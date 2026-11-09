@@ -9,6 +9,7 @@ import { renovateModule as engine } from './renovate-engine.mjs'
 import { postUpgrade } from './renovate-post-upgrade.mjs'
 import { prepareTauriSecurity, securityCompanions } from './renovate-prepare.mjs'
 import { securityReleaseAgeMs } from './renovate-release-age.mjs'
+import { TEST_IMAGE_KEYS } from './reverse-proxy-examples.mjs'
 import { crateIndexResponse, isCrateIndexRead } from './test-support.mjs'
 
 const requireRenovate = createRequire(new URL('../.github/renovate/package.json', import.meta.url))
@@ -182,6 +183,49 @@ describe('renovate policy with the pinned engine', () => {
       expect((await rule({ ...dep, manager, packageFile: 'versions.env' })).enabled, dep.depType).toBe(false)
     const bun = extracted.find(dep => dep.depType === 'BUN_VERSION')
     expect((await rule({ ...bun, manager, packageFile: 'versions.env' })).enabled, 'an ordinary pin stays enabled').not.toBe(false)
+  })
+  it('groups exactly the reverse proxy test images, keeps their -alpine variant, and runs no toolchain step for them', async () => {
+    const extracted = extractPins(readFileSync(resolve(root, 'versions.env'), 'utf8'), 'versions.env', policy.customManagers[0]).deps
+    const manager = getManagerConfig(config(), 'regex').manager
+    const grouped = []
+    for (const dep of extracted) {
+      const applied = await rule({ ...dep, manager, packageFile: 'versions.env' })
+      if (applied.groupName === 'reverse proxy test images')
+        grouped.push(dep.depType)
+    }
+    expect(grouped.toSorted()).toEqual([...TEST_IMAGE_KEYS].toSorted())
+
+    const nginx = extracted.find(dep => dep.depType === 'NGINX_IMAGE')
+    expect(nginx.currentValue).toEndWith('-alpine')
+    const { allowedVersions } = await rule({ ...nginx, manager, packageFile: 'versions.env' })
+    const allowed = new RegExp(allowedVersions.slice(1, -1))
+    expect(['1.30.0-alpine', '1.30-alpine', '3.7.18'].filter(version => !allowed.test(version))).toEqual([])
+    expect([
+      '1.30.0-alpine-slim',
+      '1.30.0-perl',
+      'latest',
+      'v3.7.18',
+    ].filter(version => allowed.test(version))).toEqual([])
+    // Docker versioning proposes only a tag of the current variant, so the pin cannot move to the Debian build.
+    expect(get('docker').isCompatible('1.31.0-alpine', nginx.currentValue)).toBe(true)
+    expect(get('docker').isCompatible('1.31.0', nginx.currentValue)).toBe(false)
+
+    const calls = []
+    await postUpgrade(TEST_IMAGE_KEYS.map(depType => ({
+      ...extracted.find(dep => dep.depType === depType),
+      manager,
+      packageFile: 'versions.env',
+      newValue: extracted.find(dep => dep.depType === depType).currentValue.replace(/^(\d+)/, major => String(Number(major) + 1)),
+    })), {
+      trusted: '/trusted',
+      run: (command, args) => {
+        calls.push([command, args])
+        return 'versions.env\0'
+      },
+    })
+    expect(calls.map(([command, args]) => [command, args[0]])).toEqual([
+      ['git', 'diff'],
+    ])
   })
   it('accepts the pinned engine custom-manager metadata and synchronizes only the toolchain claims', async () => {
     const extraction = extractPins(readFileSync(resolve(root, 'versions.env'), 'utf8'), 'versions.env', policy.customManagers[0])

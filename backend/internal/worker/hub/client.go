@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"connectrpc.com/connect/v2"
-	"connectrpc.com/connect/v2/connecthttp"
 	"connectrpc.com/connect/v2/connectproto"
 	"github.com/coder/quartz"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -152,25 +151,13 @@ func WithClock(clock quartz.Clock) ClientOption {
 // hubtransport.New, which accepts an http(s) URL, a `unix:` socket path or a
 // `npipe:` pipe name.
 //
-// The connector client takes the HTTP2Only client and the gRPC protocol, and
-// that is a requirement rather than a preference: Connect is a BIDIRECTIONAL
-// gRPC stream, which HTTP/1.1 cannot express. Against a cleartext hub with no
-// h2c this client fails with hubtransport.ErrH2CUnsupported, which states the
-// URL and the remedy, instead of degrading to a protocol on which the worker
-// could never connect. The unary ListOwnedTabsForWorker uses the same client:
-// it needs no protocol of its own.
+// newConnectorClient states the lane and the protocol that the connector
+// client takes, and why.
 func New(endpoint *hubtransport.Endpoint, opts ...ClientOption) *Client {
-	httpClient := endpoint.HTTP2OnlyClient()
-	connectURL := endpoint.BaseURL()
 	c := &Client{
-		connector: leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-			httpClient,
-			connectURL,
-			connecthttp.WithReadMaxBytes(0),
-			connecthttp.WithGRPC(),
-		))),
-		endpoint: endpoint,
-		clock:    quartz.NewReal(),
+		connector: newConnectorClient(endpoint),
+		endpoint:  endpoint,
+		clock:     quartz.NewReal(),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -456,14 +443,14 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 
 	// Send the WorkerHello INLINE on the stream before the writer exists. The
 	// Hub reads it before it lists this worker online, and answers the handshake
-	// of every channel from it. ConnectRPC with gRPC protocol only sends HTTP/2
-	// headers on the first Send(), and nothing else may enqueue until the writer
-	// is published.
+	// of every channel from it. connect-go sends the request headers with the
+	// first Send(), and nothing else may enqueue until the writer is published.
 	//
 	// When the Hub refuses before it reads the hello (a missing, unknown or
 	// deleted token, or a Hub that is shutting down), this write can fail with an
 	// error that wraps io.EOF: connecthttp's duplexHTTPCall.Send maps a closed
-	// request pipe to io.EOF, and grpcClientConn.Receive reads the status.
+	// request pipe to io.EOF, and Receive reads the status from the end of the
+	// stream.
 	// Surface that status, so that the reconnect loop sees the refusal and its
 	// WorkerConnectRefusal detail. A refusal after the hello read (a key
 	// mismatch, a fenced registry, the worker cap) cannot fail this write,
@@ -898,8 +885,8 @@ func connectRefusalReason(err error) leapmuxv1.WorkerConnectRefusalReason {
 //
 // A write that fails because the Hub ended the stream wraps io.EOF:
 // connecthttp's duplexHTTPCall.Send maps a closed request pipe to io.EOF, and
-// grpcClientConn.Receive reads the status from the trailers or from a
-// trailers-only response. Cancelling in that case makes duplexHTTPCall.Read
+// connectStreamingClientConn.Receive reads the status from the end-of-stream
+// message. Cancelling in that case makes duplexHTTPCall.Read
 // check the context before it reads the response, so Receive returns a bare
 // Canceled and the Hub's status -- with its WorkerConnectRefusal detail -- is
 // lost. Leaving the stream to its reader is what surfaces it.
@@ -910,7 +897,8 @@ func connectRefusalReason(err error) leapmuxv1.WorkerConnectRefusalReason {
 // abortStreamLocked on RST_STREAM, GOAWAY and connection loss, after which
 // processResetStream or cleanupWriteRequest also closes the response body, and
 // through abortRequestBodyWrite on a status above 299, which connecthttp's
-// grpcValidateResponse turns into the error Receive returns. A write can fail
+// connectStreamingClientConn.validateResponse turns into the error Receive
+// returns. A write can fail
 // with io.EOF before that error exists, but makeRequest stores it as responseErr
 // before it closes responseReady, and Receive waits for responseReady.
 func writerGiveUpCancelsConnection(reason sendq.GiveUpReason, err error) bool {

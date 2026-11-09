@@ -1719,6 +1719,16 @@ tasks:
     cmds:
       - node scripts/test-docker.mjs {{.IMAGE | shellQuote}}
 
+  test-reverse-proxies:
+    desc: Verify the reverse proxy examples of the documentation against a built Docker image
+    # Pass proxy names and options after --, such as `-- --stability-seconds=60 nginx caddy`.
+    # The image must match the platform of the Docker engine. CI does not run this task, because it starts a Hub, a
+    # proxy, and a Worker for each proxy and keeps them running for several minutes.
+    requires:
+      vars: [IMAGE]
+    cmds:
+      - node scripts/test-reverse-proxies.mjs {{.IMAGE | shellQuote}} {{.CLI_ARGS}}
+
   docker-build:
     desc: Build all Docker images
     cmds:

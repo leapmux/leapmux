@@ -198,6 +198,22 @@ The Worker process is alive and logging reconnection attempts, but it never show
 A Worker reconnects automatically with exponential backoff: 1 s, doubling to 180 s, with ±20% jitter, so one wait reaches at most about 3.6 minutes. If you just restarted the Hub, give the Worker up to that long to reconnect, or restart the Worker to retry immediately.
 {{< /callout >}}
 
+### A Worker cannot register or stay connected through a reverse proxy
+
+**Symptom**
+A Worker registers but never appears online, or it keeps reconnecting, and the Hub answers the web app normally.
+
+**Cause and fix**
+The proxy does not carry the Worker's stream under `/leapmux.v1.WorkerConnectorService/` as the stream requires. [Reverse Proxy](/docs/admin/reverse-proxy/#what-the-proxy-must-carry) states the requirements and gives a tested configuration for nginx, Caddy, Traefik, HAProxy, and Apache httpd. Find the Worker's message in this table:
+
+| The Worker logs | Cause | Fix |
+|---|---|---|
+| `hub did not deliver a usable worker identity within timeout; forcing reconnect`, every 10 seconds | The proxy buffers the Worker's request, so the Hub never receives the Worker's first message. nginx `proxy_pass` does this by default. | Forward the service over cleartext HTTP/2 without buffering, for example with nginx `grpc_pass`. |
+| `disconnected from hub, reconnecting...` with `HTTP status 505 HTTP Version Not Supported` | The proxy forwards the Worker's stream to the Hub over HTTP/1.1, which cannot carry a stream in both directions. | Forward the service over cleartext HTTP/2. |
+| `disconnected from hub, reconnecting...` with `stream error: stream ID 1; INTERNAL_ERROR; received from peer`, after about 1 MiB of traffic | nginx applies its default limit of 1 MiB on a request body to the Worker's whole stream. The nginx error log shows `client intended to send too large chunked body`. | Set `client_max_body_size 0;` in the nginx `server` block. |
+| The same message, every 60 seconds | Traefik limits the time to read a whole request to 60 seconds by default. | Set `transport.respondingTimeouts.readTimeout: 0` on the Traefik entry point. |
+| `endpoint does not support cleartext HTTP/2 (h2c)` | The Worker's Hub URL is an `http://` URL whose endpoint answers HTTP/1.1 only. | [Register the Worker again](/docs/admin/managing-workers/#register-a-worker-again) with the proxy's `https://` URL, or point the URL at the Hub itself. |
+
 ### A Worker keeps retrying, and each attempt fails as unauthenticated or permission denied
 
 **Symptom**
@@ -394,7 +410,7 @@ leapmux control admin settings set public_url "https://hub.example.com"   # sche
 leapmux control admin settings set secure_cookies true
 ```
 
-`public_url` must be scheme + host only — **sub-path mounting** (e.g. `https://example.com/leapmux`) is explicitly rejected. Enabling `secure_cookies` changes the cookie name and signs every current session out — do it once, at setup. See [Configuration](/docs/admin/configuration/) and [Running LeapMux](/docs/admin/running-leapmux/).
+`public_url` must be scheme + host only — **sub-path mounting** (e.g. `https://example.com/leapmux`) is explicitly rejected. Enabling `secure_cookies` changes the cookie name and signs every current session out — do it once, at setup. See [Configuration](/docs/admin/configuration/) and [Reverse Proxy](/docs/admin/reverse-proxy/).
 
 ## Can't log in or sign up
 

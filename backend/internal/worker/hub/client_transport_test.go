@@ -48,7 +48,7 @@ func TestConnect_DoesNotDialAnHTTPSHubInCleartext(t *testing.T) {
 }
 
 // TestConnect_UsesTheHTTP2OnlyLane pins that the worker's own connection
-// refuses to degrade. Connect is a bidirectional gRPC stream, which HTTP/1.1
+// refuses to degrade. Connect is a bidirectional stream, which HTTP/1.1
 // cannot carry, so a hub with no h2c has to fail with a message that names the
 // cause rather than with a protocol error from inside connect-go.
 func TestConnect_UsesTheHTTP2OnlyLane(t *testing.T) {

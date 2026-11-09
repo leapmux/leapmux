@@ -85,7 +85,7 @@
         "/^versions\\.env$/"
       ],
       "matchStrings": [
-        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?(?: extractVersion=(?<extractVersion>\\S+))?\\n(?<depType>[A-Z_][A-Z0-9_]*)=(?:alpine:|ubuntu:)?(?<currentValue>[^\\s]+)"
+        "# renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)(?: versioning=(?<versioning>\\S+))?(?: extractVersion=(?<extractVersion>\\S+))?\\n(?<depType>[A-Z_][A-Z0-9_]*)=(?:[a-z0-9._/-]+:)?(?<currentValue>[^\\s:]+)"
       ],
       "versioningTemplate": "{{#if versioning}}{{{versioning}}}{{else}}semver{{/if}}"
     }
@@ -231,6 +231,24 @@
         "S6_OVERLAY_VERSION"
       ],
       "groupName": "container runtime"
+    },
+    {
+      "description": [
+        "Update the images of task test-reverse-proxies together, and keep the -alpine variant of each tag that has one"
+      ],
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchDepTypes": [
+        "NGINX_IMAGE",
+        "CADDY_IMAGE",
+        "TRAEFIK_IMAGE",
+        "HAPROXY_IMAGE",
+        "HTTPD_IMAGE",
+        "CURL_IMAGE"
+      ],
+      "groupName": "reverse proxy test images",
+      "allowedVersions": "/^\\d+(\\.\\d+){1,3}(-alpine)?$/"
     },
     {
       "matchManagers": [

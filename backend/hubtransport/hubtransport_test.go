@@ -161,7 +161,7 @@ func TestUnaryClientProbesOnlyOnceAcrossLanes(t *testing.T) {
 }
 
 // TestHTTP2OnlyClientFailsClosedWithoutH2C covers the worker's own Connect
-// stream, which is bidirectional gRPC: HTTP/1.1 cannot carry it, so a silent
+// stream, which is bidirectional: HTTP/1.1 cannot carry it, so a silent
 // fallback would produce a worker that half-works with nothing naming why.
 func TestHTTP2OnlyClientFailsClosedWithoutH2C(t *testing.T) {
 	rec := &recorder{}

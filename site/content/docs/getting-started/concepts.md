@@ -66,7 +66,7 @@ For multi-user and remote setups, run a Hub (`leapmux hub`) and Workers (`leapmu
 
 ```text
 ┌────────────────┐              ┌─────────────────┐            ┌──────────────────┐
-│                │  ConnectRPC  │                 │    gRPC    │  Worker 1        │
+│                │  ConnectRPC  │                 │ ConnectRPC │  Worker 1        │
 │   Frontend     │◄────────────►│       Hub       │◄──────────►│  ┌────────────┐  │
 │  (Browser /    │  WebSocket   │     (Relay)     │            │  │   Agents   │  │
 │  Desktop App)  │              │                 │            │  │ (multiple) │  │

@@ -2,7 +2,7 @@
 title: "Admin CLI"
 description: "leapmux control admin administers a running Hub over RPC: settings, users, sessions, Workers, sign-in providers, captcha, rate limits, and tokens."
 type: docs
-weight: 9
+weight: 10
 ---
 
 This chapter is the `leapmux control admin ...` command tree: the online, authenticated face of hub administration. It uses the same transport, authentication, JSON output envelope, and entity-ID flags as the rest of `leapmux control` — see [Control CLI](/docs/using/control-cli/) for those mechanics. For the offline break-glass tree (`bootstrap`, `password`, `encryption-key`, `db`), see [Recovery](/docs/admin/recover/).

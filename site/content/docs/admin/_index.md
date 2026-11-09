@@ -7,13 +7,14 @@ sidebar:
   open: true
 ---
 
-For administrators hosting LeapMux for a team: run modes, starting and stopping,
+For administrators hosting LeapMux for a team: run modes, starting and stopping, HTTPS through a reverse proxy,
 configuration, Worker and account administration, encryption, the security model, offline recovery, and Hub
 administration from the terminal.
 
 {{< cards >}}
   {{< card link="/docs/admin/running-leapmux/" title="Running LeapMux" icon="server" subtitle="Run modes, ports, data directories, and Docker." >}}
   {{< card link="/docs/admin/starting-and-stopping/" title="Starting and Stopping" icon="play" subtitle="Start, stop, and check LeapMux, at login or at boot." >}}
+  {{< card link="/docs/admin/reverse-proxy/" title="Reverse Proxy" icon="globe-alt" subtitle="Serve LeapMux over HTTPS behind nginx, Caddy, Traefik, HAProxy, or Apache." >}}
   {{< card link="/docs/admin/configuration/" title="Configuration" icon="cog" subtitle="Every config key, environment variable, and storage backend." >}}
   {{< card link="/docs/admin/managing-workers/" title="Managing Workers" icon="chip" subtitle="Register, approve, pin, and select Workers." >}}
   {{< card link="/docs/admin/sign-in-providers/" title="Sign-in Providers" icon="key" subtitle="Configure OAuth / OIDC sign-in." >}}

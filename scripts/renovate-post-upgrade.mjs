@@ -8,6 +8,27 @@ import { needsNotice } from './notice-inputs.mjs'
 import { finishGoUpgrades, prepareGoUpgrades } from './renovate-go.mjs'
 import { isDependencyInput } from './renovate-inputs.mjs'
 import { reconcileTauri } from './renovate-tauri.mjs'
+import { TEST_IMAGE_KEYS } from './reverse-proxy-examples.mjs'
+
+/**
+ * The versions.env pins that are not toolchains: the container runtime of the LeapMux image, and the images that only
+ * task test-reverse-proxies runs. No documented version follows them, so they share a branch with their group and need
+ * no version synchronization. Every other versions.env pin is a toolchain.
+ */
+const NON_TOOLCHAIN_PINS = new Set([
+  'ALPINE_IMAGE',
+  'UBUNTU_IMAGE',
+  'S6_OVERLAY_VERSION',
+  ...TEST_IMAGE_KEYS,
+])
+
+/** Whether newValue is a version that the pin's tag may carry. A test image keeps the -alpine variant of its tag. */
+function isPinVersion(upgrade) {
+  const version = TEST_IMAGE_KEYS.includes(upgrade.depType)
+    ? /^\d+(?:\.\d+){1,3}(?:-alpine)?$/
+    : /^\d+(?:\.\d+){1,3}$/
+  return version.test(upgrade.newValue)
+}
 
 export function validateUpgrades(upgrades) {
   if (!Array.isArray(upgrades) || upgrades.length === 0 || upgrades.length > 10000)
@@ -38,10 +59,10 @@ export function validateUpgrades(upgrades) {
       throw new Error(`Invalid target version for ${upgrade.depName}.`)
     if (upgrade.manager === 'gomod' && !/^v\d+\.[\w.+-]+$/.test(upgrade.newValue))
       throw new Error(`Invalid Go target version for ${upgrade.depName}.`)
-    if (upgrade.manager === 'regex' && (!/^[A-Z_][A-Z0-9_]*$/.test(upgrade.depType ?? '') || upgrade.depType === 'VERSION' || !/^\d+(?:\.\d+){1,3}$/.test(upgrade.newValue)))
+    if (upgrade.manager === 'regex' && (!/^[A-Z_][A-Z0-9_]*$/.test(upgrade.depType ?? '') || upgrade.depType === 'VERSION' || !isPinVersion(upgrade)))
       throw new Error('Invalid tool or image pin metadata.')
   }
-  const toolchains = upgrades.filter(upgrade => upgrade.packageFile === 'versions.env' && !['ALPINE_IMAGE', 'UBUNTU_IMAGE', 'S6_OVERLAY_VERSION'].includes(upgrade.depType))
+  const toolchains = upgrades.filter(upgrade => upgrade.packageFile === 'versions.env' && !NON_TOOLCHAIN_PINS.has(upgrade.depType))
   if (toolchains.length && (upgrades.length !== 1 || toolchains.length !== 1))
     throw new Error('A toolchain update must have its own branch.')
   return { toolchain: toolchains.length === 1 }

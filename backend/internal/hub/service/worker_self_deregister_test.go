@@ -9,12 +9,10 @@ import (
 	"time"
 
 	"connectrpc.com/connect/v2"
-	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
@@ -25,6 +23,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	workerhub "github.com/leapmux/leapmux/internal/worker/hub"
 )
 
 // deregisterSelfCall performs one DeregisterSelf with the worker token.
@@ -107,8 +106,7 @@ func TestSelfDeregisterFencesDelayedAdmission(t *testing.T) {
 	endpoint, err := hubtransport.New(server.URL)
 	require.NoError(t, err)
 	t.Cleanup(endpoint.CloseIdleConnections)
-	client := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		endpoint.StreamClient(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	client := workerhub.NewConnectorClient(endpoint.StreamClient(), server.URL)
 	streamCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	streamCtx, info := connect.NewClientContext(streamCtx)

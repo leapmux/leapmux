@@ -36,7 +36,7 @@ While the `solo` account has no password, the first TCP caller can claim it by s
 
 Set the `solo` account's password and add the address in **Preferences → Administration → Network access**. The Hub starts answering there at once, and again on every later start. From then on every network address asks you to sign in as `solo` — `127.0.0.1` included — while the desktop app, which reaches its Hub over a local socket, never does. [Network access](/docs/admin/configuration/#network-access) covers the panel, and [Security & Threat Model](/docs/admin/security/#solo-mode-a-reduced-threat-model) the rule.
 
-Session settings apply to solo mode when you sign in over the network. For HTTPS access, follow [Reverse proxy and public URL](#reverse-proxy-and-public-url).
+Session settings apply to solo mode when you sign in over the network. For HTTPS access, follow [Reverse Proxy](/docs/admin/reverse-proxy/).
 
 A solo hub still has no sign-up, no passkeys, no account recovery and no email: one account, one password. For a multi-user deployment, use hub mode (with separate Workers) or dev mode instead.
 
@@ -95,7 +95,7 @@ leapmux control admin settings set smtp '{"host":"smtp.example.com","port":587,"
 By default the Hub uses an embedded SQLite database at `<data_dir>/hub.db` with its encryption key ring at `<data_dir>/encryption.key`. For a shared, durable deployment you will usually point it at an external database via `-storage-type` and the matching `*-dsn` flag. The full reference is in [Configuration](/docs/admin/configuration/); the [Hub settings](/docs/admin/admin-cli/#hub-settings) section of the Admin CLI chapter covers the settings table.
 
 {{< callout type="info" >}}
-For HTTPS access, put a reverse proxy in front of the Hub. See [Reverse proxy and public URL](#reverse-proxy-and-public-url) below.
+For HTTPS access, put a reverse proxy in front of the Hub. See [Reverse Proxy](/docs/admin/reverse-proxy/).
 {{< /callout >}}
 
 ## Running Workers
@@ -203,7 +203,7 @@ docker run -d --name leapmux-dev --restart unless-stopped \
   ghcr.io/leapmux/leapmux:latest
 ```
 
-Open `http://localhost:4327` and complete `/setup` to create the first administrator. The examples publish the port on all host interfaces. For HTTPS access, follow [Reverse proxy and public URL](#reverse-proxy-and-public-url).
+Open `http://localhost:4327` and complete `/setup` to create the first administrator. The examples publish the port on all host interfaces. For HTTPS access, follow [Reverse Proxy](/docs/admin/reverse-proxy/).
 
 {{< callout type="warning" >}}
 Solo mode listens on `127.0.0.1:4327` inside the container by default, so publishing its port does not make it reachable from the host. Use `dev` when you want a Hub and Worker in one container that accepts network connections and requires sign-in.
@@ -234,34 +234,9 @@ Use `--restart unless-stopped` with `docker run`, or `restart: unless-stopped` i
 
 ## Reverse proxy and public URL
 
-To serve LeapMux over HTTPS, put a reverse proxy such as nginx, Caddy, or Traefik in front of the Hub. Configure the Hub to use its public address:
+To serve LeapMux over HTTPS, put a reverse proxy in front of the Hub, and set the Hub's `public_url`, `secure_cookies`, and `trusted_proxy_ranges`. The proxy must forward the Worker's stream to the Hub over cleartext HTTP/2 (h2c). [Reverse Proxy](/docs/admin/reverse-proxy/) states every requirement, gives a tested configuration for nginx, Caddy, Traefik, HAProxy, and Apache httpd, and shows how to check the result.
 
-1. Set `public_url` to the external HTTPS URL: `leapmux control admin settings set public_url "https://hub.example.com"`.
-2. Enable secure cookies with `leapmux control admin settings set secure_cookies true`. This signs out current sessions, so configure it during initial setup.
-3. Trust the proxy's address with `leapmux control admin settings set trusted_proxy_ranges '["127.0.0.1", "::1"]'`. This example trusts a proxy on the same machine over IPv4 or IPv6. Use the actual address or range for a remote proxy. The Hub ignores forwarding headers from untrusted proxies.
-4. Register each Worker with `--hub` set to the same external `https://` address. A Worker keeps using the URL that it registered with. Workers always initiate outbound connections, so they need no inbound ports of their own.
-
-The Hub applies these three settings within about 30 seconds. No restart is needed.
-
-For the supported proxy address formats and forwarding headers, see [Configuration](/docs/admin/configuration/).
-
-{{< callout type="warning" >}}
-If you use `cloudflare` or `cloudfront` in `trusted_proxy_ranges`, those values trust the bundled ranges for the entire provider. Restrict access to your distribution or use authenticated origin requests. Configure every proxy to remove client-supplied forwarding headers or append only verified values. LeapMux does not download updated provider ranges automatically.
-{{< /callout >}}
-
-{{< callout type="warning" >}}
-`public_url` must be a bare scheme + host — for example `https://hub.example.com`. Sub-path mounting (such as `https://example.com/leapmux`) is **not** supported and is rejected at write time. Give LeapMux its own hostname or subdomain.
-{{< /callout >}}
-
-The proxy must also forward WebSocket upgrades, since Frontend traffic and the relayed Worker streams ride over long-lived connections. For details about encryption and Worker identity verification, see [Security & Threat Model](/docs/admin/security/).
-
-The proxy must carry **HTTP/2 to the Hub** as well. A Worker holds one bidirectional stream to the Hub, and HTTP/1.1 cannot carry it, so a Worker behind an HTTP/1.1-only proxy cannot connect and says so:
-
-```
-endpoint does not support cleartext HTTP/2 (h2c)
-```
-
-Configure the proxy to accept HTTPS and forward cleartext HTTP/2 (`h2c`) to the Hub. Use nginx `grpc_pass`, Caddy `transport http { versions h2c }`, or Traefik `h2c://`. Alternatively, connect the Worker directly to the Hub. Browser and command-line requests can work over HTTP/1.1 even when the Worker connection fails.
+For details about encryption and Worker identity verification, see [Security & Threat Model](/docs/admin/security/).
 
 ## Upgrading
 

@@ -1,0 +1,31 @@
+# /etc/traefik/dynamic/leapmux.yml
+
+http:
+  routers:
+    # The Worker's stream: HTTP/2 to the Hub, without buffering.
+    leapmux-worker:
+      rule: Host(`hub.example.com`) && PathPrefix(`/leapmux.v1.WorkerConnectorService/`)
+      entryPoints: [websecure]
+      service: leapmux-h2c
+      tls: {}
+    # Everything else: the web app, its API calls, and WebSocket upgrades.
+    leapmux:
+      rule: Host(`hub.example.com`)
+      entryPoints: [websecure]
+      service: leapmux
+      tls: {}
+
+  services:
+    leapmux-h2c:
+      loadBalancer:
+        servers:
+          - url: h2c://127.0.0.1:4327
+    leapmux:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:4327
+
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/hub.example.com.crt
+      keyFile: /etc/traefik/certs/hub.example.com.key

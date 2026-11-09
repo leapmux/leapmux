@@ -19,8 +19,8 @@
 //
 //   - UnaryClient and StreamClient carry request/response calls and Connect
 //     server streams. Both work over HTTP/1.1, so both accept the fallback.
-//   - HTTP2OnlyClient carries a bidirectional gRPC stream, which HTTP/1.1
-//     cannot express. It fails with ErrH2CUnsupported instead of degrading.
+//   - HTTP2OnlyClient carries a bidirectional stream, which HTTP/1.1 cannot
+//     express in any RPC protocol. It fails with ErrH2CUnsupported instead of degrading.
 //   - WebSocketClient carries an upgrade. A WebSocket cannot ride HTTP/2:
 //     coder/websocket needs http.Hijacker, which the HTTP/2 ResponseWriter
 //     does not implement. This lane is HTTP/1.1 always.

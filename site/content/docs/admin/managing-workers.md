@@ -2,7 +2,7 @@
 title: "Managing Workers"
 description: "How a Worker connects out to a Hub, how to register and approve one, how Worker status shows in the UI, and how TOFU key pinning guards against a malicious Hub."
 type: docs
-weight: 4
+weight: 5
 ---
 
 A **Worker** is the long-running daemon that hosts your coding agents, terminals, and file access. It runs on whatever machine holds the code you want to work on — your laptop, a powerful desktop, a remote build box — and connects *out* to a Hub. This chapter covers how a Worker reaches a Hub, how you register one, and how the UI shows Worker status. It also covers TOFU key pinning and how you pick which Worker hosts a new tab.
@@ -11,7 +11,7 @@ If you only ever use solo mode, a Worker is started for you in-process and most 
 
 ## How a Worker reaches a Hub
 
-The Worker always **dials the Hub** — it opens a single outbound bidirectional gRPC stream and keeps it alive. Nothing ever connects *to* the Worker, so:
+The Worker always **dials the Hub** — it opens a single outbound bidirectional stream and keeps it alive. Nothing ever connects *to* the Worker, so:
 
 - The Worker needs **no inbound port** and works fine behind NAT, a home router, or a corporate firewall.
 - Only the Hub needs a reachable address (see [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/admin/configuration/)).

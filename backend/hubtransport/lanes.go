@@ -128,8 +128,8 @@ func (p preferH2C) CloseIdleConnections() {
 	closeIdleConnections(p.h1)
 }
 
-// requireH2C is the cleartext lane for a bidirectional gRPC stream, which
-// HTTP/1.1 cannot express. It fails closed with a message an operator can act
+// requireH2C is the cleartext lane for a bidirectional stream, which HTTP/1.1
+// cannot express. It fails closed with a message an operator can act
 // on, rather than degrading to a protocol on which the stream cannot work.
 type requireH2C struct {
 	prober      *prober

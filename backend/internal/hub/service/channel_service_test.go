@@ -26,6 +26,7 @@ import (
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/sendq"
+	workerhub "github.com/leapmux/leapmux/internal/worker/hub"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
@@ -113,7 +114,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 
 	return &channelTestEnv{
 		channelClient:   leapmuxv1connect.NewChannelServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
-		connectorClient: leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
+		connectorClient: workerhub.NewConnectorClient(server.Client(), server.URL),
 		mgmtClient:      leapmuxv1connect.NewWorkerManagementServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
 		authClient:      leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
 		store:           st,
@@ -167,8 +168,7 @@ func (e *channelTestEnv) streamConnector(t *testing.T, name string) leapmuxv1con
 	endpoint, err := hubtransport.New(socketURL)
 	require.NoError(t, err)
 	t.Cleanup(endpoint.CloseIdleConnections)
-	return leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		endpoint.StreamClient(), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	return workerhub.NewConnectorClient(endpoint.StreamClient(), "http://localhost")
 }
 
 // openWorkerStream opens a Connect stream authenticated as the worker.

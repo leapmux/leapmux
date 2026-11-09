@@ -2,7 +2,7 @@
 title: "Configuration"
 description: "The complete configuration reference for the LeapMux Hub and Worker: how settings resolve, every config key and default, storage backends, and encryption mode."
 type: docs
-weight: 3
+weight: 4
 ---
 
 This chapter is the complete configuration reference for the LeapMux **Hub** and **Worker** services. It covers how settings are layered and resolved, where config files live, every config key with its default and meaning, the supported storage backends, listen-address formats, encryption mode, and the timeout/limit knobs.
@@ -683,6 +683,8 @@ log_level: debug
 
 ### Production Hub behind a reverse proxy
 
+For the configuration of the proxy itself, see [Reverse Proxy](/docs/admin/reverse-proxy/).
+
 ```yaml
 # /etc/leapmux/hub.yaml
 listen: "127.0.0.1:4327"      # only the reverse proxy reaches the Hub
@@ -745,7 +747,8 @@ The bare `version` subcommand is a **top-level** command (`leapmux version`), no
 
 ## Related chapters
 
-- [Running LeapMux](/docs/admin/running-leapmux/) — run modes, ports, data dirs, Docker, reverse proxy.
+- [Running LeapMux](/docs/admin/running-leapmux/) — run modes, ports, data dirs, Docker.
+- [Reverse Proxy](/docs/admin/reverse-proxy/) — what the proxy must carry, and a tested configuration for nginx, Caddy, Traefik, HAProxy, and Apache httpd.
 - [Encryption & Data](/docs/admin/encryption-and-data/) — encryption key ring, rotation, DB migrations, backup/restore.
 - [Managing Workers](/docs/admin/managing-workers/) — registration keys, approval, Worker selection.
 - [Sign-in Providers](/docs/admin/sign-in-providers/) — configuring OAuth/OIDC as an administrator.

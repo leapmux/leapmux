@@ -1,0 +1,14 @@
+# /etc/caddy/Caddyfile
+# Caddy obtains and renews the certificate for hub.example.com itself.
+
+hub.example.com {
+	# The Worker's stream: HTTP/2 to the Hub, without buffering.
+	handle /leapmux.v1.WorkerConnectorService/* {
+		reverse_proxy h2c://127.0.0.1:4327
+	}
+
+	# Everything else: the web app, its API calls, and WebSocket upgrades.
+	handle {
+		reverse_proxy 127.0.0.1:4327
+	}
+}

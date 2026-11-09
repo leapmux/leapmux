@@ -1,0 +1,22 @@
+# /etc/traefik/traefik.yml
+
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+  websecure:
+    address: ":443"
+    transport:
+      respondingTimeouts:
+        # The default of 60 seconds limits the time to read a whole request.
+        # A Worker's stream is one request that lasts as long as the Worker
+        # runs, so the default ends it every minute.
+        readTimeout: 0
+
+providers:
+  file:
+    directory: /etc/traefik/dynamic

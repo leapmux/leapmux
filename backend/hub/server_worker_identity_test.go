@@ -4,18 +4,17 @@ import (
 	"testing"
 
 	"connectrpc.com/connect/v2"
-	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	workerhub "github.com/leapmux/leapmux/internal/worker/hub"
 )
 
 // A rename reaches a connected worker through the Hub's own wiring: the store
@@ -36,8 +35,7 @@ func TestServer_ARenameReachesTheOwnersConnectedWorker(t *testing.T) {
 	endpoint, err := hubtransport.New(srv.localListenURLs[0])
 	require.NoError(t, err)
 	t.Cleanup(endpoint.CloseIdleConnections)
-	connector := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		endpoint.HTTP2OnlyClient(), endpoint.BaseURL(), connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	connector := workerhub.NewConnectorClient(endpoint.HTTP2OnlyClient(), endpoint.BaseURL())
 	streamCtx, call := connect.NewClientContext(ctx)
 	call.RequestHeader().Set("Authorization", "Bearer "+credentials.AuthToken)
 	stream, err := connector.Connect(streamCtx)

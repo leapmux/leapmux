@@ -18,6 +18,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	workerhub "github.com/leapmux/leapmux/internal/worker/hub"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
@@ -194,7 +195,7 @@ func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed r
 
 	return &regKeyEnv{
 		mgmtClient:      leapmuxv1connect.NewWorkerManagementServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
-		connectorClient: leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
+		connectorClient: workerhub.NewConnectorClient(server.Client(), server.URL),
 		authClient:      leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
 		store:           st,
 		mailer:          mailer,
@@ -858,10 +859,10 @@ func TestRegister_OverUnixSocket_StillRequiresValidKey(t *testing.T) {
 
 	env := setupRegKeyEnv(t)
 
-	// The gRPC-over-h2c client used by `leapmux worker --hub unix:...` dials the
+	// The h2c client that `leapmux worker --hub unix:...` uses dials the
 	// hub the same way it would in production.
 	httpClient := env.serveOverUnixSocket(t, "hub")
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	connectorClient := workerhub.NewConnectorClient(httpClient, "http://localhost")
 	authClient := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, "http://localhost", connecthttp.WithReadMaxBytes(0))))
 	mgmtClient := leapmuxv1connect.NewWorkerManagementServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, "http://localhost", connecthttp.WithReadMaxBytes(0))))
 
@@ -942,8 +943,7 @@ func TestConnect_SendsWorkerIdentityFirst(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, worker.RegisteredBy)
 
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		env.serveOverUnixSocket(t, "hub-identity"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	connectorClient := workerhub.NewConnectorClient(env.serveOverUnixSocket(t, "hub-identity"), "http://localhost")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -995,8 +995,7 @@ func openAdminWorkerStream(t *testing.T, env *regKeyEnv, socketName string) (lea
 	worker, err := env.store.Workers().GetByID(context.Background(), regResp.GetWorkerId())
 	require.NoError(t, err)
 
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		env.serveOverUnixSocket(t, socketName), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	connectorClient := workerhub.NewConnectorClient(env.serveOverUnixSocket(t, socketName), "http://localhost")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
 	streamCtx, streamInfo := connect.NewClientContext(ctx)
@@ -1590,8 +1589,7 @@ func TestConnect_TellsADeregisteringWorkerToStopAndDeletesItOnAck(t *testing.T) 
 	require.NoError(t, err)
 	require.Equal(t, int64(1), deregistered, "the worker is deregistered while no connection exists")
 
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		env.serveOverUnixSocket(t, "hub-deregister-on-connect"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	connectorClient := workerhub.NewConnectorClient(env.serveOverUnixSocket(t, "hub-deregister-on-connect"), "http://localhost")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	streamCtx, streamInfo := connect.NewClientContext(ctx)
@@ -1639,8 +1637,7 @@ func TestFailedStopDeliveryEndsTheActiveStreamAndRecoversDurableState(t *testing
 			}))
 			registered, err := env.registerWithKey(t, key)
 			require.NoError(t, err)
-			client := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-				env.serveOverUnixSocket(t, "hub-delivery-recovery"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+			client := workerhub.NewConnectorClient(env.serveOverUnixSocket(t, "hub-delivery-recovery"), "http://localhost")
 			open := func() leapmuxv1connect.WorkerConnectorServiceConnectClientStream {
 				streamCtx, info := connect.NewClientContext(ctx)
 				info.RequestHeader().Set("Authorization", "Bearer "+registered.GetAuthToken())
@@ -1790,8 +1787,7 @@ func TestConnect_TellsAWorkerChangedWhileItConnectsToStop(t *testing.T) {
 			require.NoError(t, err)
 			workerID := regResp.GetWorkerId()
 
-			connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-				env.serveOverUnixSocket(t, "hub-changed-while-connecting"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+			connectorClient := workerhub.NewConnectorClient(env.serveOverUnixSocket(t, "hub-changed-while-connecting"), "http://localhost")
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			streamCtx, streamInfo := connect.NewClientContext(ctx)
@@ -1864,8 +1860,7 @@ func TestConnect_RefusesTheStreamWhenTheWorkerCannotBeReadAgain(t *testing.T) {
 	require.NoError(t, err)
 	workerID := regResp.GetWorkerId()
 
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		env.serveOverUnixSocket(t, "hub-read-again-fails"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	connectorClient := workerhub.NewConnectorClient(env.serveOverUnixSocket(t, "hub-read-again-fails"), "http://localhost")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	streamCtx, streamInfo := connect.NewClientContext(ctx)
@@ -1915,8 +1910,7 @@ func TestConnect_FencedRegistryRefusesWithUnavailable(t *testing.T) {
 	worker, err := env.store.Workers().GetByID(context.Background(), regResp.GetWorkerId())
 	require.NoError(t, err)
 
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		env.serveOverUnixSocket(t, "hub-fenced"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	connectorClient := workerhub.NewConnectorClient(env.serveOverUnixSocket(t, "hub-fenced"), "http://localhost")
 
 	// The Hub has begun shutting down. The interceptor is NOT installed on this
 	// fixture, which is exactly the window under test: the request is already
@@ -1984,8 +1978,7 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 		return resp
 	}
 
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		env.serveOverUnixSocket(t, "hub-worker-cap"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	connectorClient := workerhub.NewConnectorClient(env.serveOverUnixSocket(t, "hub-worker-cap"), "http://localhost")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -1999,7 +1992,7 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 	// worker speaks first because ConnectRPC only sends headers on the first Send.
 	// When the Hub refuses immediately, Send may wrap io.EOF; Receive carries
 	// the status (connecthttp's duplexHTTPCall.Send maps a closed request pipe to
-	// io.EOF, and grpcClientConn.Receive reads the status).
+	// io.EOF, and Receive reads the status from the end-of-stream message).
 	openStream := func(t *testing.T, authToken string) (workerStream, *leapmuxv1.ConnectResponse, error) {
 		t.Helper()
 		streamCtx, streamInfo := connect.NewClientContext(ctx)
@@ -2225,8 +2218,7 @@ func TestConnectAndDisconnectNotifyTheOwnersUserEvents(t *testing.T) {
 	// Subscribe only now, so the registration's own event cannot satisfy a wait.
 	events := env.subscribeUserEvents(t, env.adminID(t))
 
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		env.serveOverUnixSocket(t, "hub-online-events"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	connectorClient := workerhub.NewConnectorClient(env.serveOverUnixSocket(t, "hub-online-events"), "http://localhost")
 	ctx := testutil.DeadlineContext(t)
 	connectStream := func(hello *leapmuxv1.WorkerHello) leapmuxv1connect.WorkerConnectorServiceConnectClientStream {
 		streamCtx, streamInfo := connect.NewClientContext(ctx)
@@ -2391,8 +2383,7 @@ func TestConnectRefusesKeysThatDifferFromTheRegisteredKeys(t *testing.T) {
 	regResp, err := env.registerWithKeys(t, createResp.GetRegistrationKey(), workerkeystest.Keys(0x31))
 	require.NoError(t, err)
 
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		env.serveOverUnixSocket(t, "hub-pin-mismatch"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	connectorClient := workerhub.NewConnectorClient(env.serveOverUnixSocket(t, "hub-pin-mismatch"), "http://localhost")
 	ctx := testutil.DeadlineContext(t)
 
 	openStream := func(t *testing.T) leapmuxv1connect.WorkerConnectorServiceConnectClientStream {
@@ -2444,8 +2435,7 @@ func TestConnectTagsOnlyADeletedWorkerAsPermanent(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, env.store.Workers().MarkDeleted(context.Background(), goneResp.GetWorkerId()))
 
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		env.serveOverUnixSocket(t, "hub-refusal-details"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	connectorClient := workerhub.NewConnectorClient(env.serveOverUnixSocket(t, "hub-refusal-details"), "http://localhost")
 	ctx := testutil.DeadlineContext(t)
 
 	openStream := func(t *testing.T, bearer string, sendHello bool) leapmuxv1connect.WorkerConnectorServiceConnectClientStream {
@@ -2536,8 +2526,7 @@ func TestConnectAnswersAStoreFaultInTheTokenReadAsInternal(t *testing.T) {
 		return workerFaultStore{Store: st}
 	}})
 
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		env.serveOverUnixSocket(t, "hub-token-fault"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	connectorClient := workerhub.NewConnectorClient(env.serveOverUnixSocket(t, "hub-token-fault"), "http://localhost")
 	ctx := testutil.DeadlineContext(t)
 	streamCtx, streamInfo := connect.NewClientContext(ctx)
 	streamInfo.RequestHeader().Set("Authorization", "Bearer anything")

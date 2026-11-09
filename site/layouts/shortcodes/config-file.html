@@ -1,0 +1,27 @@
+{{- /*
+  config-file renders one file of the page's bundle as a code block, with the
+  file's install path as its title.
+
+      {{< config-file file="nginx.conf" lang="nginx" >}}
+
+  The reverse proxy page uses it so that the configuration a reader copies is
+  the file that scripts/test-reverse-proxies.mjs mounts into each proxy. The
+  first line of each file states its install path, which becomes the title,
+  and the code block shows the rest without its leading blank lines. A missing
+  file stops the build, so a renamed example cannot leave an empty block.
+*/ -}}
+{{- $name := .Get "file" -}}
+{{- $lang := .Get "lang" -}}
+{{- with .Page.Resources.Get $name -}}
+  {{- $lines := split (strings.TrimRight "\n" .Content) "\n" -}}
+  {{- $first := index $lines 0 -}}
+  {{- if not (hasPrefix $first "# /") -}}
+    {{- errorf "config-file: %s must start with a comment line that states its install path (%s)" $name $.Position -}}
+  {{- end -}}
+  {{- $path := strings.TrimPrefix "# " $first -}}
+  {{- $body := strings.TrimLeft "\n" (delimit (after 1 $lines) "\n") -}}
+  {{- $fence := "```" -}}
+  {{- $.Page.RenderString (dict "display" "block") (printf "%s%s {filename=%q}\n%s\n%s" $fence $lang $path $body $fence) -}}
+{{- else -}}
+  {{- errorf "config-file: the page has no file %q (%s)" $name $.Position -}}
+{{- end -}}
