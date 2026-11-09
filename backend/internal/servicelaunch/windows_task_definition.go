@@ -82,14 +82,15 @@ type windowsTaskIdentity struct {
 	TriggerSID   string
 }
 
-func windowsTaskDescription(spec LaunchSpec) string {
-	return "LeapMux " + spec.Mode.String() + " (" + spec.InstanceID + ", account " + spec.AccountID + ")"
-}
+// taskName identifies the scheduled task of an instance. It has no build tag,
+// like the rest of this file, so the renderer coverage test can render the
+// task's identity on every platform.
+func taskName(spec LaunchSpec) string { return "leapmux-" + spec.Mode.String() + "-" + spec.InstanceID }
 
 func taskDefinitionXML(spec LaunchSpec, arguments string) ([]byte, error) {
 	definition := windowsTaskDefinition{
 		Namespace: windowsTaskNamespace, Version: "1.2",
-		Registration: windowsTaskRegistration{Description: windowsTaskDescription(spec)},
+		Registration: windowsTaskRegistration{Description: windowsDefinitionDescription(spec)},
 		Triggers:     windowsTaskTriggers{Items: []windowsTaskTrigger{{XMLName: xml.Name{Local: "LogonTrigger"}, Enabled: new(true), UserID: spec.AccountID}}},
 		Principals:   windowsTaskPrincipals{Items: []windowsTaskPrincipal{{ID: "LeapMux", UserID: spec.AccountID, LogonType: "Password", RunLevel: new("LeastPrivilege")}}},
 		Settings: windowsTaskSettings{
@@ -133,7 +134,7 @@ func (definition windowsTaskDefinition) matches(spec LaunchSpec, identity window
 	if namespace == "" {
 		namespace = definition.Namespace
 	}
-	if definition.XMLName.Local != "Task" || namespace != windowsTaskNamespace || definition.Registration.Description != windowsTaskDescription(spec) {
+	if definition.XMLName.Local != "Task" || namespace != windowsTaskNamespace || definition.Registration.Description != windowsDefinitionDescription(spec) {
 		return false
 	}
 	if len(definition.Triggers.Items) != 1 || len(definition.Principals.Items) != 1 || len(definition.Actions.Items) != 1 {

@@ -129,10 +129,9 @@ runs:
         node-version: ${{ env.NODE_VERSION }}
 
     - name: Setup Task for image tests
-      uses: arduino/setup-task@c0bc642852239c2689f73f4ea6459c29405f3c52 # v3.0.0
+      uses: ./.github/actions/setup-cli-tools
       with:
-        version: ${{ env.TASK_VERSION }}
-        repo-token: ${{ github.token }}
+        tools: task
 
     - name: Test the image
       shell: bash

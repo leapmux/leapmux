@@ -39,7 +39,7 @@ func (svc *Service) reserveNativeTurnRestart(agentID string) (reserved, newReser
 		svc.nativeTurnRestarts = make(map[string]struct{})
 	}
 	svc.nativeTurnRestarts[agentID] = struct{}{}
-	svc.nativeTurnRestartWG.Add(1)
+	svc.nativeTurnRestartsInFlight.Add()
 	return true, true
 }
 
@@ -48,7 +48,7 @@ func (svc *Service) restartAfterNativeTurn(agentID string, admission agent.TurnS
 		svc.lifecycleMu.Lock()
 		delete(svc.nativeTurnRestarts, agentID)
 		svc.lifecycleMu.Unlock()
-		svc.nativeTurnRestartWG.Done()
+		svc.nativeTurnRestartsInFlight.Done()
 	}()
 	if !admission.IsCurrent() {
 		return

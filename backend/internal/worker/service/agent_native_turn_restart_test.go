@@ -223,7 +223,7 @@ func TestNativeTurnRestartChecksOwnershipAfterLifecycleWait(t *testing.T) {
 			}
 			release()
 			finished := make(chan struct{})
-			go func() { svc.nativeTurnRestartWG.Wait(); close(finished) }()
+			go func() { <-svc.nativeTurnRestartsInFlight.DoneChan(); close(finished) }()
 			select {
 			case <-finished:
 			case <-ctx.Done():

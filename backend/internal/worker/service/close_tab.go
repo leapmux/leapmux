@@ -271,9 +271,9 @@ func (svc *Service) payloadTabWorkingDir(userID, tabID string) string {
 // closeTabCommon runs the shared tab-close flow for every tab type the CloseTab
 // handler closes. The handler is
 // registered as a tracked dispatcher method (dispatchTracked) so the
-// dispatcher's bound Cleanup WaitGroup is Add(1)'d synchronously
-// BEFORE the dispatched goroutine launches — Shutdown.Wait can't slip
-// past an in-flight close. closeTabCommon itself stays free of
+// dispatcher's bound Cleanup counter is incremented synchronously
+// BEFORE the dispatched goroutine launches — the Cleanup wait in Shutdown
+// can't slip past an in-flight close. closeTabCommon itself stays free of
 // Cleanup.Add to avoid the inside-goroutine-Add race the
 // dispatcher-level tracking was introduced to fix. The orphan
 // reconciler routes through here too, by way of closeTabForConvergence; it

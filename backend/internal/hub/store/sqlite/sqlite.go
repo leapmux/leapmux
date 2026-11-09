@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
@@ -210,11 +211,36 @@ func (c *sqliteConn) withTransaction(ctx context.Context, fn func(tx *sqliteConn
 	return sqlutil.WithTransactionCancellation(ctx, tx.Commit())
 }
 
+// closeCheckpointTimeout limits the WAL checkpoint that Close runs before it
+// closes the database.
+//
+// The checkpoint needs the write lock, and the busy timeout of this database
+// has no practical limit (see sqlitedb.Open). Without its own limit, a
+// straggler that still holds the lock at shutdown would hold the close for
+// about 24.8 days, and launchd or systemd would send SIGKILL long before. The
+// close runs after lifecycle.ShutdownDrainTimeout at the latest, inside the
+// one-minute reserve before that SIGKILL, and shares the reserve with the
+// release of the runtime lease (up to 10s) before it. 20s leaves the rest of
+// the reserve to the steps after it.
+//
+// The limit costs nothing that a later open does not recover. The modernc
+// driver ends the busy wait and interrupts the copy when the context ends, and
+// SQLite then leaves the WAL intact, so the next open replays it.
+const closeCheckpointTimeout = 20 * time.Second
+
 func (s *sqliteStore) Close() error {
+	return s.close(closeCheckpointTimeout)
+}
+
+// close checkpoints the WAL, giving up after checkpointLimit, and then closes
+// the database whatever the checkpoint did.
+func (s *sqliteStore) close(checkpointLimit time.Duration) error {
+	ctx, cancel := context.WithTimeout(context.Background(), checkpointLimit)
+	defer cancel()
 	// Flush the WAL before close to avoid a large WAL file on the next open.
-	if _, err := s.conn.shared.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+	if _, err := s.conn.shared.db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
 		// Log but don't fail — the close itself is more important.
-		slog.Warn("WAL checkpoint failed", "error", err)
+		slog.Warn("WAL checkpoint failed; closing the database anyway, and the next open recovers the WAL", "error", err)
 	}
 	return s.conn.shared.db.Close()
 }

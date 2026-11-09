@@ -72,8 +72,10 @@ runs:
     - name: Write git metadata
       shell: bash
       run: |
-        echo "COMMIT_HASH=$(git rev-parse --short HEAD)" >> "$GITHUB_ENV"
-        echo "COMMIT_TIME=$(git log -1 --format=%cI)" >> "$GITHUB_ENV"
+        commit_hash="$(git rev-parse --short HEAD)"
+        commit_time="$(git log -1 --format=%cI)"
+        echo "COMMIT_HASH=$commit_hash" >> "$GITHUB_ENV"
+        echo "COMMIT_TIME=$commit_time" >> "$GITHUB_ENV"
 
     - name: Setup Node.js
       uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -131,9 +133,10 @@ runs:
         # snapshot implementation about either.
         prefix="$(node scripts/cache-snapshot.mjs prefix --kind docker-go)"
         cache_path="$(node scripts/cache-snapshot.mjs active-path --kind docker-go --root go-build)"
+        key="$(node scripts/cache-snapshot.mjs key --kind docker-go --hash "$hash" --week "$week")"
         {
           echo "writes-shared=$writes_shared"
-          echo "key=$(node scripts/cache-snapshot.mjs key --kind docker-go --hash "$hash" --week "$week")"
+          echo "key=$key"
           echo "restore-prefix=${prefix}"
           echo "cache-path=$cache_path"
           echo "build-args<<LEAPMUX_BUILD_ARGS"

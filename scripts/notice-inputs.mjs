@@ -40,10 +40,28 @@ export const NOTICE_INPUTS = [
   '.github/actions/build-output-cache/action.yaml',
   '.github/actions/save-cache-snapshot/action.yaml',
   '.github/actions/dependency-caches/action.yaml',
+  '.github/actions/setup-cli-tools/action.yaml',
   '.github/actions/ci-resource-monitor/action.yaml',
   '.github/actions/load-versions/action.yaml',
+  // The scripts that the setup actions above run, and the modules that they
+  // import. github-actions-caches.test.mjs walks the setup and fails for a
+  // reached file that this list misses. The resource-monitor scripts are
+  // listed by name, because a glob would also match their tests.
   'scripts/cache-policy.mjs',
   'scripts/cache-snapshot.mjs',
+  'scripts/download.mjs',
+  'scripts/http-retry.mjs',
+  'scripts/download-cli-tools.mjs',
+  // The installer reads its pinned asset digests at run time.
+  'scripts/cli-tools.sha256',
+  'scripts/tauri-cli-version.mjs',
+  'scripts/download-go-modules.mjs',
+  'scripts/go-tools.mjs',
+  'scripts/ci-resource-monitor.mjs',
+  'scripts/ci-resource-monitor/linux.mjs',
+  'scripts/ci-resource-monitor/macos.mjs',
+  'scripts/ci-resource-monitor/metrics.mjs',
+  'scripts/ci-resource-monitor/windows.mjs',
 ]
 
 export function needsNotice(files) {

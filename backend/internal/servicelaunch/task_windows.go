@@ -34,8 +34,6 @@ func newWindowsTaskManager(credential credentialProvider) *windowsTaskManager {
 	}
 }
 
-func taskName(spec LaunchSpec) string { return "leapmux-" + spec.Mode.String() + "-" + spec.InstanceID }
-
 func (m *windowsTaskManager) Inspect(ctx context.Context, spec LaunchSpec) (NativeStatus, error) {
 	if err := validateWindowsLaunch(ctx, spec, lifecycle.StartupLogin); err != nil {
 		return NativeStatus{}, err

@@ -18,13 +18,20 @@ diagnose() {
 
 diagnose tauri-cache ls -la "$HOME/.cache/tauri"
 diagnose appimage-directory ls -la desktop/rust/target/release/bundle/appimage
-LINUXDEPLOY="$HOME/.cache/tauri/linuxdeploy-$(uname -m).AppImage"
-diagnose wrapper-version "$LINUXDEPLOY" --version
-diagnose extracted-plugins "$HOME/.cache/tauri/linuxdeploy-extracted/AppRun" --list-plugins
+diagnose staged-gstreamer-plugins ls -la desktop/rust/target/leapmux-gstreamer-plugins
+# Tauri downloads its own linuxdeploy as linuxdeploy-<commit>-<arch>.AppImage.
+LINUXDEPLOY="$(find "$HOME/.cache/tauri" -maxdepth 1 -name "linuxdeploy-*-$(uname -m).AppImage" -print -quit 2>/dev/null)"
 APPDIR="$(find desktop/rust/target/release/bundle/appimage -maxdepth 1 -name '*.AppDir' -print -quit 2>/dev/null)"
-if [ -n "$APPDIR" ]; then
-    diagnose direct-linuxdeploy "$LINUXDEPLOY" --appdir "$APPDIR" --output appimage --plugin gtk
+if [ -n "$LINUXDEPLOY" ]; then
+    diagnose linuxdeploy-version env APPIMAGE_EXTRACT_AND_RUN=1 "$LINUXDEPLOY" --version
+    diagnose linuxdeploy-plugins env APPIMAGE_EXTRACT_AND_RUN=1 "$LINUXDEPLOY" --list-plugins
+    if [ -n "$APPDIR" ]; then
+        diagnose direct-linuxdeploy env APPIMAGE_EXTRACT_AND_RUN=1 GSTREAMER_PLUGINS_DIR="$PROJECT_DIR/desktop/rust/target/leapmux-gstreamer-plugins" "$LINUXDEPLOY" --appdir "$APPDIR" --output appimage --plugin gtk --plugin gstreamer
+    fi
 else
+    printf 'No linuxdeploy AppImage exists in %s. Tauri did not download its bundler tools.\n' "$HOME/.cache/tauri"
+fi
+if [ -z "$APPDIR" ]; then
     printf 'No AppDir exists. Tauri did not reach the linuxdeploy step.\n'
 fi
 SIDECAR="$(find desktop/go/bin -maxdepth 1 -name 'leapmux-desktop-service-*' -print -quit 2>/dev/null)"

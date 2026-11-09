@@ -501,7 +501,7 @@ func TestWorkspaceArchive_UnarchiveResumesOnlyEligibleAgents(t *testing.T) {
 	recorder := newStartRecorder()
 	recorder.install(svc)
 	resumer := svc.AgentResumer()
-	t.Cleanup(resumer.Stop)
+	t.Cleanup(func() { resumer.Stop(nil) })
 
 	for _, testAgent := range []struct {
 		id           string

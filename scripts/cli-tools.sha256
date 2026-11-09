@@ -1,0 +1,20 @@
+# The sha256 of each pinned CLI tool release asset. scripts/download-cli-tools.mjs
+# refuses a download that differs. `task sync-cli-tool-digests` rewrites this file
+# for the pins in versions.env.
+f71b009ebd8530b12fd85b060c6c245e15d6e5110ccc8da48d8b6fa71e59330b  buf 1.75.0 buf-Darwin-arm64
+ff6d0979143c661d59178a032c57be883b2ac03dc9bf7d00ffca222b0354bd46  buf 1.75.0 buf-Darwin-x86_64
+00eb190aa82df17f393e05b04889cc60a0b13b3259d336e21a87d5f23ab4fd26  buf 1.75.0 buf-Linux-aarch64
+fad1e38d6909bbb583a4da81d8c02a01046e2cd663bde7e337dd24277393764b  buf 1.75.0 buf-Linux-x86_64
+57fdfac407c0538707a7d8f7ddc13fcd8770e3c58dcffe7d55e7d8f1804cca61  buf 1.75.0 buf-Windows-arm64.exe
+de35b288e7962ac72aefee5048aff80551a4f0e6ac865a21f838693461ac8b8d  buf 1.75.0 buf-Windows-x86_64.exe
+8b8f18bd2b30346efbc698dd5a73dd7c805f3ef8380f6dfc95c768f3f1852f6a  protoc 36.2 protoc-36.2-linux-aarch_64.zip
+121f6c7afe1d4d0e3ea6aab9432038599250134cbf4474cb1167d2c7decd4278  protoc 36.2 protoc-36.2-linux-x86_64.zip
+9cd98a532c5c5e0c4161314de0225de27e4c8a323917b6ea7b1b714d3ae23466  protoc 36.2 protoc-36.2-osx-aarch_64.zip
+228cc7add4616cc14ca5e80dee83209d44449a7aee95a914ae748fa374efb078  protoc 36.2 protoc-36.2-osx-x86_64.zip
+f0c128dc0d8492eceece83bb459a4c0e316764b929ffbf1aa416357fd644edd3  protoc 36.2 protoc-36.2-win64.zip
+0543b0844a725814c0412d3f4bed12873ce9ed0da207b15775f63a97d734aac0  task 3.54.0 task_darwin_amd64.tar.gz
+12a69fcf37bb8d5bc9150c44f9a936775b73e59ff044c2c245232f198c135637  task 3.54.0 task_darwin_arm64.tar.gz
+680859dbb4d881a9c72d4d9a8f510825450849af8567deacd7302c01124416fb  task 3.54.0 task_linux_amd64.tar.gz
+d7189d439d4a6058e39e1b2acd7c8b27acd4856691b408f23b242e4294e1df5b  task 3.54.0 task_linux_arm64.tar.gz
+837f42f71899ea41d07a47acc81d4d6ea80cb41c68292345f915c656473efcb7  task 3.54.0 task_windows_amd64.zip
+4618ea027582738a056af9a5b78086c402e93c82c1c67df0eab2d20c649608e2  task 3.54.0 task_windows_arm64.zip

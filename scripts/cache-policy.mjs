@@ -72,10 +72,20 @@ function cargoHome(env) {
   return env.CARGO_HOME || join(homeDir(env), '.cargo')
 }
 
+// The per-user cache directory of a runner: AppData/Local on Windows and
+// ~/.cache elsewhere, macOS included.
+function userCacheDir(env) {
+  return requireEnv(env, 'RUNNER_OS') === 'Windows'
+    ? join(homeDir(env), 'AppData', 'Local')
+    : join(homeDir(env), '.cache')
+}
+
 function tauriCache(env) {
-  if (requireEnv(env, 'RUNNER_OS') === 'Windows')
-    return join(homeDir(env), 'AppData', 'Local', 'tauri')
-  return join(homeDir(env), '.cache', 'tauri')
+  return join(userCacheDir(env), 'tauri')
+}
+
+function cliToolsDir(env) {
+  return join(userCacheDir(env), 'leapmux-cli-tools')
 }
 
 function spinnersClone(env) {
@@ -118,27 +128,39 @@ const activeRoots = {
   tauriCache: env => requireEnv(env, 'RUNNER_OS') === 'macOS'
     ? null
     : tauriCache(env),
+  cliTools: env => cliToolsDir(env),
   spinnersSubtree: env => join(spinnersClone(env), 'spinners'),
   renovateRe2Node: (env, workspace) => join(workspaceRoot(env, workspace), '.github', 'renovate', 'node_modules', 're2', 'build', 'Release', 're2.node'),
   renovateTaskChecksum: (env, workspace) => join(workspaceRoot(env, workspace), '.task', 'checksum', 'build-renovate-re2'),
   renovateTaskRecord: (env, workspace) => join(workspaceRoot(env, workspace), '.task', 'artifacts', taskArtifactRecordName('build-renovate-re2')),
 }
 
+// A partition that one runner operating system owns.
+function osPrefix(label) {
+  return env => `${label}-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-`
+}
+
+// A partition that one runner operating system and architecture own.
+function osArchPrefix(label) {
+  return env => `${label}-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-${requireEnv(env, 'RUNNER_ARCH')}-`
+}
+
 // The prefix builders return the partition that this generation owns. Each
 // embeds CACHE_SNAPSHOT_VERSION, so no prefix of this generation matches an
 // archive of a previous one.
 const prefixBuilders = {
-  'go-modules': env => `go-modules-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-`,
-  'site-go-modules': env => `site-go-modules-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-`,
-  'bun-packages': env => `bun-packages-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-${requireEnv(env, 'RUNNER_ARCH')}-`,
-  'cargo-downloads': env => `cargo-downloads-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-`,
+  'go-modules': osPrefix('go-modules'),
+  'site-go-modules': osPrefix('site-go-modules'),
+  'bun-packages': osArchPrefix('bun-packages'),
+  'cargo-downloads': osPrefix('cargo-downloads'),
   'native-go': env => `go-build-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-${requireEnv(env, 'RUNNER_ARCH')}-${requireEnv(env, 'CACHE_IMAGE')}-go${requireEnv(env, 'GOLANG_VERSION')}-`,
   'native-rust': env => `rust-build-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-${requireEnv(env, 'RUNNER_ARCH')}-${requireEnv(env, 'CACHE_IMAGE')}-rust${requireEnv(env, 'RUST_VERSION')}-`,
   'docker-go': env => `docker-go-build-${CACHE_SNAPSHOT_VERSION}-${dockerArch(env)}-go${requireEnv(env, 'GOLANG_VERSION')}-`,
   'site-go': env => `site-go-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-go${requireEnv(env, 'GOLANG_VERSION')}-`,
-  'apt-packages': env => `apt-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-${requireEnv(env, 'RUNNER_ARCH')}-`,
-  'tauri-tools': env => `tauri-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-${requireEnv(env, 'RUNNER_ARCH')}-`,
-  'spinners': env => `spinners-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-`,
+  'apt-packages': osArchPrefix('apt'),
+  'tauri-tools': osArchPrefix('tauri'),
+  'cli-tools': osArchPrefix('cli-tools'),
+  'spinners': osPrefix('spinners'),
   'renovate-re2': env => `renovate-re2-${CACHE_SNAPSHOT_VERSION}-${requireEnv(env, 'RUNNER_OS')}-${requireEnv(env, 'RUNNER_ARCH')}-${requireEnv(env, 'CACHE_IMAGE')}-node24-bun${requireEnv(env, 'BUN_VERSION')}-task${requireEnv(env, 'TASK_VERSION')}-`,
 }
 
@@ -367,6 +389,36 @@ const CACHE_POLICIES = {
       },
     ],
   },
+  'cli-tools': {
+    kind: 'cli-tools',
+    category: 'tool',
+    description: 'The pinned protoc, buf and Task binaries that scripts/download-cli-tools.mjs installs, for the requested tool subset only.',
+    population: POPULATION_ACTIVATE_THEN_PRODUCE,
+    trim: TRIM_NONE,
+    writerScope: WRITER_SCOPE_ANY,
+    writers: 'Any job after its tool download completes.',
+    // The key carries two hash segments: the download recipe (the installer
+    // and its pinned asset digests), and the requested tool set with the
+    // pinned versions of exactly those tools. The archive therefore holds
+    // exactly the declared binaries, and a pin of one tool never rotates the
+    // archive of a job that installs only another.
+    keyedByWeek: false,
+    hashSegment: 'required',
+    // Every job that restores also publishes after its download, so the
+    // kind has no reader role and permits no fallback.
+    fallback: 'none',
+    roots: [
+      {
+        name: 'tools',
+        type: 'tree',
+        required: true,
+        requiredNonEmpty: true,
+        mode: 'replace',
+        clearOnWriterMiss: true,
+        active: activeRoots.cliTools,
+      },
+    ],
+  },
   'apt-packages': {
     kind: 'apt-packages',
     category: 'tool',
@@ -394,12 +446,19 @@ const CACHE_POLICIES = {
   'tauri-tools': {
     kind: 'tauri-tools',
     category: 'tool',
-    description: 'Tool downloads and patched files produced by a complete packaging build: the Linux wrapper, the extracted tree, the .orig marker, and the patched plugins.',
+    description: 'The bundler tools that the Tauri CLI downloads into its cache during a complete packaging build: an AppRun, a linuxdeploy AppImage and its plugins on Linux, and WiX on Windows.',
     population: POPULATION_ACTIVATE_THEN_PRODUCE,
     trim: TRIM_NONE,
     writerScope: WRITER_SCOPE_ANY,
     writers: 'Every non-macOS job after a successful complete packaging build.',
-    keyedByWeek: true,
+    // The key hash is the resolved Tauri CLI version
+    // (scripts/tauri-cli-version.mjs), because the CLI decides which tools
+    // it downloads. The key carries no weekly epoch: a weekly rotation
+    // downloaded the same tools again for every pull request that opened
+    // the week before the main build published the key. Without it, the
+    // appimage plugin from Tauri's `continuous` tag stays at its first
+    // download until the CLI version changes.
+    keyedByWeek: false,
     hashSegment: 'required',
     // Every job that restores also publishes after its packaging build, so
     // the kind has no reader role and permits no fallback.

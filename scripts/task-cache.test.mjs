@@ -371,8 +371,7 @@ describe('spinner source generation', () => {
     await activateCacheSnapshot({
       kind: 'spinners',
       key,
-      exactHit: true,
-      matchedKey: true,
+      matchedKey: key,
       writer: true,
       workspace: dir,
       env,

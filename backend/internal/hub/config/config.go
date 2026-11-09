@@ -19,6 +19,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/memlimit"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/locallisten"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 const (
@@ -128,6 +129,12 @@ type Config struct {
 	// from its own predecessor wait, and `leapmux hub` leaves it at zero,
 	// because on a shared database a second Hub is a real misconfiguration.
 	RuntimeLeaseWait time.Duration
+	// ShutdownDeadline ends every wait of the Hub's shutdown; see
+	// lifecycle.ShutdownDrainTimeout. Like RuntimeLeaseWait it carries no koanf
+	// tag, because no flag or file sets it: solo.Start fills it with the one
+	// deadline it shares between its Hub and its Worker. When it is nil,
+	// NewServer creates a deadline of its own.
+	ShutdownDeadline *drain.Deadline
 	DevMode          bool              // Non-solo development mode. The first administrator completes setup.
 	Extras           map[string]string // Extra flag values not in the hub Config struct
 }

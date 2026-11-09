@@ -40,7 +40,7 @@ describe('cache snapshot core', () => {
     })
     it('defines one policy for every supported kind', () => {
       const kinds = cacheKinds()
-      expect(kinds).toHaveLength(12)
+      expect(kinds).toHaveLength(13)
       for (const kind of kinds) {
         const policy = cachePolicy(kind)
         expect(policy.kind).toBe(kind)
@@ -52,6 +52,7 @@ describe('cache snapshot core', () => {
         'apt-packages',
         'bun-packages',
         'cargo-downloads',
+        'cli-tools',
         'docker-go',
         'go-modules',
         'native-go',
@@ -120,6 +121,7 @@ describe('cache snapshot core', () => {
       expect(partitionPrefix('docker-go', { ...linux, RUNNER_ARCH: 'ARM64' })).toEndWith('-arm64-go1.27.1-')
       expect(partitionPrefix('renovate-re2', linux)).toBe(`renovate-re2-${CACHE_SNAPSHOT_VERSION}-Linux-X64-ubuntu24-node24-bun1.4.4-task3.46.0-`)
       expect(partitionPrefix('spinners', linux)).toBe(`spinners-${CACHE_SNAPSHOT_VERSION}-Linux-`)
+      expect(partitionPrefix('cli-tools', linux)).toBe(`cli-tools-${CACHE_SNAPSHOT_VERSION}-Linux-X64-`)
     })
 
     it('refuses a partition whose environment inputs are missing', () => {
@@ -166,6 +168,13 @@ describe('cache snapshot core', () => {
       expect(() => cacheKey('spinners', { hash, week: '2027-W01' }, linux)).toThrow('carries no hash segment')
     })
 
+    it('composes the content-addressed tool keys from the hash without a week', () => {
+      expect(cacheKey('tauri-tools', { hash }, linux)).toBe(`tauri-${CACHE_SNAPSHOT_VERSION}-Linux-X64-${hash}`)
+      expect(cacheKey('cli-tools', { hash }, linux)).toBe(`cli-tools-${CACHE_SNAPSHOT_VERSION}-Linux-X64-${hash}`)
+      expect(() => cacheKey('cli-tools', { hash, week: '2027-W01' }, linux)).toThrow('carries no weekly epoch')
+      expect(() => cacheKey('tauri-tools', {}, linux)).toThrow('sha256')
+    })
+
     it('accepts the two hash segments of the Renovate RE2 key', () => {
       const recipeHash = 'b'.repeat(64)
       expect(cacheKey('renovate-re2', { hash: `${hash}-${recipeHash}`, week: '2027-W01' }, linux))
@@ -207,7 +216,11 @@ describe('cache snapshot core', () => {
         ],
         [
           'tauri-tools',
-          { hash, week: '2027-W01' },
+          { hash },
+        ],
+        [
+          'cli-tools',
+          { hash },
         ],
         [
           'spinners',
@@ -267,6 +280,7 @@ describe('cache snapshot core', () => {
         'site-go-modules',
         'bun-packages',
         'cargo-downloads',
+        'cli-tools',
         'spinners',
         'apt-packages',
         'tauri-tools',
@@ -395,6 +409,16 @@ describe('cache snapshot core', () => {
       ])
       expect(activeRootsFor('tauri-tools', linux, '/work').map(root => root.active)).toEqual([
         join('/home/fixture', '.cache', 'tauri'),
+      ])
+    })
+
+    it('resolves the CLI tool directory from the runner home layout', () => {
+      expect(activeRootsFor('cli-tools', linux, '/work').map(root => root.active)).toEqual([
+        join('/home/fixture', '.cache', 'leapmux-cli-tools'),
+      ])
+      const windows = { ...linux, RUNNER_OS: 'Windows', USERPROFILE: '/c/fixture' }
+      expect(activeRootsFor('cli-tools', windows, '/work').map(root => root.active)).toEqual([
+        join('/c/fixture', 'AppData', 'Local', 'leapmux-cli-tools'),
       ])
     })
 

@@ -273,16 +273,16 @@ func sendFailureLevel(err error) slog.Level {
 	return slog.LevelWarn
 }
 
-// ShutdownFlushTimeout limits FlushSends. It is generous relative to the work (a
-// handful of small frames onto an open socket) because the cost of waiting too
-// long is a slower exit, while the cost of not waiting long enough is a user
-// staring at a terminal that silently stopped.
+// ShutdownFlushTimeout is the limit that the worker shutdown gives FlushSends.
+// It is generous relative to the work (a handful of small frames onto an open
+// socket) because the cost of waiting too long is a slower exit, while the
+// cost of not waiting long enough is a user staring at a terminal that
+// silently stopped.
 const ShutdownFlushTimeout = 5 * time.Second
 
 // FlushSends blocks until everything already enqueued has been handed to the
-// Connect stream, with ShutdownFlushTimeout as its limit. A nil writer (never
-// connected, or already torn down) is nothing to wait for and returns
-// immediately.
+// Connect stream, with limit as its limit. A nil writer (never connected, or
+// already torn down) is nothing to wait for and returns immediately.
 //
 // Send only ENQUEUES, so a caller whose next act is tearing the connection down
 // -- graceful shutdown, which broadcasts the terminal "[Worker disconnected]"
@@ -291,14 +291,15 @@ const ShutdownFlushTimeout = 5 * time.Second
 // needed them is a browser that will never get another chance to hear from this
 // process.
 //
-// The limit lives here rather than in a parameter because there is one policy,
-// and a parameter would make each caller restate it.
-func (c *Client) FlushSends() error {
+// The limit is a parameter, although the policy is ShutdownFlushTimeout,
+// because the shutdown caps it by the time left before its deadline (see
+// lifecycle.ShutdownDrainTimeout).
+func (c *Client) FlushSends(limit time.Duration) error {
 	w := c.currentWriter()
 	if w == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), ShutdownFlushTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	return w.Flush(ctx)
 }

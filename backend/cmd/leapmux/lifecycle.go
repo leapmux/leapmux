@@ -290,11 +290,15 @@ func foregroundResult(ctx context.Context, err error) error {
 
 // The wait budgets the plan states. The runtime wait budget starts
 // after configuration consent and native authorization complete; a
-// restart spends ONE budget on shutdown and startup together.
+// restart spends ONE budget on shutdown and startup together, so its
+// budget is the sum of the other two.
 const (
-	defaultStartTimeout  = 60 * time.Second
-	defaultStopTimeout   = 30 * time.Second
-	defaultStatusTimeout = 3 * time.Second
+	defaultStartTimeout = 60 * time.Second
+	// stop waits as long as launchd and systemd give a shutdown before they
+	// send SIGKILL, so it never gives up on a shutdown that can still finish.
+	defaultStopTimeout    = lifecycle.ShutdownTimeout
+	defaultRestartTimeout = defaultStopTimeout + defaultStartTimeout
+	defaultStatusTimeout  = 3 * time.Second
 )
 
 // runModeStopWithController stops the running instance and waits for the FULL

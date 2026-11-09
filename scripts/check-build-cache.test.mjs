@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { readBuildLog } from './check-build-cache.mjs'
+import { canonicalToolNames } from './download-cli-tools.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 const fixtures = []
@@ -351,10 +352,13 @@ describe('native build cache checks in CI', () => {
   it('prepares signing tools through the shared Task prerequisite', () => {
     const workflow = Bun.YAML.parse(readFileSync(join(root, '.github/workflows/desktop-artifacts.yaml'), 'utf8'))
     const steps = workflow.jobs['macos-app-sign'].steps
-    const setup = steps.findIndex(step => step.uses?.startsWith('arduino/setup-task@'))
+    const setup = steps.findIndex(step => step.uses === './.github/actions/setup-cli-tools')
     const prepare = steps.findIndex(step => step.run === 'task prepare-dmg-tools')
     expect(setup).toBeGreaterThanOrEqual(0)
     expect(prepare).toBeGreaterThan(setup)
+    // The step must install Task itself, not only some other tool.
+    const action = Bun.YAML.parse(readFileSync(join(root, '.github/actions/setup-cli-tools/action.yaml'), 'utf8'))
+    expect(canonicalToolNames(steps[setup].with?.tools ?? action.inputs.tools.default)).toContain('task')
     const taskfile = Bun.YAML.parse(readFileSync(join(root, 'Taskfile.yaml'), 'utf8'))
     expect(taskfile.tasks['prepare-dmg-tools'].internal ?? false).toBe(false)
     expect(steps.some(step => /node-gyp|bun install/.test(step.run ?? ''))).toBe(false)

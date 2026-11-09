@@ -10,6 +10,8 @@ import (
 	"os"
 	"time"
 
+	"github.com/coder/quartz"
+
 	"github.com/leapmux/leapmux/locallisten"
 )
 
@@ -224,26 +226,40 @@ func RequestStop(ctx context.Context, record RuntimeRecord) (StopResponse, error
 	return client.RequestStop(ctx, StopRequest{InstanceID: record.InstanceID, AttemptID: record.AttemptID})
 }
 
-// waitForLockRelease waits until the runtime lock of the canonical data
-// directory is free, and returns nil only then. It returns the context's
-// error when the context ends first. It returns a probe failure at once,
-// because a lock that cannot be probed does not prove that the shutdown
-// completed.
-func waitForLockRelease(ctx context.Context, canonical string) error {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
+// WaitForRuntimeRelease waits until no process holds the runtime lock of
+// paths, and returns nil only then. An instance releases that lock as the
+// last step of its shutdown, so a nil result means that the instance
+// finished its shutdown and a new instance can acquire the lock. It returns
+// the context's error when the context ends first. It returns a probe
+// failure at once, because a lock that cannot be probed does not prove that
+// the shutdown completed.
+func WaitForRuntimeRelease(ctx context.Context, paths Paths) error {
+	return waitForRuntimeRelease(ctx, paths, quartz.NewReal())
+}
+
+// runtimeReleaseRetryTag identifies, for a test clock, the timer that
+// waitForRuntimeRelease arms after a probe finds the lock held.
+const runtimeReleaseRetryTag = "runtime-release-retry"
+
+// waitForRuntimeRelease is WaitForRuntimeRelease with the clock that spaces
+// the probes. It arms the retry timer only after a probe finds the lock
+// held, so a test that catches the timer knows that the wait saw the lock
+// held.
+func waitForRuntimeRelease(ctx context.Context, paths Paths, clock quartz.Clock) error {
 	for {
-		held, err := probeExclusiveLock(pathsFor(canonical).RuntimeLock)
+		held, err := ProbeRuntimeLock(paths)
 		if err != nil {
 			return err
 		}
 		if !held {
 			return nil
 		}
+		retry := clock.NewTimer(100*time.Millisecond, runtimeReleaseRetryTag)
 		select {
 		case <-ctx.Done():
+			retry.Stop()
 			return ctx.Err()
-		case <-ticker.C:
+		case <-retry.C:
 		}
 	}
 }

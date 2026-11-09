@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/leapmux/leapmux/lifecycle"
 )
@@ -116,6 +117,10 @@ func (m *systemdManager) definitionUnit(spec LaunchSpec) []byte {
 	// No Restart: a local process failure stays visible through status
 	// until the user restarts it, and nothing fights `stop`.
 	fmt.Fprintf(&b, "Restart=no\n")
+	// systemd sends SIGKILL when a service outlives TimeoutStopSec after
+	// SIGTERM, so a shutdown that hangs cannot stall a stop, a logout, or a
+	// system shutdown. A unit-less value is in seconds (`man systemd.service`).
+	fmt.Fprintf(&b, "TimeoutStopSec=%d\n", int(lifecycle.ShutdownTimeout/time.Second))
 	fmt.Fprintf(&b, "\n[Install]\n")
 	if spec.Startup == lifecycle.StartupLogin {
 		fmt.Fprintf(&b, "WantedBy=graphical-session.target\n")

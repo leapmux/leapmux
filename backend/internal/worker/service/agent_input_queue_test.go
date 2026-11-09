@@ -1470,7 +1470,7 @@ func requireInterruptReachedAgent(t *testing.T, svc *Service, agentID string) {
 // that a stop path runs first.
 func stopInputQueue(t *testing.T, svc *Service, agentID string) {
 	t.Helper()
-	svc.InputQueue.Stop()()
+	<-svc.InputQueue.Stop()
 	_, err := svc.InputQueue.Pause(context.Background(), agentID,
 		leapmuxv1.AgentInputQueuePauseReason_AGENT_INPUT_QUEUE_PAUSE_REASON_INTERRUPTED)
 	require.ErrorIs(t, err, inputqueue.ErrManagerStopped,

@@ -16,9 +16,11 @@ FROM --platform=${BUILDPLATFORM} node:${NODE_VERSION}-alpine AS node
 FROM --platform=${BUILDPLATFORM} golang:${GOLANG_VERSION}-alpine AS tools
 
 # BusyBox ash runs each RUN below. `pipefail` makes a failed download fail
-# the step. Without it, `wget ... | bash` ran an empty script and hid the
-# failure of the Bun installer download. `wget | tar` was already safe,
-# because tar reads to EOF and fails on a truncated archive.
+# the step. Without it, `curl ... | bash` would run an empty script and hide
+# the failure of the Bun installer download. `curl | tar` is safe as well,
+# because tar reads to EOF and fails on a truncated archive. Each download
+# retries a transient failure (`--retry 10 --retry-all-errors`), because one
+# 5xx answer of a release CDN would otherwise fail the image build.
 SHELL ["/bin/ash", "-eo", "pipefail", "-c"]
 
 ARG BUF_VERSION
@@ -36,11 +38,11 @@ COPY --from=node /usr/local/bin/node /usr/local/bin/node
 # Go tool dependencies reside in isolated modules under tools/.
 # Task builds and runs them through scripts/run-go-tool.mjs.
 RUN apk add --no-cache bash curl git libatomic libgcc libstdc++ rsync && \
-    wget -qO- "https://github.com/go-task/task/releases/download/v${TASK_VERSION}/task_linux_$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/').tar.gz" | tar -xz -C /usr/local/bin task && \
-    wget -qO /usr/local/bin/buf "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-$(uname -m)" && chmod +x /usr/local/bin/buf
+    curl -fsSL --retry 10 --retry-all-errors "https://github.com/go-task/task/releases/download/v${TASK_VERSION}/task_linux_$(uname -m | sed 's/x86_64/amd64/' | sed 's/aarch64/arm64/').tar.gz" | tar -xz -C /usr/local/bin task && \
+    curl -fsSL --retry 10 --retry-all-errors -o /usr/local/bin/buf "https://github.com/bufbuild/buf/releases/download/v${BUF_VERSION}/buf-Linux-$(uname -m)" && chmod +x /usr/local/bin/buf
 
-# Install Bun (pinned)
-RUN wget -qO- https://bun.sh/install | BUN_INSTALL=/usr bash -s "bun-v${BUN_VERSION}"
+# Install Bun (pinned). The installer downloads Bun itself, without a retry.
+RUN curl -fsSL --retry 10 --retry-all-errors https://bun.sh/install | BUN_INSTALL=/usr bash -s "bun-v${BUN_VERSION}"
 
 # Import the restored Go snapshot into the same mount that the build uses.
 # The caller supplies go-cache-input as a local named build context.
@@ -115,11 +117,14 @@ ARG TARGETARCH
 
 # Install s6-overlay. Docker uses amd64/arm64, but the s6-overlay releases
 # use x86_64/aarch64, so the script maps the architecture name first.
-# Alpine needs ca-certificates for HTTPS. Ubuntu needs these packages:
+# curl downloads both archives and retries a transient failure, and apt
+# retries a failed fetch (Acquire::Retries). Alpine needs ca-certificates for
+# HTTPS, and curl only for this step, so the virtual package .s6-fetch removes
+# it again; BusyBox supplies an xz-capable tar.
+# Ubuntu needs these packages:
 # - ca-certificates.
-# - wget.
+# - curl.
 # - xz-utils.
-# Alpine BusyBox already supplies wget and xz-capable tar.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     case "${TARGETARCH}" in \
@@ -128,18 +133,20 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       *)     S6_ARCH="${TARGETARCH}" ;; \
     esac && \
     if [ -f /etc/alpine-release ]; then \
-      apk add --no-cache ca-certificates; \
+      apk add --no-cache ca-certificates && \
+      apk add --no-cache --virtual .s6-fetch curl; \
     else \
-      apt-get update && apt-get install -y --no-install-recommends ca-certificates wget xz-utils \
+      apt-get -o Acquire::Retries=10 update && apt-get -o Acquire::Retries=10 install -y --no-install-recommends ca-certificates curl xz-utils \
       && rm -rf /var/lib/apt/lists/*; \
     fi && \
-    wget -qO /tmp/s6-overlay-noarch.tar.xz \
+    curl -fsSL --retry 10 --retry-all-errors -o /tmp/s6-overlay-noarch.tar.xz \
       "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz" && \
-    wget -qO /tmp/s6-overlay-${S6_ARCH}.tar.xz \
+    curl -fsSL --retry 10 --retry-all-errors -o /tmp/s6-overlay-${S6_ARCH}.tar.xz \
       "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${S6_ARCH}.tar.xz" && \
     tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz && \
     tar -C / -Jxpf /tmp/s6-overlay-${S6_ARCH}.tar.xz && \
-    rm /tmp/s6-overlay-*.tar.xz
+    rm /tmp/s6-overlay-*.tar.xz && \
+    if [ -f /etc/alpine-release ]; then apk del .s6-fetch; fi
 
 # Install runtime dependencies:
 # - ca-certificates supplies TLS certificate validation.
@@ -147,6 +154,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # - git supports worktrees and branches. It reports repository status also.
 # - bash and zsh supply terminal shells.
 # - ncurses supplies the xterm-256color terminfo entry.
+# apt retries a fetch that fails (Acquire::Retries), because apt-get update
+# reports an unreachable mirror only as a warning, and the install then
+# fails with "Unable to locate package".
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     if [ -f /etc/alpine-release ]; then \
@@ -154,7 +164,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         ca-certificates tzdata \
         git bash zsh ncurses; \
     else \
-      apt-get update && apt-get install -y --no-install-recommends \
+      apt-get -o Acquire::Retries=10 update && apt-get -o Acquire::Retries=10 install -y --no-install-recommends \
         ca-certificates tzdata \
         git bash zsh ncurses-base \
       && rm -rf /var/lib/apt/lists/*; \

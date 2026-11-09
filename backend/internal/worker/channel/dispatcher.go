@@ -4,7 +4,6 @@ import (
 	"context"
 	"log/slog"
 	"runtime/debug"
-	"sync"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -89,8 +88,8 @@ type streamPreparer interface {
 type HandlerFunc func(ctx context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, sender ResponseWriter)
 
 // registered captures a handler plus whether its in-flight invocations
-// must gate Shutdown. tracked=true methods drive cleanup.Add(1) /
-// .Done() around every dispatch via the WaitGroup bound through
+// must gate Shutdown. tracked=true methods drive cleanup.Add() /
+// .Done() around every dispatch via the counter bound through
 // BindCleanup.
 type registered struct {
 	fn      HandlerFunc
@@ -111,14 +110,14 @@ type Dispatcher struct {
 	handlers map[string]registered
 	// cleanup, when non-nil, is incremented before every tracked
 	// dispatch and decremented when the handler returns. Callers
-	// (typically the worker service.Service) Wait on it from Shutdown
+	// (typically the worker service.Service) wait on it from Shutdown
 	// so destructive mutations finish before DB / data-dir teardown.
-	cleanup *sync.WaitGroup
+	cleanup *drain.Counter
 	// gate admits handlers while the worker is live and joins them, up to a
 	// limit, at shutdown. Every handler -- tracked or not -- counts: an untracked
 	// handler such as UpdateAgentSettings or SendControlResponse can reach
-	// the closed database, and Cleanup.Wait ran once, so a later tracked Add
-	// was neither joined nor safe. CloseAdmission flips the gate, and the
+	// the closed database, and the Cleanup wait in Shutdown ran once, so a
+	// later tracked Add was neither joined nor safe. CloseAdmission flips the gate, and the
 	// refusal of a closed gate states the shutdown instead of racing it.
 	gate drain.Gate
 }
@@ -133,7 +132,7 @@ func NewDispatcher() *Dispatcher {
 // Registration states how the dispatcher runs one method.
 type Registration struct {
 	// Tracked makes Shutdown wait for in-flight invocations, through the
-	// WaitGroup that BindCleanup binds. Use it for any destructive mutation whose
+	// counter that BindCleanup binds. Use it for any destructive mutation whose
 	// half-applied state would leak if Shutdown returned mid-flight -- e.g. a
 	// multi-step git mutation that has run the first command but not the
 	// second, or a worktree teardown that has removed the directory but not
@@ -141,13 +140,13 @@ type Registration struct {
 	// the current set rather than maintaining a list here, which drifts as
 	// handlers are added or removed.)
 	//
-	// The Add(1) for tracked methods happens SYNCHRONOUSLY in DispatchAsync
+	// The Add() for tracked methods happens SYNCHRONOUSLY in DispatchAsync
 	// (before the goroutine launches) and at the top of DispatchWith (the
-	// synchronous local-IPC path), so Shutdown.Wait observes the
+	// synchronous local-IPC path), so the wait in Shutdown observes the
 	// increment regardless of how the dispatch was initiated. Putting the
-	// Add(1) inside the handler body -- as an earlier revision did -- races
-	// `go DispatchWith(...)` against Shutdown.Wait, which can return
-	// before the goroutine even reaches Add(1).
+	// Add() inside the handler body -- as an earlier revision did -- races
+	// `go DispatchWith(...)` against that wait, which can return
+	// before the goroutine even reaches Add().
 	Tracked bool
 	// Streaming marks a server-streaming method, whose replies are
 	// InnerStreamMessage frames rather than one InnerRpcResponse. The
@@ -183,7 +182,7 @@ func (d *Dispatcher) Methods() []string {
 	return methods
 }
 
-// BindCleanup wires the WaitGroup that tracked dispatches Add(1) on.
+// BindCleanup wires the counter that tracked dispatches Add() on.
 // Pass nil to disable cleanup tracking (e.g. in tests that don't care
 // about Shutdown drain semantics). Must be called before the first
 // dispatch; concurrent BindCleanup + Dispatch is a programming error.
@@ -192,8 +191,8 @@ func (d *Dispatcher) Methods() []string {
 // service.RegisterAll binds svc.Cleanup itself, so the two can't drift.
 // It stays exported for the channel-package tests and for any registrar
 // that wires a dispatcher without a Service behind it.
-func (d *Dispatcher) BindCleanup(wg *sync.WaitGroup) {
-	d.cleanup = wg
+func (d *Dispatcher) BindCleanup(cleanup *drain.Counter) {
+	d.cleanup = cleanup
 }
 
 // Dispatch routes an InnerRpcRequest to the appropriate handler using
@@ -204,7 +203,7 @@ func (d *Dispatcher) BindCleanup(wg *sync.WaitGroup) {
 //
 // Synchronous. Callers that want fire-and-forget behaviour (the
 // session receive loop) should use DispatchAsync, which manages the
-// Add(1)/Done() pairing across the goroutine boundary.
+// Add()/Done() pairing across the goroutine boundary.
 func (d *Dispatcher) Dispatch(ctx context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, requestID uint64, inner *channelSender) {
 	d.DispatchWith(ctx, caller, req, &boundSender{sender: inner, requestID: requestID, method: req.GetMethod()})
 }
@@ -214,7 +213,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, caller Caller, req *leapmuxv1
 // the handler completes. Used by the local-IPC router (which serves
 // the `leapmux control` CLI on a synchronous request/response loop).
 //
-// For tracked methods, Add(1)/Done() bracket the handler call so a
+// For tracked methods, Add()/Done() bracket the handler call so a
 // SIGTERM mid-request waits for the response to flush before Shutdown
 // tears down the DB.
 func (d *Dispatcher) DispatchWith(ctx context.Context, caller Caller, req *leapmuxv1.InnerRpcRequest, w ResponseWriter) {
@@ -236,8 +235,8 @@ func (d *Dispatcher) DispatchWith(ctx context.Context, caller Caller, req *leapm
 }
 
 // DispatchAsync launches the handler on a new goroutine. For tracked
-// methods the WaitGroup Add(1) happens SYNCHRONOUSLY before the
-// goroutine launches, so Shutdown.Wait observes the increment
+// methods the counter's Add() happens SYNCHRONOUSLY before the
+// goroutine launches, so the wait in Shutdown observes the increment
 // regardless of scheduler timing. The defer'd Done() runs inside the
 // goroutine after the handler returns.
 //
@@ -301,7 +300,7 @@ func (d *Dispatcher) beginInvocation(h registered) (func(), bool) {
 	tracked := h.tracked && d.cleanup != nil
 	finish, admitted := d.gate.Begin(func() {
 		if tracked {
-			d.cleanup.Add(1)
+			d.cleanup.Add()
 		}
 	})
 	if !admitted {

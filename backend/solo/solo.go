@@ -298,7 +298,14 @@ type Instance struct {
 	// closes. The backstop warning therefore covers bring-up as well as the drain --
 	// it can fire with no Worker goroutine in existence.
 	workerDrained drain.Counter
-	listenURL     string
+	// shutdownDeadline is the one deadline of the combined shutdown, shared by
+	// the Hub (hubCfg.ShutdownDeadline) and the Worker
+	// (worker.RunConfig.ShutdownDeadline). shutdown starts it first, so the
+	// Hub teardown that follows the Worker drain gets what the drain left of
+	// lifecycle.ShutdownDrainTimeout, not a fresh budget. Nil on the bare
+	// instances the tests build, where it never starts.
+	shutdownDeadline *drain.Deadline
+	listenURL        string
 	// accessURL is the address to open in a browser; see AccessURL.
 	accessURL string
 	hubErr    error         // set before hubDone is closed
@@ -548,6 +555,8 @@ func (i *Instance) workerExited(ctx context.Context, cause error) {
 // Hub exiting on its own -- and any of them can arrive first.
 func (i *Instance) shutdown() {
 	i.shutdownOnce.Do(func() {
+		// The combined shutdown begins here, for the Hub and the Worker alike.
+		i.shutdownDeadline.Start()
 		if i.cancelWorker != nil {
 			i.cancelWorker()
 		}
@@ -557,7 +566,7 @@ func (i *Instance) shutdown() {
 		// mechanism -- an ordinary shutdown returns here as soon as the last
 		// frame is away. Stop still joins the full exit afterwards, unbounded;
 		// see its doc for why the database close is not optional.
-		i.workerDrained.Wait(workerDrainTimeout,
+		i.workerDrained.Wait(i.shutdownDeadline.Cap(workerDrainTimeout),
 			"worker bring-up or drain did not finish before the hub shutdown deadline; stopping the hub anyway")
 		if i.cancelHub != nil {
 			i.cancelHub()
@@ -573,7 +582,9 @@ func (i *Instance) shutdown() {
 // worker.Run closes the Worker's database as it unwinds, and returning from Stop
 // with that still in flight would let the next ConnectSolo reopen the same file
 // underneath it. A Worker that overran the drain budget has already cost the Hub
-// nothing further by this point -- the Hub is stopped.
+// nothing further by this point -- the Hub is stopped. It still ends in time:
+// every wait inside the Worker ends at the shared shutdown deadline, so what
+// remains after it is the database close itself.
 //
 // Wait may complete before local cleanup. Stop includes cleanup failures in its result.
 // A drain deadline remains a warning; Stop still joins the full Worker exit.
@@ -596,6 +607,12 @@ func (i *Instance) Stop() error {
 // still in flight would let the next ConnectSolo reopen the same file underneath
 // it. By this point the Hub is already stopped, so a slow Worker costs it
 // nothing further.
+//
+// The shutdown deadline does not cap the two waits here, and must not: each
+// waits for a database close, and the leases below must release after it. They
+// end in time all the same, because every wait inside the Hub and the Worker
+// ends at the deadline, and what remains after it are the persistence steps,
+// each with a limit of its own.
 func (i *Instance) join() error {
 	i.shutdown()
 	<-i.hubDone
@@ -849,6 +866,13 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 	}
 	hubCfg.RuntimeLeaseWait = time.Until(probeDeadline)
 
+	// ONE deadline for the whole combined shutdown. Instance.shutdown starts it
+	// before it drains the Worker, and the Hub reads the same one, so the Hub
+	// teardown that runs after the drain shares the drain's budget instead of
+	// starting its own (see lifecycle.ShutdownDrainTimeout).
+	shutdownDeadline := drain.NewDeadline(d.clock, lifecycle.ShutdownDrainTimeout)
+	hubCfg.ShutdownDeadline = shutdownDeadline
+
 	// The component directories exist durably already: acquisition
 	// created and validated them. NewServer takes the hub lease's
 	// ownership here; its Serve releases it with the store cleanup.
@@ -889,16 +913,17 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 	workerCtx, cancelWorker := context.WithCancel(detached)
 	hubCtx, cancelHub := context.WithCancel(detached)
 	inst := &Instance{
-		cancelWorker:   cancelWorker,
-		cancelHub:      cancelHub,
-		listenURL:      listenURL,
-		accessURL:      accessURL,
-		hubDone:        make(chan struct{}),
-		watcherDone:    make(chan struct{}),
-		rootLease:      root,
-		closeDirectory: d.closeDirectory,
-		workerLease:    workerLease,
-		failureCh:      make(chan struct{}),
+		cancelWorker:     cancelWorker,
+		cancelHub:        cancelHub,
+		shutdownDeadline: shutdownDeadline,
+		listenURL:        listenURL,
+		accessURL:        accessURL,
+		hubDone:          make(chan struct{}),
+		watcherDone:      make(chan struct{}),
+		rootLease:        root,
+		closeDirectory:   d.closeDirectory,
+		workerLease:      workerLease,
+		failureCh:        make(chan struct{}),
 	}
 	// The Instance owns the root and worker leases now; its join()
 	// releases them after the work joins. The server already owns the Hub
@@ -982,16 +1007,17 @@ func start(ctx context.Context, cfg Config, d deps, prepared *PreparedConfig, ro
 	// until /setup completes.
 	setupWorker := func(ctx context.Context) error {
 		return d.bringUpWorker(ctx, workerBringUp{
-			work:         &inst.workerWork,
-			drained:      &inst.workerDrained,
-			server:       server,
-			workerLease:  workerLease,
-			hubCfg:       hubCfg,
-			listenURL:    listenURL,
-			runWorker:    d.runWorker,
-			onExit:       func(cause error) { inst.workerExited(workerCtx, cause) },
-			onStarting:   inst.markWorkerStarting,
-			onConnection: inst.updateWorkerConnection,
+			work:             &inst.workerWork,
+			drained:          &inst.workerDrained,
+			shutdownDeadline: inst.shutdownDeadline,
+			server:           server,
+			workerLease:      workerLease,
+			hubCfg:           hubCfg,
+			listenURL:        listenURL,
+			runWorker:        d.runWorker,
+			onExit:           func(cause error) { inst.workerExited(workerCtx, cause) },
+			onStarting:       inst.markWorkerStarting,
+			onConnection:     inst.updateWorkerConnection,
 		})
 	}
 	// Hold a Worker-side token ACROSS bring-up. Without it a caller cancelling
@@ -1141,7 +1167,10 @@ const workerSetupPollTag = "solo-deferred-worker-setup"
 // Named fields keep the injected runner and its call sites on one signature.
 type workerBringUp struct {
 	work, drained *drain.Counter
-	server        *hub.Server
+	// shutdownDeadline is the combined instance's one shutdown deadline, which
+	// the Worker shares with the Hub.
+	shutdownDeadline *drain.Deadline
+	server           *hub.Server
 	// workerLease is the worker component's held lease. bringUpLocalWorker
 	// TRANSFERS it into worker.Run when the worker goroutine launches;
 	// until then the Instance retains it, and the combined shutdown
@@ -1210,10 +1239,11 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 		defer p.work.Done()
 		defer releaseDrained()
 		wErr := p.runWorker(ctx, worker.RunConfig{
-			Drained:   releaseDrained,
-			HubURL:    p.listenURL,
-			Directory: p.workerLease,
-			OnReady:   func() { reportReady(true) },
+			Drained:          releaseDrained,
+			ShutdownDeadline: p.shutdownDeadline,
+			HubURL:           p.listenURL,
+			Directory:        p.workerLease,
+			OnReady:          func() { reportReady(true) },
 			OnConnectionState: func(state worker.ConnectionState) {
 				if p.onConnection != nil {
 					p.onConnection(state)

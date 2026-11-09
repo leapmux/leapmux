@@ -34,6 +34,23 @@ func ValidateDirectorySelection(role Role, canonical string) error {
 	return nil
 }
 
+// ShutdownTimeout is how long an instance may take to finish its shutdown
+// after a stop request or SIGTERM. launchd and systemd send SIGKILL to an
+// instance that outlives it after SIGTERM, and `stop` waits that long by
+// default.
+const ShutdownTimeout = 3 * time.Minute
+
+// ShutdownDrainTimeout is how long after its start a shutdown may wait for
+// work to finish. Every wait of the shutdown ends by then, at its own limit or
+// at this one, so every step that persists state starts before it: a database
+// write, a database close, the runtime record, a lock release. The time from
+// here to ShutdownTimeout, at least one minute, is the reserve for those
+// steps, because a SIGKILL ends the steps that it interrupts.
+//
+// Each mode holds one drain.Deadline with this budget for its shutdown, and a
+// combined instance shares one between its Hub and its Worker.
+const ShutdownDrainTimeout = 2 * time.Minute
+
 // Stop requests authenticated shutdown and waits for the runtime lock to be
 // released after the complete application join. The result reports whether
 // the command found an active runtime. It never terminates a process by PID.
@@ -87,7 +104,7 @@ func stopWithRequester(ctx context.Context, role Role, dataDirectory string, req
 	if !response.Accepted || response.AttemptID != record.AttemptID {
 		return active, fmt.Errorf("the instance refused the stop request for this attempt")
 	}
-	if err := waitForLockRelease(ctx, canonical); err != nil {
+	if err := WaitForRuntimeRelease(ctx, paths); err != nil {
 		return active, fmt.Errorf("shutdown could not be confirmed: %w", err)
 	}
 	return active, nil

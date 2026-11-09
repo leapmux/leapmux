@@ -126,6 +126,37 @@ describe('createRegistryFetch', () => {
     expect((await registryFetch('https://registry.example/x', {})).status).toBe(429)
     expect(sleeps).toEqual([3000, 10000])
   })
+  it('waits until the HTTP date that Retry-After gives', async () => {
+    // The fixture clock starts at the epoch.
+    const { registryFetch, sleeps } = fixture({
+      answers: [
+        new Response('', {
+          status: 503,
+          headers: { 'Retry-After': 'Thu, 01 Jan 1970 00:00:05 GMT' },
+        }),
+        Response.json({ ok: true }),
+      ],
+    })
+    expect(await (await registryFetch('https://registry.example/x', {})).json()).toEqual({ ok: true })
+    expect(sleeps).toEqual([5000])
+  })
+  it('treats a malformed Retry-After as absent and waits the backoff', async () => {
+    const { registryFetch, sleeps } = fixture({
+      answers: [
+        new Response('', {
+          status: 429,
+          headers: { 'Retry-After': '1.5' },
+        }),
+        new Response('', {
+          status: 429,
+          headers: { 'Retry-After': '1e1' },
+        }),
+        new Response('', { status: 429 }),
+      ],
+    })
+    expect((await registryFetch('https://registry.example/x', {})).status).toBe(429)
+    expect(sleeps).toEqual([1000, 2000])
+  })
   it('never retries a final answer, an aborted read, or a failure after the last retry', async () => {
     const notFound = fixture({
       answers: [

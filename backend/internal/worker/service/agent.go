@@ -167,8 +167,8 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 			//
 			// From here, every return that does not hand the claim to
 			// runAgentStartup must release it with abandon. A claim that nobody
-			// releases reports STARTING for ever and blocks Shutdown's
-			// WaitForInFlight.
+			// releases reports STARTING for ever and holds Shutdown's
+			// drainForShutdown until the shutdown deadline.
 			startupCtx, cancel := context.WithCancel(context.Background())
 			startupHandle := svc.AgentStartup.begin(agentID, cancel)
 			if startupHandle == nil {
@@ -246,12 +246,12 @@ func registerAgentHandlers(d ownerOnlyRegistrar, svc *Service) {
 				// runAgentStartup is what normally carries `defer finish()`,
 				// and it never launches on this path -- so release the
 				// in-flight count begin() added here, or Shutdown's
-				// WaitForInFlight blocks forever. cancel() disposes the
-				// context nothing else will ever own.
+				// drainForShutdown waits for it until the shutdown deadline.
+				// cancel() disposes the context nothing else will ever own.
 				//
 				// finish() comes LAST, after the failure is durable. It is the
 				// deferred call on every other startup path precisely so the
-				// DB write and broadcast complete first: WaitForInFlight is
+				// DB write and broadcast complete first: drainForShutdown is
 				// documented to leave callers observing a quiescent DB, and
 				// Shutdown closes the database handle once it returns. Calling
 				// it before persistAgentStartupError would let a concurrent
@@ -3303,6 +3303,13 @@ func (r clearRecovery) interruption(svc *Service) startupInterruption {
 	return svc.AgentStartup.interruptionOf(r.handle, false, false)
 }
 
+// stoppedByShutdown reports whether the shutdown deadline ended the claim of
+// this recovery (see startupCore.cancelForShutdown). Such a launch failed
+// because the worker is going away, so it records no startup failure.
+func (r clearRecovery) stoppedByShutdown(svc *Service) bool {
+	return r.handle != nil && svc.AgentStartup.shutdownStopped(r.handle)
+}
+
 // end retires the claim after a launch that produced a running process. The
 // launch context stays alive, because it is the lifetime of that process.
 // succeed is identity-guarded, so a claim that a close already retired leaves
@@ -3314,9 +3321,9 @@ func (r clearRecovery) end(svc *Service) {
 	svc.AgentStartup.succeed(r.handle.id, r.handle)
 }
 
-// abandon retires the claim without a failure, after a close or an archive
-// ended the launch, and releases the launch context, which owns no process
-// now.
+// abandon retires the claim without a failure, after a close, an archive or
+// the shutdown deadline ended the launch, and releases the launch context,
+// which owns no process now.
 func (r clearRecovery) abandon(svc *Service) {
 	if r.handle == nil {
 		return
@@ -3371,8 +3378,8 @@ type relaunchHold struct {
 // INACTIVE, or the tab is going away.
 //
 // It claims nothing once Shutdown began, either. A claim adds one to the
-// in-flight count that Shutdown's WaitForInFlight joins, and an add to a
-// WaitGroup that a Wait already joins is a misuse of the WaitGroup. The handlers
+// in-flight count that Shutdown's drainForShutdown joins, and an add after
+// that join sampled the count is one the join misses. The handlers
 // that reach a hold do not refuse a request in that state, as the handlers that
 // open a tab do (see refuseIfShuttingDown). The replacement runs without a hold.
 // A reader can then read INACTIVE in the gap, and that is acceptable because the
@@ -3517,6 +3524,14 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 			recovery.abandon(svc)
 			return nil, errAgentArchivedDuringLaunch
 		case interruptionNone:
+		}
+		if recovery.stoppedByShutdown(svc) {
+			// The shutdown deadline cancelled the launch. That is not a
+			// startup failure either: the agent keeps the failure that it had
+			// before this clear, and the user can clear again after the
+			// restart.
+			recovery.abandon(svc)
+			return nil, fmt.Errorf("clear context: %w", errWorkerShuttingDown)
 		}
 		// A launch can state its new session and then fail. Forget that
 		// session also, so that no cold start resumes a session that no
@@ -3663,7 +3678,7 @@ func (p resumePolicy) sessionID(svc *Service, row db.Agent) string {
 // all three callers -- queue dispatch, a raw control request, and the resume
 // sweep -- the same three properties: a client that connects mid-start replays
 // STARTING, a CloseTab cancels the start through cancelAndClear, and
-// Shutdown's WaitForInFlight drains it. A registration at one call site would
+// Shutdown's drainForShutdown drains it. A registration at one call site would
 // leave the other callers without any of them.
 //
 // A request or queue drain does not race a startup that is already in flight

@@ -215,13 +215,16 @@ type OutputHandler struct {
 	// broadcasts, and neither may run against a closed database or a stream
 	// that already flushed. The zero value works, so nothing constructs it.
 	// refreshLifecycleMu serializes the shuttingDown latch against every Add on
-	// activityRefreshes. sync.WaitGroup states that an Add which starts while the
-	// counter is zero must happen BEFORE a Wait, and a bare latch test cannot
-	// promise that: a caller that read the latch false could be descheduled past
-	// Shutdown's whole drain and land its Add inside WaitActivityRefreshes's Wait,
-	// which is a WaitGroup misuse and panics. See beginActivityRefresh.
+	// activityRefreshes. drain.Counter states that no Add may follow the sample
+	// a wait takes, and a bare latch test cannot promise that: a caller that
+	// read the latch false could be descheduled past Shutdown's whole drain and
+	// land its Add after WaitActivityRefreshes sampled the counter, a refresh
+	// that the join then misses. See beginActivityRefresh.
+	//
+	// A counter rather than a sync.WaitGroup, because Shutdown waits for it
+	// only until the shutdown deadline.
 	refreshLifecycleMu sync.Mutex
-	activityRefreshes  sync.WaitGroup
+	activityRefreshes  drain.Counter
 
 	// newSettleTimer schedules the end of a settle's debounce window. Defaults to
 	// time.AfterFunc; a test replaces it to fire the window on demand, because a

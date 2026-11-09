@@ -201,7 +201,7 @@ describe('cache snapshot core', () => {
       await activateCacheSnapshot({
         kind: 'go-modules',
         key: cacheKey('go-modules', { hash }, env),
-        exactHit: true,
+        matchedKey: cacheKey('go-modules', { hash }, env),
         workspace: dir,
         env,
       })
@@ -220,7 +220,7 @@ describe('cache snapshot core', () => {
         kind: 'native-go',
         key: cacheKey('native-go', { hash, week: '2027-W01' }, env),
         writer: true,
-        exactHit: true,
+        matchedKey: cacheKey('native-go', { hash, week: '2027-W01' }, env),
         workspace: dir,
         env,
       })
@@ -245,7 +245,7 @@ describe('cache snapshot core', () => {
         kind: 'go-modules',
         key: cacheKey('go-modules', { hash }, env),
         writer: true,
-        exactHit: true,
+        matchedKey: cacheKey('go-modules', { hash }, env),
         workspace: dir,
         env,
       })
@@ -266,7 +266,6 @@ describe('cache snapshot core', () => {
         kind: 'native-go',
         key: cacheKey('native-go', { hash, week: '2027-W01' }, env),
         writer: true,
-        exactHit: false,
         workspace: dir,
         env,
       })
@@ -287,13 +286,54 @@ describe('cache snapshot core', () => {
         kind: 'go-modules',
         key: cacheKey('go-modules', { hash }, env),
         writer: false,
-        exactHit: false,
-        matchedKey: false,
+        matchedKey: null,
         workspace: dir,
         env,
       })
       expect(activated.outcome).toBe('miss')
       expect(readFileSync(join(active, 'cache', 'kept'), 'utf8')).toBe('kept\n')
+    })
+
+    it('derives an exact hit from a matched key equal to the requested key, ignoring letter case', async () => {
+      // actions/cache sets cache-hit when the matched key equals the key with
+      // a case-insensitive comparison, so the matched key alone decides.
+      for (const spell of [
+        key => key,
+        key => key.toUpperCase(),
+      ]) {
+        const dir = fixture()
+        const env = goEnv(dir)
+        const key = cacheKey('native-go', { hash, week: '2027-W01' }, env)
+        writeTree(join(snapshotPaths('native-go', dir).payloadRoot, 'gocache'), { entry: 'exact\n' })
+        const activated = await activateCacheSnapshot({
+          kind: 'native-go',
+          key,
+          writer: true,
+          matchedKey: spell(key),
+          workspace: dir,
+          env,
+        })
+        expect(activated.outcome).toBe('activated-exact')
+        expect(activated.cacheHit).toBe(true)
+        expect(activated.saveRequired).toBe(false)
+      }
+    })
+
+    it('refuses a matched key that is not a key string', async () => {
+      // The activation once took a boolean. A caller that still passes one
+      // must fail, not lose its fallback in silence.
+      const dir = fixture()
+      const env = goEnv(dir)
+      for (const matchedKey of [true, false, 1]) {
+        await expect(activateCacheSnapshot({
+          kind: 'native-go',
+          key: cacheKey('native-go', { hash, week: '2027-W01' }, env),
+          writer: false,
+          matchedKey,
+          workspace: dir,
+          env,
+        })).rejects.toThrow('The matched cache key must be a key string or null.')
+      }
     })
 
     it('activates a reader fallback but refuses one for a writer', async () => {
@@ -302,12 +342,12 @@ describe('cache snapshot core', () => {
       const { payloadRoot } = snapshotPaths('native-go', dir)
       writeTree(join(payloadRoot, 'gocache'), { 'fallback-entry': 'fallback\n' })
       const key = cacheKey('native-go', { hash, week: '2027-W01' }, env)
+      const fallbackKey = cacheKey('native-go', { hash: recipeHash, week: '2026-W44' }, env)
       const reader = await activateCacheSnapshot({
         kind: 'native-go',
         key,
         writer: false,
-        exactHit: false,
-        matchedKey: true,
+        matchedKey: fallbackKey,
         workspace: dir,
         env,
       })
@@ -321,10 +361,106 @@ describe('cache snapshot core', () => {
         kind: 'native-go',
         key,
         writer: true,
-        exactHit: false,
-        matchedKey: true,
+        matchedKey: fallbackKey,
         workspace: writerDir,
         env: writerEnv,
+      })).rejects.toThrow('must not restore a fallback')
+    })
+
+    it('ignores a restored archive whose key predates a key-shape change', async () => {
+      // A kind that drops a key segment, as tauri-tools dropped its weekly
+      // epoch, leaves archives whose keys extend the new key of the same
+      // hash. The cache transport matches such a key as an extension of the
+      // exact key; it must not become a fallback.
+      const dir = fixture()
+      const env = runnerEnv(dir, {
+        HOME: join(dir, 'home'),
+      })
+      const key = cacheKey('tauri-tools', { hash }, env)
+      const stale = `${key}-2026-W45`
+      const { payloadRoot } = snapshotPaths('tauri-tools', dir)
+      writeTree(join(payloadRoot, 'tauri'), { 'linuxdeploy-x86_64.AppImage': 'stale\n' })
+      const logs = []
+      const activated = await activateCacheSnapshot({
+        kind: 'tauri-tools',
+        key,
+        writer: true,
+        matchedKey: stale,
+        workspace: dir,
+        env,
+        log: message => logs.push(message),
+      })
+      expect(activated.outcome).toBe('writer-empty')
+      expect(activated.saveRequired).toBe(true)
+      expect(logs.join('\n')).toContain(`Ignoring the restored tauri-tools archive ${stale}`)
+      // The stale payload is gone and the writer starts from empty roots.
+      expect(readdirSafe(snapshotPaths('tauri-tools', dir).payloadRoot)).toEqual([])
+      expect(readdirSafe(activeRootsFor('tauri-tools', env, dir)[0].active)).toEqual([])
+    })
+
+    it('reports a stale-shape restore as a miss for a reader', async () => {
+      const dir = fixture()
+      const env = runnerEnv(dir, {
+        HOME: join(dir, 'home'),
+      })
+      const key = cacheKey('tauri-tools', { hash }, env)
+      writeTree(join(snapshotPaths('tauri-tools', dir).payloadRoot, 'tauri'), { stale: 'stale\n' })
+      const activated = await activateCacheSnapshot({
+        kind: 'tauri-tools',
+        key,
+        writer: false,
+        matchedKey: `${key}-2026-W45`,
+        workspace: dir,
+        env,
+      })
+      expect(activated.outcome).toBe('miss')
+      expect(activated.cacheHit).toBe(false)
+    })
+
+    it('ignores an archive that extends the exact key of a writer, even in the current key shape', async () => {
+      // The transport tries the exact key, then any key that extends it. An
+      // extra hash segment keeps such a key valid for a kind without a
+      // weekly epoch, so only its position shows that no restore-keys
+      // produced it.
+      const dir = fixture()
+      const env = runnerEnv(dir, {
+        HOME: join(dir, 'home'),
+      })
+      const key = cacheKey('cli-tools', { hash }, env)
+      const extension = `${key}-${recipeHash}`
+      writeTree(join(snapshotPaths('cli-tools', dir).payloadRoot, 'tools'), { protoc: 'stale\n' })
+      const logs = []
+      const activated = await activateCacheSnapshot({
+        kind: 'cli-tools',
+        key,
+        writer: true,
+        matchedKey: extension,
+        workspace: dir,
+        env,
+        log: message => logs.push(message),
+      })
+      expect(activated.outcome).toBe('writer-empty')
+      expect(activated.saveRequired).toBe(true)
+      expect(logs.join('\n')).toContain(`Ignoring the restored cli-tools archive ${extension}`)
+      expect(readdirSafe(snapshotPaths('cli-tools', dir).payloadRoot)).toEqual([])
+    })
+
+    it('refuses a writer fallback from restore-keys in an older key shape', async () => {
+      // A key that does not extend the exact key reaches a writer only
+      // through restore-keys, which a writer must not pass, whatever the
+      // shape of the matched key.
+      const dir = fixture()
+      const env = runnerEnv(dir, {
+        HOME: join(dir, 'home'),
+      })
+      writeTree(join(snapshotPaths('tauri-tools', dir).payloadRoot, 'tauri'), { stale: 'stale\n' })
+      await expect(activateCacheSnapshot({
+        kind: 'tauri-tools',
+        key: cacheKey('tauri-tools', { hash }, env),
+        writer: true,
+        matchedKey: `${cacheKey('tauri-tools', { hash: recipeHash }, env)}-2026-W45`,
+        workspace: dir,
+        env,
       })).rejects.toThrow('must not restore a fallback')
     })
 
@@ -341,7 +477,7 @@ describe('cache snapshot core', () => {
         kind: 'native-go',
         key: cacheKey('native-go', { hash, week: '2027-W01' }, env),
         writer: true,
-        exactHit: true,
+        matchedKey: cacheKey('native-go', { hash, week: '2027-W01' }, env),
         workspace: dir,
         env,
         log: message => logs.push(message),
@@ -366,7 +502,7 @@ describe('cache snapshot core', () => {
         kind: 'renovate-re2',
         key: cacheKey('renovate-re2', { hash: `${hash}-${recipeHash}`, week: '2027-W01' }, env),
         writer: true,
-        exactHit: true,
+        matchedKey: cacheKey('renovate-re2', { hash: `${hash}-${recipeHash}`, week: '2027-W01' }, env),
         workspace: dir,
         env,
       })
@@ -393,7 +529,7 @@ describe('cache snapshot core', () => {
         kind: 'go-modules',
         key: cacheKey('go-modules', { hash }, env),
         writer: true,
-        exactHit: true,
+        matchedKey: cacheKey('go-modules', { hash }, env),
         workspace: dir,
         env,
       })
@@ -417,7 +553,7 @@ describe('cache snapshot core', () => {
         kind: 'native-go',
         key: cacheKey('native-go', { hash, week: '2027-W01' }, env),
         writer: true,
-        exactHit: true,
+        matchedKey: cacheKey('native-go', { hash, week: '2027-W01' }, env),
         workspace: dir,
         env,
         log: message => logs.push(message),
@@ -444,7 +580,7 @@ describe('cache snapshot core', () => {
         kind: 'native-go',
         key: cacheKey('native-go', { hash, week: '2027-W01' }, env),
         writer: true,
-        exactHit: true,
+        matchedKey: cacheKey('native-go', { hash, week: '2027-W01' }, env),
         workspace: dir,
         env,
         fsImpl: {
@@ -465,7 +601,7 @@ describe('cache snapshot core', () => {
         kind: 'go-modules',
         key: cacheKey('go-modules', { hash }, env),
         writer: true,
-        exactHit: true,
+        matchedKey: cacheKey('go-modules', { hash }, env),
         workspace: dir,
         env,
       })
@@ -1008,6 +1144,51 @@ describe('cache snapshot CLI', () => {
     expect(result.stdout).toContain('outcome=writer-empty')
   })
 
+  it('treats an empty matched key as no match', () => {
+    const dir = fixture()
+    const env = goEnv(dir)
+    writeTree(join(snapshotPaths('native-go', dir).payloadRoot, 'gocache'), { entry: 'restored' })
+    const output = join(dir, 'activation-output')
+    const result = runCli([
+      'activate',
+      '--kind',
+      'native-go',
+      '--key',
+      cacheKey('native-go', { hash, week: '2027-W01' }, env),
+      '--writer',
+      'false',
+      '--matched-key',
+      '',
+    ], dir, { ...env, GITHUB_OUTPUT: output })
+    expect(result.status, result.stderr).toBe(0)
+    expect(outputRecords(output)).toMatchObject({ 'outcome': 'miss', 'cache-hit': 'false' })
+    expect(`${result.stdout}${result.stderr}`).not.toContain('Ignoring the restored')
+  })
+
+  it('activates the fallback that the matched key identifies', () => {
+    const dir = fixture()
+    const env = goEnv(dir)
+    writeTree(join(snapshotPaths('native-go', dir).payloadRoot, 'gocache'), { entry: 'restored' })
+    const output = join(dir, 'activation-output')
+    const result = runCli([
+      'activate',
+      '--kind',
+      'native-go',
+      '--key',
+      cacheKey('native-go', { hash, week: '2027-W01' }, env),
+      '--writer',
+      'false',
+      '--matched-key',
+      cacheKey('native-go', {
+        hash: 'b'.repeat(64),
+        week: '2026-W52',
+      }, env),
+    ], dir, { ...env, GITHUB_OUTPUT: output })
+    expect(result.status, result.stderr).toBe(0)
+    expect(outputRecords(output)).toMatchObject({ 'outcome': 'activated-fallback', 'cache-hit': 'false', 'save-required': 'false' })
+    expect(readFileSync(join(env.GOCACHE, 'entry'), 'utf8')).toBe('restored')
+  })
+
   it('repopulates a partial exact hit without publishing over an occupied immutable key', () => {
     const dir = fixture()
     const env = runnerEnv(dir, {
@@ -1024,10 +1205,8 @@ describe('cache snapshot CLI', () => {
       key,
       '--writer',
       'true',
-      '--exact-hit',
-      'true',
-      '--matched',
-      'true',
+      '--matched-key',
+      key,
     ], dir, { ...env, GITHUB_OUTPUT: output })
     expect(result.status, result.stderr).toBe(0)
     expect(outputRecords(output)).toMatchObject({ 'outcome': 'writer-empty', 'cache-hit': 'false', 'save-required': 'false' })
@@ -1150,7 +1329,6 @@ describe('cache dependency lifecycle', () => {
       kind: 'go-modules',
       key,
       writer: true,
-      exactHit: false,
       workspace: dir,
       env,
     })

@@ -10,7 +10,7 @@ const readYaml = path => Bun.YAML.parse(readFileSync(resolve(root, path), 'utf8'
 const expression = body => `\${{ ${body} }}`
 // Each native runner tests the resource monitor's probes for its own OS.
 const MONITOR_TEST = 'bun test --timeout 30000 scripts/ci-resource-monitor.test.mjs scripts/ci-resource-monitor/'
-const CACHE_NATIVE_TEST = 'bun test --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs ./scripts/test-support.test.mjs ./scripts/run-go-tool.test.mjs ./scripts/download-go-modules.test.mjs'
+const CACHE_NATIVE_TEST = 'bun test --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs ./scripts/test-support.test.mjs ./scripts/run-go-tool.test.mjs ./scripts/download-go-modules.test.mjs ./scripts/download-cli-tools.test.mjs'
 const fixtures = []
 
 afterEach(() => {

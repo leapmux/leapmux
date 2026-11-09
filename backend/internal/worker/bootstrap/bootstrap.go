@@ -37,6 +37,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/service"
 	"github.com/leapmux/leapmux/internal/worker/wakelock"
 	"github.com/leapmux/leapmux/internal/workerkeys"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // Params is everything Wire needs that worker.Run already knows.
@@ -84,6 +85,11 @@ type Params struct {
 	AgentStartupConcurrency int
 	UseLoginShell           bool
 	WakeLock                *wakelock.ActivityTracker
+	// ShutdownDeadline ends every wait of Shutdown and WaitHandlers; see
+	// lifecycle.ShutdownDrainTimeout. worker.Run creates it and starts it
+	// when its run context ends. Nil lets service.New install one that
+	// nothing starts.
+	ShutdownDeadline *drain.Deadline
 }
 
 // Wiring is the assembled worker. Callers own the lifecycle: nothing here
@@ -113,7 +119,8 @@ type Wiring struct {
 // handlerDrainTimeout limits the join of all admitted handlers, including watches.
 const handlerDrainTimeout = 5 * time.Second
 
-// WaitHandlers joins the dispatcher's handlers within one shutdown budget.
+// WaitHandlers joins the dispatcher's handlers within one shutdown budget,
+// which the shutdown deadline caps.
 //
 // It lives on Wiring because worker.Run holds no dispatcher. The deferred call
 // in Run orders it after client.Stop, so the goodbye still travels on the live
@@ -125,7 +132,7 @@ func (w *Wiring) WaitHandlers() {
 	}
 	// Each wait logs its own expiry (drain.Counter), so the wrapper adds none:
 	// one expired wait is one Warn, not two.
-	if w.dispatcher.WaitHandlers(handlerDrainTimeout) {
+	if w.dispatcher.WaitHandlers(w.Service.ShutdownDeadline.Cap(handlerDrainTimeout)) {
 		slog.Info("worker handlers joined")
 	}
 }
@@ -139,7 +146,8 @@ func (w *Wiring) WaitHandlers() {
 // An entry point that tore the stream down straight afterwards raced the
 // drain goroutine and lost under load, and the loss is invisible:
 // sendq.Writer.Close discards the queue and logs nothing, so the browser's
-// terminal simply stops. FlushSends limits the teardown behind the drain.
+// terminal simply stops. FlushSends limits the teardown behind the drain, and
+// the shutdown deadline caps that limit.
 func (w *Wiring) Shutdown() {
 	// Close the dispatcher's admission before anything drains: a handler
 	// admitted after the drain started is one the WaitHandlers in worker.Run
@@ -149,7 +157,7 @@ func (w *Wiring) Shutdown() {
 	if w.client == nil {
 		return
 	}
-	if err := w.client.FlushSends(); err != nil {
+	if err := w.client.FlushSends(w.Service.ShutdownDeadline.Cap(hub.ShutdownFlushTimeout)); err != nil {
 		slog.Warn("shutdown: outbound queue did not drain", "error", err)
 	}
 }
@@ -219,6 +227,7 @@ func Wire(p Params) *Wiring {
 		UseLoginShell:       p.UseLoginShell,
 		WakeLock:            p.WakeLock,
 		MaxMessageSize:      p.MaxMessageSize,
+		ShutdownDeadline:    p.ShutdownDeadline,
 	})
 	svc.RestoreState()
 
@@ -466,10 +475,10 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 	// The resumer stops FIRST: it starts agents, and each start runs DB reads and
 	// registers a remote-IPC cleanup. Stopping the reconciler first would leave
 	// that work running past the point Shutdown believes the loops are quiet.
-	svc.SetStopBackgroundLoops(func() {
-		resumer.Stop()
-		reconciler.Stop()
-		stopPeriodicLoops(cancelPeriodic, periodicLoops)
+	svc.SetStopBackgroundLoops(func(deadline *drain.Deadline) {
+		resumer.Stop(deadline)
+		reconciler.Stop(deadline)
+		stopPeriodicLoops(cancelPeriodic, periodicLoops, deadline)
 	})
 
 	// Nudge the reconciler the moment the Hub identifies this worker's owner,
@@ -502,13 +511,13 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 	return resumer
 }
 
-// stopPeriodicLoops ends the loops of one context and waits until each returned.
-// A canceled loop finishes the pass in progress, and the caller closes the
-// database that the pass uses.
-func stopPeriodicLoops(cancel context.CancelFunc, stopped []<-chan struct{}) {
+// stopPeriodicLoops ends the loops of one context and waits until each returned,
+// but not past deadline (nil waits without a limit). A canceled loop finishes
+// the pass in progress, and the caller closes the database that the pass uses.
+func stopPeriodicLoops(cancel context.CancelFunc, stopped []<-chan struct{}, deadline *drain.Deadline) {
 	cancel()
 	for _, loopStopped := range stopped {
-		<-loopStopped
+		deadline.Wait(loopStopped, "shutdown deadline passed while a periodic worker loop still ran a pass; abandoning it")
 	}
 }
 

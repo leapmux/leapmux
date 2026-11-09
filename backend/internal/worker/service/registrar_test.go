@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
+	"github.com/leapmux/leapmux/util/drain"
 )
 
 // testWorkerMethod declares a test-only WORKER method that requires one scope.
@@ -213,8 +213,8 @@ func TestGuardedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 			svc, _, _ := setupTestService(t)
 			tc.seed(t, svc)
 			d := channel.NewDispatcher()
-			var wg sync.WaitGroup
-			d.BindCleanup(&wg)
+			var cleanup drain.Counter
+			d.BindCleanup(&cleanup)
 			o := newTestRegistrar(d, svc).ownerOnly()
 
 			release := make(chan struct{})
@@ -232,14 +232,14 @@ func TestGuardedTrackedHelpersTrackInFlightDispatches(t *testing.T) {
 
 			waitReturned := make(chan struct{})
 			go func() {
-				wg.Wait()
+				<-cleanup.DoneChan()
 				close(waitReturned)
 			}()
 
 			<-handlerEntered
 			select {
 			case <-waitReturned:
-				t.Fatal("wg.Wait() returned before the handler finished")
+				t.Fatal("the cleanup wait returned before the handler finished")
 			default:
 			}
 

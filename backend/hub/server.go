@@ -287,6 +287,11 @@ type Server struct {
 	// releases it with the rest of its teardown, after the store closes;
 	// a construction that fails releases it through acquiredResources.
 	directory *lifecycle.DirectoryLease
+	// shutdownDeadline ends every wait of the shutdown, so the store close and
+	// the lease release start in time; see lifecycle.ShutdownDrainTimeout.
+	// Serve starts it when the shutdown begins. A solo Hub shares it with the
+	// Worker, whose drain already ran against it.
+	shutdownDeadline *drain.Deadline
 	// ready closes when required Hub initialization has completed and
 	// serving has begun: the point a caller's readiness wait may treat
 	// as "the Hub answers". A bound socket alone does not close it.
@@ -325,6 +330,13 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, acquired.close(fmt.Errorf("validate config: %w", err))
+	}
+
+	// One deadline ends every wait of the shutdown. A standalone Hub owns it;
+	// solo hands in the one it shares with its Worker.
+	shutdownDeadline := cfg.ShutdownDeadline
+	if shutdownDeadline == nil {
+		shutdownDeadline = drain.NewDeadline(quartz.NewReal(), lifecycle.ShutdownDrainTimeout)
 	}
 
 	so := serverOptions{listenLocal: locallisten.Listen}
@@ -1150,6 +1162,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		revocationWatcher: revWatcher,
 		workerEffects:     workerEffects,
 		directory:         directory,
+		shutdownDeadline:  shutdownDeadline,
 		ready:             make(chan struct{}),
 	}
 	// The lease is the Server's now; a failure below this point goes
@@ -1378,11 +1391,13 @@ func (s *Server) Serve(ctx context.Context) error {
 	// cleanup compact revocations this process did not observe.
 	if err := s.revocationWatcher.AcquireLease(serveCtx, s.cfg.RuntimeLeaseWait); err != nil {
 		// A refused lease never reaches the teardown below, so this path ends
-		// the hub's lifetime itself, before its store close.
+		// the hub's lifetime itself, before its store close. It is a shutdown
+		// as well, so the shutdown deadline limits its waits too.
+		s.shutdownDeadline.Start()
 		s.cancelServing()
 		s.authContexts.Stop()
-		s.crdtRegistry.Shutdown(crdtShutdownTimeout)
-		watcherCloseCtx, cancelWatcherClose := context.WithTimeout(context.Background(), 10*time.Second)
+		s.crdtRegistry.Shutdown(s.shutdownDeadline.Cap(crdtShutdownTimeout))
+		watcherCloseCtx, cancelWatcherClose := context.WithTimeout(context.Background(), s.shutdownDeadline.Cap(10*time.Second))
 		watcherCloseErr := s.revocationWatcher.Close(watcherCloseCtx)
 		cancelWatcherClose()
 		// Cancellation during lease seeding is a requested exit. SQLite can
@@ -1433,6 +1448,10 @@ func (s *Server) Serve(ctx context.Context) error {
 	shutdownDone := make(chan serverTeardownErrors, 1)
 	go func() {
 		<-serveCtx.Done()
+		// The shutdown begins here. From now on every wait below and in the
+		// Serve goroutine ends at the deadline, at the latest, so the store
+		// close and the lease release start before it.
+		s.shutdownDeadline.Start()
 		logShutdownCause(serveCtx)
 
 		// 1. Reject all new RPCs and stop background tasks.
@@ -1446,7 +1465,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		// drain waits on the handler that stream is parked in. This releases the
 		// drain for the handlers the worker registry knows about. The handlerCtx
 		// cancel below releases the handlers it does not know about.
-		notifyCtx, cancelNotify := context.WithTimeout(context.Background(), 2*time.Second)
+		notifyCtx, cancelNotify := context.WithTimeout(context.Background(), s.shutdownDeadline.Cap(2*time.Second))
 		s.workerMgr.NotifyShutdownAndFence(notifyCtx, 10)
 		cancelNotify()
 
@@ -1459,7 +1478,12 @@ func (s *Server) Serve(ctx context.Context) error {
 		// unlimited outbound I/O) is cancelled. This is the structural limit
 		// FenceAll cannot express, since FenceAll only reaches handlers the
 		// worker registry knows about.
-		graceTimer := time.AfterFunc(handlerGrace, s.cancelHandlers)
+		//
+		// The shutdown deadline caps the grace and the drain below alike. With
+		// less than handlerGrace left, both end at the deadline, and the drain
+		// gets no time after the forced cancellation: the deadline wins over
+		// the gap that TestShutdownTimeoutsAreOrdered keeps between the two.
+		graceTimer := time.AfterFunc(s.shutdownDeadline.Cap(handlerGrace), s.cancelHandlers)
 		defer graceTimer.Stop()
 
 		// Drain in-flight HTTP requests, then force-close any connections
@@ -1484,7 +1508,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		// TCP listener needs no equivalent — a lingering accepted TCP conn does
 		// not block rebinding the port, whereas a surviving named-pipe instance
 		// does block the next ListenPipe(FIRST_PIPE_INSTANCE).
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), httpDrainTimeout)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.shutdownDeadline.Cap(httpDrainTimeout))
 		defer cancel()
 		httpShutdownErr := s.server.Shutdown(shutdownCtx)
 		httpCloseErr := s.server.Close()
@@ -1497,7 +1521,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		// whose parent is BaseContext -- and then join every WebSocket
 		// handler, so none reads the store after it closes.
 		s.cancelHandlers()
-		s.webSockets.Drain(webSocketDrainTimeout,
+		s.webSockets.Drain(s.shutdownDeadline.Cap(webSocketDrainTimeout),
 			"hub: websocket handler drain timed out during shutdown; abandoning hijacked handlers")
 
 		shutdownDone <- serverTeardownErrors{
@@ -1581,14 +1605,14 @@ func (s *Server) Serve(ctx context.Context) error {
 	// flight reads it through every one of its steps. The loops stop when
 	// serveCtx ended, and run skips its remaining steps once it did, so this
 	// wait is the pass that already started.
-	joinLoops(backgroundLoopDrainTimeout, s.backgroundLoops)
+	joinLoops(s.shutdownDeadline.Cap(backgroundLoopDrainTimeout), s.backgroundLoops)
 
 	// Join the detached credential-notice emails: each is capped at
 	// service.CredentialNoticeTimeout on its own detached budget, and the
 	// notice a mint just queued is the one an exit in this window would
 	// lose. The budget below is that send budget plus a scheduling margin,
 	// so one full SMTP exchange fits.
-	s.credentialNotices.Wait(service.CredentialNoticeJoinTimeout,
+	s.credentialNotices.Wait(s.shutdownDeadline.Cap(service.CredentialNoticeJoinTimeout),
 		"hub: credential notice sends did not finish in the shutdown budget; abandoning the emails")
 
 	// 5b. End the hub's own lifetime context: every piece of detached work it
@@ -1598,11 +1622,14 @@ func (s *Server) Serve(ctx context.Context) error {
 	s.cancelServing()
 
 	// 6. Stop CRDT managers while their journal store is still available.
-	s.crdtRegistry.Shutdown(crdtShutdownTimeout)
+	s.crdtRegistry.Shutdown(s.shutdownDeadline.Cap(crdtShutdownTimeout))
 
 	// 7. Stop the watcher before removing its durable cursor, then close the
 	// store. A context with a deadline stops a broken backend from hanging shutdown.
-	watcherCloseCtx, cancelWatcherClose := context.WithTimeout(context.Background(), 10*time.Second)
+	// The deadline limits only the wait for the watcher's loop: the release of
+	// the runtime lease is a write, and Close gives it a limit of its own
+	// even when this context has already ended.
+	watcherCloseCtx, cancelWatcherClose := context.WithTimeout(context.Background(), s.shutdownDeadline.Cap(10*time.Second))
 	teardownErrs.watcherClose = s.revocationWatcher.Close(watcherCloseCtx)
 	cancelWatcherClose()
 	// A watcher lease-loss can race a listener error into the select above; when

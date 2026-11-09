@@ -49,7 +49,7 @@ func assertForeignNativeControlDenied(t *testing.T, url string) {
 	require.NoError(t, err)
 	file, ok := ownerConnection.(interface{ Fd() uintptr })
 	require.True(t, ok)
-	descriptor, err := windows.GetSecurityInfo(windows.Handle(file.Fd()), windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	descriptor, err := windows.GetSecurityInfo(windows.Handle(file.Fd()), windows.SE_KERNEL_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	require.NoError(t, err)
 	acl, _, err := descriptor.DACL()
 	require.NoError(t, err)

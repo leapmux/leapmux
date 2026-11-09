@@ -18,6 +18,10 @@ const (
 	workerDeregisterSummary = "Remove this worker's registration, keeping the worker database"
 )
 
+// defaultDeregisterTimeout limits the wait for the Hub. Deregistration
+// requires a stopped worker, so it waits for no shutdown.
+const defaultDeregisterTimeout = 30 * time.Second
+
 // workerRegisterOptions holds the flags of `leapmux worker register`.
 //
 // The Hub URL and the registration key are flags only, never configuration
@@ -59,7 +63,7 @@ func loadWorkerRegisterCommand(args []string) (*config.Config, workerRegisterOpt
 }
 
 func loadWorkerDeregisterCommand(args []string) (*config.Config, workerCredentialOptions, error) {
-	return loadWorkerCredentialCommand(args, "deregister", workerDeregisterSummary, defaultStopTimeout, nil)
+	return loadWorkerCredentialCommand(args, "deregister", workerDeregisterSummary, defaultDeregisterTimeout, nil)
 }
 
 // loadWorkerCredentialCommand loads the worker configuration that selects the

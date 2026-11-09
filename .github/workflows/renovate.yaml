@@ -55,7 +55,6 @@ jobs:
       - name: Setup build toolchain
         uses: ./.github/actions/setup-build
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
           setup-desktop: 'false'
 
       - name: Setup Node.js for Renovate
@@ -64,7 +63,9 @@ jobs:
           node-version: 24
 
       - name: Select Renovate Node.js
-        run: echo "RENOVATE_NODE=$(command -v node)" >> "$GITHUB_ENV"
+        run: |
+          renovate_node="$(command -v node)"
+          echo "RENOVATE_NODE=$renovate_node" >> "$GITHUB_ENV"
 
       - name: Install pinned Renovate without scripts
         run: task install-renovate

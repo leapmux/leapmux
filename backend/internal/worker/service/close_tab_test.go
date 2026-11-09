@@ -809,7 +809,7 @@ func TestCloseAgent_AlreadyClosed_Idempotent(t *testing.T) {
 	// What we actually require: Cleanup wait-group is not stuck.
 	done := make(chan struct{})
 	go func() {
-		svc.Cleanup.Wait()
+		<-svc.Cleanup.DoneChan()
 		close(done)
 	}()
 	select {
@@ -1161,7 +1161,7 @@ func TestShutdown_WaitsForInFlightClose(t *testing.T) {
 
 	// Manually Add(1) to the cleanup wait-group to simulate an
 	// in-flight close still doing work while Shutdown races it.
-	svc.Cleanup.Add(1)
+	svc.Cleanup.Add()
 
 	shutdownDone := make(chan struct{})
 	go func() {
@@ -1198,7 +1198,7 @@ func TestShutdown_WaitsForCloseAfterHandlerPanic(t *testing.T) {
 	// deferred Done() MUST still fire.
 	func() {
 		defer func() { _ = recover() }()
-		svc.Cleanup.Add(1)
+		svc.Cleanup.Add()
 		defer svc.Cleanup.Done()
 		panic("simulated handler panic")
 	}()

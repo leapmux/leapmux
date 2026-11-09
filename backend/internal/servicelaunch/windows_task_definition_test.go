@@ -32,6 +32,36 @@ func TestTaskDefinitionUsesPasswordAndOneAccount(t *testing.T) {
 	assert.True(t, definition.matches(spec, windowsTaskIdentity{Arguments: spec.RunArguments(), PrincipalSID: spec.AccountID, TriggerSID: spec.AccountID}))
 }
 
+func TestTaskDefinitionCarriesEveryLaunchField(t *testing.T) {
+	base, err := LaunchSpecFromService(testSpec())
+	require.NoError(t, err)
+	base.AccountID = "S-1-5-21-1001"
+	render := func(spec LaunchSpec) []byte {
+		// upsertWindowsTask composes RunArguments with
+		// windows.ComposeCommandLine, which builds only on Windows. Both
+		// spellings read the same fields.
+		definition, err := taskDefinitionXML(spec, strings.Join(spec.RunArguments(), " "))
+		require.NoError(t, err)
+		return append([]byte(taskName(spec)+"\n"), definition...)
+	}
+	assertDefinitionCarries(t, base, render, fieldsCarriedBy(map[string]bool{
+		"InstanceID": true,
+		"Mode":       true,
+		// The startup kind selects the mechanism: windowsAdapter sends a
+		// boot specification to the service, so a task always has login
+		// startup, and validateWindowsLaunch refuses any other kind.
+		"Startup":   false,
+		"AccountID": true,
+		// The task identifies the account by AccountID. RegisterTask takes
+		// AccountName only to log on with the password, and
+		// verifyWindowsAccount requires AccountName to resolve to AccountID.
+		"AccountName":      false,
+		"Executable":       true,
+		"WorkingDirectory": true,
+		"DataDirectory":    true,
+	}))
+}
+
 func TestTaskDefinitionDetectsEffectiveLaunchDrift(t *testing.T) {
 	spec, err := LaunchSpecFromService(testSpec())
 	require.NoError(t, err)

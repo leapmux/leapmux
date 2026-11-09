@@ -206,6 +206,15 @@ tasks:
     cmds:
       - bun scripts/sync-versions.mjs
 
+  sync-cli-tool-digests:
+    desc: Pin the sha256 of each CLI tool release asset for the versions in versions.env
+    # scripts/download-cli-tools.mjs refuses a download whose sha256 differs from
+    # scripts/cli-tools.sha256. A row that the table already holds keeps its digest, so
+    # only a changed pin downloads its assets. The Renovate post-upgrade step runs this
+    # task on the toolchain branch of protoc, buf, or Task.
+    cmds:
+      - node scripts/download-cli-tools.mjs --sync-digests
+
   generate-proto:
     desc: Generate Protocol Buffer code
     sources:
@@ -982,9 +991,11 @@ tasks:
     status: *artifact_status
     cmds:
       - *forget_artifacts
+      # Stage the allowlisted GStreamer plugins. `tauri build` passes GSTREAMER_PLUGINS_DIR to the GStreamer plugin of
+      # linuxdeploy, which then deploys only those plugins. The stage lives under target/, outside this task's sources.
+      - desktop/rust/scripts/appimage-gstreamer.mjs stage desktop/rust/target/leapmux-gstreamer-plugins
       # The build-backend dependency supplies ../../leapmux for tauri.linux.conf.json's deb.files entry.
-      - desktop/rust/scripts/patch-linuxdeploy.sh
-      - cd desktop/rust && ../../frontend/node_modules/.bin/tauri build --config '{"version":"{{.VERSION}}"}'
+      - cd desktop/rust && GSTREAMER_PLUGINS_DIR="$PWD/target/leapmux-gstreamer-plugins" ../../frontend/node_modules/.bin/tauri build --config '{"version":"{{.VERSION}}"}'
       # Place the AppImage binary beside the sidecar in /usr/lib/leapmux-desktop/, as the Debian package does.
       # Tauri starts with the Debian data tree, which places the app in usr/bin and the sidecar in usr/lib/leapmux-desktop/.
       # Move the app so leapmux-desktop stays outside the launcher's PATH.
@@ -992,6 +1003,7 @@ tasks:
       # linuxdeploy's AppRun searches a fixed PATH that excludes usr/lib. An absolute Exec value instead resolves against the host filesystem.
       # Prepend the private app directory inside AppRun. AppRun.wrapped appends the inherited PATH.
       # The shared Exec=leapmux-desktop then resolves correctly, and /proc/self/exe identifies the real directory for sidecar discovery.
+      # Fix the GStreamer AppRun hook and verify the bundled plugins (desktop/rust/scripts/appimage-gstreamer.mjs).
       # Repack the AppDir with Tauri's cached linuxdeploy plugin and replace the original AppImage.
       #
       # The grep checks must fail if linuxdeploy changes the AppRun command or the shared template changes Exec.
@@ -1011,6 +1023,7 @@ tasks:
         test -x "$appdir/usr/lib/leapmux-desktop/leapmux-desktop"
         test ! -e "$appdir/usr/bin/leapmux-desktop"
         grep -q 'usr/lib/leapmux-desktop:\$PATH' "$appdir/AppRun"
+        desktop/rust/scripts/appimage-gstreamer.mjs patch-appdir "$appdir"
         plugin="${HOME}/.cache/tauri/linuxdeploy-plugin-appimage.AppImage"
         test -x "$plugin"
         # Drop Tauri's original (Debian-named on x86); repack to the uname name.
@@ -1680,9 +1693,9 @@ tasks:
       - bun test --timeout 30000 ./scripts/test-docker.test.mjs
 
   test-cache-native:
-    desc: Test cache snapshots and isolated Go tools against this OS's real toolchains
+    desc: Test cache snapshots, the CLI tool installer, and isolated Go tools against this OS's real toolchains
     cmds:
-      - bun test --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs ./scripts/test-support.test.mjs ./scripts/run-go-tool.test.mjs ./scripts/download-go-modules.test.mjs
+      - bun test --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs ./scripts/test-support.test.mjs ./scripts/run-go-tool.test.mjs ./scripts/download-go-modules.test.mjs ./scripts/download-cli-tools.test.mjs
 
   test-docker-cache:
     desc: Prove that the Docker Go cache export reads the current cache mount

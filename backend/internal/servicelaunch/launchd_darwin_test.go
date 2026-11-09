@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/leapmux/leapmux/internal/util/filelock"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -64,6 +67,7 @@ type stubbedLaunchd struct {
 	disabled         bool
 	label            string
 	loadedDefinition []byte
+	awaited          []lifecycle.Paths
 }
 
 func newStubbedLaunchd() *stubbedLaunchd {
@@ -133,6 +137,12 @@ func newStubbedLaunchd() *stubbedLaunchd {
 				return os.ErrNotExist
 			}
 			delete(s.files, path)
+			return nil
+		},
+		awaitRuntimeRelease: func(_ context.Context, paths lifecycle.Paths) error {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			s.awaited = append(s.awaited, paths)
 			return nil
 		},
 	}
@@ -218,6 +228,12 @@ func TestLaunchdDefinitionArguments(t *testing.T) {
 	bootText := string(newStubbedLaunchd().definitionPlist(boot))
 	assert.Contains(t, bootText, "<key>UserName</key>")
 	assert.Contains(t, bootText, "<string>trustin</string>", "the daemon runs as the selected account")
+
+	// Both startup kinds give the application three minutes after SIGTERM
+	// before launchd sends SIGKILL.
+	for _, definition := range []string{text, bootText} {
+		assert.Contains(t, definition, "\t<key>ExitTimeOut</key>\n\t<integer>180</integer>\n", "launchd sends SIGKILL 180 seconds after SIGTERM")
+	}
 }
 
 func TestLaunchdDefinitionDoesNotExposeEnvironment(t *testing.T) {
@@ -227,6 +243,38 @@ func TestLaunchdDefinitionDoesNotExposeEnvironment(t *testing.T) {
 	assert.NotContains(t, definition, "private-secret-value")
 	assert.NotContains(t, definition, "EnvironmentVariables")
 	assert.Contains(t, definition, "--service-spec")
+}
+
+func TestLaunchdDefinitionCarriesEveryLaunchField(t *testing.T) {
+	manager := newStubbedLaunchd()
+	for _, startup := range []lifecycle.StartupKind{lifecycle.StartupLogin, lifecycle.StartupBoot} {
+		t.Run(string(startup), func(t *testing.T) {
+			base := launchdTestSpec()
+			base.Startup = startup
+			render := func(spec LaunchSpec) []byte {
+				path, err := manager.definitionPath(spec)
+				require.NoError(t, err)
+				return append([]byte(path+"\n"), manager.definitionPlist(spec)...)
+			}
+			assertDefinitionCarries(t, base, render, fieldsCarriedBy(map[string]bool{
+				"InstanceID": true,
+				"Mode":       true,
+				"Startup":    true,
+				// The instance identity derives from AccountID, so another
+				// account changes the label. managedRun refuses a saved
+				// AccountID that is not the running account.
+				"AccountID": false,
+				// A boot daemon sets UserName to the account. A login agent
+				// runs as the account whose GUI domain loads it, and
+				// managedRun refuses a saved AccountName that is not the
+				// running account.
+				"AccountName":      startup == lifecycle.StartupBoot,
+				"Executable":       true,
+				"WorkingDirectory": true,
+				"DataDirectory":    true,
+			}))
+		})
+	}
 }
 
 func TestLaunchdInstallEnablesWithoutStarting(t *testing.T) {
@@ -244,6 +292,55 @@ func TestLaunchdStopPropagatesFailure(t *testing.T) {
 	manager := newStubbedLaunchd()
 	manager.runLaunchctl = func(context.Context, []string, bool) ([]byte, error) { return nil, assert.AnError }
 	require.ErrorIs(t, manager.Stop(t.Context(), launchdTestSpec()), assert.AnError)
+}
+
+func TestLaunchdStubbedStopNeverProbesTheDataDirectory(t *testing.T) {
+	// The stubbed manager must stay hermetic: a running application that
+	// holds the runtime lock of the spec's data directory, as the default
+	// worker directory of a developer's account can, must not stall Stop.
+	manager := newStubbedLaunchd()
+	spec := launchdTestSpec()
+	spec.DataDirectory = t.TempDir()
+	holdRuntimeLock(t, spec.DataDirectory)
+	require.NoError(t, manager.Install(t.Context(), spec))
+	require.NoError(t, manager.Start(t.Context(), spec))
+	// The deadline only keeps a regression from hanging the test.
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	require.NoError(t, manager.Stop(ctx, spec))
+	// Stop still waits, through the substituted wait, on the spec's lock.
+	assert.Equal(t, []lifecycle.Paths{lifecycle.PathsOf(spec.DataDirectory)}, manager.awaited)
+}
+
+func TestLaunchdStopSkipsTheWaitWhenNoJobIsLoaded(t *testing.T) {
+	manager := newStubbedLaunchd()
+	require.NoError(t, manager.Stop(t.Context(), launchdTestSpec()))
+	assert.Empty(t, manager.awaited)
+}
+
+func TestLaunchdStopReportsAFailedWait(t *testing.T) {
+	manager := newStubbedLaunchd()
+	spec := launchdTestSpec()
+	require.NoError(t, manager.Install(t.Context(), spec))
+	require.NoError(t, manager.Start(t.Context(), spec))
+	manager.awaitRuntimeRelease = func(context.Context, lifecycle.Paths) error { return context.DeadlineExceeded }
+	err := manager.Stop(t.Context(), spec)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.EqualError(t, err, "servicelaunch: waiting for the application to exit after launchd removed the job: context deadline exceeded")
+}
+
+// holdRuntimeLock takes the runtime lock of a data directory for the rest of
+// the test, as a running application holds it.
+func holdRuntimeLock(t *testing.T, dataDirectory string) {
+	t.Helper()
+	paths := lifecycle.PathsOf(dataDirectory)
+	require.NoError(t, os.MkdirAll(filepath.Dir(paths.RuntimeLock), 0o700))
+	lock, err := filelock.Open(paths.RuntimeLock, false)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = lock.Close() })
+	held, err := filelock.TryLock(lock)
+	require.NoError(t, err)
+	require.True(t, held)
 }
 
 func TestLaunchdDisabledOverrideRequiresRepair(t *testing.T) {

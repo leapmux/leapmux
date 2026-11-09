@@ -47,7 +47,9 @@ jobs:
       - name: Derive the cache week
         # The weekly epoch of the site snapshots. Setup-build is not used
         # here, so this job derives the week itself.
-        run: echo "CACHE_WEEK=$(date -u +%G-W%V)" >> "$GITHUB_ENV"
+        run: |
+          cache_week="$(date -u +%G-W%V)"
+          echo "CACHE_WEEK=$cache_week" >> "$GITHUB_ENV"
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -61,7 +63,9 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
 
       - name: Locate the site Go build cache
-        run: echo "GOCACHE=$(go env GOCACHE)" >> "$GITHUB_ENV"
+        run: |
+          gocache="$(go env GOCACHE)"
+          echo "GOCACHE=$gocache" >> "$GITHUB_ENV"
 
       - name: Restore the site module downloads
         uses: ./.github/actions/dependency-caches
@@ -75,7 +79,9 @@ jobs:
         id: site-key
         env:
           CACHE_HASH: ${{ hashFiles('site/go.mod', 'site/go.sum') }}
-        run: echo "key=$(node scripts/cache-snapshot.mjs key --kind site-go --hash "$CACHE_HASH" --week "$CACHE_WEEK")" >> "$GITHUB_OUTPUT"
+        run: |
+          key="$(node scripts/cache-snapshot.mjs key --kind site-go --hash "$CACHE_HASH" --week "$CACHE_WEEK")"
+          echo "key=$key" >> "$GITHUB_OUTPUT"
 
       - name: Restore the site build outputs
         # This workflow runs only on main, so every job is a writer and

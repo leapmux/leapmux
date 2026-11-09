@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/leapmux/leapmux/lifecycle"
 )
 
 // stubbedSystemd records every systemctl argv and unit file.
@@ -105,6 +107,49 @@ func TestSystemdDefinitionArguments(t *testing.T) {
 	assert.Contains(t, bootUnit, "User=trustin\n", "the system unit runs as the selected account")
 	assert.Contains(t, bootUnit, "Group=staff\n")
 	assert.Contains(t, bootUnit, "WantedBy=multi-user.target")
+
+	// Both startup kinds give the application three minutes after SIGTERM
+	// before systemd sends SIGKILL.
+	for _, definition := range []string{unit, bootUnit} {
+		_, service, found := strings.Cut(definition, "\n[Service]\n")
+		require.True(t, found)
+		service, _, found = strings.Cut(service, "\n[Install]\n")
+		require.True(t, found)
+		assert.Contains(t, strings.Split(service, "\n"), "TimeoutStopSec=180", "systemd sends SIGKILL 180 seconds after SIGTERM")
+	}
+}
+
+func TestSystemdDefinitionCarriesEveryLaunchField(t *testing.T) {
+	manager := newStubbedSystemd()
+	for _, startup := range []lifecycle.StartupKind{lifecycle.StartupLogin, lifecycle.StartupBoot} {
+		t.Run(string(startup), func(t *testing.T) {
+			base, err := LaunchSpecFromService(testSpec())
+			require.NoError(t, err)
+			base.Startup = startup
+			render := func(spec LaunchSpec) []byte {
+				path, err := manager.definitionPath(spec)
+				require.NoError(t, err)
+				return append([]byte(path+"\n"), manager.definitionUnit(spec)...)
+			}
+			assertDefinitionCarries(t, base, render, fieldsCarriedBy(map[string]bool{
+				"InstanceID": true,
+				"Mode":       true,
+				"Startup":    true,
+				// The instance identity derives from AccountID, so another
+				// account changes the unit name. managedRun refuses a saved
+				// AccountID that is not the running account.
+				"AccountID": false,
+				// A system service sets User= to the account. A user service
+				// runs as the account whose service manager loads it, and
+				// managedRun refuses a saved AccountName that is not the
+				// running account.
+				"AccountName":      startup == lifecycle.StartupBoot,
+				"Executable":       true,
+				"WorkingDirectory": true,
+				"DataDirectory":    true,
+			}))
+		})
+	}
 }
 
 func TestSystemdDefinitionDoesNotExposeEnvironment(t *testing.T) {

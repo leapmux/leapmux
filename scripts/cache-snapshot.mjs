@@ -313,16 +313,46 @@ function clearOwnedRoots(roots, log) {
 }
 
 /**
+ * Decide whether a restored archive whose key differs from the exact key may
+ * serve as a fallback. In each branch scope, the cache transport tries the
+ * exact key, then any key that extends it, and only then the restore-keys
+ * prefixes. A writer passes no restore-keys, so a key that extends its own
+ * key reaches it only through that prefix match, whatever the shape of the
+ * key: the writer ignores the archive and starts from empty owned roots. Any
+ * other key reaches a writer only through restore-keys, which a writer must
+ * not pass. A reader accepts a fallback only in the current key shape of the
+ * kind.
+ */
+function usableFallbackKey({ kind, key, matchedKey, writer, env, log }) {
+  if (!matchedKey)
+    return null
+  if (writer) {
+    if (!matchedKey.startsWith(key))
+      throw new Error(`A ${kind} writer must not restore a fallback snapshot. Writers start from empty owned roots.`)
+    log(`Ignoring the restored ${kind} archive ${matchedKey}: the cache transport matched it as an extension of the exact key, and a writer starts from empty owned roots.`)
+    return null
+  }
+  try {
+    validateCacheKey(kind, matchedKey, env)
+    return matchedKey
+  }
+  catch {
+    log(`Ignoring the restored ${kind} archive ${matchedKey}: its key does not match the current ${kind} key shape.`)
+    return null
+  }
+}
+
+/**
  * Validate a restored payload and activate it, or start a writer from empty
  * owned roots. A reader may activate a fallback payload, but the caller
- * never saves after a fallback. A writer must not receive a fallback at all.
+ * never saves after a fallback. A writer never activates a fallback: it
+ * ignores an archive whose key extends its exact key, and fails on any other.
  */
 export async function activateCacheSnapshot({
   kind,
   key,
   writer = false,
-  exactHit = false,
-  matchedKey = false,
+  matchedKey = null,
   workspace = process.cwd(),
   env = process.env,
   log = () => {},
@@ -330,8 +360,22 @@ export async function activateCacheSnapshot({
 }) {
   const policy = cachePolicy(kind)
   validateCacheKey(kind, key, env)
-  if (writer && matchedKey && !exactHit)
-    throw new Error(`A ${kind} writer must not restore a fallback snapshot. Writers start from empty owned roots.`)
+  if (matchedKey !== null && typeof matchedKey !== 'string')
+    throw new TypeError('The matched cache key must be a key string or null.')
+  // actions/cache reports cache-hit exactly when the key that it matched
+  // equals the requested key in a case-insensitive comparison
+  // (isExactKeyMatch), so the matched key alone decides an exact hit.
+  const exactHit = matchedKey !== null && matchedKey.toLowerCase() === key.toLowerCase()
+  const fallbackKey = exactHit
+    ? null
+    : usableFallbackKey({
+        kind,
+        key,
+        matchedKey,
+        writer,
+        env,
+        log,
+      })
   const roots = activeRootsFor(kind, env, workspace)
   const { payloadRoot } = snapshotPaths(kind, workspace)
   let validation = { valid: false, reason: 'no payload was restored' }
@@ -340,7 +384,7 @@ export async function activateCacheSnapshot({
   const usableExact = exactHit && validation.valid
   if (exactHit && !validation.valid)
     log(`An exact hit restored an unusable payload: ${validation.reason} Rebuilding active data without replacing the occupied archive key.`)
-  if (usableExact || (!exactHit && matchedKey && validation.valid)) {
+  if (usableExact || (fallbackKey && validation.valid)) {
     log(`${usableExact ? 'Activating an exact' : 'Activating a fallback'} ${kind} snapshot.`)
     for (const root of roots) {
       // An optional root that the payload does not carry stays untouched.
@@ -895,8 +939,7 @@ async function main(argv) {
         kind,
         key: args.key,
         writer: args.writer === 'true',
-        exactHit: args['exact-hit'] === 'true',
-        matchedKey: args.matched === 'true',
+        matchedKey: args['matched-key'] || null,
         log,
       })
       writeOutputs({

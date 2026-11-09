@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { appendFileSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import process from 'node:process'
+import { cliToolVersionEnvs } from './download-cli-tools.mjs'
 import { needsNotice } from './notice-inputs.mjs'
 import { finishGoUpgrades, prepareGoUpgrades } from './renovate-go.mjs'
 import { isDependencyInput } from './renovate-inputs.mjs'
@@ -74,10 +75,12 @@ export async function postUpgrade(upgrades, { root = process.cwd(), trusted = pr
     }
     return result.stdout ?? ''
   })
-  // A toolchain branch only rewrites the documented versions. CI installs and validates
-  // the proposed toolchain.
+  // A toolchain branch only rewrites the documented versions, and for a CLI tool the
+  // pinned digests of its release assets. CI installs and validates the proposed toolchain.
   if (toolchain) {
     run('task', ['sync-versions'])
+    if (cliToolVersionEnvs().includes(upgrades[0].depType))
+      run('task', ['sync-cli-tool-digests'])
     return
   }
   if (!trusted)

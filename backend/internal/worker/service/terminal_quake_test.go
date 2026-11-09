@@ -1101,7 +1101,7 @@ func TestQuakeCloseIsJoinedByServiceCleanup(t *testing.T) {
 
 	svc.closeQuakeTerminalOnShellExit(terminalID)
 	svc.Output.SetShuttingDown()
-	svc.Cleanup.Wait()
+	<-svc.Cleanup.DoneChan()
 
 	row, err := svc.Queries.GetTerminal(ctx, terminalID)
 	require.NoError(t, err)
@@ -1131,7 +1131,7 @@ func TestCloseQuakeTerminalLeavesTheRowAfterShutdownBegins(t *testing.T) {
 	sendShellLine(t, d, terminalID, []byte("exit 0"+testutil.TestShellEnter()))
 	testutil.AssertEventually(t, func() bool { return svc.Terminals.IsExited(terminalID) }, "shell exit")
 	svc.Terminals.WaitForExit(terminalID)
-	svc.Cleanup.Wait()
+	<-svc.Cleanup.DoneChan()
 
 	row, err := svc.Queries.GetTerminal(ctx, terminalID)
 	require.NoError(t, err)
