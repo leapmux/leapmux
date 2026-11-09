@@ -39,7 +39,7 @@ function runShell(script, dir, extra = {}, fakeBin) {
     cwd: dir,
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...inheritedEnvironment(),
       GITHUB_ENV: join(dir, 'environment'),
       GITHUB_OUTPUT: join(dir, 'output'),
       GITHUB_PATH: join(dir, 'path'),
@@ -89,6 +89,35 @@ const workflowFiles = readdirSync(join(root, '.github/workflows'))
 const actionFiles = readdirSync(join(root, '.github/actions'), { withFileTypes: true })
   .filter(entry => entry.isDirectory())
   .map(entry => `.github/actions/${entry.name}/action.yaml`)
+
+/**
+ * The variables that a GitHub Actions job holds outside a simulated step,
+ * besides the RUNNER_* and GITHUB_* variables that the runner sets:
+ * - each variable that a step of this repository writes to GITHUB_ENV
+ * - each pin of versions.env, which load-versions writes there
+ */
+const JOB_STATE_VARIABLES = new Set([
+  ...[
+    ...workflowFiles,
+    ...actionFiles,
+  ].flatMap(file => [
+    ...raw(file).matchAll(/\becho\s+["']?([A-Z_][A-Z0-9_]*)=/g),
+  ].map(match => match[1])),
+  ...[
+    ...raw('versions.env').matchAll(/^([A-Z_][A-Z0-9_]*)=/gm),
+  ].map(match => match[1]),
+])
+
+/**
+ * The environment of this test process without the job state of a CI job
+ * that runs it. A simulated step inherits only this, so a test behaves the
+ * same on a developer machine and inside a CI job, and passes each job value
+ * that it reads.
+ */
+function inheritedEnvironment() {
+  return Object.fromEntries(Object.entries(process.env).filter(([name]) =>
+    !name.startsWith('RUNNER_') && !name.startsWith('GITHUB_') && !JOB_STATE_VARIABLES.has(name)))
+}
 
 function jobSteps(doc) {
   const out = []
@@ -162,6 +191,19 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     expect(downloads.length).toBeGreaterThanOrEqual(5)
     for (const line of downloads)
       expect(line, line.trim()).toContain('curl -fsSL --retry 10 --retry-all-errors ')
+  })
+
+  it('retries each apt fetch of the Dockerfile', () => {
+    // apt-get update reports an unreachable mirror only as a warning, so the
+    // install that follows failed with "Unable to locate package" when
+    // archive.ubuntu.com timed out once.
+    const commands = raw('docker/Dockerfile').split('\n').filter(line => !line.trimStart().startsWith('#')).join('\n')
+    const calls = [
+      ...commands.matchAll(/apt-get\b[^&\n\\]*/g),
+    ].map(match => match[0])
+    expect(calls.length).toBeGreaterThanOrEqual(4)
+    for (const call of calls)
+      expect(call).toMatch(/^apt-get -o Acquire::Retries=10 (update|install)\b/)
   })
 
   it('runs container build tools on the builder platform and cross-compiles the requested target', () => {
@@ -996,7 +1038,7 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
     const operations = []
     const active = join(dir, 'gomod-active')
     const moduleEnv = {
-      ...process.env,
+      ...inheritedEnvironment(),
       RUNNER_OS: 'Linux',
       RUNNER_ARCH: 'X64',
       GOMODCACHE: active,
@@ -1073,7 +1115,7 @@ describe('cache and pin invariants of the GitHub Actions workflows', () => {
         key: `go-build-2-Linux-X64-ubuntu24-go1.27.1-${'a'.repeat(64)}-2027-W01`,
         workspace: root,
         env: {
-          ...process.env,
+          ...inheritedEnvironment(),
           RUNNER_OS: 'Linux',
           RUNNER_ARCH: 'X64',
           CACHE_IMAGE: 'ubuntu24',
@@ -2033,6 +2075,49 @@ describe('cache workflow execution', () => {
     expect(result.status).not.toBe(0)
     expect(result.stderr).toContain('RUNNER_ARCH')
     expect(outputFile(dir)).toBe('')
+  })
+
+  it('runs a simulated step without the job state of the CI job that runs the test', () => {
+    // A CI job that runs this suite has already run setup-cli-tools and the
+    // other setup steps, so its environment holds their GITHUB_ENV writes and
+    // the runner's own variables. None of them may reach a simulated step.
+    const leaked = {
+      LEAPMUX_CLI_TOOLS_KEY: 'cli-tools-1-Linux-X64-of-the-outer-job',
+      RUNNER_ARCH: 'X64',
+      GITHUB_WORKSPACE: '/home/runner/work/leapmux/leapmux',
+      GOMODCACHE: '/home/runner/.cache/go-mod',
+      PROTOC_VERSION: '1.0',
+    }
+    const saved = Object.fromEntries(Object.keys(leaked).map(name => [
+      name,
+      process.env[name],
+    ]))
+    Object.assign(process.env, leaked)
+    try {
+      for (const name of Object.keys(leaked))
+        expect(inheritedEnvironment()).not.toHaveProperty(name)
+      expect(inheritedEnvironment().PATH).toBe(process.env.PATH)
+      const locate = actionSteps('.github/actions/setup-cli-tools/action.yaml').find(step => step.id === 'tools')
+      const dir = fixture()
+      const result = execute(locate, dir, environment(dir), {
+        inputs: { tools: 'task' },
+      })
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(0)
+      const absent = fixture()
+      const env = environment(absent)
+      delete env.RUNNER_ARCH
+      expect(execute(locate, absent, env, {
+        inputs: { tools: 'task' },
+      }).stderr).toContain('RUNNER_ARCH')
+    }
+    finally {
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined)
+          delete process.env[name]
+        else
+          process.env[name] = value
+      }
+    }
   })
 
   it('exposes the validated activation result for a partial transport hit', () => {

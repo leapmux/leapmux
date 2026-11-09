@@ -117,9 +117,10 @@ ARG TARGETARCH
 
 # Install s6-overlay. Docker uses amd64/arm64, but the s6-overlay releases
 # use x86_64/aarch64, so the script maps the architecture name first.
-# curl downloads both archives and retries a transient failure. Alpine needs
-# ca-certificates for HTTPS, and curl only for this step, so the virtual
-# package .s6-fetch removes it again; BusyBox supplies an xz-capable tar.
+# curl downloads both archives and retries a transient failure, and apt
+# retries a failed fetch (Acquire::Retries). Alpine needs ca-certificates for
+# HTTPS, and curl only for this step, so the virtual package .s6-fetch removes
+# it again; BusyBox supplies an xz-capable tar.
 # Ubuntu needs these packages:
 # - ca-certificates.
 # - curl.
@@ -135,7 +136,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       apk add --no-cache ca-certificates && \
       apk add --no-cache --virtual .s6-fetch curl; \
     else \
-      apt-get update && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
+      apt-get -o Acquire::Retries=10 update && apt-get -o Acquire::Retries=10 install -y --no-install-recommends ca-certificates curl xz-utils \
       && rm -rf /var/lib/apt/lists/*; \
     fi && \
     curl -fsSL --retry 10 --retry-all-errors -o /tmp/s6-overlay-noarch.tar.xz \
@@ -153,6 +154,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # - git supports worktrees and branches. It reports repository status also.
 # - bash and zsh supply terminal shells.
 # - ncurses supplies the xterm-256color terminfo entry.
+# apt retries a fetch that fails (Acquire::Retries), because apt-get update
+# reports an unreachable mirror only as a warning, and the install then
+# fails with "Unable to locate package".
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     if [ -f /etc/alpine-release ]; then \
@@ -160,7 +164,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         ca-certificates tzdata \
         git bash zsh ncurses; \
     else \
-      apt-get update && apt-get install -y --no-install-recommends \
+      apt-get -o Acquire::Retries=10 update && apt-get -o Acquire::Retries=10 install -y --no-install-recommends \
         ca-certificates tzdata \
         git bash zsh ncurses-base \
       && rm -rf /var/lib/apt/lists/*; \
