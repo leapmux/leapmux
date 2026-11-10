@@ -53,7 +53,6 @@ var captchaExemptRationale = map[string]string{
 	leapmuxv1connect.AuthServiceFinishPasskeySignUpProcedure:                 "consumes a short-lived ceremony session; expensive work is in Begin",
 	leapmuxv1connect.AuthServiceFinishAccountRecoveryPasskeyProcedure:        "consumes a short-lived ceremony session the captcha'd Begin minted",
 	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure:                 "caller is a worker process with a registration key, not a human form",
-	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:                  "caller is a worker process with an auth_token, not a human form",
 	leapmuxv1connect.WorkerConnectorServiceListOwnedTabsForWorkerProcedure:   "caller is a worker process with an auth_token, not a human form",
 	leapmuxv1connect.WorkerConnectorServiceGetRegistrationChallengeProcedure: "caller is a worker process retrying its own registration with a registration key, not a human form",
 	leapmuxv1connect.WorkerConnectorServiceRecoverRegistrationProcedure:      "caller is a worker process proving key possession for its own registration, not a human form",

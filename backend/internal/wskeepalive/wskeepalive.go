@@ -1,15 +1,17 @@
-package service
+// Package wskeepalive probes long-lived WebSockets.
+package wskeepalive
 
 import (
 	"context"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/coder/websocket"
 )
 
 const (
-	// wsKeepaliveInterval is how often an idle long-lived socket is probed.
+	// Interval is how often an idle long-lived socket is probed.
 	//
 	// Every other bound on these connections fires on a WRITE -- the per-write
 	// watchdog, the stall clock, the byte budget -- so a peer that stops
@@ -22,11 +24,11 @@ const (
 	// That became a user-visible cost when connections started being counted:
 	// each dead tab holds two leases against max_connections_per_user, and the
 	// message a refused user gets tells them to close a tab -- which does
-	// nothing for sockets that are already gone. Thirty seconds is well inside
+	// nothing for sockets that are already gone. Ten seconds is well inside
 	// any plausible cap-refill window and far below the idle timeouts of common
 	// proxies, which this doubles as protection against.
-	wsKeepaliveInterval = 30 * time.Second
-	// wsKeepaliveTimeout bounds ONE probe. Generous relative to a round trip on
+	Interval = 10 * time.Second
+	// Timeout limits one probe. Generous relative to a round trip on
 	// any real link, because the cost of being wrong is disconnecting a healthy
 	// client.
 	//
@@ -36,9 +38,9 @@ const (
 	// deadline covers acquiring the connection's write mutex, which a data
 	// frame holds for as long as it is in flight -- up to relayWriteTimeout,
 	// which is longer. A single failed probe therefore does not mean the peer
-	// is gone; see wsKeepaliveFailuresBeforeDrop.
-	wsKeepaliveTimeout = 10 * time.Second
-	// wsKeepaliveFailuresBeforeDrop is how many CONSECUTIVE probes must fail
+	// is gone; see FailuresBeforeDrop.
+	Timeout = 10 * time.Second
+	// FailuresBeforeDrop is how many CONSECUTIVE probes must fail
 	// before the connection is dropped.
 	//
 	// One is not enough, because a failed probe has two causes and only one of
@@ -49,12 +51,19 @@ const (
 	// out. Condemning on one sample let the keepalive pre-empt those bounds and
 	// report a dead peer for a client that was alive and about to finish.
 	//
-	// Two probes span a whole interval, so anything the WRITER considers fatal
-	// has already fired by the second one, with its own timeout and its own
-	// reason. What is left for the keepalive is what only it can see: a socket
-	// with nothing to write whose peer is gone.
-	wsKeepaliveFailuresBeforeDrop = 2
+	// At a ten-second interval, two failed probes can disconnect a slow peer
+	// before its writer's stall limit. The same policy applies to every route.
+	FailuresBeforeDrop = 2
 )
+
+// Probe holds a connection and its liveness callbacks. OnAnswer runs
+// synchronously after each answered probe, before the loop takes another tick.
+type Probe struct {
+	Conn     *websocket.Conn
+	Cancel   func()
+	OnAnswer func()
+	Attrs    []any
+}
 
 // A probe loop is only safe once something is READING the socket.
 // coder/websocket says so outright (conn.go): "Ping must be called concurrently
@@ -71,29 +80,29 @@ const (
 // endpoint has to pick one of them by name: neither can be called without
 // saying where its reads come from.
 
-// wsKeepaliveProduction is the pace a real connection is probed at. A function
+// Production is the pace a real connection is probed at. A function
 // rather than a package variable, so no handler and no test can mutate the one
 // the others read.
-func wsKeepaliveProduction() wsKeepalivePace {
-	return wsKeepalivePace{interval: wsKeepaliveInterval, timeout: wsKeepaliveTimeout}
+func Production() Pace {
+	return Pace{Interval: Interval, Timeout: Timeout}
 }
 
-// wsKeepalivePace is how fast the probe loop runs. A value each handler carries
+// Pace is how fast the probe loop runs. A value each handler carries
 // rather than a package variable a test overrides: these handlers run in
 // parallel with each other and with every other test in this package, so a
 // mutable global would be a data race between a test setting its pace and a
 // handler reading it.
-type wsKeepalivePace struct {
-	interval time.Duration
-	timeout  time.Duration
-	// ticks, when non-nil, replaces the interval ticker. A test drives probes
-	// through it one at a time, so a case about WHEN the loop is armed is bounded
-	// by an event it sends rather than by a duration a loaded CI box overshoots.
-	// Nil in production, where the ticker is the only thing that fires it.
-	ticks <-chan time.Time
+type Pace struct {
+	Interval time.Duration
+	Timeout  time.Duration
+	// Ticks, when non-nil, replaces the interval ticker. A test drives one
+	// probe at a time through this channel. The test controls when the loop
+	// starts probing, without relying on a duration a loaded CI machine can
+	// exceed. Nil uses the production ticker.
+	Ticks <-chan time.Time
 }
 
-// startDrainingReads probes conn and OWNS the goroutine that drains its reads,
+// StartDrainingReads probes Probe.Conn and owns the goroutine that drains its reads,
 // starting the reader FIRST so it is live before any probe can fire. For a
 // handler with no use for what the peer sends: it cannot arm a probe loop
 // without the reader that answers it, because this one call starts both.
@@ -105,28 +114,26 @@ type wsKeepalivePace struct {
 // Both goroutines cancel on the way out: a read that fails is how a peer that
 // DID send a close frame is noticed, and a probe that fails is how one that
 // vanished without one is.
-func (k wsKeepalivePace) startDrainingReads(ctx context.Context, conn *websocket.Conn, cancel context.CancelFunc, endpoint, userID string) {
+func (k Pace) StartDrainingReads(ctx context.Context, probe Probe) {
 	go func() {
-		defer cancel()
+		defer probe.Cancel()
 		for {
-			if _, _, err := conn.Read(ctx); err != nil {
+			if _, _, err := probe.Conn.Read(ctx); err != nil {
 				return
 			}
 		}
 	}()
-	k.startBesideAReadLoop(ctx, conn, cancel, endpoint, userID)
+	k.StartBesideAReadLoop(ctx, probe)
 }
 
-// startBesideAReadLoop probes conn for a handler that reads the socket ITSELF,
-// from the statement after this one. The /ws/channel relay is that shape: its
-// read loop is what routes frontend frames, so the keepalive cannot own it.
-//
-// Call it immediately before entering that loop and nowhere else. Every
-// statement between the two is a window in which a probe has no reader.
-func (k wsKeepalivePace) startBesideAReadLoop(ctx context.Context, conn *websocket.Conn, cancel context.CancelFunc, endpoint, userID string) {
+// StartBesideAReadLoop probes Probe.Conn while the caller owns its reader.
+// Start that reader before this call, or enter its read loop immediately after
+// this call. Pong processing requires an active reader, so no other work may
+// delay a reader that has not started yet.
+func (k Pace) StartBesideAReadLoop(ctx context.Context, probe Probe) {
 	ticks, stop := k.tick()
 	go func() {
-		defer cancel()
+		defer probe.Cancel()
 		defer stop()
 		failures := 0
 		for {
@@ -135,13 +142,16 @@ func (k wsKeepalivePace) startBesideAReadLoop(ctx context.Context, conn *websock
 				return
 			case <-ticks:
 			}
-			probeCtx, done := context.WithTimeout(ctx, k.timeout)
-			err := conn.Ping(probeCtx)
+			probeCtx, done := context.WithTimeout(ctx, k.Timeout)
+			err := probe.Conn.Ping(probeCtx)
 			done()
 			if err == nil {
 				// Consecutive, so a probe lost to a long write does not count
 				// against one lost later to a peer that really did vanish.
 				failures = 0
+				if probe.OnAnswer != nil {
+					probe.OnAnswer()
+				}
 				continue
 			}
 			// A cancelled parent means the handler is already unwinding, which
@@ -150,15 +160,13 @@ func (k wsKeepalivePace) startBesideAReadLoop(ctx context.Context, conn *websock
 				return
 			}
 			failures++
-			if failures < wsKeepaliveFailuresBeforeDrop {
+			if failures < FailuresBeforeDrop {
 				slog.Debug("websocket keepalive probe failed; waiting for the next one",
-					"endpoint", endpoint, "user_id", userID,
-					"failures", failures, "error", err)
+					append(slices.Clone(probe.Attrs), "failures", failures, "error", err)...)
 				continue
 			}
 			slog.Debug("websocket keepalive failed; dropping the connection",
-				"endpoint", endpoint, "user_id", userID,
-				"failures", failures, "error", err)
+				append(slices.Clone(probe.Attrs), "failures", failures, "error", err)...)
 			return
 		}
 	}()
@@ -173,13 +181,13 @@ func (k wsKeepalivePace) startBesideAReadLoop(ctx context.Context, conn *websock
 // with a message about a non-positive interval and no clue whose; a handler
 // composed without a pace is a wiring bug, and the one it produces -- a socket
 // with no liveness probe at all -- is invisible from outside.
-func (k wsKeepalivePace) tick() (<-chan time.Time, func()) {
-	if k.ticks != nil {
-		return k.ticks, func() {}
+func (k Pace) tick() (<-chan time.Time, func()) {
+	if k.Ticks != nil {
+		return k.Ticks, func() {}
 	}
-	if k.interval <= 0 {
-		panic("service: WebSocket handler composed without a keepalive pace")
+	if k.Interval <= 0 {
+		panic("wskeepalive: a probe requires a keepalive pace")
 	}
-	ticker := time.NewTicker(k.interval)
+	ticker := time.NewTicker(k.Interval)
 	return ticker.C, ticker.Stop
 }

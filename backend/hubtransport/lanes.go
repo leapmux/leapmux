@@ -127,28 +127,3 @@ func (p preferH2C) CloseIdleConnections() {
 	closeIdleConnections(p.h2c)
 	closeIdleConnections(p.h1)
 }
-
-// requireH2C is the cleartext lane for a bidirectional stream, which HTTP/1.1
-// cannot express. It fails closed with a message an operator can act
-// on, rather than degrading to a protocol on which the stream cannot work.
-type requireH2C struct {
-	prober      *prober
-	h2c         http.RoundTripper
-	endpointURL string
-}
-
-func (r requireH2C) RoundTrip(req *http.Request) (*http.Response, error) {
-	if proxyURL := proxiedAway(req); proxyURL != nil {
-		return nil, refuse(req, fmt.Errorf(
-			"%w: an HTTP proxy (%s) is configured for %s, and prior-knowledge h2c cannot pass through one",
-			ErrH2CUnsupported, proxyURL.Redacted(), r.endpointURL))
-	}
-	if r.prober.supportsH2C(req.Context()) == verdictUnsupported {
-		return nil, refuse(req, fmt.Errorf(
-			"%w: %s answers HTTP/1.1 only, and this stream needs HTTP/2; put an h2c-capable reverse proxy in front of the Hub, or point this URL at the Hub itself",
-			ErrH2CUnsupported, r.endpointURL))
-	}
-	return r.h2c.RoundTrip(req)
-}
-
-func (r requireH2C) CloseIdleConnections() { closeIdleConnections(r.h2c) }

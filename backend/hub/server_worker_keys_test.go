@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/leapmux/leapmux/channelwire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -55,7 +56,7 @@ func TestServer_AWorkerWithOtherKeysStopsReconnecting(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, workerhub.ErrKeysRefused,
 		"the refusal must reach the reconnect loop through the real receive path")
-	assert.Contains(t, err.Error(), "differ from the keys it registered with",
+	assert.Contains(t, err.Error(), channelwire.WorkerCloseReasonKeysDiffer,
 		"the error states the Hub's fact")
 	assert.NotContains(t, err.Error(), "register it again",
 		"the remedy belongs to reregistrationAdvice, not to the Hub's fact")

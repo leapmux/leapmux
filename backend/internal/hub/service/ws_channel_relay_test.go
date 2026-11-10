@@ -688,7 +688,7 @@ func TestChannelRelay_RefusesBeyondThePerUserConnectionCap(t *testing.T) {
 	// dialling a socket and trusting it to bind first.
 	//
 	// websocket.Dial returns as soon as the server writes the 101 upgrade, which
-	// acceptWS does BEFORE bind reaches the registry's lock -- so "dial A, then
+	// acceptWebSocket does BEFORE bind reaches the registry's lock -- so "dial A, then
 	// dial B" does not order A's lease ahead of B's. Deschedule A's handler in
 	// that window and B binds first, is granted the only slot, and the socket
 	// the assertions then read from is the healthy one: the read blocks to its

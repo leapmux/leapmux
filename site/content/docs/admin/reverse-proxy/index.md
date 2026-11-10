@@ -9,21 +9,14 @@ The Hub does not terminate TLS itself. To serve LeapMux over HTTPS, put a revers
 
 ## What the proxy must carry
 
-The Hub serves three kinds of traffic on one port:
+The Hub serves two kinds of traffic on one port:
 
 | Traffic | Path | How the proxy forwards it |
 |---|---|---|
-| The Worker's service: registration and the Worker's stream | `/leapmux.v1.WorkerConnectorService/` | Cleartext HTTP/2 (h2c), as one stream that lasts as long as the Worker runs |
-| The WebSockets of the web app and of the end-to-end encrypted channels | `/ws/` | An HTTP/1.1 upgrade that stays open for hours |
-| The web app, its API calls, and `leapmux control` | Every other path | HTTP/1.1 or HTTP/2 |
+| The Worker's stream, web app live updates, and encrypted channels | `/ws/` | HTTP/1.1 WebSocket upgrades that stay open for hours |
+| The web app, its API calls, Worker registration, and `leapmux control` | Every other path | HTTP/1.1 or HTTP/2 |
 
-The Worker's stream needs more than a typical web application does. The proxy must meet these requirements for it:
-
-- **Accept HTTP/2 from clients.** A Worker connects to the proxy over HTTPS with HTTP/2 only.
-- **Forward the service to the Hub over HTTP/2.** The Worker's stream sends and receives at the same time, which HTTP/1.1 cannot do. The Hub accepts cleartext HTTP/2 (h2c) and HTTP/1.1 on the same port, so the Hub needs no setting for this.
-- **Stream the request without buffering it, and without a limit on its size or its total duration.** A Worker sends all of its traffic in the body of one request, for as long as the Worker runs. A proxy that buffers the request never delivers the Worker's first message. A limit on the body size, or on the time to read the whole request, ends the Worker's connection.
-
-A timeout for inactivity is safe. The Worker and the Hub exchange a message every few seconds, and the Hub probes each WebSocket every 30 seconds. A timeout of one minute or longer therefore never ends a healthy connection.
+The Hub pings each WebSocket, including the Worker's stream, every 10 seconds. Use an inactivity timeout of one minute or longer. Regular probes keep a healthy connection active through that timeout.
 
 The proxy must also do these things:
 
@@ -55,7 +48,9 @@ Each configuration below does these things:
 
 - It serves `hub.example.com` on port 443, and redirects port 80 to it.
 - It reaches the Hub at `127.0.0.1:4327` on the same machine.
-- It sends `/leapmux.v1.WorkerConnectorService/` to the Hub over cleartext HTTP/2, and everything else over HTTP/1.1.
+- It forwards all traffic to the Hub over HTTP/1.1, including WebSocket upgrades.
+
+The repository's `task test-reverse-proxies` harness verifies registration, connection, and transfers larger than 4 MiB before and after a 200-second stability window. It checks the web app's event WebSocket for that window too. All five examples pass those checks. A separate HAProxy run verifies a 15-second inactivity timeout for 60 seconds.
 
 Replace the host name, the certificate paths, and the Hub's address with your own. The title of each file states where the file goes.
 
@@ -63,41 +58,40 @@ Replace the host name, the certificate paths, and the Hub's address with your ow
 
 The configuration requires nginx 1.25.1 or later, for the `http2` directive.
 
-- `grpc_pass` is nginx's HTTP/2 proxy. It sends the Worker's service to the Hub over HTTP/2 and streams the request, although the Worker does not use the gRPC protocol. `proxy_pass` does neither by default: it forwards over HTTP/1.1, and it buffers the whole request before it sends it. nginx 1.29 can carry the service with `proxy_pass` too, but only with all of `proxy_http_version 2`, `proxy_request_buffering off`, and `proxy_buffering off`. `grpc_pass` needs none of them.
-- `client_max_body_size 0` removes nginx's limit of 1 MiB on a request body. nginx applies that limit to the Worker's whole stream, so the default ends the Worker's connection after its first mebibyte of traffic.
+`client_max_body_size 0` lets the Hub enforce its own limit on unary requests. nginx's default limit of 1 MiB would reject bulk requests that the Hub accepts. The Worker's stream uses a WebSocket upgrade.
 
 {{< config-file file="nginx.conf" lang="nginx" >}}
 
 ### Caddy
 
-Caddy obtains and renews the certificate itself. The `h2c://` scheme sends the Worker's service to the Hub over cleartext HTTP/2. Caddy forwards WebSocket upgrades and sets the forwarding headers without further configuration.
+Caddy obtains and renews the certificate itself. One `reverse_proxy` forwards API calls and WebSocket upgrades to the Hub and sets the forwarding headers.
 
 {{< config-file file="Caddyfile" lang="caddyfile" >}}
 
 ### Traefik
 
-The static configuration defines the entry points. The `readTimeout: 0` line is necessary: Traefik limits the time to read a whole request to 60 seconds by default, which ends a Worker's connection every minute.
+The static configuration defines the entry points. Traefik's default request-read timeout permits the WebSocket stream; no timeout override is needed.
 
 {{< config-file file="traefik.yml" lang="yaml" >}}
 
-The dynamic configuration routes the Worker's service to an `h2c://` server, and everything else to an `http://` server. Traefik gives a router with a longer rule a higher priority, so the Worker's router wins for its path.
+The dynamic configuration uses one router and one HTTP upstream for the web app, API calls, and WebSocket upgrades.
 
 {{< config-file file="traefik-dynamic.yml" lang="yaml" >}}
 
-To obtain the certificate from Let's Encrypt, define a certificate resolver in the static configuration, set it as `tls.certResolver` on both routers, and remove the `tls.certificates` section. The Traefik documentation describes certificate resolvers.
+To obtain the certificate from Let's Encrypt, define a certificate resolver in the static configuration, set it as `tls.certResolver` on the router, and remove the `tls.certificates` section. The Traefik documentation describes certificate resolvers.
 
 ### HAProxy
 
-`proto h2` on the `server` line makes HAProxy talk to the Hub over cleartext HTTP/2 for the Worker's service. `alpn h2,http/1.1` on the `bind` line offers HTTP/2 to clients. The certificate file holds the certificate chain followed by the private key.
+`alpn h2,http/1.1` on the `bind` line offers HTTP/2 to browsers. The HTTP/1.1 upstream carries API calls and WebSocket upgrades. The certificate file holds the certificate chain followed by the private key.
 
 {{< config-file file="haproxy.cfg" lang="haproxy" >}}
 
 ### Apache httpd
 
-The configuration requires Apache httpd 2.4.47 or later, for `upgrade=websocket`. The `h2c://` scheme of `mod_proxy_http2` sends the Worker's service to the Hub over cleartext HTTP/2. Enable the modules and the site on Debian or Ubuntu:
+The configuration requires Apache httpd 2.4.47 or later, for `upgrade=websocket`. One HTTP upstream carries all traffic, including the Worker's WebSocket. Enable the modules and the site on Debian or Ubuntu:
 
 ```bash
-sudo a2enmod ssl http2 proxy proxy_http proxy_http2 headers
+sudo a2enmod ssl http2 proxy proxy_http headers
 sudo a2ensite leapmux
 sudo systemctl reload apache2
 ```

@@ -1,6 +1,10 @@
 package service
 
-import "time"
+import (
+	"time"
+
+	"github.com/leapmux/leapmux/internal/wskeepalive"
+)
 
 // ParkedFrameCapForTest exposes the bound so an external test can state its
 // precondition AS the bound rather than as a round number beside it -- a guard
@@ -26,7 +30,7 @@ const ParkedFrameCapForTest = parkedFrameCap
 // Here rather than in ws_userevents.go for the reason ParkedFrameCapForTest is:
 // the shipped API should not carry a seam only tests reach.
 func (h *UserEventsHandler) WithForcedKeepaliveProbesForTest(ticks <-chan time.Time, timeout time.Duration) *UserEventsHandler {
-	h.keepalive = wsKeepalivePace{timeout: timeout, ticks: ticks}
+	h.keepalive = wskeepalive.Pace{Timeout: timeout, Ticks: ticks}
 	return h
 }
 
@@ -74,3 +78,9 @@ func (s *WorkerConnectorService) IdentityDeliveryLockHeldForTest(owner string) b
 // WorkerIdentityReadTimeoutForTest is the limit of each username read under
 // the owner's delivery lock, so a test advances a mock clock by exactly it.
 const WorkerIdentityReadTimeoutForTest = workerIdentityReadTimeout
+
+// WithForcedKeepaliveProbesForTest lets the test trigger each worker probe.
+func (h *WorkerStreamHandler) WithForcedKeepaliveProbesForTest(ticks <-chan time.Time, timeout time.Duration) *WorkerStreamHandler {
+	h.keepalive = wskeepalive.Pace{Timeout: timeout, Ticks: ticks}
+	return h
+}

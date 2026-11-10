@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'bun:test'
 import {
@@ -61,7 +61,7 @@ describe('PROXIES', () => {
 
   it('mounts each certificate at a path that the proxy\'s own examples read', () => {
     const unread = PROXIES.flatMap((proxy) => {
-      const examples = proxy.examples.map(readExample).join('\n')
+      const examples = proxy.examples.map(name => readExample(name)).join('\n')
       return proxy.certificates
         .filter(certificate => !examples.includes(certificate.target))
         .map(certificate => `${proxy.name}: ${certificate.target}`)
@@ -157,6 +157,22 @@ describe('useCaddyLocalCertificates', () => {
 
 describe('prepareProxyFiles', () => {
   const proxy = name => PROXIES.find(entry => entry.name === name)
+
+  it('reads and prepares examples from the selected directory', () => {
+    mkdirSync(join(ROOT, '.tmp'), { recursive: true })
+    const directory = mkdtempSync(join(ROOT, '.tmp', 'reverse-proxy-examples-'))
+    const source = readExample('nginx.conf').replaceAll('hub.example.com', 'variant.example.test')
+    try {
+      writeFileSync(join(directory, 'nginx.conf'), source)
+      expect(readExample('nginx.conf', directory)).toBe(source)
+      const [file] = prepareProxyFiles(proxy('nginx'), undefined, directory)
+      expect(file.content).toBe(source)
+      expect(file.target).toBe('/etc/nginx/conf.d/leapmux.conf')
+    }
+    finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
 
   it('mounts each example of a proxy at its install path, unchanged', () => {
     const files = prepareProxyFiles(proxy('traefik'))

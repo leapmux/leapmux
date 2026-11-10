@@ -6,14 +6,17 @@ import "leapmux/v1/access.proto";
 import "leapmux/v1/channel.proto";
 import "leapmux/v1/common.proto";
 
-// WorkerConnectorService is called BY Worker instances on Hub via gRPC.
-// Handles registration and the main bidirectional communication stream.
+// WorkerConnectorService is called BY Worker instances on Hub via ConnectRPC.
+// It handles registration, its recovery, self-deregistration, and the
+// owned-tab listing. The Worker's long-lived stream is not an RPC: it is the
+// WebSocket at /ws/worker, whose binary messages carry ConnectRequest and
+// ConnectResponse.
 service WorkerConnectorService {
   option (leapmux.v1.host) = SERVICE_HOST_HUB;
   // Register this worker using a registration key obtained out-of-band
   // from the hub UI. The key travels in the Authorization: Bearer header
   // and is consumed atomically; on success the hub returns a long-lived
-  // auth token that the worker uses for subsequent Connect calls.
+  // auth token that the worker presents on its stream and on later calls.
   rpc Register(RegisterRequest) returns (RegisterResponse) {
     option (leapmux.v1.access) = { public: {} };
   }
@@ -40,16 +43,12 @@ service WorkerConnectorService {
   rpc DeregisterSelf(DeregisterSelfRequest) returns (DeregisterSelfResponse) {
     option (leapmux.v1.access) = { public: {} };
   }
-  // Main bidirectional stream for lifecycle notifications and E2EE channel
-  // management. The worker's first message is always a WorkerHello.
-  rpc Connect(stream ConnectRequest) returns (stream ConnectResponse) {
-    option (leapmux.v1.access) = { public: {} };
-  }
   // Provides the periodic worker-side orphan reconciler with the
   // authoritative `workspace_tab_owned` view filtered to the calling worker.
   //
-  // Public: the same worker auth_token as Connect, on a plain unary RPC rather
-  // than the stream, checked by the handler through AuthenticateWorkerBearer.
+  // Public: the same worker auth_token as the stream, on a plain unary RPC
+  // rather than the stream, checked by the handler through
+  // AuthenticateWorkerBearer.
   // The worker's orphan reconciler is the only caller, and it is what
   // converges a worker after a close or a cross-workspace move that landed
   // while the worker was offline -- so without public access the interceptor
@@ -267,41 +266,19 @@ message Worker {
   bool auto_registered = 6;
 }
 
-// --- Bidirectional stream envelope messages ---
+// --- Worker stream envelope messages (the /ws/worker WebSocket) ---
 
-// The first message a worker sends on every Connect stream. The hub reads it
+// The first message a worker sends on every stream. The hub reads it
 // before it lists the worker online and keeps it, unchanged, with that
 // connection; GetWorkerHandshakeParams answers from it alone.
 //
 // Its keys must equal the keys the worker registered with (RegisterRequest).
-// The hub refuses a malformed hello with InvalidArgument, and other keys with
-// PermissionDenied and a WorkerConnectRefusal of KEYS_DIFFER.
+// The hub closes the stream of a malformed hello with status 1002 and reason
+// invalid_worker_message, and the stream of other keys with status 1008 and
+// reason worker_keys_differ, which the worker treats as permanent.
 message WorkerHello {
   WorkerPublicKeys keys = 1;
   EncryptionMode encryption_mode = 2; // UNSPECIFIED is refused.
-}
-
-// WorkerConnectRefusal is the error detail the hub attaches to a Connect
-// refusal that reconnecting cannot fix. A worker acts only on an error that
-// carries it: a proxy in front of the hub can answer 401 or 403 by itself,
-// and a bare status code must never make a worker delete its state or stop.
-// A party that controls the hub's responses can forge it, but such a party can
-// already forge a DeregisterNotification (ConnectResponse.deregister) frame, so
-// the detail grants nothing new.
-message WorkerConnectRefusal {
-  WorkerConnectRefusalReason reason = 1;
-}
-
-enum WorkerConnectRefusalReason {
-  WORKER_CONNECT_REFUSAL_REASON_UNSPECIFIED = 0;
-  // The auth token belongs to a worker that was deleted. The hub sends it only
-  // for a row it holds, never for a token it does not know, so a worker
-  // pointed at the wrong hub keeps its identity. A worker that receives it
-  // stops connecting; a standalone worker also clears its state.
-  WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED = 1;
-  // The hello's keys differ from the keys the worker registered with. The
-  // worker stops and keeps its state; a new registration is the remedy.
-  WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER = 2;
 }
 
 // ConnectRequest wraps all messages from Worker to Hub.
@@ -316,8 +293,6 @@ message ConnectRequest {
     // E2EE channels
     ChannelOpenResponse channel_open_resp = 13;
     ChannelMessage channel_message_resp = 14;
-    // Health
-    Heartbeat heartbeat = 15;
   }
 }
 
@@ -367,13 +342,11 @@ message ConnectResponse {
     ChannelOpenRequest channel_open = 13;
     ChannelMessage channel_message = 14;
     ChannelCloseNotification channel_close = 15;
-    // Health
-    Heartbeat heartbeat = 16;
     // Workspace-tabs sync result (carried in the same request_id as the
     // worker's WorkerTabInventory ConnectRequest payload).
-    WorkerTabInventoryResponse worker_tab_inventory_resp = 17;
-    // Convergence nudge (unsolicited, like heartbeat).
-    ReconcileNudge reconcile_nudge = 18;
+    WorkerTabInventoryResponse worker_tab_inventory_resp = 16;
+    // Convergence nudge (unsolicited).
+    ReconcileNudge reconcile_nudge = 17;
   }
 }
 
@@ -393,9 +366,9 @@ message ConnectResponse {
 // naming the tabs would add a second, staler source of truth for the same fact.
 message ReconcileNudge {}
 
-// WorkerIdentity tells a worker who owns it. The Hub sends it as the FIRST message
-// on every Connect stream, before the connection is registered with the worker
-// manager -- so nothing, in particular no ChannelOpen, can precede it.
+// WorkerIdentity tells a worker who owns it. The Hub enqueues it as the FIRST
+// message on every stream, before publishing the connection in the worker
+// manager. No ChannelOpen can precede it.
 //
 // The Hub is the only authority: registered_by is sourced from
 // workers.registered_by, which is NOT NULL and set at registration. The worker keeps
@@ -433,9 +406,3 @@ message DeregisterAck {}
 message HubShuttingDownNotification {
   int32 retry_delay_seconds = 1;
 }
-
-// --- Common ---
-
-// Heartbeat keeps the stream alive and updates the worker's last_seen. It
-// carries no value: the hub records its own receive time.
-message Heartbeat {}

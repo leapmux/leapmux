@@ -1722,6 +1722,7 @@ tasks:
   test-reverse-proxies:
     desc: Verify the reverse proxy examples of the documentation against a built Docker image
     # Pass proxy names and options after --, such as `-- --stability-seconds=60 nginx caddy`.
+    # Use `-- --examples-dir=.tmp/<variant> nginx` to verify a changed configuration.
     # The image must match the platform of the Docker engine. CI does not run this task, because it starts a Hub, a
     # proxy, and a Worker for each proxy and keeps them running for several minutes.
     requires:

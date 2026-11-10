@@ -399,6 +399,9 @@ func resumeCursorEncodable(cursor *leapmuxv1.HLC) bool {
 	return DecodeResumeHLC(EncodeResumeHLC(cursor)) != nil
 }
 
+// ErrMalformedFrame identifies invalid framing or an undecodable protobuf.
+var ErrMalformedFrame = errors.New("malformed frame")
+
 // WriteFramedBytes writes a length-prefixed binary frame to a
 // WebSocket. Wire format: [4 bytes big-endian length][payload].
 // The shared wire format used by /ws/channel (ChannelMessage) and
@@ -420,13 +423,36 @@ func ReadFramedBytes(ctx context.Context, ws *websocket.Conn) ([]byte, error) {
 		return nil, err
 	}
 	if len(data) < contracts.LengthPrefixBytes {
-		return nil, fmt.Errorf("framed: message too short (%d bytes)", len(data))
+		return nil, fmt.Errorf("%w: message too short (%d bytes)", ErrMalformedFrame, len(data))
 	}
 	length := binary.BigEndian.Uint32(data[:contracts.LengthPrefixBytes])
 	if int(length) != len(data)-contracts.LengthPrefixBytes {
-		return nil, fmt.Errorf("framed: length mismatch (header=%d, actual=%d)", length, len(data)-contracts.LengthPrefixBytes)
+		return nil, fmt.Errorf("%w: length mismatch (header=%d, actual=%d)", ErrMalformedFrame, length, len(data)-contracts.LengthPrefixBytes)
 	}
 	return data[contracts.LengthPrefixBytes:], nil
+}
+
+// WriteProtoFrame writes a protobuf with a four-byte big-endian length prefix.
+func WriteProtoFrame(ctx context.Context, ws *websocket.Conn, msg proto.Message) error {
+	buf := make([]byte, contracts.LengthPrefixBytes, contracts.LengthPrefixBytes+proto.Size(msg))
+	buf, err := (proto.MarshalOptions{}).MarshalAppend(buf, msg)
+	if err != nil {
+		return fmt.Errorf("marshal: %w", err)
+	}
+	binary.BigEndian.PutUint32(buf[:contracts.LengthPrefixBytes], uint32(len(buf)-contracts.LengthPrefixBytes))
+	return ws.Write(ctx, websocket.MessageBinary, buf)
+}
+
+// ReadProtoFrame reads one framed protobuf. Transport errors retain their type.
+func ReadProtoFrame(ctx context.Context, ws *websocket.Conn, msg proto.Message) error {
+	payload, err := ReadFramedBytes(ctx, ws)
+	if err != nil {
+		return err
+	}
+	if err := proto.Unmarshal(payload, msg); err != nil {
+		return fmt.Errorf("%w: unmarshal: %w", ErrMalformedFrame, err)
+	}
+	return nil
 }
 
 // ChunkContinuation interprets a ChannelMessage's flags field for the
@@ -461,11 +487,7 @@ func ChunkContinuation(flags leapmuxv1.ChannelMessageFlags) (more, valid bool) {
 // WriteChannelMessage writes a length-prefixed ChannelMessage to a WebSocket.
 // Wire format: [4 bytes big-endian length][protobuf-encoded ChannelMessage]
 func WriteChannelMessage(ctx context.Context, ws *websocket.Conn, msg *leapmuxv1.ChannelMessage) error {
-	data, err := proto.Marshal(msg)
-	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
-	}
-	return WriteFramedBytes(ctx, ws, data)
+	return WriteProtoFrame(ctx, ws, msg)
 }
 
 // SendChannelFrames splits plaintext into contracts.MaxPlaintextPerChunk-sized chunks and
@@ -509,13 +531,9 @@ func SendChannelFrames(plaintext []byte, sendChunk func(chunk []byte, flags leap
 
 // ReadChannelMessage reads a length-prefixed ChannelMessage from a WebSocket.
 func ReadChannelMessage(ctx context.Context, ws *websocket.Conn) (*leapmuxv1.ChannelMessage, error) {
-	payload, err := ReadFramedBytes(ctx, ws)
-	if err != nil {
-		return nil, err
-	}
 	msg := &leapmuxv1.ChannelMessage{}
-	if err := proto.Unmarshal(payload, msg); err != nil {
-		return nil, fmt.Errorf("unmarshal: %w", err)
+	if err := ReadProtoFrame(ctx, ws, msg); err != nil {
+		return nil, err
 	}
 	return msg, nil
 }

@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,14 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect/v2"
-	"connectrpc.com/connect/v2/connecthttp"
-	"connectrpc.com/connect/v2/connectproto"
+	"github.com/coder/websocket"
+	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/internal/worker/hub/fakehubtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/config"
@@ -72,61 +68,43 @@ func TestRejectedStandaloneWorkerReleasesDirectory(t *testing.T) {
 	}
 }
 
-// fakeConnector answers the Worker's Connect stream with connect.
-type fakeConnector struct {
-	leapmuxv1connect.UnimplementedWorkerConnectorServiceHandler
-	connect func(context.Context, leapmuxv1connect.WorkerConnectorServiceConnectServerStream) error
-}
-
-func (c *fakeConnector) Connect(ctx context.Context, stream leapmuxv1connect.WorkerConnectorServiceConnectServerStream) error {
-	return c.connect(ctx, stream)
-}
-
-// startFakeHub serves connector over h2c, which the Worker's Connect stream
-// requires.
-func startFakeHub(t *testing.T, connector *fakeConnector) string {
+// startFakeHub serves the production worker WebSocket protocol.
+func startFakeHub(t *testing.T, handle func(context.Context, *fakehubtest.Stream) error) string {
 	t.Helper()
-	mux := http.NewServeMux()
-	server := connect.NewServer()
-	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(server, connector)
-	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
-	httpServer := httptest.NewUnstartedServer(mux)
-	httpServer.Config.Protocols = &http.Protocols{}
-	httpServer.Config.Protocols.SetHTTP1(true)
-	httpServer.Config.Protocols.SetUnencryptedHTTP2(true)
-	httpServer.Start()
-	t.Cleanup(httpServer.Close)
-	return httpServer.URL
+	return fakehubtest.Start(t, func(ctx context.Context, stream *fakehubtest.Stream) { _ = handle(ctx, stream) })
 }
 
 // startReceivingHub reports every received frame without blocking the stream.
 func startReceivingHub(t *testing.T) (string, <-chan struct{}) {
 	t.Helper()
 	connected := make(chan struct{}, 1)
-	hubURL := startFakeHub(t, &fakeConnector{connect: func(ctx context.Context, stream leapmuxv1connect.WorkerConnectorServiceConnectServerStream) error {
+	hubURL := startFakeHub(t, func(ctx context.Context, stream *fakehubtest.Stream) error {
+		greeted := false
 		for {
-			if _, err := stream.Receive(); err != nil {
+			if _, err := stream.Receive(ctx); err != nil {
 				return ctx.Err()
+			}
+			if !greeted {
+				greeted = true
+				if err := stream.Greet(ctx, "owner"); err != nil {
+					return err
+				}
 			}
 			select {
 			case connected <- struct{}{}:
 			default:
 			}
 		}
-	}})
+	})
 	return hubURL, connected
 }
 
-// startRefusingHub answers every Connect with a refusal for good.
-func startRefusingHub(t *testing.T, code connect.Code, reason leapmuxv1.WorkerConnectRefusalReason) string {
+// startRefusingHub answers each upgraded stream with a permanent refusal.
+func startRefusingHub(t *testing.T, reason string) string {
 	t.Helper()
-	return startFakeHub(t, &fakeConnector{connect: func(context.Context, leapmuxv1connect.WorkerConnectorServiceConnectServerStream) error {
-		detail, err := connectproto.NewErrorDetail(&leapmuxv1.WorkerConnectRefusal{Reason: reason})
-		if err != nil {
-			return err
-		}
-		return connect.NewError(code, "the hub refuses this worker").WithDetail(detail)
-	}})
+	return fakehubtest.Start(t, func(_ context.Context, stream *fakehubtest.Stream) {
+		_ = stream.Refuse(websocket.StatusPolicyViolation, reason)
+	})
 }
 
 // writeRegisteredState writes the state of a Worker that already
@@ -150,8 +128,7 @@ func writeRegisteredStateAgainst(t *testing.T, hubURL string) *config.Config {
 //
 // Not parallel: the worker command sets the process-global log level.
 func TestRunWorkerClearsTheStateOfADeletedWorker(t *testing.T) {
-	hubURL := startRefusingHub(t, connect.CodeUnauthenticated,
-		leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED)
+	hubURL := startRefusingHub(t, channelwire.WorkerCloseReasonDeleted)
 	cfg := writeRegisteredStateAgainst(t, hubURL)
 
 	require.NoError(t, runWorkerCommandForTest(t, []string{"--data-dir", cfg.DataDir, "--log-level", "error"}))
@@ -165,8 +142,7 @@ func TestRunWorkerClearsTheStateOfADeletedWorker(t *testing.T) {
 //
 // Not parallel: the worker command sets the process-global log level.
 func TestRunWorkerKeepsTheStateAndAdvisesWhenTheHubRefusesItsKeys(t *testing.T) {
-	hubURL := startRefusingHub(t, connect.CodePermissionDenied,
-		leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER)
+	hubURL := startRefusingHub(t, channelwire.WorkerCloseReasonKeysDiffer)
 	cfg := writeRegisteredStateAgainst(t, hubURL)
 
 	err := runWorkerCommandForTest(t, []string{"--data-dir", cfg.DataDir, "--log-level", "error"})
@@ -324,8 +300,8 @@ func TestClearDeletedWorkerState(t *testing.T) {
 func TestWorkerCommandReportsDeregistrationCleanupFailure(t *testing.T) {
 	arrived, release := make(chan struct{}), make(chan struct{})
 	var released sync.Once
-	hubURL := startFakeHub(t, &fakeConnector{connect: func(ctx context.Context, stream leapmuxv1connect.WorkerConnectorServiceConnectServerStream) error {
-		if _, err := stream.Receive(); err != nil {
+	hubURL := startFakeHub(t, func(ctx context.Context, stream *fakehubtest.Stream) error {
+		if _, err := stream.Receive(ctx); err != nil {
 			return err
 		}
 		close(arrived)
@@ -334,12 +310,8 @@ func TestWorkerCommandReportsDeregistrationCleanupFailure(t *testing.T) {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-		detail, err := connectproto.NewErrorDetail(&leapmuxv1.WorkerConnectRefusal{Reason: leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED})
-		if err != nil {
-			return err
-		}
-		return connect.NewError(connect.CodeUnauthenticated, "worker deleted").WithDetail(detail)
-	}})
+		return stream.Refuse(websocket.StatusPolicyViolation, channelwire.WorkerCloseReasonDeleted)
+	})
 	cfg := writeRegisteredStateAgainst(t, hubURL)
 	before, err := os.ReadFile(cfg.StatePath())
 	require.NoError(t, err)

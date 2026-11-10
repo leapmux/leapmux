@@ -91,9 +91,8 @@ const httpDrainTimeout = 10 * time.Second
 // the journal, rather than from a round number: a batch bigger than that is one
 // whose OWN later resume is guaranteed to exceed the budget and force that client
 // onto a full snapshot, so accepting it buys nothing. It is far above any
-// legitimate message on this surface -- the largest are a worker's whole-machine
-// tab inventory (identity fields only) and a relayed ChannelMessage, itself
-// chunk-capped at contracts.MaxCiphertextForChunk (64 KiB).
+// ordinary layout batch on this surface. Worker inventories and encrypted
+// channel messages use the read limits of their own WebSocket routes.
 //
 // READS only; mountConnect deliberately caps no response (no
 // connecthttp.WithSendMaxBytes), because GetMaterialized legitimately returns a multi-MB snapshot for a large
@@ -767,6 +766,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		}
 	})
 	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer, connectorSvc)
+	mux.Handle(channelwire.WSRouteWorker, trackWebSocket(webSockets, service.NewWorkerStreamHandler(connectorSvc)))
 	mgmtSvc := service.NewWorkerManagementService(st, wMgr, workerEffects, mailSender, mailRenderer, setMgr)
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, mgmtSvc)
 

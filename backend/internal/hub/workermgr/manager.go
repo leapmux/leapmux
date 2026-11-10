@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"connectrpc.com/connect/v2"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -55,9 +54,6 @@ type Manager struct {
 	// locking; the load that matters happens under mu, with the tally it is
 	// compared against. See SetMaxWorkersPerUser.
 	maxWorkersPerUser atomic.Int64
-
-	regMu      sync.Mutex
-	regWaiters map[string]chan struct{} // regToken -> notify channel
 
 	// reachAuth gates every USER-DIRECTED read of the registry. It is supplied
 	// at construction by the component that owns the ownership +
@@ -159,7 +155,6 @@ func New(a ReachAuthorizer) *Manager {
 		conns:         make(map[string]*Conn),
 		connsByOwner:  make(map[string]int),
 		deregistering: make(map[string]bool),
-		regWaiters:    make(map[string]chan struct{}),
 		reachAuth:     a,
 	}
 }
@@ -231,10 +226,9 @@ func (m *Manager) Register(c *Conn) (bool, error) {
 	// The fenced check and the map write share this critical section, which is
 	// what makes the fence TOTAL rather than point-in-time: either Register
 	// sees the flag, or FenceAll's snapshot sees this conn. There is no third
-	// outcome. Without it a handler that passed the shutdown interceptor before
-	// shutdownCh closed -- it is a one-shot check, and a store round trip plus
-	// the greeting enqueue sit between it and here -- would publish a connection
-	// nothing ever fences, and hold the Hub's drain until workerIdleTimeout.
+	// outcome. Without it, a handler admitted before shutdown could finish its
+	// store read and greeting setup after FenceAll's snapshot. Its new
+	// connection would then keep the Hub's WebSocket drain open.
 	if m.fenced {
 		m.mu.Unlock()
 		c.Fence()
@@ -414,32 +408,6 @@ func (m *Manager) IsDeregistering(workerID string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.deregistering[workerID]
-}
-
-// WaitForRegistrationChange blocks until the registration identified by
-// regToken is notified, the context is cancelled, or the timeout expires.
-// Returns nil on notification, ctx.Err() on cancel, or a timeout error.
-func (m *Manager) WaitForRegistrationChange(ctx context.Context, regToken string, timeout time.Duration) error {
-	ch := make(chan struct{})
-
-	m.regMu.Lock()
-	m.regWaiters[regToken] = ch
-	m.regMu.Unlock()
-
-	defer func() {
-		m.regMu.Lock()
-		delete(m.regWaiters, regToken)
-		m.regMu.Unlock()
-	}()
-
-	select {
-	case <-ch:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(timeout):
-		return fmt.Errorf("wait for registration change timed out")
-	}
 }
 
 // ShutdownNotifyResult tallies what became of one NotifyShutdownAndFence
@@ -645,24 +613,9 @@ func (m *Manager) connsLocked() []*Conn {
 // rather than published behind the fence. NotifyShutdownAndFence defers it, so
 // every worker the notification pass saw learns to delay its reconnect first.
 //
-// The Hub cannot leave these streams to the workers to close. A worker keeps
-// its stream open until it decides to reconnect, and the Hub only learns it is
-// gone from a frame or from workerIdleTimeout; meanwhile an
-// unencrypted-HTTP/2 connection counts as ACTIVE for its whole life (net/http
-// marks it so in maybeServeUnencryptedHTTP2), so http.Server.Shutdown's drain
-// waits on the handler holding it. A remote worker that is wedged, or merely
-// polite, would therefore spend the Hub's entire shutdown budget -- and past it
-// the drain reports a deadline the operator sees as a failed shutdown.
-//
-// One residual remains: a handler parked inside its OWN drain write is still
-// freed only by server.Close() after the drain deadline. connWriteTimeout
-// bounds the queue (give up, discard, fence) but cannot unpark the handler --
-// connect.ServerStream.Send has no context and bottoms out in
-// http.ResponseWriter.Write; cancelling connCtx does not interrupt an
-// in-flight HTTP/2 DATA write blocked on peer flow control. Spawning a
-// second Write against ctx.Done would race the transport. The cross-sender
-// pile-up, the deadline-ignoring block, and the Unregister deadlock that
-// motivated https://github.com/leapmux/leapmux/issues/344 are gone.
+// A worker can keep its stream open until it decides to reconnect. Fencing
+// ends each handler's context, including a write waiting for peer flow control.
+// The handler then closes its WebSocket and releases the Hub's drain.
 func (m *Manager) FenceAll() {
 	m.mu.Lock()
 	m.fenced = true
@@ -671,16 +624,5 @@ func (m *Manager) FenceAll() {
 
 	for _, conn := range conns {
 		conn.Fence()
-	}
-}
-
-// NotifyRegistrationChange wakes up any waiter blocked on the given regToken.
-func (m *Manager) NotifyRegistrationChange(regToken string) {
-	m.regMu.Lock()
-	defer m.regMu.Unlock()
-
-	if ch, ok := m.regWaiters[regToken]; ok {
-		close(ch)
-		delete(m.regWaiters, regToken)
 	}
 }

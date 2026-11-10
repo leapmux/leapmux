@@ -68,7 +68,7 @@ For multi-user and remote setups, run a Hub (`leapmux hub`) and Workers (`leapmu
 ┌────────────────┐              ┌─────────────────┐            ┌──────────────────┐
 │                │  ConnectRPC  │                 │ ConnectRPC │  Worker 1        │
 │   Frontend     │◄────────────►│       Hub       │◄──────────►│  ┌────────────┐  │
-│  (Browser /    │  WebSocket   │     (Relay)     │            │  │   Agents   │  │
+│  (Browser /    │  WebSocket   │     (Relay)     │ WebSocket  │  │   Agents   │  │
 │  Desktop App)  │              │                 │            │  │ (multiple) │  │
 │                │              │    Go Service   │            │  └────────────┘  │
 └────────────────┘              │  + Database     │            │  + SQLite        │

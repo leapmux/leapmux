@@ -362,7 +362,7 @@ func TestDevForegroundStatusAdvancesAfterAdministratorSetup(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(endpoint.CloseIdleConnections)
 	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(
-		endpoint.HTTP2OnlyClient(), endpoint.BaseURL(), connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+		endpoint.UnaryClient(hubtransport.DefaultUnaryTimeout), endpoint.BaseURL(), connecthttp.WithReadMaxBytes(0))))
 	_, err = client.SignUp(ctx, &leapmuxv1.SignUpRequest{Username: "lifecycle-owner", Password: "test-password-123", DisplayName: "Lifecycle Owner"})
 	require.NoError(t, err)
 	require.Eventually(t, func() bool {

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/coder/quartz"
+	"github.com/leapmux/leapmux/channelwire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -192,13 +193,12 @@ func TestServeWaitsForARunningWebSocketHandler(t *testing.T) {
 	})
 }
 
-// Both WebSocket routes are wrapped: a closed gate answers 503 on each of
-// them, so neither upgrade can hijack a connection past the shutdown.
-func TestNewServerTracksBothWebSocketRoutes(t *testing.T) {
+// Every WebSocket route answers 503 after the shutdown closes admission.
+func TestNewServerTracksEveryWebSocketRoute(t *testing.T) {
 	srv := startTestServer(t, &config.Config{})
 	srv.webSockets.Close(nil)
 
-	for _, route := range []string{contracts.WSRouteChannel, contracts.WSRouteUserEvents} {
+	for _, route := range []string{contracts.WSRouteChannel, contracts.WSRouteUserEvents, channelwire.WSRouteWorker} {
 		rec := httptest.NewRecorder()
 		srv.server.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, route, nil))
 		assert.Equal(t, http.StatusServiceUnavailable, rec.Code, "%s must answer 503 behind a closed gate", route)

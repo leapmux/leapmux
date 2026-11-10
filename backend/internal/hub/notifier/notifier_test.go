@@ -204,7 +204,7 @@ func TestSendDeregister_OtherPayloadIsNotAnAck(t *testing.T) {
 	e := newEnv(t)
 	reg := newFakeRegistry(t, e.worker, true)
 	sender := &fakeSender{respond: func(context.Context) (*leapmuxv1.ConnectRequest, error) {
-		return &leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}}}, nil
+		return &leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: &leapmuxv1.WorkerTabInventory{}}}, nil
 	}}
 
 	require.NoError(t, e.notifier(e.st, reg, sender).SendDeregister(context.Background(), e.worker))

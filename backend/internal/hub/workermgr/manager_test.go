@@ -14,7 +14,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/sendq"
-	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 // local equivalents of workermgrtest — this package cannot import that one
@@ -67,7 +66,7 @@ func newOwnedTestConn(t *testing.T, workerID, owner string, write func(*leapmuxv
 	if write == nil {
 		write = func(*leapmuxv1.ConnectResponse) error { return nil }
 	}
-	conn, pump := NewConn(ctx, cancel, workerID, owner, sendq.NewMaxBytesPoolForTest(), write, greeting, testHello())
+	conn, pump := NewConn(ctx, cancel, workerID, owner, sendq.NewMaxBytesPoolForTest(), func(_ context.Context, msg *leapmuxv1.ConnectResponse) error { return write(msg) }, greeting, testHello())
 	t.Cleanup(conn.Fence)
 	return conn, pump
 }
@@ -87,71 +86,6 @@ func newAutoDrainedConn(t *testing.T, workerID string, greeting *leapmuxv1.Conne
 		}
 	}()
 	return conn, rec
-}
-
-func TestWaitForRegistrationChange_Notified(t *testing.T) {
-	m := New(DenyAllReach())
-
-	done := make(chan error, 1)
-	go func() {
-		done <- m.WaitForRegistrationChange(context.Background(), "token-1", 5*time.Second)
-	}()
-
-	testutil.AssertEventually(t, func() bool {
-		m.regMu.Lock()
-		defer m.regMu.Unlock()
-		_, exists := m.regWaiters["token-1"]
-		return exists
-	})
-
-	m.NotifyRegistrationChange("token-1")
-
-	select {
-	case err := <-done:
-		require.NoError(t, err)
-	case <-time.After(1 * time.Second):
-		require.Fail(t, "WaitForRegistrationChange did not return after Notify")
-	}
-}
-
-func TestWaitForRegistrationChange_Timeout(t *testing.T) {
-	m := New(DenyAllReach())
-
-	err := m.WaitForRegistrationChange(context.Background(), "token-2", 10*time.Millisecond)
-	require.Error(t, err)
-	assert.Equal(t, "wait for registration change timed out", err.Error())
-}
-
-func TestWaitForRegistrationChange_ContextCancel(t *testing.T) {
-	m := New(DenyAllReach())
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	done := make(chan error, 1)
-	go func() {
-		done <- m.WaitForRegistrationChange(ctx, "token-3", 5*time.Second)
-	}()
-
-	testutil.AssertEventually(t, func() bool {
-		m.regMu.Lock()
-		defer m.regMu.Unlock()
-		_, exists := m.regWaiters["token-3"]
-		return exists
-	})
-
-	cancel()
-
-	select {
-	case err := <-done:
-		assert.ErrorIs(t, err, context.Canceled)
-	case <-time.After(1 * time.Second):
-		require.Fail(t, "WaitForRegistrationChange did not return after context cancel")
-	}
-}
-
-func TestNotifyRegistrationChange_NoWaiters(t *testing.T) {
-	m := New(DenyAllReach())
-	m.NotifyRegistrationChange("nonexistent-token")
 }
 
 func TestMarkDeregistering(t *testing.T) {
@@ -336,14 +270,14 @@ func TestRegisterSendsGreetingBeforePublishing(t *testing.T) {
 	assert.Zero(t, rec.Len(), "greeting is queued, not written, until Drain")
 
 	require.NoError(t, conn.SendControl(&leapmuxv1.ConnectResponse{
-		Payload: &leapmuxv1.ConnectResponse_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
+		Payload: &leapmuxv1.ConnectResponse_ReconcileNudge{ReconcileNudge: &leapmuxv1.ReconcileNudge{}},
 	}))
 	require.NoError(t, pump.Drain())
 
 	msgs := rec.Messages()
 	require.Len(t, msgs, 2)
 	assert.NotNil(t, msgs[0].GetWorkerIdentity(), "greeting must be frame 0")
-	assert.NotNil(t, msgs[1].GetHeartbeat(), "post-Register enqueue drains after the greeting")
+	assert.NotNil(t, msgs[1].GetReconcileNudge(), "post-Register enqueue drains after the greeting")
 }
 
 // A greeting that cannot be enqueued (fenced queue) must not be published.

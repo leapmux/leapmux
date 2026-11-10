@@ -96,9 +96,9 @@ export function pinnedImage(key) {
   return image
 }
 
-/** Read an example file of the page bundle. */
-export function readExample(name) {
-  return readFileSync(join(EXAMPLES_DIR, name), 'utf8')
+/** Read an example from directory, using the documentation page bundle by default. */
+export function readExample(name, directory = EXAMPLES_DIR) {
+  return readFileSync(join(directory, name), 'utf8')
 }
 
 /** List the example files of the page bundle: every file except the page itself. */
@@ -157,10 +157,11 @@ export function useCaddyLocalCertificates(source) {
 /**
  * Prepare the files that the harness mounts for one proxy: each example at its install path, after any change.
  * stockConfig is the content of proxy.stockConfig.path in the proxy's image, for a proxy that states one.
+ * directory selects an alternate copy of the example files.
  */
-export function prepareProxyFiles(proxy, stockConfig) {
+export function prepareProxyFiles(proxy, stockConfig, directory = EXAMPLES_DIR) {
   const files = proxy.examples.map((name) => {
-    const source = readExample(name)
+    const source = readExample(name, directory)
     const target = installPath(name, source)
     const content = proxy.renderExample
       ? proxy.renderExample(source)

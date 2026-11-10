@@ -37,7 +37,7 @@ There are three protocol paths, each with a different security posture:
 |------|----------|------------|
 | Frontend → Hub | ConnectRPC (gRPC-compatible) — login, workspace management, Worker registration | TLS in front of the Hub (your responsibility as administrator) |
 | Frontend → Worker | Hybrid post-quantum Noise_NK. The handshake rides Hub-relayed RPCs; the encrypted traffic that follows is multiplexed over a single relayed WebSocket | End-to-end encrypted; the Hub cannot decrypt |
-| Worker → Hub | ConnectRPC over the Connect protocol, as one bidirectional stream over HTTP/2; the Worker always dials out (NAT-friendly, no inbound ports) | TLS in front of the Hub; channel payloads ride inside the E2EE tunnel |
+| Worker → Hub | ConnectRPC (Connect protocol) for registration and other calls, plus one WebSocket (`/ws/worker`) for the stream. The Worker always dials out and needs no inbound ports | TLS in front of the Hub; channel payloads ride inside the E2EE tunnel |
 
 The key consequence: control-plane data (accounts, workspace records, layout, Worker registration) reaches the Hub in a form it can read, while everything you actually do inside an agent or terminal travels inside an encrypted channel the Hub merely forwards.
 
@@ -66,7 +66,7 @@ Four specifics matter:
 - **Workspace titles are visible, agent content is not.** Name your workspaces with that in mind. Tab positions and tiling geometry are layout metadata the Hub stores so your arrangement can sync across devices (see [Device Sync](/docs/using/device-sync/)).
 - **Worker public keys are visible; private keys never leave the Worker.** The Worker registers its public composite keys with the Hub once, and the Hub refuses a connection that presents other ones. Its private halves stay in the Worker's local state.
 - **Agent and terminal state live only in the Worker's local SQLite database.** It is never uploaded to the Hub. This includes agent and subagent transcripts, to-do lists, and the background-task registry. See [Encryption & Data](/docs/admin/encryption-and-data/) for where that data lives and how to back it up.
-- **The Worker tells the Hub nothing about the machine** — no hostname, OS, or path field exists in anything it registers or heartbeats. A different component does send one: `leapmux control` login registers a device name against the API token so you can recognize the device later, defaulting to `user@host` — often the same machine the Worker runs on. Pass `--device-name` at login to choose the label yourself.
+- **The Worker tells the Hub nothing about the machine** — no hostname, OS, or path field exists in anything it registers or sends on its stream. A different component does send one: `leapmux control` login registers a device name against the API token so you can recognize the device later, defaulting to `user@host` — often the same machine the Worker runs on. Pass `--device-name` at login to choose the label yourself.
 
 ## The E2EE protocol
 

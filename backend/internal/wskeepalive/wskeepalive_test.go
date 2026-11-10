@@ -1,4 +1,4 @@
-package service
+package wskeepalive
 
 import (
 	"context"
@@ -14,7 +14,7 @@ import (
 
 // testPace drives the probe loop fast enough to assert against, without
 // touching any state another parallel test can see.
-var testPace = wsKeepalivePace{interval: 20 * time.Millisecond, timeout: 200 * time.Millisecond}
+var testPace = Pace{Interval: 20 * time.Millisecond, Timeout: 200 * time.Millisecond}
 
 // A half-open peer -- one that stops answering without sending a close frame --
 // is invisible to every other bound on these sockets, because they all fire on a
@@ -43,7 +43,7 @@ func TestWSKeepaliveDropsAPeerThatStopsAnsweringPings(t *testing.T) {
 				}
 			}
 		}()
-		testPace.startBesideAReadLoop(ctx, conn, cancel, "test", "user-1")
+		testPace.StartBesideAReadLoop(ctx, Probe{Conn: conn, Cancel: cancel, Attrs: []any{"endpoint", "test", "user_id", "user-1"}})
 		<-ctx.Done()
 		close(dropped)
 	}))
@@ -67,7 +67,7 @@ func TestWSKeepaliveDropsAPeerThatStopsAnsweringPings(t *testing.T) {
 // A probe cannot see its own answer unless something is reading the socket:
 // coder/websocket waits for a Reader call to process the pong. So a handler
 // that has no use for what the peer sends must not be able to arm a probe loop
-// on its own -- and startDrainingReads is the shape that makes it impossible,
+// on its own -- and StartDrainingReads is the shape that makes it impossible,
 // by starting the reader itself.
 //
 // The handler here never reads, which is exactly the /ws/userevents shape that
@@ -93,8 +93,8 @@ func TestWSKeepaliveDrainingReadsAnswersProbesForAHandlerThatNeverReads(t *testi
 
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
-		pace := wsKeepalivePace{timeout: 10 * time.Second, ticks: ticks}
-		pace.startDrainingReads(ctx, conn, cancel, "test", "user-1")
+		pace := Pace{Timeout: 10 * time.Second, Ticks: ticks}
+		pace.StartDrainingReads(ctx, Probe{Conn: conn, Cancel: cancel, Attrs: []any{"endpoint", "test", "user_id", "user-1"}})
 		// The handler itself never touches the socket again -- the keepalive owns
 		// every read on it.
 		<-ctx.Done()
@@ -156,8 +156,8 @@ func TestWSKeepaliveSurvivesASingleFailedProbe(t *testing.T) {
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 		// Short, because every probe here is meant to time out.
-		pace := wsKeepalivePace{timeout: 50 * time.Millisecond, ticks: ticks}
-		pace.startDrainingReads(ctx, conn, cancel, "test", "user-1")
+		pace := Pace{Timeout: 50 * time.Millisecond, Ticks: ticks}
+		pace.StartDrainingReads(ctx, Probe{Conn: conn, Cancel: cancel, Attrs: []any{"endpoint", "test", "user_id", "user-1"}})
 		<-ctx.Done()
 		close(dropped)
 	}))
@@ -170,12 +170,12 @@ func TestWSKeepaliveSurvivesASingleFailedProbe(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.CloseNow() })
 
-	for i := range wsKeepaliveFailuresBeforeDrop {
+	for i := range FailuresBeforeDrop {
 		select {
 		case ticks <- time.Now():
 		case <-dropped:
 			t.Fatalf("dropped after %d consecutive failures; the threshold is %d",
-				i, wsKeepaliveFailuresBeforeDrop)
+				i, FailuresBeforeDrop)
 		case <-ctx.Done():
 			t.Fatalf("probe %d was never taken", i)
 		}
@@ -192,8 +192,8 @@ func TestWSKeepaliveSurvivesASingleFailedProbe(t *testing.T) {
 
 // The other half of the property: a healthy peer must survive. A probe that
 // disconnected a client answering normally would be strictly worse than the
-// silence it replaced. This is the startBesideAReadLoop shape, where the
-// HANDLER owns the read loop; its sibling above covers startDrainingReads.
+// silence it replaced. This is the StartBesideAReadLoop shape, where the
+// HANDLER owns the read loop; its sibling above covers StartDrainingReads.
 //
 // Bounded by an event, not a duration. An unbuffered send on `ticks` lands only
 // when the probe loop comes back around to receive it, so "four sends landed
@@ -232,8 +232,8 @@ func TestWSKeepaliveLeavesAnAnsweringPeerAlone(t *testing.T) {
 				}
 			}
 		}()
-		pace := wsKeepalivePace{timeout: 10 * time.Second, ticks: ticks}
-		pace.startBesideAReadLoop(ctx, conn, cancel, "test", "user-1")
+		pace := Pace{Timeout: 10 * time.Second, Ticks: ticks}
+		pace.StartBesideAReadLoop(ctx, Probe{Conn: conn, Cancel: cancel, Attrs: []any{"endpoint", "test", "user_id", "user-1"}})
 		<-ctx.Done()
 		close(dropped)
 	}))
@@ -265,10 +265,10 @@ func TestWSKeepaliveLeavesAnAnsweringPeerAlone(t *testing.T) {
 		}
 	}()
 
-	// More probes than wsKeepaliveFailuresBeforeDrop, so a loop that was
+	// More probes than FailuresBeforeDrop, so a loop that was
 	// miscounting successes as failures would have dropped this connection
 	// before the last send landed.
-	for i := range wsKeepaliveFailuresBeforeDrop + 2 {
+	for i := range FailuresBeforeDrop + 2 {
 		select {
 		case ticks <- time.Now():
 		case <-dropped:
@@ -285,4 +285,97 @@ func TestWSKeepaliveLeavesAnAnsweringPeerAlone(t *testing.T) {
 		t.Fatal("the server handler did not retire after its peer closed")
 	}
 	<-handlerDone
+}
+
+func TestProductionPace(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, 10*time.Second, Production().Interval)
+	assert.Equal(t, 10*time.Second, Production().Timeout)
+	assert.Equal(t, 2, FailuresBeforeDrop)
+}
+
+func TestAZeroPacePanics(t *testing.T) {
+	t.Parallel()
+	require.Panics(t, func() { (Pace{}).tick() })
+}
+
+func TestOnAnswerRunsAfterEachAnsweredProbe(t *testing.T) {
+	testOnAnswer(t, true)
+}
+
+func TestOnAnswerDoesNotRunForAnUnansweredProbe(t *testing.T) {
+	testOnAnswer(t, false)
+}
+
+func testOnAnswer(t *testing.T, responds bool) {
+	t.Helper()
+	ticks := make(chan time.Time)
+	answers := make(chan struct{})
+	dropped := make(chan struct{})
+	attrs := []any{"endpoint", "test", "preserve-1", "preserve-2", "preserve-3", "preserve-4"}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.CloseNow() }()
+		ctx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+		(Pace{Ticks: ticks, Timeout: 50 * time.Millisecond}).StartDrainingReads(ctx, Probe{Conn: conn, Cancel: cancel, Attrs: attrs[:2], OnAnswer: func() {
+			select {
+			case answers <- struct{}{}:
+			case <-ctx.Done():
+			}
+		}})
+		<-ctx.Done()
+		close(dropped)
+	}))
+	t.Cleanup(srv.Close)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, "ws"+srv.URL[len("http"):], nil)
+	require.NoError(t, err)
+	defer func() { _ = conn.CloseNow() }()
+	if responds {
+		go func() {
+			for {
+				if _, _, err := conn.Read(ctx); err != nil {
+					return
+				}
+			}
+		}()
+	}
+	select {
+	case <-answers:
+		t.Fatal("answer before a probe")
+	default:
+	}
+	count := FailuresBeforeDrop
+	if responds {
+		count = 4
+	}
+	for range count {
+		select {
+		case ticks <- time.Now():
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+		if responds {
+			select {
+			case <-answers:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		}
+	}
+	if !responds {
+		select {
+		case <-answers:
+			t.Fatal("unanswered probe called OnAnswer")
+		case <-dropped:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	assert.Equal(t, []any{"endpoint", "test", "preserve-1", "preserve-2", "preserve-3", "preserve-4"}, attrs, "probe logging must preserve caller-owned storage")
 }

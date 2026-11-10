@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	// connDrainMaxFrames / connDrainMaxDuration bound one Connect-select Drain
-	// turn so a large outbound backlog cannot starve receives, idle, or
-	// ctx.Done. The deferred full Drain on teardown still empties the queue.
+	// connDrainMaxFrames and connDrainMaxDuration limit one handler drain turn.
+	// A large outbound backlog must yield to receives and ctx.Done.
+	// The deferred full Drain on teardown still empties the queue.
 	connDrainMaxFrames   = 32
 	connDrainMaxDuration = 5 * time.Millisecond
 )
@@ -157,7 +157,7 @@ func NewConn(
 	workerID string,
 	owner string,
 	pool *sendq.Pool,
-	write func(*leapmuxv1.ConnectResponse) error,
+	write func(context.Context, *leapmuxv1.ConnectResponse) error,
 	greeting *leapmuxv1.ConnectResponse,
 	hello *leapmuxv1.WorkerHello,
 ) (*Conn, *SendPump) {
@@ -176,9 +176,7 @@ func NewConn(
 		hello:    proto.CloneOf(hello),
 	}
 	c.q = sendq.NewUnstarted(ctx, sendq.Config[*leapmuxv1.ConnectResponse]{
-		Write: func(_ context.Context, m *leapmuxv1.ConnectResponse) error {
-			return write(m)
-		},
+		Write: write,
 		Size: func(m *leapmuxv1.ConnectResponse) int {
 			return proto.Size(m)
 		},
@@ -187,6 +185,11 @@ func NewConn(
 		FrameOverhead:  sendq.DefaultFrameOverhead,
 		WriteTimeout:   sendq.DefaultWriteTimeout,
 		OnGiveUp: func(reason sendq.GiveUpReason, err error) {
+			if reason == sendq.GiveUpWriteError && ctx.Err() != nil {
+				slog.Debug("worker stream write ended with its connection context", "worker_id", workerID, "error", err)
+				c.Fence()
+				return
+			}
 			metrics.CountSendqGiveUp(metrics.PoolWorker, reason.Label())
 			slog.Warn("worker connect stream writer gave up; fencing",
 				"worker_id", workerID, "reason", reason.Label(), "error", err)

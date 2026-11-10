@@ -11,7 +11,7 @@ If you only ever use solo mode, a Worker is started for you in-process and most 
 
 ## How a Worker reaches a Hub
 
-The Worker always **dials the Hub** — it opens a single outbound bidirectional stream and keeps it alive. Nothing ever connects *to* the Worker, so:
+The Worker always **dials the Hub** — it opens a single outbound WebSocket and keeps it alive. Nothing ever connects *to* the Worker, so:
 
 - The Worker needs **no inbound port** and works fine behind NAT, a home router, or a corporate firewall.
 - Only the Hub needs a reachable address (see [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/admin/configuration/)).
@@ -163,12 +163,12 @@ When the Hub no longer knows the Worker, `deregister` cannot complete. This happ
 
 ## Worker status: online and offline
 
-A Worker's **online** status is computed live — it reflects whether the Hub currently holds an open stream to that Worker, not a stored flag. The moment a Worker's connection drops, it shows offline; the moment it reconnects, it shows online again. The Hub records `last_seen_at` on connect and on every heartbeat.
+A Worker's **online** status reflects whether the Hub holds an open stream to that Worker. It is computed live, rather than stored as a flag. A closed connection shows offline at once, and a reconnect shows online again. The Hub records `last_seen_at` on connect and on each answered ping, every 10 seconds.
 
-Offline appears within ~10 seconds of a dropped link. During normal traffic the regular messages keep the link alive, so no extra heartbeats are sent.
+A silent drop normally shows offline within about 30 seconds. The Worker also drops its connection when the Hub stops sending pings for 30 seconds.
 
 {{< callout type="info" >}}
-The exact heartbeat cadence (administrator-level detail): the Worker checks its connection every 2 seconds and sends an idle heartbeat only after 5 seconds of silence (no other message sent in that window); the Hub treats a Worker that is silent for 10 seconds as disconnected.
+The Hub probes each Worker's stream every 10 seconds. Each probe has a ten-second timeout, and two consecutive failures drop the connection. The Worker watches those pings and sends no pings of its own.
 {{< /callout >}}
 
 ### In the sidebar

@@ -64,8 +64,9 @@ runs the semantic cross-checks (derived arithmetic, enum coverage via
 - Import generated code directly: Go `generated/contracts`, one spelling per
   constant (`contracts.MaxMessageSize`, `contracts.WSRouteChannel`); frontend
   `~/generated/contracts/*`. No re-export shims. `channelwire` keeps only
-  Go-owned limits no contract holds (`WSReadLimit`, `UserEventsReadLimit`) plus
-  wire helpers, and aliases no generated constant.
+  Go-owned limits no contract holds (`WSReadLimit`, `UserEventsReadLimit`,
+  `WorkerStreamReadLimit`), the Worker stream's route, subprotocol and close
+  reasons, plus wire helpers. It aliases no generated constant.
 - Change a value by editing `contracts/<name>.json` and running
   `task generate`. A new proto enum value fails `generate-contracts` until its
   contract entry exists.

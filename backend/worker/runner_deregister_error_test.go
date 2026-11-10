@@ -5,62 +5,47 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect/v2"
-	"connectrpc.com/connect/v2/connecthttp"
-	"connectrpc.com/connect/v2/connectproto"
+	"github.com/coder/websocket"
+	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/internal/worker/hub/fakehubtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/lifecycle"
 )
 
-type callbackErrorHub struct {
-	leapmuxv1connect.UnimplementedWorkerConnectorServiceHandler
-	notification bool
-}
-
-func (h callbackErrorHub) Connect(ctx context.Context, stream leapmuxv1connect.WorkerConnectorServiceConnectServerStream) error {
-	if !h.notification {
-		detail, err := connectproto.NewErrorDetail(&leapmuxv1.WorkerConnectRefusal{Reason: leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED})
-		if err != nil {
-			return err
+func startCallbackErrorHub(t *testing.T, notification bool) string {
+	t.Helper()
+	return fakehubtest.Start(t, func(ctx context.Context, stream *fakehubtest.Stream) {
+		if !notification {
+			_ = stream.Refuse(websocket.StatusPolicyViolation, channelwire.WorkerCloseReasonDeleted)
+			return
 		}
-		return connect.NewError(connect.CodeUnauthenticated, "worker deleted").WithDetail(detail)
-	}
-	if err := stream.Send(&leapmuxv1.ConnectResponse{RequestId: "delete", Payload: &leapmuxv1.ConnectResponse_Deregister{Deregister: &leapmuxv1.DeregisterNotification{}}}); err != nil {
-		return err
-	}
-	for {
-		if _, err := stream.Receive(); err != nil {
-			return ctx.Err()
+		if _, err := stream.Receive(ctx); err != nil {
+			return
 		}
-	}
+		if err := stream.Greet(ctx, "owner"); err != nil {
+			return
+		}
+		if err := stream.Send(ctx, &leapmuxv1.ConnectResponse{RequestId: "delete", Payload: &leapmuxv1.ConnectResponse_Deregister{Deregister: &leapmuxv1.DeregisterNotification{}}}); err != nil {
+			return
+		}
+		_ = stream.ReadUntilClosed(ctx)
+	})
 }
 
 func TestDeregisterCallbackErrorsSurviveCancellationAndCleanup(t *testing.T) {
 	for _, notification := range []bool{false, true} {
 		for _, cancelDuring := range []bool{false, true} {
 			t.Run(fmt.Sprintf("notification=%v/cancel=%v", notification, cancelDuring), func(t *testing.T) {
-				mux := http.NewServeMux()
-				server := connect.NewServer()
-				leapmuxv1connect.RegisterWorkerConnectorServiceHandler(server, callbackErrorHub{notification: notification})
-				connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
-				hub := httptest.NewUnstartedServer(mux)
-				hub.Config.Protocols = &http.Protocols{}
-				hub.Config.Protocols.SetHTTP1(true)
-				hub.Config.Protocols.SetUnencryptedHTTP2(true)
-				hub.Start()
-				t.Cleanup(hub.Close)
+				hubURL := startCallbackErrorHub(t, notification)
 				root, err := lifecycle.CanonicalDir(t.TempDir())
 				require.NoError(t, err)
 				owner := lifecycle.NewDirectoryOwner(lifecycle.RoleWorker, root)
@@ -80,7 +65,7 @@ func TestDeregisterCallbackErrorsSurviveCancellationAndCleanup(t *testing.T) {
 				go func() {
 					defer close(done)
 					result = run(ctx, RunConfig{
-						HubURL: hub.URL, Directory: lease, CompositeKey: key, AuthToken: "token", WorkerID: "worker", EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+						HubURL: hubURL, Directory: lease, CompositeKey: key, AuthToken: "token", WorkerID: "worker", EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
 						OnDeregister: func() error { close(entered); <-release; return callbackFailure }, Drained: func() { close(drained) },
 					}, runCleanup{
 						closeDatabase: func(database *sql.DB) error {

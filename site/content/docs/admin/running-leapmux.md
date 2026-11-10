@@ -234,7 +234,7 @@ Use `--restart unless-stopped` with `docker run`, or `restart: unless-stopped` i
 
 ## Reverse proxy and public URL
 
-To serve LeapMux over HTTPS, put a reverse proxy in front of the Hub, and set the Hub's `public_url`, `secure_cookies`, and `trusted_proxy_ranges`. The proxy must forward the Worker's stream to the Hub over cleartext HTTP/2 (h2c). [Reverse Proxy](/docs/admin/reverse-proxy/) states every requirement, gives a tested configuration for nginx, Caddy, Traefik, HAProxy, and Apache httpd, and shows how to check the result.
+To serve LeapMux over HTTPS, put a reverse proxy in front of the Hub, and set the Hub's `public_url`, `secure_cookies`, and `trusted_proxy_ranges`. The proxy must forward WebSocket upgrades, which carry the Worker's stream and the web app's live updates. [Reverse Proxy](/docs/admin/reverse-proxy/) states every requirement, gives a tested configuration for nginx, Caddy, Traefik, HAProxy, and Apache httpd, and shows how to check the result.
 
 For details about encryption and Worker identity verification, see [Security & Threat Model](/docs/admin/security/).
 

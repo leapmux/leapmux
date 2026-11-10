@@ -33,7 +33,7 @@ func TestEveryDeregisterAttemptEndsItsSelectedConnection(t *testing.T) {
 					case "send failed":
 						return nil, errInjected
 					case "wrong payload":
-						return &leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}}}, nil
+						return &leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: &leapmuxv1.WorkerTabInventory{}}}, nil
 					default:
 						return nil, nil
 					}

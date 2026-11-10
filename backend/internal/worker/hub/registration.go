@@ -332,14 +332,9 @@ func validAttemptIdentity(id string) bool {
 
 // registerAttemptTimeout limits ONE registration attempt.
 //
-// The retry loop above sits BELOW the call, so an attempt that never returns
-// takes the loop with it. Register runs on the HTTP2Only lane, which carries
-// no http.Client timeout by design — that lane also carries the worker's
-// bidirectional Connect stream, whose body ends only when the stream does —
-// so a hub that completed the TCP accept and the HTTP/2 handshake and then
-// never answered hung `leapmux worker register` at startup for ever, with no
-// retry, no backoff and no log line. The limit belongs to this unary CALL
-// rather than to the lane, which is why it is a context deadline here.
+// Each registration attempt needs its own deadline so a stalled request can
+// return to the retry loop. The unary client also limits the whole exchange;
+// this shorter attempt limit preserves registration's retry policy.
 //
 // It is generous: registration is one round trip, but it runs while a hub may
 // still be starting, and the retry costs a fresh key nothing.

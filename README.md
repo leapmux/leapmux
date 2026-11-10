@@ -124,7 +124,7 @@ The connections use these protocols:
 
 - Frontend↔Hub uses ConnectRPC.
 - Frontend↔Worker uses hybrid post-quantum Noise_NK over one WebSocket that the Hub relays.
-- Worker↔Hub uses gRPC.
+- Worker↔Hub uses ConnectRPC for registration and one WebSocket for its stream.
 
 The Hub routes traffic but cannot read Frontend↔Worker content.
 The wire format uses Protocol Buffers in [`/proto/leapmux/v1/`](proto/leapmux/v1/).
@@ -884,10 +884,10 @@ task dev-site    # Live-reload dev server at http://localhost:1313
 
 ### Hub (Central Service)
 
-- **[ConnectRPC](https://connectrpc.com/)** - Modern gRPC-compatible RPC framework (Frontend communication)
+- **[ConnectRPC](https://connectrpc.com/)** - Modern gRPC-compatible RPC framework (Frontend and Worker communication)
 - **[Go](https://go.dev/)** - Primary language
 - **[Goose](https://pressly.github.io/goose/)** - Database migrations
-- **[gRPC](https://grpc.io/)** - Standard gRPC (Worker communication)
+- **[coder/websocket](https://github.com/coder/websocket)** - Worker stream
 - **[koanf](https://github.com/knadh/koanf)** - Layered configuration (defaults, file, env)
 - **[Protocol Buffers](https://protobuf.dev/)** - Service and message definitions
 - **Pluggable database** - SQLite, PostgreSQL, MySQL, CockroachDB, YugabyteDB, or TiDB (see [Architecture](#architecture))
@@ -898,7 +898,7 @@ task dev-site    # Live-reload dev server at http://localhost:1313
 - **[CIRCL](https://github.com/cloudflare/circl)** - SLH-DSA post-quantum signatures for E2EE channel handling
 - **[Git](https://git-scm.com/)** - Repository info and worktree management
 - **[Go](https://go.dev/)** - Primary language
-- **[gRPC](https://grpc.io/)** - Communication with Hub
+- **[coder/websocket](https://github.com/coder/websocket)** - Stream to the Hub
 - **[SQLite](https://sqlite.org/)** - Embedded database for agent and terminal state
 
 ### Desktop

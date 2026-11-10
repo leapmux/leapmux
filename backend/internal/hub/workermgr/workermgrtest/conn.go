@@ -128,7 +128,7 @@ func NewConnWithHello(tb testing.TB, workerID string, hello *leapmuxv1.WorkerHel
 	require.NotNil(tb, hello)
 	ctx, cancel := context.WithCancel(context.Background())
 	pool := sendq.NewMaxBytesPoolForTest()
-	conn, pump := workermgr.NewConn(ctx, cancel, workerID, "", pool, write, nil, hello)
+	conn, pump := workermgr.NewConn(ctx, cancel, workerID, "", pool, func(_ context.Context, msg *leapmuxv1.ConnectResponse) error { return write(msg) }, nil, hello)
 	tb.Cleanup(conn.Fence)
 	go drainUntilDone(conn, pump)
 	return conn

@@ -2,13 +2,7 @@
 
 http:
   routers:
-    # The Worker's stream: HTTP/2 to the Hub, without buffering.
-    leapmux-worker:
-      rule: Host(`hub.example.com`) && PathPrefix(`/leapmux.v1.WorkerConnectorService/`)
-      entryPoints: [websecure]
-      service: leapmux-h2c
-      tls: {}
-    # Everything else: the web app, its API calls, and WebSocket upgrades.
+    # The web app, API calls, and all WebSocket upgrades.
     leapmux:
       rule: Host(`hub.example.com`)
       entryPoints: [websecure]
@@ -16,10 +10,6 @@ http:
       tls: {}
 
   services:
-    leapmux-h2c:
-      loadBalancer:
-        servers:
-          - url: h2c://127.0.0.1:4327
     leapmux:
       loadBalancer:
         servers:

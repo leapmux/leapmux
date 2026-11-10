@@ -15,6 +15,8 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 
 	"github.com/coder/quartz"
+	"github.com/coder/websocket"
+	"github.com/leapmux/leapmux/channelwire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -476,7 +478,7 @@ func TestValidateWorkerHello(t *testing.T) {
 	// A first message that is not a hello, or a mode that is not supported.
 	for name, msg := range map[string]*leapmuxv1.ConnectRequest{
 		"a nil message":       nil,
-		"a heartbeat":         {Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}}},
+		"a tab inventory":     {Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: &leapmuxv1.WorkerTabInventory{}}},
 		"an unspecified mode": hello(leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED, nil),
 		"an unknown mode":     hello(leapmuxv1.EncryptionMode(99), nil),
 	} {
@@ -589,10 +591,10 @@ func (s *scriptedWorkerStream) feed(results ...workerReceiveResult) {
 	}
 }
 
-func heartbeatMessage(requestID string) *leapmuxv1.ConnectRequest {
+func inventoryMessage(requestID string) *leapmuxv1.ConnectRequest {
 	return &leapmuxv1.ConnectRequest{
 		RequestId: requestID,
-		Payload:   &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
+		Payload:   &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: &leapmuxv1.WorkerTabInventory{}},
 	}
 }
 
@@ -608,8 +610,8 @@ func TestStartWorkerReceivePump_DeliversInOrderAndStopsAfterAnError(t *testing.T
 		received := startWorkerReceivePump(t.Context(), stream)
 
 		stream.feed(
-			workerReceiveResult{msg: heartbeatMessage("first")},
-			workerReceiveResult{msg: heartbeatMessage("second")},
+			workerReceiveResult{msg: inventoryMessage("first")},
+			workerReceiveResult{msg: inventoryMessage("second")},
 			workerReceiveResult{err: io.EOF},
 		)
 		assert.Equal(t, "first", (<-received).msg.GetRequestId())
@@ -628,8 +630,8 @@ func TestStartWorkerReceivePump_StopsWhenTheContextEndsWithAFullChannel(t *testi
 		received := startWorkerReceivePump(ctx, stream)
 
 		stream.feed(
-			workerReceiveResult{msg: heartbeatMessage("buffered")},
-			workerReceiveResult{msg: heartbeatMessage("read ahead")},
+			workerReceiveResult{msg: inventoryMessage("buffered")},
+			workerReceiveResult{msg: inventoryMessage("read ahead")},
 		)
 		synctest.Wait()
 		require.Len(t, received, 1, "precondition: the channel is full, and the pump holds the next message")
@@ -680,10 +682,40 @@ func TestReceiveHello_TakesItsResultFromThePump(t *testing.T) {
 
 	t.Run("refuses a first message that is not a hello", func(t *testing.T) {
 		received := make(chan workerReceiveResult, 1)
-		received <- workerReceiveResult{msg: heartbeatMessage("first")}
+		received <- workerReceiveResult{msg: inventoryMessage("first")}
 		_, err := svc.receiveHello(t.Context(), received)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "must be a hello")
+		requireStreamRefusal(t, err, websocket.StatusProtocolError, channelwire.WorkerCloseReasonInvalidMessage)
+	})
+
+	t.Run("accepts a normal close", func(t *testing.T) {
+		received := make(chan workerReceiveResult, 1)
+		received <- workerReceiveResult{err: websocket.CloseError{Code: websocket.StatusNormalClosure}}
+		hello, err := svc.receiveHello(t.Context(), received)
+		require.NoError(t, err)
+		assert.Nil(t, hello)
+	})
+	t.Run("preserves a malformed frame refusal", func(t *testing.T) {
+		refusal := refuseWorkerStream(websocket.StatusProtocolError, channelwire.WorkerCloseReasonInvalidMessage, channelwire.ErrMalformedFrame)
+		received := make(chan workerReceiveResult, 1)
+		received <- workerReceiveResult{err: refusal}
+		_, err := svc.receiveHello(t.Context(), received)
+		assert.Same(t, refusal, err)
+	})
+	t.Run("reports the hello timeout", func(t *testing.T) {
+		clock := testutil.NewQuartzMock(t)
+		newTimer, stopTimer := testutil.NewTimerTraps(t, clock, workerHelloTimerTag)
+		ctx := testutil.DeadlineContext(t)
+		result := make(chan error, 1)
+		go func() {
+			_, err := (&WorkerConnectorService{clock: clock}).receiveHello(ctx, make(chan workerReceiveResult))
+			result <- err
+		}()
+		delay := testutil.WaitForTimer(t, ctx, newTimer)
+		assert.Equal(t, 10*time.Second, delay)
+		testutil.AdvanceAndAwaitStop(t, ctx, clock, delay, stopTimer)
+		requireStreamRefusal(t, <-result, websocket.StatusProtocolError, channelwire.WorkerCloseReasonHelloTimeout)
 	})
 
 	t.Run("returns the context's error", func(t *testing.T) {
@@ -735,4 +767,55 @@ func TestNewWorkerConnectorServiceRequiresDeregisterEffects(t *testing.T) {
 			DeregisterEffects: nil,
 		})
 	})
+}
+
+func requireStreamRefusal(t *testing.T, err error, status websocket.StatusCode, reason string) {
+	t.Helper()
+	var refusal *workerStreamRefusal
+	require.ErrorAs(t, err, &refusal)
+	assert.Equal(t, status, refusal.status)
+	assert.Equal(t, reason, refusal.reason)
+}
+
+func TestWorkerStreamRefusal(t *testing.T) {
+	t.Parallel()
+	cause := errors.New("invalid hello")
+	err := refuseWorkerStream(websocket.StatusProtocolError, channelwire.WorkerCloseReasonInvalidMessage, cause)
+	requireStreamRefusal(t, err, websocket.StatusProtocolError, channelwire.WorkerCloseReasonInvalidMessage)
+	assert.ErrorIs(t, err, cause)
+	assert.Contains(t, err.Error(), cause.Error())
+}
+
+func TestConnectionEndReason(t *testing.T) {
+	t.Parallel()
+	reqCtx, stop := context.WithCancel(t.Context())
+	stop()
+	assert.Equal(t, "request context ended (hub shutdown or transport closed)", connectionEndReason(reqCtx, reqCtx))
+	for _, tc := range []struct {
+		cause error
+		want  string
+	}{
+		{errWorkerStoppedAnsweringPings, "worker stopped answering pings"},
+		{context.Canceled, "connection cancelled (fenced or replaced)"},
+	} {
+		connCtx, cancel := context.WithCancelCause(t.Context())
+		cancel(tc.cause)
+		assert.Equal(t, tc.want, connectionEndReason(t.Context(), connCtx))
+	}
+}
+
+func TestWorkerClosedStream(t *testing.T) {
+	t.Parallel()
+	for _, code := range []websocket.StatusCode{websocket.StatusNormalClosure, websocket.StatusGoingAway, websocket.StatusNoStatusRcvd} {
+		err := fmt.Errorf("receive: %w", websocket.CloseError{Code: code})
+		assert.True(t, workerClosedStream(err))
+		assert.Equal(t, "worker closed the stream", streamEndReason(err))
+	}
+	assert.True(t, workerClosedStream(io.EOF))
+	for _, err := range []error{nil, errors.New("failed"), websocket.CloseError{Code: websocket.StatusInternalError, Reason: "x"}} {
+		assert.False(t, workerClosedStream(err))
+		if err != nil {
+			assert.Contains(t, streamEndReason(err), "worker stream failed:")
+		}
+	}
 }

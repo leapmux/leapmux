@@ -2,14 +2,13 @@ package worker_test
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/worker/hub/fakehubtest"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -24,19 +23,7 @@ import (
 // and its connection hook reports the disconnect once the stream ends.
 func startOfflineHub(t *testing.T) string {
 	t.Helper()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		// Hold the request open until the client gives up: an
-		// unavailable hub that accepted the connection.
-		<-r.Context().Done()
-	})
-	httpServer := httptest.NewUnstartedServer(mux)
-	httpServer.Config.Protocols = &http.Protocols{}
-	httpServer.Config.Protocols.SetHTTP1(true)
-	httpServer.Config.Protocols.SetUnencryptedHTTP2(true)
-	httpServer.Start()
-	t.Cleanup(httpServer.Close)
-	return httpServer.URL
+	return fakehubtest.Start(t, func(ctx context.Context, stream *fakehubtest.Stream) { _ = stream.ReadUntilClosed(ctx) })
 }
 
 // TestRegisteredOfflineWorkerBecomesLocallyReady pins the two facts the

@@ -290,6 +290,8 @@ var handMountedRoutes = map[string]struct {
 	"contracts.WSRouteUserEvents": {routeRequiresScope, leapmuxv1.Scope_SCOPE_WORKSPACE_READ,
 		"the stream is the account's layout document and every change to it"},
 
+	"channelwire.WSRouteWorker": {routeNoLeapMuxBearer, 0, "a worker auth_token, which the scope model does not describe; AuthenticateWorkerBearer checks it before the upgrade"},
+
 	// --- The authorization server. Every leg here either runs before any
 	// credential exists, or authenticates with an OAuth artifact rather than
 	// with a leapmux bearer.

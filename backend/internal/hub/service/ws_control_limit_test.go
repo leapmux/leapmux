@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/wskeepalive"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +24,7 @@ func TestWSControlLimiterRefusesAFloodAfterTheBurst(t *testing.T) {
 	// A frozen clock, so the bucket refills by exactly what the test says and
 	// the assertion is on the rule rather than on how fast the machine ran.
 	now := time.Now()
-	l := newWSControlLimiter("test", "user-1", func() time.Time { return now })
+	l := newWSControlLimiter("test", userSubject("user-1"), func() time.Time { return now })
 
 	for i := range int(wsControlFrameBurst) {
 		ok, abusive := l.allow()
@@ -50,7 +52,7 @@ func TestWSControlLimiterReportsSustainedAbuse(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
-	l := newWSControlLimiter("test", "user-1", func() time.Time { return now })
+	l := newWSControlLimiter("test", userSubject("user-1"), func() time.Time { return now })
 
 	var abusive bool
 	for range int(wsControlFrameBurst) + wsControlFrameAbuseLimit {
@@ -71,7 +73,7 @@ func TestWSControlLimiterTearsTheConnectionDownOnce(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
-	l := newWSControlLimiter("test", "user-1", func() time.Time { return now })
+	l := newWSControlLimiter("test", userSubject("user-1"), func() time.Time { return now })
 
 	var abuses int
 	onAbuse := func() { abuses++ }
@@ -102,16 +104,16 @@ func TestWSControlLimiterTearsTheConnectionDownOnce(t *testing.T) {
 }
 
 // A well-behaved client must never reach the limit. Our own keepalive probes
-// once every wsKeepaliveInterval and the peer answers each one, so the steady
+// once every wskeepalive.Interval and the peer answers each one, so the steady
 // state is two control frames per interval against a budget of two per SECOND.
 func TestWSControlLimiterLeavesNormalTrafficAlone(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
-	l := newWSControlLimiter("test", "user-1", func() time.Time { return now })
+	l := newWSControlLimiter("test", userSubject("user-1"), func() time.Time { return now })
 
 	for range 1000 {
-		now = now.Add(wsKeepaliveInterval)
+		now = now.Add(wskeepalive.Interval)
 		for range 2 { // a probe's pong, plus an unsolicited heartbeat pong
 			ok, abusive := l.allow()
 			require.True(t, ok, "normal keepalive traffic must never be refused")
@@ -130,7 +132,7 @@ func TestWSControlLimiterForgivesABurstyPeerThatRecovers(t *testing.T) {
 	t.Parallel()
 
 	now := time.Now()
-	l := newWSControlLimiter("test", "user-1", func() time.Time { return now })
+	l := newWSControlLimiter("test", userSubject("user-1"), func() time.Time { return now })
 
 	// A hundred hours of fifty-frame clumps. Each clump spends the burst and
 	// then refuses its remaining 30, so 3000 frames are refused in all -- three
@@ -187,7 +189,7 @@ func TestWSInboundTrafficDoesNotStandInForAPong(t *testing.T) {
 				}
 			}
 		}()
-		testPace.startBesideAReadLoop(ctx, conn, cancel, "test", "user-1")
+		(wskeepalive.Pace{Interval: 20 * time.Millisecond, Timeout: 200 * time.Millisecond}).StartBesideAReadLoop(ctx, wskeepalive.Probe{Conn: conn, Cancel: cancel})
 		<-ctx.Done()
 		close(dropped)
 	}))
@@ -217,4 +219,12 @@ func TestWSInboundTrafficDoesNotStandInForAPong(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("inbound traffic must not stand in for the pong a probe is waiting for")
 	}
+}
+
+func TestWSControlLimiterLogsItsSubject(t *testing.T) {
+	logs := testutil.CaptureDefaultLogger(t)
+	limiter := newWSControlLimiter("worker", workerSubject("w-1"), nil)
+	limiter.closeAbusive(1000)
+	assert.Contains(t, logs.String(), "worker_id=w-1")
+	assert.NotContains(t, logs.String(), "user_id=")
 }

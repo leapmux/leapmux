@@ -237,3 +237,25 @@ func TestWithLastFailure(t *testing.T) {
 	assert.ErrorIs(t, got, lastFailure)
 	assert.EqualError(t, got, "context deadline exceeded; the last attempt failed: unavailable: hub down")
 }
+
+func TestConnectorClient_RegistersAgainstAnHTTP1OnlyEndpoint(t *testing.T) {
+	service := &connectorHub{}
+	server := connect.NewServer()
+	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(server, service)
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, server)
+	contentTypes := make(chan string, 1)
+	endpointServer := hubtransporttest.NewHTTP1Server(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == leapmuxv1connect.WorkerConnectorServiceRegisterProcedure {
+			contentTypes <- r.Header.Get("Content-Type")
+		}
+		mux.ServeHTTP(w, r)
+	}))
+	endpoint, err := hubtransport.New(endpointServer.URL)
+	require.NoError(t, err)
+	t.Cleanup(endpoint.CloseIdleConnections)
+	response, err := registerOnceThrough(t, endpoint)
+	require.NoError(t, err)
+	assert.Equal(t, "worker-1", response.GetWorkerId())
+	assert.Equal(t, "application/proto", <-contentTypes)
+}

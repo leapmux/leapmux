@@ -1,6 +1,6 @@
 // Verify every reverse proxy example of the documentation against a built LeapMux image.
 //
-// Usage: node scripts/test-reverse-proxies.mjs [--stability-seconds=N] [--keep-on-failure] <image> [proxy...]
+// Usage: node scripts/test-reverse-proxies.mjs [--stability-seconds=N] [--keep-on-failure] [--examples-dir=<path>] <image> [proxy...]
 //
 // --keep-on-failure leaves the containers of a failed proxy running, for inspection. Remove them with
 // `docker rm -f` and the network with `docker network rm`; the harness prints both names.
@@ -23,10 +23,10 @@ import { Buffer } from 'node:buffer'
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { CLIENT_IMAGE_KEY, pinnedImage, prepareProxyFiles, PROXIES, PUBLIC_HOST, ROOT } from './reverse-proxy-examples.mjs'
+import { CLIENT_IMAGE_KEY, EXAMPLES_DIR, pinnedImage, prepareProxyFiles, PROXIES, PUBLIC_HOST, ROOT } from './reverse-proxy-examples.mjs'
 
 // versions.env pins every image, so that Renovate keeps each one current. The certificates come from the
 // container runtime's own Alpine image.
@@ -36,8 +36,8 @@ const HUB_URL = `https://${PUBLIC_HOST}`
 const ADMIN_USERNAME = 'proxy-admin'
 const TRUSTED_PROXY_RANGES = '["127.0.0.1","::1"]'
 const READY_DEADLINE_MS = 60_000
-// Larger than the 1 MiB request body limit that nginx applies by default, which counts every byte of a Worker's
-// stream as one request.
+// Exceeds nginx's default 1 MiB body limit so a baseline HTTP/2 Worker stream fails without its override.
+// The same transfer checks framing and delivery on the WebSocket stream.
 const TRANSFER_BYTES = 3 * 1024 * 1024
 const DEFAULT_STABILITY_SECONDS = 200
 const wire = JSON.parse(readFileSync(join(ROOT, 'contracts', 'wire.json'), 'utf8'))
@@ -134,22 +134,32 @@ async function createCertificates(directory) {
   }
 }
 
-const USAGE = 'Usage: test-reverse-proxies.mjs [--stability-seconds=N] [--keep-on-failure] <image> [proxy...]'
+const USAGE = 'Usage: test-reverse-proxies.mjs [--stability-seconds=N] [--keep-on-failure] [--examples-dir=<path>] <image> [proxy...]'
 
 function parseArguments(argv) {
   let stabilitySeconds = DEFAULT_STABILITY_SECONDS
   let keepOnFailure = false
+  let examplesDirectory = EXAMPLES_DIR
   const positional = []
   for (const argument of argv) {
     const match = /^--stability-seconds=(\d+)$/.exec(argument)
-    if (match)
+    if (match) {
       stabilitySeconds = Number(match[1])
-    else if (argument === '--keep-on-failure')
+    }
+    else if (argument === '--keep-on-failure') {
       keepOnFailure = true
-    else if (argument.startsWith('-'))
+    }
+    else if (argument.startsWith('--examples-dir=')) {
+      const directory = argument.slice('--examples-dir='.length)
+      assert(directory, `--examples-dir requires a path. ${USAGE}`)
+      examplesDirectory = resolve(directory)
+    }
+    else if (argument.startsWith('-')) {
       throw new Error(`Unknown option: ${argument}. ${USAGE}`)
-    else
+    }
+    else {
       positional.push(argument)
+    }
   }
   const [image, ...names] = positional
   assert(image, USAGE)
@@ -159,6 +169,7 @@ function parseArguments(argv) {
     image,
     stabilitySeconds,
     keepOnFailure,
+    examplesDirectory,
     proxies: names.length
       ? PROXIES.filter(proxy => names.includes(proxy.name))
       : PROXIES,
@@ -170,11 +181,12 @@ function parseArguments(argv) {
  * failure, and interruption.
  */
 class ProxyEnvironment {
-  constructor(proxy, image, directory, certificates) {
+  constructor(proxy, image, directory, certificates, examplesDirectory) {
     this.proxy = proxy
     this.proxyImage = pinnedImage(proxy.imageKey)
     this.image = image
     this.directory = directory
+    this.examplesDirectory = examplesDirectory
     this.certificates = certificates
     this.prefix = `leapmux-rp-${proxy.name}-${randomUUID().slice(0, 8)}`
     this.network = this.prefix
@@ -342,7 +354,7 @@ class ProxyEnvironment {
       : undefined
     const mounts = []
     mkdirSync(join(this.directory, 'config'), { recursive: true })
-    for (const file of prepareProxyFiles(this.proxy, stockConfig)) {
+    for (const file of prepareProxyFiles(this.proxy, stockConfig, this.examplesDirectory)) {
       const local = join(this.directory, 'config', file.name)
       writeFileSync(local, file.content, { mode: 0o644 })
       mounts.push('--volume', `${local}:${file.target}:ro`)
@@ -431,7 +443,7 @@ class ProxyEnvironment {
     const lines = result.stdout.trimEnd().split('\n')
     const [code, version, contentType] = lines.pop().split(' ')
     assert.equal(code, '200')
-    assert.equal(version, '2', 'the proxy must offer HTTP/2, which the Worker requires')
+    assert.equal(version, '2', 'each example offers HTTP/2 to browsers')
     assert.match(contentType, /^text\/html/)
     assert.match(lines.join('\n'), /<div id="app">/)
     this.log('PASS: the web app loads over HTTP/2')
@@ -707,15 +719,15 @@ class ProxyEnvironment {
   }
 }
 
-const { image, stabilitySeconds, keepOnFailure, proxies } = parseArguments(process.argv.slice(2))
+const { image, stabilitySeconds, keepOnFailure, examplesDirectory, proxies } = parseArguments(process.argv.slice(2))
 mkdirSync(join(ROOT, '.tmp'), { recursive: true })
 const directory = mkdtempSync(join(ROOT, '.tmp', 'reverse-proxy-test-'))
-console.log(`Testing ${proxies.map(proxy => pinnedImage(proxy.imageKey)).join(', ')} with ${image}. Diagnostics: ${directory}`)
+console.log(`Testing ${proxies.map(proxy => pinnedImage(proxy.imageKey)).join(', ')} with ${image}. Examples: ${examplesDirectory}. Diagnostics: ${directory}`)
 const certificates = await createCertificates(join(directory, 'certificates'))
 const environments = proxies.map((proxy) => {
   const proxyDirectory = join(directory, proxy.name)
   mkdirSync(proxyDirectory, { recursive: true })
-  return new ProxyEnvironment(proxy, image, proxyDirectory, certificates)
+  return new ProxyEnvironment(proxy, image, proxyDirectory, certificates, examplesDirectory)
 })
 
 process.on('SIGINT', () => {

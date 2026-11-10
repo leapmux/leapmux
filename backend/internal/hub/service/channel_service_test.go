@@ -4,10 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
-	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +14,7 @@ import (
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/coder/quartz"
+	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -22,8 +22,6 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/hubtransport"
-	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/sendq"
 	workerhub "github.com/leapmux/leapmux/internal/worker/hub"
@@ -59,7 +57,8 @@ type channelTestEnv struct {
 	channelMgr      *channelmgr.Manager
 	pending         *workermgr.PendingRequests
 	mux             *http.ServeMux
-	// clock drives the connector's hello and idle deadlines.
+	server          *httptest.Server
+	// clock drives the connector's hello deadline.
 	clock *quartz.Mock
 }
 
@@ -89,18 +88,19 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))))
 
-	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer,
-		service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{
-			Store:             st,
-			WorkerManager:     wMgr,
-			ChannelManager:    nil,
-			PendingRequests:   nil,
-			Notifier:          nil,
-			Registry:          nil,
-			QueuePool:         sendq.NewMaxBytesPoolForTest(),
-			Clock:             clock,
-			DeregisterEffects: service.NewWorkerDeregisterEffects(nil, nil, nil),
-		}))
+	connector := service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{
+		Store:             st,
+		WorkerManager:     wMgr,
+		ChannelManager:    nil,
+		PendingRequests:   nil,
+		Notifier:          nil,
+		Registry:          nil,
+		QueuePool:         sendq.NewMaxBytesPoolForTest(),
+		Clock:             clock,
+		DeregisterEffects: service.NewWorkerDeregisterEffects(nil, nil, nil),
+	})
+	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer, connector)
+	mux.Handle(channelwire.WSRouteWorker, service.NewWorkerStreamHandler(connector).WithForcedKeepaliveProbesForTest(make(chan time.Time), time.Second))
 
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer,
 		service.NewWorkerManagementService(st, wMgr, nil, mail.NewStubSender(), mail.Renderer{}, set))
@@ -122,6 +122,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 		channelMgr:      cMgr,
 		pending:         pendingReqs,
 		mux:             mux,
+		server:          server,
 		clock:           clock,
 	}
 }
@@ -157,29 +158,6 @@ func (e *channelTestEnv) requireHandshake(t *testing.T, ctx context.Context, tok
 	require.NoError(t, err)
 	assert.True(t, proto.Equal(want.GetKeys(), resp.GetKeys()), "the keys must be the selected connection's")
 	assert.Equal(t, want.GetEncryptionMode(), resp.GetEncryptionMode(), "the mode must be the selected connection's")
-}
-
-// streamConnector returns a WorkerConnectorService client served over h2c on a
-// unix socket. Connect is a bidi stream, which the env's HTTP/1 httptest server
-// cannot carry.
-func (e *channelTestEnv) streamConnector(t *testing.T, name string) leapmuxv1connect.WorkerConnectorServiceClient {
-	t.Helper()
-	socketURL := hubtransporttest.NewSocketServer(t, name, e.mux)
-	endpoint, err := hubtransport.New(socketURL)
-	require.NoError(t, err)
-	t.Cleanup(endpoint.CloseIdleConnections)
-	return workerhub.NewConnectorClient(endpoint.StreamClient(), "http://localhost")
-}
-
-// openWorkerStream opens a Connect stream authenticated as the worker.
-func openWorkerStream(t *testing.T, ctx context.Context, client leapmuxv1connect.WorkerConnectorServiceClient, authToken string) leapmuxv1connect.WorkerConnectorServiceConnectClientStream {
-	t.Helper()
-	streamCtx, streamInfo := connect.NewClientContext(ctx)
-	streamInfo.RequestHeader().Set("Authorization", "Bearer "+authToken)
-	stream, err := client.Connect(streamCtx)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = stream.Close() })
-	return stream
 }
 
 func (e *channelTestEnv) adminToken(t *testing.T) string {
@@ -243,34 +221,31 @@ func TestGetWorkerHandshakeParams(t *testing.T) {
 	env.requireHandshake(t, ctx, token, workerID, hello)
 }
 
-// workerStreams sets up a registered worker and a stream client for the tests
-// that drive the real Connect handler.
-func workerStreams(t *testing.T, name string) (env *channelTestEnv, ctx context.Context, token, workerID, authToken string, client leapmuxv1connect.WorkerConnectorServiceClient) {
+// workerStreams registers a Worker and returns the HTTP server used to dial
+// its stream.
+func workerStreams(t *testing.T) (env *channelTestEnv, ctx context.Context, token, workerID, authToken string, server *httptest.Server) {
 	t.Helper()
-	return workerStreamsWithFill(t, name, workerkeystest.SeededWorkerFill)
+	return workerStreamsWithFill(t, workerkeystest.SeededWorkerFill)
 }
 
 // workerStreamsWithFill is workerStreams for a test whose hellos are filled with
 // something else.
-func workerStreamsWithFill(t *testing.T, name string, fill byte) (env *channelTestEnv, ctx context.Context, token, workerID, authToken string, client leapmuxv1connect.WorkerConnectorServiceClient) {
+func workerStreamsWithFill(t *testing.T, fill byte) (env *channelTestEnv, ctx context.Context, token, workerID, authToken string, server *httptest.Server) {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("unix sockets are not available on Windows")
-	}
 	env = setupChannelTestServer(t)
 	ctx = testutil.DeadlineContext(t)
 	token = env.adminToken(t)
 	workerID = env.createWorkerWithKeys(t, token, fill)
 	worker, err := env.store.Workers().GetByID(ctx, workerID)
 	require.NoError(t, err)
-	return env, ctx, token, workerID, worker.AuthToken, env.streamConnector(t, name)
+	return env, ctx, token, workerID, worker.AuthToken, env.server
 }
 
 // connectWorker opens a stream, sends hello, and waits for the identity frame
 // that proves the Hub registered the connection.
-func connectWorker(t *testing.T, ctx context.Context, client leapmuxv1connect.WorkerConnectorServiceClient, authToken string, hello *leapmuxv1.WorkerHello) leapmuxv1connect.WorkerConnectorServiceConnectClientStream {
+func connectWorker(t *testing.T, ctx context.Context, server *httptest.Server, authToken string, hello *leapmuxv1.WorkerHello) *workerTestPeer {
 	t.Helper()
-	stream := openWorkerStream(t, ctx, client, authToken)
+	stream := dialWorker(t, ctx, server, authToken)
 	require.NoError(t, stream.Send(helloRequest(hello)))
 	identity, err := stream.Receive()
 	require.NoError(t, err)
@@ -287,17 +262,16 @@ func connectWorker(t *testing.T, ctx context.Context, client leapmuxv1connect.Wo
 // Hub pins it; the mode is what tells them apart.
 func TestGetWorkerHandshakeParamsAnswersTheRegisteredConnectionUntilAReplacementSendsItsHello(t *testing.T) {
 	t.Parallel()
-	env, ctx, token, workerID, authToken, client := workerStreamsWithFill(t, "hub-handshake-pair", 0xa1)
+	env, ctx, token, workerID, authToken, server := workerStreamsWithFill(t, 0xa1)
 
 	helloA := classicHello(0xa1)
-	connectWorker(t, ctx, client, authToken, helloA)
+	connectWorker(t, ctx, server, authToken, helloA)
 	env.requireHandshake(t, ctx, token, workerID, helloA)
 
 	// Connection B opens and withholds its hello. The hello timer proves B's
 	// handler is running and waiting for it.
 	newTimer, stopTimer := testutil.NewTimerTraps(t, env.clock, "worker-hello")
-	streamB := openWorkerStream(t, ctx, client, authToken)
-	require.NoError(t, streamB.SendHeaders())
+	streamB := dialWorker(t, ctx, server, authToken)
 	testutil.WaitForTimer(t, ctx, newTimer)
 	env.requireHandshake(t, ctx, token, workerID, helloA)
 
@@ -319,16 +293,16 @@ func TestGetWorkerHandshakeParamsAnswersTheRegisteredConnectionUntilAReplacement
 // connection's.
 func TestGetWorkerHandshakeParamsAnswersFromTheSelectedConnection(t *testing.T) {
 	t.Parallel()
-	env, ctx, token, workerID, authToken, client := workerStreamsWithFill(t, "hub-handshake-selected", 0xa1)
+	env, ctx, token, workerID, authToken, server := workerStreamsWithFill(t, 0xa1)
 
 	helloA := classicHello(0xa1)
-	connectWorker(t, ctx, client, authToken, helloA)
+	connectWorker(t, ctx, server, authToken, helloA)
 
 	// Gate B between its hello and its registration: receiveHello stops its
 	// hello timer as it returns, and the trap parks it there.
 	newTimer, stopTimer := testutil.NewTimerTraps(t, env.clock, "worker-hello")
 	helloB := postQuantumHello(0xa1)
-	streamB := openWorkerStream(t, ctx, client, authToken)
+	streamB := dialWorker(t, ctx, server, authToken)
 	require.NoError(t, streamB.Send(helloRequest(helloB)))
 	testutil.WaitForTimer(t, ctx, newTimer)
 	stop := stopTimer.MustWait(ctx)
@@ -343,28 +317,28 @@ func TestGetWorkerHandshakeParamsAnswersFromTheSelectedConnection(t *testing.T) 
 // A refused replacement leaves the registered connection's answer unchanged.
 func TestGetWorkerHandshakeParamsIgnoresARefusedReplacement(t *testing.T) {
 	t.Parallel()
-	env, ctx, token, workerID, authToken, client := workerStreamsWithFill(t, "hub-handshake-refused", 0xa1)
+	env, ctx, token, workerID, authToken, server := workerStreamsWithFill(t, 0xa1)
 
 	helloA := classicHello(0xa1)
-	connectWorker(t, ctx, client, authToken, helloA)
+	connectWorker(t, ctx, server, authToken, helloA)
 
 	// A malformed hello: refused before the pin is even compared.
 	bad := classicHello(0xc3)
 	bad.Keys.X25519 = bad.Keys.X25519[:16]
-	streamC := openWorkerStream(t, ctx, client, authToken)
+	streamC := dialWorker(t, ctx, server, authToken)
 	require.NoError(t, streamC.Send(helloRequest(bad)))
 	_, err := streamC.Receive()
 	require.Error(t, err)
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	requireWorkerClose(t, err, websocket.StatusProtocolError, channelwire.WorkerCloseReasonInvalidMessage)
 	env.requireHandshake(t, ctx, token, workerID, helloA)
 
 	// A complete key set that is not the pinned one: refused by the pin.
 	other := classicHello(0xc3)
-	streamD := openWorkerStream(t, ctx, client, authToken)
+	streamD := dialWorker(t, ctx, server, authToken)
 	require.NoError(t, streamD.Send(helloRequest(other)))
 	_, err = streamD.Receive()
 	require.Error(t, err)
-	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	requireWorkerClose(t, err, websocket.StatusPolicyViolation, channelwire.WorkerCloseReasonKeysDiffer)
 	env.requireHandshake(t, ctx, token, workerID, helloA)
 }
 
@@ -372,7 +346,7 @@ func TestGetWorkerHandshakeParamsIgnoresARefusedReplacement(t *testing.T) {
 // registers anything.
 func TestConnectRefusesAnUnusableFirstMessage(t *testing.T) {
 	t.Parallel()
-	env, ctx, token, workerID, authToken, client := workerStreams(t, "hub-hello-refusals")
+	env, ctx, token, workerID, authToken, server := workerStreams(t)
 
 	short := classicHello(0x01)
 	short.Keys.X25519 = short.Keys.X25519[:31]
@@ -391,7 +365,7 @@ func TestConnectRefusesAnUnusableFirstMessage(t *testing.T) {
 	classicWithoutPQ.Keys.Slhdsa = nil
 
 	for name, first := range map[string]*leapmuxv1.ConnectRequest{
-		"a heartbeat":                                   {Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}}},
+		"a tab inventory":                               {Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: &leapmuxv1.WorkerTabInventory{}}},
 		"a hello with no keys":                          helloRequest(&leapmuxv1.WorkerHello{EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC}),
 		"an unspecified mode":                           helloRequest(unspecified),
 		"a short x25519 key":                            helloRequest(short),
@@ -401,11 +375,11 @@ func TestConnectRefusesAnUnusableFirstMessage(t *testing.T) {
 		"a classic hello without the post-quantum keys": helloRequest(classicWithoutPQ),
 	} {
 		t.Run(name, func(t *testing.T) {
-			stream := openWorkerStream(t, ctx, client, authToken)
+			stream := dialWorker(t, ctx, server, authToken)
 			require.NoError(t, stream.Send(first))
 			_, err := stream.Receive()
 			require.Error(t, err)
-			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+			requireWorkerClose(t, err, websocket.StatusProtocolError, channelwire.WorkerCloseReasonInvalidMessage)
 		})
 	}
 	_, err := env.channelClient.GetWorkerHandshakeParams(authedReq(ctx,
@@ -416,30 +390,28 @@ func TestConnectRefusesAnUnusableFirstMessage(t *testing.T) {
 // A hello that never arrives ends the stream at the hello deadline.
 func TestConnectEndsAStreamWhoseHelloNeverArrives(t *testing.T) {
 	t.Parallel()
-	env, ctx, _, _, authToken, client := workerStreams(t, "hub-hello-deadline")
+	env, ctx, _, _, authToken, server := workerStreams(t)
 
 	newTimer, stopTimer := testutil.NewTimerTraps(t, env.clock, "worker-hello")
-	stream := openWorkerStream(t, ctx, client, authToken)
-	require.NoError(t, stream.SendHeaders())
+	stream := dialWorker(t, ctx, server, authToken)
 	delay := testutil.WaitForTimer(t, ctx, newTimer)
 	testutil.AdvanceAndAwaitStop(t, ctx, env.clock, delay, stopTimer)
 
 	_, err := stream.Receive()
 	require.Error(t, err)
-	assert.Equal(t, connect.CodeDeadlineExceeded, connect.CodeOf(err))
+	requireWorkerClose(t, err, websocket.StatusProtocolError, channelwire.WorkerCloseReasonHelloTimeout)
 }
 
 // A worker that hangs up before its hello ends the stream cleanly: Connect
 // returns no error, and the worker is never listed online.
 func TestConnectEndsQuietlyWhenTheWorkerClosesBeforeItsHello(t *testing.T) {
 	t.Parallel()
-	env, ctx, token, workerID, authToken, client := workerStreams(t, "hub-hello-eof")
+	env, ctx, token, workerID, authToken, server := workerStreams(t)
 
-	stream := openWorkerStream(t, ctx, client, authToken)
-	require.NoError(t, stream.SendHeaders())
-	require.NoError(t, stream.CloseSend())
+	stream := dialWorker(t, ctx, server, authToken)
+	require.NoError(t, stream.Close())
 	_, err := stream.Receive()
-	require.ErrorIs(t, err, io.EOF, "a hang-up before the hello is no protocol error")
+	require.ErrorIs(t, err, net.ErrClosed, "a hang-up before the hello is no protocol error")
 
 	_, err = env.channelClient.GetWorkerHandshakeParams(authedReq(ctx,
 		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID}, token))
@@ -447,146 +419,17 @@ func TestConnectEndsQuietlyWhenTheWorkerClosesBeforeItsHello(t *testing.T) {
 	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err), "a connection with no hello is never registered")
 }
 
-// connectWorkerUnderIdleTrap is connectWorker for a test that traps the idle
-// timer. The handler arms that timer before its loop writes the greeting, so
-// the trap must release the timer before the identity frame can arrive. It
-// returns the stream and the delay the timer asked for.
-func connectWorkerUnderIdleTrap(
-	t *testing.T, ctx context.Context, client leapmuxv1connect.WorkerConnectorServiceClient,
-	authToken string, hello *leapmuxv1.WorkerHello, newIdleTimer *quartz.Trap,
-) (leapmuxv1connect.WorkerConnectorServiceConnectClientStream, time.Duration) {
-	t.Helper()
-	stream := openWorkerStream(t, ctx, client, authToken)
-	require.NoError(t, stream.Send(helloRequest(hello)))
-	delay := testutil.WaitForTimer(t, ctx, newIdleTimer)
-	identity, err := stream.Receive()
-	require.NoError(t, err)
-	require.NotNil(t, identity.GetWorkerIdentity(), "the first frame after a valid hello is WorkerIdentity")
-	return stream, delay
-}
-
-// A worker that goes silent after its hello is assumed dead at the receive
-// idle deadline: the Hub ends the stream and lists the worker offline.
-func TestConnectEndsAStreamThatFallsSilentAfterItsHello(t *testing.T) {
-	t.Parallel()
-	env, ctx, token, workerID, authToken, client := workerStreamsWithFill(t, "hub-idle-deadline", 0x51)
-
-	newTimer, stopTimer := testutil.NewTimerTraps(t, env.clock, "worker-idle")
-	hello := classicHello(0x51)
-	stream, delay := connectWorkerUnderIdleTrap(t, ctx, client, authToken, hello, newTimer)
-	assert.Equal(t, 10*time.Second, delay, "the idle deadline is the one the worker's heartbeat interval is sized for")
-	env.requireHandshake(t, ctx, token, workerID, hello)
-
-	testutil.AdvanceAndAwaitStop(t, ctx, env.clock, delay, stopTimer)
-	_, err := stream.Receive()
-	require.ErrorIs(t, err, io.EOF, "the idle deadline ends the stream without an error code")
-
-	_, err = env.channelClient.GetWorkerHandshakeParams(authedReq(ctx,
-		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID}, token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err), "a worker that timed out is offline")
-}
-
-// Every message from the worker re-arms the idle deadline for its full length,
-// so a worker that heartbeats inside the deadline stays connected past it.
-func TestConnectHeartbeatRearmsTheIdleDeadline(t *testing.T) {
-	t.Parallel()
-	env, ctx, token, workerID, authToken, client := workerStreamsWithFill(t, "hub-idle-rearm", 0x61)
-
-	newTimer, stopTimer := testutil.NewTimerTraps(t, env.clock, "worker-idle")
-	resetTimer := env.clock.Trap().TimerReset("worker-idle")
-	t.Cleanup(resetTimer.Close)
-	hello := classicHello(0x61)
-	stream, delay := connectWorkerUnderIdleTrap(t, ctx, client, authToken, hello, newTimer)
-
-	heartbeat := func() {
-		t.Helper()
-		require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}}}))
-		stopTimer.MustWait(ctx).MustRelease(ctx)
-		reset := resetTimer.MustWait(ctx)
-		assert.Equal(t, delay, reset.Duration, "a message re-arms the deadline for its full length")
-		reset.MustRelease(ctx)
-		for {
-			frame, err := stream.Receive()
-			require.NoError(t, err)
-			if frame.GetHeartbeat() != nil {
-				return
-			}
-		}
-	}
-
-	// Two heartbeats, each one second before the deadline it re-arms. Past
-	// the first deadline the worker is still connected.
-	env.clock.Advance(delay - time.Second).MustWait(ctx)
-	heartbeat()
-	env.clock.Advance(delay - time.Second).MustWait(ctx)
-	heartbeat()
-	env.requireHandshake(t, ctx, token, workerID, hello)
-
-	// Silence for the full deadline after the last heartbeat ends the stream.
-	testutil.AdvanceAndAwaitStop(t, ctx, env.clock, delay, stopTimer)
-	_, err := stream.Receive()
-	require.ErrorIs(t, err, io.EOF)
-}
-
-// An empty heartbeat keeps the stream alive and updates last_seen.
-func TestConnectHeartbeatUpdatesLastSeen(t *testing.T) {
-	t.Parallel()
-	if runtime.GOOS == "windows" {
-		t.Skip("unix sockets are not available on Windows")
-	}
-	// Connect itself stamps last_seen, so comparing timestamps cannot tell a
-	// heartbeat that writes from one that does not. Count the writes instead.
-	var writes atomic.Int64
-	env := newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
-		return lastSeenCountingStore{Store: st, writes: &writes}
-	}})
-	stream, _, _ := connectAdminWorker(t, env, "hub-heartbeat")
-
-	writes.Store(0)
-	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}}}))
-	for {
-		frame, err := stream.Receive()
-		require.NoError(t, err)
-		if frame.GetHeartbeat() != nil {
-			break
-		}
-	}
-	// The Hub writes last_seen before it answers, so the reply orders the write.
-	assert.Equal(t, int64(1), writes.Load(), "one heartbeat writes last_seen once")
-}
-
-// lastSeenCountingStore counts the connector's last_seen writes.
-type lastSeenCountingStore struct {
-	store.Store
-	writes *atomic.Int64
-}
-
-func (s lastSeenCountingStore) Workers() store.WorkerStore {
-	return lastSeenCountingWorkers{WorkerStore: s.Store.Workers(), writes: s.writes}
-}
-
-type lastSeenCountingWorkers struct {
-	store.WorkerStore
-	writes *atomic.Int64
-}
-
-func (w lastSeenCountingWorkers) UpdateLastSeen(ctx context.Context, id string) error {
-	w.writes.Add(1)
-	return w.WorkerStore.UpdateLastSeen(ctx, id)
-}
-
 // The stream has one receive pump, which starts before the hello and reads ahead
 // during the pin check. A message that follows the hello at once must still
 // reach the main loop, after the identity frame.
 func TestConnectProcessesAMessageThatFollowsTheHelloAtOnce(t *testing.T) {
 	t.Parallel()
-	_, ctx, _, _, authToken, client := workerStreamsWithFill(t, "hub-read-ahead", 0x22)
+	_, ctx, _, _, authToken, server := workerStreamsWithFill(t, 0x22)
 
-	stream := openWorkerStream(t, ctx, client, authToken)
+	stream := dialWorker(t, ctx, server, authToken)
 	require.NoError(t, stream.Send(helloRequest(classicHello(0x22))))
 	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
+		RequestId: "r1", Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: &leapmuxv1.WorkerTabInventory{}},
 	}))
 
 	first, err := stream.Receive()
@@ -594,20 +437,21 @@ func TestConnectProcessesAMessageThatFollowsTheHelloAtOnce(t *testing.T) {
 	require.NotNil(t, first.GetWorkerIdentity(), "the identity frame stays first")
 	second, err := stream.Receive()
 	require.NoError(t, err)
-	assert.NotNil(t, second.GetHeartbeat(), "the main loop answers the message the pump read ahead")
+	assert.NotNil(t, second.GetWorkerTabInventoryResp(), "the main loop answers the message the pump read ahead")
+	assert.Equal(t, "r1", second.GetRequestId())
 }
 
 // A second hello on one stream is a protocol error.
 func TestConnectRefusesASecondHello(t *testing.T) {
 	t.Parallel()
-	_, ctx, _, _, authToken, client := workerStreamsWithFill(t, "hub-second-hello", 0x21)
+	_, ctx, _, _, authToken, server := workerStreamsWithFill(t, 0x21)
 
-	stream := connectWorker(t, ctx, client, authToken, classicHello(0x21))
+	stream := connectWorker(t, ctx, server, authToken, classicHello(0x21))
 	require.NoError(t, stream.Send(helloRequest(classicHello(0x21))))
 	for {
 		_, err := stream.Receive()
 		if err != nil {
-			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+			requireWorkerClose(t, err, websocket.StatusProtocolError, channelwire.WorkerCloseReasonInvalidMessage)
 			return
 		}
 	}
