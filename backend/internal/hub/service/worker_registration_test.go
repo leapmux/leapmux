@@ -105,9 +105,9 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config, seed regKeySeed) *r
 }
 
 // newRegKeyEnv builds a registration-key test env. Its connectorStore option
-// wraps the store that the connector service alone reads, so a test can
-// act inside one of Connect's store calls; every other service reads the
-// store unwrapped.
+// wraps the store that the worker connector and stream handlers read, so a
+// test can act inside their store calls. Other services read the store
+// unwrapped.
 type regKeyEnvOptions struct {
 	connectorStore    func(store.Store) store.Store
 	deregisterEffects func(*notifier.Notifier, *crdt.Registry) *service.WorkerDeregisterEffects
@@ -372,7 +372,7 @@ func TestRegister_HappyPath_ReturnsCredentialsAndConsumesKey(t *testing.T) {
 
 // The worker pool's count term, end to end.
 //
-// A Worker's Connect stream is a member of the worker pool, guaranteed the same
+// A Worker's stream is a member of the worker pool, guaranteed the same
 // working set the pool may not reclaim -- but it takes no lease, so the per-user
 // CONNECTION cap cannot see it, and registration keys have no quota. Without
 // this bound, N keys mint N members and the floors the worker pool promises sum
@@ -947,7 +947,7 @@ func TestRegister_OverUnixSocket_StillRequiresValidKey(t *testing.T) {
 	})
 }
 
-// The Hub must send WorkerIdentity as the FIRST message on every Connect stream.
+// The Hub must send WorkerIdentity as the FIRST message on every worker stream.
 //
 // It is the worker's only source for its own owner: the worker's owner gate
 // guards every machine-scoped family (file, git, sysinfo, tunnel) on it, and the
@@ -1008,8 +1008,8 @@ func connectAdminWorker(t *testing.T, env *regKeyEnv) (*workerTestPeer, string, 
 }
 
 // openAdminWorkerStream registers a worker as the admin, opens its WebSocket
-// stream over HTTP/1.1 and sends the hello. It reads nothing, so a test
-// can act while Connect still runs, before the Hub writes the greeting.
+// stream over HTTP/1.1 and sends the hello without waiting for the greeting.
+// Tests can use store hooks to pause setup before the Hub writes that greeting.
 func openAdminWorkerStream(t *testing.T, env *regKeyEnv) (*workerTestPeer, *store.Worker) {
 	t.Helper()
 	token := env.login(t, "admin", "admin123")
@@ -1079,11 +1079,12 @@ func TestRedeliverWorkerIdentity_FollowsARename(t *testing.T) {
 	assert.Equal(t, "admin-final", identity.GetRegisteredByUsername())
 }
 
-// A rename can commit after Connect's greeting read returned the old name and
-// before the registration publishes the connection. Its re-delivery then starts
-// while the registry does not hold the connection yet. Connect holds the owner's
-// delivery lock across both steps, so the re-delivery waits, takes its snapshot
-// after the registration, and the worker never keeps the old name.
+// A rename can commit after serveWorkerStream's greeting read returned the
+// old name and before the registration publishes the connection. Its
+// re-delivery then starts while the registry does not hold the connection
+// yet. serveWorkerStream holds the owner's delivery lock across both steps,
+// so the re-delivery waits, takes its snapshot after the registration, and
+// the worker never keeps the old name.
 func TestConnect_SendsARenameThatRacedTheRegistration(t *testing.T) {
 	t.Parallel()
 	var renamed atomic.Bool
@@ -1093,7 +1094,7 @@ func TestConnect_SendsARenameThatRacedTheRegistration(t *testing.T) {
 		return renameAfterFirstReadStore{
 			Store: st, renamed: &renamed, username: "admin-raced",
 			// The rename's user-info observer, which runs on another goroutine
-			// while Connect still holds the lock.
+			// while serveWorkerStream still holds the lock.
 			afterRename: func(owner string) {
 				go func() {
 					defer close(redelivered)
@@ -1116,7 +1117,7 @@ func TestConnect_SendsARenameThatRacedTheRegistration(t *testing.T) {
 
 // A connection reads the owner's username once, for its greeting. The count is
 // taken after a re-delivery, whose frame the test reads, so it holds every read
-// that Connect made.
+// that serveWorkerStream made.
 func TestConnect_ReadsTheUsernameOnce(t *testing.T) {
 	t.Parallel()
 	var reads atomic.Int64
@@ -1171,8 +1172,8 @@ func TestConnect_GreetsWithNoUsernameWhenTheAccountCannotBeRead(t *testing.T) {
 	renameUser(t, env.store, owner, "admin-later")
 	env.connector.RedeliverWorkerIdentity(owner)
 
-	// The first identity frame after the greeting is the re-delivery: Connect
-	// sent no second frame for the read that failed.
+	// The first identity frame after the greeting is the re-delivery:
+	// serveWorkerStream sent no second frame for the read that failed.
 	identity := nextWorkerIdentity(t, stream)
 	assert.Equal(t, "admin-later", identity.GetRegisteredByUsername())
 }
@@ -1222,11 +1223,11 @@ func TestWorkerIdentityReadsHoldTheOwnersDeliveryLock(t *testing.T) {
 	assert.False(t, env.connector.IdentityDeliveryLockHeldForTest(owner), "each critical section ended")
 }
 
-// Connect reads the owner's username under the owner's delivery lock. A read
-// that stalls holds the lock for at most the identity read timeout, so a
-// re-delivery for the same owner still completes. The user-info observers and
-// the revocation watcher run that re-delivery, so a stall that held the lock for
-// ever would stall them too.
+// serveWorkerStream reads the owner's username under the owner's delivery
+// lock. A read that stalls holds the lock for at most the identity read
+// timeout, so a re-delivery for the same owner still completes. The user-info
+// observers and the revocation watcher run that re-delivery, so a stall that
+// held the lock for ever would stall them too.
 func TestConnect_AStalledGreetingReadReleasesTheOwnersDeliveryLock(t *testing.T) {
 	t.Parallel()
 	ctx := testutil.DeadlineContext(t)
@@ -1287,7 +1288,7 @@ func TestRedeliverWorkerIdentity_AStalledReadEndsAtTheReadTimeout(t *testing.T) 
 	clock := testutil.NewQuartzMock(t)
 	stalled := make(chan struct{})
 	env := regKeyEnvFromStore(t, hubtestutil.OpenTestStore(t), testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
-		// The first read is Connect's; the second is the re-delivery's.
+		// The first read is serveWorkerStream's; the second is the re-delivery's.
 		return stallUserReadStore{Store: st, reads: new(atomic.Int64), stallRead: 2, stalled: stalled}
 	}}, clock)
 	stream, owner, _ := connectAdminWorker(t, env)
@@ -1316,9 +1317,9 @@ func TestRedeliverWorkerIdentity_AStalledReadEndsAtTheReadTimeout(t *testing.T) 
 	assert.Equal(t, "admin-after-redeliver-stall", nextWorkerIdentity(t, stream).GetRegisteredByUsername())
 }
 
-// A panic in Connect's greeting read must release the owner's delivery lock.
-// Otherwise every later delivery for the owners on that lock's stripe blocks for
-// ever. Nothing registered, so the worker stays offline.
+// A panic in serveWorkerStream's greeting read must release the owner's
+// delivery lock. Otherwise every later delivery for the owners on that lock's
+// stripe blocks for ever. Nothing registered, so the worker stays offline.
 func TestConnect_APanicInTheGreetingReadUnlocks(t *testing.T) {
 	t.Parallel()
 	env := newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
@@ -1333,8 +1334,9 @@ func TestConnect_APanicInTheGreetingReadUnlocks(t *testing.T) {
 		"the panic must release the owner's delivery lock")
 }
 
-// A panic in Connect after the registration must undo the registration.
-// Otherwise the worker reads online through a connection that nobody drains.
+// A panic in serveWorkerStream after the registration must undo the
+// registration. Otherwise the worker reads online through a connection that
+// nobody drains.
 func TestConnect_APanicAfterTheRegistrationUnregisters(t *testing.T) {
 	t.Parallel()
 	env := newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
@@ -1354,8 +1356,8 @@ func TestConnect_APanicAfterTheRegistrationUnregisters(t *testing.T) {
 		"the critical section ended with the registration")
 }
 
-// panicWorkerReadStore panics in the worker read that Connect makes after the
-// registration.
+// panicWorkerReadStore panics in the worker read that serveWorkerStream makes
+// after the registration.
 type panicWorkerReadStore struct {
 	store.Store
 }
@@ -1490,7 +1492,7 @@ func (u userReadCountingUsers) GetByID(ctx context.Context, id string) (*store.U
 }
 
 // renameAfterFirstReadStore renames a user right after the connector's first
-// read of that user, which is the greeting read in Connect.
+// read of that user, which is the greeting read in serveWorkerStream.
 type renameAfterFirstReadStore struct {
 	store.Store
 	renamed  *atomic.Bool
@@ -1664,8 +1666,8 @@ func (failedStopSender) SendAndWait(context.Context, *workermgr.Conn, *leapmuxv1
 }
 
 // authReadHookStore runs afterAuthRead after each successful
-// GetByAuthTokenIncludeDeleted call. This is the window between Connect's
-// authentication read and connection registration.
+// GetByAuthTokenIncludeDeleted call. This is the window between the stream
+// handler's authentication read and connection registration.
 type authReadHookStore struct {
 	store.Store
 	afterAuthRead func(*store.Worker)
@@ -1689,11 +1691,11 @@ func (w authReadHookWorkers) GetByAuthTokenIncludeDeleted(ctx context.Context, t
 }
 
 // A deregistration, or a deletion with the worker's user, can commit after
-// Connect authenticates the worker and before it registers the connection.
-// SendDeregister then finds no connection and tells nobody, so Connect itself
-// must notice the change and tell the worker to stop. Otherwise the worker
-// stays connected, and keeps its agents running, until it happens to
-// reconnect.
+// WorkerStreamHandler authenticates the worker and before the session
+// registers its connection. SendDeregister then finds no connection and tells
+// nobody, so serveWorkerStream must notice the change and tell the worker to
+// stop. Otherwise the worker stays connected, and keeps its agents running,
+// until it happens to reconnect.
 func TestConnect_TellsAWorkerChangedWhileItConnectsToStop(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -1772,7 +1774,7 @@ func TestConnect_TellsAWorkerChangedWhileItConnectsToStop(t *testing.T) {
 }
 
 // workerReadFailStore fails every GetByIDIncludeDeleted, which is the read that
-// Connect makes after it registers the connection.
+// serveWorkerStream makes after it registers the connection.
 type workerReadFailStore struct {
 	store.Store
 }
@@ -1789,10 +1791,11 @@ func (workerReadFailWorkers) GetByIDIncludeDeleted(context.Context, string) (*st
 	return nil, errors.New("worker read failed")
 }
 
-// Connect cannot know whether the worker must be told to stop when it cannot
-// read the worker again after the registration. It must refuse the stream
-// rather than serve it as ACTIVE, and the refused connection must leave the
-// registry, so the worker reconnects and the next Connect decides again.
+// serveWorkerStream cannot know whether the worker must be told to stop when
+// it cannot read the worker again after the registration. It must refuse the
+// stream rather than serve it as ACTIVE, and the refused connection must
+// leave the registry. The worker reconnects, and serveWorkerStream decides
+// again on the next connection.
 func TestConnect_RefusesTheStreamWhenTheWorkerCannotBeReadAgain(t *testing.T) {
 	t.Parallel()
 	env := newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store {
@@ -1827,13 +1830,12 @@ func TestConnect_RefusesTheStreamWhenTheWorkerCannotBeReadAgain(t *testing.T) {
 	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, row.Status)
 }
 
-// A Connect handler can clear the shutdown interceptor -- a one-shot check --
-// microseconds before the Hub starts fencing, then spend store round trips, the
-// hello read and the key comparison getting to Register. The registry refuses it, and what the
-// worker sees has to be Unavailable rather than Internal: the manager-level
-// tests pin the refusal, but only this one pins the status code a real worker
-// observes, which is the part a later edit folding the branch back into the
-// generic internal-error close would silently change.
+// A worker stream can pass the WebSocket admission check before shutdown,
+// then spend time reading its hello, comparing keys, and reading the store
+// before Register sees the fenced registry. The worker must receive close
+// 1012 with hub_shutting_down. The manager tests prove the refusal; this test
+// proves that a real stream receives the shutdown close rather than close
+// 1011 with hub_internal_error.
 func TestConnect_FencedRegistryRefusesWithServiceRestart(t *testing.T) {
 	t.Parallel()
 	env := setupRegKeyEnv(t)
@@ -1848,9 +1850,8 @@ func TestConnect_FencedRegistryRefusesWithServiceRestart(t *testing.T) {
 	worker, err := env.store.Workers().GetByID(context.Background(), regResp.GetWorkerId())
 	require.NoError(t, err)
 
-	// The Hub has begun shutting down. The interceptor is NOT installed on this
-	// fixture, which is exactly the window under test: the request is already
-	// past it.
+	// The fixture omits the WebSocket admission check, so the request reaches
+	// the registry after shutdown fences it.
 	env.wMgr.FenceAll()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1875,7 +1876,7 @@ func TestConnect_FencedRegistryRefusesWithServiceRestart(t *testing.T) {
 //
 // max_workers_per_user is meant to bound how many of one account's Workers sit in
 // the worker send-queue pool, each holding a floor the pool may not reclaim.
-// Counting ROWS cannot do that. The pool member is created per Connect stream,
+// Counting ROWS cannot do that. The pool member is created per worker stream,
 // behind an auth-token lookup that -- correctly -- still admits a DEREGISTERING
 // worker, because that stream is how the worker is told to tear itself down. The
 // row count stops seeing it the moment the row deregisters, and nothing

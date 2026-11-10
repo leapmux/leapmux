@@ -16,11 +16,10 @@ import (
 	"github.com/leapmux/leapmux/internal/wskeepalive"
 )
 
-// wsAuthenticator carries what every long-lived WebSocket endpoint needs before
-// it can serve: the shared HTTP auth ladder (solo -> bearer -> cookie), the
-// authenticated lease bind, the upgrade itself, and the pace its liveness probe
-// runs at. Both UserEventsHandler and ChannelRelayHandler embed it, so that
-// option set lives in one place and cannot drift between endpoints.
+// wsAuthenticator holds browser endpoint options. It supplies the shared HTTP
+// authentication ladder (solo -> bearer -> cookie), the authenticated lease
+// bind, and the keepalive pace. UserEventsHandler and ChannelRelayHandler
+// embed it so those options cannot drift between the browser endpoints.
 type wsAuthenticator struct {
 	store          store.Store
 	soloUser       *auth.UserInfo
@@ -73,8 +72,8 @@ func newWSAuthenticator(
 	}
 }
 
-// authenticate resolves the caller via the shared HTTP auth ladder so every WS
-// endpoint stays interchangeable for credential plumbing. The token validator
+// authenticate resolves the caller via the shared HTTP auth ladder so both
+// browser endpoints use the same credential checks. The token validator
 // is optional (nil accepts cookie auth only), and the caller wires it after
 // construction, so this reads it at call time.
 //

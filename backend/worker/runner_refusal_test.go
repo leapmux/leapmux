@@ -207,9 +207,8 @@ func TestRunStopsWhenTheHubDeletedAWorkerWithNoHook(t *testing.T) {
 	assert.Equal(t, int32(1), drained.Load())
 }
 
-// HubEndpoint lets a caller share the endpoint that it registered through, so the
-// Connect stream reuses its connection pool. HubURL then states nothing, and an
-// invalid one must not matter.
+// HubEndpoint supplies the Hub destination and transport configuration.
+// HubURL must not override it, even when HubURL is empty or invalid.
 func TestRunUsesTheHubEndpointItIsGiven(t *testing.T) {
 	t.Parallel()
 	hubService := &refusingHub{

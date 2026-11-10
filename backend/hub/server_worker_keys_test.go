@@ -65,8 +65,8 @@ func TestServer_AWorkerWithOtherKeysStopsReconnecting(t *testing.T) {
 }
 
 // A Worker the Hub has DELETED is told so for good: OnDeregister runs and the
-// loop stops. The Hub refuses before it reads the hello, so the status arrives
-// through either Send or Receive; only the outcome is asserted.
+// loop stops. The Hub refuses before reading the hello. The Worker reads that
+// refusal's close frame even when its hello write fails.
 func TestServer_ADeletedWorkerIsToldToStop(t *testing.T) {
 	t.Parallel()
 	srv := startTestServer(t, &config.Config{})

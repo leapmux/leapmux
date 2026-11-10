@@ -631,7 +631,8 @@ class ProxyEnvironment {
 
   /**
    * Read a file of several megabytes from the Worker through an end-to-end encrypted channel. The bytes travel from
-   * the Worker to the Hub on the Worker's stream, so the proxy carries them as part of one long request body.
+   * the Worker to the Hub on the Worker's stream. The proxy carries framed WebSocket messages with the new image
+   * and one long HTTP/2 request body with the baseline image.
    */
   async checkTransfer(label) {
     const path = '/tmp/reverse-proxy-transfer.txt'

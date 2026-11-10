@@ -258,7 +258,7 @@ type Server struct {
 	// would accept a Worker whose dial then raced the shutdown of the
 	// predecessor this launch is waiting out.
 	leaseHeld chan struct{}
-	// webSockets counts the hijacked WebSocket handlers of both relay routes.
+	// webSockets counts the hijacked handlers of every WebSocket route.
 	// The shutdown closes admission directly after shutdownCh, cancels the
 	// handlers, and drains them before the store closes: http.Server.Shutdown
 	// and Close cannot reach a hijacked handler, and nothing else joined one.
@@ -523,7 +523,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	// handlerCtx is the parent of every in-flight HTTP handler's request context
 	// (via http.Server.BaseContext below). It is cancelled handlerGrace into
 	// shutdown so a handler the per-registry teardown paths cannot reach (every
-	// mux route, not just the worker Connect streams) is forced to unwind before
+	// mux route, not just the worker WebSocket streams) is forced to unwind before
 	// the drain's deadline. Created beside shutdownCh so the two shutdown signals
 	// live together; cancelHandlers is released through acquiredResources on any
 	// construction failure.
@@ -1041,22 +1041,16 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		Protocols: protocols,
 		HTTP2: &http.HTTP2Config{
 			MaxConcurrentStreams: 1000,
-			// Without this a peer that stops draining its socket parks the
-			// writer forever, and workermgr.Conn.Send holds the conn's mutex
-			// across that write -- so ONE stalled worker blocks every other
-			// sender to it (notifier, channel relay, shutdown notice) for the
-			// process's life, and its Connect handler can never return. The
-			// timeout is extended whenever any byte is written, so it caps
-			// zero PROGRESS on a write, not the write's total duration: a slow
-			// but moving consumer never trips it, however large the frame. 30s
-			// is therefore about how long a stalled-but-recoverable socket may
-			// take to accept a single byte -- generous for a paused VM or a
-			// saturated link, and far short of leaving a stalled peer to hold
-			// the conn mutex for the process's life.
+			// End an HTTP/2 API response's socket write after 30 seconds with
+			// no byte progress. Each written byte extends the timeout, so a
+			// slow peer that keeps receiving does not hit a limit on the
+			// response's total duration, even for a large response. Thirty
+			// seconds lets a paused VM or saturated link recover without
+			// letting a stalled socket write wait forever.
 			//
-			// It does NOT limit a peer that stalls its HTTP/2 flow-control
-			// window instead, because then no socket write is attempted; see
-			// workermgr.FenceAll for that residual.
+			// An HTTP/2 flow-control stall attempts no socket write, so this
+			// timeout does not cover it. Worker WebSocket writes instead use
+			// their queue watchdog and cancellation of the connection context.
 			WriteByteTimeout: 30 * time.Second,
 		},
 	}
@@ -1460,7 +1454,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		s.authContexts.Stop()
 
 		// 2. Notify connected workers to delay reconnection, then end their
-		// Connect streams. Both halves matter to the drain below: a notified
+		// WebSocket streams. Both halves matter to the drain below: a notified
 		// worker still holds its stream until it decides to reconnect, and the
 		// drain waits on the handler that stream is parked in. This releases the
 		// drain for the handlers the worker registry knows about. The handlerCtx
@@ -1492,22 +1486,20 @@ func (s *Server) Serve(ctx context.Context) error {
 		// ListenPipe with FILE_FLAG_FIRST_PIPE_INSTANCE on the same name
 		// fails with ERROR_ACCESS_DENIED.
 		//
-		// http.Server.Close() only iterates net/http's own activeConn map.
-		// A channel-relay websocket is hijacked, which removes it from that
-		// map — so Close() cannot reach it. (An unencrypted-HTTP/2 connection
-		// carrying a worker's bidi stream stays in the map, but marked ACTIVE
-		// for its whole life, which is why the drain above needs the fenced
-		// handlers to return first.) locallisten.CloseAccepted closes the
-		// underlying pipe handles directly via the listener's own
-		// accepted-connection tracking — the only level that sees every conn
-		// THAT listener accepted.
+		// http.Server.Close() only iterates net/http's activeConn map. Every
+		// WebSocket upgrade hijacks its connection and removes it from that
+		// map, including the Worker stream and both browser routes. The HTTP
+		// drain therefore cannot join those handlers. locallisten.CloseAccepted
+		// closes underlying pipe handles through the listener's own tracking,
+		// the only level that sees every connection that listener accepted.
 		//
-		// It is a safeguard, not the primary teardown: authContexts.Stop above
-		// cancels each relay's auth lease, which ends its handler and closes
-		// the socket. This catches one hijacked before its lease existed. The
-		// TCP listener needs no equivalent — a lingering accepted TCP conn does
-		// not block rebinding the port, whereas a surviving named-pipe instance
-		// does block the next ListenPipe(FIRST_PIPE_INSTANCE).
+		// This is a safeguard, not the primary teardown. Worker fencing and
+		// browser lease teardown above end established streams, and the
+		// WebSocket gate below joins their handlers. This also catches a
+		// socket hijacked before its lease or registry entry existed. TCP
+		// needs no equivalent: a lingering accepted TCP connection does not
+		// block rebinding its port, whereas a surviving named-pipe instance
+		// blocks the next ListenPipe(FILE_FLAG_FIRST_PIPE_INSTANCE).
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), s.shutdownDeadline.Cap(httpDrainTimeout))
 		defer cancel()
 		httpShutdownErr := s.server.Shutdown(shutdownCtx)

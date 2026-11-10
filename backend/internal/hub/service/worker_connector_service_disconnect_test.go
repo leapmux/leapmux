@@ -27,7 +27,7 @@ import (
 // because it needs this package's registration fixtures.
 
 // TestConnect_DisconnectLogCarriesReasonWhenWorkerClosesStream drives the
-// real Connect handler over a unix socket and pins the reason on the
+// worker WebSocket handler over HTTP/1.1 and pins the reason on the
 // teardown log for the one quiet exit every healthy reconnect produces: the
 // worker hanging up cleanly. Before the reason field this line said only
 // THAT the worker disconnected, and diagnosing solo's 10s reconnect loop
@@ -88,8 +88,8 @@ func TestConnect_LogsAHelloPhaseRefusal(t *testing.T) {
 	require.Error(t, err)
 	requireWorkerClose(t, err, websocket.StatusProtocolError, channelwire.WorkerCloseReasonInvalidMessage)
 
-	// Connect logs before it returns, and the refusal reaches the worker only
-	// after Connect returns, so the line is already in the buffer.
+	// serveWorkerStream logs before returning to WorkerStreamHandler, which
+	// then sends the close frame. The line is already in the buffer.
 	line := logs.String()
 	require.Contains(t, line, `level=WARN msg="worker stream ended before a valid hello"`)
 	require.Contains(t, line, "worker_id="+regResp.GetWorkerId())

@@ -568,7 +568,7 @@ func TestSendPumpDrainTurnBoundsBatchAndResignals(t *testing.T) {
 	require.NoError(t, pump.DrainTurn())
 	assert.Equal(t, int32(connDrainMaxFrames), wrote.Load(), "DrainTurn must stop at the frame budget")
 
-	// Remaining frames re-signal Ready so the Connect select can turn again.
+	// Remaining frames re-signal Ready so the handler's select can turn again.
 	select {
 	case <-pump.Ready():
 	case <-time.After(time.Second):

@@ -145,8 +145,7 @@ func WithClock(clock quartz.Clock) ClientOption {
 	}
 }
 
-// New creates a new Hub client with integrated lifecycle management.
-// It creates agent and terminal managers internally. Build endpoint with
+// New creates a Hub client and its terminal manager. Build endpoint with
 // hubtransport.New, which accepts an http(s) URL, a `unix:` socket path or a
 // `npipe:` pipe name.
 //
@@ -185,7 +184,7 @@ func New(endpoint *hubtransport.Endpoint, opts ...ClientOption) *Client {
 // would probe again and pool separately.
 func (c *Client) Endpoint() *hubtransport.Endpoint { return c.endpoint }
 
-// Stop gracefully stops all managers.
+// Stop closes every encrypted channel.
 // Safe to call multiple times.
 func (c *Client) Stop() {
 	c.stopOnce.Do(func() {
@@ -342,10 +341,11 @@ const (
 // A writer that is gone or closed is not saturated: the connection is ending
 // already. Its context ended, or the writer gave up. A writer gives up WITHOUT
 // cancelling when the Hub ended the stream (see writerGiveUpCancelsConnection),
-// so the receive loop can still report the Hub's status, and a cancel here
-// would replace that status with Canceled. So the frame is dropped quietly, and
-// no cancel follows. A gone writer has no connection left to cancel: Connect
-// clears the writer and the cancel function together.
+// so the receive loop can still read the Hub's close. Cancelling here closes
+// the socket and can replace an unread refusal with the local cancellation
+// cause. Drop the frame quietly without cancelling. A gone writer has no
+// connection left to cancel: Connect clears the writer and cancel function
+// together.
 func (c *Client) trySendControl(msg *leapmuxv1.ConnectRequest) controlSendOutcome {
 	w := c.currentWriter()
 	if w == nil {

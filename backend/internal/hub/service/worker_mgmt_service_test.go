@@ -58,8 +58,8 @@ func TestListWorkers_RejectsMalformedCursor(t *testing.T) {
 
 // TestGetWorker_ReportsTimestampsAsInstants pins the worker's two instants as
 // Timestamps. created_at is the stored row's creation time. last_seen_at is
-// unset until the worker first connects, and set once the hub records a
-// heartbeat, so a client never reads an empty string as a time.
+// unset until the Hub records the Worker's connection or an answered ping,
+// so a client never reads an empty string as a time.
 func TestGetWorker_ReportsTimestampsAsInstants(t *testing.T) {
 	t.Parallel()
 
@@ -86,7 +86,7 @@ func TestGetWorker_ReportsTimestampsAsInstants(t *testing.T) {
 
 	require.NoError(t, st.Workers().UpdateLastSeen(context.Background(), workerID))
 	seen := get()
-	require.NotNil(t, seen.GetLastSeenAt(), "a heartbeat sets the last-seen time")
+	require.NotNil(t, seen.GetLastSeenAt(), "recording worker activity sets the last-seen time")
 	assert.False(t, seen.GetLastSeenAt().AsTime().Before(row.CreatedAt), "the worker is seen after it was created")
 
 	// The listing projects the same instants as the single read.

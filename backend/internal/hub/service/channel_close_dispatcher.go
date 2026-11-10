@@ -20,8 +20,8 @@ const (
 // needs. ConnForTrustedPath performs no authorization, which is correct here:
 // worker ids arrive from channelmgr teardown (a trusted server flow), never
 // from a user-supplied id.
-// Holding this interface instead of *workermgr.Manager keeps Register /
-// the liveness probes / WaitFor* out of reach.
+// Holding this interface instead of *workermgr.Manager keeps registration
+// and registry mutation out of reach.
 type workerConnRegistry interface {
 	ConnForTrustedPath(string) *workermgr.Conn
 }
@@ -164,7 +164,7 @@ func (d *workerCloseDispatcher) deliverWorkerCloses(workerID string) {
 }
 
 // sendChannelCloseNotification enqueues one channel-close control frame.
-// The real write runs on the Connect handler's pump; this call is a pure
+// The real write runs on the worker session's pump; this call is a pure
 // hub-code enqueue that cannot panic through third-party transport code.
 func sendChannelCloseNotification(conn *workermgr.Conn, channelID string) {
 	if err := conn.SendControl(newChannelCloseResponse(channelID)); err != nil {

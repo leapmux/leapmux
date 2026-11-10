@@ -342,7 +342,7 @@ func TestGetWorkerHandshakeParamsIgnoresARefusedReplacement(t *testing.T) {
 	env.requireHandshake(t, ctx, token, workerID, helloA)
 }
 
-// Connect refuses every first message that is not a usable hello, before it
+// The Hub refuses every first message that is not a usable hello, before it
 // registers anything.
 func TestConnectRefusesAnUnusableFirstMessage(t *testing.T) {
 	t.Parallel()
@@ -402,8 +402,8 @@ func TestConnectEndsAStreamWhoseHelloNeverArrives(t *testing.T) {
 	requireWorkerClose(t, err, websocket.StatusProtocolError, channelwire.WorkerCloseReasonHelloTimeout)
 }
 
-// A worker that hangs up before its hello ends the stream cleanly: Connect
-// returns no error, and the worker is never listed online.
+// A worker that hangs up before its hello closes the stream without error,
+// and the Hub never lists it online.
 func TestConnectEndsQuietlyWhenTheWorkerClosesBeforeItsHello(t *testing.T) {
 	t.Parallel()
 	env, ctx, token, workerID, authToken, server := workerStreams(t)

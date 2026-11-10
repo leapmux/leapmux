@@ -431,18 +431,27 @@ func TestCloseWorkerChannels_IsSilentWhenThereIsNothingToClose(t *testing.T) {
 	assert.Empty(t, buf.String())
 }
 
-// TestStreamEndReason pins the vocabulary of the connect-time disconnect log:
-// the two shapes that are the worker's own doing (no observed error, and a
-// clean EOF) collapse to the one healthy phrase, and everything else keeps
-// its verbatim error so an operator reads the actual transport failure.
+// TestStreamEndReason verifies that nil, EOF, and accepted WebSocket close
+// statuses produce the healthy close text. Other errors keep their text.
 func TestStreamEndReason(t *testing.T) {
-	assert.Equal(t, "worker closed the stream", streamEndReason(nil),
-		"no observed receive error is the handler exiting, not the stream failing")
-	assert.Equal(t, "worker closed the stream", streamEndReason(io.EOF),
-		"a clean EOF is the worker's own hang-up")
-	assert.Equal(t,
-		"worker stream failed: read unix /hub.sock->: i/o timeout",
-		streamEndReason(errors.New("read unix /hub.sock->: i/o timeout")))
+	abnormalClose := websocket.CloseError{Code: websocket.StatusInternalError, Reason: "x"}
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"no observed error", nil, "worker closed the stream"},
+		{"eof", io.EOF, "worker closed the stream"},
+		{"normal close", websocket.CloseError{Code: websocket.StatusNormalClosure}, "worker closed the stream"},
+		{"going away", websocket.CloseError{Code: websocket.StatusGoingAway}, "worker closed the stream"},
+		{"no status", websocket.CloseError{Code: websocket.StatusNoStatusRcvd}, "worker closed the stream"},
+		{"abnormal close", abnormalClose, "worker stream failed: " + abnormalClose.Error()},
+		{"transport failure", errors.New("read unix /hub.sock->: i/o timeout"), "worker stream failed: read unix /hub.sock->: i/o timeout"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, streamEndReason(tc.err))
+		})
+	}
 }
 
 func TestValidateWorkerHello(t *testing.T) {
@@ -538,7 +547,7 @@ func TestValidateWorkerHello(t *testing.T) {
 }
 
 // The queue pool and the clock carry no nil-tolerant default, so the
-// constructor refuses each one loudly rather than let the first Connect panic.
+// constructor refuses each one rather than let the first stream handler panic.
 func TestNewWorkerConnectorServiceRequiresAQueuePoolAndAClock(t *testing.T) {
 	t.Parallel()
 

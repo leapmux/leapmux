@@ -170,8 +170,8 @@ func New(a ReachAuthorizer) *Manager {
 //
 // This is the bound on POOL MEMBERSHIP, and it is not redundant with its twin
 // WorkerConnectorService.SetMaxWorkersPerUser, which bounds how many registered
-// worker ROWS an account may hold. A row cap cannot bound membership on its own:
-// a DEREGISTERING row keeps its Connect stream -- that stream is how the worker
+// worker ROWS an account may hold. A row cap cannot limit membership on its own:
+// a DEREGISTERING row keeps its worker stream -- that stream is how the worker
 // is told to tear itself down -- while no longer counting against the row cap,
 // so register/deregister/register cycles would grow the worker pool without ever
 // exceeding it. The row cap stays because it refuses at registration time, where
@@ -264,7 +264,7 @@ func (m *Manager) Register(c *Conn) (bool, error) {
 			c.Fence()
 			// After the unlock, so a slow log handler cannot hold the registry
 			// lock, and at Warn because it is the operator's to act on: either
-			// an account is leaking Connect streams or the cap is under what its
+			// an account is leaking worker streams or the cap is under what its
 			// machines legitimately hold.
 			slog.Warn("refusing worker connection: account is at its live worker cap",
 				"user_id", c.owner, "worker_id", c.WorkerID, "held", held, "limit", limit)
@@ -295,11 +295,11 @@ func (m *Manager) Register(c *Conn) (bool, error) {
 // deferred cleanup from accidentally removing a newer replacement connection.
 // Returns true if the connection was actually removed.
 //
-// Unregister does NOT Fence: the Connect handler removes the conn from the
-// registry first (so no new Hub sender can look it up), then drains the
+// Unregister does NOT Fence: the worker stream handler removes the conn from
+// the registry first (so no new Hub sender can look it up), then drains the
 // remaining queue while it still owns the stream, then Fences. That order
 // closes the window where SendControl could return nil and then be discarded
-// by Close. See WorkerConnectorService.Connect.
+// by Close. See WorkerConnectorService.serveWorkerStream.
 func (m *Manager) Unregister(workerID string, conn *Conn) bool {
 	// A nil conn is refused up front because it MATCHES: reading an absent key
 	// out of conns yields nil too, so `m.conns[workerID] == conn` would be true
@@ -554,9 +554,8 @@ func (m *Manager) NotifyShutdownAndFence(ctx context.Context, retryDelaySeconds 
 		}()
 	}
 
-	// Deferred so it runs on EVERY exit, deadline included: a worker that could
-	// not be notified inside the budget is exactly the one that would otherwise
-	// hold the drain open for the full idle timeout.
+	// Deferred so it runs on every exit, including deadline expiry. A failed
+	// notification must still fence the connection and start its handler teardown.
 	defer m.FenceAll()
 
 	result := ShutdownNotifyResult{Total: len(connections)}
@@ -608,7 +607,7 @@ func (m *Manager) connsLocked() []*Conn {
 	return conns
 }
 
-// FenceAll cancels every registered worker connection, ending its Connect
+// FenceAll cancels every registered worker connection, ending its stream
 // handler, and latches the registry closed so a later Register is refused
 // rather than published behind the fence. NotifyShutdownAndFence defers it, so
 // every worker the notification pass saw learns to delay its reconnect first.

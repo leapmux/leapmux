@@ -1,5 +1,5 @@
 // Package workermgrtest provides shared Conn fixtures for hub packages that
-// exercise the worker registry without owning the Connect handler.
+// exercise the worker registry without owning the worker stream handler.
 package workermgrtest
 
 import (

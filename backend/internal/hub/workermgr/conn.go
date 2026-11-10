@@ -32,8 +32,8 @@ var ErrConnectionClosed = errors.New("worker connection closed")
 var ErrControlSaturated = errors.New("worker connection control queue saturated")
 
 // Conn represents a connected worker's bidirectional stream. Sends enqueue
-// onto a handler-drained queue; the Connect handler alone holds the matching
-// SendPump and is the only goroutine that ever writes.
+// onto a handler-drained queue; the worker stream handler alone holds the
+// matching SendPump and is the only goroutine that ever writes.
 type Conn struct {
 	WorkerID string
 	// Greeting, when non-nil at Register, is enqueued before the connection is
@@ -63,19 +63,20 @@ type Conn struct {
 	hello *leapmuxv1.WorkerHello
 }
 
-// SendPump is the Connect handler's exclusive write capability. The registry
-// hands out *Conn, which has no drain method; only the handler holds the
-// pump. Sole ownership of the transport write is therefore unforgeable rather
-// than a documentation comment -- across package boundaries. Same-package
-// tests must keep the pump returned by NewConn rather than reconstructing one.
+// SendPump is the worker stream handler's exclusive write capability. The
+// registry hands out *Conn, which has no drain method; only the handler holds
+// the pump. Sole ownership of the transport write is therefore unforgeable
+// rather than a documentation comment -- across package boundaries.
+// Same-package tests must keep the pump returned by NewConn rather than
+// reconstructing one.
 type SendPump struct{ c *Conn }
 
 // Ready returns the queue's wake channel. The handler selects on it and calls
 // DrainTurn (or Drain on teardown). Exactly one goroutine may consume it.
 func (p *SendPump) Ready() <-chan struct{} { return p.c.q.Wake() }
 
-// DrainTurn writes up to a bounded batch of queued frames and returns so the
-// Connect select can service receives. Remaining frames re-signal Ready.
+// DrainTurn writes up to a limited batch of queued frames and returns so the
+// handler's select can service receives. Remaining frames re-signal Ready.
 func (p *SendPump) DrainTurn() (err error) {
 	return p.drain(sendq.DrainLimits{
 		MaxFrames:   connDrainMaxFrames,
@@ -85,7 +86,7 @@ func (p *SendPump) DrainTurn() (err error) {
 
 // Drain pops and writes every currently queued frame. Returns a non-nil error
 // once the queue has given up (write failure or watchdog); give-up already
-// fenced and cancelled the conn. Used on Connect teardown after the conn is
+// fenced and cancelled the conn. Used on stream teardown after the conn is
 // removed from the registry, so the final flush cannot race new enqueues.
 //
 // A panicking Write is recovered here so it cannot escape the handler's drain
@@ -235,7 +236,7 @@ func (c *Conn) SendWait(ctx context.Context, msg *leapmuxv1.ConnectResponse) err
 }
 
 // SendControl tries to enqueue a reserved-budget control frame (greeting,
-// heartbeat, shutdown, channel close, reconcile nudge, tab sync). Closed →
+// shutdown, channel close, reconcile nudge, tab sync). Closed →
 // ErrConnectionClosed. Reserve gone → Fence + ErrControlSaturated, matching
 // the worker's TrySendOrReset policy: a peer that cannot accept control is
 // discarded so reconnect recovers handshake/teardown rather than leaving a
