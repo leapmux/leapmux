@@ -18,7 +18,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
-	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -729,13 +728,13 @@ func TestGoal_TransitionKindMarksAReplacement(t *testing.T) {
 
 // startGoalAgentProcess registers a real test process through the Manager's startup path.
 // The live-goal fixture needs that process because an absent process correctly projects a stored goal as Dormant.
-func startGoalAgentProcess(t *testing.T, svc *Service, agentID string) {
+func startGoalAgentProcess(t *testing.T, svc *Service, agentID string, start agent.StartFunc) {
 	t.Helper()
 	_, err := svc.Agents.StartAgentWith(t.Context(), agent.Options{
 		AgentID:       agentID,
 		WorkingDir:    t.TempDir(),
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
-	}, agent.NewProviderServices(requireRootOutputSink(t, svc.Output, agentID)), claudetest.StartEcho)
+	}, agent.NewProviderServices(requireRootOutputSink(t, svc.Output, agentID)), start)
 	require.NoError(t, err)
 	t.Cleanup(func() { svc.Agents.StopAndWaitAgent(agentID) })
 	require.True(t, svc.Agents.AgentAlive(agentID))
@@ -746,14 +745,8 @@ func startGoalAgentProcess(t *testing.T, svc *Service, agentID string) {
 func TestGoal_DeliveredTextCommandPersistsThroughTheOutputSink(t *testing.T) {
 	t.Parallel()
 	svc, _, agentID, _ := setupGoalTest(t)
-	startGoalAgentProcess(t, svc, agentID)
-	require.NoError(t, svc.Agents.SendRawInput(agentID, []byte(
-		"{\"type\":\"system\",\"subtype\":\"init\",\"slash_commands\":[\"goal\"]}\n"), agent.StopContext{}))
-	// The init line makes a round trip through a real process. On a loaded
-	// Windows runner, that took longer than the one second this wait once had.
-	testutil.RequireEventually(t, func() bool {
-		return len(svc.Agents.SupportedGoalActions(agentID)) > 0
-	}, "the echoed init line advertises the goal command")
+	startGoalAgentProcess(t, svc, agentID, claudetest.StartEchoWithGoalCommand)
+	require.Equal(t, []agent.GoalAction{agent.GoalActionSet, agent.GoalActionClear}, svc.Agents.SupportedGoalActions(agentID), "startup advertises the fixture's goal command before delivery")
 
 	require.NoError(t, svc.Agents.SendInput(agentID, "/goal ship the release", nil))
 	stored, err := svc.Output.LoadGoal(t.Context(), agentID)
@@ -792,7 +785,7 @@ func TestGoal_AGoalWithNoRunningProcessProjectsDormant(t *testing.T) {
 func TestGoal_AGoalWithARunningProcessKeepsItsStatus(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, _ := setupGoalTest(t)
-	startGoalAgentProcess(t, svc, agentID)
+	startGoalAgentProcess(t, svc, agentID, claudetest.StartEcho)
 
 	report := activeGoal("Ship it", 10, time.Unix(1_700_000_000, 0).UTC())
 	report.StatusDetail = "verifying"
@@ -886,7 +879,7 @@ func TestGoal_ProcessExitIsIdempotent(t *testing.T) {
 func TestGoal_TheFullRowAdapterProjectsALiveGoal(t *testing.T) {
 	t.Parallel()
 	svc, sink, agentID, readRow := setupGoalTest(t)
-	startGoalAgentProcess(t, svc, agentID)
+	startGoalAgentProcess(t, svc, agentID, claudetest.StartEcho)
 	sink.UpsertGoal(activeGoal("Ship it", 10, time.Unix(1_700_000_000, 0).UTC()))
 
 	snapshot := svc.Output.GoalSnapshotFrom(GoalColumnsOfAgent(readRow()))

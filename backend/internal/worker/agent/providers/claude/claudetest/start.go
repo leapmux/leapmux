@@ -25,6 +25,17 @@ func StartEcho(ctx context.Context, opts agent.Options, sink agent.ProviderServi
 	return &echoAgent{running}, nil
 }
 
+// StartEchoWithGoalCommand advertises /goal before the manager registers the process.
+// Goal-delivery tests can then send a command without waiting for echoed startup output.
+func StartEchoWithGoalCommand(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+	running, err := StartEcho(ctx, opts, sink)
+	if err != nil {
+		return nil, err
+	}
+	running.HandleOutput([]byte(`{"type":"system","subtype":"init","slash_commands":["goal"]}`))
+	return running, nil
+}
+
 // echoAgent keeps Claude output handling and the process lifecycle for service tests.
 // Raw input goes directly to the transport because cat has no native permission state.
 type echoAgent struct{ *claude.Agent }
