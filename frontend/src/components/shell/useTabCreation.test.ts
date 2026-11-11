@@ -131,6 +131,34 @@ function sentAgent(index = 0): OpenAgentRequest {
   return mockOpenAgent.mock.calls[index]![1] as OpenAgentRequest
 }
 
+function holdAgentRetry(failure: 'transport' | 'definitive') {
+  const held = deferred<unknown>()
+  const requests: Array<{ tabId: string, bytes: Uint8Array }> = []
+  mockOpenAgent.mockImplementation((_worker, request: OpenAgentRequest) => {
+    requests.push({
+      tabId: request.creation!.tabId,
+      bytes: toBinary(OpenAgentRequestSchema, request),
+    })
+    if (requests.length === 1) {
+      return Promise.reject(failure === 'transport'
+        ? new ChannelError('transport', 'unknown outcome')
+        : new ChannelError('rpc', 'rejected creation', { code: Code.Aborted }))
+    }
+    return held.promise
+  })
+  return {
+    held,
+    expectRetryIdentity() {
+      expect(mockOpenAgent).toHaveBeenCalledTimes(2)
+      const [first, second] = requests
+      if (failure === 'transport')
+        expect(second!.bytes).toEqual(first!.bytes)
+      else
+        expect(second!.tabId).not.toBe(first!.tabId)
+    },
+  }
+}
+
 describe('useTabCreation', () => {
   it('allocates a new identity when canonical state ends an uncertain attempt', async () => {
     const s = setup()
@@ -292,11 +320,11 @@ function openKind(s: ReturnType<typeof setup>, kind: CreationKind, callbacks: Pa
     })
   }
 }
-function replyFor(s: ReturnType<typeof setup>, kind: CreationKind) {
-  const creation = sentCreation(kind)
+function replyFor(s: ReturnType<typeof setup>, kind: CreationKind, index = 0) {
+  const creation = sentCreation(kind, index)
   const publication = s.publisher.receipt(typeFor(kind), creation.tabId)
   return kind === 'agent'
-    ? s.agentReply(sentAgent())
+    ? s.agentReply(sentAgent(index))
     : kind === 'terminal'
       ? { terminalId: creation.tabId, title: 'Shell', publication }
       : { publication }
@@ -363,20 +391,7 @@ describe('useTabCreation canonical ordering', () => {
 describe('useTabCreation retry identity', () => {
   it.each(['transport', 'definitive'] as const)('preserves a synchronous retry observer after %s failure', async (failure) => {
     const s = setup()
-    const held = deferred<unknown>()
-    const requests: Array<{ tabId: string, bytes: Uint8Array }> = []
-    mockOpenAgent.mockImplementation((_worker, request: OpenAgentRequest) => {
-      requests.push({
-        tabId: request.creation!.tabId,
-        bytes: toBinary(OpenAgentRequestSchema, request),
-      })
-      if (requests.length === 1) {
-        return Promise.reject(failure === 'transport'
-          ? new ChannelError('transport', 'unknown outcome')
-          : new ChannelError('rpc', 'rejected creation', { code: Code.Aborted }))
-      }
-      return held.promise
-    })
+    const transport = holdAgentRetry(failure)
     let retry: Promise<boolean> | undefined
     let retryFinished = false
     const input = { ...s.origin, request: s.request }
@@ -392,15 +407,9 @@ describe('useTabCreation retry identity', () => {
     expect(await s.coordinator.openAgent(input)).toBe(false)
     await settle()
     expect(onError).toHaveBeenCalledOnce()
-    expect(mockOpenAgent).toHaveBeenCalledTimes(2)
+    transport.expectRetryIdentity()
     expect(retryFinished).toBe(false)
-    const first = requests[0]!
-    const second = requests[1]!
-    if (failure === 'transport')
-      expect(second.bytes).toEqual(first.bytes)
-    else
-      expect(second.tabId).not.toBe(first.tabId)
-    held.resolve(s.agentReply(sentAgent(1), true))
+    transport.held.resolve(s.agentReply(sentAgent(1), true))
     expect(await retry).toBe(true)
   })
 
@@ -471,6 +480,112 @@ describe('useTabCreation retry identity', () => {
 })
 
 describe('useTabCreation local completion', () => {
+  for (const kind of ['agent', 'terminal', 'file', 'image'] as const) {
+    it.each([
+      'close',
+      'reassignment',
+      'account',
+      'aba',
+      'disposal',
+      'view',
+    ] as const)(`rechecks a detached ${kind} observer after a preceding callback changes %s`, async (change) => {
+      const s = setup()
+      const held = deferred<unknown>()
+      mockFor(kind).mockReturnValueOnce(held.promise)
+      const [view, setView] = createSignal<unknown>({})
+      const secondObserved = vi.fn()
+      const firstObserved = vi.fn(() => {
+        const id = sentCreation(kind).tabId
+        switch (change) {
+          case 'close':
+            s.publisher.deliver([
+              tombstoneTab(s.publisher.context, typeFor(kind), id),
+            ])
+            break
+          case 'reassignment':
+            s.publisher.deliver([
+              setTabWorkerId(s.publisher.context, typeFor(kind), id, 'replacement'),
+            ])
+            break
+          case 'account':
+          case 'aba':
+            setStorageAccountForTests('replacement-account')
+            s.setUserId('replacement-account')
+            if (change === 'aba') {
+              setStorageAccountForTests(s.harness.userId)
+              s.setUserId(s.harness.userId)
+            }
+            break
+          case 'disposal':
+            s.dispose()
+            break
+          case 'view':
+            setView({})
+            break
+        }
+      })
+      const first = openKind(s, kind, { viewIdentity: view, onObserved: firstObserved })
+      const second = openKind(s, kind, { viewIdentity: view, onObserved: secondObserved })
+      await settle()
+      expect(mockFor(kind)).toHaveBeenCalledOnce()
+      s.publisher.publish(typeFor(kind), sentCreation(kind).tabId, { workerId: 'worker' })
+      held.resolve(replyFor(s, kind))
+      expect(await first).toBe(true)
+      expect(await second).toBe(false)
+      expect(firstObserved).toHaveBeenCalledOnce()
+      expect(secondObserved).not.toHaveBeenCalled()
+      expect(s.onError).not.toHaveBeenCalled()
+    })
+  }
+
+  for (const kind of ['agent', 'terminal', 'file', 'image'] as const) {
+    it.each(['event-first', 'reply-first'] as const)(`starts a fresh ${kind} creation when completion resubmits after %s`, async (order) => {
+      const s = setup()
+      const firstReply = deferred<unknown>()
+      const secondReply = deferred<unknown>()
+      mockFor(kind).mockReturnValueOnce(firstReply.promise).mockReturnValueOnce(secondReply.promise)
+      const secondObserved = vi.fn()
+      let second: Promise<boolean> | undefined
+      let secondFinished = false
+      const firstObserved = vi.fn(() => {
+        second = openKind(s, kind, { onObserved: secondObserved }).then((value) => {
+          secondFinished = true
+          return value
+        })
+      })
+      const first = openKind(s, kind, { onObserved: firstObserved })
+      await settle()
+      const firstCreation = sentCreation(kind)
+      const firstResponse = replyFor(s, kind)
+      const publishFirst = () => s.publisher.publish(typeFor(kind), firstCreation.tabId, { workerId: 'worker' })
+      if (order === 'event-first')
+        publishFirst()
+      else
+        firstReply.resolve(firstResponse)
+      await settle()
+      expect(firstObserved).not.toHaveBeenCalled()
+      if (order === 'event-first')
+        firstReply.resolve(firstResponse)
+      else
+        publishFirst()
+      expect(await first).toBe(true)
+      await settle()
+      expect(firstObserved).toHaveBeenCalledOnce()
+      expect(mockFor(kind)).toHaveBeenCalledTimes(2)
+      const secondCreation = sentCreation(kind, 1)
+      expect(secondCreation.tabId).not.toBe(firstCreation.tabId)
+      expect(secondFinished).toBe(false)
+      expect(secondObserved).not.toHaveBeenCalled()
+      secondReply.resolve(replyFor(s, kind, 1))
+      await settle()
+      expect(secondFinished).toBe(false)
+      expect(secondObserved).not.toHaveBeenCalled()
+      s.publisher.publish(typeFor(kind), secondCreation.tabId, { workerId: 'worker' })
+      expect(await second).toBe(true)
+      expect(secondObserved).toHaveBeenCalledOnce()
+    })
+  }
+
   it('selects the current canonical location after a move', async () => {
     const s = setup()
     seedWorkspace(s.harness, 'other', 'other-root')
@@ -876,7 +991,7 @@ describe('useTabCreation workspace admission', () => {
     })).toBe(false)
     expect(mockCreateWorkspace).not.toHaveBeenCalled()
     expect(mockOpenAgent).not.toHaveBeenCalled()
-    expect(s.onError).toHaveBeenCalledOnce()
+    expect(s.onError).toHaveBeenCalledExactlyOnceWith(new Error('Choose a Worker for the new tab.'))
   })
 })
 
@@ -1163,20 +1278,7 @@ describe('useTabCreation operation isolation', () => {
     const s = setup()
     seedWorkspace(s.harness, 'ws-new', 'new-root')
     mockCreateWorkspace.mockResolvedValueOnce({ workspaceId: 'ws-new' })
-    const held = deferred<unknown>()
-    const requests: Array<{ tabId: string, bytes: Uint8Array }> = []
-    mockOpenAgent.mockImplementation((_worker, request: OpenAgentRequest) => {
-      requests.push({
-        tabId: request.creation!.tabId,
-        bytes: toBinary(OpenAgentRequestSchema, request),
-      })
-      if (requests.length === 1) {
-        return Promise.reject(failure === 'transport'
-          ? new ChannelError('transport', 'unknown outcome')
-          : new ChannelError('rpc', 'rejected creation', { code: Code.Aborted }))
-      }
-      return held.promise
-    })
+    const transport = holdAgentRetry(failure)
     let retry: Promise<boolean> | undefined
     let retryFinished = false
     const committed = vi.fn()
@@ -1193,13 +1295,9 @@ describe('useTabCreation operation isolation', () => {
     await settle()
     expect(onError).toHaveBeenCalledOnce()
     expect(mockCreateWorkspace).toHaveBeenCalledOnce()
-    expect(mockOpenAgent).toHaveBeenCalledTimes(2)
+    transport.expectRetryIdentity()
     expect(retryFinished).toBe(false)
-    if (failure === 'transport')
-      expect(requests[1]!.bytes).toEqual(requests[0]!.bytes)
-    else
-      expect(requests[1]!.tabId).not.toBe(requests[0]!.tabId)
-    held.resolve(s.agentReply(sentAgent(1), true))
+    transport.held.resolve(s.agentReply(sentAgent(1), true))
     expect(await retry).toBe(true)
     if (failure === 'definitive')
       expect(committed).toHaveBeenCalledOnce()

@@ -39,17 +39,25 @@ func (m *Manager) runTask(ctx context.Context, run func()) error {
 	return nil
 }
 
+func captureTabPublication(request *leapmuxv1.TabPublication) (*leapmuxv1.TabPublication, []byte, error) {
+	if err := tabcreation.Validate(request.GetCreation(), request.GetTabType()); err != nil {
+		return nil, nil, err
+	}
+	captured := proto.CloneOf(request)
+	hash, err := tabcreation.Fingerprint(captured)
+	if err != nil {
+		return nil, nil, err
+	}
+	return captured, hash, nil
+}
+
 // PublishTab commits a Worker's already-persisted resource and durable result.
 // The caller authenticates workerID; this method never accepts another owner.
 func (m *Manager) PublishTab(ctx context.Context, workerID string, request *leapmuxv1.TabPublication) (*leapmuxv1.PublishTabResponse, error) {
 	if workerID == "" || m.owner.IsZero() {
 		return nil, errors.New("tab publication requires an owner and Worker")
 	}
-	if err := tabcreation.Validate(request.GetCreation(), request.GetTabType()); err != nil {
-		return nil, err
-	}
-	captured := proto.CloneOf(request)
-	hash, err := tabcreation.Fingerprint(captured)
+	captured, hash, err := captureTabPublication(request)
 	if err != nil {
 		return nil, err
 	}
@@ -306,11 +314,7 @@ func (m *Manager) CancelTabPublication(ctx context.Context, workerID string, req
 	if workerID == "" || m.owner.IsZero() {
 		return errors.New("tab cancellation requires an owner and Worker")
 	}
-	if err := tabcreation.Validate(request.GetCreation(), request.GetTabType()); err != nil {
-		return err
-	}
-	captured := proto.CloneOf(request)
-	hash, err := tabcreation.Fingerprint(captured)
+	captured, hash, err := captureTabPublication(request)
 	if err != nil {
 		return err
 	}
@@ -366,11 +370,7 @@ func (m *Manager) ResolveTabPublication(ctx context.Context, workerID string, re
 	if workerID == "" || m.owner.IsZero() {
 		return nil, errors.New("tab resolution requires an owner and Worker")
 	}
-	if err := tabcreation.Validate(request.GetCreation(), request.GetTabType()); err != nil {
-		return nil, err
-	}
-	captured := proto.CloneOf(request)
-	hash, err := tabcreation.Fingerprint(captured)
+	captured, hash, err := captureTabPublication(request)
 	if err != nil {
 		return nil, err
 	}

@@ -82,9 +82,12 @@ export interface UseTabCreationOptions {
   focusEditor: () => void
 }
 
-interface CreationFrame {
-  account: string
-  generation: number
+interface AccountLifetime {
+  readonly account: string
+  readonly generation: number
+}
+
+interface CreationFrame extends AccountLifetime {
   activeWorkspace: string | null | undefined
   focusedTile: string | null
   sourceTab: Tab | undefined
@@ -129,7 +132,7 @@ type CreationStage
 
 interface CreationOperation {
   readonly key: string
-  readonly frame: CreationFrame
+  readonly lifetime: AccountLifetime
   readonly target: CreationTarget
   readonly type: TabType
   readonly workerId: string
@@ -175,12 +178,18 @@ export function useTabCreation(options: UseTabCreationOptions) {
   let disposed = false
   const changed = () => setRevision(value => value + 1)
 
-  function accountIsCurrent(frame: CreationFrame) {
-    return !disposed && frame.account === options.userId() && frame.generation === generation
+  function accountIsCurrent(lifetime: AccountLifetime) {
+    return !disposed && lifetime.account === options.userId() && lifetime.generation === generation
   }
 
   function viewIsCurrent(frame: CreationFrame) {
     return !frame.view || frame.view() === frame.viewIdentity
+  }
+
+  function reportCreationError(origin: Pick<TabCreationOrigin, 'onError'>, frame: CreationFrame, error: unknown): false {
+    if (accountIsCurrent(frame) && viewIsCurrent(frame))
+      runLocalCallback(() => origin.onError(error))
+    return false
   }
 
   function forgetAttempts() {
@@ -325,7 +334,7 @@ export function useTabCreation(options: UseTabCreationOptions) {
   }
 
   function operationIsCurrent(operation: CreationOperation) {
-    return accountIsCurrent(operation.frame) && operations.get(operation.key) === operation
+    return accountIsCurrent(operation.lifetime) && operations.get(operation.key) === operation
   }
 
   function preparedIsCurrent(attempt: CreationContext) {
@@ -361,21 +370,34 @@ export function useTabCreation(options: UseTabCreationOptions) {
         continue
       const attempt = operation.stage.prepared
       const ended = attemptEnded(attempt)
-      if (ended)
+      const publishedTab = attempt.publication && options.state()?.userId === attempt.frame.account
+        ? options.view.getById(operation.type, attempt.creation.tabId)
+        : undefined
+      const completionReady = publishedTab?.workerId === operation.workerId
+      const detached = ended || completionReady
+      const observers = detached
+        ? [...attempt.observers]
+        : attempt.observers
+      if (detached) {
+        attempt.observers.clear()
         retireAttempt(attempt)
-      for (const observer of attempt.observers) {
+      }
+      for (const observer of observers) {
         if (!accountIsCurrent(observer.frame) || !viewIsCurrent(observer.frame) || ended) {
           attempt.observers.delete(observer)
           observer.resolve(false)
           continue
         }
-        if (!attempt.publication || options.state()?.userId !== observer.frame.account)
+        if (!completionReady)
           continue
-        const tab = options.view.getById(attempt.operation.type, attempt.creation.tabId)
-        if (!tab || tab.workerId !== attempt.operation.workerId)
+        const tab = options.state()?.userId === observer.frame.account && !attemptEnded(attempt)
+          ? options.view.getById(operation.type, attempt.creation.tabId)
+          : undefined
+        if (!tab || tab.workerId !== operation.workerId) {
+          observer.resolve(false)
           continue
+        }
         const activate = selectionIsCurrent(observer, attempt)
-        attempt.observers.delete(observer)
         batch(() => {
           if (activate) {
             if (options.activeWorkspaceId() !== tab.workspaceId)
@@ -389,11 +411,6 @@ export function useTabCreation(options: UseTabCreationOptions) {
           if (activate)
             focusAfterCompletion(observer, tab)
         })
-      }
-      if (attempt.publication && attempt.observers.size === 0
-        && options.state()?.userId === attempt.frame.account
-        && options.view.getById(attempt.operation.type, attempt.creation.tabId)) {
-        retireAttempt(attempt)
       }
     }
   })
@@ -431,11 +448,8 @@ export function useTabCreation(options: UseTabCreationOptions) {
         if (!options.state()?.tabs[attempt.creation.tabId])
           options.metadata.remove(attempt.creation.tabId)
       }
-      for (const observer of observers) {
-        if (accountIsCurrent(observer.frame) && viewIsCurrent(observer.frame))
-          runLocalCallback(() => observer.onError(error))
-        observer.resolve(false)
-      }
+      for (const observer of observers)
+        observer.resolve(reportCreationError(observer, observer.frame, error))
       changed()
     })
   }
@@ -502,7 +516,7 @@ export function useTabCreation(options: UseTabCreationOptions) {
         }
     const operation: CreationOperation = {
       key,
-      frame,
+      lifetime: { account: frame.account, generation: frame.generation },
       target,
       type,
       workerId: origin.workerId,
@@ -654,9 +668,7 @@ export function useTabCreation(options: UseTabCreationOptions) {
       return observe(attempt, input, frame)
     }
     catch (error) {
-      if (accountIsCurrent(frame) && viewIsCurrent(frame))
-        runLocalCallback(() => input.onError(error))
-      return Promise.resolve(false)
+      return Promise.resolve(reportCreationError(input, frame, error))
     }
   }
 
@@ -666,8 +678,6 @@ export function useTabCreation(options: UseTabCreationOptions) {
     if (!frame)
       return false
     try {
-      if (!input.workerId)
-        throw new Error('Choose a Worker for the new tab.')
       const request = captureAgentRequest(input.request)
       const operation = getOperation({
         origin: input,
@@ -708,9 +718,7 @@ export function useTabCreation(options: UseTabCreationOptions) {
       return observe(attempt, origin, frame)
     }
     catch (error) {
-      if (accountIsCurrent(frame) && viewIsCurrent(frame))
-        runLocalCallback(() => input.onError(error))
-      return false
+      return reportCreationError(input, frame, error)
     }
   }
 
@@ -764,9 +772,7 @@ export function useTabCreation(options: UseTabCreationOptions) {
       return observe(attempt, input, frame)
     }
     catch (error) {
-      if (accountIsCurrent(frame) && viewIsCurrent(frame))
-        runLocalCallback(() => input.onError(error))
-      return Promise.resolve(false)
+      return Promise.resolve(reportCreationError(input, frame, error))
     }
   }
 
@@ -822,9 +828,7 @@ export function useTabCreation(options: UseTabCreationOptions) {
       return observe(attempt, input, frame)
     }
     catch (error) {
-      if (accountIsCurrent(frame) && viewIsCurrent(frame))
-        runLocalCallback(() => input.onError(error))
-      return Promise.resolve(false)
+      return Promise.resolve(reportCreationError(input, frame, error))
     }
   }
 
