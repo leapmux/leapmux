@@ -2,9 +2,16 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/leapmux/leapmux/internal/authscope"
+	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 
 	"github.com/leapmux/leapmux/internal/tabcreation"
 
@@ -25,7 +32,7 @@ func seedPendingCreation(t *testing.T, svc *Service, owner, id string) db.GetTab
 	key := db.GetTabCreationParams{UserID: owner, WorkerID: svc.WorkerID, TabID: id}
 	hash, err := tabcreation.Fingerprint(request)
 	require.NoError(t, err)
-	runtime, err := json.Marshal(creationRecoveryInputs{Runtime: []byte(`{}`), Unscoped: true})
+	runtime, err := json.Marshal(creationRecoveryInputs{Runtime: json.RawMessage(`{}`), Unscoped: true})
 	require.NoError(t, err)
 	require.NoError(t, svc.Queries.InsertTabCreation(t.Context(), db.InsertTabCreationParams{UserID: key.UserID, WorkerID: key.WorkerID, TabID: key.TabID, TabType: int64(leapmuxv1.TabType_TAB_TYPE_FILE), RequestHash: hash, RequestPayload: requestPayload, PublicationPayload: publicationPayload, RuntimePayload: runtime, PublicationResult: []byte{}, State: creationPending}))
 	return key
@@ -142,5 +149,72 @@ func TestCreationRecovery_RejectsBlankStorageOwnersAndWorkers(t *testing.T) {
 			err := svc.Queries.InsertTabCreation(t.Context(), db.InsertTabCreationParams{UserID: userID, WorkerID: workerID, TabID: "blank-key", TabType: int64(leapmuxv1.TabType_TAB_TYPE_FILE), RequestHash: make([]byte, 32), RequestPayload: []byte{}, PublicationPayload: []byte{}, RuntimePayload: []byte{}, PublicationResult: []byte{}, State: creationPending})
 			require.Error(t, err)
 		})
+	}
+}
+
+func TestCreationRecoveryInputs_ObjectEnvelope(t *testing.T) {
+	t.Parallel()
+	for _, runtime := range []string{`{}`, ` {"Startup":{"Started":true,"ExpectedCommit":"abc"}} `, `{"nested":{"text":"한글\n\"","zero":0}}`} {
+		t.Run(runtime, func(t *testing.T) {
+			t.Parallel()
+			inputs, err := decodeCreationRecoveryInputs([]byte(`{"Runtime":` + runtime + `,"Scopes":[1],"Unscoped":false}`))
+			require.NoError(t, err)
+			assert.JSONEq(t, runtime, string(inputs.Runtime))
+			assert.Equal(t, []leapmuxv1.Scope{1}, inputs.Scopes)
+			assert.False(t, inputs.Unscoped)
+		})
+	}
+}
+
+func TestCreationRecoveryInputs_RejectsInvalidRuntime(t *testing.T) {
+	t.Parallel()
+	for _, payload := range []string{`{}`, `null`, `{"Runtime":null}`, `{"Runtime":"e30="}`, `{"Runtime":[]}`, `{"Runtime":1}`, `{"Runtime":true}`, `{`} {
+		t.Run(payload, func(t *testing.T) {
+			t.Parallel()
+			_, err := decodeCreationRecoveryInputs([]byte(payload))
+			require.Error(t, err)
+		})
+	}
+}
+
+type testCreationRuntime struct {
+	payload string
+	err     error
+}
+
+func (*testCreationRuntime) startupIntent() *creationStartupIntent { return nil }
+func (r *testCreationRuntime) MarshalJSON() ([]byte, error)        { return []byte(r.payload), r.err }
+
+func TestCreationRecoveryInputs_EncodingPreservesRuntimeAndGrant(t *testing.T) {
+	t.Parallel()
+	for _, scopes := range []authscope.ScopeSet{authscope.UnscopedGrant(), authscope.NonAdminGrant(), {}} {
+		payload := `{"nested":{"text":"한글\n\"","zero":0},"large":"` + strings.Repeat("x", 65536) + `"}`
+		encoded, err := encodeCreationRecoveryInputs(&testCreationRuntime{payload: payload}, scopes)
+		require.NoError(t, err)
+		inputs, err := decodeCreationRecoveryInputs(encoded)
+		require.NoError(t, err)
+		assert.JSONEq(t, payload, string(inputs.Runtime))
+		assert.Equal(t, scopes.Scopes(), inputs.Scopes)
+		assert.Equal(t, scopes.IsUnscoped(), inputs.Unscoped)
+	}
+	encoded, err := encodeCreationRecoveryInputs(&payloadCreationRuntime{}, authscope.UnscopedGrant())
+	require.NoError(t, err)
+	assert.JSONEq(t, `{"Runtime":{},"Scopes":[2],"Unscoped":true}`, string(encoded))
+}
+
+func TestCreationRecoveryInputs_EncodingFailurePrecedesResourceWrite(t *testing.T) {
+	t.Parallel()
+	for _, runtime := range []creationRuntime{nil, (*agentCreationRuntime)(nil), (*terminalCreationRuntime)(nil), (*payloadCreationRuntime)(nil), &testCreationRuntime{payload: `null`}, &testCreationRuntime{payload: `[]`}, &testCreationRuntime{payload: `"object"`}, &testCreationRuntime{payload: `0`}, &testCreationRuntime{payload: `true`}, &testCreationRuntime{payload: `{`}, &testCreationRuntime{err: errors.New("marshal failed")}} {
+		svc, _, _ := setupTestService(t)
+		request := &leapmuxv1.RegisterTabPayloadRequest{Creation: creationIntent("invalid"), Payload: &leapmuxv1.TabPayload{Kind: &leapmuxv1.TabPayload_File{File: &leapmuxv1.FileTabPayload{FilePath: "/private/file.txt"}}}}
+		hash, err := tabcreation.Fingerprint(request)
+		require.NoError(t, err)
+		op := &creationOperation{coordinator: svc.creations, caller: channel.NewCaller(userid.MustNew("user-1"), authscope.NonAdminGrant()), request: request, hash: hash, publication: &leapmuxv1.TabPublication{Creation: request.Creation, TabType: leapmuxv1.TabType_TAB_TYPE_FILE}}
+		called := false
+		err = op.persist(runtime, func(context.Context, *db.Queries) error { called = true; return nil })
+		require.Error(t, err)
+		assert.False(t, called)
+		_, err = svc.Queries.GetTabCreation(t.Context(), op.dbKey())
+		assert.ErrorIs(t, err, sql.ErrNoRows)
 	}
 }

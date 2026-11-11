@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -79,16 +78,6 @@ func (svc *Service) prepareCreationStartup(ctx context.Context, plan gitModePlan
 	return intent, nil
 }
 
-func (op *creationOperation) encodedRuntime() ([]byte, error) {
-	if op.runtime == nil {
-		return nil, errors.New("tab creation has no recovery runtime")
-	}
-	payload, err := json.Marshal(op.runtime)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(creationRecoveryInputs{Runtime: payload, Scopes: op.caller.Scopes.Scopes(), Unscoped: op.caller.Scopes.IsUnscoped()})
-}
 func (op *creationOperation) saveRuntime(ctx context.Context) error {
 	validatedOwner, ownerOK := userid.OwnerFilter(op.caller.UserID)
 	if !ownerOK {
@@ -96,7 +85,7 @@ func (op *creationOperation) saveRuntime(ctx context.Context) error {
 	}
 	queryKey := op.dbKey()
 	queryKey.UserID = validatedOwner
-	payload, err := op.encodedRuntime()
+	payload, err := encodeCreationRecoveryInputs(op.runtime, op.caller.Scopes)
 	if err != nil {
 		return err
 	}
@@ -158,7 +147,7 @@ func (op *creationOperation) checkpointPhase0(ctx context.Context, result gitMod
 	if !ownerOK {
 		return errCreationOwnerMissing
 	}
-	payload, err := op.encodedRuntime()
+	payload, err := encodeCreationRecoveryInputs(op.runtime, op.caller.Scopes)
 	if err != nil {
 		return err
 	}

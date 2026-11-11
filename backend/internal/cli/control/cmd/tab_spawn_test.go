@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -266,9 +267,65 @@ func TestTabCreationCLI_PublishesFilePresentationWithTheEncryptedPayload(t *test
 			assert.Equal(t, "/private/report.txt", request.GetPayload().GetFile().GetFilePath())
 			assert.Equal(t, "/private", request.GetPayload().GetWorkingDir())
 			assert.Equal(t, leapmuxv1.TabInsertion_TAB_INSERTION_FIRST, request.GetCreation().GetPlacement().GetInsertion())
-			assert.Equal(t, int32(2), request.GetCreation().GetPresentation().GetDisplayMode())
-			assert.Equal(t, int32(2), request.GetCreation().GetPresentation().GetFileViewMode())
+			assert.Equal(t, leapmuxv1.TabDisplayMode_TAB_DISPLAY_MODE_SOURCE, request.GetCreation().GetPresentation().GetDisplayMode())
+			assert.Equal(t, leapmuxv1.TabFileViewMode_TAB_FILE_VIEW_MODE_HEAD, request.GetCreation().GetPresentation().GetFileViewMode())
 			assert.NotContains(t, hub.called(), leapmuxv1connect.UserCRDTSubmitOpsProcedure)
+		})
+	}
+}
+
+func TestTabCreationCLI_RejectsPresentationOverflowBeforeCalls(t *testing.T) {
+	for _, transport := range tabOpenTransports {
+		t.Run(transport.name, func(t *testing.T) {
+			for _, flag := range []string{"--display-mode", "--file-view-mode"} {
+				for _, value := range []string{"-2147483649", "2147483648"} {
+					t.Run(flag+"="+value, func(t *testing.T) {
+						dispatcher := &creationPublicationDispatcher{}
+						hub := &recordingHub{materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st}
+						hubFlag := transport.start(t, hub, dispatcher)
+						var openErr error
+						output := withCapturedStdout(t, func() {
+							openErr = RunTabOpen(fakeCmdCtx{}, []string{"--hub", hubFlag, "--type", "file", "--workspace-id", "ws-1", "--worker-id", "worker-A", "--tile-id", "root-1", "--path", "/private/report.txt", flag, value, "--first"})
+						})
+						require.Error(t, openErr)
+						envelopes := decodeEnvelopes(t, output)
+						require.Len(t, envelopes, 1)
+						assert.Equal(t, "invalid_request", envelopes[0]["error"]["code"])
+						assert.Equal(t, flag+" must be between -2147483648 and 2147483647", envelopes[0]["error"]["message"])
+						assert.Empty(t, hub.called())
+						assert.Empty(t, dispatcher.recorded())
+					})
+				}
+			}
+		})
+	}
+}
+
+func TestTabCreationCLI_PreservesPresentationValues(t *testing.T) {
+	for _, transport := range tabOpenTransports {
+		t.Run(transport.name, func(t *testing.T) {
+			for _, value := range []int32{-2147483648, -1, 0, 2, 999, 2147483647} {
+				t.Run(strconv.FormatInt(int64(value), 10), func(t *testing.T) {
+					dispatcher := &creationPublicationDispatcher{}
+					hub := &recordingHub{materialized: newStateBuilder().workspace("ws-1", "root-1").leafNode("root-1", "", "m").st}
+					hubFlag := transport.start(t, hub, dispatcher)
+					var openErr error
+					output := withCapturedStdout(t, func() {
+						mode := strconv.FormatInt(int64(value), 10)
+						openErr = RunTabOpen(fakeCmdCtx{}, []string{"--hub", hubFlag, "--type", "file", "--workspace-id", "ws-1", "--worker-id", "worker-A", "--tile-id", "root-1", "--path", "/private/report.txt", "--display-mode", mode, "--file-view-mode", mode, "--first"})
+					})
+					require.NoError(t, openErr, "stdout: %s", output)
+					require.Len(t, decodeEnvelopes(t, output), 1)
+					calls := dispatcher.recorded()
+					require.Len(t, calls, 1)
+					presentation := calls[0].in.(*leapmuxv1.RegisterTabPayloadRequest).GetCreation().GetPresentation()
+					require.NotNil(t, presentation)
+					assert.Equal(t, value, int32(presentation.GetDisplayMode()))
+					assert.Equal(t, value, int32(presentation.GetFileViewMode()))
+					assert.Equal(t, value != 0, presentation.DisplayMode != nil)
+					assert.Equal(t, value != 0, presentation.FileViewMode != nil)
+				})
+			}
 		})
 	}
 }

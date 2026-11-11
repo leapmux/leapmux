@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
-import { TabCreationSchema } from '~/generated/proto/leapmux/v1/tab_creation_pb'
+import { TabCreationSchema, TabDisplayMode, TabFileViewMode } from '~/generated/proto/leapmux/v1/tab_creation_pb'
 import { withTestBridge } from './crdtBridge'
 import { createCanonicalTabPublisher } from './tabPublication'
 
@@ -27,7 +27,7 @@ describe('createCanonicalTabPublisher', () => {
           workspaceId: harness.workspaceId,
           destination: { case: 'tileId', value: harness.rootTileId },
         },
-        presentation: { displayMode: 1, fileViewMode: 4, fileDiffBase: 'head-vs-working' },
+        presentation: { displayMode: TabDisplayMode.RENDER, fileViewMode: TabFileViewMode.UNIFIED_DIFF, fileDiffBase: 'head-vs-working' },
       }))
       expect(consume).toHaveBeenCalledOnce()
       const tab = harness.pending.state.speculativeState.tabs['published-file']!

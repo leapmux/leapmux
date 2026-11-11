@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,4 +117,44 @@ func TestCreationCheckpoint_RejectsDirectoryReplacedByFile(t *testing.T) {
 	content, err := os.ReadFile(directory)
 	require.NoError(t, err)
 	assert.Equal(t, "replacement file\n", string(content))
+}
+
+func TestCreationRuntime_SaveRuntimeStoresObjectEnvelope(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	directory := t.TempDir()
+	op := savedAgentCreation(t, svc, creationStartupIntent{Plan: gitModePlan{Mode: gitModeUseCurrent, WorkingDir: directory, PlannedWorkingDir: directory}})
+	op.runtime.startupIntent().Started = true
+	require.NoError(t, op.saveRuntime(t.Context()))
+	assertStoredCreationRuntime(t, op)
+}
+
+func TestCreationRuntime_CheckpointPhase0StoresObjectEnvelope(t *testing.T) {
+	t.Parallel()
+	svc, _, _ := setupTestService(t)
+	directory := t.TempDir()
+	op := savedAgentCreation(t, svc, creationStartupIntent{Plan: gitModePlan{Mode: gitModeUseCurrent, WorkingDir: directory, PlannedWorkingDir: directory}})
+	result := gitModeResult{WorkingDir: directory}
+	op.runtime.startupIntent().Started = true
+	op.runtime.startupIntent().Result = &result
+	require.NoError(t, op.checkpointPhase0(t.Context(), result))
+	assertStoredCreationRuntime(t, op)
+}
+
+func assertStoredCreationRuntime(t *testing.T, op *creationOperation) {
+	t.Helper()
+	row, err := op.coordinator.svc.Queries.GetTabCreation(t.Context(), op.dbKey())
+	require.NoError(t, err)
+	var envelope struct {
+		Runtime  map[string]json.RawMessage
+		Scopes   []leapmuxv1.Scope
+		Unscoped bool
+	}
+	require.NoError(t, json.Unmarshal(row.RuntimePayload, &envelope))
+	require.NotNil(t, envelope.Runtime)
+	var startup creationStartupIntent
+	require.NoError(t, json.Unmarshal(envelope.Runtime["Startup"], &startup))
+	assert.Equal(t, *op.runtime.startupIntent(), startup)
+	assert.Equal(t, op.caller.Scopes.Scopes(), envelope.Scopes)
+	assert.Equal(t, op.caller.Scopes.IsUnscoped(), envelope.Unscoped)
 }

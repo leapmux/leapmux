@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"os"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -10,7 +12,6 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
-	"google.golang.org/protobuf/proto"
 )
 
 // RunTabOpen creates a new tab on the given tile. Dispatches on --type:
@@ -27,7 +28,7 @@ import (
 func RunTabOpen(rawCtx any, args []string) error {
 	cmd := asCtx(rawCtx)
 	var hub, tabType, filePath string
-	var displayMode, fileViewMode int
+	var displayMode, fileViewMode int64
 	// Agent-only flags.
 	var provider, model, effort, title, permissionMode, workingDir, initialMessage string
 	// Terminal-only flags.
@@ -38,8 +39,8 @@ func RunTabOpen(rawCtx any, args []string) error {
 	fs.StringVar(&tabType, "type", "", "type of the new tab to open: agent | terminal | file (required; distinct from --tab-type, which classifies the anchor --tab-id)")
 	pos := bindPositionFlags(fs, "place the new tab")
 	fs.StringVar(&filePath, "path", "", "absolute file path (--type=file only; registered worker-side over E2EE)")
-	fs.IntVar(&displayMode, "display-mode", 0, "--type=file: initial display_mode register value")
-	fs.IntVar(&fileViewMode, "file-view-mode", 0, "--type=file: initial file_view_mode register value")
+	fs.Int64Var(&displayMode, "display-mode", 0, "--type=file: initial display_mode register value")
+	fs.Int64Var(&fileViewMode, "file-view-mode", 0, "--type=file: initial file_view_mode register value")
 	// Agent-only flags.
 	fs.StringVar(&provider, "provider", os.Getenv("LEAPMUX_CONTROL_AGENT_PROVIDER"), "--type=agent: provider (defaults to $LEAPMUX_CONTROL_AGENT_PROVIDER; when unset, auto-picks the sole installed provider on the worker, or errors with the list if more than one is installed -- run 'leapmux control agent providers' to see options)")
 	fs.StringVar(&model, "model", "", "--type=agent: model")
@@ -72,6 +73,16 @@ func RunTabOpen(rawCtx any, args []string) error {
 	}
 	if tt != leapmuxv1.TabType_TAB_TYPE_FILE && filePath != "" {
 		return control.EmitError("invalid_request", "--path is only valid for --type=file")
+	}
+	if tt == leapmuxv1.TabType_TAB_TYPE_FILE {
+		for _, mode := range []struct {
+			flag  string
+			value int64
+		}{{"display-mode", displayMode}, {"file-view-mode", fileViewMode}} {
+			if mode.value < math.MinInt32 || mode.value > math.MaxInt32 {
+				return control.EmitError("invalid_request", fmt.Sprintf("--%s must be between -2147483648 and 2147483647", mode.flag))
+			}
+		}
 	}
 	spec, err := pos.Resolve()
 	if err != nil {
@@ -215,10 +226,10 @@ func RunTabOpen(rawCtx any, args []string) error {
 		}
 		presentation := &leapmuxv1.TabPresentation{}
 		if displayMode != 0 {
-			presentation.DisplayMode = proto.Int32(int32(displayMode))
+			presentation.DisplayMode = leapmuxv1.TabDisplayMode(displayMode).Enum()
 		}
 		if fileViewMode != 0 {
-			presentation.FileViewMode = proto.Int32(int32(fileViewMode))
+			presentation.FileViewMode = leapmuxv1.TabFileViewMode(fileViewMode).Enum()
 		}
 		creation.Presentation = presentation
 		publication, err := registerFileTabPayload(cc.ctx, cc.c, workerID, creation, filePath, workingDir)

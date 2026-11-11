@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"sync/atomic"
@@ -68,6 +69,18 @@ func TestTabCreation_PreservesEveryResourceWhilePublicationWaits(t *testing.T) {
 				t.Fatal("creation never reached Hub publication")
 			}
 			assert.Empty(t, writer.responsesSnapshot(), "unary success requires a Hub commit")
+			creation, err := svc.Queries.GetTabCreation(t.Context(), db.GetTabCreationParams{UserID: "user-1", WorkerID: svc.WorkerID, TabID: "pending"})
+			require.NoError(t, err)
+			var envelope struct {
+				Runtime  map[string]any
+				Scopes   []leapmuxv1.Scope
+				Unscoped bool
+			}
+			require.NoError(t, json.Unmarshal(creation.RuntimePayload, &envelope))
+			require.NotNil(t, envelope.Runtime)
+			assert.Equal(t, authscope.UnscopedGrant().Scopes(), envelope.Scopes)
+			assert.True(t, envelope.Unscoped)
+
 			clock := time.Now()
 			reconciler := NewOrphanReconciler(svc.Queries, func(context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
 				return &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}, nil

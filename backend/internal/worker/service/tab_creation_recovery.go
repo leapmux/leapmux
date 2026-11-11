@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -20,15 +21,29 @@ import (
 // creationRecoveryInputs retains the admitted grant with private launch intent.
 // Recovery never constructs a grant broader than the one that admitted creation.
 type creationRecoveryInputs struct {
-	Runtime  []byte
+	Runtime  json.RawMessage
 	Scopes   []leapmuxv1.Scope
 	Unscoped bool
+}
+
+func encodeCreationRecoveryInputs(runtime creationRuntime, scopes authscope.ScopeSet) ([]byte, error) {
+	payload, err := json.Marshal(runtime)
+	if err != nil {
+		return nil, fmt.Errorf("encode tab creation recovery runtime: %w", err)
+	}
+	if len(payload) == 0 || payload[0] != '{' {
+		return nil, errors.New("tab creation recovery runtime must be a non-null JSON object")
+	}
+	return json.Marshal(creationRecoveryInputs{Runtime: payload, Scopes: scopes.Scopes(), Unscoped: scopes.IsUnscoped()})
 }
 
 func decodeCreationRecoveryInputs(payload []byte) (creationRecoveryInputs, error) {
 	var inputs creationRecoveryInputs
 	if err := json.Unmarshal(payload, &inputs); err != nil {
 		return inputs, fmt.Errorf("decode tab creation recovery inputs: %w", err)
+	}
+	if runtime := bytes.TrimSpace(inputs.Runtime); len(runtime) == 0 || runtime[0] != '{' {
+		return inputs, errors.New("tab creation recovery runtime must be a non-null JSON object")
 	}
 	return inputs, nil
 }
@@ -40,7 +55,7 @@ func (svc *Service) ResolvePendingTabCreations(ctx context.Context) error {
 	if !ownerOK {
 		return errCreationOwnerMissing
 	}
-	rows, err := svc.Queries.ListPendingTabCreations(ctx, db.ListPendingTabCreationsParams{UserID: validatedOwner, WorkerID: svc.WorkerID, State: creationPending, State_2: creationCancelRequested, State_3: creationPublished, State_4: creationCanceled})
+	rows, err := svc.Queries.ListPendingTabCreations(ctx, db.ListPendingTabCreationsParams{UserID: validatedOwner, WorkerID: svc.WorkerID, PendingState: creationPending, CancelRequestedState: creationCancelRequested, PublishedState: creationPublished, CanceledState: creationCanceled})
 	if err != nil {
 		return err
 	}

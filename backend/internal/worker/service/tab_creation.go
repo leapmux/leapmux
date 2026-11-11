@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -216,11 +215,7 @@ func (op *creationOperation) persistLocked(runtime creationRuntime, write func(c
 	if err := c.ctx.Err(); err != nil {
 		return err
 	}
-	runtimePayload, err := json.Marshal(runtime)
-	if err != nil {
-		return err
-	}
-	envelope, err := json.Marshal(creationRecoveryInputs{Runtime: runtimePayload, Scopes: op.caller.Scopes.Scopes(), Unscoped: op.caller.Scopes.IsUnscoped()})
+	envelope, err := encodeCreationRecoveryInputs(runtime, op.caller.Scopes)
 	if err != nil {
 		return err
 	}

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { TabDisplayMode, TabFileViewMode } from '~/generated/proto/leapmux/v1/tab_creation_pb'
 import { decodeDisplayMode, decodeFileDiffBase, decodeFileViewMode, encodeDisplayMode, encodeFileViewMode } from './tabPresentation'
 
 describe('tab presentation', () => {
@@ -64,5 +65,27 @@ describe('tab presentation', () => {
     ],
   ])('ignores an unknown diff base %s', (_label, value) => {
     expect(decodeFileDiffBase(value)).toBeUndefined()
+  })
+})
+
+describe('presentation enum coverage', () => {
+  it('maps every nonzero display enum exactly once', () => {
+    const mapped = (['render', 'source', 'split'] as const).map(encodeDisplayMode)
+    const declared = Object.values(TabDisplayMode).filter(value => typeof value === 'number' && value !== 0)
+    expect(new Set(mapped).size).toBe(mapped.length)
+    expect(mapped.toSorted()).toEqual(declared.toSorted())
+  })
+
+  it('maps every nonzero file view enum exactly once', () => {
+    const mapped = ([
+      'working',
+      'head',
+      'staged',
+      'unified-diff',
+      'split-diff',
+    ] as const).map(encodeFileViewMode)
+    const declared = Object.values(TabFileViewMode).filter(value => typeof value === 'number' && value !== 0)
+    expect(new Set(mapped).size).toBe(mapped.length)
+    expect(mapped.toSorted()).toEqual(declared.toSorted())
   })
 })

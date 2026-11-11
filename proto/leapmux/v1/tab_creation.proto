@@ -38,11 +38,27 @@ enum TabInsertion {
   TAB_INSERTION_AFTER = 4;
 }
 
+enum TabDisplayMode {
+  TAB_DISPLAY_MODE_UNSPECIFIED = 0;
+  TAB_DISPLAY_MODE_RENDER = 1;
+  TAB_DISPLAY_MODE_SOURCE = 2;
+  TAB_DISPLAY_MODE_SPLIT = 3;
+}
+
+enum TabFileViewMode {
+  TAB_FILE_VIEW_MODE_UNSPECIFIED = 0;
+  TAB_FILE_VIEW_MODE_WORKING = 1;
+  TAB_FILE_VIEW_MODE_HEAD = 2;
+  TAB_FILE_VIEW_MODE_STAGED = 3;
+  TAB_FILE_VIEW_MODE_UNIFIED_DIFF = 4;
+  TAB_FILE_VIEW_MODE_SPLIT_DIFF = 5;
+}
+
 // TabPresentation contains only the initial registers the Hub already stores.
 // File paths, image references, and resource configuration remain on the Worker.
 message TabPresentation {
-  optional int32 display_mode = 1;
-  optional int32 file_view_mode = 2;
+  optional TabDisplayMode display_mode = 1;
+  optional TabFileViewMode file_view_mode = 2;
   optional string file_diff_base = 3;
 }
 

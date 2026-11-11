@@ -263,7 +263,7 @@ func TestWorkerTabPublication_ReplaysReceiptsWithoutLifecycleReads(t *testing.T)
 			assert.True(t, proto.Equal(original, replay))
 			assert.Zero(t, f.lists.Load())
 			changed := proto.CloneOf(request)
-			changed.Creation.Presentation = &leapmuxv1.TabPresentation{DisplayMode: proto.Int32(2)}
+			changed.Creation.Presentation = &leapmuxv1.TabPresentation{DisplayMode: leapmuxv1.TabDisplayMode_TAB_DISPLAY_MODE_SOURCE.Enum()}
 			mismatch, err := f.call(t.Context(), changed)
 			require.Equal(t, connect.CodeInternal, connect.CodeOf(err))
 			assert.Nil(t, mismatch)

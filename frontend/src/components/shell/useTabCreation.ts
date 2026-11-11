@@ -105,13 +105,11 @@ interface CreationObserver {
   resolve: (observed: boolean) => void
 }
 
-interface CreationAttempt {
-  key: string
+interface PreparedTabCreation {
+  operation: CreationOperation
   frame: CreationFrame
-  creation: TabCreation
-  type: TabType
-  workerId: string
-  controller: AbortController
+  creation: TabCreation & { placement: TabPlacement }
+  signal: AbortSignal
   sending: boolean
   seenLive: boolean
   publication: PublishedTab | undefined
@@ -120,22 +118,32 @@ interface CreationAttempt {
   observers: Set<CreationObserver>
 }
 
-type CreationContext = Omit<CreationAttempt, 'send'>
+type CreationContext = Omit<PreparedTabCreation, 'send'>
 
-interface WorkspaceAttempt {
-  controller: AbortController
-  result: Promise<string>
-  attempt?: CreationAttempt
+type CreationTarget = { kind: 'existing', workspaceId: string } | { kind: 'new', title: string }
+
+type CreationStage
+  = { kind: 'workspace_pending', result: Promise<string> }
+    | { kind: 'workspace_ready', workspaceId: string }
+    | { kind: 'tab_pending', prepared: PreparedTabCreation }
+
+interface CreationOperation {
+  readonly key: string
+  readonly frame: CreationFrame
+  readonly target: CreationTarget
+  readonly type: TabType
+  readonly workerId: string
+  readonly controller: AbortController
+  stage: CreationStage
 }
 
 interface AttemptPreparation {
+  operation: CreationOperation
   origin: TabCreationOrigin
   frame: CreationFrame
-  type: TabType
-  requestKey: string
   presentation?: TabPresentation | undefined
   placement: () => TabPlacement
-  prepare: (attempt: CreationContext) => CreationAttempt['send']
+  prepare: (attempt: CreationContext) => PreparedTabCreation['send']
 }
 
 function captureAgentRequest(input: AgentTabCreation['request']): OpenAgentRequest {
@@ -160,8 +168,7 @@ function runLocalCallback(callback: () => void) {
 
 /** Owns immutable attempts and local completion while canonical state owns tabs. */
 export function useTabCreation(options: UseTabCreationOptions) {
-  const attempts = new Map<string, CreationAttempt>()
-  const workspaces = new Map<string, WorkspaceAttempt>()
+  const operations = new Map<string, CreationOperation>()
   const [revision, setRevision] = createSignal(0)
   let account = untrack(options.userId)
   let generation = 0
@@ -178,15 +185,14 @@ export function useTabCreation(options: UseTabCreationOptions) {
 
   function forgetAttempts() {
     generation++
-    for (const attempt of attempts.values()) {
-      attempt.controller.abort()
-      for (const observer of attempt.observers)
-        observer.resolve(false)
+    for (const operation of operations.values()) {
+      operation.controller.abort()
+      if (operation.stage.kind === 'tab_pending') {
+        for (const observer of operation.stage.prepared.observers)
+          observer.resolve(false)
+      }
     }
-    for (const workspace of workspaces.values())
-      workspace.controller.abort()
-    attempts.clear()
-    workspaces.clear()
+    operations.clear()
   }
 
   function syncAccount() {
@@ -266,9 +272,9 @@ export function useTabCreation(options: UseTabCreationOptions) {
       return attempt.seenLive
     if (!hlcIsZero(record.tombstoneAt))
       return true
-    if (record.tabType !== attempt.type)
+    if (record.tabType !== attempt.operation.type)
       return true
-    if (record.workerId && record.workerId.value !== attempt.workerId)
+    if (record.workerId && record.workerId.value !== attempt.operation.workerId)
       return true
     attempt.seenLive = true
     return false
@@ -276,7 +282,7 @@ export function useTabCreation(options: UseTabCreationOptions) {
 
   function validatePublication(attempt: CreationContext, publication: PublishedTab | undefined): PublishedTab {
     if (!publication || publication.tab?.tabId !== attempt.creation.tabId
-      || publication.tab.tabType !== attempt.type
+      || publication.tab.tabType !== attempt.operation.type
       || publication.workspaceId !== attempt.creation.placement?.workspaceId
       || !publication.tileId || !publication.position) {
       throw new Error('The Worker returned an invalid tab publication.')
@@ -284,7 +290,7 @@ export function useTabCreation(options: UseTabCreationOptions) {
     return publication
   }
 
-  function selectionIsCurrent(observer: CreationObserver, attempt: CreationAttempt) {
+  function selectionIsCurrent(observer: CreationObserver, attempt: PreparedTabCreation) {
     const frame = observer.frame
     const workspaceId = observer.workspaceId
     const tileId = attempt.creation.placement?.destination.case === 'tileId'
@@ -318,14 +324,26 @@ export function useTabCreation(options: UseTabCreationOptions) {
     })
   }
 
-  function retireAttempt(attempt: CreationAttempt) {
-    if (attempts.get(attempt.key) !== attempt)
+  function operationIsCurrent(operation: CreationOperation) {
+    return accountIsCurrent(operation.frame) && operations.get(operation.key) === operation
+  }
+
+  function preparedIsCurrent(attempt: CreationContext) {
+    return operationIsCurrent(attempt.operation)
+      && attempt.operation.stage.kind === 'tab_pending'
+      && attempt.operation.stage.prepared === attempt
+  }
+
+  function retireOperation(operation: CreationOperation) {
+    if (operations.get(operation.key) !== operation)
       return
-    attempts.delete(attempt.key)
-    for (const [key, workspace] of workspaces) {
-      if (workspace.attempt === attempt)
-        workspaces.delete(key)
-    }
+    operations.delete(operation.key)
+    operation.controller.abort()
+  }
+
+  function retireAttempt(attempt: PreparedTabCreation) {
+    if (preparedIsCurrent(attempt))
+      retireOperation(attempt.operation)
   }
 
   const stopStorageObservation = onStorageAccountChange(() => {
@@ -338,7 +356,10 @@ export function useTabCreation(options: UseTabCreationOptions) {
     untrack(syncAccount)
     revision()
     options.state()
-    for (const attempt of attempts.values()) {
+    for (const operation of operations.values()) {
+      if (operation.stage.kind !== 'tab_pending')
+        continue
+      const attempt = operation.stage.prepared
       const ended = attemptEnded(attempt)
       if (ended)
         retireAttempt(attempt)
@@ -350,8 +371,8 @@ export function useTabCreation(options: UseTabCreationOptions) {
         }
         if (!attempt.publication || options.state()?.userId !== observer.frame.account)
           continue
-        const tab = options.view.getById(attempt.type, attempt.creation.tabId)
-        if (!tab || tab.workerId !== attempt.workerId)
+        const tab = options.view.getById(attempt.operation.type, attempt.creation.tabId)
+        if (!tab || tab.workerId !== attempt.operation.workerId)
           continue
         const activate = selectionIsCurrent(observer, attempt)
         attempt.observers.delete(observer)
@@ -371,7 +392,7 @@ export function useTabCreation(options: UseTabCreationOptions) {
       }
       if (attempt.publication && attempt.observers.size === 0
         && options.state()?.userId === attempt.frame.account
-        && options.view.getById(attempt.type, attempt.creation.tabId)) {
+        && options.view.getById(attempt.operation.type, attempt.creation.tabId)) {
         retireAttempt(attempt)
       }
     }
@@ -383,37 +404,43 @@ export function useTabCreation(options: UseTabCreationOptions) {
     forgetAttempts()
   })
 
-  function sendAttempt(attempt: CreationAttempt) {
+  function sendAttempt(attempt: PreparedTabCreation) {
     if (attempt.sending || attempt.publication)
       return
     attempt.sending = true
     void Promise.resolve().then(attempt.send).then((publication) => {
       attempt.sending = false
-      if (!accountIsCurrent(attempt.frame) || attempts.get(attempt.key) !== attempt || attemptEnded(attempt))
+      if (!preparedIsCurrent(attempt) || attemptEnded(attempt))
         return
       attempt.publication = publication
       runLocalCallback(() => attempt.onCommitted?.(publication, () => accountIsCurrent(attempt.frame)))
       changed()
     }, (error: unknown) => {
       attempt.sending = false
-      if (!accountIsCurrent(attempt.frame) || attempts.get(attempt.key) !== attempt)
+      if (!preparedIsCurrent(attempt))
         return
+      const observers = [...attempt.observers]
+      attempt.observers.clear()
       if (isDefinitiveTabCreationError(error)) {
-        attempts.delete(attempt.key)
+        if (attempt.operation.target.kind === 'new') {
+          attempt.operation.stage = { kind: 'workspace_ready', workspaceId: attempt.creation.placement.workspaceId }
+        }
+        else {
+          retireOperation(attempt.operation)
+        }
         if (!options.state()?.tabs[attempt.creation.tabId])
           options.metadata.remove(attempt.creation.tabId)
       }
-      for (const observer of attempt.observers) {
+      for (const observer of observers) {
         if (accountIsCurrent(observer.frame) && viewIsCurrent(observer.frame))
           runLocalCallback(() => observer.onError(error))
         observer.resolve(false)
       }
-      attempt.observers.clear()
       changed()
     })
   }
 
-  function observe(attempt: CreationAttempt, origin: TabCreationOrigin, frame: CreationFrame): Promise<boolean> {
+  function observe(attempt: PreparedTabCreation, origin: TabCreationOrigin, frame: CreationFrame): Promise<boolean> {
     const tileId = attempt.creation.placement?.destination.case === 'tileId'
       ? attempt.creation.placement.destination.value
       : undefined
@@ -433,58 +460,100 @@ export function useTabCreation(options: UseTabCreationOptions) {
     })
   }
 
-  function prepareAttempt({ origin, frame, type, requestKey, presentation, placement, prepare }: AttemptPreparation): CreationAttempt {
+  function getOperation(input: {
+    origin: Pick<TabCreationOrigin, 'retryKey' | 'workerId'>
+    frame: CreationFrame
+    target: CreationTarget
+    type: TabType
+    requestKey: string
+    presentation?: TabPresentation | undefined
+  }): CreationOperation {
+    const { origin, frame, target, type, requestKey, presentation } = input
     if (!origin.workerId)
       throw new Error('Choose a Worker for the new tab.')
     const key = JSON.stringify([
       frame.account,
       origin.retryKey,
-      origin.workspaceId,
       origin.workerId,
       type,
+      target.kind,
+      target.kind === 'existing'
+        ? target.workspaceId
+        : target.title,
       requestKey,
       presentation
         ? toJsonString(TabPresentationSchema, presentation)
         : '',
     ])
-    const previous = attempts.get(key)
+    const previous = operations.get(key)
     if (previous)
       return previous
-    const context: CreationContext = {
+    const controller = new AbortController()
+    const stage: CreationStage = target.kind === 'existing'
+      ? { kind: 'workspace_ready', workspaceId: target.workspaceId }
+      : {
+          kind: 'workspace_pending',
+          result: Promise.resolve().then(async () => {
+            const response = await workspaceClient.createWorkspace({ title: target.title }, { signal: controller.signal })
+            if (!response.workspaceId)
+              throw new Error('The Hub returned no workspace identity.')
+            return response.workspaceId
+          }),
+        }
+    const operation: CreationOperation = {
       key,
       frame,
+      target,
       type,
       workerId: origin.workerId,
-      creation: create(TabCreationSchema, {
-        tabId: randomUUID(),
-        placement: placement(),
-        ...(presentation
-          ? { presentation }
-          : {}),
-      }),
-      controller: new AbortController(),
-      sending: false,
-      seenLive: false,
-      publication: undefined,
-      onCommitted: origin.onCommitted,
-      observers: new Set(),
+      controller,
+      stage,
     }
+    operations.set(key, operation)
+    return operation
+  }
+
+  function prepareAttempt({ operation, origin, frame, presentation, placement, prepare }: AttemptPreparation): PreparedTabCreation {
+    if (operation.stage.kind === 'tab_pending')
+      return operation.stage.prepared
+    const tabId = randomUUID()
     try {
-      const attempt: CreationAttempt = Object.assign(context, {
+      const context: CreationContext = {
+        operation,
+        frame,
+        creation: {
+          ...create(TabCreationSchema, {
+            tabId,
+            ...(presentation
+              ? { presentation }
+              : {}),
+          }),
+          placement: placement(),
+        },
+        signal: operation.controller.signal,
+        sending: false,
+        seenLive: false,
+        publication: undefined,
+        onCommitted: origin.onCommitted,
+        observers: new Set(),
+      }
+      const attempt: PreparedTabCreation = Object.assign(context, {
         send: prepare(context),
       })
-      attempts.set(key, attempt)
+      operation.stage = { kind: 'tab_pending', prepared: attempt }
       return attempt
     }
     catch (error) {
       if (accountIsCurrent(frame))
-        options.metadata.remove(context.creation.tabId)
+        options.metadata.remove(tabId)
+      if (operation.target.kind === 'existing')
+        retireOperation(operation)
       throw error
     }
   }
 
   function applyAgentReply(attempt: CreationContext, info: AgentInfo, landed: TabWritesLanded, seedFromActive: boolean) {
-    if (!accountIsCurrent(attempt.frame) || attemptEnded(attempt))
+    if (!preparedIsCurrent(attempt) || attemptEnded(attempt))
       return
     const current = options.metadata.get(attempt.creation.tabId)
     if (current?.hydrated)
@@ -502,7 +571,7 @@ export function useTabCreation(options: UseTabCreationOptions) {
     }
     if (!landed.git(info.id) && !fresh.gitStatus && current?.gitToplevel === undefined)
       seedGit(attempt, info.workingDir, seedFromActive)
-    const mapped = protoToAgentTabFields(options.repoGitStore, attempt.workerId, fresh)
+    const mapped = protoToAgentTabFields(options.repoGitStore, attempt.operation.workerId, fresh)
     const fields = statusChanged
       ? withoutLiveStatusFields(mapped)
       : mapped
@@ -520,7 +589,7 @@ export function useTabCreation(options: UseTabCreationOptions) {
     if (!enabled)
       return
     const seed = planOptimisticRepoGit(options.repoGitStore, attempt.frame.sourceTab, {
-      workerId: attempt.workerId,
+      workerId: attempt.operation.workerId,
       workingDir,
       ...(shellStartDir === undefined
         ? {}
@@ -530,14 +599,19 @@ export function useTabCreation(options: UseTabCreationOptions) {
     seed.commit()
   }
 
-  function agentAttempt(input: AgentTabCreation, frame: CreationFrame, request: OpenAgentRequest, placement: () => TabPlacement): CreationAttempt {
+  function agentAttempt(input: AgentTabCreation, frame: CreationFrame, request: OpenAgentRequest, operation: CreationOperation): PreparedTabCreation {
     const seedFromActive = input.seedGitFromActiveTab !== false
     return prepareAttempt({
       origin: input,
       frame,
-      type: TabType.AGENT,
-      requestKey: toJsonString(OpenAgentRequestSchema, request),
-      placement,
+      operation,
+      placement: () => operation.target.kind === 'new'
+        ? create(TabPlacementSchema, {
+            workspaceId: input.workspaceId,
+            destination: { case: 'firstLeaf', value: {} },
+            insertion: TabInsertion.LAST,
+          })
+        : capturePlacement(input.workspaceId),
       prepare: (prepared) => {
         request.creation = prepared.creation
         const landed = watchTabWrites(options.metadata, [prepared.creation.tabId])
@@ -552,9 +626,9 @@ export function useTabCreation(options: UseTabCreationOptions) {
         })
         seedGit(prepared, request.workingDir, seedFromActive)
         return async () => {
-          const response = await workerAgent.openAgent(prepared.workerId, request, { signal: prepared.controller.signal })
+          const response = await workerAgent.openAgent(prepared.operation.workerId, request, { signal: prepared.signal })
           const publication = validatePublication(prepared, response.publication)
-          if (!response.agent || response.agent.id !== prepared.creation.tabId || response.agent.workerId !== prepared.workerId)
+          if (!response.agent || response.agent.id !== prepared.creation.tabId || response.agent.workerId !== prepared.operation.workerId)
             throw new Error('The Worker returned a different agent identity.')
           applyAgentReply(prepared, response.agent, landed, seedFromActive)
           return publication
@@ -569,7 +643,14 @@ export function useTabCreation(options: UseTabCreationOptions) {
       return Promise.resolve(false)
     try {
       const request = captureAgentRequest(input.request)
-      const attempt = agentAttempt(input, frame, request, () => capturePlacement(input.workspaceId))
+      const operation = getOperation({
+        origin: input,
+        frame,
+        target: { kind: 'existing', workspaceId: input.workspaceId },
+        type: TabType.AGENT,
+        requestKey: toJsonString(OpenAgentRequestSchema, request),
+      })
+      const attempt = agentAttempt(input, frame, request, operation)
       return observe(attempt, input, frame)
     }
     catch (error) {
@@ -588,46 +669,42 @@ export function useTabCreation(options: UseTabCreationOptions) {
       if (!input.workerId)
         throw new Error('Choose a Worker for the new tab.')
       const request = captureAgentRequest(input.request)
-      const title = input.title
-      const key = JSON.stringify([
-        frame.account,
-        input.retryKey,
-        input.workerId,
-        title,
-        toJsonString(OpenAgentRequestSchema, request),
-      ])
-      let entry = workspaces.get(key)
-      if (!entry) {
-        const controller = new AbortController()
-        const result = Promise.resolve().then(async () => {
-          const response = await workspaceClient.createWorkspace({ title }, { signal: controller.signal })
-          if (!response.workspaceId)
-            throw new Error('The Hub returned no workspace identity.')
-          return response.workspaceId
-        })
-        entry = { controller, result }
-        workspaces.set(key, entry)
-      }
-      const workspace = entry
-      const workspaceKey = key
+      const operation = getOperation({
+        origin: input,
+        frame,
+        target: { kind: 'new', title: input.title },
+        type: TabType.AGENT,
+        requestKey: toJsonString(OpenAgentRequestSchema, request),
+      })
       let workspaceId: string
-      try {
-        workspaceId = await workspace.result
+      switch (operation.stage.kind) {
+        case 'workspace_pending': {
+          const preparation = operation.stage
+          try {
+            workspaceId = await preparation.result
+          }
+          catch (error) {
+            if (operation.stage === preparation)
+              retireOperation(operation)
+            throw error
+          }
+          if (!operationIsCurrent(operation))
+            return false
+          if (operation.stage === preparation)
+            operation.stage = { kind: 'workspace_ready', workspaceId }
+          break
+        }
+        case 'workspace_ready':
+          workspaceId = operation.stage.workspaceId
+          break
+        case 'tab_pending':
+          workspaceId = operation.stage.prepared.creation.placement.workspaceId
+          break
       }
-      catch (error) {
-        if (workspaces.get(workspaceKey) === workspace)
-          workspaces.delete(workspaceKey)
-        throw error
-      }
-      if (!accountIsCurrent(frame))
+      if (!operationIsCurrent(operation))
         return false
       const origin: AgentTabCreation = { ...input, workspaceId }
-      const attempt = agentAttempt(origin, frame, request, () => create(TabPlacementSchema, {
-        workspaceId,
-        destination: { case: 'firstLeaf', value: {} },
-        insertion: TabInsertion.LAST,
-      }))
-      workspace.attempt = attempt
+      const attempt = agentAttempt(origin, frame, request, operation)
       return observe(attempt, origin, frame)
     }
     catch (error) {
@@ -645,11 +722,17 @@ export function useTabCreation(options: UseTabCreationOptions) {
       const seedFromActive = input.seedGitFromActiveTab !== false
       const request = clone(OpenTerminalRequestSchema, create(OpenTerminalRequestSchema, input.request))
       request.target = { case: undefined }
-      const attempt = prepareAttempt({
+      const operation = getOperation({
         origin: input,
         frame,
+        target: { kind: 'existing', workspaceId: input.workspaceId },
         type: TabType.TERMINAL,
         requestKey: toJsonString(OpenTerminalRequestSchema, request),
+      })
+      const attempt = prepareAttempt({
+        operation,
+        origin: input,
+        frame,
         placement: () => capturePlacement(input.workspaceId),
         prepare: (prepared) => {
           request.target = { case: 'creation', value: prepared.creation }
@@ -668,11 +751,11 @@ export function useTabCreation(options: UseTabCreationOptions) {
           })
           seedGit(prepared, request.workingDir, seedFromActive, request.shellStartDir || undefined)
           return async () => {
-            const response = await workerTerminal.openTerminal(prepared.workerId, request, { signal: prepared.controller.signal })
+            const response = await workerTerminal.openTerminal(prepared.operation.workerId, request, { signal: prepared.signal })
             const publication = validatePublication(prepared, response.publication)
             if (response.terminalId !== prepared.creation.tabId)
               throw new Error('The Worker returned a different terminal identity.')
-            if (accountIsCurrent(prepared.frame) && !attemptEnded(prepared) && options.metadata.get(prepared.creation.tabId)?.title === undefined)
+            if (preparedIsCurrent(prepared) && !attemptEnded(prepared) && options.metadata.get(prepared.creation.tabId)?.title === undefined)
               options.metadata.patch(prepared.creation.tabId, { title: response.title })
             return publication
           }
@@ -704,12 +787,19 @@ export function useTabCreation(options: UseTabCreationOptions) {
       const presentation = input.presentation
         ? create(TabPresentationSchema, input.presentation)
         : undefined
-      const attempt = prepareAttempt({
+      const operation = getOperation({
         origin: input,
         frame,
+        target: { kind: 'existing', workspaceId: input.workspaceId },
         type,
         presentation,
         requestKey: toJsonString(RegisterTabPayloadRequestSchema, request),
+      })
+      const attempt = prepareAttempt({
+        operation,
+        origin: input,
+        frame,
+        presentation,
         placement: () => capturePlacement(input.workspaceId),
         prepare: (prepared) => {
           request.creation = prepared.creation
@@ -724,7 +814,7 @@ export function useTabCreation(options: UseTabCreationOptions) {
           })
           seedGit(prepared, request.payload?.workingDir ?? '', true)
           return async () => {
-            const response = await workerPrivate.registerTabPayload(prepared.workerId, request, { signal: prepared.controller.signal })
+            const response = await workerPrivate.registerTabPayload(prepared.operation.workerId, request, { signal: prepared.signal })
             return validatePublication(prepared, response.publication)
           }
         },
@@ -739,8 +829,11 @@ export function useTabCreation(options: UseTabCreationOptions) {
   }
 
   function acceptsEarlyMetadata(tabId: string, type: TabType, workerId: string): boolean {
-    for (const attempt of attempts.values()) {
-      if (attempt.creation.tabId !== tabId || attempt.type !== type || attempt.workerId !== workerId
+    for (const operation of operations.values()) {
+      if (operation.stage.kind !== 'tab_pending')
+        continue
+      const attempt = operation.stage.prepared
+      if (attempt.creation.tabId !== tabId || attempt.operation.type !== type || attempt.operation.workerId !== workerId
         || !accountIsCurrent(attempt.frame)) {
         continue
       }

@@ -1,6 +1,7 @@
 package tabcreation
 
 import (
+	"encoding/hex"
 	"strings"
 	"testing"
 
@@ -8,6 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -77,4 +79,68 @@ func TestFingerprint(t *testing.T) {
 	require.Error(t, err)
 	_, err = Fingerprint(&leapmuxv1.TabCreation{TabId: string([]byte{255})})
 	require.Error(t, err)
+}
+
+func TestTabPresentationProtocol(t *testing.T) {
+	t.Parallel()
+	fields := (&leapmuxv1.TabPresentation{}).ProtoReflect().Descriptor().Fields()
+	require.Equal(t, 3, fields.Len())
+	for i, expected := range []struct {
+		field, enum string
+		members     []string
+	}{
+		{"display_mode", "TabDisplayMode", []string{"UNSPECIFIED", "RENDER", "SOURCE", "SPLIT"}},
+		{"file_view_mode", "TabFileViewMode", []string{"UNSPECIFIED", "WORKING", "HEAD", "STAGED", "UNIFIED_DIFF", "SPLIT_DIFF"}},
+	} {
+		field := fields.ByName(protoreflect.Name(expected.field))
+		require.NotNil(t, field)
+		assert.Equal(t, protoreflect.FieldNumber(i+1), field.Number())
+		assert.True(t, field.HasPresence())
+		require.Equal(t, protoreflect.EnumKind, field.Kind())
+		enum := field.Enum()
+		assert.Equal(t, expected.enum, string(enum.Name()))
+		require.Equal(t, len(expected.members), enum.Values().Len())
+		prefix := "TAB_DISPLAY_MODE_"
+		if i == 1 {
+			prefix = "TAB_FILE_VIEW_MODE_"
+		}
+		for ordinal, member := range expected.members {
+			value := enum.Values().Get(ordinal)
+			assert.Equal(t, protoreflect.EnumNumber(ordinal), value.Number())
+			assert.Equal(t, prefix+member, string(value.Name()))
+		}
+	}
+	diffBase := fields.ByName("file_diff_base")
+	require.NotNil(t, diffBase)
+	assert.Equal(t, protoreflect.FieldNumber(3), diffBase.Number())
+	assert.Equal(t, protoreflect.StringKind, diffBase.Kind())
+	assert.True(t, diffBase.HasPresence())
+}
+
+func TestTabPresentationNumericEncodingAndPresence(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name  string
+		value *leapmuxv1.TabPresentation
+		wire  string
+	}{
+		{"absent", &leapmuxv1.TabPresentation{}, ""},
+		{"explicit zero", &leapmuxv1.TabPresentation{DisplayMode: leapmuxv1.TabDisplayMode(0).Enum(), FileViewMode: leapmuxv1.TabFileViewMode(0).Enum(), FileDiffBase: proto.String("")}, "080010001a00"},
+		{"known", &leapmuxv1.TabPresentation{DisplayMode: leapmuxv1.TabDisplayMode_TAB_DISPLAY_MODE_RENDER.Enum(), FileViewMode: leapmuxv1.TabFileViewMode_TAB_FILE_VIEW_MODE_UNIFIED_DIFF.Enum()}, "08011004"},
+		{"unknown positive", &leapmuxv1.TabPresentation{DisplayMode: leapmuxv1.TabDisplayMode(32768).Enum(), FileViewMode: leapmuxv1.TabFileViewMode(32768).Enum()}, "0880800210808002"},
+		{"unknown negative", &leapmuxv1.TabPresentation{DisplayMode: leapmuxv1.TabDisplayMode(-1).Enum(), FileViewMode: leapmuxv1.TabFileViewMode(-1).Enum()}, "08ffffffffffffffffff0110ffffffffffffffffff01"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			encoded, err := proto.Marshal(test.value)
+			require.NoError(t, err)
+			assert.Equal(t, test.wire, hex.EncodeToString(encoded))
+			var decoded leapmuxv1.TabPresentation
+			require.NoError(t, proto.Unmarshal(encoded, &decoded))
+			assert.True(t, proto.Equal(test.value, &decoded))
+			creation := validCreation()
+			creation.Presentation = &decoded
+			require.NoError(t, Validate(creation, leapmuxv1.TabType_TAB_TYPE_FILE))
+		})
+	}
 }

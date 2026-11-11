@@ -1,18 +1,18 @@
 import type { TabCreationOrigin } from './useTabCreation'
 import type { OpenAgentRequest } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TabCreation } from '~/generated/proto/leapmux/v1/tab_creation_pb'
-import { create } from '@bufbuild/protobuf'
+import { create, toBinary } from '@bufbuild/protobuf'
 import { Code } from '@connectrpc/connect'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentInfoSchema, AgentProvider, AgentStatus, AgentStatusChangeSchema, AvailableOptionGroupSchema, OpenAgentResponseSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentInfoSchema, AgentProvider, AgentStatus, AgentStatusChangeSchema, AvailableOptionGroupSchema, OpenAgentRequestSchema, OpenAgentResponseSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitRepoStatusSchema, TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TabInsertion } from '~/generated/proto/leapmux/v1/tab_creation_pb'
 import { handleAgentStatusChange } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { setStorageAccountForTests } from '~/lib/browserStorage'
 import { ChannelError } from '~/lib/channelError'
-import { getCRDTBridge, tombstoneTab } from '~/lib/crdt'
+import { getCRDTBridge, setTabWorkerId, tombstoneTab } from '~/lib/crdt'
 import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
@@ -361,6 +361,49 @@ describe('useTabCreation canonical ordering', () => {
 })
 
 describe('useTabCreation retry identity', () => {
+  it.each(['transport', 'definitive'] as const)('preserves a synchronous retry observer after %s failure', async (failure) => {
+    const s = setup()
+    const held = deferred<unknown>()
+    const requests: Array<{ tabId: string, bytes: Uint8Array }> = []
+    mockOpenAgent.mockImplementation((_worker, request: OpenAgentRequest) => {
+      requests.push({
+        tabId: request.creation!.tabId,
+        bytes: toBinary(OpenAgentRequestSchema, request),
+      })
+      if (requests.length === 1) {
+        return Promise.reject(failure === 'transport'
+          ? new ChannelError('transport', 'unknown outcome')
+          : new ChannelError('rpc', 'rejected creation', { code: Code.Aborted }))
+      }
+      return held.promise
+    })
+    let retry: Promise<boolean> | undefined
+    let retryFinished = false
+    const input = { ...s.origin, request: s.request }
+    const onError = vi.fn(() => {
+      if (onError.mock.calls.length === 1) {
+        retry = s.coordinator.openAgent(input).then((value) => {
+          retryFinished = true
+          return value
+        })
+      }
+    })
+    input.onError = onError
+    expect(await s.coordinator.openAgent(input)).toBe(false)
+    await settle()
+    expect(onError).toHaveBeenCalledOnce()
+    expect(mockOpenAgent).toHaveBeenCalledTimes(2)
+    expect(retryFinished).toBe(false)
+    const first = requests[0]!
+    const second = requests[1]!
+    if (failure === 'transport')
+      expect(second.bytes).toEqual(first.bytes)
+    else
+      expect(second.tabId).not.toBe(first.tabId)
+    held.resolve(s.agentReply(sentAgent(1), true))
+    expect(await retry).toBe(true)
+  })
+
   it.each(['transport', 'definitive'] as const)('retains only uncertain attempts after %s failure', async (failure) => {
     const s = setup()
     mockOpenAgent.mockRejectedValueOnce(failure === 'transport'
@@ -790,6 +833,38 @@ describe('useTabCreation terminal identity', () => {
 })
 
 describe('useTabCreation workspace admission', () => {
+  it.each(['reject', 'missing-id'] as const)('retires failed workspace preparation after %s', async (failure) => {
+    const s = setup()
+    const held = deferred<{ workspaceId: string }>()
+    mockCreateWorkspace.mockReturnValueOnce(held.promise)
+    const [view, setView] = createSignal<unknown>({})
+    const obsoleteError = vi.fn()
+    const otherError = vi.fn()
+    const input = { ...s.origin, title: 'Workspace', request: s.request }
+    const first = s.coordinator.openWorkspace(input)
+    const second = s.coordinator.openWorkspace({ ...input, onError: otherError })
+    const obsolete = s.coordinator.openWorkspace({ ...input, viewIdentity: view, onError: obsoleteError })
+    await settle()
+    setView({})
+    if (failure === 'reject')
+      held.reject(new Error('workspace refused'))
+    else
+      held.resolve({ workspaceId: '' })
+    expect(await first).toBe(false)
+    expect(await second).toBe(false)
+    expect(await obsolete).toBe(false)
+    expect(mockCreateWorkspace).toHaveBeenCalledOnce()
+    expect(mockOpenAgent).not.toHaveBeenCalled()
+    expect(s.onError).toHaveBeenCalledOnce()
+    expect(otherError).toHaveBeenCalledOnce()
+    expect(obsoleteError).not.toHaveBeenCalled()
+    seedWorkspace(s.harness, 'ws-new', 'new-root')
+    mockCreateWorkspace.mockResolvedValueOnce({ workspaceId: 'ws-new' })
+    mockOpenAgent.mockImplementationOnce((_worker, request: OpenAgentRequest) => Promise.resolve(s.agentReply(request, true)))
+    expect(await s.coordinator.openWorkspace(input)).toBe(true)
+    expect(mockCreateWorkspace).toHaveBeenCalledTimes(2)
+  })
+
   it('refuses a missing Worker before creating a workspace', async () => {
     const s = setup()
     mockCreateWorkspace.mockResolvedValue({ workspaceId: 'should-not-exist' })
@@ -908,5 +983,224 @@ describe('useTabCreation acceptsEarlyMetadata', () => {
     expect(s.coordinator.acceptsEarlyMetadata(id, TabType.AGENT, 'worker')).toBe(false)
     s.dispose()
     expect(s.coordinator.acceptsEarlyMetadata(id, TabType.AGENT, 'worker')).toBe(false)
+  })
+})
+
+describe('useTabCreation operation transitions', () => {
+  it('joins callers while workspace preparation waits', async () => {
+    const s = setup()
+    const held = deferred<{ workspaceId: string }>()
+    mockCreateWorkspace.mockReturnValueOnce(held.promise)
+    mockOpenAgent.mockImplementation((_worker, request: OpenAgentRequest) => Promise.resolve(s.agentReply(request, true)))
+    const input = { ...s.origin, title: 'Workspace', request: s.request }
+    const first = s.coordinator.openWorkspace(input)
+    const second = s.coordinator.openWorkspace(input)
+    await settle()
+    expect(mockCreateWorkspace).toHaveBeenCalledOnce()
+    expect(mockOpenAgent).not.toHaveBeenCalled()
+    expect(s.coordinator.acceptsEarlyMetadata('unprepared', TabType.AGENT, 'worker')).toBe(false)
+    seedWorkspace(s.harness, 'ws-new', 'new-root')
+    held.resolve({ workspaceId: 'ws-new' })
+    expect(await first).toBe(true)
+    expect(await second).toBe(true)
+    expect(mockOpenAgent).toHaveBeenCalledOnce()
+  })
+
+  it('retains the known workspace after definitive resource rejection', async () => {
+    const s = setup()
+    seedWorkspace(s.harness, 'ws-new', 'new-root')
+    mockCreateWorkspace.mockResolvedValue({ workspaceId: 'ws-new' })
+    mockOpenAgent.mockRejectedValueOnce(new ChannelError('rpc', 'rejected creation', { code: Code.Aborted }))
+    const input = { ...s.origin, title: 'Workspace', request: s.request }
+    expect(await s.coordinator.openWorkspace(input)).toBe(false)
+    const first = sentAgent()
+    mockOpenAgent.mockImplementationOnce((_worker, request: OpenAgentRequest) => Promise.resolve(s.agentReply(request, true)))
+    expect(await s.coordinator.openWorkspace(input)).toBe(true)
+    expect(mockCreateWorkspace).toHaveBeenCalledOnce()
+    expect(sentAgent(1).creation!.tabId).not.toBe(first.creation!.tabId)
+    expect(sentAgent(1).creation!.placement!.workspaceId).toBe('ws-new')
+  })
+
+  it.each(['account', 'aba', 'disposal'] as const)('stops old workspace continuations after %s', async (ending) => {
+    const s = setup()
+    const held = deferred<{ workspaceId: string }>()
+    mockCreateWorkspace.mockReturnValueOnce(held.promise)
+    const result = s.coordinator.openWorkspace({ ...s.origin, title: 'Workspace', request: s.request })
+    await settle()
+    if (ending === 'disposal') {
+      s.dispose()
+    }
+    else {
+      setStorageAccountForTests('other')
+      s.setUserId('other')
+      if (ending === 'aba') {
+        setStorageAccountForTests(s.harness.userId)
+        s.setUserId(s.harness.userId)
+      }
+    }
+    held.resolve({ workspaceId: 'old-account-workspace' })
+    expect(await result).toBe(false)
+    expect(mockCreateWorkspace.mock.calls[0]?.[1].signal.aborted).toBe(true)
+    expect(mockOpenAgent).not.toHaveBeenCalled()
+    expect(s.onError).not.toHaveBeenCalled()
+  })
+
+  it('finishes account-owned creation after the initiating dialog disappears', async () => {
+    const s = setup()
+    const held = deferred<{ workspaceId: string }>()
+    const [view, setView] = createSignal<unknown>({})
+    const onObserved = vi.fn()
+    const onCommitted = vi.fn()
+    mockCreateWorkspace.mockReturnValueOnce(held.promise)
+    mockOpenAgent.mockImplementationOnce((_worker, request: OpenAgentRequest) => Promise.resolve(s.agentReply(request, true)))
+    const result = s.coordinator.openWorkspace({
+      ...s.origin,
+      title: 'Workspace',
+      request: s.request,
+      viewIdentity: view,
+      onObserved,
+      onCommitted,
+    })
+    await settle()
+    setView(null)
+    seedWorkspace(s.harness, 'ws-new', 'new-root')
+    held.resolve({ workspaceId: 'ws-new' })
+    expect(await result).toBe(false)
+    await settle()
+    expect(onCommitted).toHaveBeenCalledOnce()
+    expect(onObserved).not.toHaveBeenCalled()
+    expect(s.onError).not.toHaveBeenCalled()
+  })
+
+  it.each(['account', 'aba', 'disposal'] as const)('keeps committed bookkeeping valid after cache retirement until %s', async (ending) => {
+    const s = setup()
+    let isCurrent: (() => boolean) | undefined
+    mockOpenAgent.mockImplementationOnce((_worker, request: OpenAgentRequest) => Promise.resolve(s.agentReply(request, true)))
+    expect(await s.coordinator.openAgent({
+      ...s.origin,
+      request: s.request,
+      onCommitted: (_publication, current) => { isCurrent = current },
+    })).toBe(true)
+    await settle()
+    expect(s.coordinator.acceptsEarlyMetadata(sentAgent().creation!.tabId, TabType.AGENT, 'worker')).toBe(false)
+    expect(isCurrent?.()).toBe(true)
+    if (ending === 'disposal') {
+      s.dispose()
+    }
+    else {
+      setStorageAccountForTests('other')
+      s.setUserId('other')
+      if (ending === 'aba') {
+        setStorageAccountForTests(s.harness.userId)
+        s.setUserId(s.harness.userId)
+      }
+    }
+    expect(isCurrent?.()).toBe(false)
+  })
+})
+
+describe('useTabCreation operation isolation', () => {
+  it.each(['title', 'worker', 'configuration'] as const)('separates workspace operations with different %s', async (change) => {
+    const s = setup()
+    const firstReply = deferred<{ workspaceId: string }>()
+    const secondReply = deferred<{ workspaceId: string }>()
+    mockCreateWorkspace.mockReturnValueOnce(firstReply.promise).mockReturnValueOnce(secondReply.promise)
+    const input = { ...s.origin, title: 'Workspace', request: s.request }
+    const first = s.coordinator.openWorkspace(input)
+    const second = s.coordinator.openWorkspace({
+      ...input,
+      ...(change === 'title'
+        ? { title: 'Other' }
+        : {}),
+      ...(change === 'worker'
+        ? { workerId: 'other' }
+        : {}),
+      ...(change === 'configuration'
+        ? {
+            request: { ...s.request, workingDir: '/different' },
+          }
+        : {}),
+    })
+    await settle()
+    expect(mockCreateWorkspace).toHaveBeenCalledTimes(2)
+    s.dispose()
+    firstReply.resolve({ workspaceId: 'first' })
+    secondReply.resolve({ workspaceId: 'second' })
+    expect(await first).toBe(false)
+    expect(await second).toBe(false)
+    expect(mockOpenAgent).not.toHaveBeenCalled()
+  })
+
+  for (const kind of ['agent', 'terminal', 'file', 'image'] as const) {
+    it.each(['close', 'reassignment'] as const)(`ignores a late ${kind} reply after canonical %s`, async (ending) => {
+      const s = setup()
+      const held = deferred<unknown>()
+      const observed = vi.fn()
+      const committed = vi.fn()
+      mockFor(kind).mockReturnValueOnce(held.promise)
+      const result = openKind(s, kind, { onObserved: observed, onCommitted: committed })
+      await settle()
+      const creation = sentCreation(kind)
+      const reply = replyFor(s, kind)
+      s.publisher.publish(typeFor(kind), creation.tabId, { workerId: 'worker' })
+      s.publisher.deliver([
+        ending === 'close'
+          ? tombstoneTab(s.publisher.context, typeFor(kind), creation.tabId)
+          : setTabWorkerId(s.publisher.context, typeFor(kind), creation.tabId, 'replacement'),
+      ])
+      expect(await result).toBe(false)
+      expect(s.coordinator.acceptsEarlyMetadata(creation.tabId, typeFor(kind), 'worker')).toBe(false)
+      s.metadata.patch(creation.tabId, { title: 'Newer title' })
+      held.resolve(reply)
+      await settle()
+      expect(s.metadata.get(creation.tabId)?.title).toBe('Newer title')
+      expect(observed).not.toHaveBeenCalled()
+      expect(committed).not.toHaveBeenCalled()
+    })
+  }
+
+  it.each(['transport', 'definitive'] as const)('keeps a synchronous workspace retry after %s failure', async (failure) => {
+    const s = setup()
+    seedWorkspace(s.harness, 'ws-new', 'new-root')
+    mockCreateWorkspace.mockResolvedValueOnce({ workspaceId: 'ws-new' })
+    const held = deferred<unknown>()
+    mockOpenAgent.mockRejectedValueOnce(failure === 'transport'
+      ? new ChannelError('transport', 'unknown outcome')
+      : new ChannelError('rpc', 'rejected creation', { code: Code.Aborted }))
+    mockOpenAgent.mockReturnValueOnce(held.promise)
+    let retry: Promise<boolean> | undefined
+    const committed = vi.fn()
+    const input = { ...s.origin, title: 'Workspace', request: s.request }
+    const onError = vi.fn(() => {
+      if (onError.mock.calls.length === 1)
+        retry = s.coordinator.openWorkspace({ ...input, onError, onCommitted: committed })
+    })
+    expect(await s.coordinator.openWorkspace({ ...input, onError })).toBe(false)
+    await settle()
+    expect(onError).toHaveBeenCalledOnce()
+    expect(mockCreateWorkspace).toHaveBeenCalledOnce()
+    expect(mockOpenAgent).toHaveBeenCalledTimes(2)
+    if (failure === 'transport')
+      expect(sentAgent(1)).toEqual(sentAgent())
+    else
+      expect(sentAgent(1).creation!.tabId).not.toBe(sentAgent().creation!.tabId)
+    held.resolve(s.agentReply(sentAgent(1), true))
+    expect(await retry).toBe(true)
+    if (failure === 'definitive')
+      expect(committed).toHaveBeenCalledOnce()
+    else
+      expect(committed).not.toHaveBeenCalled()
+  })
+
+  it('refuses a missing destination before dispatch and admits a later valid destination', async () => {
+    const s = setup()
+    const input = { ...s.origin, workspaceId: 'missing', request: s.request }
+    expect(await s.coordinator.openAgent(input)).toBe(false)
+    expect(mockOpenAgent).not.toHaveBeenCalled()
+    expect(s.onError).toHaveBeenCalledOnce()
+    seedWorkspace(s.harness, 'missing', 'missing-root')
+    s.publisher.publish(TabType.AGENT, 'existing', { workerId: 'worker', workspaceId: 'missing', tileId: 'missing-root' })
+    mockOpenAgent.mockImplementationOnce((_worker, request: OpenAgentRequest) => Promise.resolve(s.agentReply(request, true)))
+    expect(await s.coordinator.openAgent(input)).toBe(true)
   })
 })

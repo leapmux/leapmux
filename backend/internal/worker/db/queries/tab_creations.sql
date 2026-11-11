@@ -7,8 +7,15 @@ INSERT INTO tab_creations(user_id, worker_id, tab_id, tab_type, request_hash, re
 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: ListPendingTabCreations :many
-SELECT * FROM tab_creations WHERE user_id = ? AND worker_id = ?
-    AND (state IN (?, ?, ?) OR (state = ? AND cancel_progress_payload IS NOT NULL))
+SELECT * FROM tab_creations
+WHERE user_id = sqlc.arg(user_id) AND worker_id = sqlc.arg(worker_id)
+    AND state IN (
+        sqlc.arg(pending_state),
+        sqlc.arg(cancel_requested_state),
+        sqlc.arg(published_state),
+        sqlc.arg(canceled_state)
+    )
+    AND (state <> sqlc.arg(canceled_state) OR cancel_progress_payload IS NOT NULL)
 ORDER BY created_at, tab_id;
 
 -- name: CommitTabCreation :execrows

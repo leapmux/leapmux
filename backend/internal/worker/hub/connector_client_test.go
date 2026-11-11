@@ -295,7 +295,7 @@ func TestConnectorPublicationCallsCarryImmutableDescriptor(t *testing.T) {
 		Creation: &leapmuxv1.TabCreation{
 			TabId:        "publication-wire",
 			Placement:    &leapmuxv1.TabPlacement{WorkspaceId: "workspace", Destination: &leapmuxv1.TabPlacement_TileId{TileId: "tile"}, Insertion: leapmuxv1.TabInsertion_TAB_INSERTION_LAST},
-			Presentation: &leapmuxv1.TabPresentation{FileViewMode: proto.Int32(4), FileDiffBase: proto.String("head-vs-working")},
+			Presentation: &leapmuxv1.TabPresentation{FileViewMode: leapmuxv1.TabFileViewMode_TAB_FILE_VIEW_MODE_UNIFIED_DIFF.Enum(), FileDiffBase: proto.String("head-vs-working")},
 		},
 		TabType: leapmuxv1.TabType_TAB_TYPE_FILE,
 	}

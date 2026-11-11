@@ -102,10 +102,10 @@ func (m *Manager) publishTab(ctx context.Context, workerID string, request *leap
 	presentation := request.GetCreation().GetPresentation()
 	if presentation != nil {
 		if presentation.DisplayMode != nil {
-			ops = append(ops, &leapmuxv1.CrdtOp{OpId: id.Generate(), Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{Tab: tab, Field: &leapmuxv1.SetTabRegisterOp_DisplayMode{DisplayMode: presentation.GetDisplayMode()}}}})
+			ops = append(ops, &leapmuxv1.CrdtOp{OpId: id.Generate(), Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{Tab: tab, Field: &leapmuxv1.SetTabRegisterOp_DisplayMode{DisplayMode: int32(presentation.GetDisplayMode())}}}})
 		}
 		if presentation.FileViewMode != nil {
-			ops = append(ops, &leapmuxv1.CrdtOp{OpId: id.Generate(), Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{Tab: tab, Field: &leapmuxv1.SetTabRegisterOp_FileViewMode{FileViewMode: presentation.GetFileViewMode()}}}})
+			ops = append(ops, &leapmuxv1.CrdtOp{OpId: id.Generate(), Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{Tab: tab, Field: &leapmuxv1.SetTabRegisterOp_FileViewMode{FileViewMode: int32(presentation.GetFileViewMode())}}}})
 		}
 		if presentation.FileDiffBase != nil {
 			ops = append(ops, &leapmuxv1.CrdtOp{OpId: id.Generate(), Body: &leapmuxv1.CrdtOp_SetTabRegister{SetTabRegister: &leapmuxv1.SetTabRegisterOp{Tab: tab, Field: &leapmuxv1.SetTabRegisterOp_FileDiffBase{FileDiffBase: presentation.GetFileDiffBase()}}}})
