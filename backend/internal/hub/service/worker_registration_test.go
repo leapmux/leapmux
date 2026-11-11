@@ -109,8 +109,9 @@ func setupRegKeyEnvWithCfg(t *testing.T, cfg *config.Config, seed regKeySeed) *r
 // test can act inside their store calls. Other services read the store
 // unwrapped.
 type regKeyEnvOptions struct {
-	connectorStore    func(store.Store) store.Store
-	deregisterEffects func(*notifier.Notifier, *crdt.Registry) *service.WorkerDeregisterEffects
+	workerProbeTimeout time.Duration
+	connectorStore     func(store.Store) store.Store
+	deregisterEffects  func(*notifier.Notifier, *crdt.Registry) *service.WorkerDeregisterEffects
 }
 
 func newRegKeyEnv(t *testing.T, cfg *config.Config, seed regKeySeed, options regKeyEnvOptions) *regKeyEnv {
@@ -124,6 +125,11 @@ func newRegKeyEnv(t *testing.T, cfg *config.Config, seed regKeySeed, options reg
 // clock drives the connector's deadlines; nil gives the real clock.
 func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed regKeySeed, options regKeyEnvOptions, clock quartz.Clock) *regKeyEnv {
 	t.Helper()
+	require.GreaterOrEqual(t, options.workerProbeTimeout, time.Duration(0), "worker probe timeout must not be negative")
+	probeTimeout := 30 * time.Second
+	if options.workerProbeTimeout != 0 {
+		probeTimeout = options.workerProbeTimeout
+	}
 	if clock == nil {
 		clock = quartz.NewReal()
 	}
@@ -188,7 +194,7 @@ func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed r
 	wMgr.SetMaxWorkersPerUser(limits.MaxWorkersPerUser)
 	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer, connectorSvc)
 	probes := make(chan time.Time)
-	mux.Handle(channelwire.WSRouteWorker, service.NewWorkerStreamHandler(connectorSvc).WithForcedKeepaliveProbesForTest(probes, 50*time.Millisecond))
+	mux.Handle(channelwire.WSRouteWorker, service.NewWorkerStreamHandler(connectorSvc).WithForcedKeepaliveProbesForTest(probes, probeTimeout))
 
 	mgmtSvc := service.NewWorkerManagementService(st, wMgr, service.NewWorkerDeregisterEffects(nil, notif, registry.BroadcastWorkersChanged), mailer, mail.Renderer{}, set)
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, mgmtSvc)
@@ -1904,7 +1910,7 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 	defer cancel()
 
 	hello := helloRequest(postQuantumHello(0x31))
-	inventory := &leapmuxv1.ConnectRequest{RequestId: "inventory", Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: &leapmuxv1.WorkerTabInventory{}}}
+	inventory := &leapmuxv1.ConnectRequest{RequestId: "inventory", Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: &leapmuxv1.WorkerTabInventory{Complete: true}}}
 	openStream := func(t *testing.T, authToken string) (*workerTestPeer, *leapmuxv1.ConnectResponse, error) {
 		t.Helper()
 		stream := dialWorker(t, ctx, env.server, authToken)
@@ -1955,9 +1961,9 @@ func TestConnect_RefusesWhenTheAccountIsAtItsLiveWorkerCap(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, deregistered.Status)
 
-	// The deregistering row still holds its live connection and queue membership.
-	require.NoError(t, firstStream.Send(inventory))
-	awaitInventory(t, firstStream)
+	// The deregistering row still holds a writable connection and queue membership.
+	env.connector.RedeliverWorkerIdentity(env.adminID(t))
+	require.NotNil(t, nextWorkerIdentity(t, firstStream))
 	require.NotNil(t, env.wMgr.ConnForTrustedPath(first.GetWorkerId()),
 		"a deregistering worker keeps its connection, and therefore its pool membership")
 

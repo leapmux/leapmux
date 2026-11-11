@@ -5,7 +5,7 @@ import { getTestChannel } from './helpers/api'
 import { retryUntilPass } from './helpers/retryUntilPass'
 import { tabIdSelector } from './helpers/tabSelectors'
 import { activeXterm, focusActiveTerminal, getTerminalRows, getTerminalText, typeInTerminal, waitForTerminalReady, waitForTerminalText } from './helpers/terminal'
-import { agentTabs, openTerminalViaUI, sidebarLeaves, terminalTabs, visibleOnly, waitForLayoutSave } from './helpers/ui'
+import { agentTabs, openTerminalViaUI, sidebarLeaves, terminalTabs, visibleOnly } from './helpers/ui'
 import { listTerminalsViaAPI, waitForTerminalExitViaAPI, waitForWorkerTabTitle } from './helpers/workerTabs'
 
 /** The notice that the Worker writes after a shell exits with code 0, through its closing bracket. */
@@ -120,9 +120,7 @@ test.describe('Terminal', () => {
     // write(snapshot). Without the tracker prefix, xterm comes up in
     // main screen and renders the alt-screen body bytes as garbage.
 
-    const saved = waitForLayoutSave(page)
     await openTerminalViaUI(page)
-    await saved
 
     // Enter alt-screen and push enough printable output to wrap the retained
     // ring. The printed marker must differ from the echoed command text.
@@ -154,14 +152,8 @@ test.describe('Terminal', () => {
   })
 
   test('should restore terminal screen content after page refresh', async ({ page, authenticatedWorkspace }) => {
-    // Start listening for the layout save before opening the terminal
-    const saved = waitForLayoutSave(page)
-
-    // Open a terminal via the tab bar
+    // The helper waits for canonical publication and completed startup.
     await openTerminalViaUI(page)
-
-    // Wait for the layout save to complete so the terminal tab is persisted
-    await saved
 
     // Type a marker and wait for it to appear
     await typeInTerminal(page, 'echo SCREENRESTORE')
@@ -183,7 +175,7 @@ test.describe('Terminal', () => {
   })
 
   test('should terminate shell in worker when terminal tab is closed', async ({ page, authenticatedWorkspace }) => {
-    // Open a terminal via the tab bar
+    // The helper waits for canonical publication and completed startup.
     await openTerminalViaUI(page)
 
     // Close the terminal tab (click the x button on the terminal tab)
@@ -200,7 +192,7 @@ test.describe('Terminal', () => {
   })
 
   test('should keep terminal tab but stop input after shell exits via "exit"', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
-    // Open a terminal via the tab bar
+    // The helper waits for canonical publication and completed startup.
     const terminalId = await openTerminalViaUI(page)
     await expect(terminalTabs(page)).toBeVisible()
 
@@ -247,7 +239,7 @@ test.describe('Terminal', () => {
     // Start with a smaller viewport to get a small initial terminal
     await page.setViewportSize({ width: 900, height: 600 })
 
-    // Open a terminal via the tab bar
+    // The helper waits for canonical publication and completed startup.
     await openTerminalViaUI(page)
 
     // Wait for xterm to initialize with rows

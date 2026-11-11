@@ -1,7 +1,8 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'bun:test'
 import {
+  EXAMPLES_DIR,
   EXAMPLES_PAGE,
   installPath,
   listExamples,
@@ -13,7 +14,6 @@ import {
   requiredApacheModules,
   ROOT,
   TEST_IMAGE_KEYS,
-  unusedOrMissingExamples,
   useCaddyLocalCertificates,
 } from './reverse-proxy-examples.mjs'
 
@@ -29,7 +29,11 @@ const STOCK_HTTPD = [
 
 describe('PROXIES', () => {
   it('lists every example file of the page bundle, and only files that exist', () => {
-    expect(unusedOrMissingExamples()).toEqual({ missing: [], unused: [] })
+    const listed = PROXIES.flatMap(proxy => proxy.examples)
+    expect({
+      missing: listed.filter(name => !existsSync(join(EXAMPLES_DIR, name))),
+      unused: listExamples().filter(name => !listed.includes(name)),
+    }).toEqual({ missing: [], unused: [] })
   })
 
   it('gives each example file to one proxy only', () => {
@@ -52,7 +56,7 @@ describe('PROXIES', () => {
     expect(() => pinnedImage('NO_SUCH_IMAGE')).toThrow('versions.env does not define NO_SUCH_IMAGE.')
   })
 
-  it('names each proxy once', () => {
+  it('lists each proxy once', () => {
     const names = PROXIES.map(proxy => proxy.name)
     expect(names).toEqual([
       ...new Set(names),

@@ -31,7 +31,7 @@ import (
 // authoritative for the owner it names: `setFake("user-1", nil, nil)` means
 // "user-1 has no tabs left", which is a reap instruction for user-1 and says
 // nothing at all about anyone else.
-func newOrphanReconcilerHarness(t *testing.T, opts service.OrphanReconcilerOptions) (
+func newOrphanReconcilerHarness(t *testing.T, opts service.OrphanReconcilerOptions, applyArchive archiveApplyFunc) (
 	*db.Queries,
 	*service.TabPayloadStore,
 	*service.OrphanReconciler,
@@ -65,13 +65,8 @@ func newOrphanReconcilerHarness(t *testing.T, opts service.OrphanReconcilerOptio
 		opts.Logger = slog.New(slog.NewTextHandler(testWriter{t: t}, &slog.HandlerOptions{Level: slog.LevelError}))
 	}
 	teardown := &recordingTeardown{q: q, files: files}
-	if opts.CloseTab == nil {
-		opts.CloseTab = teardown.closeTab
-	}
-	if opts.ApplyArchiveState == nil {
-		opts.ApplyArchiveState = func(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error) {
-			return nil, nil
-		}
+	if opts.BeginTabReconciliation == nil {
+		opts.BeginTabReconciliation = fixedReconciliationPassWithArchive(teardown.closeTab, applyArchive)
 	}
 	if opts.ResumeAgents == nil {
 		opts.ResumeAgents = func([]string) {}
@@ -113,56 +108,26 @@ func (w testWriter) Write(p []byte) (int, error) { w.t.Log(string(p)); return le
 // "the hooks are optional", and a wiring that omitted one would then converge
 // while it silently skipped every archive transition. The panic is what keeps
 // that wiring impossible, so it is the thing to pin.
-func TestNewOrphanReconciler_RefusesAListFnWithoutArchiveHooks(t *testing.T) {
+func TestNewOrphanReconciler_RequiresResumeWithHubReads(t *testing.T) {
 	t.Parallel()
-
 	listFn := func(context.Context) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
 		return &leapmuxv1.ListOwnedTabsForWorkerResponse{}, nil
 	}
-	applyFn := func(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error) {
-		return nil, nil
-	}
-	resumeFn := func([]string) {}
-	closeTab := func(leapmuxv1.TabType, string, string) {}
-
-	for _, testCase := range []struct {
-		name   string
-		opts   service.OrphanReconcilerOptions
-		panics bool
-	}{
-		{name: "both hooks absent", panics: true, opts: service.OrphanReconcilerOptions{
-			CloseTab: closeTab,
-		}},
-		{name: "resume hook absent", panics: true, opts: service.OrphanReconcilerOptions{
-			CloseTab: closeTab, ApplyArchiveState: applyFn,
-		}},
-		{name: "apply hook absent", panics: true, opts: service.OrphanReconcilerOptions{
-			CloseTab: closeTab, ResumeAgents: resumeFn,
-		}},
-		{name: "both hooks present", panics: false, opts: service.OrphanReconcilerOptions{
-			CloseTab: closeTab, ApplyArchiveState: applyFn, ResumeAgents: resumeFn,
-		}},
-	} {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-			build := func() { service.NewOrphanReconciler(nil, listFn, testCase.opts) }
-			if testCase.panics {
-				assert.Panics(t, build)
-				return
-			}
-			assert.NotPanics(t, build)
-		})
-	}
+	factory := fixedReconciliationPass(func(leapmuxv1.TabType, string, string) {})
+	assert.Panics(t, func() {
+		service.NewOrphanReconciler(nil, listFn, service.OrphanReconcilerOptions{BeginTabReconciliation: factory})
+	})
+	assert.NotPanics(t, func() {
+		service.NewOrphanReconciler(nil, listFn, service.OrphanReconcilerOptions{BeginTabReconciliation: factory, ResumeAgents: func([]string) {}})
+	})
 }
 
-// A reconciler with NO listFn reads no Hub state, so it needs no archive hooks:
-// reconcileOnce returns after the worktree sweep, before it could use them.
 func TestNewOrphanReconciler_LocalOnlyNeedsNoArchiveHooks(t *testing.T) {
 	t.Parallel()
 
 	assert.NotPanics(t, func() {
 		service.NewOrphanReconciler(nil, nil, service.OrphanReconcilerOptions{
-			CloseTab: func(leapmuxv1.TabType, string, string) {},
+			BeginTabReconciliation: fixedReconciliationPass(func(leapmuxv1.TabType, string, string) {}),
 		})
 	})
 }
@@ -170,7 +135,7 @@ func TestNewOrphanReconciler_LocalOnlyNeedsNoArchiveHooks(t *testing.T) {
 func TestOrphanReconciler_FileTab_MissingOnHub_Revoked(t *testing.T) {
 	t.Parallel()
 
-	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, ignoreHarnessArchiveState)
 	ctx := context.Background()
 
 	// Local row that the hub no longer knows about.
@@ -190,7 +155,7 @@ func TestOrphanReconciler_FileTab_MissingOnHub_Revoked(t *testing.T) {
 func TestOrphanReconciler_Agent_MissingOnHub_Closed(t *testing.T) {
 	t.Parallel()
 
-	q, _, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	q, _, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, ignoreHarnessArchiveState)
 	ctx := context.Background()
 
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
@@ -208,7 +173,7 @@ func TestOrphanReconciler_Agent_MissingOnHub_Closed(t *testing.T) {
 func TestOrphanReconciler_Terminal_MissingOnHub_Closed(t *testing.T) {
 	t.Parallel()
 
-	q, _, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	q, _, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, ignoreHarnessArchiveState)
 	ctx := context.Background()
 
 	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{
@@ -278,7 +243,7 @@ func (r *recordingTeardown) closeTab(tabType leapmuxv1.TabType, userID, tabID st
 func TestOrphanReconciler_Agent_MissingOnHub_StopsInMemory(t *testing.T) {
 	t.Parallel()
 
-	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, ignoreHarnessArchiveState)
 	ctx := context.Background()
 
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
@@ -302,7 +267,7 @@ func TestOrphanReconciler_Agent_MissingOnHub_StopsInMemory(t *testing.T) {
 func TestOrphanReconciler_Terminal_MissingOnHub_StopsInMemory(t *testing.T) {
 	t.Parallel()
 
-	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, ignoreHarnessArchiveState)
 	ctx := context.Background()
 
 	require.NoError(t, q.UpsertTerminal(ctx, db.UpsertTerminalParams{
@@ -325,7 +290,7 @@ func TestOrphanReconciler_Terminal_MissingOnHub_StopsInMemory(t *testing.T) {
 func TestOrphanReconciler_Agent_PresentOnHub_DoesNotStop(t *testing.T) {
 	t.Parallel()
 
-	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, ignoreHarnessArchiveState)
 	ctx := context.Background()
 
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
@@ -355,7 +320,7 @@ func TestOrphanReconciler_Agent_PresentOnHub_DoesNotStop(t *testing.T) {
 func TestOrphanReconciler_QuakeTerminal_DirectoryStillHasATab_Survives(t *testing.T) {
 	t.Parallel()
 
-	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, ignoreHarnessArchiveState)
 	ctx := context.Background()
 
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
@@ -385,7 +350,7 @@ func TestOrphanReconciler_QuakeTerminal_DirectoryStillHasATab_Survives(t *testin
 func TestOrphanReconciler_QuakeTerminal_DirectoryHasNoTabsLeft_Closed(t *testing.T) {
 	t.Parallel()
 
-	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, ignoreHarnessArchiveState)
 	ctx := context.Background()
 
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
@@ -410,7 +375,7 @@ func TestOrphanReconciler_QuakeTerminal_DirectoryHasNoTabsLeft_Closed(t *testing
 func TestOrphanReconciler_QuakeTerminal_ATabInAnotherDirectoryIsNoReference(t *testing.T) {
 	t.Parallel()
 
-	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, ignoreHarnessArchiveState)
 	ctx := context.Background()
 
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
@@ -435,12 +400,10 @@ func TestOrphanReconciler_AppliesArchiveStateBeforeConvergence(t *testing.T) {
 	t.Parallel()
 
 	var calls []leapmuxv1.WorkspaceArchiveState
-	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
-		ApplyArchiveState: func(_ context.Context, state leapmuxv1.WorkspaceArchiveState, _ userid.UserID, tabs []*leapmuxv1.TabIdent) ([]string, error) {
-			calls = append(calls, state)
-			require.Equal(t, "agent-archived", tabs[0].GetTabId())
-			return nil, nil
-		},
+	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, func(_ context.Context, state leapmuxv1.WorkspaceArchiveState, _ userid.UserID, tabs []*leapmuxv1.TabIdent) ([]string, error) {
+		calls = append(calls, state)
+		require.Equal(t, "agent-archived", tabs[0].GetTabId())
+		return nil, nil
 	})
 	require.NoError(t, q.CreateAgent(t.Context(), db.CreateAgentParams{
 		ID: "agent-archived", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
@@ -467,12 +430,10 @@ func TestOrphanReconciler_ArchivePassForwardsTheResponseOwner(t *testing.T) {
 
 	received := map[leapmuxv1.WorkspaceArchiveState][]*leapmuxv1.TabIdent{}
 	owners := map[leapmuxv1.WorkspaceArchiveState]string{}
-	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
-		ApplyArchiveState: func(_ context.Context, state leapmuxv1.WorkspaceArchiveState, owner userid.UserID, tabs []*leapmuxv1.TabIdent) ([]string, error) {
-			received[state] = append(received[state], tabs...)
-			owners[state] = owner.String()
-			return nil, nil
-		},
+	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, func(_ context.Context, state leapmuxv1.WorkspaceArchiveState, owner userid.UserID, tabs []*leapmuxv1.TabIdent) ([]string, error) {
+		received[state] = append(received[state], tabs...)
+		owners[state] = owner.String()
+		return nil, nil
 	})
 	require.NoError(t, q.CreateAgent(t.Context(), db.CreateAgentParams{
 		ID: "agent-active", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
@@ -503,10 +464,8 @@ func TestOrphanReconciler_ArchivePassForwardsTheResponseOwner(t *testing.T) {
 func TestOrphanReconciler_ArchiveFailurePreventsConvergenceAndReaping(t *testing.T) {
 	t.Parallel()
 
-	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
-		ApplyArchiveState: func(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error) {
-			return nil, assert.AnError
-		},
+	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, func(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error) {
+		return nil, assert.AnError
 	})
 	require.NoError(t, q.CreateAgent(t.Context(), db.CreateAgentParams{
 		ID: "agent-live", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
@@ -542,16 +501,16 @@ func TestOrphanReconciler_ResumesUnarchivedAgentsWithoutWaitingForConvergence(t 
 	q, _, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
 		Now:      func() time.Time { return now },
 		TabGrace: 10 * time.Second,
-		ApplyArchiveState: func(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error) {
-			if firstApply {
-				firstApply = false
-				return []string{"agent-active"}, nil
-			}
-			return nil, nil
-		},
+
 		ResumeAgents: func(agentIDs []string) {
 			resumed = append(resumed, agentIDs...)
 		},
+	}, func(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error) {
+		if firstApply {
+			firstApply = false
+			return []string{"agent-active"}, nil
+		}
+		return nil, nil
 	})
 	for _, agentID := range []string{"agent-active", "agent-stale"} {
 		require.NoError(t, q.CreateAgent(t.Context(), db.CreateAgentParams{
@@ -579,7 +538,7 @@ func TestOrphanReconciler_ResumesUnarchivedAgentsWithoutWaitingForConvergence(t 
 func TestOrphanReconciler_ListError_DoesNotPanic_DoesNotCloseRows(t *testing.T) {
 	t.Parallel()
 
-	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, ignoreHarnessArchiveState)
 	ctx := context.Background()
 
 	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
@@ -607,7 +566,7 @@ func TestOrphanReconciler_TriggerRunsPassImmediately(t *testing.T) {
 	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
 		// A long interval keeps the tick from racing with Trigger.
 		Interval: time.Hour,
-	})
+	}, ignoreHarnessArchiveState)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -654,7 +613,7 @@ func TestOrphanReconciler_RetriesAfterHubListFailure(t *testing.T) {
 
 	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
 		Interval: time.Hour,
-	})
+	}, ignoreHarnessArchiveState)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -719,7 +678,7 @@ func runOnce(ctx context.Context, rec *service.OrphanReconciler) bool {
 func TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner(t *testing.T) {
 	t.Parallel()
 
-	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, ignoreHarnessArchiveState)
 	ctx := context.Background()
 
 	const sharedTabID = "file-1700000000000-1"
@@ -761,7 +720,7 @@ func TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner(t *testing.T) {
 func TestOrphanReconciler_FileTab_SharedTabIDReapsOnlyTheStaleOwner(t *testing.T) {
 	t.Parallel()
 
-	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, ignoreHarnessArchiveState)
 	ctx := context.Background()
 
 	const sharedTabID = "file-1700000000000-1"
@@ -799,7 +758,7 @@ func TestOrphanReconciler_FileTab_SharedTabIDReapsOnlyTheStaleOwner(t *testing.T
 func TestOrphanReconciler_FileTab_OutOfScopeOwnerIsNotReaped(t *testing.T) {
 	t.Parallel()
 
-	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, ignoreHarnessArchiveState)
 	ctx := context.Background()
 
 	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
@@ -847,7 +806,7 @@ func TestOrphanReconciler_UndeclaredScopeReapsNothing(t *testing.T) {
 		// Warn-level: the skipped pass logs at Warn and the harness default
 		// only prints Errors, which would hide it.
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	})
+	}, ignoreHarnessArchiveState)
 	ctx := context.Background()
 
 	require.NoError(t, files.Register(ctx, service.RegisterTabPayloadParams{
@@ -894,7 +853,7 @@ func tabPayloadsByUser(t *testing.T, q *db.Queries, ctx context.Context) map[str
 func TestReconcileAgentsSkipsChildAgents(t *testing.T) {
 	t.Parallel()
 
-	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{})
+	q, _, rec, setFake, teardown := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{}, ignoreHarnessArchiveState)
 	ctx := context.Background()
 
 	// Root + child, both open, both absent from the hub. The child is linked to
@@ -955,7 +914,7 @@ func TestOrphanReconciler_OnConvergedReportsOnlyAConvergedPass(t *testing.T) {
 			converged++
 			mu.Unlock()
 		},
-	})
+	}, ignoreHarnessArchiveState)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -1005,7 +964,7 @@ func TestOrphanReconciler_NoOnConvergedHookIsFine(t *testing.T) {
 
 	q, files, rec, setFake, _ := newOrphanReconcilerHarness(t, service.OrphanReconcilerOptions{
 		Interval: time.Hour,
-	})
+	}, ignoreHarnessArchiveState)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

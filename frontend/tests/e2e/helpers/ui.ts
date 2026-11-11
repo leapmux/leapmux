@@ -1151,8 +1151,8 @@ export async function waitForActiveTabContext(page: Page) {
  *
  * - Wait for the active tab directory first. The handler reads the directory synchronously. If absent, it opens a
  *   directory dialog without retrying, so an early click creates no terminal.
- * - The new terminal is the terminal tab that was not there before the click. The tab list is optimistic state, so
- *   the wait then requires the xterm of THAT terminal: a bare `.xterm` matches each mounted terminal, and a hidden
+ * - The new terminal appears after canonical publication. Identify the tab absent before the click, then wait
+ *   for that terminal's xterm. A bare `.xterm` matches each mounted terminal, and a hidden
  *   terminal tab stays mounted.
  * - Wait for the startup overlay to disappear before a caller can type input.
  */
@@ -2282,8 +2282,8 @@ export function tiles(page: Page): Locator {
 
 /**
  * Require `count` agent tabs in the tab bars.
- * This is an assertion about the view, not a readiness wait. The tab list is optimistic state, so a tab can show
- * before its agent starts and can leave before its agent stops. Wait on the Worker for an agent's state.
+ * Publication can precede startup, and local tombstoning can precede Worker
+ * teardown. Wait on the Worker to establish its agent's lifecycle state.
  */
 export async function expectAgentTabCount(page: Page, count: number): Promise<void> {
   if (!Number.isSafeInteger(count) || count < 0)

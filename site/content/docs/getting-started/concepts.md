@@ -140,6 +140,10 @@ A **tab** is one piece of content, and there are exactly four kinds:
 
 Every tab lives in a tile and carries an ordering position. Each tab is hosted on a specific Worker and may be **bound to a git worktree and branch**. The Worker is where the agent process or shell runs. The worktree and branch select the checkout it operates on. See [Coding Agents](/docs/using/coding-agents/), [Terminals](/docs/using/terminals/), and [File Browser](/docs/using/file-browser/) for each tab type, and [Worktrees & Branches](/docs/using/worktrees-and-branches/) for the git binding.
 
+When you create a tab, the client captures its destination and sends the request to the hosting Worker. The Worker stores the resource and asks the Hub to commit its tab identity and placement. All clients receive that committed tab through the existing layout synchronization. The initiating client activates it when the tab arrives, provided you still have the same creation context open.
+
+A successful creation response confirms the Hub's commit. Agent and shell startup can continue asynchronously and report their status through the encrypted channel. The Worker retains pending creation operations across disconnects and restarts. A retry uses the same creation identity, so an uncertain response can complete without adding another resource.
+
 ## Workers: where the work runs
 
 A **Worker** is a process (or, in solo mode, an in-process component) that runs your agents, terminals, file browsing, and git operations. When you open a tab you pick which Worker hosts it, so an agent's filesystem access and git commands happen on the machine that holds the repo — your laptop, a remote dev box, a build server.

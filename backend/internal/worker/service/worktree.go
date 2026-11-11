@@ -916,122 +916,110 @@ func (svc *Service) gitStillListsWorktree(ctx context.Context, wt db.Worktree) b
 // Git locks still prevent removal. A failed removal keeps the tracking record.
 // A missing directory counts as removed only when Git no longer lists it.
 func (svc *Service) removeWorktreeFromDisk(wt db.Worktree) error {
-	ctx := bgCtx()
-	// Serialize Worker Git mutations from branch selection through branch and record cleanup.
-	// Keep the worktree lifecycle lock outside this repository lock.
-	defer svc.lockGitIndex(wt.RepoRoot)()
-
-	// Resolve the branch to delete BEFORE the worktree-remove call: the
-	// DB row's branch_name was stamped at attach time, but an external
-	// `git checkout` (terminal, IDE, sibling agent) or the post-attach
-	// checkout in executeCheckoutBranch can move HEAD without updating
-	// the row. Trusting wt.BranchName would attempt `git branch -D
-	// <stale-name>` against the wrong target — at best a no-op log, at
-	// worst the deletion of an unrelated branch (e.g. `main`). A live
-	// HEAD probe pinned against the worktree path produces the truth.
-	//
-	// Probe failure paths MUST fall through to "skip the branch delete"
-	// (branchToDelete=""), not "use the stale DB row". Falling back to
-	// wt.BranchName is the exact hazard the comment above warns
-	// against: a transient probe failure (DeadlineExceeded, permission,
-	// transient I/O) would route us straight into the
-	// delete-unrelated-branch case the live probe was added to defend
-	// against. errNotGitRepo is a special case: the worktree's .git
-	// admin dir is corrupt, so we have no live ground truth either way
-	// — leaving branchToDelete empty avoids a destructive guess.
-	branchToDelete := ""
-	if info, infoErr := queryGitPathInfo(ctx, wt.WorktreePath); infoErr == nil {
-		if info.BranchName != "" {
-			branchToDelete = info.BranchName
+	identity, err := svc.captureWorktreeRemovalIdentity(bgCtx(), wt, newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED, wt.ID, ""))
+	if err != nil {
+		if _, statErr := os.Stat(wt.WorktreePath); !errors.Is(statErr, os.ErrNotExist) || svc.gitStillListsWorktree(bgCtx(), wt) {
+			return fmt.Errorf("prepare removal of worktree %q: %w", wt.WorktreePath, err)
 		}
-		// else: detached HEAD — nothing branch-named to delete.
-	} else {
-		slog.Warn("removeWorktreeFromDisk: live HEAD probe failed; skipping branch delete to avoid touching a stale name",
-			"worktree_id", wt.ID,
-			"worktree_path", wt.WorktreePath,
-			"stale_db_branch", wt.BranchName,
-			"error", infoErr)
 	}
+	defer releaseRemovalIdentityBestEffort(identity)
+	return svc.removeWorktreeFromDiskRecorded(bgCtx(), wt, &memoryWorktreeRemovalJournal{identity: identity})
+}
 
-	if svc.afterWorktreeBranchProbeFn != nil {
-		svc.afterWorktreeBranchProbeFn()
+// removeWorktreeFromDiskRecorded keeps one destructive implementation for all closes.
+func (svc *Service) removeWorktreeFromDiskRecorded(ctx context.Context, wt db.Worktree, journal worktreeRemovalJournal) error {
+	defer svc.lockGitIndex(wt.RepoRoot)()
+	checkpoint := journal.Checkpoint()
+	if checkpoint != nil && (checkpoint.WorktreeID != wt.ID || !pathutil.SamePath(pathutil.Canonicalize(checkpoint.WorktreePath), pathutil.Canonicalize(wt.WorktreePath)) || !pathutil.SamePath(pathutil.Canonicalize(checkpoint.RepoRoot), pathutil.Canonicalize(wt.RepoRoot))) {
+		return errors.New("the saved removal identifies a different worktree")
 	}
-	args := worktreeRemoveArgs(wt.WorktreePath)
-
-	// `git worktree remove` must complete before the branch cleanup: git
-	// refuses to delete a branch still checked out in a worktree. Once the
-	// worktree is gone, the branch cleanup and the DB DeleteWorktree are
-	// independent and run in parallel.
-	removeErr := gitutil.Run(ctx, wt.RepoRoot, args...)
-	if removeErr != nil {
-		slog.Warn("failed to remove worktree",
-			"worktree_path", wt.WorktreePath, "error", removeErr)
+	if checkpoint == nil {
+		intent := worktreeRemovalCheckpoint{WorktreeID: wt.ID, WorktreePath: wt.WorktreePath, RepoRoot: wt.RepoRoot}
+		// A failed live probe omits branch cleanup. The SQL branch can be stale.
+		if info, err := queryGitPathInfo(ctx, wt.WorktreePath); err == nil {
+			intent.Branch = info.BranchName
+			intent.Commit = info.HeadSHA
+		} else if err != nil {
+			slog.Warn("read worktree branch before removal failed; keeping its branch", "worktree_id", wt.ID, "error", err)
+		}
+		if svc.afterWorktreeBranchProbeFn != nil {
+			svc.afterWorktreeBranchProbeFn()
+		}
+		if err := journal.SaveIntent(ctx, intent); err != nil {
+			return &closeProgressWriteError{err}
+		}
+		checkpoint = journal.Checkpoint()
 	}
-
-	// Settle the verdict BEFORE the cleanup below, because the soft-delete now
-	// depends on it.
-	//
-	// A failed remove still counts as removed when the path is gone anyway (the
-	// user pre-deleted it, or git cleaned up partially) — there is nothing left
-	// for anyone to clean up. "Gone" is not the stat alone: `git worktree list`
-	// reads the admin directory, not the working tree, so git keeps a LOCKED
-	// worktree in its listing after the user deletes the directory by hand, and
-	// keeps refusing to remove it. A stat-only check reported that refusal as a
-	// removal, and the user was told "Worktree removed" over a worktree git
-	// still held, on a branch that still existed.
-	removed := removeErr == nil
-	if !removed {
-		if _, statErr := os.Stat(wt.WorktreePath); os.IsNotExist(statErr) && !svc.gitStillListsWorktree(ctx, wt) {
+	if !checkpoint.DirectoryRemoved {
+		removed := false
+		if _, err := os.Stat(wt.WorktreePath); errors.Is(err, os.ErrNotExist) && !svc.gitStillListsWorktree(ctx, wt) {
 			removed = true
 		}
-	}
-
-	var wg errgroup.Group
-	if branchToDelete != "" {
-		wg.Go(func() error {
-			// Always probe IsBranchInUse before delete. `git worktree add
-			// --force` lets the same branch live in multiple worktrees, so
-			// removing one of them does NOT guarantee the branch is free —
-			// a `git branch -D` that runs unconditionally on the success
-			// path would fail with "branch is checked out at <other>" and
-			// the failure would only surface as a Debug log.
-			inUse, err := gitutil.IsBranchInUse(ctx, wt.RepoRoot, branchToDelete)
+		var removeErr error
+		if !removed {
+			if err := validateWorktreeRemovalIdentity(ctx, wt, journal.TargetIdentity()); err != nil {
+				return err
+			}
+			info, err := queryGitPathInfo(ctx, wt.WorktreePath)
 			if err != nil {
-				slog.Warn("failed to check branch usage; skipping branch delete",
-					"branch", branchToDelete, "error", err)
+				return err
+			}
+			if info.BranchName != checkpoint.Branch || info.HeadSHA != checkpoint.Commit {
+				return errors.New("the worktree branch or commit changed after removal was prepared")
+			}
+			removeErr = gitutil.Run(ctx, wt.RepoRoot, worktreeRemoveArgs(wt.WorktreePath)...)
+			removed = removeErr == nil
+		}
+		if !removed {
+			if _, err := os.Stat(wt.WorktreePath); errors.Is(err, os.ErrNotExist) && !svc.gitStillListsWorktree(ctx, wt) {
+				removed = true
+			}
+		}
+		if !removed {
+			return fmt.Errorf(`git worktree remove "%s": %w`, wt.WorktreePath, removeErr)
+		}
+		if err := journal.SaveRemoved(ctx, *checkpoint); err != nil {
+			return &closeProgressWriteError{err}
+		}
+		checkpoint = journal.Checkpoint()
+	}
+	if err := svc.finishRecordedWorktreeRemoval(ctx, wt, *checkpoint); err != nil {
+		return journal.TrackingCleanupFailed(err)
+	}
+	return nil
+}
+
+// finishRecordedWorktreeRemoval never removes a directory. Expected-ref deletion
+// preserves a branch recreated or advanced after an interrupted removal.
+func (svc *Service) finishRecordedWorktreeRemoval(ctx context.Context, wt db.Worktree, checkpoint worktreeRemovalCheckpoint) error {
+	var cleanup errgroup.Group
+	if checkpoint.Branch != "" && checkpoint.Commit != "" {
+		cleanup.Go(func() error {
+			inUse, err := gitutil.IsBranchInUse(ctx, wt.RepoRoot, checkpoint.Branch)
+			if err != nil {
+				slog.Warn("read branch usage after worktree removal failed; keeping its branch", "branch", checkpoint.Branch, "error", err)
 				return nil
 			}
 			if inUse {
-				slog.Info("branch still checked out in another worktree; skipping delete",
-					"branch", branchToDelete)
 				return nil
 			}
-			if err := gitutil.DeleteBranch(ctx, wt.RepoRoot, branchToDelete); err != nil {
-				slog.Warn("failed to delete branch",
-					"branch", branchToDelete, "error", err)
+			if err := gitutil.Run(ctx, wt.RepoRoot, "update-ref", "-d", "refs/heads/"+checkpoint.Branch, checkpoint.Commit); err != nil {
+				slog.Warn("delete unchanged worktree branch failed; keeping its current ref", "branch", checkpoint.Branch, "error", err)
 			}
 			return nil
 		})
 	}
-	if removed {
-		wg.Go(func() error {
-			if err := svc.Queries.DeleteWorktree(ctx, wt.ID); err != nil {
-				slog.Warn("failed to delete worktree record",
-					"worktree_id", wt.ID, "error", err)
-			}
+	cleanup.Go(func() error {
+		// A path created after confirmed removal belongs to a new filesystem object.
+		// Preserve its tracking row rather than detach a newly admitted resource.
+		if _, err := os.Stat(wt.WorktreePath); err == nil {
 			return nil
-		})
-	}
-	_ = wg.Wait()
-
-	if removed {
-		return nil
-	}
-	// Use %s + literal quotes rather than %q so Windows paths stay in
-	// their native backslash form. %q would render C:\Users\foo as
-	// "C:\\Users\\foo", which is both ugly in the UI (failure_detail
-	// is shown to end users) and breaks substring assertions in tests.
-	return fmt.Errorf(`git worktree remove "%s": %w`, wt.WorktreePath, removeErr)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return svc.Queries.DeleteWorktree(ctx, wt.ID)
+	})
+	return cleanup.Wait()
 }
 
 // CleanupOrphanWorktreeLinks removes only links whose tabs are no longer live.
@@ -1242,7 +1230,7 @@ func worktreeTabUserID(tabType leapmuxv1.TabType, userID string) string {
 // deletion itself is driven by the close handler when the caller
 // passed WorktreeAction_REMOVE and no other tabs remain.
 //
-// The REMOVE-close path in closeTabCommon still uses removeTabFromWorktree
+// The REMOVE-close path uses removeTabFromWorktreeContext
 // so it can guard the delete by worktree_id (defense-in-depth against a
 // stale association). Other callers don't have the worktree in hand and
 // would pay for a GetWorktreeForTab round-trip; the (tab_type, tab_id,
@@ -1252,25 +1240,17 @@ func worktreeTabUserID(tabType leapmuxv1.TabType, userID string) string {
 // userID is normalized through worktreeTabUserID, so AGENT/TERMINAL callers
 // may pass either the authenticated user or "".
 func (svc *Service) unregisterTab(tabType leapmuxv1.TabType, tabID, userID string) {
-	if err := svc.Queries.DeleteWorktreeTabsByTabID(bgCtx(), db.DeleteWorktreeTabsByTabIDParams{
-		TabType: tabType,
-		TabID:   tabID,
-		UserID:  worktreeTabUserID(tabType, userID),
-	}); err != nil {
-		slog.Warn("failed to remove worktree tab",
-			"tab_type", tabType, "tab_id", tabID, "error", err)
+	if err := svc.unregisterTabContext(bgCtx(), tabType, tabID, userID); err != nil {
+		slog.Warn("remove closed worktree tab link failed", "tab_type", tabType, "tab_id", tabID, "error", err)
 	}
 }
+func (svc *Service) unregisterTabContext(ctx context.Context, tabType leapmuxv1.TabType, tabID, userID string) error {
+	return svc.Queries.DeleteWorktreeTabsByTabID(ctx, db.DeleteWorktreeTabsByTabIDParams{TabType: tabType, TabID: tabID, UserID: worktreeTabUserID(tabType, userID)})
+}
 
-// removeTabFromWorktree drops the tab→worktree association row for a
-// caller that already holds the worktree row. Used by the REMOVE-close
-// path to avoid a second GetWorktreeForTab lookup AND to guard the
-// delete by worktree_id against a stale association. Returns the DB
-// error (also logged) so the REMOVE-close path can surface a partial
-// failure rather than letting the surviving link masquerade as a
-// sibling still referencing the worktree.
-func (svc *Service) removeTabFromWorktree(tabType leapmuxv1.TabType, tabID, userID, worktreeID string) error {
-	if err := svc.Queries.RemoveWorktreeTab(bgCtx(), db.RemoveWorktreeTabParams{
+// removeTabFromWorktreeContext deletes only the association captured for this worktree.
+func (svc *Service) removeTabFromWorktreeContext(ctx context.Context, tabType leapmuxv1.TabType, tabID, userID, worktreeID string) error {
+	if err := svc.Queries.RemoveWorktreeTab(ctx, db.RemoveWorktreeTabParams{
 		WorktreeID: worktreeID,
 		TabType:    tabType,
 		TabID:      tabID,

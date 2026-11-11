@@ -258,8 +258,8 @@ describe('applyOp', () => {
   // Regression pin: a create op arriving on a subscriber whose
   // `UserMaterialized` predated the workspace finds `state.workspaces[wsID]`
   // absent. The apply layer must create the record; without it
-  // `state.workspaces[wsID].rootNodeId` stayed empty, `seedTabIntoNewWorkspace`
-  // timed out, and the new workspace rendered an empty tile via the layout
+  // `state.workspaces[wsID].rootNodeId` stayed empty, so published tabs could
+  // not attach and the workspace rendered an empty tile via the layout
   // store's FALLBACK_LEAF instead of the real root.
   it('creates the workspace record with its root for a createWorkspace op when absent', () => {
     const state = newState('user')

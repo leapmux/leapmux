@@ -10,17 +10,13 @@ import (
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
-	"github.com/leapmux/leapmux/internal/util/id"
+	"google.golang.org/protobuf/proto"
 )
 
 // RunTabOpen creates a new tab on the given tile. Dispatches on --type:
 //
-//   - agent     → calls worker OpenAgent (creates a real agent record),
-//     then writes the CRDT batch (tile/position/worker_id).
-//   - terminal  → calls worker OpenTerminal (creates a real terminal
-//     record), then writes the CRDT batch.
-//   - file      → registers the path worker-side over E2EE via
-//     `RegisterTabPayload`, then writes the CRDT batch.
+// Each ordinary tab type uses Worker-owned creation and Hub publication. FILE
+// payloads travel through RegisterTabPayload over the encrypted channel.
 //
 // Required-flag defaults are read from LEAPMUX_CONTROL_* env vars when
 // the user runs from inside a remote-enabled agent/terminal, so the
@@ -110,11 +106,7 @@ func RunTabOpen(rawCtx any, args []string) error {
 		if err := maybePreflightWorker(ctx, c, workerID); err != nil {
 			return err
 		}
-		// `tab open --type=agent` issues up to four inner-RPCs against the SAME
-		// worker: ListAvailableProviders (only when --provider is omitted),
-		// OpenAgent, the optional initial EnqueueAgentInput, and a rollback
-		// CloseTab on CRDT failure. Hoisting one Noise_NK channel over the
-		// whole sequence pays the handshake once instead of per call.
+		// Provider discovery, creation, and optional initial input share one channel.
 		var result *openAgentResult
 		if err := withWorkerChannel(ctx, c, workerID, func(w workerCall) error {
 			resolvedProvider, err := resolveProvider(ctx, provider, w.Call)
@@ -158,8 +150,7 @@ func RunTabOpen(rawCtx any, args []string) error {
 		if err := maybePreflightWorker(ctx, c, workerID); err != nil {
 			return err
 		}
-		// Same hoist as the agent branch: OpenTerminal and its rollback
-		// CloseTab target one worker, so one handshake covers both.
+		// Use the same channel ownership as the agent creation path.
 		var result *openTerminalResult
 		if err := withWorkerChannel(ctx, c, workerID, func(w workerCall) error {
 			var err error
@@ -186,10 +177,8 @@ func RunTabOpen(rawCtx any, args []string) error {
 		return control.EmitData(tabOpenEnvelope(result.TerminalID, resolve.TabTypeWireName(tt), workspaceID, workerID, result.TileID, result.Position))
 
 	case leapmuxv1.TabType_TAB_TYPE_FILE:
-		// FILE flow: tab is created entirely inside the CLI handler
-		// (no worker spawn step that would pin a tile for us). For
-		// --first / --last, --tile-id is required; --before / --after
-		// carry their own tile via the ref tab.
+		// Preserve the file command's explicit destination requirement.
+		// Relative insertion derives the destination from the anchor tab.
 		if tileID == "" && (spec.kind == positionFirst || spec.kind == positionLast) {
 			return control.EmitError("invalid_request", "--tile-id is required for --type=file with --first/--last")
 		}
@@ -198,7 +187,7 @@ func RunTabOpen(rawCtx any, args []string) error {
 			return err
 		}
 		defer cc.close()
-		resolvedTileID, resolvedPos, err := resolvePositionSpec(cc.bs.State, tileID, "", spec)
+		resolvedTileID, _, err := resolvePositionSpec(cc.bs.State, tileID, "", spec)
 		if err != nil {
 			return err
 		}
@@ -208,7 +197,6 @@ func RunTabOpen(rawCtx any, args []string) error {
 		if err := maybePreflightWorker(cc.ctx, cc.c, workerID); err != nil {
 			return err
 		}
-		tabID := id.Generate()
 		if workerID == "" {
 			workerID = findWorkerForWorkspaceInState(cc.bs.State, workspaceID)
 			if workerID == "" {
@@ -221,24 +209,23 @@ func RunTabOpen(rawCtx any, args []string) error {
 		// same "the file tab inherits the context it was opened from" the UI
 		// path sends. Run from outside a LeapMux tab it is empty, and the
 		// worker falls back to the file's own directory.
-		if err := registerFileTabPayload(cc.ctx, cc.c, workerID, tabID, filePath, workingDir); err != nil {
-			return control.EmitErrorWith("worker_register_failed", err)
-		}
-		ops := []*leapmuxv1.CrdtOp{
-			opSetTabTileID(cc.bs, tt, tabID, resolvedTileID),
-			opSetTabPosition(cc.bs, tt, tabID, resolvedPos),
-			opSetTabWorkerID(cc.bs, tt, tabID, workerID),
-		}
-		if displayMode != 0 {
-			ops = append(ops, opSetTabDisplayMode(cc.bs, tt, tabID, int32(displayMode)))
-		}
-		if fileViewMode != 0 {
-			ops = append(ops, opSetTabFileViewMode(cc.bs, tt, tabID, int32(fileViewMode)))
-		}
-		if err := cc.submitOps(ops); err != nil {
+		creation, err := resolveTabCreation(cc.ctx, cc.c, workspaceID, resolvedTileID, spec)
+		if err != nil {
 			return err
 		}
-		out := tabOpenEnvelope(tabID, resolve.TabTypeWireName(tt), workspaceID, workerID, resolvedTileID, resolvedPos)
+		presentation := &leapmuxv1.TabPresentation{}
+		if displayMode != 0 {
+			presentation.DisplayMode = proto.Int32(int32(displayMode))
+		}
+		if fileViewMode != 0 {
+			presentation.FileViewMode = proto.Int32(int32(fileViewMode))
+		}
+		creation.Presentation = presentation
+		publication, err := registerFileTabPayload(cc.ctx, cc.c, workerID, creation, filePath, workingDir)
+		if err != nil {
+			return control.EmitErrorWith("worker_register_failed", err)
+		}
+		out := tabOpenEnvelope(creation.GetTabId(), resolve.TabTypeWireName(tt), workspaceID, workerID, publication.GetTileId(), publication.GetPosition())
 		out["path"] = filePath
 		return control.EmitData(out)
 	default:
@@ -270,20 +257,17 @@ func tabOpenEnvelope(tabID, tabType, workspaceID, workerID, tileID, position str
 	}
 }
 
-// registerFileTabPayload invokes the worker's `RegisterTabPayload`
-// inner-RPC over E2EE so the file path stays off the hub. The
-// returned response is empty on success; any worker-side error is
-// surfaced as a wrapped codedRPCError.
-func registerFileTabPayload(ctx context.Context, c *control.Client, workerID, tabID, filePath, workingDir string) error {
-	req := &leapmuxv1.RegisterTabPayloadRequest{
-		TabId: tabID,
-		Payload: &leapmuxv1.TabPayload{
-			WorkingDir: workingDir,
-			Kind:       &leapmuxv1.TabPayload_File{File: &leapmuxv1.FileTabPayload{FilePath: filePath}},
-		},
+// registerFileTabPayload keeps the path encrypted and returns the committed tab.
+func registerFileTabPayload(ctx context.Context, c *control.Client, workerID string, creation *leapmuxv1.TabCreation, filePath, workingDir string) (*leapmuxv1.PublishedTab, error) {
+	request := &leapmuxv1.RegisterTabPayloadRequest{Creation: creation, Payload: &leapmuxv1.TabPayload{WorkingDir: workingDir, Kind: &leapmuxv1.TabPayload_File{File: &leapmuxv1.FileTabPayload{FilePath: filePath}}}}
+	var response leapmuxv1.RegisterTabPayloadResponse
+	if err := callInnerRPCBest(ctx, c, workerID, leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure, request, &response); err != nil {
+		return nil, err
 	}
-	var resp leapmuxv1.RegisterTabPayloadResponse
-	return callInnerRPCBest(ctx, c, workerID, leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure, req, &resp)
+	if err := validateTabPublication(creation, leapmuxv1.TabType_TAB_TYPE_FILE, response.GetPublication()); err != nil {
+		return nil, err
+	}
+	return response.GetPublication(), nil
 }
 
 // findWorkerForWorkspaceInState returns the first worker_id hosting a

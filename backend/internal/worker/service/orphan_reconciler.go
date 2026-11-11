@@ -44,18 +44,9 @@ type OrphanReconciler struct {
 	// cleanupWorktreeLinks removes dead database links only. Nil disables this cleanup pass.
 	cleanupWorktreeLinks func(ctx context.Context, wt db.Worktree) error
 
-	// closeTab performs the full per-type teardown for a tab the hub no longer
-	// knows about, so an offline convergence matches an online close. Required at
-	// construction; there is no narrower fallback (see OrphanReconcilerOptions).
-	//
-	// One hook rather than three: the per-type dispatch belongs to the Service side
-	// (closeTabForConvergence), and splitting it here meant every caller restated
-	// which policy each type gets.
-	closeTab func(tabType leapmuxv1.TabType, userID, tabID string)
-	// applyArchiveState reconciles the Hub's lifecycle state before the pass
-	// reports convergence and before the initial agent resume sweep can start.
-	applyArchiveState func(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error)
-	resumeAgents      func([]string)
+	// beginPass owns publication and archive observations across the Hub read.
+	beginPass    func() TabReconciliationPass
+	resumeAgents func([]string)
 	// onConverged reports a CONVERGED pass to the caller. Nil disables the report.
 	onConverged func()
 	// prevOrphanTabs maps a reconcilable tab to when it FIRST looked absent from
@@ -68,7 +59,7 @@ type OrphanReconciler struct {
 
 // OrphanReconcilerOptions configures NewOrphanReconciler.
 //
-// CloseTab is required. The archive hooks are required when listFn is set. There
+// BeginTabReconciliation is required. ResumeAgents is required with listFn. There
 // are no longer separate Agents / Terminals process-stopper hooks: stopping the
 // subprocess is part of the shared per-type teardown the Close*Tab hooks run, so
 // a caller cannot wire one without the other.
@@ -86,30 +77,11 @@ type OrphanReconcilerOptions struct {
 	// CleanupWorktreeLinks removes dead links with a current liveness check.
 	// Connect it to (*Service).CleanupOrphanWorktreeLinks. It never deletes Git artifacts.
 	CleanupWorktreeLinks func(ctx context.Context, wt db.Worktree) error
-	// CloseTab performs the FULL per-type teardown for a tab the hub no longer
-	// knows about. Wire it to (*Service).CloseTabForReconcile so an offline
-	// convergence tears a tab down exactly as an online close does, and so the
-	// worktree-link policy is chosen once on that side rather than per call here.
-	//
-	// Injected rather than called directly for the same reason CleanupWorktreeLinks is:
-	// the reconciler is deliberately independent of the agent/terminal packages,
-	// which is what lets its tests drive it with narrow fakes.
-	//
-	// All three are REQUIRED -- NewOrphanReconciler panics without them. They used
-	// to be optional, falling back to a DB close plus a process stop, which the
-	// surrounding comments themselves called "NOT enough in production": it
-	// skipped the startup cancel, the runtime-state clear and the registered
-	// cleanups (the remote-IPC teardown among them), and leaked one terminal
-	// manager entry per reap. A tier that exists only for test convenience is
-	// exactly the divergent close path this change set out to remove.
-	CloseTab func(tabType leapmuxv1.TabType, userID, tabID string)
-	// ApplyArchiveState applies grouped authoritative tab states. Production
-	// wires it to Service.ApplyTabArchiveState, which is the ONLY way this
-	// Worker learns its archive state -- there is no RPC for it. Required when
-	// listFn is set. The owner is the hub response's owner_user_id, which owns
-	// every tab of one response.
-	ApplyArchiveState func(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error)
-	// ResumeAgents schedules agent IDs only after the whole pass converges. It
+	// BeginTabReconciliation captures observations before the Hub read. Its
+	// methods provide ordered archive application and the full conditional close.
+	// Required: a narrower database-only close would omit process and IPC cleanup.
+	BeginTabReconciliation func() TabReconciliationPass
+	// ResumeAgents schedules agents whose authoritative archive state became active. It
 	// is required when listFn is set.
 	ResumeAgents func([]string)
 	// OnConverged, when set, is called after every pass that CONVERGED (see
@@ -155,12 +127,12 @@ func NewOrphanReconciler(queries *db.Queries, listFn func(ctx context.Context) (
 	// non-nil interface in some shapes, and an unwired hook must fail at
 	// construction rather than on the first reap -- which is hourly, offline, and
 	// unattended, i.e. the worst place to discover it. Mirrors workermgr.New.
-	if nilcheck.IsNilDependency(opts.CloseTab) {
-		panic("service: NewOrphanReconciler requires CloseTab" +
+	if nilcheck.IsNilDependency(opts.BeginTabReconciliation) {
+		panic("service: NewOrphanReconciler requires BeginTabReconciliation" +
 			" (the offline teardown must be the same one an online close runs)")
 	}
-	if listFn != nil && (nilcheck.IsNilDependency(opts.ApplyArchiveState) || nilcheck.IsNilDependency(opts.ResumeAgents)) {
-		panic("service: NewOrphanReconciler requires archive-state apply and resume hooks when it reads Hub tab state")
+	if listFn != nil && nilcheck.IsNilDependency(opts.ResumeAgents) {
+		panic("service: NewOrphanReconciler requires a resume hook when it reads Hub tab state")
 	}
 	return &OrphanReconciler{
 		queries:              queries,
@@ -172,8 +144,7 @@ func NewOrphanReconciler(queries *db.Queries, listFn func(ctx context.Context) (
 		done:                 make(chan struct{}),
 		logger:               opts.Logger,
 		cleanupWorktreeLinks: opts.CleanupWorktreeLinks,
-		closeTab:             opts.CloseTab,
-		applyArchiveState:    opts.ApplyArchiveState,
+		beginPass:            opts.BeginTabReconciliation,
 		resumeAgents:         opts.ResumeAgents,
 		onConverged:          opts.OnConverged,
 		prevOrphanTabs:       make(map[ownedTabKey]time.Time),
@@ -348,6 +319,8 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 		return converged
 	}
 
+	pass := r.beginPass()
+	defer pass.Done()
 	resp, err := r.listFn(ctx)
 	if err != nil {
 		r.logger.Warn("orphan reconciler: list owned tabs", "err", err)
@@ -406,10 +379,10 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 	// Each tab lands in exactly one bucket, so the order of these two calls
 	// does not decide any tab's outcome. Archived runs first only so that a
 	// pass which stops processes does that before it schedules any resume.
-	if !r.applyArchiveBucket(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, owner, archivedTabs) {
+	if !r.applyArchiveBucket(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED, owner, archivedTabs, pass) {
 		return false
 	}
-	if !r.applyArchiveBucket(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, owner, activeTabs) {
+	if !r.applyArchiveBucket(ctx, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, owner, activeTabs, pass) {
 		return false
 	}
 	hubByKey := make(map[ownedTabKey]*leapmuxv1.WorkerTabState, len(hubTabs))
@@ -424,6 +397,16 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 	// mint gate above.
 	now := r.now()
 	next := make(map[ownedTabKey]time.Time)
+	unresolved := false
+	// Protection and the grace check share the creation lock. A protected row
+	// resets its clock but does not stop this pass from checking other rows.
+	reapTab := func(k ownedTabKey) {
+		if !pass.ReapIf(k.tabType, k.userID, k.tabID, func() bool { return r.reapDue(k, now, next) }) {
+			unresolved = true
+			delete(r.prevOrphanTabs, k)
+			delete(next, k)
+		}
+	}
 	// Four named results, not an accumulator: every pass must RUN, so the
 	// conjunction cannot short-circuit, and separate results keep that visible.
 	//
@@ -434,17 +417,17 @@ func (r *OrphanReconciler) reconcileOnce(ctx context.Context) bool {
 	// leave the shell alive for a whole reconcile interval. The payload pass
 	// counts here for the same reason the other two do -- a FILE or IMAGE tab
 	// is a reference to its directory, so its close can be what empties one.
-	okPayloads := r.reconcileTabPayloads(ctx, hubByKey, owner, now, next)
-	okAgents := r.reconcileAgents(ctx, hubByKey, now, next)
-	okTerminals := r.reconcileTerminals(ctx, hubByKey, now, next)
-	okQuake := r.reconcileQuakeTerminals(ctx, now, next)
+	okPayloads := r.reconcileTabPayloads(ctx, hubByKey, owner, now, next, reapTab)
+	okAgents := r.reconcileAgents(ctx, hubByKey, now, next, reapTab)
+	okTerminals := r.reconcileTerminals(ctx, hubByKey, now, next, reapTab)
+	okQuake := r.reconcileQuakeTerminals(ctx, now, next, reapTab)
 	if localReconciled := okPayloads && okAgents && okTerminals && okQuake; !localReconciled {
 		converged = false
 	} else {
 		// Replace the clock map only after all FOUR local reads succeed. A
 		// partial read cannot prove that an omitted clock should reset.
 		r.prevOrphanTabs = next
-		if len(next) > 0 {
+		if len(next) > 0 || unresolved {
 			// A deferred reap is unfinished business, not convergence. Report it
 			// so Run re-arms its retry backoff and a later pass does the
 			// teardown, instead of leaving it to the hourly tick.
@@ -513,11 +496,11 @@ func (r *OrphanReconciler) hasAnyLocalRows(ctx context.Context) (has, ok bool) {
 // applyArchiveBucket applies one archive state to the tabs the Hub reports in
 // it, and records the agents whose state changed to active. It reports whether
 // the pass may continue.
-func (r *OrphanReconciler) applyArchiveBucket(ctx context.Context, state leapmuxv1.WorkspaceArchiveState, owner userid.UserID, tabs []*leapmuxv1.TabIdent) bool {
+func (r *OrphanReconciler) applyArchiveBucket(ctx context.Context, state leapmuxv1.WorkspaceArchiveState, owner userid.UserID, tabs []*leapmuxv1.TabIdent, pass TabReconciliationPass) bool {
 	if len(tabs) == 0 {
 		return true
 	}
-	resumeAgentIDs, err := r.applyArchiveState(ctx, state, owner, tabs)
+	resumeAgentIDs, err := pass.ApplyArchiveState(ctx, state, owner, tabs)
 	if err != nil {
 		r.logger.Warn("orphan reconciler: apply archive state", "state", state, "error", err)
 		return false
@@ -578,7 +561,7 @@ func (r *OrphanReconciler) reconcileWorktrees(ctx context.Context) bool {
 // and stating that at the destructive line is what keeps a future reader from
 // widening the read and silently widening the reap with it. Pinned by
 // TestOrphanReconciler_FileTab_SharedTabIDStaysWithItsOwner.
-func (r *OrphanReconciler) reconcileTabPayloads(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.WorkerTabState, owner userid.UserID, now time.Time, next map[ownedTabKey]time.Time) bool {
+func (r *OrphanReconciler) reconcileTabPayloads(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.WorkerTabState, owner userid.UserID, now time.Time, next map[ownedTabKey]time.Time, reapTab func(ownedTabKey)) bool {
 	rows, err := r.queries.ListAllWorkerTabPayloads(ctx)
 	if err != nil {
 		r.logger.Warn("orphan reconciler: list worker_tab_payloads", "err", err)
@@ -616,11 +599,8 @@ func (r *OrphanReconciler) reconcileTabPayloads(ctx context.Context, hubByKey ma
 			}
 			// Grace comes AFTER the owner check, so a row belonging to another
 			// owner never enters the map and never starts a clock.
-			if !r.reapDue(k, now, next) {
-				continue
-			}
 			// Route through the SAME teardown the AGENT and TERMINAL cases use.
-			// r.closeTab is (*Service).CloseTabForReconcile, which DROPS the
+			// The pass calls (*Service).CloseTabForReconcile, which DROPS the
 			// worktree_tabs link -- and dropping it is how KEEP is expressed. A
 			// zero-link worktree is excluded from ListOrphanCandidateWorktrees
 			// (that query requires at least one link), so the directory survives
@@ -635,7 +615,7 @@ func (r *OrphanReconciler) reconcileTabPayloads(ctx context.Context, hubByKey ma
 			//
 			// Pinned by
 			// TestReconcileFileTabs_RoutesThroughSharedTeardownHonouringKeep.
-			r.closeTab(tabType, row.UserID, row.TabID)
+			reapTab(k)
 		}
 	}
 	return true
@@ -643,7 +623,7 @@ func (r *OrphanReconciler) reconcileTabPayloads(ctx context.Context, hubByKey ma
 
 // reconcileAgents iterates every locally-known agent and absorbs the
 // hub's view: hub-absent -> stop the subprocess and close the row locally.
-func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.WorkerTabState, now time.Time, next map[ownedTabKey]time.Time) bool {
+func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.WorkerTabState, now time.Time, next map[ownedTabKey]time.Time, reapTab func(ownedTabKey)) bool {
 	// OPEN rows only. A closed row has already been torn down, so comparing it
 	// against the hub's live list only re-ran the full teardown -- cancelAndClear,
 	// StopAgent, ClearAgentRuntimeState, the registered cleanups -- and re-logged
@@ -667,9 +647,6 @@ func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[own
 			// Absent, but not yet for long enough. The client's own close
 			// tombstones the tab before its RPC lands, so an immediate reap
 			// here would drop the worktree link that close is about to use.
-			if !r.reapDue(k, now, next) {
-				continue
-			}
 			// Unlike the file-tab loop this absence is NOT owner-checked --
 			// see the note in reconcileOnce: there is no owner to check it
 			// against on either side of this comparison (the key normalizes to
@@ -693,7 +670,7 @@ func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[own
 			// There is no narrower fallback any more: the hook is required at
 			// construction, so the offline path cannot be a weaker subset of the
 			// online one even by misconfiguration.
-			r.closeTab(leapmuxv1.TabType_TAB_TYPE_AGENT, "", agentID)
+			reapTab(k)
 			r.logger.Info("orphan reconciler: closed stale agent", "agent_id", agentID)
 		}
 	}
@@ -701,7 +678,7 @@ func (r *OrphanReconciler) reconcileAgents(ctx context.Context, hubByKey map[own
 }
 
 // reconcileTerminals does the same for terminals.
-func (r *OrphanReconciler) reconcileTerminals(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.WorkerTabState, now time.Time, next map[ownedTabKey]time.Time) bool {
+func (r *OrphanReconciler) reconcileTerminals(ctx context.Context, hubByKey map[ownedTabKey]*leapmuxv1.WorkerTabState, now time.Time, next map[ownedTabKey]time.Time, reapTab func(ownedTabKey)) bool {
 	// OPEN rows only, for the same reasons as reconcileAgents.
 	rows, err := r.queries.ListAllOpenTerminalIDsWithQuake(ctx)
 	if err != nil {
@@ -726,9 +703,6 @@ func (r *OrphanReconciler) reconcileTerminals(ctx context.Context, hubByKey map[
 		if _, ok := hubByKey[k]; !ok {
 			// Same grace as reconcileAgents: a close RPC still in flight must
 			// not lose its worktree link to this pass.
-			if !r.reapDue(k, now, next) {
-				continue
-			}
 			// Owner-blind for the same reason as reconcileAgents.
 			// Symmetric to reconcileAgents: SQLite close + send a
 			// stop signal to the in-memory terminal manager so the
@@ -739,7 +713,7 @@ func (r *OrphanReconciler) reconcileTerminals(ctx context.Context, hubByKey map[
 			// helper uses RemoveTerminal rather than StopTerminal, which also drops
 			// the manager's terminals/meta/exitDone entries -- the fallback this
 			// replaced leaked one set per reaped terminal.
-			r.closeTab(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", row.ID)
+			reapTab(k)
 			r.logger.Info("orphan reconciler: closed stale terminal", "terminal_id", row.ID)
 		}
 	}
@@ -777,7 +751,7 @@ func (r *OrphanReconciler) reconcileTerminals(ctx context.Context, hubByKey map[
 // extra pass on every ordinary reap. The synchronous close path covers every
 // ordinary close whatever the hub does, so what leaks is the case where THAT
 // path already failed.
-func (r *OrphanReconciler) reconcileQuakeTerminals(ctx context.Context, now time.Time, next map[ownedTabKey]time.Time) bool {
+func (r *OrphanReconciler) reconcileQuakeTerminals(ctx context.Context, now time.Time, next map[ownedTabKey]time.Time, reapTab func(ownedTabKey)) bool {
 	// The SAME sweep the archive path runs -- an archived tab is not a
 	// reference, so a directory whose every tab is archived loses its shell
 	// here too. Sharing it is what stops the backstop and the synchronous path
@@ -789,10 +763,7 @@ func (r *OrphanReconciler) reconcileQuakeTerminals(ctx context.Context, now time
 	}
 	for _, row := range rows {
 		k := newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, row.ID, "")
-		if !r.reapDue(k, now, next) {
-			continue
-		}
-		r.closeTab(leapmuxv1.TabType_TAB_TYPE_TERMINAL, "", row.ID)
+		reapTab(k)
 		r.logger.Info("orphan reconciler: closed a quake terminal whose directory has no tabs left",
 			"terminal_id", row.ID, "working_dir", row.WorkingDir)
 	}

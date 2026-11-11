@@ -2,18 +2,11 @@ package service
 
 import (
 	"log/slog"
-	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
 	"github.com/leapmux/leapmux/internal/util/nilcheck"
-
-	"github.com/leapmux/leapmux/internal/util/panicsafe"
-)
-
-const (
-	channelCloseSenderLimit = 4
 )
 
 // workerConnRegistry is the narrow live-conn lookup the close dispatcher
@@ -28,139 +21,30 @@ type workerConnRegistry interface {
 
 type workerCloseDispatcher struct {
 	workerMgr workerConnRegistry
-	ready     []string
-
-	mu      sync.Mutex
-	pending map[string]*pendingWorkerCloses
-	workers int
 }
 
-type pendingWorkerCloses struct {
-	channelIDs []string
-}
-
-// newWorkerCloseDispatcher requires a registry. The narrow interface above
-// cannot be nil-checked by its holder -- a nil *workermgr.Manager converted to
-// it is a NON-nil interface value -- so an unchecked nil would surface as a nil
-// receiver panic inside enqueueChannelCloses, on the caller's goroutine and
-// outside runWorker's recover. Refusing at construction turns a wiring mistake
-// into a startup failure that names it, rather than a teardown that dies on the
-// first revocation.
+// newWorkerCloseDispatcher rejects nil, including a typed nil registry.
+// Otherwise the first teardown would panic inside the registry lookup.
 func newWorkerCloseDispatcher(workerMgr workerConnRegistry) *workerCloseDispatcher {
 	if nilcheck.IsNilDependency(workerMgr) {
 		panic("service: worker close dispatcher requires a worker registry")
 	}
-	return &workerCloseDispatcher{
-		workerMgr: workerMgr,
-		pending:   make(map[string]*pendingWorkerCloses),
-	}
+	return &workerCloseDispatcher{workerMgr: workerMgr}
 }
 
-// enqueueChannelCloses accepts close notifications without waiting for a worker
-// stream. Pending closes are grouped by worker so one blocked stream consumes at
-// most one sender. The ready queue is intentionally unbounded: revocation is a
-// security boundary, so a burst must not silently leave worker-side channels
-// alive. Only the sender goroutine count is bounded. The method name matches the
-// channelCloseEnqueuer interface so this dispatcher satisfies it directly.
+// enqueueChannelCloses admits each close directly to its current connection's
+// control queue. Transport writes remain on the connection's exclusive pump.
+// A saturated connection fences itself; later workers still receive their closes.
 func (d *workerCloseDispatcher) enqueueChannelCloses(closed []channelmgr.ClosedChannel) {
-	// Look up live conns outside d.mu so registry RLock does not nest under
-	// the dispatcher lock under large teardown bursts.
-	live := make([]channelmgr.ClosedChannel, 0, len(closed))
 	for _, cc := range closed {
 		if cc.WorkerID == "" || cc.ChannelID == "" {
 			continue
 		}
-		if d.workerMgr.ConnForTrustedPath(cc.WorkerID) == nil {
-			continue
+		conn := d.workerMgr.ConnForTrustedPath(cc.WorkerID)
+		if conn != nil {
+			sendChannelCloseNotification(conn, cc.ChannelID)
 		}
-		live = append(live, cc)
 	}
-	if len(live) == 0 {
-		return
-	}
-
-	d.mu.Lock()
-	// defer, not a trailing Unlock: this body appends to pending/ready, and a
-	// panic with the lock held would wedge every subsequent channel teardown.
-	defer d.mu.Unlock()
-	for _, cc := range live {
-		workerPending := d.pending[cc.WorkerID]
-		if workerPending == nil {
-			workerPending = &pendingWorkerCloses{}
-			d.pending[cc.WorkerID] = workerPending
-			d.ready = append(d.ready, cc.WorkerID)
-		}
-		workerPending.channelIDs = append(workerPending.channelIDs, cc.ChannelID)
-	}
-	d.startWorkersLocked()
-}
-
-func (d *workerCloseDispatcher) startWorkersLocked() {
-	toStart := min(channelCloseSenderLimit-d.workers, len(d.ready))
-	d.workers += toStart
-	for range toStart {
-		go d.runWorker()
-	}
-}
-
-func (d *workerCloseDispatcher) runWorker() {
-	for {
-		d.mu.Lock()
-		if len(d.ready) == 0 {
-			d.workers--
-			d.mu.Unlock()
-			return
-		}
-		workerID := d.ready[0]
-		if len(d.ready) == 1 {
-			d.ready = nil
-		} else {
-			d.ready[0] = ""
-			d.ready = d.ready[1:]
-		}
-		d.mu.Unlock()
-		// runWorker is a detached goroutine (go d.runWorker()) with no caller to
-		// propagate to: recover a panic in delivery so one bad close drops a single
-		// notification instead of crashing the whole Hub, matching the sibling
-		// channelmgr.fanOutTeardown defense. d.mu is released above and
-		// deliverWorkerCloses's own locked sections are panic-free map/slice ops, so
-		// recovery can never resume holding the lock; the loop then continues,
-		// keeping this worker and its slot accounting intact.
-		func() {
-			defer panicsafe.RecoverAndLog(nil,
-				"recovered from panic in worker-close dispatch", "worker_id", workerID)
-			d.deliverWorkerCloses(workerID)
-		}()
-	}
-}
-
-func (d *workerCloseDispatcher) deliverWorkerCloses(workerID string) {
-	d.mu.Lock()
-	workerPending := d.pending[workerID]
-	if workerPending == nil || len(workerPending.channelIDs) == 0 {
-		d.mu.Unlock()
-		return
-	}
-	channelIDs := workerPending.channelIDs
-	workerPending.channelIDs = nil
-	d.mu.Unlock()
-
-	for _, channelID := range channelIDs {
-		conn := d.workerMgr.ConnForTrustedPath(workerID)
-		if conn == nil {
-			continue
-		}
-		sendChannelCloseNotification(conn, channelID)
-	}
-
-	d.mu.Lock()
-	if len(workerPending.channelIDs) == 0 {
-		delete(d.pending, workerID)
-	} else {
-		d.ready = append(d.ready, workerID)
-	}
-	d.startWorkersLocked()
-	d.mu.Unlock()
 }
 
 // sendChannelCloseNotification enqueues one channel-close control frame.
@@ -174,7 +58,7 @@ func sendChannelCloseNotification(conn *workermgr.Conn, channelID string) {
 }
 
 // newChannelCloseResponse builds the worker ConnectResponse that notifies a
-// worker one channel is closed. Shared by the async dispatcher and the
+// worker one channel is closed. Shared by direct close admission and the
 // synchronous worker-relay teardown (closeWorkerChannel) so the close-envelope
 // shape has a single source of truth.
 func newChannelCloseResponse(channelID string) *leapmuxv1.ConnectResponse {

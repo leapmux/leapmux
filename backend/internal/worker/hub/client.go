@@ -6,9 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,10 +26,8 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// Connect-stream queue limits are sendq.Default* so Hub and worker stay on
-// one definition. A wall-clock stall cutoff on a server-to-server connection
-// invites a reconnect storm under sustained load, so there is none -- the
-// byte budget alone disconnects a Hub that cannot keep up.
+// Connect-stream queues share sendq.Default* limits. The byte budget limits
+// queued data, and the write watchdog disconnects a stalled transport.
 
 // Client manages the connection to the Hub.
 type Client struct {
@@ -97,13 +92,15 @@ type Client struct {
 	EncryptionMode leapmuxv1.EncryptionMode
 
 	// TabSyncProvider returns the current tab state for WorkerTabInventory
-	// on connect. Set by bootstrap.Wire after it builds the worker service.
-	TabSyncProvider func() *leapmuxv1.WorkerTabInventory
+	// after a usable identity. Set by bootstrap.Wire after it builds the service.
+	TabSyncProvider func(context.Context) (*leapmuxv1.WorkerTabInventory, error)
 
-	mu         sync.Mutex
-	writer     *sendq.Writer[*leapmuxv1.ConnectRequest]
-	connCancel context.CancelCauseFunc // Ends the current connection with its cause.
-	stopOnce   sync.Once
+	mu             sync.Mutex
+	writer         *sendq.Writer[*leapmuxv1.ConnectRequest]
+	connCancel     context.CancelCauseFunc // Ends the current connection with its cause.
+	stopOnce       sync.Once
+	tabSync        *inventoryUpload
+	tabSyncStopped bool
 	// identityReceived is set when the Hub delivers a WorkerIdentity on the
 	// current connection and OnWorkerIdentity reports that the worker holds an
 	// owner. A watchdog (see watchForIdentity) force-closes the stream if none
@@ -247,17 +244,6 @@ func (c *Client) Send(msg *leapmuxv1.ConnectRequest) error {
 		return err
 	}
 	return nil
-}
-
-// sendFailureLevel picks the level for a failed Send: Debug when the connection
-// was on its way out, Warn for a genuine fault. Every reporter of a Send failure
-// asks the channel package the same question, so a new send site cannot quietly
-// reintroduce a per-disconnect alarm.
-func sendFailureLevel(err error) slog.Level {
-	if channel.IsTransportTeardown(err) {
-		return slog.LevelDebug
-	}
-	return slog.LevelWarn
 }
 
 // ShutdownFlushTimeout is the limit that the worker shutdown gives FlushSends.
@@ -491,19 +477,19 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 	c.identityReceived.Store(false)
 	go c.watchForIdentity(connCtx, cancelCause)
 
-	// The read limit applies to the entire request, including its envelope.
-	if c.TabSyncProvider != nil {
-		if inventory := c.TabSyncProvider(); inventory != nil {
-			req := &leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: inventory}}
-			size := proto.Size(req)
-			if size > channelwire.WorkerStreamMaxMessageBytes {
-				slog.Error("skipping an oversize worker tab inventory; the periodic reconciler still converges",
-					"tabs", len(inventory.GetTabs()), "size", size, "limit", channelwire.WorkerStreamMaxMessageBytes)
-			} else if err := c.Send(req); err != nil {
-				slog.Log(context.Background(), sendFailureLevel(err), "failed to send workspace tabs sync", "error", err)
-			}
+	var upload *inventoryUpload
+	defer func() {
+		// Release a producer parked on queue admission before joining it.
+		if upload != nil {
+			upload.stop()
 		}
-	}
+		c.mu.Lock()
+		if c.tabSync == upload {
+			c.tabSync = nil
+		}
+		c.mu.Unlock()
+	}()
+	inventoryStarted := false
 
 	// Main receive loop.
 	for {
@@ -513,6 +499,10 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 		}
 
 		c.handleMessage(msg)
+		if msg.GetWorkerIdentity() != nil && c.identityReceived.Load() && !inventoryStarted {
+			inventoryStarted = true
+			upload = c.startTabSync(connCtx, writer)
+		}
 	}
 }
 
@@ -556,47 +546,6 @@ func (c *Client) handleMessage(msg *leapmuxv1.ConnectResponse) {
 	default:
 		slog.Warn("unhandled hub message", "request_id", msg.GetRequestId(), "payload_type", fmt.Sprintf("%T", msg.GetPayload()))
 	}
-}
-
-// resolveWorkingDir resolves a working directory path:
-//   - Expands leading "~" or "~/" to the user's home directory
-//   - Resolves to an absolute path via filepath.Abs
-//   - Cleans the path via filepath.Clean
-//   - Validates the directory exists
-func resolveWorkingDir(path string) (string, error) {
-	// Expand tilde: only "~" alone or "~/..." are tilde prefixes.
-	// NOT "/foo/~/bar", "~~", "~~/foo", etc.
-	if path == "~" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		path = home
-	} else if strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		path = filepath.Join(home, path[2:])
-	}
-
-	// Resolve to absolute and clean.
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("resolve absolute path: %w", err)
-	}
-	resolved := filepath.Clean(abs)
-
-	// Validate directory exists.
-	info, err := os.Stat(resolved)
-	if err != nil {
-		return "", fmt.Errorf(`stat working directory "%s": %w`, resolved, err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf(`working directory "%s" is not a directory`, resolved)
-	}
-
-	return resolved, nil
 }
 
 // workerIdentityTimeout limits how long the worker waits for the Hub's
@@ -849,4 +798,36 @@ func receiveEndError(readErr error, ctx, connCtx context.Context) error {
 		return fmt.Errorf("connection ended: %w", context.Cause(connCtx))
 	}
 	return readErr
+}
+
+// PublishTab publishes an already-persisted resource using this Worker's token.
+// It is independent of delegation minting, so it also works for the first tab.
+func (c *Client) PublishTab(ctx context.Context, token string, request *leapmuxv1.TabPublication) (*leapmuxv1.PublishTabResponse, error) {
+	if token == "" {
+		return nil, errors.New("the Worker has no Hub credential")
+	}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
+	return c.connector.PublishTab(ctx, &leapmuxv1.PublishTabRequest{Publication: request})
+}
+
+// CancelTabPublication prevents late publication with this Worker's credential.
+func (c *Client) CancelTabPublication(ctx context.Context, token string, request *leapmuxv1.TabPublication) error {
+	if token == "" {
+		return errors.New("the Worker has no Hub credential")
+	}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
+	_, err := c.connector.CancelTabPublication(ctx, &leapmuxv1.CancelTabPublicationRequest{Publication: request})
+	return err
+}
+
+// ResolveTabPublication reads current hosting state with the Worker's credential.
+func (c *Client) ResolveTabPublication(ctx context.Context, token string, request *leapmuxv1.TabPublication) (*leapmuxv1.ResolveTabPublicationResponse, error) {
+	if token == "" {
+		return nil, errors.New("the Worker has no Hub credential")
+	}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
+	return c.connector.ResolveTabPublication(ctx, &leapmuxv1.ResolveTabPublicationRequest{Publication: request})
 }

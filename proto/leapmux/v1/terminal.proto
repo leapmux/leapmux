@@ -3,6 +3,7 @@ package leapmux.v1;
 
 import "leapmux/v1/access.proto";
 import "leapmux/v1/common.proto";
+import "leapmux/v1/tab_creation.proto";
 import "leapmux/v1/git.proto";
 
 // WorkerTerminalService opens, drives and reads terminals. Served by the Worker
@@ -61,7 +62,7 @@ message OpenTerminalRequest {
   // rule RenameTerminal applies. Mirrors OpenAgentRequest.title.
   string title = 7;
 
-  // When true, this terminal is the QUAKE terminal of `working_dir` rather than
+  // With a quake target, this terminal is the QUAKE terminal of `working_dir` rather than
   // a tab of its own. `working_dir` is the whole address: a quake terminal
   // belongs to a DIRECTORY on this worker, not to a tab, so every tab that
   // works in that directory reaches the same shell. Three consequences, all
@@ -77,7 +78,10 @@ message OpenTerminalRequest {
   //
   // A unique partial index over the open rows enforces the last point, so the
   // guarantee survives two devices racing.
-  bool quake = 8;
+  oneof target {
+    QuakeTerminalTarget quake = 8;
+    TabCreation creation = 9;
+  }
 }
 
 message OpenTerminalResponse {
@@ -91,6 +95,7 @@ message OpenTerminalResponse {
   // via the first TerminalStatusChange (gitStatus) after worktree creation
   // finishes on the async startup path.
   string title = 2;
+  PublishedTab publication = 3;
 }
 
 // RestartTerminalRequest respawns the shell process for an exited

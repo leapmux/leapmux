@@ -143,7 +143,7 @@ func TestWSReadLimit_AcceptsLargeChunk(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = ws.Close(websocket.StatusNormalClosure, "") }()
 
-	// Client also needs a higher write limit for large messages.
+	// Send the frame that exceeds the server's default read limit.
 	err = ws.Write(ctx, websocket.MessageBinary, frame)
 	require.NoError(t, err)
 
@@ -644,7 +644,7 @@ func TestRelayFrontendMessageToWorker(t *testing.T) {
 
 	t.Run("fenced worker stream is terminal", func(t *testing.T) {
 		wm := workermgr.New(workermgr.DenyAllReach())
-		conn, _ := workermgrtest.NewRecordedConn(t, "w1")
+		conn := workermgrtest.NewConn(t, "w1")
 		_, _ = wm.Register(conn)
 		conn.Fence()
 		h := &ChannelRelayHandler{workerMgr: wm, channelMgr: channelmgr.New(0)}

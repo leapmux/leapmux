@@ -2,12 +2,16 @@
 import type { ComponentProps } from 'solid-js'
 import type { AppShellDialogStates } from './AppShellDialogs'
 import type { TabBusyProbe } from './tabBusyProbe'
+import type { AgentCreationSubmission, TerminalCreationSubmission } from './useTabCreation'
 import type { useTabOperations } from './useTabOperations'
+import type { OpenAgentRequest } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { Tab } from '~/stores/tab.types'
+import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerGit } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
+import { AgentInfoSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { createDialogState, createUpdatableDialogState } from '~/hooks/createDialogState'
 import { GitMode } from '~/hooks/useGitModeState'
@@ -18,6 +22,7 @@ import { emitAddTab } from '~/stores/tabOps'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { makeInspectResp, makeWorktreeRemovalResp } from '~/test-support/gitBranchFixtures'
 import { pickMenuValue } from '~/test-support/menu'
+import { createCanonicalTabPublisher, createTestTabCreation } from '~/test-support/tabPublication'
 import { createTestTabStores } from '~/test-support/tabStores'
 import { AppShellDialogs } from './AppShellDialogs'
 
@@ -27,7 +32,12 @@ import { AppShellDialogs } from './AppShellDialogs'
 // 250 ms of extra transform and import work per run. Vitest raises a
 // missing export on property ACCESS, not at link time, and no dialog in
 // this suite reaches another workerRpc call.
+const mockOpenAgent = vi.fn()
+
 vi.mock('~/api/workerRpc', () => ({
+  workerAgent: {
+    openAgent: (...args: unknown[]) => mockOpenAgent(...args),
+  },
   workerGit: {
     inspectBranchDeletion: vi.fn(),
     inspectWorktreeRemoval: vi.fn(),
@@ -42,66 +52,30 @@ vi.mock('~/components/common/Toast', () => ({
   showErrorToast: vi.fn(),
 }))
 
-// The two creation dialogs are stubbed for the same reason ChangeBranchDialog
-// is (see below): this suite tests the PARENT's plumbing, not the dialogs' own
-// fields. The stubs surface the guard reason the parent computes so a test can
-// assert what the real dialog would disable submit on.
-// The agent the stub reports as created, so a test can drive `onCreated`
-// without standing up the real dialog's worker and directory fields.
-//
-// Built with `create(AgentInfoSchema, ...)`, not as an object literal, so it
-// carries every field the wire supplies -- `status`, `agentProvider`,
-// `acceptsMessages` and the rest that `protoToAgentTabFields` reads. A literal
-// leaves them `undefined`, which no real response does.
-//
-// It is built inside the factory rather than in `vi.hoisted`, because
-// `vi.hoisted` runs before the static imports initialize and cannot name
-// `create`. The factory is async and runs lazily, so it can import both.
-vi.mock('~/components/shell/NewAgentDialog', async () => {
-  const { create } = await import('@bufbuild/protobuf')
-  const { AgentInfoSchema } = await import('~/generated/proto/leapmux/v1/agent_pb')
-  // No `gitStatus`: the OpenAgent response carries none. The worker computes
-  // it in startup phase 1 and sends it on the STARTING broadcast, so the
-  // `git status` shell-out does not block the RPC.
-  const createdAgent = create(AgentInfoSchema, {
-    id: 'created-agent',
-    workerId: 'w1',
-    title: 'Agent Mimi',
-    workingDir: '/repo',
-  })
-  return {
-    // Two buttons, one for each answer the real dialog gives for
-    // `seedGitFromActiveTab`: the plain git mode may seed, every mode that
-    // redirects the working directory may not.
-    NewAgentDialog: (props: {
-      blockedReason?: () => string | undefined
-      defaultWorkerId?: string
-      defaultWorkingDir?: string
-      onCreated: (agent: typeof createdAgent, opts: { seedGitFromActiveTab: boolean }) => void
-      onClose: () => void
-    }) => (
+// These stubs submit captured configuration through the same callbacks as the forms.
+vi.mock('~/components/shell/NewAgentDialog', () => ({
+  NewAgentDialog: (props: {
+    blockedReason?: () => string | undefined
+    defaultWorkerId?: string
+    defaultWorkingDir?: string
+    onCreate: (input: AgentCreationSubmission) => Promise<boolean>
+  }) => {
+    const submit = (seedGitFromActiveTab: boolean) => props.onCreate({
+      workerId: props.defaultWorkerId ?? 'w1',
+      request: { workingDir: props.defaultWorkingDir ?? '/repo', agentProvider: 1 },
+      seedGitFromActiveTab,
+      onError: vi.fn(),
+    })
+    return (
       <>
         <div data-testid="new-agent-stub">{props.blockedReason?.() ?? ''}</div>
-        {/* What the parent resolved the dialog's target to. */}
         <div data-testid="new-agent-target">{`${props.defaultWorkerId ?? ''}|${props.defaultWorkingDir ?? ''}`}</div>
-        <button
-          type="button"
-          data-testid="new-agent-created"
-          onClick={() => props.onCreated(createdAgent, { seedGitFromActiveTab: true })}
-        >
-          created
-        </button>
-        <button
-          type="button"
-          data-testid="new-agent-created-worktree"
-          onClick={() => props.onCreated(createdAgent, { seedGitFromActiveTab: false })}
-        >
-          created in a worktree
-        </button>
+        <button type="button" data-testid="new-agent-created" disabled={Boolean(props.blockedReason?.())} onClick={() => submit(true)}>create</button>
+        <button type="button" data-testid="new-agent-created-worktree" disabled={Boolean(props.blockedReason?.())} onClick={() => submit(false)}>create in a worktree</button>
       </>
-    ),
-  }
-})
+    )
+  },
+}))
 
 vi.mock('~/components/shell/NewTerminalDialog', () => ({
   NewTerminalDialog: (props: {
@@ -127,7 +101,7 @@ vi.mock('~/components/workspace/ChangeBranchDialog', () => ({
   ChangeBranchDialog: (props: {
     blockedReason?: () => string | undefined
     onBranchChanged?: (branch: string) => void
-    onTerminalCreated?: (terminalId: string, workerId: string, workingDir: string, title: string) => void
+    createTerminal: (input: TerminalCreationSubmission) => Promise<boolean>
     onClose: () => void
   }) => (
     <>
@@ -145,7 +119,11 @@ vi.mock('~/components/workspace/ChangeBranchDialog', () => ({
       <button
         type="button"
         data-testid="change-branch-terminal-stub"
-        onClick={() => props.onTerminalCreated?.('t1', 'w2', '/other', 'bash')}
+        onClick={() => props.createTerminal({
+          workerId: 'w2',
+          request: { workingDir: '/other', title: 'bash' },
+          onError: vi.fn(),
+        })}
       >
         terminal
       </button>
@@ -192,6 +170,13 @@ function renderDialogs(
 ) {
   const dialogs = makeDialogs()
   const onBranchChanged = vi.fn()
+  const creation = {
+    acceptsEarlyMetadata: () => false,
+    openAgent: vi.fn(async () => true),
+    openTerminal: vi.fn(async () => true),
+    registerPayload: vi.fn(async () => true),
+    openWorkspace: vi.fn(async () => true),
+  }
   const closeWorktreeTabs = vi.fn().mockResolvedValue({
     removed: true,
     failed: false,
@@ -217,7 +202,6 @@ function renderDialogs(
   // the fixture has to supply this one -- an omitted handler used to throw out
   // of the click handler, which vitest reported as an unhandled error rather
   // than as a failing test.
-  const onSelectWorkspace = vi.fn()
   // `satisfies` type-checks the fields this fixture DOES fill, so a rename
   // of `closeWorktreeTabs` or a change to the TabContext shape fails to
   // compile. The one widening cast stays at the render call, because each
@@ -228,6 +212,7 @@ function renderDialogs(
   const tabOps = { closeWorktreeTabsAndReport: closeWorktreeTabs } satisfies Pick<ReturnType<typeof useTabOperations>, 'closeWorktreeTabsAndReport'>
   const repoGitStore = createRepoGitStore()
   const props = {
+    creation,
     dialogs,
     onBranchChanged,
     tabOps: tabOps as unknown as ReturnType<typeof useTabOperations>,
@@ -238,7 +223,6 @@ function renderDialogs(
       probeMany: async () => [],
     } as unknown as TabBusyProbe,
     activeWorkspace,
-    onSelectWorkspace,
     isWorkspaceMutatable: () => opts.mutatable ?? true,
     layoutStore: { placementTileId, firstLeafIdFor } as unknown as ComponentProps<typeof AppShellDialogs>['layoutStore'],
     repoGitStore,
@@ -251,12 +235,12 @@ function renderDialogs(
   } satisfies Partial<ComponentProps<typeof AppShellDialogs>>
   render(() => <AppShellDialogs {...(props as unknown as ComponentProps<typeof AppShellDialogs>)} />)
   return {
+    creation,
     dialogs,
     onBranchChanged,
     closeWorktreeTabs,
     placementTileId,
     firstLeafIdFor,
-    onSelectWorkspace,
   }
 }
 
@@ -510,13 +494,10 @@ describe('AppShellDialogs branch dialogs', () => {
     expect(dialogs.keyPinConfirm.value()).toBeNull()
   })
 
-  // A tab is placed on the ACTIVE workspace's focused tile, so a dialog opened
-  // against another workspace's branch row selects that workspace first. It
-  // used to skip the placement instead, and the tab was then never created at
-  // all: the open RPC carries no workspace id, so nothing server-side files it
-  // and the agent or pty stayed alive with no tab to reach it by.
-  it('change branch: selects the dialog\'s workspace before placing a created tab', async () => {
-    const { dialogs, placementTileId, onSelectWorkspace } = renderDialogs(() => ({ id: 'another-ws' }))
+  // The branch dialog captures its own workspace in the creation intent,
+  // including when another workspace is active.
+  it.each(['another-ws', 'ws1'])('captures its destination workspace while %s is active', async (activeId) => {
+    const { dialogs, creation, placementTileId } = renderDialogs(() => ({ id: activeId }), { placementTileId: 'tile-1' })
     dialogs.changeBranch.open({
       workerId: 'w2',
       gitToplevel: '/other',
@@ -525,43 +506,18 @@ describe('AppShellDialogs branch dialogs', () => {
       isWorktree: false,
       initialMode: GitMode.CreateWorktree,
     })
-
     fireEvent.click(await screen.findByTestId('change-branch-terminal-stub'))
-
-    expect(onSelectWorkspace).toHaveBeenCalledWith('ws1')
-    // And the placement runs AFTER the switch, or it would resolve the tile
-    // against the workspace the user is leaving.
-    const selectOrder = onSelectWorkspace.mock.invocationCallOrder[0]
-    const placeOrder = placementTileId.mock.invocationCallOrder[0]
-    if (selectOrder === undefined || placeOrder === undefined)
-      throw new Error('expected both the workspace switch and the tab placement to have run')
-    expect(selectOrder).toBeLessThan(placeOrder)
-  })
-
-  it('change branch: still selects when the dialog already targets the active workspace', async () => {
-    // A no-op switch, and the placement runs either way -- one rule, not a
-    // special case that a future edit could invert for the common path alone.
-    const { dialogs, placementTileId, onSelectWorkspace } = renderDialogs(() => ({ id: 'ws1' }))
-    dialogs.changeBranch.open({
-      workerId: 'w2',
-      gitToplevel: '/other',
+    expect(creation.openTerminal).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'ws1',
-      branchName: 'feature',
-      isWorktree: false,
-      initialMode: GitMode.CreateWorktree,
-    })
-
-    fireEvent.click(await screen.findByTestId('change-branch-terminal-stub'))
-
-    expect(onSelectWorkspace).toHaveBeenCalledWith('ws1')
-    expect(placementTileId).toHaveBeenCalled()
+      workerId: 'w2',
+      request: expect.objectContaining({ workingDir: '/other' }),
+    }))
+    expect(placementTileId).not.toHaveBeenCalled()
   })
 
-  // The change-branch guard reason describes the ACTIVE workspace's
-  // placement — the same condition the tab-insertion callbacks gate on. A
-  // dialog opened against another workspace's branch row places no local
-  // tab, so it must not inherit a reason it cannot act on.
-  it('change branch: hands the guard reason only when the dialog targets the active workspace', async () => {
+  // The parent supplies the readiness reason for the dialog's destination.
+  // This case targets the active workspace before its tree has arrived.
+  it('supplies a readiness reason for an active destination whose tree is missing', async () => {
     const { dialogs } = renderDialogs(() => ({ id: 'ws1' }), { placementTileId: '' })
     dialogs.changeBranch.open({
       workerId: 'w2',
@@ -575,13 +531,9 @@ describe('AppShellDialogs branch dialogs', () => {
     expect(await screen.findByTestId('change-branch-blocked')).toHaveTextContent(/not ready yet/i)
   })
 
-  // The reason answers for the workspace the dialog PLACES into, which is the
-  // branch row's own. It used to answer `undefined` for any non-active
-  // workspace, which left Create enabled over a tree the projection had not
-  // delivered -- and that refusal is silent AND late: the open RPC has already
-  // made the agent and its worktree, so what survives is a running process with
-  // no tab pointing at it.
-  it('change branch: blocks when the dialog\'s OWN workspace has no tree yet', async () => {
+  // Readiness belongs to the branch row's workspace. A non-active destination
+  // whose tree has not arrived must also receive a visible reason.
+  it('supplies a readiness reason for a non-active destination whose tree is missing', async () => {
     const { dialogs } = renderDialogs(() => ({ id: 'another-ws' }), {
       readyWorkspaceIds: ['another-ws'],
     })
@@ -613,11 +565,8 @@ describe('AppShellDialogs branch dialogs', () => {
     expect(await screen.findByTestId('change-branch-blocked')).toHaveTextContent(/^$/)
   })
 
-  // A tab is placed onto the active workspace's projected tree, so the
-  // creation dialogs must not create the worker-side agent/pty when there is
-  // nowhere to place it — the placement refusal arrives only after the RPC,
-  // and the resource it strands has no tab to reach it by. The parent hands
-  // the dialogs the reason; these pin its outcomes, one per case.
+  // The parent supplies destination-readiness reasons to the creation dialogs.
+  // These cases verify each unavailable destination before dispatch.
   describe('new-tab guard reason', () => {
     it('tells the dialogs to block creation when there is no workspace at all', async () => {
       const { dialogs } = renderDialogs(() => null)
@@ -701,6 +650,7 @@ describe('AppShellDialogs agent creation', () => {
   function renderForCreate() {
     const harness = installTestBridge({ workspaceId: 'ws1' })
     const stores = createTestTabStores('ws1')
+    const publisher = createCanonicalTabPublisher(harness)
     const repoGitStore = createRepoGitStore()
     const dialogs = makeDialogs()
     const props = {
@@ -721,7 +671,20 @@ describe('AppShellDialogs agent creation', () => {
         gitToplevel: '/repo',
       }),
     }
-    render(() => <AppShellDialogs {...(props as unknown as ComponentProps<typeof AppShellDialogs>)} />)
+    mockOpenAgent.mockImplementation(async (workerId: string, request: OpenAgentRequest) => ({
+      agent: create(AgentInfoSchema, {
+        id: request.creation!.tabId,
+        workerId,
+        title: 'Agent Mimi',
+        workingDir: request.workingDir,
+        agentProvider: request.agentProvider,
+      }),
+      publication: publisher.publishCreation(TabType.AGENT, workerId, request.creation),
+    }))
+    render(() => {
+      const creation = createTestTabCreation(stores, repoGitStore)
+      return <AppShellDialogs {...(props as unknown as ComponentProps<typeof AppShellDialogs>)} creation={creation} />
+    })
     return {
       dialogs,
       repoGitStore,
@@ -767,13 +730,13 @@ describe('AppShellDialogs agent creation', () => {
 
     fireEvent.click(await screen.findByTestId('new-agent-created'))
 
-    await waitFor(() => expect(view.getAgentTab('created-agent')).toBeDefined())
+    await waitFor(() => expect(view.getAgentTab(mockOpenAgent.mock.calls.at(-1)?.[1].creation.tabId)).toBeDefined())
     // `isHydrated` reads the metadata row, not the assembled tab.
     expect(
-      metadata.get('created-agent')?.hydrated,
+      metadata.get(mockOpenAgent.mock.calls.at(-1)?.[1].creation.tabId)?.hydrated,
       'the hydrator must not re-ask for this tab',
     ).toBe(true)
-    expect(view.getAgentTab('created-agent')?.gitToplevel, 'the response carries no repo identity').toBeUndefined()
+    expect(view.getAgentTab(mockOpenAgent.mock.calls.at(-1)?.[1].creation.tabId)?.gitToplevel, 'the response carries no repo identity').toBeUndefined()
     expect(Object.keys(repoGitStore.repos())).toEqual([])
   })
 
@@ -789,7 +752,7 @@ describe('AppShellDialogs agent creation', () => {
 
     fireEvent.click(await screen.findByTestId('new-agent-created'))
 
-    await waitFor(() => expect(stores.view.getAgentTab('created-agent')).toBeDefined())
+    await waitFor(() => expect(stores.view.getAgentTab(mockOpenAgent.mock.calls.at(-1)?.[1].creation.tabId)).toBeDefined())
     expect(
       stores.repoGitStore.get(repoKey('w1', '/repo'))?.branch,
       'the sidebar can group the new tab before the worker reports',
@@ -809,7 +772,7 @@ describe('AppShellDialogs agent creation', () => {
 
     fireEvent.click(await screen.findByTestId('new-agent-created-worktree'))
 
-    await waitFor(() => expect(stores.view.getAgentTab('created-agent')).toBeDefined())
+    await waitFor(() => expect(stores.view.getAgentTab(mockOpenAgent.mock.calls.at(-1)?.[1].creation.tabId)).toBeDefined())
     expect(stores.repoGitStore.get(repoKey('w1', '/repo'))).toBeUndefined()
   })
 

@@ -19,7 +19,6 @@ import (
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/hub"
-	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/worker"
 )
 
@@ -72,14 +71,9 @@ func (trace *deregisterTrace) runConfig(t *testing.T, logs *testutil.LogBuffer, 
 	t.Helper()
 	key, err := noiseutil.GenerateCompositeKeypair()
 	require.NoError(t, err)
-	canonical, err := lifecycle.CanonicalDir(t.TempDir())
-	require.NoError(t, err)
-	lease, leaseErr := lifecycle.AcquireDirectory(
-		lifecycle.NewDirectoryOwner(lifecycle.RoleWorker, canonical), lifecycle.RoleWorker, canonical)
-	require.NoError(t, leaseErr)
 	return worker.RunConfig{
 		HubURL:         hubURL,
-		Directory:      lease,
+		Directory:      workerLeaseForTest(t),
 		AuthToken:      "token",
 		CompositeKey:   key,
 		WorkerID:       "worker-1",
@@ -207,28 +201,61 @@ func TestRunStopsWhenTheHubDeletedAWorkerWithNoHook(t *testing.T) {
 	assert.Equal(t, int32(1), drained.Load())
 }
 
-// HubEndpoint supplies the Hub destination and transport configuration.
-// HubURL must not override it, even when HubURL is empty or invalid.
+// HubEndpoint supplies the Hub destination and every reported connection URL.
+// HubURL must not override it, even when HubURL is empty, invalid, or different.
 func TestRunUsesTheHubEndpointItIsGiven(t *testing.T) {
 	t.Parallel()
-	hubService := &refusingHub{
-
-		reason: channelwire.WorkerCloseReasonDeleted,
+	for _, connection := range []struct {
+		name  string
+		greet bool
+	}{{"refused", false}, {"greeted", true}} {
+		t.Run(connection.name, func(t *testing.T) {
+			for _, configured := range []struct {
+				name string
+				url  string
+			}{{"empty", ""}, {"invalid", "not a URL"}, {"different", "http://unused.invalid"}} {
+				t.Run(configured.name, func(t *testing.T) {
+					t.Parallel()
+					var connects atomic.Int32
+					hubURL := fakehubtest.Start(t, func(ctx context.Context, stream *fakehubtest.Stream) {
+						connects.Add(1)
+						if connection.greet {
+							deregisterWorker(ctx, stream)
+						} else {
+							_ = stream.Refuse(websocket.StatusPolicyViolation, channelwire.WorkerCloseReasonDeleted)
+						}
+					})
+					endpoint, err := hubtransport.New(hubURL)
+					require.NoError(t, err)
+					key, err := noiseutil.GenerateCompositeKeypair()
+					require.NoError(t, err)
+					ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+					defer cancel()
+					var states []worker.ConnectionState
+					require.NoError(t, worker.Run(ctx, worker.RunConfig{
+						HubURL:            configured.url,
+						HubEndpoint:       endpoint,
+						Directory:         workerLeaseForTest(t),
+						AuthToken:         "token",
+						CompositeKey:      key,
+						WorkerID:          "worker-1",
+						EncryptionMode:    leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
+						OnConnectionState: func(state worker.ConnectionState) { states = append(states, state) },
+					}))
+					assert.Equal(t, int32(1), connects.Load())
+					want := []bool{false}
+					if connection.greet {
+						want = []bool{true, false}
+					}
+					require.Len(t, states, len(want))
+					for i, state := range states {
+						assert.Equal(t, endpoint.URL(), state.HubURL)
+						assert.Equal(t, want[i], state.Connected)
+					}
+				})
+			}
+		})
 	}
-	endpoint, err := hubtransport.New(hubService.start(t))
-	require.NoError(t, err)
-	key, err := noiseutil.GenerateCompositeKeypair()
-	require.NoError(t, err)
-
-	require.NoError(t, worker.Run(t.Context(), worker.RunConfig{
-		HubEndpoint:    endpoint,
-		Directory:      workerLeaseForTest(t),
-		AuthToken:      "token",
-		CompositeKey:   key,
-		WorkerID:       "worker-1",
-		EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
-	}))
-	assert.Equal(t, int32(1), hubService.connects.Load(), "Run must connect through the given endpoint")
 }
 
 // With neither a HubEndpoint nor a usable HubURL, Run has nothing to connect to.

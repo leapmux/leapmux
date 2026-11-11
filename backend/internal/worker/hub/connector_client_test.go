@@ -19,6 +19,8 @@ import (
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // proxyBehavior states what the test proxy does with the Hub's response.
@@ -258,4 +260,61 @@ func TestConnectorClient_RegistersAgainstAnHTTP1OnlyEndpoint(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "worker-1", response.GetWorkerId())
 	assert.Equal(t, "application/proto", <-contentTypes)
+}
+
+type publicationWireCall struct {
+	procedure   string
+	publication *leapmuxv1.TabPublication
+}
+
+type publicationConnectorHub struct {
+	leapmuxv1connect.UnimplementedWorkerConnectorServiceHandler
+	calls chan publicationWireCall
+}
+
+func (h *publicationConnectorHub) PublishTab(_ context.Context, request *leapmuxv1.PublishTabRequest) (*leapmuxv1.PublishTabResponse, error) {
+	h.calls <- publicationWireCall{procedure: "publish", publication: proto.CloneOf(request.GetPublication())}
+	return &leapmuxv1.PublishTabResponse{}, nil
+}
+
+func (h *publicationConnectorHub) CancelTabPublication(_ context.Context, request *leapmuxv1.CancelTabPublicationRequest) (*emptypb.Empty, error) {
+	h.calls <- publicationWireCall{procedure: "cancel", publication: proto.CloneOf(request.GetPublication())}
+	return &emptypb.Empty{}, nil
+}
+
+func (h *publicationConnectorHub) ResolveTabPublication(_ context.Context, request *leapmuxv1.ResolveTabPublicationRequest) (*leapmuxv1.ResolveTabPublicationResponse, error) {
+	h.calls <- publicationWireCall{procedure: "resolve", publication: proto.CloneOf(request.GetPublication())}
+	return &leapmuxv1.ResolveTabPublicationResponse{}, nil
+}
+
+func TestConnectorPublicationCallsCarryImmutableDescriptor(t *testing.T) {
+	hub := &publicationConnectorHub{calls: make(chan publicationWireCall, 1)}
+	proxy := startProxiedHub(t, hub, forwardOverHTTP1)
+	client := &Client{connector: newConnectorClient(proxy.endpoint)}
+	publication := &leapmuxv1.TabPublication{
+		Creation: &leapmuxv1.TabCreation{
+			TabId:        "publication-wire",
+			Placement:    &leapmuxv1.TabPlacement{WorkspaceId: "workspace", Destination: &leapmuxv1.TabPlacement_TileId{TileId: "tile"}, Insertion: leapmuxv1.TabInsertion_TAB_INSERTION_LAST},
+			Presentation: &leapmuxv1.TabPresentation{FileViewMode: proto.Int32(4), FileDiffBase: proto.String("head-vs-working")},
+		},
+		TabType: leapmuxv1.TabType_TAB_TYPE_FILE,
+	}
+	for _, procedure := range []string{"publish", "resolve", "cancel"} {
+		t.Run(procedure, func(t *testing.T) {
+			ctx := testutil.DeadlineContext(t)
+			switch procedure {
+			case "publish":
+				_, err := client.PublishTab(ctx, "worker-token", publication)
+				require.NoError(t, err)
+			case "resolve":
+				_, err := client.ResolveTabPublication(ctx, "worker-token", publication)
+				require.NoError(t, err)
+			case "cancel":
+				require.NoError(t, client.CancelTabPublication(ctx, "worker-token", publication))
+			}
+			call := <-hub.calls
+			assert.Equal(t, procedure, call.procedure)
+			assert.True(t, proto.Equal(publication, call.publication))
+		})
+	}
 }

@@ -1,8 +1,9 @@
 import type { Component } from 'solid-js'
-import type { AgentInfo, AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { AgentCreationSubmission, TerminalCreationSubmission } from '~/components/shell/useTabCreation'
+import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ChangeBranchMode } from '~/hooks/useGitModeState'
 import { createEffect, createSignal, Match, on, Show, Switch } from 'solid-js'
-import { workerAgent, workerGit, workerTerminal } from '~/api/workerRpc'
+import { workerGit } from '~/api/workerRpc'
 import { openAgentRequestOptions } from '~/components/chat/providers/registry'
 import { labelRow } from '~/components/common/Dialog.css'
 import { PillGroup } from '~/components/common/PillGroup'
@@ -78,16 +79,14 @@ interface ChangeBranchDialogProps {
    */
   onBranchChanged?: (newBranch: string) => void
   /**
-   * When this returns a string in CreateWorktree mode, no tab can be
-   * placed for the new worktree's agent/terminal (no workspace tree, or
-   * an archived workspace): submit is disabled and the string is shown
-   * as the reason. Guards the worker RPC — creating the resource first
-   * and refusing placement second would orphan it. The branch-only modes
-   * open no tab, so the reason never applies to them.
+   * In CreateWorktree mode, an absent workspace tree or archived workspace
+   * prevents placement of the new agent or terminal. A returned reason
+   * disables submit and appears in the dialog before a Worker request.
+   * Branch-only modes operate on the existing checkout and ignore this reason.
    */
   blockedReason?: () => string | undefined
-  onAgentCreated?: (agent: AgentInfo) => void
-  onTerminalCreated?: (terminalId: string, workerId: string, workingDir: string, title: string) => void
+  createAgent: (input: AgentCreationSubmission) => Promise<boolean>
+  createTerminal: (input: TerminalCreationSubmission) => Promise<boolean>
   onClose: () => void
 }
 
@@ -162,10 +161,9 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
   )
   const { shell } = shellState
 
-  // The guard reason applies only to the one mode whose submit opens a
-  // worker-side resource that placement could orphan; branch-only modes
-  // change no tabs. One accessor so the submit gate and the notice read
-  // the same value.
+  // CreateWorktree requires a destination for its new tab. Branch-only modes
+  // operate on the existing checkout. One accessor supplies the submit control
+  // and its visible reason.
   const worktreeBlockedReason = () =>
     gitMode.currentIntent().mode === GitMode.CreateWorktree
       ? props.blockedReason?.()
@@ -202,16 +200,8 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
     })
   }
 
-  // Parent callbacks (onBranchChanged / onAgentCreated /
-  // onTerminalCreated) run AFTER the RPC has already mutated worker
-  // state. A throw inside them must NOT be reported as an RPC failure:
-  // useDialogSubmit's catch sets the error banner from any throw
-  // inside dispatchMode, which on a successful checkout would lie to
-  // the user (HEAD moved, dialog says "Operation failed"). Funnel
-  // every parent-callback site through this helper so each call site
-  // collapses to one line AND a future fifth callback added to props
-  // can't forget the try/catch (the WHAT-comment per the callback
-  // name is the audit trail).
+  // A branch-change callback runs after the Worker commits its Git mutation.
+  // Keep its exception separate from the RPC result shown by the form.
   const safeCallback = <T,>(name: string, fn: ((arg: T) => void) | undefined, arg: T): void => {
     if (!fn)
       return
@@ -223,7 +213,7 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
     }
   }
 
-  const dispatchMode = async (): Promise<void> => {
+  const dispatchMode = async (): Promise<boolean> => {
     const baseArgs = {
       path: props.gitToplevel,
     }
@@ -245,7 +235,7 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
         // stripped, or the sidebar stamps the wrong label.
         const stamped = resolveStampedBranch(target, inspect.branches())
         safeCallback('onBranchChanged', props.onBranchChanged, stamped)
-        return
+        return true
       }
       case GitMode.CreateBranch: {
         const newBranch = intent.createBranch
@@ -255,17 +245,10 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
           baseBranch: intent.createBranchBase,
         })
         safeCallback('onBranchChanged', props.onBranchChanged, newBranch)
-        return
+        return true
       }
       case GitMode.CreateWorktree: {
-        // The narrowed intent already proves we're in CreateWorktree, so
-        // project its setup directly instead of routing through
-        // `toGitSetup()` (which re-derives the mode from `currentIntent`).
-        // No workspace id: neither OpenAgentRequest nor OpenTerminalRequest has
-        // a field for one -- a Worker stores no workspace, and which workspace
-        // the tab lands in is decided by the CRDT tile the CLIENT places it on.
-        // The key used to be spread in here and was dropped on the wire, which
-        // read as if the Worker filed the tab for a non-active workspace.
+        // Capture the worktree configuration before handing creation to the parent.
         const worktreeArgs = {
           workingDir: props.gitToplevel,
           gitSetup: setupForCreateWorktree(intent),
@@ -274,56 +257,39 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
           const provider = agentProvider()
           if (provider === undefined)
             throw new Error('No agent provider available')
-          const resp = await workerAgent.openAgent(props.workerId, {
-            ...worktreeArgs,
-            agentProvider: provider,
-            // The CLEANED title, for the reason createTitleState.cleaned states.
-            title: title.cleaned(),
-            // And whether the user kept the suggestion, for the reason
-            // createTitleState.isPristine states.
-            titleAutoGenerated: title.isPristine(),
-            ...openAgentRequestOptions(provider),
-          })
-          if (resp.agent) {
-            recordProviderUse(provider)
-            safeCallback('onAgentCreated', props.onAgentCreated, resp.agent)
-          }
-          return
-        }
-        const resp = await workerTerminal.openTerminal(props.workerId, {
-          ...worktreeArgs,
-          cols: DEFAULT_TERMINAL_COLS,
-          rows: DEFAULT_TERMINAL_ROWS,
-          shell: shell(),
-          title: title.cleaned(),
-        })
-        // onTerminalCreated takes a 4-tuple — bundle as an object so
-        // safeCallback's single-arg shape stays consistent across
-        // every call site. Capture the prop into a local before the
-        // ternary so the solid/reactivity lint doesn't flag the
-        // prop read as untracked: the dispatch is already running
-        // outside a reactive scope and a stale handler would just
-        // be a no-op, but the local makes intent explicit.
-        const onTerminalCreated = props.onTerminalCreated
-        safeCallback(
-          'onTerminalCreated',
-          onTerminalCreated
-            ? args => onTerminalCreated(args.id, args.workerId, args.workingDir, args.title)
-            : undefined,
-          {
-            id: resp.terminalId,
+          return props.createAgent({
             workerId: props.workerId,
-            workingDir: props.gitToplevel,
-            title: resp.title,
+            seedGitFromActiveTab: false,
+            request: {
+              ...worktreeArgs,
+              agentProvider: provider,
+              title: title.cleaned(),
+              titleAutoGenerated: title.isPristine(),
+              ...openAgentRequestOptions(provider),
+            },
+            onCommitted: () => recordProviderUse(provider),
+            onError: error => setError(formatErrorMessage(error, 'Failed to create the worktree agent')),
+          })
+        }
+        return props.createTerminal({
+          workerId: props.workerId,
+          seedGitFromActiveTab: false,
+          request: {
+            ...worktreeArgs,
+            cols: DEFAULT_TERMINAL_COLS,
+            rows: DEFAULT_TERMINAL_ROWS,
+            shell: shell(),
+            title: title.cleaned(),
           },
-        )
+          onError: error => setError(formatErrorMessage(error, 'Failed to create the worktree terminal')),
+        })
       }
     }
   }
 
   const handleSubmit = formHandler(submitDisabled, async () => {
-    await dispatchMode()
-    props.onClose()
+    if (await dispatchMode())
+      props.onClose()
   })
 
   return (

@@ -1,8 +1,10 @@
 import { execFileSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { TabType, WorktreeAction } from '../../src/generated/proto/leapmux/v1/common_pb'
+import { TabInsertion } from '../../src/generated/proto/leapmux/v1/tab_creation_pb'
 import {
   WorkerTerminalService,
 } from '../../src/generated/proto/leapmux/v1/terminal_pb'
@@ -34,8 +36,8 @@ test.describe('Worktree Lifecycle', () => {
 
     await expect(page.getByText('e2e-test-branch')).toBeVisible()
 
-    // The dialog closes when the API call (including the git worktree
-    // creation) has completed, and the new workspace is then the active one.
+    // The creation reply and canonical tab complete the dialog submission.
+    // Startup readiness has its own check below.
     await submitNewWorkspaceDialog(page, 'Worktree Test WS')
     await waitForWorkspaceReady(page)
 
@@ -99,6 +101,17 @@ test.describe('Worktree Lifecycle', () => {
       workerId,
       WorkerTerminalService.method.openTerminal,
       {
+        target: {
+          case: 'creation',
+          value: {
+            tabId: randomUUID(),
+            placement: {
+              workspaceId,
+              destination: { case: 'firstLeaf', value: {} },
+              insertion: TabInsertion.LAST,
+            },
+          },
+        },
         cols: 80,
         rows: 24,
         workingDir: repoDir,

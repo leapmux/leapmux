@@ -5,12 +5,16 @@ import (
 	"encoding/binary"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/runtime/protoiface"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -114,4 +118,92 @@ func TestWorkerStreamURL(t *testing.T) {
 	for input, want := range map[string]string{"http://h:1": "ws://h:1/ws/worker", "https://h": "wss://h/ws/worker", "http://localhost": "ws://localhost/ws/worker"} {
 		assert.Equal(t, want, WorkerStreamURL(input))
 	}
+}
+
+type sizeCountingMessage struct {
+	proto.Message
+	uncachedSizeCalls *atomic.Int32
+}
+
+func (m sizeCountingMessage) ProtoReflect() protoreflect.Message {
+	return sizeCountingReflection{Message: m.Message.ProtoReflect(), uncachedSizeCalls: m.uncachedSizeCalls}
+}
+
+type sizeCountingReflection struct {
+	protoreflect.Message
+	uncachedSizeCalls *atomic.Int32
+}
+
+func (m sizeCountingReflection) ProtoMethods() *protoiface.Methods {
+	methods := *m.Message.ProtoMethods()
+	size := methods.Size
+	methods.Size = func(in protoiface.SizeInput) protoiface.SizeOutput {
+		if in.Flags&protoiface.MarshalUseCachedSize == 0 {
+			m.uncachedSizeCalls.Add(1)
+		}
+		in.Message = m.Message
+		return size(in)
+	}
+	marshal := methods.Marshal
+	methods.Marshal = func(in protoiface.MarshalInput) (protoiface.MarshalOutput, error) {
+		in.Message = m.Message
+		return marshal(in)
+	}
+	if check := methods.CheckInitialized; check != nil {
+		methods.CheckInitialized = func(in protoiface.CheckInitializedInput) (protoiface.CheckInitializedOutput, error) {
+			in.Message = m.Message
+			return check(in)
+		}
+	}
+	return &methods
+}
+
+func TestWriteProtoFrameCalculatesSizeAtMostOncePerWrite(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		msg  *leapmuxv1.ConnectRequest
+	}{
+		{"empty", &leapmuxv1.ConnectRequest{}},
+		{"nested", &leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{
+			WorkerTabInventory: &leapmuxv1.WorkerTabInventory{Tabs: []*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "first"}}},
+		}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			conn := protoFramePair(t, func(ctx context.Context, ws *websocket.Conn) {
+				for range 2 {
+					var received leapmuxv1.ConnectRequest
+					if !assert.NoError(t, ReadProtoFrame(ctx, ws, &received)) {
+						return
+					}
+					if !assert.NoError(t, WriteProtoFrame(ctx, ws, &received)) {
+						return
+					}
+				}
+			})
+			var uncachedSizeCalls atomic.Int32
+			counted := sizeCountingMessage{Message: tc.msg, uncachedSizeCalls: &uncachedSizeCalls}
+			for range 2 {
+				uncachedSizeCalls.Store(0)
+				require.NoError(t, WriteProtoFrame(t.Context(), conn, counted))
+				var reply leapmuxv1.ConnectRequest
+				require.NoError(t, ReadProtoFrame(t.Context(), conn, &reply))
+				assert.True(t, proto.Equal(tc.msg, &reply))
+				assert.LessOrEqual(t, uncachedSizeCalls.Load(), int32(1), "one write must not repeat uncached sizing")
+				tc.msg.RequestId = strings.Repeat("r", 257)
+				if inventory := tc.msg.GetWorkerTabInventory(); inventory != nil {
+					inventory.Tabs[0].TabId = strings.Repeat("t", 257)
+				}
+			}
+		})
+	}
+}
+
+func TestWriteProtoFramePreservesMarshalErrors(t *testing.T) {
+	t.Parallel()
+	msg := &leapmuxv1.ConnectRequest{RequestId: string([]byte{0xff})}
+	err := WriteProtoFrame(t.Context(), nil, msg)
+	require.ErrorContains(t, err, "marshal:")
+	assert.ErrorContains(t, err, "invalid UTF-8")
 }

@@ -34,10 +34,6 @@ func testHello() *leapmuxv1.WorkerHello {
 	}
 }
 
-// testPool gives one Conn a private byte budget the size a production Hub
-// grants a single connection, so a test that fills its queue does not change
-// what any other test's Conn is admitted. Tests that mean to exercise SHARED
-// pressure build one pool and hand it to several NewConn calls.
 func TestConnSendReturnsWhileWriteParked(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
@@ -623,58 +619,45 @@ func TestNewConnRefusesToBuildWithoutABudget(t *testing.T) {
 	})
 }
 
-func TestFenceEndsAWriteParkedOnTheConnectionContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	started := make(chan struct{})
-	conn, pump := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(writeCtx context.Context, _ *leapmuxv1.ConnectResponse) error {
-		close(started)
-		<-writeCtx.Done()
-		return writeCtx.Err()
-	}, nil, testHello())
-	t.Cleanup(conn.Fence)
-	require.NoError(t, conn.Send(channelMsg(1)))
-	drained := make(chan error, 1)
-	go func() { drained <- pump.Drain() }()
-	<-started
-	conn.Fence()
-	select {
-	case err := <-drained:
-		require.ErrorIs(t, err, context.Canceled)
-	case <-time.After(30 * time.Second):
-		t.Fatal("Fence did not release the write")
-	}
-}
-
-func TestAWriteEndedByTheConnectionContextIsNotAGiveUp(t *testing.T) {
-	logs := testutil.CaptureDefaultLogger(t)
-	counter := metrics.SendqGiveUpsTotal.WithLabelValues(metrics.PoolWorker, sendq.GiveUpWriteError.Label())
-	before := promtestutil.ToFloat64(counter)
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	started := make(chan struct{})
-	conn, pump := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(writeCtx context.Context, _ *leapmuxv1.ConnectResponse) error {
-		close(started)
-		<-writeCtx.Done()
-		return writeCtx.Err()
-	}, nil, testHello())
-	t.Cleanup(conn.Fence)
-	require.NoError(t, conn.Send(channelMsg(1)))
-	drained := make(chan error, 1)
-	go func() { drained <- pump.Drain() }()
-	<-started
-	cancel()
-	select {
-	case err := <-drained:
-		require.ErrorIs(t, err, context.Canceled)
-	case <-time.After(30 * time.Second):
-		t.Fatal("cancellation did not release the write")
-	}
-	assert.Equal(t, before, promtestutil.ToFloat64(counter))
-	assert.NotContains(t, logs.String(), "writer gave up; fencing")
-	select {
-	case <-conn.Done():
-	default:
-		t.Fatal("connection stayed active")
+func TestConnectionCancellationEndsAWriteWithoutAGiveUp(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		stop func(*Conn, context.CancelFunc)
+	}{
+		{"fence", func(conn *Conn, _ context.CancelFunc) { conn.Fence() }},
+		{"parent cancellation", func(_ *Conn, cancel context.CancelFunc) { cancel() }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := testutil.CaptureDefaultLogger(t)
+			counter := metrics.SendqGiveUpsTotal.WithLabelValues(metrics.PoolWorker, sendq.GiveUpWriteError.Label())
+			before := promtestutil.ToFloat64(counter)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			started := make(chan struct{})
+			conn, pump := NewConn(ctx, cancel, "w1", "u1", sendq.NewMaxBytesPoolForTest(), func(writeCtx context.Context, _ *leapmuxv1.ConnectResponse) error {
+				close(started)
+				<-writeCtx.Done()
+				return writeCtx.Err()
+			}, nil, testHello())
+			t.Cleanup(conn.Fence)
+			require.NoError(t, conn.Send(channelMsg(1)))
+			drained := make(chan error, 1)
+			go func() { drained <- pump.Drain() }()
+			<-started
+			tc.stop(conn, cancel)
+			select {
+			case err := <-drained:
+				require.ErrorIs(t, err, context.Canceled)
+			case <-time.After(30 * time.Second):
+				t.Fatal("cancellation did not release the write")
+			}
+			assert.Equal(t, before, promtestutil.ToFloat64(counter))
+			assert.NotContains(t, logs.String(), "writer gave up; fencing")
+			select {
+			case <-conn.Done():
+			default:
+				t.Fatal("connection stayed active")
+			}
+		})
 	}
 }

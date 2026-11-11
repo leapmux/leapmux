@@ -104,6 +104,8 @@ func startHubChannelHarness(t *testing.T, hub *recordingHub, disp controlipc.Loc
 // the test's dispatcher. channel.Dispatcher matches a method exactly and has no
 // catch-all, so a new procedure under test goes here.
 var harnessWorkerProcedures = []string{
+	leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure,
+	leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure,
 	leapmuxv1connect.WorkerAgentServiceListAgentsProcedure,
 	leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure,
 	leapmuxv1connect.WorkerGitServiceInspectLastTabCloseProcedure,
@@ -224,6 +226,10 @@ func (h *hubChannelHarness) GetWorkspace(ctx context.Context, req *leapmuxv1.Get
 
 func (h *hubChannelHarness) LocateTab(ctx context.Context, req *leapmuxv1.LocateTabRequest) (*leapmuxv1.LocateTabResponse, error) {
 	return answerFromRecordingHub(ctx, h.hub, leapmuxv1connect.WorkspaceServiceLocateTabProcedure, req, &leapmuxv1.LocateTabResponse{})
+}
+
+func (h *hubChannelHarness) LocateTile(ctx context.Context, req *leapmuxv1.LocateTileRequest) (*leapmuxv1.LocateTileResponse, error) {
+	return answerFromRecordingHub(ctx, h.hub, leapmuxv1connect.WorkspaceServiceLocateTileProcedure, req, &leapmuxv1.LocateTileResponse{})
 }
 
 func (h *hubChannelHarness) GetMaterialized(ctx context.Context, req *leapmuxv1.GetMaterializedRequest) (*leapmuxv1.GetMaterializedResponse, error) {

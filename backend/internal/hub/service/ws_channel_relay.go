@@ -78,8 +78,8 @@ func NewChannelRelayHandler(
 	}
 }
 
-// WithChannelCloseEnqueuer shares the service's bounded worker notification
-// dispatcher with relay-disconnect teardown.
+// WithChannelCloseEnqueuer shares the service's worker-close admission
+// with relay-disconnect teardown.
 func (h *ChannelRelayHandler) WithChannelCloseEnqueuer(enqueuer channelCloseEnqueuer) *ChannelRelayHandler {
 	if !nilcheck.IsNilDependency(enqueuer) {
 		h.closeDispatcher = enqueuer

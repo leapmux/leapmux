@@ -7,6 +7,7 @@ import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { cmpStr, hlcIsZero } from '~/lib/crdt'
 import { shallowEqual, shallowEqualArraysDeep } from '~/lib/shallowEqual'
 import { tabKey } from './tab.helpers'
+import { decodeDisplayMode, decodeFileDiffBase, decodeFileViewMode } from './tabPresentation'
 
 /**
  * The join.
@@ -295,6 +296,9 @@ export function createTabView(opts: CreateTabViewOpts) {
       // The absent-register case is already covered by `?.`.
       const workerId = rec.workerId?.value ?? previous.workerId
       const position = rec.position?.value ?? previous.position
+      const displayMode = rec.displayMode?.value ?? previous.displayMode
+      const fileViewMode = rec.fileViewMode?.value ?? previous.fileViewMode
+      const fileDiffBase = rec.fileDiffBase?.value ?? previous.fileDiffBase
       // Keep the row we handed out last time when nothing on it moved, and store
       // every held row back into `lastResolved` so the next tick can do the
       // same. `assembled` maps over this array with `mapArray`, which keys each
@@ -302,8 +306,17 @@ export function createTabView(opts: CreateTabViewOpts) {
       // dispose that computation and remount the tab's `<For>` row on every tick
       // it stays held, dropping an in-flight drag or a focused rename input.
       const row = workerId === previous.workerId && position === previous.position
+        && displayMode === previous.displayMode && fileViewMode === previous.fileViewMode
+        && fileDiffBase === previous.fileDiffBase
         ? previous
-        : { ...previous, workerId, position }
+        : {
+            ...previous,
+            workerId,
+            position,
+            displayMode,
+            fileViewMode,
+            fileDiffBase,
+          }
       lastResolved.set(rec.tabId, row)
       held.push(row)
     }
@@ -431,11 +444,11 @@ export function createTabView(opts: CreateTabViewOpts) {
           ...base,
           type: TabType.FILE,
           filePath: m.filePath,
-          // Not from the record: TabRecord has registers for these, but nothing
-          // has ever emitted them -- see the note in tabMetadata.store.ts.
-          displayMode: m.displayMode,
-          fileViewMode: m.fileViewMode,
-          fileDiffBase: m.fileDiffBase,
+          // Canonical creation preferences supply the initial view. Later
+          // viewer controls write this client's overrides to metadata.
+          displayMode: m.displayMode ?? decodeDisplayMode(r.displayMode),
+          fileViewMode: m.fileViewMode ?? decodeFileViewMode(r.fileViewMode),
+          fileDiffBase: m.fileDiffBase ?? decodeFileDiffBase(r.fileDiffBase),
           fileOpenSource: m.fileOpenSource,
         } satisfies Complete<FileTab>
     }
@@ -592,6 +605,8 @@ export function createTabView(opts: CreateTabViewOpts) {
   })
 
   return {
+    /** Account that owns the current canonical projection. */
+    ownerUserId: () => opts.state()?.userId,
     /** Tabs for one workspace, in position order. Empty for an unknown id. */
     forWorkspace(workspaceId: string): Tab[] {
       return byWorkspace().get(workspaceId) ?? []

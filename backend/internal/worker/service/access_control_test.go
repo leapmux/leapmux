@@ -349,7 +349,7 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 			}
 		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure, leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure, func() proto.Message {
-			return &leapmuxv1.RegisterTabPayloadRequest{TabId: "tab-1", Payload: fileTabPayload("/tmp/x", "")}
+			return &leapmuxv1.RegisterTabPayloadRequest{Creation: &leapmuxv1.TabCreation{TabId: "tab-1"}, Payload: fileTabPayload("/tmp/x", "")}
 		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerTabServiceCleanupWorkspaceProcedure, leapmuxv1connect.WorkerTabServiceCleanupWorkspaceProcedure, func() proto.Message {
 			return &leapmuxv1.CleanupWorkspaceRequest{}

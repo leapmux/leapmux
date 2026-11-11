@@ -2,9 +2,12 @@ syntax = "proto3";
 package leapmux.v1;
 
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
 import "leapmux/v1/access.proto";
 import "leapmux/v1/channel.proto";
 import "leapmux/v1/common.proto";
+import "leapmux/v1/tab_creation.proto";
+import "leapmux/v1/user_ops.proto";
 
 // WorkerConnectorService is called BY Worker instances on Hub via ConnectRPC.
 // It handles registration, its recovery, self-deregistration, and the
@@ -56,6 +59,58 @@ service WorkerConnectorService {
   rpc ListOwnedTabsForWorker(ListOwnedTabsForWorkerRequest) returns (ListOwnedTabsForWorkerResponse) {
     option (leapmux.v1.access) = { public: {} };
   }
+  // Publish one already-persisted resource on behalf of the Worker's owner.
+  // The handler authenticates the Worker token and derives owner and Worker ID.
+  rpc PublishTab(PublishTabRequest) returns (PublishTabResponse) {
+    option (leapmux.v1.access) = { public: {} };
+  }
+  // Prevent a pending creation from publishing, or remove its published tab.
+  // Cancellation and publication serialize on the same canonical writer.
+  rpc CancelTabPublication(CancelTabPublicationRequest) returns (google.protobuf.Empty) {
+    option (leapmux.v1.access) = { public: {} };
+  }
+  // Read the immutable receipt and current canonical ownership before startup.
+  rpc ResolveTabPublication(ResolveTabPublicationRequest) returns (ResolveTabPublicationResponse) {
+    option (leapmux.v1.access) = { public: {} };
+  }
+}
+
+message PublishTabRequest {
+  TabPublication publication = 1;
+}
+
+message CancelTabPublicationRequest {
+  TabPublication publication = 1;
+}
+
+message ResolveTabPublicationRequest {
+  TabPublication publication = 1;
+}
+
+message PublishTabResponse {
+  oneof outcome {
+    PublishedTab published = 1;
+    RejectedTabPublication rejected = 2;
+  }
+}
+
+// Presence describes canonical ownership now, independently of a receipt.
+enum TabPublicationPresence {
+  TAB_PUBLICATION_PRESENCE_UNSPECIFIED = 0;
+  TAB_PUBLICATION_PRESENCE_HOSTED = 1;
+  TAB_PUBLICATION_PRESENCE_ABSENT = 2;
+  TAB_PUBLICATION_PRESENCE_REASSIGNED = 3;
+}
+
+message ResolveTabPublicationResponse {
+  PublishTabResponse receipt = 1;
+  TabPublicationPresence presence = 2;
+  WorkspaceArchiveState archive_state = 3;
+}
+
+message RejectedTabPublication {
+  BatchRejectionReason reason = 1;
+  string message = 2;
 }
 
 message ListOwnedTabsForWorkerRequest {}
@@ -79,7 +134,7 @@ message ListOwnedTabsForWorkerResponse {
 
 // WorkerTabState identifies one tab that the Hub still owns and states whether
 // the workspace that contains it is archived. It carries no workspace, tile,
-// or position because the Worker stores none of that placement state.
+// or position because the Worker keeps placement only in pending creation intent.
 message WorkerTabState {
   // The tab. Its owner is the response's owner_user_id: the Hub's query binds
   // that one owner, so every row of one response shares it. A FILE or IMAGE
@@ -87,8 +142,8 @@ message WorkerTabState {
   // worker's orphan reconciler matches such a row against its local
   // worker_tab_payloads row by (owner, tab_id) -- worker_tab_payloads is keyed
   // (user_id, tab_id), and a blank owner would match no row on a write and
-  // another account's row on a read. AGENT and TERMINAL ids are server-minted
-  // and globally unique, so their reconciliation ignores the owner.
+  // another account's row on a read. AGENT and TERMINAL ids are globally unique,
+  // so their reconciliation ignores the owner.
   TabIdent tab = 1;
   WorkspaceArchiveState archive_state = 2;
 }
@@ -307,10 +362,13 @@ message ConnectRequest {
 // (WatchWorkerPrivateEvents, WorkerPrivateService, WorkerPrivateEvent,
 // HubUnaryBridge, SnapshotForOwner).
 //
-// The hub TOMBSTONES every owned tab this report omits, so an omission is a
-// deletion of the user's tabs. BuildTabSync is what must stay exhaustive.
+// The Hub reconciles only after the final segment. It tombstones unchanged
+// admission-time candidates that the complete report omits. BuildTabSync must
+// enumerate every hosted tab; an interrupted report deletes nothing.
 message WorkerTabInventory {
   repeated TabIdent tabs = 1;
+  // Only the final segment permits reconciliation and acknowledgment.
+  bool complete = 2;
 }
 
 // WorkerTabInventoryResponse acknowledges a tab-sync. It is deliberately EMPTY:

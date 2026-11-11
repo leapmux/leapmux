@@ -1,5 +1,6 @@
 import type { NewTabTarget } from './AppShellDialogs'
 import type { TabContext } from './tabContext'
+import type { TabCreationCoordinator } from './useTabCreation'
 import type { ControlResponseHandler } from '~/components/chat/controls/types'
 import type { ProviderSettingChange } from '~/components/chat/providerSettings'
 import type { CloseTabResponse } from '~/generated/proto/leapmux/v1/worker_tab_pb'
@@ -11,8 +12,6 @@ import type { createAgentSessionStore } from '~/stores/agentSession.store'
 import type { createChatStore } from '~/stores/chat.store'
 import type { GoalAction } from '~/stores/chatGoal'
 import type { createControlStore } from '~/stores/control.store'
-import type { createLayoutStore } from '~/stores/layout.store'
-import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
@@ -30,13 +29,12 @@ import { AgentOptionSettlementState, AgentProvider, ControlResponseState } from 
 import { TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { getMruProviders, touchMruProvider } from '~/lib/mruAgentProviders'
 import { goalActionToProto } from '~/stores/chatGoal'
-import { openedAgentTabFields, planOptimisticRepoGit, setOptionValue } from '~/stores/tab.helpers'
+import { setOptionValue } from '~/stores/tab.helpers'
 import { emitRemoveTab, emitRemoveTabs, hasLiveTabRecord } from '~/stores/tabOps'
-import { openTabInFocusedTile } from './openTabInFocusedTile'
-import { warnUnlessPlaceableTab } from './placeableTabGuard'
 import '~/components/chat/providers'
 
 export interface UseAgentOperationsProps {
+  creation: TabCreationCoordinator
   agentSessionStore: ReturnType<typeof createAgentSessionStore>
   agentInputQueueStore: ReturnType<typeof createAgentInputQueueStore>
   chatStore: ReturnType<typeof createChatStore>
@@ -46,7 +44,6 @@ export interface UseAgentOperationsProps {
   metadata: TabMetadataStore
   selection: TabSelectionStore
   getActiveWorkspaceId: () => string | null
-  layoutStore: ReturnType<typeof createLayoutStore>
   settingsLoading: {
     start: (key?: string, axes?: readonly string[]) => void
     stop: (key?: string, axes?: readonly string[]) => void
@@ -58,7 +55,6 @@ export interface UseAgentOperationsProps {
   setNewAgentLoadingProvider: (provider: AgentProvider | null) => void
   focusEditor?: () => void
   forceScrollToBottom?: () => void
-  repoGitStore: ReturnType<typeof createRepoGitStore>
   releaseAgentComposerActionState: (agentId: string) => void
 }
 
@@ -156,88 +152,26 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     return available[0] ?? null
   }
 
-  // Open a new agent in the given workspace. Answers whether an agent was
-  // actually opened, so callers can record the "use" only on success — a
-  // refused open (see the guard below) is not a use.
-  const openAgentInWorkspace = async (workspaceId: string, workerId: string, workingDir: string, sessionId?: string, agentProvider: AgentProvider = AgentProvider.CLAUDE_CODE): Promise<boolean> => {
-    // BEFORE the worker RPC: it is the step that can't be taken back. A
-    // placement refusal after it (no projected tree to place on — e.g. the
-    // workspace's tree hasn't arrived) leaves an orphaned agent behind with
-    // no tab to reach it by.
-    if (!warnUnlessPlaceableTab(props.layoutStore, 'an agent'))
-      return false
-    try {
-      // Title left empty: the worker picks "Agent <Name>" server-side
-      // so CLI and UI paths share one pool (see worker/service/
-      // tab_names.go). The response carries the resolved title back.
-      const resp = await workerAgent.openAgent(workerId, {
+  // Create through Worker publication and return after local observation.
+  // Record account-scoped provider usage after the Worker confirms the commit.
+  const openAgentInWorkspace = (workspaceId: string, workerId: string, workingDir: string, sessionId?: string, agentProvider: AgentProvider = AgentProvider.CLAUDE_CODE): Promise<boolean> => {
+    return props.creation.openAgent({
+      workspaceId,
+      workerId,
+      retryKey: 'agent-operations',
+      request: {
         agentProvider,
         workingDir,
         ...openAgentRequestOptions(agentProvider),
         ...(sessionId
           ? { agentSessionId: sessionId }
           : {}),
-      })
-      if (resp.agent) {
-        // Seed git branch / origin from the active tab when both resolve to
-        // the same directory. Agent tabs have no shellStartDir --
-        // effectiveGitDir collapses to workingDir for them.
-        //
-        // The worker resolves the real values later. The OpenAgent response
-        // carries no git status: the worker computes it in startup phase 1 and
-        // sends it on the STARTING broadcast, because the `git status`
-        // shell-out would otherwise block the RPC. So this seed is what the
-        // sidebar shows until that broadcast lands.
-        //
-        // ONE read of the active tab feeds both the dir-match guard and the
-        // branch copy. A second read would let a later edit give the two
-        // different tabs.
-        const activeTab = props.selection.activeTabForWorkspace(workspaceId)
-        const seed = planOptimisticRepoGit(
-          props.repoGitStore,
-          activeTab,
-          { workerId: resp.agent.workerId, workingDir: resp.agent.workingDir },
-        )
-        // Everything the OpenAgent response carries that the CRDT does not:
-        // title, provider, status, session, option catalogs. This also primes
-        // the settings-label cache with the agent's catalogs.
-        //
-        // `hydrated`: the OpenAgent response IS the worker's answer for this
-        // tab, so `useTabHydrators` must not immediately re-ask. Its reply
-        // would land without the pending-axis suppression the live settings
-        // path applies, overwriting an optimistic edit made during the
-        // round-trip.
-        const agentFields = openedAgentTabFields(props.repoGitStore, resp.agent)
-        const placedTileId = openTabInFocusedTile(
-          props,
-          { type: TabType.AGENT, id: resp.agent.id, workerId: resp.agent.workerId },
-          // `seed.fields` FIRST, so the worker's own answer wins on the row for
-          // the same reason it wins in the store. The two halves of a tab's
-          // repo identity must not resolve a conflict in opposite directions.
-          //
-          // Today the response carries no toplevel, so the seed is the only
-          // source and the order changes nothing. It matters if the response
-          // ever carries one and it differs from the active tab's guess.
-          {
-            ...seed.fields,
-            ...agentFields,
-          },
-        )
-        // Only now, because placement can be refused. Writing the store first
-        // leaves an entry that no tab reads and nothing reclaims.
-        if (placedTileId)
-          seed.commit()
-        // Focus the editor after the reactive updates propagate to the DOM.
-        requestAnimationFrame(() => props.focusEditor?.())
-        return true
-      }
-      return false
-    }
-    catch (err) {
-      showWarnToast('Failed to open agent', err)
-      return false
-    }
+      },
+      onCommitted: () => touchMruProvider(agentProvider),
+      onError: error => showWarnToast('Failed to open agent', error),
+    })
   }
+  let openGeneration = 0
 
   // Open a new agent in the active workspace (for click handlers).
   // When providerOverride is given (from per-provider TabBar buttons),
@@ -270,15 +204,16 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       props.newAgentDialog.open(target ?? {})
       return
     }
+    const requestGeneration = ++openGeneration
     props.setNewAgentLoadingProvider(provider)
     try {
       // Only a successful open counts as a use: a refused or failed open
       // records nothing, so the MRU list keeps reflecting real usage.
-      if (await openAgentInWorkspace(ws.id, workerId, workingDir, undefined, provider))
-        touchMruProvider(provider)
+      await openAgentInWorkspace(ws.id, workerId, workingDir, undefined, provider)
     }
     finally {
-      props.setNewAgentLoadingProvider(null)
+      if (requestGeneration === openGeneration)
+        props.setNewAgentLoadingProvider(null)
     }
   }
 

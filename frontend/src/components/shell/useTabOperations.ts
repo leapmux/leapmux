@@ -1,41 +1,43 @@
+import type { MessageInitShape } from '@bufbuild/protobuf'
 import type { BusyTabConfirmState } from './BusyTabCloseDialog'
 import type { TabBusyProbe, TabBusyReason } from './tabBusyProbe'
 import type { TabContext } from './tabContext'
 import type { useAgentOperations } from './useAgentOperations'
+import type { TabCreationCoordinator } from './useTabCreation'
 import type { useTerminalOperations } from './useTerminalOperations'
 import type { WorktreeCloseSummary } from '~/components/shell/closeResultToast'
 import type { LastTabCloseChoice, LastTabConfirmState } from '~/components/shell/LastTabCloseDialog'
 import type { InspectLastTabCloseResponse } from '~/generated/proto/leapmux/v1/git_pb'
+import type { TabPresentationSchema } from '~/generated/proto/leapmux/v1/tab_creation_pb'
 import type { CloseTabResponse } from '~/generated/proto/leapmux/v1/worker_tab_pb'
 import type { createChatStore } from '~/stores/chat.store'
 import type { SavedViewportScroll } from '~/stores/chatTypes'
 import type { createFloatingWindowStore } from '~/stores/floatingWindow.store'
 import type { createLayoutStore } from '~/stores/layout.store'
-import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { FileOpenSource, FileTab, Tab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { batch, createSignal } from 'solid-js'
 import { isWorkerUnreachable } from '~/api/workerErrors'
-import { workerGit, workerPrivate } from '~/api/workerRpc'
+import { workerGit } from '~/api/workerRpc'
 import { showInfoToast, showWarnToast } from '~/components/common/Toast'
 import { summarizeWorktreeCloses, warnWorktreeUnreachable, worktreeRemovalToast } from '~/components/shell/closeResultToast'
 import { closeTabOnWorker } from '~/components/shell/closeTabOnWorker'
 import { getTerminalInstance } from '~/components/terminal/TerminalView'
 import { TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { createDialogState, createUpdatableDialogState } from '~/hooks/createDialogState'
-import { makeIdGenerator } from '~/lib/idGenerator'
-import { basename, isAbsolute } from '~/lib/paths'
+import { isAbsolute } from '~/lib/paths'
 import { fileTabPayload, imageTabPayload } from '~/lib/tabPayload'
 import { MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
-import { descendantAgentTabs, isSubagentTab, planOptimisticRepoGit, tabDisplayLabel, tabKey } from '~/stores/tab.helpers'
+import { descendantAgentTabs, isSubagentTab, tabDisplayLabel, tabKey } from '~/stores/tab.helpers'
 import { isPayloadBackedTabType } from '~/stores/tab.types'
 import { emitRemoveTab } from '~/stores/tabOps'
-import { openTabInFocusedTile } from './openTabInFocusedTile'
+import { encodeFileViewMode } from '~/stores/tabPresentation'
 import { focusTile, removeEmptyFloatingWindow } from './tileLifecycle'
 
 interface UseTabOperationsOpts {
+  creation: TabCreationCoordinator
   view: TabView
   metadata: TabMetadataStore
   selection: TabSelectionStore
@@ -49,9 +51,7 @@ interface UseTabOperationsOpts {
   focusEditor: () => void
   getScrollState: () => SavedViewportScroll | undefined
   /**
-   * Active workspace id, for the layout-side reads only:
-   * `activeTabForWorkspace`, `ownerWorkspaceFor` and `view.forWorkspace`. No
-   * worker RPC in this module takes a workspace id any more.
+   * Active workspace for layout reads and the destination captured by creation.
    */
   getActiveWorkspaceId: () => string | undefined
   /**
@@ -75,13 +75,11 @@ interface UseTabOperationsOpts {
   workerOnlineState: (workerId: string) => boolean | undefined
   /** Answers "would closing this tab interrupt running work". */
   busyProbe: TabBusyProbe
-  repoGitStore: ReturnType<typeof createRepoGitStore>
 }
 
 export function useTabOperations(opts: UseTabOperationsOpts) {
   const {
     view,
-    metadata,
     selection,
     chatStore,
     layoutStore,
@@ -633,7 +631,43 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
     return true
   }
 
-  const generateFileTabId = makeIdGenerator('file')
+  const pendingPayloadOpens = new Set<string>()
+
+  // Repeated pending clicks share one attempt. Unknown results remain retryable
+  // in the AppShell coordinator with the original request and placement.
+  const persistPayloadTab = (open: {
+    key: string
+    workerId: string
+    payload: ReturnType<typeof fileTabPayload>
+    label: string
+    fileOpenSource?: FileOpenSource
+    presentation?: MessageInitShape<typeof TabPresentationSchema>
+  }) => {
+    const workspaceId = getActiveWorkspaceId() ?? ''
+    const key = JSON.stringify([
+      workspaceId,
+      open.workerId,
+      open.payload.kind?.case,
+      open.key,
+    ])
+    if (pendingPayloadOpens.has(key))
+      return
+    pendingPayloadOpens.add(key)
+    void opts.creation.registerPayload({
+      workspaceId,
+      workerId: open.workerId,
+      retryKey: 'payload-open',
+      request: { payload: open.payload },
+      ...(open.fileOpenSource === undefined
+        ? {}
+        : { fileOpenSource: open.fileOpenSource }),
+      ...(open.presentation === undefined
+        ? {}
+        : { presentation: open.presentation }),
+      onError: error => showWarnToast(open.label, error),
+    }).finally(() => pendingPayloadOpens.delete(key))
+  }
+
   const handleFileOpen = (
     path: string,
     openSource?: FileOpenSource,
@@ -657,8 +691,8 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       // it, the editor pane, `getCurrentTabContext` and the git-status gate all
       // keep answering for the FOCUSED tile's tab while the file the user just
       // clicked merely fronts in some other tile's strip. It also makes the two
-      // branches of this function agree — the new-tab branch below goes through
-      // `openTabInFocusedTile`, which always lands on the focused tile.
+      // branches of this function agree. Creation completion also selects the
+      // canonical tab and focuses its tile.
       if (existingTab.tileId)
         focusTile(layoutStore, floatingWindowStore, existingTab.tileId, existingTab.workspaceId)
       return
@@ -676,90 +710,29 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       fileDiffBase = 'head-vs-working'
     }
 
-    const fileName = basename(path) || path
-    const tabId = generateFileTabId()
-    // A file tab inherits the git context of the tab it was opened from, the
-    // same way a terminal opened "here" does -- same helper, same guard that it
-    // only seeds when the two resolve to the same directory. Without it the tab
-    // renders ungrouped until the next git-status refresh reaches it, even
-    // though the answer was on screen at the moment of the open.
-    //
-    // ONE read of the active tab, and ONE seed call. Read twice, a later edit
-    // can decide the directory match against one tab and copy the branch from
-    // another.
-    const gitSeed = planOptimisticRepoGit(opts.repoGitStore, activeTab(), {
+    persistPayloadTab({
+      key: path,
       workerId: ctx.workerId,
-      workingDir: ctx.workingDir,
-    })
-    const placedTileId = openTabInFocusedTile(
-      {
-        view,
-        layoutStore,
-        selection,
-        metadata,
-      },
-      { type: TabType.FILE, id: tabId, workerId: ctx.workerId },
-      {
-        ...gitSeed.fields,
-        filePath: path,
-        workingDir: ctx.workingDir,
-        title: fileName,
-        fileViewMode,
-        fileDiffBase,
-        fileOpenSource: openSource,
-        // This path already knows everything the FILE hydrator would fetch, so
-        // say so — the local open paths are required to (`SharedMeta.hydrated`).
-        // Leaving it unset is why the hydrator carried a `!tab.filePath` clause,
-        // and that clause is exactly the payload sniff the flag's own doc
-        // forbids: any other writer of `filePath` can forge it.
-        hydrated: true,
-      },
-    )
-    // A refused placement added no tab. Registering the path anyway would
-    // persist a worker-side row (and broadcast it to peers) for a tab id
-    // no tree holds — a phantom the reconciler only sweeps an hour later.
-    if (!placedTileId) {
-      showWarnToast('Cannot open the file', new Error('The workspace is not ready for a new tab yet.'))
-      return
-    }
-    // The tab exists, so the optimistic repo copy now has a reader.
-    gitSeed.commit()
-
-    // E2EE worker-side payload registration. The hub never sees the path; the
-    // worker persists `(user_id, tab_id, tab_type, payload, working_dir)` and
-    // emits TabPayloadRegistered on its OWN private-event stream so peer
-    // clients learn the path and the resolved working dir.
-    //
-    // `workingDir` is what makes the worker able to answer branch-context
-    // questions about this tab at all -- the last-tab close inspection, the
-    // sibling-on-this-branch scan, PushBranch. It is the originating tab's dir,
-    // the same value seeded onto the tab above, so the two sides group this tab
-    // identically instead of the worker re-deriving one from the file path.
-    //
-    // Unconditional. This used to be gated on an active workspace id, left over
-    // from when the request carried one -- a guard on a value the call no longer
-    // sends, whose only effect would have been to skip the registration and
-    // leave the tab permanently unresolvable to peers.
-    //
-    // Fire-and-forget — failure here doesn't unmount the locally-added tab; the
-    // user can retry by re-opening.
-    workerPrivate.registerTabPayload(ctx.workerId, {
-      tabId,
       payload: fileTabPayload(path, ctx.workingDir),
-    }).catch(() => {
-      // Roll back the optimistic add so the user sees the failure surface (and
-      // isn't left with a tab whose path peers can't resolve).
-      emitRemoveTab(TabType.FILE, tabId)
+      label: 'Cannot open the file',
+      ...(openSource === undefined
+        ? {}
+        : { fileOpenSource: openSource }),
+      presentation: {
+        fileViewMode: encodeFileViewMode(fileViewMode),
+        ...(fileDiffBase === undefined
+          ? {}
+          : { fileDiffBase }),
+      },
     })
   }
 
-  const generateImageTabId = makeIdGenerator('image')
   /**
    * Open one image an agent returned inside a chat message in its own tab.
    *
-   * The counterpart to `handleFileOpen`, and deliberately the same five steps:
-   * dedupe, placement pre-check, `openTabInFocusedTile`, then the E2EE payload
-   * registration with a rollback. What differs is only WHAT is registered --
+   * The counterpart to `handleFileOpen`: deduplicate, persist the payload,
+   * and let the Worker publish its canonical tab.
+   * What differs is only what is registered:
    * a message reference instead of a path -- because the two are the same class
    * of secret and take the same route to the worker.
    *
@@ -795,48 +768,15 @@ export function useTabOperations(opts: UseTabOperationsOpts) {
       return
     }
 
-    const tabId = generateImageTabId()
-    const gitSeed = planOptimisticRepoGit(opts.repoGitStore, activeTab(), {
+    persistPayloadTab({
+      key: JSON.stringify([
+        image.agentId,
+        String(image.seq),
+        image.imageIndex,
+      ]),
       workerId: ctx.workerId,
-      workingDir: ctx.workingDir,
-    })
-    const placedTileId = openTabInFocusedTile(
-      {
-        view,
-        layoutStore,
-        selection,
-        metadata,
-      },
-      { type: TabType.IMAGE, id: tabId, workerId: ctx.workerId },
-      {
-        ...gitSeed.fields,
-        workingDir: ctx.workingDir,
-        title: image.title,
-        imageAgentId: image.agentId,
-        imageSeq: image.seq,
-        imageIndex: image.imageIndex,
-        // This path already knows everything the payload hydrator would fetch,
-        // so say so -- the local open paths are required to
-        // (`SharedMeta.hydrated`).
-        hydrated: true,
-      },
-    )
-    // A refused placement added no tab. Registering the payload anyway would
-    // persist a worker-side row (and broadcast it to peers) for a tab id no
-    // tree holds -- a phantom the reconciler only sweeps an hour later.
-    if (!placedTileId) {
-      showWarnToast('Cannot open the image', new Error('The workspace is not ready for a new tab yet.'))
-      return
-    }
-    gitSeed.commit()
-
-    workerPrivate.registerTabPayload(ctx.workerId, {
-      tabId,
       payload: imageTabPayload({ ...image, workingDir: ctx.workingDir }),
-    }).catch(() => {
-      // Roll back the optimistic add so the user sees the failure surface (and
-      // isn't left with a tab peers can't resolve).
-      emitRemoveTab(TabType.IMAGE, tabId)
+      label: 'Cannot open the image',
     })
   }
 

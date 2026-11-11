@@ -410,11 +410,9 @@ func (s *ChannelService) finishChannelClose(closed []channelmgr.ClosedChannel) i
 	return len(closed)
 }
 
-// notifyWorkersClosed queues ChannelClose for each torn-down channel. Local
-// teardown never waits on a slow worker stream. Delivery is best effort: closes
-// for offline workers are skipped (a reconnecting worker tears its own channels
-// down on the dropped stream), while the pending-close queue itself is unbounded
-// so a revocation burst is never dropped for capacity.
+// notifyWorkersClosed admits ChannelClose directly to each current connection.
+// Transport writes run on that connection's pump. Absent connections are skipped;
+// a connection whose control admission saturates fences itself.
 func (s *ChannelService) notifyWorkersClosed(closed []channelmgr.ClosedChannel) {
 	s.closeDispatcher.enqueueChannelCloses(closed)
 }

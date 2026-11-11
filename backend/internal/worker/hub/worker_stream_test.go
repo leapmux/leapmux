@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/coder/websocket"
@@ -21,33 +22,29 @@ import (
 
 func TestDialWorkerStream_SendsTheBearerAndTheSubprotocol(t *testing.T) {
 	t.Parallel()
-	request := make(chan *http.Request, 1)
-	url := fakehubtest.Start(t, func(ctx context.Context, stream *fakehubtest.Stream) {
-		request <- stream.Request()
-		_ = stream.ReadUntilClosed(ctx)
-	})
-	stream, err := DialWorkerStream(t.Context(), http.DefaultClient, url, "worker-token")
-	require.NoError(t, err)
-	defer func() { _ = stream.CloseNow() }()
-	req := <-request
-	assert.Equal(t, "Bearer worker-token", req.Header.Get("Authorization"))
-	assert.Equal(t, channelwire.WSSubprotocolWorkerStream, req.Header.Get("Sec-WebSocket-Protocol"))
-	assert.Empty(t, req.Header.Get("Origin"))
-	assert.Empty(t, req.Header.Get("Sec-WebSocket-Extensions"))
-	assert.Equal(t, 1, req.ProtoMajor)
-}
-
-func TestDialWorkerStream_OmitsTheHeaderForAnEmptyToken(t *testing.T) {
-	t.Parallel()
-	request := make(chan *http.Request, 1)
-	url := fakehubtest.Start(t, func(ctx context.Context, stream *fakehubtest.Stream) {
-		request <- stream.Request()
-		_ = stream.ReadUntilClosed(ctx)
-	})
-	stream, err := DialWorkerStream(t.Context(), http.DefaultClient, url, "")
-	require.NoError(t, err)
-	defer func() { _ = stream.CloseNow() }()
-	assert.Empty(t, (<-request).Header.Values("Authorization"))
+	for _, tc := range []struct {
+		name          string
+		token         string
+		authorization []string
+	}{{"bearer", "worker-token", []string{"Bearer worker-token"}}, {"empty token", "", nil}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			request := make(chan *http.Request, 1)
+			url := fakehubtest.Start(t, func(ctx context.Context, stream *fakehubtest.Stream) {
+				request <- stream.Request()
+				_ = stream.ReadUntilClosed(ctx)
+			})
+			stream, err := DialWorkerStream(t.Context(), http.DefaultClient, url, tc.token)
+			require.NoError(t, err)
+			defer func() { _ = stream.CloseNow() }()
+			req := <-request
+			assert.Equal(t, tc.authorization, req.Header.Values("Authorization"))
+			assert.Equal(t, channelwire.WSSubprotocolWorkerStream, req.Header.Get("Sec-WebSocket-Protocol"))
+			assert.Empty(t, req.Header.Get("Origin"))
+			assert.Empty(t, req.Header.Get("Sec-WebSocket-Extensions"))
+			assert.Equal(t, 1, req.ProtoMajor)
+		})
+	}
 }
 
 func TestDialWorkerStream_ReportsARefusedUpgrade(t *testing.T) {
@@ -146,4 +143,32 @@ func TestUpgradeRefusedError(t *testing.T) {
 			assert.ErrorIs(t, err, cause)
 		})
 	}
+}
+
+func TestWorkerStream_AutomaticPongFailsDuringALongDataWrite(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		body := testutil.NewDelayedWebSocketTransport(26 * time.Second)
+		stream, err := DialWorkerStream(t.Context(), &http.Client{Transport: body}, "http://probe", "token")
+		require.NoError(t, err)
+		defer func() { _ = stream.CloseNow() }()
+		start := time.Now()
+		written := make(chan error, 1)
+		go func() {
+			written <- stream.Send(context.Background(), &leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: &leapmuxv1.WorkerTabInventory{Complete: true}}})
+		}()
+		<-body.WriteStarted
+		read := make(chan error, 1)
+		go func() { _, err := stream.Receive(context.Background()); read <- err }()
+		go func() {
+			timer := time.NewTimer(10 * time.Second)
+			defer timer.Stop()
+			<-timer.C
+			body.Incoming <- []byte{0x89, 0}
+		}()
+		<-stream.PingReceived()
+		require.Error(t, <-read)
+		assert.Equal(t, 15*time.Second, time.Since(start), "the automatic pong has five seconds to acquire the frame mutex")
+		_ = stream.CloseNow()
+		require.Error(t, <-written)
+	})
 }

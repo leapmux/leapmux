@@ -2,7 +2,7 @@
 //
 // The documentation page site/content/docs/admin/reverse-proxy/ renders each example file with the config-file
 // shortcode, and scripts/test-reverse-proxies.mjs mounts the same file into the proxy. The two therefore cannot drift.
-import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 import { parseVersions } from './sync-versions.mjs'
 
@@ -179,13 +179,4 @@ export function prepareProxyFiles(proxy, stockConfig, directory = EXAMPLES_DIR) 
     })
   }
   return files
-}
-
-/** Check that each proxy lists only files that exist, and that no example file is left without a proxy. */
-export function unusedOrMissingExamples() {
-  const listed = PROXIES.flatMap(proxy => proxy.examples)
-  return {
-    missing: listed.filter(name => !existsSync(join(EXAMPLES_DIR, name))),
-    unused: listExamples().filter(name => !listed.includes(name)),
-  }
 }

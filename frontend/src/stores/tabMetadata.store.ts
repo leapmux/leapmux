@@ -3,22 +3,21 @@ import type { AgentProvider, AgentStatus, AvailableOptionGroup, QueueHeadDispatc
 import type { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import type { HLC, UserCrdtState } from '~/generated/proto/leapmux/v1/user_crdt_pb'
 import type { TabPayloadView } from '~/lib/tabPayload'
-import { createEffect, createMemo } from 'solid-js'
-import { createStore, produce, unwrap } from 'solid-js/store'
-import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
+import { batch, createEffect, createMemo, getOwner, onCleanup } from 'solid-js'
+import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
+import { KEY_TAB_MRU, onStorageAccountChange, sessionStorageGet, sessionStorageSet, storageAccountId } from '~/lib/browserStorage'
 import { hlcIsZero } from '~/lib/crdt/hlc'
 import { assignDefined } from '~/lib/jsonPick'
 import { sameKeys } from '~/lib/sameKeys'
 import { shallowEqual, shallowEqualArrays } from '~/lib/shallowEqual'
 
 /**
- * Everything about a tab that the CRDT does NOT carry.
+ * Worker-sourced and client-local tab metadata.
  *
  * `TabRecord` owns identity and placement — `tab_type`, `tab_id`, `tile_id`,
- * `position`, `worker_id`, `display_mode`, `file_view_mode`, `file_diff_base`,
- * `tombstone_at`. Those are read from the projection at join time and are
- * deliberately absent here; storing them a second time is what
- * `reconcileFromProjection` used to exist to repair.
+ * `position`, `worker_id`, and `tombstone_at`. The join reads those from the
+ * projection. Canonical presentation registers supply initial FILE preferences.
+ * Metadata holds subsequent client-local presentation overrides.
  *
  * What is left splits in two, and both are keyed by tab id — which is globally
  * unique across the user's whole account per the `TabRecord` protocol invariant,
@@ -56,24 +55,11 @@ export interface SharedMeta {
   title?: string | undefined
   hasNotification?: boolean | undefined
   /**
-   * Set once the worker has actually answered for this tab.
-   *
-   * Written ONLY by the paths that HOLD a worker response for this exact tab:
-   * `useTabHydrators` (the `listAgents` / `listTerminals` reply) and the local
-   * open paths, which already carry the `OpenAgent` / `OpenTerminal` response
-   * that answers the same question. Deliberately NOT derived from any payload
-   * field: sniffing one ("is `cols` set?", "is `agentStatus` set?") makes the
-   * predicate forgeable by anything else that writes that field -- a local
-   * terminal resize patches `cols` within a frame of mount, which retires the
-   * tab from the candidate set before the worker has ever replied and
-   * permanently suppresses its title, status and scrollback.
-   *
-   * The local paths MUST set it. They pass every payload-shaped predicate
-   * already, so omitting the flag puts a tab this client just opened straight
-   * back into the hydration candidate set: a redundant round-trip whose reply
-   * is applied with none of the live handlers' guards, which drags a running
-   * terminal back to STARTING and overwrites an in-flight optimistic
-   * agent-settings edit.
+   * Set after a complete Worker snapshot answers for this tab.
+   * AgentInfo and private payload snapshots are complete.
+   * OpenTerminal returns only identity, title, and publication, so ordinary
+   * terminal creation leaves this unset until ListTerminals supplies its state.
+   * A local resize or partial status event also leaves it unset.
    */
   hydrated?: boolean | undefined
   /**
@@ -183,17 +169,8 @@ export interface FileMeta {
   filePath?: string | undefined
   fileOpenSource?: FileOpenSource | undefined
   /**
-   * `TabRecord` HAS registers for these three (`display_mode`,
-   * `file_view_mode`, `file_diff_base`) and `apply.ts` merges them INBOUND, but
-   * this client never emits them — `ops.ts` deliberately has no builder for any
-   * of the three. The old tab store wrote all three to local state only, so in
-   * practice they have always been per-client and never synced. They stay here
-   * to preserve exactly that: reading them from the projection instead would
-   * return empty for every tab and silently break the file viewer's mode toggle.
-   *
-   * Syncing view mode across devices would mean adding both the builders and a
-   * write path. That may well be desirable, but it is a behaviour change nobody
-   * asked for and belongs in its own change, not smuggled in by a refactor.
+   * Viewer controls store per-client overrides here. The join falls back to
+   * the canonical creation preferences when this client has no override.
    */
   displayMode?: string | undefined
   fileViewMode?: FileViewMode | undefined
@@ -431,8 +408,9 @@ function createMruPersister(initialJson: string) {
  *
  * - `'status'`: the lifecycle of the tab.
  * - `'catalog'`: the option-group catalog of an agent.
+ * - `'git'`: the repository snapshot of the tab.
  */
-export type LiveWrite = 'status' | 'catalog'
+export type LiveWrite = 'status' | 'catalog' | 'git'
 
 export function createTabMetadataStore() {
   // Seed MRU eagerly, before any render can read `mruHead`. The bootstrap
@@ -448,9 +426,13 @@ export function createTabMetadataStore() {
       { mru },
     ] satisfies [string, TabMetadata]),
   )
-  const persistMru = createMruPersister(JSON.stringify(mruSnapshot(seedByTabId)))
+  let persistMru = createMruPersister(JSON.stringify(mruSnapshot(seedByTabId)))
 
-  const [state, setState] = createStore<{ byTabId: Record<string, TabMetadata> }>({ byTabId: seedByTabId })
+  const [state, setState] = createStore<{ userId: string | null, accountGeneration: number, byTabId: Record<string, TabMetadata> }>({
+    userId: storageAccountId(),
+    accountGeneration: 0,
+    byTabId: seedByTabId,
+  })
   let mruCounter = seedMax
 
   // How many live events of each kind every tab applied. Plain data, not store state:
@@ -459,9 +441,38 @@ export function createTabMetadataStore() {
   const liveEpochs: Record<LiveWrite, Map<string, number>> = {
     status: new Map(),
     catalog: new Map(),
+    git: new Map(),
+  }
+
+  const titleEpochs = new Map<string, number>()
+
+  const unsubscribe = onStorageAccountChange(() => {
+    const { stamps, max } = loadMru()
+    const byTabId = Object.fromEntries(Object.entries(stamps).map(([id, mru]) => [
+      id,
+      { mru },
+    ]))
+    titleEpochs.clear()
+    mruCounter = max
+    persistMru = createMruPersister(JSON.stringify(mruSnapshot(byTabId)))
+    for (const epochs of Object.values(liveEpochs))
+      epochs.clear()
+    batch(() => setState(reconcile({
+      userId: storageAccountId(),
+      accountGeneration: state.accountGeneration + 1,
+      byTabId,
+    })))
+  })
+  if (getOwner())
+    onCleanup(unsubscribe)
+
+  const recordTitleWrite = (tabId: string, fields: TabMetadata) => {
+    if (fields.title !== undefined)
+      titleEpochs.set(tabId, (titleEpochs.get(tabId) ?? 0) + 1)
   }
 
   const patch = (tabId: string, fields: TabMetadata) => {
+    recordTitleWrite(tabId, fields)
     setState(produce((s) => {
       const existing = s.byTabId[tabId] ?? {}
       mergeDefined(existing, fields)
@@ -470,6 +481,7 @@ export function createTabMetadataStore() {
   }
 
   const forgetLiveEpochs = (tabId: string) => {
+    titleEpochs.delete(tabId)
     for (const epochs of Object.values(liveEpochs))
       epochs.delete(tabId)
   }
@@ -497,16 +509,9 @@ export function createTabMetadataStore() {
     patch,
 
     /**
-     * `patch` for an event that the worker pushed on the live stream and that the
-     * tab applied. `writes` lists what the event wrote that a snapshot reply also
-     * states. It is the only writer that advances {@link liveStatusEpoch} and
-     * {@link liveCatalogEpoch}, one step for each kind that it lists.
-     *
-     * List `'status'` when the event writes the lifecycle of the tab: the status of
-     * an agent, or the status of a terminal. List `'catalog'` when the event
-     * carries the option-group catalog of an agent. An event that carries neither
-     * (a git-only update), and an event that a guard refused, go through `patch`
-     * instead. Neither one answers the question that a snapshot answers.
+     * Apply a live event and advance each supplied observation kind.
+     * Status, catalog, and Git counters protect pending snapshot replies.
+     * Every supplied title also advances titleEpoch through patch.
      */
     patchLive,
 
@@ -550,6 +555,16 @@ export function createTabMetadataStore() {
       return liveEpochs.catalog.get(tabId) ?? 0
     },
 
+    /** Number of supplied titles, including local renames and private events. */
+    titleEpoch(tabId: string): number {
+      return titleEpochs.get(tabId) ?? 0
+    },
+
+    /** Number of live Git snapshots applied to this tab. */
+    liveGitEpoch(tabId: string): number {
+      return liveEpochs.git.get(tabId) ?? 0
+    },
+
     /**
      * Merge `fields` into a tab's metadata ONLY when a row already exists.
      *
@@ -570,6 +585,7 @@ export function createTabMetadataStore() {
     patchExisting(tabId: string, fields: TabMetadata) {
       if (state.byTabId[tabId] === undefined)
         return
+      recordTitleWrite(tabId, fields)
       setState(produce((s) => {
         const existing = s.byTabId[tabId]
         if (!existing)
@@ -655,9 +671,9 @@ export type TabMetadataStore = ReturnType<typeof createTabMetadataStore>
  * `state.tabs`, NOT the projection's `ownedTabs`") was previously written out
  * three times, twice verbatim, because the caller sat in a different module.
  *
- * Nothing else drops these rows: a close is a tombstone, not a store call, and
- * terminal `screen` buffers are the largest thing in here, so without the sweep
- * a long session accumulates the scrollback of every terminal it ever opened.
+ * The sweep reclaims canonically retired rows, including terminal screen
+ * buffers. Private revocation also removes unpublished or tombstoned payload
+ * metadata. Without the sweep, a long session retains closed terminal buffers.
  *
  * A row is retired when its tab was LIVE and then stopped being live — never
  * merely because it is not live now. `seen` is what encodes the difference, and
@@ -665,8 +681,8 @@ export type TabMetadataStore = ReturnType<typeof createTabMetadataStore>
  *
  * Retiring every not-live id instead was a defect. An id absent from
  * `state.tabs` is not a tab that went away; it is one the CRDT has not heard of
- * YET. Every open path writes a tab's metadata BEFORE emitting the op that
- * creates it (`openTabInFocusedTile`, `openSubagentTab`), because the
+ * YET. Local creation seeds metadata before the Worker can publish the tab.
+ * Child revival also seeds metadata before its local CRDT operation, because the
  * projection renders the tab synchronously and patching afterwards paints it
  * untitled. Any effect flush inside that window — and the metadata write itself
  * causes one, since a store write outside a batch runs the effects a previous
@@ -704,15 +720,20 @@ export function useMetadataSweep(
   metadata: TabMetadataStore,
   onRetire?: (tabIds: ReadonlySet<string>) => void,
 ): void {
-  const liveTabIdSet = createMemo<Set<string> | null>(
+  const liveTabIdSet = createMemo<{ userId: string, live: Set<string> } | null>(
     () => {
       const state = crdtState()
-      return state
-        ? liveTabIds(state)
+      return state && state.userId === metadata.state.userId
+        ? {
+            userId: state.userId,
+            live: liveTabIds(state),
+          }
         : null
     },
     null,
-    { equals: sameKeys },
+    {
+      equals: (a, b) => a === b || (a !== null && b !== null && a.userId === b.userId && sameKeys(a.live, b.live)),
+    },
   )
 
   // The tab ids the CRDT has reported live at least once. See above: this is
@@ -724,7 +745,9 @@ export function useMetadataSweep(
   // and without the seed nothing ever reclaims a row for a tab closed on another
   // device while this page was away, because an id the CRDT never reports can
   // never enter this set.
-  const seen = new Set<string>(Object.keys(metadata.state.byTabId))
+  let seen = new Set<string>(Object.keys(metadata.state.byTabId))
+  let owner = metadata.state.userId
+  let accountGeneration = metadata.state.accountGeneration
 
   // Whether the CRDT has reported a non-empty tab set yet. A cold start
   // publishes an EMPTY manager and fills it from the server a moment later, so
@@ -733,9 +756,17 @@ export function useMetadataSweep(
   let sawTabs = false
 
   createEffect(() => {
-    const live = liveTabIdSet()
-    if (!live)
+    const nextOwner = metadata.state.userId
+    if (nextOwner !== owner || metadata.state.accountGeneration !== accountGeneration) {
+      owner = nextOwner
+      accountGeneration = metadata.state.accountGeneration
+      seen = new Set(Object.keys(metadata.state.byTabId))
+      sawTabs = false
+    }
+    const snapshot = liveTabIdSet()
+    if (!snapshot)
       return
+    const live = snapshot.live
     if (!sawTabs) {
       if (live.size === 0)
         return
@@ -754,4 +785,44 @@ export function useMetadataSweep(
       onRetire?.(retired)
     metadata.dropTabs(retired)
   })
+}
+
+/** Writes that arrived while a tab snapshot request waited. */
+export interface TabWritesLanded {
+  /** The live stream wrote a status, so the reply holds an older lifecycle. */
+  status: (tabId: string) => boolean
+  /** The live stream wrote an option-group catalog, so the reply holds an older catalog. */
+  catalog: (tabId: string) => boolean
+  git: (tabId: string) => boolean
+  title: (tabId: string) => boolean
+}
+
+/**
+ * Capture tab observation counters before requesting a snapshot.
+ * Check the returned functions before mapping the reply, because a mapper
+ * can update repository and catalog caches before returning metadata fields.
+ */
+export function watchTabWrites(metadata: TabMetadataStore, tabIds: readonly string[]): TabWritesLanded {
+  const statusBefore = new Map(tabIds.map(tabId => [
+    tabId,
+    metadata.liveStatusEpoch(tabId),
+  ]))
+  const catalogBefore = new Map(tabIds.map(tabId => [
+    tabId,
+    metadata.liveCatalogEpoch(tabId),
+  ]))
+  const gitBefore = new Map(tabIds.map(tabId => [
+    tabId,
+    metadata.liveGitEpoch(tabId),
+  ]))
+  const titleBefore = new Map(tabIds.map(tabId => [
+    tabId,
+    metadata.titleEpoch(tabId),
+  ]))
+  return {
+    title: tabId => metadata.titleEpoch(tabId) !== titleBefore.get(tabId),
+    git: tabId => metadata.liveGitEpoch(tabId) !== gitBefore.get(tabId),
+    status: tabId => metadata.liveStatusEpoch(tabId) !== statusBefore.get(tabId),
+    catalog: tabId => metadata.liveCatalogEpoch(tabId) !== catalogBefore.get(tabId),
+  }
 }

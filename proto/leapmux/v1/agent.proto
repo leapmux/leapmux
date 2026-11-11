@@ -3,6 +3,7 @@ package leapmux.v1;
 
 import "leapmux/v1/access.proto";
 import "leapmux/v1/common.proto";
+import "leapmux/v1/tab_creation.proto";
 import "leapmux/v1/git.proto";
 
 // WorkerAgentService opens, drives and reads agents. Served by the Worker inside
@@ -232,10 +233,8 @@ enum ContentCompression {
 // --- Agent CRUD ---
 
 message OpenAgentRequest {
-  // Target: where the agent runs. No worker_id -- the channel the request
-  // travels on identifies the worker. No workspace_id -- a Worker stores none,
-  // and which workspace the tab lands in is decided by the CRDT tile the
-  // client places it on.
+  // The channel identifies the Worker. Creation carries public placement intent;
+  // the Worker persists the resource and asks the Hub to publish its tab.
   string working_dir = 1;       // Working directory on the worker (required)
 
   // Agent configuration.
@@ -265,10 +264,12 @@ message OpenAgentRequest {
   // title it sent. An empty `title` is auto-generated regardless -- the worker
   // picked that one itself.
   bool title_auto_generated = 7;
+  TabCreation creation = 8;
 }
 
 message OpenAgentResponse {
   AgentInfo agent = 1;
+  PublishedTab publication = 2;
 }
 
 message ListAgentsRequest {

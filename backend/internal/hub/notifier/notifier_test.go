@@ -33,7 +33,7 @@ type fakeRegistry struct {
 func newFakeRegistry(t *testing.T, workerID string, connected bool) *fakeRegistry {
 	r := &fakeRegistry{flag: map[string]bool{}}
 	if connected {
-		r.conn, _ = workermgrtest.NewRecordedConn(t, workerID)
+		r.conn = workermgrtest.NewConn(t, workerID)
 	}
 	return r
 }

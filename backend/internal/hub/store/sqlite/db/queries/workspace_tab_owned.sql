@@ -110,3 +110,18 @@ WHERE t.tab_id = sqlc.arg(tab_id)
   AND w.deleted_at IS NULL
   AND t.user_id = sqlc.arg(user_id)
 LIMIT 1;
+
+
+-- name: GetWorkerOwnedTabState :one
+SELECT wto.user_id, wto.workspace_id, wto.tab_type, wto.tab_id, wto.worker_id,
+       CASE WHEN w.deleted_at IS NOT NULL OR ws.section_type = sqlc.arg(archived_section_type)
+            THEN CAST(sqlc.arg(archived_archive_state) AS INTEGER)
+            ELSE CAST(sqlc.arg(active_archive_state) AS INTEGER) END AS archive_state
+FROM workspace_tab_owned wto
+JOIN workspaces w ON w.id = wto.workspace_id
+LEFT JOIN workspace_section_items wsi
+  ON wsi.user_id = wto.user_id AND wsi.workspace_id = wto.workspace_id
+LEFT JOIN workspace_sections ws
+  ON ws.id = wsi.section_id AND ws.user_id = wto.user_id
+WHERE wto.user_id = sqlc.arg(user_id) AND wto.worker_id = sqlc.arg(worker_id)
+AND wto.tab_id = sqlc.arg(tab_id);

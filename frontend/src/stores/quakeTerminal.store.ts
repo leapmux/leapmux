@@ -286,7 +286,7 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
       workingDir: key.workingDir,
       shell: '',
       shellStartDir: '',
-      quake: true,
+      target: { case: 'quake', value: {} },
     })
     recordResolvedTerminal(keyId, resp.terminalId, () =>
       deps.metadata.patch(resp.terminalId, openedTerminalMetadata({

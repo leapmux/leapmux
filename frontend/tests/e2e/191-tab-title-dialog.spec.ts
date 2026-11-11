@@ -5,10 +5,8 @@ import { branchGroupRow, clickBranchMenuItem, loginViaToken, openNewAgentDialog,
 import { listAgentsViaAPI, listTerminalsViaAPI, waitForWorkerTabTitle } from './helpers/workerTabs'
 import { createGitRepo, createWorkspaceWithWorktreeViaAPI } from './helpers/worktree'
 
-// The title checks below read the Worker-backed RPC, never the sidebar. The local
-// tab list is optimistic CRDT state, so a sidebar check would pass on what this
-// client wrote rather than on what the worker stored -- and the title the worker
-// stores is the CLEANED one, which is the whole point of sending it.
+// Title persistence checks read the Worker's stored, cleaned title through its RPC.
+// The sidebar can reflect private local metadata before the Worker stores that title.
 
 test.describe('Tab title in the create dialogs', () => {
   // The dialogs open from a workspace whose agent works in the frontend directory.

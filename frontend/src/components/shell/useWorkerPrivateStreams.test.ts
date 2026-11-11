@@ -4,16 +4,20 @@ import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { QuakePanelAction } from '~/generated/proto/leapmux/v1/worker_private_pb'
-import { setCRDTBridge } from '~/lib/crdt'
+import { setStorageAccountForTests } from '~/lib/browserStorage'
+import { getCRDTBridge, setCRDTBridge, setTabWorkerId, tombstoneTab } from '~/lib/crdt'
+import { useMetadataSweep } from '~/stores/tabMetadata.store'
 import { emitAddTab } from '~/stores/tabOps'
-import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
+import { installTestBridge, seedWorkspace, TEST_USER_ID } from '~/test-support/crdtBridge'
+import { createCanonicalTabPublisher } from '~/test-support/tabPublication'
 import { createTestQuakeStore, createTestTabStores } from '~/test-support/tabStores'
 import { useWorkerPrivateStreams } from './useWorkerPrivateStreams'
 
 interface OpenedStream {
   workerId: string
-  onTabRenamed: (evt: { tabId: string, title: string }) => void
+  onTabRenamed: (evt: { tabId: string, tabType: TabType, title: string }) => void
   onTabPayloadRegistered: (evt: { tabId: string, payload: TabPayloadView }) => void
+  onTabPayloadRevoked: (evt: { tabId: string }) => void
   onQuakePanelCommand: (evt: { workingDir: string, action: QuakePanelAction }) => void
   closed: boolean
 }
@@ -37,6 +41,7 @@ const mockOpen = vi.fn((o: Record<string, unknown>) => {
     workerId: o.workerId as string,
     onTabRenamed: o.onTabRenamed as OpenedStream['onTabRenamed'],
     onTabPayloadRegistered: o.onTabPayloadRegistered as OpenedStream['onTabPayloadRegistered'],
+    onTabPayloadRevoked: o.onTabPayloadRevoked as OpenedStream['onTabPayloadRevoked'],
     onQuakePanelCommand: o.onQuakePanelCommand as OpenedStream['onQuakePanelCommand'],
     closed: false,
   }
@@ -72,7 +77,7 @@ const flush = () => new Promise<void>(queueMicrotask)
  * paths, not titles.
  */
 describe('useWorkerPrivateStreams', () => {
-  function mount() {
+  function mount(acceptsEarlyMetadata = (_id: string, _type: TabType, _worker: string) => false) {
     const harness = installTestBridge({ workspaceId: WS })
     const stores = createTestTabStores(WS)
     const quakeStore = createTestQuakeStore(stores.view)
@@ -80,7 +85,13 @@ describe('useWorkerPrivateStreams', () => {
       harness,
       ...stores,
       quakeStore,
-      run: () => useWorkerPrivateStreams({ view: stores.view, metadata: stores.metadata, quakeStore }),
+      run: () => useWorkerPrivateStreams({
+        acceptsEarlyMetadata,
+        state: () => getCRDTBridge()?.speculativeState() ?? null,
+        view: stores.view,
+        metadata: stores.metadata,
+        quakeStore,
+      }),
     }
   }
 
@@ -126,7 +137,7 @@ describe('useWorkerPrivateStreams', () => {
 
       const stream = opened.find(o => o.workerId === 'w2')
       expect(stream, 'the off-screen workspace must have a stream at all').toBeDefined()
-      stream!.onTabRenamed({ tabId: 'a2', title: 'Renamed elsewhere' })
+      stream!.onTabRenamed({ tabId: 'a2', tabType: TabType.AGENT, title: 'Renamed elsewhere' })
 
       expect(s.metadata.get('a2')?.title).toBe('Renamed elsewhere')
       dispose()
@@ -263,7 +274,7 @@ describe('useWorkerPrivateStreams', () => {
    */
   it('mirrors a path that arrives BEFORE the tab\'s CRDT row', async () => {
     await createRoot(async (dispose) => {
-      const s = mount()
+      const s = mount((id, type, worker) => id === 'f-early' && type === TabType.FILE && worker === 'w1')
       // A worker to subscribe to, but no `f-early` row yet.
       emitAddTab({
         type: TabType.AGENT,
@@ -287,7 +298,6 @@ describe('useWorkerPrivateStreams', () => {
         position: 'b',
         workerId: 'w1',
       })
-      s.run()
       await flush()
 
       expect(s.metadata.get('f-early'), 'the row must pick up what arrived before it').toMatchObject({
@@ -520,6 +530,217 @@ describe('useWorkerPrivateStreams', () => {
       expect(opened).toHaveLength(1)
       dispose()
       expect(firstOpened().closed, 'streams must not outlive the AppShell that opened them').toBe(true)
+    })
+  })
+})
+
+describe('useWorkerPrivateStreams retired tabs', () => {
+  it.each(['payload', 'rename'] as const)('ignores a delayed %s event after canonical retirement', async (kind) => {
+    await createRoot(async (dispose) => {
+      try {
+        const harness = installTestBridge({ workspaceId: WS })
+        const stores = createTestTabStores(WS)
+        const publisher = createCanonicalTabPublisher(harness)
+        publisher.publish(TabType.AGENT, 'sibling', { workerId: 'w1' })
+        publisher.publish(TabType.FILE, 'closed-file', { workerId: 'w1' })
+        stores.metadata.patch('closed-file', { filePath: '/repo/a', hydrated: true })
+        useMetadataSweep(() => getCRDTBridge()?.speculativeState() ?? null, stores.metadata)
+        useWorkerPrivateStreams({
+          acceptsEarlyMetadata: () => false,
+          state: () => getCRDTBridge()?.speculativeState() ?? null,
+          view: stores.view,
+          metadata: stores.metadata,
+          quakeStore: createTestQuakeStore(stores.view),
+        })
+        await flush()
+        const stream = firstOpened()
+        publisher.deliver([
+          tombstoneTab(publisher.context, TabType.FILE, 'closed-file'),
+        ])
+        await flush()
+        expect(stream.closed).toBe(false)
+        expect(stores.metadata.get('closed-file')).toBeUndefined()
+        if (kind === 'payload') {
+          stream.onTabPayloadRegistered({
+            tabId: 'closed-file',
+            payload: { kind: 'file', filePath: '/repo/a', workingDir: '/repo' },
+          })
+        }
+        else {
+          stream.onTabRenamed({ tabId: 'closed-file', tabType: TabType.FILE, title: 'Late rename' })
+        }
+        expect(stores.metadata.get('closed-file')).toBeUndefined()
+      }
+      finally { dispose() }
+    })
+  })
+})
+
+describe('useWorkerPrivateStreams cleared Worker register', () => {
+  it.each(['payload', 'rename'] as const)('ignores an old Worker %s event after hosting is explicitly cleared', async (kind) => {
+    await createRoot(async (dispose) => {
+      try {
+        const harness = installTestBridge({ workspaceId: WS })
+        const stores = createTestTabStores(WS)
+        const publisher = createCanonicalTabPublisher(harness)
+        publisher.publish(TabType.AGENT, 'sibling', { workerId: 'w1' })
+        publisher.publish(TabType.FILE, 'unhosted', { workerId: 'w1' })
+        stores.metadata.patch('unhosted', { title: 'Current title', filePath: '/current' })
+        useWorkerPrivateStreams({
+          acceptsEarlyMetadata: () => false,
+          state: () => getCRDTBridge()?.speculativeState() ?? null,
+          view: stores.view,
+          metadata: stores.metadata,
+          quakeStore: createTestQuakeStore(stores.view),
+        })
+        await flush()
+        const stream = firstOpened()
+        publisher.deliver([
+          setTabWorkerId(publisher.context, TabType.FILE, 'unhosted', ''),
+        ])
+        await flush()
+        expect(harness.pending.state.speculativeState.tabs.unhosted?.workerId?.value).toBe('')
+        expect(stream.closed).toBe(false)
+        const patch = vi.spyOn(stores.metadata, 'patch')
+        if (kind === 'payload') {
+          stream.onTabPayloadRegistered({
+            tabId: 'unhosted',
+            payload: { kind: 'file', filePath: '/obsolete', workingDir: '/repo' },
+          })
+        }
+        else {
+          stream.onTabRenamed({ tabId: 'unhosted', tabType: TabType.FILE, title: 'Obsolete title' })
+        }
+        expect(patch).not.toHaveBeenCalled()
+        expect(stores.metadata.get('unhosted')).toMatchObject({ title: 'Current title', filePath: '/current' })
+      }
+      finally { dispose() }
+    })
+  })
+})
+
+describe('useWorkerPrivateStreams creation ownership', () => {
+  it.each(['payload', 'rename'] as const)('ignores an unknown %s event without allocating private metadata', async (kind) => {
+    await createRoot(async (dispose) => {
+      try {
+        const harness = installTestBridge({ workspaceId: WS })
+        const stores = createTestTabStores(WS)
+        createCanonicalTabPublisher(harness).publish(TabType.AGENT, 'sibling', { workerId: 'w1' })
+        useWorkerPrivateStreams({
+          acceptsEarlyMetadata: () => false,
+          state: () => getCRDTBridge()?.speculativeState() ?? null,
+          view: stores.view,
+          metadata: stores.metadata,
+          quakeStore: createTestQuakeStore(stores.view),
+        })
+        await flush()
+        if (kind === 'payload') {
+          firstOpened().onTabPayloadRegistered({
+            tabId: 'unknown',
+            payload: { kind: 'file', filePath: '/private', workingDir: '/repo' },
+          })
+        }
+        else {
+          firstOpened().onTabRenamed({ tabId: 'unknown', tabType: TabType.AGENT, title: 'Private title' })
+        }
+        expect(stores.metadata.get('unknown')).toBeUndefined()
+      }
+      finally { dispose() }
+    })
+  })
+
+  it('ignores callbacks retained after stream disposal', async () => {
+    await createRoot(async (dispose) => {
+      const harness = installTestBridge({ workspaceId: WS })
+      const stores = createTestTabStores(WS)
+      createCanonicalTabPublisher(harness).publish(TabType.FILE, 'file', { workerId: 'w1' })
+      stores.metadata.patch('file', { title: 'Current', filePath: '/current' })
+      useWorkerPrivateStreams({
+        acceptsEarlyMetadata: () => false,
+        state: () => getCRDTBridge()?.speculativeState() ?? null,
+        view: stores.view,
+        metadata: stores.metadata,
+        quakeStore: createTestQuakeStore(stores.view),
+      })
+      await flush()
+      const stream = firstOpened()
+      dispose()
+      stream.onTabRenamed({ tabId: 'file', tabType: TabType.FILE, title: 'Late title' })
+      stream.onTabPayloadRegistered({
+        tabId: 'file',
+        payload: { kind: 'file', filePath: '/late', workingDir: '/repo' },
+      })
+      expect(stores.metadata.get('file')).toMatchObject({ title: 'Current', filePath: '/current' })
+    })
+  })
+
+  it('reclaims a revoked unpublished payload while preserving every canonical live tab', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const harness = installTestBridge({ workspaceId: WS })
+        const stores = createTestTabStores(WS)
+        const publisher = createCanonicalTabPublisher(harness)
+        publisher.publish(TabType.FILE, 'live', { workerId: 'w1' })
+        publisher.publish(TabType.FILE, 'reassigned', { workerId: 'w2' })
+        for (const id of ['unpublished', 'live', 'reassigned'])
+          stores.metadata.patch(id, { filePath: '/private', hydrated: true })
+        useWorkerPrivateStreams({
+          acceptsEarlyMetadata: () => false,
+          state: () => getCRDTBridge()?.speculativeState() ?? null,
+          view: stores.view,
+          metadata: stores.metadata,
+          quakeStore: createTestQuakeStore(stores.view),
+        })
+        await flush()
+        const stream = opened.find(stream => stream.workerId === 'w1')!
+        for (const id of ['unpublished', 'live', 'reassigned'])
+          stream.onTabPayloadRevoked({ tabId: id })
+        expect(stores.metadata.get('unpublished')).toBeUndefined()
+        expect(stores.metadata.get('live')).toMatchObject({ filePath: '/private' })
+        expect(stores.metadata.get('reassigned')).toMatchObject({ filePath: '/private' })
+      }
+      finally { dispose() }
+    })
+  })
+})
+
+describe('useWorkerPrivateStreams account generation', () => {
+  it('reopens the same Worker stream and rejects prior callbacks after switching away and back', async () => {
+    await createRoot(async (dispose) => {
+      try {
+        const harness = installTestBridge({ workspaceId: WS })
+        const stores = createTestTabStores(WS)
+        createCanonicalTabPublisher(harness).publish(TabType.FILE, 'file', { workerId: 'w1' })
+        useWorkerPrivateStreams({
+          acceptsEarlyMetadata: () => false,
+          state: () => getCRDTBridge()?.speculativeState() ?? null,
+          view: stores.view,
+          metadata: stores.metadata,
+          quakeStore: createTestQuakeStore(stores.view),
+        })
+        await flush()
+        const original = firstOpened()
+        let previous = original
+        for (const account of ['account-b', TEST_USER_ID]) {
+          const replacement = installTestBridge({ userId: account, workspaceId: WS })
+          createCanonicalTabPublisher(replacement).publish(TabType.FILE, 'file', { workerId: 'w1' })
+          setStorageAccountForTests(account)
+          await flush()
+          const current = opened.at(-1)!
+          expect(previous.closed).toBe(true)
+          expect(current).not.toBe(previous)
+          previous = current
+          current.onTabRenamed({ tabId: 'file', tabType: TabType.FILE, title: account })
+          original.onTabRenamed({ tabId: 'file', tabType: TabType.FILE, title: 'Obsolete' })
+          original.onTabPayloadRevoked({ tabId: 'file' })
+          expect(stores.metadata.get('file')?.title).toBe(account)
+        }
+        expect(opened.filter(stream => !stream.closed)).toHaveLength(1)
+      }
+      finally {
+        dispose()
+        setStorageAccountForTests(TEST_USER_ID)
+      }
     })
   })
 })

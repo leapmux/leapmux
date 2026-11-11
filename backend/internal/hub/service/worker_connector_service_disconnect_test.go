@@ -19,12 +19,10 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
-// Tests in this file do NOT call t.Parallel(), unlike the rest of this
-// package. They swap slog's default handler to capture log output, and that
-// handler is process-global: run alongside a sibling, the buffer they assert
-// on collects whatever the sibling logged too. Same convention as
-// worker_connector_service_internal_test.go, which cannot host this test
-// because it needs this package's registration fixtures.
+// Tests that capture slog's default logger do not call t.Parallel().
+// The process-global logger would also capture messages from concurrent tests.
+// These tests use this package's registration fixtures; the internal service
+// test package cannot use those fixtures.
 
 // TestConnect_DisconnectLogCarriesReasonWhenWorkerClosesStream drives the
 // worker WebSocket handler over HTTP/1.1 and pins the reason on the

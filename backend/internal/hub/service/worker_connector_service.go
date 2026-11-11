@@ -362,12 +362,18 @@ const workerIdentityReadTimerTag = "worker-identity-read"
 // after this call on s.clock. Call the returned function when the read is
 // done; it stops the timer and releases the context.
 func (s *WorkerConnectorService) identityReadContext(parent context.Context) (context.Context, func()) {
+	return s.workerStoreContext(parent, workerIdentityReadTimeout, workerIdentityReadTimerTag)
+}
+
+// workerStoreContext limits a store operation with the connector's clock.
+// The returned function stops its timer and releases the context.
+func (s *WorkerConnectorService) workerStoreContext(parent context.Context, timeout time.Duration, timerTag string) (context.Context, func()) {
 	ctx, cancel := context.WithCancelCause(parent)
-	timer := s.clock.AfterFunc(workerIdentityReadTimeout, func() {
+	timer := s.clock.AfterFunc(timeout, func() {
 		cancel(context.DeadlineExceeded)
-	}, workerIdentityReadTimerTag)
+	}, timerTag)
 	return ctx, func() {
-		timer.Stop(workerIdentityReadTimerTag)
+		timer.Stop(timerTag)
 		cancel(context.Canceled)
 	}
 }
@@ -574,6 +580,11 @@ func (s *WorkerConnectorService) serveWorkerStream(reqCtx context.Context, worke
 		return refuseWorkerStream(websocket.StatusPolicyViolation, channelwire.WorkerCloseReasonKeysDiffer, errors.New("the worker's public keys differ from the keys it registered with"))
 	}
 
+	inventory, err := s.beginWorkerInventory(connCtx, worker.ID, worker.RegisteredBy)
+	if err != nil {
+		return refuseWorkerStream(websocket.StatusInternalError, channelwire.WorkerCloseReasonHubInternalError, fmt.Errorf("begin worker inventory: %w", err))
+	}
+
 	conn, pump, replaced, err := s.registerGreetedConn(connCtx, cancelConn, worker, hello, stream.Send)
 	if err != nil {
 		switch {
@@ -624,7 +635,9 @@ func (s *WorkerConnectorService) serveWorkerStream(reqCtx context.Context, worke
 		// this case changes what the owner's worker list reads.
 		s.announceWorkersChanged(worker.RegisteredBy)
 	}
-	stream.startLiveness(connCtx, func() { cancelConnCause(errWorkerStoppedAnsweringPings) }, func() { s.recordWorkerSeen(connCtx, worker.ID) })
+	recordSeen, stopSeen := s.startWorkerSeenRecorder(connCtx, worker.ID)
+	defer stopSeen()
+	stream.startLiveness(connCtx, func() { cancelConnCause(errWorkerStoppedAnsweringPings) }, recordSeen)
 
 	// Read the worker again, now that Register made the connection reachable,
 	// and decide on the DEREGISTER delivery from this read, never from the
@@ -644,7 +657,7 @@ func (s *WorkerConnectorService) serveWorkerStream(reqCtx context.Context, worke
 		return refuseWorkerStream(websocket.StatusInternalError, channelwire.WorkerCloseReasonHubInternalError, fmt.Errorf("read worker after register: %w", err))
 	}
 
-	s.recordWorkerSeen(ctx, worker.ID)
+	recordSeen()
 
 	slog.Info("worker connected", "worker_id", worker.ID, "status", current.Status)
 	// exitReason names WHY the handler is returning, set on every exit path
@@ -699,7 +712,11 @@ func (s *WorkerConnectorService) serveWorkerStream(reqCtx context.Context, worke
 			}
 			return errWorkerStreamClosed
 		}
-		if err := s.processWorkerMessage(ctx, conn, worker.ID, worker.RegisteredBy, result.msg); err != nil {
+		if err := s.processWorkerMessage(ctx, conn, worker.ID, result.msg, inventory); err != nil {
+			var refusal *workerStreamRefusal
+			if errors.As(err, &refusal) {
+				return err
+			}
 			return refuseWorkerStream(websocket.StatusProtocolError, channelwire.WorkerCloseReasonInvalidMessage, err)
 		}
 		return nil
@@ -862,14 +879,13 @@ var errWorkerStreamClosed = errors.New("worker stream closed")
 // processWorkerMessage handles a single message from the worker stream.
 // Returns a non-nil error to terminate the connection (e.g. invalid config).
 //
-// registeredBy is the worker's registrant, already in hand from the handler's
-// AuthenticateWorkerBearer call. It is threaded here purely for the tab-sync path, which needs
-// the owner axis workspace_tab_owned is keyed by.
+// inventory contains the owner-scoped admission snapshot for this connection.
 func (s *WorkerConnectorService) processWorkerMessage(
 	ctx context.Context,
 	conn *workermgr.Conn,
-	workerID, registeredBy string,
+	workerID string,
 	msg *leapmuxv1.ConnectRequest,
+	inventory *workerInventory,
 ) error {
 	// A hello opens the stream and is read before the main loop starts, so one
 	// here is a second hello -- a protocol error.
@@ -877,19 +893,18 @@ func (s *WorkerConnectorService) processWorkerMessage(
 		return errors.New("worker sent a second hello on one worker stream")
 	}
 
+	// Handle workspace tab sync from worker. The response is sent
+	// back on the same bidi stream with the matching request_id so
+	// the worker can correlate it with its outbound message.
+	if tabSync := msg.GetWorkerTabInventory(); tabSync != nil {
+		return s.handleWorkspaceTabsSync(ctx, conn, msg.GetRequestId(), tabSync, inventory)
+	}
+
 	// Try to complete pending request-response pairs (file operations).
 	if s.pending != nil && msg.GetRequestId() != "" {
 		if s.pending.Complete(msg.GetRequestId(), msg) {
 			return nil
 		}
-	}
-
-	// Handle workspace tab sync from worker. The response is sent
-	// back on the same bidi stream with the matching request_id so
-	// the worker can correlate it with its outbound message.
-	if tabSync := msg.GetWorkerTabInventory(); tabSync != nil {
-		s.handleWorkspaceTabsSync(ctx, conn, workerID, registeredBy, msg.GetRequestId(), tabSync)
-		return nil
 	}
 
 	// Route channel messages from worker to frontend.
@@ -958,171 +973,66 @@ func (s *WorkerConnectorService) closeWorkerChannel(conn *workermgr.Conn, worker
 	}
 }
 
-// handleWorkspaceTabsSync compares the worker's reported tab state
-// against the CRDT-derived workspace_tab_owned view, computes the
-// authoritative classification, and:
-//
-//   - Emits an EMPTY WorkerTabInventoryResponse on the bidi stream. It carries no
-//     classification: its only effect is to make the worker trigger a reconcile
-//     pass, which derives what to drop from ListOwnedTabsForWorker instead. It
-//     once listed orphans and cross-workspace reassignments; nothing consumed
-//     them, and there is no workspace id on the worker left to reassign.
-//   - For tabs the CRDT knows about that the worker doesn't,
-//     submits a TombstoneTab op via SubmitInternal so the CRDT side
-//     converges to the worker's authoritative view (the worker is
-//     the source of truth for live agent / terminal liveness).
-//
-// `requestID` is the ConnectRequest envelope id; the response carries
-// the same id so the worker correlates it.
-//
-// `registeredBy` is the worker's registrant and the owner the whole exchange is
-// scoped to. ListOwnedByWorker binds it, because workspace_tab_owned is keyed
-// by (user_id, tab_id) and worker_id alone selects across tenants -- nothing in
-// the schema ties a row's user_id to the registrant of the worker it names.
-//
-// That scoping is also why a blank registrant aborts the handler below instead
-// of falling through: the orphan classification reads "in the worker's report,
-// absent from hubTabs" as "the CRDT dropped it", so an empty hubTabs would tell
-// the worker to drop every agent and terminal it hosts.
-func (s *WorkerConnectorService) handleWorkspaceTabsSync(
-	ctx context.Context,
-	conn *workermgr.Conn,
-	workerID, registeredBy, requestID string,
-	sync *leapmuxv1.WorkerTabInventory,
-) {
-	owner, ok := userid.New(registeredBy)
-	if !ok {
-		slog.Error("workspace tab sync: worker has a blank registrant, cannot scope the owned-tab view",
-			"worker_id", workerID)
-		return
+// workerInventory belongs to one admitted connection. An incomplete upload
+// cannot delete tabs or trigger the Worker's orphan reconciler.
+type workerInventory struct {
+	owner    string
+	snapshot *crdt.WorkerTabInventorySnapshot
+	complete bool
+}
+
+func (s *WorkerConnectorService) beginWorkerInventory(ctx context.Context, workerID, registeredBy string) (*workerInventory, error) {
+	if _, ok := userid.New(registeredBy); !ok {
+		return nil, errors.New("worker has a blank registrant")
 	}
-	hubTabs, err := s.store.WorkspaceTabIndex().ListOwnedByWorker(ctx, store.ListOwnedTabsByWorkerParams{
-		UserID:   owner,
-		WorkerID: workerID,
-	})
+	inventory := &workerInventory{owner: registeredBy}
+	if s.crdtRegistry == nil {
+		return inventory, nil
+	}
+	manager, err := s.crdtRegistry.Get(ctx, registeredBy)
 	if err != nil {
-		slog.Error("failed to list hub-owned tabs for worker during sync", "worker_id", workerID, "error", err)
-		return
+		return nil, err
 	}
-	type tabKey struct {
-		tabType leapmuxv1.TabType
-		tabID   string
+	snapshot, err := manager.BeginWorkerTabInventory(ctx, workerID)
+	if err != nil {
+		return nil, err
 	}
-	// Build a single index keyed by (tab_type, tab_id). Matched entries
-	// are removed during the worker-side scan so the post-scan
-	// leftovers ARE the stale-tombstone set — no third pass over the
-	// worker keys needed.
-	// (tab_type, tab_id) is a safe key here ONLY because the query above is
-	// owner-scoped: within one owner the table is unique on tab_id, so no two
-	// rows can collide. It would not be safe across owners -- tab ids are
-	// client-chosen, and the worker's report carries no user axis at all, so a
-	// cross-owner collision would be unresolvable on this side.
-	hubByKey := make(map[tabKey]store.WorkerTabStateRow, len(hubTabs))
-	for _, ht := range hubTabs {
-		hubByKey[tabKey{tabType: ht.TabType, tabID: ht.TabID}] = ht
-	}
+	inventory.snapshot = snapshot
+	return inventory, nil
+}
 
-	resp := &leapmuxv1.WorkerTabInventoryResponse{}
-	// The scan's only remaining product is the leftovers in hubByKey. The
-	// per-tab classification the response used to carry (orphan_tab_ids,
-	// reassignments) is gone: no worker ever read it -- OnTabSyncResponse
-	// discards the payload and triggers a reconcile pass -- and it could not
-	// have been made owner-safe anyway, because the worker's report carries no
-	// user axis. OrphanReconciler makes both decisions from
-	// ListOwnedTabsForWorker, which does.
-	for _, t := range sync.GetTabs() {
-		delete(hubByKey, tabKey{tabType: t.GetTabType(), tabID: t.GetTabId()})
+func (s *WorkerConnectorService) handleWorkspaceTabsSync(ctx context.Context, conn *workermgr.Conn, requestID string, report *leapmuxv1.WorkerTabInventory, inventory *workerInventory) error {
+	if inventory == nil || inventory.complete {
+		return errors.New("worker sent inventory outside its initial synchronization")
 	}
-
-	// Whatever survived hubByKey above is a CRDT row the worker doesn't
-	// host anymore — tombstone via the manager so subscribers observe a
-	// consistent state.
-	//
-	// Group by owner and submit ONE BATCH PER TENANT, each to that tenant's own
-	// manager. A single flat batch handed to whichever owner's manager Go's
-	// randomized map iteration yielded first would carry every tombstone into
-	// that one manager, and nothing downstream can catch it: a submit names no
-	// tenant of its own -- the manager it lands on IS the tenant -- so there is
-	// nothing left to compare it against, and SubmitInternal marks the batch
-	// internal, which is exactly the flag that skips the per-op auth check. So
-	// the foreign tombstone COMMITS -- applyTombstoneTab materializes a record
-	// for a tab that owner has never seen, while the real owner's index row is
-	// left in place (the projection diff keys deletes by the projected row's own
-	// owner, i.e. the winner's) and its tabs live forever.
-	//
-	// Not reachable now that ListOwnedByWorker binds the owner: hubByKey holds
-	// exactly one owner's rows, and it is `owner` -- the value the query was
-	// bound with, already minted above.
-	//
-	// So the tombstones go to THAT manager, in ONE batch. The previous shape
-	// grouped by each row's own user_id and handed the resulting raw string to
-	// Registry.Get, which made this the last production path reaching the
-	// registry with an unvalidated column value. Deriving the target from the
-	// bound owner instead makes the batch's tenancy a property of the query
-	// rather than of data the loop re-reads -- and the row-level owner is still
-	// checked, but as an assertion that says so when it fails rather than a
-	// silent route into whatever manager a foreign string names.
-	if s.crdtRegistry != nil && len(hubByKey) > 0 {
-		tombstones := make([]*leapmuxv1.CrdtOp, 0, len(hubByKey))
-		for _, ht := range hubByKey {
-			if !owner.Matches(ht.UserID) {
-				slog.Error("workspace tab sync: owner-bound query returned a foreign row; refusing to tombstone",
-					"worker_id", workerID, "scope_owner", owner.String(), "row_owner", ht.UserID, "tab_id", ht.TabID)
-				continue
-			}
-			tombstones = append(tombstones, &leapmuxv1.CrdtOp{
-				OpId: id.Generate(),
-				Body: &leapmuxv1.CrdtOp_TombstoneTab{
-					TombstoneTab: &leapmuxv1.TombstoneTabOp{
-						Tab: &leapmuxv1.TabIdent{TabType: ht.TabType, TabId: ht.TabID},
-					},
-				},
-			})
-		}
-		if len(tombstones) > 0 {
-			mgr, err := s.crdtRegistry.Get(ctx, owner.String())
-			if err != nil {
-				slog.Warn("workspace tab sync: get manager failed",
-					"worker_id", workerID, "user_id", owner.String(), "error", err)
-			} else {
-				batch := &leapmuxv1.OpBatch{
-					// The owner is part of the batch id so the entry names its
-					// own tenant in the journal: id.Generate() already makes it
-					// unique, but the dedup table is keyed per user, and an id
-					// that carries the tenant is diagnosable rather than opaque.
-					BatchId: "worker-sync-" + workerID + "-" + owner.String() + "-" + id.Generate(),
-					Ops:     tombstones,
-				}
-				if _, err := mgr.SubmitInternal(ctx, crdt.SubmitInput{
-					Batches:     []*leapmuxv1.OpBatch{batch},
-					PrincipalID: crdt.HubReservedPrincipal,
-				}); err != nil {
-					slog.Warn("workspace tab sync: submit tombstones failed",
-						"worker_id", workerID, "user_id", owner.String(), "error", err)
-				}
-			}
+	if len(report.GetTabs()) == 0 && !report.GetComplete() {
+		return errors.New("worker sent an empty incomplete inventory segment")
+	}
+	for _, tab := range report.GetTabs() {
+		if tab == nil || tab.GetTabId() == "" || tab.GetTabType() < leapmuxv1.TabType_TAB_TYPE_AGENT || tab.GetTabType() > leapmuxv1.TabType_TAB_TYPE_IMAGE {
+			return errors.New("worker sent an invalid inventory entry")
 		}
 	}
-
-	// Always send a response even when both lists are empty so the
-	// worker can rely on the round-trip to mark its initial sync
-	// complete.
-	if err := conn.SendControl(&leapmuxv1.ConnectResponse{
-		RequestId: requestID,
-		Payload: &leapmuxv1.ConnectResponse_WorkerTabInventoryResp{
-			WorkerTabInventoryResp: resp,
-		},
-	}); err != nil {
-		slog.Debug("failed to send workspace tabs sync response",
-			"worker_id", workerID, "error", err)
+	if inventory.snapshot != nil {
+		inventory.snapshot.RecordHostedTabs(report.GetTabs())
 	}
-
-	slog.Info("workspace tab sync handled",
-		"worker_id", workerID,
-		"worker_tabs", len(sync.GetTabs()),
-		"hub_tabs", len(hubTabs),
-		"stale_hub_rows", len(hubByKey),
-	)
+	if !report.GetComplete() {
+		return nil
+	}
+	inventory.complete = true
+	if inventory.snapshot != nil {
+		manager, err := s.crdtRegistry.Get(ctx, inventory.owner)
+		if err != nil {
+			return refuseWorkerStream(websocket.StatusInternalError, channelwire.WorkerCloseReasonHubInternalError, fmt.Errorf("resolve worker inventory owner: %w", err))
+		}
+		if err := manager.FinishWorkerTabInventory(ctx, inventory.snapshot); err != nil {
+			return refuseWorkerStream(websocket.StatusInternalError, channelwire.WorkerCloseReasonHubInternalError, fmt.Errorf("finish worker inventory: %w", err))
+		}
+	}
+	if err := conn.SendControl(&leapmuxv1.ConnectResponse{RequestId: requestID, Payload: &leapmuxv1.ConnectResponse_WorkerTabInventoryResp{WorkerTabInventoryResp: &leapmuxv1.WorkerTabInventoryResponse{}}}); err != nil {
+		return refuseWorkerStream(websocket.StatusInternalError, channelwire.WorkerCloseReasonHubInternalError, fmt.Errorf("acknowledge worker inventory: %w", err))
+	}
+	return nil
 }
 
 // closeWorkerChannels unregisters every channel a disconnected worker owned.
@@ -1195,11 +1105,5 @@ func workerClosedStream(err error) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-func (s *WorkerConnectorService) recordWorkerSeen(ctx context.Context, workerID string) {
-	if err := s.store.Workers().UpdateLastSeen(ctx, workerID); err != nil && ctx.Err() == nil {
-		slog.Warn("failed to update worker last seen", "worker_id", workerID, "error", err)
 	}
 }

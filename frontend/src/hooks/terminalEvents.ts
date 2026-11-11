@@ -88,8 +88,8 @@ export function applyTerminalStatusChange(
   upsertRepoGitFromProtoStatus(repoGitStore, workerId, sc.gitStatus, migrateHint !== undefined
     ? { migrateErrorHintFrom: migrateHint }
     : {})
-  if (sc.gitStatus?.toplevel)
-    metadata.patch(terminalId, { gitToplevel: sc.gitStatus.toplevel })
+  if (sc.gitStatus !== undefined)
+    metadata.patchLive(terminalId, { gitToplevel: sc.gitStatus.toplevel || undefined }, ['git'])
   switch (sc.status) {
     case TerminalStatus.STARTING:
       if (existingTab && existingTab.status !== TerminalStatus.READY && existingTab.status !== TerminalStatus.STARTING) {

@@ -251,7 +251,7 @@ func TestOpenAgent_NoWorktreeMutationOnCreateRecordFailure(t *testing.T) {
 
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
-	svc.createAgentRecordFn = func(context.Context, db.CreateAgentParams) error {
+	svc.createAgentRecordFn = func(context.Context, *db.Queries, db.CreateAgentParams) error {
 		return errors.New("forced create failure")
 	}
 
@@ -281,7 +281,7 @@ func TestOpenAgent_NoBranchMutationOnCreateRecordFailure(t *testing.T) {
 
 	svc, d, w := setupTestService(t)
 	defer drainAllInFlight(svc)
-	svc.createAgentRecordFn = func(context.Context, db.CreateAgentParams) error {
+	svc.createAgentRecordFn = func(context.Context, *db.Queries, db.CreateAgentParams) error {
 		return errors.New("forced create failure")
 	}
 

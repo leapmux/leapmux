@@ -40,14 +40,9 @@ interface OpenStreamOpts {
    * Optional callback for `TabPayloadRevoked` events, which the worker emits
    * when a payload-backed tab closes anywhere.
    *
-   * NOTHING supplies it today, deliberately. A revoke always accompanies a tab
-   * that leaves the CRDT projection, and `useMetadataSweep` reclaims that tab's
-   * metadata off the projection -- which covers a close this client issued AND
-   * one a peer issued. A second reclaim keyed on this event would be the same
-   * fact on a different schedule, which is exactly the strand
-   * `useWorkerPrivateStreams` documents. The hook stays because the event is on
-   * the wire and a receiver that needs more than the sweep has a place to
-   * attach.
+   * Pending creation can be revoked before canonical publication. The shell
+   * reclaims that private metadata here. Canonical live tabs keep their metadata
+   * until projection retirement, including tabs reassigned to another Worker.
    */
   onTabPayloadRevoked?: (evt: { tabId: string }) => void
   /**

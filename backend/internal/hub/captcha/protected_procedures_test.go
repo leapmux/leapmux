@@ -44,6 +44,9 @@ var protectedAuthenticatedRationale = map[string]string{
 // passes the auth package's rationale test, and ships the procedure
 // unprotected.
 var captchaExemptRationale = map[string]string{
+	leapmuxv1connect.WorkerConnectorServicePublishTabProcedure:               "caller is an authenticated Worker publishing a tab, not a human form",
+	leapmuxv1connect.WorkerConnectorServiceCancelTabPublicationProcedure:     "caller is an authenticated Worker canceling its tab creation, not a human form",
+	leapmuxv1connect.WorkerConnectorServiceResolveTabPublicationProcedure:    "caller is an authenticated Worker resolving its tab publication, not a human form",
 	leapmuxv1connect.AuthServiceSetInitialSoloPasswordProcedure:              "solo disables captcha; ratelimit.OpSoloPasswordSetup caps its Argon2 hash by address instead",
 	leapmuxv1connect.SystemServiceGetSystemInfoProcedure:                     "cheap pre-login read",
 	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:                   "cheap pre-login read",

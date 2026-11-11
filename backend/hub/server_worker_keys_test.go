@@ -28,10 +28,11 @@ func workerKeysClient(t *testing.T, srv *Server, opts ...workerhub.ClientOption)
 	t.Cleanup(endpoint.CloseIdleConnections)
 	client := workerhub.New(endpoint, opts...)
 	t.Cleanup(client.Stop)
-	// An owner is seeded, so BuildTabSync would produce an inventory; an empty
-	// one is enough to make Connect write a second frame after the hello, which is
-	// what the give-up path needs to be reachable.
-	client.TabSyncProvider = func() *leapmuxv1.WorkerTabInventory { return &leapmuxv1.WorkerTabInventory{} }
+	// An admitted identity starts an empty inventory upload. Refused streams
+	// preserve their close reason before any upload starts.
+	client.TabSyncProvider = func(context.Context) (*leapmuxv1.WorkerTabInventory, error) {
+		return &leapmuxv1.WorkerTabInventory{}, nil
+	}
 	return client
 }
 

@@ -39,3 +39,8 @@ DELETE FROM worker_tab_payloads WHERE user_id = ? AND tab_id = ?;
 UPDATE worker_tab_payloads SET workspace_archived = sqlc.arg(workspace_archived)
 WHERE user_id = sqlc.arg(user_id) AND tab_id = sqlc.arg(tab_id)
   AND workspace_archived <> sqlc.arg(workspace_archived);
+
+-- name: InsertWorkerTabPayload :exec
+INSERT INTO worker_tab_payloads (user_id, tab_id, tab_type, payload, working_dir)
+VALUES (?, ?, ?, ?, ?)
+;

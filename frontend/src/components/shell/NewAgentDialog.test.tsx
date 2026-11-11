@@ -1,3 +1,4 @@
+import type { AgentCreationSubmission } from './useTabCreation'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
@@ -64,6 +65,11 @@ vi.mock('~/api/workerRpc', () => ({
 
 const openAgentMock = workerAgent.openAgent as unknown as ReturnType<typeof vi.fn>
 
+async function submitCreation(input: AgentCreationSubmission): Promise<boolean> {
+  await workerAgent.openAgent(input.workerId, input.request)
+  return true
+}
+
 function renderDialog(blockedReason?: () => string | undefined) {
   return render(withPreferences(() => (
     <NewAgentDialog
@@ -72,7 +78,7 @@ function renderDialog(blockedReason?: () => string | undefined) {
       {...(blockedReason !== undefined
         ? { blockedReason }
         : {})}
-      onCreated={() => {}}
+      onCreate={submitCreation}
       onClose={() => {}}
       repoGitStore={createRepoGitStore()}
     />
@@ -131,7 +137,7 @@ describe('NewAgentDialog startup options', () => {
         defaultWorkerId="w-1"
         defaultWorkingDir="/native/workspace"
         availableProviders={providers()}
-        onCreated={() => {}}
+        onCreate={submitCreation}
         onClose={() => {}}
         repoGitStore={createRepoGitStore()}
       />

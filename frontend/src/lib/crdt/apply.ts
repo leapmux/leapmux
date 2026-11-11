@@ -436,8 +436,8 @@ function applyTombstoneRecord<R extends { tombstoneAt?: HLC | undefined }>(
  *
  * Creating the record here, rather than waiting for one, matters to a
  * subscriber whose initial `UserMaterialized` predated the workspace:
- * `seedTabIntoNewWorkspace` / `awaitWorkspaceBootstrap` wait on
- * `state.workspaces[wsID].rootNodeId`, and would wait forever otherwise.
+ * the projection needs `state.workspaces[wsID].rootNodeId` to attach tabs
+ * that the Worker publishes into the fresh workspace.
  */
 function applyCreateWorkspace(state: UserCrdtState, workspaceId: string, rootNodeId: string): void {
   let rec = state.workspaces[workspaceId]

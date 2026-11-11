@@ -18,9 +18,8 @@ import { emitAddTab, emitReviveTab, positionAfterKey } from '~/stores/tabOps'
  *   3. New -> place it adjacent to its parent tab (or the focused tile when the
  *      parent is absent/unplaced) and select it ('opened').
  *
- * Returns 'no-tile' when no projected tile is resolvable (the same refusal
- * openTabInFocusedTile uses: emitting against a placeholder tile is rejected by
- * the hub and orphans the resource).
+ * Returns 'no-tile' when no projected tile is resolvable. The Hub refuses an
+ * operation that uses a local placeholder as its destination.
  *
  * The metadata patch runs BEFORE the emit (the documented order rule): emit*Tab
  * applies to speculativeState synchronously, so the projection renders the tab

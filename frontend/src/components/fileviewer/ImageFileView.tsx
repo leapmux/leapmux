@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { ZoomMode } from './ImageToolbar'
-import type { ViewMode } from './ViewToggle'
+import type { FileDisplayMode } from '~/stores/tab.types'
 import { createEffect, createMemo, createSignal, Match, onCleanup, Switch } from 'solid-js'
 import { getImageMimeType, isSvgExtension } from '~/lib/fileType'
 import { basename } from '~/lib/paths'
@@ -193,7 +193,7 @@ export function ImageFileView(props: {
    * for raster images (which have no toggle and always render the image
    * directly).
    */
-  mode: ViewMode
+  mode: FileDisplayMode
   onQuote?: (text: string, startLine?: number, endLine?: number) => void
 }): JSX.Element {
   const isSvg = () => isSvgExtension(props.filePath)

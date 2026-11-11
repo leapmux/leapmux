@@ -24,8 +24,6 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
-	"github.com/leapmux/leapmux/internal/hub/store"
-	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
 	"github.com/leapmux/leapmux/internal/sendq"
@@ -33,20 +31,20 @@ import (
 	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
-// Tests in this file do NOT call t.Parallel(), unlike the rest of the package.
-// They swap slog's default handler to capture log output, and that handler is
-// process-global: run alongside a sibling, the buffer they assert on collects
-// whatever the sibling logged too. Everything else here owns its own store,
-// server and temp dirs and runs parallel.
+// Tests that capture slog's default logger do not call t.Parallel().
+// The logger is process-global, so concurrent tests could add unrelated
+// lines to the captured output. Other tests in this file may run in parallel.
 
 // tabSyncJournal is a minimal crdt.Journal that records, per user, the
 // tab ids every committed batch tombstoned. The worker tab-sync tests
 // assert tenancy by reading it: a tombstone that lands in the wrong
 // user's journal is exactly the cross-tenant bug under test.
 type tabSyncJournal struct {
-	mu       sync.Mutex
-	byUser   map[string][]string
-	batchIDs []string
+	publications map[string]*crdt.PublicationReceipt
+	mu           sync.Mutex
+	byUser       map[string][]string
+	batchIDs     []string
+	commitErr    error
 }
 
 func newTabSyncJournal() *tabSyncJournal {
@@ -64,6 +62,12 @@ func (j *tabSyncJournal) ListBatchesAfter(context.Context, string, *leapmuxv1.HL
 func (j *tabSyncJournal) CommitBatch(_ context.Context, c crdt.CommitBatch) error {
 	j.mu.Lock()
 	defer j.mu.Unlock()
+	if j.commitErr != nil {
+		return j.commitErr
+	}
+	if c.Publication != nil {
+		j.recordPublication(c.UserID, *c.Publication)
+	}
 	j.batchIDs = append(j.batchIDs, c.Batch.GetBatchId())
 	for _, op := range c.Batch.GetOps() {
 		if body, ok := op.GetBody().(*leapmuxv1.CrdtOp_TombstoneTab); ok {
@@ -152,232 +156,82 @@ func newRecordingRegistry(t *testing.T, j crdt.Journal) *recordingRegistry {
 	return &recordingRegistry{inner: inner}
 }
 
-// TestHandleWorkspaceTabsSync_TombstonesOnlyTheRegistrant pins the tenancy of
-// the stale-tombstone batch. workspace_tab_owned is keyed by (user_id, tab_id)
-// and nothing ties a row's owner to the registrant of the worker it names, so
-// two owners' rows can legitimately name worker w1 -- but ListOwnedByWorker
-// binds the registrant, so only that owner's rows reach the classification.
-//
-// The foreign row must therefore be untouched: not fetched, not tombstoned. A
-// tombstone landing in bob's document would materialize a record for a tab he
-// has never seen (SubmitInternal skips the per-op auth check), while alice's
-// real row survives and her tabs live forever.
-func TestHandleWorkspaceTabsSync_TombstonesOnlyTheRegistrant(t *testing.T) {
-	st := hubtestutil.OpenTestStore(t)
-	userA := storetest.SeedUser(t, st, "alice")
-	userB := storetest.SeedUser(t, st, "bob")
-	seedOwnedTab(t, st, userA.ID, "alice ws", "tab-a")
-	seedOwnedTab(t, st, userB.ID, "bob ws", "tab-b")
-	ctx := context.Background()
+func seedInventoryTab(t *testing.T, reg *recordingRegistry, owner, tabID string) *crdt.Manager {
+	t.Helper()
+	manager, err := reg.inner.Get(t.Context(), owner)
+	require.NoError(t, err)
+	manager.SeedStateForTest(func(state *leapmuxv1.UserCrdtState) {
+		state.Workspaces["ws"] = &leapmuxv1.WorkspaceContentsRecord{WorkspaceId: "ws", RootNodeId: "root"}
+		state.Nodes["root"] = &leapmuxv1.NodeRecord{NodeId: "root", Kind: &leapmuxv1.LWWNodeKind{Value: leapmuxv1.NodeKind_NODE_KIND_LEAF}}
+		state.Tabs[tabID] = &leapmuxv1.TabRecord{TabId: tabID, TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TileId: &leapmuxv1.LWWString{Value: "root"}, WorkerId: &leapmuxv1.LWWString{Value: "w1"}, Position: &leapmuxv1.LWWString{Value: "a0"}}
+	})
+	return manager
+}
 
+func TestWorkerInventorySegments_ReconcilesOnlyOnCompletion(t *testing.T) {
 	journal := newTabSyncJournal()
 	reg := newRecordingRegistry(t, journal)
-	svc := NewWorkerConnectorService(WorkerConnectorServiceDeps{
-		Store:             st,
-		WorkerManager:     nil,
-		ChannelManager:    nil,
-		PendingRequests:   nil,
-		Notifier:          nil,
-		Registry:          reg,
-		QueuePool:         sendq.NewMaxBytesPoolForTest(),
-		Clock:             quartz.NewReal(),
-		DeregisterEffects: NewWorkerDeregisterEffects(nil, nil, nil),
-	})
+	seedInventoryTab(t, reg, "alice", "present")
+	seedInventoryTab(t, reg, "alice", "stale")
+	seedInventoryTab(t, reg, "bob", "stale")
+	svc := &WorkerConnectorService{crdtRegistry: reg}
+	inventory, err := svc.beginWorkerInventory(t.Context(), "w1", "alice")
+	require.NoError(t, err)
+	var sent atomic.Int32
+	conn := workermgrtest.NewConnWithWrite(t, "w1", func(*leapmuxv1.ConnectResponse) error { sent.Add(1); return nil })
+	require.NoError(t, svc.handleWorkspaceTabsSync(t.Context(), conn, "", &leapmuxv1.WorkerTabInventory{Tabs: []*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "present"}}}, inventory))
+	require.Empty(t, journal.tombstonedTabs("alice"))
+	require.Zero(t, sent.Load())
+	// This tab was not a candidate when the connection was admitted.
+	seedInventoryTab(t, reg, "alice", "new")
+	require.NoError(t, svc.handleWorkspaceTabsSync(t.Context(), conn, "", &leapmuxv1.WorkerTabInventory{Complete: true}, inventory))
+	assert.Equal(t, []string{"stale"}, journal.tombstonedTabs("alice"))
+	assert.Empty(t, journal.tombstonedTabs("bob"))
+	assert.Equal(t, []string{"alice", "alice"}, reg.seen())
+	testutil.AssertEventually(t, func() bool { return sent.Load() == 1 })
+	require.Error(t, svc.handleWorkspaceTabsSync(t.Context(), conn, "", &leapmuxv1.WorkerTabInventory{Complete: true}, inventory))
+}
 
-	var mu sync.Mutex
-	var sent []*leapmuxv1.ConnectResponse
-	conn := workermgrtest.NewConnWithWrite(t, "w1", func(msg *leapmuxv1.ConnectResponse) error {
-		mu.Lock()
-		sent = append(sent, msg)
-		mu.Unlock()
-		return nil
-	})
-
-	// Empty worker report: the worker hosts nothing, so every row the hub
-	// listed for this registrant is stale.
-	svc.handleWorkspaceTabsSync(ctx, conn, "w1", userA.ID, "req-1", &leapmuxv1.WorkerTabInventory{})
-
-	assert.Equal(t, []string{userA.ID}, reg.seen(),
-		"only the registrant's manager may be resolved")
-	assert.Equal(t, []string{"tab-a"}, journal.tombstonedTabs(userA.ID))
-	assert.Empty(t, journal.tombstonedTabs(userB.ID),
-		"a row owned by someone other than the registrant is out of scope entirely")
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(sent) == 1
-	}, time.Second, time.Millisecond, "the worker must still get its sync response")
-
-	// Batch ids must stay unique per submit within one sync, otherwise a
-	// second batch would dedup against the first.
-	ids := journal.committedBatchIDs()
-	seen := map[string]bool{}
-	for _, id := range ids {
-		require.False(t, seen[id], fmt.Sprintf("duplicate batch id %q", id))
-		seen[id] = true
+func TestWorkerInventorySegments_RejectsMalformedReports(t *testing.T) {
+	for _, report := range []*leapmuxv1.WorkerTabInventory{
+		{}, {Tabs: []*leapmuxv1.TabIdent{nil}, Complete: true},
+		{Tabs: []*leapmuxv1.TabIdent{{TabId: "tab"}}, Complete: true},
+		{Tabs: []*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}}, Complete: true},
+		{Tabs: []*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType(-1), TabId: "tab"}}, Complete: true},
+		{Tabs: []*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType(999), TabId: "tab"}}, Complete: true},
+	} {
+		t.Run(fmt.Sprint(report), func(t *testing.T) {
+			svc := &WorkerConnectorService{}
+			conn := workermgrtest.NewConnWithWrite(t, "w1", func(*leapmuxv1.ConnectResponse) error { t.Error("malformed inventory was acknowledged"); return nil })
+			require.Error(t, svc.handleWorkspaceTabsSync(t.Context(), conn, "", report, &workerInventory{}))
+		})
 	}
 }
 
-// TestHandleWorkspaceTabsSync_ManagerGetFailureStillResponds pins the error
-// shape of the tombstone submit: an unresolvable manager is logged and skipped,
-// and the worker still gets its sync response. Returning early instead would
-// leave the worker waiting on a round-trip it uses to mark its initial sync
-// complete.
-func TestHandleWorkspaceTabsSync_ManagerGetFailureStillResponds(t *testing.T) {
-	st := hubtestutil.OpenTestStore(t)
-	userA := storetest.SeedUser(t, st, "alice")
-	seedOwnedTab(t, st, userA.ID, "w1", "tab-a")
-
+func TestWorkerInventoryAdmission_RefusesMissingOwnerOrManager(t *testing.T) {
 	journal := newTabSyncJournal()
 	reg := newRecordingRegistry(t, journal)
-	reg.failFor = userA.ID
-	svc := NewWorkerConnectorService(WorkerConnectorServiceDeps{
-		Store:             st,
-		WorkerManager:     nil,
-		ChannelManager:    nil,
-		PendingRequests:   nil,
-		Notifier:          nil,
-		Registry:          reg,
-		QueuePool:         sendq.NewMaxBytesPoolForTest(),
-		Clock:             quartz.NewReal(),
-		DeregisterEffects: NewWorkerDeregisterEffects(nil, nil, nil),
-	})
-
-	var sent atomic.Int32
-	conn := workermgrtest.NewConnWithWrite(t, "w1", func(*leapmuxv1.ConnectResponse) error {
-		sent.Add(1)
-		return nil
-	})
-
-	svc.handleWorkspaceTabsSync(context.Background(), conn, "w1", userA.ID, "req-1", &leapmuxv1.WorkerTabInventory{})
-
-	assert.Equal(t, []string{userA.ID}, reg.seen())
-	assert.Empty(t, journal.tombstonedTabs(userA.ID), "nothing commits when the manager cannot be resolved")
-	require.Eventually(t, func() bool { return sent.Load() == 1 }, time.Second, time.Millisecond,
-		"the worker still gets its sync response")
+	reg.failFor = "alice"
+	svc := &WorkerConnectorService{crdtRegistry: reg}
+	_, err := svc.beginWorkerInventory(t.Context(), "w1", "")
+	require.ErrorContains(t, err, "blank registrant")
+	_, err = svc.beginWorkerInventory(t.Context(), "w1", "alice")
+	require.ErrorContains(t, err, "no manager")
+	assert.Empty(t, journal.committedBatchIDs())
 }
 
-// TestHandleWorkspaceTabsSync_ForeignOwnerTabIDCollisionIsInvisible pins what
-// the owner predicate bought. Tab ids are client-chosen and the table is unique
-// on (user_id, tab_id), so two owners can hold the SAME id on one worker; the
-// worker's report carries no user axis at all, so nothing on this side could
-// disambiguate them. An owner-blind query put both in a map keyed by (tab_type,
-// tab_id), where one silently displaced the other and the survivor decided the
-// classification -- here, bob's workspace would be pushed onto alice's tab as a
-// reassignment.
-//
-// With the predicate bound, bob's row never enters the comparison.
-func TestHandleWorkspaceTabsSync_ForeignOwnerTabIDCollisionIsInvisible(t *testing.T) {
-	st := hubtestutil.OpenTestStore(t)
-	userA := storetest.SeedUser(t, st, "alice")
-	userB := storetest.SeedUser(t, st, "bob")
-	_ = seedOwnedTab(t, st, userA.ID, "alice ws", "dup-tab")
-	seedOwnedTab(t, st, userB.ID, "bob ws", "dup-tab")
-
+func TestWorkerInventorySegments_ForeignIdentityCollisionIsInvisible(t *testing.T) {
 	journal := newTabSyncJournal()
-	svc := NewWorkerConnectorService(WorkerConnectorServiceDeps{
-		Store:             st,
-		WorkerManager:     nil,
-		ChannelManager:    nil,
-		PendingRequests:   nil,
-		Notifier:          nil,
-		Registry:          newRecordingRegistry(t, journal),
-		QueuePool:         sendq.NewMaxBytesPoolForTest(),
-		Clock:             quartz.NewReal(),
-		DeregisterEffects: NewWorkerDeregisterEffects(nil, nil, nil),
-	})
-	var mu sync.Mutex
-	var sent []*leapmuxv1.ConnectResponse
-	conn := workermgrtest.NewConnWithWrite(t, "w1", func(msg *leapmuxv1.ConnectResponse) error {
-		mu.Lock()
-		sent = append(sent, msg)
-		mu.Unlock()
-		return nil
-	})
-
-	// The worker hosts the tab, in alice's workspace, exactly as her row says.
-	svc.handleWorkspaceTabsSync(context.Background(), conn, "w1", userA.ID, "req-1", &leapmuxv1.WorkerTabInventory{
-		Tabs: []*leapmuxv1.TabIdent{
-			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "dup-tab"},
-		},
-	})
-
-	require.Eventually(t, func() bool {
-		mu.Lock()
-		defer mu.Unlock()
-		return len(sent) == 1
-	}, time.Second, time.Millisecond)
-	mu.Lock()
-	require.NotNil(t, sent[0].GetWorkerTabInventoryResp(), "the sync is acknowledged")
-	mu.Unlock()
-	// The tombstone journal is now the only observable: the response carries no
-	// per-tab classification (see WorkerTabInventoryResponse). Alice's tab
-	// matched her own row, so nothing of hers is stale -- and Bob's
-	// identically-named row must not be dragged in by the id collision.
-	assert.Empty(t, journal.tombstonedTabs(userA.ID))
-	assert.Empty(t, journal.tombstonedTabs(userB.ID),
-		"the foreign owner's identically-named row is out of scope, not stale")
-}
-
-// TestHandleWorkspaceTabsSync_BlankRegistrantIsRefused pins the fail-closed
-// path: with no owner to scope the query by, the hub cannot tell which rows the
-// worker's tabs correspond to, and an empty hub view would classify EVERY tab
-// the worker reported as an orphan -- an instruction to drop every agent and
-// terminal it hosts. Refuse the whole exchange instead.
-func TestHandleWorkspaceTabsSync_BlankRegistrantIsRefused(t *testing.T) {
-	st := hubtestutil.OpenTestStore(t)
-	userA := storetest.SeedUser(t, st, "alice")
-	_ = seedOwnedTab(t, st, userA.ID, "alice ws", "tab-a")
-
-	logs := testutil.CaptureDefaultLogger(t)
-	journal := newTabSyncJournal()
-	svc := NewWorkerConnectorService(WorkerConnectorServiceDeps{
-		Store:             st,
-		WorkerManager:     nil,
-		ChannelManager:    nil,
-		PendingRequests:   nil,
-		Notifier:          nil,
-		Registry:          newRecordingRegistry(t, journal),
-		QueuePool:         sendq.NewMaxBytesPoolForTest(),
-		Clock:             quartz.NewReal(),
-		DeregisterEffects: NewWorkerDeregisterEffects(nil, nil, nil),
-	})
-	sent := 0
-	conn := workermgrtest.NewConnWithWrite(t, "w1", func(msg *leapmuxv1.ConnectResponse) error {
-		sent++
-		return nil
-	})
-
-	svc.handleWorkspaceTabsSync(context.Background(), conn, "w1", "", "req-1", &leapmuxv1.WorkerTabInventory{
-		Tabs: []*leapmuxv1.TabIdent{
-			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "tab-a"},
-			{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "not-in-crdt"},
-		},
-	})
-
-	assert.Equal(t, 0, sent, "no classification is sent when the exchange cannot be scoped")
-	assert.Empty(t, journal.tombstonedTabs(userA.ID))
-	// Silent to the worker by design, so the log is the only operator signal.
-	assert.Contains(t, logs.String(), "worker has a blank registrant")
-}
-
-// seedOwnedTab writes one workspace_tab_owned row for `worker` w1, creating the
-// owner's workspace first (the row's workspace_id FK requires it). It returns
-// the workspace id so callers can echo it in a worker tab report.
-func seedOwnedTab(t *testing.T, st store.Store, ownerID, title, tabID string) string {
-	t.Helper()
-	wsID := storetest.SeedWorkspace(t, st, ownerID, title)
-	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(context.Background(), store.UpsertTabParams{
-		UserID:      userid.MustNew(ownerID),
-		WorkspaceID: wsID,
-		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-		TabID:       tabID,
-		WorkerID:    "w1",
-		TileID:      "tile-" + tabID,
-		Position:    "a0",
-		Rendered:    false,
-	}))
-	return wsID
+	reg := newRecordingRegistry(t, journal)
+	seedInventoryTab(t, reg, "alice", "same")
+	seedInventoryTab(t, reg, "bob", "same")
+	svc := &WorkerConnectorService{crdtRegistry: reg}
+	inventory, err := svc.beginWorkerInventory(t.Context(), "w1", "alice")
+	require.NoError(t, err)
+	conn := workermgrtest.NewConnWithWrite(t, "w1", func(*leapmuxv1.ConnectResponse) error { return nil })
+	require.NoError(t, svc.handleWorkspaceTabsSync(t.Context(), conn, "", &leapmuxv1.WorkerTabInventory{Complete: true, Tabs: []*leapmuxv1.TabIdent{{TabId: "same", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT}}}, inventory))
+	assert.Empty(t, journal.tombstonedTabs("alice"))
+	assert.Empty(t, journal.tombstonedTabs("bob"))
 }
 
 // closeWorkerChannels used to branch on a shutdown channel and skip everything below
@@ -827,4 +681,58 @@ func TestWorkerClosedStream(t *testing.T) {
 			assert.Contains(t, streamEndReason(err), "worker stream failed:")
 		}
 	}
+}
+
+func TestWorkerInventory_FailedCommitIsNotAcknowledged(t *testing.T) {
+	journal := newTabSyncJournal()
+	reg := newRecordingRegistry(t, journal)
+	seedInventoryTab(t, reg, "alice", "stale")
+	svc := &WorkerConnectorService{crdtRegistry: reg}
+	inventory, err := svc.beginWorkerInventory(t.Context(), "w1", "alice")
+	require.NoError(t, err)
+	journal.mu.Lock()
+	journal.commitErr = errors.New("commit unavailable")
+	journal.mu.Unlock()
+	var sent atomic.Int32
+	conn := workermgrtest.NewConnWithWrite(t, "w1", func(*leapmuxv1.ConnectResponse) error { sent.Add(1); return nil })
+	err = svc.handleWorkspaceTabsSync(t.Context(), conn, "", &leapmuxv1.WorkerTabInventory{Complete: true}, inventory)
+	var refusal *workerStreamRefusal
+	require.ErrorAs(t, err, &refusal)
+	assert.Zero(t, sent.Load())
+	assert.Empty(t, journal.tombstonedTabs("alice"))
+}
+
+func (j *tabSyncJournal) recordPublication(userID string, r crdt.PublicationReceipt) {
+	if j.publications == nil {
+		j.publications = make(map[string]*crdt.PublicationReceipt)
+	}
+	copy := r
+	copy.RequestHash = append([]byte(nil), r.RequestHash...)
+	copy.Response = proto.CloneOf(r.Response)
+	j.publications[userID+"/"+r.WorkerID+"/"+r.TabID] = &copy
+}
+func (j *tabSyncJournal) LookupTabPublication(_ context.Context, userID, workerID, tabID string) (*crdt.PublicationReceipt, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	r := j.publications[userID+"/"+workerID+"/"+tabID]
+	if r == nil {
+		return nil, crdt.ErrNotFound
+	}
+	copy := *r
+	copy.RequestHash = append([]byte(nil), r.RequestHash...)
+	copy.Response = proto.CloneOf(r.Response)
+	return &copy, nil
+}
+func (j *tabSyncJournal) CommitRejectedTabPublication(_ context.Context, userID string, r crdt.PublicationReceipt) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.commitErr != nil {
+		return j.commitErr
+	}
+	j.recordPublication(userID, r)
+	return nil
+}
+
+func (*tabSyncJournal) LookupHostedTabState(_ context.Context, _, _, tabID string) (*leapmuxv1.WorkerTabState, error) {
+	return &leapmuxv1.WorkerTabState{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID}, ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE}, nil
 }

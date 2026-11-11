@@ -7,10 +7,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
 
 // noIdentityRemoteIPC fails every spawn with ErrMissingIdentity and records
@@ -40,18 +42,8 @@ func (f *noIdentityRemoteIPC) TerminalSpawning(info TerminalSpawnInfo) ([]string
 	return f.spawn(info.TabID)
 }
 
-// An agent that cannot name its user must fail the way every other startup
-// failure does -- and must not leak the in-flight startup count.
-//
-// The agent row is already committed by the time the identity check runs, so
-// simply returning leaves it open forever with no startup_error and no
-// STARTUP_FAILED broadcast: every reconnecting client keeps listing a tab that
-// never started and never explains itself, which is the exact unexplained
-// symptom ErrMissingIdentity was introduced to remove. Separately,
-// AgentStartup.begin() has already added to the in-flight WaitGroup and only
-// runAgentStartup's deferred finish() releases it -- and that goroutine never
-// launches on this path -- so a bare return wedges Shutdown's WaitForInFlight
-// forever.
+// An IPC identity failure after confirmed publication keeps a visible failed tab.
+// It must record the startup failure and release the pre-goroutine startup claim.
 func TestOpenAgent_MissingIdentityFailsStartupAndReleasesInFlight(t *testing.T) {
 	t.Parallel()
 
@@ -63,8 +55,12 @@ func TestOpenAgent_MissingIdentityFailsStartupAndReleasesInFlight(t *testing.T) 
 		WorkingDir: t.TempDir(),
 	}, w)
 
-	// The caller is told, but that alone is not enough -- see below.
-	require.NotEmpty(t, w.rejections(), "the calling RPC must report the failure")
+	require.Empty(t, w.rejections())
+	require.Len(t, w.responsesSnapshot(), 1)
+	response := &leapmuxv1.OpenAgentResponse{}
+	require.NoError(t, proto.Unmarshal(w.responsesSnapshot()[0].GetPayload(), response))
+	require.NotNil(t, response.GetPublication(), "the visible tab has a confirmed Hub publication")
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, response.GetAgent().GetStatus())
 
 	// The startup wait group must be releasable. Guard with a timeout rather
 	// than calling WaitForInFlight directly, so a leak fails the test instead
@@ -90,13 +86,11 @@ func TestOpenAgent_MissingIdentityFailsStartupAndReleasesInFlight(t *testing.T) 
 	assert.NotEmpty(t, row.StartupError,
 		"a spawn refused for a missing identity must persist why, or the tab is a phantom")
 
-	// ...and the row must be tombstoned. This is the only startup failure that
-	// answers the RPC with an error instead of an OpenAgentResponse, so the
-	// client never learns the agent id: it cannot list the tab and will never
-	// send CloseTab. An open row here is a tab nobody can name and nobody can
-	// close, left for the hourly OrphanReconciler to notice.
-	assert.True(t, row.ClosedAt.Valid,
-		"nothing will ever close this row: the refusal must tombstone it itself")
+	assert.Equal(t, row.ID, response.GetAgent().GetId())
+	assert.False(t, row.ClosedAt.Valid, "the published failed tab must remain available for inspection and restart")
+	creation, err := svc.Queries.GetTabCreation(ctx, db.GetTabCreationParams{UserID: "user-1", WorkerID: svc.WorkerID, TabID: row.ID})
+	require.NoError(t, err)
+	assert.Equal(t, creationCommitted, creation.State, "the fatal IPC outcome must complete the durable startup checkpoint")
 }
 
 // A restart that cannot name its user must fail the restart AND retire the dead

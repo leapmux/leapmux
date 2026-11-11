@@ -385,7 +385,7 @@ func run(ctx context.Context, cfg RunConfig, cleanup runCleanup) (result error) 
 	// loop takes over.
 	if cfg.OnConnectionState != nil {
 		client.OnConnectionState = func(connected bool, err error) {
-			cfg.OnConnectionState(ConnectionState{Connected: connected, HubURL: cfg.HubURL, Err: err})
+			cfg.OnConnectionState(ConnectionState{Connected: connected, HubURL: hubEndpoint.URL(), Err: err})
 		}
 	}
 	connectionErr := client.ConnectWithReconnect(runCtx, cfg.AuthToken)

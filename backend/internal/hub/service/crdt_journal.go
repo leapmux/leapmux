@@ -508,7 +508,13 @@ func (j *crdtJournal) CommitBatch(ctx context.Context, c crdt.CommitBatch) error
 			return fmt.Errorf("insert dedup row %s: %w", d.BatchID, err)
 		}
 		idx := txTabIndexWriter{tx: tx, owner: owner}
-		return crdt.ApplyDiff(ctx, idx, c.IndexDiff)
+		if err := crdt.ApplyDiff(ctx, idx, c.IndexDiff); err != nil {
+			return err
+		}
+		if c.Publication != nil {
+			return insertTabPublication(ctx, tx, owner, *c.Publication)
+		}
+		return nil
 	})
 }
 
@@ -660,4 +666,64 @@ func tabIndexKeys(keys []crdt.TabKey) []store.TabIndexKey {
 		out[i] = store.TabIndexKey{UserID: owner, TabID: k.TabID}
 	}
 	return out
+}
+
+func insertTabPublication(ctx context.Context, st store.Store, owner userid.UserID, receipt crdt.PublicationReceipt) error {
+	payload, err := proto.Marshal(receipt.Response)
+	if err != nil {
+		return fmt.Errorf("encode tab publication result: %w", err)
+	}
+	params := store.InsertWorkerTabPublicationParams{WorkerTabPublicationKey: store.WorkerTabPublicationKey{UserID: owner, WorkerID: receipt.WorkerID, TabID: receipt.TabID}, WorkerTabPublication: store.WorkerTabPublication{RequestHash: receipt.RequestHash, ResponsePayload: payload}}
+	if receipt.Replace {
+		return st.WorkerTabPublications().Replace(ctx, params)
+	}
+	return st.WorkerTabPublications().Insert(ctx, params)
+}
+
+func (j *crdtJournal) LookupTabPublication(ctx context.Context, userID, workerID, tabID string) (*crdt.PublicationReceipt, error) {
+	owner, err := mintTenant(userID)
+	if err != nil {
+		return nil, err
+	}
+	row, err := j.store.WorkerTabPublications().Get(ctx, store.WorkerTabPublicationKey{UserID: owner, WorkerID: workerID, TabID: tabID})
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, crdt.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	response := &leapmuxv1.PublishTabResponse{}
+	if err := proto.Unmarshal(row.ResponsePayload, response); err != nil {
+		return nil, fmt.Errorf("decode tab publication result: %w", err)
+	}
+	if response.GetOutcome() == nil {
+		return nil, errors.New("stored tab publication has no result")
+	}
+	return &crdt.PublicationReceipt{WorkerID: workerID, TabID: tabID, RequestHash: row.RequestHash, Response: response}, nil
+}
+
+func (j *crdtJournal) CommitRejectedTabPublication(ctx context.Context, userID string, receipt crdt.PublicationReceipt) error {
+	owner, err := mintTenant(userID)
+	if err != nil {
+		return err
+	}
+	if receipt.Response.GetRejected() == nil {
+		return errors.New("a rejection receipt is required")
+	}
+	return j.store.RunInTransaction(ctx, func(tx store.Store) error { return insertTabPublication(ctx, tx, owner, receipt) })
+}
+
+func (j *crdtJournal) LookupHostedTabState(ctx context.Context, userID, workerID, tabID string) (*leapmuxv1.WorkerTabState, error) {
+	owner, err := mintTenant(userID)
+	if err != nil {
+		return nil, err
+	}
+	row, err := j.store.WorkspaceTabIndex().GetOwnedState(ctx, store.GetWorkerOwnedTabStateParams{UserID: owner, WorkerID: workerID, TabID: tabID})
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, crdt.ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &leapmuxv1.WorkerTabState{Tab: &leapmuxv1.TabIdent{TabType: row.TabType, TabId: row.TabID}, ArchiveState: row.ArchiveState}, nil
 }

@@ -25,10 +25,10 @@ const (
 // ErrConnectionClosed is returned when a sender races worker disconnect.
 var ErrConnectionClosed = errors.New("worker connection closed")
 
-// ErrControlSaturated is returned when SendControl cannot enqueue because the
-// byte budget (including the control reserve) is full. Distinct from
-// ErrConnectionClosed so callers can retry or re-queue without treating the
-// worker as offline.
+// ErrControlSaturated is returned when SendControl cannot enqueue a control
+// frame within the available byte budget. SendControl fences the connection
+// before returning it. The distinct error lets shutdown notification reporting
+// identify Hub-side saturation instead of a worker that had already disconnected.
 var ErrControlSaturated = errors.New("worker connection control queue saturated")
 
 // Conn represents a connected worker's bidirectional stream. Sends enqueue

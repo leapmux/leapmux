@@ -4,21 +4,25 @@ import type { GitRepoStatus } from '~/generated/proto/leapmux/v1/common_pb'
 import { create } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { AgentActivityState, AgentStatus, AgentStatusChangeSchema, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, AgentProvider, AgentStatus, AgentStatusChangeSchema, AvailableOptionGroupSchema, AvailableOptionSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { GitRepoStatusSchema, TabHydrationStatus, TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus, TerminalStatusChangeSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { handleAgentStatusChange } from '~/hooks/agentEvents'
+import { handleActivityChanged, handleAgentStatusChange } from '~/hooks/agentEvents'
 import { createLoadingSignal } from '~/hooks/createLoadingSignal'
 import { applyTerminalStatusChange, markTerminalExited } from '~/hooks/terminalEvents'
-import { setCRDTBridge } from '~/lib/crdt'
+import { setCRDTBridge, setTabWorkerId } from '~/lib/crdt'
+import { getCachedSettingsLabel } from '~/lib/settingsLabelCache'
 import { createAgentActivityStore } from '~/stores/agentActivity.store'
 import { createAgentSessionStore } from '~/stores/agentSession.store'
 import { createChatStore } from '~/stores/chat.store'
 import { createControlStore } from '~/stores/control.store'
+import { repoKey } from '~/stores/repoGit'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { isFileTab, isImageTab } from '~/stores/tab.types'
-import { emitAddTab } from '~/stores/tabOps'
+import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
+import { settle } from '~/test-support/async'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
+import { createCanonicalTabPublisher } from '~/test-support/tabPublication'
 import { createTestTabStores } from '~/test-support/tabStores'
 import { useTabHydrators } from './useTabHydrators'
 
@@ -138,6 +142,7 @@ function applyLiveStatus(
   handleAgentStatusChange(
     agentId,
     create(AgentStatusChangeSchema, {
+      agentProvider: AgentProvider.CLAUDE_CODE,
       status: event.status,
       ...(event.gitStatus !== undefined
         ? { gitStatus: event.gitStatus }
@@ -170,7 +175,7 @@ function applyLiveStatus(
 function applyLiveTerminalStatus(
   s: Pick<ReturnType<typeof createTestTabStores>, 'view' | 'metadata'> & { repoGitStore: ReturnType<typeof createRepoGitStore> },
   terminalId: string,
-  event: { status: TerminalStatus, startupError?: string, startupMessage?: string },
+  event: { status: TerminalStatus, startupError?: string, startupMessage?: string, gitStatus?: GitRepoStatus },
 ) {
   applyTerminalStatusChange(
     s.metadata,
@@ -221,8 +226,10 @@ function setup(workspaceId = 'ws-test', detachedTerminals?: () => readonly { id:
     mount: (
       onlineWorkerIds?: () => ReadonlySet<string>,
       settingsPendingAxes?: (agentId: string) => ReadonlySet<string>,
+      userId: () => string | undefined = () => 'usertest',
     ) =>
       useTabHydrators({
+        ...{ userId },
         view: stores.view,
         metadata: stores.metadata,
         repoGitStore,
@@ -2040,5 +2047,327 @@ describe('useTabHydrators', () => {
         vi.useRealTimers()
       }
     })
+  })
+})
+
+describe('useTabHydrators lifetime', () => {
+  for (const kind of ['agent', 'terminal', 'file'] as const) {
+    it.each(['account', 'dispose', 'close'] as const)(`ignores a late ${kind} reply after %s`, async (change) => {
+      const held = heldReply()
+      const mock = kind === 'agent'
+        ? mockListAgents
+        : kind === 'terminal'
+          ? mockListTerminals
+          : mockGetTabPayload
+      mock.mockReturnValueOnce(held.promise)
+      const [userId, setUserId] = createSignal<string | undefined>('usertest')
+      const { s, dispose } = createRoot((dispose) => {
+        const s = setup()
+        s.add(kind === 'agent'
+          ? TabType.AGENT
+          : kind === 'terminal'
+            ? TabType.TERMINAL
+            : TabType.FILE, 'late')
+        s.mount(undefined, undefined, userId)
+        return { s, dispose }
+      })
+      try {
+        await flush()
+        expect(mock).toHaveBeenCalledOnce()
+        if (change === 'account')
+          setUserId('other-account')
+        if (change === 'dispose')
+          dispose()
+        if (change === 'close') {
+          emitRemoveTab(kind === 'agent'
+            ? TabType.AGENT
+            : kind === 'terminal'
+              ? TabType.TERMINAL
+              : TabType.FILE, 'late')
+        }
+        s.metadata.remove('late')
+        held.settle(kind === 'agent'
+          ? {
+              agents: [
+                agentInfo('late'),
+              ],
+              verdicts: [],
+            }
+          : kind === 'terminal'
+            ? {
+                terminals: [
+                  terminalInfo('late'),
+                ],
+                verdicts: [],
+              }
+            : {
+                payload: {
+                  workingDir: '/secret',
+                  kind: {
+                    case: 'file',
+                    value: { filePath: '/secret/a' },
+                  },
+                },
+              })
+        await flush()
+        await flush()
+        expect(s.metadata.get('late')).toBeUndefined()
+        expect(s.repoGitStore.repos()).toEqual({})
+      }
+      finally { dispose() }
+    })
+  }
+})
+
+describe('useTabHydrators snapshot freshness', () => {
+  it.each([AgentStatus.UNSPECIFIED, AgentStatus.ACTIVE])('keeps live Git identity and catalog caches over an old agent snapshot with status %s', async (status) => {
+    const held = heldReply()
+    mockListAgents.mockReturnValueOnce(held.promise)
+    const { s, dispose } = createRoot((dispose) => {
+      const s = setup()
+      s.add(TabType.AGENT, 'fresh')
+      s.mount()
+      return { s, dispose }
+    })
+    try {
+      await settle()
+      const groups = [
+        modelGroup('model-x', ['model-x']),
+      ]
+      groups[0]!.options[0]!.name = 'Current model label'
+      applyLiveStatus(s, 'fresh', {
+        status,
+        gitStatus: create(GitRepoStatusSchema, { toplevel: '/new', branch: 'new' }),
+        optionGroups: groups,
+      })
+      const oldGroups = [
+        modelGroup('model-x', ['model-x']),
+      ]
+      oldGroups[0]!.options[0]!.name = 'Obsolete model label'
+      held.settle({
+        agents: [
+          agentInfo('fresh', {
+            gitStatus: create(GitRepoStatusSchema, { toplevel: '/old', branch: 'old' }),
+            optionGroups: oldGroups,
+          }),
+        ],
+        verdicts: [],
+      })
+      await settle()
+      expect.soft(s.view.getAgentTab('fresh')?.gitToplevel).toBe('/new')
+      expect.soft(s.repoGitStore.get(repoKey('w1', '/old'))).toBeUndefined()
+      expect.soft(getCachedSettingsLabel(AgentProvider.CLAUDE_CODE, 'model', 'model-x')).toBe('Current model label')
+    }
+    finally { dispose() }
+  })
+
+  it.each([TerminalStatus.UNSPECIFIED, TerminalStatus.READY])('keeps live Git identity over an old terminal snapshot with status %s', async (status) => {
+    const held = heldReply()
+    mockListTerminals.mockReturnValueOnce(held.promise)
+    const { s, dispose } = createRoot((dispose) => {
+      const s = setup()
+      s.add(TabType.TERMINAL, 'fresh')
+      s.mount()
+      return { s, dispose }
+    })
+    try {
+      await settle()
+      applyLiveTerminalStatus(s, 'fresh', {
+        status,
+        gitStatus: create(GitRepoStatusSchema, { toplevel: '/new', branch: 'new' }),
+      })
+      held.settle({
+        terminals: [
+          terminalInfo('fresh', {
+            gitStatus: create(GitRepoStatusSchema, { toplevel: '/old', branch: 'old' }),
+          }),
+        ],
+        verdicts: [],
+      })
+      await settle()
+      expect.soft(s.view.getTerminalTab('fresh')?.gitToplevel).toBe('/new')
+      expect.soft(s.repoGitStore.get(repoKey('w1', '/old'))).toBeUndefined()
+    }
+    finally { dispose() }
+  })
+})
+
+describe('useTabHydrators Worker reassignment', () => {
+  it.each(['agent', 'terminal', 'file'] as const)('starts a new %s request before its former Worker answers', async (kind) => {
+    const old = heldReply()
+    const fresh = heldReply()
+    const mock = kind === 'agent'
+      ? mockListAgents
+      : kind === 'terminal'
+        ? mockListTerminals
+        : mockGetTabPayload
+    mock.mockImplementation((workerId: string) => workerId === 'w1'
+      ? old.promise
+      : fresh.promise)
+    const type = kind === 'agent'
+      ? TabType.AGENT
+      : kind === 'terminal'
+        ? TabType.TERMINAL
+        : TabType.FILE
+    const { s, publisher, dispose } = createRoot((dispose) => {
+      const s = setup()
+      const publisher = createCanonicalTabPublisher(s.harness)
+      publisher.publish(type, 'reassigned', { workerId: 'w1' })
+      s.mount()
+      return { s, publisher, dispose }
+    })
+    try {
+      await settle()
+      publisher.deliver([
+        setTabWorkerId(publisher.context, type, 'reassigned', 'w2'),
+      ])
+      await settle()
+      expect(s.view.getById(type, 'reassigned')?.workerId).toBe('w2')
+      expect(mock).toHaveBeenCalledTimes(2)
+      expect(mock.mock.calls[1]?.[0]).toBe('w2')
+      old.settle(kind === 'agent'
+        ? {
+            agents: [
+              agentInfo('reassigned', { title: 'Old' }),
+            ],
+            verdicts: [],
+          }
+        : kind === 'terminal'
+          ? {
+              terminals: [
+                terminalInfo('reassigned', { title: 'Old' }),
+              ],
+              verdicts: [],
+            }
+          : {
+              payload: {
+                workingDir: '/old',
+                kind: {
+                  case: 'file',
+                  value: { filePath: '/old/a' },
+                },
+              },
+            })
+      await settle()
+      expect(s.metadata.get('reassigned')).toBeUndefined()
+      fresh.settle(kind === 'agent'
+        ? {
+            agents: [
+              agentInfo('reassigned', { title: 'Fresh', workerId: 'w2' }),
+            ],
+            verdicts: [],
+          }
+        : kind === 'terminal'
+          ? {
+              terminals: [
+                terminalInfo('reassigned', { title: 'Fresh' }),
+              ],
+              verdicts: [],
+            }
+          : {
+              payload: {
+                workingDir: '/new',
+                kind: {
+                  case: 'file',
+                  value: { filePath: '/new/a' },
+                },
+              },
+            })
+      await settle()
+      expect(s.metadata.get('reassigned')).toMatchObject(kind === 'file'
+        ? { filePath: '/new/a', hydrated: true }
+        : { title: 'Fresh', hydrated: true })
+      expect(mock).toHaveBeenCalledTimes(2)
+    }
+    finally { dispose() }
+  })
+})
+
+describe('useTabHydrators newer private metadata', () => {
+  it.each(['agent', 'terminal', 'image'] as const)('preserves a title written while its %s snapshot waits', async (kind) => {
+    const held = heldReply()
+    const mock = kind === 'agent'
+      ? mockListAgents
+      : kind === 'terminal'
+        ? mockListTerminals
+        : mockGetTabPayload
+    mock.mockReturnValueOnce(held.promise)
+    const { s, dispose } = createRoot((dispose) => {
+      const s = setup()
+      s.add(kind === 'agent'
+        ? TabType.AGENT
+        : kind === 'terminal'
+          ? TabType.TERMINAL
+          : TabType.IMAGE, 'renamed')
+      s.mount()
+      return { s, dispose }
+    })
+    try {
+      await settle()
+      s.metadata.patch('renamed', { title: 'Current private title' })
+      held.settle(kind === 'agent'
+        ? {
+            agents: [
+              agentInfo('renamed', { title: 'Obsolete title' }),
+            ],
+            verdicts: [],
+          }
+        : kind === 'terminal'
+          ? {
+              terminals: [
+                terminalInfo('renamed', { title: 'Obsolete title' }),
+              ],
+              verdicts: [],
+            }
+          : {
+              payload: {
+                workingDir: '/repo',
+                kind: {
+                  case: 'image',
+                  value: {
+                    agentId: 'a',
+                    seq: 1n,
+                    imageIndex: 0,
+                    title: 'Obsolete title',
+                  },
+                },
+              },
+            })
+      await settle()
+      expect(s.metadata.get('renamed')?.title).toBe('Current private title')
+      expect(s.metadata.get('renamed')?.hydrated).toBe(true)
+    }
+    finally { dispose() }
+  })
+
+  it('preserves a newer live activity level over the list baseline', async () => {
+    const held = heldReply()
+    mockListAgents.mockReturnValueOnce(held.promise)
+    const { s, dispose } = createRoot((dispose) => {
+      const s = setup()
+      s.add(TabType.AGENT, 'working')
+      s.mount()
+      return { s, dispose }
+    })
+    try {
+      await settle()
+      handleActivityChanged('working', { state: AgentActivityState.WORKING }, {
+        view: s.view,
+        metadata: s.metadata,
+        selection: s.selection,
+        agentActivityStore: s.agentActivityStore,
+        getActiveWorkspaceId: () => 'ws-test',
+      })
+      held.settle({
+        agents: [
+          agentInfo('working', { publishedActivityState: AgentActivityState.IDLE }),
+        ],
+        verdicts: [],
+      })
+      await settle()
+      expect(s.agentActivityStore.isBusy('working')).toBe(true)
+      expect(s.metadata.get('working')?.hydrated).toBe(true)
+    }
+    finally { dispose() }
   })
 })

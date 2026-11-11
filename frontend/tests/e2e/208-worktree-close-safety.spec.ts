@@ -4,11 +4,12 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { TabType } from '../../src/generated/proto/leapmux/v1/common_pb'
+import { TabInsertion } from '../../src/generated/proto/leapmux/v1/tab_creation_pb'
 import { WorkerPrivateService } from '../../src/generated/proto/leapmux/v1/worker_private_pb'
 import { fileTabPayload } from '../../src/lib/tabPayload'
 import { test } from './fixtures'
 import { createWorkspaceViaAPI, getTestChannel, openAgentViaAPI } from './helpers/api'
-import { getUserEventsSubscription, seedTabIntoWorkspace } from './helpers/crdt'
+import { getUserEventsSubscription } from './helpers/crdt'
 import { deleteWorkspaceViaUI, loginViaToken, openWorkspace, tabById } from './helpers/ui'
 import { inspectLastTabCloseViaAPI, waitForAgentStartupViaAPI, waitForWorkerAgentsClosed } from './helpers/workerTabs'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
@@ -57,18 +58,17 @@ test.describe('worktree close safety', () => {
     const channel = await getTestChannel(hubUrl, cookie)
     const tabId = `file-untracked-${workspaceId}`
     await channel.callWorker(workerId, WorkerPrivateService.method.registerTabPayload, {
-      tabId,
+      creation: {
+        tabId,
+        placement: {
+          workspaceId,
+          destination: { case: 'firstLeaf', value: {} },
+          insertion: TabInsertion.LAST,
+        },
+      },
       payload: fileTabPayload(join(paths.nested, 'committed.txt'), paths.worktree),
     })
-    await seedTabIntoWorkspace({
-      hubUrl,
-      cookie,
-      workspaceId,
-      workerId,
-      tabId,
-      tabType: TabType.FILE,
-      userEvents,
-    })
+    await userEvents.awaitRootNodeId(workspaceId)
     await loginViaToken(page, cookie)
     await openWorkspace(page, workspaceId)
     await clickClose(page, tabId)

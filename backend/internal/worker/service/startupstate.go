@@ -40,6 +40,9 @@ const (
 //     PTY was registered in the Manager, so runTerminalStartup can apply
 //     it the moment StartTerminal returns.
 type startupEntry struct {
+	creation          *creationOperation
+	creationResult    creationStartupOutcome
+	creationHandedOff bool
 	// id is the agent or terminal this entry claims. It travels ON the entry so
 	// every transition can check that the map slot still holds THIS entry: a
 	// startup goroutine that a close already retired must not retire the
@@ -628,6 +631,9 @@ func (r *startupCore) succeed(id string, handle *startupEntry) {
 	r.mu.Lock()
 	entry := r.entries[id]
 	if entry != nil && (handle == nil || entry == handle) {
+		if entry.creation != nil && entry.creationResult.kind == creationStartupIncomplete {
+			entry.creationResult = creationStartupOutcome{kind: creationStartupSucceeded}
+		}
 		delete(r.entries, id)
 		entry.release()
 	} else {
@@ -667,6 +673,13 @@ func (r *startupCore) fail(h *startupEntry, startupError string) {
 		entry.stopEviction()
 		return
 	}
+	if h.creation != nil {
+		message := startupError
+		if message == "" {
+			message = "The process failed during startup."
+		}
+		h.creationResult = creationStartupOutcome{kind: creationStartupFailed, message: message}
+	}
 	// Release the startup this failure replaces: an awaited startup that FAILS
 	// has stopped being in flight just as surely as one that succeeded.
 	prev.release()
@@ -689,8 +702,8 @@ func (r *startupCore) fail(h *startupEntry, startupError string) {
 // entry and nothing to record; when the startup already FAILED, fail() has
 // installed a different entry and this stamps that one, which no goroutine is
 // reading. Both fall out of the handle rather than needing a guard.
-func (r *startupCore) cancelAndClear(id string, disposition closeWorktreeDisposition) {
-	r.cancelStartup(id, true, func(e *startupEntry) {
+func (r *startupCore) cancelAndClear(id string, disposition closeWorktreeDisposition) *startupEntry {
+	return r.cancelStartup(id, true, func(e *startupEntry) {
 		e.closeDisposition = disposition
 		e.closeRaced = true
 	})
@@ -758,13 +771,17 @@ func (r *startupCore) cancelStartup(id string, preferFinished bool, stamp func(*
 	return entry
 }
 
-// waitForFinished blocks until the goroutine of entry returned, and the goroutine
-// of every claim behind it. The links never change after a claim set them, so no
-// lock is needed.
+// waitForFinished joins canceled process startups and their enclosing claims.
+// Creation owns its publication admission before handoff. Archive teardown must
+// not join that admission while it holds locks the publisher still needs.
 func (r *startupCore) waitForFinished(entry *startupEntry) {
 	for ; entry != nil; entry = entry.enclosing {
-		if entry.finished != nil {
-			<-entry.finished
+		r.mu.Lock()
+		join := entry.finished != nil && (entry.creation == nil || entry.creationHandedOff)
+		finished := entry.finished
+		r.mu.Unlock()
+		if join {
+			<-finished
 		}
 	}
 }
@@ -1110,6 +1127,87 @@ func (r *startupCore) terminalResizeState(ctx context.Context, h *startupEntry) 
 	}
 	if h != nil && (r.entries[h.id] != h || h.failed) {
 		return errStartupEntryChanged
+	}
+	return nil
+}
+
+func (r *startupCore) bindCreation(handle *startupEntry, op *creationOperation) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if handle == nil || r.entries[handle.id] != handle {
+		return false
+	}
+	handle.creation = op
+	return true
+}
+func (r *startupCore) creationOutcome(handle *startupEntry) creationStartupOutcome {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if handle == nil {
+		return creationStartupOutcome{}
+	}
+	if handle.archiveStopped || handle.shutdownStopped || handle.closeRaced {
+		return creationStartupOutcome{kind: creationStartupInterrupted}
+	}
+	return handle.creationResult
+}
+
+// creationCheckpointDone includes an original creation behind an internal relaunch.
+// The registry already retains that chain until every startup tail returns.
+func (r *startupCore) creationCheckpointDone(id string) <-chan struct{} {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for entry := r.inflight[id]; entry != nil; entry = entry.enclosing {
+		if entry.creation != nil && !entry.hasFinished() {
+			return entry.finished
+		}
+	}
+	return nil
+}
+
+func (r *startupCore) ownsCreation(entry *startupEntry, op *creationOperation) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return entry != nil && r.entries[entry.id] == entry && entry.creation == op && !entry.failed && !r.claimsClosed
+}
+func (r *startupCore) creationProcessOwns(entry *startupEntry) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return entry != nil && entry.creationHandedOff
+}
+func (r *startupCore) admitCreationProcess(entry *startupEntry, op *creationOperation) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if entry == nil || r.entries[entry.id] != entry || entry.creation != op || entry.failed || r.claimsClosed || entry.archiveStopped || entry.shutdownStopped || entry.closeRaced || r.closeInProgress[entry.id] > 0 {
+		return errors.New("the startup no longer owns its creation admission")
+	}
+	entry.creationHandedOff = true
+	return nil
+}
+func (r *startupCore) hasProcessStartup(id string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for entry := r.inflight[id]; entry != nil; entry = entry.enclosing {
+		if !entry.hasFinished() && (entry.creation == nil || entry.creationHandedOff) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *startupCore) waitForFinishedContext(ctx context.Context, entry *startupEntry) error {
+	for ; entry != nil; entry = entry.enclosing {
+		r.mu.Lock()
+		join := entry.finished != nil && (entry.creation == nil || entry.creationHandedOff)
+		finished := entry.finished
+		r.mu.Unlock()
+		if join {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-finished:
+			}
+		}
 	}
 	return nil
 }

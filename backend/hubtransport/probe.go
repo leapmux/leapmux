@@ -87,9 +87,8 @@ type prober struct {
 	// The test controls the end of the cooldown without a sleep or a real timer.
 	now func() time.Time
 
-	mu      sync.Mutex
-	decided bool
-	result  verdict
+	mu     sync.Mutex
+	result verdict
 	// undecidedUntil specifies when an undecided verdict permits another probe.
 	// Zero permits a probe now. See undecidedCooldown.
 	undecidedUntil time.Time
@@ -112,7 +111,7 @@ func newProber(endpointURL string, dial func(ctx context.Context) (net.Conn, err
 // Its cancellation does not change the verdict for other callers.
 func (p *prober) supportsH2C(ctx context.Context) verdict {
 	p.mu.Lock()
-	if p.decided {
+	if p.result != verdictUndecided {
 		result := p.result
 		p.mu.Unlock()
 		return result
@@ -143,12 +142,9 @@ func (p *prober) supportsH2C(ctx context.Context) verdict {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.decided {
-		return p.result
-	}
-	// The probe reached no verdict. Another probe here makes each waiter repeat the same failed attempt.
-	// The next request after the cooldown starts another probe.
-	return verdictUndecided
+	// Waiters use the published result. Only a later request after the cooldown
+	// can start another probe when this result is inconclusive.
+	return p.result
 }
 
 // runProbe runs one probe and publishes its verdict.
@@ -159,7 +155,6 @@ func (p *prober) runProbe(done chan struct{}) {
 	p.mu.Lock()
 	p.inflight = nil
 	if result != verdictUndecided {
-		p.decided = true
 		p.result = result
 	} else {
 		// Keep no decided verdict after an inconclusive probe. Delay another probe until the cooldown ends.

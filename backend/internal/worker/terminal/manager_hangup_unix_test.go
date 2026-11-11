@@ -447,6 +447,10 @@ func TestManager_HangUpAllJoinsAReplacedExitHandler(t *testing.T) {
 		<-entered
 		<-oldTerm.readDoneCh
 		<-oldTerm.childSideClosedCh
+		canceled, cancel := context.WithCancel(t.Context())
+		cancel()
+		require.ErrorIs(t, m.WaitForExitContext(canceled, "replaced"), context.Canceled,
+			"a creation-owned wait must remain cancellable while the exit callback is held")
 
 		// The restart replaces the PTY while the old exit goroutine is parked in
 		// the handler above, and installs a fresh one.
@@ -461,6 +465,7 @@ func TestManager_HangUpAllJoinsAReplacedExitHandler(t *testing.T) {
 		replacement := hangUpTerminal(m, "replaced")
 		m.StopTerminal("replaced")
 		m.WaitForExit("replaced")
+		require.NoError(t, m.WaitForExitContext(t.Context(), "replaced"))
 		<-replacement.readDoneCh
 		<-replacement.childSideClosedCh
 

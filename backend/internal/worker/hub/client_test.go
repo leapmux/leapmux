@@ -9,8 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -93,95 +91,6 @@ func TestNewUsesRealClockByDefault(t *testing.T) {
 	c := newTestClient(t, "http://localhost:0")
 	require.IsType(t, quartz.NewReal(), c.clock,
 		"New must wire the real clock, not a seeded mock a WithinDuration check would accept")
-}
-
-func TestResolveWorkingDir_HomeDir(t *testing.T) {
-	home, err := os.UserHomeDir()
-	require.NoError(t, err, "UserHomeDir")
-
-	got, err := resolveWorkingDir("~")
-	require.NoError(t, err, "resolveWorkingDir(~)")
-	assert.Equal(t, home, got)
-}
-
-func TestResolveWorkingDir_HomeSubdir(t *testing.T) {
-	home, err := os.UserHomeDir()
-	require.NoError(t, err, "UserHomeDir")
-
-	// Use a subdirectory that exists under home. On macOS/Linux, home itself
-	// always exists, so we create a temp dir under it for a reliable test.
-	sub := filepath.Join(home, "Documents")
-	if _, statErr := os.Stat(sub); statErr != nil {
-		t.Skipf("~/Documents does not exist, skipping")
-	}
-
-	got, err := resolveWorkingDir("~/Documents")
-	require.NoError(t, err, "resolveWorkingDir(~/Documents)")
-	assert.Equal(t, sub, got)
-}
-
-func TestResolveWorkingDir_TildeInMiddle(t *testing.T) {
-	// /foo/~/bar is NOT a tilde prefix — should be treated literally.
-	// This path likely doesn't exist, so we expect an error.
-	_, err := resolveWorkingDir("/foo/~/bar")
-	assert.Error(t, err, "expected error for /foo/~/bar (path should not exist)")
-}
-
-func TestResolveWorkingDir_DoubleTilde(t *testing.T) {
-	// ~~ is NOT a tilde prefix — resolves relative to cwd as ./~~
-	_, err := resolveWorkingDir("~~")
-	assert.Error(t, err, "expected error for ~~ (no such directory)")
-}
-
-func TestResolveWorkingDir_DoubleTildeSubpath(t *testing.T) {
-	_, err := resolveWorkingDir("~~/foo")
-	assert.Error(t, err, "expected error for ~~/foo (no such directory)")
-}
-
-func TestResolveWorkingDir_ExistingDir(t *testing.T) {
-	// Use a temp directory to avoid symlink issues (/tmp -> /private/tmp on macOS).
-	dir := t.TempDir()
-
-	got, err := resolveWorkingDir(dir)
-	require.NoError(t, err, "resolveWorkingDir(%s)", dir)
-	expected := filepath.Clean(dir)
-	assert.Equal(t, expected, got)
-}
-
-func TestResolveWorkingDir_NonexistentPath(t *testing.T) {
-	_, err := resolveWorkingDir("/nonexistent/path/that/does/not/exist")
-	assert.Error(t, err, "expected error for nonexistent path")
-}
-
-func TestResolveWorkingDir_FileNotDir(t *testing.T) {
-	// Create a temporary file (not a directory).
-	f, err := os.CreateTemp("", "resolveWorkingDir-test-*")
-	require.NoError(t, err)
-	_ = f.Close()
-	defer func() { _ = os.Remove(f.Name()) }()
-
-	_, err = resolveWorkingDir(f.Name())
-	assert.Error(t, err, "expected error for a file path (not a directory)")
-}
-
-func TestResolveWorkingDir_Empty(t *testing.T) {
-	// Empty string resolves to cwd.
-	cwd, err := os.Getwd()
-	require.NoError(t, err)
-
-	got, err := resolveWorkingDir("")
-	require.NoError(t, err, "resolveWorkingDir('')")
-	assert.Equal(t, cwd, got)
-}
-
-func TestResolveWorkingDir_RelativePath(t *testing.T) {
-	// "." should resolve to cwd.
-	cwd, err := os.Getwd()
-	require.NoError(t, err)
-
-	got, err := resolveWorkingDir(".")
-	require.NoError(t, err, "resolveWorkingDir('.')")
-	assert.Equal(t, cwd, got)
 }
 
 func TestConnectWithReconnect_ReconnectsOnFailure(t *testing.T) {
@@ -1208,7 +1117,6 @@ func writerStreamClient(t *testing.T, writeErr, refusal error) (*Client, *fakeHu
 	c := newTestClient(t, "http://127.0.0.1:1", WithClock(testutil.NewQuartzMock(t)))
 	stream := newFakeHubStream(writeErr, refusal)
 	c.dialStream = func(context.Context, string) (hubStream, error) { return stream, nil }
-	c.TabSyncProvider = func() *leapmuxv1.WorkerTabInventory { return &leapmuxv1.WorkerTabInventory{} }
 	return c, stream
 }
 
@@ -1221,6 +1129,7 @@ func TestConnect_ReturnsTheHubsRefusalWhenAWriteHitsTheClosedStream(t *testing.T
 			result := make(chan error, 1)
 			go func() { result <- c.Connect(t.Context(), "token") }()
 			synctest.Wait()
+			require.NoError(t, c.Send(inventoryMsg()))
 			close(stream.receiveOK)
 			assert.Equal(t, refusalWorkerDeleted, classifyStreamRefusal(<-result))
 			assert.NotContains(t, logs.String(), "writer gave up; reconnecting")
@@ -1233,6 +1142,7 @@ func TestConnect_ReturnsTheHubsRefusalWhenAWriteHitsTheClosedStream(t *testing.T
 			result := make(chan error, 1)
 			go func() { result <- c.Connect(t.Context(), "token") }()
 			synctest.Wait()
+			require.NoError(t, c.Send(inventoryMsg()))
 			err := <-result
 			assert.ErrorIs(t, err, failure)
 			assert.Equal(t, refusalRetry, classifyStreamRefusal(err))
@@ -1596,6 +1506,8 @@ func TestConnect_ClosesWithTheHandshakeOnlyOnAStop(t *testing.T) {
 				synctest.Wait()
 				if !failure {
 					cancel()
+				} else {
+					require.NoError(t, c.Send(inventoryMsg()))
 				}
 				require.Error(t, <-result)
 				want := "close"
@@ -1627,36 +1539,20 @@ func inventoryOfSize(t *testing.T, size int) *leapmuxv1.WorkerTabInventory {
 	return inventory
 }
 
-func TestConnect_SkipsAnOversizeTabInventory(t *testing.T) {
+func TestInventorySegments_RejectsAnUnrepresentableEntry(t *testing.T) {
 	for _, extra := range []int{0, 1} {
-		t.Run(map[int]string{0: "at the limit", 1: "over the limit"}[extra], func(t *testing.T) {
-			logs := testutil.CaptureDefaultLogger(t)
-			synctest.Test(t, func(t *testing.T) {
-				c, stream := writerStreamClient(t, nil, nil)
-				inventory := inventoryOfSize(t, channelwire.WorkerStreamMaxMessageBytes+extra)
-				c.TabSyncProvider = func() *leapmuxv1.WorkerTabInventory { return inventory }
-				ctx, cancel := context.WithCancel(t.Context())
-				defer cancel()
-				result := make(chan error, 1)
-				go func() { result <- c.Connect(ctx, "token") }()
-				synctest.Wait()
-				stream.mu.Lock()
-				sent := append([]*leapmuxv1.ConnectRequest(nil), stream.sent...)
-				stream.mu.Unlock()
-				require.NotEmpty(t, sent)
-				assert.NotNil(t, sent[0].GetHello())
-				if extra == 0 {
-					require.Len(t, sent, 2)
-					assert.NotNil(t, sent[1].GetWorkerTabInventory())
-					assert.NotContains(t, logs.String(), "oversize")
-				} else {
-					assert.Equal(t, 1, len(sent))
-					assert.Contains(t, logs.String(), "level=ERROR")
-					assert.Contains(t, logs.String(), "the periodic reconciler still converges")
-				}
-				cancel()
-				assert.ErrorIs(t, <-result, context.Canceled)
-			})
+		t.Run(fmt.Sprint(extra), func(t *testing.T) {
+			inventory := inventoryOfSize(t, channelwire.WorkerStreamMaxMessageBytes-2+extra)
+			segments, err := inventorySegments(t.Context(), inventory)
+			if extra == 0 {
+				require.NoError(t, err)
+				require.Len(t, segments, 1)
+				assert.Equal(t, channelwire.WorkerStreamMaxMessageBytes, proto.Size(segments[0]))
+				assert.True(t, segments[0].GetWorkerTabInventory().GetComplete())
+			} else {
+				require.Error(t, err)
+				assert.Nil(t, segments)
+			}
 		})
 	}
 }

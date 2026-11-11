@@ -172,6 +172,16 @@ All of one user's own work is a single trust domain from an agent's point of vie
 The Worker's check is defence in depth. The Hub already authorizes a channel to a Worker only for that Worker's own owner, so every delegation token that reaches it carries the right identity in the first place. The Worker verifies it anyway rather than trusting the Hub to be correct.
 {{< /callout >}}
 
+### Worker credentials and tab publication
+
+A registered Worker uses its bearer credential for registration state and its outbound Hub connection. That credential also permits publication of tabs hosted on that Worker in its owner's writable workspaces. The Hub derives both identities from the credential and checks the destination workspace and tile.
+
+For ordinary Agent, Terminal, File, and Image tabs, the Worker persists the resource and a durable creation operation. It then asks the Hub to commit the tab's public identity and placement. The Hub records the publication result in the same transaction as the layout change. Repeating the same creation returns that recorded result. A cancellation records its outcome durably so delayed publication cannot recreate a canceled tab.
+
+The public creation descriptor carries the tab ID, destination, relative ordering, and initial viewer preferences. File paths, image references, agent settings, and startup recovery inputs stay on the Worker. Private responses and events reach clients through their encrypted channels.
+
+The Worker credential also permits resolution and cancellation of its recorded creations. Treat control of a Worker credential as control of the public tab records hosted by that Worker. A Worker credential grants no authority to publish a tab hosted by another Worker.
+
 ## Worker identity and TOFU pinning
 
 Each Worker has a persistent **composite static keypair** (X25519 + ML-KEM-1024 + SLH-DSA-SHAKE-256f), generated when the Worker registers and stored in the Worker's local state. The Hub receives only the public halves, at registration, and stores them: it pins them to the Worker and refuses a connection that presents other keys.

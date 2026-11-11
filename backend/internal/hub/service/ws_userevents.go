@@ -279,8 +279,7 @@ func parkRefusalMessage(bound dropBound) string {
 	case dropBoundFrames:
 		return "userevents: park buffer full while building the bootstrap frame, falling back to a snapshot"
 	}
-	// No default arm, so a fourth bound stops compiling here rather than being
-	// described by whichever sentence happened to be last.
+	// Use a generic message for an unknown refusal limit.
 	return "userevents: a frame was refused while building the bootstrap frame, falling back to a snapshot"
 }
 

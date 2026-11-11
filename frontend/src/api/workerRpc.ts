@@ -158,8 +158,8 @@ function isWorkerUnavailable(err: unknown): err is ChannelError {
  * not the sequence, so a caller that sets one should expect the worst case
  * to be roughly four attempts plus 1.4s of backoff.
  *
- * A retry cannot double-apply a write: every site the worker answers
- * `Unavailable` from returns before it mutates anything.
+ * Every retry sends the same request. Tab creation carries a stable identity,
+ * so the Worker can resume a pending operation or return its committed result.
  */
 async function callWorker<I extends DescMessage, O extends DescMessage>(
   workerId: string,

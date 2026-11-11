@@ -21,6 +21,7 @@ export const TERMINAL_DISCONNECTED = 'disconnected' as const
 /** A terminal status as a tab shows it: the worker's status, or the client's own disconnected state. */
 export type TerminalDisplayStatus = TerminalStatus | typeof TERMINAL_DISCONNECTED
 
+export type FileDisplayMode = 'render' | 'source' | 'split'
 export type FileViewMode = 'working' | 'head' | 'staged' | 'unified-diff' | 'split-diff'
 export type FileDiffBase = 'head-vs-working' | 'head-vs-staged'
 export type FileOpenSource = 'all' | 'changed' | 'staged' | 'unstaged'
@@ -208,20 +209,21 @@ export function isImageTab(t: Tab): t is ImageTab {
  * True for the tab kinds whose contents live in a worker-side `TabPayload`
  * rather than in the CRDT.
  *
- * AGENT and TERMINAL tabs are resolved by their own worker RPCs (ListAgents /
- * ListTerminals) against ids the server minted. FILE and IMAGE tabs carry
- * client-minted ids and a payload the hub must never see, so they share one
- * register / replay / re-read / revoke path -- and every consumer of that path
- * asks this question rather than listing the two types again.
+ * AGENT and TERMINAL metadata comes from their dedicated Worker RPCs,
+ * ListAgents and ListTerminals. Ordinary creation supplies its identity in the
+ * creation descriptor. The Hub must never receive a private payload in plaintext.
+ * FILE and IMAGE resolve their private payloads through shared registration,
+ * replay, read, and revocation behavior. Consumers use this predicate to select
+ * that behavior.
  *
  * Two user-facing rules follow from the same property. Such a tab has no
  * server-side name to rename, because its title comes from the payload. And it
  * owns no process, so a close drops a viewer and stops nothing -- which is why
  * `LastTabCloseDialog` reads `willStop` from this predicate.
  *
- * A close is NOT merely a row delete, though: `useTabOperations` also revokes
- * the payload, and that RPC can remove the worktree from disk. Archive state
- * blocks the close of every tab type, this one included.
+ * useTabOperations requests CloseTab, and Worker teardown revokes the payload.
+ * That operation can remove the worktree from disk. Archive state blocks the
+ * close of every tab type, including a payload-backed tab.
  */
 export function isPayloadBackedTabType(type: TabType): boolean {
   return type === TabType.FILE || type === TabType.IMAGE

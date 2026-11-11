@@ -2,7 +2,7 @@ import type { AgentActivityStore } from '~/stores/agentActivity.store'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 import type { TabView } from '~/stores/tabView'
-import { createEffect, createMemo, createSignal, onCleanup, untrack } from 'solid-js'
+import { createComputed, createEffect, createMemo, createSignal, onCleanup, untrack } from 'solid-js'
 import { workerAgent, workerPrivate, workerTerminal } from '~/api/workerRpc'
 import { TabHydrationStatus, TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import { resolveSettingsTabFields } from '~/hooks/agentEvents'
@@ -12,7 +12,7 @@ import { tabPayloadView } from '~/lib/tabPayload'
 import { migrateErrorHintFromForResolvedRepo, upsertRepoGitFromProtoStatus } from '~/stores/repoGit'
 import { keepLiveTerminalStatus, protoToAgentTabFields, tabKey, terminalMetadata, withoutClientHeldTerminalFields, withoutLiveCatalogFields, withoutLiveStatusFields } from '~/stores/tab.helpers'
 import { isPayloadBackedTabType } from '~/stores/tab.types'
-import { tabPayloadMetadata } from '~/stores/tabMetadata.store'
+import { tabPayloadMetadata, watchTabWrites } from '~/stores/tabMetadata.store'
 
 /** No axis is in flight. Shared so the common case allocates nothing. */
 const EMPTY_PENDING_AXES: ReadonlySet<string> = new Set()
@@ -30,43 +30,6 @@ function hydratableTabsOf(view: TabView) {
     ...view.all(),
     ...view.detachedTerminalTabs(),
   ]
-}
-
-/**
- * What the live stream wrote to the tabs while a snapshot request was pending.
- * Both functions take a tab id and answer for that tab.
- */
-interface LiveWritesLanded {
-  /** The live stream wrote a status, so the reply holds an older lifecycle. */
-  status: (tabId: string) => boolean
-  /** The live stream wrote an option-group catalog, so the reply holds an older catalog. */
-  catalog: (tabId: string) => boolean
-}
-
-/**
- * Read the live counts of each tab in `tabIds`. Call it before a snapshot request
- * leaves, and call the functions that it returns when the reply lands. They say
- * whether the live stream wrote a status or a catalog to a tab meanwhile.
- *
- * The worker builds the reply after the request leaves, and the live stream can
- * write to a tab while the request is pending. Such a write can be newer than the
- * state that the reply holds, and nothing sends it again. The caller then keeps
- * what the live stream wrote. See `TabMetadataStore.liveStatusEpoch` and
- * `TabMetadataStore.liveCatalogEpoch`.
- */
-function watchLiveWrites(metadata: TabMetadataStore, tabIds: readonly string[]): LiveWritesLanded {
-  const statusBefore = new Map(tabIds.map(tabId => [
-    tabId,
-    metadata.liveStatusEpoch(tabId),
-  ]))
-  const catalogBefore = new Map(tabIds.map(tabId => [
-    tabId,
-    metadata.liveCatalogEpoch(tabId),
-  ]))
-  return {
-    status: tabId => metadata.liveStatusEpoch(tabId) !== statusBefore.get(tabId),
-    catalog: tabId => metadata.liveCatalogEpoch(tabId) !== catalogBefore.get(tabId),
-  }
 }
 
 /**
@@ -152,6 +115,7 @@ export interface TabHydrators {
  * update) don't re-walk the tab list.
  */
 export interface UseTabHydratorsOpts {
+  userId: () => string | undefined
   view: TabView
   metadata: TabMetadataStore
   repoGitStore: ReturnType<typeof createRepoGitStore>
@@ -190,9 +154,41 @@ export interface UseTabHydratorsOpts {
 }
 
 export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
+  let current: TabHydrators | undefined
+  createComputed(() => {
+    const account = opts.userId()
+    const accountGeneration = opts.metadata.state.accountGeneration
+    if (!account)
+      return
+    let alive = true
+    onCleanup(() => {
+      alive = false
+      current = undefined
+    })
+    current = untrack(() => createAccountTabHydrators(opts, () =>
+      alive && opts.userId() === account && opts.view.ownerUserId() === account
+      && opts.metadata.state.userId === account && opts.metadata.state.accountGeneration === accountGeneration))
+  })
+  return {
+    reaskWorkerTerminals: workerId => current?.reaskWorkerTerminals(workerId),
+  }
+}
+
+function createAccountTabHydrators(opts: UseTabHydratorsOpts, isCurrent: () => boolean): TabHydrators {
   type Tab = ReturnType<typeof opts.view.all>[number]
-  const hydratableTabs = (): Tab[] => hydratableTabsOf(opts.view)
-  const resolveHydratable = (tab: Tab): Tab | undefined => resolveHydratableIn(opts.view, tab)
+  const hydratableTabs = (): Tab[] => isCurrent()
+    ? hydratableTabsOf(opts.view)
+    : []
+  const resolveHydratable = (tab: Tab): Tab | undefined => {
+    if (!isCurrent())
+      return undefined
+    const current = resolveHydratableIn(opts.view, tab)
+    return current?.type === tab.type && current.workerId === tab.workerId
+      ? current
+      : undefined
+  }
+
+  const hydrationKey = (tab: Tab): string => JSON.stringify([tab.type, tab.workerId, tab.id])
 
   /**
    * Has the worker answered for this tab yet?
@@ -301,7 +297,7 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
         if (!spec.predicate(tab))
           continue
         candidates.push(tab)
-        ids.add(tab.id)
+        ids.add(hydrationKey(tab))
       }
       return { ids, candidates }
     }, {
@@ -312,14 +308,16 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
     })
 
     function schedulePerTabRetry(tab: Tab): void {
-      const tabId = tab.id
-      retry.schedule(tabId, () => {
+      const retryKey = hydrationKey(tab)
+      if (!isCurrent())
+        return
+      retry.schedule(retryKey, () => {
         const stillPending = resolveHydratable(tab)
         if (!stillPending || !spec.predicate(stillPending)) {
           // Tab is gone (closed by user, removed by another client,
           // or hydrated by another path). Drop the per-tab delay so
           // the Map doesn't accumulate ghost entries.
-          retry.reset(tabId)
+          retry.reset(retryKey)
           return
         }
         runFor(stillPending)
@@ -341,6 +339,8 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
     // of N separate single-tab batch RPCs (which would defeat the
     // batching the spec was designed for).
     function scheduleBatchRetry(workerId: string): void {
+      if (!isCurrent())
+        return
       retry.schedule(workerId, () => {
         if (spec.kind !== 'batched')
           return
@@ -356,20 +356,22 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
     async function runFor(tab: Tab): Promise<void> {
       if (spec.kind !== 'per-tab')
         return
-      if (inflight.has(tab.id))
+      if (inflight.has(hydrationKey(tab)))
         return
-      inflight.add(tab.id)
+      inflight.add(hydrationKey(tab))
       const tabId = tab.id
       try {
         await spec.fetch(tab)
+        if (!resolveHydratable(tab))
+          return
         opts.metadata.patch(tabId, { hydrated: true })
-        retry.reset(tabId)
+        retry.reset(hydrationKey(tab))
       }
       catch {
         schedulePerTabRetry(tab)
       }
       finally {
-        inflight.delete(tabId)
+        inflight.delete(hydrationKey(tab))
       }
     }
 
@@ -377,11 +379,11 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
     async function runForBatch(workerId: string, tabs: Tab[]): Promise<void> {
       if (spec.kind !== 'batched')
         return
-      const fresh = tabs.filter(t => !inflight.has(t.id))
+      const fresh = tabs.filter(t => !inflight.has(hydrationKey(t)))
       if (fresh.length === 0)
         return
       for (const t of fresh)
-        inflight.add(t.id)
+        inflight.add(hydrationKey(t))
       // A reply that answered for only some of the batch is a PARTIAL success,
       // not a success: the omitted tabs are still bare and nothing else will ask
       // again for them. ABSENT is the one verdict worth retiring on -- the
@@ -393,9 +395,11 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
       let pending: Tab[]
       try {
         const result = await spec.fetchBatch(workerId, fresh)
+        if (!isCurrent())
+          return
         const verdict = new Map(result.verdicts.map(v => [v.tabId, v.status]))
         for (const t of fresh) {
-          if (result.resolved.has(t.id))
+          if (resolveHydratable(t) && result.resolved.has(t.id))
             opts.metadata.patch(t.id, { hydrated: true })
         }
         pending = fresh.filter(t =>
@@ -411,7 +415,7 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
         // them is what stops the effect from issuing a second RPC for tabs this
         // batch is still answering for.
         for (const t of fresh)
-          inflight.delete(t.id)
+          inflight.delete(hydrationKey(t))
       }
 
       if (pending.length === 0) {
@@ -601,7 +605,10 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
       // re-check narrows the optional field for TypeScript.
       if (!tab.workerId)
         return
+      const landed = watchTabWrites(opts.metadata, [tab.id])
       const resp = await workerPrivate.getTabPayload(tab.workerId, { tabId: tab.id })
+      if (!resolveHydratable(tab))
+        return
       const payload = tabPayloadView(resp.payload)
       // A payload this client cannot read patches nothing, and the tab is still
       // marked hydrated by `runFor` -- which is correct, however it reads.
@@ -623,7 +630,10 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
       // branch group and drives the git-status containment match -- a hydrated
       // tab without it falls back to matching on the file's own path, which is
       // a different repo whenever the file was opened from another checkout.
-      opts.metadata.patch(tab.id, tabPayloadMetadata(payload))
+      const fields = tabPayloadMetadata(payload)
+      if (landed.title(tab.id))
+        delete fields.title
+      opts.metadata.patch(tab.id, fields)
     },
   })
 
@@ -641,19 +651,44 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
       && Boolean(tab.workerId)
       && (!isHydrated(tab.id) || reaskAgents.has(tab.id)),
     fetchBatch: async (workerId, tabs) => {
-      const landed = watchLiveWrites(opts.metadata, tabs.map(t => t.id))
+      const landed = watchTabWrites(opts.metadata, tabs.map(t => t.id))
+      const activityBefore = new Map(tabs.map(tab => [
+        tab.id,
+        opts.agentActivityStore.observationEpoch(tab.id),
+      ]))
       const resp = await workerAgent.listAgents(workerId, {
         tabIds: tabs.map(t => t.id),
       })
+      if (!isCurrent()) {
+        return {
+          resolved: new Set(),
+          verdicts: [],
+        }
+      }
       const byId = new Map(resp.agents.map(a => [a.id, a]))
       const resolved = new Set<string>()
       // The ask happened, so drop the re-ask marks whatever the reply says. A
       // tab the worker no longer knows must not stay armed and re-ask forever.
       reaskAgents.drop(tabs.map(t => t.id))
-      for (const tab of tabs) {
-        const agent = byId.get(tab.id)
-        if (!agent)
+      for (const requested of tabs) {
+        const tab = resolveHydratable(requested)
+        if (!tab)
           continue
+        const snapshot = byId.get(tab.id)
+        if (!snapshot)
+          continue
+        const agent = {
+          ...snapshot,
+          ...(landed.title(tab.id)
+            ? { title: '' }
+            : {}),
+          ...(landed.git(tab.id)
+            ? { gitStatus: undefined }
+            : {}),
+          ...(landed.catalog(tab.id)
+            ? { optionGroups: opts.metadata.get(tab.id)?.optionGroups ?? [] }
+            : {}),
+        }
         // protoToAgentTabFields writes every per-agent field onto the
         // tab and primes `settingsLabelCache` with the agent's catalogs.
         // The tab's current git status goes along so a re-hydration of an
@@ -719,7 +754,8 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
         // no spinner for the rest of
         // the turn. The exact value belongs to the close guard,
         // which fetches it at the moment of the close (see createTabBusyProbe).
-        opts.agentActivityStore.seedPublished(tab.id, agent.publishedActivityState)
+        if (opts.agentActivityStore.observationEpoch(tab.id) === activityBefore.get(tab.id))
+          opts.agentActivityStore.seedPublished(tab.id, agent.publishedActivityState)
         resolved.add(tab.id)
       }
       return { resolved, verdicts: resp.verdicts }
@@ -745,18 +781,36 @@ export function useTabHydrators(opts: UseTabHydratorsOpts): TabHydrators {
       && Boolean(tab.workerId)
       && (!isHydrated(tab.id) || reaskTerminals.has(tab.id)),
     fetchBatch: async (workerId, tabs) => {
-      const landed = watchLiveWrites(opts.metadata, tabs.map(t => t.id))
+      const landed = watchTabWrites(opts.metadata, tabs.map(t => t.id))
       const resp = await workerTerminal.listTerminals(workerId, {
         tabIds: tabs.map(t => t.id),
       })
+      if (!isCurrent()) {
+        return {
+          resolved: new Set(),
+          verdicts: [],
+        }
+      }
       // The ask happened, so drop the re-ask marks whatever the reply says, as
       // the agent batch does.
       reaskTerminals.drop(tabs.map(t => t.id))
       const byId = new Map(resp.terminals.map(t => [t.terminalId, t]))
       const resolved = new Set<string>()
-      for (const tab of tabs) {
-        const term = byId.get(tab.id)
-        if (term) {
+      for (const requested of tabs) {
+        const tab = resolveHydratable(requested)
+        if (!tab)
+          continue
+        const snapshot = byId.get(tab.id)
+        if (snapshot) {
+          const term = {
+            ...snapshot,
+            ...(landed.git(tab.id)
+              ? { gitStatus: undefined }
+              : {}),
+            ...(landed.title(tab.id)
+              ? { title: '' }
+              : {}),
+          }
           // The reply holds the lifecycle as the worker read it before the reply
           // left. A status event that landed since is newer, and nothing sends it
           // again, so the reply keeps what the live stream wrote and gives only

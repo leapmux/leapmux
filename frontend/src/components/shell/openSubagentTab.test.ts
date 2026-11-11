@@ -19,7 +19,7 @@ import { openSubagentTab } from './openSubagentTab'
  *
  * `vi.mock('~/stores/tabOps')` records every emit call into `calls` so a test
  * can assert WHICH op fired AND that `metadata.patch` ran first (the order
- * rule openTabInFocusedTile documents the same way). `positionAfterKey` is
+ * required by the synchronous projection). `positionAfterKey` is
  * imported by the source from the same module, so the mock returns a sentinel
  * string the assertions can read back out of the recorded emit payload.
  */

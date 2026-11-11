@@ -826,7 +826,22 @@ CREATE TABLE altcha_used_salts (
 ) COLLATE=utf8mb4_bin;
 CREATE INDEX idx_altcha_used_salts_expires_at ON altcha_used_salts(expires_at);
 
+-- Durable results survive ordinary CRDT deduplication cleanup.
+CREATE TABLE worker_tab_publications (
+    user_id VARCHAR(48) NOT NULL,
+    worker_id VARCHAR(48) NOT NULL,
+    tab_id VARCHAR(128) NOT NULL,
+    request_hash VARBINARY(32) NOT NULL CHECK (length(request_hash) = 32),
+    response_payload LONGBLOB NOT NULL,
+    PRIMARY KEY (user_id, worker_id, tab_id),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (worker_id) REFERENCES workers(id) ON DELETE CASCADE
+) COLLATE=utf8mb4_bin;
+
+CREATE INDEX idx_worker_tab_publications_worker ON worker_tab_publications(worker_id);
+
 -- +goose Down
+DROP TABLE IF EXISTS worker_tab_publications;
 DROP TABLE IF EXISTS oauth_authorization_codes;
 DROP TABLE IF EXISTS device_authorizations;
 DROP TABLE IF EXISTS delegation_tokens;

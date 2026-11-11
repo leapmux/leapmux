@@ -146,6 +146,9 @@ func (s *pgStore) WorkspaceTabIndex() store.WorkspaceTabIndexStore {
 }
 func (s *pgStore) UserOpBatches() store.UserOpBatchesStore { return &userOpBatchesStore{conn: s.conn} }
 func (s *pgStore) UserState() store.UserStateStore         { return &userStateStore{conn: s.conn} }
+func (s *pgStore) WorkerTabPublications() store.WorkerTabPublicationStore {
+	return &workerTabPublicationStore{conn: s.conn}
+}
 func (s *pgStore) UserRecentBatchIDs() store.UserRecentBatchIDStore {
 	return &userRecentBatchIDStore{conn: s.conn}
 }

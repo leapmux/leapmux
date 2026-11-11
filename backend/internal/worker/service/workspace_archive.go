@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
 	"sync"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -23,10 +22,9 @@ type archiveTabSet struct {
 	terminals []string
 	// payloads holds the FILE and IMAGE tabs, as (owner, id) pairs.
 	//
-	// A PAIR, unlike the other two: a payload-backed tab id is minted
-	// client-side and unique only within one account, so worker_tab_payloads is
-	// keyed (user_id, tab_id) and the id alone would match another account's
-	// row. Agent and terminal ids are server-minted and globally unique.
+	// worker_tab_payloads uses (user_id, tab_id) as its primary key, so both
+	// fields identify the row to exclude. An ID alone could match another
+	// account's payload. Agent and terminal tables use global ID primary keys.
 	//
 	// Such a tab owns no process, so nothing pauses or stops for it. The flag
 	// exists only so the quake reference count can tell a viewer the user can
@@ -46,16 +44,14 @@ type payloadTabRef struct {
 // addresses the payload-backed ones, whose ids are unique only within one
 // account.
 //
-// The orphan reconciler is the only caller. There is deliberately no RPC for
-// this: the Hub nudges a Worker whenever a workspace's archive state or a tab's
-// workspace membership changes, and the reconcile pass that follows reads the
-// Hub's own answer. A client-driven variant would be a second delivery path
-// for one effect, and it would apply only while that client was connected.
-func (svc *Service) ApplyTabArchiveState(
+// applyObservedTabArchiveState applies the Hub read owned by observation.
+// The observation must begin before the RPC so a newer application invalidates it.
+func (svc *Service) applyObservedTabArchiveState(
 	ctx context.Context,
 	state leapmuxv1.WorkspaceArchiveState,
 	owner userid.UserID,
 	tabs []*leapmuxv1.TabIdent,
+	observation *archiveObservation,
 ) ([]string, error) {
 	flag, err := workspaceArchiveFlag(state)
 	if err != nil {
@@ -66,7 +62,7 @@ func (svc *Service) ApplyTabArchiveState(
 		return nil, err
 	}
 
-	changed, err := svc.writeArchiveFlagsAndTearDown(ctx, state, flag, requested)
+	changed, err := svc.writeArchiveFlagsAndTearDown(ctx, state, flag, requested, observation)
 	if err != nil {
 		return nil, err
 	}
@@ -122,10 +118,14 @@ func (svc *Service) writeArchiveFlagsAndTearDown(
 	state leapmuxv1.WorkspaceArchiveState,
 	flag bool,
 	requested archiveTabSet,
+	observation *archiveObservation,
 ) (archiveTabSet, error) {
 	unlock := svc.lockArchiveTabs(requested)
 	defer unlock()
 
+	if err := observation.accept(requested.lockKeys()); err != nil {
+		return archiveTabSet{}, err
+	}
 	changed, err := svc.persistArchiveFlags(ctx, flag, requested)
 	if err != nil {
 		return archiveTabSet{}, err
@@ -158,17 +158,7 @@ func (svc *Service) writeArchiveFlagsAndTearDown(
 // requests over intersecting tab sets unable to deadlock: both walk the same
 // global order, so neither can hold a lock the other wants next.
 func (svc *Service) lockArchiveTabs(tabs archiveTabSet) func() {
-	keys := make([]string, 0, len(tabs.agents)+len(tabs.terminals)+len(tabs.payloads))
-	for _, id := range tabs.agents {
-		keys = append(keys, "agent:"+id)
-	}
-	for _, id := range tabs.terminals {
-		keys = append(keys, "terminal:"+id)
-	}
-	for _, ref := range tabs.payloads {
-		keys = append(keys, "payload:"+ref.userID+"\x00"+ref.tabID)
-	}
-	sort.Strings(keys)
+	keys := tabs.lockKeys()
 	locks := make([]*sync.Mutex, 0, len(keys))
 	for _, key := range keys {
 		v, _ := svc.archiveTabLocks.LoadOrStore(key, &sync.Mutex{})

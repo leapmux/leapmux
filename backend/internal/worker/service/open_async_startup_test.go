@@ -1360,8 +1360,8 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 	// post-OpenAgent WatchEvents dispatch reads the registry, the phase-0
 	// "Creating worktree" label is lost (observed on Windows CI).
 	wWatch := newTestWriter()
-	svc.createAgentRecordFn = func(ctx context.Context, params db.CreateAgentParams) error {
-		if err := svc.Queries.CreateAgent(ctx, params); err != nil {
+	svc.createAgentRecordFn = func(ctx context.Context, queries *db.Queries, params db.CreateAgentParams) error {
+		if err := queries.CreateAgent(ctx, params); err != nil {
 			return err
 		}
 		registerAgentWatch(svc, wWatch.channelID, params.ID, leapmuxv1.WatchMode_WATCH_MODE_FULL, wWatch)

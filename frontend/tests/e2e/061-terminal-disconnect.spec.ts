@@ -4,16 +4,15 @@ import { TERMINAL_DISCONNECTED } from '~/stores/tab.types'
 import { listOnlineWorkerIDsViaAPI } from './helpers/api'
 import { withCleanup } from './helpers/cleanup'
 import { getTerminalRows, getTerminalText, sendActiveTerminalInput, waitForTerminalReady, waitForTerminalText } from './helpers/terminal'
-import { openTerminalViaUI, terminalTabs, waitForLayoutSave } from './helpers/ui'
+import { openTerminalViaUI, terminalTabs } from './helpers/ui'
 import { ensureWorkerOnline, restartHub, restartWorker, stopHub, stopWorker, processTest as test, waitForWorkerOffline } from './process-control-fixtures'
 
 test.describe('Terminal Disconnection', () => {
   test('restores terminal output and one disconnect notice after a Worker restart', async ({ separateHubWorker, page, authenticatedWorkspace }) => {
     void authenticatedWorkspace
     await withCleanup(async () => {
-      const saved = waitForLayoutSave(page)
       await openTerminalViaUI(page)
-      await saved
+
       await terminalTabs(page).click()
       await waitForTerminalReady(page)
       const marker = 'SHUTDOWN_RESTORE_MARKER'

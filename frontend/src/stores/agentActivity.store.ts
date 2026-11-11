@@ -57,9 +57,18 @@ export function isPublishedActivityState(state: AgentActivityState): boolean {
 export function createAgentActivityStore() {
   const [state, setState] = createStore<AgentActivityStoreState>({ stateByAgent: {} })
 
+  let nextObservation = 0
+  const observations = new Map<string, number>()
+  function observe(agentId: string) {
+    observations.set(agentId, ++nextObservation)
+  }
+
   const stateOf = (agentId: string): AgentActivityState => state.stateByAgent[agentId] ?? DEFAULT_ACTIVITY_STATE
 
   return {
+    /** The most recent valid activity observation for this agent. */
+    observationEpoch: (agentId: string): number => observations.get(agentId) ?? 0,
+
     /**
      * Show the spinner only for WORKING.
      * An unreported agent uses the IDLE default.
@@ -87,6 +96,7 @@ export function createAgentActivityStore() {
     apply(agentId: string, next: AgentActivityState): boolean {
       if (!isPublishedActivityState(next))
         return false
+      observe(agentId)
       const settled = stateOf(agentId) === AgentActivityState.WORKING && next !== AgentActivityState.WORKING
       if (state.stateByAgent[agentId] !== next)
         setState('stateByAgent', agentId, next)
@@ -107,12 +117,14 @@ export function createAgentActivityStore() {
     seedPublished(agentId: string, next: AgentActivityState): void {
       if (!isPublishedActivityState(next))
         return
+      observe(agentId)
       if (state.stateByAgent[agentId] !== next)
         setState('stateByAgent', agentId, next)
     },
 
     /** Remove the level and its settle baseline when the tab retires or its worker disconnects. */
     forget(agentId: string) {
+      observations.delete(agentId)
       setState(produce((s) => {
         delete s.stateByAgent[agentId]
       }))

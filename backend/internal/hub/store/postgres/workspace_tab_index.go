@@ -329,3 +329,19 @@ func tabRowFromDB(r gendb.WorkspaceTabOwned) store.WorkspaceTabRow {
 		Rendered:    r.Rendered,
 	}
 }
+
+func (s *workspaceTabIndexStore) GetOwnedState(ctx context.Context, p store.GetWorkerOwnedTabStateParams) (*store.WorkerTabStateRow, error) {
+	owner, ok := userid.OwnerFilter(p.UserID)
+	if !ok || p.WorkerID == "" || p.TabID == "" {
+		return nil, store.ErrNotFound
+	}
+	row, err := s.conn.q.GetWorkerOwnedTabState(ctx, gendb.GetWorkerOwnedTabStateParams{ArchivedSectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED, ArchivedArchiveState: int32(leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED), ActiveArchiveState: int32(leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE), UserID: owner, WorkerID: p.WorkerID, TabID: p.TabID})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, store.ErrNotFound
+	}
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	result := ownedTabStateRowFromDB(gendb.ListOwnedTabsByWorkerRow(row))
+	return &result, nil
+}

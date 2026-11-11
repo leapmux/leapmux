@@ -28,6 +28,8 @@ type integerEnumColumn struct {
 	// admitted lists the ordinals the column accepts when the set is NOT the
 	// plain minimum-to-maximum range. Nil means every ordinal in that range.
 	admitted []int64
+	// nullable admits SQL NULL as the absence of a selected ordinal.
+	nullable bool
 }
 
 // accepts reports whether the column takes one ordinal.
@@ -40,21 +42,24 @@ func (c integerEnumColumn) accepts(ordinal int64) bool {
 
 func integerEnumColumns() []integerEnumColumn {
 	return []integerEnumColumn{
-		{"agents.agent_provider", "UPDATE agents SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM agents", 1, int64(len(leapmuxv1.AgentProvider_name) - 1), nil},
-		{"agents.goal_status", "UPDATE agents SET goal_status = ?", "SELECT typeof(goal_status), goal_status FROM agents", 0, 5, nil},
-		{"messages.content_compression", "UPDATE messages SET content_compression = ?", "SELECT typeof(content_compression), content_compression FROM messages", 1, 2, nil},
-		{"messages.supplemental_content_compression", "UPDATE messages SET supplemental_content_compression = ?", "SELECT typeof(supplemental_content_compression), supplemental_content_compression FROM messages", 1, 2, nil},
-		{"agent_input_queue_items.kind", "UPDATE agent_input_queue_items SET kind = ?", "SELECT typeof(kind), kind FROM agent_input_queue_items", 1, 8, nil},
-		{"agent_input_queue_items.state", "UPDATE agent_input_queue_items SET state = ?", "SELECT typeof(state), state FROM agent_input_queue_items", 1, 5, nil},
-		{"control_deliveries.state", "UPDATE control_deliveries SET state = ?", "SELECT typeof(state), state FROM control_deliveries", 1, 4, nil},
-		{"control_deliveries.kind", "UPDATE control_deliveries SET kind = ? WHERE id = 'enum-unattached'", "SELECT typeof(kind), kind FROM control_deliveries WHERE id = 'enum-unattached'", 1, 2, nil},
+		{"tab_creations.state", "UPDATE tab_creations SET state = ?", "SELECT typeof(state), state FROM tab_creations", 1, 6, nil, false},
+		{"tab_creations.tab_type", "UPDATE tab_creations SET tab_type = ?", "SELECT typeof(tab_type), tab_type FROM tab_creations", 1, 4, nil, false},
+		{"tab_creations.cancel_action", "UPDATE tab_creations SET cancel_action = ?", "SELECT typeof(cancel_action), cancel_action FROM tab_creations", 1, 2, nil, true},
+		{"agents.agent_provider", "UPDATE agents SET agent_provider = ?", "SELECT typeof(agent_provider), agent_provider FROM agents", 1, int64(len(leapmuxv1.AgentProvider_name) - 1), nil, false},
+		{"agents.goal_status", "UPDATE agents SET goal_status = ?", "SELECT typeof(goal_status), goal_status FROM agents", 0, 5, nil, false},
+		{"messages.content_compression", "UPDATE messages SET content_compression = ?", "SELECT typeof(content_compression), content_compression FROM messages", 1, 2, nil, false},
+		{"messages.supplemental_content_compression", "UPDATE messages SET supplemental_content_compression = ?", "SELECT typeof(supplemental_content_compression), supplemental_content_compression FROM messages", 1, 2, nil, false},
+		{"agent_input_queue_items.kind", "UPDATE agent_input_queue_items SET kind = ?", "SELECT typeof(kind), kind FROM agent_input_queue_items", 1, 8, nil, false},
+		{"agent_input_queue_items.state", "UPDATE agent_input_queue_items SET state = ?", "SELECT typeof(state), state FROM agent_input_queue_items", 1, 5, nil, false},
+		{"control_deliveries.state", "UPDATE control_deliveries SET state = ?", "SELECT typeof(state), state FROM control_deliveries", 1, 4, nil, false},
+		{"control_deliveries.kind", "UPDATE control_deliveries SET kind = ? WHERE id = 'enum-unattached'", "SELECT typeof(kind), kind FROM control_deliveries WHERE id = 'enum-unattached'", 1, 2, nil, false},
 		// The tie CHECK demands follow_up text exactly when the kind is non-zero,
 		// so the update writes both from one bound parameter (?1 appears twice).
 		// A range refusal then cannot hide behind a tie refusal.
-		{"control_response_payloads.follow_up_kind", "UPDATE control_response_payloads SET follow_up_kind = ?1, follow_up = CASE WHEN ?1 = 0 THEN '' ELSE 'answer' END", "SELECT typeof(follow_up_kind), follow_up_kind FROM control_response_payloads", 0, 7, []int64{0, 6, 7}},
-		{"agent_todos.status", "UPDATE agent_todos SET status = ?", "SELECT typeof(status), status FROM agent_todos", 1, 5, nil},
-		{"agent_background_tasks.kind", "UPDATE agent_background_tasks SET kind = ?", "SELECT typeof(kind), kind FROM agent_background_tasks", 1, 3, nil},
-		{"agent_background_tasks.status", "UPDATE agent_background_tasks SET status = ?", "SELECT typeof(status), status FROM agent_background_tasks", 1, 8, nil},
+		{"control_response_payloads.follow_up_kind", "UPDATE control_response_payloads SET follow_up_kind = ?1, follow_up = CASE WHEN ?1 = 0 THEN '' ELSE 'answer' END", "SELECT typeof(follow_up_kind), follow_up_kind FROM control_response_payloads", 0, 7, []int64{0, 6, 7}, false},
+		{"agent_todos.status", "UPDATE agent_todos SET status = ?", "SELECT typeof(status), status FROM agent_todos", 1, 5, nil, false},
+		{"agent_background_tasks.kind", "UPDATE agent_background_tasks SET kind = ?", "SELECT typeof(kind), kind FROM agent_background_tasks", 1, 3, nil, false},
+		{"agent_background_tasks.status", "UPDATE agent_background_tasks SET status = ?", "SELECT typeof(status), status FROM agent_background_tasks", 1, 8, nil, false},
 	}
 }
 
@@ -66,6 +71,7 @@ func integerEnumStore(t *testing.T) *sql.DB {
 	require.NoError(t, workerdb.Migrate(t.Context(), store))
 	for _, statement := range []string{
 		"INSERT INTO agents (id) VALUES ('enum-owner')",
+		"INSERT INTO tab_creations(user_id,worker_id,tab_id,tab_type,request_hash,request_payload,publication_payload,runtime_payload,state) VALUES ('user','worker','tab',1,zeroblob(32),X'',X'',X'',1)",
 		"INSERT INTO messages (id, agent_id, seq, source, content, content_compression) VALUES ('enum-message', 'enum-owner', 1, 1, X'7b7d', 1)",
 		"INSERT INTO agent_input_queue_items (id, agent_id, order_index, kind, state) VALUES ('enum-input', 'enum-owner', 1, 1, 1)",
 		"INSERT INTO control_deliveries (id, agent_id, kind, operation_id, instance_id, state) VALUES ('enum-response', 'enum-owner', 1, 'enum-request', 'enum-claim', 1)",
@@ -106,12 +112,18 @@ func TestEnumColumnsRejectFractionalOrdinals(t *testing.T) {
 			require.NoError(t, err)
 			for _, invalid := range []any{float64(max(column.minimum, 1)) + 0.5, int64(1 << 40), nil} {
 				_, err := store.ExecContext(t.Context(), column.update, invalid)
-				assert.Error(t, err, "a non-ordinal must fail at the actual storage boundary")
 				var storageType string
 				var stored any
 				require.NoError(t, store.QueryRowContext(t.Context(), column.read).Scan(&storageType, &stored))
-				assert.Equal(t, "integer", storageType)
-				assert.Equal(t, column.minimum, stored, "a refused value must leave the actual stored ordinal unchanged")
+				if invalid == nil && column.nullable {
+					assert.NoError(t, err, "a nullable enum must permit an absent selection")
+					assert.Equal(t, "null", storageType)
+					assert.Nil(t, stored)
+				} else {
+					assert.Error(t, err, "a non-ordinal must fail at the actual storage boundary")
+					assert.Equal(t, "integer", storageType)
+					assert.Equal(t, column.minimum, stored, "a refused value must leave the actual stored ordinal unchanged")
+				}
 				_, err = store.ExecContext(t.Context(), column.update, column.minimum)
 				require.NoError(t, err)
 			}
@@ -602,4 +614,21 @@ func TestAgentProviderColumnRefusesUnspecified(t *testing.T) {
 	beyondLast := leapmuxv1.AgentProvider(int32(leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI) + 1)
 	assert.ErrorContains(t, createAgent("beyond-last-ordinal", beyondLast),
 		"CHECK constraint failed", "an ordinal past the last declared provider is refused")
+}
+
+func TestTabCreationEnumColumnsMatchProto(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(workerMigration)
+	require.NoError(t, err)
+	schema := string(data)
+	start := strings.Index(schema, "CREATE TABLE tab_creations (")
+	require.NotEqual(t, -1, start)
+	declaration, _, found := strings.Cut(schema[start:], "\n);")
+	require.True(t, found)
+	assert.Contains(t, declaration, "CHECK (state BETWEEN 1 AND 6)")
+	assert.Equal(t, int32(6), lastDeclaredOrdinal(t, leapmuxv1.TabCreationState_name))
+	assert.Contains(t, declaration, "CHECK (tab_type BETWEEN 1 AND 4)")
+	assert.Equal(t, int32(4), lastDeclaredOrdinal(t, leapmuxv1.TabType_name))
+	assert.Contains(t, declaration, "CHECK (cancel_action BETWEEN 1 AND 2)")
+	assert.Equal(t, int32(2), lastDeclaredOrdinal(t, leapmuxv1.WorktreeAction_name))
 }

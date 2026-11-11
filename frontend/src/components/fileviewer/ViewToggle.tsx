@@ -1,4 +1,5 @@
 import type { JSX } from 'solid-js'
+import type { FileDisplayMode } from '~/stores/tab.types'
 import Code from 'lucide-solid/icons/code'
 import Columns2 from 'lucide-solid/icons/columns-2'
 import Eye from 'lucide-solid/icons/eye'
@@ -7,16 +8,14 @@ import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import * as styles from './FileViewer.css'
 
-export type ViewMode = 'render' | 'source' | 'split'
-
 /**
  * Segmented view-mode toggle row used by markdown and SVG-image
  * viewers. Positioning is owned by the parent — this component just
  * paints the button chrome.
  */
 export function ViewToggle(props: {
-  mode: ViewMode
-  onToggle: (mode: ViewMode) => void
+  mode: FileDisplayMode
+  onToggle: (mode: FileDisplayMode) => void
   showSplit?: boolean
 }): JSX.Element {
   return (

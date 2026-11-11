@@ -1,12 +1,13 @@
+import type { MessageInitShape } from '@bufbuild/protobuf'
+import type { GitSetupSchema } from '../../../src/generated/proto/leapmux/v1/git_pb'
 // ──────────────────────────────────────────────
 // API helpers for setting up test prerequisites
 // ──────────────────────────────────────────────
 
-import type { MessageInitShape } from '@bufbuild/protobuf'
-import type { GitSetupSchema } from '../../../src/generated/proto/leapmux/v1/git_pb'
 import type { ChannelManager } from '../../../src/lib/channel'
 import type { ProviderWorkingDir } from './providerWorkingDir'
 import { execFile } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { fromJson } from '@bufbuild/protobuf'
@@ -14,6 +15,7 @@ import { OPTION_ID_MODEL } from '../../../src/components/chat/settingsGroups'
 import { MAX_PAGE_LIMIT } from '../../../src/generated/contracts/pagination'
 import { AgentProvider, WorkerAgentService } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '../../../src/generated/proto/leapmux/v1/common_pb'
+import { TabInsertion } from '../../../src/generated/proto/leapmux/v1/tab_creation_pb'
 import {
   WorkerTabService,
 } from '../../../src/generated/proto/leapmux/v1/worker_tab_pb'
@@ -816,6 +818,14 @@ export async function openAgentViaAPI(
     workerId,
     WorkerAgentService.method.openAgent,
     {
+      creation: {
+        tabId: randomUUID(),
+        placement: {
+          workspaceId,
+          destination: { case: 'firstLeaf', value: {} },
+          insertion: TabInsertion.LAST,
+        },
+      },
       workingDir: workingDir ?? '',
       ...(options.agentSessionId !== undefined
         ? { agentSessionId: options.agentSessionId }
@@ -838,22 +848,11 @@ export async function openAgentViaAPI(
     throw new Error('openAgentViaAPI: no agent in response')
   }
 
-  // Register the tab in the conflict-free replicated data type (CRDT), as tabStore.addTab does in the browser.
-  // The register contains the root tile ID, position, and worker ID.
-  // Use the subscription that createWorkspaceViaAPI opened before workspace creation.
-  // The hub must deliver its root-node operation or creation event through that existing subscription.
-  // A lost event then causes awaitRootNodeId to time out, as the browser would otherwise show an empty workspace without the agent tab.
-  const { seedTabIntoWorkspace, getUserEventsSubscription } = await import('./crdt')
+  if (resp.publication?.tab?.tabId !== resp.agent.id || resp.publication.workspaceId !== workspaceId)
+    throw new Error('openAgentViaAPI: invalid publication receipt')
+  const { getUserEventsSubscription } = await import('./crdt')
   const userEvents = await getUserEventsSubscription(hubUrl, cookie)
-  await seedTabIntoWorkspace({
-    hubUrl,
-    cookie,
-    workspaceId,
-    tabType: TabType.AGENT,
-    tabId: resp.agent.id,
-    workerId,
-    userEvents,
-  })
+  await userEvents.awaitRootNodeId(workspaceId)
   return resp.agent.id
 }
 

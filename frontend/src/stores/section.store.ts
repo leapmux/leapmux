@@ -29,6 +29,17 @@ export function createSectionStore() {
   return {
     state,
 
+    /** Clear account-owned data before loading another account. */
+    reset() {
+      setState({
+        sections: [],
+        items: [],
+        loading: false,
+        error: null,
+        loaded: false,
+      })
+    },
+
     setSections(sections: Section[]) {
       setState('sections', sections)
     },

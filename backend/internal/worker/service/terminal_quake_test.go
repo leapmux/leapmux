@@ -35,7 +35,7 @@ func openQuakeTerminal(t *testing.T, svc *Service, d testRPCDispatcher, workingD
 	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		Shell:      testutil.TestShell(),
 		WorkingDir: workingDir,
-		Quake:      true,
+		Target:     &leapmuxv1.OpenTerminalRequest_Quake{Quake: &leapmuxv1.QuakeTerminalTarget{}},
 		Cols:       200,
 		Rows:       24,
 	}, w)
@@ -483,7 +483,7 @@ func TestOpenTerminal_RefusesAQuakeTerminalWithAGitMode(t *testing.T) {
 	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
 		Shell:      testutil.TestShell(),
 		WorkingDir: dir,
-		Quake:      true,
+		Target:     &leapmuxv1.OpenTerminalRequest_Quake{Quake: &leapmuxv1.QuakeTerminalTarget{}},
 		GitSetup:   createWorktreeSetup("feature/x", ""),
 	}, w)
 
@@ -960,10 +960,10 @@ func TestOpenTerminal_RefusesAQuakeTerminalWithNoWorkingDir(t *testing.T) {
 
 	w := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, &leapmuxv1.OpenTerminalRequest{
-		Shell: testutil.TestShell(),
-		Quake: true,
-		Cols:  200,
-		Rows:  24,
+		Shell:  testutil.TestShell(),
+		Target: &leapmuxv1.OpenTerminalRequest_Quake{Quake: &leapmuxv1.QuakeTerminalTarget{}},
+		Cols:   200,
+		Rows:   24,
 	}, w)
 
 	require.Len(t, w.errors, 1)
@@ -989,18 +989,12 @@ func TestSetQuakePanel_RefusesAnEmptyWorkingDir(t *testing.T) {
 	assert.Contains(t, w.errors[0].message, "working_dir")
 }
 
-// dirHasLiveTab keys on (kind, id), not on the id alone.
-//
-// An agent or terminal id is a server-minted nanoid and globally unique, but a
-// payload-backed tab id is minted client-side and unique only within ONE
-// account. Keyed on the id alone, a viewer closing in one account excluded a
-// second account's still-open viewer of the same directory -- and the reap then
-// took a shell that account was using.
+// dirHasLiveTab excludes one (kind, ID) pair. A live tab of another kind
+// with the same ID must continue to keep the directory in use.
 func TestDirHasLiveTab_ExcludesOneTabRatherThanEveryTabSharingItsID(t *testing.T) {
 	t.Parallel()
 
-	// The same client-minted id in two accounts, plus the agent that happens to
-	// carry it too. Only the closing one may be excluded.
+	// The FILE and AGENT rows share an ID. Only the closing FILE row may be excluded.
 	tabs := []dirTabRef{
 		{Kind: leapmuxv1.TabType_TAB_TYPE_FILE, ID: "file-1", WorkingDir: "/repo"},
 		{Kind: leapmuxv1.TabType_TAB_TYPE_AGENT, ID: "file-1", WorkingDir: "/repo"},

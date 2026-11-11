@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httputil"
@@ -120,7 +121,7 @@ func TestServer_ShutdownTellsAConnectedWorkerAndEndsItsStream(t *testing.T) {
 	}
 	_, err = stream.Receive(ctx)
 	require.Error(t, err)
-	assert.True(t, websocket.CloseStatus(err) == websocket.StatusNormalClosure || err == io.EOF, "unexpected stream end: %v", err)
+	assert.True(t, websocket.CloseStatus(err) == websocket.StatusNormalClosure || errors.Is(err, io.EOF), "unexpected stream end: %v", err)
 	select {
 	case <-stopped:
 	case <-ctx.Done():

@@ -10,11 +10,11 @@ import { LastTabCloseTarget } from '~/generated/proto/leapmux/v1/git_pb'
 import { TerminalProcessSchema } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { ChannelError } from '~/lib/channelError'
 import { createChatStore, MAX_BACKGROUND_CHAT_MESSAGES } from '~/stores/chat.store'
-import { createRepoGitStore } from '~/stores/repoGit.store'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
-import { flush } from '~/test-support/async'
+import { deferred, flush } from '~/test-support/async'
 import { installTestBridge } from '~/test-support/crdtBridge'
 import { makeMessage } from '~/test-support/messageFactory'
+import { createCanonicalTabPublisher, createTestTabCreation } from '~/test-support/tabPublication'
 import { createTestFloatingWindowStore, createTestTabStores } from '~/test-support/tabStores'
 
 // Default: every FILE / AGENT / TERMINAL close path now routes through
@@ -24,6 +24,8 @@ import { createTestFloatingWindowStore, createTestTabStores } from '~/test-suppo
 // Each mock forwards the worker RPC's (workerId, req, ...) arguments, so
 // the param list is typed as `unknown[]`; tests read them back via
 // `mock.calls[0]` and narrow `req` with a per-call `as { ... }` cast.
+let publisher: ReturnType<typeof createCanonicalTabPublisher>
+
 const mockInspectLastTabClose = vi.fn((..._args: unknown[]) => Promise.resolve({ shouldPrompt: false } as unknown))
 const mockPushBranch = vi.fn((..._args: unknown[]) => {})
 const mockRegisterTabPayload = vi.fn((..._args: unknown[]) => Promise.resolve({}))
@@ -37,7 +39,18 @@ vi.mock('~/api/workerRpc', () => ({
     pushBranch: (...args: unknown[]) => mockPushBranch(...args),
   },
   workerPrivate: {
-    registerTabPayload: (...args: unknown[]) => mockRegisterTabPayload(...args),
+    registerTabPayload: async (...args: unknown[]) => {
+      const activePublisher = publisher
+      const result = await mockRegisterTabPayload(...args)
+      const [workerId, request] = args as [string, import('~/generated/proto/leapmux/v1/worker_private_pb').RegisterTabPayloadRequest]
+      const type = request.payload?.kind.case === 'file'
+        ? TabType.FILE
+        : TabType.IMAGE
+      return {
+        ...result,
+        publication: activePublisher.publishCreation(type, workerId, request.creation),
+      }
+    },
   },
   workerTab: {
     closeTab: (...args: unknown[]) => mockCloseTab(...args),
@@ -113,11 +126,12 @@ function setup(
   // delivered, so placement has no projected tree to resolve to.
   // `busyReason` is what the busy probe reports for every tab; null (the
   // default) means nothing is running, which is the normal case.
-  opts: { unbootstrapped?: boolean, busyReason?: TabBusyReason | null } = {},
+  opts: { unbootstrapped?: boolean, busyReason?: TabBusyReason | null, getActiveWorkspaceId?: () => string | undefined } = {},
 ) {
   // Override the global test bridge with a known tile id so the
   // projection's root leaf is the tile these tests address.
-  installTestBridge({ rootTileId: 'tile-1' })
+  const harness = installTestBridge({ rootTileId: 'tile-1' })
+  publisher = createCanonicalTabPublisher(harness)
   const stores = createTestTabStores(opts.unbootstrapped ? 'ws-never-bootstrapped' : 'ws-test')
   const { view, metadata, selection, layoutStore } = stores
   const chatStore = createChatStore()
@@ -160,13 +174,13 @@ function setup(
     }),
     focusEditor: vi.fn(),
     getScrollState,
-    getActiveWorkspaceId: () => 'ws-test',
+    getActiveWorkspaceId: opts.getActiveWorkspaceId ?? (() => 'ws-test'),
     busyProbe: {
       probe: async () => opts.busyReason ?? null,
       probeMany: async () => [],
     },
     workerOnlineState,
-    repoGitStore: createRepoGitStore(),
+    creation: createTestTabCreation(stores),
   })
 
   return {
@@ -215,6 +229,127 @@ describe('useTabOperations', () => {
   })
 
   describe('file-tab E2EE worker round-trip', () => {
+    it.each(['file', 'image'] as const)('waits for %s persistence and suppresses duplicate pending opens', async (kind) => {
+      await createRoot(async (dispose) => {
+        const persisted = deferred<object>()
+        try {
+          const { ops, view } = setup()
+          mockRegisterTabPayload.mockReturnValueOnce(persisted.promise)
+          const open = () => kind === 'file'
+            ? ops.handleFileOpen('/tmp/pending.go')
+            : ops.handleChatImageOpen({
+                agentId: 'agent-a',
+                seq: 42n,
+                index: 0,
+                title: 'Read',
+                workerId: 'w-1',
+                workingDir: '/tmp',
+              })
+          open()
+          open()
+          await flush()
+          const type = kind === 'file'
+            ? TabType.FILE
+            : TabType.IMAGE
+          expect(view.forWorkspace('ws-test').filter(t => t.type === type)).toHaveLength(0)
+          expect(mockRegisterTabPayload).toHaveBeenCalledTimes(1)
+          persisted.resolve({})
+          await flush()
+          expect(view.forWorkspace('ws-test').filter(t => t.type === type)).toHaveLength(1)
+        }
+        finally {
+          persisted.resolve({})
+          await flush()
+          dispose()
+        }
+      })
+    })
+
+    it.each(['file', 'image'] as const)('retains a published %s when local placement changes', async (kind) => {
+      await createRoot(async (dispose) => {
+        const persisted = deferred<object>()
+        try {
+          const { ops, view, layoutStore } = setup()
+          mockRegisterTabPayload.mockReturnValueOnce(persisted.promise)
+          if (kind === 'file') {
+            ops.handleFileOpen('/tmp/unplaced.go')
+          }
+          else {
+            ops.handleChatImageOpen({
+              agentId: 'agent-a',
+              seq: 42n,
+              index: 0,
+              title: 'Read',
+              workerId: 'w-1',
+              workingDir: '/tmp',
+            })
+          }
+          const refused = vi.spyOn(layoutStore, 'placementTileId').mockReturnValue('')
+          try {
+            persisted.resolve({})
+            await settle()
+            expect(view.all().filter(t => t.type === (kind === 'file'
+              ? TabType.FILE
+              : TabType.IMAGE))).toHaveLength(1)
+            expect(mockCloseTab).not.toHaveBeenCalled()
+            expect(mockShowWarnToast).not.toHaveBeenCalled()
+          }
+          finally {
+            refused.mockRestore()
+          }
+        }
+        finally {
+          persisted.resolve({})
+          await settle()
+          dispose()
+        }
+      })
+    })
+
+    it('retains a published payload after the active workspace changes', async () => {
+      await createRoot(async (dispose) => {
+        const persisted = deferred<object>()
+        try {
+          let activeWorkspace = 'ws-test'
+          const { ops, view } = setup(DEFAULT_SCROLL_STATE, () => true, {
+            getActiveWorkspaceId: () => activeWorkspace,
+          })
+          mockRegisterTabPayload.mockReturnValueOnce(persisted.promise)
+          ops.handleFileOpen('/tmp/workspace-changed.go')
+          activeWorkspace = 'ws-other'
+          persisted.resolve({})
+          await settle()
+          expect(view.all().some(t => t.type === TabType.FILE)).toBe(true)
+          expect(mockCloseTab).not.toHaveBeenCalled()
+        }
+        finally {
+          persisted.resolve({})
+          await settle()
+          dispose()
+        }
+      })
+    })
+
+    it('allows retry after payload registration fails', async () => {
+      await createRoot(async (dispose) => {
+        try {
+          const { ops, view } = setup()
+          mockRegisterTabPayload.mockRejectedValueOnce(new Error('registration failed'))
+          ops.handleFileOpen('/tmp/retry.go')
+          await settle()
+          expect(view.all().some(t => t.type === TabType.FILE)).toBe(false)
+          expect(mockShowWarnToast).toHaveBeenCalled()
+          ops.handleFileOpen('/tmp/retry.go')
+          await settle()
+          expect(view.all().filter(t => t.type === TabType.FILE)).toHaveLength(1)
+          expect(mockRegisterTabPayload).toHaveBeenCalledTimes(2)
+        }
+        finally {
+          dispose()
+        }
+      })
+    })
+
     it('makes handleFileOpen call RegisterTabPayload with the local path and the originating tab\'s working dir', async () => {
       await createRoot(async (dispose) => {
         try {
@@ -353,7 +488,7 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('makes handleImageOpen roll the tab back when the payload registration fails', async () => {
+    it('renders no image tab without canonical publication after an uncertain reply', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, view } = setup()
@@ -367,8 +502,8 @@ describe('useTabOperations', () => {
             workingDir: '/tmp',
           })
           await flush()
-          // Leaving it would strand a tab no peer -- and no reload -- can
-          // resolve, because nothing on the worker describes it.
+          // Publication remains unresolved after this transport failure.
+          // Canonical events determine membership in the tab view.
           expect(view.forWorkspace('ws-test').filter(t => t.type === TabType.IMAGE)).toHaveLength(0)
         }
         finally {
@@ -548,6 +683,7 @@ describe('useTabOperations', () => {
             gitToplevel: '/tmp',
           })
           ops.handleFileOpen('/tmp/myfile.go')
+          await flush()
           const opened = view.forWorkspace('ws-test').find(t => t.type === TabType.FILE)
           expect(opened).toMatchObject({
             gitToplevel: '/tmp',
@@ -592,6 +728,7 @@ describe('useTabOperations', () => {
         try {
           const { ops, view } = setup()
           ops.handleFileOpen('/tmp/staged.go', 'staged')
+          await flush()
           const opened = view.forWorkspace('ws-test').find(t => t.type === TabType.FILE)
           expect(opened).toMatchObject({
             fileViewMode: 'unified-diff',
@@ -848,16 +985,14 @@ describe('useTabOperations', () => {
       })
     })
 
-    it('makes handleFileOpen roll back the optimistic tab on RegisterTabPayload failure', async () => {
+    it('renders no file tab without canonical publication after a registration transport failure', async () => {
       await createRoot(async (dispose) => {
         try {
           mockRegisterTabPayload.mockImplementationOnce(() => Promise.reject(new Error('e2ee failure')))
           const { view, ops } = setup()
           ops.handleFileOpen('/tmp/myfile.go')
-          // Tab added optimistically.
-          expect(view.all().some(t => t.type === TabType.FILE)).toBe(true)
-          // Wait for the rejection microtask to fire the rollback.
-          await new Promise(r => setTimeout(r, 0))
+          expect(view.all().some(t => t.type === TabType.FILE)).toBe(false)
+          await settle()
           expect(view.all().some(t => t.type === TabType.FILE)).toBe(false)
         }
         finally {
@@ -1467,7 +1602,7 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
         probeMany: async () => [],
       },
       workerOnlineState: () => true,
-      repoGitStore: createRepoGitStore(),
+      creation: createTestTabCreation(stores),
     })
 
     const tab = stores.view.getById(type, id)!
@@ -1618,7 +1753,7 @@ describe('useTabOperations.handleTabClose focus migration', () => {
           probeMany: async () => [],
         },
         workerOnlineState: () => true,
-        repoGitStore: createRepoGitStore(),
+        creation: createTestTabCreation(stores),
       })
 
       await ops.handleTabClose(view.getById(TabType.FILE, 'file-a')!)
@@ -1683,7 +1818,7 @@ describe('useTabOperations.handleTabClose focus migration', () => {
           probeMany: async () => [],
         },
         workerOnlineState: () => true,
-        repoGitStore: createRepoGitStore(),
+        creation: createTestTabCreation(stores),
       })
 
       await ops.handleTabClose(view.getById(TabType.FILE, 'file-a')!)
@@ -1740,7 +1875,7 @@ function setupWithFloatingWindow() {
       probeMany: async () => [],
     },
     workerOnlineState: () => true,
-    repoGitStore: createRepoGitStore(),
+    creation: createTestTabCreation(stores),
   })
 
   return {
@@ -2149,7 +2284,7 @@ describe('useTabOperations.closeTabWithAction', () => {
         probeMany: async () => [],
       },
       workerOnlineState: () => true,
-      repoGitStore: createRepoGitStore(),
+      creation: createTestTabCreation(stores),
     })
     return {
       ...stores,
@@ -2256,7 +2391,7 @@ function setupForFocusMigration() {
       probeMany: async () => [],
     },
     workerOnlineState: () => true,
-    repoGitStore: createRepoGitStore(),
+    creation: createTestTabCreation(stores),
   })
   return {
     ...stores,

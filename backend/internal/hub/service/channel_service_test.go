@@ -365,7 +365,7 @@ func TestConnectRefusesAnUnusableFirstMessage(t *testing.T) {
 	classicWithoutPQ.Keys.Slhdsa = nil
 
 	for name, first := range map[string]*leapmuxv1.ConnectRequest{
-		"a tab inventory":                               {Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: &leapmuxv1.WorkerTabInventory{}}},
+		"a tab inventory":                               {Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: &leapmuxv1.WorkerTabInventory{Complete: true}}},
 		"a hello with no keys":                          helloRequest(&leapmuxv1.WorkerHello{EncryptionMode: leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC}),
 		"an unspecified mode":                           helloRequest(unspecified),
 		"a short x25519 key":                            helloRequest(short),
@@ -429,7 +429,7 @@ func TestConnectProcessesAMessageThatFollowsTheHelloAtOnce(t *testing.T) {
 	stream := dialWorker(t, ctx, server, authToken)
 	require.NoError(t, stream.Send(helloRequest(classicHello(0x22))))
 	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
-		RequestId: "r1", Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: &leapmuxv1.WorkerTabInventory{}},
+		RequestId: "r1", Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: &leapmuxv1.WorkerTabInventory{Complete: true}},
 	}))
 
 	first, err := stream.Receive()
@@ -718,6 +718,24 @@ func setupDirectOpenChannelEnv(t *testing.T) *directOpenChannelEnv {
 	}
 }
 
+func (e *directOpenChannelEnv) channelOpenResponder(respond func(*leapmuxv1.ChannelOpenRequest) *leapmuxv1.ChannelOpenResponse) func(*leapmuxv1.ConnectResponse) error {
+	return func(msg *leapmuxv1.ConnectResponse) error {
+		e.sent <- msg
+		if open := msg.GetChannelOpen(); open != nil {
+			e.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
+				Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{ChannelOpenResp: respond(open)},
+			})
+		}
+		return nil
+	}
+}
+
+func (e *directOpenChannelEnv) openStandardChannel() (*leapmuxv1.OpenChannelResponse, error) {
+	channelSvc := service.NewChannelService(e.store, e.worker, e.channels, e.pending, allowAllAuthFreshness{})
+	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(e.user.ID), Username: e.user.Username})
+	return channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{WorkerId: e.workerID, HandshakePayload: []byte("handshake")})
+}
+
 func TestOpenChannel_UnregistersWhenAuthRevokedDuringRegistration(t *testing.T) {
 	t.Parallel()
 
@@ -749,22 +767,13 @@ func TestOpenChannel_ClosesWorkerChannelWhenAuthRevokedDuringHandshake(t *testin
 
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 2)
-	conn := workermgrtest.NewConnWithWrite(t, env.workerID, func(msg *leapmuxv1.ConnectResponse) error {
-		env.sent <- msg
-		if msg.GetChannelOpen() != nil {
-			env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
-				Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
-					ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
-						ChannelId:        msg.GetChannelOpen().GetChannelId(),
-						HandshakePayload: []byte("worker-handshake"),
-						MaxMessageSize:   msg.GetChannelOpen().GetMaxMessageSize(),
-					},
-				},
-			})
+	conn := workermgrtest.NewConnWithWrite(t, env.workerID, env.channelOpenResponder(func(open *leapmuxv1.ChannelOpenRequest) *leapmuxv1.ChannelOpenResponse {
+		return &leapmuxv1.ChannelOpenResponse{
+			ChannelId:        open.GetChannelId(),
+			HandshakePayload: []byte("worker-handshake"),
+			MaxMessageSize:   open.GetMaxMessageSize(),
 		}
-		return nil
-
-	})
+	}))
 	requireWorkerConnectionRegistration(t, env.worker, conn)
 
 	checker := &freshnessAfterNCalls{staleAfter: 3}
@@ -814,15 +823,7 @@ func TestOpenChannel_ClosesLocalChannelWhenOpenWriteFails(t *testing.T) {
 		return nil
 	})
 	requireWorkerConnectionRegistration(t, env.worker, conn)
-	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID: userid.MustNew(env.user.ID), Username: env.user.Username,
-	})
-
-	_, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
-		WorkerId:         env.workerID,
-		HandshakePayload: []byte("handshake"),
-	})
+	_, err := env.openStandardChannel()
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
 
@@ -875,33 +876,16 @@ func TestOpenChannel_MapsWorkerErrorCodes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			env := setupDirectOpenChannelEnv(t)
 			env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
-			conn := workermgrtest.NewConnWithWrite(t, env.workerID, func(msg *leapmuxv1.ConnectResponse) error {
-				env.sent <- msg
-				if open := msg.GetChannelOpen(); open != nil {
-					env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
-						Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
-							ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
-								ChannelId: open.GetChannelId(),
-								Error:     "worker reject: " + tc.name,
-								ErrorCode: tc.code,
-							},
-						},
-					})
+			conn := workermgrtest.NewConnWithWrite(t, env.workerID, env.channelOpenResponder(func(open *leapmuxv1.ChannelOpenRequest) *leapmuxv1.ChannelOpenResponse {
+				return &leapmuxv1.ChannelOpenResponse{
+					ChannelId: open.GetChannelId(),
+					Error:     "worker reject: " + tc.name,
+					ErrorCode: tc.code,
 				}
-				return nil
-
-			})
+			}))
 			requireWorkerConnectionRegistration(t, env.worker, conn)
 
-			channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
-			ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-				ID:       userid.MustNew(env.user.ID),
-				Username: env.user.Username,
-			})
-			_, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
-				WorkerId:         env.workerID,
-				HandshakePayload: []byte("handshake"),
-			})
+			_, err := env.openStandardChannel()
 			require.Error(t, err)
 			assert.Equal(t, tc.want, connect.CodeOf(err), "code %v must map via channelwire.ConnectCodeFromChannelOpenError", tc.code)
 		})
@@ -915,34 +899,17 @@ func TestOpenChannel_RejectsErrorCodeOnlyWithoutErrorString(t *testing.T) {
 	// buggy/hostile worker cannot fall through to the success path.
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
-	conn := workermgrtest.NewConnWithWrite(t, env.workerID, func(msg *leapmuxv1.ConnectResponse) error {
-		env.sent <- msg
-		if open := msg.GetChannelOpen(); open != nil {
-			env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
-				Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
-					ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
-						ChannelId:        open.GetChannelId(),
-						ErrorCode:        leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_CHANNEL_ALREADY_ACTIVE,
-						MaxMessageSize:   uint64(contracts.MaxMessageSize),
-						HandshakePayload: []byte("should-not-matter"),
-					},
-				},
-			})
+	conn := workermgrtest.NewConnWithWrite(t, env.workerID, env.channelOpenResponder(func(open *leapmuxv1.ChannelOpenRequest) *leapmuxv1.ChannelOpenResponse {
+		return &leapmuxv1.ChannelOpenResponse{
+			ChannelId:        open.GetChannelId(),
+			ErrorCode:        leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_CHANNEL_ALREADY_ACTIVE,
+			MaxMessageSize:   uint64(contracts.MaxMessageSize),
+			HandshakePayload: []byte("should-not-matter"),
 		}
-		return nil
-
-	})
+	}))
 	requireWorkerConnectionRegistration(t, env.worker, conn)
 
-	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:       userid.MustNew(env.user.ID),
-		Username: env.user.Username,
-	})
-	_, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
-		WorkerId:         env.workerID,
-		HandshakePayload: []byte("handshake"),
-	})
+	_, err := env.openStandardChannel()
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "worker rejected channel")
@@ -956,33 +923,16 @@ func TestOpenChannel_MapsInvalidMaxMessageSizeErrorCode(t *testing.T) {
 	// Kept as a focused alias of the table above for the original skew case.
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
-	conn := workermgrtest.NewConnWithWrite(t, env.workerID, func(msg *leapmuxv1.ConnectResponse) error {
-		env.sent <- msg
-		if open := msg.GetChannelOpen(); open != nil {
-			env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
-				Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
-					ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
-						ChannelId: open.GetChannelId(),
-						Error:     "invalid hub max_message_size: below floor",
-						ErrorCode: leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_INVALID_MAX_MESSAGE_SIZE,
-					},
-				},
-			})
+	conn := workermgrtest.NewConnWithWrite(t, env.workerID, env.channelOpenResponder(func(open *leapmuxv1.ChannelOpenRequest) *leapmuxv1.ChannelOpenResponse {
+		return &leapmuxv1.ChannelOpenResponse{
+			ChannelId: open.GetChannelId(),
+			Error:     "invalid hub max_message_size: below floor",
+			ErrorCode: leapmuxv1.ChannelOpenErrorCode_CHANNEL_OPEN_ERROR_CODE_INVALID_MAX_MESSAGE_SIZE,
 		}
-		return nil
-
-	})
+	}))
 	requireWorkerConnectionRegistration(t, env.worker, conn)
 
-	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:       userid.MustNew(env.user.ID),
-		Username: env.user.Username,
-	})
-	_, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
-		WorkerId:         env.workerID,
-		HandshakePayload: []byte("handshake"),
-	})
+	_, err := env.openStandardChannel()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid hub max_message_size")
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
@@ -994,34 +944,17 @@ func TestOpenChannel_UnspecifiedWorkerErrorStaysInternal(t *testing.T) {
 
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
-	conn := workermgrtest.NewConnWithWrite(t, env.workerID, func(msg *leapmuxv1.ConnectResponse) error {
-		env.sent <- msg
-		if open := msg.GetChannelOpen(); open != nil {
-			env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
-				Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
-					ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
-						ChannelId: open.GetChannelId(),
-						Error:     "handshake failed: corrupt",
-						// ErrorCode unspecified → Internal (retryable-looking
-						// worker fault, not a client config mistake).
-					},
-				},
-			})
+	conn := workermgrtest.NewConnWithWrite(t, env.workerID, env.channelOpenResponder(func(open *leapmuxv1.ChannelOpenRequest) *leapmuxv1.ChannelOpenResponse {
+		return &leapmuxv1.ChannelOpenResponse{
+			ChannelId: open.GetChannelId(),
+			Error:     "handshake failed: corrupt",
+			// ErrorCode unspecified → Internal (retryable-looking
+			// worker fault, not a client config mistake).
 		}
-		return nil
-
-	})
+	}))
 	requireWorkerConnectionRegistration(t, env.worker, conn)
 
-	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:       userid.MustNew(env.user.ID),
-		Username: env.user.Username,
-	})
-	_, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
-		WorkerId:         env.workerID,
-		HandshakePayload: []byte("handshake"),
-	})
+	_, err := env.openStandardChannel()
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
 }
@@ -1033,34 +966,17 @@ func TestOpenChannel_RejectsWorkerEchoAboveHubMax(t *testing.T) {
 	hubMax := 1 << 20 // 1 MiB — below the protocol default so an oversize echo is visible
 	env.channels = channelmgr.New(hubMax)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
-	conn := workermgrtest.NewConnWithWrite(t, env.workerID, func(msg *leapmuxv1.ConnectResponse) error {
-		env.sent <- msg
-		if open := msg.GetChannelOpen(); open != nil {
-			env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
-				Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
-					ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
-						ChannelId:        open.GetChannelId(),
-						HandshakePayload: []byte("worker-handshake"),
-						// Valid by itself, but above what this hub announced.
-						MaxMessageSize: uint64(hubMax * 2),
-					},
-				},
-			})
+	conn := workermgrtest.NewConnWithWrite(t, env.workerID, env.channelOpenResponder(func(open *leapmuxv1.ChannelOpenRequest) *leapmuxv1.ChannelOpenResponse {
+		return &leapmuxv1.ChannelOpenResponse{
+			ChannelId:        open.GetChannelId(),
+			HandshakePayload: []byte("worker-handshake"),
+			// Valid by itself, but above what this hub announced.
+			MaxMessageSize: uint64(hubMax * 2),
 		}
-		return nil
-
-	})
+	}))
 	requireWorkerConnectionRegistration(t, env.worker, conn)
 
-	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:       userid.MustNew(env.user.ID),
-		Username: env.user.Username,
-	})
-	_, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
-		WorkerId:         env.workerID,
-		HandshakePayload: []byte("handshake"),
-	})
+	_, err := env.openStandardChannel()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "above hub max")
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err),
@@ -1081,33 +997,16 @@ func TestOpenChannel_RejectsWorkerEchoInvalidMaxMessageSize(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			env := setupDirectOpenChannelEnv(t)
 			env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
-			conn := workermgrtest.NewConnWithWrite(t, env.workerID, func(msg *leapmuxv1.ConnectResponse) error {
-				env.sent <- msg
-				if open := msg.GetChannelOpen(); open != nil {
-					env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
-						Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
-							ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
-								ChannelId:        open.GetChannelId(),
-								HandshakePayload: []byte("worker-handshake"),
-								MaxMessageSize:   tc.echo,
-							},
-						},
-					})
+			conn := workermgrtest.NewConnWithWrite(t, env.workerID, env.channelOpenResponder(func(open *leapmuxv1.ChannelOpenRequest) *leapmuxv1.ChannelOpenResponse {
+				return &leapmuxv1.ChannelOpenResponse{
+					ChannelId:        open.GetChannelId(),
+					HandshakePayload: []byte("worker-handshake"),
+					MaxMessageSize:   tc.echo,
 				}
-				return nil
-
-			})
+			}))
 			requireWorkerConnectionRegistration(t, env.worker, conn)
 
-			channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
-			ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-				ID:       userid.MustNew(env.user.ID),
-				Username: env.user.Username,
-			})
-			_, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
-				WorkerId:         env.workerID,
-				HandshakePayload: []byte("handshake"),
-			})
+			_, err := env.openStandardChannel()
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "max_message_size")
 			assert.Equal(t, connect.CodeInternal, connect.CodeOf(err),
@@ -1127,35 +1026,18 @@ func TestOpenChannel_AdoptsWorkerLoweredMaxMessageSize(t *testing.T) {
 	lowered := 100_000
 	env.channels = channelmgr.New(hubMax)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
-	conn := workermgrtest.NewConnWithWrite(t, env.workerID, func(msg *leapmuxv1.ConnectResponse) error {
-		env.sent <- msg
-		if open := msg.GetChannelOpen(); open != nil {
-			assert.Equal(t, uint64(hubMax), open.GetMaxMessageSize(),
-				"hub must announce its configured payload budget")
-			env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
-				Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
-					ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
-						ChannelId:        open.GetChannelId(),
-						HandshakePayload: []byte("worker-handshake"),
-						MaxMessageSize:   uint64(lowered),
-					},
-				},
-			})
+	conn := workermgrtest.NewConnWithWrite(t, env.workerID, env.channelOpenResponder(func(open *leapmuxv1.ChannelOpenRequest) *leapmuxv1.ChannelOpenResponse {
+		assert.Equal(t, uint64(hubMax), open.GetMaxMessageSize(),
+			"hub must announce its configured payload budget")
+		return &leapmuxv1.ChannelOpenResponse{
+			ChannelId:        open.GetChannelId(),
+			HandshakePayload: []byte("worker-handshake"),
+			MaxMessageSize:   uint64(lowered),
 		}
-		return nil
-
-	})
+	}))
 	requireWorkerConnectionRegistration(t, env.worker, conn)
 
-	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:       userid.MustNew(env.user.ID),
-		Username: env.user.Username,
-	})
-	resp, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
-		WorkerId:         env.workerID,
-		HandshakePayload: []byte("handshake"),
-	})
+	resp, err := env.openStandardChannel()
 	require.NoError(t, err)
 	assert.Equal(t, uint64(lowered), resp.GetMaxMessageSize())
 	require.True(t, env.channels.Exists(resp.GetChannelId()))
@@ -1195,33 +1077,16 @@ func TestOpenChannel_ReturnsNegotiatedMaxMessageSize(t *testing.T) {
 
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
-	conn := workermgrtest.NewConnWithWrite(t, env.workerID, func(msg *leapmuxv1.ConnectResponse) error {
-		env.sent <- msg
-		if open := msg.GetChannelOpen(); open != nil {
-			env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
-				Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
-					ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
-						ChannelId:        open.GetChannelId(),
-						HandshakePayload: []byte("worker-handshake"),
-						MaxMessageSize:   open.GetMaxMessageSize(),
-					},
-				},
-			})
+	conn := workermgrtest.NewConnWithWrite(t, env.workerID, env.channelOpenResponder(func(open *leapmuxv1.ChannelOpenRequest) *leapmuxv1.ChannelOpenResponse {
+		return &leapmuxv1.ChannelOpenResponse{
+			ChannelId:        open.GetChannelId(),
+			HandshakePayload: []byte("worker-handshake"),
+			MaxMessageSize:   open.GetMaxMessageSize(),
 		}
-		return nil
-
-	})
+	}))
 	requireWorkerConnectionRegistration(t, env.worker, conn)
 
-	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:       userid.MustNew(env.user.ID),
-		Username: env.user.Username,
-	})
-	resp, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
-		WorkerId:         env.workerID,
-		HandshakePayload: []byte("handshake"),
-	})
+	resp, err := env.openStandardChannel()
 	require.NoError(t, err)
 	assert.Equal(t, uint64(contracts.MaxMessageSize), resp.GetMaxMessageSize(),
 		"OpenChannelResponse must return the effective payload budget")
@@ -1237,34 +1102,17 @@ func TestOpenChannel_PropagatesAuthenticatedUserId(t *testing.T) {
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 1)
 	var announcedToWorker string
-	conn := workermgrtest.NewConnWithWrite(t, env.workerID, func(msg *leapmuxv1.ConnectResponse) error {
-		env.sent <- msg
-		if open := msg.GetChannelOpen(); open != nil {
-			announcedToWorker = open.GetUserId()
-			env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
-				Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
-					ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
-						ChannelId:        open.GetChannelId(),
-						HandshakePayload: []byte("worker-handshake"),
-						MaxMessageSize:   open.GetMaxMessageSize(),
-					},
-				},
-			})
+	conn := workermgrtest.NewConnWithWrite(t, env.workerID, env.channelOpenResponder(func(open *leapmuxv1.ChannelOpenRequest) *leapmuxv1.ChannelOpenResponse {
+		announcedToWorker = open.GetUserId()
+		return &leapmuxv1.ChannelOpenResponse{
+			ChannelId:        open.GetChannelId(),
+			HandshakePayload: []byte("worker-handshake"),
+			MaxMessageSize:   open.GetMaxMessageSize(),
 		}
-		return nil
-
-	})
+	}))
 	requireWorkerConnectionRegistration(t, env.worker, conn)
 
-	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:       userid.MustNew(env.user.ID),
-		Username: env.user.Username,
-	})
-	resp, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
-		WorkerId:         env.workerID,
-		HandshakePayload: []byte("handshake"),
-	})
+	resp, err := env.openStandardChannel()
 	require.NoError(t, err)
 	assert.Equal(t, env.user.ID, announcedToWorker,
 		"ChannelOpenRequest must carry the authenticated user id to the worker")
@@ -1277,22 +1125,13 @@ func TestOpenChannel_ClosesWhenCredentialExpires(t *testing.T) {
 
 	env := setupDirectOpenChannelEnv(t)
 	env.sent = make(chan *leapmuxv1.ConnectResponse, 2)
-	conn := workermgrtest.NewConnWithWrite(t, env.workerID, func(msg *leapmuxv1.ConnectResponse) error {
-		env.sent <- msg
-		if open := msg.GetChannelOpen(); open != nil {
-			env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
-				Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{
-					ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
-						ChannelId:        open.GetChannelId(),
-						HandshakePayload: []byte("worker-handshake"),
-						MaxMessageSize:   open.GetMaxMessageSize(),
-					},
-				},
-			})
+	conn := workermgrtest.NewConnWithWrite(t, env.workerID, env.channelOpenResponder(func(open *leapmuxv1.ChannelOpenRequest) *leapmuxv1.ChannelOpenResponse {
+		return &leapmuxv1.ChannelOpenResponse{
+			ChannelId:        open.GetChannelId(),
+			HandshakePayload: []byte("worker-handshake"),
+			MaxMessageSize:   open.GetMaxMessageSize(),
 		}
-		return nil
-
-	})
+	}))
 	requireWorkerConnectionRegistration(t, env.worker, conn)
 
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})

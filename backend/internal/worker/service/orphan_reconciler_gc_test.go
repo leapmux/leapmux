@@ -10,13 +10,8 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/internal/util/userid"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 )
-
-func ignoreArchiveState(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error) {
-	return nil, nil
-}
 
 func ignoreAgentResume([]string) {}
 
@@ -28,7 +23,7 @@ func TestReconcileWorktreeLinksCleansImmediately(t *testing.T) {
 	require.NoError(t, err)
 	svc.registerTabForWorktree("dead", leapmuxv1.TabType_TAB_TYPE_AGENT, "absent")
 	rec := NewOrphanReconciler(svc.Queries, nil, OrphanReconcilerOptions{
-		CloseTab: svc.CloseTabForReconcile, CleanupWorktreeLinks: svc.CleanupOrphanWorktreeLinks,
+		BeginTabReconciliation: svc.BeginTabReconciliation, CleanupWorktreeLinks: svc.CleanupOrphanWorktreeLinks,
 	})
 	require.True(t, rec.reconcileOnce(ctx))
 	count, err := svc.Queries.CountWorktreeTabs(ctx, "dead")
@@ -52,9 +47,9 @@ func TestReconcileWorktrees_CleansDeadLinksOnEachPass(t *testing.T) {
 		return q.DeleteDeadWorktreeTabs(rctx, wt.ID)
 	}
 	rec := NewOrphanReconciler(q, nil, OrphanReconcilerOptions{
-		Now:                  func() time.Time { return clock },
-		CleanupWorktreeLinks: cleanup,
-		CloseTab:             svc.CloseTabForReconcile,
+		Now:                    func() time.Time { return clock },
+		CleanupWorktreeLinks:   cleanup,
+		BeginTabReconciliation: svc.BeginTabReconciliation,
 	})
 
 	// Strand: the worktree's only link points at a CLOSED agent (no live
@@ -113,9 +108,9 @@ func TestReconcileWorktrees_SparesWorktreeReLinkedBetweenPasses(t *testing.T) {
 		return q.DeleteDeadWorktreeTabs(ctx, wt.ID)
 	}
 	rec := NewOrphanReconciler(q, nil, OrphanReconcilerOptions{
-		Now:                  func() time.Time { return clock },
-		CleanupWorktreeLinks: cleanup,
-		CloseTab:             svc.CloseTabForReconcile,
+		Now:                    func() time.Time { return clock },
+		CleanupWorktreeLinks:   cleanup,
+		BeginTabReconciliation: svc.BeginTabReconciliation,
 	})
 
 	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-reuse", WorktreePath: "/r/reuse", RepoRoot: "/r", BranchName: "b"})
@@ -275,10 +270,10 @@ func TestReconcileFileTabs_RoutesThroughSharedTeardownHonouringKeep(t *testing.T
 	// TabGrace -1: this test asserts WHAT the teardown does, not when it is due.
 	// TestReconcileTabs_* below covers the grace itself.
 	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
-		CloseTab:          svc.CloseTabForReconcile,
-		ApplyArchiveState: ignoreArchiveState,
-		ResumeAgents:      ignoreAgentResume,
-		TabGrace:          -1,
+		BeginTabReconciliation: svc.BeginTabReconciliation,
+
+		ResumeAgents: ignoreAgentResume,
+		TabGrace:     -1,
 	})
 	rec.reconcileOnce(ctx)
 
@@ -382,9 +377,9 @@ func TestReconcileOnce_LocalProbeFailureIsNotConvergence(t *testing.T) {
 		return &leapmuxv1.ListOwnedTabsForWorkerResponse{OwnerUserId: "user-1"}, nil
 	}
 	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
-		CloseTab:          svc.CloseTabForReconcile,
-		ApplyArchiveState: ignoreArchiveState,
-		ResumeAgents:      ignoreAgentResume,
+		BeginTabReconciliation: svc.BeginTabReconciliation,
+
+		ResumeAgents: ignoreAgentResume,
 	})
 
 	// A healthy, genuinely idle worker converges and skips the hub RPC.
@@ -427,11 +422,11 @@ func TestReconcileTabs_DefersTheReapUntilTheGraceElapses(t *testing.T) {
 	}
 	clock := time.Now()
 	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
-		CloseTab:          svc.CloseTabForReconcile,
-		ApplyArchiveState: ignoreArchiveState,
-		ResumeAgents:      ignoreAgentResume,
-		Now:               func() time.Time { return clock },
-		TabGrace:          10 * time.Second,
+		BeginTabReconciliation: svc.BeginTabReconciliation,
+
+		ResumeAgents: ignoreAgentResume,
+		Now:          func() time.Time { return clock },
+		TabGrace:     10 * time.Second,
 	})
 
 	assert.False(t, rec.reconcileOnce(ctx),
@@ -474,11 +469,11 @@ func TestReconcileTabs_RestartsTheClockWhenTheHubListsTheTabAgain(t *testing.T) 
 	}
 	clock := time.Now()
 	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
-		CloseTab:          svc.CloseTabForReconcile,
-		ApplyArchiveState: ignoreArchiveState,
-		ResumeAgents:      ignoreAgentResume,
-		Now:               func() time.Time { return clock },
-		TabGrace:          10 * time.Second,
+		BeginTabReconciliation: svc.BeginTabReconciliation,
+
+		ResumeAgents: ignoreAgentResume,
+		Now:          func() time.Time { return clock },
+		TabGrace:     10 * time.Second,
 	})
 
 	rec.reconcileOnce(ctx) // absent: starts the clock
@@ -520,11 +515,11 @@ func TestReconcileTabs_RemoveCloseKeepsItsWorktreeLinkAcrossARacingPass(t *testi
 	}
 	clock := time.Now()
 	rec := NewOrphanReconciler(q, listFn, OrphanReconcilerOptions{
-		CloseTab:          svc.CloseTabForReconcile,
-		ApplyArchiveState: ignoreArchiveState,
-		ResumeAgents:      ignoreAgentResume,
-		Now:               func() time.Time { return clock },
-		TabGrace:          10 * time.Second,
+		BeginTabReconciliation: svc.BeginTabReconciliation,
+
+		ResumeAgents: ignoreAgentResume,
+		Now:          func() time.Time { return clock },
+		TabGrace:     10 * time.Second,
 	})
 
 	rec.reconcileOnce(ctx)
@@ -552,7 +547,7 @@ func TestWorkspaceCleanupPreservesExistingCheckoutAfterGrace(t *testing.T) {
 	require.Empty(t, w.errors)
 	clock := time.Now()
 	rec := NewOrphanReconciler(svc.Queries, nil, OrphanReconcilerOptions{
-		Now: func() time.Time { return clock }, CleanupWorktreeLinks: svc.CleanupOrphanWorktreeLinks, CloseTab: svc.CloseTabForReconcile,
+		Now: func() time.Time { return clock }, CleanupWorktreeLinks: svc.CleanupOrphanWorktreeLinks, BeginTabReconciliation: svc.BeginTabReconciliation,
 	})
 	require.True(t, rec.reconcileOnce(context.Background()))
 	clock = clock.Add(3 * time.Minute)
@@ -575,7 +570,7 @@ func TestCleanupWorktreeLinksFailurePreventsConvergence(t *testing.T) {
 	svc.registerTabForWorktree("cleanup-failure", leapmuxv1.TabType_TAB_TYPE_AGENT, "dead")
 	clock := time.Now()
 	rec := NewOrphanReconciler(svc.Queries, nil, OrphanReconcilerOptions{
-		Now: func() time.Time { return clock }, CloseTab: svc.CloseTabForReconcile,
+		Now: func() time.Time { return clock }, BeginTabReconciliation: svc.BeginTabReconciliation,
 		CleanupWorktreeLinks: svc.CleanupOrphanWorktreeLinks,
 	})
 	svc.Queries = db.New(&faultingDBTX{real: svc.DB, failSubstr: "DELETE FROM worktree_tabs"})

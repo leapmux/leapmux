@@ -70,6 +70,9 @@ type Service struct {
 	// while removing the swapped-argument one.
 	Config
 
+	creations           *tabCreationCoordinator
+	archiveObservations archiveObservationTracker
+
 	Queries    *db.Queries
 	Watchers   *WatcherManager // Fan-out manager for event broadcasting
 	Output     *OutputHandler  // Agent output NDJSON processor
@@ -95,9 +98,11 @@ type Service struct {
 	beforeAgentCloseTeardownFn func(string)
 	// beforeWorktreeRemovalFn controls the final removal boundary in tests.
 	beforeWorktreeRemovalFn func()
+	// afterPayloadPersistenceFn pauses payload creation before Hub publication in tests.
+	afterPayloadPersistenceFn func(context.Context)
 	// afterWorktreeBranchProbeFn controls the branch-selection boundary in tests.
 	afterWorktreeBranchProbeFn func()
-	createAgentRecordFn        func(context.Context, db.CreateAgentParams) error
+	createAgentRecordFn        func(context.Context, *db.Queries, db.CreateAgentParams) error
 	getAgentByIDFn             func(context.Context, string) (db.Agent, error)
 	sendControlResponseFn      func(string, []byte) error
 	updateAgentSettingsFn      func(string, OptionMap) agent.SettingsApplyResult
@@ -556,6 +561,11 @@ func (svc *Service) agentAPITimeout() time.Duration {
 // grown past what positional arguments can keep readable. Service embeds
 // it, so every field below is readable as svc.<Field>.
 type Config struct {
+	ResolveTabPublication func(context.Context, *leapmuxv1.TabPublication) (*leapmuxv1.ResolveTabPublicationResponse, error)
+	// PublishTab and CancelTabPublication use this Worker's captured Hub credential.
+	PublishTab           func(context.Context, *leapmuxv1.TabPublication) (*leapmuxv1.PublishTabResponse, error)
+	CancelTabPublication func(context.Context, *leapmuxv1.TabPublication) error
+
 	// Enforced: New panics if Channels, Send, or Agents is missing.
 	Channels *channel.Manager // E2EE channel manager (for session lookups)
 	Send     SendFunc         // Forwards messages to the Hub via WebSocket
@@ -628,6 +638,15 @@ func New(cfg Config) *Service {
 	if cfg.Agents == nil {
 		panic("service.New: Agents must be set")
 	}
+	if cfg.PublishTab == nil {
+		panic("service.New: PublishTab must be set")
+	}
+	if cfg.ResolveTabPublication == nil {
+		panic("service.New: ResolveTabPublication must be set")
+	}
+	if cfg.CancelTabPublication == nil {
+		panic("service.New: CancelTabPublication must be set")
+	}
 
 	// Written back into cfg before the copy below, so Service.Clock reads the
 	// installed clock rather than nil.
@@ -659,6 +678,7 @@ func New(cfg Config) *Service {
 	}
 	svc.TabPayloads = NewTabPayloadStore(svc.Queries, svc.PrivateEvents, &svc.worktreeLifecycle)
 	queueAdapter := &agentInputQueueAdapter{svc: svc}
+	svc.creations = newTabCreationCoordinator(svc)
 	svc.InputQueue = inputqueue.NewManager(inputqueue.NewStore(cfg.DB, cfg.Clock), queueAdapter, queueAdapter)
 	svc.Output.SetQueueHeadDispatchFunc(svc.queueHeadDispatch)
 	svc.Output.SetInputProcessStateFunc(func(agentID string) {
@@ -715,7 +735,7 @@ func New(cfg Config) *Service {
 	svc.startAgentFn = svc.Agents.StartAgent
 	svc.startBackgroundAgentFn = svc.Agents.StartBackgroundAgent
 	svc.startTerminalFn = svc.Terminals.StartTerminal
-	svc.createAgentRecordFn = svc.Queries.CreateAgent
+	svc.createAgentRecordFn = func(ctx context.Context, q *db.Queries, p db.CreateAgentParams) error { return q.CreateAgent(ctx, p) }
 	svc.getAgentByIDFn = svc.Queries.GetAgentByID
 	svc.sendControlResponseFn = func(agentID string, content []byte) error {
 		return svc.Agents.SendRawInput(agentID, content, agent.StopContext{})
@@ -818,17 +838,40 @@ func (svc *Service) startTerminal(ctx context.Context, opts terminal.Options, ou
 	if svc.startTerminalFn != nil {
 		return svc.startTerminalFn(ctx, opts, outputFn, exitFn)
 	}
+	return svc.startTerminalProcess(ctx, opts, outputFn, exitFn)
+}
+
+// startTerminalProcess restores a stopped incarnation without losing its screen
+// or metadata. Startup admission serializes this with archive and explicit restart.
+func (svc *Service) startTerminalProcess(ctx context.Context, opts terminal.Options, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler) error {
+	if svc.Terminals.HasTerminal(opts.ID) {
+		if svc.Terminals.IsRunning(opts.ID) {
+			return fmt.Errorf("%w: %s", terminal.ErrTerminalStillRunning, opts.ID)
+		}
+		if err := svc.Terminals.WaitForExitContext(ctx, opts.ID); err != nil {
+			return err
+		}
+		row, err := svc.Queries.GetTerminalForRestart(ctx, opts.ID)
+		if err != nil {
+			return err
+		}
+		return svc.Terminals.RestartTerminal(ctx, opts, row.ScreenLength.Int64, outputFn, exitFn)
+	}
 	return svc.Terminals.StartTerminal(ctx, opts, outputFn, exitFn)
 }
 
 func (svc *Service) createAgentRecord(ctx context.Context, params db.CreateAgentParams) error {
+	return svc.createAgentRecordUsing(ctx, svc.Queries, params)
+}
+
+func (svc *Service) createAgentRecordUsing(ctx context.Context, q *db.Queries, params db.CreateAgentParams) error {
 	if err := validateAgentRecordProvider(params); err != nil {
 		return err
 	}
 	if svc.createAgentRecordFn != nil {
-		return svc.createAgentRecordFn(ctx, params)
+		return svc.createAgentRecordFn(ctx, q, params)
 	}
-	return svc.Queries.CreateAgent(ctx, params)
+	return q.CreateAgent(ctx, params)
 }
 
 func validateAgentRecordProvider(params db.CreateAgentParams) error {
@@ -1093,6 +1136,7 @@ func (svc *Service) shutdown() {
 	// what the screen bytes happen to end with. See broadcastTerminalsDisconnected.
 	notified := make(map[string]struct{})
 	svc.broadcastTerminalsDisconnected(notified)
+	svc.creations.stop()
 
 	// Stop the background loops before the drains below: the orphan reconciler,
 	// the boot-time agent resume sweep and the periodic retention and sweep loops.
@@ -1790,7 +1834,12 @@ func sendProtoResponse(sender channel.ResponseWriter, msg proto.Message) {
 		_ = sender.SendError(int32(codes.Internal), "internal: marshal response")
 		return
 	}
-	if err := sender.SendResponse(channelwire.NewPayloadResponse(data)); err != nil {
+	sendInnerResponse(sender, channelwire.NewPayloadResponse(data))
+}
+
+// sendInnerResponse preserves the channel's explicit oversized-response failure.
+func sendInnerResponse(sender channel.ResponseWriter, response *leapmuxv1.InnerRpcResponse) {
+	if err := sender.SendResponse(response); err != nil {
 		// A rejected message is the one send failure worth answering: the
 		// channel refused THIS payload on its own terms (it is over the
 		// size cap), so the transport is fine and a small reply will get
@@ -1804,7 +1853,7 @@ func sendProtoResponse(sender channel.ResponseWriter, msg proto.Message) {
 		// read it.
 		if errors.Is(err, channel.ErrMessageRejected) {
 			slog.Warn("response too large for the channel; answering with an error instead",
-				"bytes", len(data), "error", err)
+				"bytes", len(response.GetPayload()), "error", err)
 			_ = sender.SendError(int32(codes.ResourceExhausted),
 				"response too large to deliver; request a smaller range")
 		}

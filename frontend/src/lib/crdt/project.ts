@@ -53,6 +53,9 @@ export interface RenderedTab {
   readonly workerId: string
   readonly tileId: string
   readonly position: string
+  readonly displayMode?: number | undefined
+  readonly fileViewMode?: number | undefined
+  readonly fileDiffBase?: string | undefined
 }
 
 /** Immutable once returned, for the reason {@link RenderTree} gives. */
@@ -138,6 +141,9 @@ interface CachedTab {
   tileId: TabRecord['tileId']
   position: TabRecord['position']
   workerId: TabRecord['workerId']
+  displayMode: TabRecord['displayMode']
+  fileViewMode: TabRecord['fileViewMode']
+  fileDiffBase: TabRecord['fileDiffBase']
   /**
    * The resolved workspace, which depends on the node topology rather than on the
    * tab's own registers: a floating window moving between workspaces, or a peer
@@ -399,6 +405,9 @@ export class ProjectionCache {
       && prev.tileId === rec.tileId
       && prev.position === rec.position
       && prev.workerId === rec.workerId
+      && prev.displayMode === rec.displayMode
+      && prev.fileViewMode === rec.fileViewMode
+      && prev.fileDiffBase === rec.fileDiffBase
       && prev.workspaceId === workspaceId) {
       this.nextTabs.set(rec.tabId, prev)
       return prev.row
@@ -417,6 +426,9 @@ export class ProjectionCache {
       tileId: rec.tileId,
       position: rec.position,
       workerId: rec.workerId,
+      displayMode: rec.displayMode,
+      fileViewMode: rec.fileViewMode,
+      fileDiffBase: rec.fileDiffBase,
       workspaceId,
       row,
     })
@@ -1147,6 +1159,9 @@ export function project(state: UserCrdtState, cache?: ProjectionCache): Projecti
       workerId: t.workerId?.value ?? '',
       tileId: tile,
       position: t.position?.value ?? '',
+      displayMode: t.displayMode?.value,
+      fileViewMode: t.fileViewMode?.value,
+      fileDiffBase: t.fileDiffBase?.value,
     })
     // Both views report the same `tile_id`, because the rendered tree now
     // advertises every leaf under its own node id -- see the SPLIT collapse in

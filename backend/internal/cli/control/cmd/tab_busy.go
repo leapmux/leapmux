@@ -18,13 +18,10 @@ import (
 // caller has no terminal), so it refuses and names the flag that overrides it --
 // the same shape the `--worktree` gate already uses.
 //
-// Three commands close a tab and are NOT guarded, each by decision:
+// These operations do not use this guard.
 //
 //   - `workspace delete` is destructive by name, carries its own --force, and
 //     its fan-out never inspects an individual tab.
-//   - tab_spawn.go's closeOrphanTab unwinds a `tab open` that already failed,
-//     for an agent and for a terminal. It closes what this command itself
-//     created moments ago, so there is no user work to lose.
 //   - `agent interrupt` aborts a turn without closing anything. Interrupting IS
 //     the intent, and a guard would ask the user to confirm what they asked for.
 

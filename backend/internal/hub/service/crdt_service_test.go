@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -27,12 +29,13 @@ import (
 // crdt_test package's fakeJournal but is kept inline so the service
 // tests don't reach into another package's private symbols.
 type memJournal struct {
-	mu          sync.Mutex
-	state       *leapmuxv1.UserCrdtState
-	batches     []*leapmuxv1.OpBatch
-	transitions []*leapmuxv1.BatchTransitions
-	dedup       map[string]crdt.RecentBatchRecord
-	commitErr   error
+	publications map[string]*crdt.PublicationReceipt
+	mu           sync.Mutex
+	state        *leapmuxv1.UserCrdtState
+	batches      []*leapmuxv1.OpBatch
+	transitions  []*leapmuxv1.BatchTransitions
+	dedup        map[string]crdt.RecentBatchRecord
+	commitErr    error
 	// listErr, when set, makes the resume tail read fail hard. Mirrors the
 	// crdt_test fakeJournal's field of the same name; it is what lets a
 	// service-level test drive SubscribeWithACL's ERROR return, which is
@@ -93,6 +96,9 @@ func (j *memJournal) CommitBatch(_ context.Context, c crdt.CommitBatch) error {
 	defer j.mu.Unlock()
 	if j.commitErr != nil {
 		return j.commitErr
+	}
+	if c.Publication != nil {
+		j.recordPublication(c.UserID, *c.Publication)
 	}
 	j.batches = append(j.batches, c.Batch)
 	j.transitions = append(j.transitions, c.Transitions)
@@ -339,13 +345,10 @@ func TestCRDTService_SubmitOps_OriginClientIdSpoofingRejected(t *testing.T) {
 	assert.Equal(t, "wkr1", tab.GetWorkerId().GetValue())
 }
 
-// TestCRDTService_SubmitOps_TabOutsideAnyWorkspaceRejected is the
-// end-to-end form of the tab-placement guard: a batch that creates a tab
-// on a tile no workspace claims is REJECTED, not committed. Browsers and
-// the CLI both refuse to emit such an op client-side (the worker resource
-// is created before the placement op, so a rejection after it strands an
-// orphan); this pins the hub-side check that makes the class impossible
-// for a buggy or hostile client regardless.
+// TestCRDTService_SubmitOps_TabOutsideAnyWorkspaceRejected checks the Hub's
+// placement validation. A tab-register batch that targets a tile outside every
+// workspace must be rejected. The guard covers malformed and hostile requests.
+// Ordinary browser and CLI creation reaches this validation through the Worker.
 func TestCRDTService_SubmitOps_TabOutsideAnyWorkspaceRejected(t *testing.T) {
 	t.Parallel()
 
@@ -680,4 +683,39 @@ func TestResolveAllowedWorkspaces_ZeroUserIDRefusesUnderBothArms(t *testing.T) {
 // measuring the fixture rather than the handler.
 func sessionCaller(userID string) *auth.UserInfo {
 	return &auth.UserInfo{ID: userid.MustNew(userID), Scopes: authscope.UnscopedGrant()}
+}
+
+func (j *memJournal) recordPublication(userID string, r crdt.PublicationReceipt) {
+	if j.publications == nil {
+		j.publications = make(map[string]*crdt.PublicationReceipt)
+	}
+	copy := r
+	copy.RequestHash = append([]byte(nil), r.RequestHash...)
+	copy.Response = proto.CloneOf(r.Response)
+	j.publications[userID+"/"+r.WorkerID+"/"+r.TabID] = &copy
+}
+func (j *memJournal) LookupTabPublication(_ context.Context, userID, workerID, tabID string) (*crdt.PublicationReceipt, error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	r := j.publications[userID+"/"+workerID+"/"+tabID]
+	if r == nil {
+		return nil, crdt.ErrNotFound
+	}
+	copy := *r
+	copy.RequestHash = append([]byte(nil), r.RequestHash...)
+	copy.Response = proto.CloneOf(r.Response)
+	return &copy, nil
+}
+func (j *memJournal) CommitRejectedTabPublication(_ context.Context, userID string, r crdt.PublicationReceipt) error {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.commitErr != nil {
+		return j.commitErr
+	}
+	j.recordPublication(userID, r)
+	return nil
+}
+
+func (*memJournal) LookupHostedTabState(_ context.Context, _, _, tabID string) (*leapmuxv1.WorkerTabState, error) {
+	return &leapmuxv1.WorkerTabState{Tab: &leapmuxv1.TabIdent{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: tabID}, ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE}, nil
 }

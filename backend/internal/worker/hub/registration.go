@@ -211,7 +211,7 @@ func registerProtocolOnce(
 	callCtx, info := connect.NewClientContext(attemptCtx)
 	info.RequestHeader().Set("Authorization", "Bearer "+registrationKey)
 
-	resp, err := registerOnce(callCtx, client, req, attemptTimeout)
+	resp, err := client.Register(callCtx, req)
 	if err == nil {
 		result, credentialErr := registrationCredentials(resp)
 		if credentialErr != nil {
@@ -339,18 +339,6 @@ func validAttemptIdentity(id string) bool {
 // It is generous: registration is one round trip, but it runs while a hub may
 // still be starting, and the retry costs a fresh key nothing.
 const registerAttemptTimeout = 30 * time.Second
-
-// registerOnce makes one attempt under timeout.
-func registerOnce(
-	ctx context.Context,
-	client leapmuxv1connect.WorkerConnectorServiceClient,
-	req *leapmuxv1.RegisterRequest,
-	timeout time.Duration,
-) (*leapmuxv1.RegisterResponse, error) {
-	attemptCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	return client.Register(attemptCtx, req)
-}
 
 // recoveryMessage builds the exact byte sequence the recovery signature
 // covers, mirroring the hub's verifier:

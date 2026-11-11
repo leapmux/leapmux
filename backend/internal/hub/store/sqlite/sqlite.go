@@ -21,8 +21,8 @@ import (
 //
 // Sub-stores are constructed on demand by each getter rather than
 // cached on the struct: a transaction-scoped store would otherwise
-// allocate all 26 sub-store structs up front (most unused per tx), and
-// a fresh `&{conn}` per call is cheaper than the prior 26-field batch
+// allocate every sub-store up front (most unused per tx), and
+// a fresh `&{conn}` per call is cheaper than the prior eager allocation
 // for any tx that touches fewer than ~26 tables.
 type sqliteStore struct {
 	conn *sqliteConn
@@ -89,6 +89,9 @@ func (s *sqliteStore) UserOpBatches() store.UserOpBatchesStore {
 	return &userOpBatchesStore{conn: s.conn}
 }
 func (s *sqliteStore) UserState() store.UserStateStore { return &userStateStore{conn: s.conn} }
+func (s *sqliteStore) WorkerTabPublications() store.WorkerTabPublicationStore {
+	return &workerTabPublicationStore{conn: s.conn}
+}
 func (s *sqliteStore) UserRecentBatchIDs() store.UserRecentBatchIDStore {
 	return &userRecentBatchIDStore{conn: s.conn}
 }

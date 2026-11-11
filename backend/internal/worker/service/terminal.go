@@ -14,7 +14,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/internal/util/id"
+
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
@@ -128,216 +128,8 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 		})
 
 	// OpenTerminal starts a new PTY terminal session.
-	registerOwnerGuarded(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, dispatchPlain,
-		func(ctx context.Context, caller channel.Caller, r *leapmuxv1.OpenTerminalRequest, sender channel.ResponseWriter) {
-			if svc.refuseIfShuttingDown(sender) {
-				return
-			}
-			cols := r.GetCols()
-			if cols == 0 {
-				cols = 80
-			}
-			rows := r.GetRows()
-			if rows == 0 {
-				rows = 25
-			}
-			if err := validateTerminalDimensions(cols, rows); err != nil {
-				sendInvalidArgument(sender, err.Error())
-				return
-			}
-
-			// Resolve the default shell here (not inside terminal.Start) so
-			// the startup-panel label reflects the actual binary, e.g.
-			// "Starting zsh…" rather than a generic "Starting terminal…"
-			// fallback when the client passes shell="".
-			shell := r.GetShell()
-			if shell == "" {
-				shell = terminal.ResolveDefaultShell()
-			}
-			shellStartDir := expandTilde(r.GetShellStartDir())
-			workingDir, err := normalizeWorkingDir(r.GetWorkingDir(), svc.HomeDir, svc.HomeDir)
-			if err != nil {
-				sendInvalidArgument(sender, err.Error())
-				return
-			}
-
-			// Validate git-mode options on the sync path so bad input fails
-			// the RPC with InvalidArgument before we create any DB row. The
-			// actual mutation happens inside runTerminalStartup.
-			plan, gmErr := svc.validateGitMode(ctx, workingDir, r.GetGitSetup())
-			if gmErr != nil {
-				sendValidationError(sender, gmErr)
-				return
-			}
-
-			// A QUAKE terminal is opened AT a directory; it never CREATES one.
-			//
-			// This is not a restriction on worktrees. A tab that lives in a
-			// worktree already carries that worktree's path as its working
-			// dir, so its panel opens there like any other -- the client
-			// simply sends that path. What is refused is asking this one call
-			// to do both: create or switch a worktree AND be the quake shell
-			// of the result.
-			//
-			// Refused HERE, at the only write point of is_quake, because every
-			// later consumer -- the adopt lookup, the unique index, the
-			// reconciler's liveness question, closeQuakeTerminalIfUnused --
-			// reads working_dir and assumes it is the address the CLIENT asked
-			// for. A worktree created mid-startup stores plan.PlannedWorkingDir
-			// instead, so the panel would key on the pre-worktree path, never
-			// adopt the shell it just started, and leak a fresh one per toggle.
-			isQuake := r.GetQuake()
-			if isQuake && plan.Mode != gitModeUseCurrent {
-				sendInvalidArgument(sender, "a quake terminal opens at a directory and cannot create or switch a worktree; open it with the worktree path as working_dir")
-				return
-			}
-			// The RAW field, before normalizeWorkingDir above resolved it. That
-			// call turns an empty path into the worker's home directory, which
-			// for a quake terminal is not a default but a different shell: the
-			// directory IS the address, so an unset field would silently claim
-			// the singleton row of $HOME and hold it against the real one.
-			// ListTerminals drops an empty quake directory for the same reason.
-			if isQuake && strings.TrimSpace(r.GetWorkingDir()) == "" {
-				sendInvalidArgument(sender, "a quake terminal needs a working_dir: it is the address of the shell, not a default")
-				return
-			}
-
-			// A QUAKE terminal is at most one per directory, so a second
-			// OpenTerminal that specifies the same directory hands back the first
-			// one. This is what lets two devices -- or two agent tabs that
-			// work in one directory, or one device toggling the panel twice
-			// -- share a single shell instead of racing to spawn two.
-			// Answered before the id is minted, so the duplicate call
-			// creates no row, no startup entry and no goroutine.
-			if svc.adoptExistingQuakeTerminal(sender, isQuake, workingDir) {
-				return
-			}
-
-			terminalID := id.Generate()
-
-			outputFn := svc.makeTerminalOutputFn(terminalID)
-			exitFn := svc.makeTerminalExitFn()
-
-			// Register the startup in the registry BEFORE the row becomes
-			// visible, with a cancel ctx so CloseTab during phase 0 aborts
-			// executeGitMode. A reader that finds the row of a terminal with no
-			// entry and no PTY takes it for a dead shell. A second quake open
-			// finds the row by its directory, and quakeShellIsLive then answers
-			// from the registry: with no entry it closes the row of a shell that
-			// is about to start. OpenAgent registers first for the same reason.
-			//
-			// From here, every return that does not hand the claim to
-			// runTerminalStartup must release it with abandon. A claim that
-			// nobody releases reports STARTING for ever and holds Shutdown's
-			// drainForShutdown until the shutdown deadline.
-			startupCtx, startupHandle := svc.beginTerminalStartup(terminalID, shell)
-			if startupHandle == nil {
-				// Unreachable in practice -- terminalID was minted a few lines
-				// above -- but the claim is the authority, so honour it rather
-				// than run a startup that owns no registry entry. During a
-				// shutdown the claim is refused by the latch, and the answer
-				// states that.
-				svc.sendStartupRefused(sender, "a startup for this terminal is already in progress")
-				return
-			}
-
-			releaseWorktree, admissionErr := svc.worktreeLifecycle.admit(plan.PlannedWorkingDir)
-			if admissionErr != nil {
-				svc.TerminalStartup.abandon(startupHandle)
-				sendFailedPrecondition(sender, admissionErr.Error())
-				return
-			}
-			defer releaseWorktree()
-
-			// Persist the initial terminal record using the planned working
-			// dir, so tab sync and post-refresh reads see the eventual path
-			// even before git-mode execution creates the worktree.
-			//
-			// A client-set title is CLEANED, never refused, with the rule that
-			// validate.CleanName documents. RenameTerminal, RenameAgent
-			// and OpenAgent apply the same rule, so every writer of a `title`
-			// column enforces one rule and none of them fails the RPC over a
-			// title the user can neither see nor correct.
-			terminalTitle := validate.CleanName(r.GetTitle())
-			// Empty title means "you pick one" -- the client sent none, or
-			// cleaning removed every character of the one it sent. Default to
-			// a random "Terminal <Name>" from the shared pool so every spawn
-			// path (UI, CLI, ChangeBranchDialog) gets a name from one pool,
-			// picked one place. The response echoes whatever lands here, so a
-			// client that sent a title renders the STORED form, not its input.
-			if terminalTitle == "" {
-				terminalTitle = pickTerminalTitle()
-			}
-			if upsertErr := svc.Queries.UpsertTerminal(bgCtx(), db.UpsertTerminalParams{
-				ID:            terminalID,
-				WorkingDir:    plan.PlannedWorkingDir,
-				ShellStartDir: shellStartDir,
-				Shell:         shell,
-				Title:         terminalTitle,
-				Cols:          int64(cols),
-				Rows:          int64(rows),
-				Screen:        []byte{},
-				IsQuake:       isQuake,
-			}); upsertErr != nil {
-				// The row does not exist, so no startup will ever run for it.
-				svc.TerminalStartup.abandon(startupHandle)
-				// Losing the quake race lands here: the check above found no
-				// quake terminal for this directory, another client inserted
-				// one in the window, and the unique partial index refused this
-				// row. Re-read and answer with the winner's terminal, so both
-				// callers attach to one PTY. The index is what makes this
-				// decidable at all -- without it both inserts would succeed and
-				// the two clients would type into different shells.
-				//
-				// A lookup that still finds nothing means the failure was not
-				// the race, so report it. Deliberately not keyed on a SQLite
-				// error code: the question "does a quake terminal exist for
-				// this directory now?" is the one that decides what to do, and
-				// it answers itself.
-				if svc.adoptExistingQuakeTerminal(sender, isQuake, workingDir) {
-					return
-				}
-				slog.Error("failed to persist terminal record", "terminal_id", terminalID, "error", upsertErr)
-				sendInternalError(sender, "failed to persist terminal")
-				return
-			}
-			// Same window as the agent path: the row is durable and reapable, but
-			// its cleanup is only registered once spawnControlIPC runs. See
-			// cleanupRegistry.claim.
-			svc.terminalCleanups.claim(terminalID)
-
-			// Broadcast STARTING with the provider label. Phase 0 will
-			// overwrite the message with a mode-specific label (e.g.
-			// `Creating worktree "feature/x"…`) before mutation begins. The
-			// git status is nil here because the post-mutation working dir
-			// isn't known yet; phase 1 re-broadcasts with the real value.
-			svc.announceTerminalStarting(terminalID, shell)
-
-			sendProtoResponse(sender, &leapmuxv1.OpenTerminalResponse{
-				TerminalId: terminalID,
-				Title:      terminalTitle,
-			})
-
-			// Kick off git-mode execution + PTY spawn in the background.
-			// The ControlIPC mint happens inside runTerminalStartup so an
-			// unusually slow factory doesn't stretch the synchronous RPC
-			// latency the user sees.
-			spawnInfo := TerminalSpawnInfo{
-				UserID:     caller.UserID,
-				WorkerID:   svc.WorkerID,
-				TabID:      terminalID,
-				IsQuake:    isQuake,
-				WorkingDir: plan.PlannedWorkingDir,
-			}
-			go svc.runTerminalStartup(startupCtx, terminal.Options{
-				ID:            terminalID,
-				Shell:         shell,
-				WorkingDir:    plan.PlannedWorkingDir,
-				ShellStartDir: shellStartDir,
-				Cols:          uint16(cols),
-				Rows:          uint16(rows),
-			}, spawnInfo, plan, outputFn, exitFn, startupHandle)
-		})
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, dispatchTracked,
+		svc.handleOpenTerminal)
 
 	// RestartTerminal respawns the shell process for a terminal whose
 	// previous PTY has exited. Reuses the tab's working_dir / shell /
@@ -348,6 +140,22 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 	registerTerminalForRestartGuarded(d, leapmuxv1connect.WorkerTerminalServiceRestartTerminalProcedure,
 		func(_ context.Context, caller channel.Caller, r *leapmuxv1.RestartTerminalRequest, dbTerm db.GetTerminalForRestartRow, sender channel.ResponseWriter) {
 			terminalID := r.GetTerminalId()
+			creationCtx, cancelCreationWait := context.WithTimeout(bgCtx(), svc.creationAttemptTimeout())
+			creationErr := svc.awaitCreationStartup(creationCtx, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID)
+			cancelCreationWait()
+			if creationErr != nil {
+				sendFailedPrecondition(sender, creationErr.Error())
+				return
+			}
+			latest, readErr := svc.Queries.GetTerminalForRestart(bgCtx(), terminalID)
+			if readErr != nil {
+				sendInternalError(sender, readErr.Error())
+				return
+			}
+			dbTerm = latest
+			if refuseArchivedWrite(sender, leapmuxv1.Scope_SCOPE_TERMINAL_WRITE, dbTerm.WorkspaceArchived, "terminal") {
+				return
+			}
 
 			if svc.refuseIfShuttingDown(sender) {
 				return
@@ -367,7 +175,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 			// Reject overlapping restarts: a previous startup hasn't broadcast
 			// READY/FAILED yet (could be the original OpenTerminal still in
 			// flight, or a back-to-back restart).
-			if _, _, _, inFlight := svc.TerminalStartup.status(terminalID); inFlight {
+			if svc.TerminalStartup.hasUnfinishedClaim(terminalID) {
 				sendFailedPrecondition(sender, "terminal startup in progress")
 				return
 			}
@@ -502,6 +310,14 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 					// The request belongs to an obsolete physical instance.
 					return nil
 				case errors.Is(resizeErr, terminal.ErrTerminalNotFound):
+					saved, saveErr := svc.saveCreationTerminalResize(ctx, terminalID, uint16(cols), uint16(rows))
+					if saveErr != nil {
+						return saveErr
+					}
+					if saved {
+						svc.TerminalStartup.setPendingResize(h, uint16(cols), uint16(rows))
+						return nil
+					}
 					// Startup owns these dimensions until its physical terminal is ready.
 					if svc.TerminalStartup.setPendingResize(h, uint16(cols), uint16(rows)) {
 						return nil
@@ -903,6 +719,7 @@ func registerTerminalHandlers(d ownerOnlyRegistrar, svc *Service) {
 func (svc *Service) runTerminalStartup(ctx context.Context, opts terminal.Options, spawnInfo TerminalSpawnInfo, plan gitModePlan, outputFn terminal.OutputHandler, exitFn terminal.ExitHandler, h *startupEntry) {
 	terminalID := opts.ID
 	defer svc.TerminalStartup.finishEntry(h)
+	defer func() { svc.finishCreationStartup(h.creation, svc.TerminalStartup.creationOutcome(h)) }()
 
 	// Mint the remote-IPC token before phase 0 so the cleanup is in the
 	// map by the time any concurrent CloseTab calls terminalCleanups.run.
@@ -1152,6 +969,10 @@ func (svc *Service) succeedTerminalStartup(terminalID string, h *startupEntry) {
 // runTerminalPhase0 broadcasts the per-mode label and executes the
 // git-mode mutation.
 func (svc *Service) runTerminalPhase0(ctx context.Context, terminalID string, plan gitModePlan, h *startupEntry) (gitModeResult, error) {
+	if h.creation != nil {
+		h.creation.announcePhase0(svc.terminalStartupCallbacks(terminalID, h))
+		return h.creation.runCreationPhase0(ctx)
+	}
 	return svc.runStartupPhase0(ctx, plan, svc.terminalStartupCallbacks(terminalID, h))
 }
 

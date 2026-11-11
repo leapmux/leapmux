@@ -435,7 +435,8 @@ func ReadFramedBytes(ctx context.Context, ws *websocket.Conn) ([]byte, error) {
 // WriteProtoFrame writes a protobuf with a four-byte big-endian length prefix.
 func WriteProtoFrame(ctx context.Context, ws *websocket.Conn, msg proto.Message) error {
 	buf := make([]byte, contracts.LengthPrefixBytes, contracts.LengthPrefixBytes+proto.Size(msg))
-	buf, err := (proto.MarshalOptions{}).MarshalAppend(buf, msg)
+	// Use the cache filled by Size. The message must remain unchanged until marshaling finishes.
+	buf, err := (proto.MarshalOptions{UseCachedSize: true}).MarshalAppend(buf, msg)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}

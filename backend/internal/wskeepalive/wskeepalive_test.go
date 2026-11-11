@@ -5,7 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"github.com/leapmux/leapmux/internal/util/testutil"
 
 	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
@@ -76,13 +79,13 @@ func TestWSKeepaliveDropsAPeerThatStopsAnsweringPings(t *testing.T) {
 // perfectly healthy connection mid-bootstrap.
 //
 // Probes are forced through an injected channel rather than a fast interval, so
-// nothing here is sized by a duration: each send completes only when the loop
-// comes back for another tick, which it does only after a probe SUCCEEDED -- a
-// failed one exits the loop and cancels.
+// each tick starts one probe. Its OnAnswer acknowledgement proves that the
+// probe succeeded; a second tick alone would also follow one tolerated failure.
 func TestWSKeepaliveDrainingReadsAnswersProbesForAHandlerThatNeverReads(t *testing.T) {
 	t.Parallel()
 
 	ticks := make(chan time.Time)
+	answers := make(chan struct{})
 	dropped := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
@@ -94,7 +97,12 @@ func TestWSKeepaliveDrainingReadsAnswersProbesForAHandlerThatNeverReads(t *testi
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
 		pace := Pace{Timeout: 10 * time.Second, Ticks: ticks}
-		pace.StartDrainingReads(ctx, Probe{Conn: conn, Cancel: cancel, Attrs: []any{"endpoint", "test", "user_id", "user-1"}})
+		pace.StartDrainingReads(ctx, Probe{Conn: conn, Cancel: cancel, Attrs: []any{"endpoint", "test", "user_id", "user-1"}, OnAnswer: func() {
+			select {
+			case answers <- struct{}{}:
+			case <-ctx.Done():
+			}
+		}})
 		// The handler itself never touches the socket again -- the keepalive owns
 		// every read on it.
 		<-ctx.Done()
@@ -125,6 +133,13 @@ func TestWSKeepaliveDrainingReadsAnswersProbesForAHandlerThatNeverReads(t *testi
 				"its pong had nobody to read it", i)
 		case <-ctx.Done():
 			t.Fatalf("probe %d was never taken", i)
+		}
+		select {
+		case <-answers:
+		case <-dropped:
+			t.Fatalf("the keepalive dropped the peer before probe %d was answered", i)
+		case <-ctx.Done():
+			t.Fatalf("probe %d was not answered", i)
 		}
 	}
 }
@@ -309,6 +324,10 @@ func TestOnAnswerDoesNotRunForAnUnansweredProbe(t *testing.T) {
 
 func testOnAnswer(t *testing.T, responds bool) {
 	t.Helper()
+	timeout := 10 * time.Second
+	if !responds {
+		timeout = 50 * time.Millisecond
+	}
 	ticks := make(chan time.Time)
 	answers := make(chan struct{})
 	dropped := make(chan struct{})
@@ -321,7 +340,7 @@ func testOnAnswer(t *testing.T, responds bool) {
 		defer func() { _ = conn.CloseNow() }()
 		ctx, cancel := context.WithCancel(r.Context())
 		defer cancel()
-		(Pace{Ticks: ticks, Timeout: 50 * time.Millisecond}).StartDrainingReads(ctx, Probe{Conn: conn, Cancel: cancel, Attrs: attrs[:2], OnAnswer: func() {
+		(Pace{Ticks: ticks, Timeout: timeout}).StartDrainingReads(ctx, Probe{Conn: conn, Cancel: cancel, Attrs: attrs[:2], OnAnswer: func() {
 			select {
 			case answers <- struct{}{}:
 			case <-ctx.Done():
@@ -378,4 +397,39 @@ func testOnAnswer(t *testing.T, responds bool) {
 		}
 	}
 	assert.Equal(t, []any{"endpoint", "test", "preserve-1", "preserve-2", "preserve-3", "preserve-4"}, attrs, "probe logging must preserve caller-owned storage")
+}
+
+func TestWSKeepalive_EnforcesTheEarlyDisconnectPolicyDuringDataWrites(t *testing.T) {
+	for _, writeDuration := range []time.Duration{26 * time.Second, 9 * time.Second} {
+		t.Run(writeDuration.String(), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				body := testutil.NewDelayedWebSocketTransport(writeDuration)
+				conn, _, err := websocket.Dial(t.Context(), "ws://probe", &websocket.DialOptions{HTTPClient: &http.Client{Transport: body}})
+				require.NoError(t, err)
+				defer func() { _ = conn.CloseNow() }()
+				start := time.Now()
+				completed := make(chan int, 1)
+				go func() {
+					count := 0
+					for {
+						if err := conn.Write(context.Background(), websocket.MessageBinary, []byte("valid data")); err != nil {
+							completed <- count
+							return
+						}
+						count++
+					}
+				}()
+				<-body.WriteStarted
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				Production().StartDrainingReads(ctx, Probe{Conn: conn, Cancel: func() { cancel(); _ = conn.CloseNow() }})
+				want := 0
+				if writeDuration == 9*time.Second {
+					want = 2
+				}
+				assert.Equal(t, want, <-completed)
+				assert.Equal(t, 25*time.Second, time.Since(start), "two five-second probe failures can preempt a progressing write")
+			})
+		})
+	}
 }

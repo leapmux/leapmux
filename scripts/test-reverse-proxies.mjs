@@ -20,13 +20,13 @@
 // - More than a mebibyte crosses the Worker's stream, before and after the window.
 import assert from 'node:assert/strict'
 import { Buffer } from 'node:buffer'
-import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { CLIENT_IMAGE_KEY, EXAMPLES_DIR, pinnedImage, prepareProxyFiles, PROXIES, PUBLIC_HOST, ROOT } from './reverse-proxy-examples.mjs'
+import { DockerSession, isMissingDockerResource, runCommand } from './reverse-proxy-runtime.mjs'
 
 // versions.env pins every image, so that Renovate keeps each one current. The certificates come from the
 // container runtime's own Alpine image.
@@ -39,48 +39,14 @@ const READY_DEADLINE_MS = 60_000
 // Exceeds nginx's default 1 MiB body limit so a baseline HTTP/2 Worker stream fails without its override.
 // The same transfer checks framing and delivery on the WebSocket stream.
 const TRANSFER_BYTES = 3 * 1024 * 1024
+const API_TOKEN_TTL_SECONDS = 60 * 60
 const DEFAULT_STABILITY_SECONDS = 200
+// Leave half the token lifetime for the final transfer and cleanup.
+const MAX_STABILITY_SECONDS = Math.floor(API_TOKEN_TTL_SECONDS / 2)
 const wire = JSON.parse(readFileSync(join(ROOT, 'contracts', 'wire.json'), 'utf8'))
-// An interrupt ends every wait at once, so that cleanup removes the containers without waiting out a window.
-const interruption = new AbortController()
-
-/** Run a command and return its exit status and output, whatever the status. */
-function run(command, args, { input, timeoutMs = 120_000 } = {}) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    })
-    const stdout = []
-    const stderr = []
-    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs)
-    child.stdout.on('data', chunk => stdout.push(chunk))
-    child.stderr.on('data', chunk => stderr.push(chunk))
-    child.on('error', (error) => {
-      clearTimeout(timer)
-      reject(error)
-    })
-    child.on('close', (status, signal) => {
-      clearTimeout(timer)
-      resolve({
-        status: status ?? (signal ? 128 : 1),
-        stdout: Buffer.concat(stdout).toString('utf8'),
-        stderr: Buffer.concat(stderr).toString('utf8'),
-      })
-    })
-    child.stdin.end(input ?? '')
-  })
-}
-
-/** Run a docker command, and fail with its output unless it succeeds. */
-async function docker(args, options) {
-  const result = await run('docker', args, options)
-  if (result.status !== 0)
-    throw new Error(`docker ${args.join(' ')} failed (${result.status}):\n${result.stdout}${result.stderr}`)
-  return result.stdout.trim()
-}
 
 /** Poll check until it returns a value other than undefined, or fail at the deadline with the last error. */
-async function poll(description, check, deadlineMs = READY_DEADLINE_MS) {
+async function poll(description, check, { deadlineMs = READY_DEADLINE_MS, signal }) {
   const deadline = Date.now() + deadlineMs
   let lastError
   while (Date.now() < deadline) {
@@ -93,7 +59,7 @@ async function poll(description, check, deadlineMs = READY_DEADLINE_MS) {
       lastError = error
     }
     // The containers start independently of this process. Their readiness is external state, so poll it.
-    await sleep(500, undefined, { signal: interruption.signal })
+    await sleep(500, undefined, { signal })
   }
   throw new Error(`${description} did not happen within ${deadlineMs / 1000} seconds${lastError
     ? `: ${lastError.message}`
@@ -101,7 +67,7 @@ async function poll(description, check, deadlineMs = READY_DEADLINE_MS) {
 }
 
 /** Create the test certificate authority and a server certificate for the public host. */
-async function createCertificates(directory) {
+async function createCertificates(commands, directory) {
   const script = [
     'set -eu',
     'apk add --no-cache openssl >/dev/null',
@@ -116,8 +82,7 @@ async function createCertificates(directory) {
   ].join('\n')
   // Docker creates a missing bind-mount source as root, which a rootless or remote engine cannot do.
   mkdirSync(directory, { recursive: true })
-  await docker([
-    'run',
+  await commands.dockerContainer([
     '--rm',
     '-v',
     `${directory}:/out`,
@@ -136,15 +101,17 @@ async function createCertificates(directory) {
 
 const USAGE = 'Usage: test-reverse-proxies.mjs [--stability-seconds=N] [--keep-on-failure] [--examples-dir=<path>] <image> [proxy...]'
 
-function parseArguments(argv) {
+export function parseArguments(argv) {
   let stabilitySeconds = DEFAULT_STABILITY_SECONDS
   let keepOnFailure = false
   let examplesDirectory = EXAMPLES_DIR
   const positional = []
   for (const argument of argv) {
-    const match = /^--stability-seconds=(\d+)$/.exec(argument)
-    if (match) {
-      stabilitySeconds = Number(match[1])
+    if (argument.startsWith('--stability-seconds=')) {
+      const raw = argument.slice('--stability-seconds='.length)
+      const seconds = Number(raw)
+      assert(/^\d+$/.test(raw) && Number.isSafeInteger(seconds) && seconds >= 1 && seconds <= MAX_STABILITY_SECONDS, `--stability-seconds must be an integer between 1 and ${MAX_STABILITY_SECONDS}. ${USAGE}`)
+      stabilitySeconds = seconds
     }
     else if (argument === '--keep-on-failure') {
       keepOnFailure = true
@@ -180,8 +147,9 @@ function parseArguments(argv) {
  * One proxy's test environment. Every resource it creates is recorded, so that cleanup removes it on success,
  * failure, and interruption.
  */
-class ProxyEnvironment {
-  constructor(proxy, image, directory, certificates, examplesDirectory) {
+export class ProxyEnvironment {
+  constructor(proxy, image, directory, certificates, examplesDirectory, commands) {
+    this.commands = commands
     this.proxy = proxy
     this.proxyImage = pinnedImage(proxy.imageKey)
     this.image = image
@@ -208,20 +176,20 @@ class ProxyEnvironment {
   async container(role, args) {
     const name = this.name(role)
     this.containers.push(name)
-    await docker(['run', '-d', '--name', name, ...args])
+    await this.commands.docker(['run', '-d', '--name', name, ...args])
     return name
   }
 
   async volume(role) {
     const name = this.name(role)
     this.volumes.push(name)
-    await docker(['volume', 'create', name])
+    await this.commands.docker(['volume', 'create', name])
     return name
   }
 
   /** Run curl in the client container. Each call trusts the test authority and reaches the proxy by its host name. */
   async curl(args, options) {
-    return run('docker', [
+    return this.commands.run([
       'exec',
       '-i',
       this.client,
@@ -258,8 +226,8 @@ class ProxyEnvironment {
     const responseBody = result.stdout.slice(separator + 4)
     const status = Number(/^HTTP\/\S+ (\d+)/m.exec(head)?.[1])
     assert.equal(status, 200, `${method} answered ${status}: ${responseBody}`)
-    // The Hub names the cookie __Host-leapmux-session when it sees HTTPS, through TLS of its own or through the
-    // X-Forwarded-Proto header of a trusted proxy.
+    // The Hub uses the cookie name __Host-leapmux-session when it sees HTTPS.
+    // It detects HTTPS through its own TLS or a trusted proxy's X-Forwarded-Proto header.
     const sessionCookie = /^set-cookie: ((?:__Host-)?leapmux-session=[^;]+)/im.exec(head)?.[1]
     return {
       body: JSON.parse(responseBody || '{}'),
@@ -270,13 +238,14 @@ class ProxyEnvironment {
   async signIn() {
     const { body, sessionCookie } = await this.rpc('AuthService/Login', { username: ADMIN_USERNAME, password: this.password })
     assert(sessionCookie, 'Login set no session cookie')
-    return { cookie: sessionCookie, userId: body.sessionReport.user.id }
+    const userId = body?.sessionReport?.user?.id
+    assert(userId, 'Login returned no user identity for the proxy check')
+    return { cookie: sessionCookie, userId }
   }
 
   /** Run the LeapMux CLI in a new container on the test network, as a remote machine does. */
   async leapmux(args, { volume } = {}) {
-    return run('docker', [
-      'run',
+    return this.commands.runContainer([
       '--rm',
       '--network',
       this.network,
@@ -303,11 +272,10 @@ class ProxyEnvironment {
     this.cliDirectory = join(this.directory, 'cli')
     mkdirSync(this.trustDirectory, { recursive: true })
     mkdirSync(this.cliDirectory, { recursive: true })
-    await docker(['network', 'create', this.network])
+    await this.commands.docker(['network', 'create', this.network])
 
     const hubVolume = await this.volume('hub')
-    await docker([
-      'run',
+    await this.commands.dockerContainer([
       '--rm',
       '--volume',
       `${hubVolume}:/data`,
@@ -343,8 +311,7 @@ class ProxyEnvironment {
     ])
 
     const stockConfig = this.proxy.stockConfig
-      ? await docker([
-          'run',
+      ? await this.commands.dockerContainer([
           '--rm',
           '--entrypoint',
           'cat',
@@ -372,7 +339,7 @@ class ProxyEnvironment {
     if (this.proxy.generatesCertificate) {
       const root = this.proxy.generatesCertificate.rootCertificate
       await poll('the proxy issuing its certificate authority', async () => {
-        const result = await run('docker', [
+        const result = await this.commands.run([
           'cp',
           `${this.proxyContainer}:${root}`,
           join(this.trustDirectory, 'ca.pem'),
@@ -380,7 +347,7 @@ class ProxyEnvironment {
         return result.status === 0
           ? true
           : undefined
-      })
+      }, { signal: this.commands.signal })
     }
     else {
       writeFileSync(join(this.trustDirectory, 'ca.pem'), readFileSync(this.certificates.authority))
@@ -396,7 +363,7 @@ class ProxyEnvironment {
       CURL_IMAGE,
       '86400',
     ])
-    this.clientAddress = await docker([
+    this.clientAddress = await this.commands.docker([
       'inspect',
       '--format',
       `{{(index .NetworkSettings.Networks "${this.network}").IPAddress}}`,
@@ -413,7 +380,7 @@ class ProxyEnvironment {
       if (result.status === 0 && result.stdout === '200')
         return true
       throw new Error(`curl ${result.status}, HTTP ${result.stdout}: ${result.stderr}`)
-    })
+    }, { signal: this.commands.signal })
     this.log('PASS: the Hub answers through the proxy')
   }
 
@@ -450,7 +417,7 @@ class ProxyEnvironment {
   }
 
   /**
-   * Trust the proxy, then sign in again until the new session records the client's own address. The proxy's
+   * Trust the proxy, then sign in once to check the client's address and secure cookie name. The proxy's
    * X-Forwarded-For header supplies that address, and its X-Forwarded-Proto header makes the Hub issue the
    * __Host- cookie that only an HTTPS origin may hold.
    */
@@ -458,20 +425,33 @@ class ProxyEnvironment {
     const { cookie } = await this.signIn()
     assert.match(cookie, /^leapmux-session=/, 'an untrusted proxy must not make the Hub see HTTPS')
     await this.rpc('UserService/ElevateSession', { currentPassword: this.password }, cookie)
-    await this.rpc('AdminSettingsService/UpdateSettings', {
+    const { body: updated } = await this.rpc('AdminSettingsService/UpdateSettings', {
       writes: [
         { key: 'trusted_proxy_ranges', partialJson: TRUSTED_PROXY_RANGES },
       ],
     }, cookie)
-    // The Hub applies a settings change within about 30 seconds.
-    const session = await poll('a new session recording the client address', async () => {
-      const candidate = await this.signIn()
-      const { body } = await this.rpc('AdminUserService/ListSessions', {}, candidate.cookie)
-      const newest = body.sessions.toSorted((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0]
-      if (newest.ipAddress === this.clientAddress)
-        return candidate
-      throw new Error(`the newest session records ${newest.ipAddress}, not ${this.clientAddress}`)
-    })
+    const values = Array.isArray(updated?.values)
+      ? updated.values
+      : []
+    const setting = values.find(value => value?.key === 'trusted_proxy_ranges')
+    assert(typeof setting?.effectiveJson === 'string', 'The Hub did not report effective trusted_proxy_ranges')
+    let effectiveRanges
+    try {
+      effectiveRanges = JSON.parse(setting.effectiveJson)
+    }
+    catch (cause) {
+      throw new Error('The Hub returned invalid trusted_proxy_ranges', { cause })
+    }
+    assert.deepEqual(effectiveRanges, JSON.parse(TRUSTED_PROXY_RANGES), 'The Hub did not apply trusted_proxy_ranges')
+    const session = await this.signIn()
+    const { body } = await this.rpc('AdminUserService/ListSessions', {}, session.cookie)
+    const sessionId = session.cookie.slice(session.cookie.indexOf('=') + 1)
+    const sessions = Array.isArray(body?.sessions)
+      ? body.sessions
+      : []
+    const current = sessions.find(candidate => candidate?.id === sessionId)
+    assert(current, 'The Hub did not list the new session')
+    assert.equal(current.ipAddress, this.clientAddress, 'The new session must record the client address')
     this.log(`PASS: the Hub records the client address ${this.clientAddress}, not the proxy's`)
     assert.match(session.cookie, /^__Host-leapmux-session=/, 'the Hub must see HTTPS through X-Forwarded-Proto')
     this.log('PASS: the Hub sees HTTPS through X-Forwarded-Proto')
@@ -495,7 +475,7 @@ class ProxyEnvironment {
       `--output /tmp/websocket.out '${url}' 2>/tmp/websocket.err`,
       '; echo $? > /tmp/websocket.exit',
     ].join(' ')
-    await docker([
+    await this.commands.docker([
       'exec',
       '--detach',
       this.client,
@@ -504,21 +484,21 @@ class ProxyEnvironment {
       command,
     ])
     await poll('the WebSocket upgrade', async () => {
-      const exited = await run('docker', [
+      const exited = await this.commands.run([
         'exec',
         this.client,
         'cat',
         '/tmp/websocket.exit',
       ])
       if (exited.status === 0) {
-        throw new Error(`the WebSocket closed early with curl exit ${exited.stdout.trim()}: ${(await run('docker', [
+        throw new Error(`the WebSocket closed early with curl exit ${exited.stdout.trim()}: ${(await this.commands.run([
           'exec',
           this.client,
           'cat',
           '/tmp/websocket.err',
         ])).stdout}`)
       }
-      const received = await run('docker', [
+      const received = await this.commands.run([
         'exec',
         this.client,
         'stat',
@@ -529,13 +509,13 @@ class ProxyEnvironment {
       return received.status === 0 && Number(received.stdout) > 0
         ? true
         : undefined
-    })
+    }, { signal: this.commands.signal })
     this.log('PASS: the event WebSocket upgrades and receives its first frame')
   }
 
   async checkWebSocketLasted() {
     const exit = await poll('the WebSocket reaching its time limit', async () => {
-      const result = await run('docker', [
+      const result = await this.commands.run([
         'exec',
         this.client,
         'cat',
@@ -544,8 +524,8 @@ class ProxyEnvironment {
       return result.status === 0
         ? result.stdout.trim()
         : undefined
-    }, (this.stabilitySeconds + 60) * 1000)
-    const error = (await run('docker', [
+    }, { deadlineMs: (this.stabilitySeconds + 60) * 1000, signal: this.commands.signal })
+    const error = (await this.commands.run([
       'exec',
       this.client,
       'cat',
@@ -590,7 +570,7 @@ class ProxyEnvironment {
       this.image,
     ])
     this.workerId = await poll('the Worker connecting through the proxy', async () => {
-      const result = await run('docker', [
+      const result = await this.commands.run([
         'exec',
         this.worker,
         '/usr/local/bin/leapmux',
@@ -604,7 +584,7 @@ class ProxyEnvironment {
       if (status.readiness === 'ready' && status.connection?.state === 'connected')
         return status.registration.worker_id
       throw new Error(`readiness ${status.readiness}, connection ${status.connection?.state}`)
-    })
+    }, { signal: this.commands.signal })
     this.workerConnectedAt = Date.now()
     this.log(`PASS: the Worker connects through the proxy (${this.workerId})`)
   }
@@ -614,7 +594,7 @@ class ProxyEnvironment {
     const { body } = await this.rpc('AdminUserService/IssueAPIToken', {
       user: { id: userId },
       installationName: 'reverse-proxy-test',
-      ttlSeconds: '3600',
+      ttlSeconds: String(API_TOKEN_TTL_SECONDS),
       scopes: ['worker:read', 'file:read'],
     }, cookie)
     writeFileSync(join(this.cliDirectory, `${PUBLIC_HOST}.json`), JSON.stringify({
@@ -622,7 +602,7 @@ class ProxyEnvironment {
       hub_id: 'reverse-proxy-test',
       access_token: body.accessToken,
       refresh_token: '',
-      expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      expires_at: new Date(Date.now() + API_TOKEN_TTL_SECONDS * 1000).toISOString(),
       user_id: userId,
       username: ADMIN_USERNAME,
       scope: 'worker:read file:read',
@@ -636,7 +616,7 @@ class ProxyEnvironment {
    */
   async checkTransfer(label) {
     const path = '/tmp/reverse-proxy-transfer.txt'
-    const digest = await docker([
+    const digest = await this.commands.docker([
       'exec',
       this.worker,
       'sh',
@@ -670,9 +650,9 @@ class ProxyEnvironment {
     if (remaining > 0) {
       this.log(`waiting ${Math.ceil(remaining / 1000)} seconds for the stability window`)
       // The window itself is the test: a proxy timeout that ends a stream must have the time to fire.
-      await sleep(remaining, undefined, { signal: interruption.signal })
+      await sleep(remaining, undefined, { signal: this.commands.signal })
     }
-    const workerLogs = await run('docker', ['logs', this.worker])
+    const workerLogs = await this.commands.run(['logs', this.worker])
     const logs = workerLogs.stdout + workerLogs.stderr
     const connects = logs.split('\n').filter(line => line.includes('connected to hub') && !line.includes('disconnected')).length
     const disconnects = logs.split('\n').filter(line => line.includes('disconnected from hub'))
@@ -701,59 +681,104 @@ class ProxyEnvironment {
   async cleanup() {
     const failures = []
     // A resource that docker never created is already gone, which is the outcome cleanup wants.
-    const removeEach = async (names, args, describe) => {
+    const removeEach = async (names, args, resourceKind) => {
       for (const name of names) {
-        const removed = await run('docker', [...args, name])
-        if (removed.status !== 0 && !/no such|not found/i.test(removed.stderr))
-          failures.push(new Error(`${describe} ${name}: ${removed.stderr}`))
+        const removed = await this.commands.cleanupRun([...args, name])
+        if (removed.status !== 0 && !isMissingDockerResource(removed.stderr, resourceKind, name))
+          failures.push(new Error(`docker ${args.join(' ')} ${name}: ${removed.stderr}`))
       }
     }
     for (const name of this.containers) {
-      const logs = await run('docker', ['logs', name])
+      const logs = await this.commands.cleanupRun(['logs', name])
       if (logs.status === 0)
         writeFileSync(join(this.directory, `${name}.log`), logs.stdout + logs.stderr)
     }
-    await removeEach(this.containers.toReversed(), ['rm', '--force', '--volumes'], 'docker rm')
-    await removeEach(this.volumes, ['volume', 'rm'], 'docker volume rm')
-    await removeEach([this.network], ['network', 'rm'], 'docker network rm')
+    await removeEach(this.containers.toReversed(), ['rm', '--force', '--volumes'], 'container')
+    await removeEach(this.volumes, ['volume', 'rm'], 'volume')
+    await removeEach([this.network], ['network', 'rm'], 'network')
     return failures
   }
 }
 
-const { image, stabilitySeconds, keepOnFailure, examplesDirectory, proxies } = parseArguments(process.argv.slice(2))
-mkdirSync(join(ROOT, '.tmp'), { recursive: true })
-const directory = mkdtempSync(join(ROOT, '.tmp', 'reverse-proxy-test-'))
-console.log(`Testing ${proxies.map(proxy => pinnedImage(proxy.imageKey)).join(', ')} with ${image}. Examples: ${examplesDirectory}. Diagnostics: ${directory}`)
-const certificates = await createCertificates(join(directory, 'certificates'))
-const environments = proxies.map((proxy) => {
-  const proxyDirectory = join(directory, proxy.name)
-  mkdirSync(proxyDirectory, { recursive: true })
-  return new ProxyEnvironment(proxy, image, proxyDirectory, certificates, examplesDirectory)
-})
+async function cleanupEnvironments(environments) {
+  const results = await Promise.allSettled(environments.map(environment => environment.cleanup()))
+  return results.flatMap(result => result.status === 'fulfilled'
+    ? result.value
+    : [result.reason])
+}
 
-process.on('SIGINT', () => {
-  // The cleanup below removes every container. A second interrupt exits at once.
-  if (interruption.signal.aborted)
-    process.exit(130)
-  console.log('Interrupted. Removing the test containers.')
-  interruption.abort()
-})
-
-const results = await Promise.allSettled(environments.map(environment => environment.verify(stabilitySeconds)))
-const failures = []
-for (const [index, result] of results.entries()) {
-  const environment = environments[index]
-  if (result.status === 'rejected') {
-    failures.push(result.reason)
-    environment.log(`FAIL: ${result.reason.stack ?? result.reason}`)
-    if (keepOnFailure && !interruption.signal.aborted) {
-      // The password protects only this disposable Hub, and an inspection needs it to sign in.
-      environment.log(`kept for inspection: containers ${environment.containers.join(' ')}, network ${environment.network}, sign in as ${ADMIN_USERNAME} with ${environment.password}`)
-      continue
+export async function runReverseProxyTests(argv, { execute = runCommand, signals = process } = {}) {
+  const { image, stabilitySeconds, keepOnFailure, examplesDirectory, proxies } = parseArguments(argv)
+  mkdirSync(join(ROOT, '.tmp'), { recursive: true })
+  // An interrupt cancels verification. Cleanup commands run independently.
+  const interruption = new AbortController()
+  const commands = new DockerSession(interruption.signal, execute)
+  const directory = mkdtempSync(join(ROOT, '.tmp', 'reverse-proxy-test-'))
+  console.log(`Testing ${proxies.map(proxy => pinnedImage(proxy.imageKey)).join(', ')} with ${image}. Examples: ${examplesDirectory}. Diagnostics: ${directory}`)
+  const signalHandlers = [
+    ['SIGINT', 130],
+    ['SIGTERM', 143],
+  ].map(([signalName, exitCode]) => {
+    const handler = () => {
+      // A second signal exits immediately, including while cleanup runs.
+      if (interruption.signal.aborted)
+        process.exit(exitCode)
+      console.log('Interrupted. Removing the test containers.')
+      interruption.abort()
+    }
+    signals.on(signalName, handler)
+    return { signalName, handler }
+  })
+  const failures = []
+  let fatalFailure
+  let environments = []
+  const retained = new Set()
+  try {
+    const certificates = await createCertificates(commands, join(directory, 'certificates'))
+    environments = proxies.map((proxy) => {
+      const proxyDirectory = join(directory, proxy.name)
+      mkdirSync(proxyDirectory, { recursive: true })
+      return new ProxyEnvironment(proxy, image, proxyDirectory, certificates, examplesDirectory, commands)
+    })
+    const results = await Promise.allSettled(environments.map(environment => environment.verify(stabilitySeconds)))
+    for (const [index, result] of results.entries()) {
+      if (result.status !== 'rejected')
+        continue
+      const environment = environments[index]
+      failures.push(result.reason)
+      environment.log(`FAIL: ${result.reason?.stack ?? result.reason}`)
+      if (keepOnFailure && !interruption.signal.aborted) {
+        retained.add(environment)
+        // The password protects only this disposable Hub, and an inspection needs it to sign in.
+        environment.log(`kept for inspection: containers ${environment.containers.join(' ')}, network ${environment.network}, sign in as ${ADMIN_USERNAME} with ${environment.password}`)
+      }
     }
   }
-  failures.push(...await environment.cleanup())
+  catch (error) {
+    fatalFailure = { error }
+  }
+  finally {
+    try {
+      failures.push(...await cleanupEnvironments(environments.filter(environment => !retained.has(environment))))
+      failures.push(...await commands.cleanup())
+      // An interrupt during cleanup also removes environments selected for inspection.
+      if (interruption.signal.aborted)
+        failures.push(...await cleanupEnvironments([...retained]))
+    }
+    finally {
+      for (const { signalName, handler } of signalHandlers)
+        signals.off(signalName, handler)
+    }
+  }
+  if (fatalFailure) {
+    if (failures.length === 0)
+      throw fatalFailure.error
+    failures.unshift(fatalFailure.error)
+  }
+  if (failures.length > 0)
+    throw new AggregateError(failures, `Reverse proxy tests failed. Diagnostics: ${directory}`)
+  console.log(`PASS: ${proxies.map(proxy => proxy.name).join(', ')}`)
 }
-if (failures.length > 0)
-  throw new AggregateError(failures, `Reverse proxy tests failed. Diagnostics: ${directory}`)
-console.log(`PASS: ${proxies.map(proxy => proxy.name).join(', ')}`)
+
+if (import.meta.main)
+  await runReverseProxyTests(process.argv.slice(2))

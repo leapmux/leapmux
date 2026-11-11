@@ -176,6 +176,14 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		WorkingDir: "",
 	}))
 
+	// tab_creations.created_at uses the table default during atomic creation.
+	require.NoError(t, queries.InsertTabCreation(ctx, gendb.InsertTabCreationParams{
+		UserID: "user-1", WorkerID: "worker-1", TabID: "creation-1",
+		TabType: int64(leapmuxv1.TabType_TAB_TYPE_FILE), RequestHash: make([]byte, 32),
+		RequestPayload: []byte{}, PublicationPayload: []byte{}, RuntimePayload: []byte{}, PublicationResult: []byte{},
+		State: int64(leapmuxv1.TabCreationState_TAB_CREATION_STATE_PENDING),
+	}))
+
 	offenders, columns, err := sqlitedb.FindNonCanonicalDatetimes(ctx, sqlDB, "goose_db_version")
 	require.NoError(t, err)
 	require.NotEmpty(t, columns, "walk discovered no DATETIME columns; the discovery query is broken")

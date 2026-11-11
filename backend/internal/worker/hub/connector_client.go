@@ -10,8 +10,8 @@ import (
 	"github.com/leapmux/leapmux/hubtransport"
 )
 
-// newConnectorClient builds the unary client for registration, recovery,
-// tab listing, and deregistration. The worker stream uses its own WebSocket.
+// newConnectorClient builds the unary client for Worker control-plane calls.
+// The Worker stream uses its own WebSocket.
 func newConnectorClient(endpoint *hubtransport.Endpoint) leapmuxv1connect.WorkerConnectorServiceClient {
 	return NewConnectorClient(endpoint.UnaryClient(hubtransport.DefaultUnaryTimeout), endpoint.BaseURL())
 }

@@ -19,39 +19,32 @@ var errNativeSessionAlreadyOpen = errors.New("the native agent session is alread
 // transcript tree from its last closed tab. An external native session opens
 // without Worker history.
 func (svc *Service) createAgentRecordWithTranscript(ctx context.Context, params db.CreateAgentParams, resumeSessionID string) error {
-	if resumeSessionID == "" {
-		return svc.createAgentRecord(ctx, params)
+	tx, err := svc.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("start agent transaction: %w", err)
 	}
+	defer func() { _ = tx.Rollback() }()
+	if err := svc.createAgentRecordWithTranscriptUsing(ctx, svc.Queries.WithTx(tx), params, resumeSessionID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (svc *Service) createAgentRecordWithTranscriptUsing(ctx context.Context, queries *db.Queries, params db.CreateAgentParams, resumeSessionID string) error {
 	if err := validateAgentRecordProvider(params); err != nil {
 		return err
 	}
-
-	// The source lookup and the copy must see one database state. Creating the
-	// target inside this transaction also prevents a failed copy from leaving
-	// a new agent row without the transcript the caller selected.
-	// The pending claim is separate from the provider-confirmed session ID.
-	// Its unique index keeps two manual opens from claiming one native session.
 	params.PendingResumeSessionID = resumeSessionID
-	tx, err := svc.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("start resumed-agent transaction: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	queries := svc.Queries.WithTx(tx)
-	// The plain creation hook uses the service's database handle. It cannot
-	// join this transaction, so resume inserts through its bound query set.
-	if err := queries.CreateAgent(ctx, params); err != nil {
+	if err := svc.createAgentRecordUsing(ctx, queries, params); err != nil {
 		if open, checkErr := queries.HasOpenAgentForNativeSession(ctx, db.HasOpenAgentForNativeSessionParams{
 			AgentProvider: params.AgentProvider, SessionID: resumeSessionID, TargetAgentID: params.ID,
-		}); checkErr == nil && open {
+		}); resumeSessionID != "" && checkErr == nil && open {
 			return errNativeSessionAlreadyOpen
 		}
 		return fmt.Errorf("create resumed agent: %w", err)
+	}
+	if resumeSessionID == "" {
+		return nil
 	}
 	sourceID, err := queries.FindClosedAgentWithTranscriptForNativeSession(ctx, db.FindClosedAgentWithTranscriptForNativeSessionParams{
 		AgentProvider:  params.AgentProvider,
@@ -79,10 +72,6 @@ func (svc *Service) createAgentRecordWithTranscript(ctx context.Context, params 
 			return fmt.Errorf("copy the prior Worker child transcripts: %w", err)
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit resumed-agent transcript: %w", err)
-	}
-	committed = true
 	return nil
 }
 

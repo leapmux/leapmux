@@ -423,10 +423,7 @@ type ShutdownNotifyResult struct {
 	Total       int
 }
 
-// record folds one worker's outcome into the tally. It lives next to the struct
-// so the enum and the buckets it feeds cannot drift: adding an outcome is a
-// compile-time visit here rather than a switch somewhere else that silently
-// drops the new case on the floor.
+// record adds one worker's classified outcome to its count.
 func (r *ShutdownNotifyResult) record(o notifyOutcome) {
 	switch o {
 	case notifyDelivered:
