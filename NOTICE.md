@@ -38,7 +38,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/felixge/httpsnoop v1.1.0](#githubcomfelixgehttpsnoop-v110)
 - [github.com/fsnotify/fsnotify v1.10.1](#githubcomfsnotifyfsnotify-v1101)
 - [github.com/fxamacker/cbor/v2 v2.10.0](#githubcomfxamackercborv2-v2100)
-- [github.com/go-jose/go-jose/v4 v4.1.8](#githubcomgo-josego-josev4-v418)
+- [github.com/go-jose/go-jose/v4 v4.1.9](#githubcomgo-josego-josev4-v419)
 - [github.com/go-logr/logr v1.4.4](#githubcomgo-logrlogr-v144)
 - [github.com/go-logr/stdr v1.2.2](#githubcomgo-logrstdr-v122)
 - [github.com/go-ole/go-ole v1.3.0](#githubcomgo-olego-ole-v130)
@@ -98,7 +98,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/shirou/gopsutil/v4 v4.26.10](#githubcomshirougopsutilv4-v42610)
 - [github.com/sirupsen/logrus v1.10.2](#githubcomsirupsenlogrus-v1102)
 - [github.com/stretchr/testify v1.12.1](#githubcomstretchrtestify-v1121)
-- [github.com/testcontainers/testcontainers-go v0.44.0](#githubcomtestcontainerstestcontainers-go-v0440)
+- [github.com/testcontainers/testcontainers-go v0.45.0](#githubcomtestcontainerstestcontainers-go-v0450)
 - [github.com/things-go/go-socks5 v0.1.4](#githubcomthings-gogo-socks5-v014)
 - [github.com/tinylib/msgp v1.6.5](#githubcomtinylibmsgp-v165)
 - [github.com/tklauser/go-sysconf v0.4.0](#githubcomtklausergo-sysconf-v040)
@@ -118,18 +118,18 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [golang.org/x/crypto v0.58.0](#golangorgxcrypto-v0580)
 - [golang.org/x/mod v0.42.0](#golangorgxmod-v0420)
 - [golang.org/x/net v0.62.0](#golangorgxnet-v0620)
-- [golang.org/x/oauth2 v0.37.0](#golangorgxoauth2-v0370)
-- [golang.org/x/sync v0.24.0](#golangorgxsync-v0240)
-- [golang.org/x/sys v0.49.0](#golangorgxsys-v0490)
+- [golang.org/x/oauth2 v0.38.0](#golangorgxoauth2-v0380)
+- [golang.org/x/sync v0.25.0](#golangorgxsync-v0250)
+- [golang.org/x/sys v0.50.0](#golangorgxsys-v0500)
 - [golang.org/x/term v0.47.0](#golangorgxterm-v0470)
 - [golang.org/x/text v0.43.0](#golangorgxtext-v0430)
 - [golang.org/x/tools v0.52.0](#golangorgxtools-v0520)
 - [google.golang.org/grpc v1.85.0](#googlegolangorggrpc-v1850)
 - [google.golang.org/protobuf v1.36.12](#googlegolangorgprotobuf-v13612)
-- [modernc.org/libc v1.79.1](#moderncorglibc-v1791)
+- [modernc.org/libc v1.80.1](#moderncorglibc-v1801)
 - [modernc.org/mathutil v1.7.1](#moderncorgmathutil-v171)
 - [modernc.org/memory v1.12.1](#moderncorgmemory-v1121)
-- [modernc.org/sqlite v1.61.1](#moderncorgsqlite-v1611)
+- [modernc.org/sqlite v1.62.0](#moderncorgsqlite-v1620)
 
 ### Rust Dependencies
 
@@ -3290,7 +3290,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### github.com/go-jose/go-jose/v4 v4.1.8
+### github.com/go-jose/go-jose/v4 v4.1.9
 
 ```
                                  Apache License
@@ -9290,7 +9290,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### github.com/testcontainers/testcontainers-go v0.44.0
+### github.com/testcontainers/testcontainers-go v0.45.0
 
 ```
 The MIT License (MIT)
@@ -11271,7 +11271,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/oauth2 v0.37.0
+### golang.org/x/oauth2 v0.38.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11303,7 +11303,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/sync v0.24.0
+### golang.org/x/sync v0.25.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11335,7 +11335,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/sys v0.49.0
+### golang.org/x/sys v0.50.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11701,7 +11701,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### modernc.org/libc v1.79.1
+### modernc.org/libc v1.80.1
 
 ```
 Copyright (c) 2017 The Libc Authors. All rights reserved.
@@ -11797,7 +11797,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### modernc.org/sqlite v1.61.1
+### modernc.org/sqlite v1.62.0
 
 ```
 Copyright (c) 2017 The Sqlite Authors. All rights reserved.
