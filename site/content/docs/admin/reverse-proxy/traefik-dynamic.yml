@@ -1,0 +1,21 @@
+# /etc/traefik/dynamic/leapmux.yml
+
+http:
+  routers:
+    # The web app, API calls, and all WebSocket upgrades.
+    leapmux:
+      rule: Host(`hub.example.com`)
+      entryPoints: [websecure]
+      service: leapmux
+      tls: {}
+
+  services:
+    leapmux:
+      loadBalancer:
+        servers:
+          - url: http://127.0.0.1:4327
+
+tls:
+  certificates:
+    - certFile: /etc/traefik/certs/hub.example.com.crt
+      keyFile: /etc/traefik/certs/hub.example.com.key

@@ -108,6 +108,7 @@ import { useCrdtRuntime } from './useCrdtRuntime'
 import { useCrossWorkspaceMove } from './useCrossWorkspaceMove'
 import { useFloatingWindowOps } from './useFloatingWindowOps'
 import { useFocusInvariant } from './useFocusInvariant'
+import { useTabCreation } from './useTabCreation'
 import { useTabHydrators } from './useTabHydrators'
 import { useTabOperations } from './useTabOperations'
 import { useTabPersistence } from './useTabPersistence'
@@ -149,6 +150,7 @@ export const AppShell: Component = () => {
 
   // Workspace & section loading
   const { loadWorkspaces, loadSections, handleMoveSection, handleMoveSectionServer } = useWorkspaceLoader({
+    userId,
     workspaceStore,
     sectionStore,
   })
@@ -370,6 +372,7 @@ export const AppShell: Component = () => {
   // off one best-effort fetch per pending tab; see useTabHydrators for
   // the per-type predicates.
   const tabHydrators = useTabHydrators({
+    userId,
     view: tabView,
     metadata: tabMetadata,
     repoGitStore,
@@ -405,12 +408,28 @@ export const AppShell: Component = () => {
     pingNow: heartbeat.pingNow,
   })
 
+  const creation = useTabCreation({
+    userId: () => userId(),
+    state: crdtState,
+    activeWorkspaceId: () => workspace.activeWorkspaceId(),
+    view: tabView,
+    metadata: tabMetadata,
+    selection,
+    layoutStore,
+    repoGitStore,
+    settingsPendingAxes: id => settingsLoading.pendingAxes(id),
+    selectWorkspace: id => handleSelectWorkspace(id),
+    focusEditor,
+  })
+
   // One WatchWorkerPrivateEvents subscription per worker hosting a tab
   // anywhere in the account -- the Worker stores no workspace id, so there
   // is no narrower key. Drives the file-tab path cache and mirrors rename /
   // register / revoke events into the local stores.
   // See useWorkerPrivateStreams for the per-worker open/close logic.
   useWorkerPrivateStreams({
+    acceptsEarlyMetadata: creation.acceptsEarlyMetadata,
+    state: crdtState,
     view: tabView,
     metadata: tabMetadata,
     quakeStore,
@@ -591,13 +610,11 @@ export const AppShell: Component = () => {
   createEffect(() => {
     if (!isWorkspaceRoute())
       return
-    // Skip while the NewWorkspaceDialog is open. The dialog races a
-    // multi-step async flow (CreateWorkspace → openAgent → seedTab →
-    // metadata seed) against the WorkspaceCreated event the hub
-    // broadcasts inline during CreateWorkspace. Activating the new
-    // workspace mid-flow would run the one-shot selection restore
-    // against a workspace whose agent tab has not been placed yet,
-    // burning the attempt and landing the user on the fallback tab.
+    // Wait while NewWorkspaceDialog is open. CreateWorkspace can expose the
+    // new workspace before the Worker publishes its tab.
+    // The coordinator activates that workspace after canonical tab observation.
+    // Running fallback selection earlier could consume the one-shot restore
+    // before the agent tab exists and select a fallback tab.
     if (newWorkspaceDialog.value())
       return
     const uid = userId()
@@ -878,6 +895,7 @@ export const AppShell: Component = () => {
   const agentComposerActionStates = createAgentComposerActionStateStore()
 
   const agentOps = useAgentOperations({
+    creation,
     agentSessionStore,
     agentInputQueueStore,
     chatStore,
@@ -887,7 +905,6 @@ export const AppShell: Component = () => {
     metadata: tabMetadata,
     selection,
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
-    layoutStore,
     settingsLoading,
     isActiveWorkspaceMutatable,
     activeWorkspace,
@@ -896,23 +913,20 @@ export const AppShell: Component = () => {
     setNewAgentLoadingProvider,
     focusEditor,
     forceScrollToBottom: () => forceScrollToBottomRef()?.(),
-    repoGitStore,
     releaseAgentComposerActionState: agentComposerActionStates.releaseAgent,
   })
 
   // Terminal operations hook
   const termOps = useTerminalOperations({
+    creation,
     view: tabView,
     metadata: tabMetadata,
-    selection,
-    layoutStore,
     activeWorkspace,
     isActiveWorkspaceMutatable,
     getCurrentTabContext,
     newTerminalDialog,
     setNewTerminalLoading,
     setNewShellLoading,
-    repoGitStore,
     isQuakeTerminal: terminalId => quakeStore.isQuakeTerminal(terminalId),
     isWorkerStreamOnline: workerOnline.isOnline,
   })
@@ -940,6 +954,7 @@ export const AppShell: Component = () => {
   // the handle into the shared `dialogs` record so AppShellDialogs sees
   // one flat dialog map.
   const tabOps = useTabOperations({
+    creation,
     busyProbe,
     view: tabView,
     metadata: tabMetadata,
@@ -955,7 +970,6 @@ export const AppShell: Component = () => {
     getScrollState: () => getScrollStateRef()?.(),
     getActiveWorkspaceId: () => workspace.activeWorkspaceId() ?? undefined,
     workerOnlineState: workerId => workerOnlineState(workerSection.workers(), workerId),
-    repoGitStore,
   })
 
   /**
@@ -1364,7 +1378,7 @@ export const AppShell: Component = () => {
   }
 
   // Workspace selection switches in place — there is no per-workspace URL.
-  const handleSelectWorkspace = (id: string) => {
+  function handleSelectWorkspace(id: string) {
     closeMobileOverlay()
     switchWorkspace(id)
   }
@@ -1919,6 +1933,7 @@ export const AppShell: Component = () => {
         </Show>
 
         <AppShellDialogs
+          creation={creation}
           dialogs={dialogs}
           // The dialog states a refusal in its own slot, in the provider's words, so this
           // path lets the rejection through rather than reporting it here.
@@ -1933,17 +1948,10 @@ export const AppShell: Component = () => {
           activeWorkspace={activeWorkspace}
           isWorkspaceMutatable={isWorkspaceMutatableById}
           getCurrentTabContext={getCurrentTabContext}
-          agentOps={agentOps}
-          termOps={termOps}
           tabOps={tabOps}
-          view={tabView}
-          metadata={tabMetadata}
-          selection={selection}
           layoutStore={layoutStore}
           sectionStore={sectionStore}
-          focusEditor={focusEditor}
           loadWorkspaces={loadWorkspaces}
-          onSelectWorkspace={id => handleSelectWorkspace(id)}
           {...(() => {
             // Omitted until the provider scan answers: the prop takes no
             // explicit undefined, and the hoist lets the spread narrow.

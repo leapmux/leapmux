@@ -79,10 +79,7 @@ func (cb startupCallbacks) pastPhase0() bool {
 // populated iff a mutation partially succeeded before failing) and any
 // error.
 func (svc *Service) runStartupPhase0(ctx context.Context, plan gitModePlan, cb startupCallbacks) (gitModeResult, error) {
-	if label := plan.PhaseLabel(); label != "" {
-		cb.setMessage(label)
-		cb.broadcastStarting(label)
-	}
+	announceStartupPhase0(plan.PhaseLabel(), cb)
 	return svc.executeGitMode(ctx, plan)
 }
 
@@ -205,5 +202,12 @@ func (svc *Service) terminalStartupCallbacks(terminalID string, h *startupEntry)
 		archiveStopped:  func() bool { return svc.TerminalStartup.archiveStopped(h) },
 		shutdownStopped: func() bool { return svc.TerminalStartup.shutdownStopped(h) },
 		phase0Complete:  func() bool { return svc.TerminalStartup.phase0Complete(h) },
+	}
+}
+
+func announceStartupPhase0(label string, cb startupCallbacks) {
+	if label != "" {
+		cb.setMessage(label)
+		cb.broadcastStarting(label)
 	}
 }

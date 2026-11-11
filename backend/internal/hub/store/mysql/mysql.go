@@ -268,6 +268,9 @@ func (s *mysqlStore) UserOpBatches() store.UserOpBatchesStore {
 	return &userOpBatchesStore{conn: s.conn}
 }
 func (s *mysqlStore) UserState() store.UserStateStore { return &userStateStore{conn: s.conn} }
+func (s *mysqlStore) WorkerTabPublications() store.WorkerTabPublicationStore {
+	return &workerTabPublicationStore{conn: s.conn}
+}
 func (s *mysqlStore) UserRecentBatchIDs() store.UserRecentBatchIDStore {
 	return &userRecentBatchIDStore{conn: s.conn}
 }

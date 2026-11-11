@@ -2,15 +2,14 @@ package cmd
 
 import (
 	"context"
-	"log/slog"
-
-	"golang.org/x/sync/errgroup"
+	"errors"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/optionids"
+	"google.golang.org/protobuf/types/known/emptypb"
 )
 
 // openAgentArgs is the resolved input to openAgentAndAddTab. All
@@ -28,8 +27,7 @@ type openAgentArgs struct {
 	WorkingDir     string
 	InitialMessage string
 	// Position spec captures the caller's --first / --last /
-	// --before / --after intent; resolved against the bootstrapped
-	// state inside addTabToCRDTWithBootstrap.
+	// --before / --after intent. The Hub resolves its committed rank.
 	Position positionSpec
 }
 
@@ -62,218 +60,85 @@ type openAgentResult struct {
 	InitialMsgWarn string
 }
 
-// closeOrphanTab tears down an agent or a terminal that was opened but never
-// got a tab, on the channel the spawn already holds. Best-effort: the caller is
-// already returning the failure that caused the unwind.
-//
-// The rollback runs because the operation failed, and the likeliest failure is
-// that the operation's context ended: one deadline covers the whole `tab open`.
-// A CloseTab under that context would start expired and fail at once, and the
-// agent or the PTY would run with no tab until the worker's orphan reconciler
-// stops it. So the rollback keeps the values of ctx but takes a deadline of its
-// own, which the end of ctx does not cancel.
-//
-// It calls Call, not CallEmit, and logs its own failure instead of printing it.
-// The caller prints the one envelope that reports the failure that caused the
-// rollback, and a rollback envelope printed first would be the one that a
-// script reads.
-func closeOrphanTab(ctx context.Context, w workerCall, tabType leapmuxv1.TabType, tabID string) {
-	rollbackCtx, cancel := rpcDeadline(context.WithoutCancel(ctx))
-	defer cancel()
-	err := w.Call(rollbackCtx, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{
-		Tab: &leapmuxv1.TabIdent{TabType: tabType, TabId: tabID},
-	}, nil)
-	if err != nil {
-		slog.Warn("tab open: the rollback could not close the tab on the worker, so its process runs until the worker's orphan reconciler stops it",
-			"tab_type", tabTypeName(tabType), "tab_id", tabID, "worker_id", w.workerID, "error", err)
+// resolveTabCreation captures placement before the Worker admits creation.
+// Only a reference without an explicit tile needs a bootstrap to find its tile.
+// The Hub validates the intent and calculates its canonical rank at commit.
+func resolveTabCreation(ctx context.Context, c *control.Client, workspaceID, tileID string, spec positionSpec) (*leapmuxv1.TabCreation, error) {
+	placement := &leapmuxv1.TabPlacement{WorkspaceId: workspaceID, RelativeTabId: spec.refID}
+	switch spec.kind {
+	case positionFirst:
+		placement.Insertion = leapmuxv1.TabInsertion_TAB_INSERTION_FIRST
+	case positionLast:
+		placement.Insertion = leapmuxv1.TabInsertion_TAB_INSERTION_LAST
+	case positionBefore, positionAfter:
+		if spec.refID == "" {
+			return nil, control.EmitError("invalid_request", flagLabelForPositionKind(spec.kind)+" requires a tab id")
+		}
+		placement.Insertion = leapmuxv1.TabInsertion_TAB_INSERTION_BEFORE
+		if spec.kind == positionAfter {
+			placement.Insertion = leapmuxv1.TabInsertion_TAB_INSERTION_AFTER
+		}
+		if tileID == "" {
+			bootstrap, err := crdtBootstrap(ctx, c, []string{workspaceID})
+			if err != nil {
+				return nil, control.EmitErrorWith("crdt_bootstrap_failed", err)
+			}
+			if err := preflightTab(bootstrap.State, workspaceID, spec.refID, leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED); err != nil {
+				return nil, err
+			}
+			tileID = bootstrap.State.GetTabs()[spec.refID].GetTileId().GetValue()
+		}
+	default:
+		return nil, control.EmitError("invalid_request", "unknown position kind")
 	}
+	if tileID == "" {
+		placement.Destination = &leapmuxv1.TabPlacement_FirstLeaf{FirstLeaf: &emptypb.Empty{}}
+	} else {
+		placement.Destination = &leapmuxv1.TabPlacement_TileId{TileId: tileID}
+	}
+	return &leapmuxv1.TabCreation{TabId: id.Generate(), Placement: placement}, nil
 }
 
-// openAgentAndAddTab opens an agent on the worker, defaults its tile
-// to the workspace's root node when none is supplied, writes the
-// CRDT tab batch (tile_id + position + worker_id), and rolls the
-// agent back on CRDT failure. The permission mode is seeded into the
-// OpenAgent options (applied at launch); the optional initial-message
-// follow-up runs AFTER the CRDT batch — its failure surfaces as a
-// non-fatal warning on the result.
-//
-// The two round-trips that don't depend on each other — OpenAgent on
-// the worker and crdtBootstrap — are run concurrently via errgroup so
-// wall-clock latency is bounded by the slower of the two rather than
-// their sum.
-//
-// `w` carries a channel the CALLER opened to args.WorkerID and keeps open for
-// the whole sequence, so OpenAgent, the optional EnqueueAgentInput, and any
-// rollback CloseTab share one Noise_NK handshake instead of one apiece.
-// On a local-IPC client it carries no channel, and each call routes through
-// the per-agent socket.
-//
-// Only one errgroup goroutine touches `w`, so nothing here relies on the
-// channel being safe for concurrent calls.
+// validateTabPublication checks the result before the CLI reports a usable tab.
+func validateTabPublication(creation *leapmuxv1.TabCreation, kind leapmuxv1.TabType, publication *leapmuxv1.PublishedTab) error {
+	if publication.GetTab().GetTabId() != creation.GetTabId() || publication.GetTab().GetTabType() != kind || publication.GetWorkspaceId() != creation.GetPlacement().GetWorkspaceId() {
+		return errors.New("the Worker returned a publication for a different tab")
+	}
+	if publication.GetTileId() == "" || publication.GetPosition() == "" {
+		return errors.New("the Worker returned an incomplete tab publication")
+	}
+	return nil
+}
+
+// openAgentAndAddTab asks the Worker to create and publish an agent. A successful
+// reply supplies the committed placement. The optional initial input uses the
+// same channel and reports a warning if its separate enqueue fails.
 func openAgentAndAddTab(ctx context.Context, c *control.Client, w workerCall, args openAgentArgs) (*openAgentResult, error) {
 	if args.WorkspaceID == "" || args.WorkerID == "" {
 		return nil, control.EmitError("invalid_request", "workspace_id and worker_id are required for --type=agent")
 	}
-	// Initial option selections (model / effort / permission mode), built once.
-	options := spawnOptions(args.Model, args.Effort, args.PermissionMode)
-	req := &leapmuxv1.OpenAgentRequest{
-		AgentProvider: args.Provider,
-		Options:       options,
-		Title:         args.Title,
-		WorkingDir:    args.WorkingDir,
-	}
-
-	// Phase 1: spawn the agent on the worker AND bootstrap the CRDT in
-	// parallel, because neither feeds the other.
-	//
-	// A failed OpenAgent cancels the bootstrap, whose result nothing needs any
-	// more. A failed bootstrap cancels nothing: OpenAgent runs under ctx, because
-	// the worker finishes a spawn that the CLI stops waiting for, and only the
-	// response gives the agent id that the rollback needs.
-	//
-	// Neither goroutine prints. A cancellation fails the other goroutine too,
-	// and that failure is a result of the first one, so a goroutine that printed
-	// its own failure would add a second envelope. errgroup keeps the first
-	// failure, and the code below prints that one.
-	g, bootstrapCtx := errgroup.WithContext(ctx)
-
-	var resp leapmuxv1.OpenAgentResponse
-	var bs *CRDTBootstrap
-
-	g.Go(func() error {
-		return w.Call(ctx, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, req, &resp)
-	})
-	g.Go(func() error {
-		var err error
-		bs, err = crdtBootstrap(bootstrapCtx, c, []string{args.WorkspaceID})
-		if err != nil {
-			return &codedRPCError{Code: "crdt_bootstrap_failed", Cause: err}
-		}
-		return nil
-	})
-	if err := g.Wait(); err != nil {
-		// If OpenAgent succeeded but the bootstrap failed, the agent is now
-		// orphan on the worker. Roll it back so the user isn't left with a
-		// dangling agent record.
-		if agentID := resp.GetAgent().GetId(); agentID != "" {
-			closeOrphanTab(ctx, w, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID)
-		}
-		return nil, emitInnerRPCError(err)
-	}
-
-	agentID := resp.GetAgent().GetId()
-	// Both unwind paths go through the SAME helper on the SAME channel. The
-	// CRDT-failure rollback below used to call callInnerRPC, which opened a
-	// fresh Noise_NK channel and quietly broke the one-handshake property this
-	// function's doc comment promises -- on the likelier of the two paths.
-	rollback := func() { closeOrphanTab(ctx, w, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID) }
-	resolvedTileID, position, err := addTabToCRDTWithBootstrap(ctx, c, bs, args.WorkspaceID, leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, args.TileID, args.Position, args.WorkerID, rollback)
+	creation, err := resolveTabCreation(ctx, c, args.WorkspaceID, args.TileID, args.Position)
 	if err != nil {
 		return nil, err
 	}
-	result := &openAgentResult{
-		Agent:    resp.GetAgent(),
-		TileID:   resolvedTileID,
-		Position: position,
+	request := &leapmuxv1.OpenAgentRequest{Creation: creation, AgentProvider: args.Provider, Options: spawnOptions(args.Model, args.Effort, args.PermissionMode), Title: args.Title, WorkingDir: args.WorkingDir}
+	var response leapmuxv1.OpenAgentResponse
+	if err := w.CallEmit(ctx, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, request, &response); err != nil {
+		return nil, err
 	}
-	// The permission mode rode in on the OpenAgent options above, so the only remaining
-	// post-spawn follow-up is the optional initial message -- an inner-RPC against the same
-	// worker that just received OpenAgent, on the same channel it arrived over.
+	if err := validateTabPublication(creation, leapmuxv1.TabType_TAB_TYPE_AGENT, response.GetPublication()); err != nil {
+		return nil, control.EmitErrorWith("invalid_worker_response", err)
+	}
+	if response.GetAgent().GetId() != creation.GetTabId() || response.GetAgent().GetWorkerId() != args.WorkerID {
+		return nil, control.EmitError("invalid_worker_response", "the Worker returned a different agent identity")
+	}
+	result := &openAgentResult{Agent: response.GetAgent(), TileID: response.GetPublication().GetTileId(), Position: response.GetPublication().GetPosition()}
 	if args.InitialMessage != "" {
-		if err := w.Call(ctx, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{
-			AgentId: agentID, InputId: id.Generate(), Text: args.InitialMessage,
-			Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
-		}, nil); err != nil {
-			// Non-fatal: the agent is open and its tab is registered, so the
-			// caller reports the spawn as a success carrying this warning.
+		if err := w.Call(ctx, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, &leapmuxv1.EnqueueAgentInputRequest{AgentId: creation.GetTabId(), InputId: id.Generate(), Text: args.InitialMessage, Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE}, nil); err != nil {
 			result.InitialMsgWarn = err.Error()
 		}
 	}
 	return result, nil
-}
-
-// addTabToCRDT bootstraps the CRDT for `workspaceID` and submits the
-// tab-registration batch. Convenience wrapper for callers that don't
-// already have a *CRDTBootstrap in hand; the parallelizable variant is
-// `addTabToCRDTWithBootstrap`. `rollback` runs on any failure so the
-// worker-side resource owned by the caller is torn down before the
-// error surfaces. Errors are already wrapped in EmitError /
-// EmitErrorWith — the caller should return them directly.
-func addTabToCRDT(
-	ctx context.Context,
-	c *control.Client,
-	workspaceID string,
-	tabType leapmuxv1.TabType,
-	tabID, requestedTileID string,
-	spec positionSpec,
-	workerID string,
-	rollback func(),
-) (resolvedTileID, position string, err error) {
-	bs, err := crdtBootstrap(ctx, c, []string{workspaceID})
-	if err != nil {
-		rollback()
-		return "", "", control.EmitErrorWith("crdt_bootstrap_failed", err)
-	}
-	return addTabToCRDTWithBootstrap(ctx, c, bs, workspaceID, tabType, tabID, requestedTileID, spec, workerID, rollback)
-}
-
-// addTabToCRDTWithBootstrap resolves the destination tile + LexoRank
-// position from the supplied positionSpec and emits a 3-op batch
-// registering the tab's tile_id + position + worker_id. Callers that
-// already paid for a CRDT bootstrap — e.g. the agent / terminal open
-// path that ran bootstrap in parallel with the worker RPC — use this
-// variant directly to avoid a redundant bootstrap.
-//
-// Tile resolution priority:
-//
-//  1. The ref tab's tile, when the spec is --before / --after (and
-//     consistent with requestedTileID if both are set).
-//  2. requestedTileID, when supplied.
-//  3. The workspace's root_node_id, for backwards compatibility with
-//     spawns that don't pin a tile (the env-defaulted parent-tab path
-//     normally pre-fills requestedTileID).
-func addTabToCRDTWithBootstrap(
-	ctx context.Context,
-	c *control.Client,
-	bs *CRDTBootstrap,
-	workspaceID string,
-	tabType leapmuxv1.TabType,
-	tabID, requestedTileID string,
-	spec positionSpec,
-	workerID string,
-	rollback func(),
-) (resolvedTileID, position string, err error) {
-	resolvedTileID = requestedTileID
-	if resolvedTileID == "" && (spec.kind == positionFirst || spec.kind == positionLast) {
-		resolvedTileID = bs.State.GetWorkspaces()[workspaceID].GetRootNodeId()
-	}
-	if resolvedTileID == "" && spec.kind != positionBefore && spec.kind != positionAfter {
-		rollback()
-		return "", "", control.EmitError("missing_tile", "workspace has no root_node_id; pass --tile-id or wait for workspace seed to propagate")
-	}
-	// Position resolution: for --before / --after the helper derives
-	// the destination tile from the ref tab; for --first / --last it
-	// needs resolvedTileID supplied above.
-	resolvedTileID, position, err = resolvePositionSpec(bs.State, resolvedTileID, "", spec)
-	if err != nil {
-		rollback()
-		return "", "", err
-	}
-	ops := []*leapmuxv1.CrdtOp{
-		opSetTabTileID(bs, tabType, tabID, resolvedTileID),
-		opSetTabPosition(bs, tabType, tabID, position),
-		opSetTabWorkerID(bs, tabType, tabID, workerID),
-	}
-	batchRes, err := crdtSubmitBatch(ctx, c, bs, workspaceID, crdtNewBatch(ops))
-	if err != nil {
-		rollback()
-		return "", "", control.EmitErrorWith("crdt_submit_failed", err)
-	}
-	if err := crdtBatchError(batchRes); err != nil {
-		rollback()
-		return "", "", control.EmitErrorWith("crdt_batch_rejected", err)
-	}
-	return resolvedTileID, position, nil
 }
 
 // openTerminalArgs mirrors openAgentArgs for terminal spawns. Shell
@@ -296,51 +161,36 @@ type openTerminalArgs struct {
 	Position positionSpec
 }
 
-// terminalOpenRequest projects the resolved CLI arguments onto the wire
-// request, the way spawnOptions does for the agent path.
-//
-// Cols / Rows stay at zero so the worker applies its 80x25 default
-// (terminal.Open); the frontend resizes the PTY as soon as the user attaches.
-func terminalOpenRequest(args openTerminalArgs) *leapmuxv1.OpenTerminalRequest {
-	return &leapmuxv1.OpenTerminalRequest{
-		WorkingDir:    args.WorkingDir,
-		Shell:         args.Shell,
-		ShellStartDir: args.ShellStartDir,
-		Title:         args.Title,
-	}
+// terminalOpenRequest carries one immutable ordinary-tab creation intent.
+// Dimensions remain zero so the Worker applies its default before attachment.
+func terminalOpenRequest(args openTerminalArgs, creation *leapmuxv1.TabCreation) *leapmuxv1.OpenTerminalRequest {
+	return &leapmuxv1.OpenTerminalRequest{WorkingDir: args.WorkingDir, Shell: args.Shell, ShellStartDir: args.ShellStartDir, Title: args.Title, Target: &leapmuxv1.OpenTerminalRequest_Creation{Creation: creation}}
 }
 
-// openTerminalResult is what openTerminalAndAddTab emits on success.
 type openTerminalResult struct {
 	TerminalID string
 	TileID     string
 	Position   string
 }
 
-// openTerminalAndAddTab opens a terminal on the worker, defaults its
-// tile to the workspace's root node when none is supplied, writes the
-// CRDT tab batch, and rolls the terminal back on CRDT failure.
+// openTerminalAndAddTab returns the placement committed by the Worker operation.
 func openTerminalAndAddTab(ctx context.Context, c *control.Client, w workerCall, args openTerminalArgs) (*openTerminalResult, error) {
 	if args.WorkspaceID == "" || args.WorkerID == "" {
 		return nil, control.EmitError("invalid_request", "workspace_id and worker_id are required for --type=terminal")
 	}
-	req := terminalOpenRequest(args)
-	var resp leapmuxv1.OpenTerminalResponse
-	if err := w.CallEmit(ctx, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, req, &resp); err != nil {
-		return nil, err
-	}
-	terminalID := resp.GetTerminalId()
-	// On the SAME channel as the open, matching the agent path: the rollback
-	// is the likelier of this function's two worker calls to actually run, and
-	// paying a second Noise_NK handshake for it defeats the hoist.
-	rollback := func() { closeOrphanTab(ctx, w, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID) }
-	resolvedTileID, position, err := addTabToCRDT(ctx, c, args.WorkspaceID, leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, args.TileID, args.Position, args.WorkerID, rollback)
+	creation, err := resolveTabCreation(ctx, c, args.WorkspaceID, args.TileID, args.Position)
 	if err != nil {
 		return nil, err
 	}
-	return &openTerminalResult{
-		TerminalID: terminalID,
-		TileID:     resolvedTileID,
-		Position:   position,
-	}, nil
+	var response leapmuxv1.OpenTerminalResponse
+	if err := w.CallEmit(ctx, leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure, terminalOpenRequest(args, creation), &response); err != nil {
+		return nil, err
+	}
+	if err := validateTabPublication(creation, leapmuxv1.TabType_TAB_TYPE_TERMINAL, response.GetPublication()); err != nil {
+		return nil, control.EmitErrorWith("invalid_worker_response", err)
+	}
+	if response.GetTerminalId() != creation.GetTabId() {
+		return nil, control.EmitError("invalid_worker_response", "the Worker returned a different terminal identity")
+	}
+	return &openTerminalResult{TerminalID: response.GetTerminalId(), TileID: response.GetPublication().GetTileId(), Position: response.GetPublication().GetPosition()}, nil
 }

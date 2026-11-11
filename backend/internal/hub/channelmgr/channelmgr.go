@@ -605,8 +605,7 @@ func (m *Manager) expireDueChannels() {
 // drainRemoved writes a frontend close frame and expiry runs a caller-supplied
 // onExpire, either of which could panic, and this goroutine has no caller to
 // propagate to -- an unrecovered panic would crash the whole Hub instead of
-// dropping one channel's notification (the same defense the sibling
-// service/channel_close_dispatcher.go applies). Shared by expireDueChannels and
+// dropping one channel's notification. Shared by expireDueChannels and
 // closeChannelIDs so the cap, recovery, and wait accounting cannot drift.
 func fanOutTeardown(ids []string, work func(id string)) {
 	sem := make(chan struct{}, channelExpireConcurrency)

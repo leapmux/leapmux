@@ -488,6 +488,24 @@ func (m *Manager) WaitForExit(terminalID string) {
 	}
 }
 
+// WaitForExitContext joins the current incarnation's reader drain and exit
+// callback. It does not restrict callers that intentionally replace an exited
+// incarnation before its callback finishes; HangUpAll also joins retired ones.
+func (m *Manager) WaitForExitContext(ctx context.Context, terminalID string) error {
+	m.mu.RLock()
+	registration, ok := m.current[terminalID]
+	m.mu.RUnlock()
+	if !ok {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-registration.done:
+		return nil
+	}
+}
+
 // ExitHandlerFinished reports completion of the current instance's reader drain
 // and exit handler. An absent registration has no handler to wait for.
 func (m *Manager) ExitHandlerFinished(terminalID string) bool {

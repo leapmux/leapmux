@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { NumberedFileLine } from '../chat/model/readFileResult'
-import type { ViewMode } from './ViewToggle'
+import type { FileDisplayMode } from '~/stores/tab.types'
 import { createMemo, Show } from 'solid-js'
 import { markdownContent } from '~/components/chat/markdownEditor/markdownContent.css'
 import { ReadResultView } from '~/components/chat/results/ReadResultView'
@@ -14,7 +14,7 @@ export function MarkdownFileView(props: {
   filePath: string
   totalSize: number
   /** Controlled view mode (render / source / split). */
-  mode: ViewMode
+  mode: FileDisplayMode
   onQuote?: (text: string, startLine?: number, endLine?: number) => void
 }): JSX.Element {
   const text = createMemo(() => new TextDecoder().decode(props.content))

@@ -44,7 +44,7 @@ func (e *codedRPCError) Error() string {
 func (e *codedRPCError) Unwrap() error { return e.Cause }
 
 // callInnerRPCBest selects the same transport as callInnerRPC and returns errors without emitting them.
-// Commands such as workspace deletion and agent rollback combine failures before producing one result envelope.
+// Workspace deletion combines failures before producing one result envelope.
 func callInnerRPCBest(ctx context.Context, c *control.Client, workerID, method string, in proto.Message, out proto.Message) error {
 	// Validate serialization before a malformed request can start a Noise_NK handshake.
 	if _, err := proto.Marshal(in); err != nil {
@@ -61,8 +61,7 @@ func callInnerRPCBest(ctx context.Context, c *control.Client, workerID, method s
 // A shared channel already belongs to one worker. A per-call workerID could incorrectly suggest that the channel can switch workers.
 // This type prevents callers from supplying a different workerID for a shared channel.
 //
-// Each call takes its own context. tab_spawn uses the operation's context for OpenAgent and a detached context for its rollback.
-// Storing one context would prevent these calls from using the required cancellation behavior.
+// Each call supplies its context, so callers control cancellation independently for separate RPCs.
 type workerCall struct {
 	c        *control.Client
 	workerID string
@@ -131,7 +130,7 @@ func (w workerCall) CallEmit(ctx context.Context, method string, in, out proto.M
 // Local IPC clients use the agent's socket without opening a channel.
 //
 // The channel lives until body returns, not until ctx ends. Each call in body takes its own context.
-// A rollback in body (closeOrphanTab) runs after ctx ended and needs the channel to still be open.
+// The body can finish related cleanup with a separate context after ctx ends.
 func withWorkerChannel(ctx context.Context, c *control.Client, workerID string, body func(w workerCall) error) error {
 	if c.IsWorkerIPC() {
 		return body(workerCall{c: c, workerID: workerID})

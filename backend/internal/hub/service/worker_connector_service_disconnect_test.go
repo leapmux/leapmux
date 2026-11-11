@@ -2,43 +2,36 @@ package service_test
 
 import (
 	"context"
-	"io"
-	"runtime"
+	"net"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect/v2"
-	"connectrpc.com/connect/v2/connecthttp"
+	"github.com/coder/websocket"
+	"github.com/leapmux/leapmux/channelwire"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
-// Tests in this file do NOT call t.Parallel(), unlike the rest of this
-// package. They swap slog's default handler to capture log output, and that
-// handler is process-global: run alongside a sibling, the buffer they assert
-// on collects whatever the sibling logged too. Same convention as
-// worker_connector_service_internal_test.go, which cannot host this test
-// because it needs this package's registration fixtures.
+// Tests that capture slog's default logger do not call t.Parallel().
+// The process-global logger would also capture messages from concurrent tests.
+// These tests use this package's registration fixtures; the internal service
+// test package cannot use those fixtures.
 
 // TestConnect_DisconnectLogCarriesReasonWhenWorkerClosesStream drives the
-// real Connect handler over a unix socket and pins the reason on the
+// worker WebSocket handler over HTTP/1.1 and pins the reason on the
 // teardown log for the one quiet exit every healthy reconnect produces: the
 // worker hanging up cleanly. Before the reason field this line said only
 // THAT the worker disconnected, and diagnosing solo's 10s reconnect loop
 // started from a log that could not tell a clean close, a transport failure,
 // and a fenced connection apart.
 func TestConnect_DisconnectLogCarriesReasonWhenWorkerClosesStream(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("unix sockets are not available on Windows")
-	}
 	logs := testutil.CaptureDefaultLogger(t)
 	env := setupRegKeyEnv(t)
 
@@ -51,22 +44,14 @@ func TestConnect_DisconnectLogCarriesReasonWhenWorkerClosesStream(t *testing.T) 
 	worker, err := env.store.Workers().GetByID(context.Background(), regResp.GetWorkerId())
 	require.NoError(t, err)
 
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		env.serveOverUnixSocket(t, "hub-disconnect-reason"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	streamCtx, info := connect.NewClientContext(ctx)
-	info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
-	stream, err := connectorClient.Connect(streamCtx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// ConnectRPC only sends headers on the first Send, so the worker speaks first.
+	stream := dialWorker(t, ctx, env.server, worker.AuthToken)
+	// The worker sends its hello before the Hub greets it.
 	require.NoError(t, stream.Send(helloRequest(classicHello(0x31))))
 	_, err = stream.Receive() // the WorkerIdentity greeting
 	require.NoError(t, err)
-	require.NoError(t, stream.CloseSend()) // the worker hangs up cleanly
+	require.NoError(t, stream.Close()) // the worker hangs up cleanly
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(logs.String(), `msg="worker disconnected"`) &&
@@ -81,9 +66,6 @@ func TestConnect_DisconnectLogCarriesReasonWhenWorkerClosesStream(t *testing.T) 
 // line the Hub recorded nothing, so a worker that looped on a malformed hello
 // left no trace of why.
 func TestConnect_LogsAHelloPhaseRefusal(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("unix sockets are not available on Windows")
-	}
 	logs := testutil.CaptureDefaultLogger(t)
 	env := setupRegKeyEnv(t)
 
@@ -94,23 +76,18 @@ func TestConnect_LogsAHelloPhaseRefusal(t *testing.T) {
 	regResp, err := env.registerWithKey(t, createResp.GetRegistrationKey())
 	require.NoError(t, err)
 
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		env.serveOverUnixSocket(t, "hub-hello-refusal"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
-	streamCtx, info := connect.NewClientContext(testutil.DeadlineContext(t))
-	info.RequestHeader().Set("Authorization", "Bearer "+regResp.GetAuthToken())
-	stream, err := connectorClient.Connect(streamCtx)
-	require.NoError(t, err)
+	stream := dialWorker(t, testutil.DeadlineContext(t), env.server, regResp.GetAuthToken())
 	t.Cleanup(func() { _ = stream.Close() })
-	// A heartbeat where the hello must be.
+	// A tab inventory where the hello must be.
 	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
+		Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: &leapmuxv1.WorkerTabInventory{}},
 	}))
 	_, err = stream.Receive()
 	require.Error(t, err)
-	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	requireWorkerClose(t, err, websocket.StatusProtocolError, channelwire.WorkerCloseReasonInvalidMessage)
 
-	// Connect logs before it returns, and the refusal reaches the worker only
-	// after Connect returns, so the line is already in the buffer.
+	// serveWorkerStream logs before returning to WorkerStreamHandler, which
+	// then sends the close frame. The line is already in the buffer.
 	line := logs.String()
 	require.Contains(t, line, `level=WARN msg="worker stream ended before a valid hello"`)
 	require.Contains(t, line, "worker_id="+regResp.GetWorkerId())
@@ -148,9 +125,6 @@ func (w *parkingMarkWorkers) MarkDeleted(ctx context.Context, workerID string) e
 // unregisters. A worker that already removed its registration must not leave a
 // deregistering Hub row because its detached deletion outlived the handler.
 func TestConnectWaitsForDeregisterCompletionBeforeDisconnect(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("unix sockets are not available on Windows")
-	}
 	for _, cause := range []string{"shutdown", "worker EOF", "second hello", "EOF before acknowledgement"} {
 		t.Run(cause, func(t *testing.T) {
 			logs := testutil.CaptureDefaultLogger(t)
@@ -184,12 +158,7 @@ func TestConnectWaitsForDeregisterCompletionBeforeDisconnect(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
-			streamCtx, info := connect.NewClientContext(ctx)
-			info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
-			connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-				env.serveOverUnixSocket(t, "hub-deregister-wait"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
-			stream, err := connectorClient.Connect(streamCtx)
-			require.NoError(t, err)
+			stream := dialWorker(t, ctx, env.server, worker.AuthToken)
 			require.NoError(t, stream.Send(helloRequest(classicHello(0x31))))
 			_, err = stream.Receive() // the WorkerIdentity greeting
 			require.NoError(t, err)
@@ -209,9 +178,9 @@ func TestConnectWaitsForDeregisterCompletionBeforeDisconnect(t *testing.T) {
 				}
 			}
 			if cause == "EOF before acknowledgement" {
-				require.NoError(t, stream.CloseSend())
+				require.NoError(t, stream.Close())
 				_, receiveErr := stream.Receive()
-				require.ErrorIs(t, receiveErr, io.EOF)
+				require.ErrorIs(t, receiveErr, net.ErrClosed)
 				row, readErr := env.store.Workers().GetByIDIncludeDeleted(ctx, worker.ID)
 				require.NoError(t, readErr)
 				require.Nil(t, row.DeletedAt, "a worker must not be deleted without acknowledgement")
@@ -220,7 +189,7 @@ func TestConnectWaitsForDeregisterCompletionBeforeDisconnect(t *testing.T) {
 					t.Fatal("an unacknowledged delivery attempted deletion")
 				default:
 				}
-				require.Contains(t, logs.String(), "worker did not acknowledge DEREGISTER")
+				testutil.AssertEventually(t, func() bool { return strings.Contains(logs.String(), "worker did not acknowledge DEREGISTER") })
 				require.NotContains(t, logs.String(), context.DeadlineExceeded.Error(), "EOF must cancel the pending send before its deadline")
 				return
 			}
@@ -238,7 +207,7 @@ func TestConnectWaitsForDeregisterCompletionBeforeDisconnect(t *testing.T) {
 			case "shutdown":
 				env.wMgr.FenceAll()
 			case "worker EOF":
-				require.NoError(t, stream.CloseSend())
+				require.NoError(t, stream.Close())
 			case "second hello":
 				require.NoError(t, stream.Send(helloRequest(classicHello(0x31))))
 			}
@@ -265,10 +234,13 @@ func TestConnectWaitsForDeregisterCompletionBeforeDisconnect(t *testing.T) {
 			require.NoError(t, err)
 			require.NotNil(t, row.DeletedAt, "deletion must commit before handler teardown finishes")
 			_, receiveErr := stream.Receive()
-			if cause == "second hello" {
-				require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(receiveErr))
-			} else {
-				require.ErrorIs(t, receiveErr, io.EOF)
+			switch cause {
+			case "worker EOF":
+				require.ErrorIs(t, receiveErr, net.ErrClosed)
+			case "second hello":
+				requireWorkerClose(t, receiveErr, websocket.StatusProtocolError, channelwire.WorkerCloseReasonInvalidMessage)
+			default:
+				requireWorkerClose(t, receiveErr, websocket.StatusNormalClosure, "")
 			}
 		})
 	}

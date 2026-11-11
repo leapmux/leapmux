@@ -198,10 +198,23 @@ The Worker process is alive and logging reconnection attempts, but it never show
 A Worker reconnects automatically with exponential backoff: 1 s, doubling to 180 s, with ±20% jitter, so one wait reaches at most about 3.6 minutes. If you just restarted the Hub, give the Worker up to that long to reconnect, or restart the Worker to retry immediately.
 {{< /callout >}}
 
-### A Worker keeps retrying, and each attempt fails as unauthenticated or permission denied
+### A Worker cannot register or stay connected through a reverse proxy
 
 **Symptom**
-The Worker never comes online, and each reconnection attempt logs an `unauthenticated` error, or `permission_denied` when a proxy answers 403.
+A Worker registers but never appears online, or it keeps reconnecting, and the Hub answers the web app normally.
+
+**Cause and fix**
+The proxy must forward the `/ws/worker` WebSocket upgrade and keep the connection open. [Reverse Proxy](/docs/admin/reverse-proxy/#what-the-proxy-must-carry) gives the requirements and verified configurations for nginx, Caddy, Traefik, HAProxy, and Apache httpd. These messages were recorded with upgrade forwarding disabled and with a five-second inactivity timeout:
+
+| The Worker logs | Cause | Fix |
+|---|---|---|
+| `the hub refused the worker stream: HTTP 426 Upgrade Required: WebSocket protocol violation: Connection header "" does not contain Upgrade` | The proxy does not forward the WebSocket upgrade for `/ws/worker`. | Forward WebSocket upgrades on `/ws/`, including the Worker's route. |
+| `disconnected from hub, reconnecting...` with `receive: failed to get reader: failed to read frame header: EOF`, at a fixed idle interval | The proxy's inactivity timeout is shorter than the ten-second ping interval. | Use an inactivity timeout of one minute or longer. |
+
+### A Worker keeps retrying, and each attempt receives HTTP 401 or 403
+
+**Symptom**
+The Worker never comes online, and each reconnection attempt logs `HTTP 401`, or `HTTP 403` when a proxy refuses it.
 
 **Cause** — either the Hub has no record of the Worker's token, or something in front of the Hub refuses it:
 
@@ -212,7 +225,7 @@ The Worker never comes online, and each reconnection attempt logs an `unauthenti
 
 The Worker keeps its `state.json` for these errors, because a proxy or a Hub restored from an old backup must not destroy its identity.
 
-After five `unauthenticated` refusals in a row, the Worker logs one error that states the remedy, and it keeps retrying:
+After five `HTTP 401` refusals in a row, the Worker logs one error that states the remedy, and it keeps retrying:
 
 ```text
 the hub does not know this worker's token. Check the saved Hub endpoint and any proxy in front of the Hub. If the hub deleted this worker more than 7 days ago, stop it, delete state.json, and register it again.
@@ -394,7 +407,7 @@ leapmux control admin settings set public_url "https://hub.example.com"   # sche
 leapmux control admin settings set secure_cookies true
 ```
 
-`public_url` must be scheme + host only — **sub-path mounting** (e.g. `https://example.com/leapmux`) is explicitly rejected. Enabling `secure_cookies` changes the cookie name and signs every current session out — do it once, at setup. See [Configuration](/docs/admin/configuration/) and [Running LeapMux](/docs/admin/running-leapmux/).
+`public_url` must be scheme + host only — **sub-path mounting** (e.g. `https://example.com/leapmux`) is explicitly rejected. Enabling `secure_cookies` changes the cookie name and signs every current session out — do it once, at setup. See [Configuration](/docs/admin/configuration/) and [Reverse Proxy](/docs/admin/reverse-proxy/).
 
 ## Can't log in or sign up
 

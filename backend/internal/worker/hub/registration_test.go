@@ -67,13 +67,6 @@ func testRegistrationOptions(key string) RegistrationOptions {
 	}
 }
 
-// Connect satisfies the client interface but is never exercised by the
-// Register flow under test. Connect v2 names the stream type, and the
-// constructor returns an error alongside it.
-func (m *mockConnectorClient) Connect(_ context.Context) (leapmuxv1connect.WorkerConnectorServiceConnectClientStream, error) {
-	return leapmuxv1connect.WorkerConnectorServiceConnectClientStream{}, nil
-}
-
 // fastRegisterRetry is the production registration policy with a tiny backoff
 // ladder and the clock the test drives, so a retry costs no wall time.
 func fastRegisterRetry(clock quartz.Clock) registerRetry {
@@ -481,11 +474,8 @@ func TestRegisterWithClient_BackoffFollowsItsLadder(t *testing.T) {
 // TestRegisterWithClient_LimitsOneAttempt pins the limit that keeps a stalled
 // hub from wedging worker startup.
 //
-// Register runs on the HTTP2Only lane, which carries NO http.Client timeout by
-// design: that lane also carries the worker's bidirectional Connect stream,
-// whose body ends only when the stream does. The retry loop sits BELOW the
-// call, so before this an attempt that never returned took the loop with it,
-// and `leapmux worker` hung at startup for ever with no retry and no log line.
+// An attempt that never returns prevents every retry. The attempt deadline
+// applies even when the client has a longer timeout of its own.
 //
 // The attempt limit is a real 20ms here, not a mocked one: it is a context
 // deadline, and context.WithTimeout reads the real clock. Only the wait

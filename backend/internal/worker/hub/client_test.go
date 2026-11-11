@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,8 +18,9 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
-	"connectrpc.com/connect/v2/connectproto"
 	"github.com/coder/quartz"
+	"github.com/coder/websocket"
+	"github.com/leapmux/leapmux/channelwire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -37,11 +38,7 @@ import (
 // newBareClient builds the minimal Client the transport tests need: no
 // endpoint and no managers, but a working clock.
 //
-// The clock is not optional here even though these tests never advance it. New
-// is the only place that installs one, and a successful enqueue stamps
-// lastSendTime through it -- so a bare `&Client{}` that reaches Send with a
-// live writer panics on a nil interface instead of failing an assertion. One
-// helper means no test has to decide whether its path reaches the clock.
+// The clock also drives the retry and identity watchdog tests.
 func newBareClient() *Client {
 	return &Client{clock: quartz.NewReal()}
 }
@@ -94,95 +91,6 @@ func TestNewUsesRealClockByDefault(t *testing.T) {
 	c := newTestClient(t, "http://localhost:0")
 	require.IsType(t, quartz.NewReal(), c.clock,
 		"New must wire the real clock, not a seeded mock a WithinDuration check would accept")
-}
-
-func TestResolveWorkingDir_HomeDir(t *testing.T) {
-	home, err := os.UserHomeDir()
-	require.NoError(t, err, "UserHomeDir")
-
-	got, err := resolveWorkingDir("~")
-	require.NoError(t, err, "resolveWorkingDir(~)")
-	assert.Equal(t, home, got)
-}
-
-func TestResolveWorkingDir_HomeSubdir(t *testing.T) {
-	home, err := os.UserHomeDir()
-	require.NoError(t, err, "UserHomeDir")
-
-	// Use a subdirectory that exists under home. On macOS/Linux, home itself
-	// always exists, so we create a temp dir under it for a reliable test.
-	sub := filepath.Join(home, "Documents")
-	if _, statErr := os.Stat(sub); statErr != nil {
-		t.Skipf("~/Documents does not exist, skipping")
-	}
-
-	got, err := resolveWorkingDir("~/Documents")
-	require.NoError(t, err, "resolveWorkingDir(~/Documents)")
-	assert.Equal(t, sub, got)
-}
-
-func TestResolveWorkingDir_TildeInMiddle(t *testing.T) {
-	// /foo/~/bar is NOT a tilde prefix — should be treated literally.
-	// This path likely doesn't exist, so we expect an error.
-	_, err := resolveWorkingDir("/foo/~/bar")
-	assert.Error(t, err, "expected error for /foo/~/bar (path should not exist)")
-}
-
-func TestResolveWorkingDir_DoubleTilde(t *testing.T) {
-	// ~~ is NOT a tilde prefix — resolves relative to cwd as ./~~
-	_, err := resolveWorkingDir("~~")
-	assert.Error(t, err, "expected error for ~~ (no such directory)")
-}
-
-func TestResolveWorkingDir_DoubleTildeSubpath(t *testing.T) {
-	_, err := resolveWorkingDir("~~/foo")
-	assert.Error(t, err, "expected error for ~~/foo (no such directory)")
-}
-
-func TestResolveWorkingDir_ExistingDir(t *testing.T) {
-	// Use a temp directory to avoid symlink issues (/tmp -> /private/tmp on macOS).
-	dir := t.TempDir()
-
-	got, err := resolveWorkingDir(dir)
-	require.NoError(t, err, "resolveWorkingDir(%s)", dir)
-	expected := filepath.Clean(dir)
-	assert.Equal(t, expected, got)
-}
-
-func TestResolveWorkingDir_NonexistentPath(t *testing.T) {
-	_, err := resolveWorkingDir("/nonexistent/path/that/does/not/exist")
-	assert.Error(t, err, "expected error for nonexistent path")
-}
-
-func TestResolveWorkingDir_FileNotDir(t *testing.T) {
-	// Create a temporary file (not a directory).
-	f, err := os.CreateTemp("", "resolveWorkingDir-test-*")
-	require.NoError(t, err)
-	_ = f.Close()
-	defer func() { _ = os.Remove(f.Name()) }()
-
-	_, err = resolveWorkingDir(f.Name())
-	assert.Error(t, err, "expected error for a file path (not a directory)")
-}
-
-func TestResolveWorkingDir_Empty(t *testing.T) {
-	// Empty string resolves to cwd.
-	cwd, err := os.Getwd()
-	require.NoError(t, err)
-
-	got, err := resolveWorkingDir("")
-	require.NoError(t, err, "resolveWorkingDir('')")
-	assert.Equal(t, cwd, got)
-}
-
-func TestResolveWorkingDir_RelativePath(t *testing.T) {
-	// "." should resolve to cwd.
-	cwd, err := os.Getwd()
-	require.NoError(t, err)
-
-	got, err := resolveWorkingDir(".")
-	require.NoError(t, err, "resolveWorkingDir('.')")
-	assert.Equal(t, cwd, got)
 }
 
 func TestConnectWithReconnect_ReconnectsOnFailure(t *testing.T) {
@@ -265,8 +173,7 @@ func TestConnectWithReconnect_StopsOnRefusedKeys(t *testing.T) {
 
 	mockConnect := func(_ context.Context, _ string) error {
 		attempts.Add(1)
-		return refusalReasonError(t, connect.CodePermissionDenied,
-			leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER)
+		return websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: channelwire.WorkerCloseReasonKeysDiffer}
 	}
 
 	err := client.connectWithReconnect(ctx, "token", mockConnect, newFastBackoff(), 5*time.Millisecond)
@@ -276,7 +183,7 @@ func TestConnectWithReconnect_StopsOnRefusedKeys(t *testing.T) {
 	assert.Zero(t, deregisters.Load(), "a key refusal must not clear the worker's state")
 }
 
-// A refusal that carries WORKER_DELETED stops the loop and runs OnDeregister.
+// A refusal that carries worker_deleted stops the loop and runs OnDeregister.
 // A Client with no OnDeregister stops the same way, because a panic there would
 // end the whole solo or desktop process.
 func TestConnectWithReconnect_DeregistersADeletedWorker(t *testing.T) {
@@ -295,8 +202,7 @@ func TestConnectWithReconnect_DeregistersADeletedWorker(t *testing.T) {
 
 			mockConnect := func(_ context.Context, _ string) error {
 				attempts.Add(1)
-				return refusalReasonError(t, connect.CodeUnauthenticated,
-					leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED)
+				return websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: channelwire.WorkerCloseReasonDeleted}
 			}
 
 			err := client.connectWithReconnect(ctx, "token", mockConnect, newFastBackoff(), 5*time.Millisecond)
@@ -325,7 +231,7 @@ func TestConnectWithReconnect_RetriesABarePermissionDenied(t *testing.T) {
 		if attempts.Add(1) >= 2 {
 			cancel()
 		}
-		return connect.NewError(connect.CodePermissionDenied, "forbidden")
+		return &UpgradeRefusedError{StatusCode: 403, Body: "forbidden"}
 	}
 
 	done := make(chan struct{})
@@ -342,13 +248,13 @@ func TestConnectWithReconnect_RetriesABarePermissionDenied(t *testing.T) {
 		require.FailNow(t, "the reconnect loop did not stop after cancellation")
 	}
 	assert.Equal(t, int32(2), attempts.Load(), "a bare PermissionDenied must be retried")
-	assert.Zero(t, deregisters.Load(), "only a WorkerConnectRefusal detail may run OnDeregister")
+	assert.Zero(t, deregisters.Load(), "only a permanent Hub close may run OnDeregister")
 }
 
 // A bare Unauthenticated is not proof that this worker was deleted. A proxy in
 // front of the hub answers 401 by itself, and a hub database restored from an
 // older backup does not know the worker's token — neither may destroy the
-// worker's identity. Only the WorkerConnectRefusal detail makes a refusal
+// worker's identity. Only the permanent Hub close makes a refusal
 // permanent; without one the worker retries, and OnDeregister never runs.
 func TestConnectWithReconnect_RetriesABareUnauthenticated(t *testing.T) {
 	var attempts, deregisters atomic.Int32
@@ -364,7 +270,7 @@ func TestConnectWithReconnect_RetriesABareUnauthenticated(t *testing.T) {
 		if attempts.Add(1) >= 2 {
 			cancel() // Stop after the retry proves the loop kept going.
 		}
-		return connect.NewError(connect.CodeUnauthenticated, "unauthorized")
+		return &UpgradeRefusedError{StatusCode: 401, Body: "unauthorized"}
 	}
 
 	done := make(chan struct{})
@@ -399,7 +305,7 @@ func TestConnectWithReconnect_RetriesABareUnauthenticated(t *testing.T) {
 	}
 
 	assert.Equal(t, int32(2), attempts.Load(), "a bare Unauthenticated must be retried")
-	assert.Zero(t, deregisters.Load(), "only a WorkerConnectRefusal detail may run OnDeregister")
+	assert.Zero(t, deregisters.Load(), "only a permanent Hub close may run OnDeregister")
 }
 
 // A worker that the hub does not know retries for ever, so it must state its own
@@ -407,7 +313,7 @@ func TestConnectWithReconnect_RetriesABareUnauthenticated(t *testing.T) {
 // Unauthenticated refusals, at the attempt that reaches the threshold, and any
 // other outcome starts the count again.
 func TestConnectWithReconnect_LogsTheRemedyOnceForAWorkerTheHubDoesNotKnow(t *testing.T) {
-	bareUnauthenticated := connect.NewError(connect.CodeUnauthenticated, "unauthorized")
+	bareUnauthenticated := &UpgradeRefusedError{StatusCode: 401, Body: "unauthorized"}
 	lostConnection := errors.New("connection lost")
 	repeat := func(err error, n int) []error {
 		errs := make([]error, n)
@@ -454,7 +360,7 @@ func TestConnectWithReconnect_LogsTheRemedyOnceForAWorkerTheHubDoesNotKnow(t *te
 		},
 		{
 			name: "a bare PermissionDenied counts as another outcome",
-			errs: repeat(connect.NewError(connect.CodePermissionDenied, "forbidden"), 2*bareUnauthenticatedRemedyThreshold),
+			errs: repeat(&UpgradeRefusedError{StatusCode: 403, Body: "forbidden"}, 2*bareUnauthenticatedRemedyThreshold),
 		},
 	}
 
@@ -638,86 +544,6 @@ func TestConnectWithReconnect_BackoffCapsAtMax(t *testing.T) {
 		"the sequence must actually reach the cap, or the loop above proves nothing")
 }
 
-// refusalReasonError builds the wire shape a refusal arrives in: a connect.Error
-// with one WorkerConnectRefusal detail.
-func refusalReasonError(t *testing.T, code connect.Code, reason leapmuxv1.WorkerConnectRefusalReason) *connect.Error {
-	t.Helper()
-	detail, err := connectproto.NewErrorDetail(&leapmuxv1.WorkerConnectRefusal{Reason: reason})
-	require.NoError(t, err)
-	return connect.NewError(code, "refused").WithDetail(detail)
-}
-
-func TestConnectRefusalReason(t *testing.T) {
-	t.Parallel()
-
-	keysDiffer := leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER
-	deleted := leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED
-	unspecified := leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_UNSPECIFIED
-
-	otherTypeDetail := &connect.ErrorDetail{Type: "leapmux.v1.SomeOtherMessage", Value: []byte{0x08, 0x01}}
-	undecodableDetail := &connect.ErrorDetail{Type: "leapmux.v1.WorkerConnectRefusal", Value: []byte{0xFF, 0xFF}}
-
-	for name, tc := range map[string]struct {
-		err  error
-		want leapmuxv1.WorkerConnectRefusalReason
-	}{
-		"nil": {err: nil, want: unspecified},
-		"a non-connect error whose text contains the words": {
-			err: errors.New("unauthenticated: worker was deleted"), want: unspecified,
-		},
-		"a bare code": {
-			err: connect.NewError(connect.CodeUnauthenticated, "invalid auth token"), want: unspecified,
-		},
-		"the detail under a receive wrap": {
-			err:  fmt.Errorf("receive: %w", refusalReasonError(t, connect.CodeUnauthenticated, deleted)),
-			want: deleted,
-		},
-		"the detail under a hello wrap": {
-			err:  fmt.Errorf("hello: %w", refusalReasonError(t, connect.CodePermissionDenied, keysDiffer)),
-			want: keysDiffer,
-		},
-		"the detail under the ErrKeysRefused double wrap": {
-			err: fmt.Errorf("%w: %w", ErrKeysRefused,
-				refusalReasonError(t, connect.CodePermissionDenied, keysDiffer)),
-			want: keysDiffer,
-		},
-		"a detail of another type": {
-			err:  connect.NewError(connect.CodeInternal, "x").WithDetail(otherTypeDetail),
-			want: unspecified,
-		},
-		"the right type with an undecodable value": {
-			err:  connect.NewError(connect.CodeInternal, "x").WithDetail(undecodableDetail),
-			want: unspecified,
-		},
-		"a reason of UNSPECIFIED": {
-			err:  refusalReasonError(t, connect.CodeUnauthenticated, unspecified),
-			want: unspecified,
-		},
-		"a decodable detail of another type, then the refusal": {
-			err: func() error {
-				other, err := connectproto.NewErrorDetail(&leapmuxv1.Heartbeat{})
-				require.NoError(t, err)
-				refusal, err := connectproto.NewErrorDetail(&leapmuxv1.WorkerConnectRefusal{Reason: keysDiffer})
-				require.NoError(t, err)
-				return connect.NewError(connect.CodePermissionDenied, "x").WithDetail(other).WithDetail(refusal)
-			}(),
-			want: keysDiffer,
-		},
-		"two details, the refusal second": {
-			err: func() error {
-				detail, err := connectproto.NewErrorDetail(&leapmuxv1.WorkerConnectRefusal{Reason: deleted})
-				require.NoError(t, err)
-				return connect.NewError(connect.CodeUnauthenticated, "x").WithDetail(otherTypeDetail).WithDetail(detail)
-			}(),
-			want: deleted,
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tc.want, connectRefusalReason(tc.err))
-		})
-	}
-}
-
 // TestHandleMessage_WorkspaceTabsSyncResp_InvokesCallback pins the
 // dispatch wiring for the hub's reply to the connect-time
 // WorkerTabInventory. Without this case, handleMessage falls through
@@ -819,7 +645,7 @@ func TestConnectionStateRequiresAcceptedIdentityAndReportsDisconnection(t *testi
 				causes = append(causes, err)
 			}
 			identity := &leapmuxv1.ConnectResponse{Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "owner"}}}
-			failure := refusalReasonError(t, connect.CodePermissionDenied, leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER)
+			failure := websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: channelwire.WorkerCloseReasonKeysDiffer}
 			err := client.connectWithReconnect(t.Context(), "token", func(context.Context, string) error { client.handleMessage(identity); return failure }, newFastBackoff(), time.Second)
 			require.ErrorIs(t, err, ErrKeysRefused)
 			if accept {
@@ -971,17 +797,67 @@ func TestWatchForIdentity_ForceCancelsWhenIdentityMissing(t *testing.T) {
 	testCtx := testutil.DeadlineContext(t)
 	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, hubIdentityTimerTag)
 	var cancelled atomic.Bool
-	c.connCancel = func() { cancelled.Store(true) }
+	cancelCause := func(cause error) { assert.ErrorIs(t, cause, errNoWorkerIdentity); cancelled.Store(true) }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go c.watchForIdentity(ctx)
+	go c.watchForIdentity(ctx, cancelCause)
 
 	delay := testutil.WaitForTimer(t, testCtx, newTimer)
 	assert.Equal(t, workerIdentityTimeout, delay)
 	testutil.AdvanceAndAwaitStop(t, testCtx, clock, delay, stopTimer)
 	assert.True(t, cancelled.Load(),
 		"the watchdog must cancel the connection when the Hub omits WorkerIdentity")
+}
+
+// This test changes the process-global logger, so it cannot run in parallel.
+func TestWatchForIdentity_DoesNotCancelAReplacementConnection(t *testing.T) {
+	clock := testutil.NewQuartzMock(t)
+	c := newTestClient(t, "http://localhost:0", WithClock(clock))
+	testCtx := testutil.DeadlineContext(t)
+	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, hubIdentityTimerTag)
+	timeoutReached := make(chan struct{})
+	resume := make(chan struct{})
+	release := sync.OnceFunc(func() { close(resume) })
+	defer release()
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{
+		ReplaceAttr: func(_ []string, attr slog.Attr) slog.Attr {
+			if attr.Key == slog.MessageKey && attr.Value.String() == "hub did not deliver a usable worker identity within timeout; forcing reconnect" {
+				close(timeoutReached)
+				select {
+				case <-resume:
+				case <-testCtx.Done():
+				}
+			}
+			return attr
+		},
+	})))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	oldCtx, oldCancel := context.WithCancelCause(t.Context())
+	defer oldCancel(nil)
+	c.connCancel = oldCancel
+	go c.watchForIdentity(oldCtx, oldCancel)
+	delay := testutil.WaitForTimer(t, testCtx, newTimer)
+	clock.Advance(delay).MustWait(testCtx)
+	requireReceive(t, timeoutReached, "the old watchdog did not reach its timeout")
+
+	// Pause after the timeout wins the select, then replace the connection as
+	// the reconnect loop does. Checking ctx.Err before the select cannot
+	// prevent cancellation of the replacement after this pause.
+	oldCancel(context.Canceled)
+	nextCtx, nextCancel := context.WithCancelCause(t.Context())
+	defer nextCancel(nil)
+	c.mu.Lock()
+	c.connCancel = nextCancel
+	c.mu.Unlock()
+	c.identityReceived.Store(false)
+	release()
+	stopTimer.MustWait(testCtx).MustRelease(testCtx)
+
+	assert.ErrorIs(t, context.Cause(oldCtx), context.Canceled)
+	assert.NoError(t, nextCtx.Err(), "the old watchdog must not cancel the replacement connection")
 }
 
 func TestWatchForIdentity_DoesNotCancelWhenIdentityReceived(t *testing.T) {
@@ -991,11 +867,11 @@ func TestWatchForIdentity_DoesNotCancelWhenIdentityReceived(t *testing.T) {
 	newTimer, stopTimer := testutil.NewTimerTraps(t, clock, hubIdentityTimerTag)
 	c.identityReceived.Store(true)
 	var cancelled atomic.Bool
-	c.connCancel = func() { cancelled.Store(true) }
+	cancelCause := func(cause error) { assert.ErrorIs(t, cause, errNoWorkerIdentity); cancelled.Store(true) }
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go c.watchForIdentity(ctx)
+	go c.watchForIdentity(ctx, cancelCause)
 
 	delay := testutil.WaitForTimer(t, testCtx, newTimer)
 	assert.Equal(t, workerIdentityTimeout, delay)
@@ -1023,7 +899,7 @@ func TestWatchForIdentity_ARefusedIdentityForcesAReconnectOnlyWithNoOwner(t *tes
 			testCtx := testutil.DeadlineContext(t)
 			newTimer, stopTimer := testutil.NewTimerTraps(t, clock, hubIdentityTimerTag)
 			var cancelled atomic.Bool
-			c.connCancel = func() { cancelled.Store(true) }
+			cancelCause := func(cause error) { assert.ErrorIs(t, cause, errNoWorkerIdentity); cancelled.Store(true) }
 			// The handler reports the owner, as nudgeOnNewOwner does after
 			// ApplyWorkerIdentity refused an empty owner.
 			var deliveries int
@@ -1034,7 +910,7 @@ func TestWatchForIdentity_ARefusedIdentityForcesAReconnectOnlyWithNoOwner(t *tes
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
-			go c.watchForIdentity(ctx)
+			go c.watchForIdentity(ctx, cancelCause)
 			delay := testutil.WaitForTimer(t, testCtx, newTimer)
 
 			c.handleMessage(&leapmuxv1.ConnectResponse{
@@ -1074,7 +950,7 @@ func TestClientSendReturnsTransportGoneWhenNotConnected(t *testing.T) {
 	c := newBareClient()
 	require.Nil(t, c.currentWriter(), "fixture must model a client that never connected")
 
-	err := c.Send(heartbeatMsg())
+	err := c.Send(inventoryMsg())
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, channel.ErrTransportGone)
@@ -1100,7 +976,7 @@ func TestClientSendReportsAClosedWriterAsTransportGone(t *testing.T) {
 	c.writer = writer
 	require.NotNil(t, c.currentWriter(), "fixture must model an INSTALLED writer, not the nil-writer path")
 
-	err := c.Send(heartbeatMsg())
+	err := c.Send(inventoryMsg())
 
 	require.Error(t, err)
 	assert.ErrorIs(t, err, channel.ErrTransportGone,
@@ -1108,10 +984,10 @@ func TestClientSendReportsAClosedWriterAsTransportGone(t *testing.T) {
 	assert.ErrorIs(t, err, sendq.ErrClosed, "the underlying cause stays inspectable")
 }
 
-func heartbeatMsg() *leapmuxv1.ConnectRequest {
+func inventoryMsg() *leapmuxv1.ConnectRequest {
 	return &leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Heartbeat{
-			Heartbeat: &leapmuxv1.Heartbeat{},
+		Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{
+			WorkerTabInventory: &leapmuxv1.WorkerTabInventory{},
 		},
 	}
 }
@@ -1142,10 +1018,10 @@ func TestClientSendDoesNotBlockReceiveWhenTransportBlocked(t *testing.T) {
 	})
 	t.Cleanup(func() { c.writer.Close() })
 
-	require.NoError(t, c.Send(heartbeatMsg()), "first Send enqueues without waiting on the wire")
+	require.NoError(t, c.Send(inventoryMsg()), "first Send enqueues without waiting on the wire")
 
 	done := make(chan error, 1)
-	go func() { done <- c.Send(heartbeatMsg()) }()
+	go func() { done <- c.Send(inventoryMsg()) }()
 	select {
 	case err := <-done:
 		require.NoError(t, err, "second Send must return while the transport is blocked")
@@ -1157,285 +1033,183 @@ func TestClientSendDoesNotBlockReceiveWhenTransportBlocked(t *testing.T) {
 	// receive goroutine and must not contend with a wedged Send.
 	assert.NotPanics(t, func() {
 		c.handleMessage(&leapmuxv1.ConnectResponse{
-			Payload: &leapmuxv1.ConnectResponse_Heartbeat{
-				Heartbeat: &leapmuxv1.Heartbeat{},
+			Payload: &leapmuxv1.ConnectResponse_ReconcileNudge{
+				ReconcileNudge: &leapmuxv1.ReconcileNudge{},
 			},
 		})
 	})
 }
 
-// fakeConnectStream is a connect.ClientStream the give-up tests drive by hand,
-// shaped after connecthttp's own duplexHTTPCall:
-//
-//   - The hello is accepted.
-//   - Every later Send fails with the configured write error.
-//   - Receive answers only once the test releases it. It answers the queued
-//     messages first, and then the way duplexHTTPCall.Read does: a bare
-//     Canceled when the call's context ended first, the peer's status
-//     otherwise.
-type fakeConnectStream struct {
-	ctx context.Context
-
-	writeErr  error
-	refusal   error
-	receiveOK chan struct{}
-	closed    chan struct{}
-	closeOnce sync.Once
-
-	mu    sync.Mutex
-	sends int
-	// messages are the frames the Hub sent before it ended the stream. Receive
-	// answers them in order, once the test releases it, before the status.
-	messages []*leapmuxv1.ConnectResponse
+// fakeHubStream fixes the order of reads, writes, and closes in race tests.
+type fakeHubStream struct {
+	writeErr   error
+	helloErr   error
+	refusal    error
+	receiveOK  chan struct{}
+	closed     chan struct{}
+	pings      chan struct{}
+	closeOnce  sync.Once
+	mu         sync.Mutex
+	sends      int
+	sent       []*leapmuxv1.ConnectRequest
+	messages   []*leapmuxv1.ConnectResponse
+	firstClose string
 }
 
-func newFakeConnectStream(ctx context.Context, writeErr, refusal error) *fakeConnectStream {
-	return &fakeConnectStream{
-		ctx:       ctx,
-		writeErr:  writeErr,
-		refusal:   refusal,
-		receiveOK: make(chan struct{}),
-		closed:    make(chan struct{}),
-	}
+func newFakeHubStream(writeErr, refusal error) *fakeHubStream {
+	return &fakeHubStream{writeErr: writeErr, refusal: refusal, receiveOK: make(chan struct{}), closed: make(chan struct{}), pings: make(chan struct{}, 1)}
 }
-
-func (s *fakeConnectStream) SendHeaders() error { return nil }
-
-func (s *fakeConnectStream) Send(any) error {
+func (s *fakeHubStream) Send(_ context.Context, msg *leapmuxv1.ConnectRequest) error {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.sends++
-	n := s.sends
-	s.mu.Unlock()
-	if n == 1 {
-		// The hello. The transport takes it from the request pipe, so it
-		// succeeds even when the Hub refuses before reading it.
-		return nil
+	if s.sends == 1 && s.helloErr != nil {
+		return s.helloErr
 	}
-	return s.writeErr
+	if s.sends > 1 && s.writeErr != nil {
+		return s.writeErr
+	}
+	s.sent = append(s.sent, proto.CloneOf(msg))
+	return nil
 }
-
-func (s *fakeConnectStream) CloseSend() error { return nil }
-
-func (s *fakeConnectStream) Receive(msg any) error {
+func (s *fakeHubStream) Receive(context.Context) (*leapmuxv1.ConnectResponse, error) {
 	select {
 	case <-s.receiveOK:
 	case <-s.closed:
-		return connect.NewError(connect.CodeCanceled, "stream closed")
+		return nil, fmt.Errorf("read: %w", net.ErrClosed)
+	}
+	select {
+	case <-s.closed:
+		return nil, fmt.Errorf("read: %w", net.ErrClosed)
+	default:
 	}
 	s.mu.Lock()
-	var next *leapmuxv1.ConnectResponse
 	if len(s.messages) > 0 {
-		next, s.messages = s.messages[0], s.messages[1:]
+		next := s.messages[0]
+		s.messages = s.messages[1:]
+		s.mu.Unlock()
+		return next, nil
 	}
+	refusal := s.refusal
 	s.mu.Unlock()
-	if next != nil {
-		proto.Merge(msg.(*leapmuxv1.ConnectResponse), next)
-		return nil
+	if refusal != nil {
+		return nil, refusal
 	}
-	if err := s.ctx.Err(); err != nil {
-		// duplexHTTPCall.Read checks its context before it reads the response,
-		// so a cancel that wins the race hides the peer's status.
-		return connect.NewError(connect.CodeCanceled, err.Error())
-	}
-	return s.refusal
+	<-s.closed
+	return nil, fmt.Errorf("read: %w", net.ErrClosed)
 }
-
-func (s *fakeConnectStream) Close() error {
-	s.closeOnce.Do(func() { close(s.closed) })
+func (s *fakeHubStream) finish(method string) error {
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.firstClose = method
+		s.mu.Unlock()
+		close(s.closed)
+	})
 	return nil
 }
+func (s *fakeHubStream) Close() error                  { return s.finish("close") }
+func (s *fakeHubStream) CloseNow() error               { return s.finish("close-now") }
+func (s *fakeHubStream) PingReceived() <-chan struct{} { return s.pings }
+func (s *fakeHubStream) closedWith() string            { s.mu.Lock(); defer s.mu.Unlock(); return s.firstClose }
 
-// fakeConnectTransport hands back the one stream the test prepared.
-type fakeConnectTransport struct{ stream *fakeConnectStream }
-
-func (t *fakeConnectTransport) NewClientStream(ctx context.Context, _ connect.Spec) (connect.ClientStream, error) {
-	t.stream.ctx = ctx
-	return t.stream, nil
-}
-
-// writerStreamClient builds the Client the give-up race needs: a real New over
-// a dummy endpoint, whose one RPC is served by the fake stream, and whose
-// TabSyncProvider makes Connect write a second frame right after the hello --
-// the write that hits an already-refused stream.
-func writerStreamClient(t *testing.T, writeErr, refusal error) (*Client, *fakeConnectStream) {
+func writerStreamClient(t *testing.T, writeErr, refusal error) (*Client, *fakeHubStream) {
 	t.Helper()
-	endpoint, err := hubtransport.New("http://127.0.0.1:1")
-	require.NoError(t, err)
-	c := New(endpoint, WithClock(testutil.NewQuartzMock(t)))
-	stream := newFakeConnectStream(context.Background(), writeErr, refusal)
-	c.connector = leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(&fakeConnectTransport{stream: stream}))
-	c.TabSyncProvider = func() *leapmuxv1.WorkerTabInventory { return &leapmuxv1.WorkerTabInventory{} }
+	c := newTestClient(t, "http://127.0.0.1:1", WithClock(testutil.NewQuartzMock(t)))
+	stream := newFakeHubStream(writeErr, refusal)
+	c.dialStream = func(context.Context, string) (hubStream, error) { return stream, nil }
 	return c, stream
 }
 
-// When the Hub has already refused a connection, a later write fails with an
-// error that wraps io.EOF (connecthttp's duplexHTTPCall.Send maps a closed
-// request pipe to io.EOF) while Receive still holds the Hub's real status. The
-// writer's give-up hook must leave that stream to the reader instead of
-// cancelling it: a cancel makes duplexHTTPCall.Read check its context first and
-// report a bare Canceled, which discards the refusal AND its
-// WorkerConnectRefusal detail. The worker then retries a refusal it should
-// obey.
-func TestConnect_ReturnsTheHubStatusWhenAWriteHitsTheEndedStream(t *testing.T) {
-	t.Run("an io.EOF write leaves the refusal to the reader", func(t *testing.T) {
+// A closed-socket write preserves the Hub's refusal for the receive loop.
+func TestConnect_ReturnsTheHubsRefusalWhenAWriteHitsTheClosedStream(t *testing.T) {
+	t.Run("a closed-stream write leaves the refusal to the reader", func(t *testing.T) {
+		logs := testutil.CaptureDefaultLogger(t)
 		synctest.Test(t, func(t *testing.T) {
-			// connecthttp's envelopeWriter.write builds exactly this shape.
-			writeErr := connect.Errorf(connect.CodeUnknown, "write envelope: %s", io.EOF).WithCause(io.EOF)
-			// The refusal the Hub pairs with WORKER_DELETED.
-			refusal := refusalReasonError(t, connect.CodeUnauthenticated,
-				leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED)
-			c, stream := writerStreamClient(t, writeErr, refusal)
-
-			errCh := make(chan error, 1)
-			go func() { errCh <- c.Connect(context.Background(), "token") }()
-
-			// Returns only once every goroutine in the bubble is durably
-			// blocked, which includes the writer having run its give-up hook
-			// and exited.
+			c, stream := writerStreamClient(t, fmt.Errorf("write: %w", net.ErrClosed), websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: channelwire.WorkerCloseReasonDeleted})
+			result := make(chan error, 1)
+			go func() { result <- c.Connect(t.Context(), "token") }()
 			synctest.Wait()
+			require.NoError(t, c.Send(inventoryMsg()))
 			close(stream.receiveOK)
-
-			err := <-errCh
-			require.Error(t, err)
-			assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
-				"the reader must report the Hub's status, not a Canceled the writer caused")
-			assert.Equal(t, leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED,
-				connectRefusalReason(err), "the refusal's detail must survive the write failure")
+			assert.Equal(t, refusalWorkerDeleted, classifyStreamRefusal(<-result))
+			assert.NotContains(t, logs.String(), "writer gave up; reconnecting")
 		})
 	})
-
 	t.Run("a write that the Hub did not cause still cancels", func(t *testing.T) {
 		synctest.Test(t, func(t *testing.T) {
-			c, stream := writerStreamClient(t, errors.New("broken pipe"),
-				connect.NewError(connect.CodeUnauthenticated, "auth_token required"))
-
-			errCh := make(chan error, 1)
-			go func() { errCh <- c.Connect(context.Background(), "token") }()
-
+			failure := errors.New("broken pipe")
+			c, stream := writerStreamClient(t, failure, nil)
+			result := make(chan error, 1)
+			go func() { result <- c.Connect(t.Context(), "token") }()
 			synctest.Wait()
-			close(stream.receiveOK)
-
-			err := <-errCh
-			require.Error(t, err)
-			assert.Equal(t, connect.CodeCanceled, connect.CodeOf(err),
-				"a genuine write failure must still cancel the connection")
+			require.NoError(t, c.Send(inventoryMsg()))
+			err := <-result
+			assert.ErrorIs(t, err, failure)
+			assert.Equal(t, refusalRetry, classifyStreamRefusal(err))
+			assert.Equal(t, "close-now", stream.closedWith())
 		})
 	})
 }
 
-// The Hub can send a frame that needs a control reply and then end the stream,
-// for example a ChannelOpen just before it refuses the connection. The write
-// that hits the ended stream fails with io.EOF, and the writer gives up without
-// cancelling, so its closed writer stays installed until the receive loop ends.
-// The reply to the buffered frame then finds a CLOSED writer, not a saturated
-// one: it must not warn that the control queue is saturated, and it must not
-// cancel the connection, or Receive reports Canceled and the Hub's refusal with
-// its detail is lost.
-func TestConnect_AControlReplyOnAnEndedStreamKeepsTheHubStatus(t *testing.T) {
+func TestConnect_AControlReplyOnAClosedStreamKeepsTheHubsRefusal(t *testing.T) {
 	logs := testutil.CaptureDefaultLogger(t)
 	synctest.Test(t, func(t *testing.T) {
-		writeErr := connect.Errorf(connect.CodeUnknown, "write envelope: %s", io.EOF).WithCause(io.EOF)
-		refusal := refusalReasonError(t, connect.CodeUnauthenticated,
-			leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED)
-		c, stream := writerStreamClient(t, writeErr, refusal)
+		c, stream := writerStreamClient(t, net.ErrClosed, websocket.CloseError{Code: websocket.StatusPolicyViolation, Reason: channelwire.WorkerCloseReasonDeleted})
 		keys, err := noiseutil.GenerateCompositeKeypair()
 		require.NoError(t, err)
-		c.SetChannelMgr(channel.NewManager(keys, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM,
-			c.Send, c.TrySendOrReset, 0, 0))
-		stream.messages = []*leapmuxv1.ConnectResponse{{
-			RequestId: "open-1",
-			Payload: &leapmuxv1.ConnectResponse_ChannelOpen{
-				ChannelOpen: &leapmuxv1.ChannelOpenRequest{ChannelId: "channel-1"},
-			},
-		}}
-
-		errCh := make(chan error, 1)
-		go func() { errCh <- c.Connect(context.Background(), "token") }()
-
-		// The writer has run its give-up hook and exited once every goroutine in
-		// the bubble is durably blocked.
+		c.SetChannelMgr(channel.NewManager(keys, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, c.Send, c.TrySendOrReset, 0, 0))
+		stream.messages = []*leapmuxv1.ConnectResponse{{RequestId: "open-1", Payload: &leapmuxv1.ConnectResponse_ChannelOpen{ChannelOpen: &leapmuxv1.ChannelOpenRequest{ChannelId: "channel-1"}}}}
+		result := make(chan error, 1)
+		go func() { result <- c.Connect(t.Context(), "token") }()
 		synctest.Wait()
 		close(stream.receiveOK)
-
-		err = <-errCh
-		require.Error(t, err)
-		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
-			"the reply on the closed writer must not replace the Hub's status with Canceled")
-		assert.Equal(t, leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED,
-			connectRefusalReason(err), "the refusal's detail must survive the dropped reply")
-		assert.Contains(t, logs.String(), "rejecting channel open",
-			"the receive loop handled the ChannelOpen, so its reply met the closed writer")
-		assert.NotContains(t, logs.String(), "saturated", "a closed writer is not a saturated control queue")
-		assert.NotContains(t, logs.String(), "over budget", "a closed writer is not over budget")
+		assert.Equal(t, refusalWorkerDeleted, classifyStreamRefusal(<-result))
+		assert.Contains(t, logs.String(), "rejecting channel open")
+		assert.NotContains(t, logs.String(), "saturated")
+		assert.NotContains(t, logs.String(), "over budget")
 	})
 }
 
-// The connect writer's give-up hook cancels the connection on a write failure
-// that the Hub did not cause by ending the stream, so ConnectWithReconnect
-// re-establishes it.
 func TestClientWriteFailureCancelsConnection(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	var cancelled atomic.Bool
+	ctx, cancel := context.WithCancelCause(t.Context())
+	defer cancel(nil)
 	c := newBareClient()
-	c.connCancel = func() {
-		cancelled.Store(true)
-		cancel()
-	}
+	c.connCancel = cancel
+	failure := errors.New("stream write failed")
 	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
-		Write: func(context.Context, *leapmuxv1.ConnectRequest) error {
-			return errors.New("stream write failed")
-		},
-		Size:          connectReqSize,
-		MaxBytes:      sendq.DefaultMaxBytes,
-		FrameOverhead: sendq.DefaultFrameOverhead,
-		OnGiveUp:      c.connectWriterGiveUpHook(func() { c.cancelConn() }),
+		Write: func(context.Context, *leapmuxv1.ConnectRequest) error { return failure },
+		Size:  connectReqSize, MaxBytes: sendq.DefaultMaxBytes, FrameOverhead: sendq.DefaultFrameOverhead,
+		OnGiveUp: c.connectWriterGiveUpHook(c.cancelConn),
 	})
-	t.Cleanup(func() { c.writer.Close() })
-
-	require.NoError(t, c.Send(heartbeatMsg()))
-	require.Eventually(t, cancelled.Load, 2*time.Second, 5*time.Millisecond,
-		"a write failure the Hub did not cause must cancel the connection")
+	t.Cleanup(c.writer.Close)
+	require.NoError(t, c.Send(inventoryMsg()))
+	select {
+	case <-ctx.Done():
+	case <-time.After(30 * time.Second):
+		t.Fatal("write failure did not cancel the connection")
+	}
+	assert.ErrorIs(t, context.Cause(ctx), failure)
+	assert.Contains(t, context.Cause(ctx).Error(), sendq.GiveUpWriteError.Label())
 }
 
-// A write that failed because the peer ended the stream wraps io.EOF, and the
-// receive loop reports the peer's status. Every other give-up still cancels.
 func TestWriterGiveUpCancelsConnection(t *testing.T) {
 	t.Parallel()
-
-	eofShape := connect.Errorf(connect.CodeUnknown, "write envelope: %s", io.EOF).WithCause(io.EOF)
-	for name, tc := range map[string]struct {
+	for _, tc := range []struct {
 		reason sendq.GiveUpReason
 		err    error
 		want   bool
 	}{
-		"a write error wrapping io.EOF directly": {
-			reason: sendq.GiveUpWriteError, err: io.EOF, want: false,
-		},
-		"a write error wrapping io.EOF": {
-			reason: sendq.GiveUpWriteError, err: fmt.Errorf("write: %w", io.EOF), want: false,
-		},
-		"the production write-envelope shape": {
-			reason: sendq.GiveUpWriteError, err: eofShape, want: false,
-		},
-		"a write error the Hub did not cause": {
-			reason: sendq.GiveUpWriteError, err: errors.New("broken pipe"), want: true,
-		},
-		"a write timeout wrapping io.EOF": {
-			reason: sendq.GiveUpWriteTimeout, err: eofShape, want: true,
-		},
-		"a stall wrapping io.EOF": {
-			reason: sendq.GiveUpStall, err: eofShape, want: true,
-		},
-		"an over-budget give-up wrapping io.EOF": {
-			reason: sendq.GiveUpOverBudget, err: eofShape, want: true,
-		},
-		"pool pressure wrapping io.EOF": {
-			reason: sendq.GiveUpPoolPressure, err: eofShape, want: true,
-		},
+		{sendq.GiveUpWriteError, net.ErrClosed, false},
+		{sendq.GiveUpWriteError, fmt.Errorf("write: %w", net.ErrClosed), false},
+		{sendq.GiveUpWriteError, context.Canceled, false},
+		{sendq.GiveUpWriteError, errors.New("broken pipe"), true},
+		{sendq.GiveUpWriteError, io.EOF, true},
+		{sendq.GiveUpWriteTimeout, net.ErrClosed, true},
+		{sendq.GiveUpOverBudget, net.ErrClosed, true},
+		{sendq.GiveUpPoolPressure, net.ErrClosed, true},
+		{sendq.GiveUpStall, net.ErrClosed, true},
 	} {
-		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, tc.want, writerGiveUpCancelsConnection(tc.reason, tc.err))
-		})
+		assert.Equal(t, tc.want, writerGiveUpCancelsConnection(tc.reason, tc.err))
 	}
 }
 
@@ -1512,7 +1286,7 @@ func TestClientTrySendOrResetUsesControlReserve(t *testing.T) {
 
 	var cancelled atomic.Bool
 	c := newBareClient()
-	c.connCancel = func() { cancelled.Store(true) }
+	c.connCancel = func(cause error) { assert.ErrorIs(t, cause, errControlQueueSaturated); cancelled.Store(true) }
 	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
 		Write: func(context.Context, *leapmuxv1.ConnectRequest) error {
 			select {
@@ -1556,7 +1330,7 @@ func TestClientTrySendControlTellsAnEndingConnectionFromASaturatedOne(t *testing
 			logs := testutil.CaptureDefaultLogger(t)
 			var cancelled atomic.Bool
 			c := newBareClient()
-			c.connCancel = func() { cancelled.Store(true) }
+			c.connCancel = func(cause error) { assert.ErrorIs(t, cause, errNoWorkerIdentity); cancelled.Store(true) }
 			if closedWriter {
 				c.writer = sendq.New(t.Context(), sendq.Config[*leapmuxv1.ConnectRequest]{
 					Write:          func(context.Context, *leapmuxv1.ConnectRequest) error { return nil },
@@ -1567,88 +1341,12 @@ func TestClientTrySendControlTellsAnEndingConnectionFromASaturatedOne(t *testing
 				c.writer.Close()
 			}
 
-			assert.Equal(t, controlConnectionEnding, c.trySendControl(heartbeatMsg()))
-			assert.False(t, c.TrySendOrReset(heartbeatMsg()), "a frame for an ending connection is not queued")
+			assert.Equal(t, controlConnectionEnding, c.trySendControl(inventoryMsg()))
+			assert.False(t, c.TrySendOrReset(inventoryMsg()), "a frame for an ending connection is not queued")
 			assert.False(t, cancelled.Load(), "an ending connection must not be cancelled again")
 			assert.NotContains(t, logs.String(), "saturated")
 		})
 	}
-}
-
-// lastSendTime must advance on enqueue so the idle heartbeat does not fire
-// spuriously while the queue still has work.
-func TestClientLastSendTimeAdvancesOnEnqueue(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	clock := testutil.NewQuartzMock(t)
-	c := &Client{clock: clock}
-	now := clock.Now()
-	c.lastSendTime = now.Add(-time.Hour)
-	before := c.lastSendTime
-
-	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
-		Write:         func(context.Context, *leapmuxv1.ConnectRequest) error { return nil },
-		Size:          connectReqSize,
-		MaxBytes:      sendq.DefaultMaxBytes,
-		FrameOverhead: sendq.DefaultFrameOverhead,
-	})
-	t.Cleanup(func() { c.writer.Close() })
-
-	require.NoError(t, c.Send(heartbeatMsg()))
-	c.mu.Lock()
-	after := c.lastSendTime
-	c.mu.Unlock()
-	assert.Equal(t, now, after, "Send must use the client's clock for its enqueue timestamp")
-	assert.True(t, after.After(before), "lastSendTime must advance on enqueue")
-
-	// Reset before TrySend so the assertion does not depend on wall-clock
-	// ticks between two rapid enqueues (Windows time.Now can share a tick).
-	c.mu.Lock()
-	c.lastSendTime = now.Add(-time.Hour)
-	before = c.lastSendTime
-	c.mu.Unlock()
-	require.True(t, c.TrySend(heartbeatMsg()))
-	c.mu.Lock()
-	after = c.lastSendTime
-	c.mu.Unlock()
-	assert.Equal(t, now, after, "TrySend must use the client's clock for its enqueue timestamp")
-	assert.True(t, after.After(before), "lastSendTime must advance on TrySend enqueue")
-}
-
-// TestClientLastSendTimeNeverMovesBackwards pins the monotonicity guard in
-// markEnqueued. The clock read sits outside c.mu so a trap on it cannot park
-// the whole client, which means two concurrent enqueues can read the clock in
-// one order and reach the lock in the other. The later instant must win.
-//
-// heartbeatIdleTimeout is 5s, so a regression here is not a wrong heartbeat --
-// it is lastSendTime drifting backwards under load, which makes the idle window
-// longer than the connection has really been quiet.
-func TestClientLastSendTimeNeverMovesBackwards(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	clock := testutil.NewQuartzMock(t)
-	c := &Client{clock: clock}
-	// A stamp from an enqueue whose clock read happened LATER, but which won the
-	// race to the lock first. The enqueue below reads an earlier instant.
-	ahead := clock.Now().Add(time.Minute)
-	c.lastSendTime = ahead
-
-	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
-		Write:         func(context.Context, *leapmuxv1.ConnectRequest) error { return nil },
-		Size:          connectReqSize,
-		MaxBytes:      sendq.DefaultMaxBytes,
-		FrameOverhead: sendq.DefaultFrameOverhead,
-	})
-	t.Cleanup(func() { c.writer.Close() })
-
-	require.NoError(t, c.Send(heartbeatMsg()))
-	c.mu.Lock()
-	after := c.lastSendTime
-	c.mu.Unlock()
-	assert.Equal(t, ahead, after,
-		"an enqueue that read an earlier instant must not pull lastSendTime backwards")
 }
 
 // TestClientClockReturnsTheInstalledClock pins the accessor bootstrap.Wire
@@ -1662,175 +1360,6 @@ func TestClientClockReturnsTheInstalledClock(t *testing.T) {
 	assert.Same(t, clock, c.Clock(), "the accessor must be stable across calls")
 }
 
-// TestEnqueueStampDoesNotCarryTheConnectTag pins the tag split. One tag for two
-// call sites made a trap catch both, so a test that held the connect-time stamp
-// also parked every enqueue on the send path.
-func TestEnqueueStampDoesNotCarryTheConnectTag(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	require.NotEqual(t, hubSendTimestampTag, hubConnectTimestampTag,
-		"the two stamps must be separately trappable")
-
-	clock := testutil.NewQuartzMock(t)
-	c := &Client{clock: clock}
-	connectStamps := clock.Trap().Now(hubConnectTimestampTag)
-	defer connectStamps.Close()
-
-	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
-		Write:         func(context.Context, *leapmuxv1.ConnectRequest) error { return nil },
-		Size:          connectReqSize,
-		MaxBytes:      sendq.DefaultMaxBytes,
-		FrameOverhead: sendq.DefaultFrameOverhead,
-	})
-	t.Cleanup(func() { c.writer.Close() })
-
-	// A trapped call parks its caller, so a Send that returned at all proves the
-	// enqueue stamp did not match the connect trap.
-	require.NoError(t, c.Send(heartbeatMsg()))
-	c.mu.Lock()
-	stamped := c.lastSendTime
-	c.mu.Unlock()
-	assert.Equal(t, clock.Now(), stamped, "the enqueue must still stamp its own instant")
-}
-
-func TestHeartbeatLoopUsesClockAndStopsTicker(t *testing.T) {
-	clock := testutil.NewQuartzMock(t)
-	testCtx := testutil.DeadlineContext(t)
-	ctx, cancel := context.WithCancel(t.Context())
-	t.Cleanup(cancel)
-
-	written := make(chan *leapmuxv1.ConnectRequest, 1)
-	start := clock.Now()
-	c := &Client{clock: clock, lastSendTime: start}
-	c.writer = sendq.New(ctx, sendq.Config[*leapmuxv1.ConnectRequest]{
-		Write: func(_ context.Context, msg *leapmuxv1.ConnectRequest) error {
-			written <- msg
-			return nil
-		},
-		Size:          connectReqSize,
-		MaxBytes:      sendq.DefaultMaxBytes,
-		FrameOverhead: sendq.DefaultFrameOverhead,
-	})
-	t.Cleanup(c.writer.Close)
-
-	newTicker := clock.Trap().NewTicker(hubHeartbeatTickerTag)
-	defer newTicker.Close()
-	stopTicker := clock.Trap().TickerStop(hubHeartbeatTickerTag)
-	defer stopTicker.Close()
-	// The idle measurement is the loop's synchronization point AND its subject.
-	// Its trapped argument is the lastSendTime the loop read, so each tick
-	// reports what the PREVIOUS tick did: an unchanged argument proves the
-	// previous tick sent nothing, and a moved one proves the heartbeat stamped
-	// its enqueue on this clock. The frame's arrival orders only the writer
-	// goroutine, so the sendStamps trap below is what orders markEnqueued's own
-	// clock read against the next advance.
-	idleReads := clock.Trap().Since(hubHeartbeatIdleTag)
-	defer idleReads.Close()
-	// The enqueue stamp is the value under test, so the test must own the
-	// instant markEnqueued reads. Nothing else orders that read: Send returns
-	// once the frame is QUEUED, so the loop's clock read runs beside the writer
-	// goroutine and beside the next Advance. Without this trap the fourth tick
-	// moved the clock first and the stamp reported 8s where 6s belongs.
-	sendStamps := clock.Trap().Now(hubSendTimestampTag)
-	defer sendStamps.Close()
-	done := make(chan struct{})
-	go func() {
-		c.heartbeatLoop(ctx)
-		close(done)
-	}()
-	call := newTicker.MustWait(testCtx)
-	assert.Equal(t, 2*time.Second, call.Duration)
-	call.MustRelease(testCtx)
-
-	// tick returns the lastSendTime the loop measured its idle window against.
-	tick := func() time.Time {
-		t.Helper()
-		advance := clock.Advance(2 * time.Second)
-		idle := idleReads.MustWait(testCtx)
-		measuredAgainst := idle.Time
-		idle.MustRelease(testCtx)
-		advance.MustWait(testCtx)
-		return measuredAgainst
-	}
-
-	// Ticks 1 and 2 sit at 2s and 4s idle, both under the 5s timeout.
-	assert.Equal(t, start, tick(), "the first tick measures idle time from the last enqueue")
-	assert.Equal(t, start, tick(), "the first tick was under the idle timeout, so it sent nothing")
-	// Tick 3 reaches 6s of idle time and sends.
-	assert.Equal(t, start, tick(), "the second tick was under the idle timeout, so it sent nothing")
-	heartbeatAt := clock.Now()
-	select {
-	case msg := <-written:
-		require.NotNil(t, msg.GetHeartbeat())
-	case <-testCtx.Done():
-		require.FailNow(t, "the idle heartbeat did not run on the third tick")
-	}
-	// Release the stamp BEFORE the next advance. Now reads the clock after the
-	// release and completes before MustRelease returns, so the stamp is the
-	// instant the heartbeat went out, not the one the fourth tick moves to.
-	sendStamps.MustWait(testCtx).MustRelease(testCtx)
-	assert.Equal(t, heartbeatAt, tick(),
-		"the heartbeat enqueue timestamp must come from the client clock")
-
-	cancel()
-	stopTicker.MustWait(testCtx).MustRelease(testCtx)
-	select {
-	case <-done:
-	case <-testCtx.Done():
-		require.FailNow(t, "the heartbeat loop did not stop after cancellation")
-	}
-	_, running := clock.Peek()
-	assert.False(t, running, "the heartbeat loop must stop its ticker")
-}
-
-// TestHeartbeatLoopStopsWhenTheSendFails covers the loop's error path: a
-// heartbeat that cannot reach the transport ends the loop. Without it the loop
-// keeps ticking against a connection that is already gone, and each tick logs
-// the same failure for the life of the process.
-func TestHeartbeatLoopStopsWhenTheSendFails(t *testing.T) {
-	clock := testutil.NewQuartzMock(t)
-	testCtx := testutil.DeadlineContext(t)
-	ctx, cancel := context.WithCancel(t.Context())
-	t.Cleanup(cancel)
-
-	// No writer, so Send reports the transport is gone. That is the ordinary
-	// end of a disconnect, and the loop must return on it rather than on the
-	// context, which stays live for the whole test.
-	c := &Client{clock: clock, lastSendTime: clock.Now()}
-
-	newTicker := clock.Trap().NewTicker(hubHeartbeatTickerTag)
-	defer newTicker.Close()
-	stopTicker := clock.Trap().TickerStop(hubHeartbeatTickerTag)
-	defer stopTicker.Close()
-	idleReads := clock.Trap().Since(hubHeartbeatIdleTag)
-	defer idleReads.Close()
-
-	done := make(chan struct{})
-	go func() {
-		c.heartbeatLoop(ctx)
-		close(done)
-	}()
-	newTicker.MustWait(testCtx).MustRelease(testCtx)
-
-	// Three ticks reach 6s of idle time, which is past the 5s timeout.
-	for range 3 {
-		advance := clock.Advance(2 * time.Second)
-		idleReads.MustWait(testCtx).MustRelease(testCtx)
-		advance.MustWait(testCtx)
-	}
-
-	stopTicker.MustWait(testCtx).MustRelease(testCtx)
-	select {
-	case <-done:
-	case <-testCtx.Done():
-		require.FailNow(t, "the heartbeat loop kept ticking after its send failed")
-	}
-	require.NoError(t, ctx.Err(), "the loop must have ended on the send, not on the context")
-	_, running := clock.Peek()
-	assert.False(t, running, "a loop that gave up must stop its ticker")
-}
-
 func TestCancelledConnectionPublishesDisconnectedState(t *testing.T) {
 	independent := errors.New("independent connection failure")
 	for _, test := range []struct {
@@ -1841,8 +1370,7 @@ func TestCancelledConnectionPublishesDisconnectedState(t *testing.T) {
 		{"nil", nil, false},
 		{"cancelled", context.Canceled, false},
 		{"wrapped", fmt.Errorf("transport ended: %w", context.Canceled), false},
-		{"transport", connect.NewError(connect.CodeCanceled, "request cancelled"), false},
-		{"transport close cause", connect.NewError(connect.CodeCanceled, "request cancelled").WithCause(errors.New("response body closed")), false},
+
 		{"independent", independent, true},
 		{"joined", errors.Join(context.Canceled, independent), true},
 	} {
@@ -1874,4 +1402,252 @@ func TestCancelledConnectionPublishesDisconnectedState(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClassifyStreamRefusal(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		err  error
+		want streamRefusal
+	}{
+		{nil, refusalRetry},
+		{errors.New("worker_deleted"), refusalRetry},
+		{fmt.Errorf("receive: %w", websocket.CloseError{Code: 1008, Reason: channelwire.WorkerCloseReasonDeleted}), refusalWorkerDeleted},
+		{fmt.Errorf("%w: %w", ErrKeysRefused, websocket.CloseError{Code: 1008, Reason: channelwire.WorkerCloseReasonKeysDiffer}), refusalKeysDiffer},
+		{websocket.CloseError{Code: 1013, Reason: channelwire.WorkerCloseReasonDeleted}, refusalRetry},
+		{websocket.CloseError{Code: 1008, Reason: "too_many_control_frames"}, refusalRetry},
+		{websocket.CloseError{Code: 1008}, refusalRetry},
+		{&UpgradeRefusedError{StatusCode: 401}, refusalRetry},
+	} {
+		assert.Equal(t, tc.want, classifyStreamRefusal(tc.err))
+	}
+}
+
+func TestIsUnauthorizedUpgrade(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{&UpgradeRefusedError{StatusCode: 401}, true},
+		{fmt.Errorf("connect: %w", &UpgradeRefusedError{StatusCode: 401}), true},
+		{&UpgradeRefusedError{StatusCode: 403}, false},
+		{websocket.CloseError{Code: 1008, Reason: channelwire.WorkerCloseReasonDeleted}, false},
+		{nil, false},
+	} {
+		assert.Equal(t, tc.want, isUnauthorizedUpgrade(tc.err))
+	}
+}
+
+func TestConnectWithReconnect_RetriesAPolicyCloseWithAnUnknownReason(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c := newBareClient()
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		attempts := 0
+		err := c.connectWithReconnect(ctx, "token", func(context.Context, string) error {
+			attempts++
+			if attempts == 2 {
+				cancel()
+			}
+			return websocket.CloseError{Code: 1008, Reason: "too_many_control_frames"}
+		}, newFastBackoff(), time.Second)
+		require.NoError(t, err)
+		assert.Equal(t, 2, attempts)
+	})
+}
+
+func TestReceiveEndError(t *testing.T) {
+	t.Parallel()
+	giveUp := errors.New("writer gave up")
+	refused := websocket.CloseError{Code: 1008, Reason: channelwire.WorkerCloseReasonDeleted}
+	for _, tc := range []struct {
+		name                   string
+		stop                   bool
+		cause, errorRead, want error
+	}{
+		{"a stop before a refusal", true, nil, refused, context.Canceled},
+		{"a stop before a closed socket", true, nil, net.ErrClosed, context.Canceled},
+		{"a Hub refusal before a give-up", false, giveUp, refused, refused},
+		{"Hub silence", false, errHubStoppedPinging, net.ErrClosed, errHubStoppedPinging},
+		{"identity timeout", false, errNoWorkerIdentity, net.ErrClosed, errNoWorkerIdentity},
+		{"control saturation", false, errControlQueueSaturated, net.ErrClosed, errControlQueueSaturated},
+		{"a transport error", false, nil, io.EOF, io.EOF},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, stop := context.WithCancel(t.Context())
+			defer stop()
+			connCtx, cancel := context.WithCancelCause(ctx)
+			defer cancel(nil)
+			if tc.cause != nil {
+				cancel(tc.cause)
+			}
+			if tc.stop {
+				stop()
+			}
+			assert.ErrorIs(t, receiveEndError(tc.errorRead, ctx, connCtx), tc.want)
+		})
+	}
+}
+
+func TestConnect_ClosesWithTheHandshakeOnlyOnAStop(t *testing.T) {
+	for _, failure := range []bool{false, true} {
+		t.Run(map[bool]string{false: "stop", true: "failure"}[failure], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				var writeErr error
+				if failure {
+					writeErr = errors.New("broken pipe")
+				}
+				c, stream := writerStreamClient(t, writeErr, nil)
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				result := make(chan error, 1)
+				go func() { result <- c.Connect(ctx, "token") }()
+				synctest.Wait()
+				if !failure {
+					cancel()
+				} else {
+					require.NoError(t, c.Send(inventoryMsg()))
+				}
+				require.Error(t, <-result)
+				want := "close"
+				if failure {
+					want = "close-now"
+				}
+				assert.Equal(t, want, stream.closedWith())
+			})
+		})
+	}
+}
+
+func TestConnect_ReportsTheHubsCloseAfterAFailedHello(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, stream := writerStreamClient(t, nil, websocket.CloseError{Code: 1008, Reason: channelwire.WorkerCloseReasonDeleted})
+		stream.helloErr = errors.New("broken pipe")
+		close(stream.receiveOK)
+		assert.Equal(t, refusalWorkerDeleted, classifyStreamRefusal(c.Connect(t.Context(), "token")))
+	})
+}
+
+func inventoryOfSize(t *testing.T, size int) *leapmuxv1.WorkerTabInventory {
+	t.Helper()
+	tab := &leapmuxv1.TabIdent{TabId: strings.Repeat("x", size-32), TabType: leapmuxv1.TabType_TAB_TYPE_FILE}
+	inventory := &leapmuxv1.WorkerTabInventory{Tabs: []*leapmuxv1.TabIdent{tab}}
+	req := &leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: inventory}}
+	tab.TabId += strings.Repeat("x", size-proto.Size(req))
+	require.Equal(t, size, proto.Size(req))
+	return inventory
+}
+
+func TestInventorySegments_RejectsAnUnrepresentableEntry(t *testing.T) {
+	for _, extra := range []int{0, 1} {
+		t.Run(fmt.Sprint(extra), func(t *testing.T) {
+			inventory := inventoryOfSize(t, channelwire.WorkerStreamMaxMessageBytes-2+extra)
+			segments, err := inventorySegments(t.Context(), inventory)
+			if extra == 0 {
+				require.NoError(t, err)
+				require.Len(t, segments, 1)
+				assert.Equal(t, channelwire.WorkerStreamMaxMessageBytes, proto.Size(segments[0]))
+				assert.True(t, segments[0].GetWorkerTabInventory().GetComplete())
+			} else {
+				require.Error(t, err)
+				assert.Nil(t, segments)
+			}
+		})
+	}
+}
+
+// connectedSilenceClient creates both timers before advancing the identity
+// deadline. The fake delivers its greeting only after both timer traps release.
+func connectedSilenceClient(t *testing.T, redeliver bool) (*quartz.Mock, *fakeHubStream, context.CancelFunc, <-chan error) {
+	t.Helper()
+	c, stream := writerStreamClient(t, nil, nil)
+	clock, ok := c.clock.(*quartz.Mock)
+	require.True(t, ok, "the stream fixture must use a mock clock")
+	identityNew, identityStop := testutil.NewTimerTraps(t, clock, hubIdentityTimerTag)
+	silenceNew := clock.Trap().NewTimer(hubSilenceTimerTag)
+	t.Cleanup(silenceNew.Close)
+	greeting := &leapmuxv1.ConnectResponse{Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "owner"}}}
+	stream.messages = []*leapmuxv1.ConnectResponse{greeting}
+	if redeliver {
+		stream.messages = append(stream.messages, proto.CloneOf(greeting), proto.CloneOf(greeting))
+	}
+	connected := make(chan struct{}, 3)
+	c.OnConnectionState = func(ok bool, _ error) {
+		if ok {
+			connected <- struct{}{}
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	result := make(chan error, 1)
+	go func() { result <- c.Connect(ctx, "token") }()
+	testCtx := testutil.DeadlineContext(t)
+	assert.Equal(t, hubSilenceTimeout, testutil.WaitForTimer(t, testCtx, silenceNew))
+	assert.Equal(t, workerIdentityTimeout, testutil.WaitForTimer(t, testCtx, identityNew))
+	close(stream.receiveOK)
+	requireReceive(t, connected, "identity was not received")
+	testutil.AdvanceAndAwaitStop(t, testCtx, clock, workerIdentityTimeout, identityStop)
+	return clock, stream, cancel, result
+}
+
+func TestConnect_DropsAHubThatStopsPinging(t *testing.T) {
+	clock, stream, _, result := connectedSilenceClient(t, false)
+	clock.Advance(hubSilenceTimeout - workerIdentityTimeout).MustWait(testutil.DeadlineContext(t))
+	assert.ErrorIs(t, requireReceive(t, result, "silent Hub was not disconnected"), errHubStoppedPinging)
+	assert.Equal(t, "close-now", stream.closedWith())
+}
+
+func TestConnect_KeepsAHubThatPings(t *testing.T) {
+	clock, stream, cancel, result := connectedSilenceClient(t, true)
+	reset := clock.Trap().TimerReset(hubSilenceTimerTag)
+	defer reset.Close()
+	ctx := testutil.DeadlineContext(t)
+	for range 6 {
+		stream.pings <- struct{}{}
+		call := reset.MustWait(ctx)
+		assert.Equal(t, hubSilenceTimeout, call.Duration)
+		call.MustRelease(ctx)
+		clock.Advance(hubSilenceTimeout - time.Second).MustWait(ctx)
+		select {
+		case err := <-result:
+			t.Fatalf("Hub disconnected despite its pings: %v", err)
+		default:
+		}
+	}
+	cancel()
+	assert.ErrorIs(t, requireReceive(t, result, "worker did not stop"), context.Canceled)
+	assert.Equal(t, "close", stream.closedWith())
+}
+
+func TestCancelledConnectionPublishesDisconnectedStateAfterAHandlerReturns(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		c, stream := writerStreamClient(t, nil, nil)
+		stream.messages = []*leapmuxv1.ConnectResponse{
+			{Payload: &leapmuxv1.ConnectResponse_WorkerIdentity{WorkerIdentity: &leapmuxv1.WorkerIdentity{RegisteredBy: "owner"}}},
+			{Payload: &leapmuxv1.ConnectResponse_ReconcileNudge{ReconcileNudge: &leapmuxv1.ReconcileNudge{}}},
+		}
+		close(stream.receiveOK)
+		release := make(chan struct{})
+		c.OnReconcileNudge = func() { <-release }
+		states := make(chan bool, 2)
+		causes := make(chan error, 1)
+		c.OnConnectionState = func(ok bool, err error) {
+			states <- ok
+			if !ok {
+				causes <- err
+			}
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		result := make(chan error, 1)
+		go func() { result <- c.ConnectWithReconnect(ctx, "token") }()
+		synctest.Wait()
+		cancel()
+		close(release)
+		require.NoError(t, <-result)
+		assert.True(t, <-states)
+		assert.False(t, <-states)
+		assert.NoError(t, <-causes)
+	})
 }

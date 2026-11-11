@@ -29,7 +29,7 @@ func TestProcessWorkerMessage_RoutingFailureClosesChannelAndChunkState(t *testin
 	})
 	svc := &WorkerConnectorService{channelMgr: channels}
 
-	err := svc.processWorkerMessage(context.Background(), conn, "worker", "user", &leapmuxv1.ConnectRequest{
+	err := svc.processWorkerMessage(context.Background(), conn, "worker", &leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
 			ChannelMessageResp: &leapmuxv1.ChannelMessage{
 				ChannelId:     "channel",
@@ -38,7 +38,7 @@ func TestProcessWorkerMessage_RoutingFailureClosesChannelAndChunkState(t *testin
 				Flags:         leapmuxv1.ChannelMessageFlags_CHANNEL_MESSAGE_FLAGS_MORE,
 			},
 		},
-	})
+	}, nil)
 
 	require.NoError(t, err)
 	assert.False(t, channels.Exists("channel"))
@@ -65,11 +65,11 @@ func TestProcessWorkerMessage_RejectsChannelOwnedByAnotherWorker(t *testing.T) {
 	})
 	svc := &WorkerConnectorService{channelMgr: channels}
 
-	err := svc.processWorkerMessage(context.Background(), conn, "attacker", "user", &leapmuxv1.ConnectRequest{
+	err := svc.processWorkerMessage(context.Background(), conn, "attacker", &leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
 			ChannelMessageResp: &leapmuxv1.ChannelMessage{ChannelId: "channel", Ciphertext: []byte("injected")},
 		},
-	})
+	}, nil)
 
 	require.NoError(t, err)
 	assert.True(t, channels.Exists("channel"))

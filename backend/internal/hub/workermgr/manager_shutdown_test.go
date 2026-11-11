@@ -217,7 +217,7 @@ func TestNotifyShutdownAndFence_FencesConnectionsAfterDelivering(t *testing.T) {
 		conn, pump := NewConn(ctx, func() {
 			cancelled.Add(1)
 			cancel()
-		}, workerID, testConnOwner, sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
+		}, workerID, testConnOwner, sendq.NewMaxBytesPoolForTest(), func(context.Context, *leapmuxv1.ConnectResponse) error {
 			assert.Zero(t, cancelled.Load(), "connection fenced before its notification was sent")
 			delivered.Add(1)
 			return nil
@@ -260,7 +260,7 @@ func TestNotifyShutdownAndFence_FencesConnectionsWhenContextExpires(t *testing.T
 	conn, pump := NewConn(ctxConn, func() {
 		cancelled.Store(true)
 		cancelConn()
-	}, "wedged", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
+	}, "wedged", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(context.Context, *leapmuxv1.ConnectResponse) error {
 		close(started)
 		<-release
 		return nil
@@ -328,7 +328,7 @@ func TestFenceAll_DoesNotHoldManagerLockDuringCancel(t *testing.T) {
 		case <-time.After(time.Second):
 			assert.Fail(t, "Register blocked behind FenceAll's registry lock")
 		}
-	}, "fenced", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error { return nil }, nil, testHello())
+	}, "fenced", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(context.Context, *leapmuxv1.ConnectResponse) error { return nil }, nil, testHello())
 	t.Cleanup(conn.Fence)
 	_, _ = m.Register(conn)
 
@@ -346,7 +346,7 @@ func TestRegister_RefusedOnceFenced(t *testing.T) {
 	late, pump := NewConn(ctx, func() {
 		cancelled.Store(true)
 		cancel()
-	}, "late", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
+	}, "late", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(context.Context, *leapmuxv1.ConnectResponse) error {
 		writes.Add(1)
 		return nil
 	}, &leapmuxv1.ConnectResponse{
@@ -403,7 +403,7 @@ func TestNotifyShutdownAndFence_DoesNotBlockRegisterWhileAWriteIsParked(t *testi
 	t.Cleanup(func() { close(release) })
 
 	ctxConn, cancelConn := context.WithCancel(context.Background())
-	conn, pump := NewConn(ctxConn, cancelConn, "blocked", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
+	conn, pump := NewConn(ctxConn, cancelConn, "blocked", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(context.Context, *leapmuxv1.ConnectResponse) error {
 		close(started)
 		<-release
 		return nil
@@ -459,7 +459,7 @@ func TestNotifyShutdownAndFence_ReturnsWhenContextExpires(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 
 	ctxConn, cancelConn := context.WithCancel(context.Background())
-	conn, pump := NewConn(ctxConn, cancelConn, "blocked", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(*leapmuxv1.ConnectResponse) error {
+	conn, pump := NewConn(ctxConn, cancelConn, "blocked", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(context.Context, *leapmuxv1.ConnectResponse) error {
 		close(started)
 		<-release
 		return nil
@@ -796,4 +796,30 @@ func TestNotifyShutdownAndFence_FencesAfterTheNotificationDrains(t *testing.T) {
 	defer mu.Unlock()
 	require.Equal(t, []string{"write", "fence"}, order,
 		"notification must reach the wire before the connection is fenced")
+}
+
+func TestFenceAll_ReleasesAHandlerParkedInItsOwnWrite(t *testing.T) {
+	m := New(DenyAllReach())
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	started := make(chan struct{})
+	conn, pump := NewConn(ctx, cancel, "w1", testConnOwner, sendq.NewMaxBytesPoolForTest(), func(writeCtx context.Context, _ *leapmuxv1.ConnectResponse) error {
+		close(started)
+		<-writeCtx.Done()
+		return writeCtx.Err()
+	}, nil, testHello())
+	t.Cleanup(conn.Fence)
+	_, err := m.Register(conn)
+	require.NoError(t, err)
+	require.NoError(t, conn.Send(channelMsg(1)))
+	drained := make(chan error, 1)
+	go func() { drained <- pump.Drain() }()
+	<-started
+	m.FenceAll()
+	select {
+	case err := <-drained:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(30 * time.Second):
+		t.Fatal("FenceAll did not release the handler")
+	}
 }

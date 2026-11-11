@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"sync"
 
@@ -14,13 +13,13 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/metrics"
+	"github.com/leapmux/leapmux/internal/wskeepalive"
 )
 
-// wsAuthenticator carries what every long-lived WebSocket endpoint needs before
-// it can serve: the shared HTTP auth ladder (solo -> bearer -> cookie), the
-// authenticated lease bind, the upgrade itself, and the pace its liveness probe
-// runs at. Both UserEventsHandler and ChannelRelayHandler embed it, so that
-// option set lives in one place and cannot drift between endpoints.
+// wsAuthenticator holds browser endpoint options. It supplies the shared HTTP
+// authentication ladder (solo -> bearer -> cookie), the authenticated lease
+// bind, and the keepalive pace. UserEventsHandler and ChannelRelayHandler
+// embed it so those options cannot drift between the browser endpoints.
 type wsAuthenticator struct {
 	store          store.Store
 	soloUser       *auth.UserInfo
@@ -29,24 +28,12 @@ type wsAuthenticator struct {
 	authLease      webSocketAuthLease
 	// keepalive is how often this endpoint probes its connections. Carried
 	// per handler rather than read from a package variable so parallel tests
-	// cannot race each other's pace; see wsKeepalivePace.
-	keepalive wsKeepalivePace
+	// cannot race each other's pace; see wskeepalive.Pace.
+	keepalive wskeepalive.Pace
 	// requiredScope is the one scope a credential must hold to open this
 	// endpoint at all. See newWSAuthenticator.
 	requiredScope leapmuxv1.Scope
 }
-
-// Endpoint names, and the only producer of these values.
-//
-// Each is a log field and a control-limiter label, spelled at the acceptWS call
-// and again where the keepalive is armed. Two literals per endpoint is how the
-// accept log and the keepalive log come to disagree about which socket they
-// describe -- the same drift metrics.go identifies as the reason its pool
-// labels are constants rather than literals at each call site.
-const (
-	endpointChannel    = "channel"
-	endpointUserEvents = "userevents"
-)
 
 // newWSAuthenticator builds that option set, so a handler constructor states
 // what is endpoint-SPECIFIC and nothing else.
@@ -80,13 +67,13 @@ func newWSAuthenticator(
 		authLease:     newWebSocketAuthLease(authContexts),
 		soloUser:      soloUser,
 		secureCookie:  secureCookie,
-		keepalive:     wsKeepaliveProduction(),
+		keepalive:     wskeepalive.Production(),
 		requiredScope: requiredScope,
 	}
 }
 
-// authenticate resolves the caller via the shared HTTP auth ladder so every WS
-// endpoint stays interchangeable for credential plumbing. The token validator
+// authenticate resolves the caller via the shared HTTP auth ladder so both
+// browser endpoints use the same credential checks. The token validator
 // is optional (nil accepts cookie auth only), and the caller wires it after
 // construction, so this reads it at call time.
 //
@@ -122,46 +109,6 @@ func (a wsAuthenticator) authenticate(r *http.Request) (*auth.UserInfo, error) {
 		return nil, fmt.Errorf("%w: this credential was not granted %s", auth.ErrHTTPForbidden, token)
 	}
 	return user, nil
-}
-
-// acceptWS upgrades an authenticated request and installs everything a
-// long-lived socket must have before it carries a byte: the control-frame
-// limiter's hooks, the limiter's handle on the connection it may close, and the
-// per-message read limit. Reports false when the upgrade failed, in which case
-// it already logged and the caller must return.
-//
-// One helper because the two endpoints held a copy-pasted sequence, verbatim
-// comment included, and one of its steps is silently skippable: a
-// missed attach leaves the limiter's conn nil, so closeAbusive logs a flood and
-// closes nothing -- the defence becomes a no-op with no signal that it did.
-// acceptOptions' own doc already states this principle for the hooks ("One
-// constructor so a new long-lived endpoint cannot pick up the subprotocol and
-// silently miss the control-frame bound"); attach and the read limit are the
-// rest of the same set, so they belong behind the same one call.
-//
-// The read limit is a parameter rather than a constant here because the two
-// endpoints carry different payloads; specifying it at the call site is what
-// keeps each socket and the code reading from it from drifting apart.
-func (a wsAuthenticator) acceptWS(
-	w http.ResponseWriter,
-	r *http.Request,
-	endpoint, subprotocol string,
-	readLimit int64,
-	user *auth.UserInfo,
-) (*websocket.Conn, bool) {
-	// The library answers every inbound ping with a pong, unconditionally: a peer
-	// that floods them makes the Hub write one per ping, contending with the
-	// writer serving real traffic. The limiter caps that, and unsolicited
-	// pongs on the same budget.
-	controlLimit := newWSControlLimiter(endpoint, user.ID.String(), nil)
-	conn, err := websocket.Accept(w, r, controlLimit.acceptOptions(subprotocol))
-	if err != nil {
-		slog.Error("websocket upgrade failed", "endpoint", endpoint, "user_id", user.ID, "error", err)
-		return nil, false
-	}
-	controlLimit.attach(conn)
-	conn.SetReadLimit(readLimit)
-	return conn, true
 }
 
 type webSocketAuthLease struct {

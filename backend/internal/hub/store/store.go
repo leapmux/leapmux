@@ -25,6 +25,7 @@ type Store interface {
 	UserOpBatches() UserOpBatchesStore
 	UserState() UserStateStore
 	UserRecentBatchIDs() UserRecentBatchIDStore
+	WorkerTabPublications() WorkerTabPublicationStore
 	LifecycleOutbox() LifecycleOutboxStore
 	WorkspaceSections() WorkspaceSectionStore
 	WorkspaceSectionItems() WorkspaceSectionItemStore
@@ -353,6 +354,9 @@ type WorkspaceStore interface {
 // (ListRenderedByWorkspaceIDs, LocateAccessibleRendered); worker
 // reconciliation and the delegation handler read every row.
 type WorkspaceTabIndexStore interface {
+	// GetOwnedState reads one hosted tab and its current archive state.
+	GetOwnedState(context.Context, GetWorkerOwnedTabStateParams) (*WorkerTabStateRow, error)
+
 	// UpsertOwned writes one row. Only tests call it; the CRDT manager writes
 	// through BulkUpsert.
 	UpsertOwned(ctx context.Context, p UpsertTabParams) error

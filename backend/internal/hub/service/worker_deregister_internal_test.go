@@ -333,7 +333,7 @@ func TestDeleteUserRetriesAStopInstructionThatFailedForAConnectedWorker(t *testi
 	registry := workermgr.New(NewWorkerReachAuthorizer(st))
 	workerIDs := []string{active.ID, deregistering.ID}
 	for _, workerID := range workerIDs {
-		connection, _ := workermgrtest.NewRecordedConn(t, workerID)
+		connection := workermgrtest.NewConn(t, workerID)
 		_, err := registry.Register(connection)
 		require.NoError(t, err)
 		t.Cleanup(func() { registry.Unregister(workerID, connection) })
@@ -789,7 +789,7 @@ func assertDeregistrationRecovers(t *testing.T, newStore func(t *testing.T) stor
 			switch recovery {
 			case "next connect":
 				reg := newFlagRecordingRegistry(st)
-				connection, _ := workermgrtest.NewRecordedConn(t, worker.ID)
+				connection := workermgrtest.NewConn(t, worker.ID)
 				_, err := reg.Register(connection)
 				require.NoError(t, err)
 				t.Cleanup(func() { reg.Unregister(worker.ID, connection) })

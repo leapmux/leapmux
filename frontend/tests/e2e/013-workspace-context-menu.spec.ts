@@ -208,8 +208,12 @@ test.describe('Workspace Context Menu', () => {
     // release's own light-dismiss pass cannot take it back down again.
     await expect(renameItem).toBeVisible()
 
-    // The menu lands ON the cursor, not at the row's edge.
-    const menuBox = (await page.locator('menu:popover-open').boundingBox())!
+    // Read geometry after Oat's opening transform finishes.
+    const menu = page.locator('menu:popover-open')
+    await menu.evaluate(async (element) => {
+      await Promise.all(element.getAnimations().map(animation => animation.finished))
+    })
+    const menuBox = (await menu.boundingBox())!
     expect(Math.abs(menuBox.x - x)).toBeLessThan(4)
 
     // A secondary click reads the row; it must not select it.

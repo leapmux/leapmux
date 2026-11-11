@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/worker/hub/fakehubtest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -47,26 +48,22 @@ func TestConnect_DoesNotDialAnHTTPSHubInCleartext(t *testing.T) {
 		"the worker must verify the hub certificate; got %v", err)
 }
 
-// TestConnect_UsesTheHTTP2OnlyLane pins that the worker's own connection
-// refuses to degrade. Connect is a bidirectional gRPC stream, which HTTP/1.1
-// cannot carry, so a hub with no h2c has to fail with a message that names the
-// cause rather than with a protocol error from inside connect-go.
-func TestConnect_UsesTheHTTP2OnlyLane(t *testing.T) {
-	srv := hubtransporttest.NewHTTP1Server(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	endpoint, err := hubtransport.New(srv.URL)
-	require.NoError(t, err)
-	t.Cleanup(endpoint.CloseIdleConnections)
-
-	client := New(endpoint)
-	t.Cleanup(client.Stop)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+func TestConnect_ReachesAnHTTP1OnlyHub(t *testing.T) {
+	url := fakehubtest.Start(t, func(ctx context.Context, stream *fakehubtest.Stream) {
+		if _, err := stream.Receive(ctx); err != nil {
+			return
+		}
+		assert.NoError(t, stream.Greet(ctx, "owner"))
+		_ = stream.ReadUntilClosed(ctx)
+	})
+	client := newTestClient(t, url)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	err = client.Connect(ctx, "test-token")
-
-	require.Error(t, err)
-	assert.ErrorIs(t, err, hubtransport.ErrH2CUnsupported)
-	assert.Contains(t, err.Error(), srv.URL, "the failure must name the hub an operator configured")
+	client.OnConnectionState = func(connected bool, _ error) {
+		if connected {
+			cancel()
+		}
+	}
+	require.ErrorIs(t, client.Connect(ctx, "token"), context.Canceled)
+	require.True(t, client.identityReceived.Load())
 }

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -63,11 +64,11 @@ func TestUpdateAgentSettings_ClearsSessionIDOnRestartFailure(t *testing.T) {
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
 
-	// Switch model — StopAndWaitAgent will kill the mock agent, then
-	// StartAgent will try to start a real claude process which will fail
-	// during the initialization handshake (startup timeout).
-	// Use a very short startup timeout to speed up the test.
-	svc.AgentStartupTimeout = 1 * time.Nanosecond // forces immediate timeout
+	// Fail an actual provider start. A prelaunch deadline does not establish
+	// that the saved native session is invalid and must preserve its ID.
+	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
+		return nil, errors.New("the replacement provider failed to start")
+	}
 
 	dispatch(d, leapmuxv1connect.WorkerAgentServiceUpdateAgentSettingsProcedure, &leapmuxv1.UpdateAgentSettingsRequest{
 		AgentId:  "agent-1",

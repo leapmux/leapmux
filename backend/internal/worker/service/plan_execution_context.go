@@ -13,6 +13,9 @@ import (
 // prepareApprovedPlanContext records an intentional replacement before later settings or input can fail.
 // A retry uses that recorded session and cannot clear its context again.
 func (svc *Service) prepareApprovedPlanContext(item inputqueue.DispatchItem, input *controlInput) error {
+	if err := svc.awaitAgentCreationCheckpoint(item.AgentID); err != nil {
+		return err
+	}
 	provider, release := svc.Agents.LockProvider(item.AgentID)
 	defer release()
 	current, err := svc.queueAgentRow(item.AgentID)

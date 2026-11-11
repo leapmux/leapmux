@@ -63,7 +63,6 @@ const (
 var workerReachSites = map[string]workerReachKind{
 	"internal/hub/service.(*ChannelRelayHandler).relayFrontendMessageToWorker": reachEstablishedChan,
 	"internal/hub/service.(*workerCloseDispatcher).enqueueChannelCloses":       reachServerInitiated,
-	"internal/hub/service.(*workerCloseDispatcher).deliverWorkerCloses":        reachServerInitiated,
 	// workerToProto publishes the online bit on rows its two callers loaded
 	// via Workers().GetOwned and Workers().ListByUserID, both of which scope
 	// to the caller's user id in SQL.

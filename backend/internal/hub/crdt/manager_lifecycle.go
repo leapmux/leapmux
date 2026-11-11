@@ -101,8 +101,8 @@ func DecodeLifecyclePayload(data []byte) (LifecyclePayload, []*leapmuxv1.CrdtOp,
 // the next drain -- rather than aborting the whole batch. Aborting let a
 // persistently-failing head-of-line row (e.g. a create whose read-ACL LOOKUP
 // keeps faulting) strand every INDEPENDENT workspace's rows behind it
-// indefinitely, since the only drain trigger is the next lifecycle RPC (no
-// periodic re-drain). But per-workspace ORDER must still hold: applying a delete
+// indefinitely. Lifecycle RPCs and fresh tab publication retry the drain.
+// Per-workspace ORDER must still hold: applying a delete
 // X after its create X failed would re-introduce the "phantom / no-prior-create"
 // hazard above, so once a workspace's row fails this pass, every LATER row for the
 // same workspace is deferred with it (blocked). The first error is returned so the
@@ -164,7 +164,7 @@ func (m *Manager) SubmitLifecycle(ctx context.Context, reader LifecycleOutboxRea
 			// lookup faulted), so the row is NOT consumed -- it retries on the next
 			// drain. But re-logging the SAME failing row at Error on every drain
 			// would amplify one stuck row into permanent log noise for the user's
-			// life (the only drain trigger is the next lifecycle RPC), exactly the
+			// life (a later lifecycle drain retries it), exactly the
 			// amplification the decode-failure path's undecodableLogged exists to
 			// prevent. Dedupe the same way: Error on the first sighting, Warn on
 			// the repeats the operator can do nothing about until the fault clears.
@@ -189,7 +189,7 @@ func (m *Manager) SubmitLifecycle(ctx context.Context, reader LifecycleOutboxRea
 
 // logRowFaultOnce logs a lifecycle-outbox row fault at Error on the FIRST sighting
 // of id and at Warn on every repeat, recording id in *seen so a fault that
-// persists across drains (the only drain trigger is the next lifecycle RPC) is not
+// persists across drains (a later lifecycle drain retries it) is not
 // re-logged at Error every time -- amplifying one stuck row into permanent log
 // noise for the user's life. seen is lazily allocated (nil until the first fault);
 // each caller clears the entry once its row stops faulting, so the set stays
@@ -235,9 +235,8 @@ func (m *Manager) applyLifecycleCreate(ctx context.Context, row LifecycleOutboxR
 	// projection. A read-ACL LOOKUP failure here must not silently drop
 	// the seed: contract the (possibly partially) expanded filters and
 	// return WITHOUT consuming the outbox row so the create retries
-	// whenever the outbox is next drained -- the next lifecycle mutation
-	// for this user, not a periodic tick (the fixed BatchId + idempotent
-	// apply make retry safe).
+	// when a lifecycle mutation or a fresh tab needs another drain.
+	// The fixed BatchId and idempotent apply make retry safe.
 	if err := m.ExpandSubscribersForWorkspace(ctx, wsID); err != nil {
 		m.contractSubscribersForWorkspace(wsID)
 		return fmt.Errorf("expand subscribers for workspace %s: %w", wsID, err)
@@ -414,9 +413,9 @@ func (m *Manager) applyLifecycleDelete(ctx context.Context, row LifecycleOutboxR
 	// the broadcast describes committed state either way -- but ordering it
 	// before the consume closes a window the old order left open: if
 	// MarkLifecycleOutboxConsumed fails (a transient DB write fault) the row
-	// stays pending and the only re-drain trigger is the next lifecycle RPC for
-	// this user, which for a delete that removed the user's last workspace may not
-	// come for a long time. Subscribers would keep the dead workspace in their
+	// stays pending until a lifecycle mutation or fresh publication requests another
+	// drain. A user who deleted the last workspace may trigger neither for a long
+	// time. Subscribers would keep the dead workspace in their
 	// Filter and keep routing tabs to it until reconnect. Broadcasting first
 	// means a consume failure delays only the outbox bookkeeping, not the
 	// subscriber-visible event. A successful re-drain re-broadcasts, which is

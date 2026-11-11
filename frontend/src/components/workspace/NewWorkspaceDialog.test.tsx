@@ -1,21 +1,14 @@
 import type { WorkspaceStartPoint } from './workspaceStartPoint'
-import type { TabMetadataStore } from '~/stores/tabMetadata.store'
+import type { WorkspaceCreationSubmission } from '~/components/shell/useTabCreation'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { generateSlug } from 'random-word-slugs'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { workspaceClient } from '~/api/clients'
-import { workerAgent, workerGit } from '~/api/workerRpc'
-import { AgentInfoSchema, AgentProvider, AgentStatus, OpenAgentResponseSchema } from '~/generated/proto/leapmux/v1/agent_pb'
-import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
+import { workerGit } from '~/api/workerRpc'
+import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ListGitBranchesResponseSchema, ListGitWorktreesResponseSchema } from '~/generated/proto/leapmux/v1/git_pb'
-import {
-  CreateWorkspaceResponseSchema,
-  DeleteWorkspaceResponseSchema,
-} from '~/generated/proto/leapmux/v1/workspace_pb'
 import { GitMode } from '~/hooks/useGitModeState'
 import { localStorageClearForTests, localStorageSet, PREFIX_WORKSPACE_GIT_MODE, setStorageAccountForTests } from '~/lib/browserStorage'
-import { seedTabIntoNewWorkspace } from '~/lib/crdt'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 /// <reference types="vitest/globals" />
 import { withPreferences } from '~/test-support/preferencesProvider'
@@ -79,13 +72,6 @@ vi.mock('~/api/workerRpc', () => ({
   },
 }))
 
-// Mock seedTabIntoNewWorkspace through the same module that the dialog imports.
-// Keep its other exports because the import graph also requires operation builders and the bridge.
-vi.mock('~/lib/crdt', async importOriginal => ({
-  ...(await importOriginal<typeof import('~/lib/crdt')>()),
-  seedTabIntoNewWorkspace: vi.fn(),
-}))
-
 // The real directory tree makes separate listDirectory requests. The submit path needs only its selected working directory.
 // This stub supplies that directory through the real onSelect interface.
 vi.mock('~/components/tree/DirectoryTree', () => ({
@@ -96,15 +82,7 @@ vi.mock('~/components/tree/DirectoryTree', () => ({
   ),
 }))
 
-/** What the worker reports back for the agent the dialog opens. */
-const AGENT = create(AgentInfoSchema, {
-  id: 'agent-1',
-  workerId: WORKER_ID,
-  title: 'Agent Mimi',
-  workingDir: WORKING_DIR,
-  agentProvider: AgentProvider.CLAUDE_CODE,
-  status: AgentStatus.ACTIVE,
-})
+const mockCreate = vi.fn<(input: WorkspaceCreationSubmission) => Promise<boolean>>()
 
 beforeAll(() => {
   // jsdom doesn't implement <dialog>; Dialog calls showModal()/close().
@@ -120,25 +98,19 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(workerGit.listGitBranches).mockResolvedValue(create(ListGitBranchesResponseSchema, { branches: [], currentBranch: 'main' }))
   vi.mocked(workerGit.listGitWorktrees).mockResolvedValue(create(ListGitWorktreesResponseSchema, { worktrees: [] }))
-  vi.mocked(workspaceClient.createWorkspace).mockResolvedValue(
-    create(CreateWorkspaceResponseSchema, { workspaceId: NEW_WORKSPACE_ID }),
-  )
-  vi.mocked(workspaceClient.deleteWorkspace).mockResolvedValue(create(DeleteWorkspaceResponseSchema, {}))
-  vi.mocked(workerAgent.openAgent).mockResolvedValue(
-    create(OpenAgentResponseSchema, { agent: AGENT }),
-  )
-  vi.mocked(seedTabIntoNewWorkspace).mockResolvedValue({ rootNodeId: 'root-1', position: 'n' })
+  mockCreate.mockReset()
+  mockCreate.mockImplementation(async (input) => {
+    input.onCommitted?.({ workspaceId: NEW_WORKSPACE_ID } as never, () => true)
+    return true
+  })
 })
 
 function renderDialog(overrides: Partial<Parameters<typeof NewWorkspaceDialog>[0]> = {}) {
   const props = {
-    onCreated: vi.fn(),
+    onCreate: mockCreate,
     onClose: vi.fn(),
     startPoint: { kind: 'directory' } as WorkspaceStartPoint,
     availableProviders: [AgentProvider.CLAUDE_CODE],
-    metadata: {
-      patch: vi.fn(),
-    } as unknown as TabMetadataStore,
     repoGitStore: createRepoGitStore(),
     ...overrides,
   }
@@ -167,11 +139,11 @@ describe('NewWorkspaceDialog', () => {
     await submitDialog()
 
     await waitFor(() => {
-      expect(workerAgent.openAgent).toHaveBeenCalledOnce()
+      expect(mockCreate).toHaveBeenCalledOnce()
     })
-    expect(workerAgent.openAgent).toHaveBeenCalledWith(WORKER_ID, expect.objectContaining({
-      agentProvider: AgentProvider.CLAUDE_CODE,
-      workingDir: WORKING_DIR,
+    expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({
+      workerId: WORKER_ID,
+      request: expect.objectContaining({ agentProvider: AgentProvider.CLAUDE_CODE, workingDir: WORKING_DIR }),
     }))
   })
 
@@ -184,7 +156,7 @@ describe('NewWorkspaceDialog', () => {
     await submitDialog()
 
     await waitFor(() => {
-      expect(workspaceClient.createWorkspace).toHaveBeenCalledWith({ title: 'Spaced Out' })
+      expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ title: 'Spaced Out' }))
     })
   })
 
@@ -225,7 +197,7 @@ describe('NewWorkspaceDialog', () => {
     expect(screen.getByText('Name must not be empty')).toBeInTheDocument()
 
     fireEvent.click(createButton)
-    expect(workspaceClient.createWorkspace).not.toHaveBeenCalled()
+    expect(mockCreate).not.toHaveBeenCalled()
   })
 
   // Send the cleaned title so the UI agrees with the hub before a refresh.
@@ -247,7 +219,7 @@ describe('NewWorkspaceDialog', () => {
     await submitDialog()
 
     await waitFor(() => {
-      expect(workspaceClient.createWorkspace).toHaveBeenCalledWith({ title: stored })
+      expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ title: stored }))
     })
   })
 
@@ -261,143 +233,46 @@ describe('NewWorkspaceDialog', () => {
     await submitDialog()
 
     await waitFor(() => {
-      expect(workspaceClient.createWorkspace).toHaveBeenCalledWith({ title: '100% of $HOME "quoted"' })
+      expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ title: '100% of $HOME "quoted"' }))
     })
   })
 
-  it('places the agent in the CRDT and seeds its metadata as hydrated', async () => {
-    const props = renderDialog()
-
+  it('captures the worker request and leaves publication to the coordinator', async () => {
+    renderDialog()
     await submitDialog()
-
-    await waitFor(() => {
-      expect(props.onCreated).toHaveBeenCalledWith(NEW_WORKSPACE_ID)
-    })
-    expect(seedTabIntoNewWorkspace).toHaveBeenCalledWith({
-      workspaceId: NEW_WORKSPACE_ID,
-      tabType: TabType.AGENT,
-      tabId: 'agent-1',
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledOnce())
+    expect(mockCreate.mock.calls[0]?.[0]).toMatchObject({
       workerId: WORKER_ID,
+      request: { agentProvider: AgentProvider.CLAUDE_CODE, workingDir: WORKING_DIR },
+      onCommitted: expect.any(Function),
+      onError: expect.any(Function),
     })
-    // hydrated: true marks the OpenAgent response as the worker state for this tab.
-    // Without it, useTabHydrators requests ListAgents for an agent that this client just created.
-    // That response lacks the live handler suppression for settings that still await a response.
-    expect(props.metadata.patch).toHaveBeenCalledWith('agent-1', expect.objectContaining({
-      title: 'Agent Mimi',
-      workerId: WORKER_ID,
-      agentProvider: AgentProvider.CLAUDE_CODE,
-      hydrated: true,
+  })
+
+  it('keeps the form open while the coordinator waits for publication', async () => {
+    let complete!: (result: boolean) => void
+    mockCreate.mockImplementationOnce(() => new Promise((resolve) => {
+      complete = resolve
     }))
-  })
-
-  // Both facts belong to `openedAgentTabFields`, not to this call site; its
-  // doc comment states why each one holds.
-  //   - `hydrated: true` reaches the row.
-  //   - The row gets no `gitToplevel`, because the response carries no status.
-  it('marks the new agent hydrated and gives it no repo identity', async () => {
     const props = renderDialog()
-
     await submitDialog()
-
-    await waitFor(() => {
-      expect(props.onCreated).toHaveBeenCalledWith(NEW_WORKSPACE_ID)
-    })
-    expect(props.metadata.patch).toHaveBeenCalledWith('agent-1', expect.objectContaining({
-      hydrated: true,
-    }))
-    expect(props.metadata.patch).toHaveBeenCalledWith('agent-1', expect.not.objectContaining({
-      gitToplevel: expect.anything(),
-    }))
-    expect(
-      Object.keys(props.repoGitStore.repos()),
-      'no repo identity on the row, so none in the store either',
-    ).toEqual([])
+    await waitFor(() => expect(mockCreate).toHaveBeenCalledOnce())
+    expect(screen.getByRole('button', { name: 'Creating...' })).toBeDisabled()
+    expect(props.onClose).not.toHaveBeenCalled()
+    complete(false)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Create' })).toBeEnabled())
+    expect(props.onClose).not.toHaveBeenCalled()
   })
 
-  /**
-   * Write metadata before placement, as openTabInFocusedTile requires.
-   * Placement creates the tab in the projection synchronously. Metadata written after an await leaves a temporary tab without a title or provider.
-   * The sidebar caches its groups across metadata-only changes.
-   * That temporary state can retain the generic Agent label and icon until an unrelated tab forces a rebuild.
-   */
-  it('seeds the metadata before placing the tab', async () => {
-    const order: string[] = []
+  it('reports a creation failure through the captured error callback', async () => {
+    mockCreate.mockImplementationOnce(async (input) => {
+      input.onError(new Error('worker unavailable'))
+      return false
+    })
     const props = renderDialog()
-    vi.mocked(props.metadata.patch).mockImplementation(() => {
-      order.push('metadata')
-    })
-    vi.mocked(seedTabIntoNewWorkspace).mockImplementation(async () => {
-      order.push('placement')
-      return { rootNodeId: 'root-1', position: 'n' }
-    })
-
     await submitDialog()
-
-    await waitFor(() => {
-      expect(props.onCreated).toHaveBeenCalledWith(NEW_WORKSPACE_ID)
-    })
-    expect(order).toEqual(['metadata', 'placement'])
-  })
-
-  it('reports the workspace even when the worker returns no agent', async () => {
-    vi.mocked(workerAgent.openAgent).mockResolvedValue(create(OpenAgentResponseSchema, {}))
-    const props = renderDialog()
-
-    await submitDialog()
-
-    await waitFor(() => {
-      expect(props.onCreated).toHaveBeenCalledWith(NEW_WORKSPACE_ID)
-    })
-    // The response supplies no tab to place, but the workspace exists and must remain.
-    expect(seedTabIntoNewWorkspace).not.toHaveBeenCalled()
-    expect(props.metadata.patch).not.toHaveBeenCalled()
-    expect(workspaceClient.deleteWorkspace).not.toHaveBeenCalled()
-  })
-
-  /**
-   * Roll back the workspace after every failure that follows a committed CreateWorkspace request.
-   * Otherwise, each retry leaves an empty workspace behind.
-   */
-  describe('rollback', () => {
-    it('deletes the workspace when the agent fails to open', async () => {
-      vi.mocked(workerAgent.openAgent).mockRejectedValue(new Error('worker exploded'))
-      const props = renderDialog()
-
-      await submitDialog()
-
-      await waitFor(() => {
-        expect(workspaceClient.deleteWorkspace).toHaveBeenCalledWith({ workspaceId: NEW_WORKSPACE_ID })
-      })
-      expect(props.onCreated).not.toHaveBeenCalled()
-      expect(await screen.findByText('worker exploded')).toBeInTheDocument()
-    })
-
-    it('has nothing to roll back when the workspace itself fails to be created', async () => {
-      vi.mocked(workspaceClient.createWorkspace).mockRejectedValue(new Error('quota exceeded'))
-      renderDialog()
-
-      await submitDialog()
-
-      expect(await screen.findByText('quota exceeded')).toBeInTheDocument()
-      expect(workspaceClient.deleteWorkspace).not.toHaveBeenCalled()
-      expect(workerAgent.openAgent).not.toHaveBeenCalled()
-    })
-
-    it('fails loudly, and without a rollback, when the response carries no workspace id', async () => {
-      // The workspace ID identifies the newly created workspace.
-      // An empty ID would place the agent in an empty workspace key and send a delete request with that same invalid ID.
-      vi.mocked(workspaceClient.createWorkspace).mockResolvedValue(
-        create(CreateWorkspaceResponseSchema, { workspaceId: '' }),
-      )
-      const props = renderDialog()
-
-      await submitDialog()
-
-      expect(await screen.findByText('No workspace ID in response')).toBeInTheDocument()
-      expect(workerAgent.openAgent).not.toHaveBeenCalled()
-      expect(workspaceClient.deleteWorkspace).not.toHaveBeenCalled()
-      expect(props.onCreated).not.toHaveBeenCalled()
-    })
+    expect(await screen.findByText('worker unavailable')).toBeInTheDocument()
+    expect(props.onClose).not.toHaveBeenCalled()
   })
 
   describe('a repo start point', () => {
@@ -422,9 +297,9 @@ describe('NewWorkspaceDialog', () => {
       await waitFor(() => expect(createButton.disabled).toBe(false))
       fireEvent.click(createButton)
 
-      await waitFor(() => expect(workerAgent.openAgent).toHaveBeenCalledOnce())
-      expect(vi.mocked(workerAgent.openAgent).mock.calls[0]?.[0]).toBe(WORKER_ID)
-      expect(vi.mocked(workerAgent.openAgent).mock.calls[0]?.[1])
+      await waitFor(() => expect(mockCreate).toHaveBeenCalledOnce())
+      expect(mockCreate.mock.calls[0]?.[0].workerId).toBe(WORKER_ID)
+      expect(mockCreate.mock.calls[0]?.[0].request)
         .toMatchObject({ workingDir: REPO_DIR })
     })
 
@@ -439,8 +314,8 @@ describe('NewWorkspaceDialog', () => {
       expect(screen.getByLabelText('Use current state')).toBeChecked()
       fireEvent.click(createButton)
 
-      await waitFor(() => expect(workerAgent.openAgent).toHaveBeenCalledOnce())
-      expect(vi.mocked(workerAgent.openAgent).mock.calls[0]?.[1].gitSetup).toBeUndefined()
+      await waitFor(() => expect(mockCreate).toHaveBeenCalledOnce())
+      expect(mockCreate.mock.calls[0]?.[0].request.gitSetup).toBeUndefined()
     })
 
     it.each([
@@ -465,8 +340,8 @@ describe('NewWorkspaceDialog', () => {
       await waitFor(() => expect(createButton.disabled).toBe(false))
       fireEvent.click(createButton)
 
-      await waitFor(() => expect(workerAgent.openAgent).toHaveBeenCalledOnce())
-      expect(vi.mocked(workerAgent.openAgent).mock.calls[0]?.[1].gitSetup).toEqual({
+      await waitFor(() => expect(mockCreate).toHaveBeenCalledOnce())
+      expect(mockCreate.mock.calls[0]?.[0].request.gitSetup).toEqual({
         mode: { case: setupCase, value },
       })
     })
@@ -494,7 +369,7 @@ describe('NewWorkspaceDialog', () => {
       })
       expect(await screen.findByText(message, { exact: false })).toBeVisible()
       expect(submit).toBeDisabled()
-      expect(workerAgent.openAgent).not.toHaveBeenCalled()
+      expect(mockCreate).not.toHaveBeenCalled()
       fireEvent.input(input, {
         target: { value: 'valid-new-branch' },
       })
@@ -518,7 +393,7 @@ describe('NewWorkspaceDialog', () => {
       expect(screen.queryByText('Branch name contains invalid characters')).not.toBeInTheDocument()
       expect(submit).toBeDisabled()
       fireEvent.click(submit)
-      expect(workspaceClient.createWorkspace).not.toHaveBeenCalled()
+      expect(mockCreate).not.toHaveBeenCalled()
     })
 
     it.each(['Create new branch', 'Create new worktree'])('refuses an existing branch and accepts a new name in %s', async (mode) => {
@@ -560,7 +435,7 @@ describe('NewWorkspaceDialog', () => {
       await waitFor(() => expect(submit).toBeEnabled())
       fireEvent.click(await screen.findByLabelText(mode))
       await waitFor(() => expect(submit).toBeDisabled())
-      expect(workerAgent.openAgent).not.toHaveBeenCalled()
+      expect(mockCreate).not.toHaveBeenCalled()
       fireEvent.click(screen.getByLabelText('Use current state'))
       await waitFor(() => expect(submit).toBeEnabled())
     })
@@ -587,7 +462,10 @@ describe('NewWorkspaceDialog', () => {
 
     it('remembers nothing when the submit fails', async () => {
       // A failed submission must not change the saved mode for the next dialog.
-      vi.mocked(workerAgent.openAgent).mockRejectedValue(new Error('worker exploded'))
+      mockCreate.mockImplementation(async (input) => {
+        input.onError(new Error('worker exploded'))
+        return false
+      })
       renderDialog({ startPoint: REPO_START })
 
       const createButton = await screen.findByRole('button', { name: 'Create' }) as HTMLButtonElement
@@ -606,7 +484,7 @@ describe('NewWorkspaceDialog', () => {
 
       await submitDialog()
 
-      await waitFor(() => expect(workerAgent.openAgent).toHaveBeenCalledOnce())
+      await waitFor(() => expect(mockCreate).toHaveBeenCalledOnce())
       expect(readStickyGitMode(gitModeStickyKey(WORKER_ID, WORKING_DIR))).toBeUndefined()
     })
   })

@@ -7,12 +7,9 @@
  * real handshake against two real worker processes and asserts that
  * the live frontend renders tabs hosted on either worker.
  *
- * The DOM-observable assertions:
- *   - The CLI runs `agent open --worker-id <B>`. The hub publishes a
- *     snapshot; both browsers reconcile their `tabStore` and render
- *     the new tab. `LocateTab` against the hub confirms the new tab is
- *     pinned to Worker B (not A) — proving the harness produced a
- *     real cross-worker workspace, not a fake.
+ * The CLI runs `agent open --worker-id <B>`. Worker B publishes its canonical
+ * tab through the Hub. Both browsers project the delivered operations and render
+ * the tab. LocateTab confirms its Worker B association.
  *
  * Active-tab is purely local (sessionStorage) under the CRDT model;
  * there is no `tab focus` CLI and the spec does not exercise remote
@@ -93,13 +90,9 @@ test.describe('control CLI cross-worker', () => {
           expect(tabById(pageB, agentA)).toBeVisible(),
         ])
 
-        // 1. CLI-driven `agent open` against Worker B. The hub
-        //    publishes a snapshot containing the new tab; both
-        //    browsers reconcile their `tabStore` from
-        //    `snapshot.tabs` and render it. This proves the entire
-        //    cross-worker stack: CLI → hub bearer auth → SubmitOps
-        //    adding a tab pinned to a different worker → snapshot fan-out
-        //    → frontend reconciler.
+        // 1. The CLI opens an agent on Worker B. Worker B publishes the tab
+        //    through its authenticated Hub connection. Both browsers receive
+        //    the canonical operations and project the tab with Worker B's ID.
         const agentB = await cliAgentOpen(cli, { workspaceId, workerId: workerB.id })
         await Promise.all([
           expect(tabById(pageA, agentB)).toBeVisible(),

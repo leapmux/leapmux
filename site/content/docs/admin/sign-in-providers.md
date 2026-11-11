@@ -2,7 +2,7 @@
 title: "Sign-in Providers"
 description: "Configure OAuth/OIDC single sign-on for a LeapMux Hub so users can log in with GitHub, Google, Apple, or any standards-compliant OpenID Connect provider."
 type: docs
-weight: 5
+weight: 6
 ---
 
 > **Not this chapter:** apps that ask **your Hub** for access to an account on it are [App Authorization](/docs/admin/app-authorization/).

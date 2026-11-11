@@ -143,7 +143,7 @@ func TestWSReadLimit_AcceptsLargeChunk(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = ws.Close(websocket.StatusNormalClosure, "") }()
 
-	// Client also needs a higher write limit for large messages.
+	// Send the frame that exceeds the server's default read limit.
 	err = ws.Write(ctx, websocket.MessageBinary, frame)
 	require.NoError(t, err)
 
@@ -644,7 +644,7 @@ func TestRelayFrontendMessageToWorker(t *testing.T) {
 
 	t.Run("fenced worker stream is terminal", func(t *testing.T) {
 		wm := workermgr.New(workermgr.DenyAllReach())
-		conn, _ := workermgrtest.NewRecordedConn(t, "w1")
+		conn := workermgrtest.NewConn(t, "w1")
 		_, _ = wm.Register(conn)
 		conn.Fence()
 		h := &ChannelRelayHandler{workerMgr: wm, channelMgr: channelmgr.New(0)}
@@ -688,7 +688,7 @@ func TestChannelRelay_RefusesBeyondThePerUserConnectionCap(t *testing.T) {
 	// dialling a socket and trusting it to bind first.
 	//
 	// websocket.Dial returns as soon as the server writes the 101 upgrade, which
-	// acceptWS does BEFORE bind reaches the registry's lock -- so "dial A, then
+	// acceptWebSocket does BEFORE bind reaches the registry's lock -- so "dial A, then
 	// dial B" does not order A's lease ahead of B's. Deschedule A's handler in
 	// that window and B binds first, is granted the only slot, and the socket
 	// the assertions then read from is the healthy one: the read blocks to its

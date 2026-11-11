@@ -5,6 +5,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/leapmux/leapmux/channelwire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -27,10 +28,11 @@ func workerKeysClient(t *testing.T, srv *Server, opts ...workerhub.ClientOption)
 	t.Cleanup(endpoint.CloseIdleConnections)
 	client := workerhub.New(endpoint, opts...)
 	t.Cleanup(client.Stop)
-	// An owner is seeded, so BuildTabSync would produce an inventory; an empty
-	// one is enough to make Connect write a second frame after the hello, which is
-	// what the give-up path needs to be reachable.
-	client.TabSyncProvider = func() *leapmuxv1.WorkerTabInventory { return &leapmuxv1.WorkerTabInventory{} }
+	// An admitted identity starts an empty inventory upload. Refused streams
+	// preserve their close reason before any upload starts.
+	client.TabSyncProvider = func(context.Context) (*leapmuxv1.WorkerTabInventory, error) {
+		return &leapmuxv1.WorkerTabInventory{}, nil
+	}
 	return client
 }
 
@@ -55,7 +57,7 @@ func TestServer_AWorkerWithOtherKeysStopsReconnecting(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, workerhub.ErrKeysRefused,
 		"the refusal must reach the reconnect loop through the real receive path")
-	assert.Contains(t, err.Error(), "differ from the keys it registered with",
+	assert.Contains(t, err.Error(), channelwire.WorkerCloseReasonKeysDiffer,
 		"the error states the Hub's fact")
 	assert.NotContains(t, err.Error(), "register it again",
 		"the remedy belongs to reregistrationAdvice, not to the Hub's fact")
@@ -64,8 +66,8 @@ func TestServer_AWorkerWithOtherKeysStopsReconnecting(t *testing.T) {
 }
 
 // A Worker the Hub has DELETED is told so for good: OnDeregister runs and the
-// loop stops. The Hub refuses before it reads the hello, so the status arrives
-// through either Send or Receive; only the outcome is asserted.
+// loop stops. The Hub refuses before reading the hello. The Worker reads that
+// refusal's close frame even when its hello write fails.
 func TestServer_ADeletedWorkerIsToldToStop(t *testing.T) {
 	t.Parallel()
 	srv := startTestServer(t, &config.Config{})

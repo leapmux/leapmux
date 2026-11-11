@@ -309,6 +309,13 @@ export function createTileRenderer(opts: TileRendererOpts) {
 
   const focusTile = (tileId: string) => focusTileShared(layoutStore, floatingWindowStore, tileId)
 
+  const activateTile = (tileId: string) => {
+    focusTile(tileId)
+    const tab = getActiveTabForTile(tileId)
+    if (tab)
+      selection.setActive(tab)
+  }
+
   // Main-layout strategy: close the tile. Its per-tile selection entry is
   // reclaimed by `useSelectionSweep` once the tile leaves the projection.
   const removeTileFromMain = (tileId: string) => {
@@ -724,20 +731,35 @@ export function createTileRenderer(opts: TileRendererOpts) {
    * reactive. The optional fields are omitted while their loads answer
    * undefined: TabBar's prop types take no explicit undefined.
    */
-  const buildNewTabProps = () => {
+  const buildNewTabProps = (tileId: string) => {
     const providers = agentOps.availableProviders()
     const shells = termOps.availableShells()
     const defaultShell = termOps.defaultShell()
     const loadingProvider = newAgentLoadingProvider()
     return {
       showAddButton: isActiveWorkspaceMutatable(),
-      onNewAgent: agentOps.handleOpenAgent,
-      onNewTerminal: termOps.handleOpenTerminal,
-      onNewTerminalWithShell: termOps.handleOpenTerminalWithShell,
+      onNewAgent: (provider?: AgentProvider) => {
+        activateTile(tileId)
+        return agentOps.handleOpenAgent(provider)
+      },
+      onNewTerminal: () => {
+        activateTile(tileId)
+        return termOps.handleOpenTerminal()
+      },
+      onNewTerminalWithShell: (shell: string) => {
+        activateTile(tileId)
+        return termOps.handleOpenTerminalWithShell(shell)
+      },
       // An empty target: the tab bar acts on the tab the user is looking
       // at, so both dialogs follow the current tab context.
-      onNewAgentAdvanced: () => newAgentDialog.open({}),
-      onNewTerminalAdvanced: () => newTerminalDialog.open({}),
+      onNewAgentAdvanced: () => {
+        activateTile(tileId)
+        newAgentDialog.open({})
+      },
+      onNewTerminalAdvanced: () => {
+        activateTile(tileId)
+        newTerminalDialog.open({})
+      },
       ...(providers !== undefined
         ? { availableProviders: providers }
         : {}),
@@ -779,7 +801,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         }}
         onClose={handleTabClose}
         onRename={(tab, title) => renameTab({ view, metadata }, tab, title)}
-        newTab={buildNewTabProps()}
+        newTab={buildNewTabProps(tileId)}
         {...(isMobileLayout()
           ? {
               mobile: {
@@ -1496,13 +1518,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         isFocused={layoutStore.focusedTileId() === tileId}
         actions={actions()}
         tabBar={tabBar}
-        onFocus={() => {
-          focusTile(tileId)
-          const tab = activeTab()
-          if (tab) {
-            selection.setActive(tab)
-          }
-        }}
+        onFocus={() => activateTile(tileId)}
         pop={pop()}
       >
         {renderTileContent(tileId)}

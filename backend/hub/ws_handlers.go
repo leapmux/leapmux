@@ -22,7 +22,7 @@ const webSocketShutdownBody = "hub is shutting down"
 // life of its handler, and refuses the upgrade with a 503 once the gate is
 // closed.
 //
-// NewServer wraps both WebSocket routes with one gate, so the shutdown in
+// NewServer wraps every WebSocket route with one gate, so the shutdown in
 // Serve closes admission, cancels the handlers, and drains, up to a limit, before
 // the store closes. Without it, an in-flight relay could lease an auth context
 // after AuthContextRegistry.Stop and then read a closed store.

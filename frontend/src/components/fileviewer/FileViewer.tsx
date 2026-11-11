@@ -1,10 +1,9 @@
 import type { Component } from 'solid-js'
 import type { UnsupportedReason } from './UnsupportedFileView'
-import type { ViewMode } from '~/components/fileviewer/ViewToggle'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { GitFileStatusEntry } from '~/generated/proto/leapmux/v1/common_pb'
 import type { FileViewMode } from '~/lib/fileType'
-import type { FileDiffBase, FileViewMode as TabFileViewMode } from '~/stores/tab.types'
+import type { FileDiffBase, FileDisplayMode, FileViewMode as TabFileViewMode } from '~/stores/tab.types'
 import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, Show, Switch } from 'solid-js'
 import { isTauriApp } from '~/api/platformBridge'
 import { workerFile, workerGit } from '~/api/workerRpc'
@@ -155,7 +154,7 @@ export const FileViewer: Component<{
   // a single top-right floating slot. The tab store is the source of
   // truth — emit through `onDisplayModeChange` and read back from
   // `props.displayMode` on the next tick.
-  const displayMode = (): ViewMode => (props.displayMode as ViewMode | undefined) ?? 'render'
+  const displayMode = (): FileDisplayMode => (props.displayMode as FileDisplayMode | undefined) ?? 'render'
 
   // Shared save/download workflow — single instance backs both the
   // floating FileActionsMenu and the UnsupportedFileView buttons so

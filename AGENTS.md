@@ -64,8 +64,9 @@ runs the semantic cross-checks (derived arithmetic, enum coverage via
 - Import generated code directly: Go `generated/contracts`, one spelling per
   constant (`contracts.MaxMessageSize`, `contracts.WSRouteChannel`); frontend
   `~/generated/contracts/*`. No re-export shims. `channelwire` keeps only
-  Go-owned limits no contract holds (`WSReadLimit`, `UserEventsReadLimit`) plus
-  wire helpers, and aliases no generated constant.
+  Go-owned limits no contract holds (`WSReadLimit`, `UserEventsReadLimit`,
+  `WorkerStreamReadLimit`), the Worker stream's route, subprotocol and close
+  reasons, plus wire helpers. It aliases no generated constant.
 - Change a value by editing `contracts/<name>.json` and running
   `task generate`. A new proto enum value fails `generate-contracts` until its
   contract entry exists.
@@ -482,14 +483,15 @@ Run E2E tests locally before claiming that an E2E change works.
   info card renders on two surfaces; scope each row to its popover.
   `src/test-support/visibleChatLocators.test.ts` rejects an unscoped test-id or
   `text=` locator.
-- **Wait on the WORKER, not the tab count or the hub's list** — both are
-  optimistic CRDT state. `emitRemoveTab` tombstones at once while `CloseTab`
-  is still stopping the process, and `listAgentsViaAPI` reads the hub's
-  `ListTabs`, already cleared by that tombstone. Poll `inspectLastTabCloseViaAPI`
-  for a close verdict, or `waitForAgentStartupViaAPI` for startup (it waits for
-  not-STARTING, so it does NOT distinguish a failed agent). The worker judges
-  "last tab on the branch?" from its own rows, so closing two tabs in a row
-  races the first teardown.
+- **Wait for Worker lifecycle results.** Canonical publication can precede
+  startup, and local tab removal can precede teardown. `emitRemoveTab`
+  tombstones at once while `CloseTab` is still stopping the process.
+  `listAgentsViaAPI` reads the Hub's `ListTabs`, which can already reflect that
+  tombstone. Poll `inspectLastTabCloseViaAPI` for a close verdict, or
+  `waitForAgentStartupViaAPI` for startup. The latter returns when status leaves
+  `STARTING`, including failed startup. The Worker judges "last tab on the
+  branch?" from its own rows, so closing two tabs in a row races the first
+  teardown.
 
 ### Frontend CSS (vanilla-extract)
 

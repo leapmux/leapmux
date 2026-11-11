@@ -16,7 +16,7 @@ import (
 // These tests verify the net/http contract that NewServer's ReadHeaderTimeout requires.
 // The header deadline protects HTTP/1.1 header reads and ends before HTTP/2 frame reads.
 // The Hub serves both protocols on one http.Server.
-// Its Worker Connect stream uses cleartext HTTP/2 (h2c) and can remain open indefinitely.
+// Its API calls can use cleartext HTTP/2 (h2c).
 // Solo and desktop use local inter-process communication (IPC). Remote Workers can use plain TCP.
 //
 // Go 1.25.13 retained the header deadline after the HTTP/2 handoff: golang/go#80876.

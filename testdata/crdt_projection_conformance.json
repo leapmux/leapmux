@@ -948,7 +948,7 @@
     },
     {
       "name": "a FILE tab projects like any other kind",
-      "why": "FILE is the third TabType and carries registers the projection never reads (display_mode, file_view_mode, file_diff_base). Those must not change how it resolves, and the type must survive to the row",
+      "why": "FILE is the third TabType. Its presentation registers (display_mode, file_view_mode, file_diff_base) do not change placement, and its type survives in the projected row",
       "ops": [
         { "canonicalHlc": { "physical": "1", "logical": "0", "clientId": "a" },
           "createWorkspace": { "workspaceId": "w1", "rootNodeId": "root" } },

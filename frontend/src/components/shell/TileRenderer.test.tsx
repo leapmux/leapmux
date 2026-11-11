@@ -116,6 +116,11 @@ type RendererSetup = ReturnType<typeof createTestTabStores> & {
 }
 
 interface RenderRendererOptions {
+  onNewAgent?: (provider: AgentProvider) => void
+  onNewTerminal?: () => void
+  onNewTerminalWithShell?: (shell: string) => void
+  onNewAgentAdvanced?: () => void
+  onNewTerminalAdvanced?: () => void
   chatStore?: ReturnType<typeof createChatStore>
   agentInputQueueStore?: ReturnType<typeof createAgentInputQueueStore>
   /** The control store the renderer reads, so a test can seed its requests. */
@@ -175,8 +180,8 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
       confirmLink: async () => false,
       ops: {
         agentOps: {
-          availableProviders: () => [],
-          handleOpenAgent: () => {},
+          availableProviders: () => [AgentProvider.CLAUDE_CODE],
+          handleOpenAgent: options.onNewAgent ?? (() => {}),
           handleRetryMessage: () => {},
           handleDeleteMessage: () => {},
           handleControlResponse: () => {},
@@ -185,10 +190,10 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
           handleApproveAutoReviewDenial: options.handleApproveAutoReviewDenial ?? (async () => {}),
         } as any,
         termOps: {
-          availableShells: () => [],
-          defaultShell: () => '',
-          handleOpenTerminal: () => {},
-          handleOpenTerminalWithShell: () => {},
+          availableShells: () => ['/bin/test-shell'],
+          defaultShell: () => '/bin/test-shell',
+          handleOpenTerminal: options.onNewTerminal ?? (() => {}),
+          handleOpenTerminalWithShell: options.onNewTerminalWithShell ?? (() => {}),
           handleTerminalInput: () => {},
           handleTerminalResize: () => {},
         } as any,
@@ -218,12 +223,12 @@ function renderRenderer(s: RendererSetup, focusedTileId: string, options: Render
         newTerminalLoading: () => false,
         newShellLoading: () => false,
         newAgentDialog: {
-          open: () => {},
+          open: options.onNewAgentAdvanced ?? (() => {}),
           close: () => {},
           value: () => null,
         },
         newTerminalDialog: {
-          open: () => {},
+          open: options.onNewTerminalAdvanced ?? (() => {}),
           close: () => {},
           value: () => null,
         },
@@ -1037,4 +1042,65 @@ describe('TileRenderer fileDropDisabled', () => {
     })
     expect(fileDropDisabled()).toBe(true)
   })
+})
+
+describe('createTileRenderer new-tab actions', () => {
+  const actions = [
+    ['agent', 'onNewAgent', `new-agent-button-${AgentProvider.CLAUDE_CODE}`],
+    ['terminal', 'onNewTerminal', 'new-terminal-button'],
+    ['shell', 'onNewTerminalWithShell', '/bin/test-shell'],
+    ['agent dialog', 'onNewAgentAdvanced', 'New agent...'],
+    ['terminal dialog', 'onNewTerminalAdvanced', 'New terminal...'],
+  ] as const
+
+  for (const initialSelection of ['unset', 'another tile'] as const) {
+    for (const [label, callback, control] of actions) {
+      it(`activates the source before opening the ${label} with ${initialSelection} selection`, () => {
+        const s = createSetup()
+        let tileId = s.layoutStore.firstLeafIdFor(s.workspaceId)!
+        if (initialSelection === 'another tile') {
+          const otherTileId = s.layoutStore.splitTile(tileId, 'horizontal')!
+          tileId = s.layoutStore.firstLeafIdFor(s.workspaceId)!
+          s.addAgent('other-source', otherTileId)
+          s.layoutStore.setFocusedTile(otherTileId)
+        }
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'source',
+          tileId,
+          position: 'n',
+          workerId: 'worker-1',
+        })
+        s.metadata.patch('source', { title: 'Source', workingDir: '/repo', agentStatus: AgentStatus.ACTIVE })
+        const observations: unknown[] = []
+        const action = vi.fn(() => {
+          observations.push({
+            focus: s.layoutStore.focusedTileIdFor(s.workspaceId),
+            workspace: s.selection.state.activeByWorkspace[s.workspaceId],
+            tile: s.selection.state.activeByTile[tileId],
+          })
+        })
+        renderRenderer(s, tileId, { [callback]: action })
+        if (label === 'agent' || label === 'terminal') {
+          fireEvent.click(screen.getByTestId(control))
+        }
+        else {
+          fireEvent.click(screen.getByTestId('tab-more-menu'))
+          fireEvent.click(screen.getByRole('menuitem', {
+            name: label === 'shell'
+              ? /test-shell/
+              : new RegExp(`^${control.replaceAll('.', '\\.')}`),
+          }))
+        }
+        expect(action).toHaveBeenCalledOnce()
+        expect(observations).toEqual([
+          {
+            focus: tileId,
+            workspace: tabKey({ type: TabType.AGENT, id: 'source' }),
+            tile: tabKey({ type: TabType.AGENT, id: 'source' }),
+          },
+        ])
+      })
+    }
+  }
 })

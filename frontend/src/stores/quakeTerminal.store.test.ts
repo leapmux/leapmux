@@ -147,7 +147,11 @@ describe('createQuakeTerminalStore', () => {
     })
     expect(openTerminal).toHaveBeenCalledOnce()
     expect(openTerminal.mock.calls[0]?.[0]).toBe('w1')
-    expect(openTerminal.mock.calls[0]?.[1]).toMatchObject({ quake: true, shell: '', workingDir: '/repo' })
+    expect(openTerminal.mock.calls[0]?.[1]).toMatchObject({
+      target: { case: 'quake', value: {} },
+      shell: '',
+      workingDir: '/repo',
+    })
     // The worker id routes the call and stays out of the request body.
     expect(openTerminal.mock.calls[0]?.[1]).not.toHaveProperty('workerId')
     expect(store.entryFor(KEY)?.terminalId).toBe('quake-1')

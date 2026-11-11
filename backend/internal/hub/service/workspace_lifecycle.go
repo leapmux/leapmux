@@ -81,15 +81,12 @@ func emitLifecycleOutbox(
 	return nil
 }
 
-// drainLifecycleOutbox kicks the per-user CRDT manager so the freshly
-// inserted outbox row turns into a `WorkspaceCreated` / `Renamed` /
-// `Deleted` broadcast quickly. Failure is non-fatal: the row stays pending
-// (ListPending returns it again), so the NEXT lifecycle mutation for this user
-// re-drains it -- note nothing periodic re-drains it, so on a low-traffic user
-// a transiently-failed create's live projection can lag until the next such
-// mutation (see the deep-review steering note on adding a periodic drain).
-// Pre-commit callers MUST run this AFTER the transaction commits so the
-// manager observes the new row.
+// drainLifecycleOutbox asks the per-user manager to apply committed lifecycle
+// rows promptly. A failed drain leaves rows pending for a later lifecycle
+// mutation or a tab publication with a missing workspace dependency to retry.
+// An inactive user's projection can
+// lag until another operation requests that drain.
+// Call this after the transaction commits so the manager observes its new row.
 func (s *WorkspaceService) drainLifecycleOutbox(ctx context.Context, userID string) {
 	if s.registry == nil || userID == "" {
 		return

@@ -2,7 +2,7 @@
 title: "Configuration"
 description: "The complete configuration reference for the LeapMux Hub and Worker: how settings resolve, every config key and default, storage backends, and encryption mode."
 type: docs
-weight: 3
+weight: 4
 ---
 
 This chapter is the complete configuration reference for the LeapMux **Hub** and **Worker** services. It covers how settings are layered and resolved, where config files live, every config key with its default and meaning, the supported storage backends, listen-address formats, encryption mode, and the timeout/limit knobs.
@@ -459,13 +459,15 @@ In solo and desktop mode *everything* authenticates as the single local user, so
 
 ### Workers per user
 
-`max_workers_per_user` (default `64`) is the same limit for the Worker pool: a Worker's Connect stream draws on the Worker queue budget and carries the same guaranteed working set, but it is not a *lease*, so the connection cap does not see it. The limit applies at both **registration** and **connection** — a registered Worker and a live pool member are not the same thing, and counting only registrations would let an account cycle register and deregister to accumulate pool members.
+`max_workers_per_user` (default `64`) limits live membership in the Worker queue pool. Each Worker's stream uses that pool's byte budget and receives the same guaranteed working set as other members. It holds no browser lease, so `max_connections_per_user` does not count it. The limit applies at **registration** and at **connection**. Registered Workers and live pool members are different counts: counting only registrations would let an account repeatedly register and deregister Workers to accumulate live pool members.
 
-Either refusal returns a `resource_exhausted` error that names the key; the Hub counts it in `leapmux_worker_admissions_refused_total` (labelled `stage="register"` or `stage="connect"`) and logs it with the owner and the limit. The default is far past what an account plausibly runs; it exists so the pool whose eviction costs the most — dropping a Worker takes every user's channels on that machine — cannot be oversubscribed.
+A registration refusal returns a `resource_exhausted` error that identifies `max_workers_per_user`. A connection refusal is a WebSocket close with status `1013` and reason `max_workers_per_user`, which the Worker logs and retries. The Hub counts both in `leapmux_worker_admissions_refused_total`, with `stage="register"` or `stage="connect"`, and logs the owner and the limit. Dropping a Worker disconnects every user's channels on that machine, so this limit controls how much of the Worker pool one account can hold. The default is much higher than one account is likely to need.
 
 ### Idle connections
 
-Both long-lived sockets are probed every 30 seconds. Without the probe, a peer that stops receiving without sending a close frame — a suspended laptop, a dropped mobile link, a middlebox that forgot the flow — would hold its connections (counting against `max_connections_per_user`) until the operating system's own keepalive gave up, which is on the order of ten minutes and behind some proxies never. A probe only ever establishes liveness; a reply that does not match an outstanding probe is ignored, so a client cannot fake it. The Hub also rate-limits inbound WebSocket control frames per connection, so a client cannot make it do expensive work with a ping flood; nothing an ordinary client does comes close.
+The Hub probes each browser WebSocket and each Worker's stream every 10 seconds. Each probe has a ten-second timeout, and two consecutive failures drop the connection. A peer that stops receiving without sending a close frame would otherwise hold its connection until the operating system's keepalive ended it. That can take about ten minutes, or longer behind some proxies. Browser connections keep counting against `max_connections_per_user` during that wait; Worker streams keep occupying Worker pool slots.
+
+A probe establishes liveness only. The Hub ignores a reply that does not match an outstanding probe. It also rate-limits inbound WebSocket control frames per connection, so a client cannot overload it with a ping flood. Ordinary clients stay well below that limit.
 
 ### Keys with no CLI flag
 
@@ -683,6 +685,8 @@ log_level: debug
 
 ### Production Hub behind a reverse proxy
 
+For the configuration of the proxy itself, see [Reverse Proxy](/docs/admin/reverse-proxy/).
+
 ```yaml
 # /etc/leapmux/hub.yaml
 listen: "127.0.0.1:4327"      # only the reverse proxy reaches the Hub
@@ -745,7 +749,8 @@ The bare `version` subcommand is a **top-level** command (`leapmux version`), no
 
 ## Related chapters
 
-- [Running LeapMux](/docs/admin/running-leapmux/) — run modes, ports, data dirs, Docker, reverse proxy.
+- [Running LeapMux](/docs/admin/running-leapmux/) — run modes, ports, data dirs, Docker.
+- [Reverse Proxy](/docs/admin/reverse-proxy/) — what the proxy must carry, and a tested configuration for nginx, Caddy, Traefik, HAProxy, and Apache httpd.
 - [Encryption & Data](/docs/admin/encryption-and-data/) — encryption key ring, rotation, DB migrations, backup/restore.
 - [Managing Workers](/docs/admin/managing-workers/) — registration keys, approval, Worker selection.
 - [Sign-in Providers](/docs/admin/sign-in-providers/) — configuring OAuth/OIDC as an administrator.

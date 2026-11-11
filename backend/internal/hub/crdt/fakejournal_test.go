@@ -17,9 +17,10 @@ import (
 // trivially satisfied because the fake serializes through its own
 // mutex.
 type fakeJournal struct {
-	mu       sync.Mutex
-	state    *leapmuxv1.UserCrdtState
-	stateRaw bool // true once Upsert has happened (compaction)
+	publications map[string]*crdt.PublicationReceipt
+	mu           sync.Mutex
+	state        *leapmuxv1.UserCrdtState
+	stateRaw     bool // true once Upsert has happened (compaction)
 
 	// batches and transitions are parallel slices: one entry per committed
 	// batch, paired the way the production journal's user_op_batches row +
@@ -164,6 +165,9 @@ func (f *fakeJournal) CommitBatch(_ context.Context, c crdt.CommitBatch) error {
 	defer f.mu.Unlock()
 	if f.commitErr != nil {
 		return f.commitErr
+	}
+	if c.Publication != nil {
+		f.recordPublication(c.UserID, *c.Publication)
 	}
 	f.batches = append(f.batches, c.Batch)
 	f.transitions = append(f.transitions, c.Transitions)
@@ -329,3 +333,44 @@ var errCommitFailed = errors.New("test: commit failed")
 // errLookupFailed is the canonical dedup-lookup failure used by tests that
 // inject a transient LookupRecentBatchID error.
 var errLookupFailed = errors.New("test: dedup lookup failed")
+
+func (f *fakeJournal) recordPublication(userID string, r crdt.PublicationReceipt) {
+	if f.publications == nil {
+		f.publications = make(map[string]*crdt.PublicationReceipt)
+	}
+	copy := r
+	copy.RequestHash = append([]byte(nil), r.RequestHash...)
+	copy.Response = proto.CloneOf(r.Response)
+	f.publications[userID+"/"+r.WorkerID+"/"+r.TabID] = &copy
+}
+func (f *fakeJournal) LookupTabPublication(_ context.Context, userID, workerID, tabID string) (*crdt.PublicationReceipt, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	r := f.publications[userID+"/"+workerID+"/"+tabID]
+	if r == nil {
+		return nil, crdt.ErrNotFound
+	}
+	copy := *r
+	copy.RequestHash = append([]byte(nil), r.RequestHash...)
+	copy.Response = proto.CloneOf(r.Response)
+	return &copy, nil
+}
+func (f *fakeJournal) CommitRejectedTabPublication(_ context.Context, userID string, r crdt.PublicationReceipt) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.commitErr != nil {
+		return f.commitErr
+	}
+	f.recordPublication(userID, r)
+	return nil
+}
+
+func (f *fakeJournal) LookupHostedTabState(_ context.Context, _, workerID, tabID string) (*leapmuxv1.WorkerTabState, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	row, ok := f.indexRows[tabID]
+	if !ok || row.WorkerID != workerID {
+		return nil, crdt.ErrNotFound
+	}
+	return &leapmuxv1.WorkerTabState{Tab: &leapmuxv1.TabIdent{TabType: row.TabType, TabId: tabID}, ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE}, nil
+}

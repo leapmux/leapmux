@@ -2,6 +2,7 @@ package controlipc_test
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -36,6 +37,15 @@ func newRouterService(t *testing.T) (*service.Service, *channel.Dispatcher, *con
 	svc := service.New(service.Config{DB: database, Channels: channels, Send: send,
 		Agents: agent.NewManager(providers.Registry(), nil), Terminals: terminal.NewManager(),
 		HomeDir: t.TempDir(), DataDir: t.TempDir(), SeedRegisteredBy: "router-owner",
+		PublishTab: func(context.Context, *leapmuxv1.TabPublication) (*leapmuxv1.PublishTabResponse, error) {
+			return nil, errors.New("unexpected tab publication in a local router fixture")
+		},
+		ResolveTabPublication: func(context.Context, *leapmuxv1.TabPublication) (*leapmuxv1.ResolveTabPublicationResponse, error) {
+			return nil, errors.New("unexpected publication resolution in a local router fixture")
+		},
+		CancelTabPublication: func(context.Context, *leapmuxv1.TabPublication) error {
+			return errors.New("unexpected publication cancellation in a local router fixture")
+		},
 	})
 	dispatcher := channel.NewDispatcher()
 	service.RegisterAll(dispatcher, svc)

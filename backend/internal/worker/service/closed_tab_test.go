@@ -207,6 +207,13 @@ func (w *testResponseWriter) rejections() []testError {
 	return out
 }
 
+// responsesSnapshot copies unary replies while a handler may still write them.
+func (w *testResponseWriter) responsesSnapshot() []*leapmuxv1.InnerRpcResponse {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]*leapmuxv1.InnerRpcResponse(nil), w.responses...)
+}
+
 // streamsSnapshot returns a copy of streams under the lock so callers can
 // iterate without racing concurrent SendStream writes from handler
 // goroutines. The lock also establishes happens-before with the writer so
@@ -356,6 +363,7 @@ func setupTestService(t *testing.T, opts ...setupOption) (*Service, *testService
 		registry = testRegistry
 	}
 	svc := New(Config{
+		ResolveTabPublication: fixtureResolveTabPublication, PublishTab: fixturePublishTab, CancelTabPublication: fixtureCancelTabPublication, WorkerID: "worker-1",
 		DB:        sqlDB,
 		Channels:  chmgr,
 		Send:      func(*leapmuxv1.ConnectRequest) error { return nil },

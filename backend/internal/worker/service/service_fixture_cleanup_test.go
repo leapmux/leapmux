@@ -13,6 +13,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -20,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/util/drain"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 // testRPCDispatcher lets RPC helpers use either a native or fixture-owned dispatcher.
@@ -50,11 +52,11 @@ func (d *testServiceDispatcher) ownContext(ctx context.Context) context.Context 
 }
 
 func (d *testServiceDispatcher) DispatchWith(ctx context.Context, caller channel.Caller, request *leapmuxv1.InnerRpcRequest, writer channel.ResponseWriter) {
-	d.Dispatcher.DispatchWith(d.ownContext(ctx), caller, request, &ownedTestResponseWriter{ResponseWriter: writer, owner: &d.streams})
+	d.Dispatcher.DispatchWith(d.ownContext(ctx), caller, fixtureCreationRequest(request), &ownedTestResponseWriter{ResponseWriter: writer, owner: &d.streams})
 }
 
 func (d *testServiceDispatcher) DispatchAsync(ctx context.Context, caller channel.Caller, request *leapmuxv1.InnerRpcRequest, writer channel.ResponseWriter) {
-	d.Dispatcher.DispatchAsync(d.ownContext(ctx), caller, request, &ownedTestResponseWriter{ResponseWriter: writer, owner: &d.streams})
+	d.Dispatcher.DispatchAsync(d.ownContext(ctx), caller, fixtureCreationRequest(request), &ownedTestResponseWriter{ResponseWriter: writer, owner: &d.streams})
 }
 
 type testStreamOwner struct {
@@ -576,3 +578,77 @@ func (r *fatalAssertionRecorder) Errorf(format string, args ...any) {
 	r.messages = append(r.messages, fmt.Sprintf(format, args...))
 }
 func (*fatalAssertionRecorder) FailNow() { runtime.Goexit() }
+
+func fixturePublishTab(_ context.Context, r *leapmuxv1.TabPublication) (*leapmuxv1.PublishTabResponse, error) {
+	placement := r.GetCreation().GetPlacement()
+	tile := placement.GetTileId()
+	if tile == "" {
+		tile = "fixture-tile"
+	}
+	return &leapmuxv1.PublishTabResponse{Outcome: &leapmuxv1.PublishTabResponse_Published{Published: &leapmuxv1.PublishedTab{Tab: &leapmuxv1.TabIdent{TabType: r.GetTabType(), TabId: r.GetCreation().GetTabId()}, WorkspaceId: placement.GetWorkspaceId(), TileId: tile, Position: "n"}}}, nil
+}
+func fixtureCancelTabPublication(context.Context, *leapmuxv1.TabPublication) error { return nil }
+
+// fixtureCreationRequest supplies placement to older resource-focused fixtures.
+// Boundary tests use the underlying dispatcher and receive no adaptation.
+func fixtureCreationRequest(request *leapmuxv1.InnerRpcRequest) *leapmuxv1.InnerRpcRequest {
+	var message proto.Message
+	switch request.GetMethod() {
+	case leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure:
+		message = &leapmuxv1.OpenAgentRequest{}
+	case leapmuxv1connect.WorkerTerminalServiceOpenTerminalProcedure:
+		message = &leapmuxv1.OpenTerminalRequest{}
+	case leapmuxv1connect.WorkerPrivateServiceRegisterTabPayloadProcedure:
+		message = &leapmuxv1.RegisterTabPayloadRequest{}
+	default:
+		return request
+	}
+	if err := proto.Unmarshal(request.GetPayload(), message); err != nil {
+		return request
+	}
+	var creation *leapmuxv1.TabCreation
+	switch r := message.(type) {
+	case *leapmuxv1.OpenAgentRequest:
+		creation = r.GetCreation()
+		if creation == nil {
+			creation = &leapmuxv1.TabCreation{}
+			r.Creation = creation
+		}
+	case *leapmuxv1.OpenTerminalRequest:
+		if r.GetQuake() != nil {
+			return request
+		}
+		creation = r.GetCreation()
+		if creation == nil {
+			creation = &leapmuxv1.TabCreation{}
+			r.Target = &leapmuxv1.OpenTerminalRequest_Creation{Creation: creation}
+		}
+	case *leapmuxv1.RegisterTabPayloadRequest:
+		creation = r.GetCreation()
+		if creation == nil {
+			creation = &leapmuxv1.TabCreation{}
+			r.Creation = creation
+		}
+	}
+	if creation.GetTabId() == "" {
+		creation.TabId = id.Generate()
+	}
+	if creation.GetPlacement() == nil {
+		creation.Placement = &leapmuxv1.TabPlacement{WorkspaceId: "fixture-workspace", Destination: &leapmuxv1.TabPlacement_TileId{TileId: "fixture-tile"}, Insertion: leapmuxv1.TabInsertion_TAB_INSERTION_LAST}
+	}
+	encoded, err := proto.Marshal(message)
+	if err != nil {
+		panic(err)
+	}
+	captured := proto.CloneOf(request)
+	captured.Payload = encoded
+	return captured
+}
+
+func fixtureResolveTabPublication(ctx context.Context, r *leapmuxv1.TabPublication) (*leapmuxv1.ResolveTabPublicationResponse, error) {
+	receipt, err := fixturePublishTab(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	return &leapmuxv1.ResolveTabPublicationResponse{Receipt: receipt, Presence: leapmuxv1.TabPublicationPresence_TAB_PUBLICATION_PRESENCE_HOSTED, ArchiveState: leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE}, nil
+}

@@ -44,6 +44,9 @@ var protectedAuthenticatedRationale = map[string]string{
 // passes the auth package's rationale test, and ships the procedure
 // unprotected.
 var captchaExemptRationale = map[string]string{
+	leapmuxv1connect.WorkerConnectorServicePublishTabProcedure:               "caller is an authenticated Worker publishing a tab, not a human form",
+	leapmuxv1connect.WorkerConnectorServiceCancelTabPublicationProcedure:     "caller is an authenticated Worker canceling its tab creation, not a human form",
+	leapmuxv1connect.WorkerConnectorServiceResolveTabPublicationProcedure:    "caller is an authenticated Worker resolving its tab publication, not a human form",
 	leapmuxv1connect.AuthServiceSetInitialSoloPasswordProcedure:              "solo disables captcha; ratelimit.OpSoloPasswordSetup caps its Argon2 hash by address instead",
 	leapmuxv1connect.SystemServiceGetSystemInfoProcedure:                     "cheap pre-login read",
 	leapmuxv1connect.AuthServiceGetOAuthProvidersProcedure:                   "cheap pre-login read",
@@ -53,7 +56,6 @@ var captchaExemptRationale = map[string]string{
 	leapmuxv1connect.AuthServiceFinishPasskeySignUpProcedure:                 "consumes a short-lived ceremony session; expensive work is in Begin",
 	leapmuxv1connect.AuthServiceFinishAccountRecoveryPasskeyProcedure:        "consumes a short-lived ceremony session the captcha'd Begin minted",
 	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure:                 "caller is a worker process with a registration key, not a human form",
-	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:                  "caller is a worker process with an auth_token, not a human form",
 	leapmuxv1connect.WorkerConnectorServiceListOwnedTabsForWorkerProcedure:   "caller is a worker process with an auth_token, not a human form",
 	leapmuxv1connect.WorkerConnectorServiceGetRegistrationChallengeProcedure: "caller is a worker process retrying its own registration with a registration key, not a human form",
 	leapmuxv1connect.WorkerConnectorServiceRecoverRegistrationProcedure:      "caller is a worker process proving key possession for its own registration, not a human form",

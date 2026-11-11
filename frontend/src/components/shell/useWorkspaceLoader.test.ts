@@ -2,7 +2,7 @@
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import { create } from '@bufbuild/protobuf'
 import { timestampFromMs } from '@bufbuild/protobuf/wkt'
-import { createRoot } from 'solid-js'
+import { createRoot, createSignal } from 'solid-js'
 import { unwrap } from 'solid-js/store'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { WorkspaceSchema } from '~/generated/proto/leapmux/v1/workspace_pb'
@@ -59,7 +59,11 @@ function mount() {
   return createRoot((dispose) => {
     const workspaceStore = createWorkspaceStore()
     const sectionStore = createSectionStore()
-    const loader = useWorkspaceLoader({ workspaceStore, sectionStore })
+    const loader = useWorkspaceLoader({
+      workspaceStore,
+      sectionStore,
+      userId: () => 'usertest',
+    })
     return {
       workspaceStore,
       sectionStore,
@@ -275,5 +279,94 @@ describe('useWorkspaceLoader', () => {
     await settle()
 
     expect(sectionStore.state.items.map(i => i.workspaceId)).toEqual(['new'])
+  })
+})
+
+describe('useWorkspaceLoader lifetime', () => {
+  it.each(['account', 'dispose'] as const)('ignores list results after %s', async (change) => {
+    const workspaces = deferred<{ workspaces: Workspace[] }>()
+    const sections = deferred<{ sections: never[], items: never[] }>()
+    mockListWorkspaces.mockReturnValueOnce(workspaces.promise)
+    mockListSections.mockReturnValueOnce(sections.promise)
+    const [userId, setUserId] = createSignal<string | undefined>('account-a')
+    const h = createRoot((dispose) => {
+      const workspaceStore = createWorkspaceStore()
+      const sectionStore = createSectionStore()
+      const deps = { workspaceStore, sectionStore, userId }
+      useWorkspaceLoader(deps)
+      return { dispose, workspaceStore, sectionStore }
+    })
+    await settle()
+    const writeWorkspace = vi.spyOn(h.workspaceStore, 'setWorkspaces')
+    const writeSection = vi.spyOn(h.sectionStore, 'setSections')
+    const loaded = vi.spyOn(h.workspaceStore, 'markLoaded')
+    if (change === 'account')
+      setUserId('account-b')
+    else
+      h.dispose()
+    await settle()
+    writeWorkspace.mockClear()
+    writeSection.mockClear()
+    loaded.mockClear()
+    workspaces.resolve({
+      workspaces: [
+        ws('private-a'),
+      ],
+    })
+    sections.resolve({ sections: [], items: [] })
+    await settle()
+    expect(writeWorkspace).not.toHaveBeenCalled()
+    expect(writeSection).not.toHaveBeenCalled()
+    expect(loaded).not.toHaveBeenCalled()
+    h.dispose()
+  })
+})
+
+describe('useWorkspaceLoader account replacement', () => {
+  it('clears outgoing account data and starts incoming loads without waiting for a CRDT bootstrap', async () => {
+    mockListWorkspaces.mockReset().mockResolvedValueOnce({
+      workspaces: [
+        ws('private-a'),
+      ],
+    })
+    mockListSections.mockReset().mockResolvedValueOnce({
+      sections: [
+        { id: 'section-a' },
+      ],
+      items: [],
+    })
+    const incoming = deferred<{ workspaces: Workspace[] }>()
+    const incomingSections = deferred<{ sections: never[], items: never[] }>()
+    mockListWorkspaces.mockReturnValueOnce(incoming.promise)
+    mockListSections.mockReturnValueOnce(incomingSections.promise)
+    const [userId, setUserId] = createSignal<string | undefined>('account-a')
+    const h = createRoot((dispose) => {
+      const workspaceStore = createWorkspaceStore()
+      const sectionStore = createSectionStore()
+      useWorkspaceLoader({ workspaceStore, sectionStore, userId })
+      return { dispose, workspaceStore, sectionStore }
+    })
+    try {
+      await settle()
+      expect(h.workspaceStore.state.workspaces).toHaveLength(1)
+      setUserId('account-b')
+      await settle()
+      expect(h.workspaceStore.state.workspaces).toEqual([])
+      expect(h.sectionStore.state.sections).toEqual([])
+      expect(h.workspaceStore.state.loading).toBe(true)
+      expect(h.workspaceStore.state.loaded).toBe(false)
+      expect(mockListWorkspaces).toHaveBeenCalledTimes(2)
+      incoming.resolve({
+        workspaces: [
+          ws('private-b'),
+        ],
+      })
+      incomingSections.resolve({ sections: [], items: [] })
+      await settle()
+      expect(h.workspaceStore.state.workspaces.map(w => w.id)).toEqual(['private-b'])
+      expect(h.workspaceStore.state.loaded).toBe(true)
+      expect(h.workspaceStore.state.loading).toBe(false)
+    }
+    finally { h.dispose() }
   })
 })

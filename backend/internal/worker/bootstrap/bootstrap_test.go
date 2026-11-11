@@ -26,6 +26,7 @@ import (
 	noiseutil "github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/periodic"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -35,6 +36,7 @@ import (
 	workerdb "github.com/leapmux/leapmux/internal/worker/db"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/hub"
+	"github.com/leapmux/leapmux/internal/worker/hub/fakehubtest"
 	"github.com/leapmux/leapmux/util/drain"
 
 	"github.com/leapmux/leapmux/internal/authscope"
@@ -82,7 +84,7 @@ func setupTestDBWithHandle(t *testing.T) (*db.Queries, *sql.DB) {
 
 func TestBuildTabSync_Empty(t *testing.T) {
 	queries := setupTestDB(t)
-	sync, err := BuildTabSync(queries, userid.MustNew("user-1"))
+	sync, err := BuildTabSync(t.Context(), queries, userid.MustNew("user-1"))
 	require.NoError(t, err)
 
 	require.NotNil(t, sync)
@@ -110,7 +112,7 @@ func TestBuildTabSync_AgentsFromDB(t *testing.T) {
 	_, err = queries.CloseAgent(ctx, "agent-2")
 	require.NoError(t, err)
 
-	sync, err := BuildTabSync(queries, userid.MustNew("user-1"))
+	sync, err := BuildTabSync(t.Context(), queries, userid.MustNew("user-1"))
 	require.NoError(t, err)
 
 	require.NotNil(t, sync)
@@ -143,7 +145,7 @@ func TestBuildTabSync_TerminalsFromDB(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	sync, err := BuildTabSync(queries, userid.MustNew("user-1"))
+	sync, err := BuildTabSync(t.Context(), queries, userid.MustNew("user-1"))
 	require.NoError(t, err)
 
 	require.NotNil(t, sync)
@@ -173,7 +175,7 @@ func TestBuildTabSync_MixedAgentsAndTerminals(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	sync, err := BuildTabSync(queries, userid.MustNew("user-1"))
+	sync, err := BuildTabSync(t.Context(), queries, userid.MustNew("user-1"))
 	require.NoError(t, err)
 
 	require.NotNil(t, sync)
@@ -224,7 +226,7 @@ func TestBuildTabSync_ReportsFileTabsScopedToTheOwner(t *testing.T) {
 		WorkingDir: "",
 	}))
 
-	sync, err := BuildTabSync(queries, userid.MustNew("user-1"))
+	sync, err := BuildTabSync(t.Context(), queries, userid.MustNew("user-1"))
 	require.NoError(t, err)
 
 	reported := make(map[string]leapmuxv1.TabType)
@@ -242,7 +244,7 @@ func TestBuildTabSync_ReportsFileTabsScopedToTheOwner(t *testing.T) {
 // how foreign rows would be claimed by whoever connects next.
 func TestBuildTabSync_RefusesWithoutARegisteredOwner(t *testing.T) {
 	queries := setupTestDB(t)
-	_, err := BuildTabSync(queries, userid.UserID{})
+	_, err := BuildTabSync(t.Context(), queries, userid.UserID{})
 	require.Error(t, err, "an unminted owner must refuse rather than report every row on the machine")
 }
 
@@ -265,7 +267,7 @@ func TestBuildTabSync_ReadFailureIsAnErrorNotAnEmptyReport(t *testing.T) {
 	_, execErr := sqlDB.Exec(`DROP TABLE terminals`)
 	require.NoError(t, execErr)
 
-	sync, err := BuildTabSync(queries, userid.MustNew("user-1"))
+	sync, err := BuildTabSync(t.Context(), queries, userid.MustNew("user-1"))
 
 	require.Error(t, err, "a failed read must be reported, not swallowed")
 	assert.Nil(t, sync, "no partial report may escape")
@@ -933,3 +935,117 @@ func (h warnCountingHandler) Handle(_ context.Context, r slog.Record) error {
 }
 func (h warnCountingHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
 func (h warnCountingHandler) WithGroup(name string) slog.Handler       { return h }
+
+func TestBuildTabSync_UsesCallerCancellation(t *testing.T) {
+	queries := setupTestDB(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	inventory, err := BuildTabSync(ctx, queries, userid.MustNew("user-1"))
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Nil(t, inventory)
+}
+
+func TestWire_FirstIdentityBuildsInventoryWithoutSeed(t *testing.T) {
+	reports := make(chan *leapmuxv1.WorkerTabInventory, 1)
+	url := fakehubtest.Start(t, func(ctx context.Context, stream *fakehubtest.Stream) {
+		if _, err := stream.Receive(ctx); !assert.NoError(t, err) {
+			return
+		}
+		if err := stream.Greet(ctx, "user-1"); !assert.NoError(t, err) {
+			return
+		}
+		report, err := stream.Receive(ctx)
+		if !assert.NoError(t, err) {
+			return
+		}
+		reports <- report.GetWorkerTabInventory()
+		_ = stream.ReadUntilClosed(ctx)
+	})
+	var client *hub.Client
+	wiring, _ := wireForTestWith(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, func(p *Params) {
+		client = newTestHubClient(t, url)
+		p.Client = client
+	})
+	require.True(t, wiring.Service.RegisteredBy().IsZero())
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- client.Connect(ctx, "token") }()
+	select {
+	case report := <-reports:
+		require.NotNil(t, report)
+		assert.True(t, report.GetComplete())
+	case <-time.After(30 * time.Second):
+		t.Fatal("first identity produced no inventory")
+	}
+	assert.Equal(t, "user-1", wiring.Service.RegisteredBy().String())
+	wiring.Shutdown()
+	cancel()
+	require.ErrorIs(t, <-result, context.Canceled)
+}
+
+func TestWire_InventoryTransactionAcquisitionIsCancellable(t *testing.T) {
+	w, client := wireForTest(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC)
+	require.True(t, client.OnWorkerIdentity(&leapmuxv1.WorkerIdentity{RegisteredBy: "user-1"}))
+	w.Service.DB.SetMaxOpenConns(1)
+	connection, err := w.Service.DB.Conn(t.Context())
+	require.NoError(t, err)
+	defer func() { _ = connection.Close() }()
+	waits := w.Service.DB.Stats().WaitCount
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	type result struct {
+		inventory *leapmuxv1.WorkerTabInventory
+		err       error
+	}
+	done := make(chan result, 1)
+	go func() { inventory, err := client.TabSyncProvider(ctx); done <- result{inventory, err} }()
+	testutil.AssertEventually(t, func() bool { return w.Service.DB.Stats().WaitCount > waits })
+	cancel()
+	select {
+	case got := <-done:
+		require.ErrorIs(t, got.err, context.Canceled)
+		assert.Nil(t, got.inventory)
+	case <-time.After(30 * time.Second):
+		t.Fatal("inventory transaction acquisition ignored cancellation")
+	}
+}
+
+func TestWire_ShutdownJoinsInventoryBeforeFlush(t *testing.T) {
+	url := fakehubtest.Start(t, func(ctx context.Context, stream *fakehubtest.Stream) {
+		if _, err := stream.Receive(ctx); err != nil {
+			return
+		}
+		if err := stream.Greet(ctx, "user-1"); err != nil {
+			return
+		}
+		_ = stream.ReadUntilClosed(ctx)
+	})
+	var client *hub.Client
+	w, _ := wireForTestWith(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, func(p *Params) { client = newTestHubClient(t, url); p.Client = client })
+	t.Cleanup(client.Stop)
+	started, joined := make(chan struct{}), make(chan struct{})
+	client.TabSyncProvider = func(ctx context.Context) (*leapmuxv1.WorkerTabInventory, error) {
+		close(started)
+		<-ctx.Done()
+		close(joined)
+		return nil, ctx.Err()
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- client.Connect(ctx, "token") }()
+	select {
+	case <-started:
+	case <-time.After(30 * time.Second):
+		t.Fatal("inventory producer did not start")
+	}
+	w.Shutdown()
+	select {
+	case <-joined:
+	default:
+		t.Error("shutdown returned before the inventory producer stopped")
+	}
+	cancel()
+	require.ErrorIs(t, <-result, context.Canceled)
+}

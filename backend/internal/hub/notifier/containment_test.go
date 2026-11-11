@@ -29,7 +29,7 @@ func TestDeregisterAcknowledgementKeepsTheConnectionContained(t *testing.T) {
 					return ctx.Err()
 				}
 			}))
-			connection, _ := workermgrtest.NewRecordedConn(t, e.worker)
+			connection := workermgrtest.NewConn(t, e.worker)
 			_, err := registry.Register(connection)
 			require.NoError(t, err)
 			t.Cleanup(func() { registry.Unregister(e.worker, connection) })

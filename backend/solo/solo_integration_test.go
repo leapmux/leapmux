@@ -399,7 +399,7 @@ func localWorkerManagementClient(t *testing.T, listenURL string) leapmuxv1connec
 	require.NoError(t, err)
 	t.Cleanup(endpoint.CloseIdleConnections)
 	return leapmuxv1connect.NewWorkerManagementServiceClient(connect.NewClient(connecthttp.NewTransport(
-		endpoint.HTTP2OnlyClient(), endpoint.BaseURL(), connecthttp.WithReadMaxBytes(0))))
+		endpoint.UnaryClient(hubtransport.DefaultUnaryTimeout), endpoint.BaseURL(), connecthttp.WithReadMaxBytes(0))))
 }
 
 // requireRegisteredFingerprint reads a launch's "worker initialized" JSON line

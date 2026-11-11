@@ -19,8 +19,6 @@
 //
 //   - UnaryClient and StreamClient carry request/response calls and Connect
 //     server streams. Both work over HTTP/1.1, so both accept the fallback.
-//   - HTTP2OnlyClient carries a bidirectional gRPC stream, which HTTP/1.1
-//     cannot express. It fails with ErrH2CUnsupported instead of degrading.
 //   - WebSocketClient carries an upgrade. A WebSocket cannot ride HTTP/2:
 //     coder/websocket needs http.Hijacker, which the HTTP/2 ResponseWriter
 //     does not implement. This lane is HTTP/1.1 always.
@@ -57,13 +55,9 @@ import (
 // A unary lane needs a timeout because a hub that accepts a connection and
 // never answers otherwise hangs the caller for ever. A stream lane must NOT
 // have one, because http.Client.Timeout covers the body read, and a stream's
-// body ends only when the stream does. That is why StreamClient,
-// HTTP2OnlyClient and WebSocketClient take no timeout argument.
+// body ends only when the stream does. That is why StreamClient
+// and WebSocketClient take no timeout argument.
 const DefaultUnaryTimeout = 60 * time.Second
-
-// ErrH2CUnsupported reports that a cleartext endpoint does not speak
-// prior-knowledge HTTP/2, on a lane that cannot use HTTP/1.1 instead.
-var ErrH2CUnsupported = errors.New("hubtransport: endpoint does not support cleartext HTTP/2 (h2c)")
 
 // ErrWebSocketLane reports a WebSocket upgrade sent through a client that
 // cannot carry one.
@@ -71,7 +65,7 @@ var ErrWebSocketLane = errors.New("hubtransport: this client cannot carry a WebS
 
 // Endpoint holds the transports for one endpoint URL. Every client it returns
 // shares its connection pools and its h2c verdict, so a process that holds
-// four lanes against one hub still probes once and pools once.
+// multiple clients against one hub still probes once and pools once.
 //
 // A client this hands out is the caller's own value. A caller that needs a
 // cookie jar or a redirect policy sets those fields on it; they are properties
@@ -90,10 +84,9 @@ type Endpoint struct {
 	// certificate.
 	rootCAs *x509.CertPool
 
-	// The three lane round trippers. Each one is a transport, or a transport
+	// The two lane round trippers. Each one is a transport, or a transport
 	// behind a guard, decided once in New.
 	unary     http.RoundTripper
-	http2Only http.RoundTripper
 	webSocket http.RoundTripper
 
 	// transports holds every transport built for this endpoint, so
@@ -226,31 +219,18 @@ func dialAddress(u *url.URL) string {
 	return net.JoinHostPort(u.Hostname(), "80")
 }
 
-// lanes is what one build path decides: the round tripper behind each of the
-// three lanes, before the WebSocket guard.
-//
-// A struct with named fields rather than three parameters, because `unary` and
-// `http2Only` share a type. Positionally they would be silently transposable,
-// and swapping them gives a worker's bidirectional stream the lane that falls
-// back to HTTP/1.1 — a mistake no compiler and no test in this package would
-// report.
+// lanes holds the unary and WebSocket transports selected by one build path.
 type lanes struct {
-	unary     http.RoundTripper
-	http2Only http.RoundTripper
+	unary http.RoundTripper
 	// webSocket is the concrete transport, never a wrapper: this lane is the
 	// one that MUST carry an upgrade, so guardWebSocket never wraps it.
 	webSocket *http.Transport
 }
 
-// setLanes installs one build path's decision, and applies the WebSocket guard
-// to the two lanes that must refuse an upgrade.
-//
-// Every build path routes through here, so the guard is applied in ONE place
-// and a path that forgets it cannot exist. The compiler also demands all three
-// fields of a `lanes` value, so a path cannot leave a lane nil either.
+// setLanes installs the transports and guards the unary lane against upgrades.
+// Every build path uses this helper so none can omit that guard.
 func (e *Endpoint) setLanes(l lanes) {
 	e.unary = guardWebSocket{next: l.unary}
-	e.http2Only = guardWebSocket{next: l.http2Only}
 	e.webSocket = l.webSocket
 }
 
@@ -260,17 +240,15 @@ func (e *Endpoint) wireCleartext(h2c, h1 *http.Transport, probeDial func(ctx con
 	e.prober = newProber(e.url, probeDial)
 	e.setLanes(lanes{
 		unary:     preferH2C{prober: e.prober, h2c: h2c, h1: h1},
-		http2Only: requireH2C{prober: e.prober, h2c: h2c, endpointURL: e.url},
 		webSocket: h1,
 	})
 }
 
-// buildTLS wires the three ALPN transports. No probe runs: ALPN settles the protocol
+// buildTLS wires the two ALPN transports. No probe runs: ALPN settles the protocol
 // inside the handshake, and it settles it per connection rather than once.
 func (e *Endpoint) buildTLS() {
 	e.setLanes(lanes{
 		unary:     e.newTransport(protocolsHTTP1AndHTTP2),
-		http2Only: e.newTransport(protocolsHTTP2),
 		webSocket: e.newTransport(protocolsHTTP1),
 	})
 }
@@ -296,14 +274,6 @@ func (e *Endpoint) UnaryClient(timeout time.Duration) *http.Client {
 // no overall timeout, so the caller must limit the stream with its context.
 func (e *Endpoint) StreamClient() *http.Client {
 	return e.client(e.unary, 0)
-}
-
-// HTTP2OnlyClient returns the client for a lane that HTTP/1.1 cannot carry —
-// today, the worker's bidirectional Connect stream. Against a cleartext
-// endpoint with no h2c it fails with ErrH2CUnsupported, which identifies the endpoint,
-// rather than degrading to a protocol on which the stream cannot work.
-func (e *Endpoint) HTTP2OnlyClient() *http.Client {
-	return e.client(e.http2Only, 0)
 }
 
 // WebSocketClient returns the HTTP/1.1 client for a WebSocket upgrade. It
@@ -361,5 +331,4 @@ func (e *Endpoint) newTransport(setProtocols func(*http.Protocols)) *http.Transp
 
 func protocolsH2C(p *http.Protocols)           { p.SetUnencryptedHTTP2(true) }
 func protocolsHTTP1(p *http.Protocols)         { p.SetHTTP1(true) }
-func protocolsHTTP2(p *http.Protocols)         { p.SetHTTP2(true) }
 func protocolsHTTP1AndHTTP2(p *http.Protocols) { p.SetHTTP1(true); p.SetHTTP2(true) }

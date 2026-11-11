@@ -1,0 +1,6 @@
+# /etc/caddy/Caddyfile
+# Caddy obtains and renews the certificate for hub.example.com itself.
+
+hub.example.com {
+	reverse_proxy 127.0.0.1:4327
+}

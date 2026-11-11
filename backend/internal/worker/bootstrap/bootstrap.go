@@ -153,6 +153,9 @@ func (w *Wiring) Shutdown() {
 	// admitted after the drain started is one the WaitHandlers in worker.Run
 	// would miss, and its writes would race the database close.
 	w.dispatcher.CloseAdmission()
+	if w.client != nil {
+		w.client.StopTabSync()
+	}
 	w.Service.Shutdown()
 	if w.client == nil {
 		return
@@ -211,6 +214,15 @@ func Wire(p Params) *Wiring {
 	}
 
 	svc := service.New(service.Config{
+		ResolveTabPublication: func(ctx context.Context, request *leapmuxv1.TabPublication) (*leapmuxv1.ResolveTabPublicationResponse, error) {
+			return p.Client.ResolveTabPublication(ctx, p.AuthToken, request)
+		},
+		PublishTab: func(ctx context.Context, request *leapmuxv1.TabPublication) (*leapmuxv1.PublishTabResponse, error) {
+			return p.Client.PublishTab(ctx, p.AuthToken, request)
+		},
+		CancelTabPublication: func(ctx context.Context, request *leapmuxv1.TabPublication) error {
+			return p.Client.CancelTabPublication(ctx, p.AuthToken, request)
+		},
 		Channels:            channelMgr,
 		Send:                p.Client.Send,
 		DB:                  p.DB,
@@ -391,18 +403,25 @@ func liveTabForMint(queries *db.Queries) crossworker.LiveTabProvider {
 func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer {
 	queries := db.New(p.DB)
 
-	// Provide workspace tab sync data on connect. A nil return means "send
-	// nothing", which is the only safe answer to a failed read: the hub
-	// tombstones every owned tab a report omits, so shipping a partial
-	// inventory would delete the user's tabs. Skipping the exchange costs a
-	// reconnect's worth of convergence, and the reconciler's own pass retries.
-	p.Client.TabSyncProvider = func() *leapmuxv1.WorkerTabInventory {
-		sync, err := BuildTabSync(queries, svc.RegisteredBy())
-		if err != nil {
-			slog.Warn("tab sync: skipping the report rather than sending a partial inventory", "error", err)
-			return nil
+	// Read one cancellable database snapshot. A failed read sends no completed
+	// inventory, because omission from a completed report permits deletion.
+	p.Client.TabSyncProvider = func(ctx context.Context) (*leapmuxv1.WorkerTabInventory, error) {
+		if err := svc.ResolvePendingTabCreations(ctx); err != nil {
+			return nil, err
 		}
-		return sync
+		tx, err := p.DB.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = tx.Rollback() }()
+		inventory, err := BuildTabSync(ctx, queries.WithTx(tx), svc.RegisteredBy())
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return inventory, nil
 	}
 
 	// Close the QUAKE terminals the previous worker process left behind.
@@ -436,10 +455,10 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 		},
 		service.OrphanReconcilerOptions{
 			// Clean dead tab links. Preserve every Git directory and branch.
-			CleanupWorktreeLinks: svc.CleanupOrphanWorktreeLinks,
-			CloseTab:             svc.CloseTabForReconcile,
-			ApplyArchiveState:    svc.ApplyTabArchiveState,
-			ResumeAgents:         func(agentIDs []string) { resumer.Schedule(p.Ctx, agentIDs) },
+			CleanupWorktreeLinks:   svc.CleanupOrphanWorktreeLinks,
+			BeginTabReconciliation: svc.BeginTabReconciliation,
+
+			ResumeAgents: func(agentIDs []string) { resumer.Schedule(p.Ctx, agentIDs) },
 			// The resume sweep's start signal, and the reason it is this and not
 			// "the worker finished wiring". A converged pass is the first moment
 			// two things are BOTH true: the Hub delivered this worker's owner (no
@@ -453,7 +472,7 @@ func startBackgroundLoops(p Params, svc *service.Service) *service.AgentResumer 
 			// owner is missing, which is what makes a later pass the retry -- and
 			// the OnWorkerIdentity nudge below is what makes that later pass
 			// arrive in seconds rather than at the next hourly tick.
-			OnConverged: func() { resumer.Start(p.Ctx) },
+			OnConverged: func() { svc.TriggerTabCreationRecovery(); resumer.Start(p.Ctx) },
 		},
 	)
 	go reconciler.Run(p.Ctx)
@@ -559,20 +578,12 @@ func startRetentionLoops(ctx context.Context, sqlDB *sql.DB, dataDir string) []<
 	return []<-chan struct{}{cleanupStopped, planArchiveStopped}
 }
 
-// BuildTabSync constructs a WorkerTabInventory message from the worker's
-// database: every agent, terminal and file tab it hosts.
-//
-// The report must be COMPLETE or not sent at all, which is why this returns an
-// error rather than a best-effort message. The hub treats it as authoritative
-// by omission: handleWorkspaceTabsSync deletes the reported (tab_type, tab_id)
-// keys from its own owned-tab list and submits a TombstoneTabOp for every
-// leftover. So a tab type this function forgets, or a query whose failure it
-// swallows, is not a missing entry -- it is an instruction to delete the user's
-// tabs. All three types are listed here for that reason, and every read error
-// aborts: the caller sends nothing and the next reconnect (or the reconciler's
-// own pass) tries again.
-func BuildTabSync(queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTabInventory, error) {
-	ctx := context.Background()
+// BuildTabSync enumerates every hosted tab from the caller's database snapshot.
+// Every read and conversion must succeed before the client sends any segment.
+// The Hub can delete unchanged admission-time candidates omitted from a completed
+// report, so a missing tab type or a partial read could delete a user's tabs.
+// The client sends nothing after failure and retries on a later connection.
+func BuildTabSync(ctx context.Context, queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTabInventory, error) {
 	// The report carries no user axis on the wire, so the hub attributes ALL of it
 	// to the connecting worker's registrant. Refusing an unminted owner is what
 	// keeps that attribution honest: without one we cannot tell whose file tabs
@@ -617,22 +628,18 @@ func BuildTabSync(queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTa
 		case leapmuxv1.TabType_TAB_TYPE_TERMINAL:
 			ids, err = queries.ListAllTerminalIDs(ctx)
 		case leapmuxv1.TabType_TAB_TYPE_FILE, leapmuxv1.TabType_TAB_TYPE_IMAGE:
-			// A payload-backed tab's CRDT row carries a worker_id (the frontend
-			// stamps ctx.workerId and the validator rejects a live tab without
-			// one), so it lands in workspace_tab_owned and comes back from
-			// ListOwnedByWorker, which applies no tab-type filter. Omitting this
-			// case tombstoned every file tab on the worker on every single
-			// reconnect.
+			// Worker publication supplies the canonical worker_id for payload tabs.
+			// The validator requires it on live tabs, so workspace_tab_owned includes
+			// them and ListOwnedByWorker returns them across tab types. Omitting this
+			// case tombstoned every FILE tab on the Worker on every reconnect.
 			//
-			// Scoped to the owner, unlike the two above: worker_tab_payloads is PK'd on
-			// (user_id, tab_id) because these tab ids are client-minted and unique
-			// only within a user, and a stale second owner's rows can outlive a
-			// deregister (ClearState removes state.json, not worker.db).
+			// The payload table uses (user_id, tab_id). Scope these rows to the owner.
+			// ClearState removes state.json while worker.db persists, so another
+			// owner's rows can outlive deregistration.
 			//
-			// Bucketed by KIND as well, because one table now holds both: a row
-			// reported under the wrong type would be tombstoned by the hub, which
-			// matches nothing, and the real row would go unreported and be
-			// tombstoned for real.
+			// Report the stored kind. An incorrect kind leaves the corresponding
+			// captured canonical record unreported, so inventory completion could
+			// retire it.
 			ids = payloadIDs[tabType]
 		case leapmuxv1.TabType_TAB_TYPE_UNSPECIFIED:
 			// Not a hostable tab type; nothing to report.
@@ -642,6 +649,9 @@ func BuildTabSync(queries *db.Queries, owner userid.UserID) (*leapmuxv1.WorkerTa
 			return nil, fmt.Errorf("list %s ids: %w", tabType, err)
 		}
 		for _, id := range ids {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
 			tabs = append(tabs, &leapmuxv1.TabIdent{TabType: tabType, TabId: id})
 		}
 	}
@@ -663,6 +673,9 @@ func payloadTabIDsByType(ctx context.Context, queries *db.Queries, owner userid.
 	}
 	ids := make(map[leapmuxv1.TabType][]string)
 	for _, row := range rows {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if !owner.Matches(row.UserID) {
 			continue
 		}

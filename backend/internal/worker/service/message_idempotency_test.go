@@ -3,7 +3,9 @@ package service
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -188,16 +190,48 @@ func TestKeyedChildTurnEndReplayKeepsTheNativeResultAndOneCompletion(t *testing.
 func TestKeyedNativeTurnEndReplaySurvivesSinkReplacementAndKeepsSessionsSeparate(t *testing.T) {
 	t.Parallel()
 	svc, sink, ownerID, _ := setupBgTaskTestWithService(t)
-	writer := &testResponseWriter{channelID: "native-durable-turn-replay"}
-	registerAgentWatch(svc, writer.channelID, ownerID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
 	sink.UpdateSessionID("native-session-a")
+	gitSendEntered, releaseGitSend, delivered := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var held atomic.Bool
+	var completions atomic.Int32
+	finish := sync.OnceFunc(func() { close(releaseGitSend) })
+	defer func() { finish(); svc.Output.WaitActivityRefreshes() }()
+	writer := &turnAdmissionWatchingWriter{testResponseWriter: &testResponseWriter{channelID: "native-durable-turn-replay"}}
+	writer.onEvent = func(event *leapmuxv1.AgentEvent) {
+		if event.GetTurnEnd() != nil && completions.Add(1) == 2 {
+			close(delivered)
+		}
+		if event.GetStatusChange() != nil && held.CompareAndSwap(false, true) {
+			close(gitSendEntered)
+			<-releaseGitSend
+		}
+	}
+	registerAgentWatch(svc, writer.channelID, ownerID, leapmuxv1.WatchMode_WATCH_MODE_FULL, writer)
 	content := agent.MessageContent{Original: []byte(`{"type":"result"}`), AgentSessionID: "native-session-a", IdempotencyKey: "native-turn:0"}
 	require.NoError(t, sink.PersistTurnEnd(content, agent.SpanInfo{}))
+	select {
+	case <-gitSendEntered:
+	case <-ctx.Done():
+		t.Fatal("the background Git refresh did not reach its watcher")
+	}
 	replacement := newTestRootOutputSink(t, svc.Output, ownerID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	require.NoError(t, replacement.PersistTurnEnd(content, agent.SpanInfo{}))
 	content.AgentSessionID = "native-session-b"
 	replacement.UpdateSessionID(content.AgentSessionID)
 	require.NoError(t, replacement.PersistTurnEnd(content, agent.SpanInfo{}))
+	rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: ownerID})
+	require.NoError(t, err)
+	require.Len(t, rows, 2, "both sessions persist while the watcher remains held")
+	assert.Equal(t, int32(1), completions.Load(), "the active drainer has not delivered the next completion")
+	finish()
+	select {
+	case <-delivered:
+	case <-ctx.Done():
+		t.Fatal("the watcher did not deliver both native completions")
+	}
+	svc.Output.WaitActivityRefreshes()
 	var turns int
 	for _, stream := range writer.streamsSnapshot() {
 		if decodeWatchAgentEvent(t, stream).GetTurnEnd() != nil {
@@ -205,9 +239,6 @@ func TestKeyedNativeTurnEndReplaySurvivesSinkReplacementAndKeepsSessionsSeparate
 		}
 	}
 	assert.Equal(t, 2, turns)
-	rows, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: ownerID})
-	require.NoError(t, err)
-	assert.Len(t, rows, 2)
 }
 
 func TestFailedNativeTurnEndClaimPublishesNoCompletionAndAcceptsTheNextValidAttempt(t *testing.T) {

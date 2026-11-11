@@ -2,8 +2,8 @@ import type { CloseTabResponse } from '~/generated/proto/leapmux/v1/worker_tab_p
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { ControlRequest } from '~/stores/control.store'
 import { create } from '@bufbuild/protobuf'
-
 import { Code, ConnectError } from '@connectrpc/connect'
+
 import { createRoot } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerAgent } from '~/api/workerRpc'
@@ -22,8 +22,11 @@ import { protoToAgentTabFields } from '~/stores/tab.helpers'
 import { emitAddTab } from '~/stores/tabOps'
 import { deferred, flush } from '~/test-support/async'
 import { installTestBridge } from '~/test-support/crdtBridge'
+import { createCanonicalTabPublisher, createTestTabCreation } from '~/test-support/tabPublication'
 import { createTestTabStores } from '~/test-support/tabStores'
 import { queueEditDraftKey } from '../chat/composer/draftIdentity'
+
+let publisher: ReturnType<typeof createCanonicalTabPublisher>
 
 const mockCloseTab = vi.fn<(workerId: string, req: { tab?: { tabType: TabType, tabId: string }, worktreeAction?: WorktreeAction }) => Promise<CloseTabResponse>>()
 const mockOpenAgent = vi.fn()
@@ -45,7 +48,16 @@ vi.mock('~/api/workerRpc', async (importOriginal) => {
     },
     workerAgent: {
       ...actual.workerAgent,
-      openAgent: (...args: unknown[]) => mockOpenAgent(...args),
+      openAgent: async (...args: unknown[]) => {
+        const activePublisher = publisher
+        const response = await mockOpenAgent(...args)
+        const [workerId, request] = args as [string, { creation: import('~/generated/proto/leapmux/v1/tab_creation_pb').TabCreation }]
+        return {
+          ...response,
+          agent: { ...response.agent, id: request.creation.tabId, workerId },
+          publication: activePublisher.publishCreation(TabType.AGENT, workerId, request.creation),
+        }
+      },
       interruptAgent: (...args: unknown[]) => mockInterruptAgent(...args),
       sendControlResponse: vi.fn(),
       updateAgentSettings: (...args: unknown[]) => mockUpdateAgentSettings(...args),
@@ -120,6 +132,7 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
   const agentSessionStore = createAgentSessionStore()
   const controlStore = createControlStore()
   const harness = installTestBridge({ workspaceId: 'ws-1' })
+  publisher = createCanonicalTabPublisher(harness)
   const stores = createTestTabStores(storeWorkspaceId)
 
   const chatStore = {
@@ -144,7 +157,7 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
     metadata: stores.metadata,
     selection: stores.selection,
     getActiveWorkspaceId: () => storeWorkspaceId,
-    layoutStore: stores.layoutStore,
+    creation: createTestTabCreation(stores, repoGitStore),
     settingsLoading: {
       start: vi.fn(),
       stop: vi.fn(),
@@ -161,7 +174,6 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
       value: () => null,
     },
     setNewAgentLoadingProvider: vi.fn(),
-    repoGitStore,
     releaseAgentComposerActionState,
   })
 
@@ -235,6 +247,8 @@ describe('useAgentOperations', () => {
           expect(mockOpenAgent).toHaveBeenCalledWith('w-1', expect.objectContaining({
             agentProvider: AgentProvider.CODEX,
             workingDir: '/tmp',
+          }), expect.objectContaining({
+            signal: expect.any(AbortSignal),
           }))
         }
         finally {
@@ -264,6 +278,8 @@ describe('useAgentOperations', () => {
 
           expect(mockOpenAgent).toHaveBeenCalledWith('w-2', expect.objectContaining({
             workingDir: '/other/worktree',
+          }), expect.objectContaining({
+            signal: expect.any(AbortSignal),
           }))
         }
         finally {
@@ -286,7 +302,9 @@ describe('useAgentOperations', () => {
           await flush()
           await ops.handleOpenAgent(AgentProvider.CLAUDE_CODE)
 
-          expect(mockOpenAgent).toHaveBeenCalledWith('w-1', expect.objectContaining({ workingDir: '/tmp' }))
+          expect(mockOpenAgent).toHaveBeenCalledWith('w-1', expect.objectContaining({ workingDir: '/tmp' }), expect.objectContaining({
+            signal: expect.any(AbortSignal),
+          }))
         }
         finally {
           dispose()
@@ -347,7 +365,7 @@ describe('useAgentOperations', () => {
           await ops.handleOpenAgent()
           await flush()
 
-          const tab = view.getAgentTab('new-agent')
+          const tab = view.getAgentTab(mockOpenAgent.mock.calls[0]?.[1].creation.tabId)
           expect(tab?.gitToplevel, 'the row identity comes from the seed, not the response').toBe('/repo')
           expect(
             repoGitStore.get(repoKey('w-1', '/repo'))?.branch,
@@ -400,7 +418,7 @@ describe('useAgentOperations', () => {
           await flush()
 
           expect(
-            view.getAgentTab('new-agent')?.gitToplevel,
+            view.getAgentTab(mockOpenAgent.mock.calls[0]?.[1].creation.tabId)?.gitToplevel,
             'the worker that owns this agent answered; the guess must not outrank it',
           ).toBe('/repo/wt')
         }
@@ -434,6 +452,8 @@ describe('useAgentOperations', () => {
 
           expect(mockOpenAgent).toHaveBeenCalledWith('w-1', expect.objectContaining({
             agentProvider: AgentProvider.CODEX,
+          }), expect.objectContaining({
+            signal: expect.any(AbortSignal),
           }))
         }
         finally {
@@ -472,7 +492,7 @@ describe('useAgentOperations', () => {
         metadata: stores.metadata,
         selection: stores.selection,
         getActiveWorkspaceId: () => 'ws-1',
-        layoutStore: stores.layoutStore,
+        creation: createTestTabCreation(stores),
         settingsLoading: {
           start: vi.fn(),
           stop: vi.fn(),
@@ -482,7 +502,6 @@ describe('useAgentOperations', () => {
         getCurrentTabContext: () => ctx,
         newAgentDialog,
         setNewAgentLoadingProvider: vi.fn(),
-        repoGitStore: createRepoGitStore(),
         releaseAgentComposerActionState: vi.fn(),
       })
       return { ops, newAgentDialog }

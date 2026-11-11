@@ -86,12 +86,10 @@ func TestOpenTerminal_QuakeStartupIsRegisteredBeforeTheRowIsVisible(t *testing.T
 func TestOpenTerminal_ReleasesTheStartupWhenTheRowCannotBeCreated(t *testing.T) {
 	t.Parallel()
 
-	svc, d, w := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}), withQueryRewrite(func(query string) string {
-		if strings.Contains(query, "-- name: UpsertTerminal") {
-			return "INSERT INTO no_such_table VALUES (1)"
-		}
-		return query
-	}))
+	svc, d, w := setupTestService(t, withRemoteIPC(&fakeRemoteIPC{}))
+	// A real trigger also applies to the query instance attached to the transaction.
+	_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER fail_terminal_creation BEFORE INSERT ON terminals BEGIN SELECT RAISE(ABORT, 'create terminal failed'); END`)
+	require.NoError(t, err)
 	// No drainAllInFlight: no startup goroutine runs, and a leaked startup must
 	// fail the test at requireStartupsReleased. A drain would wait for it for ever.
 
@@ -104,6 +102,9 @@ func TestOpenTerminal_ReleasesTheStartupWhenTheRowCannotBeCreated(t *testing.T) 
 	assert.Equal(t, "failed to persist terminal", w.errors[0].message)
 	requireStartupsReleased(t, &svc.TerminalStartup.startupCore)
 	assert.Equal(t, 0, countTerminalRows(t, svc), "a failed write leaves no row")
+	var pending int
+	require.NoError(t, svc.DB.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM tab_creations`).Scan(&pending))
+	assert.Zero(t, pending, "a failed creation transaction leaves no pending operation")
 }
 
 // A quake open that loses the unique index adopts the winner and starts nothing.

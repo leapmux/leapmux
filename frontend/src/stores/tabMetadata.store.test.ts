@@ -1,11 +1,11 @@
 /// <reference types="vitest/globals" />
 import { create } from '@bufbuild/protobuf'
-import { createEffect, createRoot, createSignal } from 'solid-js'
+import { batch, createEffect, createRoot, createSignal } from 'solid-js'
 import { unwrap } from 'solid-js/store'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { AgentStatus, AvailableOptionGroupSchema } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
-import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
+import { KEY_TAB_MRU, sessionStorageGet, sessionStorageSet, setStorageAccountForTests } from '~/lib/browserStorage'
 import { createTabMetadataStore, liveTabIds, useMetadataSweep } from './tabMetadata.store'
 
 /**
@@ -529,7 +529,12 @@ describe('tabMetadata', () => {
       await createRoot(async (dispose) => {
         const m = createTabMetadataStore()
         const [state, setState] = createSignal<SweepState>({ tabs: {} })
-        useMetadataSweep(() => state() as never, m)
+        useMetadataSweep(() => {
+          const value = state()
+          return value
+            ? { userId: 'usertest', ...value } as never
+            : null
+        }, m)
         await flush()
 
         // The open path's order: the row first, then the op that creates the tab.
@@ -579,7 +584,12 @@ describe('tabMetadata', () => {
           tabs: { t1: {} },
         })
         const retired: string[] = []
-        useMetadataSweep(() => state() as never, m, ids => retired.push(...ids))
+        useMetadataSweep(() => {
+          const value = state()
+          return value
+            ? { userId: 'usertest', ...value } as never
+            : null
+        }, m, ids => retired.push(...ids))
         m.patch('t1', {
           title: 'shell',
           screen: new Uint8Array(1024),
@@ -614,7 +624,12 @@ describe('tabMetadata', () => {
           tabs: { a1: {} },
         })
         const retired: string[] = []
-        useMetadataSweep(() => state() as never, m, ids => retired.push(...ids))
+        useMetadataSweep(() => {
+          const value = state()
+          return value
+            ? { userId: 'usertest', ...value } as never
+            : null
+        }, m, ids => retired.push(...ids))
         await flush()
 
         m.patch('quake-1', {
@@ -648,7 +663,12 @@ describe('tabMetadata', () => {
         const [state, setState] = createSignal<SweepState>({
           tabs: { a1: {} },
         })
-        useMetadataSweep(() => state() as never, m)
+        useMetadataSweep(() => {
+          const value = state()
+          return value
+            ? { userId: 'usertest', ...value } as never
+            : null
+        }, m)
         await flush()
 
         setState({
@@ -695,7 +715,12 @@ describe('tabMetadata', () => {
         const [state, setState] = createSignal<SweepState>({
           tabs: { t1: {} },
         })
-        useMetadataSweep(() => state() as never, m)
+        useMetadataSweep(() => {
+          const value = state()
+          return value
+            ? { userId: 'usertest', ...value } as never
+            : null
+        }, m)
         m.patch('t1', {
           title: 'shell',
           screen: new Uint8Array(1024),
@@ -747,7 +772,12 @@ describe('tabMetadata', () => {
         expect(m.get('gone'), 'seeded from the persisted MRU').toBeDefined()
 
         const [state, setState] = createSignal<SweepState>({ tabs: {} })
-        useMetadataSweep(() => state() as never, m)
+        useMetadataSweep(() => {
+          const value = state()
+          return value
+            ? { userId: 'usertest', ...value } as never
+            : null
+        }, m)
         await flush()
 
         // A cold start publishes an EMPTY tab set before the server fills it.
@@ -779,7 +809,12 @@ describe('tabMetadata', () => {
             m.dropTabs(retired)
           },
         }
-        useMetadataSweep(() => state() as never, counting as never)
+        useMetadataSweep(() => {
+          const value = state()
+          return value
+            ? { userId: 'usertest', ...value } as never
+            : null
+        }, counting as never)
         setState({
           tabs: { a: {}, b: {} },
         })
@@ -978,5 +1013,116 @@ describe('tabMetadata', () => {
     expect(m.get('a1')?.agentStatus).toBe(AgentStatus.ACTIVE)
     expect(m.get('a1')?.terminalStatus).toBeUndefined()
     expect(m.get('t1')?.terminalStatus).toBe(TerminalStatus.READY)
+  })
+})
+
+describe('createTabMetadataStore account replacement', () => {
+  it('reloads the incoming stamps without carrying private fields or live epochs', () => {
+    setStorageAccountForTests('account-b')
+    sessionStorageSet(KEY_TAB_MRU, { shared: 90, b: 80 })
+    setStorageAccountForTests('account-a')
+    sessionStorageSet(KEY_TAB_MRU, { shared: 4, a: 3 })
+    const { metadata, dispose } = createRoot(dispose => ({
+      metadata: createTabMetadataStore(),
+      dispose,
+    }))
+    try {
+      metadata.patchLive('shared', {
+        title: 'Private A',
+        filePath: '/a',
+        hydrated: true,
+        fileViewMode: 'head',
+      }, ['status', 'catalog'])
+      setStorageAccountForTests('account-b')
+      expect(metadata.get('shared')).toEqual({ mru: 90 })
+      expect(metadata.get('a')).toBeUndefined()
+      expect(metadata.liveStatusEpoch('shared')).toBe(0)
+      expect(metadata.liveCatalogEpoch('shared')).toBe(0)
+      expect(sessionStorageGet(KEY_TAB_MRU)).toEqual({ shared: 90, b: 80 })
+      metadata.touchMru('b')
+      expect(metadata.get('b')?.mru).toBe(91)
+      expect(sessionStorageGet(KEY_TAB_MRU)).toEqual({ shared: 90, b: 91 })
+      setStorageAccountForTests('account-a')
+      expect(sessionStorageGet(KEY_TAB_MRU)).toEqual({ shared: 4, a: 3 })
+      expect(metadata.get('shared')).toEqual({ mru: 4 })
+    }
+    finally { dispose() }
+  })
+
+  it('preserves incoming stamps through an empty bootstrap and sweeps them for that owner', async () => {
+    setStorageAccountForTests('account-b')
+    sessionStorageSet(KEY_TAB_MRU, { shared: 20, arriving: 10, stale: 5 })
+    setStorageAccountForTests('account-a')
+    await createRoot(async (dispose) => {
+      try {
+        const metadata = createTabMetadataStore()
+        const [state, setState] = createSignal<unknown>({
+          userId: 'account-a',
+          tabs: { shared: {} },
+        })
+        useMetadataSweep(() => state() as never, metadata)
+        await flush()
+        setStorageAccountForTests('account-b')
+        setState(null)
+        await flush()
+        setState({ userId: 'account-b', tabs: {} })
+        await flush()
+        expect(metadata.get('arriving')).toEqual({ mru: 10 })
+        setState({
+          userId: 'account-b',
+          tabs: { shared: {}, arriving: {} },
+        })
+        await flush()
+        expect(metadata.get('stale')).toBeUndefined()
+        expect(sessionStorageGet(KEY_TAB_MRU)).toEqual({ shared: 20, arriving: 10 })
+      }
+      finally { dispose() }
+    })
+  })
+
+  it('stops observing storage when its owner is disposed', () => {
+    setStorageAccountForTests('account-a')
+    const { metadata, dispose } = createRoot(dispose => ({
+      metadata: createTabMetadataStore(),
+      dispose,
+    }))
+    metadata.patch('a', { title: 'retained snapshot' })
+    dispose()
+    setStorageAccountForTests('account-b')
+    expect(metadata.get('a')?.title).toBe('retained snapshot')
+  })
+})
+
+describe('useMetadataSweep account reset generation', () => {
+  it('preserves restored stamps through a batched return to the original account', async () => {
+    setStorageAccountForTests('account-a')
+    sessionStorageSet(KEY_TAB_MRU, { shared: 20, arriving: 10 })
+    await createRoot(async (dispose) => {
+      try {
+        const metadata = createTabMetadataStore()
+        const [state, setState] = createSignal<unknown>({
+          userId: 'account-a',
+          tabs: { shared: {}, arriving: {} },
+        })
+        useMetadataSweep(() => state() as never, metadata)
+        await flush()
+        batch(() => {
+          setStorageAccountForTests('account-b')
+          setStorageAccountForTests('account-a')
+          setState({ userId: 'account-a', tabs: {} })
+        })
+        await flush()
+        expect(metadata.get('arriving')).toEqual({ mru: 10 })
+        expect(sessionStorageGet(KEY_TAB_MRU)).toEqual({ shared: 20, arriving: 10 })
+        setState({
+          userId: 'account-a',
+          tabs: { shared: {} },
+        })
+        await flush()
+        expect(metadata.get('arriving')).toBeUndefined()
+        expect(sessionStorageGet(KEY_TAB_MRU)).toEqual({ shared: 20 })
+      }
+      finally { dispose() }
+    })
   })
 })

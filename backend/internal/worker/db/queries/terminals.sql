@@ -218,3 +218,35 @@ SELECT is_quake, working_dir FROM terminals WHERE id = ?;
 -- name: ListOpenTabsByWorkingDirs :many
 SELECT tab_type, tab_id, working_dir, workspace_archived FROM tab_locations
 WHERE is_quake = 0 AND working_dir IN (sqlc.slice('working_dirs'));
+
+-- name: CreateTerminal :exec
+-- Initial records retain the existing shell and quake kind on conflict.
+-- A terminal keeps both properties for its entire lifetime.
+-- Later title and exit writes use dedicated UPDATE statements that preserve closed_at.
+INSERT INTO terminals (id, working_dir, shell_start_dir, shell, title, cols, rows, screen, exit_code, is_quake, closed_at)
+VALUES (
+  sqlc.arg(id),
+  sqlc.arg(working_dir),
+  sqlc.arg(shell_start_dir),
+  sqlc.arg(shell),
+  sqlc.arg(title),
+  sqlc.arg(cols),
+  sqlc.arg(rows),
+  sqlc.arg(screen),
+  sqlc.arg(exit_code),
+  sqlc.arg(is_quake),
+  -- Initial records can carry a persisted closed state.
+  sqlc.narg(closed_at)
+)
+;
+
+-- name: SaveCreationTerminalDimensions :execrows
+-- Retain resizes while a published creation transfers its startup claim.
+UPDATE terminals SET cols = sqlc.arg(cols), rows = sqlc.arg(rows)
+WHERE id = sqlc.arg(terminal_id) AND closed_at IS NULL
+  AND EXISTS (
+    SELECT 1 FROM tab_creations tc
+    WHERE tc.user_id = sqlc.arg(user_id) AND tc.worker_id = sqlc.arg(worker_id)
+      AND tc.tab_id = terminals.id AND tc.tab_type = sqlc.arg(tab_type)
+      AND tc.state IN (sqlc.arg(pending_state), sqlc.arg(published_state))
+  );

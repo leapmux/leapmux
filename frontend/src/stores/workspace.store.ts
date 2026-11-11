@@ -29,6 +29,16 @@ export function createWorkspaceStore() {
   return {
     state,
 
+    /** Clear account-owned data before loading another account. */
+    reset() {
+      setState({
+        workspaces: [],
+        loading: false,
+        error: null,
+        loaded: false,
+      })
+    },
+
     setWorkspaces(workspaces: Workspace[]) {
       setState('workspaces', workspaces)
     },

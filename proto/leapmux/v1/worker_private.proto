@@ -3,6 +3,7 @@ package leapmux.v1;
 
 import "leapmux/v1/access.proto";
 import "leapmux/v1/common.proto";
+import "leapmux/v1/tab_creation.proto";
 
 // WorkerPrivateService is a worker-side service whose RPCs travel
 // only over an E2EE channel. It carries content the hub deliberately
@@ -76,12 +77,11 @@ enum QuakePanelAction {
   QUAKE_PANEL_ACTION_TOGGLE = 3;
 }
 
-// QuakePanelCommand is a TRANSIENT COMMAND, not a fact, and it is the only case
-// of WorkerPrivateEvent that is. The other three describe state the worker
-// holds, so the bootstrap reply replays them; this one describes an instant.
-// It must therefore stay OUT of the subscribe-time replay -- a replayed command
-// would reopen a panel on every reconnect, and the panel's open state is
-// client-local state that no reconnect should overwrite.
+// QuakePanelCommand requests an immediate client-local panel action.
+// The other WorkerPrivateEvent cases describe resource state changes.
+// Bootstrap reconstructs TabPayloadRegistered from current payload rows.
+// Panel commands must stay live-only to preserve each client's open state.
+// Replaying a command on reconnect could reopen a panel the user closed.
 //
 // A TOGGLE reaching two frontends in different states leaves them in different
 // states. That is correct rather than unfortunate: the open state is per-client
@@ -102,10 +102,11 @@ message TabRenamed {
   string origin_client_id = 4;
 }
 
-// TabPayload is everything a tab needs to resolve WHAT IT SHOWS, and that the
-// hub must therefore never see. `TabRecord` in the CRDT carries placement only
-// -- tab type, id, tile, position, worker -- so this is the other half of a
-// tab, and it lives on the worker behind the E2EE channel.
+// TabPayload holds the private content a tab needs to resolve its display.
+// The Hub must never receive it in plaintext.
+// The Worker stores it behind the E2EE channel.
+// The Hub's canonical TabRecord carries identity, placement, and initial
+// presentation preferences.
 //
 // One message for both kinds rather than one mechanism per kind: a FILE tab's
 // path and an IMAGE tab's message reference are the same class of secret, they
@@ -176,11 +177,13 @@ message TabPayloadRevoked {
 // --- Tab payload RPC messages ---
 
 message RegisterTabPayloadRequest {
-  string tab_id = 1;
-  TabPayload payload = 2;
+  TabPayload payload = 1;
+  TabCreation creation = 2;
 }
 
-message RegisterTabPayloadResponse {}
+message RegisterTabPayloadResponse {
+  PublishedTab publication = 1;
+}
 
 message GetTabPayloadRequest {
   string tab_id = 1;

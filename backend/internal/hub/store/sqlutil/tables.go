@@ -10,6 +10,7 @@ import (
 // Tables are ordered so that foreign key constraints are satisfied
 // (children before parents).
 var SQLTruncateTableOrder = []string{
+	"worker_tab_publications",
 	"oauth_authorization_codes", "device_authorizations",
 	"pending_oauth_signups", "oauth_states", "oauth_tokens", "oauth_user_links", "oauth_providers",
 	"altcha_used_salts", "hub_settings",

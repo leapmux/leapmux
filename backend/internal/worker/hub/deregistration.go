@@ -7,7 +7,6 @@ import (
 	"log/slog"
 
 	"connectrpc.com/connect/v2"
-	"connectrpc.com/connect/v2/connecthttp"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -26,13 +25,7 @@ import (
 // the same retained deleted row, so a retry whose first half succeeded
 // completes the second half instead of wedging.
 func Deregister(ctx context.Context, endpoint *hubtransport.Endpoint, token string) error {
-	client := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		endpoint.HTTP2OnlyClient(),
-		endpoint.BaseURL(),
-		connecthttp.WithReadMaxBytes(0),
-		connecthttp.WithGRPC(),
-	)))
-	return deregisterWithClient(ctx, client, token)
+	return deregisterWithClient(ctx, newConnectorClient(endpoint), token)
 }
 
 func deregisterWithClient(ctx context.Context, client leapmuxv1connect.WorkerConnectorServiceClient, token string) error {

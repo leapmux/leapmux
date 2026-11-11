@@ -49,6 +49,9 @@ func TestQueuedInputDoesNotRelaunchARefusedNativeResume(t *testing.T) {
 	var launchedResumeIDs []string
 	openLaunched := make(chan struct{})
 	releaseOpenLaunch := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseOpenLaunch) }) }
+	t.Cleanup(release)
 	svc.startAgentFn = func(startCtx context.Context, opts agent.Options, _ agent.ProviderServices) (map[string]string, error) {
 		launchMu.Lock()
 		launchedResumeIDs = append(launchedResumeIDs, opts.ResumeSessionID)
@@ -88,7 +91,7 @@ func TestQueuedInputDoesNotRelaunchARefusedNativeResume(t *testing.T) {
 	joinTimer.MustWait(ctx).MustRelease(ctx)
 
 	// The provider refuses session/load.
-	close(releaseOpenLaunch)
+	release()
 
 	var failedItem inputqueue.SnapshotItem
 	require.Eventually(t, func() bool {

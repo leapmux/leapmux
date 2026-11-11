@@ -2016,3 +2016,9 @@ type CreatePendingOAuthSignupParams struct {
 	RedirectURI     string
 	ExpiresAt       time.Time
 }
+
+// GetWorkerOwnedTabStateParams scopes a point read to one owner's hosting Worker.
+type GetWorkerOwnedTabStateParams struct {
+	UserID          userid.UserID
+	WorkerID, TabID string
+}

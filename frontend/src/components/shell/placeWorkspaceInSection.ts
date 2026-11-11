@@ -5,11 +5,11 @@ import { appendPosition } from '~/lib/lexorank'
 
 /**
  * What has to happen after CreateWorkspace when the user opened the dialog
- * from a specific section's "+" button: move the fresh workspace into that
- * section, then refresh the workspace list.
+ * from a section menu. Refresh workspace and section metadata before local
+ * activation, then refresh both again after the section move settles.
  *
  * `targetSectionId` null means the shortcut path (no preselection), which
- * only refreshes — there is no section to move into, and the workspace
+ * refreshes both lists once. The workspace
  * already lives in the default one.
  *
  * A failed move warn-toasts rather than passing silently. The two sibling
@@ -18,9 +18,9 @@ import { appendPosition } from '~/lib/lexorank'
  * its rejection, so a workspace could land in the default section instead of
  * the section the user clicked, with nothing on screen to say so.
  *
- * The refresh runs on both paths. The move is fire-and-forget by design: the
- * caller navigates to the new workspace immediately, and the section
- * placement converges on the refresh rather than blocking that navigation.
+ * The first workspace load protects a just-published selection while its HTTP
+ * metadata is still missing. The final section load observes the move, which
+ * emits no lifecycle event. The owned loaders reject older list responses.
  *
  * Extracted from a closure inline in an `AppShellDialogs` JSX prop, where it
  * combined lexorank math, an RPC, a refresh and navigation in one 25-line
@@ -28,6 +28,7 @@ import { appendPosition } from '~/lib/lexorank'
  * same seam, taken from the same position for the same reason.
  */
 export interface PlaceWorkspaceDeps {
+  isCurrent: () => boolean
   /**
    * Narrowed to the one field `appendPosition` reads, rather than the whole
    * `SectionItem`. The real store satisfies it structurally, and a test can
@@ -35,6 +36,7 @@ export interface PlaceWorkspaceDeps {
    */
   sectionStore: { getItemsForSection: (sectionId: string) => readonly { position: string }[] }
   loadWorkspaces: () => Promise<void>
+  loadSections: () => Promise<void>
 }
 
 export function placeWorkspaceInSection(
@@ -42,14 +44,23 @@ export function placeWorkspaceInSection(
   workspaceId: string,
   targetSectionId: string | null,
 ): void {
-  if (!targetSectionId) {
+  if (!deps.isCurrent())
+    return
+  const refreshLists = () => {
+    if (!deps.isCurrent())
+      return
     void deps.loadWorkspaces()
+    void deps.loadSections()
+  }
+  if (!targetSectionId) {
+    refreshLists()
     return
   }
   // Append past the section's existing items so the new workspace gets a
   // unique lexorank rather than colliding with whichever item already sits
   // at the head.
   const position = appendPosition(deps.sectionStore.getItemsForSection(targetSectionId))
+  refreshLists()
   // CreateWorkspace just made this workspace, and a new workspace is active.
   // The Hub refuses the move if another client archived it meanwhile.
   workspaceClient.moveWorkspace({
@@ -59,9 +70,8 @@ export function placeWorkspaceInSection(
     expectedArchiveState: WorkspaceArchiveState.ACTIVE,
   })
     .catch((err) => {
-      showWarnToast('Failed to move the workspace into its section', err)
+      if (deps.isCurrent())
+        showWarnToast('Failed to move the workspace into its section', err)
     })
-    .finally(() => {
-      void deps.loadWorkspaces()
-    })
+    .finally(refreshLists)
 }

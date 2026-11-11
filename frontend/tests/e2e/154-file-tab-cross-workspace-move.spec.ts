@@ -2,10 +2,11 @@ import { Code } from '@connectrpc/connect'
 import { expect } from '@playwright/test'
 import { fileTabPayload } from '~/lib/tabPayload'
 import { TabType } from '../../src/generated/proto/leapmux/v1/common_pb'
+import { TabInsertion } from '../../src/generated/proto/leapmux/v1/tab_creation_pb'
 import { WorkerPrivateService } from '../../src/generated/proto/leapmux/v1/worker_private_pb'
 import { WorkerTabService } from '../../src/generated/proto/leapmux/v1/worker_tab_pb'
 import { test } from './fixtures'
-import { getTestChannel } from './helpers/api'
+import { createWorkspaceViaAPI, getTestChannel } from './helpers/api'
 
 /**
  * File-tab path bookkeeping over the E2EE channel.
@@ -26,19 +27,26 @@ import { getTestChannel } from './helpers/api'
 test.describe('file-tab E2EE worker round-trip', () => {
   test('register / get / revoke round-trip is keyed by tab id alone', async ({ leapmuxServer }) => {
     const { hubUrl, adminToken, workerId } = leapmuxServer
-    // No workspace: the worker keys the row by the tab ID alone, and a channel
-    // carries no workspace set.
+    // Publication chooses a workspace, while the private payload keeps only its tab identity.
     const channel = await getTestChannel(hubUrl, adminToken)
 
+    const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, 'Private file publication')
     const tabId = `t-${Date.now()}`
     const filePath = '/repo/test-file.go'
 
-    // 1. Register. No workspace is named -- the worker has nowhere to put one.
+    // Registration commits both the private payload and its canonical tab.
     await channel.callWorker(
       workerId,
       WorkerPrivateService.method.registerTabPayload,
       {
-        tabId,
+        creation: {
+          tabId,
+          placement: {
+            workspaceId,
+            destination: { case: 'firstLeaf', value: {} },
+            insertion: TabInsertion.LAST,
+          },
+        },
         payload: fileTabPayload(filePath, ''),
       },
     )

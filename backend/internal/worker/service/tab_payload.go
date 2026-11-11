@@ -95,10 +95,15 @@ func (s *TabPayloadStore) Register(ctx context.Context, p RegisterTabPayloadPara
 	// dir outside any tracked worktree leaves the tab unbound, matching
 	// today's behavior for non-worktree files.
 	s.linkTabToWorktree(ctx, owner.String(), tabPayloadLinkDir(stored), tabType, p.TabID)
-	if s.events != nil {
-		s.events.PublishTabPayloadRegistered(owner, p.TabID, stored)
-	}
+	s.publishRegistered(owner, p.TabID, stored)
 	return nil
+}
+
+// publishRegistered uses the store's configured bus after persistence commits.
+func (s *TabPayloadStore) publishRegistered(owner userid.UserID, tabID string, payload *leapmuxv1.TabPayload) {
+	if s.events != nil {
+		s.events.PublishTabPayloadRegistered(owner, tabID, payload)
+	}
 }
 
 // tabPayloadType maps a payload's oneof case to the TabType it belongs to, and
@@ -238,6 +243,10 @@ func resolveTabPayloadWorkingDir(payload *leapmuxv1.TabPayload) (string, error) 
 // it a multi-user worker could match a different user's live tab and mark a
 // strand live.
 func (s *TabPayloadStore) linkTabToWorktree(ctx context.Context, userID, linkDir string, tabType leapmuxv1.TabType, tabID string) {
+	s.linkTabToWorktreeUsing(ctx, s.q, userID, linkDir, tabType, tabID)
+}
+
+func (s *TabPayloadStore) linkTabToWorktreeUsing(ctx context.Context, q *db.Queries, userID, linkDir string, tabType leapmuxv1.TabType, tabID string) {
 	if linkDir == "" {
 		return
 	}
@@ -245,7 +254,7 @@ func (s *TabPayloadStore) linkTabToWorktree(ctx context.Context, userID, linkDir
 	if err != nil || info == nil || !info.IsWorktree {
 		return
 	}
-	wt, err := s.q.GetWorktreeByPath(ctx, pathutil.Canonicalize(info.TopLevel))
+	wt, err := q.GetWorktreeByPath(ctx, pathutil.Canonicalize(info.TopLevel))
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			slog.Warn("link tab to worktree: lookup failed",
@@ -253,7 +262,7 @@ func (s *TabPayloadStore) linkTabToWorktree(ctx context.Context, userID, linkDir
 		}
 		return
 	}
-	if err := s.q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{
+	if err := q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{
 		WorktreeID: wt.ID,
 		TabType:    tabType,
 		TabID:      tabID,
@@ -352,31 +361,24 @@ func decodeTabPayload(blob []byte) (*leapmuxv1.TabPayload, error) {
 // for the same reason as Get -- and here the stakes are higher, since the bound
 // predicate drives a DELETE.
 func (s *TabPayloadStore) RevokeRow(ctx context.Context, userID, tabID string) error {
-	owner, ok := userid.New(userID)
-	if !ok || tabID == "" {
-		return fmt.Errorf("revoke tab payload: required field empty")
-	}
-	// One statement, and its affected-row count IS the existence answer. This used
-	// to SELECT the row first, which was load-bearing only while the revoke event
-	// carried the row's workspace_id; now it would be a second round trip whose
-	// only job is a check the DELETE already reports -- and a TOCTOU window, since
-	// a concurrent revoke between the two made this a no-op that still reported
-	// success and published a duplicate TabPayloadRevoked.
-	res, err := s.q.DeleteWorkerTabPayload(ctx, db.DeleteWorkerTabPayloadParams{UserID: owner.String(), TabID: tabID})
+	revoked, err := revokeTabPayloadRow(ctx, s.q, userID, tabID)
 	if err != nil {
-		return fmt.Errorf("delete worker_tab_payload: %w", err)
+		return err
 	}
-	affected, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("delete worker_tab_payload: %w", err)
-	}
-	if affected == 0 {
+	if !revoked {
 		return ErrTabPayloadNotFound
 	}
-	if s.events != nil {
-		s.events.PublishTabPayloadRevoked(owner, tabID)
-	}
+	s.publishRevoked(userID, tabID)
 	return nil
+}
+
+// publishRevoked runs only after the deletion commits through this store.
+func (s *TabPayloadStore) publishRevoked(userID, tabID string) {
+	if s.events != nil {
+		if owner, ok := userid.New(userID); ok {
+			s.events.PublishTabPayloadRevoked(owner, tabID)
+		}
+	}
 }
 
 // SnapshotForOwner returns the TabPayloadRegistered events the private-event

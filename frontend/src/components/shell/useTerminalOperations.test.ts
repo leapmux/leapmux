@@ -1,7 +1,7 @@
 import type { CloseTabResponse } from '~/generated/proto/leapmux/v1/worker_tab_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
-
 import { createRoot, createSignal } from 'solid-js'
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerTab, workerTerminal } from '~/api/workerRpc'
 import { showWarnToast } from '~/components/common/Toast'
@@ -10,12 +10,14 @@ import { disposeTerminalInstance } from '~/components/terminal/TerminalView'
 import { TabType, WorktreeAction } from '~/generated/proto/leapmux/v1/common_pb'
 import { TerminalStatus } from '~/generated/proto/leapmux/v1/terminal_pb'
 import { handleTerminalBell } from '~/hooks/terminalEvents'
-import { createRepoGitStore } from '~/stores/repoGit.store'
 import { emitAddTab } from '~/stores/tabOps'
 import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { deferred, flush, settle } from '~/test-support/async'
 import { installTestBridge } from '~/test-support/crdtBridge'
+import { createCanonicalTabPublisher, createTestTabCreation } from '~/test-support/tabPublication'
 import { createTestTabStores } from '~/test-support/tabStores'
+
+let publisher: ReturnType<typeof createCanonicalTabPublisher>
 
 vi.mock('~/components/common/Toast', () => ({
   showWarnToast: vi.fn(),
@@ -40,7 +42,15 @@ vi.mock('~/api/workerRpc', () => ({
     sendInput: vi.fn(async () => ({})),
     restartTerminal: vi.fn(async () => ({})),
     listAvailableShells: vi.fn(async () => ({ shells: [], defaultShell: '' })),
-    openTerminal: vi.fn(async () => ({ terminalId: 'new-tid', title: '' })),
+    openTerminal: vi.fn(async (workerId: string, request: import('~/generated/proto/leapmux/v1/terminal_pb').OpenTerminalRequest) => {
+      if (request.target.case !== 'creation')
+        throw new Error('Expected ordinary terminal creation.')
+      return {
+        terminalId: request.target.value.tabId,
+        title: '',
+        publication: publisher.publishCreation(TabType.TERMINAL, workerId, request.target.value),
+      }
+    }),
     resizeTerminal: vi.fn(async () => ({})),
   },
   workerTab: {
@@ -90,7 +100,15 @@ beforeEach(() => {
   // Reset to default success — individual tests override per scenario.
   restartTerminalMock.mockImplementation(async () => ({}))
   sendInputMock.mockImplementation(async () => ({}))
-  openTerminalMock.mockImplementation(async () => ({ terminalId: 'new-tid', title: '' }))
+  openTerminalMock.mockImplementation(async (workerId: string, request: import('~/generated/proto/leapmux/v1/terminal_pb').OpenTerminalRequest) => {
+    if (request.target.case !== 'creation')
+      throw new Error('Expected ordinary terminal creation.')
+    return {
+      terminalId: request.target.value.tabId,
+      title: '',
+      publication: publisher.publishCreation(TabType.TERMINAL, workerId, request.target.value),
+    }
+  })
   closeTabMock.mockImplementation(async () => ({ worktreeId: '', failureMessage: '' }))
   listAvailableShellsMock.mockImplementation(async () => ({ shells: [], defaultShell: '' }))
 })
@@ -137,6 +155,7 @@ function addTerminal(
 
 function setup(status: TerminalStatus | undefined = undefined, tabOverrides: TabOverrides = {}, isMutatable = true, isQuakeTerminal: (id: string) => boolean = () => false) {
   const harness = installTestBridge({ workspaceId: 'ws-1' })
+  publisher = createCanonicalTabPublisher(harness)
   let stores!: ReturnType<typeof createTestTabStores>
   const [activeWorkspace] = createSignal<Workspace | null>({ id: 'ws-1' } as Workspace)
 
@@ -159,8 +178,7 @@ function setup(status: TerminalStatus | undefined = undefined, tabOverrides: Tab
     ops = useTerminalOperations({
       view: stores.view,
       metadata: stores.metadata,
-      selection: stores.selection,
-      layoutStore: stores.layoutStore,
+      creation: createTestTabCreation(stores),
       activeWorkspace,
       isActiveWorkspaceMutatable: () => isMutatable,
       getCurrentTabContext: () => ({ workerId: 'worker-1', workingDir: '/tmp' }),
@@ -171,7 +189,6 @@ function setup(status: TerminalStatus | undefined = undefined, tabOverrides: Tab
       },
       setNewTerminalLoading: () => {},
       setNewShellLoading: () => {},
-      repoGitStore: createRepoGitStore(),
       isQuakeTerminal,
       isWorkerStreamOnline: workerOnline.isOnline,
     })
@@ -209,6 +226,7 @@ interface OpenSetupOpts {
 // can verify the tab seed.
 function setupForOpen(opts: OpenSetupOpts = {}) {
   const harness = installTestBridge({ workspaceId: 'ws-1' })
+  publisher = createCanonicalTabPublisher(harness)
   let stores!: ReturnType<typeof createTestTabStores>
   const [activeWorkspace] = createSignal<Workspace | null>(
     opts.workspace === undefined
@@ -221,8 +239,7 @@ function setupForOpen(opts: OpenSetupOpts = {}) {
     ops = useTerminalOperations({
       view: stores.view,
       metadata: stores.metadata,
-      selection: stores.selection,
-      layoutStore: stores.layoutStore,
+      creation: createTestTabCreation(stores),
       activeWorkspace,
       isActiveWorkspaceMutatable: () => opts.isMutatable ?? true,
       getCurrentTabContext: () => opts.ctx ?? { workerId: 'worker-1', workingDir: '/tmp' },
@@ -233,7 +250,6 @@ function setupForOpen(opts: OpenSetupOpts = {}) {
       },
       setNewTerminalLoading: opts.setNewTerminalLoading ?? (() => {}),
       setNewShellLoading: opts.setNewShellLoading ?? (() => {}),
-      repoGitStore: createRepoGitStore(),
       isQuakeTerminal: () => false,
       isWorkerStreamOnline: () => true,
     })
@@ -280,11 +296,11 @@ describe('useTerminalOperations.handleopenterminal', () => {
     })
     // Tab was added with the response's terminalId and seeded
     // shellStartDir falling back to workingDir.
-    const newTab = view.getTerminalTab('new-tid')
+    const newTab = view.getTerminalTab(openTerminalMock.mock.calls[0]?.[1].target.value.tabId)
     expect(newTab).toBeDefined()
     expect(newTab?.workerId).toBe('worker-1')
     expect(newTab?.workingDir).toBe('/tmp')
-    expect(newTab?.shellStartDir).toBe('/tmp')
+    expect(newTab?.shellStartDir).toBeUndefined()
     // Loading toggled true then false (finally).
     expect(loadingFlips).toEqual([true, false])
   })
@@ -293,7 +309,7 @@ describe('useTerminalOperations.handleopenterminal', () => {
     const { ops, view } = setupForOpen()
     await ops.handleOpenTerminal('/work/dir')
     expect(openTerminalMock.mock.calls[0]?.[1].shellStartDir).toBe('/work/dir')
-    const newTab = view.getTerminalTab('new-tid')
+    const newTab = view.getTerminalTab(openTerminalMock.mock.calls[0]?.[1].target.value.tabId)
     expect(newTab?.shellStartDir).toBe('/work/dir')
   })
 
@@ -316,7 +332,7 @@ describe('useTerminalOperations.handleopenterminal', () => {
     // while the active tab's is /tmp.
     await s.ops.handleOpenTerminal('/repo-worktree')
 
-    const newTab = s.view.getTerminalTab('new-tid')
+    const newTab = s.view.getTerminalTab(openTerminalMock.mock.calls[0]?.[1].target.value.tabId)
     expect(newTab?.gitToplevel).toBeUndefined()
   })
 
@@ -330,7 +346,7 @@ describe('useTerminalOperations.handleopenterminal', () => {
 
     await s.ops.handleOpenTerminal()
 
-    const newTab = s.view.getTerminalTab('new-tid')
+    const newTab = s.view.getTerminalTab(openTerminalMock.mock.calls[0]?.[1].target.value.tabId)
     expect(newTab?.gitToplevel).toBe('/repo')
   })
 
@@ -361,10 +377,8 @@ describe('useTerminalOperations.handleopenterminal', () => {
     expect(view.all()).toHaveLength(0)
   })
 
-  // The pty RPC is the step that cannot be taken back: a placement refusal
-  // AFTER it strands an orphaned pty on the worker with no tab to reach it
-  // by. When the workspace's tree never arrived, the open must refuse
-  // BEFORE the RPC — with a visible reason, not silence.
+  // An absent workspace tree must produce a visible placement reason before
+  // dispatching a Worker creation request.
   it('refuses before the worker RPC when the workspace has no projected tree', async () => {
     const { ops, view } = setupForOpen({ unbootstrapped: true })
 
@@ -405,7 +419,7 @@ describe('useTerminalOperations.handleopenterminalwithshell', () => {
     // The shell-picker path does NOT seed shellStartDir onto the tab,
     // so a later restart re-uses the working directory the worker had
     // at launch rather than a stale per-shell override.
-    const newTab = view.getTerminalTab('new-tid')
+    const newTab = view.getTerminalTab(openTerminalMock.mock.calls[0]?.[1].target.value.tabId)
     expect(newTab?.shellStartDir).toBeUndefined()
     // Only the shell-loading setter fires for the dropdown path.
     expect(shellLoadingFlips).toEqual([true, false])

@@ -650,9 +650,7 @@ const connAccessor = "ConnForTrustedPath"
 
 // registryStateFields are the live-worker maps. A method that touches one of
 // them is answering, or changing, "what is the state of worker X" -- which is
-// the cross-tenant liveness oracle. regWaiters is deliberately out of scope: it
-// is keyed by an opaque registration token rather than a worker id and holds no
-// worker state.
+// the cross-tenant liveness oracle.
 var registryStateFields = map[string]bool{"conns": true, "deregistering": true, "connsByOwner": true}
 
 // checkRegistryMethodKinds classifies every exported workermgr.Manager method
@@ -689,7 +687,7 @@ func checkRegistryMethodKinds(t *testing.T, root string) map[string]bool {
 		}
 		m := facts.reach[key]
 		if !m.touchesState {
-			continue // regWaiters-only plumbing, or no registry state at all
+			continue // The method does not reach registry state.
 		}
 		name := d.fn.Name.Name
 		scanned[name] = true

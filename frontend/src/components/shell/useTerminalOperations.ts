@@ -1,16 +1,14 @@
 import type { Accessor } from 'solid-js'
 import type { NewTabTarget } from './AppShellDialogs'
 import type { TabContext } from './tabContext'
+import type { TabCreationCoordinator } from './useTabCreation'
 import type { CloseTabResponse } from '~/generated/proto/leapmux/v1/worker_tab_pb'
 import type { Workspace } from '~/generated/proto/leapmux/v1/workspace_pb'
 import type { DialogState } from '~/hooks/createDialogState'
 import type { InputQueueDrain } from '~/lib/inputQueue'
-import type { createLayoutStore } from '~/stores/layout.store'
-import type { createRepoGitStore } from '~/stores/repoGit.store'
 import type { TerminalTab } from '~/stores/tab.types'
 import type { TabMetadataStore } from '~/stores/tabMetadata.store'
 
-import type { TabSelectionStore } from '~/stores/tabSelection.store'
 import type { TabView } from '~/stores/tabView'
 import { untrack } from 'solid-js'
 import { apiLoadingTimeoutMs } from '~/api/transport'
@@ -24,11 +22,9 @@ import { useAvailableShells } from '~/hooks/useAvailableShells'
 import { createInflightCache } from '~/lib/inflightCache'
 import { createSharedInputQueues } from '~/lib/inputQueue'
 import { DEFAULT_TERMINAL_COLS, DEFAULT_TERMINAL_ROWS, ENTER_KEY_CR } from '~/lib/terminal'
-import { openedTerminalMetadata, planOptimisticRepoGit, terminalDisplayStatus } from '~/stores/tab.helpers'
+import { terminalDisplayStatus } from '~/stores/tab.helpers'
 import { TERMINAL_DISCONNECTED } from '~/stores/tab.types'
 import { emitRemoveTab } from '~/stores/tabOps'
-import { openTabInFocusedTile } from './openTabInFocusedTile'
-import { warnUnlessPlaceableTab } from './placeableTabGuard'
 
 // xterm emits Enter as a single CR byte on a non-modifier press.
 // We gate the EXITED-tab restart flow on exactly that one byte so a stray
@@ -52,17 +48,15 @@ interface TerminalInputContext {
 }
 
 export interface UseTerminalOperationsProps {
+  creation: TabCreationCoordinator
   view: TabView
   metadata: TabMetadataStore
-  selection: TabSelectionStore
-  layoutStore: ReturnType<typeof createLayoutStore>
   activeWorkspace: Accessor<Workspace | null>
   isActiveWorkspaceMutatable: Accessor<boolean>
   getCurrentTabContext: () => Pick<TabContext, 'workerId' | 'workingDir'>
   newTerminalDialog: DialogState<NewTabTarget>
   setNewTerminalLoading: (v: boolean) => void
   setNewShellLoading: (v: boolean) => void
-  repoGitStore: ReturnType<typeof createRepoGitStore>
   /** Whether a terminal id is a quake companion rather than a tab. */
   isQuakeTerminal: (terminalId: string) => boolean
   /** Whether this client's watch stream reaches a worker. See `WorkerOnlineStore.isOnline`. */
@@ -84,6 +78,7 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
   // returns on overlapping presses so they never reach the shared
   // promise's eventual rejection (which would multi-toast).
   const restartInflight = createInflightCache<string, void>()
+  const openVersions = new Map<(loading: boolean) => void, number>()
 
   // One input drain per hook instance, built once. It captures ONLY `view`
   // (not the whole props graph), so the module-level queue below retains a
@@ -160,69 +155,29 @@ export function useTerminalOperations(props: UseTerminalOperationsProps) {
       props.newTerminalDialog.open(args.target ?? {})
       return
     }
-    // BEFORE the worker RPC: it is the step that can't be taken back. A
-    // placement refusal after it (no projected tree to place on — e.g. the
-    // workspace's tree hasn't arrived) leaves an orphaned pty behind with
-    // no tab to reach it by.
-    if (!warnUnlessPlaceableTab(props.layoutStore, 'a terminal'))
-      return
+    const version = (openVersions.get(args.setLoading) ?? 0) + 1
+    openVersions.set(args.setLoading, version)
     args.setLoading(true)
     try {
-      const resp = await workerTerminal.openTerminal(ctx.workerId, {
-        cols: DEFAULT_TERMINAL_COLS,
-        rows: DEFAULT_TERMINAL_ROWS,
-        workingDir: ctx.workingDir,
-        shell: args.shell,
-        shellStartDir: args.shellStartDir ?? '',
-      })
-
-      // The metadata is everything the CRDT has no field for. Shared with the
-      // dialog open path so the two cannot disagree about the same moment --
-      // they did, and only this one was right.
-      const meta = openedTerminalMetadata({
-        title: resp.title,
-        workingDir: ctx.workingDir,
-        ...(args.shellStartDir === undefined
-          ? {}
-          : { shellStartDir: args.shellStartDir }),
-      })
-      const activeTab = props.selection.activeTabForWorkspace(ws.id)
-      // `shellStartDir` has to reach the seed resolver: `effectiveGitDir` is
-      // `shellStartDir || workingDir`, and the resolver only seeds when the
-      // new tab's git dir MATCHES the active tab's. Passing `workingDir`
-      // alone made both sides resolve to `ctx.workingDir` -- which comes from
-      // the active tab -- so the guard could never reject, and "open a
-      // terminal here" on a sibling worktree inherited the wrong repo's
-      // branch, origin and diff badges.
-      //
-      // ONE call, so the guard and the row seed cannot be given different
-      // directories. Two calls meant two hand-built argument objects that had
-      // to agree.
-      const seed = planOptimisticRepoGit(props.repoGitStore, activeTab, {
+      await props.creation.openTerminal({
+        workspaceId: ws.id,
         workerId: ctx.workerId,
-        ...(args.shellStartDir === undefined
-          ? {}
-          : { shellStartDir: args.shellStartDir }),
-        workingDir: ctx.workingDir,
-      })
-      const placedTileId = openTabInFocusedTile(
-        props,
-        { type: TabType.TERMINAL, id: resp.terminalId, workerId: ctx.workerId },
-        {
-          ...meta,
-          ...seed.fields,
+        retryKey: 'terminal-operations',
+        request: {
+          cols: DEFAULT_TERMINAL_COLS,
+          rows: DEFAULT_TERMINAL_ROWS,
+          workingDir: ctx.workingDir,
+          shell: args.shell,
+          shellStartDir: args.shellStartDir ?? '',
         },
-      )
-      // Only once the tab exists. Placement can be refused, and a store entry
-      // written before it would be an orphan nothing reclaims.
-      if (placedTileId)
-        seed.commit()
-    }
-    catch (err) {
-      showWarnToast('Failed to open terminal', err)
+        onError: error => showWarnToast('Failed to open terminal', error),
+      })
     }
     finally {
-      args.setLoading(false)
+      if (openVersions.get(args.setLoading) === version) {
+        openVersions.delete(args.setLoading)
+        args.setLoading(false)
+      }
     }
   }
 

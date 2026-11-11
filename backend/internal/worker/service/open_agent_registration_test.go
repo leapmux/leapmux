@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -57,38 +59,41 @@ func probeStartupRegistration(t *testing.T, svc *Service, d testRPCDispatcher, a
 // an agent that is about to start for an agent that never will.
 func TestOpenAgent_RegistersTheStartupBeforeTheRowIsVisible(t *testing.T) {
 	t.Parallel()
-
 	svc, d, w := setupTestService(t)
-	defer drainAllInFlight(svc)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
+	releaseStartup := make(chan struct{})
+	defer func() { close(releaseStartup); drainAllInFlight(svc) }()
+	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.ProviderServices) (map[string]string, error) {
+		select {
+		case <-releaseStartup:
+		case <-ctx.Done():
+		}
 		return nil, errors.New("forced start failure")
 	}
-
-	var atCreate startupRegistrationFacts
-	svc.createAgentRecordFn = func(ctx context.Context, params db.CreateAgentParams) error {
-		if err := svc.Queries.CreateAgent(ctx, params); err != nil {
+	var createdID string
+	var beforeCommitStatus leapmuxv1.AgentStatus
+	var trackedBeforeCommit bool
+	svc.createAgentRecordFn = func(ctx context.Context, q *db.Queries, params db.CreateAgentParams) error {
+		if err := q.CreateAgent(ctx, params); err != nil {
 			return err
 		}
-		atCreate = probeStartupRegistration(t, svc, d, params.ID)
+		row, err := q.GetAgentByID(ctx, params.ID)
+		require.NoError(t, err, "the transaction must contain its inserted row")
+		require.Equal(t, params.ID, row.ID)
+		createdID = params.ID
+		beforeCommitStatus, _, _, trackedBeforeCommit = svc.AgentStartup.status(params.ID)
 		return nil
 	}
-
-	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
-		WorkingDir:    t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}, w)
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}, w)
 	require.Empty(t, w.errors)
 	require.Len(t, w.responses, 1)
-	var resp leapmuxv1.OpenAgentResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
-	waitForStartupFailure(t, svc, resp.GetAgent().GetId())
-
-	require.True(t, atCreate.rowVisible, "the probe must run when the row exists")
-	assert.True(t, atCreate.tracked, "the startup registry must hold the agent when its row becomes visible")
-	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, atCreate.registry,
-		"the startup registry must report STARTING when the row becomes visible")
-	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, atCreate.listed,
-		"ListAgents must report STARTING, never INACTIVE, when the row becomes visible")
+	require.NotEmpty(t, createdID)
+	assert.True(t, trackedBeforeCommit, "the startup claim must precede commit")
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, beforeCommitStatus)
+	visible := probeStartupRegistration(t, svc, d, createdID)
+	require.True(t, visible.rowVisible, "a separate reader must see the committed row")
+	assert.True(t, visible.tracked)
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, visible.registry)
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, visible.listed)
 }
 
 // A row that was never created owns no startup. The registry holds the startup
@@ -100,7 +105,7 @@ func TestOpenAgent_ReleasesTheStartupWhenTheRowCannotBeCreated(t *testing.T) {
 	// fail the test at requireStartupsReleased. A drain would wait for it for ever.
 	svc, d, w := setupTestService(t)
 	var attempted string
-	svc.createAgentRecordFn = func(_ context.Context, params db.CreateAgentParams) error {
+	svc.createAgentRecordFn = func(_ context.Context, queries *db.Queries, params db.CreateAgentParams) error {
 		attempted = params.ID
 		return errors.New("forced create failure")
 	}
@@ -144,40 +149,33 @@ func TestOpenAgent_ReleasesTheStartupWhenTheNativeSessionIsAlreadyOpen(t *testin
 	assert.Equal(t, 1, countAgentRows(t, svc), "a refused handle creates no second agent")
 }
 
-// The row exists once the handler reads it back, so a failed read leaves a row
-// and no startup: nothing will ever run for the row, and the claim of its
-// cleanup must go too. The startup registry must not report STARTING for it.
-func TestOpenAgent_ReleasesTheStartupWhenTheCreatedRowCannotBeRead(t *testing.T) {
+// A transient read after commit keeps one admitted creation and retries it.
+func TestOpenAgent_RetriesTheCreatedRowReadWithoutClientRetry(t *testing.T) {
 	t.Parallel()
-
-	// No drain, for the reason that the first test states.
-	svc, d, w := setupTestService(t)
-	var created string
-	svc.createAgentRecordFn = func(ctx context.Context, params db.CreateAgentParams) error {
-		if err := svc.Queries.CreateAgent(ctx, params); err != nil {
-			return err
+	synctest.Test(t, func(t *testing.T) {
+		svc, d, w := setupTestService(t)
+		defer drainAllInFlight(svc)
+		var writes atomic.Int32
+		var failures atomic.Int32
+		svc.createAgentRecordFn = func(ctx context.Context, q *db.Queries, params db.CreateAgentParams) error {
+			writes.Add(1)
+			return q.CreateAgent(ctx, params)
 		}
-		created = params.ID
-		return nil
-	}
-	fetch := svc.getAgentByIDFn
-	svc.getAgentByIDFn = func(ctx context.Context, agentID string) (db.Agent, error) {
-		if agentID == created {
-			return db.Agent{}, errors.New("forced read failure")
+		fetch := svc.getAgentByIDFn
+		svc.getAgentByIDFn = func(ctx context.Context, id string) (db.Agent, error) {
+			if failures.CompareAndSwap(0, 1) {
+				return db.Agent{}, errors.New("transient created-row read failure")
+			}
+			return fetch(ctx, id)
 		}
-		return fetch(ctx, agentID)
-	}
-
-	dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{
-		WorkingDir:    t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
-	}, w)
-
-	require.Len(t, w.errors, 1)
-	assert.Equal(t, "failed to fetch created agent", w.errors[0].message)
-	require.NotEmpty(t, created)
-	requireStartupsReleased(t, &svc.AgentStartup.startupCore)
-	_, _, _, tracked := svc.AgentStartup.status(created)
-	assert.False(t, tracked)
-	requireNoCleanupClaim(t, &svc.agentCleanups, created)
+		svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
+			return nil, errors.New("test prevents process startup")
+		}
+		dispatch(d, leapmuxv1connect.WorkerAgentServiceOpenAgentProcedure, &leapmuxv1.OpenAgentRequest{WorkingDir: t.TempDir()}, w)
+		require.Empty(t, w.rejections())
+		require.Len(t, w.responsesSnapshot(), 1)
+		assert.Equal(t, int32(1), failures.Load())
+		assert.Equal(t, int32(1), writes.Load(), "retry must restore the committed resource")
+		assert.Equal(t, 1, countAgentRows(t, svc))
+	})
 }

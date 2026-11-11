@@ -89,8 +89,14 @@ function renderDialog(overrides?: Partial<Parameters<typeof ChangeBranchDialog>[
     availableProviders: [AgentProvider.CLAUDE_CODE],
     onClose: vi.fn(),
     onBranchChanged: vi.fn(),
-    onAgentCreated: vi.fn(),
-    onTerminalCreated: vi.fn(),
+    createAgent: vi.fn(async (input: Parameters<Parameters<typeof ChangeBranchDialog>[0]['createAgent']>[0]) => {
+      await workerAgent.openAgent(input.workerId, input.request)
+      return true
+    }),
+    createTerminal: vi.fn(async (input: Parameters<Parameters<typeof ChangeBranchDialog>[0]['createTerminal']>[0]) => {
+      await workerTerminal.openTerminal(input.workerId, input.request)
+      return true
+    }),
     ...overrides,
     // After the spread, so the merged type stays the three-mode union rather
     // than widening to the whole GitMode enum.
@@ -425,7 +431,7 @@ describe('ChangeBranchDialog', () => {
         value: { branch: 'wt-feature', baseBranch: 'feature' },
       },
     })
-    await waitFor(() => expect(props.onAgentCreated).toHaveBeenCalled())
+    await waitFor(() => expect(props.createAgent).toHaveBeenCalled())
   })
 
   // The worktree mode's submit opens a worker-side agent/pty that placement
@@ -496,7 +502,10 @@ describe('ChangeBranchDialog', () => {
       },
       shell: '/bin/zsh',
     })
-    await waitFor(() => expect(props.onTerminalCreated).toHaveBeenCalledWith('t1', 'w1', '/repo', 'bash'))
+    await waitFor(() => expect(props.createTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      workerId: 'w1',
+      request: expect.objectContaining({ workingDir: '/repo' }),
+    })))
   })
 
   it('cancel closes without firing any RPC', async () => {

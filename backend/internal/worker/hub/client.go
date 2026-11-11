@@ -4,19 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"strings"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect/v2"
-	"connectrpc.com/connect/v2/connecthttp"
-	"connectrpc.com/connect/v2/connectproto"
 	"github.com/coder/quartz"
+	"github.com/coder/websocket"
+	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
@@ -24,18 +21,18 @@ import (
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/terminal"
+	"github.com/leapmux/leapmux/internal/wskeepalive"
 	"github.com/leapmux/leapmux/util/errwrap"
 	"google.golang.org/protobuf/proto"
 )
 
-// Connect-stream queue limits are sendq.Default* so Hub and worker stay on
-// one definition. A wall-clock stall cutoff on a server-to-server connection
-// invites a reconnect storm under sustained load, so there is none -- the
-// byte budget alone disconnects a Hub that cannot keep up.
+// Connect-stream queues share sendq.Default* limits. The byte budget limits
+// queued data, and the write watchdog disconnects a stalled transport.
 
 // Client manages the connection to the Hub.
 type Client struct {
 	connector  leapmuxv1connect.WorkerConnectorServiceClient
+	dialStream func(context.Context, string) (hubStream, error)
 	endpoint   *hubtransport.Endpoint
 	authToken  string
 	terminals  *terminal.Manager
@@ -43,7 +40,7 @@ type Client struct {
 
 	// OnDeregister is called when the Hub tells this worker to stop for good: a
 	// deregistration notification on the stream (the Hub deletes the worker once
-	// it acknowledges), or a Connect refusal with WORKER_DELETED. The worker
+	// it acknowledges), or a WebSocket close with worker_deleted. The worker
 	// should clear its state and shut down gracefully.
 	OnDeregister func()
 
@@ -57,7 +54,7 @@ type Client struct {
 
 	// OnReconcileNudge is called when the Hub asks this worker to run its
 	// orphan reconciler now, because a CRDT batch tombstoned a tab this worker
-	// hosts. Unsolicited, like the heartbeat.
+	// hosts. The notification is unsolicited.
 	OnReconcileNudge func()
 
 	// OnTabSyncResponse is called when the Hub replies to the connect-time
@@ -68,12 +65,12 @@ type Client struct {
 	// interval.
 	OnTabSyncResponse func(*leapmuxv1.WorkerTabInventoryResponse)
 
-	// OnWorkerIdentity is called with the owner the Hub delivers as the FIRST
-	// message on every Connect stream, before it publishes the connection -- so it
-	// fires before any ChannelOpen on the same stream can create a session, and
-	// therefore before any handler the owner gate guards can be dispatched. The
-	// Hub sends the message again on a live stream when the owner's account
-	// changes, so the callback can run more than once per connection.
+	// OnWorkerIdentity is called with the owner in the first frame on each
+	// worker stream. The Hub enqueues that greeting before publishing the
+	// connection. This callback runs before any ChannelOpen on the stream can
+	// create a session, and before any handler that requires the owner can run.
+	// The Hub sends the message again when the owner's account changes, so the
+	// callback can run more than once per connection.
 	//
 	// The Hub is the only authority: it owns workers.registered_by. The worker keeps
 	// no copy, so a reconnect re-establishes the owner rather than trusting a cache
@@ -88,21 +85,22 @@ type Client struct {
 	OnWorkerIdentity func(identity *leapmuxv1.WorkerIdentity) (holdsOwner bool)
 
 	// PublicKeys is the Worker's static public key set, sent in the WorkerHello
-	// that opens every Connect stream. The Hub pinned it at registration and
+	// that opens every worker stream. The Hub pinned it at registration and
 	// refuses a hello that presents any other key.
 	PublicKeys *leapmuxv1.WorkerPublicKeys
 	// EncryptionMode is the Worker's encryption mode.
 	EncryptionMode leapmuxv1.EncryptionMode
 
 	// TabSyncProvider returns the current tab state for WorkerTabInventory
-	// on connect. Set by bootstrap.Wire after it builds the worker service.
-	TabSyncProvider func() *leapmuxv1.WorkerTabInventory
+	// after a usable identity. Set by bootstrap.Wire after it builds the service.
+	TabSyncProvider func(context.Context) (*leapmuxv1.WorkerTabInventory, error)
 
-	mu           sync.Mutex
-	writer       *sendq.Writer[*leapmuxv1.ConnectRequest]
-	connCancel   context.CancelFunc // cancel function for current connection context
-	lastSendTime time.Time          // last time a message was ENQUEUED (for idle heartbeat)
-	stopOnce     sync.Once
+	mu             sync.Mutex
+	writer         *sendq.Writer[*leapmuxv1.ConnectRequest]
+	connCancel     context.CancelCauseFunc // Ends the current connection with its cause.
+	stopOnce       sync.Once
+	tabSync        *inventoryUpload
+	tabSyncStopped bool
 	// identityReceived is set when the Hub delivers a WorkerIdentity on the
 	// current connection and OnWorkerIdentity reports that the worker holds an
 	// owner. A watchdog (see watchForIdentity) force-closes the stream if none
@@ -128,10 +126,7 @@ const (
 	hubReconnectTimerTag      = "hub-reconnect"
 	hubRequestedRetryTimerTag = "hub-requested-retry"
 	hubIdentityTimerTag       = "hub-identity-timeout"
-	hubHeartbeatTickerTag     = "hub-heartbeat"
-	hubHeartbeatIdleTag       = "hub-heartbeat-idle"
-	hubSendTimestampTag       = "hub-send-timestamp"
-	hubConnectTimestampTag    = "hub-connect-timestamp"
+	hubSilenceTimerTag        = "hub-silence"
 )
 
 // ClientOption changes one New setting.
@@ -147,30 +142,20 @@ func WithClock(clock quartz.Clock) ClientOption {
 	}
 }
 
-// New creates a new Hub client with integrated lifecycle management.
-// It creates agent and terminal managers internally. Build endpoint with
+// New creates a Hub client and its terminal manager. Build endpoint with
 // hubtransport.New, which accepts an http(s) URL, a `unix:` socket path or a
 // `npipe:` pipe name.
 //
-// The connector client takes the HTTP2Only client and the gRPC protocol, and
-// that is a requirement rather than a preference: Connect is a BIDIRECTIONAL
-// gRPC stream, which HTTP/1.1 cannot express. Against a cleartext hub with no
-// h2c this client fails with hubtransport.ErrH2CUnsupported, which states the
-// URL and the remedy, instead of degrading to a protocol on which the worker
-// could never connect. The unary ListOwnedTabsForWorker uses the same client:
-// it needs no protocol of its own.
+// newConnectorClient states the lane and the protocol that the connector
+// client takes, and why.
 func New(endpoint *hubtransport.Endpoint, opts ...ClientOption) *Client {
-	httpClient := endpoint.HTTP2OnlyClient()
-	connectURL := endpoint.BaseURL()
 	c := &Client{
-		connector: leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-			httpClient,
-			connectURL,
-			connecthttp.WithReadMaxBytes(0),
-			connecthttp.WithGRPC(),
-		))),
-		endpoint: endpoint,
-		clock:    quartz.NewReal(),
+		connector: newConnectorClient(endpoint),
+		endpoint:  endpoint,
+		clock:     quartz.NewReal(),
+	}
+	c.dialStream = func(ctx context.Context, token string) (hubStream, error) {
+		return DialWorkerStream(ctx, c.endpoint.WebSocketClient(), c.endpoint.BaseURL(), token)
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -196,7 +181,7 @@ func New(endpoint *hubtransport.Endpoint, opts ...ClientOption) *Client {
 // would probe again and pool separately.
 func (c *Client) Endpoint() *hubtransport.Endpoint { return c.endpoint }
 
-// Stop gracefully stops all managers.
+// Stop closes every encrypted channel.
 // Safe to call multiple times.
 func (c *Client) Stop() {
 	c.stopOnce.Do(func() {
@@ -258,19 +243,7 @@ func (c *Client) Send(msg *leapmuxv1.ConnectRequest) error {
 		}
 		return err
 	}
-	c.markEnqueued()
 	return nil
-}
-
-// sendFailureLevel picks the level for a failed Send: Debug when the connection
-// was on its way out, Warn for a genuine fault. Every reporter of a Send failure
-// asks the channel package the same question, so a new send site cannot quietly
-// reintroduce a per-disconnect alarm.
-func sendFailureLevel(err error) slog.Level {
-	if channel.IsTransportTeardown(err) {
-		return slog.LevelDebug
-	}
-	return slog.LevelWarn
 }
 
 // ShutdownFlushTimeout is the limit that the worker shutdown gives FlushSends.
@@ -281,7 +254,7 @@ func sendFailureLevel(err error) slog.Level {
 const ShutdownFlushTimeout = 5 * time.Second
 
 // FlushSends blocks until everything already enqueued has been handed to the
-// Connect stream, with limit as its limit. A nil writer (never connected, or
+// worker stream, with limit as its limit. A nil writer (never connected, or
 // already torn down) is nothing to wait for and returns immediately.
 //
 // Send only ENQUEUES, so a caller whose next act is tearing the connection down
@@ -305,7 +278,7 @@ func (c *Client) FlushSends(limit time.Duration) error {
 }
 
 // TrySend enqueues msg if the budget allows and reports whether it did. For
-// best-effort sends issued from the Connect RECEIVE goroutine, which serves
+// best-effort sends issued from the worker stream RECEIVE goroutine, which serves
 // every channel on this worker and must never block. A false return does NOT
 // tear the connection down -- use TrySendOrReset for must-deliver control
 // frames (open responses, access acks, deregister acks, teardown CLOSE).
@@ -317,7 +290,6 @@ func (c *Client) TrySend(msg *leapmuxv1.ConnectRequest) bool {
 	if !w.TryEnqueue(msg) {
 		return false
 	}
-	c.markEnqueued()
 	return true
 }
 
@@ -355,10 +327,11 @@ const (
 // A writer that is gone or closed is not saturated: the connection is ending
 // already. Its context ended, or the writer gave up. A writer gives up WITHOUT
 // cancelling when the Hub ended the stream (see writerGiveUpCancelsConnection),
-// so the receive loop can still report the Hub's status, and a cancel here
-// would replace that status with Canceled. So the frame is dropped quietly, and
-// no cancel follows. A gone writer has no connection left to cancel: Connect
-// clears the writer and the cancel function together.
+// so the receive loop can still read the Hub's close. Cancelling here closes
+// the socket and can replace an unread refusal with the local cancellation
+// cause. Drop the frame quietly without cancelling. A gone writer has no
+// connection left to cancel: Connect clears the writer and cancel function
+// together.
 func (c *Client) trySendControl(msg *leapmuxv1.ConnectRequest) controlSendOutcome {
 	w := c.currentWriter()
 	if w == nil {
@@ -366,7 +339,6 @@ func (c *Client) trySendControl(msg *leapmuxv1.ConnectRequest) controlSendOutcom
 		return controlConnectionEnding
 	}
 	if w.TryEnqueueControl(msg) {
-		c.markEnqueued()
 		return controlQueued
 	}
 	if w.IsClosed() {
@@ -377,7 +349,7 @@ func (c *Client) trySendControl(msg *leapmuxv1.ConnectRequest) controlSendOutcom
 	// without any other trace. Logged because the disconnect it causes
 	// would otherwise look spontaneous from the outside.
 	slog.Warn("hub connect stream control queue saturated; resetting connection")
-	c.cancelConn()
+	c.cancelConn(errControlQueueSaturated)
 	return controlSaturated
 }
 
@@ -386,25 +358,6 @@ func (c *Client) currentWriter() *sendq.Writer[*leapmuxv1.ConnectRequest] {
 	w := c.writer
 	c.mu.Unlock()
 	return w
-}
-
-// markEnqueued stamps the instant of this enqueue, which heartbeatLoop reads to
-// decide whether the connection went idle.
-//
-// The clock read sits OUTSIDE c.mu, like the one in Connect. A quartz trap
-// parks the calling goroutine inside Now, and a park under c.mu blocks
-// currentWriter, cancelConn and the heartbeat's own idle read, so a test that
-// traps this stamp would deadlock the client rather than observe it. Two
-// concurrent enqueues can then read the clock in one order and reach the lock
-// in the other, so the write keeps the later instant instead of overwriting it
-// -- lastSendTime only ever moves forward.
-func (c *Client) markEnqueued() {
-	now := c.clock.Now(hubSendTimestampTag)
-	c.mu.Lock()
-	if now.After(c.lastSendTime) {
-		c.lastSendTime = now
-	}
-	c.mu.Unlock()
 }
 
 // ListOwnedTabsForWorker calls the hub's WorkerConnectorService.ListOwnedTabsForWorker.
@@ -437,59 +390,46 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 	c.authToken = authToken
 	c.mu.Unlock()
 
-	// Attach the CallInfo before deriving connCtx, so connCtx inherits the
-	// authorization header. Deriving connCtx first and then replacing ctx
-	// with NewClientContext's returned context would leave connCtx without
-	// that metadata, and the hub would reject the worker as unauthenticated.
-	ctx, info := connect.NewClientContext(ctx)
-	info.RequestHeader().Set("Authorization", "Bearer "+authToken)
-
-	// Create a connection-scoped context so that write failures can
-	// cancel the connection and trigger immediate reconnection.
-	connCtx, connCancel := context.WithCancel(ctx)
-	defer connCancel()
-
-	stream, err := c.connector.Connect(connCtx)
+	connCtx, cancelCause := context.WithCancelCause(ctx)
+	defer cancelCause(nil)
+	stream, err := c.dialStream(connCtx, authToken)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = stream.CloseNow() }()
+	// A stop uses the handshake so FlushSends' final frames reach the Hub.
+	// Reads and writes use a background context because coder/websocket closes
+	// its socket as soon as an operation's context ends. This callback owns
+	// teardown instead, including interruption of a blocked write.
+	stop := context.AfterFunc(connCtx, func() {
+		if ctx.Err() != nil {
+			_ = stream.Close()
+		} else {
+			_ = stream.CloseNow()
+		}
+	})
+	defer stop()
 
-	// Send the WorkerHello INLINE on the stream before the writer exists. The
-	// Hub reads it before it lists this worker online, and answers the handshake
-	// of every channel from it. ConnectRPC with gRPC protocol only sends HTTP/2
-	// headers on the first Send(), and nothing else may enqueue until the writer
-	// is published.
-	//
-	// When the Hub refuses before it reads the hello (a missing, unknown or
-	// deleted token, or a Hub that is shutting down), this write can fail with an
-	// error that wraps io.EOF: connecthttp's duplexHTTPCall.Send maps a closed
-	// request pipe to io.EOF, and grpcClientConn.Receive reads the status.
-	// Surface that status, so that the reconnect loop sees the refusal and its
-	// WorkerConnectRefusal detail. A refusal after the hello read (a key
-	// mismatch, a fenced registry, the worker cap) cannot fail this write,
-	// because the transport takes the hello from the pipe before the Hub reads
-	// it. It can fail a later write with the same io.EOF error. The writer's
-	// give-up hook then leaves the connection to the receive loop, which returns
-	// the status.
-	if err := stream.Send(&leapmuxv1.ConnectRequest{
-		Payload: &leapmuxv1.ConnectRequest_Hello{
-			Hello: &leapmuxv1.WorkerHello{
-				Keys:           c.PublicKeys,
-				EncryptionMode: c.EncryptionMode,
-			},
-		},
+	// The hello is written before the queue exists, so it is always first.
+	if err := stream.Send(context.Background(), &leapmuxv1.ConnectRequest{
+		Payload: &leapmuxv1.ConnectRequest_Hello{Hello: &leapmuxv1.WorkerHello{
+			Keys: c.PublicKeys, EncryptionMode: c.EncryptionMode,
+		}},
 	}); err != nil {
-		if errors.Is(err, io.EOF) {
-			if _, recvErr := stream.Receive(); recvErr != nil {
-				return fmt.Errorf("hello: %w", recvErr)
+		// A failed hello can race a refusal already sent by the Hub. Read its
+		// close frame before deciding what the reconnect policy should do.
+		for {
+			if _, readErr := stream.Receive(context.Background()); readErr != nil {
+				return fmt.Errorf("hello: %w", receiveEndError(readErr, ctx, connCtx))
 			}
 		}
-		return fmt.Errorf("hello: %w", err)
 	}
+	silenceTimer := c.clock.NewTimer(hubSilenceTimeout, hubSilenceTimerTag)
+	go c.watchHubSilence(connCtx, silenceTimer, stream.PingReceived(), cancelCause)
 
 	writer := sendq.New(connCtx, sendq.Config[*leapmuxv1.ConnectRequest]{
 		Write: func(_ context.Context, m *leapmuxv1.ConnectRequest) error {
-			return stream.Send(m)
+			return stream.Send(context.Background(), m)
 		},
 		Size: func(m *leapmuxv1.ConnectRequest) int {
 			return proto.Size(m)
@@ -498,18 +438,16 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 		ControlReserve: sendq.DefaultControlReserve,
 		FrameOverhead:  sendq.DefaultFrameOverhead,
 		WriteTimeout:   sendq.DefaultWriteTimeout,
-		OnGiveUp:       c.connectWriterGiveUpHook(connCancel),
+		OnGiveUp:       c.connectWriterGiveUpHook(cancelCause),
 		OnDiscard: func(frames int, bytes int64) {
 			slog.Debug("hub connect stream discarded queued frames",
 				"frames", frames, "bytes", bytes)
 		},
 	})
 
-	connectedAt := c.clock.Now(hubConnectTimestampTag)
 	c.mu.Lock()
 	c.writer = writer
-	c.connCancel = connCancel
-	c.lastSendTime = connectedAt
+	c.connCancel = cancelCause
 	c.mu.Unlock()
 	defer func() {
 		c.mu.Lock()
@@ -529,50 +467,47 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 		}
 	}()
 
-	go c.closeStreamOnCancel(connCtx, stream)
-
 	slog.Info("connected to hub", "url", c.endpoint.URL())
 
 	// Reset identity tracking for this connection and arm the watchdog that
 	// force-closes the stream if the Hub never delivers a WorkerIdentity that
-	// leaves the worker with an owner. The Hub sends it before publishing the
+	// leaves the worker with an owner. The Hub enqueues it before publishing the
 	// connection (worker_connector_service.go), so its absence within the budget
 	// signals a stripped, dropped or empty greeting.
 	c.identityReceived.Store(false)
-	go c.watchForIdentity(connCtx)
+	go c.watchForIdentity(connCtx, cancelCause)
 
-	// Send workspace tab sync if a provider is configured.
-	if c.TabSyncProvider != nil {
-		if tabSync := c.TabSyncProvider(); tabSync != nil {
-			if err := c.Send(&leapmuxv1.ConnectRequest{
-				Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{
-					WorkerTabInventory: tabSync,
-				},
-			}); err != nil {
-				slog.Log(context.Background(), sendFailureLevel(err), "failed to send workspace tabs sync", "error", err)
-			}
+	var upload *inventoryUpload
+	defer func() {
+		// Release a producer parked on queue admission before joining it.
+		if upload != nil {
+			upload.stop()
 		}
-	}
-
-	// Start heartbeat goroutine (uses connCtx so it exits on reconnect).
-	go c.heartbeatLoop(connCtx)
+		c.mu.Lock()
+		if c.tabSync == upload {
+			c.tabSync = nil
+		}
+		c.mu.Unlock()
+	}()
+	inventoryStarted := false
 
 	// Main receive loop.
 	for {
-		msg, err := stream.Receive()
+		msg, err := stream.Receive(context.Background())
 		if err != nil {
-			return fmt.Errorf("receive: %w", err)
+			return fmt.Errorf("receive: %w", receiveEndError(err, ctx, connCtx))
 		}
 
 		c.handleMessage(msg)
+		if msg.GetWorkerIdentity() != nil && c.identityReceived.Load() && !inventoryStarted {
+			inventoryStarted = true
+			upload = c.startTabSync(connCtx, writer)
+		}
 	}
 }
 
 func (c *Client) handleMessage(msg *leapmuxv1.ConnectResponse) {
 	switch payload := msg.GetPayload().(type) {
-	case *leapmuxv1.ConnectResponse_Heartbeat:
-		// Ignore heartbeat responses.
-
 	case *leapmuxv1.ConnectResponse_Deregister:
 		c.handleDeregister(msg.GetRequestId(), payload.Deregister)
 
@@ -613,52 +548,9 @@ func (c *Client) handleMessage(msg *leapmuxv1.ConnectResponse) {
 	}
 }
 
-// resolveWorkingDir resolves a working directory path:
-//   - Expands leading "~" or "~/" to the user's home directory
-//   - Resolves to an absolute path via filepath.Abs
-//   - Cleans the path via filepath.Clean
-//   - Validates the directory exists
-func resolveWorkingDir(path string) (string, error) {
-	// Expand tilde: only "~" alone or "~/..." are tilde prefixes.
-	// NOT "/foo/~/bar", "~~", "~~/foo", etc.
-	if path == "~" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		path = home
-	} else if strings.HasPrefix(path, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("resolve home directory: %w", err)
-		}
-		path = filepath.Join(home, path[2:])
-	}
-
-	// Resolve to absolute and clean.
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("resolve absolute path: %w", err)
-	}
-	resolved := filepath.Clean(abs)
-
-	// Validate directory exists.
-	info, err := os.Stat(resolved)
-	if err != nil {
-		return "", fmt.Errorf(`stat working directory "%s": %w`, resolved, err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf(`working directory "%s" is not a directory`, resolved)
-	}
-
-	return resolved, nil
-}
-
-const heartbeatIdleTimeout = 5 * time.Second
-
 // workerIdentityTimeout limits how long the worker waits for the Hub's
 // connect-time WorkerIdentity greeting before force-closing the stream. The
-// Hub sends it before publishing the connection, so its absence within this
+// Hub enqueues it before publishing the connection, so its absence within this
 // budget signals a stripped/dropped greeting -- which would otherwise leave
 // the owner gate denying every machine-scoped RPC (file, git, sysinfo,
 // tunnel) for the connection's life, indistinguishable from a genuine
@@ -666,39 +558,11 @@ const heartbeatIdleTimeout = 5 * time.Second
 // backoff, which re-runs the greeting on a fresh stream.
 const workerIdentityTimeout = 10 * time.Second
 
-// closeStreamOnCancel ends the bidi stream when ctx fires, because cancelling
-// it is NOT enough on its own. connect-go checks the context before each read,
-// so a Receive already parked inside the HTTP/2 response body stays parked
-// until a frame arrives -- and a Hub that is shutting down sends none. The
-// Hub's Connect handler then sees nothing until its own 10s idle timeout, and
-// because an unencrypted-HTTP/2 connection counts as ACTIVE for its whole life
-// (net/http marks it so in maybeServeUnencryptedHTTP2), that handler holds
-// http.Server.Shutdown's drain open for the same 10s.
-//
-// Closing turns every cancellation -- reconnect, identity watchdog, worker
-// shutdown -- into an immediate stream end the Hub observes at once: END_STREAM
-// when the writer is idle, a reset or a truncated final frame when a send was
-// in flight. Both surface to the Hub as a receive error, which is what releases
-// its handler. Truncation is unavoidable here rather than sloppy: flushing the
-// writer first would re-park on the very stall being escaped.
-//
-// Connect's `defer connCancel()` guarantees this goroutine exits with the
-// connection. Both Close errors are structurally nil (a pipe close and a
-// response-body close), which is why connect-go's own client discards them the
-// same way.
-func (c *Client) closeStreamOnCancel(
-	ctx context.Context,
-	stream leapmuxv1connect.WorkerConnectorServiceConnectClientStream,
-) {
-	<-ctx.Done()
-	_ = stream.CloseSend()
-	_ = stream.Close()
-}
-
 // watchForIdentity force-closes the connection if the Hub does not deliver,
 // within workerIdentityTimeout, a WorkerIdentity after which OnWorkerIdentity
-// reports an owner. See Client.identityReceived.
-func (c *Client) watchForIdentity(ctx context.Context) {
+// reports an owner. cancel must belong to this connection so a delayed
+// watchdog cannot cancel a later connection. See Client.identityReceived.
+func (c *Client) watchForIdentity(ctx context.Context, cancel context.CancelCauseFunc) {
 	timer := c.clock.NewTimer(workerIdentityTimeout, hubIdentityTimerTag)
 	defer timer.Stop(hubIdentityTimerTag)
 	select {
@@ -710,56 +574,23 @@ func (c *Client) watchForIdentity(ctx context.Context) {
 		}
 		slog.Warn("hub did not deliver a usable worker identity within timeout; forcing reconnect",
 			"timeout", workerIdentityTimeout)
-		c.cancelConn()
+		cancel(errNoWorkerIdentity)
 	}
 }
 
 // cancelConn cancels the current connection's context if one is active. Safe
 // to call from any goroutine; a no-op when no connection is active.
-func (c *Client) cancelConn() {
+func (c *Client) cancelConn(cause error) {
 	c.mu.Lock()
 	cancel := c.connCancel
 	c.mu.Unlock()
 	if cancel != nil {
-		cancel()
+		cancel(cause)
 	}
 }
 
-func (c *Client) heartbeatLoop(ctx context.Context) {
-	ticker := c.clock.NewTicker(2*time.Second, hubHeartbeatTickerTag)
-	defer ticker.Stop(hubHeartbeatTickerTag)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			c.mu.Lock()
-			lastSend := c.lastSendTime
-			c.mu.Unlock()
-			// Outside the lock, for the reason markEnqueued states.
-			idle := c.clock.Since(lastSend, hubHeartbeatIdleTag)
-
-			if idle >= heartbeatIdleTimeout {
-				if err := c.Send(&leapmuxv1.ConnectRequest{
-					Payload: &leapmuxv1.ConnectRequest_Heartbeat{
-						Heartbeat: &leapmuxv1.Heartbeat{},
-					},
-				}); err != nil {
-					// Debug when the connection was simply going away: the loop races
-					// its own teardown (select gives no ordering when both ctx.Done
-					// and the tick are ready), so one more heartbeat after the writer
-					// closed is the ORDINARY end of a disconnect, not a fault.
-					slog.Log(context.Background(), sendFailureLevel(err), "heartbeat send failed", "error", err)
-					return
-				}
-			}
-		}
-	}
-}
-
-// bareUnauthenticatedRemedyThreshold is the number of consecutive Unauthenticated
-// refusals without a refusal detail at which a worker logs its remedy. One such
+// bareUnauthenticatedRemedyThreshold is the number of consecutive HTTP 401
+// upgrade refusals at which a worker logs its remedy. One such
 // refusal can be a proxy that restarts. Several in a row mean that the Hub does
 // not know this worker's token, and the worker keeps retrying for ever, so only
 // the log can tell the operator what to do.
@@ -790,16 +621,13 @@ func (c *Client) ConnectWithReconnect(ctx context.Context, authToken string) err
 }
 
 func (c *Client) connectWithReconnect(ctx context.Context, authToken string, connectToHub connectFn, bo backoff, threshold time.Duration) error {
-	// The number of consecutive Unauthenticated refusals without a detail.
+	// The number of consecutive HTTP 401 upgrade refusals.
 	bareUnauthenticated := 0
 	for {
 		start := c.clock.Now(hubReconnectTimeTag)
 		err := connectToHub(ctx, authToken)
 		connectionErr := err
-		if ctx.Err() != nil && errwrap.IsCancellationWith(err, func(cause error) bool {
-			transport, ok := cause.(*connect.Error)
-			return ok && transport.Code() == connect.CodeCanceled
-		}) {
+		if ctx.Err() != nil && errwrap.IsCancellation(err) {
 			connectionErr = nil
 		}
 
@@ -813,13 +641,11 @@ func (c *Client) connectWithReconnect(ctx context.Context, authToken string, con
 			return nil
 		}
 
-		// Only a refusal whose detail says reconnecting cannot help stops the
-		// loop. A bare code carries no such claim.
-		switch connectRefusalReason(err) {
-		case leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_UNSPECIFIED:
-			// No detail: the refusal says nothing about whether reconnecting can
-			// help, so the loop backs off and tries again below.
-			if err != nil && connect.CodeOf(err) == connect.CodeUnauthenticated {
+		// Only a Hub close with a permanent reason stops the loop.
+		switch classifyStreamRefusal(err) {
+		case refusalRetry:
+			// A transient refusal retries after the delay below.
+			if isUnauthorizedUpgrade(err) {
 				bareUnauthenticated++
 			} else {
 				bareUnauthenticated = 0
@@ -832,13 +658,13 @@ func (c *Client) connectWithReconnect(ctx context.Context, authToken string, con
 					"If the hub deleted this worker more than 7 days ago, stop it, delete state.json, and register it again.",
 					"refusals", bareUnauthenticated, "error", err)
 			}
-		case leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_WORKER_DELETED:
+		case refusalWorkerDeleted:
 			slog.Warn("the hub reports that this worker was deleted; stopping", "error", err)
 			if c.OnDeregister != nil {
 				c.OnDeregister()
 			}
 			return nil
-		case leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_KEYS_DIFFER:
+		case refusalKeysDiffer:
 			slog.Error("the hub refused this worker's public keys; stopping", "error", err)
 			return fmt.Errorf("%w: %w", ErrKeysRefused, err)
 		}
@@ -868,62 +694,44 @@ func (c *Client) connectWithReconnect(ctx context.Context, authToken string, con
 	}
 }
 
-// connectRefusalReason returns the WorkerConnectRefusal reason carried by err,
-// or UNSPECIFIED when it carries none. Only the detail counts: a bare
-// Unauthenticated, PermissionDenied or Canceled says nothing about whether
-// reconnecting can help.
-func connectRefusalReason(err error) leapmuxv1.WorkerConnectRefusalReason {
-	var connectErr *connect.Error
-	if !errors.As(err, &connectErr) {
-		return leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_UNSPECIFIED
+type streamRefusal int
+
+const (
+	refusalRetry streamRefusal = iota
+	refusalWorkerDeleted
+	refusalKeysDiffer
+)
+
+// Only an exact Hub close status and reason can stop reconnecting.
+func classifyStreamRefusal(err error) streamRefusal {
+	var closed websocket.CloseError
+	if !errors.As(err, &closed) || closed.Code != websocket.StatusPolicyViolation {
+		return refusalRetry
 	}
-	for _, detail := range connectErr.Details() {
-		// The inverse of the connectproto.NewErrorDetail the Hub builds the
-		// detail with. A detail of a type this binary does not know, or one that
-		// does not decode, says nothing about this refusal.
-		msg, err := connectproto.UnmarshalErrorDetail(detail)
-		if err != nil {
-			continue
-		}
-		if refusal, ok := msg.(*leapmuxv1.WorkerConnectRefusal); ok {
-			return refusal.GetReason()
-		}
+	switch closed.Reason {
+	case channelwire.WorkerCloseReasonDeleted:
+		return refusalWorkerDeleted
+	case channelwire.WorkerCloseReasonKeysDiffer:
+		return refusalKeysDiffer
+	default:
+		return refusalRetry
 	}
-	return leapmuxv1.WorkerConnectRefusalReason_WORKER_CONNECT_REFUSAL_REASON_UNSPECIFIED
+}
+func isUnauthorizedUpgrade(err error) bool {
+	var refused *UpgradeRefusedError
+	return errors.As(err, &refused) && refused.StatusCode == 401
 }
 
-// writerGiveUpCancelsConnection reports whether a writer give-up must end the
-// connection by cancelling it, or whether the peer already ended the stream and
-// the receive loop will report why.
-//
-// A write that fails because the Hub ended the stream wraps io.EOF:
-// connecthttp's duplexHTTPCall.Send maps a closed request pipe to io.EOF, and
-// grpcClientConn.Receive reads the status from the trailers or from a
-// trailers-only response. Cancelling in that case makes duplexHTTPCall.Read
-// check the context before it reads the response, so Receive returns a bare
-// Canceled and the Hub's status -- with its WorkerConnectRefusal detail -- is
-// lost. Leaving the stream to its reader is what surfaces it.
-//
-// That the reader still ends is not a hope: the request pipe closes only on
-// paths that also end the response read -- connect's CloseWrite after a response
-// error, closeStreamOnCancel, or net/http's HTTP/2 client through
-// abortStreamLocked on RST_STREAM, GOAWAY and connection loss, after which
-// processResetStream or cleanupWriteRequest also closes the response body, and
-// through abortRequestBodyWrite on a status above 299, which connecthttp's
-// grpcValidateResponse turns into the error Receive returns. A write can fail
-// with io.EOF before that error exists, but makeRequest stores it as responseErr
-// before it closes responseReady, and Receive waits for responseReady.
+// A closed socket leaves the Hub's close status to the receive loop. Other
+// write failures cancel promptly rather than waiting for the silence timer.
 func writerGiveUpCancelsConnection(reason sendq.GiveUpReason, err error) bool {
-	if reason == sendq.GiveUpWriteError && errors.Is(err, io.EOF) {
-		return false
-	}
-	return true
+	return reason != sendq.GiveUpWriteError || (!errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled))
 }
 
 // connectWriterGiveUpHook builds the connect writer's OnGiveUp hook. It is a
 // method so a test can drive the production hook, and it counts every give-up
 // whether or not it cancels.
-func (c *Client) connectWriterGiveUpHook(connCancel context.CancelFunc) func(sendq.GiveUpReason, error) {
+func (c *Client) connectWriterGiveUpHook(connCancel context.CancelCauseFunc) func(sendq.GiveUpReason, error) {
 	return func(reason sendq.GiveUpReason, err error) {
 		// Counted like every other sendq writer. The worker serves no /metrics
 		// of its own, but solo runs it in the Hub's process against the Hub's
@@ -938,6 +746,88 @@ func (c *Client) connectWriterGiveUpHook(connCancel context.CancelFunc) func(sen
 		}
 		slog.Warn("hub connect stream writer gave up; reconnecting",
 			"reason", reason.Label(), "error", err)
-		connCancel()
+		connCancel(fmt.Errorf("outbound queue gave up (%s): %w", reason.Label(), err))
 	}
+}
+
+// hubStream is the stream seam used by deterministic tests of teardown races.
+type hubStream interface {
+	Send(context.Context, *leapmuxv1.ConnectRequest) error
+	Receive(context.Context) (*leapmuxv1.ConnectResponse, error)
+	Close() error
+	CloseNow() error
+	PingReceived() <-chan struct{}
+}
+
+var _ hubStream = (*WorkerStream)(nil)
+
+const hubSilenceTimeout = wskeepalive.Interval*wskeepalive.FailuresBeforeDrop + wskeepalive.Timeout
+
+var (
+	errHubStoppedPinging     = errors.New("hub stopped pinging")
+	errNoWorkerIdentity      = errors.New("hub did not deliver a usable worker identity")
+	errControlQueueSaturated = errors.New("hub control queue saturated")
+)
+
+func (c *Client) watchHubSilence(ctx context.Context, timer *quartz.Timer, pings <-chan struct{}, cancel context.CancelCauseFunc) {
+	defer timer.Stop(hubSilenceTimerTag)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-pings:
+			timer.Reset(hubSilenceTimeout, hubSilenceTimerTag)
+		case <-timer.C:
+			cancel(errHubStoppedPinging)
+			return
+		}
+	}
+}
+
+// A stop takes precedence over a transport error. The Hub's close takes
+// precedence over a local failure so a raced refusal still reaches policy.
+func receiveEndError(readErr error, ctx, connCtx context.Context) error {
+	if ctx.Err() != nil {
+		return fmt.Errorf("worker stopped: %w", context.Cause(ctx))
+	}
+	var closed websocket.CloseError
+	if errors.As(readErr, &closed) {
+		return readErr
+	}
+	if connCtx.Err() != nil {
+		return fmt.Errorf("connection ended: %w", context.Cause(connCtx))
+	}
+	return readErr
+}
+
+// PublishTab publishes an already-persisted resource using this Worker's token.
+// It is independent of delegation minting, so it also works for the first tab.
+func (c *Client) PublishTab(ctx context.Context, token string, request *leapmuxv1.TabPublication) (*leapmuxv1.PublishTabResponse, error) {
+	if token == "" {
+		return nil, errors.New("the Worker has no Hub credential")
+	}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
+	return c.connector.PublishTab(ctx, &leapmuxv1.PublishTabRequest{Publication: request})
+}
+
+// CancelTabPublication prevents late publication with this Worker's credential.
+func (c *Client) CancelTabPublication(ctx context.Context, token string, request *leapmuxv1.TabPublication) error {
+	if token == "" {
+		return errors.New("the Worker has no Hub credential")
+	}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
+	_, err := c.connector.CancelTabPublication(ctx, &leapmuxv1.CancelTabPublicationRequest{Publication: request})
+	return err
+}
+
+// ResolveTabPublication reads current hosting state with the Worker's credential.
+func (c *Client) ResolveTabPublication(ctx context.Context, token string, request *leapmuxv1.TabPublication) (*leapmuxv1.ResolveTabPublicationResponse, error) {
+	if token == "" {
+		return nil, errors.New("the Worker has no Hub credential")
+	}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+token)
+	return c.connector.ResolveTabPublication(ctx, &leapmuxv1.ResolveTabPublicationRequest{Publication: request})
 }

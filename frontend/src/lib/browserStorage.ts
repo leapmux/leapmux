@@ -724,6 +724,11 @@ export function setStorageAccount(userId: string): void {
     listener()
 }
 
+/** The account whose namespace synchronous storage operations currently use. */
+export function storageAccountId(): string | null {
+  return storageAccount
+}
+
 /** Whether an account namespace is available, i.e. whether an identity resolved. */
 export function hasStorageAccount(): boolean {
   return storageAccount !== null

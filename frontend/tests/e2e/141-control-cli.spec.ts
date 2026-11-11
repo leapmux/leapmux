@@ -1,27 +1,20 @@
 /**
- * `leapmux control` end-to-end coverage for the single-worker case.
+ * End-to-end coverage for `leapmux control` with one Worker.
  *
- * The Go integration tests already prove every broadcast path the
- * spec touches at the protocol level (delegation tokens,
- * `UserCRDT /ws/userevents` fan-out, `SubmitOps` broadcast, channel
- * teardown). What they cannot exercise is the live wire-up: a real
- * frontend bundle running against a real hub, observing CLI-driven
- * mutations propagate into the DOM.
+ * Go integration tests cover delegation tokens, canonical event delivery, and
+ * channel teardown. This spec exercises the real frontend bundle against a
+ * real Hub and observes CLI-driven creation in the DOM.
  *
- * The exercised signal is: `agent open` via the CLI → worker spawns
- * the agent → CRDT `SetTabRegister` batch submitted to the hub →
- * canonical-HLC-tagged op broadcast on `/ws/userevents` →
- * `useUserEvents` feeds it into `pendingOps.consumeRemote` → tab.store
- * projects the new tab → tab element appears in the DOM with the
- * agent's `tab_id` rendered as `data-tab-id`.
+ * CLI agent creation reaches the authenticated Worker. The Worker publishes
+ * the canonical tab through the Hub, which broadcasts its operations on
+ * `/ws/userevents`. The pending manager and projection produce the rendered
+ * tab with the agent's `tab_id` as `data-tab-id`. Process startup can finish
+ * after publication.
  *
- * Active-tab is now a purely local concern (sessionStorage); the
- * CRDT model has no `RequestActiveTab` broadcast, so the spec no
- * longer exercises remote focus propagation.
+ * Active-tab selection stays local in browser storage.
  *
- * The two-browser variant repeats the open path for the multi-tab
- * case (different sessions viewing the same workspace), proving the
- * op-stream fan-out reaches every subscriber, not just the originator.
+ * The two-browser variant opens an agent while different sessions view the
+ * same workspace. Both subscribers must render the published tab.
  */
 
 import { expect } from '@playwright/test'
@@ -36,12 +29,9 @@ test.describe('control CLI live broadcast', () => {
     const cli = await mintCLITokenForAdmin(leapmuxServer)
     await expectAgentTabCount(page, 1)
 
-    // Drive the CLI from outside the browser. The hub broadcasts a
-    // canonical-HLC-tagged `CrdtOp` on `/ws/userevents` describing the
-    // new tab; the live frontend's `useUserEvents` feeds it into
-    // `pendingOps.consumeRemote` and the projection-driven
-    // `tabStore` renders the new tab — that's the wire-up under
-    // test here.
+    // The CLI invokes Worker creation. Canonical-HLC-tagged CrdtOp batches
+    // arrive on /ws/userevents. useUserEvents passes them to
+    // pendingOps.consumeRemote, then the projection and joined view render the tab.
     const newAgentID = await cliAgentOpen(cli, { workspaceId, workerId: leapmuxServer.workerId })
     await expect(tabById(page, newAgentID)).toBeVisible()
     await expectAgentTabCount(page, 2)
@@ -53,7 +43,7 @@ test.describe('control CLI live broadcast', () => {
     const cli = await mintCLITokenForAdmin(leapmuxServer)
 
     // Two browser contexts simulate a user logged in on two devices
-    // (or two windows). Both should observe the snapshot fan-out.
+    // or two windows. Both should receive the canonical operations.
     await withExtraClients(browser, leapmuxServer, 2, async ([pageA, pageB]) => {
       await loginViaToken(pageA, adminToken)
       await loginViaToken(pageB, adminToken)
@@ -66,10 +56,8 @@ test.describe('control CLI live broadcast', () => {
         expectAgentTabCount(pageB, 1),
       ])
 
-      // CLI creates a tab; both browsers must see it via snapshot
-      // reconciliation. Active-tab is purely local under the CRDT
-      // model (see `tab.go: "tab focus is intentionally absent"`), so
-      // the spec asserts visibility only.
+      // Both browsers must render the CLI-created tab from canonical events.
+      // Each browser owns its active selection, so these assertions check visibility.
       const newAgentID = await cliAgentOpen(cli, { workspaceId, workerId })
       await Promise.all([
         expect(tabById(pageA, newAgentID)).toBeVisible(),

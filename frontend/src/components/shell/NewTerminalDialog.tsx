@@ -1,7 +1,7 @@
 import type { Component } from 'solid-js'
+import type { TerminalCreationSubmission } from './useTabCreation'
 import type { createRepoGitStore } from '~/stores/repoGit.store'
 import { createMemo, Show } from 'solid-js'
-import { workerTerminal } from '~/api/workerRpc'
 import { DialogColumns, DialogTopRow, DialogTopSection } from '~/components/common/Dialog'
 import { BlockedReasonNotice } from '~/components/shell/BlockedReasonNotice'
 import { isTerminalCreateDisabled } from '~/components/shell/dialogValidation'
@@ -25,10 +25,9 @@ interface NewTerminalDialogProps {
   defaultWorkerId?: string
   defaultWorkingDir?: string
   /**
-   * When this returns a string, no tab can be placed right now (no
-   * workspace, or its tree has not arrived): submit is disabled and the
-   * string is shown as the reason. Guards the worker RPC — creating the
-   * pty first and refusing placement second would orphan it.
+   * A returned reason disables submit and appears in the dialog. It reports
+   * destination readiness before a Worker creation request, including an absent
+   * workspace or a tree that has not arrived.
    */
   blockedReason?: () => string | undefined
   /**
@@ -39,13 +38,7 @@ interface NewTerminalDialogProps {
    * the terminal into a worktree or onto another branch, where the active tab's
    * branch is the wrong answer for the directory it lands in.
    */
-  onCreated: (
-    terminalId: string,
-    workerId: string,
-    workingDir: string,
-    title: string,
-    opts: { seedGitFromActiveTab: boolean },
-  ) => void
+  onCreate: (input: TerminalCreationSubmission) => Promise<boolean>
   onClose: () => void
   repoGitStore: ReturnType<typeof createRepoGitStore>
 }
@@ -102,19 +95,18 @@ export const NewTerminalDialog: Component<NewTerminalDialogProps> = (props) => {
   }
 
   const handleSubmit = formHandler(submitDisabled, async () => {
-    const resp = await workerTerminal.openTerminal(worker.workerId(), {
-      cols: DEFAULT_TERMINAL_COLS,
-      rows: DEFAULT_TERMINAL_ROWS,
-      workingDir: worker.workingDir(),
-      shell: shell(),
-      // The CLEANED title: the worker applies the same rule to whatever
-      // arrives, so sending the raw text would show one title here and store
-      // another until the next refresh replaced it.
-      title: title.cleaned(),
-      gitSetup: gitMode.toGitSetup(),
-    })
-    props.onCreated(resp.terminalId, worker.workerId(), worker.workingDir(), resp.title, {
+    await props.onCreate({
+      workerId: worker.workerId(),
       seedGitFromActiveTab: gitMode.gitMode() === GitMode.Current,
+      request: {
+        cols: DEFAULT_TERMINAL_COLS,
+        rows: DEFAULT_TERMINAL_ROWS,
+        workingDir: worker.workingDir(),
+        shell: shell(),
+        title: title.cleaned(),
+        gitSetup: gitMode.toGitSetup(),
+      },
+      onError: error => setError(formatErrorMessage(error, 'Failed to create terminal')),
     })
   })
 

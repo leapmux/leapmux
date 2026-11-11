@@ -1,10 +1,17 @@
 import type { Locator, Page } from '@playwright/test'
+import type { ListSectionsResponse } from '../../src/generated/proto/leapmux/v1/section_pb'
+import { fromBinary, fromJsonString } from '@bufbuild/protobuf'
 import { expect } from '@playwright/test'
+import { deferred } from '~/test-support/async'
 import { frontendRoot } from '~/test-support/sourceTree'
+import { ListSectionsResponseSchema } from '../../src/generated/proto/leapmux/v1/section_pb'
+import { MoveWorkspaceRequestSchema } from '../../src/generated/proto/leapmux/v1/workspace_pb'
 import { test } from './fixtures'
-import { openAgentViaAPI } from './helpers/api'
-import { archiveWorkspaceViaUI, clickRowMenuItem, clickWorkspaceMenuItem, expandWorkspaceRow, openRowMenu, sidebarSectionHeader, workspaceRow } from './helpers/ui'
+import { callHub, deleteWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
+import { finishCleanup, withCleanup } from './helpers/cleanup'
+import { activeWorkspaceRow, archiveWorkspaceViaUI, clickRowMenuItem, clickWorkspaceMenuItem, expandSidebarSection, expandWorkspaceRow, fillWorkspaceTitle, openRowMenu, setWorkingDir, sidebarSectionHeader, submitNewWorkspaceDialog, waitForWorker, workspaceRow } from './helpers/ui'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
+import { createGitRepo } from './helpers/worktree'
 
 /**
  * The section header's menu, which replaced the `+`.
@@ -16,7 +23,8 @@ import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
  * the dialog against a live worker, and that Collapse all touches one section's
  * rows and no other's.
  *
- * Every `getByRole('menuitem')` below is `exact`. Playwright matches an
+ * Fixed-label menu lookups use `exact`. The creation item accepts its shortcut
+ * suffix through a label-prefix expression. Playwright matches an
  * accessible name by SUBSTRING otherwise, and this menu holds items whose names
  * contain one another ("Unarchive all" inside "Archive", "New workspace..."
  * beside a repository row).
@@ -93,7 +101,7 @@ test.describe('sidebar section menu', () => {
     const popover = await openSectionMenu(page, 'workspaces_archived', 'Unarchive all')
     await expect(popover.getByRole('menuitem', { name: 'Empty archive...', exact: true })).toBeVisible()
     // No create items: a workspace created into Archived is born read-only.
-    await expect(popover.getByRole('menuitem', { name: 'New workspace...', exact: true })).toHaveCount(0)
+    await expect(popover.getByRole('menuitem', { name: /^New workspace\.\.\./ })).toHaveCount(0)
   })
 
   // The filter box lives in the section BODY, and this menu opens while the
@@ -226,5 +234,102 @@ test.describe('sidebar section menu', () => {
     await confirm.getByRole('button', { name: 'Confirm?' }).click()
 
     await expect(custom).toHaveCount(0)
+  })
+})
+
+test('keeps a new workspace selected while its custom-section move waits', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+  const { hubUrl, adminToken: cookie, dataDir } = leapmuxServer
+  const sectionName = 'Creation publication'
+  const title = 'Published section workspace'
+  let sectionId: string | undefined
+  let workspaceId: string | undefined
+  let releaseMove: (() => void) | undefined
+  const sectionSnapshot = deferred<ListSectionsResponse>()
+  const stopRoutes = deferred<void>()
+  await withCleanup(async () => {
+    const created = await callHub<{ section?: { id?: string } }>(hubUrl, 'SectionService/CreateSection', { name: sectionName, sidebar: 'SIDEBAR_LEFT' }, { cookie, operation: 'create a section for publication acceptance' })
+    sectionId = created.section?.id
+    if (!sectionId)
+      throw new Error('The Hub returned no section identity.')
+    const repoDir = createGitRepo(dataDir, 'section-publication-workspace')
+    await page.reload()
+    await expect(workspaceRow(page, authenticatedWorkspace.workspaceId)).toBeVisible()
+    const custom = page.locator('[data-testid="section-header-workspaces_custom"]:visible').filter({ hasText: sectionName }).first()
+    await expect(custom).toBeVisible()
+    await expandSidebarSection(custom)
+    const gate = new Promise<void>((resolve) => {
+      releaseMove = resolve
+    })
+    let receiveMove!: (id: string) => void
+    const moveRequest = new Promise<string>((resolve) => {
+      receiveMove = resolve
+    })
+    await page.route('**/leapmux.v1.WorkspaceService/MoveWorkspace', async (route) => {
+      const body = route.request().postDataBuffer()
+      if (!body)
+        throw new Error('The section move has no request body.')
+      const request = route.request().headers()['content-type']?.includes('json')
+        ? fromJsonString(MoveWorkspaceRequestSchema, body.toString('utf8'))
+        : fromBinary(MoveWorkspaceRequestSchema, new Uint8Array(body))
+      if (request.sectionId !== sectionId) {
+        await route.continue()
+        return
+      }
+      workspaceId = request.workspaceId
+      receiveMove(request.workspaceId)
+      await gate
+      await route.continue()
+    })
+    await page.route('**/leapmux.v1.SectionService/ListSections', async (route) => {
+      const admitted = await Promise.race([
+        moveRequest.then(() => true),
+        stopRoutes.promise.then(() => false),
+      ])
+      if (!admitted) {
+        await route.abort()
+        return
+      }
+      const response = await route.fetch()
+      const body = await response.body()
+      const snapshot = response.headers()['content-type']?.includes('json')
+        ? fromJsonString(ListSectionsResponseSchema, body.toString('utf8'))
+        : fromBinary(ListSectionsResponseSchema, new Uint8Array(body))
+      await route.fulfill({ response })
+      sectionSnapshot.resolve(snapshot)
+    })
+    const trigger = custom.getByTestId('sidebar-section-menu-workspaces_custom')
+    const item = page.locator('[data-testid="sidebar-section-menu-workspaces_custom-popover"]:visible').first().getByRole('menuitem', { name: /^New workspace\.\.\./ })
+    await clickRowMenuItem(null, trigger, item)
+    await waitForWorker(page)
+    await fillWorkspaceTitle(page, title)
+    await setWorkingDir(page, repoDir)
+    await submitNewWorkspaceDialog(page, title)
+    workspaceId = await moveRequest
+    await expect(workspaceRow(page, workspaceId)).toHaveAttribute('data-active', 'true')
+    // Default-section membership is implicit until the move stores an assignment.
+    const snapshot = await sectionSnapshot.promise
+    expect(snapshot.sections.some(section => section.id === sectionId)).toBe(true)
+    expect(snapshot.items.find(item => item.workspaceId === workspaceId)?.sectionId).not.toBe(sectionId)
+    await expect(activeWorkspaceRow(page)).toContainText(title)
+    const moved = page.waitForResponse(response => response.url().endsWith('/leapmux.v1.WorkspaceService/MoveWorkspace') && response.ok())
+    releaseMove!()
+    await moved
+    await expect(custom.locator('..')).toContainText(title)
+    await expect(activeWorkspaceRow(page)).toContainText(title)
+  }, async () => {
+    stopRoutes.resolve()
+    releaseMove?.()
+    await finishCleanup([
+      ...(workspaceId
+        ? [
+            deleteWorkspaceViaAPI(hubUrl, cookie, workspaceId),
+          ]
+        : []),
+      ...(sectionId
+        ? [
+            callHub(hubUrl, 'SectionService/DeleteSection', { sectionId }, { cookie, operation: 'delete the publication acceptance section' }),
+          ]
+        : []),
+    ])
   })
 })

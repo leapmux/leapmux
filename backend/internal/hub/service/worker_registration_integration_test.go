@@ -372,6 +372,13 @@ func TestRegisterRecoversAfterLostCommittedResponse(t *testing.T) {
 	worker, rowErr := env.store.Workers().GetByRegistrationAttemptID(ctx, attempt.attemptID)
 	require.NoError(t, rowErr, "the committed attempt must be findable")
 
+	// Consuming the key expired it, so everything below recovers with a key
+	// that no longer registers anything. The documentation promises that a
+	// rerun recovers after the key's lifetime ends, and this is that case.
+	consumedKey, keyErr := env.store.RegistrationKeys().GetByID(ctx, key)
+	require.NoError(t, keyErr)
+	require.True(t, consumedKey.ExpiresAt.Before(time.Now()), "the consumed key must be expired, got %s", consumedKey.ExpiresAt)
+
 	// A plain retry of Register is AlreadyExists, not a second worker.
 	_, err = env.registerCall(t, ctx, key, attempt, false)
 	require.Error(t, err)

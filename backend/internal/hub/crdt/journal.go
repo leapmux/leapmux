@@ -93,8 +93,13 @@ type Journal interface {
 	CommitBatch(ctx context.Context, c CommitBatch) error
 
 	// LookupRecentBatchID returns a previously-committed batch_id row
-	// within the dedup window. Returns nil if absent.
+	// within the dedup window. Returns ErrNotFound if absent.
 	LookupRecentBatchID(ctx context.Context, userID, batchID string) (*RecentBatchRecord, error)
+
+	// Publication receipts have no retry expiry and commit with the tab batch.
+	LookupTabPublication(context.Context, string, string, string) (*PublicationReceipt, error)
+	LookupHostedTabState(context.Context, string, string, string) (*leapmuxv1.WorkerTabState, error)
+	CommitRejectedTabPublication(context.Context, string, PublicationReceipt) error
 
 	// CompactBatch upserts user_state.state_payload with whatever header the
 	// compaction pass built -- the watermarks, current_epoch,
@@ -138,6 +143,7 @@ type CommitBatch struct {
 	// BatchTransitions), so a caller with no transitions still commits a
 	// NOT NULL row.
 	Transitions *leapmuxv1.BatchTransitions
+	Publication *PublicationReceipt
 }
 
 // ResumeBatch pairs a journal op batch with its persisted per-entity workspace
@@ -218,4 +224,14 @@ type LifecycleOutboxRow struct {
 type LifecycleOutboxReader interface {
 	ListPendingLifecycleOutbox(ctx context.Context, userID string) ([]LifecycleOutboxRow, error)
 	MarkLifecycleOutboxConsumed(ctx context.Context, id int64, consumedAt time.Time) error
+}
+
+// PublicationReceipt retains the result for one immutable Worker creation.
+// Its owner is the journal operation's userID, not a second row-level authority.
+type PublicationReceipt struct {
+	Replace     bool
+	WorkerID    string
+	TabID       string
+	RequestHash []byte
+	Response    *leapmuxv1.PublishTabResponse
 }

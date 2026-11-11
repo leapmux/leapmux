@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"connectrpc.com/connect/v2"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -55,9 +54,6 @@ type Manager struct {
 	// locking; the load that matters happens under mu, with the tally it is
 	// compared against. See SetMaxWorkersPerUser.
 	maxWorkersPerUser atomic.Int64
-
-	regMu      sync.Mutex
-	regWaiters map[string]chan struct{} // regToken -> notify channel
 
 	// reachAuth gates every USER-DIRECTED read of the registry. It is supplied
 	// at construction by the component that owns the ownership +
@@ -159,7 +155,6 @@ func New(a ReachAuthorizer) *Manager {
 		conns:         make(map[string]*Conn),
 		connsByOwner:  make(map[string]int),
 		deregistering: make(map[string]bool),
-		regWaiters:    make(map[string]chan struct{}),
 		reachAuth:     a,
 	}
 }
@@ -175,8 +170,8 @@ func New(a ReachAuthorizer) *Manager {
 //
 // This is the bound on POOL MEMBERSHIP, and it is not redundant with its twin
 // WorkerConnectorService.SetMaxWorkersPerUser, which bounds how many registered
-// worker ROWS an account may hold. A row cap cannot bound membership on its own:
-// a DEREGISTERING row keeps its Connect stream -- that stream is how the worker
+// worker ROWS an account may hold. A row cap cannot limit membership on its own:
+// a DEREGISTERING row keeps its worker stream -- that stream is how the worker
 // is told to tear itself down -- while no longer counting against the row cap,
 // so register/deregister/register cycles would grow the worker pool without ever
 // exceeding it. The row cap stays because it refuses at registration time, where
@@ -231,10 +226,9 @@ func (m *Manager) Register(c *Conn) (bool, error) {
 	// The fenced check and the map write share this critical section, which is
 	// what makes the fence TOTAL rather than point-in-time: either Register
 	// sees the flag, or FenceAll's snapshot sees this conn. There is no third
-	// outcome. Without it a handler that passed the shutdown interceptor before
-	// shutdownCh closed -- it is a one-shot check, and a store round trip plus
-	// the greeting enqueue sit between it and here -- would publish a connection
-	// nothing ever fences, and hold the Hub's drain until workerIdleTimeout.
+	// outcome. Without it, a handler admitted before shutdown could finish its
+	// store read and greeting setup after FenceAll's snapshot. Its new
+	// connection would then keep the Hub's WebSocket drain open.
 	if m.fenced {
 		m.mu.Unlock()
 		c.Fence()
@@ -270,7 +264,7 @@ func (m *Manager) Register(c *Conn) (bool, error) {
 			c.Fence()
 			// After the unlock, so a slow log handler cannot hold the registry
 			// lock, and at Warn because it is the operator's to act on: either
-			// an account is leaking Connect streams or the cap is under what its
+			// an account is leaking worker streams or the cap is under what its
 			// machines legitimately hold.
 			slog.Warn("refusing worker connection: account is at its live worker cap",
 				"user_id", c.owner, "worker_id", c.WorkerID, "held", held, "limit", limit)
@@ -301,11 +295,11 @@ func (m *Manager) Register(c *Conn) (bool, error) {
 // deferred cleanup from accidentally removing a newer replacement connection.
 // Returns true if the connection was actually removed.
 //
-// Unregister does NOT Fence: the Connect handler removes the conn from the
-// registry first (so no new Hub sender can look it up), then drains the
+// Unregister does NOT Fence: the worker stream handler removes the conn from
+// the registry first (so no new Hub sender can look it up), then drains the
 // remaining queue while it still owns the stream, then Fences. That order
 // closes the window where SendControl could return nil and then be discarded
-// by Close. See WorkerConnectorService.Connect.
+// by Close. See WorkerConnectorService.serveWorkerStream.
 func (m *Manager) Unregister(workerID string, conn *Conn) bool {
 	// A nil conn is refused up front because it MATCHES: reading an absent key
 	// out of conns yields nil too, so `m.conns[workerID] == conn` would be true
@@ -416,32 +410,6 @@ func (m *Manager) IsDeregistering(workerID string) bool {
 	return m.deregistering[workerID]
 }
 
-// WaitForRegistrationChange blocks until the registration identified by
-// regToken is notified, the context is cancelled, or the timeout expires.
-// Returns nil on notification, ctx.Err() on cancel, or a timeout error.
-func (m *Manager) WaitForRegistrationChange(ctx context.Context, regToken string, timeout time.Duration) error {
-	ch := make(chan struct{})
-
-	m.regMu.Lock()
-	m.regWaiters[regToken] = ch
-	m.regMu.Unlock()
-
-	defer func() {
-		m.regMu.Lock()
-		delete(m.regWaiters, regToken)
-		m.regMu.Unlock()
-	}()
-
-	select {
-	case <-ch:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(timeout):
-		return fmt.Errorf("wait for registration change timed out")
-	}
-}
-
 // ShutdownNotifyResult tallies what became of one NotifyShutdownAndFence
 // broadcast. AlreadyGone is deliberately its own bucket rather than folded into
 // Failed: a worker that tore its own connection down a moment before the Hub
@@ -455,10 +423,7 @@ type ShutdownNotifyResult struct {
 	Total       int
 }
 
-// record folds one worker's outcome into the tally. It lives next to the struct
-// so the enum and the buckets it feeds cannot drift: adding an outcome is a
-// compile-time visit here rather than a switch somewhere else that silently
-// drops the new case on the floor.
+// record adds one worker's classified outcome to its count.
 func (r *ShutdownNotifyResult) record(o notifyOutcome) {
 	switch o {
 	case notifyDelivered:
@@ -586,9 +551,8 @@ func (m *Manager) NotifyShutdownAndFence(ctx context.Context, retryDelaySeconds 
 		}()
 	}
 
-	// Deferred so it runs on EVERY exit, deadline included: a worker that could
-	// not be notified inside the budget is exactly the one that would otherwise
-	// hold the drain open for the full idle timeout.
+	// Deferred so it runs on every exit, including deadline expiry. A failed
+	// notification must still fence the connection and start its handler teardown.
 	defer m.FenceAll()
 
 	result := ShutdownNotifyResult{Total: len(connections)}
@@ -640,29 +604,14 @@ func (m *Manager) connsLocked() []*Conn {
 	return conns
 }
 
-// FenceAll cancels every registered worker connection, ending its Connect
+// FenceAll cancels every registered worker connection, ending its stream
 // handler, and latches the registry closed so a later Register is refused
 // rather than published behind the fence. NotifyShutdownAndFence defers it, so
 // every worker the notification pass saw learns to delay its reconnect first.
 //
-// The Hub cannot leave these streams to the workers to close. A worker keeps
-// its stream open until it decides to reconnect, and the Hub only learns it is
-// gone from a frame or from workerIdleTimeout; meanwhile an
-// unencrypted-HTTP/2 connection counts as ACTIVE for its whole life (net/http
-// marks it so in maybeServeUnencryptedHTTP2), so http.Server.Shutdown's drain
-// waits on the handler holding it. A remote worker that is wedged, or merely
-// polite, would therefore spend the Hub's entire shutdown budget -- and past it
-// the drain reports a deadline the operator sees as a failed shutdown.
-//
-// One residual remains: a handler parked inside its OWN drain write is still
-// freed only by server.Close() after the drain deadline. connWriteTimeout
-// bounds the queue (give up, discard, fence) but cannot unpark the handler --
-// connect.ServerStream.Send has no context and bottoms out in
-// http.ResponseWriter.Write; cancelling connCtx does not interrupt an
-// in-flight HTTP/2 DATA write blocked on peer flow control. Spawning a
-// second Write against ctx.Done would race the transport. The cross-sender
-// pile-up, the deadline-ignoring block, and the Unregister deadlock that
-// motivated https://github.com/leapmux/leapmux/issues/344 are gone.
+// A worker can keep its stream open until it decides to reconnect. Fencing
+// ends each handler's context, including a write waiting for peer flow control.
+// The handler then closes its WebSocket and releases the Hub's drain.
 func (m *Manager) FenceAll() {
 	m.mu.Lock()
 	m.fenced = true
@@ -671,16 +620,5 @@ func (m *Manager) FenceAll() {
 
 	for _, conn := range conns {
 		conn.Fence()
-	}
-}
-
-// NotifyRegistrationChange wakes up any waiter blocked on the given regToken.
-func (m *Manager) NotifyRegistrationChange(regToken string) {
-	m.regMu.Lock()
-	defer m.regMu.Unlock()
-
-	if ch, ok := m.regWaiters[regToken]; ok {
-		close(ch)
-		delete(m.regWaiters, regToken)
 	}
 }

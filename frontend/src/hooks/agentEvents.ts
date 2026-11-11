@@ -950,7 +950,6 @@ function applyAgentStatusTabUpdate(
   // Write the consolidated tab update once.
   // Record live status and catalog writes in their respective epochs.
   // A pending ListAgents response then cannot replace the newer live fields.
-  // A git-only event changes neither epoch.
   // See TabMetadataStore.liveStatusEpoch and TabMetadataStore.liveCatalogEpoch.
   const hasStatus = sc.status !== AgentStatus.UNSPECIFIED
   const update = buildAgentStatusTabUpdate(sc, hasStatus, settingsFields)
@@ -959,5 +958,7 @@ function applyAgentStatusTabUpdate(
     writes.push('status')
   if (sc.optionGroups.length > 0)
     writes.push('catalog')
+  if (sc.gitStatus !== undefined)
+    writes.push('git')
   metadata.patchLive(agentId, update, writes)
 }

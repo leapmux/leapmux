@@ -513,7 +513,7 @@ CREATE UNIQUE INDEX idx_terminals_quake_working_dir ON terminals(working_dir)
 -- Links associate tabs with tracked worktrees.
 -- FILE and IMAGE tab IDs are unique only within an owner. The key must include user_id.
 -- Otherwise, a second owner's link can collide with the first owner's link and remain absent.
--- Process tabs use an empty owner because the Worker supplies their globally unique IDs.
+-- Process tabs use an empty owner because agents and terminals use ID-only primary keys.
 -- Every tab-keyed lookup and deletion matches the complete stored identity.
 CREATE TABLE worktree_tabs (
     worktree_id  TEXT NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
@@ -711,11 +711,10 @@ CREATE INDEX idx_agent_background_tasks_child ON agent_background_tasks(child_ag
 --
 -- user_id is '' for agents and terminals and REAL for payload-backed tabs
 -- (FILE and IMAGE), and that asymmetry is deliberate rather than a placeholder.
--- It mirrors worktree_tabs.user_id exactly (see worktree_tab_liveness): agent
--- and terminal ids are minted server-side and globally unique, so they need no
--- owner to disambiguate them, while a payload-backed tab id is minted
--- client-side as `<kind>-<millis>-<counter>` and is unique only within the
--- client that made it.
+-- It mirrors worktree_tabs.user_id exactly (see worktree_tab_liveness).
+-- Agents and terminals use ID-only primary keys, so their stored identity
+-- needs no owner. Payload rows use (user_id, tab_id), so their stored identity
+-- includes the owner even when the client generates a UUID.
 -- A reader scopes with `(user_id = '' OR user_id = ?)`, and
 -- worker_tab_payloads' own `CHECK (user_id <> '')` is what makes the '' case
 -- provably unable to match a payload-backed row.
@@ -743,7 +742,34 @@ UNION ALL
 SELECT tab_type, tab_id, user_id, working_dir, workspace_archived, 0
 FROM worker_tab_payloads;
 
+-- Pending operations protect resources until Hub publication has a known result.
+CREATE TABLE tab_creations (
+    user_id TEXT NOT NULL CHECK (user_id <> ''),
+    worker_id TEXT NOT NULL CHECK (worker_id <> ''),
+    tab_id TEXT NOT NULL,
+    -- TabType ordinal. TestTabCreationEnumColumnsMatchProto pins the range.
+    tab_type INTEGER NOT NULL CHECK (typeof(tab_type) = 'integer') CHECK (tab_type BETWEEN 1 AND 4),
+    request_hash BLOB NOT NULL CHECK (length(request_hash) = 32),
+    request_payload BLOB NOT NULL,
+    publication_payload BLOB NOT NULL,
+    runtime_payload BLOB NOT NULL,
+    publication_result BLOB NOT NULL DEFAULT X'',
+    -- TabCreationState ordinal. TestTabCreationEnumColumnsMatchProto pins the range.
+    state INTEGER NOT NULL CHECK (typeof(state) = 'integer') CHECK (state BETWEEN 1 AND 6),
+    -- WorktreeAction ordinal. NULL means no cancellation.
+    -- TestTabCreationEnumColumnsMatchProto pins the range.
+    cancel_action INTEGER CHECK (cancel_action IS NULL OR typeof(cancel_action) = 'integer') CHECK (cancel_action BETWEEN 1 AND 2),
+    -- NULL means no checkpoint/result. X'' is a recorded empty close response.
+    cancel_progress_payload BLOB,
+    close_response_payload BLOB,
+    failure_message TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY (user_id, worker_id, tab_id)
+);
+CREATE INDEX idx_tab_creations_pending ON tab_creations(worker_id, state);
+
 -- +goose Down
+DROP TABLE IF EXISTS tab_creations;
 DROP VIEW IF EXISTS tab_locations;
 DROP TABLE IF EXISTS agent_background_tasks;
 DROP INDEX IF EXISTS idx_agents_spawn_span;

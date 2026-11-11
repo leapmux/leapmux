@@ -21,6 +21,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/metrics"
 	"github.com/leapmux/leapmux/internal/sendq"
+	"github.com/leapmux/leapmux/internal/wskeepalive"
 )
 
 // UserEventsHandler upgrades to a WebSocket and streams `WatchUserEvent`
@@ -278,8 +279,7 @@ func parkRefusalMessage(bound dropBound) string {
 	case dropBoundFrames:
 		return "userevents: park buffer full while building the bootstrap frame, falling back to a snapshot"
 	}
-	// No default arm, so a fourth bound stops compiling here rather than being
-	// described by whichever sentence happened to be last.
+	// Use a generic message for an unknown refusal limit.
 	return "userevents: a frame was refused while building the bootstrap frame, falling back to a snapshot"
 }
 
@@ -393,7 +393,7 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// than repeated as a literal so this socket and the subscribers reading from
 	// it cannot drift apart: the two matching was previously only a claim in a
 	// comment.
-	wsConn, ok := h.acceptWS(w, r, endpointUserEvents, contracts.WSSubprotocolUserEventsRelay, channelwire.UserEventsReadLimit, user)
+	wsConn, ok := acceptWebSocket(w, r, endpointUserEvents, contracts.WSSubprotocolUserEventsRelay, channelwire.UserEventsReadLimit, userSubject(user.ID.String()))
 	if !ok {
 		countConnectWithoutBootstrap()
 		return
@@ -667,7 +667,7 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// armed up there could not see its answer: it would time out and cancel a
 	// perfectly healthy connection mid-bootstrap, which on a large account is
 	// exactly the reconnect storm this endpoint has to survive.
-	h.keepalive.startDrainingReads(ctx, wsConn, cancel, endpointUserEvents, userID)
+	h.keepalive.StartDrainingReads(ctx, wskeepalive.Probe{Conn: wsConn, Cancel: cancel, Attrs: userSubject(userID).logAttrs(endpointUserEvents)})
 
 	for {
 		evt, ok := queue.Next(ctx)

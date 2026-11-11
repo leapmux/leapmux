@@ -34,9 +34,9 @@ import (
 type RunConfig struct {
 	HubURL string // Hub server URL: http[s]://host:port, unix:<socket-path>, or npipe:<name>
 	// HubEndpoint, when non-nil, replaces HubURL. A caller that registered this
-	// worker passes the endpoint it registered through, so registration, the
-	// Connect stream and every hub call a spawned agent makes share one
-	// connection pool per protocol and one h2c verdict.
+	// worker passes the endpoint it registered through, so it and its spawned
+	// agents share transport configuration and the h2c verdict. Unary calls
+	// reuse its connection pools; the Worker stream uses its WebSocket lane.
 	HubEndpoint *hubtransport.Endpoint
 
 	// Directory is the held, ownership-validated lease of the worker's
@@ -222,9 +222,9 @@ func run(ctx context.Context, cfg RunConfig, cleanup runCleanup) (result error) 
 		return fmt.Errorf("migrate worker db: %w", err)
 	}
 
-	// ONE endpoint for the whole process: the worker's own Connect stream and
-	// every hub call a spawned agent makes then share one connection pool per
-	// protocol and one h2c verdict.
+	// One endpoint supplies transport configuration and the h2c verdict for
+	// the whole process. Unary calls share its connection pools, while the
+	// Worker stream uses its WebSocket lane.
 	hubEndpoint := cfg.HubEndpoint
 	if hubEndpoint == nil {
 		hubEndpoint, err = hubtransport.New(cfg.HubURL)
@@ -385,7 +385,7 @@ func run(ctx context.Context, cfg RunConfig, cleanup runCleanup) (result error) 
 	// loop takes over.
 	if cfg.OnConnectionState != nil {
 		client.OnConnectionState = func(connected bool, err error) {
-			cfg.OnConnectionState(ConnectionState{Connected: connected, HubURL: cfg.HubURL, Err: err})
+			cfg.OnConnectionState(ConnectionState{Connected: connected, HubURL: hubEndpoint.URL(), Err: err})
 		}
 	}
 	connectionErr := client.ConnectWithReconnect(runCtx, cfg.AuthToken)

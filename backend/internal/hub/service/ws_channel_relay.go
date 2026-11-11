@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/nilcheck"
+	"github.com/leapmux/leapmux/internal/wskeepalive"
 )
 
 // ChannelRelayHandler handles multiplexed WebSocket connections for encrypted
@@ -77,8 +78,8 @@ func NewChannelRelayHandler(
 	}
 }
 
-// WithChannelCloseEnqueuer shares the service's bounded worker notification
-// dispatcher with relay-disconnect teardown.
+// WithChannelCloseEnqueuer shares the service's worker-close admission
+// with relay-disconnect teardown.
 func (h *ChannelRelayHandler) WithChannelCloseEnqueuer(enqueuer channelCloseEnqueuer) *ChannelRelayHandler {
 	if !nilcheck.IsNilDependency(enqueuer) {
 		h.closeDispatcher = enqueuer
@@ -102,7 +103,7 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	wsConn, ok := h.acceptWS(w, r, endpointChannel, contracts.WSSubprotocolChannelRelay, channelwire.WSReadLimit, user)
+	wsConn, ok := acceptWebSocket(w, r, endpointChannel, contracts.WSSubprotocolChannelRelay, channelwire.WSReadLimit, userSubject(user.ID.String()))
 	if !ok {
 		return
 	}
@@ -180,7 +181,7 @@ func (h *ChannelRelayHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 	// processed on the read path, so every statement between the two would be a
 	// window in which the probe cannot be answered and the loop would disconnect
 	// a healthy client for it.
-	h.keepalive.startBesideAReadLoop(ctx, wsConn, cancel, endpointChannel, user.ID.String())
+	h.keepalive.StartBesideAReadLoop(ctx, wskeepalive.Probe{Conn: wsConn, Cancel: cancel, Attrs: userSubject(user.ID.String()).logAttrs(endpointChannel)})
 
 	// Read messages from frontend and route to the correct worker.
 	for {

@@ -356,21 +356,3 @@ func opSetTabPosition(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID, posit
 	inner.Field = &leapmuxv1.SetTabRegisterOp_Position{Position: position}
 	return op
 }
-
-func opSetTabWorkerID(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID, workerID string) *leapmuxv1.CrdtOp {
-	op, inner := newSetTabRegisterOp(bs, tabType, tabID)
-	inner.Field = &leapmuxv1.SetTabRegisterOp_WorkerId{WorkerId: workerID}
-	return op
-}
-
-func opSetTabDisplayMode(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID string, mode int32) *leapmuxv1.CrdtOp {
-	op, inner := newSetTabRegisterOp(bs, tabType, tabID)
-	inner.Field = &leapmuxv1.SetTabRegisterOp_DisplayMode{DisplayMode: mode}
-	return op
-}
-
-func opSetTabFileViewMode(bs *CRDTBootstrap, tabType leapmuxv1.TabType, tabID string, mode int32) *leapmuxv1.CrdtOp {
-	op, inner := newSetTabRegisterOp(bs, tabType, tabID)
-	inner.Field = &leapmuxv1.SetTabRegisterOp_FileViewMode{FileViewMode: mode}
-	return op
-}

@@ -433,23 +433,26 @@ func TestNew_CarriesEveryConfigField(t *testing.T) {
 	sqlDB := newServiceTestDB(t)
 
 	cfg := Config{
-		Channels:            channel.NewManager(nil, 0, nil, nil, 0, 0),
-		Send:                func(*leapmuxv1.ConnectRequest) error { return nil },
-		DB:                  sqlDB,
-		Agents:              agent.NewManager(testRegistry, nil),
-		Terminals:           terminal.NewManager(),
-		HomeDir:             "/home/x",
-		DataDir:             "/data/x",
-		WorkerID:            "worker-1",
-		Name:                "display-name",
-		SeedRegisteredBy:    "user-1",
-		AgentStartupTimeout: 11 * time.Second,
-		APITimeout:          7 * time.Second,
-		UseLoginShell:       true,
-		WakeLock:            wakelock.NewActivityTracker(),
-		MaxMessageSize:      32 << 20,
-		Clock:               quartz.NewReal(),
-		ShutdownDeadline:    drain.NewDeadline(quartz.NewReal(), time.Minute),
+		Channels:              channel.NewManager(nil, 0, nil, nil, 0, 0),
+		Send:                  func(*leapmuxv1.ConnectRequest) error { return nil },
+		DB:                    sqlDB,
+		Agents:                agent.NewManager(testRegistry, nil),
+		Terminals:             terminal.NewManager(),
+		HomeDir:               "/home/x",
+		DataDir:               "/data/x",
+		WorkerID:              "worker-1",
+		Name:                  "display-name",
+		SeedRegisteredBy:      "user-1",
+		AgentStartupTimeout:   11 * time.Second,
+		APITimeout:            7 * time.Second,
+		UseLoginShell:         true,
+		WakeLock:              wakelock.NewActivityTracker(),
+		MaxMessageSize:        32 << 20,
+		Clock:                 quartz.NewReal(),
+		ShutdownDeadline:      drain.NewDeadline(quartz.NewReal(), time.Minute),
+		PublishTab:            fixturePublishTab,
+		ResolveTabPublication: fixtureResolveTabPublication,
+		CancelTabPublication:  fixtureCancelTabPublication,
 	}
 
 	v := reflect.ValueOf(cfg)
@@ -492,6 +495,22 @@ func TestNew_CarriesEveryConfigField(t *testing.T) {
 	assert.NotNil(t, svc.PrivateEvents)
 	assert.NotNil(t, svc.TabPayloads)
 	assert.Equal(t, "/data/x", svc.Output.DataDir, "Output inherits the data dir")
+}
+
+func TestNew_RequiresPublicationCallbacks(t *testing.T) {
+	t.Parallel()
+	for _, field := range []string{"PublishTab", "ResolveTabPublication", "CancelTabPublication"} {
+		t.Run(field, func(t *testing.T) {
+			t.Parallel()
+			svc, _, _ := setupTestService(t)
+			cfg := svc.Config
+			reflect.ValueOf(&cfg).Elem().FieldByName(field).SetZero()
+			assert.PanicsWithValue(t, "service.New: "+field+" must be set", func() {
+				unexpected := New(cfg)
+				unexpected.Shutdown()
+			})
+		})
+	}
 }
 
 // TestNew_EmptyRegisteredByLeavesOwnerUnset pins that omitting the field
@@ -598,7 +617,7 @@ func TestRegisterAll_BindsTheCleanupDrain(t *testing.T) {
 }
 
 // newMinimalService builds the smallest Service New will accept: a real
-// DB plus the three fields it refuses to construct without.
+// DB plus the dependencies it requires.
 //
 // The stand-ins are deliberate. Channels is an empty manager, so no dispatched
 // handler finds a session -- which is what a test about local-IPC routing or
@@ -607,10 +626,13 @@ func TestRegisterAll_BindsTheCleanupDrain(t *testing.T) {
 func newMinimalService(t *testing.T, sqlDB *sql.DB) *Service {
 	t.Helper()
 	return New(Config{
-		DB:       sqlDB,
-		Channels: channel.NewManager(nil, 0, nil, nil, 0, 0),
-		Send:     func(*leapmuxv1.ConnectRequest) error { return nil },
-		Agents:   agent.NewManager(testRegistry, nil),
+		PublishTab:            fixturePublishTab,
+		ResolveTabPublication: fixtureResolveTabPublication,
+		CancelTabPublication:  fixtureCancelTabPublication,
+		DB:                    sqlDB,
+		Channels:              channel.NewManager(nil, 0, nil, nil, 0, 0),
+		Send:                  func(*leapmuxv1.ConnectRequest) error { return nil },
+		Agents:                agent.NewManager(testRegistry, nil),
 	})
 }
 

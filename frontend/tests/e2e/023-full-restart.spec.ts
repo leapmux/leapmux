@@ -2,7 +2,7 @@ import type { AgentServer } from './helpers/api'
 import { expect } from '@playwright/test'
 import { tabIdSelector } from './helpers/tabSelectors'
 import { typeInTerminal, waitForTerminalText } from './helpers/terminal'
-import { openTerminalViaUI, renameTabViaUI, reopenWorkspace, sidebarLeaves, terminalTabs, waitForLayoutSave } from './helpers/ui'
+import { openTerminalViaUI, renameTabViaUI, reopenWorkspace, sidebarLeaves, terminalTabs } from './helpers/ui'
 import { listTerminalsViaAPI, waitForTerminalExitViaAPI, waitForWorkerTabTitle } from './helpers/workerTabs'
 import { restartHub, restartWorker, stopHub, stopWorker, processTest as test } from './process-control-fixtures'
 
@@ -17,15 +17,9 @@ async function waitForSavedTerminalTitle(server: AgentServer, workspaceId: strin
 
 test.describe('Full Hub+Worker Restart', () => {
   test('should preserve terminal tab title after full restart', async ({ authenticatedWorkspace, separateHubWorker, page }) => {
-    // Listen for the layout save before the terminal opens.
-    const saved = waitForLayoutSave(page)
-
-    // Open a terminal through the tab bar. The helper waits for its tab and its xterm.
+    // Open a terminal through the tab bar. The helper waits for canonical publication and startup.
     await openTerminalViaUI(page)
     const terminalTab = terminalTabs(page)
-
-    // Wait for the layout save to store the tab.
-    await saved
 
     // Rename the terminal to save its title.
     // Escape sequences supply live titles that the Worker does not store.
@@ -54,11 +48,8 @@ test.describe('Full Hub+Worker Restart', () => {
   })
 
   test('should recover exited terminal title and screen after reloading before worker reconnects', async ({ authenticatedWorkspace, separateHubWorker, page }) => {
-    const saved = waitForLayoutSave(page)
-
     const terminalId = await openTerminalViaUI(page)
     const terminalTab = terminalTabs(page)
-    await saved
 
     // Rename the tab to store its title.
     await renameTabViaUI(page, terminalTab, 'Recovered Title')

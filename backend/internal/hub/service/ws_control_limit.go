@@ -17,9 +17,9 @@ const (
 	// connection may cost the Hub, in frames per second.
 	//
 	// A legitimate client sends almost none: our own keepalive probes once every
-	// wsKeepaliveInterval and the browser answers those, so two per second is
-	// four orders of magnitude above anything real while still being a rate
-	// rather than a hair trigger.
+	// wskeepalive.Interval and the browser answers those, so two per second is
+	// twenty times the normal rate. The separate burst allowance tolerates
+	// short bursts.
 	wsControlFrameRate = 2.0
 	// wsControlFrameBurst absorbs a genuine clump -- a client that reconnects,
 	// a proxy that replays a couple of frames -- without the sustained rate
@@ -58,7 +58,7 @@ const (
 type wsControlLimiter struct {
 	now      func() time.Time
 	endpoint string
-	userID   string
+	subject  wsSubject
 	// conn is stored after Accept returns, which is necessarily before any read
 	// can invoke a hook. An atomic rather than a captured variable so the store
 	// and the hook goroutine's load are ordered -- a plain capture would be a
@@ -87,14 +87,14 @@ type wsControlLimiter struct {
 	refused int
 }
 
-func newWSControlLimiter(endpoint, userID string, now func() time.Time) *wsControlLimiter {
+func newWSControlLimiter(endpoint string, subject wsSubject, now func() time.Time) *wsControlLimiter {
 	if now == nil {
 		now = time.Now
 	}
 	return &wsControlLimiter{
 		now:       now,
 		endpoint:  endpoint,
-		userID:    userID,
+		subject:   subject,
 		allowance: wsControlFrameBurst,
 		last:      now(),
 	}
@@ -128,7 +128,7 @@ func (l *wsControlLimiter) attach(c *websocket.Conn) { l.conn.Store(c) }
 // (see acceptOptions), so it is free to write and to log.
 func (l *wsControlLimiter) closeAbusive(refused int) {
 	slog.Warn("closing a websocket that flooded control frames",
-		"endpoint", l.endpoint, "user_id", l.userID, "refused", refused)
+		append(l.subject.logAttrs(l.endpoint), "refused", refused)...)
 	if c := l.conn.Load(); c != nil {
 		_ = c.Close(websocket.StatusPolicyViolation, contracts.CloseReasonControlFlood)
 	}

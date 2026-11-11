@@ -57,8 +57,10 @@ var publicProcedureRationale = map[string]string{
 	// Self-authenticating against a worker credential the interceptor cannot
 	// parse. Each handler resolves the caller itself and refuses without it.
 	leapmuxv1connect.WorkerConnectorServiceRegisterProcedure:                 "handler validates the registration key in its own Authorization header",
-	leapmuxv1connect.WorkerConnectorServiceConnectProcedure:                  "handler validates the worker auth_token in the stream's Authorization header",
 	leapmuxv1connect.WorkerConnectorServiceListOwnedTabsForWorkerProcedure:   "AuthenticateWorkerBearer resolves the worker and its registrant from the auth_token, and scopes the response to that owner",
+	leapmuxv1connect.WorkerConnectorServicePublishTabProcedure:               "AuthenticateWorkerBearer derives the owner and hosting Worker; canonical validation restricts the tab commit",
+	leapmuxv1connect.WorkerConnectorServiceCancelTabPublicationProcedure:     "AuthenticateWorkerBearer derives the owner and hosting Worker; canonical validation restricts the tab commit",
+	leapmuxv1connect.WorkerConnectorServiceResolveTabPublicationProcedure:    "AuthenticateWorkerBearer derives the owner and hosting Worker; canonical validation restricts the tab commit",
 	leapmuxv1connect.WorkerConnectorServiceGetRegistrationChallengeProcedure: "handler authenticates the original registration key in its Authorization header against the SHA-256 digest pinned on the attempt's worker row",
 	leapmuxv1connect.WorkerConnectorServiceRecoverRegistrationProcedure:      "handler authenticates the registration key by its pinned digest and requires an SLH-DSA signature over the challenge, verified against the keys the Hub pinned at registration",
 	leapmuxv1connect.WorkerConnectorServiceDeregisterSelfProcedure:           "handler resolves the worker from the auth_token in its Authorization header and removes exactly that worker",
@@ -298,9 +300,11 @@ func publicProceduresContainsConstant(constant string) bool {
 // constants; a service added here without an entry fails the test above, which
 // is the intended nudge.
 var knownProcedurePaths = map[string]string{
+	"WorkerConnectorServicePublishTabProcedure":               leapmuxv1connect.WorkerConnectorServicePublishTabProcedure,
+	"WorkerConnectorServiceCancelTabPublicationProcedure":     leapmuxv1connect.WorkerConnectorServiceCancelTabPublicationProcedure,
+	"WorkerConnectorServiceResolveTabPublicationProcedure":    leapmuxv1connect.WorkerConnectorServiceResolveTabPublicationProcedure,
 	"WorkerConnectorServiceListOwnedTabsForWorkerProcedure":   leapmuxv1connect.WorkerConnectorServiceListOwnedTabsForWorkerProcedure,
 	"WorkerConnectorServiceRegisterProcedure":                 leapmuxv1connect.WorkerConnectorServiceRegisterProcedure,
-	"WorkerConnectorServiceConnectProcedure":                  leapmuxv1connect.WorkerConnectorServiceConnectProcedure,
 	"WorkerConnectorServiceGetRegistrationChallengeProcedure": leapmuxv1connect.WorkerConnectorServiceGetRegistrationChallengeProcedure,
 	"WorkerConnectorServiceRecoverRegistrationProcedure":      leapmuxv1connect.WorkerConnectorServiceRecoverRegistrationProcedure,
 	"WorkerConnectorServiceDeregisterSelfProcedure":           leapmuxv1connect.WorkerConnectorServiceDeregisterSelfProcedure,

@@ -1,3 +1,4 @@
+import type { TerminalCreationSubmission } from './useTabCreation'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -64,6 +65,11 @@ vi.mock('~/api/workerRpc', () => ({
 
 const openTerminalMock = workerTerminal.openTerminal as unknown as ReturnType<typeof vi.fn>
 
+async function submitCreation(input: TerminalCreationSubmission): Promise<boolean> {
+  await workerTerminal.openTerminal(input.workerId, input.request)
+  return true
+}
+
 function renderDialog(blockedReason?: () => string | undefined) {
   return render(withPreferences(() => (
     <NewTerminalDialog
@@ -72,7 +78,7 @@ function renderDialog(blockedReason?: () => string | undefined) {
       {...(blockedReason !== undefined
         ? { blockedReason }
         : {})}
-      onCreated={() => {}}
+      onCreate={submitCreation}
       onClose={() => {}}
       repoGitStore={createRepoGitStore()}
     />

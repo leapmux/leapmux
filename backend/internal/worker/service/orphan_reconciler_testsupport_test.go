@@ -1,7 +1,12 @@
 package service_test
 
 import (
+	"context"
 	"testing"
+
+	"github.com/leapmux/leapmux/internal/util/userid"
+
+	"github.com/leapmux/leapmux/internal/worker/service"
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -44,4 +49,36 @@ func mustMarshalFilePayload(filePath, workingDir string) []byte {
 		panic(err)
 	}
 	return blob
+}
+
+// fixedReconciliationPass adapts a teardown probe for tests without publication.
+func fixedReconciliationPass(closeTab func(leapmuxv1.TabType, string, string)) func() service.TabReconciliationPass {
+	return fixedReconciliationPassWithArchive(closeTab, ignoreHarnessArchiveState)
+}
+
+type fixedTabReconciliationPass struct {
+	applyArchive archiveApplyFunc
+	closeTab     func(leapmuxv1.TabType, string, string)
+}
+
+func (p fixedTabReconciliationPass) ReapIf(kind leapmuxv1.TabType, userID, tabID string, due func() bool) bool {
+	if due() {
+		p.closeTab(kind, userID, tabID)
+	}
+	return true
+}
+func (fixedTabReconciliationPass) Done() {}
+
+type archiveApplyFunc func(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error)
+
+func ignoreHarnessArchiveState(context.Context, leapmuxv1.WorkspaceArchiveState, userid.UserID, []*leapmuxv1.TabIdent) ([]string, error) {
+	return nil, nil
+}
+func fixedReconciliationPassWithArchive(closeTab func(leapmuxv1.TabType, string, string), applyArchive archiveApplyFunc) func() service.TabReconciliationPass {
+	return func() service.TabReconciliationPass {
+		return fixedTabReconciliationPass{closeTab: closeTab, applyArchive: applyArchive}
+	}
+}
+func (p fixedTabReconciliationPass) ApplyArchiveState(ctx context.Context, state leapmuxv1.WorkspaceArchiveState, owner userid.UserID, tabs []*leapmuxv1.TabIdent) ([]string, error) {
+	return p.applyArchive(ctx, state, owner, tabs)
 }

@@ -1,10 +1,7 @@
 // ─────────────────────────────────────────────────────────────────────────
-// E2E helpers for the UserCRDT path. Mirrors the frontend's
-// useUserEvents/useOpsSubmitter handshake so tests can seed the CRDT
-// after a worker-side `OpenAgent` / `OpenTerminal` fires (those go
-// through E2EE channels and don't push into the CRDT themselves —
-// the production flow relies on the in-browser `tabStore.addTab` to
-// enqueue a SubmitOps batch).
+// E2E helpers for the long-lived UserCRDT event stream.
+// Worker-owned tab creation publishes canonical records through the Hub.
+// These subscriptions observe workspace roots and epochs across publication.
 //
 // The browser holds ONE long-lived `/ws/userevents` subscription per
 // authenticated session and discovers `workspaces[wsID].rootNodeId` by
@@ -17,30 +14,16 @@
 // regression that the fixture would silently hide.
 // ─────────────────────────────────────────────────────────────────────────
 
-import type { JsonValue } from '@bufbuild/protobuf'
-import type { CrdtOp, SetTabRegisterOp } from '../../../src/generated/proto/leapmux/v1/user_ops_pb'
-import { create, fromBinary, fromJson, toJson } from '@bufbuild/protobuf'
-import { customAlphabet } from 'nanoid'
-import { CrdtOpSchema, SubmitOpsRequestSchema, WatchUserEventSchema } from '../../../src/generated/proto/leapmux/v1/user_ops_pb'
-import { ListTabsResponseSchema } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
-import { callHub, pollHub } from './api'
+import { fromBinary } from '@bufbuild/protobuf'
+import { WatchUserEventSchema } from '../../../src/generated/proto/leapmux/v1/user_ops_pb'
 import { hubTransportUrl } from './hubTransport'
 
 const HTTP_TO_WS_RE = /^http/i
 
-const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
-
-/** How long a seeded tab can take to show in ListTabs after its batch committed. */
-const SEEDED_TAB_TIMEOUT_MS = 2_000
-
-/** The pause between two ListTabs reads of a seeded tab. */
-const SEEDED_TAB_POLL_MS = 50
-const nanoid48 = customAlphabet(ALPHABET, 48)
-
 /**
  * UserEventsSubscription is the test-side analogue of the browser's
  * `useUserEvents` hook. It opens one long-lived `/ws/userevents`
- * WebSocket and accumulates the bits the seed-tab flow needs:
+ * WebSocket and accumulates workspace root and epoch observations:
  *
  *   - `workspaces[wsID].rootNodeId` — populated either by the
  *     initial `UserMaterialized` (for workspaces that existed at
@@ -178,7 +161,7 @@ async function openUserEventsSubscription(
           setRoot(e.value.workspaceId, e.value.rootNodeId)
           break
         }
-        // Other event shapes are not interesting to the seed-tab flow.
+        // This subscription extracts workspace roots and epochs from these event shapes.
       }
     })
   })
@@ -299,131 +282,4 @@ export async function closeAllUserEventsSubscriptions(): Promise<void> {
       // best-effort
     }
   }
-}
-
-/**
- * Submit a single op batch (encoded as Connect-RPC JSON) via the hub's
- * `UserCRDT.SubmitOps` endpoint. Throws on transport failure or a
- * non-committed batch result.
- */
-async function submitSetTabRegisterBatch(args: {
-  hubUrl: string
-  cookie: string
-  epoch: bigint
-  tabType: number
-  tabId: string
-  setRegisters: { tileId?: string, position?: string, workerId?: string }
-  originClientId: string
-}): Promise<void> {
-  const ops: CrdtOp[] = []
-  const pushOp = (field: SetTabRegisterOp['field']) => {
-    ops.push(create(CrdtOpSchema, {
-      opId: nanoid48(),
-      originClientId: args.originClientId,
-      body: {
-        case: 'setTabRegister',
-        value: {
-          tab: { tabType: args.tabType, tabId: args.tabId },
-          field,
-        },
-      },
-    }))
-  }
-  if (args.setRegisters.tileId !== undefined)
-    pushOp({ case: 'tileId', value: args.setRegisters.tileId })
-  if (args.setRegisters.position !== undefined)
-    pushOp({ case: 'position', value: args.setRegisters.position })
-  if (args.setRegisters.workerId !== undefined)
-    pushOp({ case: 'workerId', value: args.setRegisters.workerId })
-
-  const reqBody = toJson(SubmitOpsRequestSchema, create(SubmitOpsRequestSchema, {
-    batches: [
-      {
-        batchId: nanoid48(),
-        epoch: args.epoch,
-        ops,
-      },
-    ],
-  }), { enumAsInteger: true })
-  // The operation states the batch, because a refusal is about its ops and its epoch.
-  const data = await callHub<{ results?: Array<{ rejected?: unknown, committed?: unknown }> }>(
-    args.hubUrl,
-    'UserCRDT/SubmitOps',
-    reqBody,
-    { cookie: args.cookie, operation: `submitSetTabRegisterBatch(${JSON.stringify(reqBody)})` },
-  )
-  if (data.results?.[0]?.rejected) {
-    throw new Error(`SubmitOps batch rejected: ${JSON.stringify(data.results[0].rejected)}; body=${JSON.stringify(reqBody)}`)
-  }
-  if (!data.results?.[0]?.committed) {
-    throw new Error(`SubmitOps batch had no committed result: ${JSON.stringify(data)}`)
-  }
-}
-
-/**
- * Seed an agent / terminal / file tab into the CRDT for tests that
- * created the underlying entity via a direct worker RPC
- * (`openAgentViaAPI` / `openTerminalViaAPI`). Mirrors the production
- * `tabStore.addTab` flow: SetTabRegister(tile_id) + SetTabRegister(
- * position) + SetTabRegister(worker_id).
- *
- * Requires a long-lived `UserEventsSubscription` opened BEFORE the
- * workspace was created so the hub's seed-ops broadcast is what
- * delivers `rootNodeId`. This is the same path the browser takes —
- * one `/ws/userevents` per session, populated from `SetWorkspaceRoot
- * Node` ops absorbed in flight. The old behaviour (bootstrap a fresh
- * subscription each call) would mask a hub bug where the seed ops are
- * dropped for existing subscribers; that bug shipped in production
- * once already, so tests must not be allowed to silently route
- * around it.
- */
-export async function seedTabIntoWorkspace(args: {
-  hubUrl: string
-  cookie: string
-  workspaceId: string
-  tabType: number
-  tabId: string
-  workerId: string
-  /** Long-lived subscription opened before `createWorkspaceViaAPI`. */
-  userEvents: UserEventsSubscription
-  /** LexoRank position. Defaults to "M" — first slot. */
-  position?: string
-}): Promise<void> {
-  const rootNodeId = await args.userEvents.awaitRootNodeId(args.workspaceId)
-  const epoch = args.userEvents.currentEpoch()
-
-  await submitSetTabRegisterBatch({
-    hubUrl: args.hubUrl,
-    cookie: args.cookie,
-    epoch,
-    tabType: args.tabType,
-    tabId: args.tabId,
-    setRegisters: {
-      tileId: rootNodeId,
-      position: args.position ?? 'M',
-      workerId: args.workerId,
-    },
-    originClientId: 'test-fixture',
-  })
-
-  // Verify the tab landed in the rendered view via ListTabs (the
-  // same path the frontend uses on workspace activation). If the
-  // batch committed but ListTabs returns empty, projection-repair
-  // dropped the tab or the rendered index wasn't written.
-  await pollHub(
-    async () => fromJson(ListTabsResponseSchema, await callHub<JsonValue>(args.hubUrl, 'WorkspaceService/ListTabs', {
-      workspaceIds: [args.workspaceId],
-    }, {
-      cookie: args.cookie,
-      operation: `seedTabIntoWorkspace(${args.tabId})`,
-    })),
-    data => data.tabs.some(tab => tab.tab?.tabId === args.tabId)
-      ? true
-      : undefined,
-    {
-      timeoutMs: SEEDED_TAB_TIMEOUT_MS,
-      intervalMs: SEEDED_TAB_POLL_MS,
-      failure: `seedTabIntoWorkspace: tab ${args.tabId} not visible via ListTabs after SubmitOps committed (workspace ${args.workspaceId})`,
-    },
-  )
 }

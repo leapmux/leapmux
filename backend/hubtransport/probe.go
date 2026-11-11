@@ -30,10 +30,10 @@ const (
 //
 // An undecided verdict proves no protocol support, so the prober does not cache it.
 // Without a cooldown, each request starts another probe and waits for it.
-// Both cleartext transports use h2c on an undecided verdict, so the extra wait changes no behavior.
+// Unary and server-stream clients use h2c on an undecided verdict, so the extra wait changes no behavior.
 // A silent endpoint consumes the full probeTimeout inside each caller's http.Client.Timeout.
 // A five-second probe then consumes the full five-second limit of `leapmux control version`.
-// The Worker reconnect loop incurs that wait before every backoff also.
+// Registration retries can incur that wait also.
 //
 // Requests that arrive during a probe share its completion channel.
 // An undecided verdict then suppresses another probe for longer than probeTimeout.
@@ -65,7 +65,6 @@ const probeTimeout = 5 * time.Second
 // The probe reaches no application access log or rate limiter.
 // An endpoint without h2c can route the preface as a PRI request or reject it.
 // A proxy can log one 400 response per process.
-// That endpoint cannot serve the Worker's bidirectional stream, which requires HTTP/2 at the same URL.
 //
 // # Verdict lifetime
 //
@@ -88,15 +87,14 @@ type prober struct {
 	// The test controls the end of the cooldown without a sleep or a real timer.
 	now func() time.Time
 
-	mu      sync.Mutex
-	decided bool
-	result  verdict
+	mu     sync.Mutex
+	result verdict
 	// undecidedUntil specifies when an undecided verdict permits another probe.
 	// Zero permits a probe now. See undecidedCooldown.
 	undecidedUntil time.Time
 	inflight       chan struct{}
 
-	warnOnce sync.Once
+	logNoH2COnce sync.Once
 	// calls counts the probes that ran. Only the tests read it.
 	calls atomic.Int64
 }
@@ -113,7 +111,7 @@ func newProber(endpointURL string, dial func(ctx context.Context) (net.Conn, err
 // Its cancellation does not change the verdict for other callers.
 func (p *prober) supportsH2C(ctx context.Context) verdict {
 	p.mu.Lock()
-	if p.decided {
+	if p.result != verdictUndecided {
 		result := p.result
 		p.mu.Unlock()
 		return result
@@ -144,12 +142,9 @@ func (p *prober) supportsH2C(ctx context.Context) verdict {
 
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.decided {
-		return p.result
-	}
-	// The probe reached no verdict. Another probe here makes each waiter repeat the same failed attempt.
-	// The next request after the cooldown starts another probe.
-	return verdictUndecided
+	// Waiters use the published result. Only a later request after the cooldown
+	// can start another probe when this result is inconclusive.
+	return p.result
 }
 
 // runProbe runs one probe and publishes its verdict.
@@ -160,7 +155,6 @@ func (p *prober) runProbe(done chan struct{}) {
 	p.mu.Lock()
 	p.inflight = nil
 	if result != verdictUndecided {
-		p.decided = true
 		p.result = result
 	} else {
 		// Keep no decided verdict after an inconclusive probe. Delay another probe until the cooldown ends.
@@ -170,8 +164,8 @@ func (p *prober) runProbe(done chan struct{}) {
 	close(done)
 
 	if result == verdictUnsupported {
-		p.warnOnce.Do(func() {
-			slog.Warn("endpoint does not support cleartext HTTP/2 (h2c). Unary calls use HTTP/1.1. The Worker Connect stream requires HTTP/2 at this URL.",
+		p.logNoH2COnce.Do(func() {
+			slog.Info("endpoint does not support cleartext HTTP/2 (h2c). Unary calls use HTTP/1.1.",
 				"endpoint", p.endpointURL)
 		})
 	}

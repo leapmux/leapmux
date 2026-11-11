@@ -33,7 +33,7 @@ func TestEveryDeregisterAttemptEndsItsSelectedConnection(t *testing.T) {
 					case "send failed":
 						return nil, errInjected
 					case "wrong payload":
-						return &leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}}}, nil
+						return &leapmuxv1.ConnectRequest{Payload: &leapmuxv1.ConnectRequest_WorkerTabInventory{WorkerTabInventory: &leapmuxv1.WorkerTabInventory{}}}, nil
 					default:
 						return nil, nil
 					}
@@ -68,7 +68,7 @@ func TestLateDeregisterFailureCannotEndAReplacementConnection(t *testing.T) {
 			e := newEnv(t)
 			registry := newFakeRegistry(t, e.worker, true)
 			selected := registry.conn
-			replacement, _ := workermgrtest.NewRecordedConn(t, e.worker)
+			replacement := workermgrtest.NewConn(t, e.worker)
 			replace := func() {
 				registry.mu.Lock()
 				registry.conn = replacement
@@ -110,10 +110,10 @@ func assertConnectionEnded(t *testing.T, connection *workermgr.Conn) {
 func TestLateConnectDeliveryCannotEndAReplacementConnection(t *testing.T) {
 	e := newEnv(t)
 	registry := workermgr.New(workermgr.DenyAllReach())
-	selected, _ := workermgrtest.NewRecordedConn(t, e.worker)
+	selected := workermgrtest.NewConn(t, e.worker)
 	_, err := registry.Register(selected)
 	require.NoError(t, err)
-	replacement, _ := workermgrtest.NewRecordedConn(t, e.worker)
+	replacement := workermgrtest.NewConn(t, e.worker)
 	_, err = registry.Register(replacement)
 	require.NoError(t, err)
 	t.Cleanup(func() { registry.Unregister(e.worker, replacement) })

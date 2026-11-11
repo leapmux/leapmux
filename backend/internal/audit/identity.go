@@ -28,6 +28,8 @@ package audit
 // unexported, and taking a bare `userID string`. They are the sites where
 // getting it wrong is worst: see the eviction-polarity block below.
 var identityComparisonSites = map[string]string{
+	// Recovery accepts only a nonzero row owner matching the delivered Worker identity.
+	"internal/worker/service.(*Service).resumeTabCreation": "TestCreationRecovery_RejectsZeroAndForeignStoredOwners",
 	// ---- hub/service: grant polarity (false means "deny") ----
 
 	// Workspace access is owner-only, and this is the single door onto it.
@@ -62,21 +64,16 @@ var identityComparisonSites = map[string]string{
 	// -- fail-OPEN for blank-vs-blank, and invisible here, because a .String()
 	// unwrap defeats the detector.
 	"internal/hub/service.(*WorkerDelegationHandler).waitForTabOwnership": "TestWorkerDelegation_Mint_RejectsForeignOwnerTabRow",
-	// The tab-sync reconciler's tombstone target. Not a grant: it compares the
-	// row-level owner against the owner the query was BOUND with, so a
-	// mismatch is a broken predicate rather than an unauthorized caller, and it
-	// reports the mismatch rather than silently routing it. It appears here
-	// because the comparison is the same one, and because this used to be the last
-	// production path that reached crdt.Registry.Get with an unvalidated column
-	// string -- the manager is now derived from the bound owner instead.
-	"internal/hub/service.(*WorkerConnectorService).handleWorkspaceTabsSync": "TestHandleWorkspaceTabsSync_TombstonesOnlyTheRegistrant",
 	// Admission locks the key's preflight owner, then checks the consumed key
 	// still belongs to that owner. A blank or changed creator must not pass.
 	"internal/hub/service.(*WorkerConnectorService).Register": "TestRegisterRefusesAConsumedKeyWithAnotherCreator",
 
 	// ---- hub/crdt: grant polarity ----
 
-	// The CRDT's only remaining tenancy comparison. A submit is no longer one:
+	// Completion accepts only snapshots captured for this manager's owner.
+	"internal/hub/crdt.(*Manager).FinishWorkerTabInventory": "TestWorkerInventory_RefusesFailedCommitsAndWrongOwners",
+
+	// Bootstrap's tenancy comparison. A submit is no longer one:
 	// SubmitInput carries no user id, so the manager it lands on IS the tenant
 	// and processSubmit has nothing to compare (Registry.Get validates the user
 	// id and keys the manager by it; the factory builds it from that key).

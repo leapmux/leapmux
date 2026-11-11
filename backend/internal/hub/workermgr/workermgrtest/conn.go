@@ -1,10 +1,9 @@
 // Package workermgrtest provides shared Conn fixtures for hub packages that
-// exercise the worker registry without owning the Connect handler.
+// exercise the worker registry without owning the worker stream handler.
 package workermgrtest
 
 import (
 	"context"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -27,68 +26,11 @@ func TestHello() *leapmuxv1.WorkerHello {
 	}
 }
 
-// Recorder is a mutex-guarded capture of ConnectResponse frames. A drained
-// Conn invokes Write from the pump goroutine, so unguarded counters race under
-// -race.
-type Recorder struct {
-	mu      sync.Mutex
-	msgs    []*leapmuxv1.ConnectResponse
-	err     error
-	onWrite func(*leapmuxv1.ConnectResponse)
-}
-
-// Write records msg (or returns a previously SetErr). Safe for concurrent use.
-func (r *Recorder) Write(msg *leapmuxv1.ConnectResponse) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.err != nil {
-		return r.err
-	}
-	r.msgs = append(r.msgs, msg)
-	if r.onWrite != nil {
-		r.onWrite(msg)
-	}
-	return nil
-}
-
-// Messages returns a snapshot of recorded frames.
-func (r *Recorder) Messages() []*leapmuxv1.ConnectResponse {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	out := make([]*leapmuxv1.ConnectResponse, len(r.msgs))
-	copy(out, r.msgs)
-	return out
-}
-
-// Len returns the number of recorded frames.
-func (r *Recorder) Len() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return len(r.msgs)
-}
-
-// SetErr makes subsequent Write calls return err.
-func (r *Recorder) SetErr(err error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.err = err
-}
-
-// SetOnWrite installs a hook invoked under the recorder lock after each
-// successful write. Use it to Complete pending requests or signal channels.
-func (r *Recorder) SetOnWrite(fn func(*leapmuxv1.ConnectResponse)) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.onWrite = fn
-}
-
-// NewRecordedConn builds a Conn whose pump is drained by a background
-// goroutine, so Send/SendControl become observable via the Recorder. The conn
-// is fenced on cleanup.
-func NewRecordedConn(tb testing.TB, workerID string) (*workermgr.Conn, *Recorder) {
+// NewConn builds an auto-drained connection that discards written frames.
+// Use NewConnWithWrite when a test needs to observe or block transport writes.
+func NewConn(tb testing.TB, workerID string) *workermgr.Conn {
 	tb.Helper()
-	rec := &Recorder{}
-	return NewConnWithWrite(tb, workerID, rec.Write), rec
+	return NewConnWithWrite(tb, workerID, func(*leapmuxv1.ConnectResponse) error { return nil })
 }
 
 // NewConnWithWrite builds an auto-drained Conn with a custom write function.
@@ -128,7 +70,7 @@ func NewConnWithHello(tb testing.TB, workerID string, hello *leapmuxv1.WorkerHel
 	require.NotNil(tb, hello)
 	ctx, cancel := context.WithCancel(context.Background())
 	pool := sendq.NewMaxBytesPoolForTest()
-	conn, pump := workermgr.NewConn(ctx, cancel, workerID, "", pool, write, nil, hello)
+	conn, pump := workermgr.NewConn(ctx, cancel, workerID, "", pool, func(_ context.Context, msg *leapmuxv1.ConnectResponse) error { return write(msg) }, nil, hello)
 	tb.Cleanup(conn.Fence)
 	go drainUntilDone(conn, pump)
 	return conn

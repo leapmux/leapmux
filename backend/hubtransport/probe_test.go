@@ -100,7 +100,7 @@ func TestUndecidedVerdictIsNotCached(t *testing.T) {
 //
 // Without it, each request to a silent endpoint waits for the full probeTimeout inside its own http.Client.Timeout.
 // That consumes the five-second limit of `leapmux control version` before its request reaches the Hub.
-// Both cleartext transports use h2c on an undecided verdict, so the extra wait changes no behavior.
+// Unary and server-stream clients use h2c on an undecided verdict, so the extra wait changes no behavior.
 func TestUndecidedVerdictPacesTheNextProbe(t *testing.T) {
 	p, clock := newTestProber(t)
 	p.run = func(context.Context) verdict { return verdictUndecided }

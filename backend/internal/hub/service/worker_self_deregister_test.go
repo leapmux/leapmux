@@ -2,20 +2,15 @@ package service_test
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect/v2"
-	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
-	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
-	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/notifier"
@@ -25,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	workerhub "github.com/leapmux/leapmux/internal/worker/hub"
 )
 
 // deregisterSelfCall performs one DeregisterSelf with the worker token.
@@ -98,25 +94,15 @@ func TestSelfDeregisterFencesDelayedAdmission(t *testing.T) {
 	_, token := registerSelfDeregisterableWorker(t, env, ctx)
 	worker, err := env.store.Workers().GetByAuthTokenIncludeDeleted(ctx, token)
 	require.NoError(t, err)
-	server := httptest.NewUnstartedServer(env.mux)
-	server.Config.Protocols = &http.Protocols{}
-	server.Config.Protocols.SetHTTP1(true)
-	server.Config.Protocols.SetUnencryptedHTTP2(true)
-	server.Start()
-	t.Cleanup(server.Close)
-	endpoint, err := hubtransport.New(server.URL)
-	require.NoError(t, err)
-	t.Cleanup(endpoint.CloseIdleConnections)
-	client := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
-		endpoint.StreamClient(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
-	streamCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	streamCtx, info := connect.NewClientContext(streamCtx)
-	info.RequestHeader().Set("Authorization", "Bearer "+token)
-	stream, err := client.Connect(streamCtx)
-	require.NoError(t, err)
-	defer func() { _ = stream.CloseSend() }()
-	require.NoError(t, stream.Send(helloRequest(postQuantumHello(0x31))))
+	type dialResult struct {
+		stream *workerhub.WorkerStream
+		err    error
+	}
+	dialled := make(chan dialResult, 1)
+	go func() {
+		stream, err := workerhub.DialWorkerStream(ctx, env.server.Client(), env.server.URL, token)
+		dialled <- dialResult{stream: stream, err: err}
+	}()
 	select {
 	case <-read:
 	case <-ctx.Done():
@@ -128,6 +114,11 @@ func TestSelfDeregisterFencesDelayedAdmission(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, deleted.DeletedAt)
 	close(release)
+	result := <-dialled
+	require.NoError(t, result.err)
+	stream := &workerTestPeer{stream: result.stream, ctx: ctx}
+	defer func() { _ = result.stream.CloseNow() }()
+	require.NoError(t, stream.Send(helloRequest(postQuantumHello(0x31))))
 	for {
 		frame, err := stream.Receive()
 		require.NoError(t, err, "the delayed connection must receive its deregistration before closing")

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { postUpgrade, validateUpgrades } from './renovate-post-upgrade.mjs'
+import { TEST_IMAGE_KEYS } from './reverse-proxy-examples.mjs'
 
 function upgrade(extra = {}) {
   return {
@@ -405,5 +406,58 @@ describe('validateUpgrades', () => {
     expect(() => validateUpgrades([
       { manager: 'bun', packageFile: 'frontend/package.json', updateType: 'lockFileMaintenance' },
     ])).not.toThrow()
+  })
+  it('accepts the -alpine variant only for a reverse proxy test image', () => {
+    const pin = (depType, newValue) => upgrade({
+      manager: 'regex',
+      packageFile: 'versions.env',
+      depName: 'nginx',
+      depType,
+      newValue,
+    })
+    for (const newValue of ['1.30.0-alpine', '1.30-alpine', '1.30.0']) {
+      expect(() => validateUpgrades([
+        pin('NGINX_IMAGE', newValue),
+      ])).not.toThrow()
+    }
+    for (const newValue of [
+      '1.30.0-alpine-slim',
+      '1.30.0-perl',
+      '1.30.0-alpine$(id)',
+      'latest',
+    ]) {
+      expect(() => validateUpgrades([
+        pin('NGINX_IMAGE', newValue),
+      ])).toThrow('Invalid tool or image pin metadata.')
+    }
+    // A value that starts with a dash fails the earlier check that guards every manager.
+    expect(() => validateUpgrades([
+      pin('NGINX_IMAGE', '-alpine'),
+    ])).toThrow('Invalid target version for nginx.')
+    expect(() => validateUpgrades([
+      pin('BUN_VERSION', '1.4.5-alpine'),
+    ])).toThrow('Invalid tool or image pin metadata.')
+    expect(() => validateUpgrades([
+      pin('ALPINE_IMAGE', '3.25-alpine'),
+    ])).toThrow('Invalid tool or image pin metadata.')
+  })
+  it('lets the reverse proxy test images share one branch, which is no toolchain branch', () => {
+    const grouped = TEST_IMAGE_KEYS.map(depType => upgrade({
+      manager: 'regex',
+      packageFile: 'versions.env',
+      depName: depType.toLowerCase(),
+      depType,
+      newValue: '9.0.0',
+    }))
+    expect(validateUpgrades(grouped)).toEqual({ toolchain: false })
+    expect(() => validateUpgrades([
+      ...grouped,
+      upgrade({
+        manager: 'regex',
+        packageFile: 'versions.env',
+        depType: 'GOLANG_VERSION',
+        newValue: '1.28.0',
+      }),
+    ])).toThrow('own branch')
   })
 })

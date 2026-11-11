@@ -188,6 +188,7 @@ type SubmitInput struct {
 	// layer over.
 	WorkerScope func(workerID string) bool
 	Internal    bool
+	publication *PublicationReceipt
 }
 
 // Manager owns one user's CRDT state and its journal, and coordinates
@@ -1578,6 +1579,7 @@ func (m *Manager) commit(ctx context.Context, in SubmitInput, batch *leapmuxv1.O
 		},
 		IndexDiff:   diff,
 		Transitions: transitions,
+		Publication: in.publication,
 	}); err != nil {
 		return fmt.Errorf("commit batch: %w", err)
 	}

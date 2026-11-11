@@ -160,3 +160,15 @@ enum AgentInputQueuePauseOwner {
   AGENT_INPUT_QUEUE_PAUSE_OWNER_AGENT_STOPPED = 5;
   AGENT_INPUT_QUEUE_PAUSE_OWNER_RECOVERY = 6;
 }
+
+// TabCreationState is the durable outcome of a Worker-owned creation operation.
+enum TabCreationState {
+  TAB_CREATION_STATE_UNSPECIFIED = 0;
+  TAB_CREATION_STATE_PENDING = 1;
+  TAB_CREATION_STATE_COMMITTED = 2;
+  TAB_CREATION_STATE_REJECTED = 3;
+  TAB_CREATION_STATE_CANCEL_REQUESTED = 4;
+  TAB_CREATION_STATE_CANCELED = 5;
+  // Hub publication committed; startup still needs its recovery inputs.
+  TAB_CREATION_STATE_PUBLISHED = 6;
+}
