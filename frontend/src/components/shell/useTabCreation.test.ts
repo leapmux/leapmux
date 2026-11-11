@@ -1164,26 +1164,41 @@ describe('useTabCreation operation isolation', () => {
     seedWorkspace(s.harness, 'ws-new', 'new-root')
     mockCreateWorkspace.mockResolvedValueOnce({ workspaceId: 'ws-new' })
     const held = deferred<unknown>()
-    mockOpenAgent.mockRejectedValueOnce(failure === 'transport'
-      ? new ChannelError('transport', 'unknown outcome')
-      : new ChannelError('rpc', 'rejected creation', { code: Code.Aborted }))
-    mockOpenAgent.mockReturnValueOnce(held.promise)
+    const requests: Array<{ tabId: string, bytes: Uint8Array }> = []
+    mockOpenAgent.mockImplementation((_worker, request: OpenAgentRequest) => {
+      requests.push({
+        tabId: request.creation!.tabId,
+        bytes: toBinary(OpenAgentRequestSchema, request),
+      })
+      if (requests.length === 1) {
+        return Promise.reject(failure === 'transport'
+          ? new ChannelError('transport', 'unknown outcome')
+          : new ChannelError('rpc', 'rejected creation', { code: Code.Aborted }))
+      }
+      return held.promise
+    })
     let retry: Promise<boolean> | undefined
+    let retryFinished = false
     const committed = vi.fn()
     const input = { ...s.origin, title: 'Workspace', request: s.request }
     const onError = vi.fn(() => {
-      if (onError.mock.calls.length === 1)
-        retry = s.coordinator.openWorkspace({ ...input, onError, onCommitted: committed })
+      if (onError.mock.calls.length === 1) {
+        retry = s.coordinator.openWorkspace({ ...input, onError, onCommitted: committed }).then((value) => {
+          retryFinished = true
+          return value
+        })
+      }
     })
     expect(await s.coordinator.openWorkspace({ ...input, onError })).toBe(false)
     await settle()
     expect(onError).toHaveBeenCalledOnce()
     expect(mockCreateWorkspace).toHaveBeenCalledOnce()
     expect(mockOpenAgent).toHaveBeenCalledTimes(2)
+    expect(retryFinished).toBe(false)
     if (failure === 'transport')
-      expect(sentAgent(1)).toEqual(sentAgent())
+      expect(requests[1]!.bytes).toEqual(requests[0]!.bytes)
     else
-      expect(sentAgent(1).creation!.tabId).not.toBe(sentAgent().creation!.tabId)
+      expect(requests[1]!.tabId).not.toBe(requests[0]!.tabId)
     held.resolve(s.agentReply(sentAgent(1), true))
     expect(await retry).toBe(true)
     if (failure === 'definitive')
