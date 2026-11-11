@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
+	"testing/synctest"
 
 	"github.com/coder/quartz"
 
@@ -438,23 +440,52 @@ func TestMuseRetryResolvesAtTheFirstDelta(t *testing.T) {
 
 func TestMuseRetryResolvesAfterProvenChildText(t *testing.T) {
 	for _, kind := range []string{"agentMessage", "reasoning"} {
-		t.Run(kind, func(t *testing.T) {
-			a, root := testAgent(t)
-			state, sink := nativeHistoryChild(t, a, root)
-			state.childViewPrefix = childViewPrefixReady
-			a.startTurn("child", "turn")
-			retry := []byte(mustMuseChoiceJSON(t, map[string]any{"method": contracts.MuseMethodTurnRetryScheduled, "params": map[string]any{"sessionId": "child", "turnId": "turn", "attempt": 1, "nextAttempt": 2, "maxAttempts": 10, "retryDelayMs": 1000}}))
-			a.HandleOutput(provedChildFrame(t, a, state, retry))
-			feed(t, a, contracts.MuseMethodItemStarted, map[string]any{"sessionId": "child", "viewCursor": "opened", "item": map[string]any{"itemId": "answer", "kind": kind, "status": "inProgress", "revision": 1, "turnId": "turn"}})
-			feed(t, a, contracts.MuseMethodItemDelta, map[string]any{"sessionId": "child", "itemId": "answer", "delta": "new text", "viewCursor": "delta"})
-			assert.Empty(t, sink.LeapMuxNotifications(), "unanchored text cannot resolve the projected retry")
-			completed := childHistoryItemEvent(t, "completed", json.RawMessage(mustMuseChoiceJSON(t, map[string]any{"itemId": "answer", "kind": kind, "status": "completed", "revision": 2, "turnId": "turn", "text": "new text"})), 2)
-			a.HandleOutput(completed)
-			a.viewWork.CloseAndWait()
-			require.Len(t, sink.LeapMuxNotifications(), 1)
-			assert.Equal(t, contracts.NotificationTypeApiRetryResolved, sink.LeapMuxNotifications()[0][contracts.NotificationFieldType])
-			assert.Empty(t, root.LeapMuxNotifications())
-		})
+		for _, queued := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/queued=%t", kind, queued), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					a, root := testAgent(t)
+					state, sink := nativeHistoryChild(t, a, root)
+					state.childViewPrefix = childViewPrefixReady
+					a.startTurn("child", "turn")
+					t.Cleanup(a.viewWork.CloseAndWait)
+					release := make(chan struct{})
+					releaseProjection := sync.OnceFunc(func() { close(release) })
+					t.Cleanup(releaseProjection)
+					if queued {
+						projected := make(chan struct{})
+						first := true
+						a.viewWork.Run("child", func() {
+							a.syncView("child")
+							if first {
+								first = false
+								close(projected)
+								<-release
+							}
+						})
+						<-projected
+					}
+					retry := []byte(mustMuseChoiceJSON(t, map[string]any{"method": contracts.MuseMethodTurnRetryScheduled, "params": map[string]any{"sessionId": "child", "turnId": "turn", "attempt": 1, "nextAttempt": 2, "maxAttempts": 10, "retryDelayMs": 1000}}))
+					a.HandleOutput(provedChildFrame(t, a, state, retry))
+					feed(t, a, contracts.MuseMethodItemStarted, map[string]any{"sessionId": "child", "viewCursor": "opened", "item": map[string]any{"itemId": "answer", "kind": kind, "status": "inProgress", "revision": 1, "turnId": "turn"}})
+					field := "text"
+					if kind == "reasoning" {
+						field = "summary.0"
+					}
+					feed(t, a, contracts.MuseMethodItemDelta, map[string]any{"sessionId": "child", "itemId": "answer", "field": field, "delta": "new text", "viewCursor": "delta"})
+					synctest.Wait()
+					assert.Empty(t, sink.LeapMuxNotifications(), "unanchored text cannot resolve the projected retry")
+					completed := childHistoryItemEvent(t, "completed", json.RawMessage(mustMuseChoiceJSON(t, map[string]any{"itemId": "answer", "kind": kind, "status": "completed", "revision": 2, "turnId": "turn", "text": "new text"})), 2)
+					a.HandleOutput(completed)
+					releaseProjection()
+					// Shutdown discards pending repeats. Let every projection finish first.
+					synctest.Wait()
+					require.True(t, a.viewWork.Idle())
+					require.Len(t, sink.LeapMuxNotifications(), 1)
+					assert.Equal(t, contracts.NotificationTypeApiRetryResolved, sink.LeapMuxNotifications()[0][contracts.NotificationFieldType])
+					assert.Empty(t, root.LeapMuxNotifications())
+				})
+			})
+		}
 	}
 }
 

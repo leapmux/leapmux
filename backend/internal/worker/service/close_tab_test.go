@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -969,7 +970,8 @@ func TestRemoveWorktreeFromDisk_GitFailure_PathIntact_ReturnsError(t *testing.T)
 	defer drainAllInFlight(svc)
 
 	repoDir := initRepo(t)
-	bogusPath := filepath.Join(t.TempDir(), "rwtfd-fail")
+	// A backslash requires quoting on every platform, including Unix hosts.
+	bogusPath := filepath.Join(t.TempDir(), `rwtfd-\fail`)
 	require.NoError(t, os.MkdirAll(bogusPath, 0o755))
 
 	wt := db.Worktree{
@@ -985,8 +987,8 @@ func TestRemoveWorktreeFromDisk_GitFailure_PathIntact_ReturnsError(t *testing.T)
 	require.NoError(t, cwErr)
 
 	err := svc.removeWorktreeFromDisk(wt)
-	assert.Error(t, err, "git-remove failure with path intact should return error")
-	assert.Contains(t, err.Error(), bogusPath)
+	require.Error(t, err, "git-remove failure with path intact should return error")
+	assert.ErrorContains(t, err, strconv.Quote(bogusPath))
 
 	// Disk path still present.
 	_, statErr := os.Stat(bogusPath)

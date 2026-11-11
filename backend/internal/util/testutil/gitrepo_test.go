@@ -1,6 +1,7 @@
 package testutil
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -85,4 +86,32 @@ func TestNewGitRepo_SupportsWorktrees(t *testing.T) {
 
 	assert.Equal(t, "wt-branch", git(t, wt, "rev-parse", "--abbrev-ref", "HEAD"))
 	assert.Equal(t, "init", git(t, wt, "log", "-1", "--pretty=%s"))
+}
+
+func TestGitReposSupportLongWorktreeMarkerPaths(t *testing.T) {
+	t.Parallel()
+	for _, create := range []struct {
+		name string
+		repo func(*testing.T) string
+	}{{"committed", NewGitRepo}, {"empty", NewEmptyGitRepo}} {
+		t.Run(create.name, func(t *testing.T) {
+			t.Parallel()
+			dir := create.repo(t)
+			assert.Equal(t, "true", git(t, dir, "config", "--local", "core.longpaths"))
+			if create.name == "empty" {
+				git(t, dir, "config", "user.name", "Test")
+				git(t, dir, "config", "user.email", "test@test.com")
+				git(t, dir, "commit", "--allow-empty", "-m", "init")
+			}
+			wt := filepath.Join(t.TempDir(), "worktree")
+			git(t, dir, "worktree", "add", "-b", "long-marker", wt)
+			gitDir := git(t, wt, "rev-parse", "--path-format=absolute", "--git-dir")
+			marker := filepath.Join(gitDir, strings.Repeat("m", 200))
+			require.Greater(t, len(marker), 260)
+			require.NoError(t, os.WriteFile(marker, []byte("identity"), 0o600))
+			git(t, dir, "worktree", "remove", "--force", wt)
+			assert.NoDirExists(t, wt)
+			assert.NoDirExists(t, gitDir)
+		})
+	}
 }

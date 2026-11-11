@@ -61,7 +61,8 @@ func run(t *testing.T, dir string, name string, args ...string) {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
-	require.NoError(t, cmd.Run(), "command failed: %s %v", name, args)
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, "command failed: %s %v\n%s", name, args, output)
 }
 
 func swapGitStatusForFileStatusHook(t *testing.T, fn func(context.Context, string) *leapmuxv1.GitRepoStatus) {

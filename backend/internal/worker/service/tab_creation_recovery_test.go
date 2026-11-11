@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -24,7 +25,7 @@ import (
 
 func seedPendingCreation(t *testing.T, svc *Service, owner, id string) db.GetTabCreationParams {
 	t.Helper()
-	request := &leapmuxv1.RegisterTabPayloadRequest{Creation: creationIntent(id), Payload: &leapmuxv1.TabPayload{Kind: &leapmuxv1.TabPayload_File{File: &leapmuxv1.FileTabPayload{FilePath: "/foreign/file.txt"}}}}
+	request := &leapmuxv1.RegisterTabPayloadRequest{Creation: creationIntent(id), Payload: &leapmuxv1.TabPayload{Kind: &leapmuxv1.TabPayload_File{File: &leapmuxv1.FileTabPayload{FilePath: filepath.Join(t.TempDir(), "file.txt")}}}}
 	requestPayload, err := proto.Marshal(request)
 	require.NoError(t, err)
 	publicationPayload, err := proto.Marshal(&leapmuxv1.TabPublication{Creation: request.Creation, TabType: leapmuxv1.TabType_TAB_TYPE_FILE})
@@ -43,7 +44,11 @@ func TestCreationRecovery_SkipsAnotherOwnerBeforeInventory(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	key := seedPendingCreation(t, svc, "another-owner", "a-foreign-pending")
 	own := seedPendingCreation(t, svc, "user-1", "z-own-pending")
-	require.NoError(t, svc.TabPayloads.Register(t.Context(), RegisterTabPayloadParams{UserID: own.UserID, TabID: own.TabID, Payload: &leapmuxv1.TabPayload{Kind: &leapmuxv1.TabPayload_File{File: &leapmuxv1.FileTabPayload{FilePath: "/foreign/file.txt"}}}}))
+	pending, err := svc.Queries.GetTabCreation(t.Context(), own)
+	require.NoError(t, err)
+	var request leapmuxv1.RegisterTabPayloadRequest
+	require.NoError(t, proto.Unmarshal(pending.RequestPayload, &request))
+	require.NoError(t, svc.TabPayloads.Register(t.Context(), RegisterTabPayloadParams{UserID: own.UserID, TabID: own.TabID, Payload: request.Payload}))
 	var publications atomic.Int32
 	svc.PublishTab = func(ctx context.Context, request *leapmuxv1.TabPublication) (*leapmuxv1.PublishTabResponse, error) {
 		assert.Equal(t, own.TabID, request.GetCreation().GetTabId())

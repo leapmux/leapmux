@@ -19,8 +19,8 @@ import (
 // (commit, branch, tag, add worktrees) without affecting any other test.
 //
 // The repo is materialized from an in-process template rather than built by
-// running git each time. `git init` + two `git config` + `git commit` is four
-// process spawns and costs ~250ms on macOS; writing out the ~30 small files
+// running git each time. Initialization, configuration, and the initial commit
+// require several process spawns; writing out the ~30 small files
 // they produce costs single-digit milliseconds. The worker packages create
 // hundreds of these repos per run, so that gap is most of their wall time.
 //
@@ -48,8 +48,7 @@ func NewGitRepo(t *testing.T) string {
 	return dir
 }
 
-// gitDaemonOffConfig turns off every git background process that outlives the
-// command which triggered it.
+// gitTestConfig disables background writers and supports long fixture paths.
 //
 // A host with core.fsmonitor enabled globally (macOS dev machines commonly do)
 // makes git spawn a filesystem-monitor DAEMON per repo. It keeps writing under
@@ -57,10 +56,13 @@ func NewGitRepo(t *testing.T) string {
 // and fails with "directory not empty". gc.auto / maintenance.auto are the same
 // hazard in slower motion: a background `git gc` fired by a commit writes into
 // .git after the command has returned.
-var gitDaemonOffConfig = [][]string{
+// Go can create removal markers beyond the Windows 260-character path limit.
+// Git for Windows needs core.longpaths to remove their administrative directories.
+var gitTestConfig = [][]string{
 	{"config", "core.fsmonitor", "false"},
 	{"config", "gc.auto", "0"},
 	{"config", "maintenance.auto", "false"},
+	{"config", "core.longpaths", "true"},
 }
 
 // NewEmptyGitRepo creates a repo with an UNBORN HEAD -- initialized, no commit
@@ -72,14 +74,14 @@ var gitDaemonOffConfig = [][]string{
 // templated: `git init` alone is one fork, and the point of the template is to
 // avoid the config+commit forks on top of it.
 //
-// Use this rather than a bare `git init`, so the daemon-off config above
-// applies here too -- an unpinned repo reintroduces the fsmonitor/TempDir race
-// for whichever host has fsmonitor on.
+// Use this rather than a bare `git init`, so the test configuration above
+// applies here too. An unpinned repo reintroduces the fsmonitor/TempDir race
+// for a host with fsmonitor enabled.
 func NewEmptyGitRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	runGitConfigured(t, dir, []string{"-c", "core.fsmonitor=false", "init", "--initial-branch=main"})
-	for _, args := range gitDaemonOffConfig {
+	for _, args := range gitTestConfig {
 		runGitConfigured(t, dir, args)
 	}
 	return dir
@@ -121,12 +123,12 @@ func buildGitRepoTemplate(scratch string) ([]templateFile, error) {
 		return nil, err
 	}
 	// -c on the init itself, then the same settings written INTO the repo
-	// (gitDaemonOffConfig) so every materialized copy carries them -- a copy
+	// (gitTestConfig) so every materialized copy carries them -- a copy
 	// that only inherited the init-time -c would spawn the daemon on its own
 	// first command. The socket such a daemon drops is not a regular file, so
 	// it could not be carried in the template either.
 	steps := [][]string{{"-c", "core.fsmonitor=false", "init", "--initial-branch=main"}}
-	steps = append(steps, gitDaemonOffConfig...)
+	steps = append(steps, gitTestConfig...)
 	steps = append(steps,
 		[]string{"config", "user.email", "test@test.com"},
 		[]string{"config", "user.name", "Test"},
