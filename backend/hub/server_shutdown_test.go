@@ -371,71 +371,68 @@ func (h *warnCountingHandler) WithGroup(name string) slog.Handler       { return
 // from the serve context, it stopped when shutdown began, and the 30-second
 // lease could lapse while the CRDT drain (up to 10 seconds) still wrote.
 // The test keeps the drain observable:
-//   - A 200ms lease renews every 50ms.
+//   - A virtual 200ms lease checks renewal every 50ms.
 //   - A manager parked in a test seed holds the CRDT drain open.
 //   - A second SQLite connection reads lease_expires_at during the drain.
 func TestServeRenewsTheLeaseDuringTheDrain(t *testing.T) {
-	cfg := &config.Config{
-		DataDir: t.TempDir(),
-		Listen:  []string{locallistentest.UniqueListenURL(t, "lmx-hub-test")},
-		Storage: config.StorageConfig{Type: config.StorageTypeSQLite},
-	}
-	srv, err := NewServer(cfg, testHubLease(t, cfg.DataDir), withRevocationWatcherOptions(200*time.Millisecond))
-	require.NoError(t, err)
+	synctest.Test(t, func(t *testing.T) {
+		// Virtual time keeps slow startup I/O from consuming the short lease budget.
+		srv := newShutdownTestServer(t, withRevocationWatcherOptions(200*time.Millisecond))
 
-	// The drain holder: a CRDT manager whose goroutine parks until the
-	// release, so crdtRegistry.Shutdown stays inside its deadline for as
-	// long as this test observes.
-	m, err := srv.crdtRegistry.Get(context.Background(), "drain-holder-user")
-	require.NoError(t, err)
-	gate := make(chan struct{})
-	var gateOnce sync.Once
-	gateRelease := func() { gateOnce.Do(func() { close(gate) }) }
-	t.Cleanup(gateRelease)
-	seedEntered := make(chan struct{})
-	go m.SeedStateForTest(func(*leapmuxv1.UserCrdtState) { close(seedEntered); <-gate })
-	<-seedEntered
+		// The drain holder: a CRDT manager whose goroutine parks until the
+		// release, so crdtRegistry.Shutdown stays inside its deadline for as
+		// long as this test observes.
+		m, err := srv.crdtRegistry.Get(context.Background(), "drain-holder-user")
+		require.NoError(t, err)
+		gate := make(chan struct{})
+		var gateOnce sync.Once
+		gateRelease := func() { gateOnce.Do(func() { close(gate) }) }
+		t.Cleanup(gateRelease)
+		seedEntered := make(chan struct{})
+		go m.SeedStateForTest(func(*leapmuxv1.UserCrdtState) { close(seedEntered); <-gate })
+		<-seedEntered
 
-	cancelServe, served := serveForShutdownTest(t, srv)
+		cancelServe, served := serveForShutdownTest(t, srv)
 
-	// Begin the shutdown and observe lease_expires_at while the drain runs.
-	cancelServe()
+		// Begin the shutdown and observe lease_expires_at while the drain runs.
+		cancelServe()
 
-	db, err := sql.Open("sqlite", filepath.Join(cfg.DataDir, "hub.db"))
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
+		db, err := sql.Open("sqlite", filepath.Join(srv.cfg.DataDir, "hub.db"))
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = db.Close() })
 
-	expiry := func() (time.Time, bool) {
-		var raw any
-		if err := db.QueryRow("SELECT lease_expires_at FROM hub_runtime_lease WHERE singleton_id = 1").Scan(&raw); err != nil {
-			return time.Time{}, false
-		}
-		switch v := raw.(type) {
-		case string:
-			parsed, parseErr := time.Parse("2006-01-02T15:04:05.000Z", v)
-			if parseErr != nil {
+		expiry := func() (time.Time, bool) {
+			var raw any
+			if err := db.QueryRow("SELECT lease_expires_at FROM hub_runtime_lease WHERE singleton_id = 1").Scan(&raw); err != nil {
 				return time.Time{}, false
 			}
-			return parsed, true
-		case time.Time:
-			return v, true
+			switch v := raw.(type) {
+			case string:
+				parsed, parseErr := time.Parse("2006-01-02T15:04:05.000Z", v)
+				if parseErr != nil {
+					return time.Time{}, false
+				}
+				return parsed, true
+			case time.Time:
+				return v, true
+			}
+			return time.Time{}, false
 		}
-		return time.Time{}, false
-	}
 
-	before, ok := expiry()
-	require.True(t, ok, "the lease row must exist when the drain begins")
+		before, ok := expiry()
+		require.True(t, ok, "the lease row must exist when the drain begins")
 
-	// The CRDT drain is parked; the renewal ticker must advance the stored
-	// expiry inside it.
-	assert.Eventually(t, func() bool {
-		after, live := expiry()
-		return live && after.After(before)
-	}, 8*time.Second, 50*time.Millisecond,
-		"lease_expires_at must advance while the drain runs")
+		// The CRDT drain is parked; the renewal ticker must advance the stored
+		// expiry inside it.
+		assert.Eventually(t, func() bool {
+			after, live := expiry()
+			return live && after.After(before)
+		}, 8*time.Second, 50*time.Millisecond,
+			"lease_expires_at must advance while the drain runs")
 
-	gateRelease()
-	assert.NoError(t, <-served)
+		gateRelease()
+		assert.NoError(t, <-served)
+	})
 }
 
 // servingCtx carries the detached work of every request, so it must end on each
