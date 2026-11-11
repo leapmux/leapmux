@@ -198,9 +198,6 @@ type serverOptions struct {
 	// completions use a process-wide goroutine, which cannot send across
 	// synctest bubble boundaries.
 	listenLocal func(string) (net.Listener, error)
-	// revocationLease, when set, replaces the watcher's default lease, so a
-	// test can observe renewal inside a drain without a real 30-second lease.
-	revocationLease time.Duration
 	// mailSender, when set, replaces the Hub's sender, so a test can hold a
 	// send open and observe what the shutdown joins.
 	mailSender mail.Sender
@@ -221,12 +218,12 @@ func withMailSender(sender mail.Sender) ServerOption {
 	}
 }
 
-// withRevocationWatcherOptions shapes the revocation watcher for a test. It
-// is unexported on purpose: production takes the watcher's own defaults.
-func withRevocationWatcherOptions(lease time.Duration) ServerOption {
-	return func(o *serverOptions) {
-		o.revocationLease = lease
-	}
+// runtimeLeaseWatcher is the watcher lifecycle that the Hub owns through shutdown.
+type runtimeLeaseWatcher interface {
+	AcquireLease(context.Context, time.Duration) error
+	StartLoop(context.Context)
+	Errors() <-chan error
+	Close(context.Context) error
 }
 
 // Server is a reusable Hub server instance.
@@ -277,7 +274,7 @@ type Server struct {
 	authContexts      *auth.AuthContextRegistry
 	workerMgr         *workermgr.Manager
 	crdtRegistry      *crdt.Registry
-	revocationWatcher *revocationwatcher.Watcher
+	revocationWatcher runtimeLeaseWatcher
 	// workerEffects runs the out-of-database half of a worker's removal, for
 	// the per-user and admin surfaces, the user-deletion cascade and
 	// RetireLocalWorker.
@@ -1063,11 +1060,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	// continue to invoke the close paths inline so they observe
 	// zero-latency revocation; the watcher is the cross-process
 	// safeguard.
-	watcherOpts := make([]revocationwatcher.Option, 0, 1)
-	if so.revocationLease > 0 {
-		watcherOpts = append(watcherOpts, revocationwatcher.WithLeaseDuration(so.revocationLease))
-	}
-	revWatcher := revocationwatcher.New(st, lifecycle, watcherOpts...)
+	revWatcher := revocationwatcher.New(st, lifecycle)
 
 	// The set serves through THIS server from here on; see setServer.
 	listeners.setServer(server)

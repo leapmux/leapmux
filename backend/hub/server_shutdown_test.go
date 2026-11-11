@@ -2,13 +2,11 @@ package hub
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -367,72 +365,74 @@ func (h *warnCountingHandler) Handle(_ context.Context, r slog.Record) error {
 func (h *warnCountingHandler) WithAttrs(attrs []slog.Attr) slog.Handler { return h }
 func (h *warnCountingHandler) WithGroup(name string) slog.Handler       { return h }
 
-// Renewal must keep running through the whole drain: with renewal derived
-// from the serve context, it stopped when shutdown began, and the 30-second
-// lease could lapse while the CRDT drain (up to 10 seconds) still wrote.
-// The test keeps the drain observable:
-//   - A virtual 200ms lease checks renewal every 50ms.
-//   - A manager parked in a test seed holds the CRDT drain open.
-//   - A second SQLite connection reads lease_expires_at during the drain.
-func TestServeRenewsTheLeaseDuringTheDrain(t *testing.T) {
+// The Hub must keep the watcher's context alive until the CRDT drain finishes.
+// The watcher and store suites cover renewal and expiry; this test checks the
+// context and close ordering without depending on a database clock.
+func TestServeKeepsTheLeaseWatcherAliveDuringTheDrain(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		// Virtual time keeps slow startup I/O from consuming the short lease budget.
-		srv := newShutdownTestServer(t, withRevocationWatcherOptions(200*time.Millisecond))
+		srv := newShutdownTestServer(t)
+		require.NoError(t, srv.revocationWatcher.Close(t.Context()))
+		watcher := &drainWatcherProbe{started: make(chan context.Context, 1), closed: make(chan struct{})}
+		srv.revocationWatcher = watcher
 
-		// The drain holder: a CRDT manager whose goroutine parks until the
-		// release, so crdtRegistry.Shutdown stays inside its deadline for as
-		// long as this test observes.
-		m, err := srv.crdtRegistry.Get(context.Background(), "drain-holder-user")
+		manager, err := srv.crdtRegistry.Get(t.Context(), "drain-holder-user")
 		require.NoError(t, err)
-		gate := make(chan struct{})
-		var gateOnce sync.Once
-		gateRelease := func() { gateOnce.Do(func() { close(gate) }) }
-		t.Cleanup(gateRelease)
+		release := make(chan struct{})
+		releaseDrain := sync.OnceFunc(func() { close(release) })
+		t.Cleanup(releaseDrain)
 		seedEntered := make(chan struct{})
-		go m.SeedStateForTest(func(*leapmuxv1.UserCrdtState) { close(seedEntered); <-gate })
+		go manager.SeedStateForTest(func(*leapmuxv1.UserCrdtState) { close(seedEntered); <-release })
 		<-seedEntered
 
 		cancelServe, served := serveForShutdownTest(t, srv)
-
-		// Begin the shutdown and observe lease_expires_at while the drain runs.
+		loopCtx := <-watcher.started
 		cancelServe()
+		synctest.Wait()
 
-		db, err := sql.Open("sqlite", filepath.Join(srv.cfg.DataDir, "hub.db"))
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = db.Close() })
-
-		expiry := func() (time.Time, bool) {
-			var raw any
-			if err := db.QueryRow("SELECT lease_expires_at FROM hub_runtime_lease WHERE singleton_id = 1").Scan(&raw); err != nil {
-				return time.Time{}, false
-			}
-			switch v := raw.(type) {
-			case string:
-				parsed, parseErr := time.Parse("2006-01-02T15:04:05.000Z", v)
-				if parseErr != nil {
-					return time.Time{}, false
-				}
-				return parsed, true
-			case time.Time:
-				return v, true
-			}
-			return time.Time{}, false
+		require.NoError(t, loopCtx.Err(), "serving cancellation must not stop lease renewal during the drain")
+		assertChannelOpen(t, watcher.closed, "the watcher must stay open while the CRDT drain is blocked")
+		select {
+		case err := <-served:
+			t.Fatalf("Serve returned before the CRDT drain finished: %v", err)
+		default:
 		}
 
-		before, ok := expiry()
-		require.True(t, ok, "the lease row must exist when the drain begins")
-
-		// The CRDT drain is parked; the renewal ticker must advance the stored
-		// expiry inside it.
-		assert.Eventually(t, func() bool {
-			after, live := expiry()
-			return live && after.After(before)
-		}, 8*time.Second, 50*time.Millisecond,
-			"lease_expires_at must advance while the drain runs")
-
-		gateRelease()
-		assert.NoError(t, <-served)
+		releaseDrain()
+		require.NoError(t, <-served)
+		assert.ErrorIs(t, loopCtx.Err(), context.Canceled, "watcher Close must end its owned loop after the drain")
+		select {
+		case <-watcher.closed:
+		default:
+			t.Fatal("Serve returned without closing the lease watcher")
+		}
 	})
+}
+
+type drainWatcherProbe struct {
+	started    chan context.Context
+	closed     chan struct{}
+	cancelLoop context.CancelFunc
+	closeOnce  sync.Once
+}
+
+func (*drainWatcherProbe) AcquireLease(ctx context.Context, _ time.Duration) error { return ctx.Err() }
+
+func (w *drainWatcherProbe) StartLoop(ctx context.Context) {
+	loopCtx, cancel := context.WithCancel(ctx)
+	w.cancelLoop = cancel
+	w.started <- loopCtx
+}
+
+func (*drainWatcherProbe) Errors() <-chan error { return nil }
+
+func (w *drainWatcherProbe) Close(context.Context) error {
+	w.closeOnce.Do(func() {
+		if w.cancelLoop != nil {
+			w.cancelLoop()
+		}
+		close(w.closed)
+	})
+	return nil
 }
 
 // servingCtx carries the detached work of every request, so it must end on each
