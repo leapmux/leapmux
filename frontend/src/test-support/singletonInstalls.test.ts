@@ -1,5 +1,8 @@
+import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
+import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 
@@ -114,4 +117,45 @@ describe('singleton installs', () => {
       ).toBe(wanted)
     }
   })
+})
+
+describe('serialization installs', () => {
+  for (const consumer of ['solid-js', '@solidjs/start']) {
+    for (const mode of ['development', 'production']) {
+      it(`round-trips web values through ${consumer} in ${mode}`, () => {
+        const require = createRequire(import.meta.url)
+        // Resolve from each consumer. Solid and SolidStart can install different
+        // Seroval versions, and each plugin must load its own compatible peer.
+        const consumerEntry = require.resolve(consumer)
+        execFileSync(process.execPath, [
+          `--conditions=${mode}`,
+          '--conditions=browser',
+          '--input-type=module',
+          '--eval',
+          `
+            import assert from 'node:assert/strict';
+            import { createRequire } from 'node:module';
+            const require = createRequire(process.argv[1]);
+            const { toJSON, fromJSON } = require('seroval');
+            const { HeadersPlugin } = require('seroval-plugins/web');
+            const plugins = [HeadersPlugin];
+            const value = {
+              headers: new Headers({ 'x-test': 'serialized' }),
+              empty: '', zero: 0, negative: -1,
+              large: Number.MAX_SAFE_INTEGER, absent: undefined, nil: null,
+            };
+            value.self = value;
+            const restored = fromJSON(toJSON(value, { plugins }), { plugins });
+            assert.deepEqual([...restored.headers], [['x-test', 'serialized']]);
+            assert.equal(restored.self, restored);
+            for (const key of ['empty', 'zero', 'negative', 'large', 'absent', 'nil']) {
+              assert.ok(Object.hasOwn(restored, key));
+              assert.equal(restored[key], value[key]);
+            }
+          `,
+          consumerEntry,
+        ], { stdio: 'pipe' })
+      })
+    }
+  }
 })

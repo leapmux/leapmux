@@ -4,7 +4,7 @@ import type { ToolCallStatus } from '../model/toolCallStatus'
 import type { ToolResultRenderContext } from '../renderContext'
 import Ban from 'lucide-solid/icons/ban'
 import Check from 'lucide-solid/icons/check'
-import CircleAlert from 'lucide-solid/icons/circle-alert'
+import CircleExclamationPoint from 'lucide-solid/icons/circle-exclamation-point'
 import Terminal from 'lucide-solid/icons/terminal'
 import { createMemo, For, Show } from 'solid-js'
 import { normalizedCommandBody, PROGRESS_MAX_ROWS } from '~/lib/normalizeProgressOutput'
@@ -102,7 +102,7 @@ export function CommandResultBody(props: {
   const statusIcon = () => props.status === 'declined'
     ? Ban
     : props.status === 'cancelled' || commandFailed()
-      ? CircleAlert
+      ? CircleExclamationPoint
       : Check
   const statusLabel = () => commandStatusLabel(props.status, exit())
   // Use the shared outcome vocabulary, not a literal.

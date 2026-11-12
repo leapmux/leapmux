@@ -5,8 +5,8 @@ import type { ToolKind } from '../model/toolKind'
 import type { MessageUiState, ToolProgressSource, ToolResultRenderContext } from '../renderContext'
 import type { ToolCallDispatch } from './tools/index'
 import type { ToolRowView } from './tools/renderer'
-import CircleAlert from 'lucide-solid/icons/circle-alert'
-import TriangleAlert from 'lucide-solid/icons/triangle-alert'
+import CircleExclamationPoint from 'lucide-solid/icons/circle-exclamation-point'
+import TriangleExclamationPoint from 'lucide-solid/icons/triangle-exclamation-point'
 import { createMemo, createSignal, Match, Show, Switch, untrack } from 'solid-js'
 import { useCopyButton } from '~/hooks/useCopyButton'
 import { stripLeadingBlankLines } from '~/lib/normalizeProgressOutput'
@@ -237,8 +237,8 @@ export function ToolMessage(props: { row: ToolCallRow, context?: ToolResultRende
         <ToolOutcomeHeader
           when={statusOutcome() !== null && !bodyStatesOutcome()}
           icon={call().status === 'incomplete'
-            ? TriangleAlert
-            : CircleAlert}
+            ? TriangleExclamationPoint
+            : CircleExclamationPoint}
           title={typedTitle()}
           {...(props.context !== undefined
             ? { context: props.context }

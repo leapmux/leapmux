@@ -4,7 +4,7 @@ import type { AgentPrompt } from './model/divider'
 import type { ChatRow } from './model/row'
 import type { ExpandableToolLayoutContext, RowRenderContext } from './renderContext'
 import type { ChatRowExtraction } from './rowExtraction'
-import CircleAlert from 'lucide-solid/icons/circle-alert'
+import CircleExclamationPoint from 'lucide-solid/icons/circle-exclamation-point'
 import MessageSquare from 'lucide-solid/icons/message-square'
 import { For, untrack } from 'solid-js'
 import { assertNever } from '~/lib/assertNever'
@@ -327,7 +327,7 @@ export function renderExtractedRow(
   if (toolCompletion) {
     return (
       <ToolStatusHeader
-        icon={CircleAlert}
+        icon={CircleExclamationPoint}
         title={toolOutcomeLabel(completion === 'interrupted'
           ? 'interrupted'
           : 'failed')}

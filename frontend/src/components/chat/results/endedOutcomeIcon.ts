@@ -1,7 +1,7 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { RunStatus } from '../model/runStatus'
 import Check from 'lucide-solid/icons/check'
-import CircleAlert from 'lucide-solid/icons/circle-alert'
+import CircleExclamationPoint from 'lucide-solid/icons/circle-exclamation-point'
 import OctagonX from 'lucide-solid/icons/octagon-x'
 
 /**
@@ -19,6 +19,6 @@ import OctagonX from 'lucide-solid/icons/octagon-x'
  */
 export const ENDED_OUTCOME_ICON = {
   completed: Check,
-  failed: CircleAlert,
+  failed: CircleExclamationPoint,
   stopped: OctagonX,
 } as const satisfies Partial<Record<RunStatus, LucideIcon>>

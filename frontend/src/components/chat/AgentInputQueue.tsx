@@ -11,7 +11,7 @@ import RotateCcw from 'lucide-solid/icons/rotate-ccw'
 import SendHorizontal from 'lucide-solid/icons/send-horizontal'
 import SquarePen from 'lucide-solid/icons/square-pen'
 import Trash from 'lucide-solid/icons/trash'
-import TriangleAlert from 'lucide-solid/icons/triangle-alert'
+import TriangleExclamationPoint from 'lucide-solid/icons/triangle-exclamation-point'
 import UserPen from 'lucide-solid/icons/user-pen'
 import Zap from 'lucide-solid/icons/zap'
 import { createMemo, createSignal, Show } from 'solid-js'
@@ -430,7 +430,7 @@ export const AgentInputQueue: Component<AgentInputQueueProps> = (props) => {
             class={ROW_ACTION_CLASS}
             tooltip="Delete"
             confirmTooltip="Confirm delete?"
-            confirmLabel={<Icon icon={TriangleAlert} size="xs" />}
+            confirmLabel={<Icon icon={TriangleExclamationPoint} size="xs" />}
             disabled={isLocked()}
             onClick={() => props.onDelete(item())}
           >

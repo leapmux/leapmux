@@ -10,7 +10,7 @@ import LoaderCircle from 'lucide-solid/icons/loader-circle'
 import Shield from 'lucide-solid/icons/shield'
 import ShieldCheck from 'lucide-solid/icons/shield-check'
 import ShieldX from 'lucide-solid/icons/shield-x'
-import TriangleAlert from 'lucide-solid/icons/triangle-alert'
+import TriangleExclamationPoint from 'lucide-solid/icons/triangle-exclamation-point'
 import { createSignal, Show } from 'solid-js'
 import { compactControl } from '~/components/common/CompactControl.css'
 import { Icon } from '~/components/common/Icon'
@@ -160,7 +160,7 @@ export function renderNotificationBlocks(blocks: readonly NotificationBlock[], c
           <div class={subagentReportHeader}>
             <Icon
               icon={warning || withheld
-                ? TriangleAlert
+                ? TriangleExclamationPoint
                 : Bot}
               size="sm"
             />

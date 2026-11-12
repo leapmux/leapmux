@@ -1,11 +1,11 @@
 import { render } from '@solidjs/testing-library'
-import CircleAlert from 'lucide-solid/icons/circle-alert'
+import CircleExclamationPoint from 'lucide-solid/icons/circle-exclamation-point'
 import { describe, expect, it } from 'vitest'
 import { drawsOwnOutcome, ToolOutcomeHeader } from './ToolStatusHeader'
 
 describe('ToolOutcomeHeader', () => {
   it('states the outcome when no enclosing renderer does', () => {
-    const { container } = render(() => <ToolOutcomeHeader when icon={CircleAlert} title="Failed" />)
+    const { container } = render(() => <ToolOutcomeHeader when icon={CircleExclamationPoint} title="Failed" />)
     expect(container.textContent).toContain('Failed')
   })
 
@@ -13,13 +13,13 @@ describe('ToolOutcomeHeader', () => {
   // outcome twice. Every renderer routes through this component for that reason.
   it('draws nothing when the enclosing renderer states the outcome', () => {
     const { container } = render(() => (
-      <ToolOutcomeHeader when icon={CircleAlert} title="Failed" context={{ completionHeader: true }} />
+      <ToolOutcomeHeader when icon={CircleExclamationPoint} title="Failed" context={{ completionHeader: true }} />
     ))
     expect(container.textContent).toBe('')
   })
 
   it('draws nothing when the renderer has no reason of its own', () => {
-    const { container } = render(() => <ToolOutcomeHeader when={false} icon={CircleAlert} title="Failed" />)
+    const { container } = render(() => <ToolOutcomeHeader when={false} icon={CircleExclamationPoint} title="Failed" />)
     expect(container.textContent).toBe('')
   })
 })
