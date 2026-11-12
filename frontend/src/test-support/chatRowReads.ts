@@ -67,8 +67,20 @@ function lookup(name: string, scope: Scope): Binding | undefined {
   return undefined
 }
 
+/**
+ * The text that each reported call holds. The scan reports only a call whose method
+ * is `evaluate` or `evaluateAll`, written as `.evaluate` or `['evaluate']`, so a
+ * source without this text holds no offender. Most e2e files never mention it, and
+ * parsing a file costs far more than the scan of its tree, so the check skips the
+ * parse for them. A method name spelled with escape sequences evades the check; the
+ * guard does not look for one.
+ */
+const REPORTED_METHOD_TEXT = 'evaluate'
+
 /** Find unsafe chat reads without confusing browser DOM nodes or variables from separate scopes. */
 export function racyChatReads(source: string, fileName = 'e2e.ts'): Array<{ index: number, text: string }> {
+  if (!source.includes(REPORTED_METHOD_TEXT))
+    return []
   const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true)
   const root: Scope = {
     functionScope: true,

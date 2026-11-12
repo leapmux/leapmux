@@ -1,8 +1,21 @@
 import { readFileSync } from 'node:fs'
-import { describe, expect, it } from 'vitest'
+import ts from 'typescript'
+import { describe, expect, it, vi } from 'vitest'
 import { racyChatReads } from '~/test-support/chatRowReads'
 import { collectE2EFiles } from '~/test-support/e2eFiles'
 import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
+
+// The real parser, wrapped so that a test can count its calls. A spy cannot
+// replace it in place, because the export of an ES module is read-only.
+vi.mock('typescript', async (importOriginal) => {
+  const actual = await importOriginal<{ default: typeof ts }>()
+  return {
+    default: {
+      ...actual.default,
+      createSourceFile: vi.fn(actual.default.createSourceFile),
+    },
+  }
+})
 
 // E2E guard: read a chat row through `readAttached`, never through a bare
 // `locator.evaluate` / `locator.evaluateAll`.
@@ -34,6 +47,22 @@ import { frontendRoot, posixRelative } from '~/test-support/sourceTree'
 // correct for them.
 
 describe('racyChatReads', () => {
+  // The guard scans every e2e file, and the parse is nearly all of its cost.
+  it('parses no source that cannot call evaluate', () => {
+    const parse = vi.mocked(ts.createSourceFile)
+    parse.mockClear()
+
+    expect(racyChatReads('const bubble = assistantBubbles(page)\nawait bubble.click()')).toEqual([])
+    expect(parse).not.toHaveBeenCalled()
+
+    expect(racyChatReads('assistantBubbles(page).evaluate(node => node.textContent)')).toHaveLength(1)
+    expect(parse).toHaveBeenCalledOnce()
+  })
+
+  it('reports a chat read through a bracketed method name', () => {
+    expect(racyChatReads(`assistantBubbles(page)['evaluate'](node => node.textContent)`)).toHaveLength(1)
+  })
+
   it('keeps locator bindings inside their own function scope', () => {
     const source = `
       function readChat(page) {
