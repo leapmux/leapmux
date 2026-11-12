@@ -120,21 +120,18 @@ export function MarkdownText(props: {
   /** Mark the body as returned tool output; see CollapsibleContentProps.outputPreview. */
   outputPreview?: boolean
 }): JSX.Element {
-  // The HTML this body showed last, kept while a theme change renders the SAME text
-  // again, so the body keeps its old colours instead of turning into a skeleton. A
-  // chat row keeps it in its render cache (see markdownHtmlForContext). A body with
-  // no render cache -- the file viewer, a control banner -- keeps it here.
+  // The HTML this body shows, and the text it renders. markdownHtmlForContext keeps
+  // it while the reader selects or scrolls, and while a theme change renders the SAME
+  // text again, so the body keeps its old colours instead of turning into a skeleton.
   let shown: { text: string, html: string } | undefined
   const html = createMemo(() => {
     const text = props.text
-    const next = markdownHtmlForContext(text, props.context)
-    if (next !== undefined) {
-      shown = { text, html: next }
-      return next
-    }
-    return shown?.text === text
+    const next = markdownHtmlForContext(text, props.context, shown?.text === text
       ? shown.html
-      : undefined
+      : undefined)
+    if (next !== undefined)
+      shown = { text, html: next }
+    return next
   })
   const pending = () => html() === undefined
   // eslint-disable-next-line solid/reactivity -- the scope reads the accessor inside its own memo

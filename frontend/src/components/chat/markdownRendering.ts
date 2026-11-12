@@ -31,19 +31,12 @@ function cachedCurrentThemeHtml(
     : setCachedRenderValueForString(context, markdownCacheNamespace(), text, sharedCached)
 }
 
-function rememberDisplayedMarkdown(
-  context: MarkdownRenderContext | undefined,
-  text: string,
-  html: string,
-): string {
-  return setCachedRenderValueForString(context, 'markdown-displayed', text, html)
-}
-
 /**
  * Return the HTML that a chat body shows for `text`, or undefined while the worker
  * renders it. The main thread never parses Markdown here (see requestMarkdownHtml).
  *
- * A body that already shows HTML keeps it in two cases:
+ * `displayed` is the HTML that the body shows now for the same text, if any. The
+ * body keeps it in two cases:
  * - While the reader selects text or the view scrolls, so the DOM under the
  *   selection or the scroll anchor does not change.
  * - While a theme change renders the new HTML, so the body keeps its old colours
@@ -53,20 +46,18 @@ function rememberDisplayedMarkdown(
  * premeasure pass included: premeasure is where a row completes its Markdown, and
  * the row stays hidden until it has.
  */
-export function markdownHtmlForContext(text: string, context: MarkdownRenderContext | undefined): string | undefined {
-  const displayed = getCachedRenderValueForString<string>(context, 'markdown-displayed', text)
+export function markdownHtmlForContext(
+  text: string,
+  context: MarkdownRenderContext | undefined,
+  displayed: string | undefined,
+): string | undefined {
   if (displayed !== undefined && (isTextSelectionActive(context) || context?.syntaxHighlightingPaused?.() === true))
     return displayed
   const current = cachedCurrentThemeHtml(text, context)
   if (current !== undefined)
-    return rememberDisplayedMarkdown(context, text, current)
+    return current
   const requested = requestMarkdownHtml(text, context?.rowOffscreen)
-  if (requested !== undefined) {
-    return rememberDisplayedMarkdown(
-      context,
-      text,
-      setCachedRenderValueForString(context, markdownCacheNamespace(), text, requested),
-    )
-  }
+  if (requested !== undefined)
+    return setCachedRenderValueForString(context, markdownCacheNamespace(), text, requested)
   return displayed
 }
