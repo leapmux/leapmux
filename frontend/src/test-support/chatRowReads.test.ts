@@ -52,6 +52,7 @@ describe('racyChatReads', () => {
     const parse = vi.mocked(ts.createSourceFile)
     parse.mockClear()
 
+    expect(racyChatReads('')).toEqual([])
     expect(racyChatReads('const bubble = assistantBubbles(page)\nawait bubble.click()')).toEqual([])
     expect(parse).not.toHaveBeenCalled()
 
@@ -61,6 +62,12 @@ describe('racyChatReads', () => {
 
   it('reports a chat read through a bracketed method name', () => {
     expect(racyChatReads(`assistantBubbles(page)['evaluate'](node => node.textContent)`)).toHaveLength(1)
+  })
+
+  it('reports a chat read through evaluateAll in a source that never calls evaluate', () => {
+    expect(racyChatReads('assistantBubbles(page).evaluateAll(nodes => nodes.length)')).toEqual([
+      { index: 0, text: 'assistantBubbles(page).evaluateAll(' },
+    ])
   })
 
   it('keeps locator bindings inside their own function scope', () => {
