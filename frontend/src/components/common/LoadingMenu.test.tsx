@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clippedText } from '~/styles/shared.css'
 import { hoverForTooltip, stubClipped } from '~/test-support/clipStub'
 import { menuOptionLabels, menuOptions, menuOptionValues, menuTrigger, menuTriggerText, openMenu, pickMenuValue } from '~/test-support/menu'
-import { LoadingMenu } from './LoadingMenu'
+import { limitDrawnOptions, LoadingMenu, MAX_DRAWN_OPTIONS } from './LoadingMenu'
 
 afterEach(() => {
   cleanup()
@@ -219,6 +219,86 @@ describe('the one-of-N menu (LoadingMenu)', () => {
       })
       pickMenuValue(MENU, 'ab')
       expect(onChange).toHaveBeenCalledWith('ab')
+    })
+  })
+
+  describe('row limit', () => {
+    /** `count` options, `opt-0` to `opt-<count - 1>`. */
+    function options(count: number) {
+      return Array.from({ length: count }, (_, i) => ({ value: `opt-${i}`, label: `Option ${i}` }))
+    }
+
+    it('mounts every row of a filtered list at the limit, with no note', () => {
+      renderMenu({
+        options: options(MAX_DRAWN_OPTIONS),
+        filter: true,
+      })
+
+      expect(menuOptionValues(MENU)).toHaveLength(MAX_DRAWN_OPTIONS)
+      expect(screen.queryByTestId('loading-menu-more')).toBeNull()
+    })
+
+    it('mounts the first rows of a longer filtered list, and says how many it leaves out', () => {
+      renderMenu({
+        options: options(MAX_DRAWN_OPTIONS + 5),
+        filter: true,
+      })
+
+      const values = menuOptionValues(MENU)
+      expect(values).toHaveLength(MAX_DRAWN_OPTIONS)
+      expect(values.at(-1)).toBe(`opt-${MAX_DRAWN_OPTIONS - 1}`)
+      expect(screen.getByTestId('loading-menu-more')).toHaveTextContent('5 more options are not shown. Type to filter the list.')
+    })
+
+    it('states one left-out option in the singular', () => {
+      renderMenu({
+        options: options(MAX_DRAWN_OPTIONS + 1),
+        filter: true,
+      })
+      openMenu(MENU)
+
+      expect(screen.getByTestId('loading-menu-more')).toHaveTextContent('1 more option is not shown.')
+    })
+
+    it('finds a row past the limit through the filter', () => {
+      const { onChange } = renderMenu({
+        options: options(MAX_DRAWN_OPTIONS + 5),
+        filter: true,
+      })
+      openMenu(MENU)
+      fireEvent.input(screen.getByTestId('loading-menu-filter'), {
+        target: { value: `Option ${MAX_DRAWN_OPTIONS + 3}` },
+      })
+
+      expect(menuOptionValues(MENU)).toEqual([`opt-${MAX_DRAWN_OPTIONS + 3}`])
+      expect(screen.queryByTestId('loading-menu-more')).toBeNull()
+      pickMenuValue(MENU, `opt-${MAX_DRAWN_OPTIONS + 3}`)
+      expect(onChange).toHaveBeenCalledWith(`opt-${MAX_DRAWN_OPTIONS + 3}`)
+    })
+
+    it('keeps a pinned row that the list holds past the limit', () => {
+      renderMenu({
+        options: [
+          ...options(MAX_DRAWN_OPTIONS + 1),
+          { value: 'escape', label: 'Enter an ID...', pinned: true },
+        ],
+        filter: true,
+      })
+
+      const values = menuOptionValues(MENU)
+      expect(values).toHaveLength(MAX_DRAWN_OPTIONS + 1)
+      expect(values.at(-1)).toBe('escape')
+      expect(screen.getByTestId('loading-menu-more')).toHaveTextContent('1 more option is not shown.')
+    })
+
+    it('mounts every row of a list with no filter box, because nothing else reaches the rest', () => {
+      renderMenu({
+        options: options(MAX_DRAWN_OPTIONS + 5),
+        filter: false,
+      })
+
+      expect(menuOptionValues(MENU)).toHaveLength(MAX_DRAWN_OPTIONS + 5)
+      expect(screen.queryByTestId('loading-menu-more')).toBeNull()
     })
   })
 
@@ -641,5 +721,52 @@ describe('LoadingMenu filter threshold', () => {
     cleanup()
     renderMenu({ ariaInvalid: false })
     expect(menuTrigger(MENU).getAttribute('aria-invalid')).toBeNull()
+  })
+})
+
+describe('limitDrawnOptions', () => {
+  const option = (value: string, pinned = false) => (pinned
+    ? { value, label: value, pinned: true }
+    : { value, label: value })
+
+  it('keeps the list itself when it fits', () => {
+    const list = [
+      option('a'),
+      option('b'),
+    ]
+
+    const limited = limitDrawnOptions(list, 2)
+
+    expect(limited.options).toBe(list)
+    expect(limited.hidden).toBe(0)
+  })
+
+  it('keeps the first unpinned options in order, and every pinned one', () => {
+    const list = [
+      option('pin-1', true),
+      option('a'),
+      option('b'),
+      option('c'),
+      option('pin-2', true),
+    ]
+
+    const limited = limitDrawnOptions(list, 2)
+
+    expect(limited.options.map(o => o.value)).toEqual(['pin-1', 'a', 'b', 'pin-2'])
+    expect(limited.hidden).toBe(1)
+  })
+
+  it('keeps only the pinned options at a limit of zero', () => {
+    const limited = limitDrawnOptions([
+      option('a'),
+      option('pin', true),
+    ], 0)
+
+    expect(limited.options.map(o => o.value)).toEqual(['pin'])
+    expect(limited.hidden).toBe(1)
+  })
+
+  it('keeps an empty list empty', () => {
+    expect(limitDrawnOptions([], 0)).toEqual({ options: [], hidden: 0 })
   })
 })

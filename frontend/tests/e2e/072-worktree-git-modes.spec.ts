@@ -5,7 +5,7 @@ import { expect } from '@playwright/test'
 import { TabType, WorktreeAction } from '../../src/generated/proto/leapmux/v1/common_pb'
 import { test } from './fixtures'
 import { createWorkspaceViaAPI, openAgentViaAPI } from './helpers/api'
-import { chooseGitMode, fillWorkspaceTitle, loginViaToken, menuOptionTexts, openNewAgentDialog, openNewTerminalDialog, openNewWorkspaceDialogAt, openWorkspace, pickMenuOption, submitNewWorkspaceDialog, waitForActiveTabContext } from './helpers/ui'
+import { chooseGitMode, fillWorkspaceTitle, loginViaToken, menuOptionTexts, openMenu, openNewAgentDialog, openNewTerminalDialog, openNewWorkspaceDialogAt, openWorkspace, pickMenuOption, submitNewWorkspaceDialog, waitForActiveTabContext } from './helpers/ui'
 import { closeAgentViaAPI, inspectLastTabCloseViaAPI, waitForAgentStartupViaAPI, waitForSoleAgentViaAPI } from './helpers/workerTabs'
 import { createWorkspaceWithAgentsViaAPI } from './helpers/workspace'
 import { addWorktree, branchExists, commitFile, createGitRepo, createWorkspaceWithWorktreeViaAPI, expectRepoBranch, managedWorktreePath, waitForPathDeleted, waitForPathExists } from './helpers/worktree'
@@ -163,6 +163,39 @@ test.describe('Worktree Git Modes', () => {
     // Verify the repo is now on the feature-switch branch. Polled: the dialog
     // closing means the RPC returned, and the checkout runs after that.
     await expectRepoBranch(repoDir, 'feature-switch')
+  })
+
+  test('switch-to-branch mode via UI: a long branch list mounts its first rows and the filter finds the rest', async ({
+    page,
+    leapmuxServer,
+  }) => {
+    const { adminToken, dataDir } = leapmuxServer
+    const repoDir = createGitRepo(dataDir, 'test-repo-many-branches')
+    // 250 branches beside the default one, written in one git call.
+    const head = headCommit(repoDir)
+    const refs = Array.from({ length: 250 }, (_, i) => `create refs/heads/many-${String(i).padStart(3, '0')} ${head}\n`).join('')
+    execFileSync('git', ['update-ref', '--stdin'], { cwd: repoDir, input: refs })
+
+    await openNewWorkspaceDialogAt(page, adminToken, repoDir)
+    await fillWorkspaceTitle(page, 'Many Branches WS')
+    await chooseGitMode(page, 'Switch to branch')
+
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByTestId('branch-select-menu-trigger')).toBeEnabled()
+    await openMenu(dialog, 'branch-select-menu')
+    const menu = dialog.getByTestId('branch-select-menu')
+
+    // 251 local branches: the menu mounts 200 rows and states the other 51.
+    await expect(menu.getByRole('menuitemradio')).toHaveCount(200)
+    await expect(menu.getByTestId('loading-menu-more')).toHaveText('51 more options are not shown. Type to filter the list.')
+
+    await menu.getByTestId('loading-menu-filter').fill('many-249')
+    await expect(menu.getByRole('menuitemradio')).toHaveCount(1)
+    await expect(menu.getByTestId('loading-menu-more')).toHaveCount(0)
+    await menu.getByTestId('loading-menu-option-many-249').click()
+
+    await submitNewWorkspaceDialog(page, 'Many Branches WS')
+    await expectRepoBranch(repoDir, 'many-249')
   })
 
   test('switch-to-branch mode via API: verifies checkout on disk', async ({

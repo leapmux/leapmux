@@ -4,6 +4,7 @@ import { createMemo, createSignal, For, Match, Show, Switch } from 'solid-js'
 import { ClippedText } from '~/components/common/ClippedText'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
+import { pluralize } from '~/lib/plural'
 import { menuItemDetail } from '~/styles/shared.css'
 import * as styles from './LoadingMenu.css'
 
@@ -145,6 +146,38 @@ export interface LoadingMenuProps {
 const FILTER_MIN_OPTIONS = 12
 
 /**
+ * The most unpinned rows a FILTERED menu mounts for one query.
+ *
+ * Each row costs a `ClippedText` tooltip and its own memos, and a list with no
+ * upper limit -- a repository's branches -- mounted every one of them at the
+ * first open. Past this count the filter is the faster way to find an entry
+ * anyway, so the menu states how many it leaves out and asks for a query. A menu
+ * with no filter box mounts every row, because nothing else could reach the rest.
+ */
+export const MAX_DRAWN_OPTIONS = 200
+
+/**
+ * The rows that one query draws: every pinned option, and the first `limit`
+ * unpinned ones in the given order. `hidden` counts the unpinned options left out.
+ */
+export function limitDrawnOptions(options: readonly LoadingMenuOption[], limit: number): { options: readonly LoadingMenuOption[], hidden: number } {
+  if (options.length <= limit)
+    return { options, hidden: 0 }
+  const drawn: LoadingMenuOption[] = []
+  let unpinned = 0
+  for (const option of options) {
+    if (option.pinned === true) {
+      drawn.push(option)
+    }
+    else if (unpinned < limit) {
+      drawn.push(option)
+      unpinned++
+    }
+  }
+  return { options: drawn, hidden: options.length - drawn.length }
+}
+
+/**
  * The renderer for one option's detail: the caller's own element when it gave
  * one, and the plain text otherwise. Undefined for an option with no detail.
  *
@@ -244,6 +277,14 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
     )
   })
 
+  /** The rows the current query draws; see MAX_DRAWN_OPTIONS. */
+  const drawn = createMemo(() => filtering()
+    ? limitDrawnOptions(visible(), MAX_DRAWN_OPTIONS)
+    : {
+        options: visible(),
+        hidden: 0,
+      })
+
   /** The option the value names, or undefined when the list does not hold it. */
   const selected = () => props.options.find(o => o.value === props.value)
 
@@ -322,7 +363,7 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
         <div class={styles.emptyNote}>No matches</div>
       </Match>
       <Match when={visible().length > 0}>
-        <For each={visible()}>
+        <For each={drawn().options}>
           {(option, i) => {
             // Spread-ready detail, as a GETTER called in spread position: the
             // read stays where the original expression evaluated. One read per
@@ -340,7 +381,7 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
               <>
                 {/* A heading whenever the group changes, so Local and Remote read
                     apart the way `<optgroup>` used to render them. */}
-                <Show when={option.group && option.group !== visible()[i() - 1]?.group}>
+                <Show when={option.group && option.group !== drawn().options[i() - 1]?.group}>
                   <div class={styles.groupHeading}>{option.group}</div>
                 </Show>
                 <DropdownMenuCheckableItem
@@ -363,6 +404,13 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
             )
           }}
         </For>
+        <Show when={drawn().hidden > 0}>
+          <div class={styles.emptyNote} data-testid="loading-menu-more">
+            {`${pluralize(drawn().hidden, 'more option')} ${drawn().hidden === 1
+              ? 'is'
+              : 'are'} not shown. Type to filter the list.`}
+          </div>
+        </Show>
       </Match>
     </Switch>
   )
@@ -459,7 +507,8 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
         (a MutationObserver and listeners on two elements), a live detail such
         as `SessionSelect`'s ticking `RelativeTime`, and its own memos. A closed
         picker paid that for every option -- `BranchSelect`'s list has no upper
-        limit -- and most pickers on screen are never opened.
+        limit -- and most pickers on screen are never opened. An open filtered
+        picker mounts at most MAX_DRAWN_OPTIONS of them.
       */}
       <Show when={everOpened()}>
         <Show when={filtering()} fallback={items()}>
