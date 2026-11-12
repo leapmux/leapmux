@@ -82,13 +82,13 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return settings.DefaultTimeouts.APITimeout() })
 
 	mux := http.NewServeMux()
-	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
 	connectServer := connect.NewServer(interceptor)
 
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))))
 
-	connector := service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{
+	connector := service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{Hasher: hubtestutil.TestSecretHasher(),
 		Store:             st,
 		WorkerManager:     wMgr,
 		ChannelManager:    nil,
@@ -103,7 +103,7 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	mux.Handle(channelwire.WSRouteWorker, service.NewWorkerStreamHandler(connector).WithForcedKeepaliveProbesForTest(make(chan time.Time), time.Second))
 
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer,
-		service.NewWorkerManagementService(st, wMgr, nil, mail.NewStubSender(), mail.Renderer{}, set))
+		service.NewWorkerManagementService(st, hubtestutil.TestSecretHasher(), wMgr, nil, mail.NewStubSender(), mail.Renderer{}, set))
 
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, sc)
 	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, channelSvc)
@@ -179,6 +179,10 @@ func (e *channelTestEnv) createWorker(t *testing.T, token string) string {
 // createWorkerWithKeys registers a Worker with an explicit key set, for the
 // tests whose connection presents that set.
 func (e *channelTestEnv) createWorkerWithKeys(t *testing.T, token string, fill byte) string {
+	return e.registerWorkerWithKeys(t, token, fill).GetWorkerId()
+}
+
+func (e *channelTestEnv) registerWorkerWithKeys(t *testing.T, token string, fill byte) *leapmuxv1.RegisterResponse {
 	t.Helper()
 	ctx := context.Background()
 
@@ -198,7 +202,7 @@ func (e *channelTestEnv) createWorkerWithKeys(t *testing.T, token string, fill b
 	})
 	require.NoError(t, err)
 
-	return regResp.GetWorkerId()
+	return regResp
 }
 
 func registerOnlineWorker(t *testing.T, env *channelTestEnv, workerID string, hello *leapmuxv1.WorkerHello) {
@@ -235,10 +239,8 @@ func workerStreamsWithFill(t *testing.T, fill byte) (env *channelTestEnv, ctx co
 	env = setupChannelTestServer(t)
 	ctx = testutil.DeadlineContext(t)
 	token = env.adminToken(t)
-	workerID = env.createWorkerWithKeys(t, token, fill)
-	worker, err := env.store.Workers().GetByID(ctx, workerID)
-	require.NoError(t, err)
-	return env, ctx, token, workerID, worker.AuthToken, env.server
+	registered := env.registerWorkerWithKeys(t, token, fill)
+	return env, ctx, token, registered.GetWorkerId(), registered.GetAuthToken(), env.server
 }
 
 // connectWorker opens a stream, sends hello, and waits for the identity frame
@@ -678,10 +680,10 @@ func setupDirectOpenChannelEnv(t *testing.T) *directOpenChannelEnv {
 
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    id.Generate(),
-		RegisteredBy: userid.MustNew(user.ID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		RegisteredBy:  userid.MustNew(user.ID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 	workspaceID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
@@ -1338,7 +1340,7 @@ func TestCloseChannel_Success(t *testing.T) {
 	// Register a channel in the channel manager.
 	channelID := id.Generate()
 	env.channelMgr.RegisterWithAuthInfo(channelID, workerID, adminUser.ID, channelmgr.AuthInfo{
-		Credential: auth.SessionCredential(token),
+		Credential: auth.SessionCredential(hubtestutil.SessionIDFromCookie(t, token)),
 	}, nil)
 
 	// Close the channel.
@@ -1445,7 +1447,7 @@ func (e *channelTestEnv) createSecondUser(t *testing.T) (userID, token string) {
 		FirstCredentialExempt: true,
 		IsAdmin:               false,
 	}))
-	token, _, _, loginErr := auth.Login(ctx, e.store, "user2", "testpass2", auth.DefaultSessionDuration)
+	token, _, _, loginErr := auth.Login(ctx, e.store, hubtestutil.TestSecretHasher(), "user2", "testpass2", auth.DefaultSessionDuration)
 	require.NoError(t, loginErr)
 	return
 }

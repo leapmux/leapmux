@@ -134,13 +134,15 @@ func TestWorkerTabPublication_ReceiptAndCRDTCommitAtomically(t *testing.T) {
 func TestWorkerTabPublication_AuthenticatesFirstTabWithoutDelegation(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	owner := storetest.SeedUser(t, st, "first-tab-owner")
-	worker := storetest.SeedWorker(t, st, owner.ID)
+	worker, workerToken := hubtestutil.CreateTestWorker(t, st, owner.ID)
 	workspace := storetest.SeedWorkspace(t, st, owner.ID, "first-tab")
 	registry := publicationRegistry(t, st)
 	manager, err := registry.Get(t.Context(), owner.ID)
 	require.NoError(t, err)
 	seedPublicationWorkspace(t, manager, workspace)
-	svc := &WorkerConnectorService{store: st, crdtRegistry: registry}
+	svc := &WorkerConnectorService{
+		hasher: hubtestutil.TestSecretHasher(),
+		store:  st, crdtRegistry: registry}
 	server := connect.NewServer()
 	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(server, svc)
 	mux := http.NewServeMux()
@@ -152,7 +154,7 @@ func TestWorkerTabPublication_AuthenticatesFirstTabWithoutDelegation(t *testing.
 	_, err = client.PublishTab(t.Context(), &leapmuxv1.PublishTabRequest{Publication: request})
 	require.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	ctx, info := connect.NewClientContext(t.Context())
-	info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+	info.RequestHeader().Set("Authorization", "Bearer "+workerToken)
 	response, err := client.PublishTab(ctx, &leapmuxv1.PublishTabRequest{Publication: request})
 	require.NoError(t, err)
 	require.NotNil(t, response.GetPublished())

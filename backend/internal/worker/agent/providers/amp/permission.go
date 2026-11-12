@@ -19,8 +19,9 @@ import (
 
 	"github.com/coder/quartz"
 
-	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+
+	"github.com/leapmux/leapmux/locallisten"
 )
 
 // The permission bridge.
@@ -517,7 +518,7 @@ func (b *permissionBridge) toolCallSignal() <-chan struct{} {
 // agent directory leaves room for the socket (agentDirSpec states its name),
 // so this refuses only a directory from somewhere else.
 func checkSocketPath(path string) error {
-	if limit := agentdir.MaxSocketPathBytes(); len(path) > limit {
+	if limit := locallisten.MaxUnixSocketPathBytes(); len(path) > limit {
 		return fmt.Errorf("the Amp permission bridge path %s is %d bytes, and a socket path on this platform takes at most %d", path, len(path), limit)
 	}
 	return nil

@@ -168,7 +168,7 @@ func TestCLIConsent_SlidesTheWindowLikeEveryOtherRestrictedAction(t *testing.T) 
 	cookie := env.elevatedAdminCookie(t)
 	ctx := context.Background()
 
-	before, err := env.store.Sessions().GetByID(ctx, cookie.Value, time.Now().UTC())
+	before, err := env.store.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, cookie.Value), time.Now().UTC())
 	require.NoError(t, err)
 	require.NotNil(t, before.ElevationExpiresAt, "precondition: the session is elevated")
 
@@ -186,7 +186,7 @@ func TestCLIConsent_SlidesTheWindowLikeEveryOtherRestrictedAction(t *testing.T) 
 	assert.Contains(t, bodyOf(t, resp), "Authorize LeapMux control CLI?")
 	assert.NotContains(t, bodyOf(t, resp), "unverified")
 
-	after, err := env.store.Sessions().GetByID(ctx, cookie.Value, time.Now().UTC())
+	after, err := env.store.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, cookie.Value), time.Now().UTC())
 	require.NoError(t, err)
 	require.NotNil(t, after.ElevationExpiresAt)
 	assert.True(t, after.ElevationExpiresAt.After(*before.ElevationExpiresAt),
@@ -331,12 +331,12 @@ func TestCLIConsent_AdminScopeRefusedForANonAdministrator(t *testing.T) {
 	ctx := context.Background()
 
 	plainID := hubtestutil.CreateTestUser(t, env.store, "plainuser", "plainpass123")
-	token, _, _, err := auth.Login(ctx, env.store, "plainuser", "plainpass123", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "plainuser", "plainpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	cookie := &http.Cookie{Name: auth.CookieName, Value: token}
 	now := env.now()
 	n, err := env.store.Sessions().Elevate(ctx, store.ElevateSessionParams{
-		SessionID:          token,
+		SessionID:          hubtestutil.SessionIDFromCookie(t, token),
 		UserID:             userid.MustNew(plainID),
 		ElevationProvenAt:  now,
 		ElevationExpiresAt: now.Add(auth.ElevationWindow),
@@ -377,11 +377,11 @@ func TestCLIConsent_AdminScopeRefusedAtEveryLegThatBindsIt(t *testing.T) {
 	elevatedPlainUser := func(t *testing.T, env *apiAuthEnv) *http.Cookie {
 		t.Helper()
 		plainID := hubtestutil.CreateTestUser(t, env.store, "plainuser", "plainpass123")
-		token, _, _, err := auth.Login(ctx, env.store, "plainuser", "plainpass123", auth.DefaultSessionDuration)
+		token, _, _, err := auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "plainuser", "plainpass123", auth.DefaultSessionDuration)
 		require.NoError(t, err)
 		now := env.now()
 		n, err := env.store.Sessions().Elevate(ctx, store.ElevateSessionParams{
-			SessionID:          token,
+			SessionID:          hubtestutil.SessionIDFromCookie(t, token),
 			UserID:             userid.MustNew(plainID),
 			ElevationProvenAt:  now,
 			ElevationExpiresAt: now.Add(auth.ElevationWindow),
@@ -437,7 +437,7 @@ func TestCLIConsent_AdminScopeRefusedAtEveryLegThatBindsIt(t *testing.T) {
 		require.NoError(t, env.store.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
 			ClientID:        oauthapp.ControlCLIClientID,
 			RequestedScopes: "admin:read admin:users admin:settings admin:workers",
-			DeviceCode:      id.Generate(), UserCode: userCode, DeviceName: "headless-box",
+			DeviceCodeHash:  hubtestutil.TestSecretHasher().Hash(id.Generate()), UserCode: userCode, DeviceName: "headless-box",
 			ExpiresAt: now.Add(service.DeviceCodeTTL),
 		}))
 
@@ -472,7 +472,7 @@ func TestDeviceActivation_RequiresElevationAndBindsTheScope(t *testing.T) {
 		require.NoError(t, env.store.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
 			ClientID:        oauthapp.ControlCLIClientID,
 			RequestedScopes: ask,
-			DeviceCode:      id.Generate(), UserCode: userCode, DeviceName: "headless",
+			DeviceCodeHash:  hubtestutil.TestSecretHasher().Hash(id.Generate()), UserCode: userCode, DeviceName: "headless",
 			ExpiresAt: env.now().Add(10 * time.Minute),
 		}))
 		return userCode
@@ -593,8 +593,8 @@ func TestDeviceActivation_IdentifiesTheAppForACLISuppliedCode(t *testing.T) {
 
 	userCode := verifycode.Generate()
 	require.NoError(t, env.store.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-		ClientID:   oauthapp.ControlCLIClientID,
-		DeviceCode: id.Generate(), UserCode: userCode, DeviceName: "ci-runner-7",
+		ClientID:       oauthapp.ControlCLIClientID,
+		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(id.Generate()), UserCode: userCode, DeviceName: "ci-runner-7",
 		ExpiresAt: env.now().Add(10 * time.Minute),
 	}))
 
@@ -690,7 +690,7 @@ func TestIssuedToken_EmailsTheOwner(t *testing.T) {
 			mux := http.NewServeMux()
 			srv := httptest.NewServer(mux)
 			t.Cleanup(srv.Close)
-			h := newOAuthServerHandler(service.OAuthServerDeps{
+			h := newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 				Store:     env.store,
 				Validator: env.validator,
 				Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),

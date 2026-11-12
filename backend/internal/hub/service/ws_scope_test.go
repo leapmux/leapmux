@@ -71,9 +71,9 @@ func newWSScopeEnv(t *testing.T, soloUser *auth.UserInfo) wsScopeEnv {
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 	return wsScopeEnv{
-		channel: NewChannelRelayHandler(st, newTestRegistry(), nil, wsScopeAuthContexts(t, st, soloUser), soloUser,
+		channel: NewChannelRelayHandler(st, hubtestutil.TestSecretHasher(), newTestRegistry(), nil, wsScopeAuthContexts(t, st, soloUser), soloUser,
 			insecureCookies, sendq.NewMaxBytesPoolForTest()).WithTokenValidator(tv),
-		userEvents: NewUserEventsHandler(st, unreachableCRDTRegistry(), wsScopeAuthContexts(t, st, soloUser), soloUser,
+		userEvents: NewUserEventsHandler(st, hubtestutil.TestSecretHasher(), unreachableCRDTRegistry(), wsScopeAuthContexts(t, st, soloUser), soloUser,
 			insecureCookies, sendq.NewMaxBytesPoolForTest()).WithTokenValidator(tv),
 		store:     st,
 		validator: tv,
@@ -93,7 +93,7 @@ func wsScopeAuthContexts(t *testing.T, st store.Store, soloUser *auth.UserInfo) 
 	if soloUser == nil {
 		return newTestAuthContexts(t)
 	}
-	_, registry := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser})
+	_, registry := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, SoloUser: soloUser})
 	t.Cleanup(registry.Stop)
 	return registry
 }
@@ -296,7 +296,7 @@ func TestNewWSAuthenticatorPanicsOnANonGrantableScope(t *testing.T) {
 	} {
 		t.Run(scope.String(), func(t *testing.T) {
 			assert.Panics(t, func() {
-				newWSAuthenticator(nil, newTestAuthContexts(t), nil, insecureCookies, scope)
+				newWSAuthenticator(nil, hubtestutil.TestSecretHasher(), newTestAuthContexts(t), nil, insecureCookies, scope)
 			})
 		})
 	}

@@ -2,7 +2,10 @@ package gitutil
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,7 +13,46 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/util/envutil"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 )
+
+func TestNewGitCmd_DisablesTheRepositorysFsmonitor(t *testing.T) {
+	t.Parallel()
+	repo := testutil.NewGitRepo(t)
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran")
+	script := filepath.Join(dir, "fsmonitor")
+	testutil.WriteExecutable(t, script, fmt.Sprintf("#!/bin/sh\nprintf ran > %q\n", marker))
+	cmd := exec.Command("git", "config", "core.fsmonitor", script)
+	cmd.Dir = repo
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	_, err = Output(t.Context(), repo, "status", "--porcelain")
+	require.NoError(t, err)
+	_, err = os.Stat(marker)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestNewGitCmd_RefusesAnImplicitBareRepository(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	cmd := exec.Command("git", "-c", "core.fsmonitor=false", "init", "--bare", dir)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", out)
+	for key, value := range map[string]string{"core.fsmonitor": "false", "gc.auto": "0", "maintenance.auto": "false"} {
+		cmd = exec.Command("git", "--git-dir="+dir, "config", key, value)
+		out, err = cmd.CombinedOutput()
+		require.NoError(t, err, "%s", out)
+	}
+	out, err = exec.Command("git", "--version").CombinedOutput()
+	require.NoError(t, err)
+	var major, minor int
+	_, err = fmt.Sscanf(string(out), "git version %d.%d", &major, &minor)
+	require.NoError(t, err)
+	require.True(t, major > 2 || major == 2 && minor >= 38, "git 2.38 or newer is required, got %s", out)
+	_, err = Output(t.Context(), dir, "rev-parse", "--git-dir")
+	require.ErrorContains(t, err, "safe.bareRepository")
+}
 
 // TestNewGitCmd_DeclinesOptionalLocks pins the env var that keeps read-only
 // probes (git status) from taking .git/index.lock and colliding with a
@@ -87,4 +129,10 @@ func isPinnedGitEnvKey(name string) bool {
 		}
 	}
 	return false
+}
+
+func TestNewGitCmd_PutsConfigPinsBeforeCallerArguments(t *testing.T) {
+	t.Parallel()
+	cmd := NewGitCmd(t.Context(), "-C", "/repo", "status")
+	assert.Equal(t, []string{"-c", "core.fsmonitor=false", "-c", "safe.bareRepository=explicit", "-C", "/repo", "status"}, cmd.Args[1:])
 }

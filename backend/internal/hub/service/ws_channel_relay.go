@@ -54,6 +54,7 @@ var errTerminalChannelRelay = errors.New("channel relay cannot continue")
 // NewChannelRelayHandler creates a new WebSocket relay handler.
 func NewChannelRelayHandler(
 	st store.Store,
+	sessionHasher auth.SecretHasher,
 	wMgr *workermgr.Manager,
 	cMgr *channelmgr.Manager,
 	authContexts *auth.AuthContextRegistry,
@@ -69,7 +70,7 @@ func NewChannelRelayHandler(
 		// Noise tunnel to a machine. Every inner method then states its own
 		// scope, which the Worker enforces from the grant the Hub announces at
 		// the handshake -- see ChannelOpenRequest.granted_scopes.
-		wsAuthenticator: newWSAuthenticator(st, authContexts, soloUser, secureCookie,
+		wsAuthenticator: newWSAuthenticator(st, sessionHasher, authContexts, soloUser, secureCookie,
 			leapmuxv1.Scope_SCOPE_WORKER_READ),
 		workerMgr:       wMgr,
 		channelMgr:      cMgr,

@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
@@ -37,7 +38,9 @@ func (w seenRecorderWorkers) UpdateLastSeen(ctx context.Context, workerID string
 func newSeenRecorderService(t *testing.T, update func(context.Context, string) error) (*WorkerConnectorService, *quartz.Mock) {
 	t.Helper()
 	clock := testutil.NewQuartzMock(t)
-	return &WorkerConnectorService{store: seenRecorderStore{update: update}, clock: clock}, clock
+	return &WorkerConnectorService{
+		hasher: hubtestutil.TestSecretHasher(),
+		store:  seenRecorderStore{update: update}, clock: clock}, clock
 }
 
 func seenRecorderContext(t *testing.T) context.Context {

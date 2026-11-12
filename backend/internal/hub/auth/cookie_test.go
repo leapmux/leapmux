@@ -42,48 +42,48 @@ func TestClearSessionCookie(t *testing.T) {
 	assert.True(t, c.HttpOnly)
 }
 
-func TestSessionIDFromCookieHeader_ValidCookie(t *testing.T) {
+func TestSessionTokenFromCookieHeader_ValidCookie(t *testing.T) {
 	header := auth.CookieName + "=my-session-id"
-	got := auth.SessionIDFromCookieHeader(header, false)
+	got := auth.SessionTokenFromCookieHeader(header, false)
 	assert.Equal(t, "my-session-id", got)
 }
 
-func TestSessionIDFromCookieHeader_MultipleCookies(t *testing.T) {
+func TestSessionTokenFromCookieHeader_MultipleCookies(t *testing.T) {
 	header := "other=value; " + auth.CookieName + "=correct-id; foo=bar"
-	got := auth.SessionIDFromCookieHeader(header, false)
+	got := auth.SessionTokenFromCookieHeader(header, false)
 	assert.Equal(t, "correct-id", got)
 }
 
-func TestSessionIDFromCookieHeader_NoCookie(t *testing.T) {
-	got := auth.SessionIDFromCookieHeader("other=value; foo=bar", false)
+func TestSessionTokenFromCookieHeader_NoCookie(t *testing.T) {
+	got := auth.SessionTokenFromCookieHeader("other=value; foo=bar", false)
 	assert.Empty(t, got)
 }
 
-func TestSessionIDFromCookieHeader_EmptyHeader(t *testing.T) {
-	got := auth.SessionIDFromCookieHeader("", false)
+func TestSessionTokenFromCookieHeader_EmptyHeader(t *testing.T) {
+	got := auth.SessionTokenFromCookieHeader("", false)
 	assert.Empty(t, got)
 }
 
-func TestSessionIDFromCookieHeader_SecureCookie(t *testing.T) {
+func TestSessionTokenFromCookieHeader_SecureCookie(t *testing.T) {
 	header := auth.SecureCookieName + "=secure-id"
-	got := auth.SessionIDFromCookieHeader(header, true)
+	got := auth.SessionTokenFromCookieHeader(header, true)
 	assert.Equal(t, "secure-id", got)
 }
 
 // The fallback reads the __Host- spelling even when secure_cookies is off, so
 // a browser that still holds the prefixed cookie from before the setting
 // changed signs out cleanly -- the same asymmetry the auth ladder applies.
-func TestSessionIDFromCookieHeader_PrefixedCookieWhileInsecure(t *testing.T) {
+func TestSessionTokenFromCookieHeader_PrefixedCookieWhileInsecure(t *testing.T) {
 	header := auth.SecureCookieName + "=leftover-id"
-	got := auth.SessionIDFromCookieHeader(header, false)
+	got := auth.SessionTokenFromCookieHeader(header, false)
 	assert.Equal(t, "leftover-id", got)
 }
 
 // With secure_cookies on, the unprefixed spelling is never read: the hub does
 // not write it, so a caller that plants one reaches nothing.
-func TestSessionIDFromCookieHeader_IgnoresUnprefixedWhenSecure(t *testing.T) {
+func TestSessionTokenFromCookieHeader_IgnoresUnprefixedWhenSecure(t *testing.T) {
 	header := auth.CookieName + "=planted-id"
-	got := auth.SessionIDFromCookieHeader(header, true)
+	got := auth.SessionTokenFromCookieHeader(header, true)
 	assert.Empty(t, got)
 }
 
@@ -240,4 +240,25 @@ func TestOAuthNonceFromRequest(t *testing.T) {
 
 	// No cookie at all.
 	assert.Empty(t, auth.OAuthNonceFromRequest(&http.Request{Header: http.Header{}}, "state-abc", false))
+}
+
+func TestParseSessionToken(t *testing.T) {
+	sessionID, secret := strings.Repeat("Az09", 12), strings.Repeat("bY18", 12)
+	value := auth.FormatSessionToken(sessionID, secret)
+	gotID, gotSecret, ok := auth.ParseSessionToken(value)
+	require.True(t, ok)
+	assert.Equal(t, sessionID, gotID)
+	assert.Equal(t, secret, gotSecret)
+	for _, value := range []string{
+		"", sessionID, "_" + secret, sessionID + "_", sessionID + "__" + secret,
+		sessionID[:47] + "_" + secret, sessionID + "A_" + secret,
+		sessionID + "_" + secret[:47], sessionID + "_" + secret + "A",
+		"!" + sessionID[1:] + "_" + secret, sessionID + "_" + secret[:47] + "!",
+		"界" + sessionID[3:] + "_" + secret, strings.Repeat("x", 10*1024),
+	} {
+		gotID, gotSecret, ok := auth.ParseSessionToken(value)
+		assert.False(t, ok, "invalid token of length %d", len(value))
+		assert.Empty(t, gotID)
+		assert.Empty(t, gotSecret)
+	}
 }

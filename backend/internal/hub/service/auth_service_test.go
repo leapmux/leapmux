@@ -54,7 +54,7 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config, seed authTestSeed
 	}
 
 	mux := http.NewServeMux()
-	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
 	var closer auth.CredentialChannelCloser
 	if len(closers) > 0 {
@@ -75,7 +75,7 @@ func TestLifecycleAwareServicesRequireEffects(t *testing.T) {
 	t.Parallel()
 
 	assert.Panics(t, func() {
-		service.NewAuthService(service.AuthServiceDeps{Renderer: mail.Renderer{}})
+		service.NewAuthService(service.AuthServiceDeps{SessionHasher: hubtestutil.TestSecretHasher(), Renderer: mail.Renderer{}})
 	})
 	assert.Panics(t, func() {
 		service.NewUserService(nil, nil, nil, nil, nil, mail.Renderer{}, nil)
@@ -158,8 +158,8 @@ func TestAuthService_SetInitialSoloPasswordCreatesElevatedSession(t *testing.T) 
 	assert.Equal(t, usernames.Solo, response.GetSessionReport().GetUser().GetUsername())
 	assert.True(t, response.GetSessionReport().GetUser().GetPasswordSet())
 
-	sessionID := sessionFromCookie(t, callInfo.ResponseHeader().Get("Set-Cookie"))
-	info, err := auth.ValidateToken(context.Background(), st, sessionID)
+	sessionToken := sessionFromCookie(t, callInfo.ResponseHeader().Get("Set-Cookie"))
+	info, err := auth.ValidateToken(context.Background(), st, hubtestutil.TestSecretHasher(), sessionToken)
 	require.NoError(t, err)
 	assert.True(t, info.Elevated(time.Now()))
 
@@ -173,7 +173,7 @@ func TestAuthService_SetInitialSoloPasswordCreatesElevatedSession(t *testing.T) 
 	assert.WithinDuration(t, time.Now().Add(auth.ElevationWindow), reported.AsTime(), time.Minute)
 	assert.True(t, info.Elevated(reported.AsTime().Add(-time.Second)),
 		"the reported deadline must fall inside the window the store recorded")
-	session, err := st.Sessions().GetByID(context.Background(), sessionID, time.Now().UTC())
+	session, err := st.Sessions().GetByID(context.Background(), hubtestutil.SessionIDFromCookie(t, sessionToken), time.Now().UTC())
 	require.NoError(t, err)
 	assert.Equal(t, "setup-test", session.UserAgent)
 
@@ -246,8 +246,8 @@ func TestAuthService_ConcurrentInitialSoloPasswordHasOneWinner(t *testing.T) {
 			continue
 		}
 		winners++
-		sessionID := sessionFromCookie(t, result.info.ResponseHeader().Get("Set-Cookie"))
-		info, err := auth.ValidateToken(context.Background(), st, sessionID)
+		sessionToken := sessionFromCookie(t, result.info.ResponseHeader().Get("Set-Cookie"))
+		info, err := auth.ValidateToken(context.Background(), st, hubtestutil.TestSecretHasher(), sessionToken)
 		require.NoError(t, err)
 		assert.True(t, info.Elevated(time.Now()))
 	}
@@ -355,11 +355,8 @@ func TestAuthService_GetCurrentUser_ReportsTheProviderOption(t *testing.T) {
 		ID: userID, Username: "oauthonly", PasswordHash: password.PlaceholderHash,
 		DisplayName: "OAuth Only", FirstCredentialExempt: false,
 	}))
-	sessionID := id.Generate()
-	require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{
-		ID: sessionID, UserID: userid.MustNew(userID),
-		ExpiresAt: time.Now().UTC().Add(time.Hour),
-	}))
+	session, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), time.Hour)
+	require.NoError(t, err)
 
 	for _, p := range []struct {
 		id           string
@@ -379,7 +376,7 @@ func TestAuthService_GetCurrentUser_ReportsTheProviderOption(t *testing.T) {
 
 	req := &leapmuxv1.GetCurrentUserRequest{}
 	ctx, info := connect.NewClientContext(ctx)
-	info.RequestHeader().Set("Cookie", auth.CookieName+"="+sessionID)
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+session.Token)
 	resp, err := client.GetCurrentUser(ctx, req)
 	require.NoError(t, err)
 
@@ -450,7 +447,7 @@ func TestAuthService_GetCurrentUser_DoesNotDeriveTheProviderOptionFromAFailedCou
 		Transports: "[]", FriendlyName: "Laptop", KeyVersion: 1, CreatedAt: time.Now().UTC(),
 	}))
 	sessionID := id.Generate()
-	require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{
+	require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: hubtestutil.TestSecretHasher().Hash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 		ID: sessionID, UserID: userid.MustNew(userID),
 		ExpiresAt: time.Now().UTC().Add(time.Hour),
 	}))
@@ -489,11 +486,8 @@ func TestAuthService_GetCurrentUser_ReportsADisabledLinkAsDisabled(t *testing.T)
 		ID: userID, Username: "haslink", PasswordHash: password.PlaceholderHash,
 		DisplayName: "Has Link", FirstCredentialExempt: true,
 	}))
-	sessionID := id.Generate()
-	require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{
-		ID: sessionID, UserID: userid.MustNew(userID),
-		ExpiresAt: time.Now().UTC().Add(time.Hour),
-	}))
+	session, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), time.Hour)
+	require.NoError(t, err)
 	require.NoError(t, st.OAuthProviders().Create(ctx, store.CreateOAuthProviderParams{
 		ID: "gh", ProviderType: huboauth.ProviderTypeGitHub, Name: "GitHub", ClientID: "cid",
 		ClientSecret: []byte("secret"), Enabled: false,
@@ -504,7 +498,7 @@ func TestAuthService_GetCurrentUser_ReportsADisabledLinkAsDisabled(t *testing.T)
 
 	req := &leapmuxv1.GetCurrentUserRequest{}
 	ctx, info := connect.NewClientContext(ctx)
-	info.RequestHeader().Set("Cookie", auth.CookieName+"="+sessionID)
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+session.Token)
 	resp, err := client.GetCurrentUser(ctx, req)
 	require.NoError(t, err)
 
@@ -654,9 +648,9 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 		return resp, st, sessionFromCookie(t, callInfo.ResponseHeader().Get("Set-Cookie"))
 	}
 
-	assertExpiry := func(t *testing.T, st store.Store, sessionID string, before time.Time) {
+	assertExpiry := func(t *testing.T, st store.Store, sessionToken string, before time.Time) {
 		t.Helper()
-		sess, err := st.Sessions().GetByID(context.Background(), sessionID, time.Now().UTC())
+		sess, err := st.Sessions().GetByID(context.Background(), hubtestutil.SessionIDFromCookie(t, sessionToken), time.Now().UTC())
 		require.NoError(t, err)
 		hubtestutil.AssertSessionLifetime(t, before, configured, sess.ExpiresAt)
 	}
@@ -664,22 +658,22 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 	t.Run("sign-up", func(t *testing.T) {
 		t.Parallel()
 		before := time.Now()
-		resp, st, sessionID := signUp(t, enableSignup, "newuser")
+		resp, st, sessionToken := signUp(t, enableSignup, "newuser")
 		require.False(t, resp.GetSessionReport().GetEmailVerification().GetVerificationRequired(), "control: this is the plain branch")
-		assertExpiry(t, st, sessionID, before)
+		assertExpiry(t, st, sessionToken, before)
 	})
 
 	t.Run("sign-up with verification required", func(t *testing.T) {
 		t.Parallel()
 		before := time.Now()
-		resp, st, sessionID := signUp(t, func(t *testing.T, set *settings.Manager) {
+		resp, st, sessionToken := signUp(t, func(t *testing.T, set *settings.Manager) {
 			enableSignup(t, set)
 			enableEmailVerification(t, set)
 		}, "unverified")
 		// Without this the subtest would silently repeat the branch above, and
 		// the second CreateSession call site would go unexercised.
 		require.True(t, resp.GetSessionReport().GetEmailVerification().GetVerificationRequired(), "this must take the verification branch")
-		assertExpiry(t, st, sessionID, before)
+		assertExpiry(t, st, sessionToken, before)
 	})
 
 	t.Run("login", func(t *testing.T) {
@@ -754,7 +748,7 @@ func TestAuthService_ChangePassword_NeedsElevatedSession(t *testing.T) {
 
 	// Set up a UserService client using the same queries and auth interceptor.
 	mux := http.NewServeMux()
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil)
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
@@ -770,7 +764,7 @@ func TestAuthService_ChangePassword_NeedsElevatedSession(t *testing.T) {
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 
 	// The password did not change: the old one still authenticates.
-	_, _, _, err = auth.Login(context.Background(), st, "admin", "admin123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "admin", "admin123", auth.DefaultSessionDuration)
 	require.NoError(t, err, "a refused change must leave the password alone")
 }
 
@@ -964,7 +958,7 @@ func setupEmailVerificationTestServer(t *testing.T, emailVerificationRequired bo
 	}
 
 	mux := http.NewServeMux()
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, Policy: servicetest.AuthPolicy(set)})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, Policy: servicetest.AuthPolicy(set)})
 
 	// The registry the interceptor caches into, wired into the lifecycle
 	// effects exactly as the hub wires it. A nil registry drops
@@ -1008,7 +1002,7 @@ func TestEmailVerificationRule_UnverifiedBlocked(t *testing.T) {
 	})
 	// email_verified defaults to 0 in the DB.
 
-	token, _, _, err := auth.Login(context.Background(), st, "unverified", "testpass", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "unverified", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// Try UpdateProfile — the verification restriction must block it.
@@ -1027,7 +1021,7 @@ func TestEmailVerificationRule_AdminExempt(t *testing.T) {
 
 	// The bootstrap admin has email_verified=0 by default (no email set).
 	// Verify the admin can still call protected RPCs.
-	adminToken, _, _, err := auth.Login(context.Background(), st, "admin", "admin123", auth.DefaultSessionDuration)
+	adminToken, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "admin", "admin123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// Admin should be able to call UpdateProfile even with email_verified=0.
@@ -1057,7 +1051,7 @@ func TestEmailVerificationRule_ConfigOff_NotBlocked(t *testing.T) {
 	})
 	// email_verified defaults to 0 — but the restriction is OFF.
 
-	token, _, _, err := auth.Login(context.Background(), st, "nogate", "testpass", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "nogate", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// Unverified user should be able to call UpdateProfile when the restriction
@@ -1118,9 +1112,9 @@ func TestSignUp_FailClosedWhenVerificationEmailFails(t *testing.T) {
 	enableEmailVerification(t, set)
 
 	mux := http.NewServeMux()
-	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
-	authSvc := service.NewAuthService(service.AuthServiceDeps{
+	authSvc := service.NewAuthService(service.AuthServiceDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store:     st,
 		Config:    testConfig(),
 		Settings:  set,
@@ -1168,7 +1162,7 @@ func TestEmailVerificationRule_LogoutAllowed(t *testing.T) {
 	})
 	// email_verified defaults to 0.
 
-	token, _, _, err := auth.Login(context.Background(), st, "logoutgating", "testpass", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "logoutgating", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// Logout should be allowed for unverified users.
@@ -1200,7 +1194,7 @@ func TestEmailVerificationRule_RequestEmailChangeAllowed(t *testing.T) {
 	})
 	// email_verified defaults to 0.
 
-	token, _, _, err := auth.Login(context.Background(), st, "emailchangegate", "testpass", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "emailchangegate", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// RequestEmailChange should be allowed for unverified users
@@ -1244,7 +1238,7 @@ func TestAuthService_Logout(t *testing.T) {
 	logoutCookie := logoutInfo.ResponseHeader().Get("Set-Cookie")
 	assert.Contains(t, logoutCookie, auth.CookieName+"=")
 	assert.Contains(t, logoutCookie, "Max-Age=0")
-	assert.Equal(t, []string{token}, closer.sessionIDs)
+	assert.Equal(t, []string{hubtestutil.SessionIDFromCookie(t, token)}, closer.sessionIDs)
 
 	// Token should be invalidated.
 	getUserCtx, getUserInfo := connect.NewClientContext(context.Background())
@@ -1284,7 +1278,7 @@ func TestAuthService_LogoutDeleteFailureReturnsInternal(t *testing.T) {
 	}
 
 	mux := http.NewServeMux()
-	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: wrapped})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapped})
 	t.Cleanup(sc.Stop)
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(wrapped, testConfig(), servicetest.NewSettingsManager(t, wrapped, nil), auth.NewCredentialLifecycleEffects(sc, nil, nil)))
 	connectServer := connect.NewServer(interceptor)
@@ -1470,7 +1464,7 @@ func TestSetupSignUp_RejectedInSoloMode(t *testing.T) {
 	// No solo user is seeded — the test asserts that AuthService rejects setup
 	// signup in solo mode at the service layer, independent of the interceptor.
 	mux := http.NewServeMux()
-	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(sc, nil, nil)))
 	connectServer := connect.NewServer(interceptor)
@@ -1973,9 +1967,9 @@ func TestBeginPasskeySignUp_RequiresEmailWhenSMTPConfigured(t *testing.T) {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
-	authSvc := service.NewAuthService(service.AuthServiceDeps{
+	authSvc := service.NewAuthService(service.AuthServiceDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store:     st,
 		Config:    testConfig(),
 		Settings:  set,
@@ -2329,7 +2323,7 @@ func TestEmailVerificationRule_MistypedAddressRecoversThroughElevation(t *testin
 		Email:                 "mistpyed@example.com",
 		FirstCredentialExempt: true,
 	}))
-	token, _, _, err := auth.Login(ctx, st, "mistyped", "testpass", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "mistyped", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// Rung one: the email gate admits the change, and the elevation gate
@@ -2364,4 +2358,29 @@ func TestEmailVerificationRule_MistypedAddressRecoversThroughElevation(t *testin
 	require.NoError(t, err)
 	assert.Equal(t, "mistyped@example.com", user.PendingEmail,
 		"the corrected address must be waiting for its confirmation")
+}
+
+func TestAuthService_LogoutRequiresTheVictimsSessionSecret(t *testing.T) {
+	client, st, _ := setupAuthTestServer(t, testConfig(), nil)
+	ctx, info := connect.NewClientContext(t.Context())
+	_, err := client.Login(ctx, &leapmuxv1.LoginRequest{Username: "admin", Password: "admin123"})
+	require.NoError(t, err)
+	token := sessionFromCookie(t, info.ResponseHeader().Get("Set-Cookie"))
+	sessionID, secret, ok := auth.ParseSessionToken(token)
+	require.True(t, ok)
+	prefix := "A"
+	if secret[0] == 'A' {
+		prefix = "B"
+	}
+	for _, invalid := range []string{sessionID, auth.FormatSessionToken(sessionID, prefix+secret[1:])} {
+		_, err := client.Logout(authedReq(t.Context(), &leapmuxv1.LogoutRequest{}, invalid))
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+		_, err = auth.ValidateToken(t.Context(), st, hubtestutil.TestSecretHasher(), token)
+		require.NoError(t, err, "a refused logout must keep the victim's session")
+	}
+	_, err = client.Logout(authedReq(t.Context(), &leapmuxv1.LogoutRequest{}, token))
+	require.NoError(t, err)
+	_, err = st.Sessions().GetByID(t.Context(), sessionID, time.Now().UTC())
+	assert.ErrorIs(t, err, store.ErrNotFound)
 }

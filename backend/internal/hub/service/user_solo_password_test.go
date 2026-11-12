@@ -148,21 +148,21 @@ func TestChangePassword_DoesNotHandASessionToAnOrdinaryCaller(t *testing.T) {
 		nil,
 	)
 
-	sessionID, expiresAt, err := auth.CreateSession(context.Background(), st, mustUserID(t, admin.ID), time.Hour)
+	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), mustUserID(t, admin.ID), time.Hour)
 	require.NoError(t, err)
-	require.False(t, expiresAt.IsZero())
+	require.False(t, createdSession.ExpiresAt.IsZero())
 	// The ordinary path demands a proven factor; grant one so the test
 	// exercises the handover rule and not the step-up rule. The session is
 	// resolved AFTER it, because UserInfo carries the elevation deadline it
 	// was read with.
 	_, err = st.Sessions().Elevate(context.Background(), store.ElevateSessionParams{
-		SessionID:          sessionID,
+		SessionID:          createdSession.ID,
 		UserID:             mustUserID(t, admin.ID),
 		ElevationProvenAt:  time.Now().UTC(),
 		ElevationExpiresAt: time.Now().UTC().Add(time.Hour),
 	}, time.Now().UTC())
 	require.NoError(t, err)
-	info, err := auth.ValidateToken(context.Background(), st, sessionID)
+	info, err := auth.ValidateToken(context.Background(), st, hubtestutil.TestSecretHasher(), createdSession.Token)
 	require.NoError(t, err)
 	require.True(t, info.Elevated(time.Now()), "precondition: the caller is elevated")
 

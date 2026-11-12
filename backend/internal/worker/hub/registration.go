@@ -192,8 +192,8 @@ func withLastFailure(ended, lastFailure error) error {
 
 // registerProtocolOnce runs ONE pass of the registration protocol: a
 // Register, and -- when the hub answers AlreadyExists because this
-// attempt already committed -- the challenge recovery that returns the
-// original credentials.
+// attempt already committed -- the challenge recovery that replaces the token
+// while keeping the Worker's identity.
 func registerProtocolOnce(
 	ctx context.Context,
 	client leapmuxv1connect.WorkerConnectorServiceClient,
@@ -226,8 +226,8 @@ func registerProtocolOnce(
 		switch connectErr.Code() {
 		case connect.CodeAlreadyExists:
 			// This attempt already committed and its response was lost.
-			// Recover the original credentials by proving possession of
-			// the private keypair the Hub pinned.
+			// Recover the Worker's identity with a replacement token by proving
+			// possession of the private keypair the Hub pinned.
 			result, recoverErr := recoverRegistration(attemptCtx, client, opts)
 			if recoverErr != nil {
 				if isPermanentRefusal(recoverErr) {

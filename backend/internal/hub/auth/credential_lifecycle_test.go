@@ -467,7 +467,7 @@ func TestUserRevokedNonPositiveGenerationFailsSafe(t *testing.T) {
 // withdrawn, and nothing would report it.
 func TestBearerRotatedNarrowingTearsDownRatherThanExtends(t *testing.T) {
 	closer := &recordingCredentialCloser{}
-	_, registry := NewInterceptor(InterceptorOptions{ServingCtx: context.Background()})
+	_, registry := NewInterceptor(InterceptorOptions{SessionHasher: testSecretHasher(), ServingCtx: context.Background()})
 	t.Cleanup(registry.Stop)
 	effects := NewCredentialLifecycleEffects(registry, closer, closer)
 
@@ -498,7 +498,7 @@ func TestBearerRescopedPicksItsEffectFromBothSets(t *testing.T) {
 
 	t.Run("widening is cache-only", func(t *testing.T) {
 		closer := &recordingCredentialCloser{}
-		_, registry := NewInterceptor(InterceptorOptions{ServingCtx: context.Background()})
+		_, registry := NewInterceptor(InterceptorOptions{SessionHasher: testSecretHasher(), ServingCtx: context.Background()})
 		t.Cleanup(registry.Stop)
 		effects := NewCredentialLifecycleEffects(registry, closer, closer)
 
@@ -508,7 +508,7 @@ func TestBearerRescopedPicksItsEffectFromBothSets(t *testing.T) {
 
 	t.Run("narrowing tears down", func(t *testing.T) {
 		closer := &recordingCredentialCloser{}
-		_, registry := NewInterceptor(InterceptorOptions{ServingCtx: context.Background()})
+		_, registry := NewInterceptor(InterceptorOptions{SessionHasher: testSecretHasher(), ServingCtx: context.Background()})
 		t.Cleanup(registry.Stop)
 		effects := NewCredentialLifecycleEffects(registry, closer, closer)
 
@@ -518,7 +518,7 @@ func TestBearerRescopedPicksItsEffectFromBothSets(t *testing.T) {
 
 	t.Run("an unchanged grant is cache-only", func(t *testing.T) {
 		closer := &recordingCredentialCloser{}
-		_, registry := NewInterceptor(InterceptorOptions{ServingCtx: context.Background()})
+		_, registry := NewInterceptor(InterceptorOptions{SessionHasher: testSecretHasher(), ServingCtx: context.Background()})
 		t.Cleanup(registry.Stop)
 		effects := NewCredentialLifecycleEffects(registry, closer, closer)
 

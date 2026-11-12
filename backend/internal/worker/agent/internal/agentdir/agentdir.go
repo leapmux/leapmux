@@ -15,9 +15,7 @@
 // Windows the parent is <base>\leapmux-agents, because Windows has no numeric
 // user id. The owner check keeps other users out of it.
 //
-// The parent's name differs from the per-worker socket directories of
-// controlipc, which use "leapmux-" and a prefix of the worker id under the same
-// bases.
+// Control sockets live separately under <data-dir>/run/control.
 //
 // # Bases
 //
@@ -67,6 +65,8 @@ import (
 	"strings"
 
 	"github.com/coder/quartz"
+
+	"github.com/leapmux/leapmux/locallisten"
 )
 
 // Spec states the agent directories of one provider.
@@ -78,7 +78,7 @@ type Spec struct {
 	// SocketName is the file name of the Unix domain socket that the provider
 	// binds in each directory, or "" when it binds none. New then puts a
 	// directory only under a base where the path of the socket fits the
-	// platform's limit (MaxSocketPathBytes).
+	// platform's limit (locallisten.MaxUnixSocketPathBytes).
 	SocketName string
 	// OnStale, when set, ends what a stale directory of the provider records,
 	// such as a process that outlived its worker. The sweep calls it while it
@@ -346,7 +346,7 @@ func (d *Dirs) New(ctx context.Context, spec Spec) (*Dir, error) {
 		parent := parentOf(base)
 		if spec.SocketName != "" {
 			worst := filepath.Join(parent, namePattern(spec)+maxRandomSuffix, spec.SocketName)
-			if limit := MaxSocketPathBytes(); len(worst) > limit {
+			if limit := locallisten.MaxUnixSocketPathBytes(); len(worst) > limit {
 				refusals = append(refusals, fmt.Errorf("%s: the socket path %s is %d bytes, and the limit is %d on this platform", base, worst, len(worst), limit))
 				continue
 			}

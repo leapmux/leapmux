@@ -54,9 +54,9 @@ func setupAccountRecoveryAuthServiceWithClock(t *testing.T, sender mail.Sender, 
 	}
 
 	mux := http.NewServeMux()
-	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
-	authSvc := service.NewAuthService(service.AuthServiceDeps{
+	authSvc := service.NewAuthService(service.AuthServiceDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store:     st,
 		Config:    testConfig(),
 		Settings:  set,
@@ -293,7 +293,7 @@ func TestCompleteAccountRecoveryPassword_Success_WipesPasskeysAndSessions(t *tes
 	}))
 	seedPasskeyCredential(t, st, userID, "Laptop")
 	uid := userid.MustNew(userID)
-	oldSession, _, err := auth.CreateSession(context.Background(), st, uid, auth.DefaultSessionDuration)
+	oldSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), uid, auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	ceremonyID := id.Generate()
 	now := time.Now().UTC()
@@ -326,13 +326,13 @@ func TestCompleteAccountRecoveryPassword_Success_WipesPasskeysAndSessions(t *tes
 	require.NoError(t, err)
 	assert.EqualValues(t, 0, count)
 
-	_, err = st.Sessions().GetByID(context.Background(), oldSession, time.Now().UTC())
+	_, err = st.Sessions().GetByID(context.Background(), oldSession.ID, time.Now().UTC())
 	assert.ErrorIs(t, err, store.ErrNotFound)
 
 	_, err = st.WebAuthnSessions().Get(context.Background(), ceremonyID)
 	assert.ErrorIs(t, err, store.ErrNotFound)
 
-	_, _, _, err = auth.Login(context.Background(), st, "wipeme", "newpass123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "wipeme", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 }
 
@@ -419,7 +419,7 @@ func TestCompleteAccountRecoveryPassword_SetsFirstPassword(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 0, count, "the lost passkey must be wiped by the break-glass posture")
 
-	_, _, _, err = auth.Login(context.Background(), st, "recoverless", "firstpass123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "recoverless", "firstpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 }
 

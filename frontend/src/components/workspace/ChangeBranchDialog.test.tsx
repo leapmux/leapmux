@@ -32,6 +32,7 @@ vi.mock('~/stores/workerInfo.store', () => {
 
 vi.mock('~/api/workerRpc', () => ({
   workerGit: {
+    getGitWorkingTreeState: vi.fn(async () => ({ $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse', isDirty: false })),
     inspectBranchChange: vi.fn(),
     listGitBranches: vi.fn(),
     listGitWorktrees: vi.fn(),
@@ -55,7 +56,11 @@ const branches: GitBranchEntry[] = [
 ]
 
 function setupRpcMocks() {
-  // The dialog now issues a single InspectBranchChange RPC at mount;
+  vi.mocked(workerGit.getGitWorkingTreeState).mockResolvedValue({
+    $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse',
+    isDirty: false,
+  })
+  // The dialog reads path info and branches with InspectBranchChange at mount;
   // the listGitBranches / getGitInfo mocks remain (unused) so the
   // shared workerRpc mock surface keeps a consistent shape.
   vi.mocked(workerGit.inspectBranchChange).mockResolvedValue({
@@ -64,7 +69,6 @@ function setupRpcMocks() {
     toplevel: '/repo',
     isWorktree: false,
     currentBranch: 'feature',
-    isDirty: false,
     branches,
   })
   vi.mocked(workerTerminal.listAvailableShells).mockResolvedValue({
@@ -117,6 +121,16 @@ describe('ChangeBranchDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     setupRpcMocks()
+  })
+
+  it('shows uncommitted changes from the working tree check', async () => {
+    vi.mocked(workerGit.getGitWorkingTreeState).mockResolvedValue({
+      $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse',
+      isDirty: true,
+    })
+    renderDialog()
+    await waitFor(() => expect(screen.getByText(/Switching branches may fail or discard changes/)).toBeVisible())
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledWith('w1', { path: '/repo' })
   })
 
   it('renders the three modes', async () => {
@@ -223,7 +237,7 @@ describe('ChangeBranchDialog', () => {
     // currentBranch via branchExists / not-current-branch checks) sees
     // the seeded value: typing the seeded branch name reports
     // "already exists" once the branches list lands. With the inspect
-    // pending, the picker is loading but the seed-driven dirty/no-op
+    // pending, the picker is loading but the seed-driven no-op
     // logic uses currentBranch='main'.
     let resolveInspect!: (resp: Awaited<ReturnType<typeof workerGit.inspectBranchChange>>) => void
     vi.mocked(workerGit.inspectBranchChange).mockReturnValue(
@@ -239,7 +253,6 @@ describe('ChangeBranchDialog', () => {
       toplevel: '/repo',
       isWorktree: false,
       currentBranch: 'main',
-      isDirty: false,
       branches,
     } as Awaited<ReturnType<typeof workerGit.inspectBranchChange>>)
     fireEvent.click(screen.getByText('Create new branch'))
@@ -320,7 +333,6 @@ describe('ChangeBranchDialog', () => {
       toplevel: '/repo',
       isWorktree: false,
       currentBranch: 'main',
-      isDirty: false,
       branches: [
         ...branches,
         { $typeName: 'leapmux.v1.GitBranchEntry', name: 'feature/auth', isRemote: false },
@@ -547,7 +559,6 @@ describe('ChangeBranchDialog', () => {
       toplevel: '/repo',
       isWorktree: false,
       currentBranch: 'feature',
-      isDirty: false,
       branches: [
         ...branches,
         { $typeName: 'leapmux.v1.GitBranchEntry', name: 'origin/feature', isRemote: true },
@@ -670,7 +681,6 @@ describe('ChangeBranchDialog header', () => {
       toplevel: '/repo-worktrees/feature',
       isWorktree: true,
       currentBranch: 'feature',
-      isDirty: false,
       branches,
     })
     renderDialog({ gitToplevel: '/repo-worktrees/feature', isWorktree: true })

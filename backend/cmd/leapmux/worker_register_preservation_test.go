@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -68,7 +70,7 @@ func TestWorkerRegisterPreservesIncompleteSavedCredentials(t *testing.T) {
 				if pendingKind == "absent" {
 					assert.NoFileExists(t, cfg.PendingPath())
 				}
-				_, keyErr := env.store.RegistrationKeys().GetByID(t.Context(), env.key)
+				_, keyErr := env.store.RegistrationKeys().GetByKeyHash(t.Context(), hubtestutil.TestSecretHasher().Hash(env.key))
 				require.NoError(t, keyErr, "the unused registration key must remain usable")
 			})
 		}

@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/locallisten"
 )
 
@@ -75,7 +76,7 @@ func serveControl(record RuntimeRecord, token string, reporter Reporter) (*contr
 	// A short, account-owned socket directory keeps the path inside the
 	// kernel's sockaddr_un limit whatever the data directory's depth.
 	if dir, err := runtimeDir(); err == nil {
-		if err := preparePrivateDir(dir); err != nil {
+		if err := atomicfile.MkdirAllPrivate(dir); err != nil {
 			return nil, err
 		}
 	}
@@ -83,7 +84,7 @@ func serveControl(record RuntimeRecord, token string, reporter Reporter) (*contr
 	if err != nil {
 		// A socket path the kernel cannot hold is a named, actionable
 		// failure rather than a raw bind error.
-		if isSocketPathTooLong(record.ControlURL) {
+		if errors.Is(err, locallisten.ErrSocketPathTooLong) {
 			return nil, controlSocketPathError(strings.TrimPrefix(record.ControlURL, "unix:"))
 		}
 		return nil, fmt.Errorf("lifecycle: open the control endpoint %s: %w", record.ControlURL, err)
@@ -187,16 +188,6 @@ func (s *controlServer) removeSocket() {
 	if path, ok := strings.CutPrefix(s.liveID.ControlURL, "unix:"); ok {
 		_ = os.Remove(filepath.Clean(path))
 	}
-}
-
-// isSocketPathTooLong reports whether a unix URL's path cannot fit the
-// kernel's sockaddr_un.
-func isSocketPathTooLong(url string) bool {
-	path, ok := strings.CutPrefix(url, "unix:")
-	if !ok {
-		return false
-	}
-	return len(path) >= maxUnixSocketPath
 }
 
 // writeControlJSON emits one JSON document with the content type the

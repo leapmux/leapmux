@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect } from '@playwright/test'
 import { frontendRoot } from '~/test-support/sourceTree'
@@ -27,6 +28,28 @@ test.describe('Worktree Detection', () => {
   // The dialogs below open from a workspace whose agent works in the frontend
   // directory. The dialog's own working directory is set per case.
   test.use({ agentWorkingDir: frontendRoot })
+
+  test('browsing to a repository runs none of its filters', async ({ page, authenticatedWorkspace, leapmuxServer }) => {
+    void authenticatedWorkspace
+    const repo = createGitRepo(leapmuxServer.dataDir, 'browse-filter')
+    const file = join(repo, 'a.txt')
+    const marker = join(repo, '.git', 'filter-ran')
+    writeFileSync(file, 'content\n')
+    writeFileSync(join(repo, '.gitattributes'), '* filter=evil\n')
+    execFileSync('git', ['add', 'a.txt', '.gitattributes'], { cwd: repo })
+    execFileSync('git', ['commit', '-m', 'add attributes'], { cwd: repo })
+    writeFileSync(join(repo, '.git', 'leapmux-filter'), '#!/bin/sh\nprintf ran > .git/filter-ran\ncat\n')
+    execFileSync('git', ['config', 'filter.evil.clean', 'sh .git/leapmux-filter'], { cwd: repo })
+    utimesSync(file, new Date(1000), new Date(1000))
+
+    await openNewAgentDialog(page)
+    await waitForWorker(page)
+    await setWorkingDir(page, repo)
+    await expect(page.getByText('Use current state')).toBeVisible()
+    await expect(page.getByRole('radio', { name: 'Use current state' })).toBeChecked()
+    expect(existsSync(marker)).toBe(false)
+    await page.getByRole('button', { name: 'Cancel' }).click()
+  })
 
   test('non-git directory hides git options in new workspace dialog', async ({
     page,

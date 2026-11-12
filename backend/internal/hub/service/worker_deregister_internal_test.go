@@ -431,7 +431,7 @@ func (s *retryWorkerDeletionStore) RunInUserAuthTransaction(ctx context.Context,
 	rollback := errors.New("roll back the first deletion attempt")
 	err := s.Store.RunInUserAuthTransaction(ctx, owner, func(tx store.Store) error {
 		if err := tx.Workers().Create(ctx, store.CreateWorkerParams{
-			ID: s.rolledBackID, AuthToken: id.Generate(), RegisteredBy: owner,
+			ID: s.rolledBackID, AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()), RegisteredBy: owner,
 			PublicKeys: storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 		}); err != nil {
 			return err
@@ -448,7 +448,7 @@ func (s *retryWorkerDeletionStore) RunInUserAuthTransaction(ctx context.Context,
 		return err
 	}
 	if err := s.Store.Workers().Create(ctx, store.CreateWorkerParams{
-		ID: s.committedID, AuthToken: id.Generate(), RegisteredBy: owner,
+		ID: s.committedID, AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()), RegisteredBy: owner,
 		PublicKeys: storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}); err != nil {
 		return err
@@ -471,7 +471,7 @@ type workerBeforeOwnerLockStore struct {
 func (s *workerBeforeOwnerLockStore) RunInUserAuthTransaction(ctx context.Context, owner userid.UserID, fn func(store.Store) error) error {
 	if owner.Matches(s.owner) && !s.inserted {
 		if err := s.Store.Workers().Create(ctx, store.CreateWorkerParams{
-			ID: s.workerID, AuthToken: id.Generate(), RegisteredBy: owner,
+			ID: s.workerID, AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()), RegisteredBy: owner,
 			PublicKeys: storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 		}); err != nil {
 			return err
@@ -559,10 +559,10 @@ func TestDeleteUserTellsEveryWorkerPastTheFirstPage(t *testing.T) {
 	for range contracts.MaxPageLimit + 1 {
 		workerID := id.Generate()
 		require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
-			ID:           workerID,
-			AuthToken:    id.Generate(),
-			RegisteredBy: userid.MustNew(owner.ID),
-			PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+			ID:            workerID,
+			AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+			RegisteredBy:  userid.MustNew(owner.ID),
+			PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 		}))
 		workerIDs = append(workerIDs, workerID)
 	}
@@ -768,7 +768,7 @@ func assertDeregistrationRecovers(t *testing.T, newStore func(t *testing.T) stor
 			st := newStore(t)
 			ctx := context.Background()
 			owner := storetest.SeedUser(t, st, "recover-owner")
-			worker := storetest.SeedWorker(t, st, owner.ID)
+			worker, workerToken := hubtestutil.CreateTestWorker(t, st, owner.ID)
 
 			failing := failingWorkerReadStore{Store: st, failWorkerID: worker.ID}
 			effects := NewWorkerDeregisterEffects(nil, newTestNotifier(t, failing, newFlagRecordingRegistry(st)), nil)
@@ -776,14 +776,14 @@ func assertDeregistrationRecovers(t *testing.T, newStore func(t *testing.T) stor
 			require.Error(t, err, "the RPC reports the failed effect")
 			assert.Contains(t, err.Error(), "send deregister")
 
-			row, err := st.Workers().GetByAuthTokenIncludeDeleted(ctx, worker.AuthToken)
+			row, err := st.Workers().GetByAuthTokenHashIncludeDeleted(ctx, hubtestutil.TestSecretHasher().Hash(workerToken))
 			require.NoError(t, err)
 			require.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, row.Status, "the intent is persisted")
 			require.NotNil(t, row.DeregisteringAt)
 			// The include-deleted lookup succeeds for every state, so admission is
 			// what the credential rule decides: a deregistering worker can still
 			// connect.
-			_, err = auth.AuthenticateWorkerBearer(ctx, st, "Bearer "+worker.AuthToken)
+			_, err = auth.AuthenticateWorkerBearer(ctx, st, hubtestutil.TestSecretHasher(), "Bearer "+workerToken)
 			require.NoError(t, err, "a deregistering worker can still connect")
 
 			switch recovery {
@@ -818,7 +818,7 @@ func TestOwnerDeregisterRecoversWithoutTheNotifier(t *testing.T) {
 			require.NoError(t, err)
 			set := settingsregistry.NewManager(st, ks)
 			require.NoError(t, set.Load(context.Background()))
-			svc := NewWorkerManagementService(st, workermgr.New(NewWorkerReachAuthorizer(st)), effects, mail.NewStubSender(), mail.Renderer{}, set)
+			svc := NewWorkerManagementService(st, hubtestutil.TestSecretHasher(), workermgr.New(NewWorkerReachAuthorizer(st)), effects, mail.NewStubSender(), mail.Renderer{}, set)
 			ownerCtx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(ownerID)})
 			_, err = svc.DeregisterWorker(ownerCtx, &leapmuxv1.DeregisterWorkerRequest{WorkerId: workerID})
 			return err

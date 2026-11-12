@@ -83,8 +83,8 @@ type Keystore struct {
 	keys          map[uint32][keySize]byte
 	aeads         map[uint32]cipher.AEAD
 	activeVersion uint32
-	// pepper is a standalone HMAC key used to hash api_token /
-	// delegation_token secrets. It is INDEPENDENT of the encryption key
+	// pepper is a standalone HMAC key for stored bearer secrets and app client
+	// secrets. It is INDEPENDENT of the encryption key
 	// ring: rotating encryption keys never changes it, so existing tokens
 	// keep validating across rotations. It is regenerated (which
 	// invalidates every token) only via RegeneratePepper.
@@ -121,7 +121,7 @@ func New(keys map[uint32][keySize]byte) (*Keystore, error) {
 func (ks *Keystore) ActiveVersion() uint32 { return ks.activeVersion }
 
 // Pepper returns the dedicated HMAC pepper used to hash bearer-token secrets
-// (api_token / delegation_token). It is a standalone secret, independent of
+// and app client secrets. It is a standalone secret, independent of
 // the encryption key ring, so rotating or removing encryption keys never
 // changes it. Regenerate it — which invalidates every existing token — via
 // RegeneratePepper.
@@ -402,9 +402,9 @@ func RemoveKey(path string, version uint32) error {
 
 // RegeneratePepper replaces the token pepper in the ring file at path with a
 // fresh random pepper, leaving the encryption key ring untouched. This
-// INVALIDATES every existing api_token and delegation_token (their HMAC
-// hashes can no longer be reproduced), so all clients must re-authenticate or
-// be re-issued. The change takes effect on the next hub start.
+// invalidates every stored bearer credential and app client secret because
+// their HMAC digests can no longer be reproduced. Clients must replace the
+// affected credentials. The change takes effect on the next Hub start.
 func RegeneratePepper(path string) error {
 	keys, _, _, err := loadRing(path)
 	if err != nil {
@@ -458,9 +458,9 @@ func writeKeyRing(path string, keys map[uint32][keySize]byte, pepper [keySize]by
 		sb.WriteString(base64.StdEncoding.EncodeToString(key[:]))
 		sb.WriteByte('\n')
 	}
-	// The dedicated token pepper (api_token / delegation_token HMAC key).
+	// The dedicated HMAC pepper for stored bearer secrets and app client secrets.
 	// Regenerate via: leapmux recover encryption-key rotate-pepper
-	sb.WriteString("# api_token/delegation_token HMAC pepper (regenerate via: leapmux recover encryption-key rotate-pepper)\n")
+	sb.WriteString("# HMAC pepper for every stored bearer secret (regenerate via: leapmux recover encryption-key rotate-pepper)\n")
 	sb.WriteString(pepperTag)
 	sb.WriteByte(':')
 	sb.WriteString(base64.StdEncoding.EncodeToString(pepper[:]))

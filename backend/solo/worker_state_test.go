@@ -25,8 +25,13 @@ import (
 
 // fakeRegistrar stands in for *hub.Server, recording what the loader asked of it.
 type fakeRegistrar struct {
-	registration    hub.WorkerRegistration
-	registrationErr error
+	registration       hub.WorkerRegistration
+	registrationErr    error
+	registrationTokens []string
+	reissuedIDs        []string
+	reissuedToken      string
+	reissueErr         error
+	onReissue          func()
 
 	adminID  string
 	adminErr error
@@ -46,8 +51,23 @@ type fakeRegistrar struct {
 	retireCtxErrs []error
 }
 
-func (f *fakeRegistrar) GetWorkerRegistration(context.Context, string) (hub.WorkerRegistration, error) {
+func (f *fakeRegistrar) GetWorkerRegistration(_ context.Context, _ string, token string) (hub.WorkerRegistration, error) {
+	f.registrationTokens = append(f.registrationTokens, token)
 	return f.registration, f.registrationErr
+}
+
+func (f *fakeRegistrar) ReissueLocalWorkerToken(_ context.Context, workerID string) (string, error) {
+	f.reissuedIDs = append(f.reissuedIDs, workerID)
+	if f.onReissue != nil {
+		f.onReissue()
+	}
+	if f.reissueErr != nil {
+		return "", f.reissueErr
+	}
+	if f.reissuedToken == "" {
+		return "", errors.New("the test did not configure a reissued worker token")
+	}
+	return f.reissuedToken, nil
 }
 
 func (f *fakeRegistrar) GetAdminUser(context.Context) (string, error) {
@@ -129,7 +149,7 @@ func preservedState(t *testing.T, path string) soloState {
 
 // activeRegistration is the registration of a row a launcher can use.
 func activeRegistration(owner string, keys *leapmuxv1.WorkerPublicKeys) hub.WorkerRegistration {
-	return hub.WorkerRegistration{
+	return hub.WorkerRegistration{AuthTokenAccepted: true,
 		Owner:      owner,
 		Status:     leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE,
 		PublicKeys: keys,
@@ -454,6 +474,8 @@ func TestLoadOrCreateWorkerState_TransientLookupErrorDoesNotReRegister(t *testin
 	_, _, err := loadWithLease(t, reg, dir)
 	require.Error(t, err, "a transient owner-lookup failure must fail the launch, not re-register")
 	assert.ErrorIs(t, err, transient, "the underlying store error must be surfaced")
+	assert.Empty(t, reg.reissuedIDs)
+	assert.Equal(t, "tok", readState(t, path).AuthToken)
 	assert.Zero(t, reg.registered, "a transient error must never trigger re-registration")
 	assert.Empty(t, reg.retiredIDs)
 	assert.Equal(t, "w1", readState(t, path).WorkerID,
@@ -752,4 +774,87 @@ func TestPreserveDiscardedState_MovesTheFileAsideSoTheNextLoadCannotSeeIt(t *tes
 		}
 	}
 	assert.Equal(t, 1, sidecars)
+}
+
+func TestLoadOrCreateWorkerState_ReusesOrReissuesTheTokenWithoutChangingIdentity(t *testing.T) {
+	for _, accepted := range []bool{true, false} {
+		t.Run(map[bool]string{true: "accepted", false: "refused"}[accepted], func(t *testing.T) {
+			dir := t.TempDir()
+			path, keys := seedUsableState(t, dir, soloState{WorkerID: "w-original", AuthToken: "original-token", RegisteredBy: "owner"})
+			before := readState(t, path)
+			registration := activeRegistration("owner", keys)
+			registration.AuthTokenAccepted = accepted
+			reg := &fakeRegistrar{registration: registration, reissuedToken: "replacement-token"}
+			got, composite, err := loadWithLease(t, reg, dir)
+			require.NoError(t, err)
+			require.NotNil(t, composite)
+			assert.Equal(t, "w-original", got.WorkerID)
+			assert.Equal(t, before.KeyMaterial, got.KeyMaterial)
+			assert.Equal(t, []string{"original-token"}, reg.registrationTokens)
+			want := "original-token"
+			if accepted {
+				assert.Empty(t, reg.reissuedIDs)
+			} else {
+				want = "replacement-token"
+				assert.Equal(t, []string{"w-original"}, reg.reissuedIDs)
+			}
+			assert.Equal(t, want, got.AuthToken)
+			assert.Equal(t, want, readState(t, path).AuthToken)
+			assert.Zero(t, reg.registered)
+			assert.Empty(t, reg.retiredIDs)
+		})
+	}
+}
+
+func TestLoadOrCreateWorkerState_KeepsSavedStateOnAReissueFailure(t *testing.T) {
+	dir := t.TempDir()
+	path, keys := seedUsableState(t, dir, soloState{WorkerID: "w-original", AuthToken: "original-token", RegisteredBy: "owner"})
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
+	registration := activeRegistration("owner", keys)
+	registration.AuthTokenAccepted = false
+	failure := errors.New("worker token store unavailable")
+	reg := &fakeRegistrar{registration: registration, reissueErr: failure}
+	got, composite, err := loadWithLease(t, reg, dir)
+	require.ErrorIs(t, err, failure)
+	assert.Nil(t, got)
+	assert.Nil(t, composite)
+	assert.Equal(t, []string{"w-original"}, reg.reissuedIDs)
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, before, after)
+	assert.Empty(t, reg.retiredIDs)
+	assert.Zero(t, reg.registered)
+}
+
+func TestLoadOrCreateWorkerState_ChecksPinnedKeysBeforeReissuingARefusedToken(t *testing.T) {
+	dir := t.TempDir()
+	path, _ := seedUsableState(t, dir, soloState{WorkerID: "w-original", AuthToken: "original-token", RegisteredBy: "owner"})
+	registration := activeRegistration("owner", workerkeystest.Keys(0x77))
+	registration.AuthTokenAccepted = false
+	reg := &fakeRegistrar{registration: registration, adminID: "owner", newWorker: hub.WorkerCredentials{WorkerID: "new-worker", AuthToken: "fresh-token"}}
+	got, _, err := loadWithLease(t, reg, dir)
+	require.NoError(t, err)
+	assert.Equal(t, "new-worker", got.WorkerID)
+	assert.Empty(t, reg.reissuedIDs)
+	assert.Equal(t, []string{"w-original"}, reg.retiredIDs)
+	assert.Equal(t, "w-original", preservedState(t, path).WorkerID)
+}
+
+func TestLoadOrCreateWorkerState_DiscardsStateWhenAReissueCannotRecoverTheRow(t *testing.T) {
+	for _, failure := range []error{hub.ErrNotAutoRegistered, errors.Join(errors.New("row removed"), store.ErrNotFound)} {
+		t.Run(failure.Error(), func(t *testing.T) {
+			dir := t.TempDir()
+			path, keys := seedUsableState(t, dir, soloState{WorkerID: "w-original", AuthToken: "original-token", RegisteredBy: "owner"})
+			registration := activeRegistration("owner", keys)
+			registration.AuthTokenAccepted = false
+			reg := &fakeRegistrar{registration: registration, reissueErr: failure, adminID: "owner", newWorker: hub.WorkerCredentials{WorkerID: "new-worker", AuthToken: "fresh-token"}}
+			got, _, err := loadWithLease(t, reg, dir)
+			require.NoError(t, err)
+			assert.Equal(t, "new-worker", got.WorkerID)
+			assert.Equal(t, []string{"w-original"}, reg.reissuedIDs)
+			assert.Equal(t, []string{"w-original"}, reg.retiredIDs)
+			assert.Equal(t, "w-original", preservedState(t, path).WorkerID)
+		})
+	}
 }

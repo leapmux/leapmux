@@ -97,13 +97,13 @@ func setupEmptyPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender
 	}
 
 	mux := http.NewServeMux()
-	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
 
 	if mailSender == nil {
 		mailSender = mail.NewStubSender()
 	}
-	authSvc := service.NewAuthService(service.AuthServiceDeps{
+	authSvc := service.NewAuthService(service.AuthServiceDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store:     st,
 		Config:    testConfig(),
 		Settings:  set,

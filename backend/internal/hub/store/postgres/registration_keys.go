@@ -27,6 +27,7 @@ func fromDBRegistrationKey(r gendb.WorkerRegistrationKey) *store.WorkerRegistrat
 
 func (s *registrationKeyStore) Create(ctx context.Context, p store.CreateRegistrationKeyParams) error {
 	return mapErr(s.conn.q.CreateRegistrationKey(ctx, gendb.CreateRegistrationKeyParams{
+		KeyHash:   p.KeyHash,
 		ID:        p.ID,
 		CreatedBy: p.CreatedBy.String(),
 		ExpiresAt: pgtime.New(p.ExpiresAt),
@@ -35,6 +36,14 @@ func (s *registrationKeyStore) Create(ctx context.Context, p store.CreateRegistr
 
 func (s *registrationKeyStore) GetByID(ctx context.Context, id string) (*store.WorkerRegistrationKey, error) {
 	r, err := s.conn.q.GetRegistrationKeyByID(ctx, id)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	return fromDBRegistrationKey(r), nil
+}
+
+func (s *registrationKeyStore) GetByKeyHash(ctx context.Context, hash []byte) (*store.WorkerRegistrationKey, error) {
+	r, err := s.conn.q.GetRegistrationKeyByHash(ctx, hash)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -50,7 +59,7 @@ func (s *registrationKeyStore) GetOwned(ctx context.Context, p store.GetOwnedReg
 		return nil, store.ErrNotFound
 	}
 	r, err := s.conn.q.GetOwnedRegistrationKey(ctx, gendb.GetOwnedRegistrationKeyParams{
-		ID:        p.ID,
+		KeyHash:   p.KeyHash,
 		CreatedBy: owner,
 	})
 	if err != nil {

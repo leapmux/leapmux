@@ -21,6 +21,7 @@ import (
 // bind, and the keepalive pace. UserEventsHandler and ChannelRelayHandler
 // embed it so those options cannot drift between the browser endpoints.
 type wsAuthenticator struct {
+	sessionHasher  auth.SecretHasher
 	store          store.Store
 	soloUser       *auth.UserInfo
 	secureCookie   func(context.Context) bool
@@ -54,6 +55,7 @@ type wsAuthenticator struct {
 // entry is a boot failure rather than a refusal in production nobody notices.
 func newWSAuthenticator(
 	st store.Store,
+	sessionHasher auth.SecretHasher,
 	authContexts *auth.AuthContextRegistry,
 	soloUser *auth.UserInfo,
 	secureCookie func(context.Context) bool,
@@ -63,6 +65,7 @@ func newWSAuthenticator(
 		panic("service: WebSocket endpoint states no grantable scope: " + requiredScope.String())
 	}
 	return wsAuthenticator{
+		sessionHasher: sessionHasher,
 		store:         st,
 		authLease:     newWebSocketAuthLease(authContexts),
 		soloUser:      soloUser,
@@ -91,6 +94,7 @@ func (a wsAuthenticator) authenticate(r *http.Request) (*auth.UserInfo, error) {
 		secureCookie = a.secureCookie(r.Context())
 	}
 	user, err := auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
+		SessionHasher: a.sessionHasher,
 		Store:         a.store,
 		Validator:     a.tokenValidator,
 		SoloUser:      a.soloUser,

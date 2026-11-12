@@ -7,7 +7,8 @@ import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerGit } from '~/api/workerRpc'
 import { GitMode } from '~/hooks/useGitModeState'
-import { dirtyWarningCopy, GitOptions, indexBranches } from './GitOptions'
+import { deferred, settle } from '~/test-support/async'
+import { GitOptions, indexBranches } from './GitOptions'
 
 function existingNames(branches: readonly GitBranchEntry[]): Set<string> {
   return indexBranches(branches).existingNames
@@ -16,44 +17,6 @@ function existingNames(branches: readonly GitBranchEntry[]): Set<string> {
 function entry(name: string, isRemote = false): GitBranchEntry {
   return { $typeName: 'leapmux.v1.GitBranchEntry', name, isRemote } as GitBranchEntry
 }
-
-describe('dirtyWarningCopy', () => {
-  it('explains the discard-or-fail risk for SwitchBranch', () => {
-    const copy = dirtyWarningCopy(GitMode.SwitchBranch)
-    expect(copy).toMatch(/uncommitted changes/i)
-    // The switch warning is the only one that mentions failure/discard
-    // — the other two transfer the changes one way or another.
-    expect(copy).toMatch(/fail|discard/i)
-  })
-
-  it('says the new branch will inherit uncommitted changes for CreateBranch', () => {
-    const copy = dirtyWarningCopy(GitMode.CreateBranch)
-    expect(copy).toMatch(/uncommitted changes/i)
-    expect(copy).toMatch(/include/i)
-  })
-
-  it('says the new worktree will NOT receive the changes for CreateWorktree', () => {
-    const copy = dirtyWarningCopy(GitMode.CreateWorktree)
-    expect(copy).toMatch(/uncommitted changes/i)
-    // CreateWorktree is the inverse of CreateBranch: the new tree
-    // starts clean, so the copy must say so explicitly.
-    expect(copy).toMatch(/not be transferred/i)
-  })
-
-  it('returns null for modes without a dirty-tree warning', () => {
-    expect(dirtyWarningCopy(GitMode.Current)).toBeNull()
-    expect(dirtyWarningCopy(GitMode.UseWorktree)).toBeNull()
-  })
-
-  it('returns distinct copy per warning mode (no accidental shared strings)', () => {
-    const a = dirtyWarningCopy(GitMode.SwitchBranch)
-    const b = dirtyWarningCopy(GitMode.CreateBranch)
-    const c = dirtyWarningCopy(GitMode.CreateWorktree)
-    expect(a).not.toEqual(b)
-    expect(b).not.toEqual(c)
-    expect(a).not.toEqual(c)
-  })
-})
 
 describe('indexBranches.existingNames', () => {
   // The set avoids a branch scan on every keystroke.
@@ -224,6 +187,7 @@ vi.mock('random-word-slugs', () => ({
 
 vi.mock('~/api/workerRpc', () => ({
   workerGit: {
+    getGitWorkingTreeState: vi.fn(),
     listGitBranches: vi.fn(),
     listGitWorktrees: vi.fn(),
   },
@@ -234,7 +198,6 @@ function makeGitInfo(overrides: Partial<GitInfoFields> = {}): GitPathInfo {
     isGitRepo: true,
     isRepoRoot: true,
     isWorktreeRoot: false,
-    isDirty: false,
     repoRoot: '/repo',
     repoDirName: 'repo',
     currentBranch: 'main',
@@ -251,6 +214,10 @@ function makeGitInfo(overrides: Partial<GitInfoFields> = {}): GitPathInfo {
 describe('GitOptions activeMode ownership', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(workerGit.getGitWorkingTreeState).mockResolvedValue({
+      $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse',
+      isDirty: false,
+    })
     vi.mocked(workerGit.listGitBranches).mockResolvedValue({
       $typeName: 'leapmux.v1.ListGitBranchesResponse',
       branches: [],
@@ -260,6 +227,111 @@ describe('GitOptions activeMode ownership', () => {
       $typeName: 'leapmux.v1.ListGitWorktreesResponse',
       worktrees: [],
     })
+  })
+
+  function renderWorkingTreeOptions(overrides: Partial<Parameters<typeof GitOptions>[0]> = {}) {
+    render(() => (
+      <GitOptions
+        workerId="w1"
+        selectedPath="/repo"
+        gitInfo={makeGitInfo()}
+        gitMode={() => GitMode.Current}
+        onGitModeChange={vi.fn()}
+        {...overrides}
+      />
+    ))
+  }
+
+  it('reads no working tree in current mode or use worktree mode', async () => {
+    renderWorkingTreeOptions()
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByLabelText('Use existing worktree'))
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).not.toHaveBeenCalled()
+  })
+
+  it('checks the working tree after selecting a warning mode', async () => {
+    vi.mocked(workerGit.getGitWorkingTreeState).mockResolvedValue({
+      $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse',
+      isDirty: true,
+    })
+    renderWorkingTreeOptions()
+    fireEvent.click(screen.getByLabelText('Switch to branch'))
+    await waitFor(() => expect(screen.getByText(/Switching branches may fail or discard changes/)).toBeVisible())
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledExactlyOnceWith('w1', { path: '/repo' })
+  })
+
+  it('checks the working tree when mounted in switch branch mode', async () => {
+    vi.mocked(workerGit.getGitWorkingTreeState).mockResolvedValue({
+      $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse',
+      isDirty: true,
+    })
+    renderWorkingTreeOptions({
+      gitMode: () => GitMode.SwitchBranch,
+    })
+    await waitFor(() => expect(screen.getByText(/Switching branches may fail or discard changes/)).toBeVisible())
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledExactlyOnceWith('w1', { path: '/repo' })
+  })
+
+  it('drops a working-tree answer that arrives after a folder change', async () => {
+    const old = deferred<Awaited<ReturnType<typeof workerGit.getGitWorkingTreeState>>>()
+    vi.mocked(workerGit.getGitWorkingTreeState).mockReturnValueOnce(old.promise)
+    const [path, setPath] = createSignal('/repo-a')
+    renderWorkingTreeOptions({
+      get selectedPath() {
+        return path()
+      },
+    })
+    fireEvent.click(screen.getByLabelText('Switch to branch'))
+    await waitFor(() => expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1))
+    setPath('/repo-b')
+    old.resolve({ $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse', isDirty: true })
+    await settle()
+    fireEvent.click(screen.getByLabelText('Switch to branch'))
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(2)
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenLastCalledWith('w1', { path: '/repo-b' })
+    expect(screen.queryByText(/Switching branches may fail or discard changes/)).not.toBeInTheDocument()
+  })
+
+  it('refetches working tree state when refreshing a warning mode', async () => {
+    const [refresh, setRefresh] = createSignal(0)
+    renderWorkingTreeOptions({
+      gitMode: () => GitMode.SwitchBranch,
+      get refreshKey() {
+        return refresh()
+      },
+    })
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1)
+    vi.mocked(workerGit.getGitWorkingTreeState).mockResolvedValue({
+      $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse',
+      isDirty: true,
+    })
+    setRefresh(1)
+    await waitFor(() => expect(screen.getByText(/Switching branches may fail or discard changes/)).toBeVisible())
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(2)
+  })
+
+  it('checks again on refresh after a working tree request fails', async () => {
+    vi.mocked(workerGit.getGitWorkingTreeState).mockRejectedValueOnce(new Error('offline'))
+    const [refresh, setRefresh] = createSignal(0)
+    renderWorkingTreeOptions({
+      gitMode: () => GitMode.SwitchBranch,
+      get refreshKey() {
+        return refresh()
+      },
+    })
+    await settle()
+    expect(screen.queryByText(/Switching branches may fail or discard changes/)).not.toBeInTheDocument()
+    vi.mocked(workerGit.getGitWorkingTreeState).mockResolvedValue({
+      $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse',
+      isDirty: true,
+    })
+    setRefresh(1)
+    await waitFor(() => expect(screen.getByText(/Switching branches may fail or discard changes/)).toBeVisible())
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(2)
   })
 
   it('seeds the radio from `props.gitMode()` at mount and ignores subsequent external mutations', async () => {
@@ -558,6 +630,29 @@ describe('GitOptions activeMode ownership', () => {
     })
   })
 
+  it('drops a branch list that arrives after a folder change', async () => {
+    const old = deferred<Awaited<ReturnType<typeof workerGit.listGitBranches>>>()
+    vi.mocked(workerGit.listGitBranches).mockReturnValueOnce(old.promise)
+    const [path, setPath] = createSignal('/repo-a')
+    render(() => <GitOptions workerId="w1" selectedPath={path()} gitInfo={makeGitInfo()} gitMode={() => GitMode.Current} onGitModeChange={vi.fn()} />)
+    fireEvent.click(screen.getByLabelText('Switch to branch'))
+    await waitFor(() => expect(workerGit.listGitBranches).toHaveBeenCalledTimes(1))
+    setPath('/repo-b')
+    old.resolve({
+      $typeName: 'leapmux.v1.ListGitBranchesResponse',
+      branches: [
+        entry('old-branch'),
+      ],
+      currentBranch: 'main',
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+    fireEvent.click(screen.getByLabelText('Switch to branch'))
+    await waitFor(() => expect(workerGit.listGitBranches).toHaveBeenCalledTimes(2))
+    expect(workerGit.listGitBranches).toHaveBeenLastCalledWith('w1', { path: '/repo-b' })
+    expect(screen.queryByText('old-branch')).not.toBeInTheDocument()
+  })
+
   it('keeps the mode when the selected path is set to the same value', async () => {
     // The reset is keyed on the path CHANGING. A re-render that hands back
     // an identical path (a parent re-computing the same string) must not
@@ -590,6 +685,10 @@ describe('GitOptions activeMode ownership', () => {
 describe('GitOptions branch name field', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(workerGit.getGitWorkingTreeState).mockResolvedValue({
+      $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse',
+      isDirty: false,
+    })
     vi.mocked(workerGit.listGitBranches).mockResolvedValue({
       $typeName: 'leapmux.v1.ListGitBranchesResponse',
       branches: [],

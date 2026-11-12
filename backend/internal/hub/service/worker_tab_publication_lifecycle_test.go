@@ -137,7 +137,7 @@ func newPublicationLifecycleFixture(t *testing.T) *publicationLifecycleFixture {
 	t.Helper()
 	f := &publicationLifecycleFixture{base: hubtestutil.OpenTestStore(t)}
 	owner := storetest.SeedUser(t, f.base, "publication-lifecycle-owner")
-	worker := storetest.SeedWorker(t, f.base, owner.ID)
+	worker, workerToken := hubtestutil.CreateTestWorker(t, f.base, owner.ID)
 	f.owner, f.workerID = userid.MustNew(owner.ID), worker.ID
 	f.gate.ready = make(chan struct{})
 	f.wrapped = publicationLifecycleFaults{Store: f.base, failList: &f.failList, lists: &f.lists, failReceipt: &f.failReceipt, gate: &f.gate, failConsumeID: &f.failConsumeID}
@@ -146,7 +146,9 @@ func newPublicationLifecycleFixture(t *testing.T) *publicationLifecycleFixture {
 	f.manager, err = registry.Get(t.Context(), owner.ID)
 	require.NoError(t, err)
 	f.workspaces = &WorkspaceService{store: f.wrapped, registry: registry}
-	connector := &WorkerConnectorService{store: f.wrapped, crdtRegistry: registry}
+	connector := &WorkerConnectorService{
+		hasher: hubtestutil.TestSecretHasher(),
+		store:  f.wrapped, crdtRegistry: registry}
 	server := connect.NewServer()
 	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(server, connector)
 	mux := http.NewServeMux()
@@ -158,7 +160,7 @@ func newPublicationLifecycleFixture(t *testing.T) *publicationLifecycleFixture {
 	authorizedContext := func(ctx context.Context) (context.Context, context.CancelFunc) {
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		ctx, info := connect.NewClientContext(ctx)
-		info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+		info.RequestHeader().Set("Authorization", "Bearer "+workerToken)
 		return ctx, cancel
 	}
 	f.call = func(ctx context.Context, publication *leapmuxv1.TabPublication) (*leapmuxv1.PublishTabResponse, error) {

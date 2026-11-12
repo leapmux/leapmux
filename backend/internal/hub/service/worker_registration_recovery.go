@@ -15,6 +15,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 // recoveryContextPrefix is the domain separator of the recovery
@@ -162,11 +163,10 @@ func (s *WorkerConnectorService) GetRegistrationChallenge(
 	}, nil
 }
 
-// RecoverRegistration returns the original credentials of a committed
-// attempt to a caller that proves possession of the private keypair
-// whose public halves the Hub pinned. It never mints a second worker
-// or token, and it rechecks that the worker and its owner remain live
-// before any credential leaves.
+// RecoverRegistration replaces the token of a committed attempt after the caller
+// proves possession of the pinned private keys. The Worker keeps its identity.
+// It rechecks that the Worker and its owner remain live before issuing a token.
+// The final write refuses a deleted or deregistering Worker.
 func (s *WorkerConnectorService) RecoverRegistration(
 	ctx context.Context,
 	req *leapmuxv1.RecoverRegistrationRequest,
@@ -219,8 +219,16 @@ func (s *WorkerConnectorService) RecoverRegistration(
 		return nil, err
 	}
 
+	token := id.Generate()
+	rows, err := s.store.Workers().RotateAuthToken(ctx, store.RotateWorkerAuthTokenParams{ID: fresh.ID, AuthTokenHash: s.hasher.Hash(token)})
+	if err != nil {
+		return nil, wrappedConnectError(connect.CodeInternal, err)
+	}
+	if rows == 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, "this worker can no longer be recovered")
+	}
 	return &leapmuxv1.RegisterResponse{
 		WorkerId:  fresh.ID,
-		AuthToken: fresh.AuthToken,
+		AuthToken: token,
 	}, nil
 }

@@ -73,7 +73,7 @@ func (s *Suite) testCredentialRoundTrip(t *testing.T) {
 		}))
 
 		params := store.CreateDeviceAuthorizationParams{
-			DeviceCode:      id.Generate(),
+			DeviceCodeHash:  FixtureSecretHash(id.Generate()),
 			UserCode:        "ABC-DEF",
 			DeviceName:      "roundtrip-laptop",
 			ClientID:        oauthapp.ControlCLIClientID,
@@ -84,7 +84,7 @@ func (s *Suite) testCredentialRoundTrip(t *testing.T) {
 		requireEveryFieldSet(t, params)
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, params))
 
-		row, err := st.DeviceAuthorizations().Get(ctx, params.DeviceCode)
+		row, err := st.DeviceAuthorizations().Get(ctx, params.DeviceCodeHash)
 		require.NoError(t, err)
 		assertSharedFieldsSurvived(t, params, *row)
 	})

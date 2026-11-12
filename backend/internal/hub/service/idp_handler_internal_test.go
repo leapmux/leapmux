@@ -112,6 +112,8 @@ func TestProviderCacheHoldsOneEntryPerProvider(t *testing.T) {
 // which is all the cache tests below touch.
 func newProviderCacheTestHandler() *IdPHandler {
 	return &IdPHandler{
+		sessionHasher: hubtestutil.TestSecretHasher(),
+
 		providers:   make(map[providerCacheKey]huboauth.Provider),
 		providerGen: make(map[string]uint64),
 	}
@@ -217,7 +219,7 @@ func TestBuildProviderDoesNotCacheADeletedProvider(t *testing.T) {
 		ID: "gh", ProviderType: huboauth.ProviderTypeGitHub, Name: "GitHub",
 		ClientID: "cid", ClientSecret: secret, Enabled: true,
 	}))
-	h := NewIdPHandler(st, &config.Config{}, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
+	h := NewIdPHandler(st, hubtestutil.TestSecretHasher(), &config.Config{}, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
 
 	// A build that races nothing caches, so the assertion below fails for
 	// the reason it states rather than because nothing ever caches.
@@ -269,7 +271,7 @@ func TestLoginOAuthUser_UsesConfiguredSessionDuration(t *testing.T) {
 	require.NoError(t, set.Load(context.Background()))
 	require.NoError(t, settings.KeySessionDurationSeconds.Set(context.Background(), set, int64(configured/time.Second)))
 
-	h := NewIdPHandler(st, &config.Config{}, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
+	h := NewIdPHandler(st, hubtestutil.TestSecretHasher(), &config.Config{}, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/auth/idp/test/callback", nil)
@@ -284,7 +286,7 @@ func TestLoginOAuthUser_UsesConfiguredSessionDuration(t *testing.T) {
 	require.NoError(t, err, "the callback must set a session cookie")
 	hubtestutil.AssertSessionLifetime(t, before, configured, parsed.Expires)
 
-	sess, err := st.Sessions().GetByID(context.Background(), parsed.Value, time.Now().UTC())
+	sess, err := st.Sessions().GetByID(context.Background(), hubtestutil.SessionIDFromCookie(t, parsed.Value), time.Now().UTC())
 	require.NoError(t, err)
 	assert.WithinDuration(t, sess.ExpiresAt, parsed.Expires, time.Second,
 		"the cookie and the row must carry the same deadline")

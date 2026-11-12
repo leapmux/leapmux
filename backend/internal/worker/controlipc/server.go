@@ -206,38 +206,20 @@ func shortPrefix(s string, n int) string {
 	return s[:n]
 }
 
-// DefaultSocketPath returns the canonical per-TAB socket URL the worker uses
-// when it spawns agents and terminals. It folds in workerID and (kind,
-// entityID), so two DIFFERENT tabs on one worker get distinct sockets.
-//
-// It is a pure function of those three values, and entityID is the tab id. Two
-// spawns of the SAME tab therefore get the SAME path, and a relaunch collides
-// with the previous spawn's listener: locallisten refuses a path whose socket
-// answers a dial. Every relaunch must retire the previous spawn's token BEFORE
-// it mints -- see Service.remintControlIPC, which owns that order for the agent
-// and terminal relaunch paths alike.
-//
-// Path budget (Unix): macOS's sun_path is 104 bytes including NUL,
-// and the default $TMPDIR is ~49 chars (`/var/folders/<2>/<32>/T/`).
-// With 48-char nanoid IDs the full path would be 170+ chars and
-// `bind: invalid argument` rejects it, so the IDs are truncated to
-// 8-char prefixes here. Windows named-pipe names have no comparable
-// constraint and keep the full IDs for readability.
-func DefaultSocketPath(workerID string, kind SocketKind, entityID string) string {
+// SocketDir returns the private directory for this Worker's control sockets.
+func SocketDir(dataDir string) string {
+	return filepath.Join(dataDir, "run", "control")
+}
+
+// SocketURL derives a socket URL from the directory and spawn identity.
+// Relaunches keep the same URL, so remintControlIPC must retire the old listener
+// before it starts the replacement. Windows uses the full IDs in a named pipe.
+func SocketURL(socketDir, workerID string, kind SocketKind, entityID string) string {
 	if runtime.GOOS == "windows" {
 		return fmt.Sprintf("npipe:leapmux-worker-%s-%s-%s", workerID, kind, entityID)
 	}
-	dir := os.Getenv("XDG_RUNTIME_DIR")
-	if dir == "" {
-		dir = os.TempDir()
-	}
-	dir = filepath.Join(dir, "leapmux-"+shortPrefix(workerID, 8))
-	_ = os.MkdirAll(dir, 0o700)
-	// Single-letter kind tag ('a' / 't') keeps the agent and terminal
-	// namespaces disjoint inside one worker dir without spending
-	// path budget on the full word.
 	file := string(kind[0]) + "-" + shortPrefix(entityID, 8) + ".sock"
-	return "unix:" + filepath.Join(dir, file)
+	return "unix:" + filepath.Join(socketDir, file)
 }
 
 // MintToken returns a fresh raw token suitable for the
@@ -375,9 +357,8 @@ func EnvVars(socketURL, token string, info TokenInfo) []string {
 	if info.TabID != "" {
 		envs = append(envs, "LEAPMUX_CONTROL_TAB_ID="+info.TabID)
 	}
-	// The terminal the process is running INSIDE, which is not always TAB_ID:
-	// inside a quake panel TAB_ID identifies a neighbouring tab, because a quake
-	// terminal has none of its own. See TokenInfo.TerminalID.
+	// A quake terminal has no advertised TabID. TerminalID still identifies
+	// the terminal that hosts the process. See TokenInfo.TerminalID.
 	if info.TerminalID != "" {
 		envs = append(envs, "LEAPMUX_CONTROL_TERMINAL_ID="+info.TerminalID)
 	}

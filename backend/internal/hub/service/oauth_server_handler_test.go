@@ -87,7 +87,7 @@ func TestNewOAuthServerHandlerRequiresCredentialLifecycleEffects(t *testing.T) {
 	t.Parallel()
 
 	require.Panics(t, func() {
-		newOAuthServerHandler(service.OAuthServerDeps{HubURL: func() string { return "" }})
+		newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), HubURL: func() string { return "" }})
 	})
 }
 
@@ -148,7 +148,7 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 	// The handler needs AuthContextRegistry to evict revoked bearers; we
 	// don't run it through the interceptor, so just construct the bare
 	// interceptor for its cache side-effect and stop the sweeper.
-	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
 
 	mux := http.NewServeMux()
@@ -172,7 +172,7 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 	now := func() time.Time { return time.Now().Add(clock.Now().Sub(base)) }
 	advance := func(d time.Duration) { clock.Advance(d).MustWait(t.Context()) }
 	set := servicetest.NewSettingsManager(t, st, nil)
-	h := newOAuthServerHandler(service.OAuthServerDeps{
+	h := newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store:     st,
 		Validator: tv,
 		Lifecycle: auth.NewCredentialLifecycleEffects(sc, closer, closer),
@@ -202,7 +202,7 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 // that depend on `requireSession` see an authenticated browser session.
 func (e *apiAuthEnv) adminCookie(t *testing.T) *http.Cookie {
 	t.Helper()
-	tok, _, _, err := auth.Login(context.Background(), e.store, hubtestutil.TestAdminUsername, hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
+	tok, _, _, err := auth.Login(context.Background(), e.store, hubtestutil.TestSecretHasher(), hubtestutil.TestAdminUsername, hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	return &http.Cookie{Name: auth.CookieName, Value: tok}
 }
@@ -217,7 +217,7 @@ func (e *apiAuthEnv) elevate(t *testing.T, cookie *http.Cookie) {
 	t.Helper()
 	now := e.now()
 	n, err := e.store.Sessions().Elevate(context.Background(), store.ElevateSessionParams{
-		SessionID:          cookie.Value,
+		SessionID:          hubtestutil.SessionIDFromCookie(t, cookie.Value),
 		UserID:             userid.MustNew(e.userID),
 		ElevationProvenAt:  now,
 		ElevationExpiresAt: now.Add(auth.ElevationWindow),
@@ -662,10 +662,10 @@ func TestAPIAuth_DeviceCode_ExpiredToken(t *testing.T) {
 	dc := id.Generate()
 	uc := verifycode.Generate()
 	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
-		ClientID:   oauthapp.ControlCLIClientID,
-		DeviceCode: dc,
-		UserCode:   uc,
-		ExpiresAt:  time.Now().Add(-time.Minute),
+		ClientID:       oauthapp.ControlCLIClientID,
+		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(dc),
+		UserCode:       uc,
+		ExpiresAt:      time.Now().Add(-time.Minute),
 	}))
 	resp, err := http.PostForm(env.server.URL+"/oauth/token", url.Values{
 		"grant_type":  {"urn:ietf:params:oauth:grant-type:device_code"},
@@ -687,10 +687,10 @@ func TestAPIAuth_DeviceCode_AccessDenied(t *testing.T) {
 	dc := id.Generate()
 	uc := verifycode.Generate()
 	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
-		ClientID:   oauthapp.ControlCLIClientID,
-		DeviceCode: dc,
-		UserCode:   uc,
-		ExpiresAt:  time.Now().Add(time.Hour),
+		ClientID:       oauthapp.ControlCLIClientID,
+		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(dc),
+		UserCode:       uc,
+		ExpiresAt:      time.Now().Add(time.Hour),
 	}))
 
 	// Mark the row DENIED through the store.
@@ -802,7 +802,7 @@ func TestAPIAuth_Refresh_FlightFollowsTheHubsLifetime(t *testing.T) {
 	servingCtx, endHub := context.WithCancel(context.Background())
 	endHub()
 	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store:      env.store,
 		Validator:  env.validator,
 		Lifecycle:  auth.NewCredentialLifecycleEffects(env.cache, env.closer, env.closer),
@@ -834,13 +834,13 @@ func TestNewOAuthServerHandlerRequiresItsShutdownDependencies(t *testing.T) {
 	lifecycle := auth.NewCredentialLifecycleEffects(nil, nil, nil)
 
 	assert.PanicsWithValue(t, "OAuth server requires the Hub's serving context", func() {
-		service.NewOAuthServerHandler(service.OAuthServerDeps{Lifecycle: lifecycle, Notices: service.NewCredentialNotices(nil, mail.Renderer{})})
+		service.NewOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Lifecycle: lifecycle, Notices: service.NewCredentialNotices(nil, mail.Renderer{})})
 	})
 	assert.PanicsWithValue(t, "OAuth server requires credential notices", func() {
-		service.NewOAuthServerHandler(service.OAuthServerDeps{Lifecycle: lifecycle, ServingCtx: context.Background()})
+		service.NewOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Lifecycle: lifecycle, ServingCtx: context.Background()})
 	})
 	assert.NotPanics(t, func() {
-		service.NewOAuthServerHandler(service.OAuthServerDeps{Lifecycle: lifecycle, ServingCtx: context.Background(), Notices: service.NewCredentialNotices(nil, mail.Renderer{})})
+		service.NewOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Lifecycle: lifecycle, ServingCtx: context.Background(), Notices: service.NewCredentialNotices(nil, mail.Renderer{})})
 	})
 }
 
@@ -900,7 +900,7 @@ func TestAPIAuth_Refresh_DoesNotPoisonFlightWithCanceledLeaderContext(t *testing
 	tokenID, currentRefresh := seedRefreshableToken(t, env)
 
 	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{Store: env.store, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, env.closer, env.closer), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: env.store, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, env.closer, env.closer), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":    {service.GrantTypeRefreshToken},
 		"client_id":     {oauthapp.ControlCLIClientID},
@@ -1040,7 +1040,7 @@ func TestAPIAuth_Refresh_RetryAcrossHandlersReturnsSamePair(t *testing.T) {
 	t.Cleanup(otherServer.Close)
 	otherValidator, err := auth.NewTokenValidator(env.store, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	newOAuthServerHandler(service.OAuthServerDeps{Store: env.store, Validator: otherValidator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return otherServer.URL }}).RegisterRoutes(otherMux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: env.store, Validator: otherValidator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return otherServer.URL }}).RegisterRoutes(otherMux)
 
 	retry, err := http.PostForm(otherServer.URL+"/oauth/token", url.Values{
 		"grant_type":    {service.GrantTypeRefreshToken},
@@ -1074,7 +1074,7 @@ func TestAPIAuth_Refresh_CASMissDoesNotReturnDerivedPairWithoutRotation(t *testi
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/token", url.Values{
 		"grant_type":    {service.GrantTypeRefreshToken},
@@ -1114,7 +1114,7 @@ func TestAPIAuth_Refresh_CASRecoveryReportsWinnerRemainingLifetime(t *testing.T)
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapper, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapper, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/token", url.Values{
 		"grant_type":    {service.GrantTypeRefreshToken},
@@ -1162,7 +1162,7 @@ func TestAPIAuth_Refresh_CASMissAfterRevocationRejectsRefresh(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/token", url.Values{
 		"grant_type":    {service.GrantTypeRefreshToken},
@@ -1340,10 +1340,10 @@ func (s deviceAuthorizationOverrideStore) rebind(tx store.Store) deviceAuthoriza
 type deviceAuthorizationOverride struct {
 	store.DeviceAuthorizationStore
 	create        func(context.Context, store.CreateDeviceAuthorizationParams) error
-	get           func(context.Context, string) (*store.DeviceAuthorization, error)
+	get           func(context.Context, []byte) (*store.DeviceAuthorization, error)
 	getByUserCode func(context.Context, string) (*store.DeviceAuthorization, error)
-	touchPoll     func(context.Context, string, time.Time) error
-	consume       func(context.Context, string) (int64, error)
+	touchPoll     func(context.Context, []byte, time.Time) error
+	consume       func(context.Context, []byte) (int64, error)
 }
 
 func (s deviceAuthorizationOverride) Create(ctx context.Context, p store.CreateDeviceAuthorizationParams) error {
@@ -1353,11 +1353,11 @@ func (s deviceAuthorizationOverride) Create(ctx context.Context, p store.CreateD
 	return s.DeviceAuthorizationStore.Create(ctx, p)
 }
 
-func (s deviceAuthorizationOverride) Get(ctx context.Context, code string) (*store.DeviceAuthorization, error) {
+func (s deviceAuthorizationOverride) Get(ctx context.Context, hash []byte) (*store.DeviceAuthorization, error) {
 	if s.get != nil {
-		return s.get(ctx, code)
+		return s.get(ctx, hash)
 	}
-	return s.DeviceAuthorizationStore.Get(ctx, code)
+	return s.DeviceAuthorizationStore.Get(ctx, hash)
 }
 
 func (s deviceAuthorizationOverride) GetByUserCode(ctx context.Context, code string) (*store.DeviceAuthorization, error) {
@@ -1367,18 +1367,18 @@ func (s deviceAuthorizationOverride) GetByUserCode(ctx context.Context, code str
 	return s.DeviceAuthorizationStore.GetByUserCode(ctx, code)
 }
 
-func (s deviceAuthorizationOverride) TouchPoll(ctx context.Context, code string, now time.Time) error {
+func (s deviceAuthorizationOverride) TouchPoll(ctx context.Context, hash []byte, now time.Time) error {
 	if s.touchPoll != nil {
-		return s.touchPoll(ctx, code, now)
+		return s.touchPoll(ctx, hash, now)
 	}
-	return s.DeviceAuthorizationStore.TouchPoll(ctx, code, now)
+	return s.DeviceAuthorizationStore.TouchPoll(ctx, hash, now)
 }
 
-func (s deviceAuthorizationOverride) Consume(ctx context.Context, code string, now time.Time) (int64, error) {
+func (s deviceAuthorizationOverride) Consume(ctx context.Context, hash []byte, now time.Time) (int64, error) {
 	if s.consume != nil {
-		return s.consume(ctx, code)
+		return s.consume(ctx, hash)
 	}
-	return s.DeviceAuthorizationStore.Consume(ctx, code, now)
+	return s.DeviceAuthorizationStore.Consume(ctx, hash, now)
 }
 
 func (s userLookupFailStore) Users() store.UserStore { return s.users }
@@ -1406,7 +1406,7 @@ func TestAPIAuth_Refresh_DetachedWorkHasDeadline(t *testing.T) {
 	validator, err := auth.NewTokenValidator(wrapped, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 
 	form := url.Values{"grant_type": {service.GrantTypeRefreshToken}, "client_id": {oauthapp.ControlCLIClientID}, "refresh_token": {auth.FormatBearer(auth.BearerKindAPI, id.Generate(), auth.MintAccessSecret())}}
 	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
@@ -1441,7 +1441,7 @@ func TestAPIAuth_Token_UserLookupFailureDoesNotLeaveToken(t *testing.T) {
 		users: getByIDFailUsers{UserStore: env.store.Users()},
 	}
 	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{Store: failing, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: failing, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 
 	before, err := env.store.APITokens().ListByUser(context.Background(), store.ListAPITokensByUserParams{UserID: userid.MustNew(env.userID), PageParams: store.PageParams{Limit: 50}})
 	require.NoError(t, err)
@@ -1474,18 +1474,18 @@ func TestAPIAuth_DeviceCode_UserLookupFailureLeavesGrantRetryable(t *testing.T) 
 	env := setupAPIAuth(t)
 	deviceCode := id.Generate()
 	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
-		ClientID:   oauthapp.ControlCLIClientID,
-		DeviceCode: deviceCode, UserCode: verifycode.Generate(), DeviceName: "test", ExpiresAt: time.Now().Add(time.Minute),
+		ClientID:       oauthapp.ControlCLIClientID,
+		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserCode: verifycode.Generate(), DeviceName: "test", ExpiresAt: time.Now().Add(time.Minute),
 	}))
 	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
-		DeviceCode: deviceCode, UserID: userid.MustNew(env.userID),
+		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserID: userid.MustNew(env.userID),
 	}, env.now().UTC())
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
 
 	failing := userLookupFailStore{Store: env.store, users: getByIDFailUsers{UserStore: env.store.Users()}}
 	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{Store: failing, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: failing, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":  {service.GrantTypeDeviceCode},
 		"client_id":   {oauthapp.ControlCLIClientID},
@@ -1518,16 +1518,16 @@ func TestAPIAuth_DeviceCode_TouchPollFailureIsInternal(t *testing.T) {
 	env := setupAPIAuth(t)
 	deviceCode := id.Generate()
 	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
-		ClientID:   oauthapp.ControlCLIClientID,
-		DeviceCode: deviceCode, UserCode: verifycode.Generate(), ExpiresAt: time.Now().Add(time.Minute),
+		ClientID:       oauthapp.ControlCLIClientID,
+		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserCode: verifycode.Generate(), ExpiresAt: time.Now().Add(time.Minute),
 	}))
 	forcedErr := errors.New("sensitive poll failure")
-	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), touchPoll: func(context.Context, string, time.Time) error {
+	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), touchPoll: func(context.Context, []byte, time.Time) error {
 		return forcedErr
 	}}
 	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
 	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":  {service.GrantTypeDeviceCode},
 		"client_id":   {oauthapp.ControlCLIClientID},
@@ -1548,12 +1548,12 @@ func TestAPIAuth_DeviceCode_LookupFailureIsInternal(t *testing.T) {
 
 	env := setupAPIAuth(t)
 	forcedErr := errors.New("sensitive device lookup failure")
-	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), get: func(context.Context, string) (*store.DeviceAuthorization, error) {
+	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), get: func(context.Context, []byte) (*store.DeviceAuthorization, error) {
 		return nil, forcedErr
 	}}
 	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
 	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{"grant_type": {service.GrantTypeDeviceCode}, "device_code": {"test-device-code"}}
 	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1571,20 +1571,20 @@ func TestAPIAuth_DeviceCode_ConsumeRequiresOneRow(t *testing.T) {
 	env := setupAPIAuth(t)
 	deviceCode := id.Generate()
 	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
-		ClientID:   oauthapp.ControlCLIClientID,
-		DeviceCode: deviceCode, UserCode: verifycode.Generate(), ExpiresAt: time.Now().Add(time.Minute),
+		ClientID:       oauthapp.ControlCLIClientID,
+		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserCode: verifycode.Generate(), ExpiresAt: time.Now().Add(time.Minute),
 	}))
 	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
-		DeviceCode: deviceCode, UserID: userid.MustNew(env.userID),
+		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserID: userid.MustNew(env.userID),
 	}, env.now().UTC())
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
-	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), consume: func(context.Context, string) (int64, error) {
+	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), consume: func(context.Context, []byte) (int64, error) {
 		return 0, nil
 	}}
 	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
 	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":  {service.GrantTypeDeviceCode},
 		"client_id":   {oauthapp.ControlCLIClientID},
@@ -1614,11 +1614,11 @@ func TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure(t
 	env := setupAPIAuth(t)
 	deviceCode := id.Generate()
 	require.NoError(t, env.store.DeviceAuthorizations().Create(context.Background(), store.CreateDeviceAuthorizationParams{
-		ClientID:   oauthapp.ControlCLIClientID,
-		DeviceCode: deviceCode, UserCode: verifycode.Generate(), ExpiresAt: time.Now().Add(time.Minute),
+		ClientID:       oauthapp.ControlCLIClientID,
+		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserCode: verifycode.Generate(), ExpiresAt: time.Now().Add(time.Minute),
 	}))
 	rows, err := env.store.DeviceAuthorizations().Approve(context.Background(), store.ApproveDeviceAuthorizationParams{
-		DeviceCode: deviceCode, UserID: userid.MustNew(env.userID),
+		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserID: userid.MustNew(env.userID),
 	}, env.now().UTC())
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows)
@@ -1626,12 +1626,12 @@ func TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure(t
 	// Inject a transient (non-final) store error inside the issuance
 	// transaction so token creation rolls back. Consume runs inside the
 	// transaction; TouchPoll runs outside it, so last_polled_at must survive.
-	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), consume: func(context.Context, string) (int64, error) {
+	device := deviceAuthorizationOverride{DeviceAuthorizationStore: env.store.DeviceAuthorizations(), consume: func(context.Context, []byte) (int64, error) {
 		return 0, errors.New("transient consume failure")
 	}}
 	wrapped := deviceAuthorizationOverrideStore{Store: env.store, device: device}
 	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 	form := url.Values{
 		"grant_type":  {service.GrantTypeDeviceCode},
 		"client_id":   {oauthapp.ControlCLIClientID},
@@ -1646,7 +1646,7 @@ func TestAPIAuth_DeviceCode_ApprovedPollAdvancesThrottleDespiteIssuanceFailure(t
 	mux.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 
-	afterRow, err := env.store.DeviceAuthorizations().Get(context.Background(), deviceCode)
+	afterRow, err := env.store.DeviceAuthorizations().Get(context.Background(), hubtestutil.TestSecretHasher().Hash(deviceCode))
 	require.NoError(t, err)
 	require.NotNil(t, afterRow.LastPolledAt, "failed issuance must still advance last_polled_at")
 	require.Nil(t, afterRow.ConsumedAt, "rolled-back issuance must leave the grant retryable")
@@ -1729,7 +1729,7 @@ func TestAPIAuth_Refresh_InternalFailureDoesNotLeakDetails(t *testing.T) {
 	validator, err := auth.NewTokenValidator(wrapped, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return env.server.URL }}).RegisterRoutes(mux)
 
 	form := url.Values{"grant_type": {service.GrantTypeRefreshToken}, "client_id": {oauthapp.ControlCLIClientID}, "refresh_token": {
 		auth.FormatBearer(auth.BearerKindAPI, id.Generate(), auth.MintAccessSecret()),
@@ -1757,7 +1757,7 @@ func TestAPIAuth_Revoke_StoreFailureReturnsServerError(t *testing.T) {
 		Store: env.store,
 		api:   apiRevokeFailTokens{APITokenStore: env.store.APITokens()},
 	}
-	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapped, Validator: env.validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/revoke", url.Values{
 		"token":     {bearer},
@@ -1795,7 +1795,7 @@ func TestAPIAuth_Revoke_VerifyLookupFailureReturnsServerError(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapped, Validator: validator, Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil), HubURL: func() string { return srv.URL }}).RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/revoke", url.Values{"token": {bearer}})
 	require.NoError(t, err)
@@ -2126,10 +2126,10 @@ func seedDelegationFixtures(t *testing.T, env *apiAuthEnv) (workerID, workspaceI
 	t.Helper()
 	workerID = id.Generate()
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    id.Generate(),
-		RegisteredBy: userid.MustNew(env.userID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		RegisteredBy:  userid.MustNew(env.userID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 	workspaceID = id.Generate()
 	require.NoError(t, env.store.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
@@ -2183,7 +2183,7 @@ func TestAPIAuth_AuthorizationCode_BlankUserIDIsInvalidGrantNotPanic(t *testing.
 
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
 
 	verifier, challenge := pkceVerifierAndChallenge()
@@ -2202,7 +2202,7 @@ func TestAPIAuth_AuthorizationCode_BlankUserIDIsInvalidGrantNotPanic(t *testing.
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	closer := &recordingBearerCloser{}
-	newOAuthServerHandler(service.OAuthServerDeps{Store: wrapped, Validator: tv, Lifecycle: auth.NewCredentialLifecycleEffects(sc, closer, closer), HubURL: func() string { return srv.URL }}).
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(), Store: wrapped, Validator: tv, Lifecycle: auth.NewCredentialLifecycleEffects(sc, closer, closer), HubURL: func() string { return srv.URL }}).
 		RegisterRoutes(mux)
 
 	resp, err := http.PostForm(srv.URL+"/oauth/token", url.Values{
@@ -2238,8 +2238,8 @@ func TestAPIAuth_Activate_GrantLookupFailureIsInternal(t *testing.T) {
 	userCode := verifycode.Generate()
 	deviceCode := id.Generate()
 	require.NoError(t, env.store.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-		ClientID:   oauthapp.ControlCLIClientID,
-		DeviceCode: deviceCode, UserCode: userCode, DeviceName: "laptop", ExpiresAt: time.Now().Add(time.Hour),
+		ClientID:       oauthapp.ControlCLIClientID,
+		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode), UserCode: userCode, DeviceName: "laptop", ExpiresAt: time.Now().Add(time.Hour),
 	}))
 	forcedErr := errors.New("sensitive grant lookup failure")
 	wrapped := deviceAuthorizationOverrideStore{
@@ -2252,7 +2252,7 @@ func TestAPIAuth_Activate_GrantLookupFailureIsInternal(t *testing.T) {
 		},
 	}
 	mux := http.NewServeMux()
-	h := newOAuthServerHandler(service.OAuthServerDeps{
+	h := newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store:     wrapped,
 		Validator: env.validator,
 		Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
@@ -2280,7 +2280,7 @@ func TestAPIAuth_Activate_GrantLookupFailureIsInternal(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, postRec.Code)
 	assert.NotContains(t, postRec.Body.String(), forcedErr.Error())
 
-	row, err := env.store.DeviceAuthorizations().Get(ctx, deviceCode)
+	row, err := env.store.DeviceAuthorizations().Get(ctx, hubtestutil.TestSecretHasher().Hash(deviceCode))
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING, row.State, "a lookup the hub could not perform must approve nothing")
 }
@@ -2346,7 +2346,7 @@ func TestAPIAuth_DeviceCode_CollidingUserCodeIsRedrawn(t *testing.T) {
 				},
 			}
 			mux := http.NewServeMux()
-			h := newOAuthServerHandler(service.OAuthServerDeps{
+			h := newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 				Store:     wrapped,
 				Validator: env.validator,
 				Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
@@ -2377,7 +2377,10 @@ func TestAPIAuth_DeviceCode_CollidingUserCodeIsRedrawn(t *testing.T) {
 				"the response must report the code that was actually stored")
 			row, err := env.store.DeviceAuthorizations().GetByUserCode(context.Background(), drawn[len(drawn)-1])
 			require.NoError(t, err)
-			assert.Equal(t, body["device_code"], row.DeviceCode)
+			deviceCode, ok := body["device_code"].(string)
+			require.True(t, ok)
+			require.NotEmpty(t, deviceCode)
+			assert.Equal(t, env.validator.HashSecret(deviceCode), row.DeviceCodeHash)
 		})
 	}
 }
@@ -2412,7 +2415,7 @@ func TestAPIAuth_DeviceCode_ASecondApprovalChangesNothing(t *testing.T) {
 	defer func() { _ = second.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, second.StatusCode, "an approved grant cannot be approved again")
 
-	row, err := env.store.DeviceAuthorizations().Get(context.Background(), deviceCode)
+	row, err := env.store.DeviceAuthorizations().Get(context.Background(), hubtestutil.TestSecretHasher().Hash(deviceCode))
 	require.NoError(t, err)
 	assert.Equal(t, "workspace:read", row.GrantedScopes,
 		"the refused submit must not change what the first approval bound")
@@ -2601,7 +2604,7 @@ func TestAPIAuth_TheRevokeLegCarriesTheAnonymousBudget(t *testing.T) {
 	limiter := ratelimit.NewManager(set)
 
 	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store: env.store, Validator: env.validator,
 		Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, env.closer, env.closer),
 		HubURL:    func() string { return env.server.URL },
@@ -2712,7 +2715,7 @@ func TestAPIAuth_CodeExchange_MarkMintedSharesTheIssuanceTransaction(t *testing.
 			mux := http.NewServeMux()
 			srv := httptest.NewServer(mux)
 			t.Cleanup(srv.Close)
-			newOAuthServerHandler(service.OAuthServerDeps{
+			newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 				Store:      markMintedSpyStore{Store: env.store, contextErrs: contextErrs},
 				Validator:  env.validator,
 				Lifecycle:  auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
@@ -2790,7 +2793,7 @@ func (s authorizationLinkCodes) MarkMinted(ctx context.Context, code, tokenID st
 func codeExchangeServer(t *testing.T, env *apiAuthEnv, st store.Store) *httptest.Server {
 	t.Helper()
 	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store: st, Validator: env.validator,
 		Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
 		HubURL:    func() string { return env.server.URL },
@@ -2911,7 +2914,7 @@ func TestAPIAuth_RequestCancellationDuringLinkRollsBackIssuance(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	mux := http.NewServeMux()
-	newOAuthServerHandler(service.OAuthServerDeps{
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store: authorizationTransactionStore{Store: env.store, beforeLink: cancel}, Validator: env.validator,
 		Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil), HubURL: func() string { return env.server.URL },
 	}).RegisterRoutes(mux)

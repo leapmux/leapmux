@@ -12,6 +12,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -72,7 +73,7 @@ func TestChangePassword_FromAnElevatedCLICredentialKeepsThatCredentialUsable(t *
 	// credential, and another browser session.
 	otherBearer := env.bearerFor(t)
 	otherTokenID := tokenIDOf(t, otherBearer)
-	otherSession, _, err := auth.CreateSession(ctx, env.store, userid.MustNew(env.userID), auth.DefaultSessionDuration)
+	otherSession, err := auth.CreateSession(ctx, env.store, hubtestutil.TestSecretHasher(), userid.MustNew(env.userID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	_, err = env.client.ChangePassword(bearerReq(ctx, &leapmuxv1.ChangePasswordRequest{
@@ -82,7 +83,7 @@ func TestChangePassword_FromAnElevatedCLICredentialKeepsThatCredentialUsable(t *
 
 	// The password really changed, so nothing below passes because the
 	// mutation quietly did nothing.
-	_, _, _, err = auth.Login(ctx, env.store, "testuser", "newpass123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "testuser", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// THE regression, read from the store where no cache can mask it.
@@ -110,9 +111,9 @@ func TestChangePassword_FromAnElevatedCLICredentialKeepsThatCredentialUsable(t *
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 
-	_, err = auth.ValidateToken(ctx, env.store, otherSession)
+	_, err = auth.ValidateToken(ctx, env.store, hubtestutil.TestSecretHasher(), otherSession.Token)
 	assert.Error(t, err, "a change from the command line signs every browser out")
-	_, err = auth.ValidateToken(ctx, env.store, env.token)
+	_, err = auth.ValidateToken(ctx, env.store, hubtestutil.TestSecretHasher(), env.token)
 	assert.Error(t, err, "the acting credential is not a session, so no session survives")
 }
 
@@ -142,7 +143,7 @@ func TestChangePassword_FromAnElevatedSessionStillRevokesEveryCredential(t *test
 	assert.NotNil(t, row.RevokedAt,
 		"a change from a browser revokes every command-line credential, elevated or not")
 
-	_, err = auth.ValidateToken(ctx, env.store, env.token)
+	_, err = auth.ValidateToken(ctx, env.store, hubtestutil.TestSecretHasher(), env.token)
 	assert.NoError(t, err, "the acting session survives, as it always did")
 }
 
@@ -186,7 +187,7 @@ func TestDeactivatePasskeyAuth_FromAnElevatedSessionKeepsThatSession(t *testing.
 	}, env.token))
 	require.NoError(t, err)
 
-	_, err = auth.ValidateToken(ctx, env.store, env.token)
+	_, err = auth.ValidateToken(ctx, env.store, hubtestutil.TestSecretHasher(), env.token)
 	assert.NoError(t, err, "the credential that asked must survive its own success")
 
 	row, err := env.store.APITokens().GetByID(ctx, tokenID)

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect/v2"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 const (
@@ -272,8 +273,8 @@ func cookieValueFromHeader(cookieHeader, name string) string {
 }
 
 // BuildSessionCookie creates an HttpOnly session cookie.
-func BuildSessionCookie(sessionID string, expiresAt time.Time, secure bool) *http.Cookie {
-	c := newCookie(cookieName(secure), sessionID, cookieMaxAge(time.Until(expiresAt)), secure)
+func BuildSessionCookie(token string, expiresAt time.Time, secure bool) *http.Cookie {
+	c := newCookie(cookieName(secure), token, cookieMaxAge(time.Until(expiresAt)), secure)
 	// The one attribute only this cookie carries. Expires is the fallback
 	// that keeps a browser which ignores Max-Age on the same deadline.
 	c.Expires = expiresAt
@@ -285,7 +286,7 @@ func BuildSessionCookie(sessionID string, expiresAt time.Time, secure bool) *htt
 // The zero value means that nothing slid on this request and this code
 // writes no cookie.
 type sessionRefresh struct {
-	sessionID string
+	token     string
 	expiresAt time.Time
 }
 
@@ -307,7 +308,7 @@ type sessionRefresh struct {
 // refreshing the session on the first response that also carried an unrelated
 // cookie, silently and with nothing to point at the cause.
 func (r sessionRefresh) applyTo(h *connect.Header, secure bool) {
-	if r.sessionID == "" {
+	if r.token == "" {
 		return
 	}
 	name := cookieName(secure)
@@ -321,7 +322,7 @@ func (r sessionRefresh) applyTo(h *connect.Header, secure bool) {
 			return
 		}
 	}
-	h.Add("Set-Cookie", BuildSessionCookie(r.sessionID, r.expiresAt, secure).String())
+	h.Add("Set-Cookie", BuildSessionCookie(r.token, r.expiresAt, secure).String())
 }
 
 // ClearSessionCookie creates a cookie that clears the session.
@@ -329,19 +330,39 @@ func ClearSessionCookie(secure bool) *http.Cookie {
 	return newCookie(cookieName(secure), "", -1, secure)
 }
 
-// SessionIDFromCookieHeader reads the session id with the asymmetric fallback
+// SessionTokenFromCookieHeader reads the session token with the asymmetric fallback
 // BOTH auth ladders use: the __Host- spelling first, and the unprefixed one
 // only on a hub whose secure_cookies setting is off (so it never writes the
 // prefix). See AuthenticateHTTP for why the fallback direction is safe.
 //
-// ONE helper, because the Connect interceptor, AuthenticateHTTP and Logout all
+// ONE helper, because the Connect interceptor and AuthenticateHTTP both
 // answer the same question for the same browser, and a caller that spelled the
 // ladder by hand could read a cookie the ladder does not -- or miss one it
 // does, which is how a sign-out once cleared no row at all.
-func SessionIDFromCookieHeader(cookieHeader string, secureCookies bool) string {
+func SessionTokenFromCookieHeader(cookieHeader string, secureCookies bool) string {
 	token := cookieValueFromHeader(cookieHeader, cookieName(true))
 	if token == "" && !secureCookies {
 		token = cookieValueFromHeader(cookieHeader, cookieName(false))
 	}
 	return token
+}
+
+// FormatSessionToken joins a public session identity and its independent secret.
+func FormatSessionToken(sessionID, secret string) string { return sessionID + "_" + secret }
+
+// ParseSessionToken accepts two generated alphanumeric values and one separator.
+func ParseSessionToken(value string) (sessionID, secret string, ok bool) {
+	if len(value) != 2*id.GeneratedLength+1 || value[id.GeneratedLength] != '_' {
+		return "", "", false
+	}
+	for i := range len(value) {
+		if i == id.GeneratedLength {
+			continue
+		}
+		c := value[i]
+		if (c < 'A' || c > 'Z') && (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+			return "", "", false
+		}
+	}
+	return value[:id.GeneratedLength], value[id.GeneratedLength+1:], true
 }

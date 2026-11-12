@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -129,10 +131,12 @@ const sessionCacheTTL = 30 * time.Second
 // revocation sequence observed before validation. Cache reads compare that
 // sequence only with marks for the same session, bearer, or user, so unrelated
 // revocations do not turn otherwise-fresh entries into misses.
+// cachedSession stays comparable because stale-entry removal uses sync.Map.CompareAndDelete.
 type cachedSession struct {
-	user     *UserInfo
-	cachedAt time.Time
-	gen      uint64
+	secretHash [sha256.Size]byte
+	user       *UserInfo
+	cachedAt   time.Time
+	gen        uint64
 }
 
 type credentialCaches struct {
@@ -221,6 +225,7 @@ func PolicyFromSettings(ctx context.Context, snap *settings.Snapshot) Policy {
 // RPC, unary and streaming alike. Its wrap method is the Connect v2
 // interceptor entry.
 type authInterceptor struct {
+	sessionHasher  SecretHasher
 	store          store.Store
 	policy         func(context.Context) Policy
 	soloUser       *UserInfo
@@ -245,10 +250,11 @@ type authInterceptor struct {
 }
 
 // InterceptorOptions carries what the auth interceptor needs. Store is what a
-// working interceptor requires; every other field is optional, and the rest of
-// the zero value gives cookie-only multi-user auth with the default session
-// duration.
+// working interceptor requires, together with SessionHasher and ServingCtx.
+// Other fields enable optional authentication rungs or policies.
 type InterceptorOptions struct {
+	// SessionHasher validates cookie secrets independently of the bearer rung.
+	SessionHasher SecretHasher
 	// Store validates a session cookie and a bearer credential. A nil Store
 	// gives an interceptor that can do neither, which is useful only for
 	// the AuthContextRegistry that the constructor returns beside it -- a
@@ -292,6 +298,9 @@ func NewInterceptor(opts InterceptorOptions) (connect.ServerInterceptor, *AuthCo
 		panic("auth interceptor requires the Hub's serving context")
 	}
 	st := opts.Store
+	if st != nil && opts.SessionHasher.IsZero() {
+		panic("auth interceptor requires SessionHasher when Store is set")
+	}
 	state := &authState{}
 	soloGate := opts.SoloGate
 	if soloGate == nil {
@@ -300,6 +309,7 @@ func NewInterceptor(opts InterceptorOptions) (connect.ServerInterceptor, *AuthCo
 		soloGate = NewSoloGate(opts.SoloUser != nil, st)
 	}
 	a := &authInterceptor{
+		sessionHasher:  opts.SessionHasher,
 		store:          st,
 		policy:         opts.Policy,
 		soloUser:       opts.SoloUser,
@@ -979,7 +989,7 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 	// spelling signed the same browser out of every Connect procedure the
 	// moment an operator turned secure_cookies off, while the WebSockets --
 	// which AuthenticateHTTP serves -- kept the session alive.
-	token := SessionIDFromCookieHeader(cookieHeader, p.SecureCookies)
+	token := SessionTokenFromCookieHeader(cookieHeader, p.SecureCookies)
 	if token == "" {
 		return ctx, noRefresh, connect.NewError(connect.CodeUnauthenticated, "")
 	}
@@ -989,8 +999,8 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 		return ctx, noRefresh, err
 	}
 	refresh := noRefresh
-	if slidTo := a.touchSession(ctx, token, userInfo, p); !slidTo.IsZero() {
-		refresh = sessionRefresh{sessionID: token, expiresAt: slidTo}
+	if slidTo := a.touchSession(ctx, userInfo.Credential.SessionID(), userInfo, p); !slidTo.IsZero() {
+		refresh = sessionRefresh{token: token, expiresAt: slidTo}
 	}
 
 	ctx = WithUser(ctx, userInfo)
@@ -1250,25 +1260,33 @@ func (a *authInterceptor) bearerCacheFresh(key bearerCacheKeyParts, cs cachedSes
 // within sessionCacheTTL AND no revocation occurred since; otherwise
 // queries the DB and caches the result.
 func (a *authInterceptor) validateTokenCached(ctx context.Context, token string) (*UserInfo, error) {
-	if v, ok := a.state.sessions.Load(token); ok {
+	sessionID, secret, ok := ParseSessionToken(token)
+	if !ok {
+		return nil, connect.Errorf(connect.CodeUnauthenticated, "invalid or expired token")
+	}
+	digest := a.sessionHasher.Hash(secret)
+	if v, ok := a.state.sessions.Load(sessionID); ok {
 		cached := v.(cachedSession)
-		if a.sessionCacheFresh(token, cached) {
+		if a.sessionCacheFresh(sessionID, cached) {
+			if !hmac.Equal(digest, cached.secretHash[:]) {
+				return nil, connect.Errorf(connect.CodeUnauthenticated, "invalid or expired token")
+			}
 			return cloneUserInfoWithGeneration(cached.user, cached.gen), nil
 		}
 		a.state.revocationMu.Lock()
-		a.state.deleteStaleSession(token, cached)
+		a.state.deleteStaleSession(sessionID, cached)
 		a.state.revocationMu.Unlock()
 	}
 
 	for {
 		validationGen := a.state.revocationGen.Load()
-		userInfo, err := ValidateToken(ctx, a.store, token)
+		userInfo, err := ValidateToken(ctx, a.store, a.sessionHasher, token)
 		if err != nil {
 			return nil, err
 		}
 
 		a.state.revocationMu.Lock()
-		if a.sessionRevoked(token, userInfo, validationGen) {
+		if a.sessionRevoked(sessionID, userInfo, validationGen) {
 			a.state.revocationMu.Unlock()
 			return nil, connect.Errorf(connect.CodeUnauthenticated, "session revoked")
 		}
@@ -1276,8 +1294,8 @@ func (a *authInterceptor) validateTokenCached(ctx context.Context, token string)
 			a.state.revocationMu.Unlock()
 			continue
 		}
-		a.state.sessions.Store(token, cachedSession{user: userInfo, cachedAt: time.Now(), gen: validationGen})
-		indexSyncMap(&a.state.userSessions, userInfo.ID.String(), token)
+		a.state.sessions.Store(sessionID, cachedSession{secretHash: [sha256.Size]byte(digest), user: userInfo, cachedAt: time.Now(), gen: validationGen})
+		indexSyncMap(&a.state.userSessions, userInfo.ID.String(), sessionID)
 		a.state.revocationMu.Unlock()
 
 		return cloneUserInfoWithGeneration(userInfo, validationGen), nil

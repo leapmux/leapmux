@@ -39,7 +39,7 @@ func newBearerAuthHub(
 ) (leapmuxv1connect.AuthServiceClient, *auth.AuthContextRegistry) {
 	t.Helper()
 	mux := http.NewServeMux()
-	interceptor, cache := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: validator})
+	interceptor, cache := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: validator})
 	t.Cleanup(cache.Stop)
 	authService := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(cache, nil, nil)))
 	connectServer := connect.NewServer(interceptor)
@@ -161,7 +161,7 @@ func setupUnseededWithOptions(t *testing.T, opts ...revocationwatcher.Option) *e
 	t.Helper()
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
-	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
 
 	closer := &fakeCloser{}
@@ -173,10 +173,10 @@ func setupUnseededWithOptions(t *testing.T, opts ...revocationwatcher.Option) *e
 
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    id.Generate(),
-		RegisteredBy: userid.MustNew(u.ID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		RegisteredBy:  userid.MustNew(u.ID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	return &envT{
@@ -367,8 +367,9 @@ func TestWatcher_PublishesGaplessSeqAndAppliesEvents(t *testing.T) {
 	env := setup(t)
 	apiToken := env.seedAPIToken(t)
 	delegationToken := env.seedDelegationToken(t)
-	sessionID, _, _, err := auth.Login(context.Background(), env.st, "admin", hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
+	sessionToken, _, _, err := auth.Login(context.Background(), env.st, hubtestutil.TestSecretHasher(), "admin", hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
 	require.NoError(t, err)
+	sessionID := hubtestutil.SessionIDFromCookie(t, sessionToken)
 
 	_, err = env.st.APITokens().Revoke(context.Background(), apiToken)
 	require.NoError(t, err)

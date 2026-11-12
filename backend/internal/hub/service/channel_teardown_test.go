@@ -60,7 +60,7 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return settings.DefaultTimeouts.APITimeout() })
 
 	mux := http.NewServeMux()
-	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	t.Cleanup(sc.Stop)
 
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, sc)
@@ -82,10 +82,10 @@ func setupTeardownEnv(t *testing.T) *teardownEnv {
 	workerID := id.Generate()
 	workerAuthTok := id.Generate()
 	require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    workerAuthTok,
-		RegisteredBy: userid.MustNew(userID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(workerAuthTok),
+		RegisteredBy:  userid.MustNew(userID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	return &teardownEnv{
@@ -240,7 +240,7 @@ func TestChannelService_CloseChannelsByUserRevocationNotifiesWorkers(t *testing.
 	workerA := env.workerID
 	workerB := id.Generate()
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID: workerB, AuthToken: id.Generate(), RegisteredBy: userid.MustNew(env.userID),
+		ID: workerB, AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()), RegisteredBy: userid.MustNew(env.userID),
 		PublicKeys: storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -124,7 +125,7 @@ var (
 // upgrade path.
 type TokenValidator struct {
 	store  store.Store
-	pepper []byte
+	hasher SecretHasher
 	// Now is the clock seam. Every deadline this validator compares reads it,
 	// so a test that expires a credential moves one field instead of waiting.
 	//
@@ -144,27 +145,49 @@ func (v *TokenValidator) now() time.Time {
 	return time.Now()
 }
 
-// NewTokenValidator returns a validator. Pepper must be at least 32 bytes;
-// callers usually source it from the hub's encryption key material.
-func NewTokenValidator(st store.Store, pepper []byte) (*TokenValidator, error) {
+// SecretHasher computes the peppered HMAC-SHA256 digest of a bearer secret.
+// Its zero value cannot hash a secret; construct it with NewSecretHasher.
+type SecretHasher struct{ pepper []byte }
+
+// NewSecretHasher copies a pepper of at least 16 bytes.
+func NewSecretHasher(pepper []byte) (SecretHasher, error) {
 	if len(pepper) < 16 {
-		return nil, fmt.Errorf("server pepper must be at least 16 bytes")
+		return SecretHasher{}, fmt.Errorf("server pepper must be at least 16 bytes")
 	}
-	return &TokenValidator{
-		store:  st,
-		pepper: pepper,
-	}, nil
+	return SecretHasher{pepper: slices.Clone(pepper)}, nil
 }
+
+// IsZero reports whether the hasher lacks its required pepper.
+func (h SecretHasher) IsZero() bool { return len(h.pepper) == 0 }
+
+// Hash returns the secret's digest. A zero hasher is a programming error.
+func (h SecretHasher) Hash(secret string) []byte {
+	if h.IsZero() {
+		panic("auth: zero SecretHasher; construct it with NewSecretHasher")
+	}
+	mac := hmac.New(sha256.New, h.pepper)
+	mac.Write([]byte(secret))
+	return mac.Sum(nil)
+}
+
+// NewTokenValidator returns a validator. Pepper must be at least 16 bytes;
+// callers usually source it from the Hub's encryption key material.
+func NewTokenValidator(st store.Store, pepper []byte) (*TokenValidator, error) {
+	hasher, err := NewSecretHasher(pepper)
+	if err != nil {
+		return nil, err
+	}
+	return &TokenValidator{store: st, hasher: hasher}, nil
+}
+
+// Hasher returns the hasher shared by the Hub's credential handlers.
+func (v *TokenValidator) Hasher() SecretHasher { return v.hasher }
 
 // HashSecret returns the canonical secret_hash for a given raw secret
 // (HMAC-SHA256 keyed by the server pepper). Exported so issuance code
 // (handlers, admin CLI) can compute hashes the same way the validator
 // does.
-func (v *TokenValidator) HashSecret(secret string) []byte {
-	mac := hmac.New(sha256.New, v.pepper)
-	mac.Write([]byte(secret))
-	return mac.Sum(nil)
-}
+func (v *TokenValidator) HashSecret(secret string) []byte { return v.hasher.Hash(secret) }
 
 // FormatBearer returns "lmx_<kind><id>_<secret>". The kind char is
 // transport-only — the stored row id is just <id>.
@@ -274,7 +297,7 @@ func (v *TokenValidator) DeriveRefreshBearerPair(
 }
 
 func (v *TokenValidator) deriveRefreshSecret(purpose string, kind BearerKind, tokenID string, refreshHash []byte) string {
-	mac := hmac.New(sha256.New, v.pepper)
+	mac := hmac.New(sha256.New, v.hasher.pepper)
 	mac.Write([]byte("leapmux-refresh-pair-v1"))
 	mac.Write([]byte{0, byte(kind), 0})
 	mac.Write([]byte(tokenID))

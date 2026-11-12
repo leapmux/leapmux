@@ -46,7 +46,7 @@ type adminOAuthEnv struct {
 func setupAdminOAuthTest(t *testing.T) *adminOAuthEnv {
 	t.Helper()
 	env := setupAdminOAuthTestUnelevated(t)
-	hubtestutil.ElevateSession(t, env.st, env.token, env.adminID)
+	hubtestutil.ElevateSession(t, env.st, hubtestutil.SessionIDFromCookie(t, env.token), env.adminID)
 	return env
 }
 
@@ -70,13 +70,13 @@ func setupAdminOAuthTestUnelevated(t *testing.T) *adminOAuthEnv {
 		IsAdmin:               true,
 	})
 	require.NoError(t, err)
-	session, _, _, err := auth.Login(context.Background(), st, "admin", "adminpass123", auth.DefaultSessionDuration)
+	session, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	ks, err := keystore.LoadOrGenerate(filepath.Join(t.TempDir(), "encryption.key"))
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	cache := &recordingProviderCache{}
 	connectServer := connect.NewServer(interceptor, service.NewElevationResponseInterceptor())
 	leapmuxv1connect.RegisterAdminIdPServiceHandler(connectServer, service.NewAdminIdPService(st, ks, cache))
@@ -468,7 +468,7 @@ func TestAdminIdPService_EvictsTheProviderCache(t *testing.T) {
 // another browser, and the fixture's own seeding writes stay admitted.
 func (e *adminOAuthEnv) unelevatedSession(t *testing.T) string {
 	t.Helper()
-	session, _, _, err := auth.Login(context.Background(), e.st, "admin", "adminpass123", auth.DefaultSessionDuration)
+	session, _, _, err := auth.Login(context.Background(), e.st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	return session
 }

@@ -18,7 +18,6 @@ function makeResp(overrides: Partial<InspectBranchChangeResponse> = {}): Inspect
     toplevel: '/repo',
     isWorktree: false,
     currentBranch: 'main',
-    isDirty: false,
     branches: [],
     ...overrides,
   } as InspectBranchChangeResponse
@@ -144,9 +143,8 @@ describe('useChangeBranchInspect', () => {
     })
   })
 
-  it('refines isDirty + isWorktree + branches once the RPC resolves', async () => {
+  it('refines isWorktree and branches once the RPC resolves', async () => {
     vi.mocked(workerGit.inspectBranchChange).mockResolvedValue(makeResp({
-      isDirty: true,
       isWorktree: true,
       branches: [
         { $typeName: 'leapmux.v1.GitBranchEntry', name: 'main', isRemote: false },
@@ -160,7 +158,6 @@ describe('useChangeBranchInspect', () => {
         branchName: 'main',
       })
       await flushMicrotasks()
-      expect(inspect.pathInfo.info().isDirty).toBe(true)
       // isWorktree response means the path resolves to a worktree root,
       // NOT a main repo root. The hook projects this onto isRepoRoot /
       // isWorktreeRoot so GitOptions can render the "Currently in

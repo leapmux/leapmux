@@ -108,7 +108,7 @@ func (s *touchRecordingSessionStore) Touch(_ context.Context, p store.TouchSessi
 }
 
 func validSessionRow(userID, username string) *store.SessionWithUser {
-	return &store.SessionWithUser{
+	return &store.SessionWithUser{SecretHash: testSecretHasher().Hash(testSessionSecret),
 		UserID: userID, Username: username,
 		CreatedAt: time.Now().Add(-time.Minute), ExpiresAt: time.Now().Add(time.Hour),
 	}
@@ -195,7 +195,7 @@ func (s validationErrorSessionStore) ValidateWithUser(context.Context, string, t
 // freshness. An entry beyond sessionCacheTTL is stale regardless of
 // generation; an entry within TTL with matching generation is fresh.
 func TestBearerCacheFresh_TTL(t *testing.T) {
-	a := &authInterceptor{state: &authState{}}
+	a := &authInterceptor{sessionHasher: testSecretHasher(), state: &authState{}}
 	now := time.Now()
 	key := bearerCacheKey(BearerKindAPI, "token", []byte("secret"))
 
@@ -211,22 +211,22 @@ func TestValidateTokenCachedUnindexesStaleSessionWhenRevalidationFails(t *testin
 	state := &authState{}
 	state.revocationGen.Store(2)
 	state.userInvalidations.Store("user", revocationMark{generation: 2, recordedAt: time.Now()})
-	state.sessions.Store("session", cachedSession{
+	state.sessions.Store(testSessionID("session"), cachedSession{
 		user:     &UserInfo{ID: userid.MustNew("user")},
 		cachedAt: time.Now(),
 		gen:      1,
 	})
 	inner := &sync.Map{}
-	inner.Store("session", struct{}{})
+	inner.Store(testSessionID("session"), struct{}{})
 	state.userSessions.Store("user", inner)
 
-	a := &authInterceptor{
+	a := &authInterceptor{sessionHasher: testSecretHasher(),
 		store: validationErrorStore{err: validationErr},
 		state: state,
 	}
-	_, err := a.validateTokenCached(context.Background(), "session")
+	_, err := a.validateTokenCached(context.Background(), testSessionToken("session"))
 	require.ErrorIs(t, err, validationErr)
-	_, sessionCached := state.sessions.Load("session")
+	_, sessionCached := state.sessions.Load(testSessionID("session"))
 	_, userIndexed := state.userSessions.Load("user")
 	assert.False(t, sessionCached)
 	assert.False(t, userIndexed, "stale session must not remain in the reverse index")
@@ -256,7 +256,7 @@ func TestSweepCachesOnce_EvictsStaleRetainsFresh(t *testing.T) {
 	indexSyncMap(&state.bearerKeysByToken, freshBearer.bearerRef(), freshBearer)
 	indexSyncMap(&state.userBearerKeys, "ub-fresh", freshBearer)
 
-	a := &authInterceptor{state: state}
+	a := &authInterceptor{sessionHasher: testSecretHasher(), state: state}
 	a.sweepCachesOnce()
 
 	assertAbsent := func(m *sync.Map, key any, msg string) {
@@ -308,18 +308,18 @@ func TestSweepCachesOnce_RefreshBetweenScanAndDeleteSurvives(t *testing.T) {
 
 func TestAuthenticateUsesTouchedSessionExpiry(t *testing.T) {
 	oldExpiry := time.Now().Add(time.Minute).UTC()
-	sessions := &touchRecordingSessionStore{row: &store.SessionWithUser{
+	sessions := &touchRecordingSessionStore{row: &store.SessionWithUser{SecretHash: testSecretHasher().Hash(testSessionSecret),
 		UserID: "user", Username: "user",
 		CreatedAt: time.Now().Add(-time.Hour), ExpiresAt: oldExpiry,
 	}}
-	a := &authInterceptor{
+	a := &authInterceptor{sessionHasher: testSecretHasher(),
 		store: sessionValidationOverrideStore{sessions: sessions},
 		state: &authState{},
 	}
 
 	ctx, refresh, err := a.authenticate(
 		context.Background(), "/private",
-		CookieName+"=session", "", a.currentPolicy(context.Background()),
+		CookieName+"="+testSessionToken("session"), "", a.currentPolicy(context.Background()),
 	)
 	require.NoError(t, err)
 	user := GetUser(ctx)
@@ -330,7 +330,7 @@ func TestAuthenticateUsesTouchedSessionExpiry(t *testing.T) {
 	assert.True(t, touchedAt.After(oldExpiry))
 	// The refreshed cookie must carry the same session and the same slid expiry
 	// the row now carries, or the browser's copy expires before the row does.
-	assert.Equal(t, sessionRefresh{sessionID: "session", expiresAt: sessions.touched.ExpiresAt}, refresh)
+	assert.Equal(t, sessionRefresh{token: testSessionToken("session"), expiresAt: sessions.touched.ExpiresAt}, refresh)
 }
 
 // TestZeroRowTouchDoesNotExtendSessionExpiry pins the C1 guard: when the
@@ -340,20 +340,20 @@ func TestAuthenticateUsesTouchedSessionExpiry(t *testing.T) {
 func TestZeroRowTouchDoesNotExtendSessionExpiry(t *testing.T) {
 	oldExpiry := time.Now().Add(time.Minute).UTC()
 	sessions := &touchRecordingSessionStore{
-		row: &store.SessionWithUser{
+		row: &store.SessionWithUser{SecretHash: testSecretHasher().Hash(testSessionSecret),
 			UserID: "user", Username: "user",
 			CreatedAt: time.Now().Add(-time.Hour), ExpiresAt: oldExpiry,
 		},
 		touchMissed: true,
 	}
-	a := &authInterceptor{
+	a := &authInterceptor{sessionHasher: testSecretHasher(),
 		store: sessionValidationOverrideStore{sessions: sessions},
 		state: &authState{},
 	}
 
 	ctx, refresh, err := a.authenticate(
 		context.Background(), "/private",
-		CookieName+"=session", "", a.currentPolicy(context.Background()),
+		CookieName+"="+testSessionToken("session"), "", a.currentPolicy(context.Background()),
 	)
 	require.NoError(t, err)
 	user := GetUser(ctx)
@@ -372,21 +372,21 @@ func TestUnrelatedSessionEvictionDoesNotReloadWarmCacheEntry(t *testing.T) {
 		return validSessionRow("user-"+sessionID, sessionID), nil
 	}}
 	state := &authState{}
-	a := &authInterceptor{
+	a := &authInterceptor{sessionHasher: testSecretHasher(),
 		store: sessionValidationOverrideStore{sessions: sessions},
 		state: state,
 	}
 	sc := &AuthContextRegistry{state: state}
 
-	_, err := a.validateTokenCached(context.Background(), "session-a")
+	_, err := a.validateTokenCached(context.Background(), testSessionToken("session-a"))
 	require.NoError(t, err)
-	_, err = a.validateTokenCached(context.Background(), "session-b")
+	_, err = a.validateTokenCached(context.Background(), testSessionToken("session-b"))
 	require.NoError(t, err)
-	sc.Evict("session-a")
-	_, err = a.validateTokenCached(context.Background(), "session-b")
+	sc.Evict(testSessionID("session-a"))
+	_, err = a.validateTokenCached(context.Background(), testSessionToken("session-b"))
 	require.NoError(t, err)
 
-	bCalls, ok := calls.Load("session-b")
+	bCalls, ok := calls.Load(testSessionID("session-b"))
 	require.True(t, ok)
 	assert.Equal(t, int32(1), bCalls.(*atomic.Int32).Load(), "evicting session A must not invalidate session B")
 }
@@ -409,7 +409,7 @@ func TestUnrelatedBearerEvictionDoesNotReloadWarmCacheEntry(t *testing.T) {
 		ID: "token-b", UserID: "user", SecretHash: validator.HashSecret(secretB), CreatedAt: time.Now(),
 	}
 	state := &authState{}
-	a := &authInterceptor{servingCtx: context.Background(), store: base, tokenValidator: validator, state: state}
+	a := &authInterceptor{sessionHasher: testSecretHasher(), servingCtx: context.Background(), store: base, tokenValidator: validator, state: state}
 	sc := &AuthContextRegistry{state: state}
 	bearerA := "Bearer " + FormatBearer(BearerKindAPI, "token-a", secretA)
 	bearerB := "Bearer " + FormatBearer(BearerKindAPI, "token-b", secretB)
@@ -434,22 +434,22 @@ func TestSessionRevocationDuringValidationRejectsResult(t *testing.T) {
 		return validSessionRow("user", "stale"), nil
 	}}
 	state := &authState{}
-	a := &authInterceptor{store: sessionValidationOverrideStore{sessions: sessions}, state: state}
+	a := &authInterceptor{sessionHasher: testSecretHasher(), store: sessionValidationOverrideStore{sessions: sessions}, state: state}
 	sc := &AuthContextRegistry{state: state}
 
 	result := make(chan error, 1)
 	go func() {
-		_, err := a.validateTokenCached(context.Background(), "session")
+		_, err := a.validateTokenCached(context.Background(), testSessionToken("session"))
 		result <- err
 	}()
 	<-started
-	sc.Evict("session")
+	sc.Evict(testSessionID("session"))
 	close(release)
 
 	err := <-result
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
-	_, cached := state.sessions.Load("session")
+	_, cached := state.sessions.Load(testSessionID("session"))
 	assert.False(t, cached, "a session revoked during validation must not be cached")
 }
 
@@ -472,7 +472,7 @@ func TestBearerRevocationDuringValidationRejectsResult(t *testing.T) {
 	require.NoError(t, err)
 	api.row.SecretHash = validator.HashSecret(secret)
 	state := &authState{}
-	a := &authInterceptor{servingCtx: context.Background(), store: base, tokenValidator: validator, state: state}
+	a := &authInterceptor{sessionHasher: testSecretHasher(), servingCtx: context.Background(), store: base, tokenValidator: validator, state: state}
 	sc := &AuthContextRegistry{state: state}
 	bearer := FormatBearer(BearerKindAPI, tokenID, secret)
 
@@ -507,7 +507,7 @@ func TestBearerSingleflightFollowerDoesNotInheritLeaderCancellation(t *testing.T
 	validator, err := NewTokenValidator(base, pepper)
 	require.NoError(t, err)
 	api.row.SecretHash = validator.HashSecret(secret)
-	a := &authInterceptor{servingCtx: context.Background(), store: base, tokenValidator: validator, state: &authState{}}
+	a := &authInterceptor{sessionHasher: testSecretHasher(), servingCtx: context.Background(), store: base, tokenValidator: validator, state: &authState{}}
 	bearer := "Bearer " + FormatBearer(BearerKindAPI, tokenID, secret)
 
 	leaderCtx, cancelLeader := context.WithCancel(context.Background())
@@ -555,7 +555,7 @@ func TestBearerSingleflightFollowersGetDistinctUserInfo(t *testing.T) {
 	validator, err := NewTokenValidator(base, pepper)
 	require.NoError(t, err)
 	api.row.SecretHash = validator.HashSecret(secret)
-	a := &authInterceptor{servingCtx: context.Background(), store: base, tokenValidator: validator, state: &authState{}}
+	a := &authInterceptor{sessionHasher: testSecretHasher(), servingCtx: context.Background(), store: base, tokenValidator: validator, state: &authState{}}
 	bearer := "Bearer " + FormatBearer(BearerKindAPI, tokenID, secret)
 
 	type result struct {
@@ -593,7 +593,7 @@ func TestBearerSingleflightFollowersGetDistinctUserInfo(t *testing.T) {
 func TestSoloAuthenticationAdvancesPastUserRevocation(t *testing.T) {
 	solo := &UserInfo{ID: userid.MustNew("solo"), UserAuthGeneration: 1}
 	state := &authState{}
-	a := &authInterceptor{soloUser: solo, state: state, soloGate: NewSoloGate(true, noSoloAccountStore{})}
+	a := &authInterceptor{sessionHasher: testSecretHasher(), soloUser: solo, state: state, soloGate: NewSoloGate(true, noSoloAccountStore{})}
 	cache := &AuthContextRegistry{state: state}
 
 	cache.RevokeUserAuthContextAtGeneration("solo", 2)
@@ -619,12 +619,12 @@ func TestUserInvalidationDuringValidationRetriesStableSnapshot(t *testing.T) {
 		return validSessionRow("user", "fresh"), nil
 	}}
 	state := &authState{}
-	a := &authInterceptor{store: sessionValidationOverrideStore{sessions: sessions}, state: state}
+	a := &authInterceptor{sessionHasher: testSecretHasher(), store: sessionValidationOverrideStore{sessions: sessions}, state: state}
 	sc := &AuthContextRegistry{state: state}
 
 	result := make(chan *UserInfo, 1)
 	go func() {
-		user, _ := a.validateTokenCached(context.Background(), "session")
+		user, _ := a.validateTokenCached(context.Background(), testSessionToken("session"))
 		result <- user
 	}()
 	<-started
@@ -654,9 +654,9 @@ func TestEvictByUserIDInvalidatesBearerUserInfo(t *testing.T) {
 func TestAuthenticateHTTPPreservesInternalSessionValidationError(t *testing.T) {
 	validationErr := errors.New("database unavailable")
 	req := httptest.NewRequest("GET", "/ws/channel", nil)
-	req.AddCookie(BuildSessionCookie("session", time.Now().Add(time.Hour), false))
+	req.AddCookie(BuildSessionCookie(testSessionToken("session"), time.Now().Add(time.Hour), false))
 
-	_, err := AuthenticateHTTP(context.Background(), req, HTTPAuthOpts{
+	_, err := AuthenticateHTTP(context.Background(), req, HTTPAuthOpts{SessionHasher: testSecretHasher(),
 		Store:      validationErrorStore{err: validationErr},
 		ReadCookie: true,
 	})
@@ -670,7 +670,7 @@ func TestAuthenticateHTTPRefreshesSyntheticUserGeneration(t *testing.T) {
 	req := httptest.NewRequest("GET", "/ws/channel", nil)
 	req = req.WithContext(peer.WithLocalIPC(req.Context()))
 
-	user, err := AuthenticateHTTP(context.Background(), req, HTTPAuthOpts{
+	user, err := AuthenticateHTTP(context.Background(), req, HTTPAuthOpts{SessionHasher: testSecretHasher(),
 		SoloUser: &UserInfo{ID: userid.MustNew("solo"), UserAuthGeneration: 1},
 		Contexts: contexts,
 		Store:    noSoloAccountStore{},
@@ -913,7 +913,7 @@ func TestAuthenticatedLeaseExpiresWithCredential(t *testing.T) {
 // The global sequence orders validation against scoped marks; advancing it
 // alone must not invalidate an unrelated cache entry.
 func TestBearerCacheFresh_UnmarkedGenerationBumpDoesNotInvalidate(t *testing.T) {
-	a := &authInterceptor{state: &authState{}}
+	a := &authInterceptor{sessionHasher: testSecretHasher(), state: &authState{}}
 	key := bearerCacheKey(BearerKindAPI, "token", []byte("secret"))
 	cs := cachedSession{user: &UserInfo{ID: userid.MustNew("u")}, cachedAt: time.Now(), gen: a.state.revocationGen.Load()}
 	assert.True(t, a.bearerCacheFresh(key, cs))
@@ -937,7 +937,7 @@ func TestAuthContextRegistry_EvictsBumpGen(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, sc := NewInterceptor(InterceptorOptions{ServingCtx: context.Background()})
+			_, sc := NewInterceptor(InterceptorOptions{SessionHasher: testSecretHasher(), ServingCtx: context.Background()})
 			t.Cleanup(sc.Stop)
 			before := sc.state.revocationGen.Load()
 			tc.fn(sc)
@@ -988,7 +988,7 @@ func TestDelegationAllowedProcedures_FailClosed(t *testing.T) {
 }
 
 func TestAuthContextRegistry_IsAuthContextCurrentIsScoped(t *testing.T) {
-	_, sc := NewInterceptor(InterceptorOptions{ServingCtx: context.Background()})
+	_, sc := NewInterceptor(InterceptorOptions{SessionHasher: testSecretHasher(), ServingCtx: context.Background()})
 	t.Cleanup(sc.Stop)
 
 	gen := sc.state.revocationGen.Load()
@@ -1181,7 +1181,7 @@ func TestAuthContextRegistry_RecordBearerExpiryMonotonicUnderConcurrency(t *test
 // past, but retains a never-expires (zero) entry, which cannot be aged out by
 // time.
 func TestAuthInterceptor_SweepsExpiredBearerExpiries(t *testing.T) {
-	a := &authInterceptor{state: &authState{}}
+	a := &authInterceptor{sessionHasher: testSecretHasher(), state: &authState{}}
 	reg := &AuthContextRegistry{state: a.state}
 	pastRef := NewBearerRef(BearerKindAPI, "tok-past")
 	liveRef := NewBearerRef(BearerKindAPI, "tok-live")
@@ -1202,7 +1202,7 @@ func TestAuthInterceptor_SweepsExpiredBearerExpiries(t *testing.T) {
 }
 
 func TestAuthInterceptor_SweepsBearerAndRevocationCaches(t *testing.T) {
-	a := &authInterceptor{state: &authState{}}
+	a := &authInterceptor{sessionHasher: testSecretHasher(), state: &authState{}}
 	// Past the sweep cutoff, which is the slide duration (the session duration
 	// plus the touch threshold) rather than the session duration alone.
 	old := time.Now().Add(-DefaultSessionDuration - 2*sessionTouchThreshold)
@@ -1264,7 +1264,7 @@ func TestStaleCacheSweepDoesNotDeleteFreshReplacements(t *testing.T) {
 
 func TestStaleCredentialCacheSweepSerializesWithValidation(t *testing.T) {
 	state := &authState{}
-	a := &authInterceptor{state: state}
+	a := &authInterceptor{sessionHasher: testSecretHasher(), state: state}
 	stale := cachedSession{
 		user:     &UserInfo{ID: userid.MustNew("user")},
 		cachedAt: time.Now().Add(-2 * sessionCacheTTL),
@@ -1427,7 +1427,7 @@ func TestBearerCacheFresh_UsesTheValidatorClockForCredentialExpiry(t *testing.T)
 	start := time.Now().Add(time.Hour)
 	expiresAt := start.Add(10 * time.Second)
 	now := start
-	a := &authInterceptor{servingCtx: context.Background(), state: &authState{}, tokenValidator: &TokenValidator{Now: func() time.Time { return now }}}
+	a := &authInterceptor{sessionHasher: testSecretHasher(), servingCtx: context.Background(), state: &authState{}, tokenValidator: &TokenValidator{Now: func() time.Time { return now }}}
 	key := bearerCacheKey(BearerKindAPI, "clocked-token", []byte("secret"))
 	cached := cachedSession{user: &UserInfo{ID: userid.MustNew("user"), CredentialExpiresAt: DeadlineAt(expiresAt)}, cachedAt: time.Now()}
 	for _, tc := range []struct {

@@ -189,14 +189,14 @@ func TestAdminSettingsService_WriteSlidesTheElevationWindow(t *testing.T) {
 	// increase rather than as a value the harness could have written itself.
 	now := time.Now().UTC()
 	nearly := now.Add(time.Minute)
-	n, err := env.st.Sessions().Elevate(ctx, elevateParams(env, now, nearly), now)
+	n, err := env.st.Sessions().Elevate(ctx, elevateParams(t, env, now, nearly), now)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
 
 	_, err = env.client.UpdateSettings(authedReq(ctx, oneWrite(settings.KeySignupEnabled.Name(), `true`), env.token))
 	require.NoError(t, err)
 
-	session, err := env.st.Sessions().GetByID(ctx, env.token, time.Now().UTC())
+	session, err := env.st.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, env.token), time.Now().UTC())
 	require.NoError(t, err)
 	require.NotNil(t, session.ElevationExpiresAt)
 	assert.True(t, session.ElevationExpiresAt.After(nearly),
@@ -212,7 +212,7 @@ func TestAdminSettingsService_RefusedWriteDoesNotSlideTheWindow(t *testing.T) {
 
 	now := time.Now().UTC()
 	nearly := now.Add(time.Minute)
-	n, err := env.st.Sessions().Elevate(ctx, elevateParams(env, now, nearly), now)
+	n, err := env.st.Sessions().Elevate(ctx, elevateParams(t, env, now, nearly), now)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
 
@@ -220,7 +220,7 @@ func TestAdminSettingsService_RefusedWriteDoesNotSlideTheWindow(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
-	session, err := env.st.Sessions().GetByID(ctx, env.token, time.Now().UTC())
+	session, err := env.st.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, env.token), time.Now().UTC())
 	require.NoError(t, err)
 	require.NotNil(t, session.ElevationExpiresAt)
 	assert.False(t, session.ElevationExpiresAt.After(nearly),
@@ -241,9 +241,10 @@ func TestAdminSettingsService_UnknownKeyIsReportedBeforeTheGate(t *testing.T) {
 // elevateParams stamps a window that ENDS at `until`, so a slide appears as
 // an increase over a deadline the test chose rather than over one the shared
 // helper wrote.
-func elevateParams(env *adminSettingsEnv, provenAt, until time.Time) store.ElevateSessionParams {
+func elevateParams(t *testing.T, env *adminSettingsEnv, provenAt, until time.Time) store.ElevateSessionParams {
+	t.Helper()
 	return store.ElevateSessionParams{
-		SessionID:          env.token,
+		SessionID:          hubtestutil.SessionIDFromCookie(t, env.token),
 		UserID:             userid.MustNew(env.adminID),
 		ElevationProvenAt:  provenAt,
 		ElevationExpiresAt: until,
@@ -299,7 +300,7 @@ func setupAdminSettingsSoloEnv(t *testing.T) *adminSettingsEnv {
 	require.NoError(t, err)
 
 	set := servicetest.NewSettingsManager(t, st, nil)
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, SoloUser: soloUser})
 
 	mux := http.NewServeMux()
 	svc := service.NewAdminSettingsService(set, &config.Config{SoloMode: true}, st)

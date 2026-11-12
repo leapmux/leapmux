@@ -7,9 +7,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/leapmux/leapmux/locallisten"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -191,4 +194,16 @@ type httpStatusError struct{ code int }
 
 func (e *httpStatusError) Error() string {
 	return fmt.Sprintf("refused with HTTP %d", e.code)
+}
+
+func TestServeControl_ReportsAnOverlongSocketPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses named pipes")
+	}
+	runtimeEnv(t)
+	path := "/" + strings.Repeat("x", locallisten.MaxUnixSocketPathBytes())
+	server, err := serveControl(RuntimeRecord{ControlURL: "unix:" + path}, "secret", &stopCountingReporter{})
+	require.Nil(t, server)
+	require.ErrorContains(t, err, "LEAPMUX_RUNTIME_DIR")
+	assert.EqualError(t, err, controlSocketPathError(path).Error())
 }

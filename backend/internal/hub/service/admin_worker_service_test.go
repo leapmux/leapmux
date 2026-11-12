@@ -28,6 +28,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
+	"google.golang.org/protobuf/proto"
 )
 
 type adminWorkerEnv struct {
@@ -73,7 +74,7 @@ func setupAdminWorkerTestWith(t *testing.T, presence *fakeWorkerPresence) *admin
 		IsAdmin:               true,
 	})
 	require.NoError(t, err)
-	session, _, _, err := auth.Login(context.Background(), st, "admin", "adminpass123", auth.DefaultSessionDuration)
+	session, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
@@ -82,7 +83,7 @@ func setupAdminWorkerTestWith(t *testing.T, presence *fakeWorkerPresence) *admin
 	// registry, and this harness builds neither; Apply skips the effects it
 	// was not given.
 	effects := service.NewWorkerDeregisterEffects(auth.NewDelegationScopeCache(st), nil, nil)
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterAdminWorkerServiceHandler(connectServer,
 		service.NewAdminWorkerService(st, presence, effects))
@@ -183,7 +184,7 @@ func TestAdminWorkerService_PurgeExpiredRegistrationKeysDrainsEveryBatch(t *test
 
 	expired := time.Now().UTC().Add(-time.Hour)
 	for range expiredRegistrationKeys {
-		require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+		require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
 			ID:        id.Generate(),
 			CreatedBy: userid.MustNew(env.userID),
 			ExpiresAt: expired,
@@ -192,7 +193,7 @@ func TestAdminWorkerService_PurgeExpiredRegistrationKeysDrainsEveryBatch(t *test
 	// A live key the purge must leave alone: the drain is not "delete every
 	// registration key until none is left".
 	liveKey := id.Generate()
-	require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+	require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
 		ID:        liveKey,
 		CreatedBy: userid.MustNew(env.userID),
 		ExpiresAt: time.Now().UTC().Add(time.Hour),
@@ -230,7 +231,7 @@ func TestAdminWorkerService_ListRegistrationKeysPagesThroughEveryKey(t *testing.
 	var seeded []string
 	for range 3 {
 		keyID := id.Generate()
-		require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+		require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
 			ID:        keyID,
 			CreatedBy: userid.MustNew(env.userID),
 			ExpiresAt: time.Now().UTC().Add(time.Hour),
@@ -263,6 +264,27 @@ func TestAdminWorkerService_ListRegistrationKeysPagesThroughEveryKey(t *testing.
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
+func TestAdminWorkerService_ListRegistrationKeysCarriesNoKey(t *testing.T) {
+	env := setupRegKeyEnv(t)
+	token := env.login(t, hubtestutil.TestAdminUsername, hubtestutil.TestAdminPassword)
+	key, err := env.mgmtClient.CreateRegistrationKey(authedReq(t.Context(), &leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	require.NoError(t, err)
+	mux := http.NewServeMux()
+	server := connect.NewServer(hubtestutil.NewStoreAuthInterceptor(t, env.store))
+	leapmuxv1connect.RegisterAdminWorkerServiceHandler(server, service.NewAdminWorkerService(env.store, env.wMgr, nil))
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
+	httpServer := httptest.NewServer(mux)
+	t.Cleanup(httpServer.Close)
+	client := leapmuxv1connect.NewAdminWorkerServiceClient(connect.NewClient(connecthttp.NewTransport(httpServer.Client(), httpServer.URL)))
+	listed, err := client.ListRegistrationKeys(authedReq(t.Context(), &leapmuxv1.ListRegistrationKeysRequest{}, token))
+	require.NoError(t, err)
+	require.Len(t, listed.GetKeys(), 1)
+	assert.Equal(t, env.adminID(t), listed.GetKeys()[0].GetCreatedBy())
+	raw, err := proto.Marshal(listed)
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), key.GetRegistrationKey())
+}
+
 // An expired key has nothing left to revoke. The listing with expired keys still
 // shows the row, so the operator's revoke says that the key exists but is dead,
 // and leaves its expiry, so the purge still deletes it on schedule.
@@ -272,7 +294,7 @@ func TestAdminWorkerService_RevokeRegistrationKeyRefusesAnExpiredKey(t *testing.
 
 	expired := time.Now().UTC().Add(-time.Hour)
 	keyID := id.Generate()
-	require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+	require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
 		ID:        keyID,
 		CreatedBy: userid.MustNew(env.userID),
 		ExpiresAt: expired,
@@ -296,7 +318,7 @@ func TestAdminWorkerService_RevokeRegistrationKeyRefusesARevokedKey(t *testing.T
 	ctx := context.Background()
 
 	keyID := id.Generate()
-	require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+	require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
 		ID:        keyID,
 		CreatedBy: userid.MustNew(env.userID),
 		ExpiresAt: time.Now().UTC().Add(time.Hour),
@@ -317,7 +339,7 @@ func TestAdminWorkerService_RevokeRegistrationKeyRefusesAConsumedKey(t *testing.
 	ctx := context.Background()
 
 	keyID := id.Generate()
-	require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+	require.NoError(t, env.st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
 		ID:        keyID,
 		CreatedBy: userid.MustNew(env.userID),
 		ExpiresAt: time.Now().UTC().Add(time.Hour),
@@ -432,10 +454,10 @@ func TestAdminWorkerService_ListWorkersCapsAnOversizedPageLimit(t *testing.T) {
 	owner := userid.MustNew(env.userID)
 	for range contracts.MaxPageLimit + 1 {
 		require.NoError(t, env.st.Workers().Create(ctx, store.CreateWorkerParams{
-			ID:           id.Generate(),
-			AuthToken:    id.Generate(),
-			RegisteredBy: owner,
-			PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+			ID:            id.Generate(),
+			AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+			RegisteredBy:  owner,
+			PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 		}))
 	}
 
@@ -468,7 +490,7 @@ func TestAdminWorkerService_DeregisterOfABundledWorker(t *testing.T) {
 		workerID := id.Generate()
 		require.NoError(t, env.st.Workers().Create(context.Background(), store.CreateWorkerParams{
 			ID:             workerID,
-			AuthToken:      id.Generate(),
+			AuthTokenHash:  hubtestutil.TestSecretHasher().Hash(id.Generate()),
 			RegisteredBy:   userid.MustNew(env.userID),
 			AutoRegistered: true,
 			PublicKeys:     storetest.WorkerKeys(workerkeystest.SeededWorkerFill),

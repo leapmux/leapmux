@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -87,7 +88,7 @@ func adminCommitVerbs() map[string]adminCommitVerb {
 			landed: func(t *testing.T, env *adminUserEnv, _, subjectUsername string) bool {
 				t.Helper()
 				_, _, _, err := auth.Login(context.Background(), env.st,
-					subjectUsername, adminCommitResetPassword, auth.DefaultSessionDuration)
+					hubtestutil.TestSecretHasher(), subjectUsername, adminCommitResetPassword, auth.DefaultSessionDuration)
 				return err == nil
 			},
 		},
@@ -195,7 +196,7 @@ func TestAdminUserService_CommitRefusesAWithdrawnActingSession(t *testing.T) {
 			// An administrator takes the acting session away. This writes the
 			// distinct session_revoked event, which is what separates it from
 			// the owner's own sign-out.
-			revoked, err := env.st.Sessions().Revoke(ctx, env.token)
+			revoked, err := env.st.Sessions().Revoke(ctx, hubtestutil.SessionIDFromCookie(t, env.token))
 			require.NoError(t, err)
 			require.EqualValues(t, 1, revoked)
 
@@ -226,7 +227,7 @@ func TestAdminUserService_CommitSlidesTheElevationWindow(t *testing.T) {
 			now := time.Now().UTC()
 			nearly := now.Add(time.Minute)
 			n, err := env.st.Sessions().Elevate(ctx, store.ElevateSessionParams{
-				SessionID:          env.token,
+				SessionID:          hubtestutil.SessionIDFromCookie(t, env.token),
 				UserID:             userid.MustNew(env.adminID),
 				ElevationProvenAt:  now,
 				ElevationExpiresAt: nearly,
@@ -238,7 +239,7 @@ func TestAdminUserService_CommitSlidesTheElevationWindow(t *testing.T) {
 			require.True(t, verb.landed(t, env, subjectID, subjectUsername),
 				"the write must land, or the slide is measured on a request the hub refused")
 
-			session, err := env.st.Sessions().GetByID(ctx, env.token, time.Now().UTC())
+			session, err := env.st.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, env.token), time.Now().UTC())
 			require.NoError(t, err)
 			require.NotNil(t, session.ElevationExpiresAt)
 			assert.True(t, session.ElevationExpiresAt.After(nearly),

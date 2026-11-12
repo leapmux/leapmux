@@ -23,7 +23,6 @@ function gitResp(overrides: Partial<GetGitInfoResponse> = {}): GetGitInfoRespons
     repoDirName: 'repo',
     isRepoRoot: true,
     isWorktreeRoot: false,
-    isDirty: false,
     currentBranch: 'main',
     originUrl: '',
     ...overrides,
@@ -57,7 +56,6 @@ describe('useGitPathInfo', () => {
       isGitRepo: true,
       isRepoRoot: true,
       isWorktreeRoot: false,
-      isDirty: true,
       repoRoot: '/repo',
       repoDirName: 'repo',
       currentBranch: 'feature-x',
@@ -77,7 +75,6 @@ describe('useGitPathInfo', () => {
         expect(info.info().isGitRepo).toBe(true)
         expect(info.info().isRepoRoot).toBe(true)
         expect(info.info().isWorktreeRoot).toBe(false)
-        expect(info.info().isDirty).toBe(true)
         expect(info.info().repoRoot).toBe('/repo')
         expect(info.info().repoDirName).toBe('repo')
         expect(info.info().currentBranch).toBe('feature-x')
@@ -624,11 +621,10 @@ describe('useGitPathInfo', () => {
           // showGitOptions is already true (skipLoadingFlash kicks in).
           await flush()
           expect(info.loading()).toBe(false)
-          pending.resolve(gitResp({ currentBranch: 'main', isDirty: true }))
+          pending.resolve(gitResp({ currentBranch: 'main' }))
           await flush()
           // The probe lands and fills in the volatile fields.
           expect(info.info().currentBranch).toBe('main')
-          expect(info.info().isDirty).toBe(true)
           dispose()
           done()
         })
@@ -679,7 +675,6 @@ describe('useGitPathInfo', () => {
         isGitRepo: true,
         isRepoRoot: true,
         currentBranch: 'feature', // volatile field changes vs. seed
-        isDirty: true,
       }))
       await new Promise<void>((done) => {
         createRoot(async (dispose) => {

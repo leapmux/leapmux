@@ -1,5 +1,5 @@
 -- name: CreateWorker :exec
-INSERT INTO workers (id, auth_token, registered_by, auto_registered,
+INSERT INTO workers (id, auth_token_hash, registered_by, auto_registered,
                      x25519_public_key, mlkem_public_key, slhdsa_public_key,
                      registration_attempt_id, registration_key_hash)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
@@ -15,11 +15,15 @@ SELECT * FROM workers WHERE id = ?;
 -- completed-then-deleted attempt from an unknown one.
 SELECT * FROM workers WHERE registration_attempt_id = ?;
 
--- name: GetWorkerByAuthTokenIncludeDeleted :one
+-- name: GetWorkerByAuthTokenHashIncludeDeleted :one
 -- The token read of AuthenticateWorkerBearer, which every worker credential
 -- check uses. It returns a deleted row too; AuthenticateWorkerBearer refuses
 -- one with ErrWorkerDeleted.
-SELECT * FROM workers WHERE auth_token = ?;
+SELECT * FROM workers WHERE auth_token_hash = ?;
+
+-- name: RotateWorkerAuthToken :execrows
+UPDATE workers SET auth_token_hash = sqlc.arg(auth_token_hash)
+WHERE id = sqlc.arg(id) AND deleted_at IS NULL AND deregistering_at IS NULL;
 
 -- Each functional index has its own hidden columns. MySQL substitutes the
 -- first matching indexed hidden column. USE INDEX keeps the predicate

@@ -97,11 +97,11 @@ func setupElevationTest(t *testing.T) *elevationEnv {
 		ID: userID, Username: "elevated", PasswordHash: hash,
 		DisplayName: "Elevated", FirstCredentialExempt: true, IsAdmin: true,
 	}))
-	token, _, _, err := auth.Login(ctx, st, "elevated", "testpass", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "elevated", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	recorder := &teardownRecorder{}
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(contexts.Stop)
 	userSvc := service.NewUserService(st, testConfig(), servicetest.NewSettingsManager(t, st, nil),
 		auth.NewCredentialLifecycleEffects(contexts, recorder, nil), mail.NewStubSender(), mail.Renderer{}, nil)
@@ -170,7 +170,7 @@ func TestElevateSession_InvalidatesTheCacheWithoutSigningTheUserOut(t *testing.T
 	// TestElevateSession_GrantTearsNothingDown isolates the teardown half,
 	// away from the credential revocation ChangePassword performs on the
 	// user's OTHER sessions and tokens.
-	info, err := auth.ValidateToken(ctx, env.store, env.token)
+	info, err := auth.ValidateToken(ctx, env.store, hubtestutil.TestSecretHasher(), env.token)
 	require.NoError(t, err, "the session must survive its own elevation")
 	assert.Equal(t, env.userID, info.ID.String())
 }
@@ -235,7 +235,7 @@ func TestDropElevation_InvalidatesTheCacheImmediately(t *testing.T) {
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 
 	// The user is still signed in: dropping an elevation is not a logout.
-	_, err = auth.ValidateToken(ctx, env.store, env.token)
+	_, err = auth.ValidateToken(ctx, env.store, hubtestutil.TestSecretHasher(), env.token)
 	assert.NoError(t, err)
 }
 
@@ -262,7 +262,7 @@ func TestElevateSession_WrongFactorDoesNotReadAsADeadSession(t *testing.T) {
 		"without the marker a browser signs the user out of the session it is verifying")
 
 	// The session really is still alive.
-	_, err = auth.ValidateToken(ctx, env.store, env.token)
+	_, err = auth.ValidateToken(ctx, env.store, hubtestutil.TestSecretHasher(), env.token)
 	assert.NoError(t, err)
 
 	// An EMPTY password takes the same path: a client must not be signed out
@@ -272,7 +272,7 @@ func TestElevateSession_WrongFactorDoesNotReadAsADeadSession(t *testing.T) {
 	assert.Equal(t, "1", info.ResponseHeader().Get(service.CredentialRejectedHeader))
 
 	// And the refusal granted nothing.
-	row, err := env.store.Sessions().GetByID(ctx, env.token, time.Now().UTC())
+	row, err := env.store.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, env.token), time.Now().UTC())
 	require.NoError(t, err)
 	assert.Nil(t, row.ElevationExpiresAt)
 }

@@ -14,6 +14,9 @@ import (
 )
 
 func listenUnix(path string) (net.Listener, error) {
+	if limit := MaxUnixSocketPathBytes(); len(path) > limit {
+		return nil, fmt.Errorf("%w: %q is %d bytes; the limit is %d", ErrSocketPathTooLong, path, len(path), limit)
+	}
 	if err := removeStaleSocket(path); err != nil {
 		return nil, fmt.Errorf("unix listen: %w", err)
 	}

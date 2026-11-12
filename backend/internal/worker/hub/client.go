@@ -655,7 +655,10 @@ func (c *Client) connectWithReconnect(ctx context.Context, authToken string, con
 			if bareUnauthenticated == bareUnauthenticatedRemedyThreshold {
 				slog.Error("the hub does not know this worker's token. "+
 					"Check the saved Hub endpoint and any proxy in front of the Hub. "+
-					"If the hub deleted this worker more than 7 days ago, stop it, delete state.json, and register it again.",
+					"The Hub may have deleted this Worker more than 7 days ago. "+
+					"A rotated token pepper or a replaced encryption.key also invalidates its token. "+
+					"If the pepper or key file changed, remove the Worker in the Hub's Worker list first. "+
+					"Stop the Worker. Delete state.json. Register the Worker again.",
 					"refusals", bareUnauthenticated, "error", err)
 			}
 		case refusalWorkerDeleted:

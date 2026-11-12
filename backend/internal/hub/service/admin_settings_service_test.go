@@ -134,7 +134,7 @@ func setupAdminSettingsTestWithQueueBudget(t *testing.T, cfg *config.Config, que
 func setupAdminSettingsEnv(t *testing.T, cfg *config.Config, opts ...settings.Option) *adminSettingsEnv {
 	t.Helper()
 	env := setupAdminSettingsEnvRaw(t, cfg, opts...)
-	hubtestutil.ElevateSession(t, env.st, env.token, env.adminID)
+	hubtestutil.ElevateSession(t, env.st, hubtestutil.SessionIDFromCookie(t, env.token), env.adminID)
 	return env
 }
 
@@ -158,7 +158,7 @@ func setupAdminSettingsEnvRaw(t *testing.T, cfg *config.Config, opts ...settings
 		IsAdmin:               true,
 	})
 	require.NoError(t, err)
-	token, _, _, err := auth.Login(context.Background(), st, "admin", "adminpass123", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
@@ -170,7 +170,7 @@ func setupAdminSettingsEnvRaw(t *testing.T, cfg *config.Config, opts ...settings
 	require.NoError(t, setMgr.Load(context.Background()))
 
 	mux := http.NewServeMux()
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	// The slide reporter rides beside the auth interceptor, exactly as the hub
 	// mounts it. Every write verb here slides the elevation window, and the
 	// deadline it produced reaches a client only through this rung -- so a

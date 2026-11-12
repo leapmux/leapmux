@@ -22,7 +22,7 @@ func (s *workerStore) Create(ctx context.Context, p store.CreateWorkerParams) er
 	}
 	return s.conn.queryError(s.conn.q.CreateWorker(ctx, gendb.CreateWorkerParams{
 		ID:                    p.ID,
-		AuthToken:             p.AuthToken,
+		AuthTokenHash:         p.AuthTokenHash,
 		RegisteredBy:          p.RegisteredBy.String(),
 		AutoRegistered:        p.AutoRegistered,
 		X25519PublicKey:       p.PublicKeys.X25519,
@@ -58,12 +58,17 @@ func (s *workerStore) GetAdmin(ctx context.Context, id string) (*store.WorkerWit
 	return &out, nil
 }
 
-func (s *workerStore) GetByAuthTokenIncludeDeleted(ctx context.Context, token string) (*store.Worker, error) {
-	row, err := s.conn.q.GetWorkerByAuthTokenIncludeDeleted(ctx, token)
+func (s *workerStore) GetByAuthTokenHashIncludeDeleted(ctx context.Context, hash []byte) (*store.Worker, error) {
+	row, err := s.conn.q.GetWorkerByAuthTokenHashIncludeDeleted(ctx, hash)
 	if err != nil {
 		return nil, s.conn.queryError(err)
 	}
 	return fromDBWorker(row), nil
+}
+
+func (s *workerStore) RotateAuthToken(ctx context.Context, p store.RotateWorkerAuthTokenParams) (int64, error) {
+	n, err := s.conn.q.RotateWorkerAuthToken(ctx, gendb.RotateWorkerAuthTokenParams{ID: p.ID, AuthTokenHash: p.AuthTokenHash})
+	return n, s.conn.queryError(err)
 }
 
 func (s *workerStore) GetByRegistrationAttemptID(ctx context.Context, attemptID string) (*store.Worker, error) {
@@ -192,7 +197,6 @@ func (s *workerStore) MarkAllDeletedByUser(ctx context.Context, registeredBy use
 func fromDBWorker(w gendb.Worker) *store.Worker {
 	return &store.Worker{
 		ID:           w.ID,
-		AuthToken:    w.AuthToken,
 		RegisteredBy: w.RegisteredBy,
 		PublicKeys: store.WorkerPublicKeys{
 			X25519: w.X25519PublicKey,

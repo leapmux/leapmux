@@ -310,7 +310,7 @@ func (h *WorkerDelegationHandler) waitForTabOwnership(ctx context.Context, userI
 // 401 for a rejected credential, 500 for a store failure, which says nothing
 // about the credential.
 func (h *WorkerDelegationHandler) authenticateWorker(w http.ResponseWriter, r *http.Request) (*store.Worker, bool) {
-	worker, err := auth.AuthenticateWorkerBearer(r.Context(), h.store, r.Header.Get("Authorization"))
+	worker, err := auth.AuthenticateWorkerBearer(r.Context(), h.store, h.validator.Hasher(), r.Header.Get("Authorization"))
 	if err == nil {
 		return worker, true
 	}

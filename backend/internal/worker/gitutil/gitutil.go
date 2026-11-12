@@ -159,12 +159,20 @@ const GitOptionalLocksOff = "GIT_OPTIONAL_LOCKS=0"
 // the environment we can assert on. See PinEnv for why the filter list is
 // derived from the assignments rather than spelled out beside them.
 func NewGitCmd(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	pinnedArgs := make([]string, 0, 2*len(gitConfigPins)+len(args))
+	for _, pin := range gitConfigPins {
+		pinnedArgs = append(pinnedArgs, "-c", pin)
+	}
+	pinnedArgs = append(pinnedArgs, args...)
+	cmd := exec.CommandContext(ctx, "git", pinnedArgs...)
 	cmd.Env = envutil.PinEnv(os.Environ(), gitEnvPins...)
 	cmd.Stdin = nil
 	procutil.HideConsoleWindow(cmd)
 	return cmd
 }
+
+// gitConfigPins disables repository fsmonitor and implicit bare discovery.
+var gitConfigPins = []string{"core.fsmonitor=false", "safe.bareRepository=explicit"}
 
 // gitEnvPins is every environment assignment NewGitCmd forces onto a git
 // command, each replacing whatever the worker inherited. One list so the

@@ -27,6 +27,7 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/hub/storeopen"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
@@ -138,11 +139,12 @@ func createTestSession(t *testing.T, q *gendb.Queries, userID string, expiresAt 
 
 	sessionID := id.Generate()
 	err := q.CreateUserSession(context.Background(), gendb.CreateUserSessionParams{
-		ID:        sessionID,
-		UserID:    userID,
-		ExpiresAt: sqltime.NewSQLiteTime(expiresAt),
-		UserAgent: "test",
-		IpAddress: "127.0.0.1",
+		SecretHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		ID:         sessionID,
+		UserID:     userID,
+		ExpiresAt:  sqltime.NewSQLiteTime(expiresAt),
+		UserAgent:  "test",
+		IpAddress:  "127.0.0.1",
 	})
 	require.NoError(t, err)
 	return sessionID
@@ -430,6 +432,9 @@ func TestCLI_RotatePepper_RequiresYes(t *testing.T) {
 	err := runRotatePepper(testCmdCtx, []string{"--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--yes")
+	for _, effect := range []string{"every session", "Worker auth token", "API and delegation tokens", "app secrets", "registration keys", "device codes"} {
+		assert.Contains(t, err.Error(), effect)
+	}
 
 	// Without --yes the pepper is left untouched.
 	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))

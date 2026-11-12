@@ -10,7 +10,7 @@ This chapter is for administrators who run a LeapMux **Hub** (or a solo-mode ins
 It covers two distinct encryption systems that are easy to confuse:
 
 - **Encryption at rest** — the Hub encrypts a small set of stored secrets (OAuth client secrets, OAuth tokens, passkey public keys, and Hub settings secrets) using a local **keystore** (the `encryption.key` file). This chapter is mostly about this.
-- **End-to-end encryption (E2EE)** — all Frontend-to-Worker traffic is encrypted so the Hub can route it but never read it. That protocol is covered in [Security & Threat Model](/docs/admin/security/); this chapter only touches the Worker key material you must back up.
+- **End-to-end encryption (E2EE)** — Frontend-to-Worker traffic is encrypted while the Hub relays it. A Hub that only observes cannot read the content. The Hub remains trusted for identity and Frontend code. That protocol is covered in [Security & Threat Model](/docs/admin/security/); this chapter only touches the Worker key material you must back up.
 
 For where these settings live and how to set them, see [Configuration](/docs/admin/configuration/). For key rotation commands, see [Recovery](/docs/admin/recover/).
 
@@ -24,13 +24,17 @@ LeapMux keeps three kinds of persistent state:
 | OAuth provider client secrets and per-user OAuth access/refresh tokens | Hub database | **Yes** — encrypted with the keystore key |
 | Hub settings secret halves (SMTP password, captcha provider keys) | Hub database | **Yes** — encrypted with the keystore key |
 | Passkey credential public keys and WebAuthn ceremony session data | Hub database | **Yes** — encrypted with the keystore key (AAD binds each row) |
-| API-token / delegation-token secrets | Hub database | No — stored as HMAC-SHA256 **hashes** (peppered), never as plaintext or reversible ciphertext |
+| API-token / delegation-token secrets | Hub database | HMAC-SHA256 digest (a hash-based message authentication code, keyed by the token pepper) |
+| Session secrets | Hub database | HMAC-SHA256 digest (peppered) |
+| Worker auth tokens | Hub database | HMAC-SHA256 digest (peppered) |
+| Registration keys | Hub database | HMAC-SHA256 digest (peppered) |
+| Device codes | Hub database | HMAC-SHA256 digest (peppered) |
 | Worker public keys (pinned at registration) | Hub database | No — public material, stored in the clear |
 | Agent transcripts, terminal I/O, worktree/session state | Worker's local SQLite (`worker.db`) | No |
 | Worker E2EE private keys + Hub auth token | Worker's `state.json` | No — plain JSON, file mode `0600` |
 
 {{< callout type="info" >}}
-Agent chat transcripts, tool calls, terminal output, file contents, and diffs **never** reach the Hub in readable form and are **not** stored in the Hub database at all. They live only in the Worker's local database and are end-to-end encrypted in transit. See [Security & Threat Model](/docs/admin/security/).
+A Hub that only observes cannot read agent transcripts, tool calls, terminal output, file contents, or diffs. The Worker stores that data, and channels encrypt it in transit. The browser also caches rendered message text and code for seven days after last use in IndexedDB. The cache is not keyed to the account, and signing out does not clear it. See [Security & Threat Model](/docs/admin/security/).
 {{< /callout >}}
 
 ### Encryption at rest details
@@ -55,7 +59,7 @@ The keystore loads its versioned key ring from `encryption.key` (highest version
 
 The key lives in a separate file from the database, so a copy of the database alone leaves the encrypted OAuth secrets readable only as ciphertext — which is why the two must be backed up together.
 
-API-token and delegation-token secrets are **not** encrypted — they are HMAC-SHA256 hashed with a dedicated, stable pepper that is independent of the encryption key ring, so the database never contains a recoverable token. See [Accounts & Authentication](/docs/using/accounts/) and the [Control CLI](/docs/using/control-cli/) for token management.
+Session secrets, Worker auth tokens, registration keys, device codes, and API/delegation token secrets are **not** encrypted. They use HMAC-SHA256 digests keyed by a dedicated, stable pepper that is independent of the encryption key ring. The database therefore holds none of these bearer secrets in plaintext. See [Accounts & Authentication](/docs/using/accounts/) and the [Control CLI](/docs/using/control-cli/) for token management.
 
 Account passwords are hashed with **Argon2id** using OWASP-recommended parameters; the Hub never stores or transmits the plaintext after hashing. See [Password requirements](/docs/using/accounts/#password-requirements).
 
@@ -104,7 +108,7 @@ Rotation generates a new active key version. Existing ciphertext stays readable 
 | `leapmux recover encryption-key rotate` | Generate and add a new encryption key version |
 | `leapmux recover encryption-key reencrypt` | Re-encrypt all secrets with the active key |
 | `leapmux recover encryption-key remove --version <N>` | Remove an old encryption key version |
-| `leapmux recover encryption-key rotate-pepper --yes` | Regenerate the token pepper (invalidates all API/delegation tokens) |
+| `leapmux recover encryption-key rotate-pepper --yes` | Regenerate the pepper; sign out sessions and invalidate Worker/API/delegation tokens, app client secrets, registration keys, and device codes |
 
 These commands do **not** all take the same flags, because they touch different things:
 
@@ -164,20 +168,33 @@ It also refuses to delete the **active** version (`cannot remove active key vers
 
 ### Rotation and API tokens
 
-Pepper rotation is **not** part of the key-rotation runbook above, and you should not add it there — encryption-key rotation deliberately leaves API and delegation tokens working.
+Pepper rotation is separate from the key-rotation runbook above. Rotating, re-encrypting, or removing encryption keys leaves the token pepper unchanged, so existing bearer credentials keep validating.
 
-The pepper used to hash API-token and delegation-token secrets is a **dedicated, stable secret**. It lives alongside the encryption keys in `encryption.key` but is **independent** of the encryption key ring: rotating, re-encrypting, or removing encryption keys never changes it, so API and delegation tokens keep validating across key rotation.
+The pepper is a **dedicated, stable secret** alongside the encryption keys in `encryption.key`. It protects every stored bearer secret and confidential app client secret.
 
-To deliberately invalidate **every** API token and delegation token — for example after a suspected keystore compromise — regenerate the pepper:
+To deliberately invalidate those credentials, for example after a suspected keystore compromise, regenerate the pepper:
 
 ```bash
 leapmux recover encryption-key rotate-pepper --yes
-# Regenerated the API-token pepper.
-# All existing API tokens and delegation tokens are now invalid.
-# Restart the hub to apply, then re-issue API tokens with: leapmux control admin api-token issue --hub <url>
+# Regenerated the token pepper.
+# Restart the Hub to apply the new pepper.
 ```
 
-Token hashes are one-way, so regenerating the pepper cannot migrate existing tokens — it invalidates them all at once, and they must be reissued (`leapmux control admin api-token issue`) or re-authenticated. The command requires `--yes` and takes effect on the next Hub restart. See the [Control CLI](/docs/using/control-cli/) for `api-token` and `delegation-token` management.
+The command requires `--yes` and takes effect on the next Hub restart. Rotating the pepper, or losing `encryption.key`, has these effects:
+
+- Signs out every session
+- Invalidates every Worker auth token
+- Invalidates API and delegation tokens and confidential app client secrets
+- Invalidates live registration keys and pending device codes
+
+The digests are one-way, so the existing credentials cannot be recovered with the new pepper. Users must sign in again, and app client secrets must be replaced. Solo mode and the desktop app reissue their own Worker's token. For each standalone Worker:
+
+1. Remove it in the Hub's Worker list.
+2. Stop it.
+3. Delete its `state.json`.
+4. Register it with a new registration key. It receives a new Worker ID.
+
+Re-issue API tokens online with `leapmux control admin api-token issue`. See the [Control CLI](/docs/using/control-cli/) for token management.
 
 ## Databases
 
@@ -304,7 +321,7 @@ A Worker that registered after the backup the database came from has no row in t
 
 ### Disaster-recovery notes
 
-- **Lost `encryption.key`, database intact:** encrypted OAuth secrets are unrecoverable. Generate a new key by starting the Hub (it auto-creates a version-1 key), then have users re-link their OAuth providers and re-enter provider client secrets. A fresh file also gets a fresh token pepper, so every API and delegation token is invalidated and must be re-issued. Encrypted settings secrets (SMTP, captcha) reset to their defaults. Non-encrypted data (accounts, workspaces) is unaffected.
+- **Lost `encryption.key`, database intact:** encrypted OAuth secrets are unrecoverable. Generate a new key by starting the Hub (it auto-creates a version-1 key), then have users re-link their OAuth providers and re-enter provider client secrets. A fresh file also gets a fresh token pepper. It signs out every session and invalidates every Worker auth token. API and delegation tokens become invalid too, along with live registration keys, pending device codes, and app client secrets. Follow the [pepper recovery steps](#rotation-and-api-tokens) for standalone Workers. Encrypted settings secrets (SMTP, captcha) reset to their defaults. Non-encrypted data (accounts, workspaces) is unaffected.
 - **Lost `hub.db`, key intact:** the key alone cannot reconstruct accounts or workspaces. Restore the database from backup.
 - **Lost a Worker's `state.json`:** deregister the old Worker entry, then register again with a fresh registration key from the Hub UI. That creates a new Worker ID, which clients pin as a new Worker, so no key-change dialog appears. See [Managing Workers](/docs/admin/managing-workers/).
 - **Lost `worker.db`:** the Worker recovers as a fresh Worker; in-progress agent transcripts and terminal scrollback held only in that database are lost. The Worker's identity (`state.json`) is unaffected.

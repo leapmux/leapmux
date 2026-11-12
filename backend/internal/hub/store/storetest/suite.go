@@ -24,6 +24,7 @@ type Suite struct {
 
 // Run executes all conformance test groups.
 func (s *Suite) Run(t *testing.T) {
+	t.Run("stored text search", s.testTableHoldsText)
 	t.Run("users", s.testUsers)
 	t.Run("user_prefs", s.testUserPrefs)
 	t.Run("sessions", s.testSessions)

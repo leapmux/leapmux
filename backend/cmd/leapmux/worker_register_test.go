@@ -88,7 +88,7 @@ func serveRegisterEnv(t *testing.T, st store.Store, address string) *registerEnv
 	cMgr := channelmgr.New(0)
 	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return 30 * time.Second })
 	notif := notifier.New(st, wMgr, pendingReqs, func() time.Duration { return 30 * time.Second }, nil)
-	connector := service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{
+	connector := service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{Hasher: hubtestutil.TestSecretHasher(),
 		Store:             st,
 		WorkerManager:     wMgr,
 		ChannelManager:    cMgr,
@@ -176,8 +176,8 @@ func mintRegistrationFixtureKey(t *testing.T, st store.Store) string {
 	admin, adminErr := st.Users().GetFirstAdmin(context.Background())
 	require.NoError(t, adminErr)
 	key := id.Generate()
-	require.NoError(t, st.RegistrationKeys().Create(context.Background(), store.CreateRegistrationKeyParams{
-		ID: key, CreatedBy: userid.MustNew(admin.ID), ExpiresAt: time.Now().Add(time.Hour),
+	require.NoError(t, st.RegistrationKeys().Create(context.Background(), store.CreateRegistrationKeyParams{KeyHash: hubtestutil.TestSecretHasher().Hash(key),
+		ID: id.Generate(), CreatedBy: userid.MustNew(admin.ID), ExpiresAt: time.Now().Add(time.Hour),
 	}))
 	return key
 }
@@ -248,7 +248,7 @@ func TestWorkerRegisterRecoversAfterClientAndHubRestart(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, state.Registered())
 	assert.Equal(t, committed.ID, state.WorkerID)
-	assert.Equal(t, committed.AuthToken, state.AuthToken)
+	hubtestutil.RequireWorkerToken(t, reopened, committed.ID, state.AuthToken)
 	assert.Equal(t, pending.KeyMaterial, state.KeyMaterial)
 	assert.NoFileExists(t, cfg.PendingPath())
 	assert.NoFileExists(t, filepath.Join(dataDir, "worker.db"), "register must exit without running the worker")
@@ -447,7 +447,7 @@ func TestWorkerRegisterRequiresItsInputs(t *testing.T) {
 
 // A durable pending record left by a crashed run is REUSED, never
 // silently replaced: rerunning the same command recovers the committed
-// attempt, and the same worker and token come back with exactly one
+// attempt, and the same Worker receives a replacement token with exactly one
 // row.
 func TestWorkerRegisterRecoversAfterAnInterruptedRun(t *testing.T) {
 	env := startRegisterEnv(t)
@@ -478,7 +478,7 @@ func TestWorkerRegisterRecoversAfterAnInterruptedRun(t *testing.T) {
 	row, err := env.store.Workers().GetByRegistrationAttemptID(ctx, pending.AttemptID)
 	require.NoError(t, err)
 	assert.Equal(t, state.WorkerID, row.ID)
-	assert.Equal(t, state.AuthToken, row.AuthToken, "the original token came back")
+	hubtestutil.RequireWorkerToken(t, env.store, row.ID, state.AuthToken)
 }
 
 // A pending record from a DIFFERENT hub or key is never silently

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -15,7 +16,7 @@ import (
 func TestOwnershipRecordRoundTrip(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "record")
 	paths := pathsFor(mustCanonical(t, root))
-	require.NoError(t, preparePrivateDir(paths.Dir))
+	require.NoError(t, atomicfile.MkdirAllPrivate(paths.Dir))
 	rec := ownershipRecord{
 		AccountID:     "501",
 		Mode:          RoleWorker,
@@ -43,7 +44,7 @@ func TestOwnershipRecordRoundTrip(t *testing.T) {
 func TestServiceSpecRoundTrip(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "spec")
 	paths := pathsFor(mustCanonical(t, root))
-	require.NoError(t, preparePrivateDir(paths.Dir))
+	require.NoError(t, atomicfile.MkdirAllPrivate(paths.Dir))
 
 	_, err := ReadServiceSpec(paths.ServiceSpec)
 	require.ErrorIs(t, err, os.ErrNotExist)

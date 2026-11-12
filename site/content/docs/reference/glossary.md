@@ -51,7 +51,7 @@ A short-lived credential a Worker mints for the agent or terminal running in one
 
 ### Distributed mode
 
-Running LeapMux with the Hub and one or more Workers as separate processes — the Hub on a shared server and Workers on your dev machines — instead of the single all-in-one `solo` process. In this mode the Hub is treated as an authenticated relay that cannot read content, which is what makes it safe for a teammate or platform team to operate. Contrast with **solo mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Threat Model](/docs/admin/security/).
+Running LeapMux with the Hub and one or more Workers as separate processes — the Hub on a shared server and Workers on your dev machines — instead of the single all-in-one `solo` process. In this mode content is end-to-end encrypted while the Hub only relays it. The Hub is still trusted for identity and code. Contrast with **solo mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Threat Model](/docs/admin/security/).
 
 ## E
 
@@ -67,7 +67,7 @@ A tab popped out of the tiled layout into a movable, resizable, opacity-adjustab
 
 ### Frontend
 
-The SolidJS web app — running in your browser or embedded in the native desktop app — that renders the tiling UI: the layout, agent chats, terminals, and the file browser. It is where you click, type, and read, and it holds no agent state of its own; everything you care about lives on the **Worker**. One of the three core components alongside the **Hub** and the **Worker**. See [Concepts & Architecture](/docs/getting-started/concepts/).
+The SolidJS web app — running in your browser or embedded in the native desktop app — that renders the tiling UI: the layout, agent chats, terminals, and the file browser. It is where you click, type, and read. The **Worker** holds agent state, and the browser caches rendered message text and code for seven days after last use in IndexedDB. The cache is not keyed to the account, and signing out does not clear it. One of the three core components alongside the **Hub** and the **Worker**. See [Concepts & Architecture](/docs/getting-started/concepts/).
 
 ## G
 
@@ -79,7 +79,7 @@ A tile turned into a fixed `rows × cols` matrix of panes (up to 20 × 20), with
 
 ### Hub
 
-The central service (`leapmux hub`) that authenticates users, stores accounts, workspaces, and layout geometry, mints Worker registration keys, and relays encrypted traffic between Frontends and Workers. The Hub is an **authenticated relay, not a trusted peer**: it routes opaque ciphertext and sees metadata (who talks to whom, message sizes, timing) but never the plaintext of agent transcripts, terminal I/O, or file contents. Its default listen address is `:4327`. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/admin/running-leapmux/).
+The central service (`leapmux hub`) that authenticates users, stores accounts, workspaces, and layout geometry, mints Worker registration keys, and relays encrypted traffic between Frontends and Workers. The Hub is **trusted for identity and code**. It cannot read content while it only relays ciphertext. A Hub that acts can open its own channel as you or serve modified Frontend code. Its default listen address is `:4327`. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## I
 
@@ -175,7 +175,7 @@ A rectangular pane in the workspace's recursive tiling layout. A **leaf** tile i
 
 ### TOFU (trust on first use)
 
-The pinning scheme that protects Worker identity. On the first connection to a Worker the Frontend records the Worker's composite static public key, and rejects any later handshake whose key differs — so a compromised Hub cannot silently swap a Worker underneath you. A mismatch raises the **"Worker public key changed"** dialog showing 4-word fingerprints, where you must explicitly Accept or Reject. CLI and cross-Worker connections pin the same way. See [Managing Workers](/docs/admin/managing-workers/) and [Security & Threat Model](/docs/admin/security/).
+The pinning scheme that protects Worker identity. On the first connection to a Worker the Frontend records the Worker's composite static public key, and rejects any later handshake whose key differs — so a Hub that substitutes a Worker key in a channel your browser opens causes a mismatch. This does not stop a Hub opening its own channel or serving modified Frontend code. A mismatch raises the **"Worker public key changed"** dialog showing 4-word fingerprints, where you must explicitly Accept or Reject. CLI and cross-Worker connections pin the same way. The desktop app's tunnels keep no pin. See [Managing Workers](/docs/admin/managing-workers/) and [Security & Threat Model](/docs/admin/security/).
 
 ## W
 

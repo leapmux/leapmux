@@ -13,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+
 	"github.com/coder/websocket"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
@@ -22,6 +25,7 @@ import (
 	"github.com/leapmux/leapmux/channelwire"
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -34,6 +38,38 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
+
+func TestUserEvents_SubscriberClientIDCarriesNoSessionSecret(t *testing.T) {
+	env := setupRegKeyEnv(t)
+	token := env.login(t, hubtestutil.TestAdminUsername, hubtestutil.TestAdminPassword)
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: env.store})
+	mux := http.NewServeMux()
+	mux.Handle(contracts.WSRouteUserEvents, service.NewUserEventsHandler(env.store, hubtestutil.TestSecretHasher(), env.registry, contexts, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()))
+	server := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterUserCRDTHandler(server, service.NewCRDTService(env.store, env.registry, nil, nil))
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
+	httpServer := httptest.NewServer(mux)
+	t.Cleanup(httpServer.Close)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	header := http.Header{"Cookie": []string{auth.CookieName + "=" + token}}
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(httpServer.URL, "http")+contracts.WSRouteUserEvents, &websocket.DialOptions{HTTPHeader: header})
+	require.NoError(t, err)
+	defer func() { _ = conn.Close(websocket.StatusNormalClosure, "") }()
+	payload, err := channelwire.ReadFramedBytes(ctx, conn)
+	require.NoError(t, err)
+	var event leapmuxv1.WatchUserEvent
+	require.NoError(t, proto.Unmarshal(payload, &event))
+	require.NotNil(t, event.GetInitial())
+	client := leapmuxv1connect.NewUserCRDTClient(connect.NewClient(connecthttp.NewTransport(httpServer.Client(), httpServer.URL)))
+	snapshot, err := client.GetMaterialized(authedReq(ctx, &leapmuxv1.GetMaterializedRequest{}, token))
+	require.NoError(t, err)
+	for _, clientID := range []string{event.GetInitial().GetSubscriberClientId(), snapshot.GetState().GetSubscriberClientId()} {
+		require.NotEmpty(t, clientID)
+		require.True(t, strings.HasPrefix(clientID, "session:"))
+		assert.NotContains(t, clientID, sessionCookieSecret(token))
+	}
+}
 
 // delegationBearer is everything a /ws/userevents test needs to dial with a
 // delegation Bearer: the validator to hand the handler, the session cache to
@@ -64,15 +100,15 @@ func newDelegationBearer(t *testing.T, st store.Store, userID string) delegation
 	t.Helper()
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    id.Generate(),
-		RegisteredBy: userid.MustNew(userID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		RegisteredBy:  userid.MustNew(userID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	_, sessionCache := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	_, sessionCache := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	t.Cleanup(sessionCache.Stop)
 
 	tokenID := id.Generate()
@@ -236,7 +272,7 @@ func TestUserEventsHandler_RefusesAConnectWhenEveryBuildSlotIsTaken(t *testing.T
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
 	handler := service.NewUserEventsHandler(
-		st, registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
+		st, hubtestutil.TestSecretHasher(), registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv)
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -290,7 +326,7 @@ func TestUserEventsHandler_RevokingTheBearerClosesTheSubscription(t *testing.T) 
 	}, nil)
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, hubtestutil.TestSecretHasher(), registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv))
 	t.Cleanup(srv.Close)
 
@@ -358,7 +394,7 @@ func TestUserEventsHandler_AFailedSubscribeIsStillCounted(t *testing.T) {
 	}, nil)
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, hubtestutil.TestSecretHasher(), registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv))
 	t.Cleanup(srv.Close)
 
@@ -467,7 +503,7 @@ func newParkWindowEnv(t *testing.T) *parkWindowEnv {
 	// which is what keeps the other tests on this env free of the keepalive
 	// entirely.
 	ticks := make(chan time.Time)
-	handler, served := servedOnce(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, insecureCookies, pool).
+	handler, served := servedOnce(service.NewUserEventsHandler(st, hubtestutil.TestSecretHasher(), registry, bearer.sessionCache, nil, insecureCookies, pool).
 		WithTokenValidator(bearer.tv).
 		WithForcedKeepaliveProbesForTest(ticks, 10*time.Second))
 	srv := httptest.NewUnstartedServer(handler)
@@ -712,7 +748,7 @@ func TestUserEventsHandler_CountsTheSuccessArmsAndTheDuration(t *testing.T) {
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
 	bearer := newDelegationBearer(t, st, user.ID)
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, hubtestutil.TestSecretHasher(), registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv))
 	t.Cleanup(srv.Close)
 
@@ -776,7 +812,7 @@ func TestUserEventsHandler_CountsAConnectThatNeverReachedSubscribe(t *testing.T)
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
 	bearer := newDelegationBearer(t, st, user.ID)
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, hubtestutil.TestSecretHasher(), registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv))
 	t.Cleanup(srv.Close)
 
@@ -816,7 +852,7 @@ func TestUserEventsHandler_RefusesACursorUnderANarrowedFilter(t *testing.T) {
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
 	bearer := newDelegationBearer(t, st, user.ID)
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, hubtestutil.TestSecretHasher(), registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv))
 	t.Cleanup(srv.Close)
 
@@ -990,7 +1026,7 @@ func TestUserEventsHandler_RefusesTheConnectWhenTheBudgetCannotHoldTheBootstrap(
 			// Whatever the fixture attached to create the condition; the
 			// assertion below is that the REFUSED connect adds nothing to it.
 			baseline := pool.Members()
-			handler, served := servedOnce(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, insecureCookies, pool).
+			handler, served := servedOnce(service.NewUserEventsHandler(st, hubtestutil.TestSecretHasher(), registry, bearer.sessionCache, nil, insecureCookies, pool).
 				WithTokenValidator(bearer.tv))
 			srv := httptest.NewServer(handler)
 			t.Cleanup(srv.Close)
@@ -1060,7 +1096,7 @@ func TestUserEventsHandler_RefusesBeyondThePerUserConnectionCap(t *testing.T) {
 	}, nil)
 	t.Cleanup(func() { registry.Shutdown(2 * time.Second) })
 
-	srv := httptest.NewServer(service.NewUserEventsHandler(st, registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
+	srv := httptest.NewServer(service.NewUserEventsHandler(st, hubtestutil.TestSecretHasher(), registry, bearer.sessionCache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(bearer.tv))
 	t.Cleanup(srv.Close)
 

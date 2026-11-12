@@ -133,7 +133,7 @@ func AcquireDirectory(owner DirectoryOwner, componentMode Role, dataDirectory st
 		return nil, fmt.Errorf("lifecycle: create the data directory %s: %w", canonical, err)
 	}
 	paths := pathsFor(canonical)
-	if err := preparePrivateDir(paths.Dir); err != nil {
+	if err := atomicfile.MkdirAllPrivate(paths.Dir); err != nil {
 		return nil, err
 	}
 

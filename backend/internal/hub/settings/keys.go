@@ -806,7 +806,7 @@ func BaseURL(s *Snapshot, listen string) string {
 //
 // The one-way direction is what makes this safe to derive per request. A
 // `__Host-` cookie is readable whatever the setting says, because
-// SessionIDFromCookieHeader tries the secure name first and unconditionally;
+// SessionTokenFromCookieHeader tries the secure name first and unconditionally;
 // only the plain name depends on the key. So a session minted through the
 // proxy stays readable, and a hub reachable both ways cannot strand one.
 //

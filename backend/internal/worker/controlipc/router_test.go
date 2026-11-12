@@ -282,6 +282,7 @@ func TestRouter_CallInner_FilesystemMethodCrossWorkerDispatchesUnconditionally(t
 		leapmuxv1connect.WorkerFileServiceReadFileProcedure,
 		leapmuxv1connect.WorkerFileServiceStatFileProcedure,
 		leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure,
+		leapmuxv1connect.WorkerGitServiceGetGitWorkingTreeStateProcedure,
 	} {
 		cross.callTarget = ""
 		cross.callMethod = ""

@@ -11,6 +11,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/mail"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlite"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -53,31 +54,31 @@ func stepUpUser(t *testing.T, st store.Store, passwordSet bool) *store.User {
 func firstCredentialSession(t *testing.T, st store.Store, user *store.User, now time.Time) *auth.UserInfo {
 	t.Helper()
 	uid := userid.MustNew(user.ID)
-	sessionID, _, err := auth.CreateSession(context.Background(), st, uid, auth.DefaultSessionDuration)
+	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), uid, auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	return &auth.UserInfo{
 		ID:              uid,
-		Credential:      auth.SessionCredential(sessionID),
+		Credential:      auth.SessionCredential(createdSession.ID),
 		AuthenticatedAt: now,
 	}
 }
 
 // liveElevatedSessionAt seeds a session with a current elevation and returns
-// the UserInfo a request on it would carry, together with the session id.
+// the UserInfo a request on it would carry, together with the session token.
 func liveElevatedSessionAt(t *testing.T, st store.Store, user *store.User, now time.Time) (*auth.UserInfo, string) {
 	t.Helper()
 	uid := userid.MustNew(user.ID)
-	sessionID, _, err := auth.CreateSession(context.Background(), st, uid, auth.DefaultSessionDuration)
+	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), uid, auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	n, err := st.Sessions().Elevate(context.Background(), store.ElevateSessionParams{
-		SessionID:          sessionID,
+		SessionID:          createdSession.ID,
 		UserID:             uid,
 		ElevationProvenAt:  now,
 		ElevationExpiresAt: now.Add(auth.ElevationWindow),
 	}, now)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
-	return &auth.UserInfo{ID: uid, Credential: auth.SessionCredential(sessionID)}, sessionID
+	return &auth.UserInfo{ID: uid, Credential: auth.SessionCredential(createdSession.ID)}, createdSession.Token
 }
 
 // The locked re-check is the guard a concurrent rotation must not skip:

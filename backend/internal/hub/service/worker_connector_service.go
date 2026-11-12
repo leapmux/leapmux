@@ -48,6 +48,7 @@ type CRDTRegistry interface {
 }
 
 type WorkerConnectorService struct {
+	hasher       auth.SecretHasher
 	store        store.Store
 	workerMgr    *workermgr.Manager
 	channelMgr   *channelmgr.Manager
@@ -92,6 +93,7 @@ type WorkerConnectorService struct {
 // WorkerConnectorServiceDeps holds the connector's construction dependencies.
 // Registry can be nil for store-only tests. DeregisterEffects is always explicit.
 type WorkerConnectorServiceDeps struct {
+	Hasher            auth.SecretHasher
 	Store             store.Store
 	WorkerManager     *workermgr.Manager
 	ChannelManager    *channelmgr.Manager
@@ -115,7 +117,8 @@ func NewWorkerConnectorService(d WorkerConnectorServiceDeps) *WorkerConnectorSer
 		panic("service: NewWorkerConnectorService requires deregistration effects")
 	}
 	return &WorkerConnectorService{
-		store: d.Store, workerMgr: d.WorkerManager, channelMgr: d.ChannelManager,
+		hasher: d.Hasher,
+		store:  d.Store, workerMgr: d.WorkerManager, channelMgr: d.ChannelManager,
 		pending: d.PendingRequests, notifier: d.Notifier, crdtRegistry: d.Registry,
 		queuePool: d.QueuePool, clock: d.Clock, challenges: newRegistrationChallengeStore(d.Clock),
 		deregisterEffects: d.DeregisterEffects,
@@ -243,7 +246,7 @@ func (s *WorkerConnectorService) Register(
 	// Resolve the owner before opening the transaction. In MySQL, an ordinary
 	// read inside the transaction could establish its snapshot before the owner
 	// lock, hiding a registration that commits while this request waits.
-	key, err := s.store.RegistrationKeys().GetByID(ctx, regKey)
+	key, err := s.store.RegistrationKeys().GetByKeyHash(ctx, s.hasher.Hash(regKey))
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			if replayErr := registeredAttemptRefusal(ctx, s.store.Workers(), req, keyDigest); replayErr != nil {
@@ -267,7 +270,7 @@ func (s *WorkerConnectorService) Register(
 		// Atomic consume: returns the row only if expires_at > now and
 		// flips it into the soft-deleted state. Any concurrent caller
 		// loses the race and sees ErrNotFound.
-		row, err := tx.RegistrationKeys().Consume(ctx, regKey)
+		row, err := tx.RegistrationKeys().Consume(ctx, key.ID)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return connect.NewError(connect.CodeUnauthenticated, "registration key invalid or already consumed")
@@ -286,7 +289,7 @@ func (s *WorkerConnectorService) Register(
 		}
 		if err := tx.Workers().Create(ctx, store.CreateWorkerParams{
 			ID:                    workerID,
-			AuthToken:             authToken,
+			AuthTokenHash:         s.hasher.Hash(authToken),
 			RegisteredBy:          registrantUID,
 			PublicKeys:            store.WorkerPublicKeysFromProto(req.GetKeys()),
 			RegistrationAttemptID: attemptID,

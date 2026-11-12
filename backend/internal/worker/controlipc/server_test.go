@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -498,35 +499,20 @@ func (s *serverAuthorizerSpy) snapshotUnregistered() []string {
 	return append([]string(nil), s.unregistered...)
 }
 
-// TestDefaultSocketPath_FitsSunPathLimit pins the production path
-// shape's fit against the most restrictive unix sun_path limit (104
-// bytes on macOS / *BSD). Worker and agent IDs in production are
-// 48-char nanoids (`internal/util/id`), and macOS's default $TMPDIR
-// is `/var/folders/<2 chars>/<32 chars>/T/` (~49 chars). Together
-// these blow past 104 unless DefaultSocketPath truncates the IDs.
-func TestDefaultSocketPath_FitsSunPathLimit(t *testing.T) {
+func TestSocketURL_PlacesTheSocketInTheGivenDirectory(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("npipe path is unaffected by sun_path")
+		t.Skip("Windows uses named pipes")
 	}
-	// Mimic macOS's default $TMPDIR ($XDG_RUNTIME_DIR is unset there).
-	const macTempDir = "/var/folders/ph/0qx1sm5d2w3dmmgckzz91wqr0000gn/T/"
-	t.Setenv("TMPDIR", macTempDir)
-	t.Setenv("XDG_RUNTIME_DIR", "")
+	dir := "/private/control"
+	url := controlipc.SocketURL(dir, strings.Repeat("w", 48), controlipc.SocketKindAgent, strings.Repeat("a", 48))
+	assert.Equal(t, "unix:"+dir+"/a-aaaaaaaa.sock", url)
+}
 
-	// Two distinct 48-char IDs in the production alphanumeric alphabet.
-	workerID := "Q1RxdwkFExperhgYzjwosFq3PKOTUjVznHtStbfBp3MFxTAn"
-	agentID := "hfMyi1Y4kjH2ZNfNd5j3H8z1OMQpxcbENB1IkzUF2aOk1XLk"
-	require.Len(t, workerID, 48)
-	require.Len(t, agentID, 48)
-
-	socketURL := controlipc.DefaultSocketPath(workerID, controlipc.SocketKindAgent, agentID)
-	require.True(t, len(socketURL) > len("unix:"))
-	path := socketURL[len("unix:"):]
-
-	// macOS / *BSD sun_path is 104 bytes including the NUL terminator,
-	// so the path itself must be <= 103 chars.
-	const sunPathLimit = 104
-	assert.LessOrEqualf(t, len(path), sunPathLimit-1,
-		"DefaultSocketPath produced %d-byte path %q, exceeds sun_path budget of %d",
-		len(path), path, sunPathLimit-1)
+func TestSocketURL_DefaultMacOSLayoutFitsTheLimit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses named pipes")
+	}
+	dir := "/Users/" + strings.Repeat("u", 32) + "/.config/leapmux/solo/worker/run/control"
+	url := controlipc.SocketURL(dir, strings.Repeat("w", 48), controlipc.SocketKindAgent, strings.Repeat("a", 48))
+	assert.LessOrEqual(t, len(strings.TrimPrefix(url, "unix:")), 103)
 }

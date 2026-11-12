@@ -46,7 +46,7 @@ func (s *Suite) testUsers(t *testing.T) {
 		// parent row. If a migration ever drops one of these references, the
 		// blank-owner shape comes back on that table alone, and silently: no
 		// ownership predicate can name the row it would admit.
-		require.Error(t, st.Sessions().Create(ctx, store.CreateSessionParams{
+		require.Error(t, st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 			ID: "sess-blank-owner", UserID: userid.UserID{},
 			ExpiresAt: time.Now().Add(time.Hour).UTC(),
 		}), "a session has no blank-id user to join to")
@@ -56,7 +56,7 @@ func (s *Suite) testUsers(t *testing.T) {
 		}), "a workspace has no blank-id owner to reference")
 
 		keysErr := st.Workers().Create(ctx, store.CreateWorkerParams{
-			ID: "worker-blank-registrant", AuthToken: "token-blank-registrant",
+			ID: "worker-blank-registrant", AuthTokenHash: FixtureSecretHash("token-blank-registrant"),
 			RegisteredBy: userid.UserID{},
 			PublicKeys:   WorkerKeys(workerkeystest.SeededWorkerFill),
 		})

@@ -33,6 +33,7 @@ const (
 // WorkerManagementService implements the Hub-side service called by Frontend
 // to manage worker registration keys and worker rows.
 type WorkerManagementService struct {
+	hasher    auth.SecretHasher
 	store     store.Store
 	workerMgr *workermgr.Manager
 	mail      mail.Sender
@@ -68,7 +69,7 @@ type WorkerManagementService struct {
 // through and the containment takes effect immediately rather than after the
 // cache TTL. renderer is a value type; it carries the hub URL used in the
 // registration email's footer.
-func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, deregisterEffects *WorkerDeregisterEffects, sender mail.Sender, renderer mail.Renderer, set *settings.Manager) *WorkerManagementService {
+func NewWorkerManagementService(st store.Store, hasher auth.SecretHasher, mgr *workermgr.Manager, deregisterEffects *WorkerDeregisterEffects, sender mail.Sender, renderer mail.Renderer, set *settings.Manager) *WorkerManagementService {
 	if st == nil {
 		panic("service: NewWorkerManagementService requires a store")
 	}
@@ -82,7 +83,8 @@ func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, deregist
 		panic("service: NewWorkerManagementService requires a mail sender (use mail.NewDisabledSender)")
 	}
 	return &WorkerManagementService{
-		store: st, workerMgr: mgr, mail: sender, renderer: renderer, set: set,
+		hasher: hasher,
+		store:  st, workerMgr: mgr, mail: sender, renderer: renderer, set: set,
 		deregisterEffects: deregisterEffects,
 	}
 }
@@ -99,7 +101,8 @@ func (s *WorkerManagementService) CreateRegistrationKey(
 	key := id.Generate()
 	expiresAt := time.Now().UTC().Add(RegistrationKeyTTL)
 	if err := s.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
-		ID:        key,
+		ID:        id.Generate(),
+		KeyHash:   s.hasher.Hash(key),
 		CreatedBy: user.ID,
 		ExpiresAt: expiresAt,
 	}); err != nil {
@@ -121,8 +124,8 @@ func (s *WorkerManagementService) ExtendRegistrationKey(
 		return nil, err
 	}
 
-	keyID := req.GetRegistrationKey()
-	if keyID == "" {
+	key := req.GetRegistrationKey()
+	if key == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "registration_key is required")
 	}
 
@@ -130,7 +133,7 @@ func (s *WorkerManagementService) ExtendRegistrationKey(
 	// surfaces cross-user access as NotFound (matching the oracle
 	// convention used elsewhere). The UPDATE enforces ownership and
 	// liveness atomically.
-	row, err := s.getOwnedKey(ctx, keyID, user.ID)
+	row, err := s.getOwnedKey(ctx, key, user.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -148,7 +151,7 @@ func (s *WorkerManagementService) ExtendRegistrationKey(
 
 	newExpiresAt := now.Add(RegistrationKeyTTL)
 	rows, err := s.store.RegistrationKeys().Extend(ctx, store.ExtendRegistrationKeyParams{
-		ID:        keyID,
+		ID:        row.ID,
 		CreatedBy: user.ID,
 		ExpiresAt: newExpiresAt,
 	})
@@ -177,19 +180,22 @@ func (s *WorkerManagementService) RevokeRegistrationKey(
 		return nil, err
 	}
 
-	keyID := req.GetRegistrationKey()
-	if keyID == "" {
+	key := req.GetRegistrationKey()
+	if key == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "registration_key is required")
 	}
 
-	// One conditional UPDATE: ownership and liveness live in the WHERE
-	// clause, so a missing key, someone else's key and a dead key (expired,
-	// consumed or already revoked) all surface as 0 rows-affected and map to
-	// NotFound (same oracle convention as GetOwned). The register dialog's
+	row, err := s.getOwnedKey(ctx, key, user.ID)
+	if err != nil {
+		return nil, err
+	}
+	// GetOwned refuses a missing key or another owner's key. The conditional
+	// UPDATE retains ownership and liveness checks, so an expired, consumed or
+	// revoked key affects zero rows and returns NotFound too. The register dialog's
 	// onCleanup revokes its key even after a successful registration
 	// consumed it, and ignores this NotFound.
 	rows, err := s.store.RegistrationKeys().SoftDelete(ctx, store.SoftDeleteRegistrationKeyParams{
-		ID:        keyID,
+		ID:        row.ID,
 		CreatedBy: user.ID,
 	})
 	if err != nil {
@@ -211,9 +217,9 @@ func (s *WorkerManagementService) EmailRegistrationInstructions(
 		return nil, err
 	}
 
-	keyID := req.GetRegistrationKey()
+	key := req.GetRegistrationKey()
 	command := req.GetCommand()
-	if keyID == "" {
+	if key == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "registration_key is required")
 	}
 	if command == "" {
@@ -238,7 +244,7 @@ func (s *WorkerManagementService) EmailRegistrationInstructions(
 
 	// Ownership + liveness checks: never email instructions for a dead
 	// key — the recipient would just be confused.
-	row, err := s.getOwnedKey(ctx, keyID, user.ID)
+	row, err := s.getOwnedKey(ctx, key, user.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -259,9 +265,9 @@ func (s *WorkerManagementService) EmailRegistrationInstructions(
 // created_by parameter would MATCH a blank column rather than fail to:
 // "missing" and "not yours" both surface as NotFound, matching the
 // convention used elsewhere (Workers().GetOwned) and avoiding an oracle
-// that would let callers probe other users' key IDs.
-func (s *WorkerManagementService) getOwnedKey(ctx context.Context, id string, userID userid.UserID) (*store.WorkerRegistrationKey, error) {
-	row, err := s.store.RegistrationKeys().GetOwned(ctx, store.GetOwnedRegistrationKeyParams{ID: id, CreatedBy: userID})
+// that would let callers probe other users' keys.
+func (s *WorkerManagementService) getOwnedKey(ctx context.Context, key string, userID userid.UserID) (*store.WorkerRegistrationKey, error) {
+	row, err := s.store.RegistrationKeys().GetOwned(ctx, store.GetOwnedRegistrationKeyParams{KeyHash: s.hasher.Hash(key), CreatedBy: userID})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, "registration key not found")

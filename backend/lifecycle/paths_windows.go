@@ -25,7 +25,3 @@ func runtimeDir() (string, error) {
 func controlURLFor(id InstanceID) string {
 	return "npipe:leapmux-" + hashID(currentAccount()) + "-" + string(id)
 }
-
-// maxUnixSocketPath is unused on Windows; named pipes have no length
-// limit of this shape.
-const maxUnixSocketPath = 0

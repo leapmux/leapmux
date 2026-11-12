@@ -15,6 +15,13 @@ import (
 )
 
 func (s *Suite) testSessions(t *testing.T) {
+	t.Run("secret digest length is enforced", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "session-digest-owner")
+		checkSecretDigestLengths(t, func(digest []byte) error {
+			return st.Sessions().Create(ctx, store.CreateSessionParams{ID: id.Generate(), SecretHash: digest, UserID: userid.MustNew(user.ID), ExpiresAt: time.Now().Add(time.Hour)})
+		})
+	})
 	t.Run("create and get by id", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "sess-user")
@@ -333,7 +340,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		user := SeedUser(t, st, "expired-user")
 
 		sessID := id.Generate()
-		err := st.Sessions().Create(ctx, store.CreateSessionParams{
+		err := st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 			ID:        sessID,
 			UserID:    userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(-1 * time.Hour), // Already expired.
@@ -374,7 +381,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		user := SeedUser(t, st, "expired-validate-user")
 
 		sessID := id.Generate()
-		err := st.Sessions().Create(ctx, store.CreateSessionParams{
+		err := st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 			ID:        sessID,
 			UserID:    userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(-1 * time.Hour),
@@ -437,7 +444,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		user := SeedUser(t, st, "touch-expired-user")
 
 		sessID := id.Generate()
-		require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{
+		require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 			ID:        sessID,
 			UserID:    userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(-time.Minute),
@@ -532,7 +539,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 		// Create an expired session.
 		expiredID := id.Generate()
-		err := st.Sessions().Create(ctx, store.CreateSessionParams{
+		err := st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 			ID:        expiredID,
 			UserID:    userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(-1 * time.Hour),
@@ -619,7 +626,7 @@ func (s *Suite) testSessions(t *testing.T) {
 
 		// Create an expired session.
 		expiredID := id.Generate()
-		err := st.Sessions().Create(ctx, store.CreateSessionParams{
+		err := st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 			ID: expiredID, UserID: userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(-1 * time.Hour),
 			UserAgent: "test-agent", IPAddress: "127.0.0.1",
@@ -735,7 +742,7 @@ func (s *Suite) testSessions(t *testing.T) {
 		user := SeedUser(t, st, "dup-sess-user")
 		sess := SeedSession(t, st, user.ID)
 
-		err := st.Sessions().Create(ctx, store.CreateSessionParams{
+		err := st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 			ID: sess.ID, UserID: userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(24 * time.Hour),
 			UserAgent: "test", IPAddress: "127.0.0.1",

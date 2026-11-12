@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -366,8 +367,8 @@ func LoadSoloUser(ctx context.Context, st store.Store) (*UserInfo, error) {
 
 // Login validates credentials and creates a new session token. lifetime is the
 // session's minimum life past the user's last request; see CreateSession.
-// Returns the session ID, user, session expiry time, and any error.
-func Login(ctx context.Context, st store.Store, username, password string, lifetime time.Duration) (string, *store.User, time.Time, error) {
+// Returns the cookie token, user, session expiry time, and any error.
+func Login(ctx context.Context, st store.Store, hasher SecretHasher, username, password string, lifetime time.Duration) (string, *store.User, time.Time, error) {
 	var zero time.Time
 	user, err := st.Users().GetByUsername(ctx, username)
 	if err != nil {
@@ -409,8 +410,7 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 	matchPrelock, verifyErrPrelock := pwdhash.Verify(user.PasswordHash, password)
 	prelockHash := user.PasswordHash
 
-	var sessionID string
-	var expiresAt time.Time
+	var session CreatedSession
 	err = st.RunInUserAuthTransaction(ctx, loginUID, func(tx store.Store) error {
 		lockedUser, err := tx.Users().GetByID(ctx, user.ID)
 		if errors.Is(err, store.ErrNotFound) {
@@ -454,7 +454,7 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 		if !sessMintOK {
 			return connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 		}
-		sessionID, expiresAt, err = CreateSession(ctx, tx, sessUID, lifetime)
+		session, err = CreateSession(ctx, tx, hasher, sessUID, lifetime)
 		if err != nil {
 			return err
 		}
@@ -471,7 +471,7 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 		}
 		return "", nil, zero, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	return sessionID, user, expiresAt, nil
+	return session.Token, user, session.ExpiresAt, nil
 }
 
 // SessionMeta holds optional metadata for session creation.
@@ -479,42 +479,53 @@ type SessionMeta struct {
 	UserAgent string
 }
 
-// CreateSession creates a new user session and returns the session ID and
-// expiry time.
+// CreatedSession separates the public identity from the secret cookie token.
+type CreatedSession struct {
+	ID        string
+	Token     string
+	ExpiresAt time.Time
+}
+
+// CreateSession creates a public identity and an independent cookie secret.
 //
 // lifetime is the session's minimum life past the user's last request. Zero or
 // less falls back to DefaultSessionDuration: a caller that has no configured
 // value must still issue a usable session, not one that expired before the
 // response left the Hub.
-func CreateSession(ctx context.Context, st store.Store, userID userid.UserID, lifetime time.Duration, meta ...SessionMeta) (string, time.Time, error) {
+func CreateSession(ctx context.Context, st store.Store, hasher SecretHasher, userID userid.UserID, lifetime time.Duration, meta ...SessionMeta) (CreatedSession, error) {
 	// A session for nobody is worse than no session: it would authenticate as a
 	// blank id, which every predicate then has to refuse individually. Refuse to
 	// write the row at all.
 	if userID.IsZero() {
-		return "", time.Time{}, fmt.Errorf("create session: user id is required")
+		return CreatedSession{}, fmt.Errorf("create session: user id is required")
 	}
-	sessionID := id.Generate()
+	sessionID, secret := id.Generate(), id.Generate()
 	expiresAt := sessionExpiry(time.Now(), lifetime)
 	params := store.CreateSessionParams{
-		ID:        sessionID,
-		UserID:    userID,
-		ExpiresAt: expiresAt,
-		IPAddress: peer.ClientIP(ctx),
+		ID:         sessionID,
+		SecretHash: hasher.Hash(secret),
+		UserID:     userID,
+		ExpiresAt:  expiresAt,
+		IPAddress:  peer.ClientIP(ctx),
 	}
 	if len(meta) > 0 {
 		params.UserAgent = meta[0].UserAgent
 	}
 	if err := st.Sessions().Create(ctx, params); err != nil {
-		return "", time.Time{}, fmt.Errorf("create session: %w", err)
+		return CreatedSession{}, fmt.Errorf("create session: %w", err)
 	}
-	return sessionID, expiresAt, nil
+	return CreatedSession{ID: sessionID, Token: FormatSessionToken(sessionID, secret), ExpiresAt: expiresAt}, nil
 }
 
 // ValidateToken resolves a session token to a UserInfo. Returns an error if
 // the token is invalid or expired. Uses a single joined query to avoid two
 // sequential DB round-trips.
-func ValidateToken(ctx context.Context, st store.Store, token string) (*UserInfo, error) {
-	row, err := st.Sessions().ValidateWithUser(ctx, token, time.Now().UTC())
+func ValidateToken(ctx context.Context, st store.Store, hasher SecretHasher, token string) (*UserInfo, error) {
+	sessionID, secret, ok := ParseSessionToken(token)
+	if !ok {
+		return nil, connect.Errorf(connect.CodeUnauthenticated, "invalid or expired token")
+	}
+	row, err := st.Sessions().ValidateWithUser(ctx, sessionID, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.Errorf(connect.CodeUnauthenticated, "invalid or expired token")
@@ -531,9 +542,12 @@ func ValidateToken(ctx context.Context, st store.Store, token string) (*UserInfo
 	if !ok {
 		return nil, connect.Errorf(connect.CodeUnauthenticated, "invalid or expired token")
 	}
+	if !hmac.Equal(hasher.Hash(secret), row.SecretHash) {
+		return nil, connect.Errorf(connect.CodeUnauthenticated, "invalid or expired token")
+	}
 	return &UserInfo{
 		ID:         id,
-		Credential: SessionCredential(token),
+		Credential: SessionCredential(sessionID),
 		// A browser session is UNSCOPED, and it says so explicitly. A session
 		// is the account itself signed in, not an app the account authorized,
 		// so no scope subtracts from it -- and stating that here rather than

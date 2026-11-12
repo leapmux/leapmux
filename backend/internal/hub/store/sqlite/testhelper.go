@@ -156,3 +156,7 @@ func (h *sqliteTestHelper) TruncateAll(ctx context.Context) error {
 	}
 	return nil
 }
+
+func (h *sqliteTestHelper) TableHoldsText(ctx context.Context, table, text string) (bool, error) {
+	return sqlutil.TableHoldsText(ctx, h.db, table, text)
+}

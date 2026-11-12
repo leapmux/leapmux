@@ -5,6 +5,7 @@ package locallisten
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -12,7 +13,25 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestListen_UnixRefusesAnOverlongPath(t *testing.T) {
+	path := uniqueUnixPathShort(t)
+	limit := MaxUnixSocketPathBytes()
+	path += strings.Repeat("x", limit+1-len(path))
+	listener, err := Listen("unix:" + path)
+	if listener != nil {
+		_ = listener.Close()
+	}
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrSocketPathTooLong)
+	assert.ErrorContains(t, err, fmt.Sprint(limit))
+	_, statErr := os.Lstat(path)
+	assert.ErrorIs(t, statErr, os.ErrNotExist)
+}
 
 // uniqueUnixPathShort returns a per-test socket path whose full length stays
 // well under the AF_UNIX sun_path limit (104 bytes on macOS).
@@ -271,4 +290,15 @@ func TestDialer_NpipeFailsWithSchemeError(t *testing.T) {
 	if !strings.Contains(err.Error(), "npipe") {
 		t.Errorf("error %v does not mention npipe", err)
 	}
+}
+
+func TestListen_UnixAcceptsAPathAtTheLimit(t *testing.T) {
+	path := uniqueUnixPathShort(t)
+	path += strings.Repeat("x", MaxUnixSocketPathBytes()-len(path))
+	listener, err := Listen("unix:" + path)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, listener.Close()) })
+	info, err := os.Lstat(path)
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&os.ModeSocket)
 }

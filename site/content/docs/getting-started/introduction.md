@@ -19,7 +19,7 @@ LeapMux is a workspace for running several coding agents and shell terminals at 
 
 It is a single program (`leapmux`) you can run two ways. The simplest is **solo mode** (`leapmux solo`): one command for one account. The desktop app uses credential-free local IPC. A TCP browser sets the first password. For a team, a **distributed** setup runs a central **Hub** that several people sign in to, while the agents run on separate machines. The native desktop app can do either.
 
-Whichever way you run it, your work — agent transcripts, terminal output, and file contents — stays on the machine that runs the agents, never on the Hub. The Hub only relays encrypted traffic it cannot read. For exactly how the pieces fit together — the components, the two deployment shapes, and the trust boundaries — see [Concepts & Architecture](/docs/getting-started/concepts/).
+Whichever way you run it, your work — agent transcripts, terminal output, and file contents — stays on the machine that runs the agents, never on the Hub. While the Hub only relays encrypted traffic, it cannot read that content. A Hub that acts has authority over identity and Frontend code; see [Security & Threat Model](/docs/admin/security/). For exactly how the pieces fit together — the components, the two deployment shapes, and the trust boundaries — see [Concepts & Architecture](/docs/getting-started/concepts/).
 
 ## Who it is for
 

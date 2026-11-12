@@ -54,7 +54,7 @@ func newSoloRungFixture(t *testing.T) soloRungFixture {
 	// here is what makes "the two cannot disagree" a tested property rather
 	// than a comment.
 	gate := auth.NewSoloGate(true, st)
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store: st, SoloUser: soloUser, SoloGate: gate,
 	})
 	svc := service.NewAdminSettingsService(
@@ -92,7 +92,7 @@ func (f soloRungFixture) httpCall(cookie *http.Cookie) (*auth.UserInfo, error) {
 	if cookie != nil {
 		r.AddCookie(cookie)
 	}
-	return auth.AuthenticateHTTP(context.Background(), r, auth.HTTPAuthOpts{
+	return auth.AuthenticateHTTP(context.Background(), r, auth.HTTPAuthOpts{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store: f.store, SoloUser: f.user, SoloGate: f.gate, ReadCookie: true,
 	})
 }
@@ -142,12 +142,12 @@ func TestSoloRung_ASessionCookieAuthenticatesOverTCP(t *testing.T) {
 	f := newSoloRungFixture(t)
 	f.setSoloPassword(t)
 
-	sessionID, expiresAt, err := auth.CreateSession(
-		context.Background(), f.store, userid.MustNew(f.user.ID.String()), auth.DefaultSessionDuration)
+	createdSession, err := auth.CreateSession(
+		context.Background(), f.store, hubtestutil.TestSecretHasher(), userid.MustNew(f.user.ID.String()), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	// secure=false, matching the zero Policy this fixture's interceptor holds:
 	// the plain cookie name is the one both ladders look for here.
-	cookie := auth.BuildSessionCookie(sessionID, expiresAt, false)
+	cookie := auth.BuildSessionCookie(createdSession.Token, createdSession.ExpiresAt, false)
 
 	// Name=value alone. cookie.String() renders the SET-Cookie form, whose
 	// attributes do not belong in a request header.

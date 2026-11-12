@@ -46,7 +46,7 @@ func seedFractionalSession(t *testing.T, st store.Store, expiresAt time.Time) (s
 	t.Helper()
 	user := storetest.SeedUser(t, st, "fractional-session-user")
 	sessionID := id.Generate()
-	require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{
+	require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{SecretHash: storetest.FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 		ID:        sessionID,
 		UserID:    userid.MustNew(user.ID),
 		ExpiresAt: expiresAt,
@@ -104,7 +104,7 @@ func TestListAllActiveSessionsPreservesFractionalCursorPrecision(t *testing.T) {
 	// instant, with hand-picked ids on both sides of the cursor id.
 	const tieBelowID, tieCursorID = "tie-a", "tie-b"
 	for _, sessID := range []string{tieBelowID, tieCursorID} {
-		require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{
+		require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{SecretHash: storetest.FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 			ID:        sessID,
 			UserID:    userid.MustNew(userID),
 			ExpiresAt: time.Now().Add(time.Hour),
@@ -149,7 +149,7 @@ func TestCreateUserSessionStoresExpiresAtCanonical(t *testing.T) {
 	user := storetest.SeedUser(t, st, "canonical-expiry-user")
 	expiresAt := time.Date(2026, 7, 20, 12, 34, 56, 789_456_789, time.UTC)
 	sessionID := id.Generate()
-	require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{
+	require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{SecretHash: storetest.FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 		ID:        sessionID,
 		UserID:    userid.MustNew(user.ID),
 		ExpiresAt: expiresAt,
@@ -280,7 +280,7 @@ func TestKeysetCursorTrailingZeroMillisecondTie(t *testing.T) {
 
 	mk := func() string {
 		sessionID := id.Generate()
-		require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{
+		require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{SecretHash: storetest.FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 			ID:        sessionID,
 			UserID:    userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(time.Hour),

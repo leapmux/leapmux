@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"runtime"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -319,6 +320,13 @@ func Wire(p Params) *Wiring {
 // over the existing E2EE channel, so a missing pin store degrades sibling
 // dispatch rather than the whole feature.
 func newControlIPCFactory(p Params, svc *service.Service, dispatcher *channel.Dispatcher) *controlipc.Factory {
+	dir := controlipc.SocketDir(p.DataDir)
+	if runtime.GOOS != "windows" {
+		if err := controlipc.SweepSocketDir(dir); err != nil {
+			slog.Warn("control socket directory unavailable", "directory", dir, "error", err)
+		}
+	}
+
 	pins, pinErr := crossworker.NewPinStore(p.DataDir)
 	if pinErr != nil {
 		slog.Warn("cross-worker pin store unavailable; sibling-worker calls disabled", "error", pinErr)
@@ -354,6 +362,7 @@ func newControlIPCFactory(p Params, svc *service.Service, dispatcher *channel.Di
 	}
 
 	return &controlipc.Factory{
+		SocketDir:     dir,
 		WorkerID:      p.WorkerID,
 		Dispatcher:    dispatcher,
 		CrossWorker:   cwClient,

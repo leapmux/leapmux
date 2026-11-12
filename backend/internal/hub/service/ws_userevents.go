@@ -80,6 +80,7 @@ type UserEventsHandler struct {
 // failure rather than a slow leak nobody attributes.
 func NewUserEventsHandler(
 	st store.Store,
+	sessionHasher auth.SecretHasher,
 	registry *crdt.Registry,
 	authContexts *auth.AuthContextRegistry,
 	soloUser *auth.UserInfo,
@@ -103,7 +104,7 @@ func NewUserEventsHandler(
 		// workspace:read, because the stream IS the account's layout document
 		// and every change to it. An app granted account:read alone has no
 		// business reading which workspaces, tabs and agents its owner has.
-		wsAuthenticator: newWSAuthenticator(st, authContexts, soloUser, secureCookie,
+		wsAuthenticator: newWSAuthenticator(st, sessionHasher, authContexts, soloUser, secureCookie,
 			leapmuxv1.Scope_SCOPE_WORKSPACE_READ),
 		registry:      registry,
 		queuePool:     queuePool,

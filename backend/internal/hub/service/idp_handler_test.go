@@ -106,7 +106,7 @@ func setupOAuthTestServerOver(
 	if wrap != nil {
 		handlerStore = wrap(st)
 	}
-	idpHandler := service.NewIdPHandler(handlerStore, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
+	idpHandler := service.NewIdPHandler(handlerStore, hubtestutil.TestSecretHasher(), cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
 
 	mux := http.NewServeMux()
 	idpHandler.RegisterRoutes(mux)
@@ -433,11 +433,11 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	mux := http.NewServeMux()
 
 	// Register OAuth HTTP routes.
-	idpHandler := service.NewIdPHandler(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
+	idpHandler := service.NewIdPHandler(st, hubtestutil.TestSecretHasher(), cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
 	idpHandler.RegisterRoutes(mux)
 
 	// Register AuthService ConnectRPC routes.
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	authDeps := servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	authDeps.Keystore = ks
 	authSvc := service.NewAuthService(authDeps)
@@ -665,8 +665,8 @@ func TestCompleteOAuthSignup_UsesConfiguredSessionDuration(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
-	sessionID := sessionFromCookie(t, info.ResponseHeader().Get("Set-Cookie"))
-	sess, err := st.Sessions().GetByID(context.Background(), sessionID, time.Now().UTC())
+	sessionToken := sessionFromCookie(t, info.ResponseHeader().Get("Set-Cookie"))
+	sess, err := st.Sessions().GetByID(context.Background(), hubtestutil.SessionIDFromCookie(t, sessionToken), time.Now().UTC())
 	require.NoError(t, err)
 	hubtestutil.AssertSessionLifetime(t, before, configured, sess.ExpiresAt)
 }
@@ -859,10 +859,10 @@ func TestCompleteOAuthSignup_UntrustedFailClosedWhenVerificationEmailFails(t *te
 	enableEmailVerification(t, set)
 
 	mux := http.NewServeMux()
-	idpHandler := service.NewIdPHandler(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
+	idpHandler := service.NewIdPHandler(st, hubtestutil.TestSecretHasher(), cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
 	idpHandler.RegisterRoutes(mux)
 
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	authDeps := servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	authDeps.Keystore = ks
 	authDeps.Mail = &mailSenderDouble{err: errors.New("smtp down")}
@@ -1074,7 +1074,7 @@ func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 		Listen: []string{":4327"},
 	}
 
-	idpHandler := service.NewIdPHandler(st, cfg, servicetest.NewSettingsManager(t, st, ks), auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
+	idpHandler := service.NewIdPHandler(st, hubtestutil.TestSecretHasher(), cfg, servicetest.NewSettingsManager(t, st, ks), auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
 	mux := http.NewServeMux()
 	idpHandler.RegisterRoutes(mux)
 	server := httptest.NewServer(mux)

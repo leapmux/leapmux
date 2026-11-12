@@ -1049,3 +1049,11 @@ func TestWire_ShutdownJoinsInventoryBeforeFlush(t *testing.T) {
 	cancel()
 	require.ErrorIs(t, <-result, context.Canceled)
 }
+
+func TestNewControlIPCFactory_PlacesSocketsInTheDataDir(t *testing.T) {
+	var dataDir string
+	w, _, _ := wireForTestWithKeypair(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, func(p *Params) { dataDir = p.DataDir })
+	factory, ok := w.Service.ControlIPC.(*controlipc.Factory)
+	require.True(t, ok)
+	assert.Equal(t, filepath.Join(dataDir, "run", "control"), factory.SocketDir)
+}

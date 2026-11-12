@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CHANGE_BRANCH_MODES,
   changeBranchInitialIntent,
+  dirtyWarningCopy,
   GIT_MODE_LABELS,
   GitMode,
   gitModeFromToken,
@@ -616,5 +617,43 @@ describe('initialIntentForMode', () => {
   it('agrees with changeBranchInitialIntent on the three modes they share', () => {
     for (const mode of CHANGE_BRANCH_MODES)
       expect(changeBranchInitialIntent(mode)).toEqual(initialIntentForMode(mode))
+  })
+})
+
+describe('dirtyWarningCopy', () => {
+  it('explains the discard-or-fail risk for SwitchBranch', () => {
+    const copy = dirtyWarningCopy(GitMode.SwitchBranch)
+    expect(copy).toMatch(/uncommitted changes/i)
+    // The switch warning is the only one that mentions failure/discard
+    // — the other two transfer the changes one way or another.
+    expect(copy).toMatch(/fail|discard/i)
+  })
+
+  it('says the new branch will inherit uncommitted changes for CreateBranch', () => {
+    const copy = dirtyWarningCopy(GitMode.CreateBranch)
+    expect(copy).toMatch(/uncommitted changes/i)
+    expect(copy).toMatch(/include/i)
+  })
+
+  it('says the new worktree will NOT receive the changes for CreateWorktree', () => {
+    const copy = dirtyWarningCopy(GitMode.CreateWorktree)
+    expect(copy).toMatch(/uncommitted changes/i)
+    // CreateWorktree is the inverse of CreateBranch: the new tree
+    // starts clean, so the copy must say so explicitly.
+    expect(copy).toMatch(/not be transferred/i)
+  })
+
+  it('returns null for modes without a dirty-tree warning', () => {
+    expect(dirtyWarningCopy(GitMode.Current)).toBeNull()
+    expect(dirtyWarningCopy(GitMode.UseWorktree)).toBeNull()
+  })
+
+  it('returns distinct copy per warning mode (no accidental shared strings)', () => {
+    const a = dirtyWarningCopy(GitMode.SwitchBranch)
+    const b = dirtyWarningCopy(GitMode.CreateBranch)
+    const c = dirtyWarningCopy(GitMode.CreateWorktree)
+    expect(a).not.toEqual(b)
+    expect(b).not.toEqual(c)
+    expect(a).not.toEqual(c)
   })
 })

@@ -85,7 +85,7 @@ func setupDelegation(t *testing.T) *delegationEnv {
 	pepper := []byte("0123456789abcdef0123456789abcdef")
 	tv, err := auth.NewTokenValidator(st, pepper)
 	require.NoError(t, err)
-	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
 
 	mux := http.NewServeMux()
@@ -109,10 +109,10 @@ func setupDelegation(t *testing.T) *delegationEnv {
 	workerID := id.Generate()
 	workerAuthToken := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    workerAuthToken,
-		RegisteredBy: userid.MustNew(u.ID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(workerAuthToken),
+		RegisteredBy:  userid.MustNew(u.ID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	workspaceID := id.Generate()
@@ -266,10 +266,10 @@ func TestWorkerDelegation_Mint_RejectsTabOwnedByDifferentWorker(t *testing.T) {
 	otherWorkerID := id.Generate()
 	otherAuthToken := id.Generate()
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:           otherWorkerID,
-		AuthToken:    otherAuthToken,
-		RegisteredBy: userid.MustNew(env.userID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            otherWorkerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(otherAuthToken),
+		RegisteredBy:  userid.MustNew(env.userID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	resp := mintRequest(t, env, otherAuthToken, map[string]any{
@@ -523,10 +523,10 @@ func TestWorkerDelegation_Revoke_RejectsCrossWorkerRevocation(t *testing.T) {
 	otherWorkerID := id.Generate()
 	otherAuthToken := id.Generate()
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:           otherWorkerID,
-		AuthToken:    otherAuthToken,
-		RegisteredBy: userid.MustNew(env.userID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            otherWorkerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(otherAuthToken),
+		RegisteredBy:  userid.MustNew(env.userID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	resp := revokeRequest(t, env, otherAuthToken, map[string]any{"token_id": tokenID})

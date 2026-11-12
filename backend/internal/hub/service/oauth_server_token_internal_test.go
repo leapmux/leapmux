@@ -9,6 +9,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
 // TestPostTouchPollOAuthError_ApprovalWithNoUserIsNotUsable pins the poll
@@ -30,7 +31,9 @@ import (
 func TestPostTouchPollOAuthError_ApprovalWithNoUserIsNotUsable(t *testing.T) {
 	t.Parallel()
 
-	h := &OAuthServerHandler{}
+	h := &OAuthServerHandler{
+		sessionHasher: hubtestutil.TestSecretHasher(),
+	}
 
 	for name, tc := range map[string]struct {
 		row      store.DeviceAuthorization

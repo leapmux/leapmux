@@ -2,6 +2,7 @@ package storetest
 
 import (
 	"context"
+	"crypto/sha256"
 	"testing"
 	"time"
 
@@ -127,14 +128,15 @@ func SeedPasswordlessUser(t *testing.T, st store.Store, username string) *store.
 // createdBy with the given expires_at and returns its id.
 func SeedRegistrationKey(t *testing.T, st store.Store, createdBy string, expiresAt time.Time) string {
 	t.Helper()
-	regID := id.Generate()
-	err := st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
-		ID:        regID,
-		CreatedBy: userid.MustNew(createdBy),
-		ExpiresAt: expiresAt,
-	})
-	require.NoError(t, err)
-	return regID
+	publicID, _ := seedRegistrationKeyWithHash(t, st, createdBy, expiresAt)
+	return publicID
+}
+
+func seedRegistrationKeyWithHash(t *testing.T, st store.Store, createdBy string, expiresAt time.Time) (string, []byte) {
+	t.Helper()
+	publicID, digest := id.Generate(), FixtureSecretHash(id.Generate())
+	require.NoError(t, st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{ID: publicID, KeyHash: digest, CreatedBy: userid.MustNew(createdBy), ExpiresAt: expiresAt}))
+	return publicID, digest
 }
 
 // WorkerKeys returns the pinned public-key set a seeded Worker row carries.
@@ -146,19 +148,25 @@ func WorkerKeys(fill byte) store.WorkerPublicKeys {
 // SeedWorker creates a worker registered by the given user and returns the fetched worker.
 func SeedWorker(t *testing.T, st store.Store, registeredBy string) *store.Worker {
 	t.Helper()
+	worker, _ := seedWorkerWithTokenHash(t, st, registeredBy)
+	return worker
+}
+
+func seedWorkerWithTokenHash(t *testing.T, st store.Store, registeredBy string) (*store.Worker, []byte) {
+	t.Helper()
 	workerID := id.Generate()
-	token := id.Generate()
+	tokenHash := FixtureSecretHash(id.Generate())
 	err := st.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    token,
-		RegisteredBy: userid.MustNew(registeredBy),
-		PublicKeys:   WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: tokenHash,
+		RegisteredBy:  userid.MustNew(registeredBy),
+		PublicKeys:    WorkerKeys(workerkeystest.SeededWorkerFill),
 	})
 	require.NoError(t, err)
 
 	worker, err := st.Workers().GetByID(ctx, workerID)
 	require.NoError(t, err)
-	return worker
+	return worker, tokenHash
 }
 
 // SeedOAuthProvider creates an OAuth provider and returns the fetched provider.
@@ -200,7 +208,7 @@ func SeedWorkspace(t *testing.T, st store.Store, ownerID, title string) string {
 func SeedSession(t *testing.T, st store.Store, userID string) *store.UserSession {
 	t.Helper()
 	sessID := id.Generate()
-	err := st.Sessions().Create(ctx, store.CreateSessionParams{
+	err := st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 		ID:        sessID,
 		UserID:    userid.MustNew(userID),
 		ExpiresAt: time.Now().Add(24 * time.Hour),
@@ -221,4 +229,21 @@ func mustSetPendingEmail(t *testing.T, minted bool, err error) {
 	t.Helper()
 	require.NoError(t, err)
 	require.True(t, minted, "the conditional mint must land for a fresh pending code")
+}
+
+// FixtureSecretHash supplies deterministic digest bytes to store-only tests.
+// Authentication tests use auth.SecretHasher to exercise the peppered scheme.
+func FixtureSecretHash(value string) []byte {
+	digest := sha256.Sum256([]byte(value))
+	return digest[:]
+}
+
+// checkSecretDigestLengths verifies the column rejects absent, short and long
+// digests, while accepting all 32 bytes even when every byte is zero.
+func checkSecretDigestLengths(t *testing.T, insert func([]byte) error) {
+	t.Helper()
+	for _, digest := range [][]byte{nil, {}, make([]byte, 1), make([]byte, 31), make([]byte, 33), make([]byte, 65536)} {
+		require.Error(t, insert(digest), "digest length %d must be refused", len(digest))
+	}
+	require.NoError(t, insert(make([]byte, 32)), "a 32-byte digest must be accepted")
 }

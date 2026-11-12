@@ -109,6 +109,7 @@ func (u User) HasUsablePassword() bool { return password.IsUsable(u.PasswordHash
 // deadline. Both nil means the session was never elevated. See
 // auth.Elevation, which is the one place the pair is interpreted.
 type UserSession struct {
+	SecretHash         []byte
 	ID                 string
 	UserID             string
 	ExpiresAt          time.Time
@@ -132,6 +133,7 @@ func (s UserSession) PageCursor() (time.Time, string) { return s.LastActiveAt, s
 // step-up admission without a second query. See UserSession for the pair's
 // meaning.
 type SessionWithUser struct {
+	SecretHash         []byte
 	UserID             string
 	Username           string
 	IsAdmin            bool
@@ -194,7 +196,6 @@ func (k WorkerPublicKeys) Proto() *leapmuxv1.WorkerPublicKeys {
 // Worker represents a registered worker node.
 type Worker struct {
 	ID           string
-	AuthToken    string
 	RegisteredBy string
 	Status       leapmuxv1.WorkerStatus
 	CreatedAt    time.Time
@@ -256,8 +257,8 @@ type WorkerWithOwner struct {
 
 // WorkerRegistrationKey is a short-lived bearer credential the user mints
 // from the frontend to authorize a single worker registration. The worker
-// presents the row's ID on WorkerConnectorService.Register and the hub
-// atomically consumes the row to create the workers entry.
+// presents the key on WorkerConnectorService.Register. The Hub finds its digest
+// and atomically consumes the row to create the workers entry. ID is public.
 //
 // SoftDelete encodes the deletion by setting ExpiresAt to a past time; the
 // cleanup loop hard-deletes rows whose ExpiresAt is older than the
@@ -842,11 +843,12 @@ type DropAPITokenElevationParams struct {
 }
 
 type CreateSessionParams struct {
-	ID        string
-	UserID    userid.UserID
-	ExpiresAt time.Time
-	UserAgent string
-	IPAddress string
+	SecretHash []byte
+	ID         string
+	UserID     userid.UserID
+	ExpiresAt  time.Time
+	UserAgent  string
+	IPAddress  string
 }
 
 type TouchSessionParams struct {
@@ -877,9 +879,9 @@ type ListUserSessionsParams struct {
 }
 
 type CreateWorkerParams struct {
-	ID           string
-	AuthToken    string
-	RegisteredBy userid.UserID
+	ID            string
+	AuthTokenHash []byte
+	RegisteredBy  userid.UserID
 	// AutoRegistered must be true only on the solo launcher's
 	// in-process bypass path (Server.RegisterWorker). All
 	// registration-key driven Register RPCs leave it false.
@@ -893,6 +895,12 @@ type CreateWorkerParams struct {
 	// cannot carry an attempt.
 	RegistrationAttemptID string
 	RegistrationKeyHash   []byte
+}
+
+// RotateWorkerAuthTokenParams replaces the digest of a live Worker's token.
+type RotateWorkerAuthTokenParams struct {
+	ID            string
+	AuthTokenHash []byte
 }
 
 // RegistrationKeyHashOrNil represents every absent digest as SQL NULL.
@@ -975,6 +983,7 @@ func WorkerAdminListStatusOf(status *leapmuxv1.WorkerStatus) (leapmuxv1.WorkerSt
 }
 
 type CreateRegistrationKeyParams struct {
+	KeyHash   []byte
 	ID        string
 	CreatedBy userid.UserID
 	ExpiresAt time.Time
@@ -984,7 +993,7 @@ type CreateRegistrationKeyParams struct {
 // gate, so the caller id cannot be an untyped positional string, mirroring
 // GetOwnedWorkerParams.
 type GetOwnedRegistrationKeyParams struct {
-	ID        string
+	KeyHash   []byte
 	CreatedBy userid.UserID
 }
 
@@ -1517,12 +1526,12 @@ func (t DelegationTokenWithOwner) PageCursor() (time.Time, string) { return t.Cr
 
 // DeviceAuthorization is an in-flight RFC 8628 device-code grant.
 type DeviceAuthorization struct {
-	DeviceCode   string
-	UserCode     string
-	DeviceName   string
-	UserID       string
-	State        leapmuxv1.DeviceAuthorizationState
-	LastPolledAt *time.Time
+	DeviceCodeHash []byte
+	UserCode       string
+	DeviceName     string
+	UserID         string
+	State          leapmuxv1.DeviceAuthorizationState
+	LastPolledAt   *time.Time
 	// ClientID is the app that started the flow.
 	ClientID string
 	// RequestedScopes is what the APP asked for, written at creation.
@@ -1965,7 +1974,7 @@ type CreateDelegationTokenParams struct {
 }
 
 type CreateDeviceAuthorizationParams struct {
-	DeviceCode      string
+	DeviceCodeHash  []byte
 	UserCode        string
 	DeviceName      string
 	ClientID        string
@@ -1977,8 +1986,8 @@ type CreateDeviceAuthorizationParams struct {
 }
 
 type ApproveDeviceAuthorizationParams struct {
-	DeviceCode string
-	UserID     userid.UserID
+	DeviceCodeHash []byte
+	UserID         userid.UserID
 	// GrantedScopes is what the browser consented to, canonical form.
 	GrantedScopes string
 }

@@ -40,7 +40,6 @@ function gitResp(overrides: Partial<GetGitInfoResponse> = {}): GetGitInfoRespons
     repoDirName: 'repo',
     isRepoRoot: true,
     isWorktreeRoot: false,
-    isDirty: false,
     currentBranch: 'main',
     originUrl: '',
     ...overrides,

@@ -85,7 +85,7 @@ Passwords are 8–128 printable ASCII characters, spaces included (see [Password
 The encryption key ring is a file (default `{DataDir}/encryption.key`, mode `0600`) holding versioned XChaCha20-Poly1305 keys plus a dedicated token pepper. The **highest version is the active key** used for all new encryption; older versions remain only to decrypt old data. For the full keystore model and backup guidance, see [Encryption & Data](/docs/admin/encryption-and-data/).
 
 {{< callout type="info" >}}
-The API-token / delegation-token pepper is a dedicated, stable secret stored in the key file but **independent** of the key ring, so `rotate`, `reencrypt`, and `remove` never invalidate tokens. To deliberately invalidate every API and delegation token, use `rotate-pepper`.
+The token pepper is a dedicated, stable secret stored in the key file but **independent** of the key ring. `rotate`, `reencrypt`, and `remove` leave it unchanged. To invalidate every stored bearer credential and app client secret, use `rotate-pepper`; the effects are listed below.
 {{< /callout >}}
 
 {{< callout type="info" >}}
@@ -112,9 +112,23 @@ Refuses the active version, an absent version, or a version that still encrypts 
 
 | Flag | Default | Description |
 | --- | --- | --- |
-| `--yes` | `false` | Required confirmation — this invalidates **all** API and delegation tokens. |
+| `--yes` | `false` | Required confirmation for session sign-out and invalidation of all stored bearer credentials and app client secrets. |
 
-Regenerates the token pepper. The key ring is untouched. Restart the hub to apply, then re-issue tokens online with `leapmux control admin api-token issue --hub <url>`.
+Regenerates the token pepper. The encryption key ring stays unchanged. Restart the Hub to apply. Pepper rotation, or a lost `encryption.key`, has these effects:
+
+- Signs out every session
+- Invalidates every Worker auth token
+- Invalidates API and delegation tokens and confidential app client secrets
+- Invalidates live registration keys and pending device codes
+
+Solo mode and the desktop app reissue their own Worker's token. For each standalone Worker:
+
+1. Remove it in the Hub's Worker list.
+2. Stop it.
+3. Delete its `state.json`.
+4. Register it with a new registration key. It receives a new Worker ID.
+
+Re-issue API tokens online with `leapmux control admin api-token issue --hub <url>`.
 
 The rotation runbook:
 

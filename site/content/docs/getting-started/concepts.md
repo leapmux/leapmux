@@ -13,13 +13,13 @@ LeapMux has three components. The Hub and the Worker are roles of a single Go bi
 
 | Component | Responsibility | Runs where | State it holds |
 |---|---|---|---|
-| **Frontend** | Renders the workspace UI: the tiling layout, agent chats, terminals, and the file browser. It is where you click, type, and read. | Your browser or the native desktop app. | None of its own. |
+| **Frontend** | Renders the workspace UI: the tiling layout, agent chats, terminals, and the file browser. It is where you click, type, and read. | Your browser or the native desktop app. | Rendered message text and code cached for seven days after last use in IndexedDB. The cache is not keyed to the account, and signing out does not clear it. |
 | **Hub** | Handles login, workspace management, and Worker registration, and **relays** encrypted Frontend↔Worker traffic. It is a coordinator and a relay, not a place where your code or conversations live. | A central Go service. | The central database (pluggable: SQLite by default, or PostgreSQL, MySQL, CockroachDB, YugabyteDB, TiDB). |
 | **Worker** | Runs your coding agents, PTY/terminal sessions, file browsing, and git operations. | A Go process, usually on the machine that holds your repos. It auto-reconnects to the Hub if the connection drops. | Its own local SQLite database. |
 
 **Your agent transcripts, terminal output, and file contents live on the Worker, never on the Hub.**
 
-The division is deliberate: the Hub knows *who is talking to whom* but never *what they say*. That property is what makes it safe to let a teammate or platform team operate the Hub while your agents run on your own machine.
+The division protects content while the Hub only observes its database, logs, and relayed traffic. The Hub is trusted for identity and code. A Hub that acts can open its own channel as you or serve modified Frontend code.
 
 {{< callout type="info" >}}
 The native desktop app is a packaged Frontend plus an embedded LeapMux binary. It can run a local Hub+Worker (solo) or connect its WebView to a remote Hub. See [Installation](/docs/getting-started/installation/) and [Running LeapMux](/docs/admin/running-leapmux/).
@@ -88,10 +88,10 @@ There is also dev mode (`leapmux dev`) — the same Hub+Worker-in-one-process ru
 |---|---|---|
 | Processes | One (Hub + Worker together) | Two or more (one Hub, one-or-more Workers) |
 | Default listen | `127.0.0.1:4327` (loopback) | Hub `:4327` (all interfaces); Workers dial out |
-| Login | None — auto-admin | Real auth (password, OAuth, sessions) |
+| Login | Local socket: none. TCP: set the first `solo` password, then sign in. | Real auth (password, OAuth, sessions) |
 | Workers | One local, in-process | One-or-more, local or remote, NAT-friendly |
 | Multiple user accounts | No | Yes |
-| Trust model | Local-host trust | Hub is an authenticated relay |
+| Trust model | Local-host trust | Hub trusted for identity and code; content end-to-end encrypted |
 
 The default TCP port everywhere is **4327**. For run modes, ports, data directories, Docker, and reverse-proxy setup, see [Running LeapMux](/docs/admin/running-leapmux/) and [Configuration](/docs/admin/configuration/). For the full command surface, see the [CLI Reference](/docs/reference/cli-reference/).
 
@@ -162,19 +162,19 @@ A tab can only be used while its Worker is online. If the hosting Worker is offl
 
 ## End-to-end encrypted channels
 
-All Frontend↔Worker traffic is **end-to-end encrypted**. The Hub relays opaque ciphertext over a single WebSocket; it never sees the plaintext.
+All Frontend↔Worker traffic is **end-to-end encrypted**. While the Hub only relays opaque ciphertext over a single WebSocket, it cannot see the plaintext.
 
 Conceptually:
 
-- When the Frontend needs to talk to a Worker, it opens an **encrypted channel** to that Worker, multiplexed through the Hub. The Hub routes the ciphertext but cannot decrypt it.
+- When the Frontend needs to talk to a Worker, it opens an **encrypted channel** to that Worker, multiplexed through the Hub. A Hub that only routes that ciphertext cannot decrypt it.
 - The encryption is a hybrid post-quantum handshake (classical + post-quantum key exchange, with authenticated encryption). A **classic** (non-PQ) mode is also available; the default is **post-quantum**. The specific algorithms are listed in [Security & Threat Model](/docs/admin/security/).
 - The Hub authenticates the channel open and names the user on the channel. The Frontend checks that name against the signed-in user. The Worker refuses any channel that carries no user identity.
 
-So the Hub sees *who talks to whom* plus the control-plane metadata it needs to route. It never sees the *content*: agent transcripts, tool calls, terminal I/O, and file contents travel inside the encrypted channel. This is what "the Hub is an **authenticated relay, not a trusted peer**" means in practice. It matters most in distributed mode, where the Hub may be operated by someone other than you. For the authoritative breakdown of exactly what the Hub can and cannot see, see [Security & Threat Model](/docs/admin/security/).
+A Hub that only observes sees *who talks to whom* and the control-plane metadata needed to route traffic. Agent transcripts, tool calls, terminal I/O, and file contents travel inside the encrypted channel. That protects content from an observing Hub. Identity and Frontend code still depend on the Hub. It matters most in distributed mode, where the Hub may be operated by someone other than you. For the authoritative breakdown of exactly what the Hub can and cannot see, see [Security & Threat Model](/docs/admin/security/).
 
 ### Worker identity is pinned (TOFU)
 
-Each Worker has a persistent static keypair. The Frontend pins that key **trust-on-first-use (TOFU)**: it records the Worker's key on first connection and rejects any later handshake whose key doesn't match. If the key changes, you get a **"Worker public key changed"** dialog showing 4-word fingerprints for the expected and actual keys, and you must explicitly **Accept** or **Reject**. A compromised Hub therefore cannot silently swap a Worker underneath you. (Closing the dialog counts as Reject — it fails closed.)
+Each Worker has a persistent static keypair. The Frontend pins that key **trust-on-first-use (TOFU)**: it records the Worker's key on first connection and rejects any later handshake whose key doesn't match. If the key changes, you get a **"Worker public key changed"** dialog showing 4-word fingerprints for the expected and actual keys, and you must explicitly **Accept** or **Reject**. Pinning detects a Hub substituting a Worker key in a channel your browser opens. It does not stop a Hub opening its own channel or serving modified Frontend code. (Closing the dialog counts as Reject — it fails closed.)
 
 For the full protocol, threat model, and trust boundaries, see [Security & Threat Model](/docs/admin/security/). For administrator-side encryption at rest (a separate keystore protecting Hub-stored secrets like OAuth tokens), see [Encryption & Data](/docs/admin/encryption-and-data/).
 
@@ -206,7 +206,7 @@ A typical mental walkthrough:
 2. You open or create a **workspace**.
 3. Inside it you arrange a **layout** of **tiles** — splits, grids, maybe a **floating window**.
 4. In each tile you open **tabs**: an agent here, a terminal there, a file viewer alongside. Each tab is hosted on a **Worker** you choose, and an agent or terminal tab can be bound to a git **worktree/branch**.
-5. The Frontend talks to each Worker over an **end-to-end encrypted channel** relayed by the Hub — which routes the bytes but can't read them.
+5. The Frontend talks to each Worker over an **end-to-end encrypted channel** relayed by the Hub. While the Hub only relays those bytes, it cannot read them.
 6. Everything keeps running on the Workers when you close the tab or reload the page, and your layout follows you across your devices.
 
 From here, jump to whichever piece you need: get LeapMux running in [Installation](/docs/getting-started/installation/) and [Quick Start](/docs/getting-started/quick-start/), or dig into any concept via its dedicated chapter linked above. New terms are collected in the [Glossary](/docs/reference/glossary/).

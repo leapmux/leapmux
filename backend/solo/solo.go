@@ -1303,15 +1303,16 @@ func bringUpLocalWorker(ctx context.Context, p workerBringUp) error {
 
 // workerRegistrar is the slice of *hub.Server that worker-state loading needs:
 // resolve a worker's registration, find the user to attribute a new local worker
-// to, register one, and retire an auto-registered row the launcher can no longer
-// use. Depending on the four methods rather than the whole Server lets the
+// to, register one, reissue its token, and retire an unusable bundled Worker.
+// Depending on these methods rather than the whole Server lets the
 // state-file rules -- which owner wins, when to re-register, when to retire -- be
 // tested without binding listeners and standing up a database.
 type workerRegistrar interface {
-	GetWorkerRegistration(ctx context.Context, workerID string) (hub.WorkerRegistration, error)
+	GetWorkerRegistration(ctx context.Context, workerID, authToken string) (hub.WorkerRegistration, error)
 	GetAdminUser(ctx context.Context) (userID string, err error)
 	RegisterWorker(ctx context.Context, userID string, keys *leapmuxv1.WorkerPublicKeys) (*hub.WorkerCredentials, error)
 	RetireLocalWorker(ctx context.Context, workerID string) error
+	ReissueLocalWorkerToken(ctx context.Context, workerID string) (string, error)
 }
 
 // loadOrCreateWorkerState returns the local Worker's state and its keypair: the
@@ -1431,7 +1432,7 @@ func reuseSavedWorkerState(ctx context.Context, server workerRegistrar, statePat
 	// "whoever the admin is now" answers a different question that merely shares
 	// an answer on a fresh single-user install: on any install where the admin
 	// changed, it silently reassigned the machine to them.
-	registration, err := server.GetWorkerRegistration(ctx, s.WorkerID)
+	registration, err := server.GetWorkerRegistration(ctx, s.WorkerID, s.AuthToken)
 	if errors.Is(err, store.ErrNotFound) {
 		// The worker row is genuinely gone (deleted, or never persisted), so there
 		// is no row to retire.
@@ -1452,6 +1453,22 @@ func reuseSavedWorkerState(ctx context.Context, server workerRegistrar, statePat
 		slog.Error("saved worker state is unusable; retiring it and re-registering a fresh worker, which orphans the previous one",
 			"worker_id", s.WorkerID, "reason", reason)
 		return nil, nil, discardSavedState(ctx, server, statePath, data, s.WorkerID)
+	}
+
+	if !registration.AuthTokenAccepted {
+		token, err := server.ReissueLocalWorkerToken(ctx, s.WorkerID)
+		if errors.Is(err, hub.ErrNotAutoRegistered) || errors.Is(err, store.ErrNotFound) {
+			return nil, nil, discardSavedState(ctx, server, statePath, data, s.WorkerID)
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("reissue saved worker token: %w", err)
+		}
+		s.AuthToken = token
+		s.RegisteredBy = registration.Owner
+		if err := persistState(statePath, &s); err != nil {
+			return nil, nil, fmt.Errorf("persist reissued worker token: %w", err)
+		}
+		return &s, compositeKey, nil
 	}
 
 	if s.RegisteredBy != registration.Owner {

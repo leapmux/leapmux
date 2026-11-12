@@ -418,6 +418,9 @@ func TestConnectWithReconnect_LogsTheRemedyOnceForAWorkerTheHubDoesNotKnow(t *te
 			assert.NotContains(t, logged, "Check --hub")
 			assert.Contains(t, logged, "state.json")
 			assert.Contains(t, logged, "more than 7 days ago")
+			assert.Contains(t, logged, "token pepper")
+			assert.Contains(t, logged, "encryption.key")
+			assert.Contains(t, logged, "remove the Worker in the Hub's Worker list")
 			for i, records := range recordsBefore {
 				want := 0
 				if i+1 > tt.wantFirstRecordAt {

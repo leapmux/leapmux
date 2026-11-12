@@ -234,16 +234,15 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		defer cancel()
 		resp := &leapmuxv1.GetGitInfoResponse{}
 
-		// Path-info, origin URL, and dirty status all race in parallel.
-		// `git -C <dir>` resolves to the repo root internally, so none of
-		// these probes depends on the rev-parse result to start. Origin
-		// and dirty are best-effort: failure leaves the field at its
-		// proto zero value, matching the prior single-probe semantics.
+		// These probes read refs and config only. Browsing must not run status,
+		// which can execute a repository's clean filters.
+		// Path info and origin URL run in parallel. GetOriginURL uses `git -C`
+		// to resolve the root itself, so it does not need the path-info result.
+		// The origin URL is best-effort; only a path-info failure fails the probe.
 		var (
 			info      *gitPathInfo
 			infoErr   error
 			originURL string
-			dirty     bool
 		)
 		g, gctx := errgroup.WithContext(ctx)
 		g.Go(func() error {
@@ -254,12 +253,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			originURL = gitutil.GetOriginURL(gctx, dirPath)
 			return nil
 		})
-		g.Go(func() error {
-			if d, err := isDirty(gctx, dirPath); err == nil {
-				dirty = d
-			}
-			return nil
-		})
+
 		_ = g.Wait()
 
 		if infoErr != nil {
@@ -298,9 +292,27 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		}
 		resp.CurrentBranch = branchOrShortSHA(info)
 		resp.OriginUrl = originURL
-		resp.IsDirty = dirty
 
 		sendProtoResponse(sender, resp)
+	})
+
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceGetGitWorkingTreeStateProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetGitWorkingTreeStateRequest, sender channel.ResponseWriter) {
+		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		if err != nil {
+			sendPermissionDenied(sender, "access denied")
+			return
+		}
+		ctx, cancel := context.WithTimeout(ctx, gitReadTimeout)
+		defer cancel()
+		dirty, err := isDirty(ctx, dirPath)
+		if ctx.Err() != nil {
+			sendInternalError(sender, ctx.Err().Error())
+			return
+		}
+		if err != nil {
+			slog.Warn("failed to read git working tree state", "path", dirPath, "error", err)
+		}
+		sendProtoResponse(sender, &leapmuxv1.GetGitWorkingTreeStateResponse{IsDirty: dirty})
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetGitFileStatusRequest, sender channel.ResponseWriter) {
@@ -1323,12 +1335,11 @@ func worktreeEntryFor(entries []*leapmuxv1.GitWorktreeEntry, path string) *leapm
 	return nil
 }
 
-// inspectBranchChange races the path-info probe, the dirty-tree probe,
-// and the branches list in one errgroup. ChangeBranchDialog opens against
-// a fixed (workerId, gitToplevel) and immediately needs all three —
-// returning them in a single RPC drops the dialog-open round trip from
-// two (GetGitInfo then ListGitBranches, each forking queryGitPathInfo
-// server-side) to one shared rev-parse.
+// inspectBranchChange reads path info and branches in one errgroup.
+// ChangeBranchDialog opens against a fixed (workerId, gitToplevel) and needs both;
+// returning them in a single RPC shares one queryGitPathInfo call instead of
+// repeating it in GetGitInfo and ListGitBranches. The dialog requests working-tree
+// state separately when the active mode needs a dirty-tree warning.
 //
 // Failure model mirrors inspectBranchDeletion: errNotGitRepo from the
 // path probe surfaces as "not a git repository"; any other goroutine's
@@ -1338,7 +1349,6 @@ func (svc *Service) inspectBranchChange(ctx context.Context, dirPath string) (*l
 		info     *gitPathInfo
 		infoErr  error
 		branches []*leapmuxv1.GitBranchEntry
-		dirty    bool
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -1361,15 +1371,7 @@ func (svc *Service) inspectBranchChange(ctx context.Context, dirPath string) (*l
 		branches = b
 		return nil
 	})
-	g.Go(func() error {
-		// `git status --porcelain` works from any subdir too. Best-
-		// effort: a probe failure leaves dirty=false, matching the
-		// GetGitInfo handler's existing "swallow on error" semantics.
-		if d, err := isDirty(gctx, dirPath); err == nil {
-			dirty = d
-		}
-		return nil
-	})
+
 	if err := g.Wait(); err != nil {
 		// Only the canonical "git says this isn't a work tree" signal
 		// (errNotGitRepo) maps to the user-facing "not a git
@@ -1390,7 +1392,6 @@ func (svc *Service) inspectBranchChange(ctx context.Context, dirPath string) (*l
 		Toplevel:      info.TopLevel,
 		IsWorktree:    info.IsWorktree,
 		CurrentBranch: branchOrShortSHA(info),
-		IsDirty:       dirty,
 		Branches:      branches,
 	}, nil
 }
@@ -2361,7 +2362,7 @@ func diffStatsForPath(ctx context.Context, dir string) (added, deleted, untracke
 		// corrupt index, dubious-ownership) are propagated so the
 		// close-prompt does not silently report 0 added / 0 deleted on a
 		// broken repo.
-		shortstat, shortstatErr = gitutil.Output(gctx, dir, "diff", "--shortstat", "HEAD")
+		shortstat, shortstatErr = gitutil.Output(gctx, dir, "diff", "--no-ext-diff", "--no-textconv", "--shortstat", "HEAD")
 		return nil
 	})
 	g.Go(func() error {
@@ -2626,11 +2627,11 @@ func getGitFileStatusEntries(ctx context.Context, repoRoot string) ([]*leapmuxv1
 		defer wg.Done()
 		// Failure is treated as "no annotation" — applyNumstat handles
 		// nil/empty input — so the local err is intentionally discarded.
-		unstagedOut, _ = gitutil.Bytes(ctx, repoRoot, "diff", "--numstat", "-z")
+		unstagedOut, _ = gitutil.Bytes(ctx, repoRoot, "diff", "--no-ext-diff", "--no-textconv", "--numstat", "-z")
 	}()
 	go func() {
 		defer wg.Done()
-		stagedOut, _ = gitutil.Bytes(ctx, repoRoot, "diff", "--numstat", "--staged", "-z")
+		stagedOut, _ = gitutil.Bytes(ctx, repoRoot, "diff", "--no-ext-diff", "--no-textconv", "--numstat", "--staged", "-z")
 	}()
 	wg.Wait()
 

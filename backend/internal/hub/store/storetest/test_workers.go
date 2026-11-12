@@ -16,6 +16,57 @@ import (
 )
 
 func (s *Suite) testWorkers(t *testing.T) {
+	t.Run("auth token digest length is enforced", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "worker-digest-owner")
+		checkSecretDigestLengths(t, func(digest []byte) error {
+			return st.Workers().Create(ctx, store.CreateWorkerParams{ID: id.Generate(), AuthTokenHash: digest, RegisteredBy: userid.MustNew(user.ID), PublicKeys: WorkerKeys(0x42)})
+		})
+	})
+	t.Run("rotation replaces an active token digest", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "rotate-digest-owner")
+		worker, oldHash := seedWorkerWithTokenHash(t, st, user.ID)
+		newHash := FixtureSecretHash("replacement")
+		rows, err := st.Workers().RotateAuthToken(ctx, store.RotateWorkerAuthTokenParams{ID: worker.ID, AuthTokenHash: newHash})
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), rows)
+		_, err = st.Workers().GetByAuthTokenHashIncludeDeleted(ctx, oldHash)
+		assert.ErrorIs(t, err, store.ErrNotFound)
+		got, err := st.Workers().GetByAuthTokenHashIncludeDeleted(ctx, newHash)
+		require.NoError(t, err)
+		assert.Equal(t, worker.ID, got.ID)
+		_, err = st.Workers().RotateAuthToken(ctx, store.RotateWorkerAuthTokenParams{ID: worker.ID, AuthTokenHash: make([]byte, 31)})
+		require.Error(t, err)
+		got, err = st.Workers().GetByAuthTokenHashIncludeDeleted(ctx, newHash)
+		require.NoError(t, err)
+		assert.Equal(t, worker.ID, got.ID)
+	})
+	t.Run("rotation preserves a deleted or deregistering token digest", func(t *testing.T) {
+		for _, deleted := range []bool{false, true} {
+			st := s.NewStore(t)
+			user := SeedUser(t, st, "inactive-digest-owner")
+			worker, oldHash := seedWorkerWithTokenHash(t, st, user.ID)
+			if deleted {
+				require.NoError(t, st.Workers().MarkDeleted(ctx, worker.ID))
+			} else {
+				_, err := st.Workers().ForceDeregister(ctx, worker.ID)
+				require.NoError(t, err)
+			}
+			newHash := FixtureSecretHash("inactive replacement")
+			rows, err := st.Workers().RotateAuthToken(ctx, store.RotateWorkerAuthTokenParams{ID: worker.ID, AuthTokenHash: newHash})
+			require.NoError(t, err)
+			assert.Zero(t, rows)
+			got, err := st.Workers().GetByAuthTokenHashIncludeDeleted(ctx, oldHash)
+			require.NoError(t, err)
+			assert.Equal(t, worker.ID, got.ID)
+			_, err = st.Workers().GetByAuthTokenHashIncludeDeleted(ctx, newHash)
+			assert.ErrorIs(t, err, store.ErrNotFound)
+			rows, err = st.Workers().RotateAuthToken(ctx, store.RotateWorkerAuthTokenParams{ID: "missing", AuthTokenHash: newHash})
+			require.NoError(t, err)
+			assert.Zero(t, rows)
+		}
+	})
 	t.Run("create accepts every empty registration digest", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "empty-digest-owner")
@@ -23,7 +74,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 			for _, digest := range [][]byte{nil, {}, make([]byte, 0, 32)} {
 				workerID := id.Generate()
 				require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
-					ID: workerID, AuthToken: id.Generate(), RegisteredBy: userid.MustNew(user.ID),
+					ID: workerID, AuthTokenHash: FixtureSecretHash(id.Generate()), RegisteredBy: userid.MustNew(user.ID),
 					AutoRegistered: bundled, PublicKeys: WorkerKeys(0x42), RegistrationKeyHash: digest,
 				}))
 				worker, err := st.Workers().GetByID(ctx, workerID)
@@ -47,7 +98,6 @@ func (s *Suite) testWorkers(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, worker.ID, found.ID)
 		assert.Equal(t, user.ID, found.RegisteredBy)
-		assert.NotEmpty(t, found.AuthToken)
 		assert.False(t, found.CreatedAt.IsZero())
 		assert.Nil(t, found.DeletedAt)
 	})
@@ -55,9 +105,9 @@ func (s *Suite) testWorkers(t *testing.T) {
 	t.Run("get by auth token", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "token-owner")
-		worker := SeedWorker(t, st, user.ID)
+		worker, workerTokenHash := seedWorkerWithTokenHash(t, st, user.ID)
 
-		found, err := st.Workers().GetByAuthTokenIncludeDeleted(ctx, worker.AuthToken)
+		found, err := st.Workers().GetByAuthTokenHashIncludeDeleted(ctx, workerTokenHash)
 		require.NoError(t, err)
 		assert.Equal(t, worker.ID, found.ID)
 	})
@@ -69,10 +119,10 @@ func (s *Suite) testWorkers(t *testing.T) {
 		token := id.Generate()
 		keys := WorkerKeys(0x31)
 		require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
-			ID:           workerID,
-			AuthToken:    token,
-			RegisteredBy: userid.MustNew(user.ID),
-			PublicKeys:   keys,
+			ID:            workerID,
+			AuthTokenHash: FixtureSecretHash(token),
+			RegisteredBy:  userid.MustNew(user.ID),
+			PublicKeys:    keys,
 		}))
 
 		byID, err := st.Workers().GetByID(ctx, workerID)
@@ -83,7 +133,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, keys, byIDIncludeDeleted.PublicKeys)
 
-		byToken, err := st.Workers().GetByAuthTokenIncludeDeleted(ctx, token)
+		byToken, err := st.Workers().GetByAuthTokenHashIncludeDeleted(ctx, FixtureSecretHash(token))
 		require.NoError(t, err)
 		assert.Equal(t, keys, byToken.PublicKeys)
 
@@ -106,7 +156,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 		workerID := id.Generate()
 		require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
 			ID:                    workerID,
-			AuthToken:             id.Generate(),
+			AuthTokenHash:         FixtureSecretHash(id.Generate()),
 			RegisteredBy:          userid.MustNew(user.ID),
 			PublicKeys:            WorkerKeys(0x41),
 			RegistrationAttemptID: attemptID,
@@ -137,10 +187,10 @@ func (s *Suite) testWorkers(t *testing.T) {
 		}
 		base := func() store.CreateWorkerParams {
 			return store.CreateWorkerParams{
-				ID:           id.Generate(),
-				AuthToken:    id.Generate(),
-				RegisteredBy: userid.MustNew(user.ID),
-				PublicKeys:   WorkerKeys(0x42),
+				ID:            id.Generate(),
+				AuthTokenHash: FixtureSecretHash(id.Generate()),
+				RegisteredBy:  userid.MustNew(user.ID),
+				PublicKeys:    WorkerKeys(0x42),
 			}
 		}
 
@@ -193,7 +243,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 		mk := func() store.CreateWorkerParams {
 			return store.CreateWorkerParams{
 				ID:                    id.Generate(),
-				AuthToken:             id.Generate(),
+				AuthTokenHash:         FixtureSecretHash(id.Generate()),
 				RegisteredBy:          userid.MustNew(user.ID),
 				PublicKeys:            WorkerKeys(0x43),
 				RegistrationAttemptID: attemptID,
@@ -225,10 +275,10 @@ func (s *Suite) testWorkers(t *testing.T) {
 			t.Run("refuses "+name, func(t *testing.T) {
 				workerID := id.Generate()
 				err := st.Workers().Create(ctx, store.CreateWorkerParams{
-					ID:           workerID,
-					AuthToken:    id.Generate(),
-					RegisteredBy: userid.MustNew(user.ID),
-					PublicKeys:   keys,
+					ID:            workerID,
+					AuthTokenHash: FixtureSecretHash(id.Generate()),
+					RegisteredBy:  userid.MustNew(user.ID),
+					PublicKeys:    keys,
 				})
 				assert.ErrorIs(t, err, store.ErrInvalidArgument)
 				_, err = st.Workers().GetByIDIncludeDeleted(ctx, workerID)
@@ -352,12 +402,12 @@ func (s *Suite) testWorkers(t *testing.T) {
 	t.Run("get by auth token returns a deleted row with its DeletedAt", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "token-del-user")
-		worker := SeedWorker(t, st, user.ID)
+		worker, workerTokenHash := seedWorkerWithTokenHash(t, st, user.ID)
 
 		err := st.Workers().MarkDeleted(ctx, worker.ID)
 		require.NoError(t, err)
 
-		gone, err := st.Workers().GetByAuthTokenIncludeDeleted(ctx, worker.AuthToken)
+		gone, err := st.Workers().GetByAuthTokenHashIncludeDeleted(ctx, workerTokenHash)
 		require.NoError(t, err, "the lookup returns every state; each caller decides how to handle a deleted row")
 		assert.Equal(t, worker.ID, gone.ID)
 		require.NotNil(t, gone.DeletedAt)
@@ -598,7 +648,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 
 	t.Run("get by auth token not found", func(t *testing.T) {
 		st := s.NewStore(t)
-		_, err := st.Workers().GetByAuthTokenIncludeDeleted(ctx, "nonexistent-token")
+		_, err := st.Workers().GetByAuthTokenHashIncludeDeleted(ctx, FixtureSecretHash("nonexistent-token"))
 		assert.ErrorIs(t, err, store.ErrNotFound)
 	})
 
@@ -828,7 +878,7 @@ func (s *Suite) testWorkers(t *testing.T) {
 		worker := SeedWorker(t, st, user.ID)
 
 		err := st.Workers().Create(ctx, store.CreateWorkerParams{
-			ID: worker.ID, AuthToken: id.Generate(), RegisteredBy: userid.MustNew(user.ID),
+			ID: worker.ID, AuthTokenHash: FixtureSecretHash(id.Generate()), RegisteredBy: userid.MustNew(user.ID),
 			PublicKeys: WorkerKeys(workerkeystest.SeededWorkerFill),
 		})
 		assert.ErrorIs(t, err, store.ErrConflict)
@@ -1056,26 +1106,26 @@ func (s *Suite) testWorkers(t *testing.T) {
 	t.Run("get by auth token returns every state", func(t *testing.T) {
 		st := s.NewStore(t)
 		user := SeedUser(t, st, "token-status-user")
-		active := SeedWorker(t, st, user.ID)
-		deregistering := SeedWorker(t, st, user.ID)
-		deleted := SeedWorker(t, st, user.ID)
+		active, activeTokenHash := seedWorkerWithTokenHash(t, st, user.ID)
+		deregistering, deregisteringTokenHash := seedWorkerWithTokenHash(t, st, user.ID)
+		deleted, deletedTokenHash := seedWorkerWithTokenHash(t, st, user.ID)
 		_, err := st.Workers().ForceDeregister(ctx, deregistering.ID)
 		require.NoError(t, err)
 		require.NoError(t, st.Workers().MarkDeleted(ctx, deleted.ID))
 
-		got, err := st.Workers().GetByAuthTokenIncludeDeleted(ctx, active.AuthToken)
+		got, err := st.Workers().GetByAuthTokenHashIncludeDeleted(ctx, activeTokenHash)
 		require.NoError(t, err)
 		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_ACTIVE, got.Status)
 		assert.Nil(t, got.DeletedAt)
 		assert.Equal(t, active.PublicKeys, got.PublicKeys)
 
-		got, err = st.Workers().GetByAuthTokenIncludeDeleted(ctx, deregistering.AuthToken)
+		got, err = st.Workers().GetByAuthTokenHashIncludeDeleted(ctx, deregisteringTokenHash)
 		require.NoError(t, err)
 		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, got.Status)
 		assert.Nil(t, got.DeletedAt)
 		assert.Equal(t, deregistering.PublicKeys, got.PublicKeys)
 
-		got, err = st.Workers().GetByAuthTokenIncludeDeleted(ctx, deleted.AuthToken)
+		got, err = st.Workers().GetByAuthTokenHashIncludeDeleted(ctx, deletedTokenHash)
 		require.NoError(t, err)
 		assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, got.Status)
 		assert.NotNil(t, got.DeletedAt)

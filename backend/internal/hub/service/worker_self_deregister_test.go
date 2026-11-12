@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/notifier"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/testutil"
@@ -38,8 +39,8 @@ func registerSelfDeregisterableWorker(t *testing.T, env *regKeyEnv, ctx context.
 	t.Helper()
 	admin := userid.MustNew(env.adminID(t))
 	key = id.Generate()
-	require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
-		ID: key, CreatedBy: admin, ExpiresAt: time.Now().Add(time.Hour),
+	require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: hubtestutil.TestSecretHasher().Hash(key),
+		ID: id.Generate(), CreatedBy: admin, ExpiresAt: time.Now().Add(time.Hour),
 	}))
 	resp, err := env.registerWithKey(t, key)
 	require.NoError(t, err)
@@ -53,7 +54,7 @@ func TestSelfDeregisterRepairsEffectsAfterCommittedDeletion(t *testing.T) {
 	}})
 	ctx := context.Background()
 	_, token := registerSelfDeregisterableWorker(t, env, ctx)
-	worker, err := env.store.Workers().GetByAuthTokenIncludeDeleted(ctx, token)
+	worker, err := env.store.Workers().GetByAuthTokenHashIncludeDeleted(ctx, hubtestutil.TestSecretHasher().Hash(token))
 	require.NoError(t, err)
 	owner := userid.MustNew(worker.RegisteredBy)
 	// Commit the same deletion as the handler, without running effects. This
@@ -70,7 +71,7 @@ func TestSelfDeregisterRepairsEffectsAfterCommittedDeletion(t *testing.T) {
 			t.Fatal("a successful deletion retry must complete the post-commit effects")
 		}
 	}
-	_, err = auth.AuthenticateWorkerBearer(ctx, env.store, "Bearer "+token)
+	_, err = auth.AuthenticateWorkerBearer(ctx, env.store, hubtestutil.TestSecretHasher(), "Bearer "+token)
 	require.ErrorIs(t, err, auth.ErrWorkerDeleted)
 }
 
@@ -92,7 +93,7 @@ func TestSelfDeregisterFencesDelayedAdmission(t *testing.T) {
 		}}
 	}})
 	_, token := registerSelfDeregisterableWorker(t, env, ctx)
-	worker, err := env.store.Workers().GetByAuthTokenIncludeDeleted(ctx, token)
+	worker, err := env.store.Workers().GetByAuthTokenHashIncludeDeleted(ctx, hubtestutil.TestSecretHasher().Hash(token))
 	require.NoError(t, err)
 	type dialResult struct {
 		stream *workerhub.WorkerStream
@@ -110,7 +111,7 @@ func TestSelfDeregisterFencesDelayedAdmission(t *testing.T) {
 	}
 	assert.False(t, env.wMgr.OnlineForTrustedPath(worker.ID))
 	require.NoError(t, env.deregisterSelfCall(t, ctx, token))
-	deleted, err := env.store.Workers().GetByAuthTokenIncludeDeleted(ctx, token)
+	deleted, err := env.store.Workers().GetByAuthTokenHashIncludeDeleted(ctx, hubtestutil.TestSecretHasher().Hash(token))
 	require.NoError(t, err)
 	require.NotNil(t, deleted.DeletedAt)
 	close(release)
@@ -132,7 +133,7 @@ func TestSelfDeregisterFencesDelayedAdmission(t *testing.T) {
 	testutil.AssertEventually(t, func() bool {
 		return !env.wMgr.OnlineForTrustedPath(worker.ID) && !env.wMgr.IsDeregistering(worker.ID)
 	})
-	_, err = auth.AuthenticateWorkerBearer(ctx, env.store, "Bearer "+token)
+	_, err = auth.AuthenticateWorkerBearer(ctx, env.store, hubtestutil.TestSecretHasher(), "Bearer "+token)
 	require.ErrorIs(t, err, auth.ErrWorkerDeleted)
 }
 
@@ -149,7 +150,7 @@ func TestSelfDeregisterRejectsBundledWorkers(t *testing.T) {
 	keys := workerKeysForBundled(t)
 	require.NoError(t, env.store.Workers().Create(ctx, store.CreateWorkerParams{
 		ID:             "bundled-worker-1",
-		AuthToken:      "bundled-token",
+		AuthTokenHash:  hubtestutil.TestSecretHasher().Hash("bundled-token"),
 		RegisteredBy:   admin,
 		AutoRegistered: true,
 		PublicKeys:     keys,
@@ -184,7 +185,7 @@ func TestSelfDeregisterRejectsBundledWorkers(t *testing.T) {
 // creates directly.
 func workerKeysForBundled(t *testing.T) store.WorkerPublicKeys {
 	t.Helper()
-	attempt := newRegisterAttempt(t, 0x77)
+	attempt := newRegisterAttempt(t)
 	return store.WorkerPublicKeysFromProto(attempt.keys)
 }
 
@@ -208,11 +209,11 @@ func TestSelfDeregisterIsIdentityScopedAndRepeatable(t *testing.T) {
 	t.Run("a valid token deletes only its own worker", func(t *testing.T) {
 		require.NoError(t, env.deregisterSelfCall(t, ctx, token))
 
-		deleted, err := env.store.Workers().GetByAuthTokenIncludeDeleted(ctx, token)
+		deleted, err := env.store.Workers().GetByAuthTokenHashIncludeDeleted(ctx, hubtestutil.TestSecretHasher().Hash(token))
 		require.NoError(t, err)
 		assert.NotNil(t, deleted.DeletedAt, "the caller's worker is deleted")
 
-		untouched, err := env.store.Workers().GetByAuthTokenIncludeDeleted(ctx, otherToken)
+		untouched, err := env.store.Workers().GetByAuthTokenHashIncludeDeleted(ctx, hubtestutil.TestSecretHasher().Hash(otherToken))
 		require.NoError(t, err)
 		assert.Nil(t, untouched.DeletedAt, "another worker's row stays")
 	})
@@ -227,7 +228,23 @@ func TestSelfDeregisterIsIdentityScopedAndRepeatable(t *testing.T) {
 		require.NoError(t, err, "the retained row keeps accepting the idempotent call")
 	})
 	t.Run("ordinary authentication refuses the deleted worker", func(t *testing.T) {
-		_, err := auth.AuthenticateWorkerBearer(ctx, env.store, "Bearer "+token)
+		_, err := auth.AuthenticateWorkerBearer(ctx, env.store, hubtestutil.TestSecretHasher(), "Bearer "+token)
 		require.ErrorIs(t, err, auth.ErrWorkerDeleted)
 	})
+}
+
+func TestSelfDeregisterUsesTheTokenDigestAndRefusesUnknownTokens(t *testing.T) {
+	env := setupRegKeyEnv(t)
+	_, token := registerSelfDeregisterableWorker(t, env, t.Context())
+	worker, err := auth.AuthenticateWorkerBearer(t.Context(), env.store, hubtestutil.TestSecretHasher(), "Bearer "+token)
+	require.NoError(t, err)
+	err = env.deregisterSelfCall(t, t.Context(), "unknown-token")
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	hubtestutil.RequireWorkerToken(t, env.store, worker.ID, token)
+	require.NoError(t, env.deregisterSelfCall(t, t.Context(), token))
+	deleted, err := env.store.Workers().GetByIDIncludeDeleted(t.Context(), worker.ID)
+	require.NoError(t, err)
+	require.NotNil(t, deleted.DeletedAt)
+	require.NoError(t, env.deregisterSelfCall(t, t.Context(), token), "a retained deleted row must still confirm a repeated request")
 }

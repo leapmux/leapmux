@@ -705,7 +705,7 @@ leapmux control admin settings list --hub unix:$HOME/.config/leapmux/hub/hub.soc
 The two transports carry different credentials and trust boundaries:
 
 - **External CLI.** Each Hub credential is a single bearer token (an `api_tokens` row, stored only as a peppered HMAC-SHA256 hash). End-to-end channels to Workers use the same Noise_NK handshake the browser uses, with each Worker's static key pinned per-hub on first use (see [Worker TOFU pins](#worker-tofu-pins)).
-- **Spawned agent or terminal.** The Worker hands the process a private local-IPC socket (mode `0600`) and a per-process token scoped to the spawning user and tab. When the agent or terminal closes, the socket is torn down and the token is invalidated.
+- **Spawned agent or terminal.** The Worker hands the process a private local-IPC socket (mode `0600`) and a per-process token scoped to the spawning user and tab. The socket lives in `<data-dir>/run/control`, a directory that only the Worker's operating-system account can open. When the agent or terminal closes, the socket is torn down and the token is invalidated.
 - **Cross-worker calls from a spawned agent.** Reaching a *sibling* Worker (an `agent`/`terminal`/`file`/`git` command with a different `--worker-id`) uses a Worker-minted delegation token: it carries your identity and is pinned to the machines it may reach. It is minted lazily on the first cross-worker call and revoked when the agent closes — so an agent that never reaches across Workers never holds one.
 
 For the full trust model, what the Hub can and cannot see, and the encryption primitives, see [Security & Threat Model](/docs/admin/security/).

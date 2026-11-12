@@ -3,10 +3,15 @@ package controlipc
 import (
 	"context"
 	"errors"
+	"fmt"
+	"path/filepath"
+	"runtime"
+
 	"log/slog"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
@@ -21,17 +26,14 @@ import (
 // in tests / minimal configurations without forcing
 // crossworker.DelegationStore in.
 //
-// Acquire carries the spawn's tab identity (tabID, tabType) because
-// the hub's mint endpoint validates that the calling worker owns the tab
-// -- it is the provenance recorded on the token, not a scope. The first
-// spawn for a given user supplies it; concurrent spawns share the same
-// cached bearer.
+// Acquire holds one reference for the user. The mint reads the tab identity
+// from the Worker's live inventory; concurrent spawns share the cached bearer.
 type DelegationLifecycle interface {
 	Acquire(userID userid.UserID)
 	Release(ctx context.Context, userID userid.UserID) error
 }
 
-// revokeRevokeTimeout caps the hub call we make from the cleanup
+// releaseRevokeTimeout caps the hub call we make from the cleanup
 // goroutine. Spawn cleanups need to return promptly; the delegation
 // row will expire on its own if the revoke RPC doesn't land in time.
 const releaseRevokeTimeout = 5 * time.Second
@@ -41,6 +43,8 @@ const releaseRevokeTimeout = 5 * time.Second
 // how to talk to the local dispatcher, sibling workers via
 // crossworker.Client, and the hub via a hub-bound HTTP client.
 type Factory struct {
+	// SocketDir is the absolute private directory for Unix control sockets.
+	SocketDir   string
 	WorkerID    string
 	Dispatcher  *channel.Dispatcher
 	CrossWorker *crossworker.Client
@@ -101,12 +105,8 @@ type HubBridge interface {
 type spawnCommon struct {
 	UserID   userid.UserID
 	WorkerID string
-	// SocketID identifies the SOCKET, and it is always the spawned entity's own id.
-	// Kept apart from TabID because a quake terminal advertises ANOTHER tab:
-	// keyed on that tab the socket path would collide with the tab's own spawn
-	// -- with the agent's socket in the best case (different SocketKind, so
-	// merely confusing) and with a terminal tab's socket in the worst, where
-	// two live shells would fight over one listener.
+	// SocketID identifies the spawned entity's socket. A quake terminal has
+	// no TabID, so its own identity must determine the socket path.
 	SocketID string
 	// TabID is the tab the spawn ADVERTISES as ambient, which every
 	// `leapmux control` command resolves through the hub's LocateTab. Empty
@@ -125,7 +125,15 @@ func (f *Factory) spawn(socketKind SocketKind, sc spawnCommon) ([]string, func()
 	if sc.UserID.IsZero() {
 		return nil, nil, service.ErrMissingIdentity
 	}
-	socketURL := DefaultSocketPath(sc.WorkerID, socketKind, sc.SocketID)
+	if runtime.GOOS != "windows" {
+		if !filepath.IsAbs(f.SocketDir) {
+			return nil, nil, fmt.Errorf("controlipc: socket directory must be absolute, got %q", f.SocketDir)
+		}
+		if err := atomicfile.MkdirAllPrivate(f.SocketDir); err != nil {
+			return nil, nil, fmt.Errorf("controlipc: prepare socket directory %s: %w", f.SocketDir, err)
+		}
+	}
+	socketURL := SocketURL(f.SocketDir, sc.WorkerID, socketKind, sc.SocketID)
 	token := MintToken()
 	tokenInfo := TokenInfo{
 		UserID:        sc.UserID,
@@ -216,9 +224,8 @@ func (f *Factory) TerminalSpawning(info service.TerminalSpawnInfo) ([]string, fu
 // invites a caller to pass one spawn's user with another's tab.
 // The attribute NAME comes from the socket kind (see SocketKind.logKey), so an
 // agent spawn cannot be logged under "terminal_id". Its VALUE is SocketID, the
-// spawn's own entity: a quake terminal's advertised TabID identifies a
-// different tab, and logging that under "terminal_id" would attribute the
-// teardown to a tab that is still running.
+// spawn's own entity: a quake terminal has no advertised TabID, so logging
+// TabID would omit the identity of the terminal being stopped.
 func (f *Factory) makeCleanup(socketKind SocketKind, sc spawnCommon, srv *Server) func() {
 	return func() {
 		if err := srv.Close(); err != nil {

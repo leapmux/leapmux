@@ -70,7 +70,7 @@ func setupAppService(t *testing.T) *appEnv {
 			FirstCredentialExempt: true, IsAdmin: isAdmin,
 		})
 		require.NoError(t, err)
-		token, _, _, err := auth.Login(ctx, st, username, "password123", auth.DefaultSessionDuration)
+		token, _, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), username, "password123", auth.DefaultSessionDuration)
 		require.NoError(t, err)
 		return u.ID, token
 	}
@@ -81,14 +81,14 @@ func setupAppService(t *testing.T) *appEnv {
 	// both sessions carry a live window. TestAppService_WritesNeedAProvenFactor
 	// drives an UN-elevated one, which is what keeps this line from silently
 	// making the gate untested.
-	hubtestutil.ElevateSession(t, st, adminSession, adminID)
-	hubtestutil.ElevateSession(t, st, userSession, userID)
+	hubtestutil.ElevateSession(t, st, hubtestutil.SessionIDFromCookie(t, adminSession), adminID)
+	hubtestutil.ElevateSession(t, st, hubtestutil.SessionIDFromCookie(t, userSession), userID)
 
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	closer := &recordingCredentialCloser{}
 	lifecycle := auth.NewCredentialLifecycleEffects(contexts, closer, nil)
 	connectServer := connect.NewServer(interceptor)
@@ -710,13 +710,13 @@ func (e *appEnv) newPlainUser(t *testing.T, username string) (id, session string
 		Username: username, PasswordHash: hash, DisplayName: username, FirstCredentialExempt: true,
 	})
 	require.NoError(t, err)
-	token, _, _, err := auth.Login(ctx, e.store, username, "password123", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(ctx, e.store, hubtestutil.TestSecretHasher(), username, "password123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	// ELEVATED, like the two sessions setupAppService builds. The elevation
 	// gate runs before the ownership rung, so a stranger with no window is
 	// refused for the window and never reaches the answer these tests measure
 	// -- which would make an ownership test pass for the wrong reason.
-	hubtestutil.ElevateSession(t, e.store, token, u.ID)
+	hubtestutil.ElevateSession(t, e.store, hubtestutil.SessionIDFromCookie(t, token), u.ID)
 	return u.ID, token
 }
 
@@ -756,7 +756,7 @@ func TestAppService_WritesNeedAProvenFactor(t *testing.T) {
 	// A fresh login rather than a dropped window, because that is the state a
 	// person is actually in: signed in for hours, with the step-up window long
 	// expired.
-	plain, _, _, err := auth.Login(ctx, env.store, "admin", "password123", auth.DefaultSessionDuration)
+	plain, _, _, err := auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "admin", "password123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	refused := map[string]func() error{

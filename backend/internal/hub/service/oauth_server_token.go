@@ -335,7 +335,8 @@ type consentedGrant struct {
 	// id is the grant row this mint redeems. It is what the mint reads as its
 	// AUTHORITY: /oauth/token carries no session at all, so the browser consent
 	// that produced this row is where the elevated session was required, and
-	// holding the row is the proof.
+	// holding the row is the proof. A device grant uses the stored digest's
+	// bytes as a string; an authorization-code grant uses its string row id.
 	id               string
 	userID           userid.UserID
 	app              *store.OAuthClient
@@ -386,7 +387,8 @@ func (h *OAuthServerHandler) handleTokenDeviceCode(w http.ResponseWriter, r *htt
 		writeOAuthError(w, http.StatusBadRequest, "invalid_request", "device_code is required")
 		return
 	}
-	row, err := h.store.DeviceAuthorizations().Get(r.Context(), deviceCode)
+	deviceCodeHash := h.validator.HashSecret(deviceCode)
+	row, err := h.store.DeviceAuthorizations().Get(r.Context(), deviceCodeHash)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "unknown device_code")
@@ -412,7 +414,7 @@ func (h *OAuthServerHandler) handleTokenDeviceCode(w http.ResponseWriter, r *htt
 		return
 	}
 	if body, ok := h.postTouchPollOAuthError(row); ok {
-		if !h.touchPoll(w, r, deviceCode) {
+		if !h.touchPoll(w, r, deviceCodeHash) {
 			return
 		}
 		writeOAuthErrorBody(w, http.StatusBadRequest, body)
@@ -425,7 +427,7 @@ func (h *OAuthServerHandler) handleTokenDeviceCode(w http.ResponseWriter, r *htt
 	// the pending/denied path above. The instant is the HUB's clock, the same
 	// clock shouldThrottle measures with: TouchPoll writes it, so one clock
 	// domain answers the whole throttle.
-	if !h.touchPoll(w, r, deviceCode) {
+	if !h.touchPoll(w, r, deviceCodeHash) {
 		return
 	}
 	// postTouchPollOAuthError above already answers authorization_pending for a
@@ -442,7 +444,7 @@ func (h *OAuthServerHandler) handleTokenDeviceCode(w http.ResponseWriter, r *htt
 	// credential into a second credential, which is precisely the widening the
 	// step-up flow exists to avoid.
 	if isElevationGrant(row) {
-		h.answerElevationPoll(w, r, row, deviceCode)
+		h.answerElevationPoll(w, r, row, deviceCodeHash)
 		return
 	}
 	scopes, scopeErr := authscope.Parse(row.GrantedScopes)
@@ -451,7 +453,7 @@ func (h *OAuthServerHandler) handleTokenDeviceCode(w http.ResponseWriter, r *htt
 		return
 	}
 	h.issueTokenResponse(w, r, consentedGrant{
-		id:               deviceCode,
+		id:               string(deviceCodeHash),
 		userID:           pollUID,
 		app:              app,
 		installationName: row.DeviceName,
@@ -462,7 +464,7 @@ func (h *OAuthServerHandler) handleTokenDeviceCode(w http.ResponseWriter, r *htt
 			// Consume is the single-use consumption that must stay atomic with
 			// token creation, so it -- and only it -- remains in the
 			// transaction.
-			affected, err := tx.DeviceAuthorizations().Consume(r.Context(), deviceCode, h.now().UTC())
+			affected, err := tx.DeviceAuthorizations().Consume(r.Context(), deviceCodeHash, h.now().UTC())
 			if err != nil {
 				return fmt.Errorf("consume device authorization: %w", err)
 			}
@@ -476,7 +478,7 @@ func (h *OAuthServerHandler) handleTokenDeviceCode(w http.ResponseWriter, r *htt
 
 // answerElevationPoll finishes a step-up poll: it reports the window the
 // approval stamped, and spends the grant.
-func (h *OAuthServerHandler) answerElevationPoll(w http.ResponseWriter, r *http.Request, row *store.DeviceAuthorization, deviceCode string) {
+func (h *OAuthServerHandler) answerElevationPoll(w http.ResponseWriter, r *http.Request, row *store.DeviceAuthorization, deviceCodeHash []byte) {
 	// The APPROVED state is not the answer, so this reads the credential itself.
 	// An approval whose elevation never committed leaves the row approved with
 	// no window; answering "elevated" there tells the client to retry a command
@@ -496,7 +498,7 @@ func (h *OAuthServerHandler) answerElevationPoll(w http.ResponseWriter, r *http.
 			"that app credential is not verified; start the verification again")
 		return
 	}
-	if err := h.spendDeviceGrant(r.Context(), deviceCode); err != nil {
+	if err := h.spendDeviceGrant(r.Context(), deviceCodeHash); err != nil {
 		if errors.Is(err, errAuthorizationGrantUnavailable) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "device_code expired or already consumed")
 			return
@@ -511,8 +513,8 @@ func (h *OAuthServerHandler) answerElevationPoll(w http.ResponseWriter, r *http.
 // two ways it can fail. ONE mapping for the elevation poll and the consent
 // mint's consume closure, so the "already consumed" answer cannot drift in
 // code or message between the two stages that spend the same row.
-func (h *OAuthServerHandler) spendDeviceGrant(ctx context.Context, deviceCode string) error {
-	affected, err := h.store.DeviceAuthorizations().Consume(ctx, deviceCode, h.now().UTC())
+func (h *OAuthServerHandler) spendDeviceGrant(ctx context.Context, deviceCodeHash []byte) error {
+	affected, err := h.store.DeviceAuthorizations().Consume(ctx, deviceCodeHash, h.now().UTC())
 	if err != nil {
 		return err
 	}
@@ -571,8 +573,8 @@ func (h *OAuthServerHandler) postTouchPollOAuthError(row *store.DeviceAuthorizat
 // grant writes, and the issuance an approved grant starts -- must advance
 // last_polled_at first, so the two spellings share one helper rather than
 // restating the statement and its error answer.
-func (h *OAuthServerHandler) touchPoll(w http.ResponseWriter, r *http.Request, deviceCode string) bool {
-	if err := h.store.DeviceAuthorizations().TouchPoll(r.Context(), deviceCode, h.now().UTC()); err != nil {
+func (h *OAuthServerHandler) touchPoll(w http.ResponseWriter, r *http.Request, deviceCodeHash []byte) bool {
+	if err := h.store.DeviceAuthorizations().TouchPoll(r.Context(), deviceCodeHash, h.now().UTC()); err != nil {
 		writeInternalError(w, "device authorization poll update failed", err)
 		return false
 	}

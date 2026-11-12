@@ -256,10 +256,10 @@ func (s *Suite) testCleanupBoundaries(t *testing.T) {
 			{"live", cutoff.Add(time.Millisecond)},
 		} {
 			require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-				ClientID:   oauthapp.ControlCLIClientID,
-				DeviceCode: "device-" + d.suffix,
-				UserCode:   "USER-" + d.suffix,
-				ExpiresAt:  d.expiresAt,
+				ClientID:       oauthapp.ControlCLIClientID,
+				DeviceCodeHash: FixtureSecretHash("device-" + d.suffix),
+				UserCode:       "USER-" + d.suffix,
+				ExpiresAt:      d.expiresAt,
 			}))
 		}
 

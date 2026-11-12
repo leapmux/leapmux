@@ -50,7 +50,7 @@ func TestLogin_Success(t *testing.T) {
 	userID := createTestUser(t, st)
 	ctx := context.Background()
 
-	token, user, _, err := auth.Login(ctx, st, "testuser", "password123", auth.DefaultSessionDuration)
+	token, user, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "testuser", "password123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	assert.NotEmpty(t, token)
 	assert.Equal(t, userID, user.ID)
@@ -65,11 +65,11 @@ func TestLogin_StampsTheGivenLifetime(t *testing.T) {
 
 	const lifetime = 90 * time.Minute
 	before := time.Now()
-	token, _, expiresAt, err := auth.Login(ctx, st, "testuser", "password123", lifetime)
+	token, _, expiresAt, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "testuser", "password123", lifetime)
 	require.NoError(t, err)
 	hubtestutil.AssertSessionLifetime(t, before, lifetime, expiresAt)
 
-	sess, err := st.Sessions().GetByID(ctx, token, time.Now().UTC())
+	sess, err := st.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, token), time.Now().UTC())
 	require.NoError(t, err)
 	assert.WithinDuration(t, expiresAt, sess.ExpiresAt, time.Second,
 		"the returned expiry and the stored row must be the same deadline")
@@ -88,18 +88,18 @@ func TestCreateSession_NonPositiveLifetimeFallsBackToDefault(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			before := time.Now()
-			_, expiresAt, err := auth.CreateSession(ctx, st, userID, lifetime)
+			createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, lifetime)
 			require.NoError(t, err)
-			hubtestutil.AssertSessionLifetime(t, before, auth.DefaultSessionDuration, expiresAt)
+			hubtestutil.AssertSessionLifetime(t, before, auth.DefaultSessionDuration, createdSession.ExpiresAt)
 		})
 	}
 
 	// A positive lifetime must also reach the session. This detects an implementation that always uses the default.
 	t.Run("positive is honoured", func(t *testing.T) {
 		before := time.Now()
-		_, expiresAt, err := auth.CreateSession(ctx, st, userID, time.Hour)
+		createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userID, time.Hour)
 		require.NoError(t, err)
-		hubtestutil.AssertSessionLifetime(t, before, time.Hour, expiresAt)
+		hubtestutil.AssertSessionLifetime(t, before, time.Hour, createdSession.ExpiresAt)
 	})
 }
 
@@ -111,9 +111,9 @@ func TestCreateSession_RecordsVerifiedClientIP(t *testing.T) {
 	user, err := st.Users().GetByUsername(ctx, hubtestutil.TestAdminUsername)
 	require.NoError(t, err)
 
-	sessionID, _, err := auth.CreateSession(ctx, st, userid.MustNew(user.ID), time.Hour)
+	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(user.ID), time.Hour)
 	require.NoError(t, err)
-	session, err := st.Sessions().GetByID(ctx, sessionID, time.Now().UTC())
+	session, err := st.Sessions().GetByID(ctx, createdSession.ID, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Equal(t, "2001:db8::7", session.IPAddress)
 }
@@ -245,7 +245,7 @@ func TestLogin_InvalidPassword(t *testing.T) {
 	createTestUser(t, st)
 	ctx := context.Background()
 
-	_, _, _, err := auth.Login(ctx, st, "testuser", "wrongpassword", auth.DefaultSessionDuration)
+	_, _, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "testuser", "wrongpassword", auth.DefaultSessionDuration)
 	require.Error(t, err)
 }
 
@@ -253,7 +253,7 @@ func TestLogin_UnknownUser(t *testing.T) {
 	st := setupStore(t)
 	ctx := context.Background()
 
-	_, _, _, err := auth.Login(ctx, st, "nonexistent", "password", auth.DefaultSessionDuration)
+	_, _, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "nonexistent", "password", auth.DefaultSessionDuration)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -271,7 +271,7 @@ func TestLogin_PasswordNotSet_SameAsUnknownUser(t *testing.T) {
 		IsAdmin:               false,
 	}))
 
-	_, _, _, err := auth.Login(ctx, st, "pkonly", "any-password", auth.DefaultSessionDuration)
+	_, _, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "pkonly", "any-password", auth.DefaultSessionDuration)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "invalid credentials")
@@ -286,7 +286,7 @@ func TestLogin_HashUnchangedAfterLogin(t *testing.T) {
 	require.NoError(t, err)
 	originalHash := user.PasswordHash
 
-	_, _, _, err = auth.Login(ctx, st, "testuser", "password123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "testuser", "password123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	user, err = st.Users().GetByUsername(ctx, "testuser")
@@ -330,7 +330,7 @@ func TestLogin_RejectsOldPasswordRotatedAtTransactionBoundary(t *testing.T) {
 		},
 	}
 
-	_, _, _, err = auth.Login(ctx, hooked, "testuser", "password123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(ctx, hooked, hubtestutil.TestSecretHasher(), "testuser", "password123", auth.DefaultSessionDuration)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	sessions := storetest.ListAllSessions(t, st, userID)
@@ -357,9 +357,9 @@ func TestLogin_AcceptsNewPasswordRotatedAtTransactionBoundary(t *testing.T) {
 		},
 	}
 
-	sessionID, user, _, err := auth.Login(ctx, hooked, "testuser", "new-password123", auth.DefaultSessionDuration)
+	sessionToken, user, _, err := auth.Login(ctx, hooked, hubtestutil.TestSecretHasher(), "testuser", "new-password123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
-	assert.NotEmpty(t, sessionID)
+	assert.NotEmpty(t, sessionToken)
 	assert.Equal(t, userID, user.ID)
 	sessions := storetest.ListAllSessions(t, st, userID)
 	require.Len(t, sessions, 1)
@@ -371,14 +371,14 @@ func TestCredentialCreationOrdersAgainstUserRevocation(t *testing.T) {
 		userID := createTestUser(t, st)
 		ctx := context.Background()
 
-		sessionID, _, err := auth.CreateSession(ctx, st, userid.MustNew(userID), auth.DefaultSessionDuration)
+		createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration)
 		require.NoError(t, err)
 		require.NoError(t, st.RunInTransaction(ctx, func(tx store.Store) error {
 			_, _, err := auth.RevokeAllUserCredentials(ctx, tx, userid.MustNew(userID))
 			return err
 		}))
 
-		_, err = auth.ValidateToken(ctx, st, sessionID)
+		_, err = auth.ValidateToken(ctx, st, hubtestutil.TestSecretHasher(), createdSession.Token)
 		require.Error(t, err)
 		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	})
@@ -392,10 +392,10 @@ func TestCredentialCreationOrdersAgainstUserRevocation(t *testing.T) {
 			_, _, err := auth.RevokeAllUserCredentials(ctx, tx, userid.MustNew(userID))
 			return err
 		}))
-		sessionID, _, err := auth.CreateSession(ctx, st, userid.MustNew(userID), auth.DefaultSessionDuration)
+		createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration)
 		require.NoError(t, err)
 
-		info, err := auth.ValidateToken(ctx, st, sessionID)
+		info, err := auth.ValidateToken(ctx, st, hubtestutil.TestSecretHasher(), createdSession.Token)
 		require.NoError(t, err)
 		user, err := st.Users().GetByID(ctx, userID)
 		require.NoError(t, err)
@@ -418,10 +418,10 @@ func TestRevokeAllUserCredentialsEmitsOnlyGenerationEvent(t *testing.T) {
 	}))
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    id.Generate(),
-		RegisteredBy: userid.MustNew(userID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		RegisteredBy:  userid.MustNew(userID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 	require.NoError(t, st.DelegationTokens().Create(ctx, store.CreateDelegationTokenParams{
 		GrantedScopes: "workspace:read workspace:write worker:read",
@@ -450,15 +450,15 @@ func TestValidateToken_Success(t *testing.T) {
 	createTestUser(t, st)
 	ctx := context.Background()
 
-	token, _, _, err := auth.Login(ctx, st, "testuser", "password123", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "testuser", "password123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
-	info, err := auth.ValidateToken(ctx, st, token)
+	info, err := auth.ValidateToken(ctx, st, hubtestutil.TestSecretHasher(), token)
 	require.NoError(t, err)
 	assert.Equal(t, "testuser", info.Username)
 	assert.True(t, info.IsAdmin)
 
-	session, err := st.Sessions().GetByID(ctx, token, time.Now().UTC())
+	session, err := st.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, token), time.Now().UTC())
 	require.NoError(t, err)
 	assert.True(t, info.AuthenticatedAt.Equal(session.CreatedAt.UTC()),
 		"session authentication must use the database session creation timestamp")
@@ -468,7 +468,7 @@ func TestValidateToken_InvalidToken(t *testing.T) {
 	st := setupStore(t)
 	ctx := context.Background()
 
-	_, err := auth.ValidateToken(ctx, st, "invalid-token")
+	_, err := auth.ValidateToken(ctx, st, hubtestutil.TestSecretHasher(), "invalid-token")
 	require.Error(t, err)
 }
 
@@ -588,11 +588,11 @@ func TestLogin_BlankUserIDRowIsRefusedNotPanicked(t *testing.T) {
 	}
 
 	require.NotPanics(t, func() {
-		sessionID, user, _, loginErr := auth.Login(context.Background(), wrapped, "blank", "correct-horse-battery", auth.DefaultSessionDuration)
+		sessionToken, user, _, loginErr := auth.Login(context.Background(), wrapped, hubtestutil.TestSecretHasher(), "blank", "correct-horse-battery", auth.DefaultSessionDuration)
 		require.Error(t, loginErr)
 		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(loginErr),
 			"a blank-id row is refused as bad credentials, not surfaced as an internal error")
-		assert.Empty(t, sessionID, "no session id is handed back for a blank-id row")
+		assert.Empty(t, sessionToken, "no session token is handed back for a blank-id row")
 		assert.Nil(t, user, "no user is handed back for a blank-id row")
 	})
 }
@@ -622,7 +622,7 @@ func TestValidateToken_BlankUserIDIsUnauthenticatedNotPanic(t *testing.T) {
 	st := setupStore(t)
 	wrapped := blankIDSessionStore{
 		Store: st,
-		sessions: blankIDSessions{SessionStore: st.Sessions(), row: &store.SessionWithUser{
+		sessions: blankIDSessions{SessionStore: st.Sessions(), row: &store.SessionWithUser{SecretHash: hubtestutil.TestSecretHasher().Hash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 			UserID:    "",
 			Username:  "blank",
 			CreatedAt: time.Now().Add(-time.Minute),
@@ -631,7 +631,7 @@ func TestValidateToken_BlankUserIDIsUnauthenticatedNotPanic(t *testing.T) {
 	}
 
 	require.NotPanics(t, func() {
-		info, err := auth.ValidateToken(context.Background(), wrapped, "any-token")
+		info, err := auth.ValidateToken(context.Background(), wrapped, hubtestutil.TestSecretHasher(), "any-token")
 		require.Error(t, err)
 		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
 			"a blank joined user_id fails closed the same way an expired session does")

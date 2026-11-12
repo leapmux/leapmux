@@ -124,6 +124,15 @@ func MkdirAllDurable(target string) error {
 	return publishStaged(firstMissing, target)
 }
 
+// MkdirAllPrivate durably creates a directory and verifies that only this account
+// can access it. It refuses a symlink or an existing directory with wider access.
+func MkdirAllPrivate(path string) error {
+	if err := MkdirAllDurable(path); err != nil {
+		return err
+	}
+	return useronly.VerifyDirectory(path)
+}
+
 // walkExistingPrefixes inspects target's prefixes from the root down.
 // It validates every publication record before any repair or creation and returns
 // those records in ancestor order. Looking up a fixed record does not list a directory.

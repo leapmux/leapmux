@@ -55,14 +55,15 @@ func (disabledCaptcha) AltchaChallengeJSON(context.Context) (string, error) {
 // the constructor readable as dependencies accumulate, and Captcha is an
 // interface with a disabled default so callers omit it without nil checks.
 type AuthServiceDeps struct {
-	Store     store.Store
-	Config    *config.Config
-	Settings  *settings.Manager
-	Lifecycle *auth.CredentialLifecycleEffects
-	Keystore  *keystore.Keystore
-	Mail      mail.Sender
-	Renderer  mail.Renderer
-	Captcha   CaptchaService // nil reports captcha as disabled
+	SessionHasher auth.SecretHasher
+	Store         store.Store
+	Config        *config.Config
+	Settings      *settings.Manager
+	Lifecycle     *auth.CredentialLifecycleEffects
+	Keystore      *keystore.Keystore
+	Mail          mail.Sender
+	Renderer      mail.Renderer
+	Captcha       CaptchaService // nil reports captcha as disabled
 	// Listen reports the hub's live listeners: the address a browser reaches
 	// it at, and whether any of them is reachable from another machine.
 	//
@@ -78,17 +79,18 @@ type AuthServiceDeps struct {
 
 // AuthService implements the leapmux.v1.AuthService ConnectRPC handler.
 type AuthService struct {
-	store      store.Store
-	cfg        *config.Config
-	set        *settings.Manager
-	lifecycle  *auth.CredentialLifecycleEffects
-	keystore   *keystore.Keystore
-	mail       mail.Sender
-	renderer   mail.Renderer
-	captcha    CaptchaService
-	listen     ListenReporter
-	soloGate   *auth.SoloGate
-	hasAnyUser atomic.Bool // one-way latch: once true, never re-queried
+	sessionHasher auth.SecretHasher
+	store         store.Store
+	cfg           *config.Config
+	set           *settings.Manager
+	lifecycle     *auth.CredentialLifecycleEffects
+	keystore      *keystore.Keystore
+	mail          mail.Sender
+	renderer      mail.Renderer
+	captcha       CaptchaService
+	listen        ListenReporter
+	soloGate      *auth.SoloGate
+	hasAnyUser    atomic.Bool // one-way latch: once true, never re-queried
 
 	// The clock GetCurrentUser reports the elevation deadline against. It
 	// must be the same seam UserService grants on, or a test that advances
@@ -117,7 +119,7 @@ func NewAuthService(deps AuthServiceDeps) *AuthService {
 		}
 		listen = ConfiguredListen{Listen: configured}
 	}
-	return &AuthService{store: deps.Store, cfg: deps.Config, set: deps.Settings, lifecycle: deps.Lifecycle, keystore: deps.Keystore, mail: deps.Mail, renderer: deps.Renderer, captcha: captchaSvc, listen: listen, soloGate: deps.SoloGate}
+	return &AuthService{sessionHasher: deps.SessionHasher, store: deps.Store, cfg: deps.Config, set: deps.Settings, lifecycle: deps.Lifecycle, keystore: deps.Keystore, mail: deps.Mail, renderer: deps.Renderer, captcha: captchaSvc, listen: listen, soloGate: deps.SoloGate}
 }
 
 // snap resolves the current settings snapshot for the settings-backed
@@ -206,21 +208,20 @@ func (s *AuthService) checkHasAnyUser(ctx context.Context) (bool, error) {
 }
 
 // setSessionCookie writes the cookie for a session that this response
-// established. One helper for the four mint paths -- login, both sign-up
-// branches, and the OAuth signup completion -- so the secure-name choice and
-// the header write cannot drift apart between them.
+// established. The sign-in paths share this helper so the secure-name choice
+// and the header write cannot differ between them.
 //
 // Set, not Add: this cookie is the response's answer about the session, and it
 // replaces anything already written for that name. The interceptor's slide
 // refresh does not touch a response that already carries a session cookie,
 // which is what keeps these two writers from overwriting each other.
-func (s *AuthService) setSessionCookie(ctx context.Context, h *connect.Header, sessionID string, expiresAt time.Time) {
-	h.Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt, s.secureCookies(ctx)).String())
+func (s *AuthService) setSessionCookie(ctx context.Context, h *connect.Header, token string, expiresAt time.Time) {
+	h.Set("Set-Cookie", auth.BuildSessionCookie(token, expiresAt, s.secureCookies(ctx)).String())
 }
 
 func (s *AuthService) Login(ctx context.Context, req *leapmuxv1.LoginRequest) (*leapmuxv1.LoginResponse, error) {
 	info := serverCallInfo(ctx)
-	token, user, expiresAt, err := auth.Login(ctx, s.store, req.GetUsername(), req.GetPassword(), s.sessionDuration(ctx))
+	token, user, expiresAt, err := auth.Login(ctx, s.store, s.sessionHasher, req.GetUsername(), req.GetPassword(), s.sessionDuration(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -272,8 +273,7 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *leapmuxv1
 
 	snap := s.snap(ctx)
 	now := s.now().UTC()
-	var sessionID string
-	var expiresAt time.Time
+	var session auth.CreatedSession
 	var elevationExpiresAt time.Time
 	var storedUser *store.User
 	err = s.store.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
@@ -307,7 +307,7 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *leapmuxv1
 			return fmt.Errorf("store the initial solo password: %w", err)
 		}
 		reqInfo := serverCallInfo(ctx)
-		sessionID, expiresAt, err = auth.CreateSession(ctx, tx, uid, settings.SessionDuration(snap), auth.SessionMeta{
+		session, err = auth.CreateSession(ctx, tx, s.sessionHasher, uid, settings.SessionDuration(snap), auth.SessionMeta{
 			UserAgent: reqInfo.RequestHeader().Get("User-Agent"),
 		})
 		if err != nil {
@@ -322,7 +322,7 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *leapmuxv1
 		// The session was created two statements above, inside this
 		// transaction, so a zero row count is an internal inconsistency rather
 		// than the ordinary "your session ended" the factor paths report.
-		elevatedUntil, live, err := elevateSessionRow(ctx, tx, sessionID, uid, now)
+		elevatedUntil, live, err := elevateSessionRow(ctx, tx, session.ID, uid, now)
 		if err != nil {
 			return fmt.Errorf("elevate the initial solo session: %w", err)
 		}
@@ -351,22 +351,26 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *leapmuxv1
 		SessionReport: signInReport(ctx, s.store, storedUser, nil, timestamppb.New(elevationExpiresAt)),
 	}
 	info.ResponseHeader().Set("Set-Cookie", auth.BuildSessionCookie(
-		sessionID, expiresAt, settings.SecureCookiesFor(ctx, snap)).String())
+		session.Token, session.ExpiresAt, settings.SecureCookiesFor(ctx, snap)).String())
 	return resp, nil
 }
 
 func (s *AuthService) Logout(ctx context.Context, req *leapmuxv1.LogoutRequest) (*leapmuxv1.LogoutResponse, error) {
 	info := serverCallInfo(ctx)
-	token := auth.SessionIDFromCookieHeader(info.RequestHeader().Get("Cookie"), s.secureCookies(ctx))
-	if token != "" {
-		if _, err := s.store.Sessions().Delete(ctx, token); err != nil {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sessionID := user.Credential.SessionID()
+	if sessionID != "" {
+		if _, err := s.store.Sessions().Delete(ctx, sessionID); err != nil {
 			// The clearing cookie rides the response header, which the
 			// transport writes alongside the error status: a logged-out
 			// client must drop its cookie even when the store delete failed.
 			info.ResponseHeader().Set("Set-Cookie", auth.ClearSessionCookie(s.secureCookies(ctx)).String())
 			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("delete session: %w", err))
 		}
-		s.lifecycle.SessionRevoked(token)
+		s.lifecycle.SessionRevoked(sessionID)
 	}
 	resp := &leapmuxv1.LogoutResponse{}
 	info.ResponseHeader().Set("Set-Cookie", auth.ClearSessionCookie(s.secureCookies(ctx)).String())
@@ -478,7 +482,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 		if mintErr != nil {
 			return nil, mintErr
 		}
-		sessionID, sessionExpires, err := auth.CreateSession(ctx, s.store, uid, s.sessionDuration(ctx))
+		session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, uid, s.sessionDuration(ctx))
 		if err != nil {
 			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 		}
@@ -489,7 +493,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 				NextResendAvailableAt: &nextResend,
 			}), nil),
 		}
-		s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, sessionExpires)
+		s.setSessionCookie(ctx, info.ResponseHeader(), session.Token, session.ExpiresAt)
 		s.hasAnyUser.Store(true)
 		return resp, nil
 	}
@@ -556,7 +560,7 @@ func (s *AuthService) signUpResponse(ctx context.Context, user *store.User) (*le
 	if err != nil {
 		return nil, err
 	}
-	sessionID, expiresAt, err := auth.CreateSession(ctx, s.store, loginUID, s.sessionDuration(ctx))
+	session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, loginUID, s.sessionDuration(ctx))
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
@@ -566,7 +570,7 @@ func (s *AuthService) signUpResponse(ctx context.Context, user *store.User) (*le
 		SessionReport: signInReport(ctx, s.store, user, nil, nil),
 	}
 	info := serverCallInfo(ctx)
-	s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, expiresAt)
+	s.setSessionCookie(ctx, info.ResponseHeader(), session.Token, session.ExpiresAt)
 	return resp, nil
 }
 
@@ -844,7 +848,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 	if mintErr != nil {
 		return nil, mintErr
 	}
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.store, finalUID, s.sessionDuration(ctx))
+	session, sessionErr := auth.CreateSession(ctx, s.store, s.sessionHasher, finalUID, s.sessionDuration(ctx))
 	if sessionErr != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}
@@ -856,7 +860,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 			NextResendAvailableAt: nextResend,
 		}), nil),
 	}
-	s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, expiresAt)
+	s.setSessionCookie(ctx, info.ResponseHeader(), session.Token, session.ExpiresAt)
 	// The pending row is consumed, so its browser binding has nothing left
 	// to bind. Add, never Set: setSessionCookie above owns the one
 	// Set-Cookie line for the session, and a Set here would delete it.

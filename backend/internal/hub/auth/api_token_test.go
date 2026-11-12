@@ -1,6 +1,7 @@
 package auth_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/authscope"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"connectrpc.com/connect/v2"
@@ -23,6 +25,27 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
+
+func TestSecretHasher(t *testing.T) {
+	_, err := auth.NewSecretHasher(bytes.Repeat([]byte{1}, 15))
+	require.Error(t, err)
+	pepper := bytes.Repeat([]byte{1}, 16)
+	hasher, err := auth.NewSecretHasher(pepper)
+	require.NoError(t, err)
+	assert.False(t, hasher.IsZero())
+	digest := hasher.Hash("secret")
+	require.Len(t, digest, 32)
+	assert.Equal(t, digest, hasher.Hash("secret"))
+	assert.NotEqual(t, digest, hasher.Hash(""))
+	pepper[0] = 2
+	assert.Equal(t, digest, hasher.Hash("secret"), "the hasher owns a copy of its pepper")
+	other, err := auth.NewSecretHasher(pepper)
+	require.NoError(t, err)
+	assert.NotEqual(t, digest, other.Hash("secret"))
+	var zero auth.SecretHasher
+	assert.True(t, zero.IsZero())
+	assert.PanicsWithValue(t, "auth: zero SecretHasher; construct it with NewSecretHasher", func() { zero.Hash("secret") })
+}
 
 func newTestStore(t *testing.T) store.Store {
 	t.Helper()
@@ -52,10 +75,10 @@ func seedWorkerAndWorkspace(t *testing.T, st store.Store, userID string) (worker
 	ctx := context.Background()
 	workerID = id.Generate()
 	require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    id.Generate(),
-		RegisteredBy: userid.MustNew(userID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		RegisteredBy:  userid.MustNew(userID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 		ID:          workspaceID,

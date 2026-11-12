@@ -18,6 +18,7 @@ var _ store.SessionStore = (*sessionStore)(nil)
 
 func fromDBSession(s gendb.UserSession) store.UserSession {
 	return store.UserSession{
+		SecretHash:         s.SecretHash,
 		ID:                 s.ID,
 		UserID:             s.UserID,
 		ExpiresAt:          s.ExpiresAt.Time,
@@ -48,11 +49,12 @@ func fromDBActiveSessionRow(r gendb.ListAllActiveSessionsRow) store.ActiveSessio
 func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) error {
 	return (&pgStore{conn: s.conn}).RunInUserAuthTransaction(ctx, p.UserID, func(tx store.Store) error {
 		return mapErr(tx.(*pgStore).conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
-			ID:        p.ID,
-			UserID:    p.UserID.String(),
-			ExpiresAt: pgtime.New(p.ExpiresAt),
-			UserAgent: p.UserAgent,
-			IpAddress: p.IPAddress,
+			SecretHash: p.SecretHash,
+			ID:         p.ID,
+			UserID:     p.UserID.String(),
+			ExpiresAt:  pgtime.New(p.ExpiresAt),
+			UserAgent:  p.UserAgent,
+			IpAddress:  p.IPAddress,
 		}))
 	})
 }
@@ -179,6 +181,7 @@ func (s *sessionStore) ValidateWithUser(ctx context.Context, id string, now time
 		return nil, mapErr(err)
 	}
 	return &store.SessionWithUser{
+		SecretHash:         row.SecretHash,
 		UserID:             row.ID,
 		Username:           row.Username,
 		IsAdmin:            row.IsAdmin,

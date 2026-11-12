@@ -125,14 +125,15 @@ const DeviceGrantDrawLimit = 4
 func (h *OAuthServerHandler) createDeviceGrant(ctx context.Context, p store.CreateDeviceAuthorizationParams) (deviceGrant, error) {
 	var err error
 	for range DeviceGrantDrawLimit {
-		p.DeviceCode = id.Generate()
+		deviceCode := id.Generate()
+		p.DeviceCodeHash = h.validator.HashSecret(deviceCode)
 		// verifycode.Generate produces a 6-char alphanumeric from an
 		// unambiguous alphabet, which is the user-code shape this grant wants;
 		// verifycode.Format adds the display form (XXX-XXX) when the response
 		// builds verification_uri_complete.
 		p.UserCode = verifycode.Generate()
 		if err = h.store.DeviceAuthorizations().Create(ctx, p); err == nil {
-			return deviceGrant{DeviceCode: p.DeviceCode, UserCode: p.UserCode}, nil
+			return deviceGrant{DeviceCode: deviceCode, UserCode: p.UserCode}, nil
 		}
 		if !errors.Is(err, store.ErrConflict) {
 			return deviceGrant{}, err

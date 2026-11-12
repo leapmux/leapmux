@@ -260,7 +260,7 @@ The file browser works identically whether the Worker is local or remote, becaus
 - **Git status** (file states and diff stats) for the colors, badges, and filters.
 - **Committed and staged file contents** for the inline diffs.
 
-When the Worker is on another machine, every one of these requests and responses travels over the end-to-end-encrypted Worker channel. The Hub relays the encrypted traffic but cannot read your paths or file contents. This is the same channel your agents and terminals use. For how remote Workers are registered, approved, and selected, see [Managing Workers](/docs/admin/managing-workers/); for the encryption details, see [Security & Threat Model](/docs/admin/security/).
+When the Worker is on another machine, every one of these requests and responses travels over the end-to-end-encrypted Worker channel. While the Hub only relays that traffic, it cannot read your paths or file contents. This is the same channel your agents and terminals use. For how remote Workers are registered, approved, and selected, see [Managing Workers](/docs/admin/managing-workers/); for the encryption details, see [Security & Threat Model](/docs/admin/security/).
 
 {{< callout type="info" >}}
 Git error messages surfaced in the browser (for example, a dubious-ownership warning) appear in English.

@@ -23,7 +23,7 @@ type workerTabPublisher struct {
 // authenticateTabPublisher derives the tenant and Worker for publication calls.
 // The Worker checks the originating caller's grant before resource persistence.
 func (s *WorkerConnectorService) authenticateTabPublisher(ctx context.Context, request *leapmuxv1.TabPublication) (*workerTabPublisher, error) {
-	worker, err := auth.AuthenticateWorkerBearer(ctx, s.store, serverCallInfo(ctx).RequestHeader().Get("Authorization"))
+	worker, err := auth.AuthenticateWorkerBearer(ctx, s.store, s.hasher, serverCallInfo(ctx).RequestHeader().Get("Authorization"))
 	if err != nil {
 		if auth.IsWorkerCredentialError(err) {
 			return nil, wrappedConnectError(connect.CodeUnauthenticated, err)

@@ -73,9 +73,9 @@ func newWiringIdentity(t *testing.T, srv *Server, serverURL string) *wiringHub {
 		EmailVerified: true,
 	})
 	require.NoError(t, err)
-	session, _, _, err := auth.Login(ctx, srv.store, wiringAdminName, wiringAdminPassword, auth.DefaultSessionDuration)
+	session, _, _, err := auth.Login(ctx, srv.store, srv.hasher, wiringAdminName, wiringAdminPassword, auth.DefaultSessionDuration)
 	require.NoError(t, err)
-	hubtestutil.ElevateSession(t, srv.store, session, admin.ID)
+	hubtestutil.ElevateSession(t, srv.store, hubtestutil.SessionIDFromCookie(t, session), admin.ID)
 	return &wiringHub{srv: srv, url: serverURL, adminID: admin.ID, session: session}
 }
 

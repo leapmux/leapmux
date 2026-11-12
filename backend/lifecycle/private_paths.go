@@ -4,16 +4,8 @@ import (
 	"errors"
 	"os"
 
-	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/util/useronly"
 )
-
-func preparePrivateDir(path string) error {
-	if err := atomicfile.MkdirAllDurable(path); err != nil {
-		return err
-	}
-	return verifyPrivateDir(path)
-}
 
 func verifyPrivateDir(path string) error { return useronly.VerifyDirectory(path) }
 

@@ -228,6 +228,7 @@ type runtimeLeaseWatcher interface {
 
 // Server is a reusable Hub server instance.
 type Server struct {
+	hasher     auth.SecretHasher
 	cfg        *config.Config
 	store      store.Store
 	keystore   *keystore.Keystore
@@ -598,7 +599,9 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		return nil, acquired.close(
 			fmt.Errorf("create token validator: %w", tvErr))
 	}
+	hasher := tokenValidator.Hasher()
 	authInterceptor, authContexts := auth.NewInterceptor(auth.InterceptorOptions{
+		SessionHasher:  hasher,
 		Store:          st,
 		SoloUser:       soloUser,
 		TokenValidator: tokenValidator,
@@ -708,6 +711,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	// delegation scope, and leaves its owner's client informed.
 	workerEffects := service.NewWorkerDeregisterEffects(scopeCache, notifierSvc, crdtRegistry.BroadcastWorkersChanged)
 	connectorSvc := service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{
+		Hasher:            hasher,
 		Store:             st,
 		WorkerManager:     wMgr,
 		ChannelManager:    cMgr,
@@ -764,7 +768,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	})
 	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer, connectorSvc)
 	mux.Handle(channelwire.WSRouteWorker, trackWebSocket(webSockets, service.NewWorkerStreamHandler(connectorSvc)))
-	mgmtSvc := service.NewWorkerManagementService(st, wMgr, workerEffects, mailSender, mailRenderer, setMgr)
+	mgmtSvc := service.NewWorkerManagementService(st, hasher, wMgr, workerEffects, mailSender, mailRenderer, setMgr)
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, mgmtSvc)
 
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, authContexts)
@@ -775,7 +779,8 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, channelSvc)
 
 	authSvc := service.NewAuthService(service.AuthServiceDeps{
-		Store: st, Config: cfg, Settings: setMgr, Lifecycle: lifecycle, Keystore: ks,
+		SessionHasher: hasher,
+		Store:         st, Config: cfg, Settings: setMgr, Lifecycle: lifecycle, Keystore: ks,
 		Mail: mailSender, Renderer: mailRenderer, Captcha: captchaMgr,
 		Listen: listenReports, SoloGate: authContexts.SoloGate(),
 	})
@@ -789,26 +794,27 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	secureCookies := func(ctx context.Context) bool {
 		return settings.SecureCookiesFor(ctx, setMgr.Snapshot(ctx))
 	}
-	channelRelay := service.NewChannelRelayHandler(st, wMgr, cMgr, authContexts, soloUser, secureCookies, relayQueuePool).
+	channelRelay := service.NewChannelRelayHandler(st, hasher, wMgr, cMgr, authContexts, soloUser, secureCookies, relayQueuePool).
 		WithTokenValidator(tokenValidator).
 		WithChannelCloseEnqueuer(channelSvc)
 	mux.Handle(contracts.WSRouteChannel, trackWebSocket(webSockets, channelRelay))
 
 	// INBOUND OAuth: the hub as a client of an identity provider, at
 	// /auth/idp/*.
-	idpHandler := service.NewIdPHandler(st, cfg, setMgr, lifecycle, ks)
+	idpHandler := service.NewIdPHandler(st, hasher, cfg, setMgr, lifecycle, ks)
 	idpHandler.RegisterRoutes(mux)
 
 	// OUTBOUND OAuth: the hub as an OAuth 2.1 authorization server, at
 	// /oauth/* plus the two well-known metadata documents.
 	oauthServer := service.NewOAuthServerHandler(service.OAuthServerDeps{
-		SoloUser:  soloUser,
-		SoloGate:  authContexts.SoloGate(),
-		Store:     st,
-		Validator: tokenValidator,
-		Lifecycle: lifecycle,
-		Settings:  setMgr,
-		HubURL:    hubBaseURL,
+		SessionHasher: hasher,
+		SoloUser:      soloUser,
+		SoloGate:      authContexts.SoloGate(),
+		Store:         st,
+		Validator:     tokenValidator,
+		Lifecycle:     lifecycle,
+		Settings:      setMgr,
+		HubURL:        hubBaseURL,
 		// The three anonymous legs share the interceptor's budget table; see
 		// ratelimit.AllowHTTP.
 		Limiter:    rateLimitMgr,
@@ -938,7 +944,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	// UpdatePresence). The WS path bypasses HTTP/1.1 chunked-stream
 	// buffering hazards (some proxies / Tauri's buffered fetch) that
 	// motivated retiring the streaming RPC.
-	userEventsHandler := service.NewUserEventsHandler(st, crdtRegistry, authContexts, soloUser, secureCookies, userEventsQueuePool).
+	userEventsHandler := service.NewUserEventsHandler(st, hasher, crdtRegistry, authContexts, soloUser, secureCookies, userEventsQueuePool).
 		WithTokenValidator(tokenValidator)
 	mux.Handle(contracts.WSRouteUserEvents, trackWebSocket(webSockets, userEventsHandler))
 
@@ -1125,6 +1131,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 	}
 
 	hubServer := &Server{
+		hasher:            hasher,
 		cfg:               cfg,
 		store:             st,
 		keystore:          ks,
@@ -1242,7 +1249,7 @@ func (s *Server) RegisterWorker(ctx context.Context, registeredBy string, keys *
 	if err := s.store.RunInUserAuthTransaction(ctx, registrantUID, func(tx store.Store) error {
 		return tx.Workers().Create(ctx, store.CreateWorkerParams{
 			ID:             workerID,
-			AuthToken:      authToken,
+			AuthTokenHash:  s.hasher.Hash(authToken),
 			RegisteredBy:   registrantUID,
 			AutoRegistered: true,
 			PublicKeys:     store.WorkerPublicKeysFromProto(keys),
@@ -1258,16 +1265,17 @@ func (s *Server) RegisterWorker(ctx context.Context, registeredBy string, keys *
 }
 
 // WorkerRegistration is what a launcher needs to decide whether its saved local
-// Worker state is still usable: who owns the row, what state the row is in, and
-// the keys the Hub pinned at registration.
+// Worker state is still usable: the row's owner and state, its pinned keys,
+// and whether the saved token is accepted.
 //
 // It exists rather than three separate reads so a launcher cannot pair a row
 // with keys from another, and so the status check it makes is the one the
 // pinned row reported.
 type WorkerRegistration struct {
-	Owner      string
-	Status     leapmuxv1.WorkerStatus
-	PublicKeys *leapmuxv1.WorkerPublicKeys
+	AuthTokenAccepted bool
+	Owner             string
+	Status            leapmuxv1.WorkerStatus
+	PublicKeys        *leapmuxv1.WorkerPublicKeys
 }
 
 // GetWorkerRegistration returns the registration of workerID, and an error when
@@ -1284,22 +1292,48 @@ type WorkerRegistration struct {
 // not-found branch (and RetireLocalWorker's own rationale) relies on a soft-deleted
 // row reading as absent. Handing it over would send the launcher down the
 // unusable-state path and rename its state file to .corrupt-*.
-func (s *Server) GetWorkerRegistration(ctx context.Context, workerID string) (WorkerRegistration, error) {
+func (s *Server) GetWorkerRegistration(ctx context.Context, workerID, authToken string) (WorkerRegistration, error) {
 	w, err := s.store.Workers().GetByID(ctx, workerID)
 	if err != nil {
 		return WorkerRegistration{}, err
 	}
+	matched, err := s.store.Workers().GetByAuthTokenHashIncludeDeleted(ctx, s.hasher.Hash(authToken))
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return WorkerRegistration{}, err
+	}
+	accepted := err == nil && matched.ID == workerID
 	return WorkerRegistration{
-		Owner:      w.RegisteredBy,
-		Status:     w.Status,
-		PublicKeys: w.PublicKeys.Proto(),
+		AuthTokenAccepted: accepted,
+		Owner:             w.RegisteredBy,
+		Status:            w.Status,
+		PublicKeys:        w.PublicKeys.Proto(),
 	}, nil
 }
 
-// ErrNotAutoRegistered is RetireLocalWorker's refusal: the row exists but it is
-// not the solo launcher's bundled Worker, so the launcher has no standing to
-// remove it.
+// ErrNotAutoRegistered refuses a launcher mutation on a standalone Worker.
+// The launcher may only retire or reissue tokens for its bundled Worker.
 var ErrNotAutoRegistered = errors.New("worker was not auto-registered")
+
+// ReissueLocalWorkerToken replaces the token of an active bundled Worker.
+// This is an in-process launcher operation with the same authority as RegisterWorker.
+func (s *Server) ReissueLocalWorkerToken(ctx context.Context, workerID string) (string, error) {
+	worker, err := s.store.Workers().GetByIDIncludeDeleted(ctx, workerID)
+	if err != nil {
+		return "", err
+	}
+	if !worker.AutoRegistered {
+		return "", ErrNotAutoRegistered
+	}
+	token := id.Generate()
+	rows, err := s.store.Workers().RotateAuthToken(ctx, store.RotateWorkerAuthTokenParams{ID: workerID, AuthTokenHash: s.hasher.Hash(token)})
+	if err != nil {
+		return "", err
+	}
+	if rows == 0 {
+		return "", fmt.Errorf("reissue local worker %s: %w", workerID, store.ErrNotFound)
+	}
+	return token, nil
+}
 
 // RetireLocalWorker removes the solo launcher's unusable local worker row at
 // once, then runs the deregistration effects for it.

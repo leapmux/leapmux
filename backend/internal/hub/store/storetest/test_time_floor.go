@@ -124,7 +124,7 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 
 		sessionID := id.Generate()
 		expiresAt := floorProbe(base, 0)
-		require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{
+		require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 			ID:        sessionID,
 			UserID:    userid.MustNew(user.ID),
 			ExpiresAt: expiresAt,
@@ -198,13 +198,13 @@ func (s *Suite) testTimeFloor(t *testing.T) {
 
 		expiresAt := floorProbe(floorProbeBase(), 0)
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-			ClientID:   oauthapp.ControlCLIClientID,
-			DeviceCode: "floor-device",
-			UserCode:   "FLOOR-USER",
-			ExpiresAt:  expiresAt,
+			ClientID:       oauthapp.ControlCLIClientID,
+			DeviceCodeHash: FixtureSecretHash("floor-device"),
+			UserCode:       "FLOOR-USER",
+			ExpiresAt:      expiresAt,
 		}))
 
-		auth, err := st.DeviceAuthorizations().Get(ctx, "floor-device")
+		auth, err := st.DeviceAuthorizations().Get(ctx, FixtureSecretHash("floor-device"))
 		require.NoError(t, err)
 		assertStoredInstant(t, "expires_at", expiresAt, auth.ExpiresAt)
 	})

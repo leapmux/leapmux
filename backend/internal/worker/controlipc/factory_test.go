@@ -57,24 +57,17 @@ func (f *fakeDelegationLifecycle) snapshot() (acq, rel []scopedKey) {
 	return append([]scopedKey(nil), f.acquires...), append([]scopedKey(nil), f.releases...)
 }
 
-// withTempSocketRoot redirects the per-agent socket factory to a
-// directly-rooted per-test tempdir. DefaultSocketPath nests one extra
-// level below the configured runtime dir (`leapmux-<wid8>/`); anchoring
-// under `/tmp` here keeps the full socket path well under macOS's
-// 104-byte sun_path limit even on long $TMPDIR layouts. On Windows
-// DefaultSocketPath ignores XDG_RUNTIME_DIR and emits an `npipe:` URL,
-// so this is a no-op there — the named-pipe namespace is process-wide
-// and doesn't need a per-test prefix beyond the spawn-id baked into
-// the pipe name.
-func withTempSocketRoot(t *testing.T) {
+// socketDirectory gives a test a short private directory on Unix.
+// Windows uses named pipes and needs no directory.
+func socketDirectory(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		return
+		return ""
 	}
 	dir, err := os.MkdirTemp("/tmp", "leapmux-")
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	t.Setenv("XDG_RUNTIME_DIR", dir)
+	t.Cleanup(func() { require.NoError(t, os.RemoveAll(dir)) })
+	return dir
 }
 
 // TestFactory_AgentSpawnAcquiresAndCleanupReleases pins the lifecycle
@@ -83,9 +76,9 @@ func withTempSocketRoot(t *testing.T) {
 // Release it on close. Without this pairing, agent close wouldn't
 // trigger the hub-side delegation revoke that the plan requires.
 func TestFactory_AgentSpawnAcquiresAndCleanupReleases(t *testing.T) {
-	withTempSocketRoot(t)
 	lifecycle := &fakeDelegationLifecycle{}
 	f := &controlipc.Factory{
+		SocketDir:  socketDirectory(t),
 		WorkerID:   "worker-A",
 		Delegation: lifecycle,
 	}
@@ -136,8 +129,7 @@ func envValue(t *testing.T, envs []string, key string) string {
 // What the panel keeps is its own identity, under TERMINAL_ID, plus the worker
 // and working dir that `terminal quake ...` runs on.
 func TestFactory_QuakeTerminalAdvertisesNoTab(t *testing.T) {
-	withTempSocketRoot(t)
-	f := &controlipc.Factory{WorkerID: "worker-A"}
+	f := &controlipc.Factory{SocketDir: socketDirectory(t), WorkerID: "worker-A"}
 
 	quakeEnvs, quakeCleanup, err := f.TerminalSpawning(service.TerminalSpawnInfo{
 		UserID:     userid.MustNew("user-1"),
@@ -179,8 +171,7 @@ func TestFactory_QuakeTerminalAdvertisesNoTab(t *testing.T) {
 // terminal and a terminal tab in the same directory are two live shells, and
 // two live shells must not fight over one listener.
 func TestFactory_QuakeTerminalSocketIsKeyedOnItsOwnID(t *testing.T) {
-	withTempSocketRoot(t)
-	f := &controlipc.Factory{WorkerID: "worker-A"}
+	f := &controlipc.Factory{SocketDir: socketDirectory(t), WorkerID: "worker-A"}
 
 	tabEnvs, tabCleanup, err := f.TerminalSpawning(service.TerminalSpawnInfo{
 		UserID:   userid.MustNew("user-1"),
@@ -209,8 +200,7 @@ func TestFactory_QuakeTerminalSocketIsKeyedOnItsOwnID(t *testing.T) {
 // `terminal ...` subgroup would default its --tab-id to the agent's own id and
 // send keystrokes to a tab that has no PTY.
 func TestFactory_AgentSpawnNamesNoTerminal(t *testing.T) {
-	withTempSocketRoot(t)
-	f := &controlipc.Factory{WorkerID: "worker-A"}
+	f := &controlipc.Factory{SocketDir: socketDirectory(t), WorkerID: "worker-A"}
 
 	envs, cleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
 		UserID:   userid.MustNew("user-1"),
@@ -229,9 +219,9 @@ func TestFactory_AgentSpawnNamesNoTerminal(t *testing.T) {
 // delegation slot on construction and Releases it on cleanup. Mirrors the
 // agent-side TestFactory_AgentSpawnAcquiresAndCleanupReleases.
 func TestFactory_TerminalSpawnAcquiresAndCleanupReleases(t *testing.T) {
-	withTempSocketRoot(t)
 	lifecycle := &fakeDelegationLifecycle{}
 	f := &controlipc.Factory{
+		SocketDir:  socketDirectory(t),
 		WorkerID:   "worker-A",
 		Delegation: lifecycle,
 	}
@@ -264,8 +254,7 @@ func TestFactory_TerminalSpawnAcquiresAndCleanupReleases(t *testing.T) {
 // stays correct across a cross-workspace move where a baked-in workspace id
 // would have gone stale.
 func TestFactory_AgentSpawnAdvertisesItsTabContext(t *testing.T) {
-	withTempSocketRoot(t)
-	f := &controlipc.Factory{WorkerID: "worker-A"}
+	f := &controlipc.Factory{SocketDir: socketDirectory(t), WorkerID: "worker-A"}
 	envs, cleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
 		UserID:   userid.MustNew("user-1"),
 		WorkerID: "worker-A",
@@ -285,12 +274,12 @@ func TestFactory_AgentSpawnAdvertisesItsTabContext(t *testing.T) {
 // factory's lookup gives for the spawn's user. The lookup runs at each call,
 // so a rename of the owner reaches a process that is already running.
 func TestFactory_SpawnReportsTheOwnerUsernameThroughWhoami(t *testing.T) {
-	withTempSocketRoot(t)
 	var username atomic.Pointer[string]
 	alice := "alice"
 	username.Store(&alice)
 	f := &controlipc.Factory{
-		WorkerID: "worker-A",
+		SocketDir: socketDirectory(t),
+		WorkerID:  "worker-A",
 		OwnerUsername: func(user userid.UserID) string {
 			if !user.Matches("user-1") {
 				return ""
@@ -326,8 +315,7 @@ func TestFactory_SpawnReportsTheOwnerUsernameThroughWhoami(t *testing.T) {
 // field is optional. Tests / minimal configurations that don't wire a
 // crossworker.DelegationStore must still get a working spawn.
 func TestFactory_NilDelegationIsTolerated(t *testing.T) {
-	withTempSocketRoot(t)
-	f := &controlipc.Factory{WorkerID: "worker-A"}
+	f := &controlipc.Factory{SocketDir: socketDirectory(t), WorkerID: "worker-A"}
 
 	envs, cleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
 		UserID:   userid.MustNew("user-1"),
@@ -389,9 +377,9 @@ func (i *authHeaderInjector) RoundTrip(req *http.Request) (*http.Response, error
 // stray Release / missing Acquire would corrupt the refcount and
 // either leak the delegation row or revoke it prematurely.
 func TestFactory_ConcurrentSpawnsRefcountCorrectly(t *testing.T) {
-	withTempSocketRoot(t)
 	lifecycle := &fakeDelegationLifecycle{}
 	f := &controlipc.Factory{
+		SocketDir:  socketDirectory(t),
 		WorkerID:   "worker-A",
 		Delegation: lifecycle,
 	}
@@ -440,8 +428,7 @@ func TestFactory_ConcurrentSpawnsRefcountCorrectly(t *testing.T) {
 // errors.New here would silently make the spawn start without remote control
 // instead of failing the tab.
 func TestFactory_SpawnRefusesEmptyUserID(t *testing.T) {
-	withTempSocketRoot(t)
-	f := &controlipc.Factory{WorkerID: "worker-A"}
+	f := &controlipc.Factory{SocketDir: socketDirectory(t), WorkerID: "worker-A"}
 
 	_, cleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
 		UserID:   userid.UserID{},

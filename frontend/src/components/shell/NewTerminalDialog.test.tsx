@@ -33,6 +33,7 @@ vi.mock('~/api/clients', () => ({
 // with it, which is exactly what these mocks exist to prevent.
 vi.mock('~/api/workerRpc', () => ({
   workerGit: {
+    getGitWorkingTreeState: vi.fn(async () => ({ $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse', isDirty: false })),
     getGitInfo: vi.fn(async () => ({})),
     // GitOptions lists both once the directory is a repository root.
     listGitBranches: vi.fn(async () => ({ branches: [], currentBranch: 'main' })),

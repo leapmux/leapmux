@@ -114,6 +114,9 @@ CREATE INDEX idx_users_is_admin ON users(is_admin, deleted_at, created_at);
 -- Auth sessions
 CREATE TABLE user_sessions (
     id              VARCHAR(255) PRIMARY KEY,
+    -- HMAC-SHA256 of the session secret, keyed by the token pepper. The cookie
+    -- is "<id>_<secret>"; the id is public and the Hub never stores the secret.
+    secret_hash VARBINARY(32) NOT NULL CHECK (OCTET_LENGTH(secret_hash) = 32),
     user_id         VARCHAR(255) NOT NULL,
     expires_at      DATETIME(3) NOT NULL,
     created_at      DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -155,7 +158,8 @@ CREATE INDEX idx_user_sessions_last_active ON user_sessions(last_active_at DESC,
 -- Registered workers
 CREATE TABLE workers (
     id            VARCHAR(255) PRIMARY KEY,
-    auth_token    VARCHAR(255) NOT NULL UNIQUE,
+    -- HMAC-SHA256 of the worker's bearer token, keyed by the token pepper.
+    auth_token_hash VARBINARY(32) NOT NULL UNIQUE CHECK (OCTET_LENGTH(auth_token_hash) = 32),
     registered_by VARCHAR(255) NOT NULL,
     -- The public keys the worker registered with. Connect refuses a hello
     -- whose keys differ, so a stolen auth token cannot attach other keys to
@@ -234,7 +238,8 @@ CREATE INDEX idx_workers_deregistering_at ON workers(deregistering_at);
 -- The cleanup loop hard-deletes rows whose expires_at is older than the
 -- retention cutoff.
 CREATE TABLE worker_registration_keys (
-    id          VARCHAR(255) PRIMARY KEY,
+    id          VARCHAR(255) PRIMARY KEY, -- public id; the key itself is never stored
+    key_hash VARBINARY(32) NOT NULL UNIQUE CHECK (OCTET_LENGTH(key_hash) = 32),
     created_by  VARCHAR(255) NOT NULL,
     created_at  DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     expires_at  DATETIME(3) NOT NULL,
@@ -606,7 +611,7 @@ CREATE INDEX idx_delegation_tokens_user_created ON delegation_tokens(user_id, cr
 CREATE INDEX idx_delegation_tokens_expires_at ON delegation_tokens(expires_at);
 
 CREATE TABLE device_authorizations (
-    device_code           VARCHAR(255) PRIMARY KEY,
+    device_code_hash VARBINARY(32) PRIMARY KEY CHECK (OCTET_LENGTH(device_code_hash) = 32),
     user_code             VARCHAR(64) NOT NULL UNIQUE,
     device_name           VARCHAR(255) NOT NULL DEFAULT '',
     -- Which app started the flow; see the sqlite migration.

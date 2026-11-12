@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
+
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
@@ -107,7 +109,7 @@ func TestServer_TCPInitialSoloPasswordCreatesVerifiedSession(t *testing.T) {
 	cookieResponse := &http.Response{Header: http.Header{"Set-Cookie": []string{setCookie}}}
 	cookies := cookieResponse.Cookies()
 	require.Len(t, cookies, 1)
-	session, err := srv.store.Sessions().GetByID(context.Background(), cookies[0].Value, time.Now().UTC())
+	session, err := srv.store.Sessions().GetByID(context.Background(), hubtestutil.SessionIDFromCookie(t, cookies[0].Value), time.Now().UTC())
 	require.NoError(t, err)
 	assert.Equal(t, "198.51.100.7", session.IPAddress)
 	assert.Equal(t, "setup-browser", session.UserAgent)

@@ -83,9 +83,10 @@ const (
 // OAuthServerDeps carries the handler's collaborators. A struct rather than a
 // growing parameter list, matching AuthServiceDeps.
 type OAuthServerDeps struct {
-	Store     store.Store
-	Validator *auth.TokenValidator
-	Lifecycle *auth.CredentialLifecycleEffects
+	SessionHasher auth.SecretHasher
+	Store         store.Store
+	Validator     *auth.TokenValidator
+	Lifecycle     *auth.CredentialLifecycleEffects
 	// SoloUser is the account a SOLO hub authenticates its LOCAL IPC callers
 	// as. It is nil on an ordinary hub, and that nil is what keeps the rung off
 	// there.
@@ -137,13 +138,14 @@ type OAuthServerDeps struct {
 // routes credential changes through lifecycle so cache, lease, and channel
 // effects remain consistent.
 type OAuthServerHandler struct {
-	store     store.Store
-	validator *auth.TokenValidator
-	soloUser  *auth.UserInfo
-	soloGate  *auth.SoloGate
-	lifecycle *auth.CredentialLifecycleEffects
-	hubURL    func() string
-	notices   *CredentialNotices
+	sessionHasher auth.SecretHasher
+	store         store.Store
+	validator     *auth.TokenValidator
+	soloUser      *auth.UserInfo
+	soloGate      *auth.SoloGate
+	lifecycle     *auth.CredentialLifecycleEffects
+	hubURL        func() string
+	notices       *CredentialNotices
 	// servingCtx is the hub's lifetime, canceled just before the store
 	// closes; see OAuthServerDeps.ServingCtx.
 	servingCtx    context.Context
@@ -169,16 +171,17 @@ func NewOAuthServerHandler(deps OAuthServerDeps) *OAuthServerHandler {
 		panic("OAuth server requires credential notices")
 	}
 	return &OAuthServerHandler{
-		store:      deps.Store,
-		validator:  deps.Validator,
-		soloUser:   deps.SoloUser,
-		soloGate:   deps.SoloGate,
-		lifecycle:  deps.Lifecycle,
-		hubURL:     deps.HubURL,
-		notices:    deps.Notices,
-		set:        deps.Settings,
-		limiter:    deps.Limiter,
-		servingCtx: deps.ServingCtx,
+		sessionHasher: deps.SessionHasher,
+		store:         deps.Store,
+		validator:     deps.Validator,
+		soloUser:      deps.SoloUser,
+		soloGate:      deps.SoloGate,
+		lifecycle:     deps.Lifecycle,
+		hubURL:        deps.HubURL,
+		notices:       deps.Notices,
+		set:           deps.Settings,
+		limiter:       deps.Limiter,
+		servingCtx:    deps.ServingCtx,
 	}
 }
 
@@ -254,6 +257,7 @@ func (h *OAuthServerHandler) requireSession(r *http.Request) *auth.UserInfo {
 	// handler reads; see AuthenticateHTTP for why the fallback direction is
 	// asymmetric.
 	user, err := auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
+		SessionHasher: h.sessionHasher,
 		Store:         h.store,
 		SoloUser:      h.soloUser,
 		SoloGate:      h.soloGate,

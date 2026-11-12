@@ -33,8 +33,7 @@ service WorkerConnectorService {
   }
   // Recover the credentials of a committed registration attempt by
   // proving possession of the private keypair whose public halves the
-  // Hub pinned. Returns the original credentials; it never mints a
-  // second worker or token.
+  // Hub pinned. Replaces the token while keeping the same Worker.
   rpc RecoverRegistration(RecoverRegistrationRequest)
       returns (RegisterResponse) {
     option (leapmux.v1.access) = { public: {} };

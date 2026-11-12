@@ -14,6 +14,8 @@ import (
 
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir/agentdirtest"
+
+	"github.com/leapmux/leapmux/locallisten"
 )
 
 // agentdir tests the directory itself. This test pins what Amp states: its
@@ -29,16 +31,16 @@ func TestAgentDirLeavesRoomForTheBridgeSocket(t *testing.T) {
 	assert.Nil(t, registered.OnStale, "an Amp agent leaves no process that outlives its worker")
 
 	short := agentdirtest.ShortBase(t)
-	long := filepath.Join(agentdirtest.ShortBase(t), strings.Repeat("d", agentdir.MaxSocketPathBytes()))
+	long := filepath.Join(agentdirtest.ShortBase(t), strings.Repeat("d", locallisten.MaxUnixSocketPathBytes()))
 	dir, err := agentdirtest.NewDirs(t, []agentdir.Spec{spec}, long, short).New(context.Background(), spec)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = dir.Close() })
 	assert.True(t, strings.HasPrefix(dir.Path(), short), "a base too long for the socket gives way to the next one")
-	assert.LessOrEqual(t, len(filepath.Join(dir.Path(), bridgeSocketName)), agentdir.MaxSocketPathBytes())
+	assert.LessOrEqual(t, len(filepath.Join(dir.Path(), bridgeSocketName)), locallisten.MaxUnixSocketPathBytes())
 	bridge, err := newPermissionBridge(dir.Path(), quartz.NewMock(t))
 	require.NoError(t, err, "the bridge binds its socket in the directory")
 	bridge.close(errAgentStopped)
 
 	_, err = agentdirtest.NewDirs(t, []agentdir.Spec{spec}, long).New(context.Background(), spec)
-	assert.ErrorContains(t, err, "the limit is "+strconv.Itoa(agentdir.MaxSocketPathBytes()))
+	assert.ErrorContains(t, err, "the limit is "+strconv.Itoa(locallisten.MaxUnixSocketPathBytes()))
 }

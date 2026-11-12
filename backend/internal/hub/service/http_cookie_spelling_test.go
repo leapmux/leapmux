@@ -25,9 +25,9 @@ import (
 // elevation. http_test.go in internal/hub/auth pins the rule; these observe
 // the wiring.
 
-// sessionCookieNamed carries one session id under one spelling.
-func sessionCookieNamed(name, sessionID string) *http.Cookie {
-	return &http.Cookie{Name: name, Value: sessionID}
+// sessionCookieNamed carries one session token under one spelling.
+func sessionCookieNamed(name, token string) *http.Cookie {
+	return &http.Cookie{Name: name, Value: token}
 }
 
 // TestCLIConsentLegReadsTheHubsCookieSpelling covers /oauth/authorize.

@@ -26,7 +26,7 @@ export interface UseGitPathInfoOptions {
    * Pre-fill the snapshot with values the caller already knows so
    * GitOptionsLoader can render children synchronously instead of
    * blocking on the spinner. The probe still runs in the background to
-   * refine volatile fields (currentBranch, isDirty) and to correct any
+   * refine volatile fields (currentBranch) and to correct any
    * seeded fields the caller guessed wrong. Typical use: a dialog that
    * was opened against a known repo root.
    */
@@ -39,7 +39,6 @@ export interface GitInfoFields {
   isGitRepo: boolean
   isRepoRoot: boolean
   isWorktreeRoot: boolean
-  isDirty: boolean
   repoRoot: string
   repoDirName: string
   currentBranch: string
@@ -60,7 +59,6 @@ export const EMPTY_INFO: GitInfoFields = {
   isGitRepo: false,
   isRepoRoot: false,
   isWorktreeRoot: false,
-  isDirty: false,
   repoRoot: '',
   repoDirName: '',
   currentBranch: '',
@@ -160,7 +158,7 @@ export function useGitPathInfo(
       // First-probe-on-worktree-root → remap: the caller's path setter
       // will switch to the canonical repoRoot, retriggering the probe.
       // Skip the setInfo here so the dialog never paints worktree-scoped
-      // currentBranch/isDirty before the repoRoot's probe lands.
+      // currentBranch before the repoRoot's probe lands.
       const willRemap = !firstProbeSeen
         && resp.isWorktreeRoot
         && !!resp.repoRoot
@@ -170,7 +168,6 @@ export function useGitPathInfo(
           isGitRepo: resp.isGitRepo,
           isRepoRoot: resp.isRepoRoot,
           isWorktreeRoot: resp.isWorktreeRoot,
-          isDirty: resp.isDirty,
           repoRoot: resp.repoRoot,
           repoDirName: resp.repoDirName,
           currentBranch: resp.currentBranch,

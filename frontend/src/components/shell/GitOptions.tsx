@@ -12,7 +12,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { WorktreeSelect } from '~/components/shell/WorktreeSelect'
 import { BranchSelect } from '~/components/workspace/BranchSelect'
 import { createGuardedFetch } from '~/hooks/createGuardedFetch'
-import { GIT_MODE_LABELS, GitMode } from '~/hooks/useGitModeState'
+import { dirtyWarningCopy, GIT_MODE_LABELS, GitMode } from '~/hooks/useGitModeState'
 import { createLogger } from '~/lib/logger'
 import { detectFlavor, join, parentDirectory, tildify } from '~/lib/paths'
 import { stripRemotePrefix, validateBranchName } from '~/lib/validate'
@@ -26,7 +26,7 @@ interface GitOptionsProps {
   homeDir?: string
   /**
    * Resolved repo identity (loading, isGitRepo, repoRoot, etc.) sourced
-   * from `useGitPathInfo`. GitOptions is a pure renderer — it does NOT
+   * from `useGitPathInfo`. GitOptions does not
    * issue the getGitInfo probe itself; the caller owns the probe and
    * decides when to mount this component (typically only when
    * `gitInfo.showGitOptions()` is true). Fields are read via
@@ -144,29 +144,6 @@ export function indexBranches(branches: readonly GitBranchEntry[]): BranchIndex 
   }
 }
 
-/**
- * A `Record`, not a `switch` with a `default`: a sixth mode added to `GitMode`
- * is then a compile error here rather than a mode that silently falls through
- * to "no warning". `null` states that a mode deliberately shows none.
- */
-const DIRTY_WARNINGS: Record<GitMode, string | null> = {
-  [GitMode.Current]: null,
-  [GitMode.SwitchBranch]: 'The working copy has uncommitted changes. Switching branches may fail or discard changes.',
-  [GitMode.CreateBranch]: 'The working copy has uncommitted changes. Creating a new branch will include them.',
-  [GitMode.CreateWorktree]: 'The selected working copy has uncommitted changes that will not be transferred to the new worktree.',
-  [GitMode.UseWorktree]: null,
-}
-
-/**
- * Per-mode dirty-worktree warning copy. Exported so tests can pin the exact
- * strings shown for each mode without rendering the full GitOptions component
- * (which depends on auth context, RPC mocks, etc.). Returns null for a mode
- * that surfaces no dirty-tree warning.
- */
-export function dirtyWarningCopy(mode: GitMode): string | null {
-  return DIRTY_WARNINGS[mode]
-}
-
 /** The branch-name error node's id, so its input can point at it. */
 const BRANCH_NAME_ERROR_ID = 'git-options-branch-name-error'
 
@@ -247,6 +224,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // filtered out below, so every stored entry is a linked worktree.
   const [worktrees, setWorktrees] = createSignal<{ path: string, branch: string }[]>([])
   const [selectedWorktreePath, setSelectedWorktreePath] = createSignal('')
+  const [dirty, setDirty] = createSignal<boolean | undefined>()
 
   // Single pass over branches() that yields the local/remote partition
   // AND the existing-name / local-name sets every downstream check
@@ -383,6 +361,18 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
     await worktreeFetcher.run({ wid: props.workerId, path: props.selectedPath })
   }
 
+  const workingTreeFetcher = createGuardedFetch<{ wid: string, path: string }, Awaited<ReturnType<typeof workerGit.getGitWorkingTreeState>>>({
+    fetch: ({ wid, path }) => workerGit.getGitWorkingTreeState(wid, { path }),
+    applySuccess: resp => setDirty(resp.isDirty),
+    onError: err => log.warn('Failed to read git working tree state', err),
+  })
+
+  const fetchWorkingTree = async () => {
+    if (!props.workerId || !props.selectedPath)
+      return
+    await workingTreeFetcher.run({ wid: props.workerId, path: props.selectedPath })
+  }
+
   // Build the intent for a given mode using whatever typed values are
   // live right now. Shared by the per-mode auto-emit effect, the radio
   // click handler, and the (worker, path) reset — keeping all three in
@@ -430,6 +420,10 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // the worktrees and all three selections along with a still-valid pick.
   createEffect(on(() => [props.workerId, props.selectedPath] as const, () => {
     batch(() => {
+      branchFetcher.run(null)
+      worktreeFetcher.run(null)
+      workingTreeFetcher.run(null)
+      setDirty(undefined)
       setInternalBranches([])
       setWorktrees([])
       setSelectedCheckoutBranch('')
@@ -447,12 +441,16 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   const modeNeedsWorktrees = (mode: GitMode) => mode === GitMode.UseWorktree
 
   const refetchForMode = (mode: GitMode) => {
+    if (dirtyWarningCopy(mode) !== null)
+      fetchWorkingTree()
     if (modeNeedsBranches(mode))
       fetchBranches()
     if (modeNeedsWorktrees(mode))
       fetchWorktrees()
   }
 
+  // The folder reset selects the default mode before this effect runs.
+  // A path dependency could request status with the previous mode while browsing.
   // Fetch branches/worktrees when the path resolves to a known repo and
   // the active mode needs them. The combined effect re-runs whenever
   // either readiness or the mode changes; the `length === 0` guards make
@@ -465,6 +463,8 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   ] as const, ([ready, mode]) => {
     if (!ready)
       return
+    if (dirtyWarningCopy(mode) !== null && dirty() === undefined)
+      fetchWorkingTree()
     if (modeNeedsBranches(mode) && !props.preloadedBranches && branches().length === 0)
       fetchBranches()
     if (modeNeedsWorktrees(mode) && worktrees().length === 0)
@@ -477,7 +477,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   }, { defer: true }))
 
   // Single uni-directional emit point: radio clicks and typed input
-  // changes flow through `setActiveMode` / `setBranchName` / etc.
+  // changes flow through `setRawMode` / `setBranchName` / etc.
   // → `intentFor` recomputes → this effect fires → parent's `setIntent`
   // lands. Dedup lives at the parent's signal (its `equals: shallowEqual`
   // skips notification for identity-equal intents) so no-op recomputes
@@ -489,7 +489,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   }
 
   const renderDirtyWarning = (mode: GitMode) => (
-    <Show when={props.gitInfo.info().isDirty}>
+    <Show when={dirty() === true}>
       <div class={warningText}>{dirtyWarningCopy(mode)}</div>
     </Show>
   )

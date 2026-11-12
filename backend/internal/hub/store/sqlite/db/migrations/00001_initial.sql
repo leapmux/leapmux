@@ -91,6 +91,9 @@ CREATE INDEX idx_users_is_admin ON users(created_at) WHERE is_admin = 1 AND dele
 -- Auth sessions
 CREATE TABLE user_sessions (
     id              TEXT PRIMARY KEY,
+    -- HMAC-SHA256 of the session secret, keyed by the token pepper. The cookie
+    -- is "<id>_<secret>"; the id is public and the Hub never stores the secret.
+    secret_hash BLOB NOT NULL CHECK (typeof(secret_hash) = 'blob' AND length(secret_hash) = 32),
     user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     expires_at      DATETIME NOT NULL,
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -131,7 +134,8 @@ CREATE INDEX idx_user_sessions_last_active ON user_sessions(last_active_at DESC,
 -- Registered workers
 CREATE TABLE workers (
     id            TEXT PRIMARY KEY,
-    auth_token    TEXT NOT NULL UNIQUE,
+    -- HMAC-SHA256 of the worker's bearer token, keyed by the token pepper.
+    auth_token_hash BLOB NOT NULL UNIQUE CHECK (typeof(auth_token_hash) = 'blob' AND length(auth_token_hash) = 32),
     registered_by TEXT NOT NULL REFERENCES users(id),
     -- The public keys the worker registered with. Connect refuses a hello
     -- whose keys differ, so a stolen auth token cannot attach other keys to
@@ -226,7 +230,8 @@ CREATE INDEX idx_workers_registered_by_deregistering_created ON workers(register
 -- The cleanup loop hard-deletes rows whose expires_at is older than the
 -- retention cutoff.
 CREATE TABLE worker_registration_keys (
-    id          TEXT PRIMARY KEY,
+    id          TEXT PRIMARY KEY, -- public id; the key itself is never stored
+    key_hash BLOB NOT NULL UNIQUE CHECK (typeof(key_hash) = 'blob' AND length(key_hash) = 32),
     created_by  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created_at  DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     expires_at  DATETIME NOT NULL
@@ -678,7 +683,7 @@ CREATE INDEX idx_delegation_tokens_expires_at ON delegation_tokens(expires_at) W
 -- CLI polls for the result. Rows live for `expires_at`; the cleanup
 -- loop hard-deletes expired rows daily.
 CREATE TABLE device_authorizations (
-    device_code           TEXT PRIMARY KEY,
+    device_code_hash BLOB PRIMARY KEY CHECK (typeof(device_code_hash) = 'blob' AND length(device_code_hash) = 32),
     user_code             TEXT NOT NULL UNIQUE,
     device_name           TEXT NOT NULL DEFAULT '',
     -- WHICH APP started the flow. The device leg is anonymous no longer: the

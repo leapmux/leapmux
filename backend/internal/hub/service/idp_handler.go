@@ -42,9 +42,10 @@ const (
 // /oauth/. The two prefixes state the direction, so neither name has to be read
 // twice.
 type IdPHandler struct {
-	store store.Store
-	cfg   *config.Config
-	set   *settings.Manager
+	sessionHasher auth.SecretHasher
+	store         store.Store
+	cfg           *config.Config
+	set           *settings.Manager
 	// lifecycle drops the cached UserInfo after the re-authentication leg
 	// elevates a session, so this process re-reads the new deadline instead
 	// of serving the old one for the rest of the auth cache's life.
@@ -115,18 +116,19 @@ type providerCacheKey struct {
 }
 
 // NewIdPHandler creates a new OAuth HTTP handler.
-func NewIdPHandler(st store.Store, cfg *config.Config, set *settings.Manager, lifecycle *auth.CredentialLifecycleEffects, ks *keystore.Keystore) *IdPHandler {
+func NewIdPHandler(st store.Store, sessionHasher auth.SecretHasher, cfg *config.Config, set *settings.Manager, lifecycle *auth.CredentialLifecycleEffects, ks *keystore.Keystore) *IdPHandler {
 	if lifecycle == nil {
 		panic("oauth handler requires credential lifecycle effects")
 	}
 	return &IdPHandler{
-		store:       st,
-		cfg:         cfg,
-		set:         set,
-		lifecycle:   lifecycle,
-		keystore:    ks,
-		providers:   make(map[providerCacheKey]huboauth.Provider),
-		providerGen: make(map[string]uint64),
+		sessionHasher: sessionHasher,
+		store:         st,
+		cfg:           cfg,
+		set:           set,
+		lifecycle:     lifecycle,
+		keystore:      ks,
+		providers:     make(map[providerCacheKey]huboauth.Provider),
+		providerGen:   make(map[string]uint64),
 	}
 }
 
@@ -256,6 +258,7 @@ func (h *IdPHandler) handleReauth(w http.ResponseWriter, r *http.Request, provid
 		return
 	}
 	user, err := auth.AuthenticateHTTP(ctx, r, auth.HTTPAuthOpts{
+		SessionHasher: h.sessionHasher,
 		Store:         h.store,
 		ReadCookie:    true,
 		SecureCookies: h.secureCookies(ctx),
@@ -789,7 +792,7 @@ func (h *IdPHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, user
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.store, loginUID, settings.SessionDuration(h.set.Snapshot(r.Context())), auth.SessionMeta{
+	session, sessionErr := auth.CreateSession(ctx, h.store, h.sessionHasher, loginUID, settings.SessionDuration(h.set.Snapshot(r.Context())), auth.SessionMeta{
 		UserAgent: r.UserAgent(),
 	})
 	if sessionErr != nil {
@@ -798,7 +801,7 @@ func (h *IdPHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, user
 		return
 	}
 
-	http.SetCookie(w, auth.BuildSessionCookie(sessionID, expiresAt, h.secureCookies(ctx)))
+	http.SetCookie(w, auth.BuildSessionCookie(session.Token, session.ExpiresAt, h.secureCookies(ctx)))
 
 	h.redirectBack(w, r, redirectURI)
 }

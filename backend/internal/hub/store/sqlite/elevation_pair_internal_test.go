@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
+	storetest "github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -37,7 +38,7 @@ func TestElevationColumnsAreWritableOnlyAsAPair(t *testing.T) {
 		DisplayName: "Elevation Pair", FirstCredentialExempt: true,
 	}))
 	sessionID := id.Generate()
-	require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{
+	require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: storetest.FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 		ID: sessionID, UserID: userid.MustNew(userID),
 		ExpiresAt: time.Now().UTC().Add(time.Hour),
 	}))

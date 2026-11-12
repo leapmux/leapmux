@@ -55,7 +55,7 @@ func setupAdminGateServer(t *testing.T) *adminGateFixture {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	connectServer := connect.NewServer(interceptor)
 
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
@@ -222,10 +222,10 @@ func TestAdminGate_DelegationBearerOfAdminRefused(t *testing.T) {
 	// The delegation row's worker reference is foreign-keyed; seed a real one.
 	workerID := id.Generate()
 	require.NoError(t, f.st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    id.Generate(),
-		RegisteredBy: owner,
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		RegisteredBy:  owner,
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	tokenID := id.Generate()
@@ -255,7 +255,7 @@ func TestAdminGate_SoloModeAutoAdmin(t *testing.T) {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, SoloUser: soloUser})
 	connectServer := connect.NewServer(interceptor)
 	adminSvc := service.NewAdminSettingsService(servicetest.NewSettingsManager(t, st, nil), &config.Config{SoloMode: true}, st)
 	leapmuxv1connect.RegisterAdminSettingsServiceHandler(connectServer, adminSvc)

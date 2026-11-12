@@ -133,29 +133,39 @@ func countEncryptedRefs(ctx context.Context, st store.Store, version uint32) ([]
 	return refs, nil
 }
 
-// runRotatePepper regenerates the dedicated api_token/delegation_token pepper.
-// This INVALIDATES every existing API token and delegation token (their HMAC
-// hashes can no longer be reproduced), so it requires --yes. The
-// encryption key ring is untouched; encryption-key rotation never affects the
-// pepper, and vice versa.
+// pepperRotationEffects is shared by confirmation and completion output.
+const pepperRotationEffects = "- Signs out every session.\n" +
+	"- Invalidates every Worker auth token.\n" +
+	"- Invalidates API and delegation tokens and confidential app secrets.\n" +
+	"- Invalidates live registration keys and pending device codes.\n"
+
+// runRotatePepper replaces the HMAC pepper for every stored bearer secret.
+// The resulting invalidations require --yes. The encryption key ring stays intact.
 func runRotatePepper(cmd cmdCtx, args []string) error {
 	var yes bool
 	return withRecoverConfig(cmd, args, func(fs *flag.FlagSet) {
-		fs.BoolVar(&yes, "yes", false, "confirm: this invalidates ALL API and delegation tokens")
+		fs.BoolVar(&yes, "yes", false, "confirm these effects after the Hub restarts:\n"+pepperRotationEffects)
 	}, func(cfg *config.Config) error {
 		path := cfg.EncryptionKeyFilePath()
 		if _, err := keystore.LoadFromFile(path); err != nil {
 			return fmt.Errorf("encryption key file not found at %s\nRun the hub once to auto-generate it, or specify --data-dir", path)
 		}
 		if !yes {
-			return fmt.Errorf("regenerating the pepper INVALIDATES ALL existing API tokens and delegation tokens; every client must be re-issued / re-authenticate.\nRe-run with --yes to proceed")
+			return fmt.Errorf("rotating the token pepper causes these effects after the Hub restarts:\n%sRe-run with --yes to proceed", pepperRotationEffects)
 		}
 		if err := keystore.RegeneratePepper(path); err != nil {
 			return err
 		}
-		fmt.Println("Regenerated the API-token pepper.")
-		fmt.Println("All existing API tokens and delegation tokens are now invalid.")
-		fmt.Println("Restart the hub to apply, then re-issue API tokens with: leapmux control admin api-token issue --hub <url>")
+		fmt.Println("Regenerated the token pepper.")
+		fmt.Print(pepperRotationEffects)
+		fmt.Println("Restart the Hub to apply the new pepper.")
+		fmt.Println("Solo mode and the desktop app reissue their own Worker's token.")
+		fmt.Println("For each standalone Worker:")
+		fmt.Println("1. Remove the Worker in the Hub's Worker list.")
+		fmt.Println("2. Stop the Worker.")
+		fmt.Println("3. Delete its state.json.")
+		fmt.Println("4. Register it with a new registration key. It receives a new Worker ID.")
+		fmt.Println("Re-issue API tokens with: leapmux control admin api-token issue --hub <url>")
 		return nil
 	})
 }

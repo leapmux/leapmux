@@ -59,6 +59,7 @@ vi.mock('~/api/workerRpc', () => ({
     openAgent: vi.fn(),
   },
   workerGit: {
+    getGitWorkingTreeState: vi.fn(async () => ({ $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse', isDirty: false })),
     getGitInfo: vi.fn(),
     // GitOptions requests both lists on mount. A supplied path snapshot makes it mount immediately.
     listGitBranches: vi.fn(async () => ({ branches: [] })),

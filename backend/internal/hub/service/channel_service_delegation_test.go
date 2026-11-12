@@ -61,7 +61,7 @@ func setupBearerChannelEnv(t *testing.T) *bearerChannelEnv {
 	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return settings.DefaultTimeouts.APITimeout() })
 
 	mux := http.NewServeMux()
-	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	t.Cleanup(sc.Stop)
 	connectServer := connect.NewServer(interceptor)
 
@@ -111,10 +111,10 @@ func (e *bearerChannelEnv) seedUserWorkspaceWorker(t *testing.T) (userID, wsA, w
 
 	workerID = id.Generate()
 	require.NoError(t, e.store.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    id.Generate(),
-		RegisteredBy: userid.MustNew(userID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		RegisteredBy:  userid.MustNew(userID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	return userID, wsA, wsB, workerID
@@ -192,10 +192,10 @@ func (e *bearerChannelEnv) seedCrossTenantDelegation(t *testing.T) (victimWorker
 	}))
 	attackerWorkerID := id.Generate()
 	require.NoError(t, e.store.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:           attackerWorkerID,
-		AuthToken:    id.Generate(),
-		RegisteredBy: userid.MustNew(attackerID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            attackerWorkerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		RegisteredBy:  userid.MustNew(attackerID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	bearer, _ = e.mintDelegation(t, victimID, attackerWorkerID, victimWS)
