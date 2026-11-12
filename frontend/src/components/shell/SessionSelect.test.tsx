@@ -305,6 +305,7 @@ describe('SessionSelect', () => {
         summary({ sessionId: 'ses_long', title }),
       ],
     })
+    openMenu(MENU)
 
     const row = screen.getByTestId('loading-menu-option-ses_long')
     expect(row.textContent).toContain('ago')

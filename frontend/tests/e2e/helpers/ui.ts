@@ -2313,8 +2313,9 @@ export async function boxOf(locator: Locator): Promise<{ x: number, y: number, w
  * Pick an option from a `DropdownMenu`.
  *
  * The app renders no native `<select>` any more (see the dropdown rule in
- * AGENTS.md), so `selectOption` has nothing to drive. A menu keeps its items
- * mounted, so this helper scopes the click to the row that owns them.
+ * AGENTS.md), so `selectOption` has nothing to drive. A menu mounts its items at
+ * its first open and keeps them mounted, so this helper opens the menu and
+ * scopes the click to the row that owns them.
  */
 // `~/components/common/LoadingMenu` writes these test IDs. `src/test-support/menu.ts` holds the equivalent Vitest query templates.
 // DOM queries and Playwright locators use different APIs, so they cannot share query code. Apply test-ID changes in all three files.

@@ -302,3 +302,36 @@ test.describe('Git File Status', () => {
     await expect(page.locator('[data-testid="diff-mode-toolbar"]')).toBeVisible()
   })
 })
+
+test.describe('Git File Versions Past the Read Limit', () => {
+  /**
+   * The viewer reads at most 256 KiB of the working copy, and of the HEAD and staged versions too: the worker cuts a
+   * git read at the limit and reports the whole size. The status bar says so for the version that the mode shows.
+   */
+  test('says that a long HEAD version is truncated, in diff and HEAD modes', async ({ page, leapmuxServer }) => {
+    const dir = createTestDirectory('leapmux-e2e-git-long-')
+    try {
+      initGitRepo(dir)
+      const lines = Array.from({ length: 8000 }, (_, index) => `line ${String(index).padStart(6, '0')} of a long tracked file`)
+      writeFileSync(join(dir, 'long.txt'), `${lines.join('\n')}\n`)
+      execFileSync('git', ['add', '.'], { cwd: dir })
+      execFileSync('git', ['commit', '-m', 'initial'], { cwd: dir })
+      writeFileSync(join(dir, 'long.txt'), `changed first line\n${lines.slice(1).join('\n')}\n`)
+
+      await showWorkspaceWithAgents(page, leapmuxServer, 'Long Git File', { workingDir: dir })
+      await page.locator('[data-testid="files-filter-changed"]').click()
+      await treeRow(page, 'long.txt').click()
+      await expect(page.locator('[data-testid="diff-mode-toolbar"]')).toBeVisible()
+
+      const truncated = page.getByText(/Truncated at 256(\.0)? KB/i).filter({ visible: true })
+      await expect(truncated).toBeVisible()
+
+      await page.locator('[data-testid="diff-mode-head"]').click()
+      await expect(page.getByText('line 000000 of a long tracked file').filter({ visible: true })).toBeVisible()
+      await expect(truncated).toBeVisible()
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

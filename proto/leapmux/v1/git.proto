@@ -227,12 +227,19 @@ enum GitFileRef {
 message ReadGitFileRequest {
   string path = 1;       // Absolute path to the file
   GitFileRef ref = 2;
+  // The most bytes of content to return; 0 returns the whole file. The file
+  // viewer reads at most as much as it reads of the working copy.
+  int64 limit = 3;
 }
 
 message ReadGitFileResponse {
   string path = 1;
+  // The file at the ref, cut at the request's limit.
   bytes content = 2;
   bool exists = 3;
+  // The size of the whole file at the ref. It exceeds the length of content
+  // when the limit cut the content.
+  int64 total_size = 4;
 }
 
 message ListGitBranchesRequest {

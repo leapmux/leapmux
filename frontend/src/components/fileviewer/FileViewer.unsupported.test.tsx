@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { GitFileRef } from '~/generated/proto/leapmux/v1/git_pb'
 import { PREFIX_FILE_SCROLL, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { MAX_FILE_IMAGE_BYTES } from '~/lib/imageBlocks'
 import { platformBridgeFileSaveStubs } from '~/test-support/saveActionsMocks'
@@ -11,6 +12,7 @@ const readFileImpl = vi.fn()
 const readGitFileImpl = vi.fn(async (..._args: unknown[]) => ({
   exists: false,
   content: new Uint8Array(),
+  totalSize: 0n,
 }))
 const downloadImpl = vi.fn((..._args: unknown[]) => Promise.resolve())
 
@@ -509,9 +511,11 @@ describe('FileViewer ref and diff reads', () => {
   }
 
   function gitText(text: string): GitRead {
+    const content = new TextEncoder().encode(text)
     return {
       exists: true,
-      content: new TextEncoder().encode(text),
+      content,
+      totalSize: BigInt(content.length),
     }
   }
 
@@ -656,5 +660,116 @@ describe('FileViewer ref and diff reads', () => {
     staged.resolve(gitText('staged text'))
     await waitFor(() => expect(screen.getByTestId('text-view')).toHaveAttribute('data-text', 'staged text'))
     expect(screen.queryByText('Loading...')).not.toBeInTheDocument()
+  })
+})
+
+// The HEAD and staged versions stop where the working copy does, at 256 KiB, and
+// the status bar says so for the version that the current mode shows.
+describe('FileViewer truncated git versions', () => {
+  const TRUNCATED = /Truncated at 256(\.0)? KB/i
+  const LIMIT = 256 * 1024
+
+  beforeEach(() => {
+    statFileImpl.mockReset()
+    readFileImpl.mockReset()
+    readGitFileImpl.mockReset()
+    readFileImpl.mockResolvedValue(readResp(new TextEncoder().encode('working')))
+  })
+
+  function gitRead(text: string, totalSize: number) {
+    return {
+      exists: true,
+      content: new TextEncoder().encode(text),
+      totalSize: BigInt(totalSize),
+    }
+  }
+
+  it('reads a git version up to the limit of the working copy', async () => {
+    readGitFileImpl.mockResolvedValue(gitRead('head text', 9))
+    render(() => <FileViewer workerId="w1" filePath="/repo/notes.txt" fileViewMode="head" />)
+    await waitFor(() => expect(screen.getByTestId('text-view')).toHaveAttribute('data-text', 'head text'))
+
+    expect(readGitFileImpl).toHaveBeenCalledWith('w1', expect.objectContaining({
+      path: '/repo/notes.txt',
+      limit: BigInt(LIMIT),
+    }), expect.anything())
+  })
+
+  it('warns that the HEAD version shown is truncated', async () => {
+    readGitFileImpl.mockResolvedValue(gitRead('head text', LIMIT + 1))
+    render(() => <FileViewer workerId="w1" filePath="/repo/notes.txt" fileViewMode="head" />)
+    await waitFor(() => expect(screen.getByTestId('text-view')).toHaveAttribute('data-text', 'head text'))
+
+    expect(screen.getByText(TRUNCATED)).toBeInTheDocument()
+  })
+
+  it('does not warn for a whole HEAD version, even when the working copy is truncated', async () => {
+    readFileImpl.mockResolvedValue(readResp(new TextEncoder().encode('working'), LIMIT + 1))
+    readGitFileImpl.mockResolvedValue(gitRead('head text', 9))
+    render(() => <FileViewer workerId="w1" filePath="/repo/notes.txt" fileViewMode="head" />)
+    await waitFor(() => expect(screen.getByTestId('text-view')).toHaveAttribute('data-text', 'head text'))
+
+    expect(screen.queryByText(TRUNCATED)).not.toBeInTheDocument()
+  })
+
+  it.each([
+    [
+      'the HEAD side',
+      'head-vs-staged',
+      [LIMIT + 1, 6],
+      7,
+    ],
+    [
+      'the staged side',
+      'head-vs-staged',
+      [4, LIMIT + 1],
+      7,
+    ],
+    [
+      'the working side',
+      'head-vs-working',
+      [4, 4],
+      LIMIT + 1,
+    ],
+  ] as const)('warns that a diff is truncated when %s is cut', async (_side, base, [headSize, stagedSize], workingSize) => {
+    readFileImpl.mockResolvedValue(readResp(new TextEncoder().encode('working'), workingSize))
+    readGitFileImpl.mockImplementation(async (...args: unknown[]) => {
+      const request = args[1] as { ref: number }
+      return request.ref === GitFileRef.HEAD
+        ? gitRead('head', headSize)
+        : gitRead('staged', stagedSize)
+    })
+    render(() => (
+      <FileViewer
+        workerId="w1"
+        filePath="/repo/notes.txt"
+        fileViewMode="unified-diff"
+        fileDiffBase={base}
+        gitFileStatus={{ path: 'notes.txt' } as never}
+      />
+    ))
+    await waitFor(() => expect(screen.getByText(TRUNCATED)).toBeInTheDocument())
+  })
+
+  it('does not warn for a diff of whole versions', async () => {
+    readGitFileImpl.mockImplementation(async (...args: unknown[]) => {
+      const request = args[1] as { ref: number }
+      return request.ref === GitFileRef.HEAD
+        ? gitRead('head', 4)
+        : gitRead('staged', 6)
+    })
+    render(() => (
+      <FileViewer
+        workerId="w1"
+        filePath="/repo/notes.txt"
+        fileViewMode="unified-diff"
+        fileDiffBase="head-vs-staged"
+        gitFileStatus={{ path: 'notes.txt' } as never}
+      />
+    ))
+    await waitFor(() => expect(readGitFileImpl).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.queryByText('Loading...')).not.toBeInTheDocument())
+
+    expect(screen.queryByText(TRUNCATED)).not.toBeInTheDocument()
   })
 })

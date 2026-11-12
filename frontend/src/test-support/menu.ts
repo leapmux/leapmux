@@ -10,11 +10,14 @@ import { fireEvent, screen, within } from '@solidjs/testing-library'
  * Reading and driving a `DropdownMenu`, for the suites that used to drive a
  * native `<select>`.
  *
- * Two things differ from a `<select>` and both bite silently:
+ * Three things differ from a `<select>` and all bite silently:
  *
- *   - A menu keeps its items MOUNTED whether or not it is open, so an unscoped
- *     `getAllByRole` returns every menu on screen merged together. Every helper
- *     here scopes to one popover.
+ *   - `LoadingMenu` mounts its rows at the FIRST open, so a menu nobody opened
+ *     has no rows to read. Every reader and picker here opens such a menu first,
+ *     as a user does (see {@link openMenu}).
+ *   - Once mounted, the rows stay mounted whether or not the menu is open, so an
+ *     unscoped `getAllByRole` returns every menu on screen merged together.
+ *     Every helper here scopes to one popover.
  *   - A closed popover is outside the accessibility tree, so role queries need
  *     `hidden: true`. The role is still asserted -- these have to be
  *     `menuitemradio`, which is what makes the group a one-of-N choice.
@@ -39,7 +42,21 @@ function popover(testId: string): HTMLElement {
  * the three readers below cannot disagree about what an option IS.
  */
 function menuItems(testId: string): HTMLElement[] {
+  mountRows(testId)
   return within(popover(testId)).queryAllByRole('menuitemradio', { hidden: true })
+}
+
+/**
+ * Open a menu that has never mounted its rows, so they exist to read.
+ *
+ * A menu that holds rows stays as it is, so a reader does not open a menu, and
+ * run its `onOpen`, a second time. A disabled trigger opens nothing, and its
+ * menu reads as empty, as a user finds it.
+ */
+function mountRows(testId: string): void {
+  const rows = within(popover(testId)).queryAllByRole('menuitemradio', { hidden: true })
+  if (rows.length === 0)
+    openMenu(testId)
 }
 
 /** The option labels one menu offers, in order. */
@@ -62,26 +79,30 @@ export function menuOptionLabels(testId: string): string[] {
 }
 
 /**
- * Open one menu, as a user does, by clicking its trigger.
+ * Open one menu, as a user does, by clicking its trigger, unless it is open.
  *
- * Required before an assertion about what a ROW draws. `LoadingMenu` defers the
- * expensive part of a row -- its label tooltip, and a caller's live detail
- * element -- to the first open, because `DropdownMenu` mounts its children
- * eagerly and a menu nobody opened would otherwise allocate one Tooltip per
- * option. The rows themselves are always mounted, so `menuOptions`,
- * `menuOptionLabels` and `menuOptionValues` need no open.
+ * `LoadingMenu` mounts its rows at the first open, because `DropdownMenu`
+ * renders its children while closed, and a menu nobody opened would otherwise
+ * pay for one row per option. The readers and pickers below call this for a
+ * menu with no rows. The E2E counterpart is `openMenu` in
+ * `tests/e2e/helpers/ui.ts`, which also opens only a closed menu: a second
+ * click would close it.
  */
 export function openMenu(testId: string): void {
-  fireEvent.click(menuTrigger(testId))
+  const trigger = menuTrigger(testId)
+  if (trigger.getAttribute('aria-expanded') !== 'true')
+    fireEvent.click(trigger)
 }
 
 /** Activate the option with this exact label. */
 export function pickMenuOption(testId: string, label: string | RegExp): void {
+  mountRows(testId)
   fireEvent.click(within(popover(testId)).getByRole('menuitemradio', { name: label, hidden: true }))
 }
 
 /** Activate the option carrying this value, whatever its label reads. */
 export function pickMenuValue(testId: string, value: string): void {
+  mountRows(testId)
   fireEvent.click(within(popover(testId)).getByTestId(`loading-menu-option-${value}`))
 }
 

@@ -38,6 +38,7 @@ function renderMenu(overrides: Partial<Parameters<typeof LoadingMenu>[0]> = {}) 
 describe('the one-of-N menu (LoadingMenu)', () => {
   it('checks the option the value names, and only it', () => {
     renderMenu({ value: 'b' })
+    openMenu(MENU)
     const items = within(screen.getByTestId(MENU)).getAllByRole('menuitemradio', { hidden: true })
     expect(items.map(el => el.getAttribute('aria-checked'))).toEqual(['false', 'true'])
     expect(menuTriggerText(MENU)).toContain('Beta')
@@ -173,6 +174,7 @@ describe('the one-of-N menu (LoadingMenu)', () => {
         { value: 'c', label: 'Gamma', group: 'Remote' },
       ],
     })
+    openMenu(MENU)
     const popover = screen.getByTestId(MENU)
     expect(within(popover).getAllByText('Local')).toHaveLength(1)
     expect(within(popover).getAllByText('Remote')).toHaveLength(1)
@@ -236,6 +238,7 @@ describe('the one-of-N menu (LoadingMenu)', () => {
     // label clips, so anything inside it goes with the ellipsis.
     it('draws the detail outside the label, so a clipped label cannot take it', () => {
       renderMenu({ options: dated })
+      openMenu(MENU)
       const label = screen.getByTestId('loading-menu-option-a-label')
       expect(label.textContent).toBe('Alpha')
       expect(screen.getByTestId('loading-menu-option-a').textContent).toContain('3d ago')
@@ -243,6 +246,7 @@ describe('the one-of-N menu (LoadingMenu)', () => {
 
     it('draws nothing beside a label with no detail', () => {
       renderMenu({ options: dated })
+      openMenu(MENU)
       expect(screen.getByTestId('loading-menu-option-b').textContent?.trim()).toBe('Beta')
     })
 
@@ -261,8 +265,6 @@ describe('the one-of-N menu (LoadingMenu)', () => {
           },
         ],
       })
-      // The renderer is deferred to the first OPEN; the text stands until then.
-      expect(screen.getByTestId('loading-menu-option-a').textContent).toContain('3d ago')
       openMenu(MENU)
       const row = screen.getByTestId('loading-menu-option-a')
       expect(row.querySelector('em')?.textContent).toBe('three days')
@@ -286,8 +288,8 @@ describe('the one-of-N menu (LoadingMenu)', () => {
           },
         ],
       })
-      // ONCE while closed: the trigger is always on screen, and the row's own
-      // copy waits for the open that reveals it.
+      // ONCE while closed: the trigger is always on screen, and the row
+      // mounts at the open that reveals it.
       expect(drawDetail).toHaveBeenCalledTimes(1)
       openMenu(MENU)
       // Twice: the row and the trigger. Once would mean one DOM node asked to
@@ -366,7 +368,7 @@ describe('the one-of-N menu (LoadingMenu)', () => {
   // -- fifty rows for a full session list, and `BranchSelect`'s list has no
   // upper limit. A row is still mounted and still readable; only the parts that
   // exist for an interaction wait for one.
-  it('allocates no per-row tooltip or live detail until it is opened', () => {
+  it('mounts no row, and so no tooltip or live detail, until it is opened', () => {
     const drawDetail = vi.fn(() => <em>three days</em>)
     renderMenu({
       options: [
@@ -389,20 +391,56 @@ describe('the one-of-N menu (LoadingMenu)', () => {
       ],
     })
 
-    // The rows ARE there, so every closed-menu assertion still holds.
-    expect(menuOptionValues(MENU)).toEqual(['a', 'b'])
-    expect(menuOptionLabels(MENU)).toEqual(['Alpha', 'Beta'])
-    // ...but no row drew the caller's element, and no row's label owns a
-    // tooltip: a Tooltip renders a wrapper around its target, and the plain
-    // branch renders the bare span instead.
+    // A closed menu that nobody opened holds no row, so no row drew the
+    // caller's element or wrapped its label in a tooltip.
+    expect(within(screen.getByTestId(MENU)).queryAllByRole('menuitemradio', { hidden: true })).toHaveLength(0)
     expect(drawDetail).not.toHaveBeenCalled()
-    expect(screen.getByTestId('loading-menu-option-a').textContent).toContain('3d ago')
 
     openMenu(MENU)
 
-    expect(drawDetail).toHaveBeenCalled()
+    expect(menuOptionValues(MENU)).toEqual(['a', 'b'])
+    expect(menuOptionLabels(MENU)).toEqual(['Alpha', 'Beta'])
+    expect(drawDetail).toHaveBeenCalledTimes(2)
     expect(screen.getByTestId('loading-menu-option-a').querySelector('em')?.textContent)
       .toBe('three days')
+  })
+
+  it('keeps its rows mounted after it closes, so a reopen mounts nothing', () => {
+    const drawDetail = vi.fn(() => <em>three days</em>)
+    renderMenu({
+      options: [
+        {
+          value: 'a',
+          label: 'Alpha',
+          detail: {
+            text: () => '3d ago',
+            render: drawDetail,
+          },
+        },
+      ],
+    })
+    openMenu(MENU)
+    const row = screen.getByTestId('loading-menu-option-a')
+    fireEvent.click(menuTrigger(MENU))
+    expect(menuTrigger(MENU)).toHaveAttribute('aria-expanded', 'false')
+
+    openMenu(MENU)
+
+    expect(screen.getByTestId('loading-menu-option-a')).toBe(row)
+    expect(drawDetail).toHaveBeenCalledOnce()
+  })
+
+  it('mounts its rows before the popover shows, so its first frame holds them', () => {
+    renderMenu()
+    const popover = screen.getByTestId(MENU)
+    let rowsWhenShown = -1
+    popover.addEventListener('toggle', () => {
+      rowsWhenShown = within(popover).queryAllByRole('menuitemradio', { hidden: true }).length
+    }, { once: true, capture: true })
+
+    openMenu(MENU)
+
+    expect(rowsWhenShown).toBe(2)
   })
 
   it('warms its caller through onOpen, the seam focus used to be', () => {

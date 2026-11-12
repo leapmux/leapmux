@@ -154,18 +154,11 @@ const FILTER_MIN_OPTIONS = 12
  * drawn: the trigger and the row each need their own, and one DOM node cannot
  * sit in two places.
  *
- * `live` false takes the TEXT even when a renderer exists. A caller's element
- * can be expensive -- `SessionSelect`'s is a live `RelativeTime` that subscribes
- * to the shared ticker -- and a row inside a menu nobody has opened should not
- * pay for it. The two read the same, because the text IS what the element draws.
  */
-function detailRenderer(
-  detail: LoadingMenuOptionDetail | undefined,
-  live = true,
-): (() => JSX.Element) | undefined {
+function detailRenderer(detail: LoadingMenuOptionDetail | undefined): (() => JSX.Element) | undefined {
   if (detail === undefined)
     return undefined
-  return () => (live && detail.render
+  return () => (detail.render
     ? detail.render()
     : detail.text())
 }
@@ -188,8 +181,8 @@ function detailRenderer(
  */
 export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
   const [query, setQuery] = createSignal('')
-  // Whether the menu has ever been opened; see `items`. One-way: it never goes
-  // back to false, so a reopen mounts nothing again.
+  // Whether the menu has ever been opened. The rows mount at the first open,
+  // and stay: a reopen mounts nothing again. See the `items` call below.
   const [everOpened, setEverOpened] = createSignal(false)
   // A signal, not a plain `let`: `select` reads it to dismiss a filtered menu.
   const [popoverEl, setPopoverEl] = createSignal<HTMLElement>()
@@ -332,14 +325,13 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
         <For each={visible()}>
           {(option, i) => {
             // Spread-ready detail, as a GETTER called in spread position: the
-            // read stays where the original expression evaluated, so the
-            // deferral contract below is unchanged. One read per evaluation
-            // keeps presence and value decided together -- a second
+            // read stays where the original expression evaluated. One read per
+            // evaluation keeps presence and value decided together -- a second
             // `detailRenderer(...)` call beside the first could not be
             // narrowed, and the spread keeps the key absent exactly when the
             // renderer answers undefined -- an option with no detail.
             const detailProps = () => {
-              const detail = detailRenderer(option.detail, everOpened())
+              const detail = detailRenderer(option.detail)
               return detail !== undefined
                 ? { detail }
                 : {}
@@ -359,20 +351,7 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
                   // whatever the user's data is long enough to be: a branch name,
                   // a session title. Clipped with no route back is the state a
                   // tooltip exists to prevent.
-                  //
-                  // Deferred to the first OPEN, and that is the whole reason this
-                  // is a prop rather than always-on. `DropdownMenu` renders its
-                  // children on MOUNT, and `ClippedText` wraps every instance in
-                  // a `Tooltip` -- a MutationObserver and listeners on two
-                  // elements, per row. Paid eagerly that is one such allocation
-                  // per option of every menu on screen, open or not: fifty for a
-                  // full session list, and `BranchSelect`'s list has no upper
-                  // limit at all. A row nobody has seen needs no route back.
-                  revealClippedLabel={everOpened()}
-                  // Same deferral, same reason: `SessionSelect`'s detail is a live
-                  // `RelativeTime` that subscribes to the shared ticker, so an
-                  // unopened picker held one subscriber per session. The text form
-                  // renders until then, so the row reads the same either way.
+                  revealClippedLabel
                   // `detailRenderer` returns undefined exactly when the option has
                   // no detail, so the spread keeps the key absent for those rows.
                   {...detailProps()}
@@ -398,9 +377,14 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
       // replaces -- so the popover follows its width. See the prop.
       matchTriggerWidth
       popoverRef={setPopoverEl}
+      // The rows mount before the popover first shows, so it never paints a
+      // frame without them, and its first position fits the full list.
+      onBeforeToggle={(opening) => {
+        if (opening)
+          setEverOpened(true)
+      }}
       onToggle={(open) => {
         if (open) {
-          setEverOpened(true)
           props.onOpen?.()
           // Put the caret in the filter box. `popover="auto"` moves focus
           // nowhere on its own, so without this the filter buys back none of
@@ -469,8 +453,18 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
           `role="menu"` around several groups. A role on the popover would give
           that panel two nested menus. The unfiltered form needs none of this --
           `DropdownMenu` renders a real `<menu>` there. */}
-      <Show when={filtering()} fallback={items()}>
-        <div role="menu" aria-label={props.ariaLabel} class={styles.filteredList}>{items()}</div>
+      {/*
+        The rows mount at the first open. `DropdownMenu` renders its children
+        while the popover is closed, and each row costs a `ClippedText` tooltip
+        (a MutationObserver and listeners on two elements), a live detail such
+        as `SessionSelect`'s ticking `RelativeTime`, and its own memos. A closed
+        picker paid that for every option -- `BranchSelect`'s list has no upper
+        limit -- and most pickers on screen are never opened.
+      */}
+      <Show when={everOpened()}>
+        <Show when={filtering()} fallback={items()}>
+          <div role="menu" aria-label={props.ariaLabel} class={styles.filteredList}>{items()}</div>
+        </Show>
       </Show>
     </DropdownMenu>
   )

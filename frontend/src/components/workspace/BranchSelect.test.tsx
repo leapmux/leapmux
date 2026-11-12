@@ -2,7 +2,7 @@
 import type { GitBranchEntry } from '~/generated/proto/leapmux/v1/git_pb'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { menuOptions, menuTrigger, menuTriggerText, pickMenuValue } from '~/test-support/menu'
+import { menuOptions, menuTrigger, menuTriggerText, openMenu, pickMenuValue } from '~/test-support/menu'
 import { BranchSelect, partitionBranches } from './BranchSelect'
 
 const MENU = 'branch-select-menu'
@@ -77,6 +77,7 @@ describe('BranchSelect', () => {
         branch('origin/dev', true),
       ],
     })
+    openMenu(MENU)
     expect(screen.getByText('Local')).toBeInTheDocument()
     expect(screen.getByText('Remote')).toBeInTheDocument()
   })
@@ -88,6 +89,7 @@ describe('BranchSelect', () => {
       ],
       remote: [],
     })
+    openMenu(MENU)
     expect(screen.getByText('Local')).toBeInTheDocument()
     expect(screen.queryByText('Remote')).toBeNull()
   })

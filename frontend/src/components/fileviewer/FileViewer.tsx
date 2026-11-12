@@ -33,6 +33,13 @@ import { UnsupportedFileView } from './UnsupportedFileView'
 import { ViewToggle } from './ViewToggle'
 
 const MAX_FILE_SIZE = 256 * 1024 // 256 KiB
+/** The limit of each git read: the HEAD and staged versions stop where the working copy does. */
+const GIT_READ_LIMIT = BigInt(MAX_FILE_SIZE)
+
+/** Whether the limit cut the content of a git read. */
+function gitReadTruncated(resp: { content: Uint8Array, totalSize: bigint }): boolean {
+  return BigInt(resp.content.length) < resp.totalSize
+}
 
 /**
  * Build the binary-file diff message from the file's git-status entry.
@@ -177,6 +184,9 @@ export const FileViewer: Component<{
   const [diffOldContent, setDiffOldContent] = createSignal<string | null>(null)
   const [diffNewContent, setDiffNewContent] = createSignal<string | null>(null)
   const [diffLoading, setDiffLoading] = createSignal(false)
+  // Whether a version that the ref or diff mode shows is cut at MAX_FILE_SIZE.
+  // Each git read takes the limit that the working copy takes.
+  const [diffTruncated, setDiffTruncated] = createSignal(false)
 
   const isDiffMode = () => props.fileViewMode === 'unified-diff' || props.fileViewMode === 'split-diff'
   const isRefMode = () => props.fileViewMode === 'head' || props.fileViewMode === 'staged'
@@ -378,20 +388,23 @@ export const FileViewer: Component<{
         setDiffLoading(false)
         setDiffOldContent(null)
         setDiffNewContent(null)
+        setDiffTruncated(false)
         return
       }
 
       setDiffLoading(true)
+      setDiffTruncated(false)
       try {
         if (mode === 'head' || mode === 'staged') {
           const ref = mode === 'head'
             ? GitFileRef.HEAD
             : GitFileRef.STAGED
-          const resp = await workerGit.readGitFile(workerId, { path: filePath, ref }, rpcOpts)
+          const resp = await workerGit.readGitFile(workerId, { path: filePath, ref, limit: GIT_READ_LIMIT }, rpcOpts)
           if (!active)
             return
           if (resp.exists) {
             setDiffOldContent(new TextDecoder().decode(resp.content))
+            setDiffTruncated(gitReadTruncated(resp))
           }
           else {
             setDiffOldContent(null)
@@ -415,6 +428,7 @@ export const FileViewer: Component<{
           const headPromise = workerGit.readGitFile(workerId, {
             path: filePath,
             ref: GitFileRef.HEAD,
+            limit: GIT_READ_LIMIT,
           }, rpcOpts)
           // Handled here as well as at the await below. When the new side
           // fails first, or this run is superseded, the function leaves
@@ -423,14 +437,17 @@ export const FileViewer: Component<{
           headPromise.catch(() => {})
           const decoder = new TextDecoder()
           let newText: string
+          let newTruncated: boolean
           if (mode === 'diff:head-vs-staged') {
             const stagedResp = await workerGit.readGitFile(workerId, {
               path: filePath,
               ref: GitFileRef.STAGED,
+              limit: GIT_READ_LIMIT,
             }, rpcOpts)
             newText = stagedResp.exists
               ? decoder.decode(stagedResp.content)
               : ''
+            newTruncated = stagedResp.exists && gitReadTruncated(stagedResp)
           }
           else {
             // head-vs-working: prefer the working-copy bytes loaded by
@@ -442,10 +459,12 @@ export const FileViewer: Component<{
             const bytes = await currentBytesPromise
             if (bytes) {
               newText = decoder.decode(bytes)
+              newTruncated = bytes.length < totalSize()
             }
             else {
               const workingResp = await fetchFirstChunk(workerId, filePath, controller.signal)
               newText = decoder.decode(workingResp.content)
+              newTruncated = BigInt(workingResp.content.length) < workingResp.totalSize
             }
           }
           const headResp = await headPromise
@@ -455,6 +474,7 @@ export const FileViewer: Component<{
             ? decoder.decode(headResp.content)
             : '')
           setDiffNewContent(newText)
+          setDiffTruncated(newTruncated || (headResp.exists && gitReadTruncated(headResp)))
         }
       }
       catch {
@@ -474,6 +494,10 @@ export const FileViewer: Component<{
   ))
 
   const isTruncated = () => content() !== null && content()!.length < totalSize()
+  /** Whether a version that the current mode shows is cut at MAX_FILE_SIZE. */
+  const shownVersionTruncated = () => isRefMode() || isDiffMode()
+    ? diffTruncated()
+    : isTruncated()
 
   const cardReason = createMemo<UnsupportedReason | null>(() => {
     if (oversizeImage())
@@ -492,6 +516,19 @@ export const FileViewer: Component<{
     && (props.fileViewMode === undefined || props.fileViewMode === 'working')
     && !showAnyway()
     && cardReason() !== null
+
+  /**
+   * Whether the status bar has something to say. In working mode it states the
+   * size and any truncation. In the ref and diff modes it states only a
+   * truncation, because the size it holds is the working copy's.
+   */
+  const statusBarShown = () => {
+    if (loading() || error())
+      return false
+    if (isRefMode() || isDiffMode())
+      return !diffLoading() && diffTruncated()
+    return !shouldShowUnsupported() && (totalSize() > 0 || isTruncated())
+  }
 
   const handleShowAnyway = async () => {
     // Snapshot worker/path at click time. If the user navigates away
@@ -828,7 +865,7 @@ export const FileViewer: Component<{
           </Show>
         </Show>
       </div>
-      <Show when={!loading() && !error() && !isDiffMode() && !isRefMode() && !shouldShowUnsupported() && (totalSize() > 0 || isTruncated())}>
+      <Show when={statusBarShown()}>
         <div
           class={styles.statusBar}
           classList={{ [styles.statusBarInteractive]: showAnyway() && cardReason() !== null }}
@@ -844,12 +881,13 @@ export const FileViewer: Component<{
               Show download view
             </button>
           </Show>
-          <Show when={isTruncated()}>
+          <Show when={shownVersionTruncated()}>
             <span class={styles.truncationWarning}>
               {`Truncated at ${formatBytes(MAX_FILE_SIZE)}`}
             </span>
           </Show>
-          <Show when={totalSize() > 0}>
+          {/* The size of the working copy, which only working mode shows. */}
+          <Show when={!isRefMode() && !isDiffMode() && totalSize() > 0}>
             <span class={styles.statusMeta}>{formatBytes(totalSize())}</span>
           </Show>
         </div>

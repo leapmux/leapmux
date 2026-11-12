@@ -5162,6 +5162,72 @@ func TestReadGitFile_HeadReturnsCommittedContent(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
 	assert.True(t, resp.GetExists())
 	assert.Equal(t, "committed\n", string(resp.GetContent()))
+	assert.Equal(t, int64(len("committed\n")), resp.GetTotalSize(), "a zero limit returns the whole file")
+}
+
+// The file viewer reads at most 256 KiB of each version. A limit cuts the
+// content and the total size still reports the whole file, so the viewer can
+// say that it truncated the file.
+func TestReadGitFile_LimitCutsContentAndReportsTotalSize(t *testing.T) {
+	t.Parallel()
+
+	const committed = "0123456789\n"
+	for _, tc := range []struct {
+		name    string
+		limit   int64
+		content string
+	}{
+		{name: "below the size", limit: 4, content: "0123"},
+		{name: "at the size", limit: int64(len(committed)), content: committed},
+		{name: "above the size", limit: 100, content: committed},
+		{name: "one byte", limit: 1, content: "0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, d, w := setupTestService(t)
+			repoDir := canonicalRepoDir(t)
+			filePath := filepath.Join(repoDir, "tracked.txt")
+			require.NoError(t, os.WriteFile(filePath, []byte(committed), 0o644))
+			run(t, repoDir, "git", "add", "tracked.txt")
+			run(t, repoDir, "git", "commit", "-m", "add tracked")
+
+			dispatch(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, &leapmuxv1.ReadGitFileRequest{
+				Path:  filePath,
+				Ref:   leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD,
+				Limit: tc.limit,
+			}, w)
+
+			require.Empty(t, w.errors)
+			require.Len(t, w.responses, 1)
+			var resp leapmuxv1.ReadGitFileResponse
+			require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+			assert.True(t, resp.GetExists())
+			assert.Equal(t, tc.content, string(resp.GetContent()))
+			assert.Equal(t, int64(len(committed)), resp.GetTotalSize())
+		})
+	}
+}
+
+func TestReadGitFile_RejectsNegativeLimit(t *testing.T) {
+	t.Parallel()
+
+	_, d, w := setupTestService(t)
+	repoDir := canonicalRepoDir(t)
+	filePath := filepath.Join(repoDir, "tracked.txt")
+	require.NoError(t, os.WriteFile(filePath, []byte("committed\n"), 0o644))
+	run(t, repoDir, "git", "add", "tracked.txt")
+	run(t, repoDir, "git", "commit", "-m", "add tracked")
+
+	dispatch(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, &leapmuxv1.ReadGitFileRequest{
+		Path:  filePath,
+		Ref:   leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD,
+		Limit: -1,
+	}, w)
+
+	require.Empty(t, w.responses, "a negative limit must not return a response")
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, int32(codes.InvalidArgument), w.errors[0].code)
 }
 
 func TestReadGitFile_StagedReturnsIndexContent(t *testing.T) {

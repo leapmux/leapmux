@@ -289,6 +289,12 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			return
 		}
 
+		limit := r.GetLimit()
+		if limit < 0 {
+			sendInvalidArgument(sender, "limit must not be negative")
+			return
+		}
+
 		ctx, cancel := context.WithTimeout(ctx, gitReadTimeout)
 		defer cancel()
 
@@ -334,10 +340,15 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			return
 		}
 
+		totalSize := int64(len(content))
+		if limit > 0 && totalSize > limit {
+			content = content[:limit]
+		}
 		sendProtoResponse(sender, &leapmuxv1.ReadGitFileResponse{
-			Path:    absPath,
-			Content: content,
-			Exists:  true,
+			Path:      absPath,
+			Content:   content,
+			Exists:    true,
+			TotalSize: totalSize,
 		})
 	})
 
