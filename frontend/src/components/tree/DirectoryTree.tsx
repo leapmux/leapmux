@@ -1,4 +1,4 @@
-import type { Accessor, Component } from 'solid-js'
+import type { Accessor, Component, JSX } from 'solid-js'
 import type { DirectoryListingData } from './directoryListings'
 import type { DirectoryTreeStateJSON, TreeNodeData } from './directoryTreeState'
 import type { FileSortOrder } from '~/lib/fileSort'
@@ -8,8 +8,8 @@ import ChevronRight from 'lucide-solid/icons/chevron-right'
 import File from 'lucide-solid/icons/file'
 import FolderClosed from 'lucide-solid/icons/folder-closed'
 import FolderOpen from 'lucide-solid/icons/folder-open'
-import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, useContext } from 'solid-js'
-import { createStore, produce, reconcile } from 'solid-js/store'
+import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, onMount, Show, Switch, untrack, useContext } from 'solid-js'
+import { createStore, produce, reconcile, unwrap } from 'solid-js/store'
 import { workerFile } from '~/api/workerRpc'
 import { createContextMenuAnchor } from '~/components/common/DropdownMenu'
 import { FileActionsMenu } from '~/components/common/FileActionsMenu'
@@ -18,6 +18,7 @@ import { StartupSpinner } from '~/components/common/StartupPanel'
 import { PREFIX_DIRECTORY_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
 import { DEFAULT_FILE_SORT_ORDER, makeFileComparator } from '~/lib/fileSort'
+import { cancelIdle, requestIdle } from '~/lib/idleCallback'
 import { basename, detectFlavor, isFilesystemRoot } from '~/lib/paths'
 import { prefersReducedMotion } from '~/lib/prefersReducedMotion'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
@@ -35,7 +36,14 @@ import {
   visibleSortedChildren,
 } from './directoryTreeState'
 import { getGitFileIconClass, RowLabelWithStats } from './gitStatusUtils'
+import { CHILDREN_TRANSITION_MS } from './sharedTree.css'
 import { menuTrigger, sidebarActions } from './sidebarActions.css'
+
+/**
+ * The longest a tree state waits for an idle period before its write runs
+ * anyway, so a page that never goes idle still persists its tree.
+ */
+const PERSIST_IDLE_TIMEOUT_MS = 1000
 
 export interface DirectoryTreeHandle {
   collapseAll: () => void
@@ -280,6 +288,22 @@ const TreeContextMenu: Component<{
 interface GitIconInfo { class: string, testId: string | undefined }
 const NO_GIT_ICON: GitIconInfo = { class: '', testId: undefined }
 
+/**
+ * The children of one directory. They mount closed and open on the next frame:
+ * an element that mounts already open does not animate, and fires no
+ * `transitionend` for `scrollIntoViewIfNeeded` to wait on.
+ */
+function TreeChildGroup(props: { open: boolean, ref: (el: HTMLDivElement) => void, children: JSX.Element }): JSX.Element {
+  const [entered, setEntered] = createSignal(false)
+  const frame = requestAnimationFrame(() => setEntered(true))
+  onCleanup(() => cancelAnimationFrame(frame))
+  return (
+    <div ref={props.ref} class={styles.childrenWrapper} classList={{ [styles.childrenWrapperExpanded]: props.open && entered() }}>
+      <div class={styles.childrenInner} role="group">{props.children}</div>
+    </div>
+  )
+}
+
 const TreeNode: Component<{
   node: TreeNodeData
   selectedPath: string
@@ -319,6 +343,22 @@ const TreeNode: Component<{
     tree.comparator(),
   ))
   const loaded = () => tree.getChildren(props.node.path) !== undefined
+
+  // A closed directory unmounts its children once the close has animated, so a
+  // closed subtree costs no rows, no menus and no memos -- a git status change
+  // used to recompute the decorations of every row the tree ever opened. The
+  // listing stays cached, so reopening it fetches nothing.
+  const [closing, setClosing] = createSignal(false)
+  createEffect(on(expanded, (isExpanded, wasExpanded) => {
+    if (isExpanded || !wasExpanded) {
+      setClosing(false)
+      return
+    }
+    setClosing(true)
+    const timer = setTimeout(setClosing, CHILDREN_TRANSITION_MS, false)
+    onCleanup(() => clearTimeout(timer))
+  }, { defer: true }))
+  const childrenMounted = () => loaded() && (expanded() || closing())
   // The registry outlives this row, so the row takes its entry with it.
   onCleanup(() => tree.registerRow(props.node.path, undefined))
 
@@ -636,30 +676,33 @@ const TreeNode: Component<{
           </div>
         )}
       </Show>
-      <Show when={loaded()}>
-        <div ref={childrenRef} class={styles.childrenWrapper} classList={{ [styles.childrenWrapperExpanded]: expanded() && !loading() }}>
-          <div class={styles.childrenInner} role="group">
-            <For each={children()}>
-              {child => (
-                <TreeNode
-                  node={child}
-                  selectedPath={props.selectedPath}
-                  depth={props.depth + 1}
-                />
-              )}
-            </For>
-            <Show when={children().length === 0}>
-              <div class={styles.emptyInline} style={{ 'padding-left': `${8 + (props.depth + 1) * 16}px` }}>
-                Empty
-              </div>
-            </Show>
-            <Show when={tree.isTruncated(props.node.path) && !tree.isVisible()}>
-              <div class={styles.emptyInline} style={{ 'padding-left': `${8 + (props.depth + 1) * 16}px` }}>
-                {tree.truncationNotice(props.node.path, children().length)}
-              </div>
-            </Show>
-          </div>
-        </div>
+      <Show when={childrenMounted()}>
+        <TreeChildGroup
+          open={expanded() && !loading()}
+          ref={(el) => {
+            childrenRef = el
+          }}
+        >
+          <For each={children()}>
+            {child => (
+              <TreeNode
+                node={child}
+                selectedPath={props.selectedPath}
+                depth={props.depth + 1}
+              />
+            )}
+          </For>
+          <Show when={children().length === 0}>
+            <div class={styles.emptyInline} style={{ 'padding-left': `${8 + (props.depth + 1) * 16}px` }}>
+              Empty
+            </div>
+          </Show>
+          <Show when={tree.isTruncated(props.node.path) && !tree.isVisible()}>
+            <div class={styles.emptyInline} style={{ 'padding-left': `${8 + (props.depth + 1) * 16}px` }}>
+              {tree.truncationNotice(props.node.path, children().length)}
+            </div>
+          </Show>
+        </TreeChildGroup>
       </Show>
     </div>
   )
@@ -724,9 +767,67 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   // wrong machine's directories with no way to tell.
   const storageKey = () => `${PREFIX_DIRECTORY_TREE}${props.workerId}:${props.rootPath}:${props.showFiles ? 'files' : 'dirs'}`
 
+  const workerFlavor = createMemo<PathFlavor>(() =>
+    props.flavor ?? detectFlavor(props.homeDir || props.rootPath || ''))
+  const revealTarget = () => props.selectedPath || props.revealPath || ''
+
+  // -------------------------------------------------------------------------
+  // Persistence: at idle time, from the unwrapped state
+  //
+  // An effect that ran `JSON.stringify` over the store proxies read every
+  // entry of every cached listing, subscribed to each one, and ran on every
+  // write: about 84 ms per expand or collapse with 60 listings of 256 entries.
+  // The same data unwrapped stringifies in 2.4 ms. So the effect below tracks
+  // only signals that change when the persisted state does, and an idle
+  // callback writes the state once for any number of changes.
+  // -------------------------------------------------------------------------
+
+  // A listing write bumps this. The persist effect tracks it in place of each
+  // entry of each listing.
+  const [listingsRevision, setListingsRevision] = createSignal(0)
+  // The idle write that waits, and the key it writes under.
+  let pendingWrite: { key: string, handle: number } | undefined
+
+  /**
+   * The directories whose listings the payload keeps: each expanded one, and the
+   * reveal target. A reveal caches the target's own listing without expanding
+   * it, and a restore without that listing would fetch it again.
+   */
+  const persistedListingPaths = (raw: { expandedPaths: Record<string, boolean>, childrenCache: Record<string, TreeNodeData[]> }): string[] => {
+    const paths = Object.keys(raw.expandedPaths)
+    const target = untrack(revealTarget)
+    if (target) {
+      const flavor = untrack(workerFlavor)
+      const targetKey = Object.keys(raw.childrenCache).find(path => samePath(path, target, flavor))
+      if (targetKey !== undefined)
+        paths.push(targetKey)
+    }
+    return paths
+  }
+
+  const writeState = (key: string) => {
+    // The ROOT unwrapped, then plain fields: reading a field through the store
+    // proxy would subscribe the caller, and the restore effect calls this.
+    const raw = unwrap(state)
+    sessionStorageSet(key, serializeState(raw.expandedPaths, raw.childrenCache, raw.truncatedDirs, persistedListingPaths(raw)))
+  }
+
+  /** Write a waiting state now, under the key it belongs to. */
+  const flushPendingWrite = () => {
+    if (pendingWrite === undefined)
+      return
+    const { key, handle } = pendingWrite
+    pendingWrite = undefined
+    cancelIdle(handle)
+    writeState(key)
+  }
+
   // Restore state from sessionStorage when rootPath changes
   createEffect(() => {
     const key = storageKey()
+    // The state of the previous key is still in the store: write it under that
+    // key before the restore replaces it.
+    flushPendingWrite()
     try {
       const stored = sessionStorageGet<DirectoryTreeStateJSON>(key)
       if (stored) {
@@ -747,14 +848,27 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     })
   })
 
-  // Persist state whenever it changes
+  // Persist the state after it changes. A restore replaces the three maps,
+  // which the property reads track; an expand or a collapse adds or removes a
+  // key of `expandedPaths`, which `Object.keys` tracks; a listing write bumps
+  // `listingsRevision`.
   createEffect(() => {
-    // Read all to subscribe
-    const expanded = state.expandedPaths
-    const cache = state.childrenCache
-    const truncated = state.truncatedDirs
-    sessionStorageSet(storageKey(), serializeState(expanded, cache, truncated))
+    const key = storageKey()
+    void Object.keys(state.expandedPaths)
+    void state.childrenCache
+    void state.truncatedDirs
+    listingsRevision()
+    // A waiting write reads the state when it runs, so it covers this change.
+    if (pendingWrite !== undefined)
+      return
+    const handle = requestIdle(() => {
+      pendingWrite = undefined
+      writeState(key)
+    }, { timeout: PERSIST_IDLE_TIMEOUT_MS })
+    pendingWrite = { key, handle }
   })
+  // A tree that unmounts before the idle period would lose its last change.
+  onCleanup(flushPendingWrite)
 
   const isNodeExpanded = (path: string) => !!state.expandedPaths[path]
   const setNodeExpanded = (path: string, expanded: boolean) => {
@@ -843,6 +957,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
         else
           delete t[path]
       }))
+      setListingsRevision(v => v + 1)
     })
   }
 
@@ -863,11 +978,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     })
   }
 
-  const workerFlavor = createMemo<PathFlavor>(() =>
-    props.flavor ?? detectFlavor(props.homeDir || props.rootPath || ''))
-
   const rootPath = () => props.rootPath
-  const revealTarget = () => props.selectedPath || props.revealPath || ''
   // Everything about WHEN to ask the worker, and for what, lives in the
   // loader. This component owns the store it writes into, and the rows.
   const listings = createDirectoryListings({

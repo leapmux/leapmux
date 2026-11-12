@@ -88,20 +88,36 @@ export interface DirectoryTreeStateJSON {
  *
  * Not a string: `sessionStorageSet` serializes whatever it is handed, so a
  * pre-stringified payload is stringified a second time -- once to build it,
- * once to escape every quotation mark of it inside the wrapper. This effect
- * runs on every store write, and a `/`-rooted tree caches many more directory
- * listings than a home-rooted one did.
+ * once to escape every quotation mark of it inside the wrapper. A `/`-rooted
+ * tree caches many more directory listings than a home-rooted one did.
+ *
+ * It keeps the listings of `listedPaths` only: the tree passes its expanded
+ * directories and its reveal target. The cache never drops a listing, so a
+ * payload with every listing grows with each directory the user ever opened,
+ * and so does the tree that a restore mounts. A collapsed directory lists again
+ * when it opens.
  */
 export function serializeState(
   expandedPaths: Record<string, boolean>,
   childrenCache: Record<string, TreeNodeData[]>,
   truncatedDirs: Record<string, number>,
+  listedPaths: readonly string[] = Object.keys(expandedPaths),
 ): DirectoryTreeStateJSON {
+  const keptListings: Record<string, TreeNodeData[]> = {}
+  const keptTruncation: Record<string, number> = {}
+  for (const path of listedPaths) {
+    const entries = childrenCache[path]
+    if (entries !== undefined)
+      keptListings[path] = entries
+    const total = truncatedDirs[path]
+    if (total !== undefined)
+      keptTruncation[path] = total
+  }
   return {
     v: DIRECTORY_TREE_STATE_VERSION,
     expandedPaths,
-    childrenCache,
-    truncatedDirs,
+    childrenCache: keptListings,
+    truncatedDirs: keptTruncation,
   }
 }
 

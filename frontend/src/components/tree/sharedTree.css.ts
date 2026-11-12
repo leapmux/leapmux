@@ -52,11 +52,17 @@ export const chevronPlaceholder = style({
   width: '16px',
 })
 
+/**
+ * How long a directory's children take to open or close. The directory tree
+ * also unmounts closed children after this long, once the close has animated.
+ */
+export const CHILDREN_TRANSITION_MS = 150
+
 export const childrenWrapper = style({
   'display': 'grid',
   'gridTemplateRows': '0fr',
   'visibility': 'hidden',
-  'transition': 'grid-template-rows 150ms cubic-bezier(0.4, 0, 0.2, 1), visibility 150ms',
+  'transition': `grid-template-rows ${CHILDREN_TRANSITION_MS}ms cubic-bezier(0.4, 0, 0.2, 1), visibility ${CHILDREN_TRANSITION_MS}ms`,
   '@media': {
     '(prefers-reduced-motion: reduce)': {
       transition: 'none',

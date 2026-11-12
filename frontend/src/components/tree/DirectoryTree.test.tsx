@@ -748,9 +748,14 @@ describe('DirectoryTree reveal', () => {
 
     renderTree({ rootPath: root, revealPath: '/home/alice' })
 
-    await waitFor(() => expect(rowFor('proj')).toBeTruthy())
+    // The reveal opens every ancestor of the target, so the target's row shows.
+    await waitFor(() => expect(rowFor('alice')).toBeTruthy())
     expect(rowFor('home')).toBeTruthy()
-    expect(rowFor('alice')).toBeTruthy()
+    // One chain request listed the target too, but the target stays closed, and a
+    // closed directory mounts no rows.
+    expect(listDirectory).toHaveBeenCalledTimes(1)
+    expect(listDirectory.mock.calls[0]?.[1]).toMatchObject({ path: '/home/alice', fromRoot: '/' })
+    expect(rowFor('proj')).toBeUndefined()
   })
 
   // The whole point of a separate prop: a revealed node is OPEN, never
@@ -791,9 +796,9 @@ describe('DirectoryTree reveal', () => {
 
     await waitFor(() => expect(rowFor('home')).toBeTruthy())
     expect(rowFor('home')?.getAttribute('data-active')).toBe('true')
-    // `/home` is expanded because it holds the selection, but nothing walked
-    // on to `/home/alice`'s own children.
-    await waitFor(() => expect(rowFor('alice')).toBeTruthy())
+    // The reveal walked to the selection, not to `revealPath`.
+    await waitFor(() => expect(listDirectory).toHaveBeenCalled())
+    expect(listDirectory.mock.calls.map(call => (call[1] as { path: string }).path)).not.toContain('/home/alice')
     expect(rowFor('proj')).toBeUndefined()
   })
 
@@ -1285,7 +1290,10 @@ describe('DirectoryTree at a filesystem root', () => {
 
     renderTree({ rootPath: 'C:\\', flavor: 'win32', revealPath: 'C:\\Users\\alice' })
 
-    await waitFor(() => expect(rowFor('proj')).toBeTruthy())
+    await waitFor(() => expect(rowFor('alice')).toBeTruthy())
+    expect(rowFor('Users')).toBeTruthy()
+    // The target stays closed, so its rows stay unmounted.
+    expect(rowFor('proj')).toBeUndefined()
     expect(listDirectory).toHaveBeenCalledTimes(1)
     expect(listDirectory.mock.calls[0]?.[1]).toMatchObject({ path: 'C:\\Users\\alice', fromRoot: 'C:\\' })
   })
@@ -1300,7 +1308,8 @@ describe('DirectoryTree at a filesystem root', () => {
     renderTree({ rootPath: 'C:\\', flavor: 'win32' })
 
     await waitFor(() => expect(rowFor('Users')).toBeTruthy())
-    expect(sessionStorageGet(`${PREFIX_DIRECTORY_TREE}w1:C:\\:dirs`)).toBeTruthy()
+    // The tree writes its state in an idle period.
+    await waitFor(() => expect(sessionStorageGet(`${PREFIX_DIRECTORY_TREE}w1:C:\\:dirs`)).toBeTruthy())
   })
 
   /**
@@ -1802,9 +1811,9 @@ describe('DirectoryTree expandPath', () => {
   /**
    * The paths the tree holds open, sorted.
    *
-   * Read from the persisted state, NOT from the rendered rows: a collapsed
-   * directory still renders its children into the DOM and hides them with a
-   * class, so `rowFor` finds a row that no user can see.
+   * Read from the persisted state, NOT from the rendered rows: a closed
+   * directory keeps its rows mounted while its close animates, so `rowFor` can
+   * find a row that no user can see.
    */
   function expandedPaths(): string[] {
     const stored = sessionStorageGet<{ expandedPaths?: Record<string, boolean> }>(storeKey)
@@ -1856,13 +1865,12 @@ describe('DirectoryTree expandPath', () => {
     }
     renderTree({ rootPath: root, selectedPath: `${root}/home`, ref: captureHandle })
     await waitFor(() => expect(rowFor('home')).toBeTruthy())
-    await settle()
-    expect(expandedPaths()).toEqual([root])
+    // The tree writes its state in an idle period.
+    await waitFor(() => expect(expandedPaths()).toEqual([root]))
 
     handle.expandPath(`${root}/home`)
-    await settle()
 
-    expect(expandedPaths()).toEqual([root, `${root}/home`])
+    await waitFor(() => expect(expandedPaths()).toEqual([root, `${root}/home`]))
   })
 
   /**
@@ -1903,12 +1911,14 @@ describe('DirectoryTree expandPath', () => {
 
     setTreeRoot('C:\\')
     handle.expandPath('C:\\Users')
-    await settle()
 
-    const stored = sessionStorageGet<{ expandedPaths?: Record<string, boolean> }>(
-      `${PREFIX_DIRECTORY_TREE}w1:C:\\:dirs`,
-    )
-    expect(Object.keys(stored?.expandedPaths ?? {}).sort()).toEqual(['C:\\', 'C:\\Users'])
+    // The tree writes its state in an idle period.
+    await waitFor(() => {
+      const stored = sessionStorageGet<{ expandedPaths?: Record<string, boolean> }>(
+        `${PREFIX_DIRECTORY_TREE}w1:C:\\:dirs`,
+      )
+      expect(Object.keys(stored?.expandedPaths ?? {}).sort()).toEqual(['C:\\', 'C:\\Users'])
+    })
   })
 
   // An empty path names no node. The key would persist, and no chevron could
@@ -1919,12 +1929,14 @@ describe('DirectoryTree expandPath', () => {
     const captureHandle = (h: DirectoryTreeHandle) => {
       handle = h
     }
-    renderTree({ rootPath: root, ref: captureHandle })
+    const { unmount } = renderTree({ rootPath: root, ref: captureHandle })
     await waitFor(() => expect(rowFor('home')).toBeTruthy())
-    await settle()
+    await waitFor(() => expect(expandedPaths()).toEqual([root]))
 
     handle.expandPath('')
-    await settle()
+    // An unmount writes a waiting state at once, so the read below sees any
+    // change that the empty path made.
+    unmount()
 
     expect(expandedPaths()).toEqual([root])
   })
@@ -2120,5 +2132,108 @@ describe('DirectoryTree keyboard navigation', () => {
     const stops = document.querySelectorAll('[role="treeitem"][tabindex="0"]')
     expect(stops).toHaveLength(1)
     expect(stops[0]).toBe(rootRow())
+  })
+})
+
+describe('DirectoryTree closed directories and persistence', () => {
+  const root = '/closing'
+  const storeKey = `${PREFIX_DIRECTORY_TREE}w1:${root}:dirs`
+
+  interface StoredTree {
+    expandedPaths?: Record<string, boolean>
+    childrenCache?: Record<string, unknown>
+  }
+
+  function stored(): StoredTree | undefined {
+    return sessionStorageGet<StoredTree>(storeKey)
+  }
+
+  function storedExpanded(): string[] {
+    return Object.keys(stored()?.expandedPaths ?? {}).sort()
+  }
+
+  function storedListings(): string[] {
+    return Object.keys(stored()?.childrenCache ?? {}).sort()
+  }
+
+  function mockTree() {
+    listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
+      if (req.path === root) {
+        return oneListing([
+          dirEntry(root, 'src'),
+        ])
+      }
+      if (req.path === `${root}/src`) {
+        return oneListing([
+          dirEntry(`${root}/src`, 'lib'),
+        ])
+      }
+      return oneListing([])
+    })
+  }
+
+  function renderWithHandle() {
+    let handle!: DirectoryTreeHandle
+    const result = renderTree({
+      rootPath: root,
+      ref: (h: DirectoryTreeHandle) => {
+        handle = h
+      },
+    })
+    return {
+      ...result,
+      handle: () => handle,
+    }
+  }
+
+  it('unmounts the rows of a closed directory once it closes, and reopens it from the cache', async () => {
+    mockTree()
+    renderTree({ rootPath: root })
+    await waitFor(() => expect(rowFor('src')).toBeTruthy())
+    fireEvent.click(rowFor('src')!)
+    await waitFor(() => expect(rowFor('lib')).toBeTruthy())
+    const requests = listDirectory.mock.calls.length
+
+    fireEvent.click(rowFor('src')!)
+    await waitFor(() => expect(rowFor('lib')).toBeUndefined())
+
+    fireEvent.click(rowFor('src')!)
+    await waitFor(() => expect(rowFor('lib')).toBeTruthy())
+    expect(listDirectory.mock.calls.length).toBe(requests)
+  })
+
+  it('writes its state in an idle period, not in the change itself', async () => {
+    mockTree()
+    const { handle } = renderWithHandle()
+    await waitFor(() => expect(storedExpanded()).toEqual([root]))
+
+    handle().expandPath(`${root}/src`)
+
+    expect(storedExpanded()).toEqual([root])
+    await waitFor(() => expect(storedExpanded()).toEqual([root, `${root}/src`]))
+  })
+
+  it('writes a waiting state at once when it unmounts', async () => {
+    mockTree()
+    const { handle, unmount } = renderWithHandle()
+    await waitFor(() => expect(storedExpanded()).toEqual([root]))
+
+    handle().expandPath(`${root}/src`)
+    unmount()
+
+    expect(storedExpanded()).toEqual([root, `${root}/src`])
+  })
+
+  it('persists the listings of open directories only', async () => {
+    mockTree()
+    renderTree({ rootPath: root })
+    await waitFor(() => expect(rowFor('src')).toBeTruthy())
+    fireEvent.click(rowFor('src')!)
+    await waitFor(() => expect(storedListings()).toEqual([root, `${root}/src`]))
+
+    fireEvent.click(rowFor('src')!)
+
+    await waitFor(() => expect(storedExpanded()).toEqual([root]))
+    expect(storedListings()).toEqual([root])
   })
 })

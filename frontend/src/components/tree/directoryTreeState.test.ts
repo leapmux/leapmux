@@ -137,6 +137,52 @@ describe('serializeState and deserializeState', () => {
     expect(deserializeState(undefined)).toBeNull()
   })
 
+  it('keeps the listings of expanded directories only', () => {
+    const stored = serializeState(
+      { '/a': true, '/a/open': true },
+      {
+        '/a': [
+          node('/a/open'),
+          node('/a/closed'),
+        ],
+        '/a/open': [
+          node('/a/open/x'),
+        ],
+        '/a/closed': [
+          node('/a/closed/y'),
+        ],
+      },
+      { '/a/open': 900, '/a/closed': 700 },
+    )
+    expect(Object.keys(stored.childrenCache)).toEqual(['/a', '/a/open'])
+    expect(stored.truncatedDirs).toEqual({ '/a/open': 900 })
+    expect(stored.expandedPaths).toEqual({ '/a': true, '/a/open': true })
+  })
+
+  it('keeps the listings that the caller lists, beside the expanded ones', () => {
+    const stored = serializeState(
+      { '/a': true },
+      {
+        '/a': [
+          node('/a/target'),
+        ],
+        '/a/target': [
+          node('/a/target/x'),
+        ],
+        '/a/other': [],
+      },
+      {},
+      ['/a', '/a/target'],
+    )
+    expect(Object.keys(stored.childrenCache)).toEqual(['/a', '/a/target'])
+  })
+
+  it('stores no listing for an expanded directory that has none yet', () => {
+    const stored = serializeState({ '/a': true }, {}, {})
+    expect(stored.childrenCache).toEqual({})
+    expect(stored.truncatedDirs).toEqual({})
+  })
+
   // The version answers "is this shape current"; this answers "is this value
   // well formed" -- for a hand edit, or a truncated write.
   it('drops a malformed directory but keeps the rest', () => {
