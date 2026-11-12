@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 
 	"github.com/leapmux/leapmux/internal/util/canonicalpath"
 	"github.com/leapmux/leapmux/util/useronly"

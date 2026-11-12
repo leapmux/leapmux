@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"strings"
 
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // LoadEnvironment reads the YAML map shared by every native launch path.
