@@ -91,10 +91,8 @@ function lineCountUpTo(text: string, max: number): number {
 }
 
 /**
- * The placeholder of a Markdown body while the worker renders it: one shimmer line
- * for each source line, up to {@link MARKDOWN_PENDING_MAX_LINES}. Inside a chat
- * row it is never seen, because the row stays hidden behind its own skeleton
- * until every body is ready. Outside the chat it is the loading state.
+ * The placeholder of a Markdown body outside the chat while the worker renders it:
+ * one shimmer line for each source line, up to {@link MARKDOWN_PENDING_MAX_LINES}.
  */
 function MarkdownPendingSkeleton(props: { text: string }): JSX.Element {
   const height = () => lineCountUpTo(props.text, MARKDOWN_PENDING_MAX_LINES) * SKELETON_LINE_PITCH_PX
@@ -108,9 +106,11 @@ function MarkdownPendingSkeleton(props: { text: string }): JSX.Element {
  * binding, so a re-mounting row clones the already-parsed template instead of
  * making the browser re-parse the same markup.
  *
- * The HTML comes from a worker, so the body can mount before it exists. Until then
- * it shows a skeleton and reports itself pending to the row's readiness scope
- * (`context.readiness`), which keeps the row hidden and its height uncommitted.
+ * The HTML comes from a worker, so the body can mount before it exists. Until then:
+ * - Inside a chat row, it reports itself pending to the row's readiness scope
+ *   (`context.readiness`) and draws nothing. The row stays hidden behind its own
+ *   skeleton, with its height uncommitted, until every body is ready.
+ * - Elsewhere, it shows a skeleton of its own.
  */
 export function MarkdownText(props: {
   text: string
@@ -134,10 +134,16 @@ export function MarkdownText(props: {
     return next
   })
   const pending = () => html() === undefined
+  const readiness = untrack(() => props.context?.readiness)
   // eslint-disable-next-line solid/reactivity -- the scope reads the accessor inside its own memo
-  untrack(() => props.context?.readiness)?.track(pending)
+  readiness?.track(pending)
   return (
-    <Show when={!pending()} fallback={<MarkdownPendingSkeleton text={props.text} />}>
+    <Show
+      when={!pending()}
+      fallback={readiness === undefined
+        ? <MarkdownPendingSkeleton text={props.text} />
+        : null}
+    >
       <div
         class={props.class ?? markdownContent}
         data-tool-output-preview={props.outputPreview === true

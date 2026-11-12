@@ -122,6 +122,21 @@ describe('MarkdownText', () => {
     })
   })
 
+  it('draws nothing while pending inside a chat row, whose own skeleton covers it', () => {
+    // The scope lives in a root of its own; the DOM is asserted outside that root,
+    // because a root's callback defers DOM updates until it returns.
+    const { readiness, dispose } = createRoot(disposeRoot => ({
+      readiness: createRenderReadinessScope(),
+      dispose: disposeRoot,
+    }))
+    const { container } = render(() => <MarkdownText text={'# Heading\n\nbody'} context={{ readiness }} />)
+
+    expect(container.childNodes).toHaveLength(0)
+    setWorkerHtml('<h1>Heading</h1>')
+    expect(container.querySelector('h1')?.textContent).toBe('Heading')
+    dispose()
+  })
+
   it('stops holding the row when the body unmounts while still pending', () => {
     let readiness: RenderReadinessScope | undefined
     const disposeRoot = createRoot((dispose) => {
