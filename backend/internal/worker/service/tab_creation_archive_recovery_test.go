@@ -140,6 +140,18 @@ func (h *creationArchiveHarness) awaitConvergence(t *testing.T) {
 	}
 }
 
+// awaitRecoveryIdle waits for the recovery scheduled by convergence to finish.
+// Changing the Hub state before recovery finishes can invalidate its observation
+// and require a retry that the mock clock must drive explicitly.
+func (h *creationArchiveHarness) awaitRecoveryIdle(t *testing.T) {
+	t.Helper()
+	testutil.RequireEventually(t, func() bool {
+		h.svc.creations.mu.Lock()
+		defer h.svc.creations.mu.Unlock()
+		return !h.svc.creations.recoveryRunning
+	}, "archived creation recovery did not become idle")
+}
+
 func (h *creationArchiveHarness) awaitStart(t *testing.T, expected int32) {
 	t.Helper()
 	select {
@@ -223,11 +235,7 @@ func TestCreationArchive_RecoversDormantPublicationThroughReconciliation(t *test
 			require.True(t, h.archived(t))
 			h.runReconciler()
 			h.awaitConvergence(t)
-			testutil.RequireEventually(t, func() bool {
-				h.svc.creations.mu.Lock()
-				defer h.svc.creations.mu.Unlock()
-				return !h.svc.creations.recoveryRunning
-			}, "archived creation recovery did not become idle")
+			h.awaitRecoveryIdle(t)
 			resizeStart, resizeStop := testutil.NewTimerTraps(t, h.clock, startupPendingResizeTimerTag)
 			h.state.Store(int32(leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE))
 			h.reconciler.Trigger()
@@ -281,6 +289,7 @@ func TestCreationArchive_JoinsRetryingCheckpointAndRecoversOnce(t *testing.T) {
 			} else {
 				assert.False(t, h.svc.Terminals.IsRunning(h.id))
 			}
+			h.awaitRecoveryIdle(t)
 			_, err = h.svc.DB.ExecContext(h.ctx, `DROP TRIGGER hold_archive_creation_completion`)
 			require.NoError(t, err)
 			h.state.Store(int32(leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE))
@@ -297,6 +306,62 @@ func TestCreationArchive_JoinsRetryingCheckpointAndRecoversOnce(t *testing.T) {
 			h.permits <- struct{}{}
 			h.join(t)
 			h.assertRunning(t, 2)
+		})
+	}
+}
+
+func TestCreationArchive_RecoveryRetriesAStaleArchiveObservation(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []leapmuxv1.TabType{leapmuxv1.TabType_TAB_TYPE_AGENT, leapmuxv1.TabType_TAB_TYPE_TERMINAL} {
+		t.Run(kind.String(), func(t *testing.T) {
+			t.Parallel()
+			h := newCreationArchiveHarness(t, kind, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED)
+			h.dispatchCreation(t)
+			h.svc.creations.workers.Wait()
+
+			// Hold the archived Hub response until reconciliation applies ACTIVE.
+			// This forces the stale-observation retry without scheduler timing.
+			observed := make(chan struct{})
+			release := make(chan struct{})
+			releaseObservation := sync.OnceFunc(func() { close(release) })
+			t.Cleanup(releaseObservation)
+			resolve := h.svc.ResolveTabPublication
+			var held atomic.Bool
+			h.svc.ResolveTabPublication = func(ctx context.Context, request *leapmuxv1.TabPublication) (*leapmuxv1.ResolveTabPublicationResponse, error) {
+				result, err := resolve(ctx, request)
+				if err == nil && result.GetArchiveState() == leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED && held.CompareAndSwap(false, true) {
+					close(observed)
+					select {
+					case <-release:
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					}
+				}
+				return result, err
+			}
+			retryStart, retryStop := testutil.NewTimerTraps(t, h.clock, tabCreationRetryTimerTag)
+			resizeStart, resizeStop := testutil.NewTimerTraps(t, h.clock, startupPendingResizeTimerTag)
+			h.svc.TriggerTabCreationRecovery()
+			select {
+			case <-observed:
+			case <-h.ctx.Done():
+				t.Fatal("recovery did not read the archived publication")
+			}
+			h.state.Store(int32(leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE))
+			h.runReconciler()
+			h.awaitConvergence(t)
+			require.False(t, h.archived(t))
+			require.Zero(t, h.starts.Load())
+			releaseObservation()
+			delay := testutil.WaitForTimer(t, h.ctx, retryStart)
+			require.Equal(t, time.Second, delay)
+			require.Zero(t, h.starts.Load())
+			testutil.AdvanceAndAwaitStop(t, h.ctx, h.clock, delay, retryStop)
+			h.driveResize(t, resizeStart, resizeStop)
+			h.awaitStart(t, 1)
+			h.permits <- struct{}{}
+			h.join(t)
+			h.assertRunning(t, 1)
 		})
 	}
 }

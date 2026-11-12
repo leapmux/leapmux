@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -701,7 +700,8 @@ func TestPermissionHelperRefusesUnusableInput(t *testing.T) {
 			assert.Contains(t, run.stderr.String(), tc.want)
 		})
 	}
-	assert.Zero(t, h.sink.PublishedControlCount(), "no unusable request reaches the user")
+	// Parallel subtests run after this parent returns.
+	t.Cleanup(func() { assert.Zero(t, h.sink.PublishedControlCount(), "no unusable request reaches the user") })
 }
 
 // An empty stdin is a call with no input, which the banner shows as `{}`.
@@ -892,18 +892,20 @@ const longSecretTimeout = time.Hour
 func TestPermissionBridgeReadsLittleBeforeTheSecret(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
-	conn := dialBridge(t, h.agent.bridge)
-	written := make(chan error, 1)
-	go func() {
-		_, err := conn.Write(bytes.Repeat([]byte("x"), 1<<20))
-		written <- err
-	}()
-	awaitEOF(t, conn)
-	if runtime.GOOS != "windows" {
-		// Windows accepts the whole write into the socket buffer, so no write
-		// error surfaces there even though the bridge closed at once.
-		assert.Error(t, <-written, "the bridge closed the connection before it read the whole line")
-	}
+	bridge := h.agent.bridge
+	server, client := net.Pipe()
+	t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
+	require.Equal(t, connTracked, bridge.track(server))
+	bridge.wg.Add(1)
+	go bridge.handleConn(server)
+
+	// net.Pipe has no socket buffer, so the accepted byte count equals what
+	// the bridge consumed. A socket can accept the whole write before the
+	// bridge closes it on any operating system.
+	require.NoError(t, client.SetWriteDeadline(time.Now().Add(30*time.Second)))
+	written, err := client.Write(bytes.Repeat([]byte("x"), 1<<20))
+	require.ErrorIs(t, err, io.ErrClosedPipe)
+	assert.Equal(t, maxSecretLineBytes+1, written, "the bridge reads only the secret limit and the byte that exceeds it")
 	assert.Zero(t, h.sink.PublishedControlCount())
 }
 

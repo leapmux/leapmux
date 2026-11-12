@@ -167,7 +167,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [block2 0.6.2 (MIT)](#block2-062-mit)
 - [blocking 1.7.0 (Apache-2.0 OR MIT)](#blocking-170-apache-20-or-mit)
 - [brotli 9.1.1 (BSD-3-Clause AND MIT)](#brotli-911-bsd-3-clause-and-mit)
-- [brotli-decompressor 6.2.0 (BSD-3-Clause/MIT)](#brotli-decompressor-620-bsd-3-clausemit)
+- [brotli-decompressor 6.3.1 (BSD-3-Clause/MIT)](#brotli-decompressor-631-bsd-3-clausemit)
 - [bs58 0.5.1 (MIT/Apache-2.0)](#bs58-051-mitapache-20)
 - [bumpalo 3.20.3 (MIT OR Apache-2.0)](#bumpalo-3203-mit-or-apache-20)
 - [bytemuck 1.25.2 (Zlib OR Apache-2.0 OR MIT)](#bytemuck-1252-zlib-or-apache-20-or-mit)
@@ -180,7 +180,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [cargo_metadata 0.19.2 (MIT)](#cargo_metadata-0192-mit)
 - [cargo_toml 1.0.1 (Apache-2.0 OR MIT)](#cargo_toml-101-apache-20-or-mit)
 - [cargo-platform 0.1.9 (MIT OR Apache-2.0)](#cargo-platform-019-mit-or-apache-20)
-- [cc 1.11.0 (MIT OR Apache-2.0)](#cc-1110-mit-or-apache-20)
+- [cc 1.11.1 (MIT OR Apache-2.0)](#cc-1111-mit-or-apache-20)
 - [cesu8 1.1.0 (Apache-2.0/MIT)](#cesu8-110-apache-20mit)
 - [cfb 0.14.0 (MIT)](#cfb-0140-mit)
 - [cfg_aliases 0.2.2 (MIT)](#cfg_aliases-022-mit)
@@ -251,8 +251,8 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [fdeflate 0.3.7 (MIT OR Apache-2.0)](#fdeflate-037-mit-or-apache-20)
 - [field-offset 0.3.6 (MIT OR Apache-2.0)](#field-offset-036-mit-or-apache-20)
 - [find-msvc-tools 0.1.15 (MIT OR Apache-2.0)](#find-msvc-tools-0115-mit-or-apache-20)
-- [fixedbitset 0.5.7 (MIT OR Apache-2.0)](#fixedbitset-057-mit-or-apache-20)
-- [flate2 1.1.10 (MIT OR Apache-2.0)](#flate2-1110-mit-or-apache-20)
+- [fixedbitset 0.5.9 (MIT OR Apache-2.0)](#fixedbitset-059-mit-or-apache-20)
+- [flate2 1.1.11 (MIT OR Apache-2.0)](#flate2-1111-mit-or-apache-20)
 - [fnv 1.0.7 (Apache-2.0 / MIT)](#fnv-107-apache-20--mit)
 - [foldhash 0.1.5 (Zlib)](#foldhash-015-zlib)
 - [foldhash 0.2.0 (Zlib)](#foldhash-020-zlib)
@@ -327,7 +327,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [is-docker 0.2.0 (MIT)](#is-docker-020-mit)
 - [is-wsl 0.4.0 (MIT)](#is-wsl-040-mit)
 - [itertools 0.14.0 (MIT OR Apache-2.0)](#itertools-0140-mit-or-apache-20)
-- [itoa 1.0.18 (MIT OR Apache-2.0)](#itoa-1018-mit-or-apache-20)
+- [itoa 1.0.19 (MIT OR Apache-2.0)](#itoa-1019-mit-or-apache-20)
 - [javascriptcore-rs 1.1.2 (MIT)](#javascriptcore-rs-112-mit)
 - [javascriptcore-rs-sys 1.1.1 (MIT)](#javascriptcore-rs-sys-111-mit)
 - [jiff 0.2.39 (Unlicense OR MIT)](#jiff-0239-unlicense-or-mit)
@@ -357,7 +357,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [markup5ever 0.39.0 (MIT OR Apache-2.0)](#markup5ever-0390-mit-or-apache-20)
 - [memchr 2.8.3 (Unlicense OR MIT)](#memchr-283-unlicense-or-mit)
 - [memoffset 0.9.1 (MIT)](#memoffset-091-mit)
-- [mime 0.3.17 (MIT OR Apache-2.0)](#mime-0317-mit-or-apache-20)
+- [mime 0.3.18 (MIT OR Apache-2.0)](#mime-0318-mit-or-apache-20)
 - [miniz_oxide 0.8.9 (MIT OR Zlib OR Apache-2.0)](#miniz_oxide-089-mit-or-zlib-or-apache-20)
 - [miniz_oxide 0.9.1 (MIT OR Zlib OR Apache-2.0)](#miniz_oxide-091-mit-or-zlib-or-apache-20)
 - [mio 1.2.4 (MIT)](#mio-124-mit)
@@ -370,7 +370,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [new_debug_unreachable 1.0.6 (MIT)](#new_debug_unreachable-106-mit)
 - [nix 0.31.3 (MIT)](#nix-0313-mit)
 - [nom 8.0.0 (MIT)](#nom-800-mit)
-- [notify-rust 4.18.2 (MIT OR Apache-2.0)](#notify-rust-4182-mit-or-apache-20)
+- [notify-rust 4.19.0 (MIT OR Apache-2.0)](#notify-rust-4190-mit-or-apache-20)
 - [num_enum 0.7.6 (BSD-3-Clause OR MIT OR Apache-2.0)](#num_enum-076-bsd-3-clause-or-mit-or-apache-20)
 - [num_enum_derive 0.7.6 (BSD-3-Clause OR MIT OR Apache-2.0)](#num_enum_derive-076-bsd-3-clause-or-mit-or-apache-20)
 - [num-conv 0.2.2 (MIT OR Apache-2.0)](#num-conv-022-mit-or-apache-20)
@@ -472,7 +472,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [serde_json 1.0.154 (MIT OR Apache-2.0)](#serde_json-10154-mit-or-apache-20)
 - [serde_repr 0.1.21 (MIT OR Apache-2.0)](#serde_repr-0121-mit-or-apache-20)
 - [serde_spanned 0.6.9 (MIT OR Apache-2.0)](#serde_spanned-069-mit-or-apache-20)
-- [serde_spanned 1.1.2 (MIT OR Apache-2.0)](#serde_spanned-112-mit-or-apache-20)
+- [serde_spanned 1.1.3 (MIT OR Apache-2.0)](#serde_spanned-113-mit-or-apache-20)
 - [serde_with 3.24.0 (MIT OR Apache-2.0)](#serde_with-3240-mit-or-apache-20)
 - [serde_with_macros 3.24.0 (MIT OR Apache-2.0)](#serde_with_macros-3240-mit-or-apache-20)
 - [serde-untagged 0.1.9 (MIT OR Apache-2.0)](#serde-untagged-019-mit-or-apache-20)
@@ -486,7 +486,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [simd-adler32 0.3.10 (MIT)](#simd-adler32-0310-mit)
 - [siphasher 1.0.4 (MIT OR Apache-2.0)](#siphasher-104-mit-or-apache-20)
 - [slab 0.4.12 (MIT)](#slab-0412-mit)
-- [smallvec 1.16.4 (MIT OR Apache-2.0)](#smallvec-1164-mit-or-apache-20)
+- [smallvec 1.16.5 (MIT OR Apache-2.0)](#smallvec-1165-mit-or-apache-20)
 - [smappservice-rs 0.1.3 (MIT)](#smappservice-rs-013-mit)
 - [socket2 0.6.5 (MIT OR Apache-2.0)](#socket2-065-mit-or-apache-20)
 - [softbuffer 0.4.8 (MIT OR Apache-2.0)](#softbuffer-048-mit-or-apache-20)
@@ -500,7 +500,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [swift-rs 1.0.9 (MIT OR Apache-2.0)](#swift-rs-109-mit-or-apache-20)
 - [syn 1.0.109 (MIT OR Apache-2.0)](#syn-10109-mit-or-apache-20)
 - [syn 2.0.119 (MIT OR Apache-2.0)](#syn-20119-mit-or-apache-20)
-- [syn 3.0.9 (MIT OR Apache-2.0)](#syn-309-mit-or-apache-20)
+- [syn 3.0.10 (MIT OR Apache-2.0)](#syn-3010-mit-or-apache-20)
 - [sync_wrapper 1.0.2 (Apache-2.0)](#sync_wrapper-102-apache-20)
 - [synstructure 0.14.0 (MIT)](#synstructure-0140-mit)
 - [system-deps 6.2.2 (MIT OR Apache-2.0)](#system-deps-622-mit-or-apache-20)
@@ -540,12 +540,12 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [tokio-macros 2.7.2 (MIT)](#tokio-macros-272-mit)
 - [tokio-util 0.7.20 (MIT)](#tokio-util-0720-mit)
 - [toml 0.8.2 (MIT OR Apache-2.0)](#toml-082-mit-or-apache-20)
-- [toml 1.1.4+spec-1.1.0 (MIT OR Apache-2.0)](#toml-114spec-110-mit-or-apache-20)
+- [toml 1.2.1+spec-1.1.0 (MIT OR Apache-2.0)](#toml-121spec-110-mit-or-apache-20)
 - [toml_datetime 0.6.3 (MIT OR Apache-2.0)](#toml_datetime-063-mit-or-apache-20)
-- [toml_datetime 1.1.2+spec-1.1.0 (MIT OR Apache-2.0)](#toml_datetime-112spec-110-mit-or-apache-20)
+- [toml_datetime 1.1.3+spec-1.1.0 (MIT OR Apache-2.0)](#toml_datetime-113spec-110-mit-or-apache-20)
 - [toml_edit 0.19.15 (MIT OR Apache-2.0)](#toml_edit-01915-mit-or-apache-20)
 - [toml_edit 0.20.2 (MIT OR Apache-2.0)](#toml_edit-0202-mit-or-apache-20)
-- [toml_edit 0.25.13+spec-1.1.0 (MIT OR Apache-2.0)](#toml_edit-02513spec-110-mit-or-apache-20)
+- [toml_edit 0.25.19+spec-1.1.0 (MIT OR Apache-2.0)](#toml_edit-02519spec-110-mit-or-apache-20)
 - [toml_parser 1.1.5+spec-1.1.0 (MIT OR Apache-2.0)](#toml_parser-115spec-110-mit-or-apache-20)
 - [toml_writer 1.2.0+spec-1.1.0 (MIT OR Apache-2.0)](#toml_writer-120spec-110-mit-or-apache-20)
 - [tower 0.5.3 (MIT)](#tower-053-mit)
@@ -567,7 +567,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [urlpattern 0.6.0 (MIT)](#urlpattern-060-mit)
 - [utf_types 1.0.0 (Apache-2.0 OR MIT)](#utf_types-100-apache-20-or-mit)
 - [utf8_iter 1.1.0 (Apache-2.0 OR MIT)](#utf8_iter-110-apache-20-or-mit)
-- [uuid 1.29.0 (Apache-2.0 OR MIT)](#uuid-1290-apache-20-or-mit)
+- [uuid 1.29.2 (Apache-2.0 OR MIT)](#uuid-1292-apache-20-or-mit)
 - [version_check 0.9.5 (MIT/Apache-2.0)](#version_check-095-mitapache-20)
 - [version-compare 0.2.1 (MIT)](#version-compare-021-mit)
 - [vswhom 0.1.0 (MIT)](#vswhom-010-mit)
@@ -626,7 +626,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [windows-threading 0.2.1 (MIT OR Apache-2.0)](#windows-threading-021-mit-or-apache-20)
 - [windows-version 0.1.7 (MIT OR Apache-2.0)](#windows-version-017-mit-or-apache-20)
 - [winnow 0.5.40 (MIT)](#winnow-0540-mit)
-- [winnow 1.0.4 (MIT)](#winnow-104-mit)
+- [winnow 1.0.5 (MIT)](#winnow-105-mit)
 - [winreg 0.56.0 (MIT)](#winreg-0560-mit)
 - [wit-bindgen 0.57.1 (Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT)](#wit-bindgen-0571-apache-20-with-llvm-exception-or-apache-20-or-mit)
 - [wl-clipboard-rs 0.9.5 (MIT OR Apache-2.0)](#wl-clipboard-rs-095-mit-or-apache-20)
@@ -639,8 +639,11 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [yoke 0.8.4 (Unicode-3.0)](#yoke-084-unicode-30)
 - [yoke-derive 0.8.4 (Unicode-3.0)](#yoke-derive-084-unicode-30)
 - [zbus 5.19.0 (MIT)](#zbus-5190-mit)
+- [zbus 6.2.1 (MIT)](#zbus-621-mit)
 - [zbus_macros 5.19.0 (MIT)](#zbus_macros-5190-mit)
+- [zbus_macros 6.2.1 (MIT)](#zbus_macros-621-mit)
 - [zbus_names 4.3.5 (MIT)](#zbus_names-435-mit)
+- [zbus_utils 6.1.0 (MIT)](#zbus_utils-610-mit)
 - [zcheapstr 1.2.0 (MIT)](#zcheapstr-120-mit)
 - [zerocopy 0.8.63 (BSD-2-Clause OR Apache-2.0 OR MIT)](#zerocopy-0863-bsd-2-clause-or-apache-20-or-mit)
 - [zerocopy-derive 0.8.63 (BSD-2-Clause OR Apache-2.0 OR MIT)](#zerocopy-derive-0863-bsd-2-clause-or-apache-20-or-mit)
@@ -651,6 +654,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [zerovec-derive 0.11.7 (Unicode-3.0)](#zerovec-derive-0117-unicode-30)
 - [zlib-rs 0.6.8 (Zlib)](#zlib-rs-068-zlib)
 - [zmij 1.0.23 (MIT)](#zmij-1023-mit)
+- [zruntime 0.2.2 (MIT)](#zruntime-022-mit)
 - [zune-core 0.5.3 (MIT OR Apache-2.0 OR Zlib)](#zune-core-053-mit-or-apache-20-or-zlib)
 - [zune-jpeg 0.5.15 (MIT OR Apache-2.0 OR Zlib)](#zune-jpeg-0515-mit-or-apache-20-or-zlib)
 - [zvariant 5.15.1 (MIT)](#zvariant-5151-mit)
@@ -680,7 +684,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [@shikijs/rehype 4.6.0 (MIT)](#shikijsrehype-460-mit)
 - [@simplewebauthn/browser 14.0.0 (MIT)](#simplewebauthnbrowser-1400-mit)
 - [@solidjs/router 1.0.1 (MIT)](#solidjsrouter-101-mit)
-- [@solidjs/start 2.2.1 (MIT)](#solidjsstart-221-mit)
+- [@solidjs/start 2.2.2 (MIT)](#solidjsstart-222-mit)
 - [@tauri-apps/api 2.12.4 (Apache-2.0 OR MIT)](#tauri-appsapi-2124-apache-20-or-mit)
 - [@tauri-apps/plugin-clipboard-manager 2.5.0 (MIT OR Apache-2.0)](#tauri-appsplugin-clipboard-manager-250-mit-or-apache-20)
 - [@tauri-apps/plugin-notification 2.8.0 (MIT OR Apache-2.0)](#tauri-appsplugin-notification-280-mit-or-apache-20)
@@ -697,12 +701,13 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [fracturedjsonjs 5.1.0 (MIT)](#fracturedjsonjs-510-mit)
 - [fzstd 0.1.1 (MIT)](#fzstd-011-mit)
 - [lightningcss 1.33.0 (MPL-2.0)](#lightningcss-1330-mpl-20)
-- [lucide-solid 1.66.0 (ISC)](#lucide-solid-1660-isc)
+- [lucide-solid 1.70.0 (ISC)](#lucide-solid-1700-isc)
 - [random-word-slugs 0.1.7 (MIT)](#random-word-slugs-017-mit)
 - [rehype-stringify 10.0.1 (MIT)](#rehype-stringify-1001-mit)
 - [remark-gfm 4.0.1 (MIT)](#remark-gfm-401-mit)
 - [remark-parse 11.0.0 (MIT)](#remark-parse-1100-mit)
 - [remark-rehype 11.1.2 (MIT)](#remark-rehype-1112-mit)
+- [seroval 1.8.0 (MIT)](#seroval-180-mit)
 - [shiki 4.6.0 (MIT)](#shiki-460-mit)
 - [solid-js 1.9.18 (MIT)](#solid-js-1918-mit)
 - [source-map-js 1.2.2 (BSD-3-Clause)](#source-map-js-122-bsd-3-clause)
@@ -17861,7 +17866,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### brotli-decompressor 6.2.0 (BSD-3-Clause/MIT)
+### brotli-decompressor 6.3.1 (BSD-3-Clause/MIT)
 
 ```
 Copyright (c) 2016 Dropbox, Inc.
@@ -19318,7 +19323,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### cc 1.11.0 (MIT OR Apache-2.0)
+### cc 1.11.1 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -32761,7 +32766,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### fixedbitset 0.5.7 (MIT OR Apache-2.0)
+### fixedbitset 0.5.9 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -32995,7 +33000,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### flate2 1.1.10 (MIT OR Apache-2.0)
+### flate2 1.1.11 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -43305,7 +43310,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### itoa 1.0.18 (MIT OR Apache-2.0)
+### itoa 1.0.19 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -48089,7 +48094,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### mime 0.3.17 (MIT OR Apache-2.0)
+### mime 0.3.18 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -50270,7 +50275,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### notify-rust 4.18.2 (MIT OR Apache-2.0)
+### notify-rust 4.19.0 (MIT OR Apache-2.0)
 
 ```
                                  Apache License
@@ -68375,7 +68380,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### serde_spanned 1.1.2 (MIT OR Apache-2.0)
+### serde_spanned 1.1.3 (MIT OR Apache-2.0)
 
 ```
                                  Apache License
@@ -71011,7 +71016,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### smallvec 1.16.4 (MIT OR Apache-2.0)
+### smallvec 1.16.5 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -73278,7 +73283,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### syn 3.0.9 (MIT OR Apache-2.0)
+### syn 3.0.10 (MIT OR Apache-2.0)
 
 ```
                               Apache License
@@ -80627,7 +80632,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### toml 1.1.4+spec-1.1.0 (MIT OR Apache-2.0)
+### toml 1.2.1+spec-1.1.0 (MIT OR Apache-2.0)
 
 ```
                                  Apache License
@@ -80818,7 +80823,7 @@ SOFTWARE.
       same "printed page" as the copyright notice for easier
       identification within third-party archives.
 
-   Copyright {yyyy} {name of copyright owner}
+   Copyright Individual contributors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -81089,7 +81094,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### toml_datetime 1.1.2+spec-1.1.0 (MIT OR Apache-2.0)
+### toml_datetime 1.1.3+spec-1.1.0 (MIT OR Apache-2.0)
 
 ```
                                  Apache License
@@ -81773,7 +81778,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### toml_edit 0.25.13+spec-1.1.0 (MIT OR Apache-2.0)
+### toml_edit 0.25.19+spec-1.1.0 (MIT OR Apache-2.0)
 
 ```
                                  Apache License
@@ -81964,7 +81969,7 @@ SOFTWARE.
       same "printed page" as the copyright notice for easier
       identification within third-party archives.
 
-   Copyright {yyyy} {name of copyright owner}
+   Copyright Individual contributors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -84648,7 +84653,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
-### uuid 1.29.0 (Apache-2.0 OR MIT)
+### uuid 1.29.2 (Apache-2.0 OR MIT)
 
 ```
                               Apache License
@@ -95023,7 +95028,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### winnow 1.0.4 (MIT)
+### winnow 1.0.5 (MIT)
 
 ```
 Permission is hereby granted, free of charge, to any person obtaining
@@ -96717,6 +96722,36 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
+### zbus 6.2.1 (MIT)
+
+```
+Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
 ### zbus_macros 5.19.0 (MIT)
 
 ```
@@ -96747,7 +96782,67 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ```
 
+### zbus_macros 6.2.1 (MIT)
+
+```
+Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
 ### zbus_names 4.3.5 (MIT)
+
+```
+Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+### zbus_utils 6.1.0 (MIT)
 
 ```
 Copyright (c) 2024 Zeeshan Ali Khan & zbus contributors
@@ -97634,6 +97729,42 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+```
+
+### zruntime 0.2.2 (MIT)
+
+```
+Copyright (c) 2026 Zeeshan Ali Khan & zruntime contributors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+The broadcast channel (`src/broadcast.rs`), its tests (`src/tests/broadcast.rs`) and its
+benchmark (`benches/broadcast.rs`) come from the async-broadcast crate
+(https://github.com/smol-rs/async-broadcast), under the license above and this notice:
+
+Copyright (c) 2020 Yoshua Wuyts, Stjepan Glavina & Zeeshan Ali Khan
 ```
 
 ### zune-core 0.5.3 (MIT OR Apache-2.0 OR Zlib)
@@ -99317,7 +99448,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @solidjs/start 2.2.1 (MIT)
+### @solidjs/start 2.2.2 (MIT)
 
 ```
 MIT License
@@ -100446,7 +100577,7 @@ This Source Code Form is "Incompatible With Secondary Licenses", as
 defined by the Mozilla Public License, v. 2.0.
 ```
 
-### lucide-solid 1.66.0 (ISC)
+### lucide-solid 1.70.0 (ISC)
 
 ```
 ISC License
@@ -100624,6 +100755,18 @@ IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
 CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
 TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
 SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+
+### seroval 1.8.0 (MIT)
+
+```
+MIT License Copyright (c) 2025 Alexis Munsayac <alexis.munsayac@gmail.com>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice (including the next paragraph) shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
 ### shiki 4.6.0 (MIT)

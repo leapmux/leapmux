@@ -4,7 +4,13 @@ package terminal
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
+	"net"
 	"os"
+	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +38,78 @@ const hangUpShellTimeout = 30 * time.Second
 
 // hangUpGrace is the per-shell escalation grace the tests pass.
 const hangUpGrace = 2 * time.Second
+
+const hangUpHelperAddress = "LEAPMUX_TEST_HANGUP_HELPER_ADDRESS"
+const hangUpReadyMarker = "LMX_HANGUP_TRAP_READY"
+
+// TestHelperHangUpIgnoringProcess runs only in the fixture's child process.
+func TestHelperHangUpIgnoringProcess(t *testing.T) {
+	address := os.Getenv(hangUpHelperAddress)
+	if address == "" {
+		return
+	}
+	signal.Ignore(syscall.SIGHUP)
+	connection, err := net.Dial("tcp", address)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = connection.Close() })
+	_, err = fmt.Fprintln(os.Stdout, hangUpReadyMarker)
+	require.NoError(t, err)
+	_, err = io.Copy(io.Discard, connection)
+	require.NoError(t, err)
+}
+
+// hangUpIgnoringOptions configures one process with no children to respawn during
+// termination. The control connection also releases it if a test fails before Stop.
+func hangUpIgnoringOptions(t *testing.T, id string) Options {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		connection, err := listener.Accept()
+		if err != nil && !errors.Is(err, net.ErrClosed) {
+			t.Errorf("accept the hang-up helper connection: %v", err)
+		}
+		accepted <- connection
+	}()
+	t.Cleanup(func() {
+		_ = listener.Close()
+		if connection := <-accepted; connection != nil {
+			_ = connection.Close()
+		}
+	})
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }
+	shell := filepath.Join(t.TempDir(), "hangup-helper")
+	testutil.WriteExecutable(t, shell, "#!/bin/sh\nexec "+quote(executable)+" -test.run='^TestHelperHangUpIgnoringProcess$' --\n")
+	return Options{
+		ID: id, Shell: shell, WorkingDir: t.TempDir(),
+		// SIGKILL prevents the helper's TestMain cleanup. Keep its temporary
+		// HOME below a directory that this parent test removes.
+		ExtraEnv: []string{hangUpHelperAddress + "=" + listener.Addr().String(), "TMPDIR=" + t.TempDir()},
+	}
+}
+
+func TestHangUpIgnoringFixtureCleanupEndsTheProcess(t *testing.T) {
+	t.Parallel()
+	m := NewManager()
+	const id = "cleanup-helper"
+	require.True(t, t.Run("release the control connection", func(t *testing.T) {
+		startHangUpIgnoringTerminal(t, m, id, nil)
+	}))
+	term := hangUpTerminal(m, id)
+	require.NotNil(t, term)
+	ctx, cancel := context.WithTimeout(t.Context(), hangUpShellTimeout)
+	defer cancel()
+	select {
+	case <-term.exitCh:
+	case <-ctx.Done():
+		t.Fatal("fixture cleanup did not end the hang-up helper")
+	}
+	assert.Zero(t, term.Wait(), "the control connection releases the helper without a signal")
+	require.NoError(t, m.WaitForExitContext(ctx, id))
+}
 
 type blockedTeardownPTY struct {
 	pty.UnixPty
@@ -85,27 +163,21 @@ func TestTerminalTerminationSurvivesBlockedPTY(t *testing.T) {
 				t.Cleanup(newTimer.Close)
 				var output testutil.LogBuffer
 				var readOnce sync.Once
-				const marker = "LMX_TEARDOWN_READY"
-				require.NoError(t, m.StartTerminal(t.Context(), Options{
-					ID: "blocked", Shell: testutil.TestShell(), WorkingDir: t.TempDir(),
-				}, func(data []byte, _ int64, _ []Signal) {
+				require.NoError(t, m.StartTerminal(t.Context(), hangUpIgnoringOptions(t, "blocked"), func(data []byte, _ int64, _ []Signal) {
 					_, _ = output.Write(data)
-					if strings.Contains(output.String(), marker) {
+					if strings.Contains(output.String(), hangUpReadyMarker) {
 						readOnce.Do(func() {
 							close(readHeld)
 							<-readRelease
 						})
 					}
 				}, nil))
-				readyCommand, err := testutil.TestShellOutputCommand(marker)
-				require.NoError(t, err)
-				require.NoError(t, m.SendInput("blocked", []byte("trap '' HUP; "+readyCommand+"; while :; do sleep 500; done"+testutil.TestShellEnter())))
 				ctx, cancel := context.WithTimeout(t.Context(), hangUpShellTimeout)
 				defer cancel()
 				select {
 				case <-readHeld:
 				case <-ctx.Done():
-					t.Fatal("the shell never installed its hang-up trap")
+					t.Fatal("the process never reported hang-up readiness")
 				}
 				term := hangUpTerminal(m, "blocked")
 				require.NotNil(t, term)
@@ -122,7 +194,7 @@ func TestTerminalTerminationSurvivesBlockedPTY(t *testing.T) {
 					blocked.beforeClose = block
 				}
 				// The output callback holds the reader between PTY calls.
-				// The live shell cannot reach exit teardown before this swap.
+				// The live process cannot reach exit teardown before this swap.
 				term.ptmx = blocked
 				releaseRead()
 				if blockedOperation == "write" {
@@ -150,12 +222,26 @@ func TestTerminalTerminationSurvivesBlockedPTY(t *testing.T) {
 				}()
 				if operation == "hang-up" {
 					newTimer.MustWait(ctx).MustRelease(ctx)
+				}
+				if blockedOperation == "close" {
+					select {
+					case <-ioEntered:
+					case <-ctx.Done():
+						t.Fatal("the PTY close never reached its hold")
+					}
+				}
+				if operation == "hang-up" {
 					clock.Advance(hangUpGrace).MustWait(ctx)
 				}
 				select {
 				case <-term.exitCh:
 				case <-ctx.Done():
 					t.Fatal("PTY teardown prevented forced process termination")
+				}
+				select {
+				case <-terminationDone:
+					t.Fatal("termination returned while the PTY operation was blocked")
+				default:
 				}
 				releaseIO()
 				select {
@@ -169,24 +255,26 @@ func TestTerminalTerminationSurvivesBlockedPTY(t *testing.T) {
 	}
 }
 
-// startHangUpTerminal starts a shell in the manager under id, with an exit
+// startHangUpTerminal starts a process in the manager with an exit
 // handler that reports through handlerRan. command, when not empty, is sent to
 // the shell after StartTerminal returns. The output buffer records readiness.
-func startHangUpTerminal(t *testing.T, m *Manager, id string, handlerRan chan string, command string) *testutil.LogBuffer {
+func startHangUpTerminal(t *testing.T, m *Manager, opts Options, handlerRan chan string, command string) *testutil.LogBuffer {
 	t.Helper()
 	output := &testutil.LogBuffer{}
-	err := m.StartTerminal(context.Background(), Options{
-		ID:         id,
-		Shell:      testutil.TestShell(),
-		WorkingDir: t.TempDir(),
-	}, func(data []byte, _ int64, _ []Signal) { _, _ = output.Write(data) }, func(terminalID string, _ int) {
+	if opts.Shell == "" {
+		opts.Shell = testutil.TestShell()
+	}
+	if opts.WorkingDir == "" {
+		opts.WorkingDir = t.TempDir()
+	}
+	err := m.StartTerminal(context.Background(), opts, func(data []byte, _ int64, _ []Signal) { _, _ = output.Write(data) }, func(terminalID string, _ int) {
 		if handlerRan != nil {
 			handlerRan <- terminalID
 		}
 	})
-	require.NoError(t, err, "StartTerminal(%s)", id)
+	require.NoError(t, err, "StartTerminal(%s)", opts.ID)
 	if command != "" {
-		require.NoError(t, m.SendInput(id, []byte(command+testutil.TestShellEnter())), "SendInput(%s)", id)
+		require.NoError(t, m.SendInput(opts.ID, []byte(command+testutil.TestShellEnter())), "SendInput(%s)", opts.ID)
 	}
 	return output
 }
@@ -218,7 +306,7 @@ func TestManager_HangUpAllEndsAShell(t *testing.T) {
 	clock := testutil.NewQuartzMock(t)
 	m := NewManager(WithClock(clock))
 	handlerRan := make(chan string, 1)
-	startHangUpTerminal(t, m, "plain", handlerRan, "")
+	startHangUpTerminal(t, m, Options{ID: "plain"}, handlerRan, "")
 
 	ids := m.HangUpAll(hangUpGrace)
 
@@ -236,7 +324,7 @@ func TestManager_HangUpAllLeavesANohupJobAlive(t *testing.T) {
 	m := NewManager()
 	pidFile := t.TempDir() + "/nohup.pid"
 	handlerRan := make(chan string, 1)
-	startHangUpTerminal(t, m, "nohup", handlerRan,
+	startHangUpTerminal(t, m, Options{ID: "nohup"}, handlerRan,
 		"nohup sh -c 'echo $$ > "+pidFile+"; exec sleep 1000' >/dev/null 2>&1 &")
 	pid := waitForShellJobPID(t, pidFile)
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
@@ -260,7 +348,7 @@ func TestManager_HangUpAllEndsAForegroundJob(t *testing.T) {
 	m := NewManager()
 	pidFile := t.TempDir() + "/fg.pid"
 	handlerRan := make(chan string, 1)
-	startHangUpTerminal(t, m, "fg", handlerRan,
+	startHangUpTerminal(t, m, Options{ID: "fg"}, handlerRan,
 		"sh -c 'echo $$ > "+pidFile+"; exec sleep 1000'")
 	pid := waitForShellJobPID(t, pidFile)
 
@@ -315,7 +403,7 @@ func TestManager_HangUpAllDoesNotLetOneShellDelayAnother(t *testing.T) {
 	m := NewManager(WithClock(clock))
 	handlerRan := make(chan string, 2)
 	startHangUpIgnoringTerminal(t, m, "stubborn", handlerRan)
-	startHangUpTerminal(t, m, "plain", handlerRan, "")
+	startHangUpTerminal(t, m, Options{ID: "plain"}, handlerRan, "")
 
 	done := make(chan []string, 1)
 	go func() { done <- m.HangUpAll(hangUpGrace) }()
@@ -506,7 +594,7 @@ func TestManager_HangUpAllWithNoTerminals(t *testing.T) {
 // nohup jobs a hang-up left alive.
 func TestManager_HangUpAllSkipsAnExitedTerminal(t *testing.T) {
 	m := NewManager()
-	startHangUpTerminal(t, m, "gone", nil, "exit")
+	startHangUpTerminal(t, m, Options{ID: "gone"}, nil, "exit")
 	deadline := time.Now().Add(hangUpShellTimeout)
 	for {
 		term := hangUpTerminal(m, "gone")
@@ -561,10 +649,7 @@ func waitForShellJobPID(t *testing.T, path string) int {
 
 func startHangUpIgnoringTerminal(t *testing.T, m *Manager, id string, handlerRan chan string) {
 	t.Helper()
-	const marker = "LMX_HANGUP_TRAP_READY"
-	emit, err := testutil.TestShellOutputCommand(marker)
-	require.NoError(t, err)
-	output := startHangUpTerminal(t, m, id, handlerRan, "trap '' HUP; "+emit+"; while :; do sleep 500; done")
-	require.Eventually(t, func() bool { return strings.Contains(output.String(), marker) }, hangUpShellTimeout, 10*time.Millisecond,
-		"the shell did not install its hang-up trap")
+	output := startHangUpTerminal(t, m, hangUpIgnoringOptions(t, id), handlerRan, "")
+	require.Eventually(t, func() bool { return strings.Contains(output.String(), hangUpReadyMarker) }, hangUpShellTimeout, 10*time.Millisecond,
+		"the process did not report hang-up readiness")
 }
