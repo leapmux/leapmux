@@ -55,7 +55,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761](#githubcomjackcpgservicefile-v000-20240606120523-5a60cdf6a761)
 - [github.com/jackc/pgx/v5 v5.12.0](#githubcomjackcpgxv5-v5120)
 - [github.com/jackc/puddle/v2 v2.2.3](#githubcomjackcpuddlev2-v223)
-- [github.com/klauspost/compress v1.20.3](#githubcomklauspostcompress-v1203)
+- [github.com/klauspost/compress v1.20.4](#githubcomklauspostcompress-v1204)
 - [github.com/knadh/koanf/maps v0.1.3](#githubcomknadhkoanfmaps-v013)
 - [github.com/knadh/koanf/parsers/yaml v1.1.1](#githubcomknadhkoanfparsersyaml-v111)
 - [github.com/knadh/koanf/providers/confmap v1.0.1](#githubcomknadhkoanfprovidersconfmap-v101)
@@ -117,13 +117,13 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [go.yaml.in/yaml/v4 v4.0.0](#goyamlinyamlv4-v400)
 - [go4.org/netipx v0.0.0-20260823151212-3075585bcbeb](#go4orgnetipx-v000-20260823151212-3075585bcbeb)
 - [golang.org/x/crypto v0.58.0](#golangorgxcrypto-v0580)
-- [golang.org/x/mod v0.42.0](#golangorgxmod-v0420)
+- [golang.org/x/mod v0.43.0](#golangorgxmod-v0430)
 - [golang.org/x/net v0.62.0](#golangorgxnet-v0620)
 - [golang.org/x/oauth2 v0.38.0](#golangorgxoauth2-v0380)
 - [golang.org/x/sync v0.25.0](#golangorgxsync-v0250)
 - [golang.org/x/sys v0.50.0](#golangorgxsys-v0500)
-- [golang.org/x/term v0.47.0](#golangorgxterm-v0470)
-- [golang.org/x/text v0.43.0](#golangorgxtext-v0430)
+- [golang.org/x/term v0.48.0](#golangorgxterm-v0480)
+- [golang.org/x/text v0.44.0](#golangorgxtext-v0440)
 - [golang.org/x/tools v0.52.0](#golangorgxtools-v0520)
 - [google.golang.org/grpc v1.85.0](#googlegolangorggrpc-v1850)
 - [google.golang.org/protobuf v1.36.12](#googlegolangorgprotobuf-v13612)
@@ -4843,7 +4843,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### github.com/klauspost/compress v1.20.3
+### github.com/klauspost/compress v1.20.4
 
 ```
 Copyright (c) 2012 The Go Authors. All rights reserved.
@@ -11419,7 +11419,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/mod v0.42.0
+### golang.org/x/mod v0.43.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11579,7 +11579,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/term v0.47.0
+### golang.org/x/term v0.48.0
 
 ```
 Copyright 2009 The Go Authors.
@@ -11611,7 +11611,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/text v0.43.0
+### golang.org/x/text v0.44.0
 
 ```
 Copyright 2009 The Go Authors.
