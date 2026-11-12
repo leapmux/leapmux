@@ -315,8 +315,9 @@ describe('renderMarkdown cache and gfm', () => {
   })
 
   it('answers a body whose parse overflows the stack with its escaped source, parsing it once', () => {
-    // A real overflow parses for seconds first; markdownWorker.test.ts holds the one
-    // real case. Here every unified processor raises the same RangeError for one body.
+    // A real overflow processes for seconds first, at a depth that depends on the
+    // stack of the thread (see markdownWorker.test.ts). Here every unified processor
+    // raises the same RangeError for one body.
     const text = '> overflowing <b>deep</b>'
     const processorPrototype = Object.getPrototypeOf(plainMarkdownProcessor) as { processSync: (value: string) => unknown }
     const parse = processorPrototype.processSync

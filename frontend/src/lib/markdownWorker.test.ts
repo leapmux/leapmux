@@ -3,12 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE } from './markdownSourceFallback'
 import { syntaxThemePair } from './shikiThemes'
 
-// The parser recurses once per blockquote level, so nesting overflows its stack:
-// at about 2,400 levels on a main thread and about 9,000 in a worker thread, whose
-// stack is larger. The work before the overflow grows faster than the depth, so
-// this depth stays near that bound, with a margin.
-const OVERFLOW_DEPTH = 12_000
-const OVERFLOWING_SOURCE = `${'>'.repeat(OVERFLOW_DEPTH)} <b>deep</b>`
+// A body whose processing raises the RangeError of a stack overflow (see the test).
+const OVERFLOWING_SOURCE = '> overflowing <b>deep</b>'
 
 /** Whether the worker's highlighter fails to start; read when the worker module loads. */
 const highlighterState = vi.hoisted(() => ({ initFails: false }))
@@ -75,9 +71,24 @@ describe('markdownWorker', () => {
     expect(responses[0]?.html).toContain('<h1>Title</h1>')
   })
 
-  it('answers a body that overflows the parser with its escaped source', async () => {
+  // The pipeline recurses once per blockquote level. In a worker thread it renders
+  // 9,000 levels in about 2.4 s and overflows at 12,000 after about 2 s, and the
+  // depth that overflows depends on the stack of the thread. A real overflow here
+  // once ran past the 30 s test timeout under the load of the full suite, so every
+  // processor raises the error that the overflow raises instead.
+  it('answers a body that overflows the parser with its escaped source, processing it once', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const { handle, responses } = await loadWorker()
+    // The worker's own unified instance: loadWorker reset the modules, and this
+    // import reads the fresh one that it loaded. Its processors share one prototype.
+    const { plainMarkdownProcessor } = await import('./markdownProcessor')
+    const processorPrototype = Object.getPrototypeOf(plainMarkdownProcessor) as { processSync: (value: string) => unknown }
+    const process = processorPrototype.processSync
+    const processSync = vi.spyOn(processorPrototype, 'processSync').mockImplementation(function (this: unknown, value: string) {
+      if (value === OVERFLOWING_SOURCE)
+        throw new RangeError('Maximum call stack size exceeded')
+      return process.call(this, value)
+    })
 
     await handle(renderRequest(7, OVERFLOWING_SOURCE))
 
@@ -86,6 +97,8 @@ describe('markdownWorker', () => {
     expect(responses[0]).toMatchObject({ type: 'render-result', id: 7, retryable: false })
     expect(responses[0]?.html).toContain(MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE)
     expect(responses[0]?.html).not.toContain('<b>')
+    // The plain processor shares the parser, so a second pass could only fail again.
+    expect(processSync.mock.calls.filter(([value]) => value === OVERFLOWING_SOURCE)).toHaveLength(1)
   })
 
   it('answers, retryable, when the highlighter cannot start and the plain parse fails too', async () => {
@@ -95,7 +108,7 @@ describe('markdownWorker', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const { handle, responses } = await loadWorker()
     // The worker's own instance: loadWorker reset the modules, and this import reads
-    // the fresh one that it loaded. The test above holds the one real overflow.
+    // the fresh one that it loaded.
     const { plainMarkdownProcessor } = await import('./markdownProcessor')
     vi.spyOn(plainMarkdownProcessor, 'processSync').mockImplementation(() => {
       throw new RangeError('Maximum call stack size exceeded')
