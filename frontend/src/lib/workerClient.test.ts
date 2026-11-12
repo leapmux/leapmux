@@ -288,3 +288,48 @@ describe('createWorkerClient time budget', () => {
     expect(captured(workers, 1).terminate).toHaveBeenCalledOnce()
   })
 })
+
+describe('createWorkerClient prepare', () => {
+  it('spawns the worker ahead of the first request, and the request reuses it', async () => {
+    const worker = new FakeWorker()
+    const spawn = vi.fn(() => worker as unknown as Worker)
+    const client = makeClient(spawn)
+
+    client.prepare()
+    expect(spawn).toHaveBeenCalledOnce()
+    client.prepare()
+    const p = client.request(id => ({ id, payload: 'a' }))
+
+    expect(spawn).toHaveBeenCalledOnce()
+    worker.reply(captured(worker.messages, 0).id, 'A')
+    await expect(p).resolves.toBe('A')
+  })
+
+  it('leaves a worker that cannot spawn for the first request to report', async () => {
+    const spawn = vi.fn((): Worker => {
+      throw new Error('blocked by CSP')
+    })
+    const client = makeClient(spawn)
+
+    expect(() => client.prepare()).not.toThrow()
+    await expect(client.request(id => ({ id, payload: 'a' }))).resolves.toBeNull()
+    // The request tried again rather than reusing a broken worker.
+    expect(spawn).toHaveBeenCalledTimes(2)
+  })
+
+  it('spawns a fresh worker after a crash', () => {
+    const workers = [
+      new FakeWorker(),
+      new FakeWorker(),
+    ]
+    let spawned = 0
+    const client = makeClient(() => workers[spawned++] as unknown as Worker)
+
+    client.prepare()
+    captured(workers, 0).onerror?.()
+    client.prepare()
+
+    expect(spawned).toBe(2)
+    expect(captured(workers, 0).terminate).toHaveBeenCalledOnce()
+  })
+})

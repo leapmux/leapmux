@@ -38,6 +38,7 @@ import {
   initiatorHandshake1,
   initiatorHandshake2,
 } from './noise-hybrid'
+import { prepareSlhDsaVerifyWorker, verifySlhDsaInWorker } from './slhDsaVerify'
 import { createWorkSlicer } from './workSlices'
 
 const log = createLogger('channel')
@@ -57,8 +58,15 @@ export type SessionKeyBundle = WorkerKeyBundle
  */
 export interface PendingHandshake {
   message1: Uint8Array
-  finish: (handshakePayload: Uint8Array) => Session
+  /** Rejects on a malformed or forged handshake-2. */
+  finish: (handshakePayload: Uint8Array) => Promise<Session>
 }
+
+/**
+ * The second step of the hybrid handshake. A test may answer synchronously; the
+ * production step is async, because it verifies the signature in a Web Worker.
+ */
+export type HybridHandshake2 = (...args: Parameters<typeof initiatorHandshake2>) => Session | Promise<Session>
 
 /** One outbound message longer than MAX_CHUNK_SIZE, which goes out in chunks. */
 export interface ChunkedMessage {
@@ -139,7 +147,7 @@ export interface ChannelSessionDeps {
 /** Injectable Noise handshake implementations (production defaults; tests override). */
 export interface ChannelSessionOpts {
   handshake1?: typeof initiatorHandshake1
-  handshake2?: typeof initiatorHandshake2
+  handshake2?: HybridHandshake2
   classicHandshake1?: typeof classicHandshake1
   classicHandshake2?: typeof classicHandshake2
 }
@@ -151,7 +159,7 @@ export interface ChannelSessionOpts {
 export class ChannelSession {
   private deps: ChannelSessionDeps
   private handshake1: typeof initiatorHandshake1
-  private handshake2: typeof initiatorHandshake2
+  private handshake2: HybridHandshake2
   private classicHS1: typeof classicHandshake1
   private classicHS2: typeof classicHandshake2
 
@@ -174,13 +182,16 @@ export class ChannelSession {
       const hs = this.classicHS1(keys.x25519PublicKey)
       return {
         message1: hs.message1,
-        finish: payload => this.classicHS2(hs.handshakeState, payload),
+        finish: async payload => this.classicHS2(hs.handshakeState, payload),
       }
     }
     const hs = this.handshake1(keys.x25519PublicKey, keys.mlkemPublicKey)
+    // The signature check of handshake-2 runs in a Web Worker. Start it now, so
+    // that it loads while message 1 makes its round trip.
+    prepareSlhDsaVerifyWorker()
     return {
       message1: hs.message1,
-      finish: payload => this.handshake2(hs.handshakeState, payload, keys.slhdsaPublicKey),
+      finish: async payload => this.handshake2(hs.handshakeState, payload, keys.slhdsaPublicKey, verifySlhDsaInWorker),
     }
   }
 

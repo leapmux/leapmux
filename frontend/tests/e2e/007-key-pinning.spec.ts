@@ -63,6 +63,25 @@ test.describe('Key Pinning', () => {
     expect(pin!.firstSeen).toBeGreaterThan(0)
   })
 
+  /**
+   * A post-quantum channel open verifies the Worker's SLH-DSA signature, which costs about 26 ms of JavaScript, in a
+   * dedicated Web Worker. The client falls back to the main thread when that worker cannot run, so the open would pass
+   * either way; this proves that the worker loads and stays up in the built app.
+   */
+  test('verifies the post-quantum handshake signature in a Web Worker', async ({
+    page,
+    workspace,
+    leapmuxServer,
+  }) => {
+    const { adminToken, adminUserId, workerId } = leapmuxServer
+
+    await loginViaToken(page, adminToken)
+    await openWorkspace(page, workspace.workspaceId)
+    await expect.poll(() => getKeyPin(page, adminUserId, workerId)).not.toBeNull()
+
+    await expect.poll(() => page.workers().some(worker => worker.url().includes('slhDsaVerifyWorker'))).toBe(true)
+  })
+
   test('accept: key mismatch dialog appears, user accepts, workspace loads', async ({
     page,
     workspace,

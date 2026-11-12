@@ -1,21 +1,23 @@
 // ---------------------------------------------------------------------------
 // Shared lazy Web Worker client lifecycle
 //
-// Both the Shiki token worker and the markdown render worker drive their worker
-// the same way: lazily spawn ONE module worker on first use, dispatch each request
-// under an incrementing id, resolve each reply by id, and -- on a worker crash
-// (`onerror`) or a `postMessage` failure -- resolve every pending request to a
-// failure value, terminate the dead worker, and drop it so the next request
-// respawns a fresh one. This factory owns that lifecycle so the two clients can't
-// drift on its subtle parts: the `worker !== failedWorker` stale-crash guard (a
-// crash from an already-replaced worker must not wipe the live worker's pending
-// set), terminate-before-respawn, and clearing pending on failure.
+// The Shiki token worker, the markdown render worker and the SLH-DSA verify
+// worker each drive their worker the same way: lazily spawn ONE module worker on
+// first use, dispatch each request under an incrementing id, resolve each reply by
+// id, and -- on a worker crash (`onerror`) or a `postMessage` failure -- resolve
+// every pending request to a failure value, terminate the dead worker, and drop it
+// so the next request respawns a fresh one. This factory owns that lifecycle so the
+// clients cannot drift on its subtle parts: the `worker !== failedWorker`
+// stale-crash guard (a crash from an already-replaced worker must not wipe the
+// live worker's pending set), terminate-before-respawn, and clearing pending on
+// failure.
 //
 // A request may also carry a time budget (see WorkerRequestOptions): a worker that
 // spends longer on it is terminated, and the requests behind it move to a fresh one.
 //
 // Each client layers its own concerns on top of `request` -- the token client a
-// result cache + in-flight coalescing; the markdown client its size-based lanes.
+// result cache + in-flight coalescing; the markdown client its size-based lanes;
+// the verify client a fallback to the calling thread.
 // ---------------------------------------------------------------------------
 
 export interface WorkerRequestOptions {
@@ -41,6 +43,12 @@ export interface WorkerClient<Req, Res> {
    * budget. Never rejects.
    */
   request: (buildMessage: (id: number) => Req, options?: WorkerRequestOptions) => Promise<Res>
+  /**
+   * Spawn the worker now, ahead of its first request, so that it loads while the
+   * caller waits on something else. A worker that cannot spawn is left for the
+   * first request, which resolves to the failure value.
+   */
+  prepare: () => void
 }
 
 export interface WorkerClientOptions<Res> {
@@ -195,5 +203,14 @@ export function createWorkerClient<Req, Res>(opts: WorkerClientOptions<Res>): Wo
     })
   }
 
-  return { request }
+  function prepare(): void {
+    try {
+      getWorker()
+    }
+    catch {
+      worker = null
+    }
+  }
+
+  return { request, prepare }
 }

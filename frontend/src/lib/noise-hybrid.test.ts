@@ -10,8 +10,8 @@ import { blake2b } from '@noble/hashes/blake2.js'
 import { ml_kem1024 } from '@noble/post-quantum/ml-kem.js'
 import { slh_dsa_shake_256f } from '@noble/post-quantum/slh-dsa.js'
 
-import { describe, expect, it } from 'vitest'
-import { AEAD_TAG_SIZE, X25519_PUBLIC_KEY_SIZE } from '~/generated/contracts/wire'
+import { describe, expect, it, vi } from 'vitest'
+import { AEAD_TAG_SIZE, SLHDSA_SIG_SIZE, X25519_PUBLIC_KEY_SIZE } from '~/generated/contracts/wire'
 import { concatBytes } from './bytes'
 import { hkdf } from './noise'
 import { clearHandshakeState, initiatorHandshake1, initiatorHandshake2 } from './noise-hybrid'
@@ -169,7 +169,7 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
   const mlkemKeys = ml_kem1024.keygen()
   const slhdsaKeys = slh_dsa_shake_256f.keygen()
 
-  it('should complete a full hybrid handshake and exchange messages', () => {
+  it('should complete a full hybrid handshake and exchange messages', async () => {
     // Initiator creates message 1.
     const { handshakeState, message1 } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
     expect(message1.length).toBe(48 + 1568) // noiseMsg1 + mlkemCT
@@ -185,7 +185,7 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
     expect(responder.message2.length).toBe(48 + 49856) // noiseMsg2 + slhdsaSig
 
     // Initiator completes handshake.
-    const session = initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey)
+    const session = await initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey)
 
     // Test initiator → responder.
     const msg1 = new TextEncoder().encode('hello from initiator')
@@ -200,7 +200,7 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
     expect(new TextDecoder().decode(pt2)).toBe('hello from responder')
   })
 
-  it('should handle multiple messages in sequence', () => {
+  it('should handle multiple messages in sequence', async () => {
     const { handshakeState, message1 } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
     const responder = responderHandshake(
       x25519Priv,
@@ -209,7 +209,7 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
       slhdsaKeys.secretKey,
       message1,
     )
-    const session = initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey)
+    const session = await initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey)
 
     for (let i = 0; i < 50; i++) {
       const fwd = new TextEncoder().encode(`forward-${i}`)
@@ -224,7 +224,7 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
     }
   })
 
-  it('should fail with wrong SLH-DSA key', () => {
+  it('should fail with wrong SLH-DSA key', async () => {
     const { handshakeState, message1 } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
     const responder = responderHandshake(
       x25519Priv,
@@ -236,17 +236,15 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
 
     // Use a different SLH-DSA public key for verification.
     const wrongKeys = slh_dsa_shake_256f.keygen()
-    expect(() => initiatorHandshake2(handshakeState, responder.message2, wrongKeys.publicKey))
-      .toThrow('SLH-DSA')
+    await expect(initiatorHandshake2(handshakeState, responder.message2, wrongKeys.publicKey)).rejects.toThrow('SLH-DSA')
   })
 
-  it('should fail with short message2', () => {
+  it('should fail with short message2', async () => {
     const { handshakeState } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
-    expect(() => initiatorHandshake2(handshakeState, new Uint8Array(16), slhdsaKeys.publicKey))
-      .toThrow('wrong size')
+    await expect(initiatorHandshake2(handshakeState, new Uint8Array(16), slhdsaKeys.publicKey)).rejects.toThrow('wrong size')
   })
 
-  it('should fail with oversized message2', () => {
+  it('should fail with oversized message2', async () => {
     const { handshakeState, message1 } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
     const responder = responderHandshake(
       x25519Priv,
@@ -258,11 +256,10 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
     // Append an extra byte to the valid message2.
     const oversized = new Uint8Array(responder.message2.length + 1)
     oversized.set(responder.message2)
-    expect(() => initiatorHandshake2(handshakeState, oversized, slhdsaKeys.publicKey))
-      .toThrow('wrong size')
+    await expect(initiatorHandshake2(handshakeState, oversized, slhdsaKeys.publicKey)).rejects.toThrow('wrong size')
   })
 
-  it('should zero handshake state after completing handshake', () => {
+  it('should zero handshake state after completing handshake', async () => {
     const { handshakeState, message1 } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
     const responder = responderHandshake(
       x25519Priv,
@@ -277,7 +274,7 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
     expect(handshakeState.mlkemCT.length).toBeGreaterThan(0)
     expect(handshakeState.e.privateKey.length).toBeGreaterThan(0)
 
-    initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey)
+    await initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey)
 
     // After handshake2, all sensitive fields should be zeroed.
     expect(handshakeState.mlkemSS.every(b => b === 0)).toBe(true)
@@ -288,7 +285,7 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
     expect(handshakeState.ss.k.every(b => b === 0)).toBe(true)
   })
 
-  it('should zero handshake state on SLH-DSA verification failure', () => {
+  it('should zero handshake state on SLH-DSA verification failure', async () => {
     const { handshakeState, message1 } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
     const responder = responderHandshake(
       x25519Priv,
@@ -299,8 +296,7 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
     )
 
     const wrongKeys = slh_dsa_shake_256f.keygen()
-    expect(() => initiatorHandshake2(handshakeState, responder.message2, wrongKeys.publicKey))
-      .toThrow('SLH-DSA')
+    await expect(initiatorHandshake2(handshakeState, responder.message2, wrongKeys.publicKey)).rejects.toThrow('SLH-DSA')
 
     // Even on failure, sensitive material should be zeroed.
     expect(handshakeState.mlkemSS.every(b => b === 0)).toBe(true)
@@ -320,7 +316,7 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
     expect(handshakeState.e.privateKey.every(b => b === 0)).toBe(true)
   })
 
-  it('should fail when ML-KEM ciphertext is tampered (handshake hash divergence)', () => {
+  it('should fail when ML-KEM ciphertext is tampered (handshake hash divergence)', async () => {
     const { handshakeState, message1 } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
 
     // Tamper with the ML-KEM ciphertext portion (after the 48-byte Noise message).
@@ -341,11 +337,10 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
     // Initiator should fail because handshake hashes diverged
     // (mixHash(mlkemCT) differs between initiator and responder). The hash is
     // the associated data of the message 2 payload, so its tag fails first.
-    expect(() => initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey))
-      .toThrow(AEAD_TAG_FAILURE)
+    await expect(initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey)).rejects.toThrow(AEAD_TAG_FAILURE)
   })
 
-  it('should encrypt empty messages', () => {
+  it('should encrypt empty messages', async () => {
     const { handshakeState, message1 } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
     const responder = responderHandshake(
       x25519Priv,
@@ -354,11 +349,65 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
       slhdsaKeys.secretKey,
       message1,
     )
-    const session = initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey)
+    const session = await initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey)
 
     const ct = session.send.encrypt(new Uint8Array(0))
     expect(ct.length).toBeGreaterThan(0) // Auth tag
     const pt = simpleCipherDecrypt(responder.receive, ct)
     expect(pt.length).toBe(0)
+  })
+
+  describe('the injected signature verifier', () => {
+    function handshake() {
+      const { handshakeState, message1 } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
+      const responder = responderHandshake(
+        x25519Priv,
+        x25519Pub,
+        mlkemKeys.secretKey,
+        slhdsaKeys.secretKey,
+        message1,
+      )
+      return { handshakeState, responder }
+    }
+
+    it('hands the signature, the transcript and the key to the verifier', async () => {
+      const { handshakeState, responder } = handshake()
+      const verify = vi.fn(async () => true)
+
+      const session = await initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey, verify)
+
+      expect(verify).toHaveBeenCalledOnce()
+      const [signature, transcript, publicKey] = verify.mock.calls[0] as unknown as [Uint8Array, Uint8Array, Uint8Array]
+      expect(signature).toHaveLength(SLHDSA_SIG_SIZE)
+      expect(transcript).toHaveLength(64)
+      expect(publicKey).toBe(slhdsaKeys.publicKey)
+      // The verifier saw the real signature over the real transcript.
+      expect(slh_dsa_shake_256f.verify(signature, transcript, publicKey)).toBe(true)
+      const pt = simpleCipherDecrypt(responder.receive, session.send.encrypt(new TextEncoder().encode('ok')))
+      expect(new TextDecoder().decode(pt)).toBe('ok')
+    })
+
+    it('fails, and zeroes the state, when the verifier answers false', async () => {
+      const { handshakeState, responder } = handshake()
+
+      await expect(initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey, () => false))
+        .rejects
+        .toThrow('SLH-DSA signature verification failed')
+
+      expect(handshakeState.mlkemSS.every(b => b === 0)).toBe(true)
+      expect(handshakeState.e.privateKey.every(b => b === 0)).toBe(true)
+    })
+
+    it('rejects with the error of the verifier, and zeroes the state', async () => {
+      const { handshakeState, responder } = handshake()
+      const failure = new Error('the verifier crashed')
+
+      await expect(initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey, async () => {
+        throw failure
+      })).rejects.toBe(failure)
+
+      expect(handshakeState.mlkemSS.every(b => b === 0)).toBe(true)
+      expect(handshakeState.ss.ck.every(b => b === 0)).toBe(true)
+    })
   })
 })

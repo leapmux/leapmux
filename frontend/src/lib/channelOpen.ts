@@ -167,7 +167,7 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
       // registered the channel, so this sits inside the rollback's coverage — the
       // Go client covers the same step the same way (handshaker.finish runs under
       // the rollback defer in backend/tunnel/channel.go).
-      const session = finishHandshake(result.handshakePayload)
+      const session = await finishHandshake(result.handshakePayload)
 
       // 4. Ensure shared WebSocket is connected.
       await this.deps.relay.ensureWebSocket()

@@ -1,4 +1,5 @@
 import type { Session } from './noise'
+import type { SlhDsaVerify } from './slhDsaVerify'
 import { x25519 } from '@noble/curves/ed25519.js'
 import { blake2b } from '@noble/hashes/blake2.js'
 /**
@@ -13,10 +14,10 @@ import { blake2b } from '@noble/hashes/blake2.js'
  */
 import { ml_kem1024 } from '@noble/post-quantum/ml-kem.js'
 
-import { slh_dsa_shake_256f } from '@noble/post-quantum/slh-dsa.js'
 import { AEAD_TAG_SIZE, SLHDSA_SIG_SIZE, X25519_PUBLIC_KEY_SIZE } from '~/generated/contracts/wire'
 import { concatBytes } from './bytes'
 import { SymmetricState } from './noise'
+import { verifySlhDsaHere } from './slhDsaVerify'
 
 const PROTOCOL_NAME = 'Noise_NK_25519_ChaChaPoly_BLAKE2b'
 const NOISE_MSG_LEN = X25519_PUBLIC_KEY_SIZE + AEAD_TAG_SIZE // 48 bytes
@@ -148,13 +149,16 @@ export function deriveRekeySecrets(
  * @param state - Handshake state from initiatorHandshake1
  * @param message2 - Responder's message (49904 bytes)
  * @param remoteSlhdsaPub - Worker's SLH-DSA-SHAKE-256f public key (64 bytes)
+ * @param verify - Verifies the signature; the channel passes one that runs in a
+ *   Web Worker, because the verification costs about 26 ms of JavaScript
  * @returns Established encrypted Session
  */
-export function initiatorHandshake2(
+export async function initiatorHandshake2(
   state: HybridHandshakeState,
   message2: Uint8Array,
   remoteSlhdsaPub: Uint8Array,
-): Session {
+  verify: SlhDsaVerify = verifySlhDsaHere,
+): Promise<Session> {
   const { ss, e, mlkemSS, mlkemCT } = state
 
   const expectedLen = NOISE_MSG_LEN + SLHDSA_SIG_SIZE
@@ -181,8 +185,16 @@ export function initiatorHandshake2(
   // Compute transcript: BLAKE2b(handshake_hash || mlkem_ct || mlkem_ss)
   const transcript = blake2b(concatBytes(ss.h, mlkemCT, mlkemSS))
 
-  // Verify SLH-DSA signature.
-  const valid = slh_dsa_shake_256f.verify(slhdsaSig, transcript, remoteSlhdsaPub)
+  // Verify SLH-DSA signature. The state stays untouched while the verification
+  // runs, and every way out of a failure zeroes it.
+  let valid: boolean
+  try {
+    valid = await verify(slhdsaSig, transcript, remoteSlhdsaPub)
+  }
+  catch (err) {
+    clearHandshakeState(state)
+    throw err
+  }
   if (!valid) {
     clearHandshakeState(state)
     throw new Error('noise-hybrid: SLH-DSA signature verification failed')

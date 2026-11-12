@@ -8,6 +8,7 @@ import { ChannelError } from './channelError'
 import { unframeBytes } from './channelFraming'
 import { ChannelSession, createChunkedSends } from './channelSession'
 import { generateRekeyEphemeral } from './noise-hybrid'
+import { verifySlhDsaInWorker } from './slhDsaVerify'
 
 /** When true, every work slice is used up after one chunk, so each later chunk waits for a yield. */
 const slicing = vi.hoisted(() => ({ oneChunkPerSlice: false }))
@@ -92,7 +93,7 @@ const keys = {
 }
 
 describe('channelSession', () => {
-  it('uses classic Noise for CLASSIC mode in beginHandshake', () => {
+  it('uses classic Noise for CLASSIC mode in beginHandshake', async () => {
     const message1 = new Uint8Array([9, 9])
     const finished = mockCipher()
     const classicHandshake1 = vi.fn((_rs: Uint8Array) => ({
@@ -113,18 +114,18 @@ describe('channelSession', () => {
     expect(pending.message1).toBe(message1)
 
     const payload = new Uint8Array([4, 5])
-    expect(pending.finish(payload)).toBe(finished)
+    await expect(pending.finish(payload)).resolves.toBe(finished)
     expect(classicHandshake2).toHaveBeenCalledWith({ tag: 'classic' }, payload)
   })
 
-  it('uses hybrid Noise for post-quantum mode in beginHandshake', () => {
+  it('uses hybrid Noise for post-quantum mode in beginHandshake', async () => {
     const message1 = new Uint8Array([8, 8])
     const finished = mockCipher()
     const handshake1 = vi.fn((_x: Uint8Array, _m: Uint8Array) => ({
       message1,
       handshakeState: { tag: 'hybrid' } as any,
     }))
-    const handshake2 = vi.fn((_hs: any, _payload: Uint8Array, _slh: Uint8Array) => finished)
+    const handshake2 = vi.fn((_hs: any, _payload: Uint8Array, _slh: Uint8Array, _verify: unknown) => finished)
     const classic1 = vi.fn()
     const session = new ChannelSession(emptyDeps(), {
       handshake1,
@@ -138,11 +139,12 @@ describe('channelSession', () => {
     expect(pending.message1).toBe(message1)
 
     const payload = new Uint8Array([6, 7])
-    expect(pending.finish(payload)).toBe(finished)
-    expect(handshake2).toHaveBeenCalledWith({ tag: 'hybrid' }, payload, keys.slhdsaPublicKey)
+    await expect(pending.finish(payload)).resolves.toBe(finished)
+    // The signature check runs in the verification worker, not on this thread.
+    expect(handshake2).toHaveBeenCalledWith({ tag: 'hybrid' }, payload, keys.slhdsaPublicKey, verifySlhDsaInWorker)
   })
 
-  it('propagates handshake-2 failures from the finish of beginHandshake', () => {
+  it('propagates handshake-2 failures from the finish of beginHandshake', async () => {
     const session = new ChannelSession(emptyDeps(), {
       handshake1: () => ({
         message1: new Uint8Array([1]),
@@ -153,7 +155,7 @@ describe('channelSession', () => {
       },
     })
     const pending = session.beginHandshake(EncryptionMode.POST_QUANTUM, keys)
-    expect(() => pending.finish(new Uint8Array([1]))).toThrow('bad handshake-2')
+    await expect(pending.finish(new Uint8Array([1]))).rejects.toThrow('bad handshake-2')
   })
 
   it('treats UNSPECIFIED like post-quantum (hybrid path) in beginHandshake', () => {
@@ -171,7 +173,7 @@ describe('channelSession', () => {
     expect(classic1).not.toHaveBeenCalled()
   })
 
-  it('propagates handshake-2 failures from the classic finish of beginHandshake', () => {
+  it('propagates handshake-2 failures from the classic finish of beginHandshake', async () => {
     const session = new ChannelSession(emptyDeps(), {
       classicHandshake1: () => ({
         message1: new Uint8Array([1]),
@@ -182,7 +184,7 @@ describe('channelSession', () => {
       },
     })
     const pending = session.beginHandshake(EncryptionMode.CLASSIC, keys)
-    expect(() => pending.finish(new Uint8Array([1]))).toThrow('bad classic handshake-2')
+    await expect(pending.finish(new Uint8Array([1]))).rejects.toThrow('bad classic handshake-2')
   })
 
   it('decrypt calls through to the receive cipher', () => {
