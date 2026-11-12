@@ -86,7 +86,7 @@
     "eslint-plugin-solid": "^0.19.0",
     "fake-indexeddb": "^6.2.5",
     "jiti": "^2.7.0",
-    "jsdom": "^30.0.1",
+    "jsdom": "^31.0.0",
     "nitro": "3.0.260903-beta",
     "node-gyp": "^13.0.2",
     "solid-refresh": "^0.6.3",
