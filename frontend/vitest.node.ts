@@ -364,6 +364,7 @@ export const NODE_TEST_FILES = [
   'src/components/chat/messageRenderCache.test.ts',
   'src/components/chat/messageUiKeys.test.ts',
   'src/components/chat/messageUtils.test.ts',
+  'src/components/chat/model/tools/generic.test.ts',
   'src/components/chat/persistedControlResponse.test.ts',
   'src/components/chat/planModeToggle.test.ts',
   'src/components/chat/providerSettings.test.ts',

@@ -7,6 +7,7 @@ import { createMemo, For, Match, Show, Switch } from 'solid-js'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { getToolResultExpanded } from '../messageRenderers'
 import { isFinishedToolCallStatus } from '../model/toolCallStatus'
+import { genericArgsText } from '../model/tools/generic'
 import { toolInputSummary, toolMessage, toolResultError, toolResultPrompt } from '../toolStyles.css'
 import { CollapsibleContent } from './CollapsibleContent'
 import { EMPTY_RESULT_NOTICE } from './emptyResultNotice'
@@ -151,9 +152,7 @@ export function GenericToolBody(props: {
   title?: string
 }): JSX.Element {
   const expanded = () => props.expanded?.() ?? getToolResultExpanded(props.context)
-  const argsText = () => props.request.argsText ?? (Object.keys(props.request.args).length > 0
-    ? prettifyJson(props.request.args)
-    : '')
+  const argsText = () => genericArgsText(props.request)
   const failed = () => props.status === 'failed'
   const structuredMetadata = () => props.result.structuredJsonRole === 'metadata'
     ? props.result.structuredJson
