@@ -15,7 +15,9 @@ import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { makeMessage, rawContent, wrapContent } from '~/test-support/messageFactory'
 import { toolFrame } from '~/test-support/mimoFixtures'
 
-// jsdom does not provide ResizeObserver or Worker.
+// jsdom does not provide ResizeObserver. It provides no Worker either, and this
+// file installs none: Markdown then renders synchronously, as in every unit test.
+// A stand-in Worker that never answers would leave every Markdown body pending.
 beforeAll(() => {
   if (!globalThis.ResizeObserver) {
     Object.defineProperty(globalThis, 'ResizeObserver', {
@@ -25,21 +27,6 @@ beforeAll(() => {
         observe() {}
         unobserve() {}
         disconnect() {}
-      },
-    })
-  }
-  if (!globalThis.Worker) {
-    Object.defineProperty(globalThis, 'Worker', {
-      configurable: true,
-      writable: true,
-      value: class {
-        onmessage: ((e: MessageEvent) => void) | null = null
-        onerror: ((e: ErrorEvent) => void) | null = null
-        postMessage() {}
-        terminate() {}
-        addEventListener() {}
-        removeEventListener() {}
-        dispatchEvent() { return false }
       },
     })
   }
@@ -991,7 +978,11 @@ describe('messageBubble rawJson', () => {
     })
   })
 
-  it('does not inject a partial-copy button into a large plain-text Markdown display', async () => {
+  it('renders a large Markdown body as Markdown and gives its code block a copy button', async () => {
+    // 100,000 characters: three times the size that used to switch a body to a
+    // capped plain-text display. The whole body now renders as Markdown.
+    const filler = 'filler '.repeat(Math.ceil(100_000 / 'filler '.length))
+    const text = `# MARKDOWN_HEAD\n\n${filler}\n\n\`\`\`js\nconst MARKDOWN_TAIL = 1\n\`\`\``
     await withControlledCopyCallbacks(async (callbacks) => {
       const msg = makeMsg({
         source: MessageSource.AGENT,
@@ -999,7 +990,7 @@ describe('messageBubble rawJson', () => {
           type: 'assistant',
           message: {
             content: [
-              { type: 'text', text: `MARKDOWN_HEAD${'x'.repeat(100_000)}MARKDOWN_TAIL` },
+              { type: 'text', text },
             ],
           },
         }),
@@ -1012,13 +1003,13 @@ describe('messageBubble rawJson', () => {
       ))
 
       const content = screen.getByTestId('message-content')
-      expect(content.querySelector('pre[data-large-text-display]')).toBeInTheDocument()
+      expect(content.querySelector('h1')?.textContent).toBe('MARKDOWN_HEAD')
+      expect(content.textContent).toContain(filler.trim())
+      expect(content.querySelector('pre code')?.textContent).toContain('const MARKDOWN_TAIL = 1')
+      expect(content.querySelector('[data-markdown-source-fallback]')).not.toBeInTheDocument()
+      expect(content.textContent).not.toContain('plain-text display')
       expect(callbacks.runIdle()).toBeGreaterThan(0)
-      content.appendChild(document.createTextNode(''))
-      expect(callbacks.deliverMutations(content)).toBeGreaterThan(0)
-      expect(callbacks.runIdle()).toBeGreaterThan(0)
-      expect(content.querySelector('.copy-code-button')).not.toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'Copy Markdown', hidden: true })).toBeInTheDocument()
+      expect(content.querySelector('pre .copy-code-button')).toBeInTheDocument()
     })
   })
 

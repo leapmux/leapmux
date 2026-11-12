@@ -118,8 +118,8 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
   // hook instance whose `tokens` starts null; the cache read otherwise lives only in the
   // effect below, which Solid runs AFTER the first render commits, so that first frame was
   // always plain even when the tokens were already cached. (Mirrors the markdown path,
-  // which reads its cache synchronously during render for exactly this reason --
-  // renderMarkdownCachedOrPlain, "already-highlighted rows must not blink back to plain".)
+  // which reads its caches synchronously during render for exactly this reason --
+  // markdownHtmlForContext, so an already-rendered body never blinks back to pending.)
   // Crucially this seeds THROUGH the `hold` gate -- only `premeasure` (a geometry-only
   // render) blocks it. The click that expands/collapses a row (or toggles the diff view)
   // fires a pointerdown, which pauses syntax highlighting for a scroll-idle beat (ChatView's

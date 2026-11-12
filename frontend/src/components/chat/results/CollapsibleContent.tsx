@@ -4,9 +4,9 @@ import { createMemo, Match, Show, Switch } from 'solid-js'
 import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { containsAnsi, renderAnsi, stripAnsi } from '~/lib/renderAnsi'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
-import { markdownContent } from '../markdownEditor/markdownContent.css'
+import { shouldPauseSyntaxHighlighting } from '../markdownRendering'
 import { getCachedRenderValueForString, setCachedRenderValueForString } from '../messageRenderCache'
-import { renderMarkdownForContext, shouldPauseSyntaxHighlighting } from '../messageRenderers'
+import { MarkdownText } from '../messageRenderers'
 import { LIMITED_TEXT_DISPLAY_NOTICE, limitTextForDisplay } from '../safeTextDisplay'
 import { JsonHighlightHtml } from '../syntaxHighlight'
 import { toolResultCollapsed, toolResultContent, toolResultContentAnsi, toolResultContentPre, toolResultPrompt } from '../toolStyles.css'
@@ -16,11 +16,11 @@ import { canHighlightBySize } from './collapse'
  * Content kinds that share the collapsed-line display:
  * - ansi-or-pre renders ANSI spans when the source contains escapes. Otherwise, it renders plain text.
  * - pre renders plain text.
- * - markdown renders the selected Markdown text in the markdownContent element.
- * - markdown-tool-result renders tool Markdown with a limited plain-text fallback for large values.
+ * - markdown-tool-result renders the full text as Markdown, whatever its size. The
+ *   collapsed class clips its height. A line slice is not valid Markdown.
  * - json renders token spans with the same display limits as plain text.
  */
-export type CollapsibleContentKind = 'ansi-or-pre' | 'pre' | 'markdown' | 'markdown-tool-result' | 'json'
+export type CollapsibleContentKind = 'ansi-or-pre' | 'pre' | 'markdown-tool-result' | 'json'
 
 export interface CollapsibleContentProps {
   /**
@@ -35,7 +35,7 @@ export interface CollapsibleContentProps {
   text: string
   /**
    * The caller can supply a collapsed text slice.
-   * The pre, ansi-or-pre, and markdown kinds use that slice.
+   * The pre and ansi-or-pre kinds use that slice.
    * Other kinds derive display text from the original text.
    * An absent slice uses the original text.
    */
@@ -44,7 +44,11 @@ export interface CollapsibleContentProps {
   isCollapsed: boolean
   /** Body kind. See {@link CollapsibleContentKind}. */
   kind: CollapsibleContentKind
-  /** The Markdown and ANSI render context. In premeasure mode, the component skips worker and Shiki work and keeps the block layout. */
+  /**
+   * The Markdown and ANSI render context. In premeasure mode, the ANSI and JSON
+   * kinds skip Shiki work and keep the block layout. The Markdown kind renders in
+   * the worker in every mode; see markdownHtmlForContext.
+   */
   context?: MarkdownRenderContext
 }
 
@@ -59,9 +63,13 @@ export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element 
     : ''
   const outputPreviewAttribute = () => props.outputPreview ? '' : undefined
   const slice = () => props.display ?? props.text
-  const safeDisplay = createMemo(() => limitTextForDisplay(slice()))
+  // The Markdown kind renders the full text and never reads this display, so it
+  // skips the scan: the memo runs eagerly, and a body can be megabytes long.
+  const safeDisplay = createMemo(() => props.kind === 'markdown-tool-result'
+    ? { text: '', limited: false }
+    : limitTextForDisplay(slice()))
   const safeText = () => safeDisplay().text
-  const rawDisplayLimited = () => props.kind !== 'markdown' && props.kind !== 'markdown-tool-result' && safeDisplay().limited
+  const rawDisplayLimited = () => safeDisplay().limited
   const isAnsi = createMemo(() => props.kind === 'ansi-or-pre' && containsAnsi(props.text))
   const ansiPlainText = createMemo(() => isAnsi()
     ? stripAnsi(safeText())
@@ -93,10 +101,6 @@ export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element 
   const renderedAnsiHtml = createMemo(() => isAnsi()
     ? ansiHtml(safeText())
     : undefined)
-  // Keep both Markdown readers lazy.
-  // A Solid memo would parse both forms before Switch selects the required format.
-  const markdownSliceHtml = () => renderMarkdownForContext(slice(), props.context)
-  const markdownFullHtml = () => renderMarkdownForContext(props.text, props.context)
   const JsonContent = () => (
     <JsonHighlightHtml
       class={`${toolResultContentAnsi}${collapsedClass()}`}
@@ -111,13 +115,16 @@ export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element 
   return (
     <>
       <Switch>
-        <Match when={props.kind === 'markdown'}>
-          <div class={`${markdownContent}${collapsedClass()}`} data-tool-output-preview={outputPreviewAttribute()} ref={cachedInnerHtml(markdownSliceHtml)} />
-        </Match>
         <Match when={props.kind === 'markdown-tool-result'}>
-          {/* Normal Markdown bodies render in full. The shared Markdown guard changes
-              an unsafe body to a limited plain-text display before parsing. */}
-          <div class={`${toolResultContent}${collapsedClass()}`} data-tool-output-preview={outputPreviewAttribute()} ref={cachedInnerHtml(markdownFullHtml)} />
+          {/* The full body renders as Markdown in the worker, whatever its size. */}
+          <MarkdownText
+            text={props.text}
+            class={`${toolResultContent}${collapsedClass()}`}
+            outputPreview={props.outputPreview === true}
+            {...(props.context !== undefined
+              ? { context: props.context }
+              : {})}
+          />
         </Match>
         <Match when={props.kind === 'json'}>
           {/* The token surface receives only the safe display text. */}

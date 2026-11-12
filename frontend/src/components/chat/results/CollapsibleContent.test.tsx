@@ -1,8 +1,9 @@
 import { render } from '@solidjs/testing-library'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import * as markdownRendering from '~/components/chat/markdownRendering'
 import { createMessageRenderCacheStore } from '~/components/chat/messageRenderCache'
-import * as messageRenderers from '~/components/chat/messageRenderers'
 import { CollapsibleContent } from '~/components/chat/results/CollapsibleContent'
+import * as safeTextDisplay from '~/components/chat/safeTextDisplay'
 import { toolResultContentAnsi, toolResultContentPre } from '~/components/chat/toolStyles.css'
 
 describe('CollapsibleContent', () => {
@@ -11,7 +12,7 @@ describe('CollapsibleContent', () => {
   })
 
   it.each(['pre', 'ansi-or-pre', 'json'] as const)('does not render unused Markdown for kind="%s"', (kind) => {
-    const renderMarkdown = vi.spyOn(messageRenderers, 'renderMarkdownForContext').mockReturnValue('<p>unused</p>')
+    const renderMarkdown = vi.spyOn(markdownRendering, 'markdownHtmlForContext').mockReturnValue('<p>unused</p>')
     const text = `${'minified'.repeat(1_000)}\nsecond line`
 
     render(() => (
@@ -140,13 +141,6 @@ describe('CollapsibleContent', () => {
     expect(body.textContent).toBe('red')
   })
 
-  it('renders markdown body for kind="markdown"', () => {
-    const { container } = render(() => (
-      <CollapsibleContent kind="markdown" text="# heading" display="# heading" isCollapsed={false} />
-    ))
-    expect(container.querySelector('h1')).not.toBeNull()
-  })
-
   it('renders markdown-tool-result body using the full text, not display', () => {
     // kind="markdown-tool-result" always renders the full text (display is ignored
     // because markdown can't be cleanly truncated by lines).
@@ -155,13 +149,28 @@ describe('CollapsibleContent', () => {
     ))
     expect(container.querySelector('strong')).not.toBeNull()
   })
+
+  it('renders a large markdown-tool-result body in full, with no display scan or limit notice', () => {
+    // Three times the size that used to switch a body to a capped plain-text display.
+    const filler = 'native '.repeat(15_000)
+    const text = `## Heading\n\n${filler}\n\n- last item`
+    const limit = vi.spyOn(safeTextDisplay, 'limitTextForDisplay')
+    const { container } = render(() => (
+      <CollapsibleContent kind="markdown-tool-result" text={text} isCollapsed={false} />
+    ))
+
+    expect(container.querySelector('h2')?.textContent).toBe('Heading')
+    expect(container.querySelector('li')?.textContent).toBe('last item')
+    expect(container.textContent).toContain(filler.trim())
+    expect(container.textContent).not.toContain('Display limited')
+    expect(limit).not.toHaveBeenCalled()
+  })
 })
 
 describe('CollapsibleContent output ownership', () => {
   it.each([
     'pre',
     'ansi-or-pre',
-    'markdown',
     'markdown-tool-result',
     'json',
   ] as const)('marks the existing output element for kind %s without adding a wrapper', (kind) => {
@@ -203,7 +212,6 @@ describe('CollapsibleContent output ownership', () => {
     { kind: 'pre', text: 'same marker' },
     { kind: 'ansi-or-pre', text: 'same marker' },
     { kind: 'ansi-or-pre', text: '\x1B[31msame marker\x1B[0m' },
-    { kind: 'markdown', text: 'same marker' },
     { kind: 'markdown-tool-result', text: 'same marker' },
     { kind: 'json', text: '{"same":"marker"}' },
   ] as const)('does not mark kind $kind text $text without output ownership', ({ kind, text }) => {

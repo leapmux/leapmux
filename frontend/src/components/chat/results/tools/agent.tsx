@@ -3,6 +3,7 @@ import type { AgentRequest } from '../../model/tools/agent'
 import type { ParsedCall, ResolvedCall, ToolKindMeta, ToolKindRenderer, ToolRowView } from './renderer'
 import Bot from 'lucide-solid/icons/bot'
 import { For, Show } from 'solid-js'
+import { MarkdownPrefetch } from '../../messageRenderers'
 import { MESSAGE_UI_KEY } from '../../messageUiKeys'
 import { toolInputText, toolResultPrompt } from '../../toolStyles.css'
 import { AgentResultBody, agentRunStatesOutcome } from '../agentResult'
@@ -46,16 +47,22 @@ function AgentPromptBody(props: { request: AgentRequest, view: ToolRowView, hasR
   const promptLabel = () => props.request.promptLabel || 'Prompt'
   const hasPrompt = () => props.request.prompt.trim() !== ''
   const longPrompt = () => textNeedsCollapse(props.request.prompt)
+  const markdownPrompt = () => props.request.promptFormat !== 'pre'
   const expanded = (): boolean => props.view.expanded()
   return (
     <>
       <Show when={!props.hasResult || expanded()}><ToolMetadata items={props.request.metadata} /></Show>
-      <Show when={hasPrompt() && (!props.hasResult || expanded())}>
+      <Show
+        when={hasPrompt() && (!props.hasResult || expanded())}
+        fallback={hasPrompt() && markdownPrompt()
+          ? <MarkdownPrefetch text={props.request.prompt} />
+          : null}
+      >
         <div class={toolResultPrompt}>{promptLabel()}</div>
         <CollapsibleContent
-          kind={props.request.promptFormat === 'pre'
-            ? 'pre'
-            : 'markdown-tool-result'}
+          kind={markdownPrompt()
+            ? 'markdown-tool-result'
+            : 'pre'}
           text={props.request.prompt}
           isCollapsed={!expanded() && longPrompt()}
           {...(props.view.context !== undefined

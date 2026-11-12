@@ -346,6 +346,81 @@ describe('createRowMeasurer', () => {
     measurer.dispose()
   })
 
+  it('reads no height from a row that waits for content, on attach or on resize', () => {
+    const measure = vi.fn(() => true)
+    const obs = fakeObserver()
+    const scheduler = manualScheduler()
+    const onFlush = vi.fn()
+    const m = createRowMeasurer({
+      measure,
+      mountedIds: new Set(),
+      createObserver: obs.createObserver,
+      scheduleMicrotask: scheduler.scheduleMicrotask,
+      isRowReady: () => false,
+      onFlush,
+    })
+    const el = fakeEl(40)
+
+    m.attachRow('r1', el)
+    obs.fire([el])
+    scheduler.run()
+
+    expect(measure).not.toHaveBeenCalled()
+    expect(onFlush).toHaveBeenCalledWith({
+      targets: 1,
+      reads: 0,
+      committed: 0,
+      skippedDetached: 0,
+      skippedNotReady: 1,
+      skippedUnchanged: 0,
+    })
+  })
+
+  it('measures a row again on remeasureRow once it is ready, with no resize', () => {
+    const measure = vi.fn(() => true)
+    const scheduler = manualScheduler()
+    let ready = false
+    const m = createRowMeasurer({
+      measure,
+      mountedIds: new Set(),
+      createObserver: fakeObserver().createObserver,
+      scheduleMicrotask: scheduler.scheduleMicrotask,
+      isRowReady: id => id === 'r1' && ready,
+    })
+    const el = fakeEl(120)
+    m.attachRow('r1', el)
+    expect(measure).not.toHaveBeenCalled()
+
+    ready = true
+    m.remeasureRow('r1')
+    scheduler.run()
+
+    expect(measure).toHaveBeenCalledOnce()
+    expect(measure).toHaveBeenCalledWith('r1', 120)
+  })
+
+  it('ignores remeasureRow for an id with no mounted row', () => {
+    const measure = vi.fn(() => true)
+    const scheduler = manualScheduler()
+    const m = createRowMeasurer({
+      measure,
+      mountedIds: new Set(),
+      createObserver: fakeObserver().createObserver,
+      scheduleMicrotask: scheduler.scheduleMicrotask,
+    })
+    const el = fakeEl(120)
+    m.attachRow('r1', el)
+    measure.mockClear()
+    m.detachRow(el)
+
+    m.remeasureRow('r1')
+    m.remeasureRow('never-mounted')
+    scheduler.run()
+
+    expect(scheduler.calls).toBe(0)
+    expect(measure).not.toHaveBeenCalled()
+  })
+
   it('measures and observes a freshly-mounted row, marking it mounted', () => {
     const measure = vi.fn(() => true)
     const mountedIds = new Set<string>()
@@ -456,6 +531,7 @@ describe('createRowMeasurer', () => {
       reads: 1,
       committed: 0,
       skippedDetached: 0,
+      skippedNotReady: 0,
       skippedUnchanged: 1,
     })
   })

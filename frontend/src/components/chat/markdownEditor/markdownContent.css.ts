@@ -1,4 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
+import { MARKDOWN_SOURCE_FALLBACK_CLASS } from '~/lib/markdownSourceFallback'
 import {
   BLOCKED_IMAGE_CHIP_CLASS,
   BLOCKED_IMAGE_CLASS,
@@ -6,7 +7,6 @@ import {
 } from '~/lib/rehypeBlockRemoteImages'
 import { codeBlockCode, codeBlockPre, codeWrap } from '~/styles/codeBlock'
 import { iconSize } from '~/styles/tokens'
-import { LARGE_TEXT_DISPLAY_CLASS } from '../safeTextDisplay'
 import { codeSurface } from '../shikiTokenColors.css'
 
 export const markdownContent = style({
@@ -31,7 +31,9 @@ globalStyle(`${markdownContent} pre code`, codeBlockCode)
 // horizontal scroll for a stable caret while typing.
 globalStyle(`${markdownContent} pre code`, codeWrap)
 
-globalStyle(`.${LARGE_TEXT_DISPLAY_CLASS}`, {
+// The escaped source of a body that the parser could not render (see
+// ~/lib/markdownSourceFallback): wrapped like prose, in the surrounding font.
+globalStyle(`.${MARKDOWN_SOURCE_FALLBACK_CLASS}`, {
   ...codeWrap,
   margin: 0,
   fontFamily: 'inherit',
@@ -42,12 +44,12 @@ globalStyle(`.${LARGE_TEXT_DISPLAY_CLASS}`, {
 // Shiki dual-theme support via CSS variables (color only -- the wrapper owns the bg).
 //
 // The SURFACE is every `<pre>`, not only the highlighted ones. A markdown body
-// renders plain `<pre><code>` twice on an ordinary path -- the synchronous
-// placeholder while the worker's highlighted result is in flight, and the
-// fallback when Shiki throws (see ~/lib/markdownProcessor) -- and scoping the
-// field to `pre.shiki` made those two frames a differently coloured block that
-// swapped under the reader. The token colours still land on `.shiki` alone,
-// because a plain `<pre>` carries no `--shiki-*` to read.
+// renders a plain `<pre><code>` when the highlighted pipeline throws or the
+// worker's highlighter cannot initialize (see ~/lib/markdownProcessor), and
+// scoping the field to `pre.shiki` made that block a differently coloured surface
+// from its highlighted neighbours. The token
+// colours still land on `.shiki` alone, because a plain `<pre>` carries no
+// `--shiki-*` to read.
 codeSurface(`${markdownContent} pre`, 'block', [
   { suffix: '.shiki' },
   { suffix: '.shiki span' },

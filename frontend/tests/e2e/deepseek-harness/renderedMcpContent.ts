@@ -1,22 +1,15 @@
-import { limitTextForDisplay, markdownNeedsPlainTextDisplay } from '../../../src/components/chat/safeTextDisplay'
 import { createMarkdownParser } from '../../../src/lib/markdownParse'
 
 export type DeepseekHarnessRenderedMcpBlock = { type: 'text', text: string } | { type: 'image', index: number }
 
 /**
  * Project one native text block of the controlled fixture into its expected visible occurrences.
- * Large text uses the shared plain display, which shows one capped text occurrence.
- * Other text uses the shared Markdown parser, which shows one occurrence for each paragraph.
+ * The shared Markdown parser shows one occurrence for each paragraph, whatever the size of the text.
  * This oracle accepts only paragraphs of plain text. It refuses other Markdown so that it never drops text.
  */
 export function deepseekHarnessMcpTextDisplay(text: string): DeepseekHarnessRenderedMcpBlock[] {
   if (!text)
     return []
-  if (markdownNeedsPlainTextDisplay(text)) {
-    return [
-      { type: 'text', text: limitTextForDisplay(text).text },
-    ]
-  }
   return createMarkdownParser().parse(text).children.map((node) => {
     if (node.type !== 'paragraph')
       throw new Error(`The DeepSeek Harness fixture text contains an unsupported Markdown ${node.type} block.`)
@@ -32,7 +25,7 @@ export function deepseekHarnessMcpTextDisplay(text: string): DeepseekHarnessRend
 }
 
 /** Read visible Model Context Protocol (MCP) result blocks in DOM order. */
-export function deepseekHarnessRenderedMcpContent(roots: Element | readonly Element[], displayNotices: readonly string[]): DeepseekHarnessRenderedMcpBlock[] | null {
+export function deepseekHarnessRenderedMcpContent(roots: Element | readonly Element[]): DeepseekHarnessRenderedMcpBlock[] | null {
   // Playwright serializes this function. Keep every runtime dependency inside it or in its arguments.
   const root = roots instanceof Element
     ? roots
@@ -41,7 +34,7 @@ export function deepseekHarnessRenderedMcpContent(roots: Element | readonly Elem
     return null
   const content: DeepseekHarnessRenderedMcpBlock[] = []
   let imageIndex = 0
-  for (const element of root.querySelectorAll<HTMLElement>('p, [data-large-text-display], button[aria-label="Open image"] img')) {
+  for (const element of root.querySelectorAll<HTMLElement>('p, button[aria-label="Open image"] img')) {
     if (!element.isConnected || element.getClientRects().length === 0)
       continue
     const style = getComputedStyle(element)
@@ -61,8 +54,6 @@ export function deepseekHarnessRenderedMcpContent(roots: Element | readonly Elem
       continue
     }
     const text = element.textContent ?? ''
-    if (element.tagName === 'P' && element.previousElementSibling?.hasAttribute('data-large-text-display') && displayNotices.includes(text))
-      continue
     if (text !== '')
       content.push({ type: 'text', text })
   }

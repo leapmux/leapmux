@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createMarkdownProcessor, extractFenceLanguages, plainMarkdownProcessor, renderWithPlainFallback } from '~/lib/markdownProcessor'
+import { createMarkdownProcessor, extractFenceLanguages, plainMarkdownProcessor, renderPlainOrSource, renderWithPlainFallback } from '~/lib/markdownProcessor'
+import { MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE, MARKDOWN_SOURCE_FALLBACK_NOTICE } from '~/lib/markdownSourceFallback'
 import { BLOCKED_IMAGE_CHIP_TEXT } from '~/lib/rehypeBlockRemoteImages'
 import { createLazyOnigurumaHighlighter } from '~/lib/shikiLazyHighlighter'
 import { collectShikiStyles } from '~/lib/shikiStyleClass'
@@ -86,6 +87,55 @@ describe('renderWithPlainFallback', () => {
     }
   })
 
+  it('shows the escaped source at once when the parse overflows the stack, with no second parse', () => {
+    // The plain processor shares the parser, so a retry would overflow the same way.
+    const plain = vi.spyOn(plainMarkdownProcessor, 'processSync')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const overflowing = {
+        processSync: () => {
+          throw new RangeError('Maximum call stack size exceeded')
+        },
+      } as unknown as Processor
+
+      const html = renderWithPlainFallback(overflowing, '> > deep <b>raw</b>')
+
+      expect(html).toContain(MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE)
+      expect(html).toContain(MARKDOWN_SOURCE_FALLBACK_NOTICE)
+      expect(html).not.toContain('<b>')
+      expect(plain).not.toHaveBeenCalled()
+    }
+    finally {
+      plain.mockRestore()
+      warn.mockRestore()
+    }
+  })
+
+  it('shows the escaped source when the plain processor throws too', () => {
+    const plain = vi.spyOn(plainMarkdownProcessor, 'processSync').mockImplementation(() => {
+      throw new Error('plugin failure')
+    })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const throwing = {
+        processSync: () => {
+          throw new Error('highlighter disposed')
+        },
+      } as unknown as Processor
+
+      const html = renderWithPlainFallback(throwing, '# heading')
+
+      expect(html).toContain(MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE)
+      expect(html).toContain('# heading')
+      expect(html).not.toContain('<h1>')
+      expect(plain).toHaveBeenCalledOnce()
+    }
+    finally {
+      plain.mockRestore()
+      warn.mockRestore()
+    }
+  })
+
   it('stays quiet when the processor succeeds', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
@@ -98,6 +148,34 @@ describe('renderWithPlainFallback', () => {
       expect(warn).not.toHaveBeenCalled()
     }
     finally {
+      warn.mockRestore()
+    }
+  })
+})
+
+describe('renderPlainOrSource', () => {
+  it('renders plain Markdown without Shiki', () => {
+    const html = renderPlainOrSource('# heading\n\n```js\nconst x = 1\n```')
+    expect(html).toContain('<h1>heading</h1>')
+    expect(html).toContain('language-js')
+    expect(html).not.toContain('class="shiki')
+  })
+
+  it('shows the escaped source when the parser throws, and never throws itself', () => {
+    const plain = vi.spyOn(plainMarkdownProcessor, 'processSync').mockImplementation(() => {
+      throw new RangeError('Maximum call stack size exceeded')
+    })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      let html = ''
+      expect(() => {
+        html = renderPlainOrSource('<script>alert(1)</script>')
+      }).not.toThrow()
+      expect(html).toContain(MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE)
+      expect(html).not.toContain('<script>')
+    }
+    finally {
+      plain.mockRestore()
       warn.mockRestore()
     }
   })

@@ -489,6 +489,7 @@ export const NODE_TEST_FILES = [
   // jsdom lacks these APIs, so tests that initialize the Oniguruma WASM engine use Node's implementations.
   'src/lib/editor/lazyShikiParser.test.ts',
   'src/lib/markdownProcessor.test.ts',
+  'src/lib/markdownWorker.test.ts',
   'src/lib/shikiLazyHighlighter.test.ts',
   'src/lib/shortcuts/commands.test.ts',
   'src/lib/shortcuts/context.test.ts',

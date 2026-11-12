@@ -8,6 +8,7 @@ import rehypeStringify from 'rehype-stringify'
 import remarkRehype from 'remark-rehype'
 import { visit } from 'unist-util-visit'
 import { createMarkdownParser } from './markdownParse'
+import { markdownSourceFallbackHtml } from './markdownSourceFallback'
 import { rehypeBlockRemoteImages } from './rehypeBlockRemoteImages'
 import { shikiStyleClassTransformer } from './shikiStyleClass'
 import { dualThemeTokenOptions } from './shikiThemes'
@@ -201,10 +202,9 @@ export function createMarkdownProcessor(highlighter: HighlighterCore, pair: Synt
 }
 
 /**
- * Markdown->HTML processor WITHOUT Shiki: the fast synchronous placeholder render
- * (used while the worker's highlighted result is in flight) and the fallback when
- * Shiki throws. Code blocks render as plain `<pre><code class="language-x">` —
- * container-styled but not theme-colored until the highlighted result swaps in.
+ * Markdown->HTML processor WITHOUT Shiki: the fallback when Shiki throws, and the
+ * worker's render when its highlighter cannot initialize. Code blocks render as
+ * plain `<pre><code class="language-x">` -- container-styled but not theme-colored.
  */
 export const plainMarkdownProcessor = withHardeningTail(
   createMarkdownParser()
@@ -213,10 +213,32 @@ export const plainMarkdownProcessor = withHardeningTail(
 )
 
 /**
+ * Render `text` with the plain processor, or show its escaped source when the
+ * parser itself fails. Never throws.
+ *
+ * A failure here is not a highlighter problem: remark-parse and the GFM plugins
+ * recurse once per nesting level, so deeply nested input (about 2,400 `>` markers
+ * on one line in V8) overflows the stack in every processor alike. Retrying with
+ * another processor cannot help, so the body shows as its source instead.
+ */
+export function renderPlainOrSource(text: string): string {
+  try {
+    return String(plainMarkdownProcessor.processSync(text))
+  }
+  catch (error) {
+    if (import.meta.env.DEV)
+      console.warn('[markdownProcessor] Markdown parsing failed; showing the source as plain text:', error)
+    return markdownSourceFallbackHtml(text)
+  }
+}
+
+/**
  * Render `text` through `processor` (highlighted), degrading to the plain
- * (un-highlighted) processor when the highlighted pipeline throws. Single-sources
- * the "on failure, fall back to plain" rule that BOTH the main-thread synchronous
- * path and the worker apply, so the two can't drift on what counts as a fallback.
+ * (un-highlighted) processor when the highlighted pipeline throws, and to the
+ * escaped source when the parser overflows its stack or the plain processor throws
+ * too. Never throws. Single-sources
+ * the fallback rule that BOTH the main-thread synchronous path and the worker
+ * apply, so the two can't drift on what counts as a fallback.
  *
  * This is the WIDER net of the two error paths, not the narrower one. A grammar
  * that throws at tokenize time -- the Safari regex-engine case -- is raised
@@ -234,9 +256,18 @@ export function renderWithPlainFallback(
     return String(processor.processSync(text))
   }
   catch (error) {
+    // A RangeError is the parser running out of stack on deep nesting. The plain
+    // processor shares that parser, so it would fail the same way after the same
+    // work, and that work is quadratic: 100,000 nested `>` markers hold a worker for
+    // about 26 seconds per attempt. Show the source at once.
+    if (error instanceof RangeError) {
+      if (import.meta.env.DEV)
+        console.warn('[markdownProcessor] Markdown parsing failed; showing the source as plain text:', error)
+      return markdownSourceFallbackHtml(text)
+    }
     if (import.meta.env.DEV)
       console.warn('[markdownProcessor] highlighted render failed; falling back to plain:', error)
-    return String(plainMarkdownProcessor.processSync(text))
+    return renderPlainOrSource(text)
   }
 }
 

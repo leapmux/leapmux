@@ -63,6 +63,43 @@ test.describe('Chat Message Rendering', () => {
   })
 
   /**
+   * A reply far past the size that used to switch Markdown to a capped plain-text
+   * display renders whole, as Markdown. Only a real browser runs the render worker,
+   * and only the worker parses Markdown: the row waits behind its loading skeleton
+   * until the worker's highlighted HTML lands, then shows every section.
+   */
+  test('renders a large reply in full as Markdown, highlighted, with no plain-text display', async ({ page, authenticatedWorkspace, modelScript }) => {
+    const sections = Array.from({ length: 400 }, (_, i) => `## Section ${i}\n\n${`Paragraph ${i} carries ordinary prose. `.repeat(9)}`)
+    const answer = [
+      '# Large reply start',
+      ...sections,
+      '- the final list item',
+      '```ts\nconst largeReplyTail = 42\n```',
+      '## Large reply end',
+    ].join('\n\n')
+    // Four times the 32 KB that used to switch a body to plain text.
+    expect(answer.length).toBeGreaterThan(128 * 1024)
+    const step = await modelScript.queue({ text: answer })
+    await sendMessage(page, modelScript.prompt('Reply with a large Markdown document.'))
+    await modelScript.waitForSteps(step + 1)
+    await waitForAgentIdle(page)
+
+    const content = assistantBubbles(page)
+      .filter({ hasText: 'Large reply end' })
+      .locator('[data-testid="message-content"]')
+    await expect(content.getByRole('heading', { level: 1, name: 'Large reply start' })).toHaveCount(1)
+    // 400 sections and the closing heading: nothing was cut from the middle.
+    await expect(content.getByRole('heading', { level: 2 })).toHaveCount(401)
+    await expect(content.getByRole('heading', { level: 2, name: 'Section 399' })).toHaveCount(1)
+    await expect(content.getByRole('listitem')).toHaveText(['the final list item'])
+    // The worker highlighted the code block at the very end of the body.
+    await expect(content.locator('pre.shiki')).toContainText('const largeReplyTail = 42')
+    await expect(content.locator('[data-markdown-source-fallback]')).toHaveCount(0)
+    await expect(content).not.toContainText('plain-text display')
+    await expect(content).not.toContainText('Display limited')
+  })
+
+  /**
    * The band reaches both panel edges. Only a real browser can verify it: the
    * strip's width comes from CSS var arithmetic that cancels the scroll
    * container's gutter, and it works around paint containment, neither of which

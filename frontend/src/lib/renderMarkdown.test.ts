@@ -3,7 +3,7 @@ import { createEffect, createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_THEME_ID } from '~/styles/themes'
 import { _resetArtifactStoreForTest, getArtifact, putArtifact } from './renderArtifactStore'
-import { _getMarkdownCacheSize, _resetMarkdownCache, markdownArtifactNs, renderMarkdown, shikiHighlighter } from './renderMarkdown'
+import { _getMarkdownCacheSize, _resetMarkdownCache, markdownArtifactNs, requestMarkdownHtml, shikiHighlighter } from './renderMarkdown'
 import { _resetShikiStyleClassesForTest } from './shikiStyleClass'
 import { readInjectedShikiRules } from './shikiStyleClass.testkit'
 import { syntaxPairFor } from './syntaxThemes'
@@ -76,7 +76,7 @@ describe('renderMarkdown shared token-style classes', () => {
     // jsdom has no Worker, so this exercises the synchronous highlighted
     // fallback -- the same createMarkdownProcessor pipeline (and transformer)
     // the worker runs.
-    const html = renderMarkdown('```js\nconst x = 1\n```')
+    const html = requestMarkdownHtml('```js\nconst x = 1\n```') ?? ''
     // Token spans carry shared classes, never inline styles. (The <pre> keeps
     // its per-block rootStyle -- one element -- so scope the assertion to spans.)
     expect(html).toContain('class="sk-')
@@ -102,11 +102,12 @@ describe('renderMarkdown shared token-style classes', () => {
       s: { 'sk-00000000-1s': '--shiki-light:#123;--shiki-dark:#456' },
     })
 
-    // First call returns the plain placeholder and starts the async warm-start.
-    expect(renderMarkdown(text)).not.toContain('data-persisted')
+    // The first call has nothing to show: it starts the async warm-start and
+    // reports the body pending. It never parses the body on this thread.
+    expect(requestMarkdownHtml(text)).toBeUndefined()
 
     await vi.waitFor(() => {
-      expect(renderMarkdown(text)).toBe('<p data-persisted="">persisted warm start body</p>')
+      expect(requestMarkdownHtml(text)).toBe('<p data-persisted="">persisted warm start body</p>')
     })
     // The dictionary's rules were injected before the HTML could render.
     expect(injectedRules()).toContain('.sk-00000000-1s{--shiki-light:#123;--shiki-dark:#456}')
@@ -121,7 +122,7 @@ describe('renderMarkdown shared token-style classes', () => {
     // The pre-{h,s} artifact shape: a bare HTML string.
     await putArtifact(markdownArtifactNs(), text, '<p>legacy</p>')
 
-    renderMarkdown(text)
+    requestMarkdownHtml(text)
 
     // The malformed hit is a miss: the render dispatches to the worker.
     await vi.waitFor(() => {
@@ -139,7 +140,7 @@ describe('renderMarkdown shared token-style classes', () => {
       },
     } as MessageEvent)
     await vi.waitFor(() => {
-      expect(renderMarkdown(text)).toBe('<p>legacy fallback</p>')
+      expect(requestMarkdownHtml(text)).toBe('<p>legacy fallback</p>')
     })
   })
 
@@ -152,7 +153,7 @@ describe('renderMarkdown shared token-style classes', () => {
       s: {},
     })
 
-    renderMarkdown(text)
+    requestMarkdownHtml(text)
 
     await vi.waitFor(() => {
       expect(dispatchesFor(text)).toHaveLength(1)
@@ -169,7 +170,7 @@ describe('renderMarkdown shared token-style classes', () => {
       },
     } as MessageEvent)
     await vi.waitFor(() => {
-      expect(renderMarkdown(text)).toBe('<p>oversized fallback</p>')
+      expect(requestMarkdownHtml(text)).toBe('<p>oversized fallback</p>')
     })
   })
 
@@ -178,7 +179,7 @@ describe('renderMarkdown shared token-style classes', () => {
     installCapturingWorker()
     const text = 'worker highlighted body'
 
-    renderMarkdown(text)
+    requestMarkdownHtml(text)
     await vi.waitFor(() => expect(dispatchesFor(text)).toHaveLength(1))
 
     const dispatch = dispatchesFor(text)[0]
@@ -194,7 +195,7 @@ describe('renderMarkdown shared token-style classes', () => {
     } as MessageEvent)
 
     await vi.waitFor(() => {
-      expect(renderMarkdown(text)).toContain('sk-00000001-13')
+      expect(requestMarkdownHtml(text)).toContain('sk-00000001-13')
     })
     // The worker has no document; the main thread injected the shipped rules.
     expect(injectedRules()).toContain('.sk-00000001-13{--shiki-light:#aaa}')
@@ -216,15 +217,15 @@ describe('renderMarkdown syntax theme invalidation', () => {
   it('bumps the version so a consumer that reads only markdownVersion re-renders', async () => {
     // Every other mutation of these caches pairs the clear with a version bump.
     // The syntax-theme invalidator did not, and a chat row survived only because
-    // its own cache namespace folds in `syntaxThemeGeneration()`. `MarkdownFileView`
-    // reads neither -- its memo depends on the file text and on `markdownVersion()`
-    // alone -- so an open markdown file kept the abandoned theme's baked token
-    // colours against a code surface already repainted for the new one.
+    // its own cache namespace folds in `syntaxThemeGeneration()`. A consumer that
+    // calls requestMarkdownHtml alone depends on the text and on `markdownVersion()`
+    // and nothing else, so it kept the abandoned theme's baked token colours
+    // against a code surface already repainted for the new one.
     const text = '# heading'
     let runs = 0
     const dispose = createRoot((disposeRoot) => {
       createEffect(() => {
-        renderMarkdown(text)
+        requestMarkdownHtml(text)
         runs += 1
       })
       return disposeRoot
@@ -254,49 +255,60 @@ describe('renderMarkdown cache and gfm', () => {
   })
 
   it('should render markdown with syntax highlighting', () => {
-    const html = renderMarkdown('```js\nconst x = 1\n```', true)
+    const html = requestMarkdownHtml('```js\nconst x = 1\n```')
     expect(html).toContain('class="shiki')
     expect(html).toContain('const')
   })
 
   it('should render plain text', () => {
-    const html = renderMarkdown('hello world', true)
+    const html = requestMarkdownHtml('hello world')
     expect(html).toContain('hello world')
   })
 
   it('should render inline code', () => {
-    const html = renderMarkdown('use `const x = 1`', true)
+    const html = requestMarkdownHtml('use `const x = 1`')
     expect(html).toContain('<code>')
     expect(html).toContain('const x = 1')
   })
 
   it('should render code blocks with unknown languages without crashing', () => {
     // Unknown language should fall back gracefully (no Shiki highlighting).
-    const html = renderMarkdown('```unknownlang123\nfoo bar\n```', true)
+    const html = requestMarkdownHtml('```unknownlang123\nfoo bar\n```')
     expect(html).toContain('foo bar')
   })
 
   it('should render GFM tables', () => {
     const md = '| a | b |\n|---|---|\n| 1 | 2 |'
-    const html = renderMarkdown(md, true)
+    const html = requestMarkdownHtml(md)
     expect(html).toContain('<table>')
     expect(html).toContain('<td>')
   })
 
   it('should cache results', () => {
     expect(_getMarkdownCacheSize()).toBe(0)
-    const html1 = renderMarkdown('cached test')
+    const html1 = requestMarkdownHtml('cached test')
     expect(_getMarkdownCacheSize()).toBe(1)
-    const html2 = renderMarkdown('cached test')
+    const html2 = requestMarkdownHtml('cached test')
     // Second call must hit the cache -- size stays at 1, not 2.
     expect(_getMarkdownCacheSize()).toBe(1)
     expect(html1).toBe(html2)
   })
 
-  it('should bypass cache when skipCache is true', () => {
+  it('returns an empty body as empty HTML without caching it', () => {
+    expect(requestMarkdownHtml('')).toBe('')
     expect(_getMarkdownCacheSize()).toBe(0)
-    renderMarkdown('cached test', true)
-    expect(_getMarkdownCacheSize()).toBe(0)
+  })
+
+  it('renders a body that overflows the parser as its escaped source instead of throwing', () => {
+    // The parser recurses once per blockquote level: about 9,000 levels overflow a
+    // worker thread's stack, and the work before the overflow grows faster than the
+    // depth. Only a failed parse produces the fallback asserted below.
+    const text = `${'>'.repeat(12_000)} <b>deep</b>`
+
+    const html = requestMarkdownHtml(text)
+    expect(html).toContain('data-markdown-source-fallback')
+    expect(html).toContain('&#x3C;b>deep&#x3C;/b>')
+    expect(html).not.toContain('<b>')
   })
 })
 

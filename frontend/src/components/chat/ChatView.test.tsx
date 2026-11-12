@@ -16,6 +16,7 @@ import { ChatView, RAIL_COAST_MAX_MS, RAIL_VISIBLE_IDLE_MS, SKELETON_SHOW_DELAY_
 import { messageListRailActive, railedRowContent, rowSkeletonClosing } from './ChatView.css'
 import { computeOverscanPx, PRE_MEASURE_WIDTH_PX } from './chatViewportGeometry'
 import { bandRow, bleedRow } from './messageStyles.css'
+import { createRenderReadinessScope } from './renderReadiness'
 import { sameVirtualItems } from './useChatVirtualizer'
 import { ROW_BLEED_LEFT_VAR, rowBleedLeftStyle } from './widgets/SpanLines.geometry'
 
@@ -56,6 +57,17 @@ const virtualizerState = vi.hoisted(() => ({
   measuredIds: new Set<string>(),
   currentHeightKeys: new Map<string, string | undefined>(),
   setDeferred: undefined as undefined | ((deferred: boolean) => void),
+  /** The rows ChatView asked the stub virtualizer to measure again. */
+  remeasuredIds: [] as string[],
+}))
+
+/**
+ * Which stubbed bubbles hold a Markdown body still rendering in the worker. The
+ * MessageBubble stub reports it to the readiness scope ChatView hands each copy.
+ */
+const markdownPendingState = vi.hoisted(() => ({
+  pendingIds: (): ReadonlySet<string> => new Set(),
+  setPendingIds: undefined as undefined | ((ids: ReadonlySet<string>) => void),
 }))
 
 const hiddenPremeasureState = vi.hoisted(() => ({
@@ -99,25 +111,35 @@ vi.mock('~/context/PreferencesContext', async () => {
 
 vi.mock('./MessageBubble', async () => {
   const actual = await vi.importActual<typeof import('./MessageBubble')>('./MessageBubble')
+  const { createSignal } = await import('solid-js')
+  const [pendingIds, setPendingIds] = createSignal<ReadonlySet<string>>(new Set())
+  markdownPendingState.pendingIds = pendingIds
+  markdownPendingState.setPendingIds = setPendingIds
+  const StubBubble = (props: Parameters<typeof actual.MessageBubble>[0]) => {
+    // A stand-in Markdown body, pending while the test lists this message.
+    // eslint-disable-next-line solid/reactivity -- the scope reads the accessor inside its own memo
+    props.readiness?.track(() => pendingIds().has(props.message.id))
+    return (
+      <div
+        data-testid="mock-message-bubble"
+        data-message-id={props.message.id}
+        data-premeasure={props.premeasureMode ? 'true' : 'false'}
+        // The scroll-idle highlight pause is only observable through the host
+        // binding MessageBubble forwards into its focused context, so surface it
+        // here for the tests that pin ChatView's highlightActivity window.
+        data-syntax-paused={props.host?.syntaxHighlightingPaused?.()
+          ? 'true'
+          : 'false'}
+      />
+    )
+  }
   return {
     ...actual,
     // A single-return ternary keeps reactivity intact (mockDeps is fixed for a
     // component's lifetime, set once per test) without tripping solid/components-return-once.
     MessageBubble: (props: Parameters<typeof actual.MessageBubble>[0]) => (
       mockState.mockDeps
-        ? (
-            <div
-              data-testid="mock-message-bubble"
-              data-message-id={props.message.id}
-              data-premeasure={props.premeasureMode ? 'true' : 'false'}
-              // The scroll-idle highlight pause is only observable through the host
-              // binding MessageBubble forwards into its focused context, so surface it
-              // here for the tests that pin ChatView's highlightActivity window.
-              data-syntax-paused={props.host?.syntaxHighlightingPaused?.()
-                ? 'true'
-                : 'false'}
-            />
-          )
+        ? StubBubble(props)
         : actual.MessageBubble(props)
     ),
   }
@@ -137,7 +159,7 @@ vi.mock('./chatHiddenPremeasure', async () => {
     return (
       <div data-testid="mock-hidden-premeasure">
         <For each={props.candidates}>
-          {candidate => props.renderBubble(candidate.entry)}
+          {candidate => props.renderBubble(candidate.entry, createRenderReadinessScope())}
         </For>
       </div>
     )
@@ -252,6 +274,9 @@ vi.mock('./useChatVirtualizer', async () => {
           virtualizerState.attachedIds.push(id)
         },
         detachRow: vi.fn(),
+        remeasureRow: (id: string) => {
+          virtualizerState.remeasuredIds.push(id)
+        },
         primeHeight: vi.fn((id: string, _height: number, heightKey?: string) => {
           if (!virtualizerState.currentHeightKeys.has(id) || virtualizerState.currentHeightKeys.get(id) !== heightKey)
             return false
@@ -265,24 +290,13 @@ vi.mock('./useChatVirtualizer', async () => {
   }
 })
 
-// jsdom does not provide ResizeObserver or Worker
+// jsdom does not provide ResizeObserver. It provides no Worker either, and this
+// file installs none: Markdown then renders synchronously, as in every unit test.
+// A stand-in Worker that never answers would leave every Markdown body pending, and
+// every row that holds one hidden behind its skeleton. The pending path has its own
+// tests, with a worker client that the test answers.
 beforeAll(() => {
   installControllableResizeObserver()
-  if (!globalThis.Worker) {
-    Object.defineProperty(globalThis, 'Worker', {
-      configurable: true,
-      writable: true,
-      value: class {
-        onmessage: ((e: MessageEvent) => void) | null = null
-        onerror: ((e: ErrorEvent) => void) | null = null
-        postMessage() {}
-        terminate() {}
-        addEventListener() {}
-        removeEventListener() {}
-        dispatchEvent() { return false }
-      },
-    })
-  }
 })
 
 function requiredPremeasureCallback(): HiddenPremeasureOnMeasure {
@@ -2691,6 +2705,8 @@ describe('chat view virtualized with stubbed deps', () => {
     viewportSizeObserverState.onHeight = undefined
     prefsState.setDiffView?.('unified') // the pref signals are module-scoped; reset between tests
     prefsState.setExpandThoughts?.(true)
+    markdownPendingState.setPendingIds?.(new Set())
+    virtualizerState.remeasuredIds = []
   })
 
   describe('chat view virtualized visible slice', () => {
@@ -3119,6 +3135,105 @@ describe('chat view virtualized with stubbed deps', () => {
       virtualizerState.setRange?.({ start: 0, end: 3 }) // bump
       expect(interior().style.visibility).not.toBe('hidden')
       expect(tail().style.visibility).not.toBe('hidden')
+    })
+
+    it('hides a measured row while its Markdown renders, paints its skeleton, then reveals and re-measures it', () => {
+      // A reload hydrates persisted heights, so a row can have a known height but no
+      // HTML yet. It skips premeasure, so only its own pending content can hold it.
+      vi.useFakeTimers()
+      virtualizerState.attachedIds = []
+      virtualizerState.measuredIds = new Set(['m0'])
+      virtualizerState.currentHeightKeys = new Map()
+      virtualizerState.setDeferred?.(false)
+      hiddenPremeasureState.candidates = []
+      hiddenPremeasureState.onMeasure = undefined
+      virtualizerState.setRange?.({ start: 0, end: 1 })
+      markdownPendingState.setPendingIds?.(new Set(['m0']))
+      const { container } = render(() => (
+        <ChatView messages={[
+          message('m0', 1),
+        ]}
+        />
+      ))
+      const row = () => container.querySelector('[data-seq="1"]') as HTMLElement
+
+      expect(row().style.visibility).toBe('hidden')
+      expect(container.querySelectorAll('[data-testid="row-skeleton"]')).toHaveLength(0)
+      vi.advanceTimersByTime(SKELETON_SHOW_DELAY_MS)
+      expect(container.querySelectorAll('[data-testid="row-skeleton"]')).toHaveLength(1)
+      expect(virtualizerState.remeasuredIds).toEqual([])
+
+      markdownPendingState.setPendingIds?.(new Set())
+
+      expect(row().style.visibility).not.toBe('hidden')
+      // The measurer read nothing while the row waited, so it measures once now.
+      expect(virtualizerState.remeasuredIds).toEqual(['m0'])
+    })
+
+    it('holds an appended ready row behind an earlier row whose Markdown still renders', () => {
+      virtualizerState.attachedIds = []
+      virtualizerState.measuredIds = new Set(['m0', 'm1', 'm2'])
+      virtualizerState.currentHeightKeys = new Map()
+      virtualizerState.setDeferred?.(false)
+      hiddenPremeasureState.candidates = []
+      hiddenPremeasureState.onMeasure = undefined
+      virtualizerState.setRange?.({ start: 0, end: 1 })
+      const [messages, setMessages] = createSignal([
+        message('m0', 1),
+      ])
+      const { container } = render(() => (
+        <ChatView messages={messages()} />
+      ))
+
+      markdownPendingState.setPendingIds?.(new Set(['m1']))
+      virtualizerState.setRange?.({ start: 0, end: 3 })
+      setMessages([
+        message('m0', 1),
+        message('m1', 2),
+        message('m2', 3),
+      ])
+      const interior = () => container.querySelector('[data-seq="2"]') as HTMLElement
+      const tail = () => container.querySelector('[data-seq="3"]') as HTMLElement
+      expect(interior().style.visibility).toBe('hidden')
+      // m2 is measured and has no pending content, but it must not appear before m1.
+      expect(tail().style.visibility).toBe('hidden')
+
+      markdownPendingState.setPendingIds?.(new Set())
+      expect(interior().style.visibility).not.toBe('hidden')
+      expect(tail().style.visibility).not.toBe('hidden')
+    })
+
+    it('shows the loading skeleton at once when a fling skeleton upgrades into a row whose Markdown still renders', async () => {
+      virtualizerState.attachedIds = []
+      virtualizerState.measuredIds = new Set(['m0', 'm1'])
+      virtualizerState.currentHeightKeys = new Map()
+      virtualizerState.setRange?.({ start: 0, end: 1 })
+      virtualizerState.setDeferred?.(false)
+      markdownPendingState.setPendingIds?.(new Set(['m1']))
+      const { container } = render(() => (
+        <ChatView messages={[
+          message('m0', 1),
+          message('m1', 2),
+        ]}
+        />
+      ))
+      await Promise.resolve()
+      const overlaySkeletons = () => [
+        ...container.querySelectorAll('[data-testid="row-skeleton"]'),
+      ].filter(skeleton => skeleton.closest('[data-seq]') === null)
+
+      // m1 enters mid-fling: an in-row skeleton, with no bubble and so nothing pending.
+      virtualizerState.setDeferred?.(true)
+      virtualizerState.setRange?.({ start: 0, end: 2 })
+      await Promise.resolve()
+      expect(overlaySkeletons()).toHaveLength(0)
+
+      // The fling settles: the bubble mounts, its Markdown is pending, and the row hides.
+      // The overlay takes over at once -- no blank gap for the show-delay.
+      virtualizerState.setDeferred?.(false)
+      await Promise.resolve()
+      expect((container.querySelector('[data-seq="2"]') as HTMLElement).style.visibility).toBe('hidden')
+      expect(overlaySkeletons()).toHaveLength(1)
     })
 
     it('premeasures a look-ahead band of rows just beyond the rendered range', async () => {

@@ -1,5 +1,5 @@
 import type { SyntaxThemePair } from './syntaxThemes'
-import { createMarkdownProcessor, extractFenceLanguages, plainMarkdownProcessor, renderWithPlainFallback } from './markdownProcessor'
+import { createMarkdownProcessor, extractFenceLanguages, renderPlainOrSource, renderWithPlainFallback } from './markdownProcessor'
 import { createLazyOnigurumaHighlighter } from './shikiLazyHighlighter'
 import { collectNewShikiStyles } from './shikiStyleClass'
 import { createPairKeyedCache, setSyntaxThemePair } from './shikiThemes'
@@ -123,7 +123,12 @@ globalThis.onmessage = async (e: MessageEvent<MarkdownRenderRequest>) => {
     // body still renders (un-highlighted) rather than stranding the request. The
     // failure is transient (the factory drops the cached init promise on rejection),
     // so mark it retryable instead of letting the client cache plain permanently.
-    html = String(plainMarkdownProcessor.processSync(msg.text))
+    //
+    // `renderPlainOrSource`, not the plain processor directly: this handler is
+    // async, so a parse that throws HERE rejects its promise, and `Worker.onerror`
+    // does not report a rejection. The request then never gets a reply, and the
+    // row that waits for it stays a skeleton forever.
+    html = renderPlainOrSource(msg.text)
     retryable = true
   }
   const response: MarkdownRenderResponse = {

@@ -3,9 +3,9 @@ import type { NumberedFileLine } from '../chat/model/readFileResult'
 import type { FileDisplayMode } from '~/stores/tab.types'
 import { createMemo, Show } from 'solid-js'
 import { markdownContent } from '~/components/chat/markdownEditor/markdownContent.css'
+import { MarkdownText } from '~/components/chat/messageRenderers'
 import { ReadResultView } from '~/components/chat/results/ReadResultView'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
-import { renderMarkdown } from '~/lib/renderMarkdown'
 import * as styles from './FileViewer.css'
 import { TextFileView } from './TextFileView'
 
@@ -18,7 +18,6 @@ export function MarkdownFileView(props: {
   onQuote?: (text: string, startLine?: number, endLine?: number) => void
 }): JSX.Element {
   const text = createMemo(() => new TextDecoder().decode(props.content))
-  const html = createMemo(() => renderMarkdown(text()))
 
   const lines = createMemo((): NumberedFileLine[] => {
     const raw = text()
@@ -53,8 +52,7 @@ export function MarkdownFileView(props: {
     <div class={styles.toggleViewContainer}>
       <Show when={props.mode === 'render'}>
         <div class={styles.markdownContainer}>
-          {/* eslint-disable-next-line solid/no-innerhtml -- intentional: rendered markdown */}
-          <div class={markdownContent} innerHTML={html()} />
+          <MarkdownText text={text()} />
         </div>
       </Show>
       <Show when={props.mode === 'split'}>
@@ -64,8 +62,7 @@ export function MarkdownFileView(props: {
             ref={leftRef}
             onScroll={() => syncScroll(leftRef, rightRef)}
           >
-            {/* eslint-disable-next-line solid/no-innerhtml -- intentional: rendered markdown */}
-            <div class={`${styles.splitPaneMarkdown} ${markdownContent}`} innerHTML={html()} />
+            <MarkdownText text={text()} class={`${styles.splitPaneMarkdown} ${markdownContent}`} />
           </div>
           <div class={styles.splitDivider} />
           <div

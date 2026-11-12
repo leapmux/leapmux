@@ -1,5 +1,6 @@
 import type { ClassifiedEntry } from './chatEntryCache'
 import type { MessageCategory } from './messageClassifier'
+import type { RenderReadiness } from './renderReadiness'
 import type { VirtualItem } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { render, screen } from '@solidjs/testing-library'
@@ -126,6 +127,83 @@ describe('chat hidden premeasure rendering', () => {
       unmount?.()
       vi.unstubAllGlobals()
     }
+  })
+
+  it('commits no height while a Markdown body is pending, and measures once it is ready without a resize', () => {
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (handler: FrameRequestCallback) => frames.push(handler))
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
+    installControllableResizeObserver()
+    let unmount: (() => void) | undefined
+    try {
+      const [pending, setPending] = createSignal(true)
+      const onMeasure = vi.fn(() => true)
+      // eslint-disable-next-line solid/reactivity -- the scope reads the accessor inside its own memo
+      const renderBubble = vi.fn((_entry: ClassifiedEntry, readiness: RenderReadiness) => {
+        readiness.track(pending)
+        return <div data-testid="bubble">body</div>
+      })
+      const rendered = render(() => (
+        <ChatHiddenPremeasure
+          candidates={[
+            {
+              entry: entryWithSpanLines(0, 'assistant_text'),
+              item: { id: 'markdown', hasSpanLines: false, heightKey: 'k1' },
+            },
+          ]}
+          contentWidthPx={400}
+          renderBubble={renderBubble}
+          onMeasure={onMeasure}
+        />
+      ))
+      unmount = rendered.unmount
+      const row = premeasureRowOf(screen.getByTestId('bubble'))
+      vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 400, 120))
+
+      // The row has a height, but its Markdown is not final: nothing commits.
+      while (frames.length > 0)
+        frames.shift()?.(0)
+      expect(onMeasure).not.toHaveBeenCalled()
+
+      // The body becomes ready. No resize fires, but the row measures anyway.
+      setPending(false)
+      expect(frames).toHaveLength(1)
+      frames.shift()?.(16)
+      expect(onMeasure).toHaveBeenCalledOnce()
+      expect(onMeasure).toHaveBeenCalledWith('markdown', 120, 'k1', expect.any(Number), true)
+    }
+    finally {
+      unmount?.()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('hands each row copy its own readiness scope', () => {
+    const scopes: RenderReadiness[] = []
+    const entry = entryWithSpanLines(0)
+    render(() => (
+      <ChatHiddenPremeasure
+        candidates={[
+          {
+            entry,
+            item: { id: 'a', hasSpanLines: false },
+          },
+          {
+            entry,
+            item: { id: 'b', hasSpanLines: false },
+          },
+        ]}
+        contentWidthPx={400}
+        renderBubble={(_entry, readiness) => {
+          scopes.push(readiness)
+          return null
+        }}
+        onMeasure={vi.fn()}
+      />
+    ))
+
+    expect(scopes).toHaveLength(2)
+    expect(scopes[0]).not.toBe(scopes[1])
   })
 
   it('skips a hidden view and measures its empty row after layout returns', () => {
@@ -685,6 +763,7 @@ describe('chat hidden premeasure rendering', () => {
           heightKey: 'same-native-key',
           connected: true,
           settled: true,
+          contentPending: false,
         },
       ])
       currentRectangle.mockReturnValue(new DOMRect(0, 0, 752, 101))

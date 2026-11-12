@@ -218,6 +218,12 @@ export interface UseChatVirtualizerOptions {
   gapSmallPx?: Accessor<number> | number
   /** Inter-row gap (px) for all other adjacent rows (~--space-5). */
   gapLargePx?: Accessor<number> | number
+  /**
+   * Whether a mounted row shows its final content. The visible measurer reads no
+   * height from a row that waits for content; see RowMeasurerDeps.isRowReady. Call
+   * `remeasureRow` when the row turns ready. Absent means every row is ready.
+   */
+  isRowContentReady?: (id: string) => boolean
 }
 
 const DEFAULT_OVERSCAN_PX = 800
@@ -386,6 +392,8 @@ export interface UseChatVirtualizerResult {
   attachRow: (id: string, el: HTMLElement) => void
   /** Cleanup callback: stop observing a row element (keeps its cached height). */
   detachRow: (el: HTMLElement) => void
+  /** Measure a mounted row again at the next flush; see RowMeasurer.remeasureRow. */
+  remeasureRow: (id: string) => void
   /**
    * The ids of the rows currently MOUNTED in the DOM (the precise rendered set,
    * maintained synchronously by attach/detach). A live, read-only view -- consumers
@@ -1079,8 +1087,11 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     mountedIds,
     currentMeasurementKey: currentHeightKey,
     shouldDeferMeasurement: () => deferMeasurements,
+    ...(opts.isRowContentReady !== undefined
+      ? { isRowReady: opts.isRowContentReady }
+      : {}),
   })
-  const { attachRow, detachRow } = measurer
+  const { attachRow, detachRow, remeasureRow } = measurer
   onCleanup(measurer.dispose)
 
   const hasDeferredMeasurements = (): boolean =>
@@ -1159,6 +1170,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     flushDeferredMeasurements,
     attachRow,
     detachRow,
+    remeasureRow,
     mountedIds,
   }
 }

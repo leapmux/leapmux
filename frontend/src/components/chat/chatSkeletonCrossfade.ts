@@ -104,6 +104,11 @@ export function createLingerSet(
  * back off mid-delay (a fling settling before a row's timer fires), instead of dropping out
  * and flickering skeleton -> blank -> skeleton.
  *
+ * `showAtOnce` (optional, reactive) skips the delay for ONE id: an active id for which it
+ * returns true appears at once. It exists for a row that already showed a skeleton of its
+ * own -- a fling skeleton upgrading into a row whose content is still rendering -- so the
+ * skeleton never gives way to a blank gap for the length of the delay.
+ *
  * Call within a reactive owner: it creates a computed, per-id timers, and an onCleanup
  * that clears them.
  */
@@ -111,6 +116,7 @@ export function createDelayedSet(
   activeIds: Accessor<Iterable<string>>,
   delayMs: number,
   showImmediately?: Accessor<boolean>,
+  showAtOnce?: (id: string) => boolean,
 ): { delayedIds: Accessor<ReadonlySet<string>> } {
   const [delayedIds, setDelayedIds] = createSignal<ReadonlySet<string>>(new Set())
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -144,7 +150,7 @@ export function createDelayedSet(
     for (const id of current) {
       if (shown.has(id))
         continue
-      if (immediate) {
+      if (immediate || showAtOnce?.(id) === true) {
         showNow(id)
         continue
       }
@@ -242,6 +248,13 @@ export interface FlingSkeletonRegistry {
    * so the rail segment doesn't dangle over the placeholder until the real row upgrades in.
    */
   skeletonIds: Accessor<ReadonlySet<string>>
+  /**
+   * The ids of rows whose fling upgrade has not finished (phase 'skeleton' or
+   * 'crossfade'). A row that upgrades into content that is still rendering hides, and
+   * its fading skeleton copy hides with it; the loading-skeleton overlay must then take
+   * over at once (see createDelayedSet's `showAtOnce`).
+   */
+  upgradingIds: Accessor<ReadonlySet<string>>
 }
 
 /**
@@ -256,18 +269,27 @@ export function createFlingSkeletonRegistry(
   crossfadeMs: number,
 ): FlingSkeletonRegistry {
   const [skeletonIds, setSkeletonIds] = createSignal<ReadonlySet<string>>(new Set())
+  const [upgradingIds, setUpgradingIds] = createSignal<ReadonlySet<string>>(new Set())
   // Toggle membership without churning the signal when it wouldn't change (most rows are
   // never skeletons, so their one effect run is a no-op).
-  const setMembership = (id: string, present: boolean): void => {
-    setSkeletonIds(prev => (present
+  const setMembership = (
+    setIds: (update: (prev: ReadonlySet<string>) => ReadonlySet<string>) => void,
+    id: string,
+    present: boolean,
+  ): void => {
+    setIds(prev => (present
       ? setWith(prev, id)
       : setWithout(prev, id)))
   }
   const trackRow = (id: string): Accessor<RowUpgradePhase> => {
     const phase = createRowUpgradePhase(virt, id, crossfadeMs)
-    createEffect(() => setMembership(id, phase() === 'skeleton'))
-    onCleanup(() => setMembership(id, false))
+    createEffect(() => setMembership(setSkeletonIds, id, phase() === 'skeleton'))
+    createEffect(() => setMembership(setUpgradingIds, id, phase() !== 'real'))
+    onCleanup(() => {
+      setMembership(setSkeletonIds, id, false)
+      setMembership(setUpgradingIds, id, false)
+    })
     return phase
   }
-  return { trackRow, skeletonIds }
+  return { trackRow, skeletonIds, upgradingIds }
 }

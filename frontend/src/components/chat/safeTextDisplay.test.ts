@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  largeMarkdownPlainHtml,
-  LIMITED_TEXT_DISPLAY_NOTICE,
-  limitTextForDisplay,
-  MARKDOWN_PARSE_CHAR_LIMIT,
-  markdownNeedsPlainTextDisplay,
-} from './safeTextDisplay'
+import { limitTextForDisplay } from './safeTextDisplay'
 
 describe('safe text display', () => {
   it('keeps a small value unchanged', () => {
@@ -47,19 +41,5 @@ describe('safe text display', () => {
 
     expect(result.text).not.toContain('\uFFFD')
     expect(() => new TextEncoder().encode(result.text)).not.toThrow()
-  })
-
-  it('routes large or long-line Markdown to the plain display', () => {
-    expect(markdownNeedsPlainTextDisplay('x'.repeat(MARKDOWN_PARSE_CHAR_LIMIT + 1))).toBe(true)
-    expect(markdownNeedsPlainTextDisplay('x'.repeat(5_000))).toBe(true)
-    expect(markdownNeedsPlainTextDisplay('# Small\n\nBody')).toBe(false)
-  })
-
-  it('escapes large Markdown before it builds the plain display', () => {
-    const html = largeMarkdownPlainHtml(`<script>unsafe</script>${'x'.repeat(100_000)}`)
-
-    expect(html).not.toContain('<script>')
-    expect(html).toContain('&lt;script&gt;unsafe&lt;/script&gt;')
-    expect(html).toContain(LIMITED_TEXT_DISPLAY_NOTICE)
   })
 })

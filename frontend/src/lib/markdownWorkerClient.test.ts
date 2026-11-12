@@ -205,6 +205,158 @@ describe('markdownWorkerClient', () => {
     expect(posted?.syntax).toEqual(oldPair)
   })
 
+  describe('render time budget', () => {
+    it('gives every render the base budget plus a share for each KB of source', async () => {
+      const { MARKDOWN_RENDER_BASE_BUDGET_MS, MARKDOWN_RENDER_BUDGET_MS_PER_KB, markdownRenderBudgetMs } = await importClient()
+
+      expect(markdownRenderBudgetMs('')).toBe(MARKDOWN_RENDER_BASE_BUDGET_MS)
+      expect(markdownRenderBudgetMs('x')).toBe(MARKDOWN_RENDER_BASE_BUDGET_MS + MARKDOWN_RENDER_BUDGET_MS_PER_KB)
+      expect(markdownRenderBudgetMs('x'.repeat(1024))).toBe(MARKDOWN_RENDER_BASE_BUDGET_MS + MARKDOWN_RENDER_BUDGET_MS_PER_KB)
+      expect(markdownRenderBudgetMs('x'.repeat(1024 * 1024))).toBe(MARKDOWN_RENDER_BASE_BUDGET_MS + 1024 * MARKDOWN_RENDER_BUDGET_MS_PER_KB)
+    })
+
+    it('resolves a render that runs past its budget to null, and renders the body behind it on a fresh worker', async () => {
+      vi.useFakeTimers()
+      try {
+        const workers: Array<{
+          onmessage: ((event: MessageEvent) => void) | null
+          messages: Array<{ id: number, text: string }>
+          terminate: ReturnType<typeof vi.fn>
+        }> = []
+        Object.defineProperty(globalThis, 'Worker', {
+          configurable: true,
+          writable: true,
+          value: class CapturingWorker {
+            onmessage: ((event: MessageEvent) => void) | null = null
+            onerror: (() => void) | null = null
+            messages: Array<{ id: number, text: string }> = []
+            terminate = vi.fn()
+
+            constructor() {
+              workers.push(this)
+            }
+
+            postMessage(message: { id: number, text: string }) {
+              this.messages.push(message)
+            }
+          },
+        })
+        const { markdownRenderBudgetMs, renderMarkdownInWorker } = await importClient()
+        const nested = '*a '.repeat(2_000)
+
+        const stuck = renderMarkdownInWorker(nested, PAIR)
+        const behind = renderMarkdownInWorker('behind', PAIR)
+        vi.advanceTimersByTime(markdownRenderBudgetMs(nested))
+
+        await expect(stuck).resolves.toBeNull()
+        expect(captured(workers, 0).terminate).toHaveBeenCalledOnce()
+        const fresh = captured(workers, 1)
+        expect(fresh.messages.map(m => m.text)).toEqual(['behind'])
+        fresh.onmessage?.({
+          data: {
+            id: captured(fresh.messages, 0).id,
+            html: '<p>behind</p>',
+            retryable: false,
+            styles: {},
+          },
+        } as MessageEvent)
+        await expect(behind).resolves.toEqual({ html: '<p>behind</p>', retryable: false, styles: {} })
+      }
+      finally {
+        vi.useRealTimers()
+      }
+    })
+  })
+
+  describe('render lanes', () => {
+    interface LaneWorker {
+      onmessage: ((event: MessageEvent) => void) | null
+      messages: Array<{ id: number, text: string }>
+    }
+
+    function installLaneWorkers(): LaneWorker[] {
+      const workers: LaneWorker[] = []
+      Object.defineProperty(globalThis, 'Worker', {
+        configurable: true,
+        writable: true,
+        value: class CapturingWorker {
+          onmessage: ((event: MessageEvent) => void) | null = null
+          onerror: (() => void) | null = null
+          messages: Array<{ id: number, text: string }> = []
+          terminate = vi.fn()
+
+          constructor() {
+            workers.push(this)
+          }
+
+          postMessage(message: { id: number, text: string }) {
+            this.messages.push(message)
+          }
+        },
+      })
+      return workers
+    }
+
+    it('renders a body at the size limit in the standard lane, and a larger one in a worker of its own', async () => {
+      const workers = installLaneWorkers()
+      const { LARGE_MARKDOWN_BODY_CHARS, renderMarkdownInWorker } = await importClient()
+      const atLimit = 'a'.repeat(LARGE_MARKDOWN_BODY_CHARS)
+      const overLimit = 'b'.repeat(LARGE_MARKDOWN_BODY_CHARS + 1)
+
+      void renderMarkdownInWorker(atLimit, PAIR)
+      expect(workers).toHaveLength(1)
+      void renderMarkdownInWorker(overLimit, PAIR)
+
+      expect(workers).toHaveLength(2)
+      expect(captured(workers, 0).messages.map(m => m.text)).toEqual([atLimit])
+      expect(captured(workers, 1).messages.map(m => m.text)).toEqual([overLimit])
+    })
+
+    it('spawns no large-lane worker until a large body arrives', async () => {
+      const workers = installLaneWorkers()
+      const { renderMarkdownInWorker } = await importClient()
+
+      void renderMarkdownInWorker('small one', PAIR)
+      void renderMarkdownInWorker('small two', PAIR)
+      void renderMarkdownInWorker('small three', PAIR)
+
+      expect(workers).toHaveLength(1)
+    })
+
+    it('posts a small body at once while large bodies fill their own lane', async () => {
+      const workers = installLaneWorkers()
+      const { LARGE_MARKDOWN_BODY_CHARS, renderMarkdownInWorker } = await importClient()
+      const large = (n: number) => `${n}`.padEnd(LARGE_MARKDOWN_BODY_CHARS + 1, 'x')
+
+      // More large bodies than the large lane's gate posts at once: the rest wait.
+      let largeSettled = 0
+      for (const n of [1, 2, 3]) {
+        void renderMarkdownInWorker(large(n), PAIR).then(() => {
+          largeSettled++
+        })
+      }
+      const small = renderMarkdownInWorker('small body', PAIR)
+
+      const largeWorker = captured(workers, 0)
+      const smallWorker = captured(workers, 1)
+      expect(largeWorker.messages).toHaveLength(2)
+      expect(smallWorker.messages.map(m => m.text)).toEqual(['small body'])
+
+      // The small body completes while every large body is still pending.
+      const { id } = captured(smallWorker.messages, 0)
+      smallWorker.onmessage?.({
+        data: {
+          id,
+          html: '<p>small body</p>',
+          retryable: false,
+          styles: {},
+        },
+      } as MessageEvent)
+      await expect(small).resolves.toEqual({ html: '<p>small body</p>', retryable: false, styles: {} })
+      expect(largeSettled).toBe(0)
+    })
+  })
+
   it('defaults a missing styles dictionary to empty (older worker response shape)', async () => {
     const workers: Array<{
       onmessage: ((event: MessageEvent) => void) | null

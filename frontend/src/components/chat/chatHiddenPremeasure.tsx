@@ -1,11 +1,13 @@
 import type { JSX } from 'solid-js'
 import type { ClassifiedEntry } from './chatEntryCache'
+import type { RenderReadiness } from './renderReadiness'
 import type { VirtualItem } from './useChatVirtualizer'
-import { batch, createEffect, createMemo, createSignal, For, on, onCleanup } from 'solid-js'
+import { batch, createEffect, createMemo, createSignal, For, on, onCleanup, untrack } from 'solid-js'
 import { emitDevEvent } from '~/lib/devInstrument'
 import { monotonicNow } from '~/lib/monotonicNow'
 import * as styles from './ChatView.css'
 import { messageRowChrome } from './messageRowLayout'
+import { createRenderReadinessScope } from './renderReadiness'
 import { rowLayoutMeasurement } from './rowLayoutMeasurement'
 import { reservedRowContentColumnStyle } from './widgets/SpanLines.geometry'
 
@@ -14,10 +16,16 @@ export interface ChatDomPremeasureCandidate {
   item: VirtualItem
 }
 
+/**
+ * Render the hidden copy of one row. `readiness` is the copy's own scope: its
+ * Markdown bodies report to it, and the copy commits no height until they are ready.
+ */
+export type PremeasureBubbleRenderer = (entry: ClassifiedEntry, readiness: RenderReadiness) => JSX.Element
+
 export interface ChatDomPremeasureProps {
   candidates: readonly ChatDomPremeasureCandidate[]
   contentWidthPx: number
-  renderBubble: (entry: ClassifiedEntry) => JSX.Element
+  renderBubble: PremeasureBubbleRenderer
   onMeasure: (id: string, height: number, heightKey: string | undefined, measureDurationMs: number, settled: boolean) => boolean
 }
 
@@ -106,13 +114,17 @@ function premeasureTaskKey(id: string, heightKey: string | undefined): string {
 
 function PremeasureRow(props: {
   candidate: ChatDomPremeasureCandidate
-  renderBubble: (entry: ClassifiedEntry) => JSX.Element
+  renderBubble: PremeasureBubbleRenderer
   onMeasure: (id: string, height: number, heightKey: string | undefined, measureDurationMs: number, settled: boolean) => boolean
   frame: SharedPremeasureFrame
 }): JSX.Element {
   let rowEl: HTMLDivElement | undefined
   let scheduledMeasureKey: string | undefined
   const [resizeObservationEnabled, setResizeObservationEnabled] = createSignal(true)
+  // This copy's Markdown bodies render in the worker. Until every one has its final
+  // HTML, the copy's height is wrong, and committing it would reveal the row at that
+  // height and move every row below when the content lands.
+  const readiness = createRenderReadinessScope()
   const observationKey = () => `${props.candidate.item.id}\0${props.candidate.item.heightKey ?? ''}`
   const hasPendingImages = (): boolean => {
     const root = rowEl
@@ -135,7 +147,10 @@ function PremeasureRow(props: {
     props.frame.schedule(key, {
       read: () => {
         const started = monotonicNow()
-        const height = rowLayoutMeasurement(rowEl)
+        const contentPending = readiness.pending()
+        const height = contentPending
+          ? undefined
+          : rowLayoutMeasurement(rowEl)
         const settled = !hasPendingImages()
         emitDevEvent('leapmux:chat-premeasure', () => ({
           phase: 'read',
@@ -145,6 +160,7 @@ function PremeasureRow(props: {
           heightKey: heightKey ?? null,
           connected: rowEl?.isConnected ?? false,
           settled,
+          contentPending,
         }))
         if (height === undefined)
           return undefined
@@ -164,6 +180,15 @@ function PremeasureRow(props: {
     const { item } = props.candidate
     scheduleMeasure(item.id, item.heightKey, props.onMeasure)
   })
+  // Measure again when the last pending body becomes ready. The new content
+  // usually resizes the copy, but nothing guarantees it, so the resize observer
+  // alone could leave the row unmeasured and hidden forever.
+  createEffect(on(readiness.pending, (pending) => {
+    if (pending)
+      return
+    const { item } = untrack(() => props.candidate)
+    scheduleMeasure(item.id, item.heightKey, props.onMeasure)
+  }, { defer: true }))
   createEffect(() => {
     const root = rowEl
     observationKey()
@@ -220,7 +245,7 @@ function PremeasureRow(props: {
           differently here than in the list. This row RESERVES the rails' width
           rather than rendering them, so it takes the margin too. */}
       <div style={reservedRowContentColumnStyle(lineCount())}>
-        {props.renderBubble(props.candidate.entry)}
+        {props.renderBubble(props.candidate.entry, readiness)}
       </div>
     </div>
   )

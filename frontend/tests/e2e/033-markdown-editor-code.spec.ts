@@ -133,9 +133,9 @@ test.describe('code block field', () => {
 
     // The transcript renders through a different stylesheet than the editor
     // (`markdownContent` vs the ProseMirror rules), and the two used to scope
-    // the field differently: the transcript claimed only `pre.shiki`, so the
-    // plain placeholder the synchronous render emits first was a differently
-    // coloured block that swapped under the reader.
+    // the field differently: the transcript claimed only `pre.shiki`, so a
+    // plain `<pre>` -- a render whose highlighting failed -- was a differently
+    // coloured block from its highlighted neighbours.
     const bubble = userBubbles(page).first()
     const sent = bubble.locator('pre')
     await expect(sent).toBeVisible()

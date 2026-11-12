@@ -7,6 +7,7 @@
 
 import type { MessageRenderCache } from './messageRenderCache'
 import type { MessageUiKey } from './messageUiKeys'
+import type { RenderReadiness } from './renderReadiness'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
@@ -14,8 +15,8 @@ import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 
 /**
  * What the markdown and ANSI body renderers need from their surroundings: the
- * caches and the two pause flags that keep a hidden or scroll-critical pass from
- * dispatching syntax work.
+ * caches, the two pause flags that keep a hidden or scroll-critical pass from
+ * dispatching syntax work, and where a body reports that its content is pending.
  */
 export interface MarkdownRenderContext {
   /**
@@ -25,9 +26,23 @@ export interface MarkdownRenderContext {
    * markdown context, and undefined is the live "absent for now" state.
    */
   renderCache?: MessageRenderCache | undefined
-  /** Hidden premeasurement pass: keep structure, skip timers, workers and highlighting. */
+  /**
+   * Hidden premeasurement pass: keep structure, skip timers and syntax work. A
+   * Markdown body is the exception: it renders in the worker in this pass too,
+   * because the row measures and reveals only once its Markdown is final.
+   */
   premeasureMode?: boolean
-  /** The visible pass is scroll-critical: defer Shiki/worker syntax jobs until it clears. */
+  /**
+   * Where a Markdown body reports that its worker render is pending, so its row
+   * copy stays hidden and commits no height until the body is ready. Absent
+   * outside a chat row: the body then shows its own skeleton.
+   */
+  readiness?: RenderReadiness | undefined
+  /**
+   * The visible pass is scroll-critical: defer Shiki/worker syntax jobs until it
+   * clears. A Markdown body that shows nothing yet still dispatches its render,
+   * because its row stays hidden until the render lands.
+   */
   syntaxHighlightingPaused?: () => boolean
   /** A browser text selection is active: do not replace selected text nodes. */
   textSelectionActive?: () => boolean

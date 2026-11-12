@@ -16,9 +16,8 @@ vi.mock('~/lib/renderAnsi', () => ({
 
 vi.mock('~/lib/renderMarkdown', () => ({
   getCachedMarkdownHtml: () => undefined,
-  renderMarkdown: (text: string) => text,
-  renderMarkdownCachedOrPlain: (text: string) => text,
-  renderMarkdownPlain: (text: string) => text,
+  requestMarkdownHtml: (text: string) => text,
+  prefetchMarkdownHtml: () => {},
   // ReadResultView's ANSI sync path calls codeToTokens (not codeToHtml); keep the
   // stub faithful to the real interface so a .log Read result rendered through these
   // mocks tokenizes (one token per line) instead of hitting a TypeError that the

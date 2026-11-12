@@ -5,7 +5,6 @@ import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { DeepseekHarnessRenderedMcpBlock } from './renderedMcpContent'
 import { readFileSync } from 'node:fs'
 import { expect } from '@playwright/test'
-import { LIMITED_TEXT_DISPLAY_NOTICE, PLAIN_TEXT_DISPLAY_NOTICE } from '../../../src/components/chat/safeTextDisplay'
 import { MESSAGE_SUPPLEMENT_FIELD } from '../../../src/generated/contracts/worker-vocab'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
 import { readMcpCallExchange } from '../helpers/mcpServerReceipt'
@@ -14,7 +13,7 @@ import { expandNativeResultView } from '../helpers/nativeResultView'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 import { nativeToolResultContent } from '../helpers/nativeToolResult'
-import { readAttachedWithArgument } from '../helpers/ui'
+import { readAttached, readAttachedWithArgument } from '../helpers/ui'
 import { readDeepseekHarnessNativeOutput } from './outputFilePaths'
 import { deepseekHarnessMcpTextDisplay, deepseekHarnessRenderedMcpContent } from './renderedMcpContent'
 
@@ -195,7 +194,7 @@ async function proveMixedMcpRow(
   const last: { rendered: DeepseekHarnessRenderedMcpBlock[] | null } = { rendered: null }
   try {
     await expect.poll(async () => {
-      last.rendered = await readAttachedWithArgument(bubble, 'the native MCP result order', deepseekHarnessRenderedMcpContent, [LIMITED_TEXT_DISPLAY_NOTICE, PLAIN_TEXT_DISPLAY_NOTICE])
+      last.rendered = await readAttached(bubble, 'the native MCP result order', deepseekHarnessRenderedMcpContent)
       return last.rendered !== null && JSON.stringify(last.rendered) === expectedOrder
     }).toBe(true)
   }

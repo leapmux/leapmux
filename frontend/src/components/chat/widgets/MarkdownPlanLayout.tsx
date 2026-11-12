@@ -1,11 +1,9 @@
 import type { JSX } from 'solid-js'
 import type { PlanRenderContext } from '../renderContext'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
-import { createMemo, Show } from 'solid-js'
+import { Show } from 'solid-js'
 import { useCopyButton } from '~/hooks/useCopyButton'
-import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
-import { markdownContent } from '../markdownEditor/markdownContent.css'
-import { renderMarkdownForContext } from '../markdownRendering'
+import { MarkdownText } from '../messageRenderers'
 import { ToolUseLayout } from './ToolUseLayout'
 
 export interface MarkdownPlanLayoutProps {
@@ -31,7 +29,6 @@ export function MarkdownPlanLayout(props: MarkdownPlanLayoutProps): JSX.Element 
     if (!props.context?.premeasureMode)
       props.context?.onReply?.(props.planText)
   }
-  const renderedPlan = createMemo(() => renderMarkdownForContext(props.planText, props.context))
 
   return (
     <ToolUseLayout
@@ -58,7 +55,14 @@ export function MarkdownPlanLayout(props: MarkdownPlanLayoutProps): JSX.Element 
     >
       <Show when={props.planText}>
         <hr />
-        <div class={markdownContent} style={{ 'font-size': 'var(--text-regular)' }} ref={cachedInnerHtml(renderedPlan)} />
+        <div style={{ 'font-size': 'var(--text-regular)' }}>
+          <MarkdownText
+            text={props.planText}
+            {...(props.context !== undefined
+              ? { context: props.context }
+              : {})}
+          />
+        </div>
       </Show>
     </ToolUseLayout>
   )

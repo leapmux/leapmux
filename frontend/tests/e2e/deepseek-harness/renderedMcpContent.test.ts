@@ -1,9 +1,17 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { largeMarkdownPlainHtml, LIMITED_TEXT_DISPLAY_NOTICE, MARKDOWN_PARSE_CHAR_LIMIT, PLAIN_TEXT_DISPLAY_NOTICE, TEXT_DISPLAY_LINE_CHAR_LIMIT } from '../../../src/components/chat/safeTextDisplay'
-import { renderMarkdownPlain } from '../../../src/lib/renderMarkdown'
+import { requestMarkdownHtml } from '../../../src/lib/renderMarkdown'
 import { deepseekHarnessMcpTextDisplay, deepseekHarnessRenderedMcpContent } from './renderedMcpContent'
 
-const displayNotices = [LIMITED_TEXT_DISPLAY_NOTICE, PLAIN_TEXT_DISPLAY_NOTICE]
+/** The size above which Markdown used to show as capped plain text. Every size now renders as Markdown. */
+const FORMER_PLAIN_DISPLAY_CHARS = 32 * 1024
+
+/** The HTML that the actual Markdown renderer shows for `text`. jsdom has no Worker, so it renders synchronously. */
+function renderedMarkdown(text: string): string {
+  const html = requestMarkdownHtml(text)
+  if (html === undefined)
+    throw new Error('Markdown rendered asynchronously in a test without a Worker.')
+  return html
+}
 
 afterEach(() => {
   document.body.replaceChildren()
@@ -29,21 +37,21 @@ const image = '<button aria-label="Open image"><img src="data:image/png;base64,R
 
 describe('deepseekHarnessRenderedMcpContent', () => {
   it('reports no attached result when the locator has no matches', () => {
-    expect(deepseekHarnessRenderedMcpContent([], [])).toBeNull()
+    expect(deepseekHarnessRenderedMcpContent([])).toBeNull()
   })
 
   it('reports no attached result when every matched row detached', () => {
     expect(deepseekHarnessRenderedMcpContent([
       document.createElement('div'),
-    ], [])).toBeNull()
+    ])).toBeNull()
   })
 
-  it('reads actual short paragraphs, large text, and repeated images in their rendered order', () => {
+  it('reads actual short paragraphs, a large paragraph, and repeated images in their rendered order', () => {
     const middle = 'native line\n'.repeat(1200)
-    const root = result(`<p>First native text.</p>${image}${largeMarkdownPlainHtml(middle)}${image}<p>Last native text.</p>`)
-    const largeText = `${'native line\n'.repeat(750)}… lines omitted from display …\n${'native line\n'.repeat(249)}`
-    expect(root.querySelector('[data-large-text-display]')?.textContent).toBe(largeText)
-    expect(deepseekHarnessRenderedMcpContent(root, displayNotices)).toEqual([
+    const root = result(`<p>First native text.</p>${image}${renderedMarkdown(middle)}${image}<p>Last native text.</p>`)
+    // A large paragraph renders whole, every line kept: no omission and no cap.
+    const largeText = Array.from({ length: 1200 }).fill('native line').join('\n')
+    expect(deepseekHarnessRenderedMcpContent(root)).toEqual([
       { type: 'text', text: 'First native text.' },
       { type: 'image', index: 0 },
       { type: 'text', text: largeText },
@@ -54,48 +62,29 @@ describe('deepseekHarnessRenderedMcpContent', () => {
 
   it('detects a moved image even when both images contain the same bytes', () => {
     const root = result(`<p>First native text.</p>${image}<p>Middle native text.</p>${image}<p>Last native text.</p>`)
-    const original = deepseekHarnessRenderedMcpContent(root, displayNotices)
+    const original = deepseekHarnessRenderedMcpContent(root)
     const first = root.querySelector('button')
     const last = root.lastElementChild
     if (!first || !last)
       throw new Error('The rendered order fixture requires its image and final text.')
     last.before(first)
-    expect(deepseekHarnessRenderedMcpContent(root, displayNotices)).toEqual([
+    expect(deepseekHarnessRenderedMcpContent(root)).toEqual([
       { type: 'text', text: 'First native text.' },
       { type: 'text', text: 'Middle native text.' },
       { type: 'image', index: 0 },
       { type: 'image', index: 1 },
       { type: 'text', text: 'Last native text.' },
     ])
-    expect(deepseekHarnessRenderedMcpContent(root, displayNotices)).not.toEqual(original)
+    expect(deepseekHarnessRenderedMcpContent(root)).not.toEqual(original)
   })
 
   it('preserves repeated text, inline text, and whitespace without merging separate blocks', () => {
-    const root = result(`<p>Repeat <strong>native</strong> text.</p>${image}<p>Repeat <strong>native</strong> text.</p><pre data-large-text-display>  first\nlast  </pre><p></p>`)
-    expect(deepseekHarnessRenderedMcpContent(root, displayNotices)).toEqual([
+    const root = result(`<p>Repeat <strong>native</strong> text.</p>${image}<p>Repeat <strong>native</strong> text.</p><p>  first\nlast  </p><p></p>`)
+    expect(deepseekHarnessRenderedMcpContent(root)).toEqual([
       { type: 'text', text: 'Repeat native text.' },
       { type: 'image', index: 0 },
       { type: 'text', text: 'Repeat native text.' },
       { type: 'text', text: '  first\nlast  ' },
-    ])
-  })
-
-  it.each(displayNotices)('excludes only the adjacent actual display notice: %s', (notice) => {
-    const root = result(`<p>${notice}</p><pre data-large-text-display>Actual native text.</pre><p>${notice}</p><p>${notice}</p>${image}<p>${notice}</p>`)
-    expect(deepseekHarnessRenderedMcpContent(root, displayNotices)).toEqual([
-      { type: 'text', text: notice },
-      { type: 'text', text: 'Actual native text.' },
-      { type: 'text', text: notice },
-      { type: 'image', index: 0 },
-      { type: 'text', text: notice },
-    ])
-  })
-
-  it('keeps an adjacent paragraph when it does not contain a display notice', () => {
-    const root = result('<pre data-large-text-display>Actual native text.</pre><p>Another native paragraph.</p>')
-    expect(deepseekHarnessRenderedMcpContent(root, displayNotices)).toEqual([
-      { type: 'text', text: 'Actual native text.' },
-      { type: 'text', text: 'Another native paragraph.' },
     ])
   })
 
@@ -107,7 +96,7 @@ describe('deepseekHarnessRenderedMcpContent', () => {
     'style="visibility:collapse"',
   ])('ignores a hidden copy under %s', (attribute) => {
     const root = result(`<div ${attribute}><p>Hidden native text.</p>${image}</div><p>Visible native text.</p>${image}`)
-    expect(deepseekHarnessRenderedMcpContent(root, displayNotices)).toEqual([
+    expect(deepseekHarnessRenderedMcpContent(root)).toEqual([
       { type: 'text', text: 'Visible native text.' },
       { type: 'image', index: 0 },
     ])
@@ -122,7 +111,7 @@ describe('deepseekHarnessRenderedMcpContent', () => {
       item: () => null,
     })
     vi.mocked(unmeasured.getClientRects).mockReturnValue(rectangles)
-    expect(deepseekHarnessRenderedMcpContent(root, displayNotices)).toEqual([
+    expect(deepseekHarnessRenderedMcpContent(root)).toEqual([
       { type: 'image', index: 0 },
       { type: 'text', text: 'Visible native text.' },
     ])
@@ -130,7 +119,7 @@ describe('deepseekHarnessRenderedMcpContent', () => {
 
   it('detects a missing image instead of inferring it from the control', () => {
     const root = result('<p>First native text.</p><button aria-label="Open image"></button><p>Last native text.</p>')
-    const actual = deepseekHarnessRenderedMcpContent(root, displayNotices)
+    const actual = deepseekHarnessRenderedMcpContent(root)
     expect(actual).toEqual([
       { type: 'text', text: 'First native text.' },
       { type: 'text', text: 'Last native text.' },
@@ -143,10 +132,10 @@ describe('deepseekHarnessRenderedMcpContent', () => {
   })
 
   it('distinguishes an empty result from a detached result', () => {
-    expect(deepseekHarnessRenderedMcpContent(result('<p></p>'), displayNotices)).toEqual([])
+    expect(deepseekHarnessRenderedMcpContent(result('<p></p>'))).toEqual([])
     const detached = result(`<p>Detached native text.</p>${image}`)
     detached.remove()
-    expect(deepseekHarnessRenderedMcpContent(detached, displayNotices)).toBeNull()
+    expect(deepseekHarnessRenderedMcpContent(detached)).toBeNull()
   })
 })
 
@@ -178,17 +167,18 @@ describe('deepseekHarnessMcpTextDisplay', () => {
     ])
   })
 
-  it('keeps a large native block in one capped plain-text display', () => {
+  it('parses a large native block into its whole Markdown paragraphs, with no cap', () => {
     const native = `First line.\n\n${'x'.repeat(33000)}`
-    // The plain display keeps the head and tail of a long line around one ellipsis.
-    const retained = TEXT_DISPLAY_LINE_CHAR_LIMIT - 1
-    const head = Math.floor(retained * 0.75)
     expect(deepseekHarnessMcpTextDisplay(native)).toEqual([
-      { type: 'text', text: `First line.\n\n${'x'.repeat(head)}…${'x'.repeat(retained - head)}` },
+      { type: 'text', text: 'First line.' },
+      {
+        type: 'text',
+        text: 'x'.repeat(33000),
+      },
     ])
   })
 
-  it('parses Markdown paragraphs up to the parse limit and uses one exact plain display above it', () => {
+  it('parses Markdown paragraphs the same way at, above, and far above the former plain-display size', () => {
     const sized = (length: number) => {
       const first = 'First paragraph.'
       const line = `${'y'.repeat(99)}\n`
@@ -196,17 +186,14 @@ describe('deepseekHarnessMcpTextDisplay', () => {
       const body = `${line.repeat(Math.floor(available / line.length))}${'y'.repeat(available % line.length)}`
       return { native: `${first}\n\n${body}`, first, body }
     }
-    const atLimit = sized(MARKDOWN_PARSE_CHAR_LIMIT)
-    expect(atLimit.native).toHaveLength(MARKDOWN_PARSE_CHAR_LIMIT)
-    expect(deepseekHarnessMcpTextDisplay(atLimit.native)).toEqual([
-      { type: 'text', text: atLimit.first },
-      { type: 'text', text: atLimit.body },
-    ])
-    const aboveLimit = sized(MARKDOWN_PARSE_CHAR_LIMIT + 1)
-    expect(aboveLimit.native).toHaveLength(MARKDOWN_PARSE_CHAR_LIMIT + 1)
-    expect(deepseekHarnessMcpTextDisplay(aboveLimit.native)).toEqual([
-      { type: 'text', text: aboveLimit.native },
-    ])
+    for (const length of [FORMER_PLAIN_DISPLAY_CHARS, FORMER_PLAIN_DISPLAY_CHARS + 1, 8 * FORMER_PLAIN_DISPLAY_CHARS]) {
+      const fixture = sized(length)
+      expect(fixture.native).toHaveLength(length)
+      expect(deepseekHarnessMcpTextDisplay(fixture.native)).toEqual([
+        { type: 'text', text: fixture.first },
+        { type: 'text', text: fixture.body },
+      ])
+    }
   })
 
   it.each([
@@ -224,14 +211,14 @@ describe('deepseekHarnessMcpTextDisplay', () => {
     const tail = 'NATIVETOOLOUTPUT-complete-42'
     const notice = '(Omitted 672056 bytes. Full formatted result stored at: /private/native/mcp__results__inspect.txt. Use read with offset/limit, or grep this path to search within it.)'
     const blocks = ['0 false\n\n0 false', `${tail}\n\n${notice}`, 'First line.\nLast line.']
-    const root = result(`${renderMarkdownPlain(blocks[0]!)}${image}${renderMarkdownPlain(blocks[1]!)}${image}${renderMarkdownPlain(blocks[2]!)}`)
-    expect(deepseekHarnessRenderedMcpContent(root, displayNotices)).toEqual([
+    const root = result(`${renderedMarkdown(blocks[0]!)}${image}${renderedMarkdown(blocks[1]!)}${image}${renderedMarkdown(blocks[2]!)}`)
+    expect(deepseekHarnessRenderedMcpContent(root)).toEqual([
       ...deepseekHarnessMcpTextDisplay(blocks[0]!),
       { type: 'image', index: 0 },
       ...deepseekHarnessMcpTextDisplay(blocks[1]!),
       { type: 'image', index: 1 },
       ...deepseekHarnessMcpTextDisplay(blocks[2]!),
     ])
-    expect(deepseekHarnessRenderedMcpContent(root, displayNotices)).toHaveLength(7)
+    expect(deepseekHarnessRenderedMcpContent(root)).toHaveLength(7)
   })
 })

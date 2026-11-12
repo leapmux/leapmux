@@ -3,12 +3,11 @@ import type { WebSearchLink, WebSearchRequest, WebSearchResult } from '../model/
 import type { ToolResultRenderContext } from '../renderContext'
 import { For, Show } from 'solid-js'
 import { Tooltip } from '~/components/common/Tooltip'
-import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { pluralize } from '~/lib/plural'
 import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
 import { extractDomain } from '~/lib/url'
 import { clippedText } from '~/styles/shared.css'
-import { getToolResultExpanded, renderMarkdownForContext } from '../messageRenderers'
+import { getToolResultExpanded, MarkdownPrefetch, MarkdownText } from '../messageRenderers'
 import {
   toolInputSummary,
   toolMessage,
@@ -85,8 +84,19 @@ export function WebSearchResultsBody(props: {
           </For>
         </div>
       </Show>
-      <Show when={expanded() && props.source.summary}>
-        <div class={toolResultContent} ref={cachedInnerHtml(() => renderMarkdownForContext(props.source.summary, props.context))} />
+      <Show
+        when={expanded() && props.source.summary}
+        fallback={props.source.summary
+          ? <MarkdownPrefetch text={props.source.summary} />
+          : null}
+      >
+        <MarkdownText
+          text={props.source.summary}
+          class={toolResultContent}
+          {...(props.context !== undefined
+            ? { context: props.context }
+            : {})}
+        />
       </Show>
     </div>
   )

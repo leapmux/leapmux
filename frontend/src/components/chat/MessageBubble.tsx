@@ -5,6 +5,7 @@ import type { MessageRenderCache } from './messageRenderCache'
 import type { MessageUiKey } from './messageUiKeys'
 import type { ChatRow } from './model/row'
 import type { RowRenderContext, ToolProgressSource } from './renderContext'
+import type { RenderReadiness } from './renderReadiness'
 import type { ToolCallMeta } from './results/tools/meta'
 import type { RowExtractionContext } from './rowModelCache'
 import type { PreparedMessage } from './rowPreparation'
@@ -92,10 +93,6 @@ function injectCopyButtons(container: HTMLElement): Array<() => void> {
   const preElements = container.querySelectorAll('pre')
   for (const pre of preElements) {
     if (pre.querySelector('.copy-code-button'))
-      continue
-    // A large Markdown body degrades to one plain-text preview in a <pre>. Its row
-    // action copies the complete source; a code button here would copy the limited view.
-    if (pre.hasAttribute('data-large-text-display'))
       continue
     // Skip shiki <pre> inside tool messages — copy is handled by ToolHeaderActions.
     if (pre.closest('[data-tool-message]'))
@@ -203,6 +200,12 @@ interface MessageBubbleProps {
   host?: MessageBubbleHost
   /** Hidden premeasurement pass: keep layout structure, skip interactive/expensive chrome. */
   premeasureMode?: boolean
+  /**
+   * The readiness scope of this row copy. Each Markdown body reports to it while
+   * its worker render is pending, so the copy stays hidden and commits no height
+   * until every body is ready. Absent outside ChatView.
+   */
+  readiness?: RenderReadiness
 }
 
 export const MessageBubble: Component<MessageBubbleProps> = (props) => {
@@ -448,6 +451,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     get setMessageUiState() { return props.premeasureMode ? undefined : props.host?.setMessageUiState },
     get premeasureMode() { return props.premeasureMode === true },
     get rowOffscreen() { return props.host?.rowOffscreen },
+    get readiness() { return props.readiness },
   }
 
   // The row's own PROSE: what the agent said, what it thought, the plan it proposed,
@@ -587,13 +591,13 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       reinjectAfterSelection = false
       schedule()
     })
-    // Re-apply on a CONTENT change, not just the first render: a code block's body is
-    // produced by renderMarkdown, whose syntax highlighting now lands ASYNCHRONOUSLY (the
-    // worker's highlighted HTML replaces the plain placeholder's innerHTML, wiping the
-    // injected buttons). A one-shot injection raced that swap -- inject before it and the
-    // button is wiped; after it and the button lands -- so a code block "sometimes" had no
-    // copy button. Observing contentRef re-injects after the swap and after an
-    // expand-collapse change, regardless of timing.
+    // Re-apply on a CONTENT change, not just the first render: a Markdown body's HTML
+    // lands ASYNCHRONOUSLY from the worker (it replaces the body's pending skeleton, and a
+    // theme change replaces the HTML again, wiping the injected buttons). A one-shot
+    // injection raced that swap -- inject before it and the button is wiped; after it and
+    // the button lands -- so a code block "sometimes" had no copy button. Observing
+    // contentRef re-injects after the swap and after an expand-collapse change,
+    // regardless of timing.
     //
     // But IGNORE mutations the copy buttons cause themselves -- the IconButton swapping its
     // Copy<->Check icon (and title) when clicked is a subtree mutation. Re-injecting on

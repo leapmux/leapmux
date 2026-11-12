@@ -25,6 +25,12 @@ export interface RowMeasurer {
   attachRow: (id: string, el: HTMLElement) => void
   /** Stop observing an unmounting row (its cached height is kept for a flash-free return). */
   detachRow: (el: HTMLElement) => void
+  /**
+   * Measure a mounted row again at the next flush, whether or not it resized. Call it
+   * when the row becomes ready (see `isRowReady`): its new content usually resizes it,
+   * but nothing guarantees that, and a missed read would leave the row unmeasured.
+   */
+  remeasureRow: (id: string) => void
   /** Whether at least one visible-row measurement is queued behind the deferral gate. */
   hasDeferredMeasurements: () => boolean
   /** Commit any measurements queued while visible measurement commits were deferred. */
@@ -75,6 +81,14 @@ export interface RowMeasurerDeps {
    */
   measureEpsilonPx?: number
   /**
+   * Whether a mounted row shows its final content. A row that waits for content (a
+   * Markdown body that its worker still renders) has a height that is wrong by
+   * exactly that content, so the measurer reads nothing from it: committing the
+   * height would move every row below twice. Call `remeasureRow` when it turns ready.
+   * Absent means every row is ready.
+   */
+  isRowReady?: (id: string) => boolean
+  /**
    * Gate visible-row height commits while a native momentum fling owns scrollTop.
    * Reads still happen and rows still mount/observe; committing is delayed so the
    * virtual spacer/translateY map does not churn by one-line estimate corrections
@@ -96,6 +110,8 @@ export interface RowMeasureFlushStats {
   reads: number
   committed: number
   skippedDetached: number
+  /** Rows not read because they wait for content (see `isRowReady`). */
+  skippedNotReady: number
   skippedUnchanged: number
 }
 
@@ -129,12 +145,17 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
 
   const readMeasurement = (
     el: Element,
-    stats?: Pick<RowMeasureFlushStats, 'reads' | 'skippedDetached' | 'skippedUnchanged'>,
+    stats?: Pick<RowMeasureFlushStats, 'reads' | 'skippedDetached' | 'skippedNotReady' | 'skippedUnchanged'>,
   ): MeasurementRead | undefined => {
     const id = elToId.get(el)
     if (id === undefined || !el.isConnected || idToEl.get(id) !== el) {
       if (stats)
         stats.skippedDetached++
+      return undefined
+    }
+    if (deps.isRowReady?.(id) === false) {
+      if (stats)
+        stats.skippedNotReady++
       return undefined
     }
     const height = rowLayoutMeasurement(el)
@@ -176,6 +197,7 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
       reads: 0,
       committed: 0,
       skippedDetached: 0,
+      skippedNotReady: 0,
       skippedUnchanged: 0,
     }
     for (const el of pending) {
@@ -267,6 +289,14 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
     ro?.observe(el)
   }
 
+  const remeasureRow = (id: string) => {
+    const el = idToEl.get(id)
+    if (el === undefined)
+      return
+    pending.add(el)
+    scheduleFlush()
+  }
+
   const detachRow = (el: HTMLElement) => {
     unobserveImages(el)
     ro?.unobserve(el)
@@ -305,6 +335,7 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
   return {
     attachRow,
     detachRow,
+    remeasureRow,
     hasDeferredMeasurements: () => deferred.size > 0,
     flushDeferredMeasurements,
     flushNow: flush,
