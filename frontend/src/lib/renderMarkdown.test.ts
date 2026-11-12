@@ -2,6 +2,7 @@ import { IDBFactory } from 'fake-indexeddb'
 import { createEffect, createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_THEME_ID } from '~/styles/themes'
+import { plainMarkdownProcessor } from './markdownProcessor'
 import { _resetArtifactStoreForTest, getArtifact, putArtifact } from './renderArtifactStore'
 import { _getMarkdownCacheSize, _resetMarkdownCache, markdownArtifactNs, requestMarkdownHtml, shikiHighlighter } from './renderMarkdown'
 import { _resetShikiStyleClassesForTest } from './shikiStyleClass'
@@ -299,16 +300,31 @@ describe('renderMarkdown cache and gfm', () => {
     expect(_getMarkdownCacheSize()).toBe(0)
   })
 
-  it('renders a body that overflows the parser as its escaped source instead of throwing', () => {
-    // The parser recurses once per blockquote level: about 9,000 levels overflow a
-    // worker thread's stack, and the work before the overflow grows faster than the
-    // depth. Only a failed parse produces the fallback asserted below.
-    const text = `${'>'.repeat(12_000)} <b>deep</b>`
+  it('answers a body whose parse overflows the stack with its escaped source, parsing it once', () => {
+    // A real overflow parses for seconds first; markdownWorker.test.ts holds the one
+    // real case. Here every unified processor raises the same RangeError for one body.
+    const text = '> overflowing <b>deep</b>'
+    const processorPrototype = Object.getPrototypeOf(plainMarkdownProcessor) as { processSync: (value: string) => unknown }
+    const parse = processorPrototype.processSync
+    const processSync = vi.spyOn(processorPrototype, 'processSync').mockImplementation(function (this: unknown, value: string) {
+      if (value === text)
+        throw new RangeError('Maximum call stack size exceeded')
+      return parse.call(this, value)
+    })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const html = requestMarkdownHtml(text)
 
-    const html = requestMarkdownHtml(text)
-    expect(html).toContain('data-markdown-source-fallback')
-    expect(html).toContain('&#x3C;b>deep&#x3C;/b>')
-    expect(html).not.toContain('<b>')
+      expect(html).toContain('data-markdown-source-fallback')
+      expect(html).toContain('&#x3C;b>deep&#x3C;/b>')
+      expect(html).not.toContain('<b>')
+      // The plain processor shares the parser, so a second parse could only fail again.
+      expect(processSync.mock.calls.filter(([value]) => value === text)).toHaveLength(1)
+    }
+    finally {
+      processSync.mockRestore()
+      warn.mockRestore()
+    }
   })
 })
 

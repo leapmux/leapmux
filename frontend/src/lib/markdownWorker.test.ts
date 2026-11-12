@@ -94,8 +94,14 @@ describe('markdownWorker', () => {
     highlighterState.initFails = true
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const { handle, responses } = await loadWorker()
+    // The worker's own instance: loadWorker reset the modules, and this import reads
+    // the fresh one that it loaded. The test above holds the one real overflow.
+    const { plainMarkdownProcessor } = await import('./markdownProcessor')
+    vi.spyOn(plainMarkdownProcessor, 'processSync').mockImplementation(() => {
+      throw new RangeError('Maximum call stack size exceeded')
+    })
 
-    await handle(renderRequest(9, OVERFLOWING_SOURCE))
+    await handle(renderRequest(9, '> deep'))
 
     expect(responses).toHaveLength(1)
     expect(responses[0]).toMatchObject({ type: 'render-result', id: 9, retryable: true })
