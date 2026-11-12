@@ -1,10 +1,14 @@
 import type { JSX } from 'solid-js'
+import type { WordDiffPart } from './diffCompute'
 import type { DiffLineEntry, SplitLineEntry, StructuredPatchHunk } from './diffTypes'
 import type { CachedToken } from '~/lib/tokenCache'
 import { For } from 'solid-js'
 import { joinClassNames } from '~/lib/classNames'
+import { pairKey } from './diffCompute'
 import { diffAddedInline, diffRemovedInline } from './diffStyles.css'
-import { pairedWordDiff } from './wordDiffCache'
+
+/** The word diffs of a computed diff, by `pairKey`. */
+type WordDiffs = ReadonlyMap<string, WordDiffPart[]>
 
 /**
  * Render a line's text using Shiki tokens when available.
@@ -119,17 +123,19 @@ function renderTokenizedWordDiff(
 }
 
 /**
- * Render inline word-level highlights for a removed line. The word diff is
- * computed via pairedWordDiff (see wordDiffCache): memoized, so the added-
- * side renderer's identical call and every later re-render (premeasure +
- * visible double mount, token arrival, view toggles) reuse it.
+ * Render inline word-level highlights for a removed line. The diff worker
+ * computed the word diff with the line diff (see diffCompute). A pair that took
+ * too many word edits has none, and draws as a plain removed line.
  */
 function renderRemovedInline(
   oldLine: string,
   newLine: string,
   oldTokens: CachedToken[] | null,
-): JSX.Element {
-  const parts = pairedWordDiff(oldLine, newLine)
+  wordDiffs: WordDiffs,
+): JSX.Element | string {
+  const parts = wordDiffs.get(pairKey(oldLine, newLine))
+  if (parts === undefined)
+    return renderTokenizedLine(oldLine, oldTokens)
   return renderTokenizedWordDiff(
     parts,
     oldTokens,
@@ -138,13 +144,16 @@ function renderRemovedInline(
   )
 }
 
-/** Render inline word-level highlights for an added line. */
+/** Render inline word-level highlights for an added line, as renderRemovedInline does for a removed one. */
 function renderAddedInline(
   oldLine: string,
   newLine: string,
   newTokens: CachedToken[] | null,
-): JSX.Element {
-  const parts = pairedWordDiff(oldLine, newLine)
+  wordDiffs: WordDiffs,
+): JSX.Element | string {
+  const parts = wordDiffs.get(pairKey(oldLine, newLine))
+  if (parts === undefined)
+    return renderTokenizedLine(newLine, newTokens)
   return renderTokenizedWordDiff(
     parts,
     newTokens,
@@ -301,6 +310,7 @@ export function buildUnifiedLines(
   hunks: StructuredPatchHunk[],
   oldTokens: CachedToken[][] | null,
   newTokens: CachedToken[][] | null,
+  wordDiffs: WordDiffs,
 ): DiffLineEntry[] {
   const result: DiffLineEntry[] = []
   // Within a `-`/`+` block, emit all '-' rows first, then all '+' rows. Queue
@@ -341,13 +351,13 @@ export function buildUnifiedLines(
         oldNum: e.oldNum,
         newNum: null,
         prefix: '-',
-        content: renderRemovedInline(e.removedContent, e.addedContent, e.oldTokens),
+        content: renderRemovedInline(e.removedContent, e.addedContent, e.oldTokens, wordDiffs),
         type: 'removed',
         hunkIndex: e.hunkIndex,
       })
       pendingAdded.push({
         newNum: e.newNum,
-        content: renderAddedInline(e.removedContent, e.addedContent, e.newTokens),
+        content: renderAddedInline(e.removedContent, e.addedContent, e.newTokens, wordDiffs),
         hunkIndex: e.hunkIndex,
       })
       return
@@ -379,6 +389,7 @@ export function buildSplitLines(
   hunks: StructuredPatchHunk[],
   oldTokens: CachedToken[][] | null,
   newTokens: CachedToken[][] | null,
+  wordDiffs: WordDiffs,
 ): { left: SplitLineEntry[], right: SplitLineEntry[] } {
   const left: SplitLineEntry[] = []
   const right: SplitLineEntry[] = []
@@ -403,13 +414,13 @@ export function buildSplitLines(
     }
     if (e.kind === 'paired') {
       left.push({
-        content: renderRemovedInline(e.removedContent, e.addedContent, e.oldTokens),
+        content: renderRemovedInline(e.removedContent, e.addedContent, e.oldTokens, wordDiffs),
         type: 'removed',
         num: e.oldNum,
         hunkIndex: e.hunkIndex,
       })
       right.push({
-        content: renderAddedInline(e.removedContent, e.addedContent, e.newTokens),
+        content: renderAddedInline(e.removedContent, e.addedContent, e.newTokens, wordDiffs),
         type: 'added',
         num: e.newNum,
         hunkIndex: e.hunkIndex,

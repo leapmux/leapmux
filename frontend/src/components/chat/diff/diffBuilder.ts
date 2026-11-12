@@ -1,46 +1,4 @@
 import type { DiffGap, DiffGapSummary, StructuredPatchHunk } from './diffTypes'
-import { diffLines } from 'diff'
-
-const TRAILING_NEWLINE_RE = /\n$/
-
-/**
- * Convert raw old/new strings into StructuredPatchHunk[] format,
- * normalizing the input for the shared diff builders.
- */
-export function rawDiffToHunks(oldStr: string, newStr: string): StructuredPatchHunk[] {
-  const changes = diffLines(oldStr, newStr)
-  const lines: string[] = []
-  let oldLines = 0
-  let newLines = 0
-  for (const change of changes) {
-    const prefix = change.added
-      ? '+'
-      : change.removed ? '-' : ' '
-    const rawLines = change.value.replace(TRAILING_NEWLINE_RE, '').split('\n')
-    for (const line of rawLines) {
-      lines.push(prefix + line)
-      if (change.added) {
-        newLines++
-      }
-      else if (change.removed) {
-        oldLines++
-      }
-      else {
-        oldLines++
-        newLines++
-      }
-    }
-  }
-  return [
-    {
-      oldStart: 1,
-      oldLines,
-      newStart: 1,
-      newLines,
-      lines,
-    },
-  ]
-}
 
 /** Format structuredPatch hunks as a unified diff string suitable for copying. */
 export function formatUnifiedDiffText(hunks: StructuredPatchHunk[], filePath?: string): string {
@@ -224,4 +182,42 @@ export function diffStatsFromHunks(hunks: StructuredPatchHunk[]): { added: numbe
     }
   }
   return { added, deleted }
+}
+
+/**
+ * The most diff lines a view draws. Each line mounts about nine DOM nodes, in the
+ * hidden premeasure copy and in the visible copy, and a rewrite of a long file
+ * changes every line.
+ */
+export const DIFF_DRAWN_LINE_LIMIT = 2000
+
+/**
+ * The first `limit` lines of `hunks`, and how many lines past them the view does
+ * not draw. A hunk that the limit cuts keeps the line counts of its kept lines.
+ */
+export function limitDiffLines(hunks: StructuredPatchHunk[], limit: number): { hunks: StructuredPatchHunk[], hiddenLines: number } {
+  const total = countHunkLines(hunks)
+  if (total <= limit)
+    return { hunks, hiddenLines: 0 }
+  const kept: StructuredPatchHunk[] = []
+  let budget = Math.max(limit, 0)
+  for (const hunk of hunks) {
+    if (budget === 0)
+      break
+    if (hunk.lines.length <= budget) {
+      kept.push(hunk)
+      budget -= hunk.lines.length
+      continue
+    }
+    const lines = hunk.lines.slice(0, budget)
+    budget = 0
+    kept.push({
+      oldStart: hunk.oldStart,
+      oldLines: lines.filter(line => !line.startsWith('+')).length,
+      newStart: hunk.newStart,
+      newLines: lines.filter(line => !line.startsWith('-')).length,
+      lines,
+    })
+  }
+  return { hunks: kept, hiddenLines: total - countHunkLines(kept) }
 }

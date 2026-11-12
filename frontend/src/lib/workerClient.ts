@@ -1,23 +1,25 @@
 // ---------------------------------------------------------------------------
 // Shared lazy Web Worker client lifecycle
 //
-// The Shiki token worker, the markdown render worker and the SLH-DSA verify
-// worker each drive their worker the same way: lazily spawn ONE module worker on
-// first use, dispatch each request under an incrementing id, resolve each reply by
-// id, and -- on a worker crash (`onerror`) or a `postMessage` failure -- resolve
-// every pending request to a failure value, terminate the dead worker, and drop it
-// so the next request respawns a fresh one. This factory owns that lifecycle so the
-// clients cannot drift on its subtle parts: the `worker !== failedWorker`
-// stale-crash guard (a crash from an already-replaced worker must not wipe the
-// live worker's pending set), terminate-before-respawn, and clearing pending on
-// failure.
+// The Shiki token worker, the markdown render worker, the SLH-DSA verify worker
+// and the diff worker each drive their worker the same way: lazily spawn ONE
+// module worker on first use, dispatch each request under an incrementing id,
+// resolve each reply by id, and -- on a worker crash (`onerror`) or a
+// `postMessage` failure -- resolve every pending request to a failure value,
+// terminate the dead worker, and drop it so the next request respawns a fresh one.
+// This factory owns that lifecycle so the clients cannot drift on its subtle
+// parts: the `worker !== failedWorker` stale-crash guard (a crash from an
+// already-replaced worker must not wipe the live worker's pending set),
+// terminate-before-respawn, and clearing pending on failure.
 //
 // A request may also carry a time budget (see WorkerRequestOptions): a worker that
 // spends longer on it is terminated, and the requests behind it move to a fresh one.
 //
-// Each client layers its own concerns on top of `request` -- the token client a
-// result cache + in-flight coalescing; the markdown client its size-based lanes;
-// the verify client a fallback to the calling thread.
+// Each client layers its own concerns on top of `request`:
+// - the token client a result cache and in-flight coalescing
+// - the markdown client its size-based lanes
+// - the verify client a fallback to the calling thread
+// - the diff client a content cache, in-flight coalescing and a priority gate
 // ---------------------------------------------------------------------------
 
 export interface WorkerRequestOptions {

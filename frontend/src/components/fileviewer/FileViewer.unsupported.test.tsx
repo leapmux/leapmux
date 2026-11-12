@@ -1,9 +1,11 @@
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { GitFileStatusCode } from '~/generated/proto/leapmux/v1/common_pb'
 import { GitFileRef } from '~/generated/proto/leapmux/v1/git_pb'
 import { PREFIX_FILE_SCROLL, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
 import { MAX_FILE_IMAGE_BYTES } from '~/lib/imageBlocks'
+import { holdComputedDiffs, requestedDiffInputs, resetHeldComputedDiffs } from '~/test-support/heldComputedDiffs'
 import { platformBridgeFileSaveStubs } from '~/test-support/saveActionsMocks'
 import { readResp, statResp } from '~/test-support/workerRpcMocks'
 
@@ -82,6 +84,8 @@ vi.mock('~/api/platformBridge', () => ({
     ...platformBridgeFileSaveStubs(),
   },
 }))
+
+vi.mock('~/components/chat/diff/diffWorkerClient', async () => (await import('~/test-support/heldComputedDiffs')).heldDiffWorkerClient())
 
 const { FileViewer } = await import('~/components/fileviewer/FileViewer')
 
@@ -771,5 +775,86 @@ describe('FileViewer truncated git versions', () => {
     await waitFor(() => expect(screen.queryByText('Loading...')).not.toBeInTheDocument())
 
     expect(screen.queryByText(TRUNCATED)).not.toBeInTheDocument()
+  })
+})
+
+// The diff worker computes the diff of the two versions. The viewer draws its
+// loading state until the diff arrives.
+describe('FileViewer diff mode', () => {
+  beforeEach(() => {
+    statFileImpl.mockReset()
+    readFileImpl.mockReset()
+    readGitFileImpl.mockReset()
+  })
+
+  afterEach(() => {
+    resetHeldComputedDiffs()
+  })
+
+  function gitText(text: string) {
+    const content = new TextEncoder().encode(text)
+    return {
+      exists: true,
+      content,
+      totalSize: BigInt(content.length),
+    }
+  }
+
+  it('draws its loading state while the diff worker computes, then the diff', async () => {
+    readFileImpl.mockResolvedValue(readResp(new TextEncoder().encode('working')))
+    readGitFileImpl.mockImplementation(async (...args: unknown[]) => {
+      const request = args[1] as { ref: number }
+      return request.ref === GitFileRef.HEAD
+        ? gitText('kept\n')
+        : gitText('kept\nadded line\n')
+    })
+    holdComputedDiffs(true)
+    render(() => (
+      <FileViewer
+        workerId="w1"
+        filePath="/repo/notes.txt"
+        fileViewMode="unified-diff"
+        fileDiffBase="head-vs-staged"
+        gitFileStatus={{ path: 'notes.txt' } as never}
+      />
+    ))
+    await waitFor(() => expect(requestedDiffInputs()).toContainEqual({
+      kind: 'texts',
+      oldText: 'kept\n',
+      newText: 'kept\nadded line\n',
+    }))
+
+    expect(screen.getByText('Loading...')).toBeInTheDocument()
+    expect(screen.queryByText('added line')).not.toBeInTheDocument()
+
+    holdComputedDiffs(false)
+
+    await waitFor(() => expect(screen.getByText('added line')).toBeInTheDocument())
+    expect(screen.queryByText('Loading...')).not.toBeInTheDocument()
+  })
+
+  it('asks the diff worker for nothing when a binary file draws its notice', async () => {
+    const bytes = new Uint8Array([0, 1, 2, 3, 0, 0, 0])
+    statFileImpl.mockResolvedValue(statResp(bytes.length))
+    readFileImpl.mockResolvedValue(readResp(bytes))
+    readGitFileImpl.mockResolvedValue({
+      exists: true,
+      content: new Uint8Array([0, 9, 9, 0]),
+      totalSize: 4n,
+    })
+    render(() => (
+      <FileViewer
+        workerId="w1"
+        filePath="/repo/blob.foo"
+        fileViewMode="unified-diff"
+        fileDiffBase="head-vs-working"
+        gitFileStatus={{ path: 'blob.foo', unstagedStatus: GitFileStatusCode.MODIFIED } as never}
+      />
+    ))
+    await waitFor(() => expect(screen.getByText('Binary file blob.foo differs in the working copy.')).toBeInTheDocument())
+    await waitFor(() => expect(readGitFileImpl).toHaveBeenCalled())
+    await waitFor(() => expect(screen.queryByText('Loading...')).not.toBeInTheDocument())
+
+    expect(requestedDiffInputs()).toEqual([])
   })
 })

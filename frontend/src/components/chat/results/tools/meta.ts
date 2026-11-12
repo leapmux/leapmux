@@ -71,6 +71,10 @@ interface RowCopyable {
  * -- and must not read as a miss. It carries the LABEL for the same reason: which side
  * answered is known only while the text is built, and reading it a second time would
  * format that unified diff again.
+ *
+ * A side whose text is a stand-in (`ToolKindMeta.copyableFinal`) stores no entry: an
+ * edit's diff arrives from the diff worker after the row mounts, and the next read
+ * builds the final text.
  */
 const copyableByRow = new WeakMap<ToolCallRow, RowCopyable>()
 
@@ -130,7 +134,16 @@ export function toolCallMeta(row: ToolCallRow): ToolCallMeta {
         ? request.copyLabel
         : undefined
     const built: RowCopyable = { text, label }
-    copyableByRow.set(row, built)
+    // A stand-in waits for the next read. Only the side that answered decides: a
+    // stand-in is null exactly when its final text is, so the final text comes from
+    // the same side, and `hasCopyable` and `copyLabel` already hold.
+    const answered = primaryText !== null
+      ? primary
+      : requestText !== null
+        ? request
+        : undefined
+    if (answered?.copyableFinal?.() ?? true)
+      copyableByRow.set(row, built)
     return built
   }
   const copyableContent = (): string | null => build().text

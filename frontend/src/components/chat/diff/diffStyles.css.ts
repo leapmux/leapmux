@@ -125,6 +125,16 @@ export const diffGapSeparator = style({
   borderBottom: '1px dashed var(--border)',
 })
 
+// The notice under a diff that draws only its first lines (see DIFF_DRAWN_LINE_LIMIT)
+export const diffTruncationNotice = style({
+  padding: 'var(--space-1) var(--space-2)',
+  fontFamily: 'var(--font-sans)',
+  fontSize: 'var(--text-8)',
+  color: 'var(--muted-foreground)',
+  backgroundColor: 'var(--background)',
+  borderTop: '1px dashed var(--border)',
+})
+
 // Clickable expand button inside the gap separator
 export const diffGapExpandButton = style({
   display: 'inline-flex',

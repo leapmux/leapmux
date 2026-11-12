@@ -335,3 +335,56 @@ test.describe('Git File Versions Past the Read Limit', () => {
     }
   })
 })
+
+test.describe('Git Diff Context', () => {
+  /**
+   * The diff worker computes the diff with three unchanged lines around each change, and the gap separators hold
+   * the rest of the file until a click reveals them.
+   */
+  test('draws a change in a long file with three lines of context, and reveals the rest on a click', async ({ page, leapmuxServer }) => {
+    const dir = createTestDirectory('leapmux-e2e-git-context-')
+    try {
+      initGitRepo(dir)
+      const rows = Array.from({ length: 250 }, (_, index) => `row ${String(index + 1).padStart(3, '0')}`)
+      writeFileSync(join(dir, 'context.txt'), `${rows.join('\n')}\n`)
+      execFileSync('git', ['add', '.'], { cwd: dir })
+      execFileSync('git', ['commit', '-m', 'initial'], { cwd: dir })
+      // Insert one line after row 100.
+      writeFileSync(join(dir, 'context.txt'), `${[
+        ...rows.slice(0, 100),
+        'inserted line',
+        ...rows.slice(100),
+      ].join('\n')}\n`)
+
+      await showWorkspaceWithAgents(page, leapmuxServer, 'Diff Context', { workingDir: dir })
+      await page.locator('[data-testid="files-filter-changed"]').click()
+      await treeRow(page, 'context.txt').click()
+      await expect(page.locator('[data-testid="diff-mode-toolbar"]')).toBeVisible()
+
+      const visibleText = (text: string) => page.getByText(text, { exact: true }).filter({ visible: true })
+      await expect(visibleText('inserted line')).toBeVisible()
+      for (const row of [
+        'row 098',
+        'row 099',
+        'row 100',
+        'row 101',
+        'row 102',
+        'row 103',
+      ])
+        await expect(visibleText(row)).toBeVisible()
+      await expect(visibleText('row 050')).toHaveCount(0)
+      await expect(visibleText('row 200')).toHaveCount(0)
+
+      // Rows 1 to 97 before the change, and rows 104 to 250 after it.
+      await expect(visibleText('147 lines hidden')).toBeVisible()
+      await visibleText('97 lines hidden').click()
+
+      await expect(visibleText('row 050')).toBeVisible()
+      await expect(visibleText('row 001')).toBeVisible()
+      await expect(visibleText('row 200')).toHaveCount(0)
+    }
+    finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

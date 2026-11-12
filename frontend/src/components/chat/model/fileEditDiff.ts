@@ -1,5 +1,6 @@
+import type { DiffInput } from '../diff/diffCompute'
 import type { StructuredPatchHunk } from '../diff/diffTypes'
-import { formatUnifiedDiffText, rawDiffToHunks } from '../diff/diffBuilder'
+import { formatUnifiedDiffText } from '../diff/diffBuilder'
 import { parseUnifiedDiffCached } from '../diff/unifiedDiffParser'
 
 /**
@@ -17,7 +18,7 @@ export type FileChangeOperation = 'add' | 'edit' | 'delete' | 'move'
  * `tool_use_result`), or the two SIDES it stated, which a tool_use input carries when
  * the result message did not.
  *
- * Exactly one. {@link fileEditDiffHunks} prefers the patch and DROPS the sides, so a
+ * Exactly one. {@link fileEditDiffInput} prefers the patch and DROPS the sides, so a
  * source that carried both drew the patch and silently ignored whatever the sides
  * said -- and {@link fileEditHasDiff} answered from the sides even when the patch was
  * empty, so the two disagreed about whether the row had anything to draw.
@@ -53,7 +54,7 @@ export function fileEditNewStr(source: FileEditDiff): string {
 }
 
 /**
- * The content half of an edit, chosen the way {@link fileEditDiffHunks} reads it.
+ * The content half of an edit, chosen the way {@link fileEditDiffInput} reads it.
  *
  * A provider that holds both a patch and two sides calls this rather than picking one
  * by hand: the patch wins when it carries hunks, because that is what the row draws.
@@ -120,10 +121,10 @@ function normalizeStructuredPatchHunk(value: unknown): StructuredPatchHunk | nul
  * Every hunk of a provider's structured patch that this build can draw.
  *
  * A malformed hunk is dropped, and the rest of the patch still draws. Rejecting the
- * WHOLE list for one bad hunk sent the row to `rawDiffToHunks(oldStr, newStr)`, and a
- * source built from hunks alone (`fileEditDiffFromHunks`) states both of those as the
- * empty string -- so one hunk a provider miscounted left a ten-hunk edit drawing
- * nothing at all.
+ * WHOLE list for one bad hunk sent the row to a diff of `oldStr` and `newStr`
+ * (`fileEditDiffInput`), and a source built from hunks alone (`fileEditDiffFromHunks`)
+ * states both of those as the empty string -- so one hunk a provider miscounted left a
+ * ten-hunk edit drawing nothing at all.
  *
  * Returns null when the input is not a list, and when no hunk survived: the callers
  * read null as "this source carries no structured patch", which is the truth in both.
@@ -241,17 +242,27 @@ export function pickFileEditDiff(
 }
 
 /**
- * Pick the hunks to render: pre-computed `structuredPatch` when non-empty,
- * otherwise compute from `oldStr`/`newStr` via `rawDiffToHunks`.
+ * What one edit diffs: the pre-computed `structuredPatch` when it carries hunks,
+ * otherwise the two sides. The drawn diff and the copied diff both read this, so
+ * they cannot disagree about which one wins. The diff worker computes the hunks
+ * of two sides (see `diffWorkerClient`).
  */
-export function fileEditDiffHunks(source: FileEditDiff): StructuredPatchHunk[] {
-  return nonEmptyStructuredPatch(source) ?? rawDiffToHunks(fileEditOldStr(source), fileEditNewStr(source))
+export function fileEditDiffInput(source: FileEditDiff): DiffInput {
+  const patch = nonEmptyStructuredPatch(source)
+  return patch === null
+    ? {
+        kind: 'texts',
+        oldText: fileEditOldStr(source),
+        newText: fileEditNewStr(source),
+      }
+    : { kind: 'hunks', hunks: patch }
 }
 
-export function fileEditCopyableText(source: FileEditDiff): string {
+/** The Copy text of one edit, given the hunks of its {@link fileEditDiffInput}. */
+export function fileEditCopyableText(source: FileEditDiff, hunks: StructuredPatchHunk[]): string {
   const { filePath, previousPath, operation } = source
   const diff = fileEditHasDiff(source)
-    ? formatUnifiedDiffText(fileEditDiffHunks(source), source.filePath)
+    ? formatUnifiedDiffText(hunks, source.filePath)
     : ''
   const metadata = previousPath && previousPath !== filePath
     ? `rename from ${previousPath}\nrename to ${filePath}`
@@ -263,8 +274,11 @@ export function fileEditCopyableText(source: FileEditDiff): string {
   return [metadata, source.notice, diff].filter(Boolean).join('\n')
 }
 
-/** Preserve the proposed operation when no file content exists to construct a diff. */
-export function requestedFileChangesCopyable(sources: FileEditDiff[]): string {
+/**
+ * Preserve the proposed operation when no file content exists to construct a diff.
+ * `hunksOf` gives the hunks of each source's {@link fileEditDiffInput}.
+ */
+export function requestedFileChangesCopyable(sources: FileEditDiff[], hunksOf: (source: FileEditDiff) => StructuredPatchHunk[]): string {
   if (sources.length === 0)
     return ''
   return [
@@ -273,7 +287,7 @@ export function requestedFileChangesCopyable(sources: FileEditDiff[]): string {
     // The copy text words a REQUESTED operation itself ("Delete x"), so the operation
     // is pulled out here: the landed-change wording ("Deleted x") must not state it first.
       const { operation, ...rest } = source
-      const diff = fileEditCopyableText(rest)
+      const diff = fileEditCopyableText(rest, hunksOf(source))
       if (diff)
         return diff
       const verb = operation === 'delete'

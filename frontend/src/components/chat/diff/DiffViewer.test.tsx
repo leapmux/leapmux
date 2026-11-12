@@ -6,9 +6,16 @@ import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { readInjectedShikiRules } from '~/lib/shikiStyleClass.testkit'
 import { setCachedTokens } from '~/lib/tokenCache'
-import { computeGapMap, computeSyntheticGapMap, DiffView, groupByHunk, rawDiffToHunks } from '.'
+import { computeGapMap, computeSyntheticGapMap, DiffView, groupByHunk } from '.'
+import { DIFF_DRAWN_LINE_LIMIT } from './diffBuilder'
+import { computeDiff } from './diffCompute'
 import { diffAddedInline, diffRemovedInline } from './diffStyles.css'
 import { buildUnifiedLines } from './diffTokenRender'
+
+/** A computed diff of `hunks`, with the word diffs that the diff worker computes for them. */
+function patchDiff(hunks: StructuredPatchHunk[]) {
+  return computeDiff({ kind: 'hunks', hunks })
+}
 
 /**
  * Reconstruct one side of a word-diff using the same filtering logic
@@ -98,7 +105,7 @@ describe('DiffView rendering preserves whitespace', () => {
     ]
 
     const { container } = render(() => (
-      <DiffView hunks={hunks} view="unified" />
+      <DiffView diff={patchDiff(hunks)} view="unified" />
     ))
 
     const { removedText, addedText } = extractDiffTexts(container, 'unified')
@@ -118,7 +125,7 @@ describe('DiffView rendering preserves whitespace', () => {
     ]
 
     const { container } = render(() => (
-      <DiffView hunks={hunks} view="unified" />
+      <DiffView diff={patchDiff(hunks)} view="unified" />
     ))
 
     const { removedText, addedText } = extractDiffTexts(container, 'unified')
@@ -138,7 +145,7 @@ describe('DiffView rendering preserves whitespace', () => {
     ]
 
     const { container } = render(() => (
-      <DiffView hunks={hunks} view="unified" />
+      <DiffView diff={patchDiff(hunks)} view="unified" />
     ))
 
     const { removedText, addedText } = extractDiffTexts(container, 'unified')
@@ -158,7 +165,7 @@ describe('DiffView rendering preserves whitespace', () => {
     ]
 
     const { container } = render(() => (
-      <DiffView hunks={hunks} view="split" />
+      <DiffView diff={patchDiff(hunks)} view="split" />
     ))
 
     const { removedText, addedText } = extractDiffTexts(container, 'split')
@@ -179,7 +186,7 @@ describe('DiffView rendering preserves whitespace', () => {
         <DiffView
           filePath="example.ts"
           originalFile={originalFile}
-          hunks={[
+          diff={patchDiff([
             {
               oldStart: 10,
               oldLines: 1,
@@ -187,7 +194,7 @@ describe('DiffView rendering preserves whitespace', () => {
               newLines: 1,
               lines: [' line 10'],
             },
-          ]}
+          ])}
           view="unified"
         />
       ))
@@ -242,7 +249,7 @@ describe('DiffView rendering preserves whitespace', () => {
       <DiffView
         filePath="example.ts"
         originalFile={originalFile()}
-        hunks={[hunk]}
+        diff={patchDiff([hunk])}
         view="unified"
       />
     ))
@@ -289,7 +296,7 @@ describe('DiffView rendering preserves whitespace', () => {
       { content: `tok:${line}`, htmlStyle: {} },
     ]))
 
-    render(() => <DiffView filePath="example.ts" originalFile={originalFile} hunks={[hunk]} view="unified" />)
+    render(() => <DiffView filePath="example.ts" originalFile={originalFile} diff={patchDiff([hunk])} view="unified" />)
 
     fireEvent.click(screen.getByText('Expand down')) // top 10
     fireEvent.click(screen.getByText('Expand up')) // bottom 10
@@ -339,7 +346,7 @@ describe('DiffView old/new-side syntax highlighting (useAsyncCodeTokens migratio
 
   it('tokenizes both sides via the shared hook when a filePath resolves a language', async () => {
     seedSides()
-    render(() => <DiffView filePath="example.ts" hunks={hunks} view="unified" />)
+    render(() => <DiffView filePath="example.ts" diff={patchDiff(hunks)} view="unified" />)
 
     // The context line carries the OLD-side token; the added line the NEW-side token.
     await waitFor(() => {
@@ -361,7 +368,7 @@ describe('DiffView old/new-side syntax highlighting (useAsyncCodeTokens migratio
     const context: MarkdownRenderContext = {
       syntaxHighlightingPaused: () => true,
     }
-    render(() => <DiffView filePath="example.ts" hunks={hunks} view="unified" context={context} />)
+    render(() => <DiffView filePath="example.ts" diff={patchDiff(hunks)} view="unified" context={context} />)
 
     // Present synchronously on the first render (the seed), not after a deferred effect.
     expect(screen.getByText('CTXTOK')).toBeInTheDocument()
@@ -370,7 +377,7 @@ describe('DiffView old/new-side syntax highlighting (useAsyncCodeTokens migratio
 
   it('renders plain when no filePath resolves a language (ineligible)', () => {
     seedSides()
-    render(() => <DiffView hunks={hunks} view="unified" />)
+    render(() => <DiffView diff={patchDiff(hunks)} view="unified" />)
 
     // No filePath -> lang undefined -> the hook never tokenizes; raw text renders.
     expect(screen.getByText('ctx')).toBeInTheDocument()
@@ -395,7 +402,7 @@ describe('DiffView ansi (.log) highlighting', () => {
       <DiffView
         filePath="out.log"
         view="unified"
-        hunks={[
+        diff={patchDiff([
           {
             oldStart: 1,
             oldLines: 1,
@@ -403,7 +410,7 @@ describe('DiffView ansi (.log) highlighting', () => {
             newLines: 1,
             lines: [` ${ESC}[32mgreen${ESC}[0m tail`],
           },
-        ]}
+        ])}
       />
     ))
 
@@ -435,7 +442,7 @@ describe('DiffView ansi (.log) highlighting', () => {
         filePath="out.log"
         view="unified"
         originalFile={originalFile}
-        hunks={[
+        diff={patchDiff([
           {
             oldStart: 3,
             oldLines: 1,
@@ -443,7 +450,7 @@ describe('DiffView ansi (.log) highlighting', () => {
             newLines: 1,
             lines: [' line 3'],
           },
-        ]}
+        ])}
       />
     ))
 
@@ -469,7 +476,7 @@ describe('DiffView shared gap scaffold (unified + split)', () => {
     render(() => (
       <DiffView
         originalFile={originalFile}
-        hunks={[
+        diff={patchDiff([
           {
             oldStart: 10,
             oldLines: 1,
@@ -477,7 +484,7 @@ describe('DiffView shared gap scaffold (unified + split)', () => {
             newLines: 1,
             lines: [' line 10'],
           },
-        ]}
+        ])}
         view="split"
       />
     ))
@@ -499,7 +506,7 @@ describe('DiffView shared gap scaffold (unified + split)', () => {
     render(() => (
       <DiffView
         originalFile={originalFile}
-        hunks={[
+        diff={patchDiff([
           {
             oldStart: 2,
             oldLines: 1,
@@ -507,7 +514,7 @@ describe('DiffView shared gap scaffold (unified + split)', () => {
             newLines: 1,
             lines: [' line 2'],
           },
-        ]}
+        ])}
         view="unified"
       />
     ))
@@ -525,7 +532,7 @@ describe('DiffView shared gap scaffold (unified + split)', () => {
     render(() => (
       <DiffView
         originalFile={originalFile}
-        hunks={[
+        diff={patchDiff([
           {
             oldStart: 2,
             oldLines: 1,
@@ -533,7 +540,7 @@ describe('DiffView shared gap scaffold (unified + split)', () => {
             newLines: 1,
             lines: [' line 2'],
           },
-        ]}
+        ])}
         view="split"
       />
     ))
@@ -584,7 +591,7 @@ describe('buildUnifiedLines line ordering', () => {
       },
     ]
 
-    const lines = buildUnifiedLines(hunks, null, null)
+    const lines = buildUnifiedLines(hunks, null, null, patchDiff(hunks).wordDiffs)
 
     // Sequence of (type, oldNum, newNum) with hunk lines in source order.
     expect(lines.map(l => [l.type, l.oldNum, l.newNum])).toEqual([
@@ -630,7 +637,7 @@ describe('buildUnifiedLines line ordering', () => {
       },
     ]
 
-    const lines = buildUnifiedLines(hunks, null, null)
+    const lines = buildUnifiedLines(hunks, null, null, patchDiff(hunks).wordDiffs)
 
     expect(lines.map(l => [l.type, l.prefix])).toEqual([
       ['context', ' '],
@@ -661,7 +668,7 @@ describe('buildUnifiedLines line ordering', () => {
       },
     ]
 
-    const lines = buildUnifiedLines(hunks, null, null)
+    const lines = buildUnifiedLines(hunks, null, null, patchDiff(hunks).wordDiffs)
 
     expect(lines.map(l => l.type)).toEqual([
       'removed',
@@ -671,36 +678,6 @@ describe('buildUnifiedLines line ordering', () => {
       'added',
       'added',
     ])
-  })
-})
-
-describe('rawDiffToHunks', () => {
-  it('produces correct hunk lines with prefixes', () => {
-    const hunks = rawDiffToHunks(
-      '    const x = 1;\n',
-      '    const y = 2;\n',
-    )
-    expect(hunks).toHaveLength(1)
-    const hunk = hunks[0]
-    if (hunk === undefined)
-      throw new Error('expected one hunk')
-    expect(hunk.lines).toContain('-    const x = 1;')
-    expect(hunk.lines).toContain('+    const y = 2;')
-  })
-
-  it('preserves leading whitespace in removed lines', () => {
-    const hunks = rawDiffToHunks(
-      '        return value;\n',
-      '    return newValue;\n',
-    )
-    expect(hunks).toHaveLength(1)
-    const hunk = hunks[0]
-    if (hunk === undefined)
-      throw new Error('expected one hunk')
-    const removedLine = hunk.lines.find(l => l.startsWith('-'))
-    expect(removedLine).toBe('-        return value;')
-    const addedLine = hunk.lines.find(l => l.startsWith('+'))
-    expect(addedLine).toBe('+    return newValue;')
   })
 })
 
@@ -918,7 +895,7 @@ describe('DiffView gap rendering without original file', () => {
 
   it('renders non-clickable hidden-line gaps in unified view', () => {
     const { getAllByText, queryByRole } = render(() => (
-      <DiffView hunks={hunks} view="unified" />
+      <DiffView diff={patchDiff(hunks)} view="unified" />
     ))
 
     expect(getAllByText('3 lines hidden')).toHaveLength(1)
@@ -928,7 +905,7 @@ describe('DiffView gap rendering without original file', () => {
 
   it('renders non-clickable hidden-line gaps in split view', () => {
     const { getAllByText, queryByRole } = render(() => (
-      <DiffView hunks={hunks} view="split" />
+      <DiffView diff={patchDiff(hunks)} view="split" />
     ))
 
     expect(getAllByText('3 lines hidden')).toHaveLength(1)
@@ -978,7 +955,7 @@ describe('dual-side tokenization dedup', () => {
           lines: [' const dedupSideA = 1', ' const dedupSideB = 2'],
         },
       ]
-      const { container } = render(() => <DiffView filePath="dedup-sides.ts" hunks={hunks} view="split" />)
+      const { container } = render(() => <DiffView filePath="dedup-sides.ts" diff={patchDiff(hunks)} view="split" />)
 
       // Two hook instances (old side + new side), ONE spawned worker, ONE dispatch.
       expect(workers).toHaveLength(1)
@@ -1053,7 +1030,7 @@ describe('diff token span classes (shared style class + word-diff composition)',
         lines: ['-const wdValue = 1', '+const wdNewValue = 1'],
       },
     ]
-    const { container } = render(() => <DiffView filePath="wd.ts" hunks={hunks} view="unified" />)
+    const { container } = render(() => <DiffView filePath="wd.ts" diff={patchDiff(hunks)} view="unified" />)
 
     // The changed word carries BOTH the token's shared style class and the
     // word-diff highlight...
@@ -1103,13 +1080,113 @@ describe('diff token span classes (shared style class + word-diff composition)',
         lines: ['-plain wd old line', '+plain wd new line'],
       },
     ]
-    const withTokens = render(() => <DiffView filePath="empty-class.ts" hunks={hunks} view="unified" />)
+    const withTokens = render(() => <DiffView filePath="empty-class.ts" diff={patchDiff(hunks)} view="unified" />)
     expect(withTokens.container.querySelector('[class=""]')).toBeNull()
 
     // ...and a token-less diff (no filePath -> no language) exercises the
     // plain word-diff fallback, whose unchanged parts must omit the class
     // attribute rather than stamp class="".
-    const plain = render(() => <DiffView hunks={hunks} view="unified" />)
+    const plain = render(() => <DiffView diff={patchDiff(hunks)} view="unified" />)
     expect(plain.container.querySelector('[class=""]')).toBeNull()
+  })
+})
+
+describe('DiffView line limit', () => {
+  /** One hunk at `oldStart` that adds `count` lines, `row 0` to `row <count - 1>`. */
+  function addedRows(count: number, oldStart = 1): StructuredPatchHunk[] {
+    return [
+      {
+        oldStart,
+        oldLines: 0,
+        newStart: oldStart,
+        newLines: count,
+        lines: Array.from({ length: count }, (_, i) => `+row ${i}`),
+      },
+    ]
+  }
+
+  it('draws every line of a diff at the limit, with no notice', () => {
+    const { queryByTestId, getByText } = render(() => (
+      <DiffView diff={patchDiff(addedRows(DIFF_DRAWN_LINE_LIMIT))} view="unified" />
+    ))
+
+    expect(getByText(`row ${DIFF_DRAWN_LINE_LIMIT - 1}`)).toBeInTheDocument()
+    expect(queryByTestId('diff-truncation-notice')).not.toBeInTheDocument()
+  })
+
+  it('draws the first lines of a longer diff and states how many more it leaves out', () => {
+    const { getByTestId, getByText, queryByText } = render(() => (
+      <DiffView diff={patchDiff(addedRows(DIFF_DRAWN_LINE_LIMIT + 5))} view="unified" />
+    ))
+
+    expect(getByText(`row ${DIFF_DRAWN_LINE_LIMIT - 1}`)).toBeInTheDocument()
+    expect(queryByText(`row ${DIFF_DRAWN_LINE_LIMIT}`)).not.toBeInTheDocument()
+    expect(getByTestId('diff-truncation-notice')).toHaveTextContent('5 more lines of this diff are not shown.')
+  })
+
+  it('states one left-out line in the singular, in the split view too', () => {
+    const { getByTestId } = render(() => (
+      <DiffView diff={patchDiff(addedRows(DIFF_DRAWN_LINE_LIMIT + 1))} view="split" />
+    ))
+
+    expect(getByTestId('diff-truncation-notice')).toHaveTextContent('1 more line of this diff is not shown.')
+  })
+
+  it('offers no gap expansion when it cuts the diff', () => {
+    // The hunk starts at line 10, so a diff that fits offers lines 1 to 9.
+    const originalFile = Array.from({ length: 9 }, (_, i) => `line ${i + 1}`).join('\n')
+    const fits = render(() => (
+      <DiffView originalFile={originalFile} diff={patchDiff(addedRows(3, 10))} view="unified" />
+    ))
+    expect(fits.getByText('9 lines hidden')).toBeInTheDocument()
+    fits.unmount()
+
+    const { queryByText, queryByRole } = render(() => (
+      <DiffView originalFile={originalFile} diff={patchDiff(addedRows(DIFF_DRAWN_LINE_LIMIT + 1, 10))} view="unified" />
+    ))
+
+    expect(queryByText('9 lines hidden')).not.toBeInTheDocument()
+    expect(queryByRole('button', { name: EXPAND_RE })).not.toBeInTheDocument()
+  })
+})
+
+describe('DiffView word diffs', () => {
+  const hunks: StructuredPatchHunk[] = [
+    {
+      oldStart: 1,
+      oldLines: 1,
+      newStart: 1,
+      newLines: 1,
+      lines: ['-let first = 1', '+let second = 1'],
+    },
+  ]
+
+  it('highlights the changed words of a paired line from the computed word diff', () => {
+    const { container } = render(() => <DiffView diff={patchDiff(hunks)} view="unified" />)
+
+    expect([
+      ...container.querySelectorAll(`.${diffRemovedInline}`),
+    ].map(el => el.textContent)).toEqual(['first'])
+    expect([
+      ...container.querySelectorAll(`.${diffAddedInline}`),
+    ].map(el => el.textContent)).toEqual(['second'])
+  })
+
+  it('draws a paired line whole when the diff has no word diff for it', () => {
+    const { container, getByText } = render(() => (
+      <DiffView
+        diff={{
+          hunks,
+          wordDiffs: new Map(),
+          replacedWhole: false,
+        }}
+        view="unified"
+      />
+    ))
+
+    expect(getByText('let first = 1')).toBeInTheDocument()
+    expect(getByText('let second = 1')).toBeInTheDocument()
+    expect(container.querySelector(`.${diffRemovedInline}`)).toBeNull()
+    expect(container.querySelector(`.${diffAddedInline}`)).toBeNull()
   })
 })

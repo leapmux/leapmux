@@ -17,8 +17,8 @@ export interface ParsedUnifiedDiff {
  * also carries.
  *
  * Returns null when the input has no hunks. Note: the diff stack's
- * `rawDiffToHunks` is the inverse direction (pre/post text → hunks), so
- * this and `rawDiffToHunks` complement each other.
+ * `computeDiff` (diffCompute.ts) goes the inverse direction (pre/post text →
+ * hunks), so the two complement each other.
  */
 export function parseUnifiedDiff(diff: string): ParsedUnifiedDiff | null {
   if (!diff.trim())

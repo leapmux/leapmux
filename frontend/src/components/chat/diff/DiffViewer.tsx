@@ -1,6 +1,7 @@
 import type { JSX } from 'solid-js'
 import type { MarkdownRenderContext } from '../renderContext'
 import type { TokenGate } from '../useAsyncCodeTokens'
+import type { ComputedDiff } from './diffCompute'
 import type { DiffGap, DiffGapSummary, DiffLineEntry, SplitLineEntry, StructuredPatchHunk } from './diffTypes'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { CachedToken } from '~/lib/tokenCache'
@@ -13,7 +14,7 @@ import { pluralize } from '~/lib/plural'
 import { shouldPauseSyntaxHighlighting } from '../markdownRendering'
 import { canHighlightBySize } from '../results/collapse'
 import { useAsyncCodeTokens } from '../useAsyncCodeTokens'
-import { computeGapMap, computeSyntheticGapMap, countHunkLines, extractSidesFromHunks, groupByHunk } from './diffBuilder'
+import { computeGapMap, computeSyntheticGapMap, countHunkLines, DIFF_DRAWN_LINE_LIMIT, extractSidesFromHunks, groupByHunk, limitDiffLines } from './diffBuilder'
 import {
   diffAdded,
   diffContainer,
@@ -31,6 +32,7 @@ import {
   diffPrefix,
   diffRemoved,
   diffSplitContainer,
+  diffTruncationNotice,
 } from './diffStyles.css'
 import { buildSplitLines, buildUnifiedLines, renderTokenizedLine } from './diffTokenRender'
 
@@ -518,9 +520,9 @@ function DiffGapScaffold<E extends { hunkIndex: number }>(props: {
 }
 
 /** Render a unified diff view from hunks. */
-function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string, originalFile?: string, showLineNumbers?: boolean, context?: MarkdownRenderContext }): JSX.Element {
+function UnifiedDiffView(props: { hunks: StructuredPatchHunk[], wordDiffs: ComputedDiff['wordDiffs'], filePath?: string, originalFile?: string, showLineNumbers?: boolean, context?: MarkdownRenderContext }): JSX.Element {
   const { oldTokens, newTokens } = useDiffTokens(() => props.hunks, () => props.filePath, () => props.context)
-  const lines = createMemo(() => buildUnifiedLines(props.hunks, oldTokens(), newTokens()))
+  const lines = createMemo(() => buildUnifiedLines(props.hunks, oldTokens(), newTokens(), props.wordDiffs))
   const groups = createMemo(() => groupByHunk(lines()))
   const { gapData, syntheticGaps } = useGapData(() => props.hunks, () => props.originalFile)
   const gapState = useGapReveals()
@@ -576,9 +578,9 @@ function SplitDiffRow(props: { left: SplitLineEntry, right: SplitLineEntry }): J
 }
 
 /** Render a split diff view from hunks (removed on left, added on right). */
-function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string, originalFile?: string, showLineNumbers?: boolean, context?: MarkdownRenderContext }): JSX.Element {
+function SplitDiffView(props: { hunks: StructuredPatchHunk[], wordDiffs: ComputedDiff['wordDiffs'], filePath?: string, originalFile?: string, showLineNumbers?: boolean, context?: MarkdownRenderContext }): JSX.Element {
   const { oldTokens, newTokens } = useDiffTokens(() => props.hunks, () => props.filePath, () => props.context)
-  const splitLines = createMemo(() => buildSplitLines(props.hunks, oldTokens(), newTokens()))
+  const splitLines = createMemo(() => buildSplitLines(props.hunks, oldTokens(), newTokens(), props.wordDiffs))
   const { gapData, syntheticGaps } = useGapData(() => props.hunks, () => props.originalFile)
   const gapState = useGapReveals()
   const leftGroups = createMemo(() => groupByHunk(splitLines().left))
@@ -621,44 +623,53 @@ function SplitDiffView(props: { hunks: StructuredPatchHunk[], filePath?: string,
   )
 }
 
-/** Renders a diff view (unified or split) from hunks with optional syntax highlighting. */
-export function DiffView(props: { hunks: StructuredPatchHunk[], view: DiffViewPreference, filePath?: string, originalFile?: string, showLineNumbers?: boolean, context?: MarkdownRenderContext }): JSX.Element {
+/**
+ * Renders a computed diff (unified or split) with optional syntax highlighting.
+ *
+ * The diff worker computed the hunks and the word diffs (see diffWorkerClient),
+ * so drawing does no diff of its own. It draws at most DIFF_DRAWN_LINE_LIMIT
+ * lines, and states how many more it leaves out. A cut diff offers no gap
+ * expansion, because the gaps after the cut would reveal unchanged lines in place
+ * of the changes that it leaves out.
+ */
+export function DiffView(props: { diff: ComputedDiff, view: DiffViewPreference, filePath?: string, originalFile?: string, showLineNumbers?: boolean, context?: MarkdownRenderContext }): JSX.Element {
+  const drawn = createMemo(() => limitDiffLines(props.diff.hunks, DIFF_DRAWN_LINE_LIMIT))
+  const originalFile = () => drawn().hiddenLines === 0
+    ? props.originalFile
+    : undefined
+  const common = () => ({
+    hunks: drawn().hunks,
+    wordDiffs: props.diff.wordDiffs,
+    ...(props.filePath !== undefined
+      ? { filePath: props.filePath }
+      : {}),
+    ...(originalFile() !== undefined
+      ? {
+          originalFile: originalFile()!,
+        }
+      : {}),
+    ...(props.showLineNumbers !== undefined
+      ? { showLineNumbers: props.showLineNumbers }
+      : {}),
+    ...(props.context !== undefined
+      ? { context: props.context }
+      : {}),
+  })
   return (
-    <Show
-      when={props.view === 'unified'}
-      fallback={(
-        <SplitDiffView
-          hunks={props.hunks}
-          {...(props.filePath !== undefined
-            ? { filePath: props.filePath }
-            : {})}
-          {...(props.originalFile !== undefined
-            ? { originalFile: props.originalFile }
-            : {})}
-          {...(props.showLineNumbers !== undefined
-            ? { showLineNumbers: props.showLineNumbers }
-            : {})}
-          {...(props.context !== undefined
-            ? { context: props.context }
-            : {})}
-        />
-      )}
-    >
-      <UnifiedDiffView
-        hunks={props.hunks}
-        {...(props.filePath !== undefined
-          ? { filePath: props.filePath }
-          : {})}
-        {...(props.originalFile !== undefined
-          ? { originalFile: props.originalFile }
-          : {})}
-        {...(props.showLineNumbers !== undefined
-          ? { showLineNumbers: props.showLineNumbers }
-          : {})}
-        {...(props.context !== undefined
-          ? { context: props.context }
-          : {})}
-      />
-    </Show>
+    <>
+      <Show
+        when={props.view === 'unified'}
+        fallback={<SplitDiffView {...common()} />}
+      >
+        <UnifiedDiffView {...common()} />
+      </Show>
+      <Show when={drawn().hiddenLines > 0}>
+        <div class={diffTruncationNotice} data-testid="diff-truncation-notice">
+          {`${pluralize(drawn().hiddenLines, 'more line')} of this diff ${drawn().hiddenLines === 1
+            ? 'is'
+            : 'are'} not shown.`}
+        </div>
+      </Show>
+    </>
   )
 }

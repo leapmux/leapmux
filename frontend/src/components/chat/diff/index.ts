@@ -1,4 +1,4 @@
-export { computeGapMap, computeSyntheticGapMap, diffStatsFromHunks, formatUnifiedDiffText, groupByHunk, rawDiffToHunks } from './diffBuilder'
+export { computeGapMap, computeSyntheticGapMap, diffStatsFromHunks, formatUnifiedDiffText, groupByHunk } from './diffBuilder'
 export type { DiffGap, DiffGapSummary, DiffLineEntry, SplitLineEntry, StructuredPatchHunk } from './diffTypes'
 export { DiffView } from './DiffViewer'
 export type { ParsedUnifiedDiff } from './unifiedDiffParser'

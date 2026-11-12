@@ -1,5 +1,6 @@
 import type { Component } from 'solid-js'
 import type { UnsupportedReason } from './UnsupportedFileView'
+import type { ComputedDiff } from '~/components/chat/diff/diffCompute'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { GitFileStatusEntry } from '~/generated/proto/leapmux/v1/common_pb'
 import type { FileViewMode } from '~/lib/fileType'
@@ -7,8 +8,9 @@ import type { FileDiffBase, FileDisplayMode, FileViewMode as TabFileViewMode } f
 import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, Show, Switch } from 'solid-js'
 import { isTauriApp } from '~/api/platformBridge'
 import { workerFile, workerGit } from '~/api/workerRpc'
-import { DiffView, rawDiffToHunks } from '~/components/chat/diff'
+import { DiffView } from '~/components/chat/diff'
 import { diffAdded, diffRemoved } from '~/components/chat/diff/diffStyles.css'
+import { requestComputedDiff } from '~/components/chat/diff/diffWorkerClient'
 import { FileActionsMenu } from '~/components/common/FileActionsMenu'
 import { createFileSaveActions } from '~/components/common/fileSaveActions'
 import { showWarnToast } from '~/components/common/Toast'
@@ -35,6 +37,15 @@ import { ViewToggle } from './ViewToggle'
 const MAX_FILE_SIZE = 256 * 1024 // 256 KiB
 /** The limit of each git read: the HEAD and staged versions stop where the working copy does. */
 const GIT_READ_LIMIT = BigInt(MAX_FILE_SIZE)
+
+/**
+ * The diff that diff mode draws: none (another mode, a binary file, or a version
+ * that has not loaded), computing in the diff worker, or ready.
+ */
+type ViewerDiff
+  = | { status: 'none' }
+    | { status: 'computing' }
+    | { status: 'ready', diff: ComputedDiff }
 
 /** Whether the limit cut the content of a git read. */
 function gitReadTruncated(resp: { content: Uint8Array, totalSize: bigint }): boolean {
@@ -579,15 +590,27 @@ export const FileViewer: Component<{
     !loading() && !error() && !isDiffMode() && !isRefMode()
     && (viewMode() === 'markdown' || (viewMode() === 'image' && isSvgExt(ext())))
 
-  const diffHunks = createMemo(() => {
-    if (!isDiffMode())
-      return []
+  // The diff of the two versions, which the diff worker computes (see
+  // diffWorkerClient). A binary file that draws its notice diffs nothing.
+  const viewerDiff = createMemo((): ViewerDiff => {
+    if (!isDiffMode() || binaryDiffMessage() !== null)
+      return { status: 'none' }
     const old = diffOldContent()
     const nw = diffNewContent()
     if (old === null || nw === null)
-      return []
-    return rawDiffToHunks(old, nw)
+      return { status: 'none' }
+    const diff = requestComputedDiff({ kind: 'texts', oldText: old, newText: nw })
+    return diff === undefined
+      ? { status: 'computing' }
+      : { status: 'ready', diff }
   })
+  const diffComputing = () => viewerDiff().status === 'computing'
+  const readyDiff = (): ComputedDiff | undefined => {
+    const current = viewerDiff()
+    return current.status === 'ready'
+      ? current.diff
+      : undefined
+  }
 
   const diffViewPref = (): DiffViewPreference =>
     props.fileViewMode === 'split-diff'
@@ -627,9 +650,9 @@ export const FileViewer: Component<{
   createEffect(on(
     () => [
       loading(),
-      diffLoading(),
+      diffLoading() || diffComputing(),
       isDiffMode(),
-      diffHunks().length,
+      readyDiff()?.hunks.length ?? 0,
       props.fileViewMode,
     ] as const,
     ([fileLoading, dLoading, diffMode, hunkCount, _fvMode]) => {
@@ -747,7 +770,7 @@ export const FileViewer: Component<{
         }}
         ref={contentRef}
       >
-        <Show when={loading() || diffLoading()}>
+        <Show when={loading() || diffLoading() || diffComputing()}>
           <div class={styles.loadingState}>Loading...</div>
         </Show>
         <Show when={error()}>
@@ -775,17 +798,19 @@ export const FileViewer: Component<{
               {binaryDiffMessage()}
             </div>
           </Show>
-          <Show when={isDiffMode() && !diffLoading() && binaryDiffMessage() === null && diffOldContent() !== null && diffNewContent() !== null}>
-            <DiffView
-              hunks={diffHunks()}
-              view={diffViewPref()}
-              filePath={props.filePath}
-              {...(diffOldContent() !== null
-                ? {
-                    originalFile: diffOldContent()!,
-                  }
-                : {})}
-            />
+          <Show when={!diffLoading() && readyDiff()}>
+            {diff => (
+              <DiffView
+                diff={diff()}
+                view={diffViewPref()}
+                filePath={props.filePath}
+                {...(diffOldContent() !== null
+                  ? {
+                      originalFile: diffOldContent()!,
+                    }
+                  : {})}
+              />
+            )}
           </Show>
 
           {/* Working mode or no mode: show normal file content. */}
