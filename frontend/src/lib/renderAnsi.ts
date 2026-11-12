@@ -1,5 +1,5 @@
-import { shikiHighlighter } from './renderMarkdown'
 import { shikiStyleClassTransformer } from './shikiStyleClass'
+import { shikiHighlighter } from './shikiSyncHighlighter'
 import { dualThemeTokenOptions } from './shikiThemes'
 
 const ESC = '\x1B'

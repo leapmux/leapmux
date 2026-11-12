@@ -108,11 +108,11 @@ const PreferencesApplier: ParentComponent = (props) => {
     // it reaches the global sink as "Something went wrong", which says nothing
     // about the code surface that did not repaint.
     //
-    // `shikiHighlighter` is loaded LAZILY: a static import of `~/lib/renderMarkdown`
-    // pulled the whole sync Shiki grammar set + worker client onto every cold
-    // boot's modulepreload list (~2 MB of critical-path JS on mobile). This
-    // effect needs the highlighter only after preferences resolve a syntax pair.
-    void import('~/lib/renderMarkdown')
+    // `shikiHighlighter` is loaded LAZILY: its module carries Shiki's core and its
+    // JavaScript regex engine, which a cold boot does not need on its
+    // modulepreload list. This effect needs the highlighter only after
+    // preferences resolve a syntax pair.
+    void import('~/lib/shikiSyncHighlighter')
       .then(({ shikiHighlighter }) => setSyntaxTheme(pair, shikiHighlighter))
       .then(() => {
         if (gen !== syntaxAttrGen)

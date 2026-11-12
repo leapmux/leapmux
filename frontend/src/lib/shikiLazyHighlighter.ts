@@ -27,8 +27,8 @@ export type LanguageLoadResult = 'loaded' | 'unsupported' | 'failed'
 /**
  * A lazily-initialized Shiki highlighter backed by the Oniguruma WASM engine.
  *
- * Unlike the synchronous main-thread `shikiHighlighter` (JS regex engine, fixed
- * 20-language set), this one:
+ * Unlike the synchronous main-thread `shikiHighlighter` (JS regex engine, no
+ * grammar: it colours ANSI output only), this one:
  *   - uses Oniguruma (Shiki's reference engine: faster on complex grammars and
  *     fully accurate -- no JS-engine lookbehind degradation), which requires an
  *     async WASM init, hence everything here is promise-based; and

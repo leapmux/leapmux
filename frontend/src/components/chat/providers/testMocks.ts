@@ -18,6 +18,9 @@ vi.mock('~/lib/renderMarkdown', () => ({
   getCachedMarkdownHtml: () => undefined,
   requestMarkdownHtml: (text: string) => text,
   prefetchMarkdownHtml: () => {},
+}))
+
+vi.mock('~/lib/shikiSyncHighlighter', () => ({
   // ReadResultView's ANSI sync path calls codeToTokens (not codeToHtml); keep the
   // stub faithful to the real interface so a .log Read result rendered through these
   // mocks tokenizes (one token per line) instead of hitting a TypeError that the

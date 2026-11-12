@@ -1,31 +1,4 @@
 import type { MarkdownRenderResult } from './markdownWorkerClient'
-import themeGithubDark from '@shikijs/themes/github-dark'
-import themeGithubLight from '@shikijs/themes/github-light'
-import { createHighlighterCoreSync } from 'shiki/core'
-import { createJavaScriptRegexEngine } from 'shiki/engine/javascript'
-// Eager grammars for the synchronous (no-Worker) fallback highlighter below. The
-// async worker/editor paths lazy-load grammars instead, so these imports live here
-// -- next to their only consumer -- rather than in the shared markdownProcessor.
-import langBash from 'shiki/langs/bash.mjs'
-import langC from 'shiki/langs/c.mjs'
-import langCpp from 'shiki/langs/cpp.mjs'
-import langCss from 'shiki/langs/css.mjs'
-import langDiff from 'shiki/langs/diff.mjs'
-import langGo from 'shiki/langs/go.mjs'
-import langHtml from 'shiki/langs/html.mjs'
-import langJava from 'shiki/langs/java.mjs'
-import langJavascript from 'shiki/langs/javascript.mjs'
-import langJson from 'shiki/langs/json.mjs'
-import langJsx from 'shiki/langs/jsx.mjs'
-import langMarkdown from 'shiki/langs/markdown.mjs'
-import langPython from 'shiki/langs/python.mjs'
-import langRust from 'shiki/langs/rust.mjs'
-import langSql from 'shiki/langs/sql.mjs'
-import langToml from 'shiki/langs/toml.mjs'
-import langTsx from 'shiki/langs/tsx.mjs'
-import langTypescript from 'shiki/langs/typescript.mjs'
-import langXml from 'shiki/langs/xml.mjs'
-import langYaml from 'shiki/langs/yaml.mjs'
 import { createSignal } from 'solid-js'
 import { capMapInsertionOrder, lruGet, lruSet } from '~/lib/mapLru'
 import { createMarkdownProcessor, renderWithPlainFallback } from './markdownProcessor'
@@ -33,56 +6,15 @@ import { markdownSourceFallbackHtml } from './markdownSourceFallback'
 import { renderMarkdownInWorker } from './markdownWorkerClient'
 import { createPersistedArtifact } from './persistedArtifact'
 import { ensureShikiStyleRules } from './shikiStyleClass'
+import { shikiHighlighter } from './shikiSyncHighlighter'
 import { createPairKeyedCache, syntaxThemePair, themeStillCurrent } from './shikiThemes'
-import { withTransparentBg } from './syntaxThemes'
 import { onSyntaxThemeChange } from './syntaxThemeStore'
 
-/** The bundled Shiki language grammars the synchronous fallback highlighter pre-loads. */
-const shikiLangs = [
-  langTypescript,
-  langJavascript,
-  langPython,
-  langRust,
-  langGo,
-  langJava,
-  langBash,
-  langJson,
-  langHtml,
-  langCss,
-  langYaml,
-  langToml,
-  langSql,
-  langMarkdown,
-  langDiff,
-  langC,
-  langCpp,
-  langJsx,
-  langTsx,
-  langXml,
-]
-
-// Synchronous Shiki highlighter, pre-loaded with the bundled languages. Still
-// exported for the OTHER synchronous highlighting call sites (renderAnsi,
-// ReadResultView, the markdown editor, tool renderers) that highlight short,
-// bounded snippets where a worker round-trip would be overkill. Markdown bodies no
-// longer use it on the hot path -- see requestMarkdownHtml below.
-// The initial pair is the Default theme's, which is GitHub's, imported
-// STATICALLY: a synchronous highlighter cannot await a chunk, so the one pair
-// the app starts on has to sit in the main bundle. Every other pair arrives
-// lazily -- `setSyntaxTheme` registers it here before pointing the shared
-// options at it, so a synchronous call site never names an unregistered theme.
-export const shikiHighlighter = createHighlighterCoreSync({
-  themes: [
-    withTransparentBg(themeGithubLight),
-    withTransparentBg(themeGithubDark),
-  ],
-  langs: shikiLangs,
-  engine: createJavaScriptRegexEngine(),
-})
-
-// The full highlighted-markdown processor on the MAIN thread. Used only as the
-// fallback when no Worker is available (unit tests / SSR) -- in the browser the
-// worker renders instead, off the UI thread (see requestMarkdownHtml).
+// The full markdown processor on the MAIN thread. Used only where no Worker exists,
+// which means the jsdom unit tests -- in the browser the worker renders instead, off
+// the UI thread (see requestMarkdownHtml). It highlights with the synchronous
+// highlighter, which holds no grammar, so a fenced block shows its text without token
+// colours unless a test loads the grammar (see shikiSyncHighlighter).
 //
 // Built LAZILY and keyed on the pair, for the same reason the worker's copy is:
 // `createMarkdownProcessor` bakes the pair in, so a module-scope `const` froze
@@ -167,9 +99,10 @@ function scheduleVersionBump(): void {
   })
 }
 
-// Whether off-thread rendering is available. False under unit tests / SSR (jsdom
-// defines no Worker), where requestMarkdownHtml renders synchronously so the
-// rendered output is identical to the browser's eventual result.
+// Whether off-thread rendering is available. False under the jsdom unit tests, which
+// define no Worker (the app renders nothing on a server). There requestMarkdownHtml
+// renders synchronously, through the same pipeline as the worker, so the output has
+// the browser's structure; only fenced code lacks token colours (see getSyncProcessor).
 function canUseWorker(): boolean {
   return typeof Worker !== 'undefined'
 }
@@ -267,8 +200,8 @@ export function getCachedMarkdownHtml(text: string): string | undefined {
   return lruGet(markdownCache, text) // hit re-fronts to MRU end
 }
 
-/** Full synchronous highlighted render (main-thread Shiki). The no-Worker path. */
-function renderHighlightedSync(text: string): string {
+/** Render `text` on this thread, where no Worker exists (see getSyncProcessor). */
+function renderWithoutWorker(text: string): string {
   return renderWithPlainFallback(getSyncProcessor(), text)
 }
 
@@ -421,7 +354,7 @@ export function requestMarkdownHtml(text: string, isLowPriority?: () => boolean)
     return cached
 
   if (!canUseWorker()) {
-    const html = renderHighlightedSync(text)
+    const html = renderWithoutWorker(text)
     lruSet(markdownCache, text, html, CACHE_MAX_SIZE)
     return html
   }

@@ -21,7 +21,7 @@ import { ensureThemesRegistered } from './syntaxThemes'
  *   3. INVALIDATE every cache holding tokenized output, then bump `generation`.
  *
  * Registering first is what makes step 2 safe: a synchronous call site
- * (`ansiTokenize`, the editor, the tool renderers) cannot await, so between 2
+ * (`renderAnsi`, `ansiTokenize`) cannot await, so between 2
  * and 1 it would name a theme Shiki has not loaded and throw. Doing it in this
  * order means the old theme simply stays live a moment longer.
  */

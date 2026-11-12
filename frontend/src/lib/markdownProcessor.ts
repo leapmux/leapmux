@@ -16,24 +16,20 @@ import { UNTRUSTED_LINK_ATTRIBUTE } from './untrustedLinkClicks'
 
 /**
  * The remark+rehype+Shiki markdown pipeline configuration, shared by BOTH the
- * main-thread synchronous renderer (renderMarkdown.ts, which holds a
- * createHighlighterCoreSync instance on the JS regex engine) and the off-thread
+ * main-thread synchronous renderer (renderMarkdown.ts, which uses the
+ * createHighlighterCoreSync instance of shikiSyncHighlighter.ts, on the JS regex
+ * engine, with no grammar) and the off-thread
  * worker (markdownWorker.ts, which holds a createHighlighterCore instance on the
  * Oniguruma WASM engine, lazily loading grammars). Centralizing the plugin chain +
  * theme set here is load-bearing: both paths emit the same themed `pre.shiki`
  * structure the CSS targets (markdownContent.css.ts), with `--shiki-light` /
  * `--shiki-dark` dual-theme variables.
  *
- * The two paths may now use DIFFERENT engines, so their token boundaries can
- * differ in edge cases -- but they never coexist in one runtime (the worker runs
- * in the browser; the sync path runs only when `Worker` is undefined, i.e.
- * tests/SSR), so the shared `markdownCache` is filled by exactly one of them per
- * session and there is no flash from a sync->worker swap.
- *
- * The eager 20-grammar set the sync fallback needs lives with its sole consumer in
- * renderMarkdown.ts (`shikiLangs`), NOT here -- so the lazy worker/editor paths that
- * import this module for the pipeline factory don't drag in 20 eager grammar chunks
- * they never use.
+ * The two paths use DIFFERENT engines and grammar sets, so their tokens differ --
+ * but they never coexist in one runtime (the worker runs in the browser; the sync
+ * path runs only when `Worker` is undefined, i.e. the jsdom unit tests), so the
+ * shared `markdownCache` is filled by exactly one of them per session and there is
+ * no flash from a sync->worker swap.
  */
 
 // Case-sensitive on purpose: only a lowercase `http(s)://` scheme is treated as
@@ -185,7 +181,7 @@ export function createMarkdownProcessor(highlighter: HighlighterCore, pair: Synt
         shikiStyleClassTransformer(),
       ],
       // A fence whose language isn't loaded (worker: lazy-load missed it; sync
-      // fallback: outside the 20-lang set) or that errors degrades to a plain
+      // fallback: it loads no grammar) or that errors degrades to a plain
       // `text` block instead of throwing the whole document to plain.
       fallbackLanguage: 'text',
       // An unknown/unloaded fence is handled by `fallbackLanguage` WITHOUT reaching

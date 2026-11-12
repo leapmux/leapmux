@@ -1,12 +1,14 @@
 import { IDBFactory } from 'fake-indexeddb'
+import langJavascript from 'shiki/langs/javascript.mjs'
 import { createEffect, createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_THEME_ID } from '~/styles/themes'
 import { plainMarkdownProcessor } from './markdownProcessor'
 import { _resetArtifactStoreForTest, getArtifact, putArtifact } from './renderArtifactStore'
-import { _getMarkdownCacheSize, _resetMarkdownCache, markdownArtifactNs, requestMarkdownHtml, shikiHighlighter } from './renderMarkdown'
+import { _getMarkdownCacheSize, _resetMarkdownCache, markdownArtifactNs, requestMarkdownHtml } from './renderMarkdown'
 import { _resetShikiStyleClassesForTest } from './shikiStyleClass'
 import { readInjectedShikiRules } from './shikiStyleClass.testkit'
+import { shikiHighlighter } from './shikiSyncHighlighter'
 import { syntaxPairFor } from './syntaxThemes'
 import { setSyntaxTheme } from './syntaxThemeStore'
 
@@ -74,9 +76,11 @@ describe('renderMarkdown shared token-style classes', () => {
   })
 
   it('renders fenced code with class-based token spans and injects the rules (sync path)', () => {
-    // jsdom has no Worker, so this exercises the synchronous highlighted
-    // fallback -- the same createMarkdownProcessor pipeline (and transformer)
-    // the worker runs.
+    // jsdom has no Worker, so this exercises the synchronous fallback -- the same
+    // createMarkdownProcessor pipeline (and transformer) the worker runs. The
+    // synchronous highlighter holds no grammar in the app, so load the one this
+    // block needs, or it renders as one plain `text` token.
+    shikiHighlighter.loadLanguageSync(langJavascript)
     const html = requestMarkdownHtml('```js\nconst x = 1\n```') ?? ''
     // Token spans carry shared classes, never inline styles. (The <pre> keeps
     // its per-block rootStyle -- one element -- so scope the assertion to spans.)
@@ -256,9 +260,19 @@ describe('renderMarkdown cache and gfm', () => {
   })
 
   it('should render markdown with syntax highlighting', () => {
+    shikiHighlighter.loadLanguageSync(langJavascript)
     const html = requestMarkdownHtml('```js\nconst x = 1\n```')
     expect(html).toContain('class="shiki')
     expect(html).toContain('const')
+    // Tokenized: the keyword sits in a span of its own.
+    expect(html).not.toContain('const x = 1')
+  })
+
+  it('renders a fenced block whose grammar is not loaded as plain text in the Shiki structure', () => {
+    const html = requestMarkdownHtml('```python\ndef f(): pass\n```')
+    expect(html).toContain('class="shiki')
+    // One token for the whole line: nothing loaded Python's grammar on this thread.
+    expect(html).toContain('def f(): pass')
   })
 
   it('should render plain text', () => {
@@ -325,36 +339,5 @@ describe('renderMarkdown cache and gfm', () => {
       processSync.mockRestore()
       warn.mockRestore()
     }
-  })
-})
-
-/**
- * The synchronous highlighter must boot already holding the pair the app
- * starts on.
- *
- * It cannot await a chunk, so that one pair is imported statically. Nothing in
- * the type system ties that import to `SYNTAX_THEMES.default`, and the two DID
- * drift apart once: pointing Default at another pair while the static import
- * stayed behind leaves every synchronous call site -- `renderAnsi`, the
- * editor, the tool renderers, the Read view -- naming a theme Shiki has not
- * loaded, which throws on the first highlight of the session.
- */
-describe('shikiHighlighter startup themes', () => {
-  it('registers the pair the theme catalogue names for Default', () => {
-    const pair = syntaxPairFor(DEFAULT_THEME_ID)
-    const loaded = shikiHighlighter.getLoadedThemes()
-    expect(loaded).toContain(pair.light)
-    expect(loaded).toContain(pair.dark)
-  })
-
-  it('highlights synchronously under that pair without registering anything', () => {
-    // The assertion that would actually have caught the drift: naming an
-    // unregistered theme throws rather than degrading.
-    const pair = syntaxPairFor(DEFAULT_THEME_ID)
-    expect(() => shikiHighlighter.codeToHtml('const a = 1', {
-      lang: 'typescript',
-      themes: { light: pair.light, dark: pair.dark },
-      defaultColor: false,
-    })).not.toThrow()
   })
 })
