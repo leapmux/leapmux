@@ -12,7 +12,7 @@ import (
 	// one project this repo's own code depends on -- and one is enough.
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 // GitHub Copilot keeps one directory per session at

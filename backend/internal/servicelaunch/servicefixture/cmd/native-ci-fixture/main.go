@@ -13,7 +13,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/servicelaunch/servicefixture"
 	"github.com/leapmux/leapmux/internal/util/atomicfile"
-	"go.yaml.in/yaml/v3"
+	"go.yaml.in/yaml/v4"
 )
 
 var runNumber = regexp.MustCompile(`^[1-9][0-9]*$`)
