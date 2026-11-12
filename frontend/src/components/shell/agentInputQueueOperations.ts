@@ -172,8 +172,8 @@ export function createAgentInputQueueOperations(deps: {
       scheduledAt,
     }
     const inputId = requirePendingAttempt
-      ? enqueueRetry.inputIdForPendingAttempt(payload)
-      : enqueueRetry.inputIdFor(payload)
+      ? await enqueueRetry.inputIdForPendingAttempt(payload)
+      : await enqueueRetry.inputIdFor(payload)
     if (inputId === undefined)
       return false
     const existing = inFlightByInputId.get(inputId)

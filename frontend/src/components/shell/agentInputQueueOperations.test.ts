@@ -536,13 +536,13 @@ describe('createAgentInputQueueOperations retryPendingMessage', () => {
       ops.sendMessage('later', [], at),
       ops.sendMessage('later', [], at),
     ])
-    try {
-      expect(enqueueAgentInput).toHaveBeenCalledTimes(1)
-    }
-    finally {
-      response.reject(error)
-      await settled
-    }
+    // Each send hashes its payload before it looks for an in-flight request.
+    await vi.waitFor(() => expect(enqueueAgentInput).toHaveBeenCalled())
+    response.reject(error)
+    const results = await settled
+    // The second send joined the first request instead of sending its own.
+    expect(enqueueAgentInput).toHaveBeenCalledTimes(1)
+    expect(results.map(result => result.status)).toEqual(['rejected', 'rejected'])
   })
 
   it('keeps earlier uncertainty when a later attempt receives a refusal', async () => {

@@ -4,6 +4,7 @@ import { blake2b } from '@noble/hashes/blake2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { randomUUID } from '~/lib/idGenerator'
 import { lruSet } from '~/lib/mapLru'
+import { createWorkSlicer } from '~/lib/workSlices'
 
 export interface AgentInputEnqueuePayload {
   agentId: string
@@ -19,23 +20,42 @@ export interface AgentInputEnqueuePayload {
   scheduledAt: string
 }
 
-function payloadFingerprint(payload: AgentInputEnqueuePayload): string {
+/**
+ * The bytes that one `hash.update` takes between two checks of the work slice. BLAKE2b
+ * in JavaScript hashes about 60 MiB per second, so a piece takes about 1 ms.
+ */
+const FINGERPRINT_PIECE_BYTES = 64 * 1024
+
+/**
+ * Hash every part of the payload, attachment bytes included, so that a change to any
+ * byte mints a fresh input ID.
+ *
+ * A payload carries up to 10 MiB per item, and hashing 10 MiB in one task froze the
+ * page for about 170 ms at each send. The hash runs in work slices instead, and yields
+ * to the event loop between them.
+ */
+async function payloadFingerprint(payload: AgentInputEnqueuePayload): Promise<string> {
   const hash = blake2b.create({ dkLen: 32 })
+  const slicer = createWorkSlicer()
   const encoder = new TextEncoder()
-  const update = (data: Uint8Array) => {
+  const update = async (data: Uint8Array) => {
     const size = new Uint8Array(8)
     new DataView(size.buffer).setBigUint64(0, BigInt(data.byteLength), true)
     hash.update(size)
-    hash.update(data)
+    for (let offset = 0; offset < data.byteLength; offset += FINGERPRINT_PIECE_BYTES) {
+      if (slicer.sliceUsed())
+        await slicer.nextSlice()
+      hash.update(data.subarray(offset, offset + FINGERPRINT_PIECE_BYTES))
+    }
   }
-  update(encoder.encode(payload.agentId))
-  update(Uint8Array.of(payload.kind))
-  update(encoder.encode(payload.text))
-  update(encoder.encode(payload.scheduledAt))
+  await update(encoder.encode(payload.agentId))
+  await update(Uint8Array.of(payload.kind))
+  await update(encoder.encode(payload.text))
+  await update(encoder.encode(payload.scheduledAt))
   for (const attachment of payload.attachments) {
-    update(encoder.encode(attachment.filename))
-    update(encoder.encode(attachment.mimeType))
-    update(attachment.data)
+    await update(encoder.encode(attachment.filename))
+    await update(encoder.encode(attachment.mimeType))
+    await update(attachment.data)
   }
   return bytesToHex(hash.digest())
 }
@@ -60,7 +80,7 @@ export function createAgentInputEnqueueRetry(mint: () => string = randomUUID) {
   // The complete payload identifies an attempt. Several abandoned drafts for
   // one agent must keep independent IDs when their responses are lost.
   const pendingByFingerprint = new Map<string, PendingAttempt>()
-  const keyOf = (payload: AgentInputEnqueuePayload) => `${payload.agentId}\0${payload.kind}\0${payloadFingerprint(payload)}`
+  const keyOf = async (payload: AgentInputEnqueuePayload) => `${payload.agentId}\0${payload.kind}\0${await payloadFingerprint(payload)}`
 
   const settle = (inputId: string, outcome: 'accepted' | 'refused' | 'uncertain') => {
     for (const [key, attempt] of pendingByFingerprint) {
@@ -79,8 +99,8 @@ export function createAgentInputEnqueueRetry(mint: () => string = randomUUID) {
   }
 
   return {
-    inputIdFor(payload: AgentInputEnqueuePayload): string {
-      const key = keyOf(payload)
+    async inputIdFor(payload: AgentInputEnqueuePayload): Promise<string> {
+      const key = await keyOf(payload)
       const attempt = pendingByFingerprint.get(key) ?? {
         inputId: mint(),
         uncertain: false,
@@ -90,8 +110,8 @@ export function createAgentInputEnqueueRetry(mint: () => string = randomUUID) {
     },
 
     /** Acquire an unanswered attempt without minting an ID or hashing twice. */
-    inputIdForPendingAttempt(payload: AgentInputEnqueuePayload): string | undefined {
-      const key = keyOf(payload)
+    async inputIdForPendingAttempt(payload: AgentInputEnqueuePayload): Promise<string | undefined> {
+      const key = await keyOf(payload)
       const attempt = pendingByFingerprint.get(key)
       if (!attempt?.uncertain)
         return undefined

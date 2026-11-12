@@ -8,7 +8,7 @@
 import type { ChannelPool } from './channelPool'
 import type { ChannelRelay } from './channelRelay'
 import type { PendingRequest, StreamListener } from './channelRpc'
-import type { ChannelSession } from './channelSession'
+import type { ChannelSession, ChunkedSends } from './channelSession'
 import type { KeyPinStore } from './keyPinStore'
 import type { Session } from './noise'
 import type { WorkerKeyBundle } from './workerKeyBundle'
@@ -16,6 +16,7 @@ import { MAX_CHUNK_SIZE, MAX_CONFIGURABLE_MESSAGE_SIZE } from '~/generated/contr
 import { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
 import { FIRST_REQUEST_ID } from './channelRpc'
+import { createChunkedSends } from './channelSession'
 import { formatErrorMessage } from './errors'
 import { KeyPinRejectedError } from './keyPinStore'
 import { monotonicNow } from './monotonicNow'
@@ -48,6 +49,7 @@ export interface OpeningChannel {
   rekeyAbort: (() => void) | null
   rekeyRequestId: number | null
   rekeyChain: Promise<void>
+  chunkedSends: ChunkedSends
   /** Worker ML-KEM pub retained for rekey encapsulation; empty in classic mode. */
   workerMlkemPub: Uint8Array
   /** In-flight rekey initiator material; null when no rekey is in progress. */
@@ -197,6 +199,7 @@ export class ChannelOpen<T extends OpeningChannel = OpeningChannel> {
         rekeyAbort: null,
         rekeyRequestId: null,
         rekeyChain: Promise.resolve(),
+        chunkedSends: createChunkedSends(),
         // Retain the worker's static ML-KEM key so a later in-band rekey can
         // encapsulate a fresh PQ ciphertext without a second
         // getWorkerHandshakeParams round trip. Empty in classic mode; its length

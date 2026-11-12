@@ -1,11 +1,30 @@
 import type { SessionChannel } from './channelSession'
 import type { Session } from './noise'
-import { describe, expect, it, vi } from 'vitest'
+import { fromBinary } from '@bufbuild/protobuf'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MAX_CHUNK_SIZE, SESSION_KEY_HARD_CEILING_MS, SESSION_KEY_MAX_AGE_MS } from '~/generated/contracts/wire'
-import { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
+import { ChannelMessageFlags, ChannelMessageSchema, EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
 import { ChannelError } from './channelError'
-import { ChannelSession } from './channelSession'
+import { unframeBytes } from './channelFraming'
+import { ChannelSession, createChunkedSends } from './channelSession'
 import { generateRekeyEphemeral } from './noise-hybrid'
+
+/** When true, every work slice is used up after one chunk, so each later chunk waits for a yield. */
+const slicing = vi.hoisted(() => ({ oneChunkPerSlice: false }))
+
+vi.mock('./workSlices', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./workSlices')>()
+  return {
+    ...actual,
+    createWorkSlicer: () => {
+      const real = actual.createWorkSlicer()
+      return {
+        sliceUsed: () => slicing.oneChunkPerSlice || real.sliceUsed(),
+        nextSlice: real.nextSlice,
+      }
+    },
+  }
+})
 
 function mockCipher(sendNeeds = false, recvNeeds = false) {
   const encrypt = vi.fn((pt: Uint8Array) => new Uint8Array(pt))
@@ -51,6 +70,7 @@ function makeChannel(overrides?: Partial<SessionChannel> & { session?: Session }
     rekeyAbort: null,
     rekeyRequestId: null,
     rekeyChain: Promise.resolve(),
+    chunkedSends: createChunkedSends(),
     workerMlkemPub: new Uint8Array(0),
     rekeyMaterial: null,
     ...overrides,
@@ -527,5 +547,151 @@ describe('channelSession', () => {
     expect(session.needsRekeyGate(makeChannel({
       lastRekeyAt: performance.now() - SESSION_KEY_HARD_CEILING_MS - 1,
     }))).toBe(true)
+  })
+})
+
+describe('channelSession chunked sends', () => {
+  afterEach(() => {
+    slicing.oneChunkPerSlice = false
+  })
+
+  /** The correlation ID and the flags of each frame that reached the wire. */
+  function decodeFrames(sent: Uint8Array[]): Array<{ id: number, more: boolean }> {
+    return sent.map((buf) => {
+      const unframed = unframeBytes(buf)
+      if (!unframed.ok)
+        throw new Error(`a frame failed to unframe: ${unframed.failure.kind}`)
+      const message = fromBinary(ChannelMessageSchema, unframed.payload)
+      return {
+        id: Number(message.correlationId),
+        more: message.flags === ChannelMessageFlags.MORE,
+      }
+    })
+  }
+
+  function setup(overrides?: Parameters<typeof makeChannel>[0], failOnWrite?: { write: number, error: Error }) {
+    const sent: Uint8Array[] = []
+    const onSendFailure = vi.fn()
+    const session = new ChannelSession({
+      sendToWire: (buf) => {
+        if (sent.length + 1 === failOnWrite?.write)
+          throw failOnWrite.error
+        sent.push(buf)
+      },
+      closeChannel: async () => {},
+      onSendFailure,
+    })
+    const ch = makeChannel({
+      maxReassembledMessageSize: MAX_CHUNK_SIZE * 4,
+      ...overrides,
+    })
+    return { sent, onSendFailure, session, ch }
+  }
+
+  const chunks = (count: number) => new Uint8Array(MAX_CHUNK_SIZE * (count - 1) + 10)
+
+  it('sends a message that fits one slice before the call returns', () => {
+    const { sent, session, ch } = setup()
+    session.sendEncryptedMessage(ch, chunks(3), 7)
+    expect(decodeFrames(sent)).toEqual([
+      { id: 7, more: true },
+      { id: 7, more: true },
+      { id: 7, more: false },
+    ])
+    expect(ch.chunkedSends.sending).toBe(false)
+  })
+
+  it('sends the first chunk at once and the rest in later tasks', async () => {
+    slicing.oneChunkPerSlice = true
+    const { sent, session, ch } = setup()
+    session.sendEncryptedMessage(ch, chunks(3), 7)
+    expect(sent).toHaveLength(1)
+    expect(ch.chunkedSends.sending).toBe(true)
+
+    await ch.chunkedSends.sent
+
+    expect(decodeFrames(sent)).toEqual([
+      { id: 7, more: true },
+      { id: 7, more: true },
+      { id: 7, more: false },
+    ])
+    expect(ch.chunkedSends.sending).toBe(false)
+  })
+
+  it('sends queued chunked messages one after another', async () => {
+    slicing.oneChunkPerSlice = true
+    const { sent, session, ch } = setup()
+    session.sendEncryptedMessage(ch, chunks(2), 7)
+    session.sendEncryptedMessage(ch, chunks(2), 8)
+
+    await ch.chunkedSends.sent
+
+    expect(decodeFrames(sent).map(frame => frame.id)).toEqual([7, 7, 8, 8])
+  })
+
+  it('lets a single frame out between the slices of a chunked message', async () => {
+    slicing.oneChunkPerSlice = true
+    const { sent, session, ch } = setup()
+    session.sendEncryptedMessage(ch, chunks(2), 7)
+    session.sendEncryptedMessage(ch, new Uint8Array(10), 9)
+
+    await ch.chunkedSends.sent
+
+    expect(decodeFrames(sent)).toEqual([
+      { id: 7, more: true },
+      { id: 9, more: false },
+      { id: 7, more: false },
+    ])
+  })
+
+  it('stops between slices when the channel closes, and drops the queue', async () => {
+    slicing.oneChunkPerSlice = true
+    const { sent, session, ch } = setup()
+    session.sendEncryptedMessage(ch, chunks(3), 7)
+    session.sendEncryptedMessage(ch, chunks(2), 8)
+    ch.state = 'closed'
+
+    await ch.chunkedSends.sent
+
+    expect(sent).toHaveLength(1)
+    expect(ch.chunkedSends.waiting).toHaveLength(0)
+    expect(ch.chunkedSends.sending).toBe(false)
+  })
+
+  it('reports a failure in a later slice to onSendFailure, and drops the queue', async () => {
+    slicing.oneChunkPerSlice = true
+    const failure = new Error('socket closed')
+    const { sent, session, ch, onSendFailure } = setup(undefined, { write: 2, error: failure })
+    session.sendEncryptedMessage(ch, chunks(3), 7)
+    session.sendEncryptedMessage(ch, chunks(2), 8)
+
+    await ch.chunkedSends.sent
+
+    expect(onSendFailure).toHaveBeenCalledExactlyOnceWith(ch, failure)
+    expect(sent).toHaveLength(1)
+    expect(ch.chunkedSends.waiting).toHaveLength(0)
+    expect(ch.chunkedSends.sending).toBe(false)
+  })
+
+  it('refuses a message over the reassembly limit before it queues anything', () => {
+    const { session, ch } = setup()
+    expect(() => session.sendEncryptedMessage(ch, new Uint8Array(MAX_CHUNK_SIZE * 4 + 1), 7)).toThrow(/^message too large/)
+    expect(ch.chunkedSends.waiting).toHaveLength(0)
+    expect(ch.chunkedSends.sending).toBe(false)
+  })
+
+  it('holds a rekey request until the chunked messages are on the wire', async () => {
+    slicing.oneChunkPerSlice = true
+    const { sent, session, ch } = setup({ lastRekeyAt: performance.now() - SESSION_KEY_MAX_AGE_MS - 1 })
+    session.sendEncryptedMessage(ch, chunks(3), 7)
+
+    const rekeyed = session.ensureRekeyed(ch)
+    await ch.chunkedSends.sent
+    await vi.waitFor(() => expect(ch.rekeyWait).not.toBeNull())
+
+    const rekeyRequestId = ch.rekeyRequestId
+    expect(decodeFrames(sent).map(frame => frame.id)).toEqual([7, 7, 7, rekeyRequestId])
+    ch.rekeyWait!(true, 0)
+    await rekeyed
   })
 })

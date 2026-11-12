@@ -38,6 +38,7 @@ import {
   initiatorHandshake1,
   initiatorHandshake2,
 } from './noise-hybrid'
+import { createWorkSlicer } from './workSlices'
 
 const log = createLogger('channel')
 
@@ -59,6 +60,35 @@ export interface PendingHandshake {
   finish: (handshakePayload: Uint8Array) => Session
 }
 
+/** One outbound message longer than MAX_CHUNK_SIZE, which goes out in chunks. */
+export interface ChunkedMessage {
+  plaintext: Uint8Array
+  requestId: number
+}
+
+/**
+ * The chunked messages of one channel, which go out one at a time, in order.
+ *
+ * Create one with {@link createChunkedSends}.
+ */
+export interface ChunkedSends {
+  /** The messages that wait behind the one being sent, oldest first. */
+  waiting: ChunkedMessage[]
+  /** True while a run sends chunked messages of this channel. */
+  sending: boolean
+  /** Settles when the latest run ends, at once when none has started. Never rejects. */
+  sent: Promise<void>
+}
+
+/** An idle queue of chunked messages, for a new channel. */
+export function createChunkedSends(): ChunkedSends {
+  return {
+    waiting: [],
+    sending: false,
+    sent: Promise.resolve(),
+  }
+}
+
 /**
  * The slice of an ActiveChannel the session helpers drive: Noise keys, age
  * policy fields, and the outbound id allocator used for RekeyRequest.
@@ -78,6 +108,8 @@ export interface SessionChannel {
   rekeyAbort: (() => void) | null
   rekeyRequestId: number | null
   rekeyChain: Promise<void>
+  /** The outbound chunked messages; see sendEncryptedMessage. */
+  chunkedSends: ChunkedSends
   /**
    * Worker's static ML-KEM-1024 encapsulation key, retained from
    * getWorkerHandshakeParams so an in-band rekey can encapsulate a fresh PQ
@@ -186,6 +218,14 @@ export class ChannelSession {
    * Encrypt and send plaintext, splitting into chunks if needed.
    * All chunks share the same correlationId. Intermediate chunks have
    * flags=MORE; the final chunk has flags=UNSPECIFIED.
+   *
+   * A single frame goes out before this returns, and a failure to send it throws
+   * to the caller. A chunked message joins the channel's queue, and the queue
+   * sends in work slices: the encryption in JavaScript costs about 5 ms per MiB,
+   * and a 10 MiB attachment froze the page for 50 ms in one loop. When the queue
+   * is idle, its first slice goes out before this returns. A failure to send a
+   * chunked message reaches `onSendFailure`, not the caller: a transport failure
+   * closes the channel, which fails the request.
    */
   sendEncryptedMessage(ch: SessionChannel, plaintext: Uint8Array, requestId: number): void {
     if (plaintext.length > ch.maxReassembledMessageSize) {
@@ -199,17 +239,58 @@ export class ChannelSession {
       return
     }
 
-    // Chunked path.
-    for (let offset = 0; offset < plaintext.length;) {
-      const end = Math.min(offset + MAX_CHUNK_SIZE, plaintext.length)
-      const chunk = plaintext.slice(offset, end)
-      offset = end
+    const queue = ch.chunkedSends
+    queue.waiting.push({ plaintext, requestId })
+    if (!queue.sending) {
+      queue.sending = true
+      queue.sent = this.sendChunkedMessages(ch)
+    }
+  }
 
-      const ciphertext = ch.session.send.encrypt(chunk)
-      const flags = offset < plaintext.length
-        ? ChannelMessageFlags.MORE
-        : ChannelMessageFlags.UNSPECIFIED
-      this.sendChannelMessage(ch, ciphertext, requestId, flags)
+  /**
+   * Send the queued chunked messages of `ch`, one after another, and yield to the
+   * event loop whenever a work slice is used up. Settles when the queue is empty or
+   * the channel closes, and never rejects.
+   *
+   * One message at a time keeps the frames of each message together, so the Worker
+   * never holds more than one incomplete message of ours, under the limit of
+   * `maxIncompleteChunked`. A single-frame message may go out between two slices.
+   * An in-band rekey waits for this run (see ensureRekeyedLocked), so no frame goes
+   * out between a RekeyRequest and its answer.
+   */
+  private async sendChunkedMessages(ch: SessionChannel): Promise<void> {
+    const queue = ch.chunkedSends
+    const slicer = createWorkSlicer()
+    try {
+      for (let message = queue.waiting.shift(); message !== undefined; message = queue.waiting.shift()) {
+        const { plaintext, requestId } = message
+        for (let offset = 0; offset < plaintext.length;) {
+          const end = Math.min(offset + MAX_CHUNK_SIZE, plaintext.length)
+          const chunk = plaintext.slice(offset, end)
+          offset = end
+
+          const ciphertext = ch.session.send.encrypt(chunk)
+          const flags = offset < plaintext.length
+            ? ChannelMessageFlags.MORE
+            : ChannelMessageFlags.UNSPECIFIED
+          this.sendChannelMessage(ch, ciphertext, requestId, flags)
+
+          const workRemains = offset < plaintext.length || queue.waiting.length > 0
+          if (workRemains && slicer.sliceUsed()) {
+            await slicer.nextSlice()
+            // A closed channel already failed the requests these messages carry.
+            if (ch.state === 'closed')
+              return
+          }
+        }
+      }
+    }
+    catch (err) {
+      this.deps.onSendFailure(ch, err)
+    }
+    finally {
+      queue.waiting.length = 0
+      queue.sending = false
     }
   }
 
@@ -249,6 +330,9 @@ export class ChannelSession {
   }
 
   private async ensureRekeyedLocked(ch: SessionChannel): Promise<void> {
+    // Let the chunked messages in progress finish under the current keys first.
+    while (ch.chunkedSends.sending)
+      await ch.chunkedSends.sent
     if (ch.state === 'closed')
       return
     if (this.pastHardCeiling(ch)) {

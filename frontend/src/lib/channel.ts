@@ -29,7 +29,7 @@
 import type { DescMessage, DescMethodServerStreaming, DescMethodUnary, MessageInitShape, MessageShape } from '@bufbuild/protobuf'
 import type { ChannelSocket } from './channelRelay'
 import type { PendingRequest, StreamAction, StreamListener } from './channelRpc'
-import type { ChannelSessionOpts } from './channelSession'
+import type { ChannelSessionOpts, ChunkedSends } from './channelSession'
 import type { Session } from './noise'
 import type { Reassembler } from './reassembler'
 import type { WorkerKeyBundle } from './workerKeyBundle'
@@ -167,6 +167,8 @@ interface ActiveChannel {
   rekeyRequestId: number | null
   /** Chains concurrent ensureRekeyed callers on this channel. */
   rekeyChain: Promise<void>
+  /** The outbound chunked messages, sent one at a time in work slices. */
+  chunkedSends: ChunkedSends
   /** Worker ML-KEM pub retained for rekey encapsulation; empty in classic mode. */
   workerMlkemPub: Uint8Array
   /** In-flight rekey initiator material; null when no rekey is in progress. */

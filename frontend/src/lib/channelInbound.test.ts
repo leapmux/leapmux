@@ -15,7 +15,7 @@ import { captureLoggerOutput } from '~/test-support/loggerCapture'
 import { ChannelError } from './channelError'
 import { ChannelInbound } from './channelInbound'
 import { ChannelRpcMux } from './channelRpc'
-import { ChannelSession } from './channelSession'
+import { ChannelSession, createChunkedSends } from './channelSession'
 import { generateRekeyEphemeral } from './noise-hybrid'
 import { Reassembler } from './reassembler'
 
@@ -37,6 +37,7 @@ function makeChannel(overrides?: Partial<InboundChannel>): InboundChannel {
     rekeyAbort: null,
     rekeyRequestId: null,
     rekeyChain: Promise.resolve(),
+    chunkedSends: createChunkedSends(),
     workerMlkemPub: new Uint8Array(0),
     rekeyMaterial: null,
     ...overrides,
