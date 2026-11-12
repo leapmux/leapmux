@@ -81,9 +81,7 @@ function noteConsumerDemand(render: InFlightRender, isLowPriority: (() => boolea
 
 // Per-text count of transient-failure retries (a grammar chunk load / highlighter init
 // that failed and may recover). Bounds re-dispatch so a genuinely broken grammar
-// eventually caches its degraded render instead of re-dispatching forever -- mirrors
-// the editor parser's MAX_LANG_LOAD_RETRIES budget, keeping the three Oniguruma
-// consumers' recovery policy consistent.
+// eventually caches its degraded render instead of re-dispatching forever.
 const retryCount = new Map<string, number>()
 const MAX_MARKDOWN_RENDER_RETRIES = 3
 // Coalesce a burst of completions (a screenful of bodies finishing within a tick)

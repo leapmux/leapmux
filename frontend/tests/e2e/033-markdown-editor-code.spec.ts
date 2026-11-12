@@ -241,6 +241,31 @@ test.describe('code block field', () => {
 })
 
 test.describe('code language label', () => {
+  /**
+   * The token worker tokenizes each code block of the composer, and the main thread only decorates the tokens. A block
+   * that changes keeps its old colours until the tokens of its new text arrive, then takes those.
+   */
+  test('colours a composer code block from the token worker, and recolours it as it changes', async ({ page, authenticatedWorkspace }) => {
+    void authenticatedWorkspace
+    const editor = await focusComposer(page)
+
+    // The ``` input rule opens a block. Its text names no language, and the block guesses TypeScript from `const`.
+    await page.keyboard.type('```')
+    await page.keyboard.type('const value = 1')
+
+    const block = editor.locator('pre')
+    const keyword = block.locator('.shiki').filter({ hasText: /^const$/ })
+    await expect(keyword).toHaveCount(1)
+    const colourOf = (locator: typeof keyword) => locator.evaluate(element => getComputedStyle(element).color)
+    expect(await colourOf(keyword)).not.toBe(await block.evaluate(element => getComputedStyle(element).color))
+
+    await page.keyboard.press('Enter')
+    await page.keyboard.type('let other = 2')
+
+    await expect(block.locator('.shiki').filter({ hasText: /^let$/ })).toHaveCount(1)
+    await expect(keyword).toHaveCount(1)
+  })
+
   test('clicking language label opens popover and selecting language updates it', async ({ page, authenticatedWorkspace }) => {
     const editor = await focusComposer(page)
 

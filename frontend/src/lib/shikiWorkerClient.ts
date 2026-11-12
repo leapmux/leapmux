@@ -1,4 +1,5 @@
 import type { TokenizeRequest, TokenizeResponse } from './shikiWorker'
+import type { SyntaxThemePair } from './syntaxThemes'
 import type { CachedToken, InternedTokenLines } from './tokenCache'
 import { createPersistedArtifact } from './persistedArtifact'
 import { syntaxThemeKey, syntaxThemePair, themeStillCurrent } from './shikiThemes'
@@ -177,4 +178,28 @@ export function tokenizeAsync(
     })
   inFlightByKey.set(flightKey, promise)
   return promise
+}
+
+/**
+ * Tokenize `code` under `pair` in the worker, outside the shared token cache,
+ * its in-flight sharing and its IndexedDB copy. For text that changes with each
+ * keystroke, such as a code block in the composer: each version would otherwise
+ * take a cache entry and a store write, and evict the tokens of the chat.
+ *
+ * Resolves to null where no Worker exists, or when the worker fails.
+ */
+export function tokenizeUncached(lang: string, code: string, pair: SyntaxThemePair): Promise<CachedToken[][] | null> {
+  if (typeof Worker === 'undefined')
+    return Promise.resolve(null)
+  return gate
+    .enqueue(() => client.request(id => ({
+      type: 'tokenize',
+      id,
+      lang,
+      code,
+      syntax: pair,
+    })))
+    .then(interned => (interned === null
+      ? null
+      : expandInternedTokenLines(interned)))
 }

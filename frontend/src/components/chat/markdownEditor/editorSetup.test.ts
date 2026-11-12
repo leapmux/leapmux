@@ -1,9 +1,10 @@
 import type { Node } from '@milkdown/prose/model'
+import type { Transaction } from '@milkdown/prose/state'
 import type { EditorView } from '@milkdown/prose/view'
 import { Schema } from '@milkdown/prose/model'
-import { Plugin, PluginKey } from '@milkdown/prose/state'
-import { createHighlightPlugin } from 'prosemirror-highlight'
+import { EditorState } from '@milkdown/prose/state'
 import { describe, expect, it, vi } from 'vitest'
+import { CODE_HIGHLIGHT_REFRESH } from '~/lib/editor/codeHighlightPlugin'
 import { computeDocStats } from './editorSetup'
 
 /**
@@ -122,80 +123,55 @@ describe('computeDocStats', () => {
 })
 
 describe('refreshEditorHighlight', () => {
-  // The plugin must be REPLACED, not merely refreshed. prosemirror-highlight
-  // keys its DecorationCache on the node and reads through it, so the supported
-  // refresh meta recomputes nothing for a block whose node did not change --
-  // which is every block when only the theme moved.
-  it('swaps the highlight plugin for a fresh instance', async () => {
-    const { refreshEditorHighlight } = await import('./editorSetup')
-
-    const highlight = createHighlightPlugin({
-      parser: () => [],
-    })
-    const other = new Plugin({
-      key: new PluginKey('unrelated'),
-    })
-    let reconfigured: readonly Plugin[] | undefined
+  /** A view stand-in: a real state, and a `dispatch` that records each transaction. */
+  function stubView(composing: boolean) {
+    const dom = document.createElement('div')
+    const dispatched: Transaction[] = []
     const view = {
-      composing: false,
-      state: {
-        plugins: [other, highlight],
-        reconfigure: ({ plugins }: { plugins: readonly Plugin[] }) => {
-          reconfigured = plugins
-          return { plugins }
-        },
+      composing,
+      dom,
+      state: EditorState.create({
+        doc: doc(para(t('x'))),
+      }),
+      dispatch: (tr: Transaction) => {
+        dispatched.push(tr)
       },
-      updateState: () => {},
-    } as unknown as EditorView
+    }
+    return { view, dom, dispatched }
+  }
 
-    refreshEditorHighlight(view)
+  // The highlight plugin keys each block on the theme, so one refresh finds
+  // every block out of date, and each keeps its old colours until the worker
+  // answers.
+  it('dispatches the refresh of the highlight plugin', async () => {
+    const { refreshEditorHighlight } = await import('./editorSetup')
+    const { view, dispatched } = stubView(false)
 
-    expect(reconfigured).toBeDefined()
-    expect(reconfigured![0]).toBe(other)
-    expect(reconfigured![1]).not.toBe(highlight)
+    refreshEditorHighlight(view as unknown as EditorView)
+
+    expect(dispatched).toHaveLength(1)
+    expect(dispatched[0]!.getMeta(CODE_HIGHLIGHT_REFRESH)).toBe(true)
+    expect(dispatched[0]!.docChanged).toBe(false)
   })
 
-  // An IME composition is the one case a rebuild must not interrupt, so the
-  // guard DEFERS the repaint over the composition and re-runs it at
-  // `compositionend`.
-  it('defers the repaint while an IME composition is in flight, then runs it', async () => {
+  // A transaction during an IME composition would disturb it, so the guard
+  // DEFERS the repaint over the composition and re-runs it at `compositionend`.
+  it('defers the repaint while an IME composition is in flight, then runs it once', async () => {
     const { refreshEditorHighlight } = await import('./editorSetup')
+    const { view, dom, dispatched } = stubView(true)
 
-    let reconfigured = 0
-    const dom = document.createElement('div')
-    const view = {
-      composing: true,
-      dom,
-      state: {
-        plugins: [
-          createHighlightPlugin({
-            parser: () => [],
-          }),
-        ],
-        reconfigure: () => {
-          reconfigured += 1
-          return {}
-        },
-      },
-      updateState: () => {},
-    } as unknown as EditorView
+    refreshEditorHighlight(view as unknown as EditorView)
+    expect(dispatched).toHaveLength(0)
 
-    refreshEditorHighlight(view)
-    expect(reconfigured).toBe(0)
-
-    // The composition ends, and the repaint the guard deferred runs.
-    //
-    // Dropping it was wrong: `prosemirror-highlight` keys its DecorationCache on
-    // the NODE, so the composition-ending transaction recomputes only the block
-    // the composition touched. Every OTHER code block in the composer kept the
-    // abandoned theme's baked colours for the rest of the session.
-    ;(view as unknown as { composing: boolean }).composing = false
+    // The composition ends, and the repaint the guard deferred runs. Dropping it
+    // would leave every code block in the abandoned theme's colours.
+    view.composing = false
     dom.dispatchEvent(new Event('compositionend'))
-    expect(reconfigured).toBe(1)
+    expect(dispatched).toHaveLength(1)
 
     // ONCE. A second `compositionend` with no new theme change must not repaint
     // again -- the listener is registered `{ once: true }`.
     dom.dispatchEvent(new Event('compositionend'))
-    expect(reconfigured).toBe(1)
+    expect(dispatched).toHaveLength(1)
   })
 })

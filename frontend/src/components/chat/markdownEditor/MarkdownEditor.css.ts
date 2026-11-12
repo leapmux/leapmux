@@ -400,9 +400,9 @@ globalStyle(`${editorWrapper} .ProseMirror pre .code-lang-label:hover`, {
   color: 'var(--muted-foreground)',
 })
 
-// Shiki syntax highlighting in editor code blocks (via prosemirror-highlight):
-// the inline decorations carry --shiki-light / --shiki-dark CSS variables (color
-// only -- the wrapper owns the bg).
+// Shiki syntax highlighting in editor code blocks (see createCodeHighlightPlugin):
+// each token decoration carries a shared style class whose rule sets the
+// --shiki-light / --shiki-dark CSS variables (color only -- the wrapper owns the bg).
 codeSurface(`${editorWrapper} .ProseMirror pre`, 'block', [
   { suffix: ' .shiki' },
 ])

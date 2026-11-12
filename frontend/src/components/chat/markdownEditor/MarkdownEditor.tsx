@@ -381,8 +381,8 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   // Repaint the composer's code blocks when the syntax theme changes.
   //
   // Shiki bakes each token's colour in at tokenize time, so an already-decorated
-  // block keeps the abandoned theme until something recomputes it -- and
-  // prosemirror-highlight recomputes only on a document change. Without this the
+  // block keeps the abandoned theme until something recomputes it -- and the
+  // highlight plugin recomputes only on a document change or a refresh. Without this the
   // composer visibly disagreed with the chat beside it, which the user had just
   // repainted, for the rest of the session.
   createEffect(on(syntaxThemeGeneration, () => {

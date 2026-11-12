@@ -70,33 +70,13 @@ export default defineConfig({
       // initial dep scan misses because they live behind lazy-loaded routes.
       'shiki/core',
       'shiki/engine/javascript',
-      // Oniguruma WASM engine (workers + editor) + inlined WASM + the lazily
+      // Oniguruma WASM engine (the workers) + inlined WASM + the lazily
       // loaded bundled-languages map. The ~332 per-language grammar chunks are
       // intentionally NOT listed: they must stay dynamic so Vite code-splits
       // each into an on-demand chunk (lazy loading is the whole point).
       'shiki/engine/oniguruma',
       'shiki/wasm',
       'shiki/langs',
-      'shiki/langs/bash.mjs',
-      'shiki/langs/c.mjs',
-      'shiki/langs/cpp.mjs',
-      'shiki/langs/css.mjs',
-      'shiki/langs/diff.mjs',
-      'shiki/langs/go.mjs',
-      'shiki/langs/html.mjs',
-      'shiki/langs/java.mjs',
-      'shiki/langs/javascript.mjs',
-      'shiki/langs/json.mjs',
-      'shiki/langs/jsx.mjs',
-      'shiki/langs/markdown.mjs',
-      'shiki/langs/python.mjs',
-      'shiki/langs/rust.mjs',
-      'shiki/langs/sql.mjs',
-      'shiki/langs/toml.mjs',
-      'shiki/langs/tsx.mjs',
-      'shiki/langs/typescript.mjs',
-      'shiki/langs/xml.mjs',
-      'shiki/langs/yaml.mjs',
       '@shikijs/rehype/core',
       '@shikijs/themes/github-dark',
       '@shikijs/themes/github-light',
@@ -104,7 +84,6 @@ export default defineConfig({
       '@milkdown/core',
       '@milkdown/ctx',
       '@milkdown/plugin-clipboard',
-      '@milkdown/plugin-highlight',
       '@milkdown/plugin-history',
       '@milkdown/plugin-listener',
       '@milkdown/preset-commonmark',

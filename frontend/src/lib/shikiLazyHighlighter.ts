@@ -18,9 +18,9 @@ import { ensureThemesRegistered } from './syntaxThemes'
  *                       caller must NOT cache this outcome as permanent.
  *
  * Before this distinction all three collapsed to `false`, so the markdown worker
- * cached a transiently-failed render as plain forever while the token worker and
- * editor parser recovered -- three divergent behaviors from one boolean. Callers
- * now share one policy off this result.
+ * cached a transiently-failed render as plain forever while the token worker
+ * recovered -- divergent behaviors from one boolean. Callers now share one policy
+ * off this result.
  */
 export type LanguageLoadResult = 'loaded' | 'unsupported' | 'failed'
 
@@ -35,10 +35,10 @@ export type LanguageLoadResult = 'loaded' | 'unsupported' | 'failed'
  *   - loads grammars on demand from Shiki's ~332 bundled languages, caching each
  *     so a language is compiled at most once per instance.
  *
- * Each isolate that needs highlighting creates its own instance (the two Web
- * Workers are separate threads with no shared memory; the editor runs one on the
- * main thread). The inlined Oniguruma WASM (`shiki/wasm`) is compiled once per
- * instance on first use.
+ * Each isolate that needs highlighting creates its own instance: the two Web
+ * Workers are separate threads with no shared memory. The main thread creates
+ * none -- the composer's code blocks tokenize in the token worker. The inlined
+ * Oniguruma WASM (`shiki/wasm`) is compiled once per instance on first use.
  */
 export interface LazyHighlighter {
   /** Resolve once the highlighter (incl. its WASM engine) has initialized. */

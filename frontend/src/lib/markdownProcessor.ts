@@ -52,8 +52,9 @@ const HTTP_URL_RE = /^https?:\/\//
  * `language-JSON` class throws "Language `JSON` not found" -- which `onError` +
  * `fallbackLanguage` then silently render plain, even though the grammar IS loaded.
  * The worker already lower-cases the fence languages it pre-loads (extractFenceLanguages),
- * and the token worker / editor parser feed `codeToTokens` the lower-cased
- * `resolveBundledLang` result; this keeps the markdown fence path consistent with both.
+ * and the token worker (which also tokenizes the composer's code blocks) feeds
+ * `codeToTokens` the lower-cased `resolveBundledLang` result; this keeps the markdown
+ * fence path consistent with both.
  */
 function remarkLowercaseCodeLang() {
   return (tree: MdastRoot) => {
