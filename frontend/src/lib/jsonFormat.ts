@@ -13,7 +13,21 @@ function createFormatter(lineLength: number): Formatter {
 
 const formatter = createFormatter(DEFAULT_JSON_LINE_LENGTH)
 
-/** Pretty-print JSON text or a plain JS value using FracturedJson when possible. */
+/**
+ * The longest JSON text, in UTF-16 code units, that prettifyJson lays out with
+ * FracturedJson.
+ *
+ * FracturedJson costs about 0.35 ms per KiB of structured JSON in V8, 15 to 20 times
+ * what the native `JSON.stringify` costs, and it runs on the main thread, mostly
+ * while a chat row extracts or renders. Up to this length a layout stays near 6 ms.
+ * A longer text gets the native indented layout, which uses more lines.
+ */
+export const FRACTURED_JSON_MAX_LENGTH = 16 * 1024
+
+/**
+ * Pretty-print JSON text or a plain JS value: with FracturedJson up to
+ * FRACTURED_JSON_MAX_LENGTH, with the native indentation above it.
+ */
 export function prettifyJson(input: unknown, lineLength = DEFAULT_JSON_LINE_LENGTH): string {
   const raw = typeof input === 'string'
     ? input
@@ -21,6 +35,9 @@ export function prettifyJson(input: unknown, lineLength = DEFAULT_JSON_LINE_LENG
 
   if (raw === undefined)
     return String(input)
+
+  if (raw.length > FRACTURED_JSON_MAX_LENGTH)
+    return indentJson(input, raw)
 
   try {
     const columns = Number.isFinite(lineLength) && lineLength >= 1
@@ -30,6 +47,19 @@ export function prettifyJson(input: unknown, lineLength = DEFAULT_JSON_LINE_LENG
       ? formatter
       : createFormatter(columns)
     return selected.Reformat(raw)
+  }
+  catch {
+    return raw
+  }
+}
+
+/** Lay out `raw` with the native indentation, or return it unchanged when it is not JSON. */
+function indentJson(input: unknown, raw: string): string {
+  try {
+    const value: unknown = typeof input === 'string'
+      ? JSON.parse(raw)
+      : input
+    return JSON.stringify(value, null, formatter.Options.IndentSpaces)
   }
   catch {
     return raw

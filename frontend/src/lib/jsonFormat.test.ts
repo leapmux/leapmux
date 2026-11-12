@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { prettifyArgsJson, prettifyJson } from './jsonFormat'
+import { FRACTURED_JSON_MAX_LENGTH, prettifyArgsJson, prettifyJson } from './jsonFormat'
 
 describe('prettifyJson', () => {
   it('formats JSON for a narrow control without changing its values', () => {
@@ -41,6 +41,37 @@ describe('prettifyJson', () => {
   it('returns undefined and function values as strings', () => {
     expect(prettifyJson(undefined)).toBe('undefined')
     expect(prettifyJson(() => 1)).toContain('=>')
+  })
+
+  describe('a long text', () => {
+    // `[0,0,...,0,10]` is 2n + 4 characters long. FracturedJson packs its numbers
+    // into rows; the native layout puts each number on a line of its own.
+    const zeros = (FRACTURED_JSON_MAX_LENGTH - 4) / 2
+    const atLimit = `[${'0,'.repeat(zeros)}10]`
+    const overLimit = `[${'0,'.repeat(zeros)}100]`
+
+    it('lays out a text at the limit with FracturedJson', () => {
+      expect(atLimit).toHaveLength(FRACTURED_JSON_MAX_LENGTH)
+      const formatted = prettifyJson(atLimit)
+      expect(formatted.trim().split('\n').length).toBeLessThan(zeros / 4)
+      expect(JSON.parse(formatted)).toEqual(JSON.parse(atLimit))
+    })
+
+    it('lays out a text over the limit with the native indentation', () => {
+      expect(overLimit).toHaveLength(FRACTURED_JSON_MAX_LENGTH + 1)
+      expect(prettifyJson(overLimit)).toBe(JSON.stringify(JSON.parse(overLimit), null, 4))
+    })
+
+    it('lays out a value whose JSON is over the limit with the native indentation', () => {
+      const items = JSON.parse(overLimit) as number[]
+      const value = { items }
+      expect(prettifyJson(value)).toBe(JSON.stringify(value, null, 4))
+    })
+
+    it('returns a text over the limit unchanged when it is not JSON', () => {
+      const text = `not json ${'x'.repeat(FRACTURED_JSON_MAX_LENGTH)}`
+      expect(prettifyJson(text)).toBe(text)
+    })
   })
 })
 
