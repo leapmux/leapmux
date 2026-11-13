@@ -29,7 +29,7 @@ For real multi-user setups see [Accounts & Authentication](/docs/using/accounts/
 
 The Worker stores agent transcripts, terminal output, and file/git state in its local SQLite database. The Hub stores accounts and workspace metadata (titles, tab positions, tiling geometry). It also stores each tab's type and hosting Worker, plus a file tab's display mode, view mode, and diff base. The public keys each Worker registered with are stored on the Hub too. They are public material, and the Hub pins them so a later connection cannot present other keys.
 
-The browser caches rendered message text and code for seven days after last use in IndexedDB. That cache is not keyed to the account, and signing out does not clear it.
+The browser caches rendered message text and code in IndexedDB. After startup, it attempts to remove entries whose recorded last-use time is at least seven days old. Cleanup is best-effort and runs at most once per page load, so entries can remain longer. There is no guaranteed deletion deadline. That cache is not keyed to the account, and signing out does not clear it.
 
 Default locations:
 

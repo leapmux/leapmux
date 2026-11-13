@@ -34,7 +34,7 @@ LeapMux keeps three kinds of persistent state:
 | Worker E2EE private keys + Hub auth token | Worker's `state.json` | No — plain JSON, file mode `0600` |
 
 {{< callout type="info" >}}
-A Hub that only observes cannot read agent transcripts, tool calls, terminal output, file contents, or diffs. The Worker stores that data, and channels encrypt it in transit. The browser also caches rendered message text and code for seven days after last use in IndexedDB. The cache is not keyed to the account, and signing out does not clear it. See [Security & Threat Model](/docs/admin/security/).
+A Hub that only observes cannot read agent transcripts, tool calls, terminal output, file contents, or diffs. The Worker stores that data, and channels encrypt it in transit. The browser caches rendered message text and code in IndexedDB. After startup, it attempts to remove entries whose recorded last-use time is at least seven days old. Cleanup is best-effort and runs at most once per page load, so entries can remain longer. There is no guaranteed deletion deadline. The cache is not keyed to the account, and signing out does not clear it. See [Security & Threat Model](/docs/admin/security/).
 {{< /callout >}}
 
 ### Encryption at rest details
@@ -170,7 +170,7 @@ It also refuses to delete the **active** version (`cannot remove active key vers
 
 Pepper rotation is separate from the key-rotation runbook above. Rotating, re-encrypting, or removing encryption keys leaves the token pepper unchanged, so existing bearer credentials keep validating.
 
-The pepper is a **dedicated, stable secret** alongside the encryption keys in `encryption.key`. It protects every stored bearer secret and confidential app client secret.
+The pepper is a **dedicated, stable secret** alongside the encryption keys in `encryption.key`. It protects the credential classes listed below.
 
 To deliberately invalidate those credentials, for example after a suspected keystore compromise, regenerate the pepper:
 
@@ -186,6 +186,8 @@ The command requires `--yes` and takes effect on the next Hub restart. Rotating 
 - Invalidates every Worker auth token
 - Invalidates API and delegation tokens and confidential app client secrets
 - Invalidates live registration keys and pending device codes
+
+Account-recovery links do not use the pepper. Pepper rotation does not invalidate them. Their existing expiry, attempt limits, and consumption checks still apply.
 
 The digests are one-way, so the existing credentials cannot be recovered with the new pepper. Users must sign in again, and app client secrets must be replaced. Solo mode and the desktop app reissue their own Worker's token. For each standalone Worker:
 

@@ -3,8 +3,12 @@ package gitutil
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
+
+	"github.com/leapmux/leapmux/util/procutil"
 )
 
 // runGit invokes a git subprocess via NewGitCmd in `dir` and captures
@@ -12,11 +16,7 @@ import (
 // stream pick it through {@link Output} / {@link OutputStderr} below;
 // callers that need both take the buffers off this function directly.
 func runGit(ctx context.Context, dir string, args ...string) (stdout, stderr bytes.Buffer, err error) {
-	cmd := NewGitCmd(ctx, append([]string{"-C", dir}, args...)...)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	err = cmd.Run()
-	return stdout, stderr, err
+	return captureGitCommand(ctx, append([]string{"-C", dir}, args...)...)
 }
 
 // wrapWithStderr threads captured stderr into the returned error so
@@ -82,4 +82,76 @@ func Run(ctx context.Context, dir string, args ...string) error {
 		return wrapWithStderr(err, stderr)
 	}
 	return nil
+}
+
+// CommandError keeps command failure separate from ownership cleanup failure.
+// A native absence status is meaningful only when cleanup also succeeded.
+type CommandError struct {
+	RunError     error
+	CleanupError error
+}
+
+func (e *CommandError) Error() string {
+	if e == nil {
+		return "git command failed"
+	}
+	joined := errors.Join(e.RunError, e.CleanupError)
+	if joined == nil {
+		return "git command failed"
+	}
+	return joined.Error()
+}
+func (e *CommandError) Unwrap() []error {
+	if e == nil {
+		return nil
+	}
+	var result []error
+	if e.RunError != nil {
+		result = append(result, e.RunError)
+	}
+	if e.CleanupError != nil {
+		result = append(result, e.CleanupError)
+	}
+	return result
+}
+
+func runGitCommand(cmd *exec.Cmd) (runErr, cleanupErr error) {
+	owner := procutil.PrepareProcess(cmd)
+	runErr = owner.Start()
+	if runErr == nil {
+		runErr = owner.Wait()
+	}
+	cleanupErr = owner.Close()
+	return runErr, cleanupErr
+}
+
+func captureGitCommand(ctx context.Context, args ...string) (stdout, stderr bytes.Buffer, err error) {
+	cmd := NewGitCmd(ctx, args...)
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	runErr, cleanupErr := runGitCommand(cmd)
+	var exitErr *exec.ExitError
+	if errors.As(runErr, &exitErr) {
+		exitErr.Stderr = bytes.Clone(stderr.Bytes())
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		runErr = errors.Join(ctxErr, runErr)
+	}
+	if runErr != nil || cleanupErr != nil {
+		err = &CommandError{RunError: runErr, CleanupError: cleanupErr}
+	}
+	return stdout, stderr, err
+}
+
+// Capture returns complete captured streams, including partial bytes on failure.
+func Capture(ctx context.Context, dir string, args ...string) (stdout, stderr []byte, err error) {
+	out, diagnostic, err := runGit(ctx, dir, args...)
+	if err != nil {
+		err = wrapWithStderr(err, diagnostic)
+	}
+	return out.Bytes(), diagnostic.Bytes(), err
+}
+
+// DiffBytes disables repository executable helpers and preserves raw output.
+func DiffBytes(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	return Bytes(ctx, dir, append([]string{"diff", "--no-ext-diff", "--no-textconv"}, args...)...)
 }

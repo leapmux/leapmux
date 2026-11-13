@@ -188,6 +188,7 @@ func setupAdminUserTestUnelevated(t *testing.T) *adminUserEnv {
 
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
+	t.Cleanup(contexts.Stop)
 	// The REAL lifecycle effects, not nil: every revoking verb on this
 	// service owes an in-process teardown after its commit, and a nil
 	// collaborator makes that obligation untestable (each effect method is
@@ -1463,11 +1464,10 @@ func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.
 		})
 	}
 
-	// The THREE that need no headless path refuse a bearer outright, and the
-	// refusal carries NO marker: a bearer has no row to stamp and nobody at a
-	// keyboard, so a prompt would ask for a factor and refuse the retry for
-	// the same reason. IssueAPIToken is the documented exception; the mint's
-	// own clamp is what contains it.
+	// These three operations require a browser session and refuse a bearer
+	// without an elevation marker. Browser-approved API elevation cannot
+	// satisfy that session requirement. IssueAPIToken is the documented
+	// exception; the mint's lifetime clamp restricts the issued credential.
 	for name, call := range map[string]func(context.Context, *adminUserEnv, string) error{
 		"CreateUser": func(ctx context.Context, env *adminUserEnv, bearer string) error {
 			_, err := env.client.CreateUser(adminBearerReq(ctx, &leapmuxv1.CreateUserRequest{
@@ -1499,7 +1499,7 @@ func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.
 			err = call(callCtx, env, issued.GetAccessToken())
 			require.Error(t, err, "a bearer must not create durable new authority")
 			assert.Empty(t, info.ResponseHeader().Get(service.ElevationRequiredHeader),
-				"a bearer can never elevate, so the refusal must not offer a prompt")
+				"API elevation cannot satisfy the browser-session requirement, so the refusal must not offer a prompt")
 		})
 	}
 }
@@ -1565,10 +1565,9 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 		})
 	}
 
-	// The EMAIL fields take the strict session rule instead, because the
-	// address is a recovery identity. A bearer is refused with no marker: it
-	// has no row to stamp and nobody at a keyboard, so a prompt would collect a
-	// factor and refuse the retry for the same reason.
+	// The email fields require a browser session because the address is a
+	// recovery identity. An elevated API credential still lacks that session,
+	// so its refusal must not offer an elevation prompt.
 	updateEmail := func(ctx context.Context, env *adminUserEnv, authorize requestAuth) error {
 		_, err := env.client.UpdateUser(authorized(ctx, &leapmuxv1.UpdateUserRequest{
 			User: service.SelectUserByID(env.adminID), Email: proto.String("moved@example.test"), EmailVerified: proto.Bool(true),
@@ -1605,7 +1604,7 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 		err = updateEmail(callCtx, env, bearerAuth(issued.GetAccessToken()))
 		require.Error(t, err, "a bearer must not move a recovery identity")
 		assert.Empty(t, info.ResponseHeader().Get(service.ElevationRequiredHeader),
-			"a bearer can never elevate, so the refusal must not offer a prompt")
+			"API elevation cannot satisfy the browser-session requirement, so the refusal must not offer a prompt")
 	})
 }
 
@@ -2305,9 +2304,8 @@ func TestAdminUserService_RewritingTheSameAddressKeepsVerified(t *testing.T) {
 // TestAdminUserService_SettingAFirstEmailIsUnverified covers the branch
 // where the account had no address at all.
 //
-// The account starts VERIFIED with no address, which is the state
-// SetUserAdmin's demotion repair exists for and which CreateUser accepts
-// directly. Starting it unverified would assert nothing: the flag would be
+// The account starts verified with no address, which CreateUser explicitly
+// accepts. Starting it unverified would assert nothing: the flag would be
 // false before and after, so the test passed with the whole rule reverted.
 // An address arriving for the first time is unconfirmed,
 // exactly like one that replaces another, so it must not land verified --

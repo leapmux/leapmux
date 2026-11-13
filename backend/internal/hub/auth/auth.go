@@ -30,27 +30,14 @@ import (
 // request, not one lifetime after the login.
 const DefaultSessionDuration = 7 * 24 * time.Hour
 
-// MinSessionDuration is the shortest session the Hub can honestly enforce.
-//
-// Two mechanisms keep a session alive past its written expiry, and the floor
-// caps what they cost together:
-//
-//   - The Hub serves a validated session from an in-memory cache for
-//     sessionCacheTTL, so a request succeeds up to that long after the row
-//     expired. That window is a constant, so it is the term that decides the
-//     floor.
-//   - A slide is throttled, so the row can carry up to one throttle window more
-//     than the configured duration. touchThreshold keeps that window at a
-//     tenth of the session, so it scales instead of dominating.
-//
-// At touchSlideDivisor times the cache TTL, the two together are at most a
-// fifth of the configured duration. Below that, "expired" stops describing when
-// the user is signed out. ValidateSessionDuration rejects a shorter
-// configuration rather than accept a policy the Hub cannot keep.
+// MinSessionDuration is the minimum configured session duration accepted by the Hub.
+// Session expiry includes one touchThreshold window to cover throttled refreshes.
+// The authentication cache checks credential expiry on every request and does not
+// extend that deadline.
 const MinSessionDuration = touchSlideDivisor * sessionCacheTTL
 
-// ValidateSessionDuration reports whether an operator's session lifetime is one
-// the Hub can enforce. The rule lives here, next to the two constants that set
+// ValidateSessionDuration reports whether a configured session lifetime meets
+// the accepted minimum. The rule lives here, next to the two constants that set
 // the floor, so a change to either cannot leave the check behind. The caller
 // adds the name of the setting.
 //
@@ -61,11 +48,7 @@ func ValidateSessionDuration(d time.Duration) error {
 	case d < 0:
 		return fmt.Errorf("must not be negative, got %s", d)
 	case d < MinSessionDuration:
-		return fmt.Errorf(
-			"must be at least %s, got %s: the Hub serves a validated session from "+
-				"an in-memory cache for %s, so a shorter session stays usable for a "+
-				"large share of its own life",
-			MinSessionDuration, d, sessionCacheTTL)
+		return fmt.Errorf("must be at least %s, got %s", MinSessionDuration, d)
 	}
 	return nil
 }
@@ -108,7 +91,13 @@ func touchThreshold(lifetime time.Duration) time.Duration {
 // end the session up to one throttle window before the lifetime passed since
 // the last request.
 func sessionExpiry(now time.Time, lifetime time.Duration) time.Time {
-	return now.Add(sessionLifetime(lifetime) + touchThreshold(lifetime)).UTC()
+	return now.Add(sessionLifetime(lifetime)).Add(touchThreshold(lifetime)).UTC()
+}
+
+// sessionRetentionCutoff keeps revocation marks for the full session lifetime
+// and refresh allowance without adding durations that could overflow.
+func sessionRetentionCutoff(now time.Time, lifetime time.Duration) time.Time {
+	return now.Add(-sessionLifetime(lifetime)).Add(-touchThreshold(lifetime)).UTC()
 }
 
 type contextKey int
@@ -353,11 +342,10 @@ func LoadSoloUser(ctx context.Context, st store.Store) (*UserInfo, error) {
 		ID:       id,
 		Username: user.Username,
 		IsAdmin:  user.IsAdmin,
-		// Solo mode's synthetic user is UNSCOPED, spelled out for the same
-		// reason a session is: whoever reaches the port already has full
-		// authority, so there is nothing here for a scope to subtract. A solo
-		// hub still honours a PRESENTED bearer's grant -- the solo rung yields
-		// to one; see authenticate.
+		// The synthetic solo user has no credential-specific scope restriction.
+		// SoloGate admits this identity only through local IPC. TCP callers use
+		// public setup procedures or ordinary credentials. Both authentication
+		// paths yield to a presented lmx_ bearer and enforce that bearer's grant.
 		Scopes:             authscope.UnscopedGrant(),
 		AuthenticatedAt:    time.Now().UTC(),
 		UserAuthGeneration: user.AuthGeneration,

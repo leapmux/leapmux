@@ -13,7 +13,7 @@ LeapMux has three components. The Hub and the Worker are roles of a single Go bi
 
 | Component | Responsibility | Runs where | State it holds |
 |---|---|---|---|
-| **Frontend** | Renders the workspace UI: the tiling layout, agent chats, terminals, and the file browser. It is where you click, type, and read. | Your browser or the native desktop app. | Rendered message text and code cached for seven days after last use in IndexedDB. The cache is not keyed to the account, and signing out does not clear it. |
+| **Frontend** | Renders the workspace UI: the tiling layout, agent chats, terminals, and the file browser. It is where you click, type, and read. | Your browser or the native desktop app. | The browser caches rendered message text and code in IndexedDB. After startup, it attempts to remove entries whose recorded last-use time is at least seven days old. Cleanup is best-effort and runs at most once per page load, so entries can remain longer. There is no guaranteed deletion deadline. The cache is not keyed to the account, and signing out does not clear it. |
 | **Hub** | Handles login, workspace management, and Worker registration, and **relays** encrypted Frontend↔Worker traffic. It is a coordinator and a relay, not a place where your code or conversations live. | A central Go service. | The central database (pluggable: SQLite by default, or PostgreSQL, MySQL, CockroachDB, YugabyteDB, TiDB). |
 | **Worker** | Runs your coding agents, PTY/terminal sessions, file browsing, and git operations. | A Go process, usually on the machine that holds your repos. It auto-reconnects to the Hub if the connection drops. | Its own local SQLite database. |
 
@@ -103,9 +103,9 @@ Everything you see in the UI fits into one nested structure. From the outside in
 User (you)
 └── Workspace
     ├── Layout tree (tiles: leaf / split / grid)
-    │   └── Tabs (agent / terminal / file)
+    │   └── Tabs (agent / terminal / file / image)
     └── Floating windows (their own tile trees)
-        └── Tabs (agent / terminal / file)
+        └── Tabs (agent / terminal / file / image)
 
 Each tab is hosted on a Worker, optionally bound to a worktree/branch.
 ```

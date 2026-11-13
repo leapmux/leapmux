@@ -82,8 +82,9 @@ func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams, no
 	// the read-side liveness/cursor filters in user_sessions.sql compare as raw
 	// strings. See the ListAllActiveSessions comment there for the full storage
 	// invariant and the modernc driver-layout hazard that makes binding a raw
-	// time.Time unsafe -- the SQLiteTime type mechanizes the canonical layout so
-	// a raw bind is a compile error.
+	// time.Time unsafe. The explicit SQLiteTime conversions below enforce the
+	// canonical layout. ExecContext accepts raw time.Time arguments too;
+	// TestTouchStoresExpiresAtCanonical checks the stored layout and liveness.
 	res, err := s.conn.exec.ExecContext(ctx,
 		`UPDATE user_sessions
 		 SET last_active_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),

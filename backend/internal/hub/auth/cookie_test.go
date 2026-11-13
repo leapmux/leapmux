@@ -87,9 +87,8 @@ func TestSessionTokenFromCookieHeader_IgnoresUnprefixedWhenSecure(t *testing.T) 
 	assert.Empty(t, got)
 }
 
-// The OAuth flow-binding cookie. Every handler test runs with secure
-// cookies off, so the __Host- half of these helpers has no coverage
-// there — and that is the half production uses.
+// These tests directly check the secure and insecure forms of the OAuth
+// flow-binding cookie.
 
 func TestBuildOAuthNonceCookie_Insecure(t *testing.T) {
 	c := auth.BuildOAuthNonceCookie("state-abc", "nonce-xyz", 5*time.Minute, false)

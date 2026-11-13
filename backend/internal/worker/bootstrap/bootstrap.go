@@ -22,7 +22,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"runtime"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -115,6 +114,7 @@ type Wiring struct {
 	// dispatcher is retained solely so Shutdown can close its admission and
 	// WaitHandlers can join its handlers. Run holds no dispatcher of its own.
 	dispatcher *channel.Dispatcher
+	controlIPC *controlipc.Factory
 }
 
 // handlerDrainTimeout limits the join of all admitted handlers, including watches.
@@ -158,6 +158,9 @@ func (w *Wiring) Shutdown() {
 		w.client.StopTabSync()
 	}
 	w.Service.Shutdown()
+	if err := w.controlIPC.Close(); err != nil {
+		slog.Warn("control IPC shutdown failed", "error", err)
+	}
 	if w.client == nil {
 		return
 	}
@@ -278,7 +281,8 @@ func Wire(p Params) *Wiring {
 	agents.SetStartupConcurrency(p.AgentStartupConcurrency)
 
 	dispatcher := channel.NewDispatcher()
-	svc.ControlIPC = newControlIPCFactory(p, svc, dispatcher)
+	controlIPC := newControlIPCFactory(p, svc, dispatcher)
+	svc.ControlIPC = controlIPC
 
 	// Binds svc.Cleanup as the tracked-dispatch drain as well as
 	// registering the handlers -- see service.RegisterAll.
@@ -309,7 +313,7 @@ func Wire(p Params) *Wiring {
 	// warning and the empty-owner refusal are shared by every worker.
 	resumer := startBackgroundLoops(p, svc)
 
-	return &Wiring{Service: svc, Resumer: resumer, client: p.Client, dispatcher: dispatcher}
+	return &Wiring{Service: svc, Resumer: resumer, client: p.Client, dispatcher: dispatcher, controlIPC: controlIPC}
 }
 
 // newControlIPCFactory builds the per-agent local-IPC factory backing the
@@ -320,13 +324,6 @@ func Wire(p Params) *Wiring {
 // over the existing E2EE channel, so a missing pin store degrades sibling
 // dispatch rather than the whole feature.
 func newControlIPCFactory(p Params, svc *service.Service, dispatcher *channel.Dispatcher) *controlipc.Factory {
-	dir := controlipc.SocketDir(p.DataDir)
-	if runtime.GOOS != "windows" {
-		if err := controlipc.SweepSocketDir(dir); err != nil {
-			slog.Warn("control socket directory unavailable", "directory", dir, "error", err)
-		}
-	}
-
 	pins, pinErr := crossworker.NewPinStore(p.DataDir)
 	if pinErr != nil {
 		slog.Warn("cross-worker pin store unavailable; sibling-worker calls disabled", "error", pinErr)
@@ -361,8 +358,7 @@ func newControlIPCFactory(p Params, svc *service.Service, dispatcher *channel.Di
 		hubBridge = controlipc.NewHubUnaryBridge(p.Client.Endpoint(), delegation)
 	}
 
-	return &controlipc.Factory{
-		SocketDir:     dir,
+	factory := &controlipc.Factory{
 		WorkerID:      p.WorkerID,
 		Dispatcher:    dispatcher,
 		CrossWorker:   cwClient,
@@ -372,6 +368,10 @@ func newControlIPCFactory(p Params, svc *service.Service, dispatcher *channel.Di
 		Delegation:    delegation,
 		OwnerUsername: svc.OwnerUsername,
 	}
+	if err := factory.PrepareSocketDirectory(p.DataDir); err != nil {
+		slog.Warn("control socket directory unavailable", "data_directory", p.DataDir, "error", err)
+	}
+	return factory
 }
 
 // liveTabForMint answers "a tab this worker currently hosts" for the delegation

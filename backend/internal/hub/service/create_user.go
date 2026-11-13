@@ -48,10 +48,26 @@ type CreateUserParams struct {
 	IsAdmin               bool
 }
 
-// createUserTxParams describes one account creation. Extra runs inside the
-// same transaction after the user row exists, so a flavor-specific artifact
+// userCreationAdmission specifies the state required under the lifecycle lock.
+// Zero is invalid, so each caller must select its admission deliberately.
+type userCreationAdmission uint8
+
+const (
+	userCreationUnrestricted userCreationAdmission = iota + 1
+	userCreationRequireEmpty
+	userCreationRequireExisting
+)
+
+var (
+	errSetupAlreadyComplete       = errors.New("setup is complete; sign in before creating another account")
+	errSignupRequiresExistingUser = errors.New("complete initial setup before signing up")
+)
+
+// createUserTxParams describes one account creation. The extra hook runs in
+// the same transaction after the user row exists, so a flavor-specific artifact
 // (a passkey credential, an OAuth link) commits with the account.
 type createUserTxParams struct {
+	admission             userCreationAdmission
 	userID                string // empty: generated here
 	username              string
 	displayName           string
@@ -71,9 +87,8 @@ type createUserTxParams struct {
 	//
 	// Nil reads the wall clock, exactly as clockSeam does. CreateUser passes
 	// none and needs none: that flavor writes no pending row, so it mints no
-	// deadline at all. The passkey sign-up leg (auth_passkey.go) does write
-	// one and still passes none, so it reads the wall clock here; it holds
-	// s.now already, and `now: s.now` is the whole of that edit.
+	// deadline at all. Passkey signup supplies s.now when it writes a pending
+	// verification row, so its expiry and resend checks use the same clock.
 	now func() time.Time
 }
 
@@ -125,6 +140,23 @@ func createUserInTx(ctx context.Context, st store.Store, opt createUserTxParams)
 	var user *store.User
 	var code string
 	err := st.RunInTransaction(ctx, func(tx store.Store) error {
+		hasLiveUsers, err := tx.Users().LockAccountLifecycle(ctx)
+		if err != nil {
+			return fmt.Errorf("check account creation admission: %w", err)
+		}
+		switch opt.admission {
+		case userCreationUnrestricted:
+		case userCreationRequireEmpty:
+			if hasLiveUsers {
+				return errSetupAlreadyComplete
+			}
+		case userCreationRequireExisting:
+			if !hasLiveUsers {
+				return errSignupRequiresExistingUser
+			}
+		default:
+			return fmt.Errorf("account creation requires an explicit admission policy")
+		}
 		userID := opt.userID
 		if userID == "" {
 			userID = id.Generate()
@@ -200,6 +232,7 @@ func CreateUser(ctx context.Context, st store.Store, p CreateUserParams) (*store
 	// The admin pending-email promotion and the competing-pending-email
 	// clear both live in createUserInTx, so every sign-up flavor gets them.
 	user, _, err := createUserInTx(ctx, st, createUserTxParams{
+		admission:             userCreationUnrestricted,
 		username:              p.Username,
 		displayName:           p.DisplayName,
 		email:                 p.Email,

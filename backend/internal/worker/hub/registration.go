@@ -76,11 +76,10 @@ func RegistrationOptionsFromKeypair(attemptID, registrationKey string, ck *noise
 const DefaultRegistrationDeadline = 5 * time.Minute
 
 // Register presents the registration key as a bearer credential to the
-// hub's Register RPC and returns permanent worker credentials. A
-// response lost after the hub committed turns into AlreadyExists on the
-// retry, and Register then drives the challenge protocol -- a fresh
-// challenge, an SLH-DSA signature over it, RecoverRegistration -- to
-// return the ORIGINAL credentials, never a second worker.
+// hub's Register RPC and returns worker credentials. A response lost after
+// the hub committed turns into AlreadyExists on the retry. Register then
+// obtains a fresh challenge, signs it with SLH-DSA, and calls
+// RecoverRegistration to recover the same Worker with a replacement auth token.
 //
 // Application refusals are permanent (ErrRegistrationRefused): the
 // worker maximum, an invalid or consumed key, malformed input, or a

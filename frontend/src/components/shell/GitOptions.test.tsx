@@ -3,7 +3,7 @@ import type { GitBranchEntry } from '~/generated/proto/leapmux/v1/git_pb'
 import type { GitInfoFields, GitPathInfo } from '~/hooks/useGitPathInfo'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { generateSlug } from 'random-word-slugs'
-import { createSignal } from 'solid-js'
+import { createSignal, untrack } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerGit } from '~/api/workerRpc'
 import { GitMode } from '~/hooks/useGitModeState'
@@ -201,6 +201,7 @@ function makeGitInfo(overrides: Partial<GitInfoFields> = {}): GitPathInfo {
     repoRoot: '/repo',
     repoDirName: 'repo',
     currentBranch: 'main',
+    attachedBranch: overrides.currentBranch ?? 'main',
     errorHint: '',
     ...overrides,
   }
@@ -211,39 +212,48 @@ function makeGitInfo(overrides: Partial<GitInfoFields> = {}): GitPathInfo {
   }
 }
 
-describe('GitOptions activeMode ownership', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    vi.mocked(workerGit.getGitWorkingTreeState).mockResolvedValue({
-      $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse',
-      isDirty: false,
-    })
-    vi.mocked(workerGit.listGitBranches).mockResolvedValue({
-      $typeName: 'leapmux.v1.ListGitBranchesResponse',
-      branches: [],
-      currentBranch: 'main',
-    })
-    vi.mocked(workerGit.listGitWorktrees).mockResolvedValue({
-      $typeName: 'leapmux.v1.ListGitWorktreesResponse',
-      worktrees: [],
-    })
-  })
+type WorkingTreeResponse = Awaited<ReturnType<typeof workerGit.getGitWorkingTreeState>>
 
-  function renderWorkingTreeOptions(overrides: Partial<Parameters<typeof GitOptions>[0]> = {}) {
-    render(() => (
-      <GitOptions
-        workerId="w1"
-        selectedPath="/repo"
-        gitInfo={makeGitInfo()}
-        gitMode={() => GitMode.Current}
-        onGitModeChange={vi.fn()}
-        {...overrides}
-      />
-    ))
-  }
+function workingTreeResponse(isDirty: boolean): WorkingTreeResponse {
+  return { $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse', isDirty }
+}
+
+function prepareGitMocks(): void {
+  vi.clearAllMocks()
+  vi.mocked(workerGit.getGitWorkingTreeState).mockResolvedValue({
+    $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse',
+    isDirty: false,
+  })
+  vi.mocked(workerGit.listGitBranches).mockResolvedValue({
+    $typeName: 'leapmux.v1.ListGitBranchesResponse',
+    branches: [],
+    currentBranch: 'main',
+    attachedBranch: 'main',
+  })
+  vi.mocked(workerGit.listGitWorktrees).mockResolvedValue({
+    $typeName: 'leapmux.v1.ListGitWorktreesResponse',
+    worktrees: [],
+  })
+}
+
+function renderGitOptions(overrides: Partial<Parameters<typeof GitOptions>[0]> = {}) {
+  return render(() => (
+    <GitOptions
+      workerId="w1"
+      selectedPath="/repo"
+      gitInfo={makeGitInfo()}
+      gitMode={() => GitMode.Current}
+      onGitModeChange={vi.fn()}
+      {...overrides}
+    />
+  ))
+}
+
+describe('GitOptions activeMode ownership', () => {
+  beforeEach(prepareGitMocks)
 
   it('reads no working tree in current mode or use worktree mode', async () => {
-    renderWorkingTreeOptions()
+    renderGitOptions()
     await settle()
     expect(workerGit.getGitWorkingTreeState).not.toHaveBeenCalled()
     fireEvent.click(screen.getByLabelText('Use existing worktree'))
@@ -256,10 +266,12 @@ describe('GitOptions activeMode ownership', () => {
       $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse',
       isDirty: true,
     })
-    renderWorkingTreeOptions()
+    renderGitOptions()
     fireEvent.click(screen.getByLabelText('Switch to branch'))
     await waitFor(() => expect(screen.getByText(/Switching branches may fail or discard changes/)).toBeVisible())
-    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledExactlyOnceWith('w1', { path: '/repo' })
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledExactlyOnceWith('w1', { path: '/repo' }, {
+      signal: expect.any(AbortSignal),
+    })
   })
 
   it('checks the working tree when mounted in switch branch mode', async () => {
@@ -267,18 +279,20 @@ describe('GitOptions activeMode ownership', () => {
       $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse',
       isDirty: true,
     })
-    renderWorkingTreeOptions({
+    renderGitOptions({
       gitMode: () => GitMode.SwitchBranch,
     })
     await waitFor(() => expect(screen.getByText(/Switching branches may fail or discard changes/)).toBeVisible())
-    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledExactlyOnceWith('w1', { path: '/repo' })
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledExactlyOnceWith('w1', { path: '/repo' }, {
+      signal: expect.any(AbortSignal),
+    })
   })
 
   it('drops a working-tree answer that arrives after a folder change', async () => {
-    const old = deferred<Awaited<ReturnType<typeof workerGit.getGitWorkingTreeState>>>()
+    const old = deferred<WorkingTreeResponse>()
     vi.mocked(workerGit.getGitWorkingTreeState).mockReturnValueOnce(old.promise)
     const [path, setPath] = createSignal('/repo-a')
-    renderWorkingTreeOptions({
+    renderGitOptions({
       get selectedPath() {
         return path()
       },
@@ -286,18 +300,20 @@ describe('GitOptions activeMode ownership', () => {
     fireEvent.click(screen.getByLabelText('Switch to branch'))
     await waitFor(() => expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1))
     setPath('/repo-b')
-    old.resolve({ $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse', isDirty: true })
+    old.resolve(workingTreeResponse(true))
     await settle()
     fireEvent.click(screen.getByLabelText('Switch to branch'))
     await settle()
     expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(2)
-    expect(workerGit.getGitWorkingTreeState).toHaveBeenLastCalledWith('w1', { path: '/repo-b' })
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenLastCalledWith('w1', { path: '/repo-b' }, {
+      signal: expect.any(AbortSignal),
+    })
     expect(screen.queryByText(/Switching branches may fail or discard changes/)).not.toBeInTheDocument()
   })
 
   it('refetches working tree state when refreshing a warning mode', async () => {
     const [refresh, setRefresh] = createSignal(0)
-    renderWorkingTreeOptions({
+    renderGitOptions({
       gitMode: () => GitMode.SwitchBranch,
       get refreshKey() {
         return refresh()
@@ -314,10 +330,81 @@ describe('GitOptions activeMode ownership', () => {
     expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(2)
   })
 
+  it.each([
+    [GitMode.SwitchBranch, 'Switching branches may fail or discard changes'],
+    [GitMode.CreateBranch, 'Creating a new branch will include them'],
+    [GitMode.CreateWorktree, 'will not be transferred to the new worktree'],
+  ] as const)('shows an unavailable status in %s without an automatic retry', async (mode, dirtyCopy) => {
+    vi.mocked(workerGit.getGitWorkingTreeState).mockRejectedValue(new Error('offline'))
+    const onGitModeChange = vi.fn()
+    renderGitOptions({
+      gitMode: () => mode,
+      onGitModeChange,
+    })
+    await waitFor(() => expect(screen.getByText('Working-tree status is unavailable.')).toBeVisible())
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled()
+    expect(screen.queryByText(new RegExp(dirtyCopy))).not.toBeInTheDocument()
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1)
+    expect(onGitModeChange).toHaveBeenLastCalledWith(expect.objectContaining({ mode }))
+    fireEvent.click(screen.getByLabelText('Use current state'))
+    await settle()
+    expect(screen.queryByText('Working-tree status is unavailable.')).not.toBeInTheDocument()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([false, true])('retries unavailable status and displays the recovered dirty value %s', async (isDirty) => {
+    vi.mocked(workerGit.getGitWorkingTreeState).mockRejectedValueOnce(new Error('offline'))
+    renderGitOptions({
+      gitMode: () => GitMode.SwitchBranch,
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Retry' })).toBeVisible())
+    const retry = deferred<WorkingTreeResponse>()
+    vi.mocked(workerGit.getGitWorkingTreeState).mockReturnValueOnce(retry.promise)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled()
+    retry.resolve(workingTreeResponse(isDirty))
+    await waitFor(() => expect(screen.queryByText('Working-tree status is unavailable.')).not.toBeInTheDocument())
+    expect(Boolean(screen.queryByText(/Switching branches may fail or discard changes/))).toBe(isDirty)
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(2)
+  })
+
+  it('replaces a known dirty warning with unavailable status when refresh fails', async () => {
+    vi.mocked(workerGit.getGitWorkingTreeState).mockResolvedValueOnce(workingTreeResponse(true))
+    const [refresh, setRefresh] = createSignal(0)
+    renderGitOptions({
+      gitMode: () => GitMode.SwitchBranch,
+      get refreshKey() { return refresh() },
+    })
+    await waitFor(() => expect(screen.getByText(/Switching branches may fail or discard changes/)).toBeVisible())
+    vi.mocked(workerGit.getGitWorkingTreeState).mockRejectedValueOnce(new Error('index unavailable'))
+    setRefresh(1)
+    await waitFor(() => expect(screen.getByText('Working-tree status is unavailable.')).toBeVisible())
+    expect(screen.queryByText(/Switching branches may fail or discard changes/)).not.toBeInTheDocument()
+  })
+
+  it('ignores a stale failure after a newer successful refresh', async () => {
+    const old = deferred<WorkingTreeResponse>()
+    vi.mocked(workerGit.getGitWorkingTreeState).mockReturnValueOnce(old.promise)
+    const [refresh, setRefresh] = createSignal(0)
+    renderGitOptions({
+      gitMode: () => GitMode.SwitchBranch,
+      get refreshKey() { return refresh() },
+    })
+    await settle()
+    vi.mocked(workerGit.getGitWorkingTreeState).mockResolvedValueOnce(workingTreeResponse(true))
+    setRefresh(1)
+    await waitFor(() => expect(screen.getByText(/Switching branches may fail or discard changes/)).toBeVisible())
+    old.reject(new Error('stale failure'))
+    await settle()
+    expect(screen.queryByText('Working-tree status is unavailable.')).not.toBeInTheDocument()
+    expect(screen.getByText(/Switching branches may fail or discard changes/)).toBeVisible()
+  })
+
   it('checks again on refresh after a working tree request fails', async () => {
     vi.mocked(workerGit.getGitWorkingTreeState).mockRejectedValueOnce(new Error('offline'))
     const [refresh, setRefresh] = createSignal(0)
-    renderWorkingTreeOptions({
+    renderGitOptions({
       gitMode: () => GitMode.SwitchBranch,
       get refreshKey() {
         return refresh()
@@ -334,20 +421,294 @@ describe('GitOptions activeMode ownership', () => {
     expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(2)
   })
 
+  it.each(['path', 'worker'] as const)('refetches a restricted warning mode after a %s reset with preloaded branches', async (target) => {
+    vi.mocked(workerGit.getGitWorkingTreeState).mockImplementation(async (workerId, { path }) => ({
+      $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse',
+      isDirty: workerId === 'w2' || path === '/repo-b',
+    }))
+    const [path, setPath] = createSignal('/repo-a')
+    const [workerId, setWorkerId] = createSignal('w1')
+    renderGitOptions({
+      get workerId() {
+        return workerId()
+      },
+      get selectedPath() {
+        return path()
+      },
+      gitMode: () => GitMode.SwitchBranch,
+      modes: [GitMode.SwitchBranch, GitMode.CreateBranch, GitMode.CreateWorktree],
+      preloadedBranches: () => [
+        entry('main'),
+      ],
+    })
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText(/Switching branches may fail or discard changes/)).not.toBeInTheDocument()
+
+    if (target === 'path')
+      setPath('/repo-b')
+    else
+      setWorkerId('w2')
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(2)
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenLastCalledWith(untrack(workerId), {
+      path: untrack(path),
+    }, {
+      signal: expect.any(AbortSignal),
+    })
+    expect(screen.getByLabelText('Switch to branch')).toBeChecked()
+    expect(screen.getByText(/Switching branches may fail or discard changes/)).toBeVisible()
+    expect(workerGit.listGitBranches).not.toHaveBeenCalled()
+  })
+
+  it.each(['path', 'worker'] as const)('replaces a pending restricted observation after a %s reset', async (target) => {
+    const old = deferred<WorkingTreeResponse>()
+    const latest = deferred<WorkingTreeResponse>()
+    vi.mocked(workerGit.getGitWorkingTreeState).mockImplementation((workerId, { path }) =>
+      workerId === 'w1' && path === '/repo-a'
+        ? old.promise
+        : latest.promise)
+    const [path, setPath] = createSignal('/repo-a')
+    const [workerId, setWorkerId] = createSignal('w1')
+    renderGitOptions({
+      get workerId() {
+        return workerId()
+      },
+      get selectedPath() {
+        return path()
+      },
+      gitMode: () => GitMode.SwitchBranch,
+      modes: [GitMode.SwitchBranch, GitMode.CreateBranch, GitMode.CreateWorktree],
+      preloadedBranches: () => [
+        entry('main'),
+      ],
+    })
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1)
+    if (target === 'path')
+      setPath('/repo-b')
+    else
+      setWorkerId('w2')
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText(/Switching branches may fail or discard changes/)).not.toBeInTheDocument()
+    latest.resolve(workingTreeResponse(true))
+    await settle()
+    expect(screen.getByText(/Switching branches may fail or discard changes/)).toBeVisible()
+    old.resolve(workingTreeResponse(false))
+    await settle()
+    expect(screen.getByText(/Switching branches may fail or discard changes/)).toBeVisible()
+  })
+
+  it.each(['path', 'worker'] as const)('keeps a %s reset free of status reads until a warning mode is selected', async (target) => {
+    const old = deferred<WorkingTreeResponse>()
+    vi.mocked(workerGit.getGitWorkingTreeState).mockReturnValueOnce(old.promise)
+    const [path, setPath] = createSignal('/repo-a')
+    const [workerId, setWorkerId] = createSignal('w1')
+    renderGitOptions({
+      get workerId() {
+        return workerId()
+      },
+      get selectedPath() {
+        return path()
+      },
+      gitMode: () => GitMode.SwitchBranch,
+    })
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1)
+    if (target === 'path')
+      setPath('/repo-b')
+    else
+      setWorkerId('w2')
+    await settle()
+    expect(screen.getByLabelText('Use current state')).toBeChecked()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByLabelText('Use existing worktree'))
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByLabelText('Switch to branch'))
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(2)
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenLastCalledWith(untrack(workerId), {
+      path: untrack(path),
+    }, {
+      signal: expect.any(AbortSignal),
+    })
+    old.resolve(workingTreeResponse(true))
+    await settle()
+    expect(screen.queryByText(/Switching branches may fail or discard changes/)).not.toBeInTheDocument()
+  })
+
+  it('waits for valid targets and readiness before refetching a restricted warning mode', async () => {
+    const [path, setPath] = createSignal('/repo')
+    const [workerId, setWorkerId] = createSignal('w1')
+    const [ready, setReady] = createSignal(false)
+    renderGitOptions({
+      get workerId() {
+        return workerId()
+      },
+      get selectedPath() {
+        return path()
+      },
+      gitInfo: {
+        ...makeGitInfo(),
+        showGitOptions: ready,
+      },
+      gitMode: () => GitMode.SwitchBranch,
+      modes: [GitMode.SwitchBranch, GitMode.CreateBranch, GitMode.CreateWorktree],
+      preloadedBranches: () => [
+        entry('main'),
+      ],
+    })
+    setPath('/repo-b')
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).not.toHaveBeenCalled()
+    setReady(true)
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1)
+    setPath('')
+    setWorkerId('')
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1)
+    setPath('/repo-c')
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1)
+    setWorkerId('w2')
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(2)
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenLastCalledWith('w2', { path: '/repo-c' }, {
+      signal: expect.any(AbortSignal),
+    })
+  })
+
+  it('shares a pending status observation across warning modes and caches its result', async () => {
+    const pending = deferred<WorkingTreeResponse>()
+    vi.mocked(workerGit.getGitWorkingTreeState).mockReturnValueOnce(pending.promise)
+    renderGitOptions()
+    for (const label of [
+      'Switch to branch',
+      'Create new branch',
+      'Create new worktree',
+      'Use current state',
+      'Switch to branch',
+    ]) {
+      fireEvent.click(screen.getByLabelText(label))
+    }
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1)
+    pending.resolve(workingTreeResponse(true))
+    await settle()
+    expect(screen.getByText(/Switching branches may fail or discard changes/)).toBeVisible()
+    fireEvent.click(screen.getByLabelText('Create new worktree'))
+    await settle()
+    expect(screen.getByText(/will not be transferred to the new worktree/)).toBeVisible()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1)
+  })
+
+  it('replaces a pending observation on refresh and ignores the older response', async () => {
+    const old = deferred<WorkingTreeResponse>()
+    const latest = deferred<WorkingTreeResponse>()
+    let calls = 0
+    vi.mocked(workerGit.getGitWorkingTreeState).mockImplementation(() => ++calls === 1
+      ? old.promise
+      : latest.promise)
+    const [refresh, setRefresh] = createSignal(0)
+    renderGitOptions({
+      gitMode: () => GitMode.SwitchBranch,
+      get refreshKey() {
+        return refresh()
+      },
+    })
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1)
+    setRefresh(1)
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(2)
+    latest.resolve(workingTreeResponse(true))
+    await settle()
+    expect(screen.getByText(/Switching branches may fail or discard changes/)).toBeVisible()
+    old.resolve(workingTreeResponse(false))
+    await settle()
+    expect(screen.getByText(/Switching branches may fail or discard changes/)).toBeVisible()
+  })
+
+  it('retries a failed observation only after selecting another warning mode', async () => {
+    vi.mocked(workerGit.getGitWorkingTreeState).mockRejectedValueOnce(new Error('offline'))
+    renderGitOptions({
+      gitMode: () => GitMode.SwitchBranch,
+    })
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByLabelText('Create new branch'))
+    await settle()
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(2)
+    expect(screen.queryByText(/Creating a new branch will include them/)).not.toBeInTheDocument()
+  })
+
+  it.each(['path', 'worker', 'refresh', 'unmount'] as const)('aborts the pending client observation on %s', async (action) => {
+    const pending = deferred<WorkingTreeResponse>()
+    const rejectedOnAbort = vi.fn()
+    vi.mocked(workerGit.getGitWorkingTreeState).mockImplementationOnce((_workerId, _request, options) => {
+      const signal = options?.signal
+      signal?.addEventListener('abort', () => {
+        rejectedOnAbort()
+        pending.reject(signal.reason)
+      }, { once: true })
+      return pending.promise
+    })
+    const [path, setPath] = createSignal('/repo-a')
+    const [workerId, setWorkerId] = createSignal('w1')
+    const [refresh, setRefresh] = createSignal(0)
+    const view = renderGitOptions({
+      get workerId() {
+        return workerId()
+      },
+      get selectedPath() {
+        return path()
+      },
+      get refreshKey() {
+        return refresh()
+      },
+      gitMode: () => GitMode.SwitchBranch,
+    })
+    await settle()
+    const firstSignal = vi.mocked(workerGit.getGitWorkingTreeState).mock.calls[0]?.[2]?.signal
+    expect(firstSignal).toBeInstanceOf(AbortSignal)
+    expect(firstSignal?.aborted).toBe(false)
+    if (action === 'path')
+      setPath('/repo-b')
+    else if (action === 'worker')
+      setWorkerId('w2')
+    else if (action === 'refresh')
+      setRefresh(1)
+    else
+      view.unmount()
+    await settle()
+    expect(firstSignal?.aborted).toBe(true)
+    expect(rejectedOnAbort).toHaveBeenCalledTimes(1)
+    if (action === 'path' || action === 'worker') {
+      expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(1)
+      fireEvent.click(screen.getByLabelText('Switch to branch'))
+      await settle()
+    }
+    if (action !== 'unmount') {
+      expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledTimes(2)
+      const latestSignal = vi.mocked(workerGit.getGitWorkingTreeState).mock.calls[1]?.[2]?.signal
+      expect(latestSignal).toBeInstanceOf(AbortSignal)
+      expect(latestSignal).not.toBe(firstSignal)
+      expect(latestSignal?.aborted).toBe(false)
+    }
+  })
+
   it('seeds the radio from `props.gitMode()` at mount and ignores subsequent external mutations', async () => {
     // Read gitMode once with untrack to initialize activeMode. Later prop updates must not replace the internal mode.
     const [mode, setMode] = createSignal<GitMode>(GitMode.SwitchBranch)
     const onGitModeChange = vi.fn()
 
-    render(() => (
-      <GitOptions
-        workerId="w1"
-        selectedPath="/repo"
-        gitInfo={makeGitInfo()}
-        gitMode={mode}
-        onGitModeChange={onGitModeChange}
-      />
-    ))
+    renderGitOptions({
+      gitMode: mode,
+      onGitModeChange,
+    })
 
     await waitFor(() => expect(screen.getByLabelText('Switch to branch')).toBeChecked())
 
@@ -363,22 +724,16 @@ describe('GitOptions activeMode ownership', () => {
   })
 
   it('radio clicks update the internal active mode AND emit an intent (uni-directional)', async () => {
-    // The click path goes `setActiveMode → currentIntent recompute →
-    // effect → onGitModeChange`. Asserts both the visual flip AND the
-    // emit so the parent's view of the mode (which comes from the
-    // intent, not from re-reading the prop) stays in sync.
+    // The radio calls setRawMode. activeMode recomputes, and the emit effect
+    // builds the intent with intentFor and calls onGitModeChange. Assert the
+    // radio selection and emitted intent so the parent's mode stays synchronized.
     const [mode] = createSignal<GitMode>(GitMode.SwitchBranch)
     const onGitModeChange = vi.fn()
 
-    render(() => (
-      <GitOptions
-        workerId="w1"
-        selectedPath="/repo"
-        gitInfo={makeGitInfo()}
-        gitMode={mode}
-        onGitModeChange={onGitModeChange}
-      />
-    ))
+    renderGitOptions({
+      gitMode: mode,
+      onGitModeChange,
+    })
 
     await waitFor(() => expect(screen.getByLabelText('Switch to branch')).toBeChecked())
     onGitModeChange.mockClear()
@@ -388,9 +743,8 @@ describe('GitOptions activeMode ownership', () => {
     await waitFor(() => expect(screen.getByLabelText('Create new branch')).toBeChecked())
     expect(screen.getByLabelText('Switch to branch')).not.toBeChecked()
 
-    // The emit fires through the createMemo + createEffect path, so it
-    // may take a microtask hop. Wait for the assertion rather than
-    // asserting synchronously.
+    // The emit runs through a reactive effect. Wait for the assertion before
+    // checking its calls.
     await waitFor(() => {
       const intents = onGitModeChange.mock.calls.map(c => (c[0] as { mode: GitMode }).mode)
       expect(intents).toContain(GitMode.CreateBranch)
@@ -405,16 +759,11 @@ describe('GitOptions activeMode ownership', () => {
     const [mode] = createSignal<GitMode>(GitMode.CreateWorktree)
     const onGitModeChange = vi.fn()
 
-    render(() => (
-      <GitOptions
-        workerId="w1"
-        selectedPath="/repo"
-        gitInfo={makeGitInfo()}
-        gitMode={mode}
-        onGitModeChange={onGitModeChange}
-        modes={[GitMode.SwitchBranch, GitMode.CreateBranch, GitMode.CreateWorktree]}
-      />
-    ))
+    renderGitOptions({
+      gitMode: mode,
+      onGitModeChange,
+      modes: [GitMode.SwitchBranch, GitMode.CreateBranch, GitMode.CreateWorktree],
+    })
 
     await waitFor(() => expect(onGitModeChange).toHaveBeenCalled())
     const firstIntent = onGitModeChange.mock.calls[0]?.[0] as { mode: GitMode }
@@ -430,16 +779,11 @@ describe('GitOptions activeMode ownership', () => {
     const [mode] = createSignal<GitMode>(GitMode.SwitchBranch)
     const onGitModeChange = vi.fn()
 
-    render(() => (
-      <GitOptions
-        workerId="w1"
-        selectedPath="/repo"
-        gitInfo={makeGitInfo()}
-        gitMode={mode}
-        onGitModeChange={onGitModeChange}
-        modes={[]}
-      />
-    ))
+    renderGitOptions({
+      gitMode: mode,
+      onGitModeChange,
+      modes: [],
+    })
 
     // DEFAULT_GIT_MODES includes Current as the first/default mode, so
     // the seed intent emitted on mount must NOT be undefined.
@@ -461,16 +805,11 @@ describe('GitOptions activeMode ownership', () => {
     const [mode] = createSignal<GitMode>(GitMode.UseWorktree)
     const onGitModeChange = vi.fn()
 
-    render(() => (
-      <GitOptions
-        workerId="w1"
-        selectedPath="/repo"
-        gitInfo={makeGitInfo()}
-        gitMode={mode}
-        onGitModeChange={onGitModeChange}
-        modes={[GitMode.SwitchBranch, GitMode.CreateBranch, GitMode.CreateWorktree]}
-      />
-    ))
+    renderGitOptions({
+      gitMode: mode,
+      onGitModeChange,
+      modes: [GitMode.SwitchBranch, GitMode.CreateBranch, GitMode.CreateWorktree],
+    })
 
     // The first enabled mode, because Current is not enabled either.
     await waitFor(() => expect(screen.getByLabelText('Switch to branch')).toBeChecked())
@@ -483,16 +822,11 @@ describe('GitOptions activeMode ownership', () => {
     const [mode] = createSignal<GitMode>(GitMode.UseWorktree)
     const onGitModeChange = vi.fn()
 
-    render(() => (
-      <GitOptions
-        workerId="w1"
-        selectedPath="/repo"
-        gitInfo={makeGitInfo()}
-        gitMode={mode}
-        onGitModeChange={onGitModeChange}
-        modes={[GitMode.Current, GitMode.SwitchBranch]}
-      />
-    ))
+    renderGitOptions({
+      gitMode: mode,
+      onGitModeChange,
+      modes: [GitMode.Current, GitMode.SwitchBranch],
+    })
 
     await waitFor(() => expect(screen.getByLabelText('Use current state')).toBeChecked())
     expect(screen.getByLabelText('Switch to branch')).not.toBeChecked()
@@ -504,16 +838,11 @@ describe('GitOptions activeMode ownership', () => {
     const [mode] = createSignal<GitMode>(GitMode.CreateWorktree)
     const onGitModeChange = vi.fn()
 
-    render(() => (
-      <GitOptions
-        workerId="w1"
-        selectedPath="/repo"
-        gitInfo={makeGitInfo()}
-        gitMode={mode}
-        onGitModeChange={onGitModeChange}
-        modes={[GitMode.SwitchBranch, GitMode.CreateBranch, GitMode.CreateWorktree]}
-      />
-    ))
+    renderGitOptions({
+      gitMode: mode,
+      onGitModeChange,
+      modes: [GitMode.SwitchBranch, GitMode.CreateBranch, GitMode.CreateWorktree],
+    })
 
     await waitFor(() => expect(screen.getByLabelText('Create new worktree')).toBeChecked())
   })
@@ -530,16 +859,12 @@ describe('GitOptions activeMode ownership', () => {
       GitMode.CreateBranch,
     ])
 
-    render(() => (
-      <GitOptions
-        workerId="w1"
-        selectedPath="/repo"
-        gitInfo={makeGitInfo()}
-        gitMode={mode}
-        onGitModeChange={vi.fn()}
-        modes={modes()}
-      />
-    ))
+    renderGitOptions({
+      gitMode: mode,
+      get modes() {
+        return modes()
+      },
+    })
 
     await waitFor(() => expect(screen.getByLabelText('Use current state')).toBeChecked())
     // CreateBranch, not SwitchBranch: the narrowed set's DEFAULT is
@@ -560,16 +885,12 @@ describe('GitOptions activeMode ownership', () => {
     const [mode] = createSignal<GitMode>(GitMode.Current)
     const [modes, setModes] = createSignal<GitMode[]>([GitMode.Current, GitMode.SwitchBranch])
 
-    render(() => (
-      <GitOptions
-        workerId="w1"
-        selectedPath="/repo"
-        gitInfo={makeGitInfo()}
-        gitMode={mode}
-        onGitModeChange={vi.fn()}
-        modes={modes()}
-      />
-    ))
+    renderGitOptions({
+      gitMode: mode,
+      get modes() {
+        return modes()
+      },
+    })
 
     await waitFor(() => expect(screen.getByLabelText('Use current state')).toBeChecked())
 
@@ -584,16 +905,11 @@ describe('GitOptions activeMode ownership', () => {
     const [mode] = createSignal<GitMode>(GitMode.UseWorktree)
     const onGitModeChange = vi.fn()
 
-    render(() => (
-      <GitOptions
-        workerId="w1"
-        selectedPath="/repo"
-        gitInfo={makeGitInfo()}
-        gitMode={mode}
-        onGitModeChange={onGitModeChange}
-        modes={[]}
-      />
-    ))
+    renderGitOptions({
+      gitMode: mode,
+      onGitModeChange,
+      modes: [],
+    })
 
     await waitFor(() => expect(screen.getByLabelText('Use existing worktree')).toBeChecked())
   })
@@ -605,15 +921,13 @@ describe('GitOptions activeMode ownership', () => {
     const [path, setPath] = createSignal('/repo')
     const onGitModeChange = vi.fn()
 
-    render(() => (
-      <GitOptions
-        workerId="w1"
-        selectedPath={path()}
-        gitInfo={makeGitInfo()}
-        gitMode={mode}
-        onGitModeChange={onGitModeChange}
-      />
-    ))
+    renderGitOptions({
+      get selectedPath() {
+        return path()
+      },
+      gitMode: mode,
+      onGitModeChange,
+    })
 
     fireEvent.click(screen.getByLabelText('Create new branch'))
     await waitFor(() => expect(screen.getByLabelText('Create new branch')).toBeChecked())
@@ -634,7 +948,11 @@ describe('GitOptions activeMode ownership', () => {
     const old = deferred<Awaited<ReturnType<typeof workerGit.listGitBranches>>>()
     vi.mocked(workerGit.listGitBranches).mockReturnValueOnce(old.promise)
     const [path, setPath] = createSignal('/repo-a')
-    render(() => <GitOptions workerId="w1" selectedPath={path()} gitInfo={makeGitInfo()} gitMode={() => GitMode.Current} onGitModeChange={vi.fn()} />)
+    renderGitOptions({
+      get selectedPath() {
+        return path()
+      },
+    })
     fireEvent.click(screen.getByLabelText('Switch to branch'))
     await waitFor(() => expect(workerGit.listGitBranches).toHaveBeenCalledTimes(1))
     setPath('/repo-b')
@@ -644,6 +962,7 @@ describe('GitOptions activeMode ownership', () => {
         entry('old-branch'),
       ],
       currentBranch: 'main',
+      attachedBranch: 'main',
     })
     await Promise.resolve()
     await Promise.resolve()
@@ -661,15 +980,13 @@ describe('GitOptions activeMode ownership', () => {
     const [path, setPath] = createSignal('/repo')
     const onGitModeChange = vi.fn()
 
-    render(() => (
-      <GitOptions
-        workerId="w1"
-        selectedPath={path()}
-        gitInfo={makeGitInfo()}
-        gitMode={mode}
-        onGitModeChange={onGitModeChange}
-      />
-    ))
+    renderGitOptions({
+      get selectedPath() {
+        return path()
+      },
+      gitMode: mode,
+      onGitModeChange,
+    })
 
     fireEvent.click(screen.getByLabelText('Create new branch'))
     await waitFor(() => expect(screen.getByLabelText('Create new branch')).toBeChecked())
@@ -683,22 +1000,7 @@ describe('GitOptions activeMode ownership', () => {
 })
 
 describe('GitOptions branch name field', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    vi.mocked(workerGit.getGitWorkingTreeState).mockResolvedValue({
-      $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse',
-      isDirty: false,
-    })
-    vi.mocked(workerGit.listGitBranches).mockResolvedValue({
-      $typeName: 'leapmux.v1.ListGitBranchesResponse',
-      branches: [],
-      currentBranch: 'main',
-    })
-    vi.mocked(workerGit.listGitWorktrees).mockResolvedValue({
-      $typeName: 'leapmux.v1.ListGitWorktreesResponse',
-      worktrees: [],
-    })
-  })
+  beforeEach(prepareGitMocks)
 
   // An empty branch field must remain empty and show its validation error.
   // A randomSlug fallback previously restored the generated value and made the empty-input path unreachable.
@@ -707,16 +1009,11 @@ describe('GitOptions branch name field', () => {
     const [mode] = createSignal<GitMode>(GitMode.CreateBranch)
     const onGitModeChange = vi.fn()
 
-    render(() => (
-      <GitOptions
-        workerId="w1"
-        selectedPath="/repo"
-        gitInfo={makeGitInfo()}
-        gitMode={mode}
-        onGitModeChange={onGitModeChange}
-        modes={[GitMode.CreateBranch]}
-      />
-    ))
+    renderGitOptions({
+      gitMode: mode,
+      onGitModeChange,
+      modes: [GitMode.CreateBranch],
+    })
 
     await waitFor(() => expect(screen.getByLabelText('Create new branch')).toBeChecked())
 
@@ -746,16 +1043,11 @@ describe('GitOptions branch name field', () => {
     const [mode] = createSignal<GitMode>(GitMode.CreateBranch)
     const onGitModeChange = vi.fn()
 
-    render(() => (
-      <GitOptions
-        workerId="w1"
-        selectedPath="/repo"
-        gitInfo={makeGitInfo()}
-        gitMode={mode}
-        onGitModeChange={onGitModeChange}
-        modes={[GitMode.CreateBranch]}
-      />
-    ))
+    renderGitOptions({
+      gitMode: mode,
+      onGitModeChange,
+      modes: [GitMode.CreateBranch],
+    })
 
     await waitFor(() => expect(screen.getByLabelText('Create new branch')).toBeChecked())
 
@@ -777,5 +1069,165 @@ describe('GitOptions branch name field', () => {
     await Promise.resolve()
     expect(input.value).toBe('third-branch')
     expect(screen.queryByText('Branch name must not be empty')).not.toBeInTheDocument()
+  })
+})
+
+describe('GitOptions attached branch identity', () => {
+  beforeEach(prepareGitMocks)
+
+  it.each([
+    { preloaded: false, remote: false },
+    { preloaded: true, remote: false },
+    { preloaded: false, remote: true },
+    { preloaded: true, remote: true },
+  ])('permits detached same-label attachment with %j', async ({ preloaded, remote }) => {
+    const label = 'a1b2c3d'
+    const selected = remote
+      ? `upstream/${label}`
+      : label
+    const branches = [
+      entry(label),
+      entry(`upstream/${label}`, true),
+    ]
+    vi.mocked(workerGit.listGitBranches).mockResolvedValue({
+      $typeName: 'leapmux.v1.ListGitBranchesResponse',
+      branches,
+      currentBranch: label,
+      attachedBranch: '',
+    })
+    const onGitModeChange = vi.fn()
+    renderGitOptions({
+      gitMode: () => GitMode.SwitchBranch,
+      gitInfo: makeGitInfo({ currentBranch: label, attachedBranch: '' }),
+      onGitModeChange,
+      ...(preloaded
+        ? {
+            preloadedBranches: () => branches,
+          }
+        : {}),
+    })
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Branch' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'Branch' }))
+    expect(screen.queryByRole('menuitemradio', { name: `${label} (current)` })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitemradio', { name: selected }))
+    await waitFor(() => expect(onGitModeChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      mode: GitMode.SwitchBranch,
+      checkoutBranch: selected,
+      checkoutBranchError: null,
+    })))
+  })
+
+  it.each([GitMode.CreateBranch, GitMode.CreateWorktree])('uses HEAD as the detached default base in mode %s', async (mode) => {
+    const label = 'a1b2c3d'
+    const branches = [
+      entry('main'),
+      entry(label),
+    ]
+    vi.mocked(workerGit.listGitBranches).mockResolvedValue({
+      $typeName: 'leapmux.v1.ListGitBranchesResponse',
+      branches,
+      currentBranch: label,
+      attachedBranch: '',
+    })
+    const onGitModeChange = vi.fn()
+    renderGitOptions({
+      gitMode: () => mode,
+      gitInfo: makeGitInfo({ currentBranch: label, attachedBranch: '' }),
+      onGitModeChange,
+    })
+    await waitFor(() => expect(onGitModeChange).toHaveBeenLastCalledWith(expect.objectContaining(
+      mode === GitMode.CreateBranch
+        ? { createBranchBase: '' }
+        : { worktreeBaseBranch: '' },
+    )))
+    fireEvent.click(screen.getByRole('button', { name: 'Branch' }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: label }))
+    await waitFor(() => expect(onGitModeChange).toHaveBeenLastCalledWith(expect.objectContaining(
+      mode === GitMode.CreateBranch
+        ? { createBranchBase: label }
+        : { worktreeBaseBranch: label },
+    )))
+  })
+
+  it('clears an automatic stale attached base but preserves an explicit selection', async () => {
+    const branches = [
+      entry('main'),
+      entry('other'),
+    ]
+    const [snapshot, setSnapshot] = createSignal(makeGitInfo({ attachedBranch: 'main' }).info())
+    const onGitModeChange = vi.fn()
+    renderGitOptions({
+      gitMode: () => GitMode.CreateBranch,
+      gitInfo: {
+        info: snapshot,
+        loading: () => false,
+        showGitOptions: () => true,
+      },
+      preloadedBranches: () => branches,
+      onGitModeChange,
+    })
+    await waitFor(() => expect(onGitModeChange).toHaveBeenLastCalledWith(expect.objectContaining({ createBranchBase: 'main' })))
+    setSnapshot(current => ({
+      ...current,
+      currentBranch: 'a1b2c3d',
+      attachedBranch: '',
+    }))
+    await waitFor(() => expect(onGitModeChange).toHaveBeenLastCalledWith(expect.objectContaining({ createBranchBase: '' })))
+    fireEvent.click(screen.getByRole('button', { name: 'Branch' }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'other' }))
+    setSnapshot(current => ({
+      ...current,
+      currentBranch: 'main',
+      attachedBranch: 'main',
+    }))
+    await waitFor(() => expect(onGitModeChange).toHaveBeenLastCalledWith(expect.objectContaining({ createBranchBase: 'other' })))
+  })
+})
+
+describe('GitOptions automatic base selection', () => {
+  beforeEach(prepareGitMocks)
+
+  it.each(['main', 'a1b2c3d'])('retains the no-op check for an attached branch %s', async (branch) => {
+    const branches = [
+      entry(branch),
+    ]
+    const onGitModeChange = vi.fn()
+    renderGitOptions({
+      gitMode: () => GitMode.SwitchBranch,
+      gitInfo: makeGitInfo({ currentBranch: branch, attachedBranch: branch }),
+      preloadedBranches: () => branches,
+      onGitModeChange,
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Branch' }))
+    fireEvent.click(screen.getByRole('menuitemradio', { name: `${branch} (current)` }))
+    await waitFor(() => expect(onGitModeChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      checkoutBranchError: 'Working directory is already on this branch.',
+    })))
+  })
+
+  it('clears an automatic base when a refreshed list proves detachment', async () => {
+    const branches = [
+      entry('main'),
+    ]
+    vi.mocked(workerGit.listGitBranches)
+      .mockResolvedValueOnce({
+        $typeName: 'leapmux.v1.ListGitBranchesResponse',
+        branches,
+        currentBranch: 'main',
+        attachedBranch: 'main',
+      })
+      .mockResolvedValueOnce({
+        $typeName: 'leapmux.v1.ListGitBranchesResponse',
+        branches,
+        currentBranch: 'a1b2c3d',
+        attachedBranch: '',
+      })
+    const [refresh, setRefresh] = createSignal(0)
+    const onGitModeChange = vi.fn()
+    render(() => <GitOptions workerId="w1" selectedPath="/repo" gitInfo={makeGitInfo()} gitMode={() => GitMode.CreateBranch} onGitModeChange={onGitModeChange} refreshKey={refresh()} />)
+    await waitFor(() => expect(onGitModeChange).toHaveBeenLastCalledWith(expect.objectContaining({ createBranchBase: 'main' })))
+    setRefresh(1)
+    await waitFor(() => expect(workerGit.listGitBranches).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(onGitModeChange).toHaveBeenLastCalledWith(expect.objectContaining({ createBranchBase: '' })))
   })
 })

@@ -2028,14 +2028,19 @@ func (svc *Service) broadcastAgentInactive(dbAgent *db.Agent) {
 }
 
 // runAgentPhase0 broadcasts the per-mode label and executes the git-mode
-// mutation. Returns the result (with rollback metadata populated iff a
-// mutation partially succeeded before failing) and any error.
+// mutation. Newly owned mutations carry rollback metadata, including
+// mutations that partially succeeded before an error.
 func (svc *Service) runAgentPhase0(ctx context.Context, dbAgent *db.Agent, plan gitModePlan, h *startupEntry) (gitModeResult, error) {
+	var result gitModeResult
+	var err error
 	if h.creation != nil {
 		h.creation.announcePhase0(svc.agentStartupCallbacks(dbAgent, nil, h))
-		return h.creation.runCreationPhase0(ctx)
+		result, err = h.creation.runCreationPhase0(ctx)
+	} else {
+		result, err = svc.runStartupPhase0(ctx, plan, svc.agentStartupCallbacks(dbAgent, nil, h))
 	}
-	return svc.runStartupPhase0(ctx, plan, svc.agentStartupCallbacks(dbAgent, nil, h))
+	result.bindCreatedWorktreeStartup(worktreeRollbackStartup{key: newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, dbAgent.ID, ""), registry: &svc.AgentStartup.startupCore, entry: h})
+	return result, err
 }
 
 // failAgentStartup is the common tail for every failure after the sync

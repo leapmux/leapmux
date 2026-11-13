@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"sync"
 
 	"github.com/leapmux/leapmux/util/pathutil"
@@ -24,10 +25,9 @@ func (svc *Service) worktreeRemovalLock(worktreeID string) *sync.Mutex {
 // gitIndexLock returns the per-repository mutex that serializes index-mutating
 // git commands. See the note on gitIndexLocks, including its lock order.
 //
-// repoRoot must be the MAIN repo root. An empty key is accepted rather than
-// panicking -- it degrades to one shared lock, which over-serializes but is
-// never wrong -- so a caller that failed to resolve the root still gets
-// mutual exclusion instead of the raw race.
+// repoGitDir is the canonical common administrative directory. An empty key
+// identifies no resolved repository. Mutation callers resolve identity before
+// they enter this helper.
 //
 // The key is CANONICALIZED here rather than at the call sites. One repo has
 // more than one spelling -- `/var/...` and `/private/var/...` name the same
@@ -38,8 +38,8 @@ func (svc *Service) worktreeRemovalLock(worktreeID string) *sync.Mutex {
 // File exists` -- the exact failure this lock exists to prevent, reintroduced
 // by the lock silently not being the same lock. Doing it here makes the
 // mistake unavailable to callers instead of asking each of them to remember.
-func (svc *Service) gitIndexLock(repoRoot string) *sync.Mutex {
-	v, _ := svc.gitIndexLocks.LoadOrStore(pathutil.Canonicalize(repoRoot), &sync.Mutex{})
+func (svc *Service) gitIndexLock(repoGitDir string) *sync.Mutex {
+	v, _ := svc.gitIndexLocks.LoadOrStore(pathutil.Canonicalize(repoGitDir), &sync.Mutex{})
 	return v.(*sync.Mutex)
 }
 
@@ -47,39 +47,45 @@ func (svc *Service) gitIndexLock(repoRoot string) *sync.Mutex {
 // the function-scoped holders that cannot use withGitIndexLock's closure form
 // (they have no error return, or their locked region spans early returns).
 //
-//	defer svc.lockGitIndex(repoRoot)()
+//	defer svc.lockGitIndex(repoGitDir)()
 //
 // Same lock, same ordering rule as withGitIndexLock -- see the LOCK ORDER note on
 // gitIndexLocks. It exists so those sites are one line instead of a hand-rolled
 // get/Lock/defer-Unlock triple, which is where a missing defer or a lock taken on
 // the wrong key would hide.
-func (svc *Service) lockGitIndex(repoRoot string) func() {
-	mu := svc.gitIndexLock(repoRoot)
+func (svc *Service) lockGitIndex(repoGitDir string) func() {
+	mu := svc.gitIndexLock(repoGitDir)
+	if svc.beforeGitIndexLockFn != nil {
+		svc.beforeGitIndexLockFn(repoGitDir)
+	}
 	mu.Lock()
 	return mu.Unlock
 }
 
-// withGitIndexLock runs fn while holding repoRoot's index lock.
-func (svc *Service) withGitIndexLock(repoRoot string, fn func() error) error {
-	mu := svc.gitIndexLock(repoRoot)
-	mu.Lock()
-	defer mu.Unlock()
+// withGitIndexLock runs fn while holding repoGitDir's index lock.
+func (svc *Service) withGitIndexLock(repoGitDir string, fn func() error) error {
+	defer svc.lockGitIndex(repoGitDir)()
 	return fn()
 }
 
-// withRepoIndexLockForDir is withGitIndexLock for a caller that holds only a
-// working dir. It resolves the main repo root itself, at the cost of one
-// `git rev-parse` fork -- fine on the user-initiated branch dialogs that need
-// it, and the reason the plan-carrying paths use withGitIndexLock instead.
-//
-// A resolution failure does NOT skip the lock: it falls back to the empty key,
-// which serializes against every other unresolved caller. Over-serializing a
-// path we cannot place is the safe direction; running it unlocked is how the
-// index.lock failure happens.
-func (svc *Service) withRepoIndexLockForDir(ctx context.Context, dir string, fn func() error) error {
-	var repoRoot string
-	if info, err := queryGitPathInfo(ctx, dir); err == nil {
-		repoRoot = info.RepoRoot
+// withRepoIndexLockForDir resolves the mutex key, then revalidates the selected
+// checkout after waiting. The callback receives only protected current metadata.
+func (svc *Service) withRepoIndexLockForDir(ctx context.Context, dir string, fn func(*gitPathInfo) error) error {
+	captured, err := queryGitPathInfo(ctx, dir)
+	if err != nil {
+		return err
 	}
-	return svc.withGitIndexLock(repoRoot, fn)
+	return svc.withGitIndexLock(captured.CommonDir, func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		current, err := queryGitPathInfo(ctx, dir)
+		if err != nil {
+			return err
+		}
+		if !pathutil.SamePath(current.CommonDir, captured.CommonDir) {
+			return errors.New("git repository changed while waiting for index lock")
+		}
+		return fn(current)
+	})
 }

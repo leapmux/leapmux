@@ -11,9 +11,12 @@ import (
 	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/authscope"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
@@ -44,7 +47,7 @@ type bearerChannelEnv struct {
 
 // setupBearerChannelEnv stands up a hub with bearer-token interceptor
 // wired in, so OpenChannel calls can be authenticated by an
-// `lmx_<id>_<secret>` Authorization header. The delegation-narrowing
+// `Authorization: Bearer lmx_d<id>_<secret>` header. The delegation-narrowing
 // tests need this — the cookie-only env in channel_service_test.go
 // doesn't exercise the bearer path the plan added.
 func setupBearerChannelEnv(t *testing.T) *bearerChannelEnv {
@@ -87,9 +90,9 @@ func setupBearerChannelEnv(t *testing.T) *bearerChannelEnv {
 	}
 }
 
-// seedUserWorkspaceWorker creates a user, two workspaces both
-// accessible to that user, and a worker the user owns. Returns ids
-// the test will use to mint a delegation bearer scoped to ws-A.
+// seedUserWorkspaceWorker creates a user, two workspaces the user owns, and
+// a Worker the user owns. It returns IDs for a delegation bearer that carries
+// the user identity and minting Worker, without a workspace restriction.
 func (e *bearerChannelEnv) seedUserWorkspaceWorker(t *testing.T) (userID, wsA, wsB, workerID string) {
 	t.Helper()
 	ctx := context.Background()
@@ -120,11 +123,11 @@ func (e *bearerChannelEnv) seedUserWorkspaceWorker(t *testing.T) (userID, wsA, w
 	return userID, wsA, wsB, workerID
 }
 
-// mintDelegation seeds a delegation_tokens row directly so the test
-// has a known (token_id, secret) pair to authenticate with. Bypasses
-// the worker mint endpoint because the tab/workspace plumbing for
-// that handler is exercised in worker_delegation_handler_test.go.
-func (e *bearerChannelEnv) mintDelegation(t *testing.T, userID, workerID, workspaceID string) (bearer, tokenID string) {
+// mintDelegation seeds a delegation_tokens row directly so the test has a known
+// (token_id, secret) pair to authenticate with. It bypasses the mint endpoint's
+// registrant and tab-ownership checks, which worker_delegation_handler_test.go
+// exercises. This bypass permits the deliberately invalid cross-tenant fixture.
+func (e *bearerChannelEnv) mintDelegation(t *testing.T, userID, workerID string) (bearer, tokenID string) {
 	t.Helper()
 	tokenID = id.Generate()
 	secret := auth.MintAccessSecret()
@@ -146,37 +149,14 @@ func openMemoryStore(t *testing.T) store.Store {
 	return hubtestutil.OpenTestStore(t)
 }
 
-// captureWorker registers a fake online worker that records every
-// ConnectResponse the hub sends so the test can inspect what the hub pushed to
-// it.
-func (e *bearerChannelEnv) captureWorker(t *testing.T, workerID string) (chan *leapmuxv1.ConnectResponse, *workermgr.Conn) {
-	t.Helper()
-	ch := make(chan *leapmuxv1.ConnectResponse, 8)
-	conn := workermgrtest.NewConnWithWrite(t, workerID, func(msg *leapmuxv1.ConnectResponse) error {
-		ch <- msg
-		return nil
-	})
-	_, _ = e.workerMgr.Register(conn)
-	return ch, conn
-}
-
-// A delegation token minted by ATTACKER's worker must not open a channel to the
-// VICTIM's own worker, even though the token legitimately carries the victim's
-// identity and the victim owns that worker.
+// seedCrossTenantDelegation directly inserts a deliberately invalid delegation
+// row that authenticates as the victim but records the attacker's Worker as
+// its minter. Production issuance rejects that combination before checking tab
+// ownership. The fixture verifies defense in depth in both channel entry points.
 //
-// This is the cross-tenant chain the worker-scope check closes. A worker mints
-// tokens for whichever user its tab was spawned for, so an attacker who shares a
-// workspace with a victim (sharing needs no consent) gets their worker to mint a
-// bearer authenticating as the VICTIM. WorkerCanUse then waves it through to the
-// victim's own worker -- the victim registered it -- and the worker sees
-// sess.UserID == victim, so the worker's owner gate passes and hands the attacker
-// tunnels and files on the victim's machine.
-// seedCrossTenantDelegation builds the cross-tenant chain the worker-scope check
-// closes and returns the victim's worker id, a workspace of the victim's, plus a
-// bearer minted by the ATTACKER's worker that authenticates as the VICTIM. The
-// workspace is returned because it is readable to the token's user by design --
-// a delegation bearer carries its owner's reach across every workspace they own,
-// so the worker bound is the only thing left that can refuse this channel.
+// It returns the victim's Worker ID and workspace, plus the synthetic bearer.
+// The victim owns the target workspace and Worker, so ordinary user ownership
+// checks permit that target. Delegation Worker scope must still refuse it.
 func (e *bearerChannelEnv) seedCrossTenantDelegation(t *testing.T) (victimWorkerID, victimWS, bearer string) {
 	t.Helper()
 	ctx := context.Background()
@@ -198,7 +178,7 @@ func (e *bearerChannelEnv) seedCrossTenantDelegation(t *testing.T) (victimWorker
 		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
-	bearer, _ = e.mintDelegation(t, victimID, attackerWorkerID, victimWS)
+	bearer, _ = e.mintDelegation(t, victimID, attackerWorkerID)
 	return victimWorkerID, victimWS, bearer
 }
 
@@ -248,49 +228,87 @@ func TestGetWorkerHandshakeParams_DelegationCannotReachAnotherUsersWorker(t *tes
 // worker that minted it (the common `leapmux control` path).
 func TestGetWorkerHandshakeParams_DelegationReachesItsMintingWorker(t *testing.T) {
 	t.Parallel()
-
 	env := setupBearerChannelEnv(t)
-	userID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
-	bearer, _ := env.mintDelegation(t, userID, workerID, wsA)
-
-	req := &leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID}
-	ctx, info := connect.NewClientContext(context.Background())
+	userID, _, _, workerID := env.seedUserWorkspaceWorker(t)
+	bearer, _ := env.mintDelegation(t, userID, workerID)
+	hello := workermgrtest.TestHello()
+	conn := workermgrtest.NewConnWithHello(t, workerID, hello, func(*leapmuxv1.ConnectResponse) error { return nil })
+	requireWorkerConnectionRegistration(t, env.workerMgr, conn)
+	ctx, info := connect.NewClientContext(testutil.DeadlineContext(t))
 	info.RequestHeader().Set("Authorization", "Bearer "+bearer)
-	_, err := env.channelClient.GetWorkerHandshakeParams(ctx, req)
-
-	assert.NotEqual(t, connect.CodePermissionDenied, connect.CodeOf(err),
-		"the minting worker's own params must remain readable: %v", err)
+	response, err := env.channelClient.GetWorkerHandshakeParams(ctx, &leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID})
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	assert.True(t, proto.Equal(hello.GetKeys(), response.GetKeys()))
+	assert.Equal(t, hello.GetEncryptionMode(), response.GetEncryptionMode())
 }
 
 // The same token MUST still open a channel back to the worker that minted it --
 // the ordinary `leapmux control` case, where an agent talks to its own host.
 func TestOpenChannel_DelegationReachesItsMintingWorker(t *testing.T) {
 	t.Parallel()
-
 	env := setupBearerChannelEnv(t)
-	userID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
-
-	bearer, _ := env.mintDelegation(t, userID, workerID, wsA)
-	sent, _ := env.captureWorker(t, workerID)
-
-	shortCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	req := &leapmuxv1.OpenChannelRequest{
-		WorkerId:         workerID,
-		HandshakePayload: []byte("hs1"),
-	}
-	shortCtx, info := connect.NewClientContext(shortCtx)
+	userID, _, _, workerID := env.seedUserWorkspaceWorker(t)
+	bearer, tokenID := env.mintDelegation(t, userID, workerID)
+	ctx, info := connect.NewClientContext(testutil.DeadlineContext(t))
 	info.RequestHeader().Set("Authorization", "Bearer "+bearer)
-	_, err := env.channelClient.OpenChannel(shortCtx, req)
-	require.Error(t, err, "no fake worker response → expected timeout, not a permission denial")
-	assert.NotEqual(t, connect.CodePermissionDenied, connect.CodeOf(err),
-		"the minting worker must remain reachable")
-
+	sent := make(chan *leapmuxv1.ConnectResponse, 4)
+	completed := make(chan bool, 1)
+	conn := workermgrtest.NewConnWithWrite(t, workerID, func(msg *leapmuxv1.ConnectResponse) error {
+		sent <- msg
+		if open := msg.GetChannelOpen(); open != nil {
+			completed <- env.pending.Complete(msg.GetRequestId(), &leapmuxv1.ConnectRequest{
+				Payload: &leapmuxv1.ConnectRequest_ChannelOpenResp{ChannelOpenResp: &leapmuxv1.ChannelOpenResponse{
+					ChannelId: open.GetChannelId(), HandshakePayload: []byte("worker-handshake"), MaxMessageSize: open.GetMaxMessageSize(),
+				}},
+			})
+		}
+		return nil
+	})
+	requireWorkerConnectionRegistration(t, env.workerMgr, conn)
+	response, err := env.channelClient.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{WorkerId: workerID, HandshakePayload: []byte("hs1")})
+	require.NoError(t, err)
+	require.NotNil(t, response)
 	select {
-	case msg := <-sent:
-		require.NotNil(t, msg.GetChannelOpen(), "the open must reach the minting worker")
-	case <-time.After(200 * time.Millisecond):
-		t.Fatal("expected ChannelOpen to be sent to the minting worker")
+	case ok := <-completed:
+		require.True(t, ok)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	var msg *leapmuxv1.ConnectResponse
+	select {
+	case msg = <-sent:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	open := msg.GetChannelOpen()
+	require.NotNil(t, open)
+	assert.NotEmpty(t, msg.GetRequestId())
+	assert.NotEmpty(t, open.GetChannelId())
+	assert.Equal(t, userID, open.GetUserId())
+	assert.Equal(t, []byte("hs1"), open.GetHandshakePayload())
+	resolved, err := env.validator.ValidateBearer(ctx, bearer)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, authscope.ScopesToWire(resolved.Scopes), open.GetGrantedScopes())
+	assert.EqualValues(t, env.channelMgr.MaxMessageSize(), open.GetMaxMessageSize())
+	assert.Equal(t, open.GetChannelId(), response.GetChannelId())
+	assert.Equal(t, userID, response.GetUserId())
+	assert.Equal(t, []byte("worker-handshake"), response.GetHandshakePayload())
+	assert.Equal(t, open.GetMaxMessageSize(), response.GetMaxMessageSize())
+	channel, exists := env.channelMgr.GetChannelInfo(response.GetChannelId())
+	require.True(t, exists)
+	assert.Equal(t, workerID, channel.WorkerID)
+	assert.Equal(t, userID, channel.UserID)
+	assert.Equal(t, auth.DelegationCredential(tokenID, workerID), channel.AuthInfo.Credential)
+	_, err = env.channelClient.CloseChannel(ctx, &leapmuxv1.CloseChannelRequest{ChannelId: response.GetChannelId()})
+	require.NoError(t, err)
+	assert.False(t, env.channelMgr.Exists(response.GetChannelId()))
+	select {
+	case closeFrame := <-sent:
+		require.NotNil(t, closeFrame.GetChannelClose())
+		assert.Equal(t, response.GetChannelId(), closeFrame.GetChannelClose().GetChannelId())
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
 }
 
@@ -298,8 +316,8 @@ func TestCloseChannel_DelegationRequiresSameBearerScope(t *testing.T) {
 	t.Parallel()
 
 	env := setupBearerChannelEnv(t)
-	userID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
-	_, tokenID := env.mintDelegation(t, userID, workerID, wsA)
+	userID, _, _, workerID := env.seedUserWorkspaceWorker(t)
+	_, tokenID := env.mintDelegation(t, userID, workerID)
 
 	cookieChannelID := id.Generate()
 	otherDelegationChannelID := id.Generate()

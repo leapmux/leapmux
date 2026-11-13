@@ -170,6 +170,9 @@ func NewOAuthServerHandler(deps OAuthServerDeps) *OAuthServerHandler {
 	if deps.Notices == nil {
 		panic("OAuth server requires credential notices")
 	}
+	if deps.Store != nil && deps.SessionHasher.IsZero() {
+		panic("OAuth server requires a session secret hasher when a store is configured")
+	}
 	return &OAuthServerHandler{
 		sessionHasher: deps.SessionHasher,
 		store:         deps.Store,
@@ -225,9 +228,8 @@ func (h *OAuthServerHandler) RegisterRoutes(mux *http.ServeMux) {
 // throttle, so the fifth anonymous endpoint is protected by construction
 // rather than by the author remembering.
 //
-// It returns true when it already wrote the refusal, matching the helper it
-// wraps, so an endpoint that keeps an internal call for a sub-path reads the
-// same way.
+// It returns a handler that stops after the throttle writes a refusal.
+// Otherwise, the handler calls leg.
 func (h *OAuthServerHandler) anonymousLeg(leg http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if h.throttleAnonymous(w, r) {
@@ -239,7 +241,7 @@ func (h *OAuthServerHandler) anonymousLeg(leg http.HandlerFunc) http.HandlerFunc
 
 // --- Helpers ---
 
-func (h *OAuthServerHandler) requireSession(r *http.Request) *auth.UserInfo {
+func (h *OAuthServerHandler) requireSession(r *http.Request) (*auth.UserInfo, error) {
 	// A session cookie, or the SOLO account -- never a bearer.
 	//
 	// Leaving Validator nil is what unwires the bearer rung, and it is
@@ -256,7 +258,7 @@ func (h *OAuthServerHandler) requireSession(r *http.Request) *auth.UserInfo {
 	// The hub's own secure_cookies setting decides which cookie spelling the
 	// handler reads; see AuthenticateHTTP for why the fallback direction is
 	// asymmetric.
-	user, err := auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
+	return auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
 		SessionHasher: h.sessionHasher,
 		Store:         h.store,
 		SoloUser:      h.soloUser,
@@ -264,10 +266,6 @@ func (h *OAuthServerHandler) requireSession(r *http.Request) *auth.UserInfo {
 		ReadCookie:    true,
 		SecureCookies: h.secureCookies(r.Context()),
 	})
-	if err != nil {
-		return nil
-	}
-	return user
 }
 
 // snapshot reads the hub's settings once. A handler wired with no manager
@@ -373,7 +371,7 @@ func gateModeFor(r *http.Request) gateMode {
 // point a signed-in victim's browser at /oauth/authorize and re-arm their
 // elevation window for another two hours, as often as it liked, up to the
 // absolute cap. "The window closes when I stop using the app" is the property
-// the End now button and operating/security.md both rest on, and a third party
+// the End now button and site/content/docs/admin/security.md both rest on, and a third party
 // must not be able to extend it.
 //
 // The endpoint still RUNS. It only reads the session and renders a page; the
@@ -415,8 +413,16 @@ func (h *OAuthServerHandler) consentLeg(methods []string, leg func(http.Response
 //     it by hand still elevates nothing.
 func (h *OAuthServerHandler) requireElevatedSession(w http.ResponseWriter, r *http.Request) *auth.UserInfo {
 	mode := gateModeFor(r)
-	user := h.requireSession(r)
-	if user == nil {
+	user, err := h.requireSession(r)
+	if errors.Is(err, auth.ErrHTTPForbidden) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return nil
+	}
+	if err != nil && !errors.Is(err, auth.ErrHTTPUnauthenticated) {
+		writeInternalError(w, "OAuth session authentication failed", err)
+		return nil
+	}
+	if err != nil || user == nil {
 		if mode == gateBounce {
 			h.redirectTo(w, r, "/login", r.URL.RequestURI())
 			return nil
@@ -681,9 +687,9 @@ func appScopeCeiling(app *store.OAuthClient) authscope.ScopeSet {
 //     access_denied. Downgrading instead would report a successful login and
 //     then fail on the first admin verb.
 //
-// An EMPTY request takes the app's whole ceiling, which is what RFC 6749
-// section 3.3 allows a server to do and what every client that omits `scope`
-// expects.
+// An empty or whitespace-only request uses the app's closed scope ceiling
+// with the admin scopes removed. RFC 6749 section 3.3 permits this default.
+// An app must explicitly request an admin scope.
 func resolveRequestedScopes(raw string, app *store.OAuthClient, user *auth.UserInfo) (authscope.ScopeSet, *oauthErrorResponse) {
 	// Closed, so the ceiling states every IMPLIED permission of the ones the
 	// registration lists: a row that lists git:write carries git:read, and an

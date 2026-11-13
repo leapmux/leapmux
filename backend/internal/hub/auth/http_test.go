@@ -142,9 +142,12 @@ func TestAuthenticateHTTPKeepsTheFallbackOnAPlainHub(t *testing.T) {
 
 	// The prefixed spelling still resolves there too: a session issued while
 	// the setting was on must survive the operator turning it off.
-	user, err = f.authenticate(f.request(map[string]string{auth.SecureCookieName: f.realToken}), true)
-	require.NoError(t, err)
-	assert.Equal(t, f.realID, user.ID.String())
+	r := f.request(map[string]string{auth.SecureCookieName: f.realToken})
+	for _, secure := range []bool{true, false} {
+		user, err = f.authenticate(r, secure)
+		require.NoError(t, err)
+		assert.Equal(t, f.realID, user.ID.String())
+	}
 }
 
 // TestAuthenticateHTTPReportsAnInvalidPrefixedCookieRatherThanFallingBack
@@ -301,4 +304,24 @@ func TestAuthenticateHTTPRequiresACookieHasher(t *testing.T) {
 	_, err := auth.AuthenticateHTTP(t.Context(), request, auth.HTTPAuthOpts{ReadCookie: true})
 	require.ErrorContains(t, err, "SessionHasher")
 	assert.NotErrorIs(t, err, auth.ErrHTTPUnauthenticated)
+}
+
+func TestAuthenticateHTTPRejectsAnUnprovenPrefixedSecretWithoutPlainFallback(t *testing.T) {
+	t.Parallel()
+	f := newHTTPAuthFixture(t)
+	sessionID, secret, ok := auth.ParseSessionToken(f.realToken)
+	require.True(t, ok)
+	replacement := "A"
+	if secret[0] == 'A' {
+		replacement = "B"
+	}
+	wrong := auth.FormatSessionToken(sessionID, replacement+secret[1:])
+	for _, secure := range []bool{true, false} {
+		user, err := f.authenticate(f.request(map[string]string{
+			auth.SecureCookieName: wrong,
+			auth.CookieName:       f.plantedToken,
+		}), secure)
+		require.ErrorIs(t, err, auth.ErrHTTPUnauthenticated)
+		assert.Nil(t, user)
+	}
 }

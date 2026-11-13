@@ -112,7 +112,7 @@ func TestRemoveWorktreeFromDiskSerializesBranchSelection(t *testing.T) {
 	require.NoError(t, gitutil.Run(ctx, wt.RepoRoot, "branch", "alternate"))
 	checkoutEntered := false
 	fx.svc.afterWorktreeBranchProbeFn = func() {
-		lock := fx.svc.gitIndexLock(wt.RepoRoot)
+		lock := fx.svc.gitIndexLock(wt.RepoGitDir)
 		if lock.TryLock() {
 			defer lock.Unlock()
 			checkoutEntered = true
@@ -599,7 +599,7 @@ func TestRegisterTabForWorktreeAfterClose(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	q := svc.Queries
 	ctx := context.Background()
-	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-1", WorktreePath: "/r/wt-1", RepoRoot: "/r", BranchName: "b"})
+	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-1", WorktreePath: "/r/wt-1", RepoRoot: "/r", RepoGitDir: regularRepositoryGitDirForTest(t, "/r"), BranchName: "b"})
 	require.NoError(t, cwErr)
 
 	// Closed during startup under KEEP: skip the link, so the worktree ends at
@@ -722,6 +722,7 @@ func TestCloseAgent_WorktreeRemoveFailure_ReturnsFailureMessage(t *testing.T) {
 		ID:           wtID,
 		WorktreePath: bogusPath,
 		RepoRoot:     repoDir,
+		RepoGitDir:   regularRepositoryGitDirForTest(t, repoDir),
 		BranchName:   "",
 	})
 	require.NoError(t, cwErr)
@@ -978,11 +979,13 @@ func TestRemoveWorktreeFromDisk_GitFailure_PathIntact_ReturnsError(t *testing.T)
 		ID:           "wt-bogus",
 		WorktreePath: bogusPath,
 		RepoRoot:     repoDir,
+		RepoGitDir:   regularRepositoryGitDirForTest(t, repoDir),
 	}
 	_, cwErr := svc.Queries.CreateWorktree(context.Background(), db.CreateWorktreeParams{
 		ID:           wt.ID,
 		WorktreePath: wt.WorktreePath,
 		RepoRoot:     wt.RepoRoot,
+		RepoGitDir:   regularRepositoryGitDirForTest(t, wt.RepoRoot),
 	})
 	require.NoError(t, cwErr)
 
@@ -1017,11 +1020,13 @@ func TestRemoveWorktreeFromDisk_PathMissing_ReturnsNil(t *testing.T) {
 		ID:           "wt-missing",
 		WorktreePath: wtDir,
 		RepoRoot:     repoDir,
+		RepoGitDir:   regularRepositoryGitDirForTest(t, repoDir),
 	}
 	_, cwErr := svc.Queries.CreateWorktree(context.Background(), db.CreateWorktreeParams{
 		ID:           wt.ID,
 		WorktreePath: wt.WorktreePath,
 		RepoRoot:     wt.RepoRoot,
+		RepoGitDir:   regularRepositoryGitDirForTest(t, wt.RepoRoot),
 	})
 	require.NoError(t, cwErr)
 
@@ -1090,15 +1095,18 @@ func TestGitStillListsWorktree_UnreadableListingReportsStillListed(t *testing.T)
 
 	// The control: a readable listing answers truthfully in both directions.
 	assert.True(t, svc.gitStillListsWorktree(context.Background(), db.Worktree{
-		RepoRoot: repoDir, WorktreePath: wtDir,
+		RepoRoot:   repoDir,
+		RepoGitDir: regularRepositoryGitDirForTest(t, repoDir), WorktreePath: wtDir,
 	}))
 	assert.False(t, svc.gitStillListsWorktree(context.Background(), db.Worktree{
-		RepoRoot: repoDir, WorktreePath: filepath.Join(t.TempDir(), "never-added"),
+		RepoRoot:   repoDir,
+		RepoGitDir: regularRepositoryGitDirForTest(t, repoDir), WorktreePath: filepath.Join(t.TempDir(), "never-added"),
 	}))
 
 	// The fail-safe: a RepoRoot that is not a repository at all.
 	assert.True(t, svc.gitStillListsWorktree(context.Background(), db.Worktree{
-		RepoRoot: t.TempDir(), WorktreePath: wtDir,
+		RepoRoot:   t.TempDir(),
+		RepoGitDir: regularRepositoryGitDirForTest(t, t.TempDir()), WorktreePath: wtDir,
 	}), "an unreadable listing must not be read as 'git let it go'")
 }
 

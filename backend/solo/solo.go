@@ -1508,19 +1508,13 @@ func discardSavedState(ctx context.Context, server workerRegistrar, statePath st
 
 // usableLocalKeypair returns the keypair of a saved local Worker state that can
 // be launched. When the state cannot be launched, it returns no keypair and a
-// reason for the log: the state has no token, the row has no owner or is not
-// ACTIVE, the Hub pinned keys this state cannot reproduce, or the keys it does
-// reproduce are not the pinned ones.
+// reason for the log: the row has no owner or is not ACTIVE, the state cannot
+// reproduce its keys, or the restored keys differ from the Hub pin.
 //
 // The check has to restore the keypair to compare its keys with the pin, so it
 // returns that keypair: the restore recomputes the SLH-DSA public key, and a
 // caller that restored it again would pay that cost twice on every launch.
 func usableLocalKeypair(s *soloState, registration hub.WorkerRegistration) (*noiseutil.CompositeKeypair, string) {
-	// The ID still identifies the row, which no launch can connect as without its
-	// token, so the row must not stay ACTIVE and offline for good.
-	if s.AuthToken == "" {
-		return nil, "the auth token is missing"
-	}
 	// Unreachable via the schema (NOT NULL, set at registration), so this means a
 	// hand-edited row or a mint path that dropped it.
 	if registration.Owner == "" {

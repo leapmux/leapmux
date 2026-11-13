@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -21,6 +22,21 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
+
+func TestCreateSessionMaximumDuration(t *testing.T) {
+	st := newTestStore(t)
+	userID := userid.MustNew(seedUser(t, st))
+	before := time.Now()
+	session, err := auth.CreateSession(t.Context(), st, hubtestutil.TestSecretHasher(), userID, math.MaxInt64)
+	require.NoError(t, err)
+	assert.True(t, session.ExpiresAt.After(before.Add(time.Duration(math.MaxInt64))))
+	stored, err := st.Sessions().GetByID(t.Context(), session.ID, before)
+	require.NoError(t, err)
+	assert.True(t, stored.ExpiresAt.After(before))
+	info, err := auth.ValidateToken(t.Context(), st, hubtestutil.TestSecretHasher(), session.Token)
+	require.NoError(t, err)
+	assert.True(t, info.ID.MatchesUser(userID))
+}
 
 func setupStore(t *testing.T) store.Store {
 	return hubtestutil.OpenTestStore(t)
@@ -608,10 +624,12 @@ func (s blankIDSessionStore) Sessions() store.SessionStore { return s.sessions }
 
 type blankIDSessions struct {
 	store.SessionStore
-	row *store.SessionWithUser
+	row       *store.SessionWithUser
+	lookupIDs []string
 }
 
-func (s blankIDSessions) ValidateWithUser(context.Context, string, time.Time) (*store.SessionWithUser, error) {
+func (s *blankIDSessions) ValidateWithUser(_ context.Context, sessionID string, _ time.Time) (*store.SessionWithUser, error) {
+	s.lookupIDs = append(s.lookupIDs, sessionID)
 	return s.row, nil
 }
 
@@ -620,9 +638,10 @@ func (s blankIDSessions) ValidateWithUser(context.Context, string, time.Time) (*
 // Replacing validation with MustNew would cause a panic.
 func TestValidateToken_BlankUserIDIsUnauthenticatedNotPanic(t *testing.T) {
 	st := setupStore(t)
+	sessionID, secret := id.Generate(), id.Generate()
 	wrapped := blankIDSessionStore{
 		Store: st,
-		sessions: blankIDSessions{SessionStore: st.Sessions(), row: &store.SessionWithUser{SecretHash: hubtestutil.TestSecretHasher().Hash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
+		sessions: &blankIDSessions{SessionStore: st.Sessions(), row: &store.SessionWithUser{SecretHash: hubtestutil.TestSecretHasher().Hash(secret),
 			UserID:    "",
 			Username:  "blank",
 			CreatedAt: time.Now().Add(-time.Minute),
@@ -631,10 +650,12 @@ func TestValidateToken_BlankUserIDIsUnauthenticatedNotPanic(t *testing.T) {
 	}
 
 	require.NotPanics(t, func() {
-		info, err := auth.ValidateToken(context.Background(), wrapped, hubtestutil.TestSecretHasher(), "any-token")
+		info, err := auth.ValidateToken(context.Background(), wrapped, hubtestutil.TestSecretHasher(), auth.FormatSessionToken(sessionID, secret))
 		require.Error(t, err)
 		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
 			"a blank joined user_id fails closed the same way an expired session does")
 		assert.Nil(t, info)
 	})
+	assert.Equal(t, []string{sessionID}, wrapped.sessions.(*blankIDSessions).lookupIDs,
+		"the credential must reach the blank-user fixture exactly once")
 }

@@ -7,8 +7,6 @@ import (
 	"github.com/leapmux/leapmux/util/useronly"
 )
 
-func verifyPrivateDir(path string) error { return useronly.VerifyDirectory(path) }
-
 func verifyPrivateFile(path string) error { return useronly.VerifyFile(path) }
 
 func verifyExistingPrivateFile(path string) error {
@@ -34,5 +32,5 @@ func verifyExistingLifecycleResources(paths Paths) error {
 	} else if err != nil {
 		return err
 	}
-	return verifyPrivateDir(paths.Logs)
+	return useronly.VerifyDirectory(paths.Logs)
 }

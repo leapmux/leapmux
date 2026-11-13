@@ -2,8 +2,10 @@ package service_test
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -137,8 +139,8 @@ func (e *appEnv) registerApp(t *testing.T, session, name string, mutate func(*le
 //
 // A private app is invisible to every other account, and the refusal is NOT
 // FOUND rather than permission-denied: telling a stranger "that exists but is
-// not yours" answers the question the rule exists to refuse. An administrator's
-// app is hub-wide, so it appears for everybody.
+// not yours" answers the question the rule exists to refuse. An administrator
+// may explicitly register a hub-wide app, which every account may authorize.
 func TestAppService_PrivateAppIsInvisibleToEverybodyElse(t *testing.T) {
 	t.Parallel()
 
@@ -189,9 +191,9 @@ func TestListAppsRejectsAMalformedCursor(t *testing.T) {
 		"a malformed cursor is bad input, not a hub fault")
 }
 
-// An administrator's app is hub-wide, and an ordinary user may neither edit nor
-// delete it -- but the hub-wide catalogue is what every account authorizes
-// against, so its existence is not a secret the way a private app is.
+// Only an administrator may register a hub-wide app. An ordinary user may
+// authorize it but may neither edit nor delete it. Every account may authorize
+// the app, so its existence is public.
 func TestAppService_HubWideAppNeedsAnAdministrator(t *testing.T) {
 	t.Parallel()
 
@@ -353,9 +355,7 @@ func TestAppService_ClientSecretCrossesOnce(t *testing.T) {
 	listed, err := env.client.ListApps(authedReq(ctx, &leapmuxv1.ListAppsRequest{}, env.user))
 	require.NoError(t, err)
 	require.NotEmpty(t, listed.GetApps())
-	for _, app := range listed.GetApps() {
-		assertNoSecretField(t, app.ProtoReflect(), secret)
-	}
+	assertNoSecretField(t, listed.ProtoReflect(), secret)
 }
 
 // The App wire shape carries NO field that could hold a secret, checked by
@@ -725,12 +725,52 @@ func (e *appEnv) newPlainUser(t *testing.T, username string) (id, session string
 // later is covered without editing this.
 func assertNoSecretField(t *testing.T, msg protoreflect.Message, secret string) {
 	t.Helper()
-	msg.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
-		if fd.Kind() == protoreflect.StringKind && !fd.IsList() {
-			assert.NotEqualf(t, secret, v.String(), "field %s carries the client secret", fd.Name())
-		}
-		return true
-	})
+	require.NotEmpty(t, secret)
+	assert.Empty(t, secretFieldPaths(msg, secret), "response field paths containing the client secret")
+}
+
+func secretFieldPaths(msg protoreflect.Message, secret string) []string {
+	var paths []string
+	var walk func(protoreflect.Message, string)
+	walk = func(message protoreflect.Message, prefix string) {
+		message.Range(func(fd protoreflect.FieldDescriptor, value protoreflect.Value) bool {
+			path := prefix + string(fd.Name())
+			switch {
+			case fd.IsMap():
+				value.Map().Range(func(key protoreflect.MapKey, item protoreflect.Value) bool {
+					if fd.MapKey().Kind() == protoreflect.StringKind && strings.Contains(key.String(), secret) {
+						paths = append(paths, path+"[key]")
+					}
+					if fd.MapValue().Kind() == protoreflect.StringKind && strings.Contains(item.String(), secret) {
+						paths = append(paths, path+"[value]")
+					} else if fd.MapValue().Kind() == protoreflect.MessageKind {
+						walk(item.Message(), path+"[value].")
+					}
+					return true
+				})
+			case fd.IsList():
+				list := value.List()
+				for i := 0; i < list.Len(); i++ {
+					itemPath := fmt.Sprintf("%s[%d]", path, i)
+					if fd.Kind() == protoreflect.StringKind && strings.Contains(list.Get(i).String(), secret) {
+						paths = append(paths, itemPath)
+					} else if fd.Kind() == protoreflect.MessageKind {
+						walk(list.Get(i).Message(), itemPath+".")
+					}
+				}
+			case fd.Kind() == protoreflect.StringKind:
+				if strings.Contains(value.String(), secret) {
+					paths = append(paths, path)
+				}
+			case fd.Kind() == protoreflect.MessageKind:
+				walk(value.Message(), path+".")
+			}
+			return true
+		})
+	}
+	walk(msg, "")
+	sort.Strings(paths)
+	return paths
 }
 
 // TestAppService_WritesNeedAProvenFactor drives the gate itself, with an
@@ -1161,8 +1201,8 @@ func TestAppService_IncludeRevokedListsRetiredRegistrations(t *testing.T) {
 
 	live := env.registerApp(t, env.admin, "live-app", nil)
 	retired := env.registerApp(t, env.admin, "retired-app", nil)
-	// The store's own ownership guard: an administrator retires a hub-wide
-	// registration.
+	// The store's ownership guard lets an administrator retire their own
+	// private registration.
 	adminUID, ok := userid.New(env.adminID)
 	require.True(t, ok)
 	rows, err := env.store.OAuthClients().Revoke(ctx, store.OAuthClientOwnershipParams{
@@ -1325,4 +1365,32 @@ func TestAppService_NoOpElevationToggleKeepsTheCachedWindow(t *testing.T) {
 
 	require.Equal(t, "elevated", env.probeElevation(t, bearer),
 		"a toggle that changed nothing must not drop the cached UserInfo")
+}
+
+func TestSecretFieldPaths(t *testing.T) {
+	const secret = "credential-material"
+	for _, tc := range []struct {
+		name  string
+		msg   proto.Message
+		paths []string
+	}{
+		{"exact", &leapmuxv1.App{ClientName: secret}, []string{"client_name"}},
+		{"substring", &leapmuxv1.App{ClientName: "prefix-" + secret + "-suffix"}, []string{"client_name"}},
+		{"redirect list", &leapmuxv1.App{RedirectUris: []string{"clean", secret}}, []string{"redirect_uris[1]"}},
+		{"grant list", &leapmuxv1.App{GrantTypes: []string{secret}}, []string{"grant_types[0]"}},
+		{"nested", &leapmuxv1.RegisterAppResponse{App: &leapmuxv1.App{ClientName: secret}}, []string{"app.client_name"}},
+		{"nested list", &leapmuxv1.ListAppsResponse{Apps: []*leapmuxv1.App{{ClientName: secret}}}, []string{"apps[0].client_name"}},
+		{"map key", &leapmuxv1.AgentSettings{Options: map[string]string{secret: "clean"}}, []string{"options[key]"}},
+		{"map value", &leapmuxv1.AgentSettings{Options: map[string]string{"key": secret}}, []string{"options[value]"}},
+		{"nested map", &leapmuxv1.UpdateAgentSettingsRequest{Settings: &leapmuxv1.AgentSettings{Options: map[string]string{"key": secret}}}, []string{"settings.options[value]"}},
+		{"clean", &leapmuxv1.App{ClientName: "public", RedirectUris: []string{"https://example.com/callback"}}, nil},
+		{"empty lists", &leapmuxv1.App{RedirectUris: []string{}}, nil},
+		{"empty map", &leapmuxv1.AgentSettings{Options: map[string]string{}}, nil},
+		{"absent nested", &leapmuxv1.RegisterAppResponse{}, nil},
+		{"zero", &leapmuxv1.App{}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.paths, secretFieldPaths(tc.msg.ProtoReflect(), secret))
+		})
+	}
 }

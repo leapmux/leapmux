@@ -538,7 +538,7 @@ func TestLoadOrCreateWorkerState_AStateWithNoIdentityIsOnlyPreserved(t *testing.
 
 // A file with a worker ID and no token identifies a row that no launch can connect
 // as. Left alone, that row stays ACTIVE and offline for good.
-func TestLoadOrCreateWorkerState_AStateWithNoTokenRetiresItsRow(t *testing.T) {
+func TestLoadOrCreateWorkerState_AStateWithNoKeypairRetiresItsRow(t *testing.T) {
 	t.Parallel()
 
 	newRegistrar := func() *fakeRegistrar {
@@ -777,22 +777,36 @@ func TestPreserveDiscardedState_MovesTheFileAsideSoTheNextLoadCannotSeeIt(t *tes
 }
 
 func TestLoadOrCreateWorkerState_ReusesOrReissuesTheTokenWithoutChangingIdentity(t *testing.T) {
-	for _, accepted := range []bool{true, false} {
-		t.Run(map[bool]string{true: "accepted", false: "refused"}[accepted], func(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		token    string
+		accepted bool
+	}{
+		{"accepted", "original-token", true},
+		{"refused", "original-token", false},
+		{"absent", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			path, keys := seedUsableState(t, dir, soloState{WorkerID: "w-original", AuthToken: "original-token", RegisteredBy: "owner"})
+			path, keys := seedUsableState(t, dir, soloState{WorkerID: "w-original", AuthToken: tc.token, RegisteredBy: "owner"})
 			before := readState(t, path)
 			registration := activeRegistration("owner", keys)
-			registration.AuthTokenAccepted = accepted
+			registration.AuthTokenAccepted = tc.accepted
 			reg := &fakeRegistrar{registration: registration, reissuedToken: "replacement-token"}
 			got, composite, err := loadWithLease(t, reg, dir)
 			require.NoError(t, err)
 			require.NotNil(t, composite)
 			assert.Equal(t, "w-original", got.WorkerID)
-			assert.Equal(t, before.KeyMaterial, got.KeyMaterial)
-			assert.Equal(t, []string{"original-token"}, reg.registrationTokens)
-			want := "original-token"
-			if accepted {
+			assert.True(t, before.KeyMaterial == got.KeyMaterial, "recovery preserves private keys")
+			persisted := readState(t, path)
+			assert.Equal(t, before.WorkerID, persisted.WorkerID)
+			assert.True(t, before.KeyMaterial == persisted.KeyMaterial, "recovery persists the original private keys")
+			publicKeys, err := workerkeys.Of(composite)
+			require.NoError(t, err)
+			assert.True(t, workerkeys.Equal(keys, publicKeys))
+			assert.Equal(t, []string{tc.token}, reg.registrationTokens)
+			want := tc.token
+			if tc.accepted {
 				assert.Empty(t, reg.reissuedIDs)
 			} else {
 				want = "replacement-token"

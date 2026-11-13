@@ -67,7 +67,7 @@ var UserConflictErrorForTest = userConflictError
 // prove that the read runs under the lock, which is what orders the identity
 // frames; no observable outcome can show that ordering without a race.
 func (s *WorkerConnectorService) IdentityDeliveryLockHeldForTest(owner string) bool {
-	mu := s.identityDeliveries.forOwner(owner)
+	mu := s.identityDeliveries.forKey(owner)
 	if mu.TryLock() {
 		mu.Unlock()
 		return false

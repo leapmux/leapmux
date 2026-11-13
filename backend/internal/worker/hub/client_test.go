@@ -1414,6 +1414,7 @@ func TestClassifyStreamRefusal(t *testing.T) {
 		want streamRefusal
 	}{
 		{nil, refusalRetry},
+		{websocket.CloseError{Code: 1008, Reason: channelwire.WorkerCloseReasonCredentialReplaced}, refusalRetry},
 		{errors.New("worker_deleted"), refusalRetry},
 		{fmt.Errorf("receive: %w", websocket.CloseError{Code: 1008, Reason: channelwire.WorkerCloseReasonDeleted}), refusalWorkerDeleted},
 		{fmt.Errorf("%w: %w", ErrKeysRefused, websocket.CloseError{Code: 1008, Reason: channelwire.WorkerCloseReasonKeysDiffer}), refusalKeysDiffer},

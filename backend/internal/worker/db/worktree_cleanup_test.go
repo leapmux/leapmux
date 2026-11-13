@@ -21,7 +21,7 @@ func TestDeleteDeadWorktreeTabs(t *testing.T) {
 	require.NoError(t, db.Migrate(ctx, sqlDB))
 	q := queries.New(sqlDB)
 	for _, wt := range []string{"target", "other", "empty"} {
-		_, err := q.CreateWorktree(ctx, queries.CreateWorktreeParams{ID: wt, WorktreePath: "/" + wt, RepoRoot: "/repo", BranchName: wt})
+		_, err := q.CreateWorktree(ctx, queries.CreateWorktreeParams{ID: wt, WorktreePath: "/" + wt, RepoRoot: "/repo", RepoGitDir: "/repo/.git", BranchName: wt})
 		require.NoError(t, err)
 	}
 	require.NoError(t, q.CreateAgent(ctx, queries.CreateAgentParams{ID: "live-agent", AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE}))

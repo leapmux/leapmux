@@ -148,7 +148,7 @@ func (s *WorkerConnectorService) GetRegistrationChallenge(
 		return nil, err
 	}
 
-	id, nonce, expiresAt, err := s.challenges.Issue(attemptID)
+	id, nonce, expiresAt, err := s.challenges.Issue(attemptID, worker.AuthTokenHash)
 	if err != nil {
 		if errors.Is(err, errChallengeCapacity) {
 			return nil, connect.NewError(connect.CodeResourceExhausted,
@@ -191,12 +191,12 @@ func (s *WorkerConnectorService) RecoverRegistration(
 
 	// Consume the challenge first: an unknown, foreign, reused, or
 	// expired identity refuses without touching the pinned keys.
-	nonce, usable := s.challenges.Consume(challengeID, attemptID)
+	challenge, usable := s.challenges.Consume(challengeID, attemptID)
 	if !usable {
 		return nil, connect.NewError(connect.CodeAborted,
 			"the challenge is unknown, expired, or already used; request a fresh one")
 	}
-	message := recoverySignedMessage(attemptID, challengeID, nonce, registrationKeyDigest(regKey))
+	message := recoverySignedMessage(attemptID, challengeID, challenge.nonce, registrationKeyDigest(regKey))
 	// The ID must be set before the unmarshal: circl's Unmarshal reads
 	// the parameter set from it, and a zero value panics. Every worker
 	// key LeapMux pins is SHAKE-256f (workerkeys.Validate enforces it).
@@ -220,12 +220,25 @@ func (s *WorkerConnectorService) RecoverRegistration(
 	}
 
 	token := id.Generate()
-	rows, err := s.store.Workers().RotateAuthToken(ctx, store.RotateWorkerAuthTokenParams{ID: fresh.ID, AuthTokenHash: s.hasher.Hash(token)})
+	rows, err := s.RotateWorkerAuthToken(ctx, store.RotateWorkerAuthTokenParams{ID: fresh.ID, AuthTokenHash: s.hasher.Hash(token), ExpectedAuthTokenHash: challenge.expectedAuthTokenHash})
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	if rows == 0 {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, "this worker can no longer be recovered")
+		current, readErr := s.store.Workers().GetByIDIncludeDeleted(ctx, fresh.ID)
+		if errors.Is(readErr, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, "this worker can no longer be recovered")
+		}
+		if readErr != nil {
+			return nil, wrappedConnectError(connect.CodeInternal, readErr)
+		}
+		if current.DeletedAt != nil || current.DeregisteringAt != nil {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, "this worker can no longer be recovered")
+		}
+		if err := s.refuseUnrecoverableWorker(ctx, current); err != nil {
+			return nil, err
+		}
+		return nil, connect.NewError(connect.CodeAborted, "the worker token changed; request a fresh recovery challenge")
 	}
 	return &leapmuxv1.RegisterResponse{
 		WorkerId:  fresh.ID,

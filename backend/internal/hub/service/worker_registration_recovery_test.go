@@ -21,7 +21,7 @@ func TestChallengeExpiryReplayAndCapacity(t *testing.T) {
 	clock := quartz.NewMock(t)
 	store := newRegistrationChallengeStore(clock)
 
-	id1, nonce1, expiresAt, err := store.Issue("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	id1, nonce1, expiresAt, err := store.Issue("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 	assert.Len(t, id1, 32, "the challenge identity is 128 bits of hex")
 	assert.Len(t, nonce1, 32, "the nonce is 32 bytes")
@@ -30,14 +30,14 @@ func TestChallengeExpiryReplayAndCapacity(t *testing.T) {
 	t.Run("a consumed challenge cannot serve twice", func(t *testing.T) {
 		got, ok := store.Consume(id1, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 		require.True(t, ok)
-		assert.Equal(t, nonce1, got)
+		assert.Equal(t, nonce1, got.nonce)
 
 		_, ok = store.Consume(id1, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 		assert.False(t, ok, "the second use of a consumed challenge refuses")
 	})
 
 	t.Run("a challenge refuses a foreign attempt", func(t *testing.T) {
-		id2, _, _, err := store.Issue("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+		id2, _, _, err := store.Issue("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", []byte("0123456789abcdef0123456789abcdef"))
 		require.NoError(t, err)
 		_, ok := store.Consume(id2, "cccccccccccccccccccccccccccccccc")
 		assert.False(t, ok, "a challenge belongs to exactly one attempt")
@@ -48,7 +48,7 @@ func TestChallengeExpiryReplayAndCapacity(t *testing.T) {
 	})
 
 	t.Run("an expired challenge refuses", func(t *testing.T) {
-		id3, _, _, err := store.Issue("dddddddddddddddddddddddddddddddd")
+		id3, _, _, err := store.Issue("dddddddddddddddddddddddddddddddd", []byte("0123456789abcdef0123456789abcdef"))
 		require.NoError(t, err)
 		// Drive the clock past the TTL; the mock fires nothing on its
 		// own, so advancing past the deadline is enough.
@@ -58,9 +58,9 @@ func TestChallengeExpiryReplayAndCapacity(t *testing.T) {
 	})
 
 	t.Run("a new challenge replaces the attempt's outstanding one", func(t *testing.T) {
-		first, _, _, err := store.Issue("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+		first, _, _, err := store.Issue("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", []byte("0123456789abcdef0123456789abcdef"))
 		require.NoError(t, err)
-		second, _, _, err := store.Issue("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
+		second, _, _, err := store.Issue("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", []byte("0123456789abcdef0123456789abcdef"))
 		require.NoError(t, err)
 		assert.NotEqual(t, first, second)
 		_, ok := store.Consume(first, "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee")
@@ -77,15 +77,15 @@ func TestChallengeExpiryReplayAndCapacity(t *testing.T) {
 			_, err := rand.Read(attempt[:])
 			require.NoError(t, err)
 			attemptID := string(hexOf(attempt[:]))
-			challengeID, _, _, err := full.Issue(attemptID)
+			challengeID, _, _, err := full.Issue(attemptID, []byte("0123456789abcdef0123456789abcdef"))
 			require.NoError(t, err)
 			if i == 0 {
 				firstAttempt, firstChallenge = attemptID, challengeID
 			}
 		}
-		_, _, _, err := full.Issue("ffffffffffffffffffffffffffffffff")
+		_, _, _, err := full.Issue("ffffffffffffffffffffffffffffffff", []byte("0123456789abcdef0123456789abcdef"))
 		assert.ErrorIs(t, err, errChallengeCapacity)
-		replacement, _, _, err := full.Issue(firstAttempt)
+		replacement, _, _, err := full.Issue(firstAttempt, []byte("0123456789abcdef0123456789abcdef"))
 		require.NoError(t, err, "replacement must not require another capacity slot")
 		assert.NotEqual(t, firstChallenge, replacement)
 		assert.Len(t, full.byID, maxOutstandingRegistrationChallenges)
@@ -141,17 +141,17 @@ func BenchmarkRegistrationChallengeOperations(b *testing.B) {
 			b.Run(fmt.Sprintf("%s/%d", operation, count), func(b *testing.B) {
 				store := newRegistrationChallengeStore(quartz.NewMock(b).WithLogger(quartz.NoOpLogger))
 				for index := 0; index < count; index++ {
-					_, _, _, err := store.Issue(fmt.Sprint(index))
+					_, _, _, err := store.Issue(fmt.Sprint(index), []byte("0123456789abcdef0123456789abcdef"))
 					require.NoError(b, err)
 				}
 				if operation == "replace" {
-					_, _, _, err := store.Issue("0")
+					_, _, _, err := store.Issue("0", []byte("0123456789abcdef0123456789abcdef"))
 					require.NoError(b, err)
 				}
 				b.ResetTimer()
 				for index := 0; index < b.N; index++ {
 					if operation == "replace" {
-						_, _, _, err := store.Issue("0")
+						_, _, _, err := store.Issue("0", []byte("0123456789abcdef0123456789abcdef"))
 						if err != nil {
 							b.Fatal(err)
 						}
@@ -170,7 +170,7 @@ func TestChallengeConsumptionAtExpiryAndConcurrentUse(t *testing.T) {
 	for _, advance := range []time.Duration{registrationChallengeTTL - time.Nanosecond, registrationChallengeTTL} {
 		clock := quartz.NewMock(t).WithLogger(quartz.NoOpLogger)
 		store := newRegistrationChallengeStore(clock)
-		id, _, _, err := store.Issue("attempt")
+		id, _, _, err := store.Issue("attempt", []byte("0123456789abcdef0123456789abcdef"))
 		require.NoError(t, err)
 		clock.Advance(advance).MustWait(t.Context())
 		_, ok := store.Consume(id, "attempt")
@@ -179,7 +179,7 @@ func TestChallengeConsumptionAtExpiryAndConcurrentUse(t *testing.T) {
 		assert.Empty(t, store.byAttempt)
 	}
 	store := newRegistrationChallengeStore(nil)
-	id, _, _, err := store.Issue("attempt")
+	id, _, _, err := store.Issue("attempt", []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 	var winners atomic.Int32
 	var callers sync.WaitGroup
@@ -198,15 +198,28 @@ func TestChallengeAdmissionReclaimsExpiredCapacity(t *testing.T) {
 	clock := quartz.NewMock(t).WithLogger(quartz.NoOpLogger)
 	store := newRegistrationChallengeStore(clock)
 	for index := 0; index < maxOutstandingRegistrationChallenges; index++ {
-		_, _, _, err := store.Issue(fmt.Sprint(index))
+		_, _, _, err := store.Issue(fmt.Sprint(index), []byte("0123456789abcdef0123456789abcdef"))
 		require.NoError(t, err)
 	}
 	clock.Advance(registrationChallengeTTL).MustWait(t.Context())
-	id, nonce, _, err := store.Issue("new-attempt")
+	id, nonce, _, err := store.Issue("new-attempt", []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 	assert.Len(t, store.byID, 1)
 	assert.Len(t, store.byAttempt, 1)
 	got, ok := store.Consume(id, "new-attempt")
 	require.True(t, ok)
-	assert.Equal(t, nonce, got)
+	assert.Equal(t, nonce, got.nonce)
+}
+
+func TestChallengeCopiesItsTokenDigest(t *testing.T) {
+	clock := quartz.NewMock(t)
+	challenges := newRegistrationChallengeStore(clock)
+	digest := []byte("0123456789abcdef0123456789abcdef")
+	want := append([]byte(nil), digest...)
+	id, _, _, err := challenges.Issue("attempt", digest)
+	require.NoError(t, err)
+	digest[0] ^= 0xff
+	proof, ok := challenges.Consume(id, "attempt")
+	require.True(t, ok)
+	assert.Equal(t, want, proof.expectedAuthTokenHash)
 }

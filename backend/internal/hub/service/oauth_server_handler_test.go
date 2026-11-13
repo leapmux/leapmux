@@ -18,8 +18,11 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/coder/quartz"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/ratelimit"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -45,6 +48,8 @@ import (
 // the bootstrap admin already provisioned, plus the token validator and
 // session cache the handler depends on.
 type apiAuthEnv struct {
+	probe     *cachedBearerProbe
+	reads     *credentialLookupCounts
 	store     store.Store
 	validator *auth.TokenValidator
 	cache     *auth.AuthContextRegistry
@@ -142,18 +147,18 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 	hubtestutil.CreateTestAdmin(t, st)
 
 	pepper := []byte("0123456789abcdef0123456789abcdef")
-	tv, err := auth.NewTokenValidator(st, pepper)
+	reads := &credentialLookupCounts{}
+	tv, err := auth.NewTokenValidator(credentialLookupStore{Store: st, counts: reads}, pepper)
 	require.NoError(t, err)
 
-	// The handler needs AuthContextRegistry to evict revoked bearers; we
-	// don't run it through the interceptor, so just construct the bare
-	// interceptor for its cache side-effect and stop the sweeper.
-	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
+	// The protected probe uses the same cache that lifecycle revocation evicts.
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	t.Cleanup(sc.Stop)
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	probe := mountCachedBearerProbe(mux, srv, interceptor)
 
 	closer := &recordingBearerCloser{}
 	clock := quartz.NewMock(t).WithLogger(quartz.NoOpLogger)
@@ -186,6 +191,7 @@ func setupAPIAuth(t *testing.T) *apiAuthEnv {
 	require.NoError(t, err)
 
 	return &apiAuthEnv{
+		probe: probe, reads: reads,
 		store:     st,
 		validator: tv,
 		cache:     sc,
@@ -1234,9 +1240,9 @@ func TestAPIAuth_Revoke_BustsCacheAndRowRevoked(t *testing.T) {
 	env := setupAPIAuth(t)
 
 	bearer, tokenID := seedReversibleToken(t, env, oauthapp.ControlCLIClientID)
-	// Warm the bearer cache by validating once.
-	_, err := env.validator.ValidateBearer(context.Background(), bearer)
-	require.NoError(t, err)
+	user, lease := warmCachedBearerLease(t, env.probe, env.cache, bearer)
+	keeper, _ := seedReversibleToken(t, env, oauthapp.ControlCLIClientID)
+	keeperUser, keeperLease := warmCachedBearerLease(t, env.probe, env.cache, keeper)
 
 	// Revoke via the public endpoint.
 	resp, err := http.PostForm(env.server.URL+"/oauth/revoke", url.Values{
@@ -1252,10 +1258,15 @@ func TestAPIAuth_Revoke_BustsCacheAndRowRevoked(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, row.RevokedAt, "token row should be revoked")
 
-	// Subsequent validation must fail (ValidateBearer re-reads the row;
-	// even before that, the cache should have been evicted).
-	_, err = env.validator.ValidateBearer(context.Background(), bearer)
-	assert.Error(t, err)
+	_, err = env.probe.authenticate(bearer)
+	require.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	assert.ErrorIs(t, lease.Err(), context.Canceled)
+	assert.False(t, env.cache.IsAuthContextCurrent(user))
+	assert.Equal(t, []auth.BearerRef{auth.NewBearerRef(auth.BearerKindAPI, tokenID)}, env.closer.snapshotRefs())
+	_, err = env.probe.authenticate(keeper)
+	require.NoError(t, err)
+	assert.NoError(t, keeperLease.Err())
+	assert.True(t, env.cache.IsAuthContextCurrent(keeperUser))
 }
 
 type apiTokenOverrideStore struct {
@@ -1832,6 +1843,10 @@ func TestAPIAuth_Revoke_DelegationToken_TouchesDelegationsTable(t *testing.T) {
 	}))
 	bearer := auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret)
 
+	user, lease := warmCachedBearerLease(t, env.probe, env.cache, bearer)
+	keeper, _ := seedReversibleToken(t, env, oauthapp.ControlCLIClientID)
+	keeperUser, keeperLease := warmCachedBearerLease(t, env.probe, env.cache, keeper)
+
 	resp, err := http.PostForm(env.server.URL+"/oauth/revoke", url.Values{"token": {bearer}})
 	require.NoError(t, err)
 	defer func() { _ = resp.Body.Close() }()
@@ -1840,6 +1855,15 @@ func TestAPIAuth_Revoke_DelegationToken_TouchesDelegationsTable(t *testing.T) {
 	row, err := env.store.DelegationTokens().GetByID(context.Background(), tokenID)
 	require.NoError(t, err)
 	assert.NotNil(t, row.RevokedAt)
+	_, err = env.probe.authenticate(bearer)
+	require.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	assert.ErrorIs(t, lease.Err(), context.Canceled)
+	assert.False(t, env.cache.IsAuthContextCurrent(user))
+	assert.Equal(t, []auth.BearerRef{auth.NewBearerRef(auth.BearerKindDelegation, tokenID)}, env.closer.snapshotRefs())
+	_, err = env.probe.authenticate(keeper)
+	require.NoError(t, err)
+	assert.NoError(t, keeperLease.Err())
+	assert.True(t, env.cache.IsAuthContextCurrent(keeperUser))
 }
 
 // The two answers RFC 7009 separates, and the line between them is what the
@@ -1888,9 +1912,7 @@ func TestAPIAuth_Revoke_WrongSecretRejected(t *testing.T) {
 
 	// Real api_token row with a known good secret.
 	goodBearer, tokenID := seedReversibleToken(t, env, oauthapp.ControlCLIClientID)
-	// Warm the cache so we can later assert that nothing evicted it.
-	_, err := env.validator.ValidateBearer(context.Background(), goodBearer)
-	require.NoError(t, err)
+	user, lease := warmCachedBearerLease(t, env.probe, env.cache, goodBearer)
 
 	// Attacker-style bearer: real token_id, wrong secret. RFC 7009 §2.1
 	// requires the presented token to be valid; without verification,
@@ -1908,10 +1930,14 @@ func TestAPIAuth_Revoke_WrongSecretRejected(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, row.RevokedAt, "row must NOT be revoked when secret didn't verify")
 
-	// Real bearer still validates (cache wasn't poisoned, row is alive).
-	user, err := env.validator.ValidateBearer(context.Background(), goodBearer)
+	reads := env.reads.api.Load()
+	resolved, err := env.probe.authenticate(goodBearer)
 	require.NoError(t, err)
-	assert.Equal(t, env.userID, user.ID.String())
+	assert.Equal(t, env.userID, resolved.ID.String())
+	assert.Equal(t, reads, env.reads.api.Load(), "a refused revoke must preserve the warm cache entry")
+	assert.True(t, env.cache.IsAuthContextCurrent(user))
+	assert.NoError(t, lease.Err())
+	assert.Empty(t, env.closer.snapshotRefs())
 }
 
 // TestAPIAuth_Revoke_WrongSecretRejected_DelegationToken pins the same
@@ -1936,6 +1962,8 @@ func TestAPIAuth_Revoke_WrongSecretRejected_DelegationToken(t *testing.T) {
 		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 
+	goodBearer := auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret)
+	user, lease := warmCachedBearerLease(t, env.probe, env.cache, goodBearer)
 	attackerBearer := auth.FormatBearer(auth.BearerKindDelegation, tokenID, "wrong")
 	resp, err := http.PostForm(env.server.URL+"/oauth/revoke", url.Values{"token": {attackerBearer}})
 	require.NoError(t, err)
@@ -1945,6 +1973,14 @@ func TestAPIAuth_Revoke_WrongSecretRejected_DelegationToken(t *testing.T) {
 	row, err := env.store.DelegationTokens().GetByID(context.Background(), tokenID)
 	require.NoError(t, err)
 	assert.Nil(t, row.RevokedAt)
+	reads := env.reads.delegation.Load()
+	resolved, err := env.probe.authenticate(goodBearer)
+	require.NoError(t, err)
+	assert.Equal(t, env.userID, resolved.ID.String())
+	assert.Equal(t, reads, env.reads.delegation.Load(), "a refused revoke must preserve the warm cache entry")
+	assert.True(t, env.cache.IsAuthContextCurrent(user))
+	assert.NoError(t, lease.Err())
+	assert.Empty(t, env.closer.snapshotRefs())
 }
 
 // The endpoint must not be a token_id existence oracle, and this is the test
@@ -2159,10 +2195,14 @@ func (s blankGrantCodeStore) OAuthAuthorizationCodes() store.OAuthAuthorizationC
 
 type blankGrantCodes struct {
 	store.OAuthAuthorizationCodeStore
-	row *store.OAuthAuthorizationCode
+	row     *store.OAuthAuthorizationCode
+	lookups atomic.Int64
+	code    atomic.Value
 }
 
-func (s blankGrantCodes) GetActive(context.Context, string, time.Time) (*store.OAuthAuthorizationCode, error) {
+func (s *blankGrantCodes) GetActive(_ context.Context, code string, _ time.Time) (*store.OAuthAuthorizationCode, error) {
+	s.lookups.Add(1)
+	s.code.Store(code)
 	return s.row, nil
 }
 
@@ -2170,8 +2210,8 @@ func (s blankGrantCodes) GetActive(context.Context, string, time.Time) (*store.O
 // guard in handleTokenAuthorizationCode.
 //
 // This test sets PKCE verification up to SUCCEED here, so the request gets
-// all the way past the checks that would otherwise mask the guard: only the
-// blank user_id can produce the invalid_grant. Fold that mint into MustNew
+// past the client, redirect and PKCE checks before the blank-user guard.
+// The exact refusal description and recorded lookup identify that path. Fold that mint into MustNew
 // and this becomes a panic inside an unauthenticated HTTP handler -- a torn
 // connection for the caller, and in a shared process it takes the request
 // goroutine with it.
@@ -2186,13 +2226,15 @@ func TestAPIAuth_AuthorizationCode_BlankUserIDIsInvalidGrantNotPanic(t *testing.
 	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
 
+	const redirectURI = "http://127.0.0.1:54321/callback"
 	verifier, challenge := pkceVerifierAndChallenge()
 	wrapped := blankGrantCodeStore{
 		Store: st,
-		codes: blankGrantCodes{
+		codes: &blankGrantCodes{
 			OAuthAuthorizationCodeStore: st.OAuthAuthorizationCodes(),
 			row: &store.OAuthAuthorizationCode{
 				Code: "grant-code", UserID: "", CodeChallenge: challenge,
+				ClientID: oauthapp.ControlCLIClientID, RedirectURI: redirectURI, GrantedScopes: "account:read",
 				InstallationName: "laptop", ExpiresAt: time.Now().Add(time.Hour),
 			},
 		},
@@ -2208,7 +2250,7 @@ func TestAPIAuth_AuthorizationCode_BlankUserIDIsInvalidGrantNotPanic(t *testing.
 	resp, err := http.PostForm(srv.URL+"/oauth/token", url.Values{
 		"grant_type":    {service.GrantTypeAuthorizationCode},
 		"client_id":     {oauthapp.ControlCLIClientID},
-		"redirect_uri":  {"http://127.0.0.1:54321/callback"},
+		"redirect_uri":  {redirectURI},
 		"code":          {"grant-code"},
 		"code_verifier": {verifier},
 	})
@@ -2220,6 +2262,10 @@ func TestAPIAuth_AuthorizationCode_BlankUserIDIsInvalidGrantNotPanic(t *testing.
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	assert.Equal(t, "invalid_grant", body["error"],
 		"a blank grant user_id reads as an unusable grant, not an internal error")
+	assert.Equal(t, "code expired or already consumed", body["error_description"])
+	spy := wrapped.codes.(*blankGrantCodes)
+	assert.EqualValues(t, 1, spy.lookups.Load())
+	assert.Equal(t, "grant-code", spy.code.Load())
 }
 
 // A store read failure on the activation leg must answer 500. It must NOT
@@ -2934,4 +2980,100 @@ func TestAPIAuth_RequestCancellationDuringLinkRollsBackIssuance(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = retry.Body.Close() }()
 	assert.Equal(t, http.StatusOK, retry.StatusCode)
+}
+
+// cachedBearerProbe observes the UserInfo that the real interceptor accepted.
+type cachedBearerProbe struct {
+	leapmuxv1connect.UnimplementedWorkspaceServiceHandler
+	mu     sync.Mutex
+	user   *auth.UserInfo
+	client leapmuxv1connect.WorkspaceServiceClient
+}
+
+func (p *cachedBearerProbe) ListWorkspaces(ctx context.Context, _ *leapmuxv1.ListWorkspacesRequest) (*leapmuxv1.ListWorkspacesResponse, error) {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	copy := *user
+	p.mu.Lock()
+	p.user = &copy
+	p.mu.Unlock()
+	return &leapmuxv1.ListWorkspacesResponse{}, nil
+}
+func mountCachedBearerProbe(mux *http.ServeMux, server *httptest.Server, interceptor connect.ServerInterceptor) *cachedBearerProbe {
+	probe := &cachedBearerProbe{}
+	srv := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterWorkspaceServiceHandler(srv, probe)
+	connecthttp.Mount(mux, srv, connecthttp.WithReadMaxBytes(0))
+	probe.client = leapmuxv1connect.NewWorkspaceServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
+	return probe
+}
+func (p *cachedBearerProbe) authenticate(bearer string) (*auth.UserInfo, error) {
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Authorization", "Bearer "+bearer)
+	_, err := p.client.ListWorkspaces(ctx, &leapmuxv1.ListWorkspacesRequest{})
+	if err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	copy := *p.user
+	return &copy, nil
+}
+func warmCachedBearerLease(t *testing.T, probe *cachedBearerProbe, cache *auth.AuthContextRegistry, bearer string) (*auth.UserInfo, context.Context) {
+	t.Helper()
+	_, err := probe.authenticate(bearer)
+	require.NoError(t, err)
+	user, err := probe.authenticate(bearer)
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	release, outcome := cache.RegisterAuthenticatedLease(context.Background(), user, cancel)
+	t.Cleanup(release)
+	require.Equal(t, auth.LeaseGranted, outcome)
+	require.NoError(t, ctx.Err())
+	return user, ctx
+}
+func (c *recordingBearerCloser) snapshotRefs() []auth.BearerRef {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var refs []auth.BearerRef
+	for i, tokenID := range c.tokenIDs {
+		refs = append(refs, auth.NewBearerRef(c.kinds[i], tokenID))
+	}
+	return refs
+}
+
+type credentialLookupCounts struct{ api, delegation atomic.Int64 }
+type credentialLookupStore struct {
+	store.Store
+	counts *credentialLookupCounts
+}
+
+func (s credentialLookupStore) APITokens() store.APITokenStore {
+	return countedAPIReads{APITokenStore: s.Store.APITokens(), count: &s.counts.api}
+}
+func (s credentialLookupStore) DelegationTokens() store.DelegationTokenStore {
+	return countedDelegationReads{DelegationTokenStore: s.Store.DelegationTokens(), count: &s.counts.delegation}
+}
+
+type countedAPIReads struct {
+	store.APITokenStore
+	count *atomic.Int64
+}
+
+func (s countedAPIReads) GetByID(ctx context.Context, id string) (*store.APIToken, error) {
+	s.count.Add(1)
+	return s.APITokenStore.GetByID(ctx, id)
+}
+
+type countedDelegationReads struct {
+	store.DelegationTokenStore
+	count *atomic.Int64
+}
+
+func (s countedDelegationReads) GetByID(ctx context.Context, id string) (*store.DelegationToken, error) {
+	s.count.Add(1)
+	return s.DelegationTokenStore.GetByID(ctx, id)
 }

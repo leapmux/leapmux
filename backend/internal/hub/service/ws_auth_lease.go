@@ -64,10 +64,14 @@ func newWSAuthenticator(
 	if !authscope.IsGrantable(requiredScope) {
 		panic("service: WebSocket endpoint states no grantable scope: " + requiredScope.String())
 	}
+	lease := newWebSocketAuthLease(authContexts)
+	if sessionHasher.IsZero() {
+		panic("service: WebSocket handler requires a session secret hasher")
+	}
 	return wsAuthenticator{
 		sessionHasher: sessionHasher,
 		store:         st,
-		authLease:     newWebSocketAuthLease(authContexts),
+		authLease:     lease,
 		soloUser:      soloUser,
 		secureCookie:  secureCookie,
 		keepalive:     wskeepalive.Production(),
@@ -80,10 +84,10 @@ func newWSAuthenticator(
 // is optional (nil accepts cookie auth only), and the caller wires it after
 // construction, so this reads it at call time.
 //
-// It also runs the SCOPE rung, which is the whole reason this endpoint takes a
-// required scope. An unscoped credential -- a browser session, solo mode, the
-// control CLI's own grant -- passes unconditionally, because a scope subtracts
-// from the account's authority and never adds to it.
+// It also checks the endpoint's required scope. Browser sessions and Solo's
+// synthetic user carry an unscoped grant and pass this check. API credentials,
+// including the control CLI's credentials, must hold the endpoint's required
+// scope.
 func (a wsAuthenticator) authenticate(r *http.Request) (*auth.UserInfo, error) {
 	// PER REQUEST, because the answer is: a trusted proxy that verified HTTPS
 	// for this connection turns the secure cookie name on whatever the setting

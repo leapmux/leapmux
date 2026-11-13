@@ -96,8 +96,9 @@ func HTTPDialContext(dial func(ctx context.Context) (net.Conn, error)) func(ctx 
 	}
 }
 
-// Listen opens a listener for the URL. Unsupported schemes return
-// ErrUnsupportedScheme wrapped with a descriptive message.
+// Listen opens a listener for the URL. Unix listeners admit only the current
+// operating-system account through native peer credentials. Unsupported schemes
+// or Unix platforms without verification return ErrUnsupportedScheme.
 func Listen(url string) (net.Listener, error) {
 	scheme, target, err := Parse(url)
 	if err != nil {

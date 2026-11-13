@@ -283,10 +283,8 @@ export function setupForUseWorktree(
  * would briefly show `Current` before the first emit replaces it.
  */
 export function useGitModeState(initial: GitModeIntent = { mode: GitMode.Current }) {
-  // Structural dedup at the signal so direct `handleGitModeChange`
-  // callers (tests, future imperative call sites) don't notify
-  // downstream effects on no-op writes — GitOptions's own outgoing
-  // memo only protects the effect path.
+  // Compare intents structurally at the signal so equal writes from
+  // GitOptions and direct callers do not notify downstream effects.
   const [currentIntent, setIntent] = createSignal<GitModeIntent>(
     initial,
     { equals: shallowEqual },

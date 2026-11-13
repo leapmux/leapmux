@@ -102,10 +102,13 @@ type Service struct {
 	afterPayloadPersistenceFn func(context.Context)
 	// afterWorktreeBranchProbeFn controls the branch-selection boundary in tests.
 	afterWorktreeBranchProbeFn func()
-	createAgentRecordFn        func(context.Context, *db.Queries, db.CreateAgentParams) error
-	getAgentByIDFn             func(context.Context, string) (db.Agent, error)
-	sendControlResponseFn      func(string, []byte) error
-	updateAgentSettingsFn      func(string, OptionMap) agent.SettingsApplyResult
+	// beforeGitIndexLockFn synchronizes the point before withGitIndexLock
+	// acquires its mutex in tests. The caller already resolved its key.
+	beforeGitIndexLockFn  func(string)
+	createAgentRecordFn   func(context.Context, *db.Queries, db.CreateAgentParams) error
+	getAgentByIDFn        func(context.Context, string) (db.Agent, error)
+	sendControlResponseFn func(string, []byte) error
+	updateAgentSettingsFn func(string, OptionMap) agent.SettingsApplyResult
 	// batchGitStatusFn runs the concurrent git-status batch for a watch
 	// catch-up. A seam (same contract as its siblings above) so tests can
 	// observe the overlap's cancellation without spawning real git processes.
@@ -264,7 +267,7 @@ type Service struct {
 
 	// gitIndexLocks serializes INDEX-MUTATING git commands per repository:
 	// `worktree add`/`remove`, `checkout`, `checkout -b`, `branch -D`, `add -A`,
-	// `commit`, `push`. Git guards its own index with `index.lock` and simply
+	// `commit`, and local push preparation. Git guards its index with `index.lock` and simply
 	// FAILS when another process holds it -- "Unable to create
 	// '.git/worktrees/<branch>/index.lock': File exists. Another git process
 	// seems to be running in this repository" -- so two of the worker's own git
@@ -275,7 +278,7 @@ type Service struct {
 	// mutation on its own startup goroutine), and DeleteBranchDialog fires every
 	// tab's REMOVE close concurrently.
 	//
-	// Keyed by MAIN REPO ROOT (gitPathInfo.RepoRoot), not by working dir: linked
+	// Keyed by COMMON ADMINISTRATIVE DIRECTORY (gitPathInfo.CommonDir): linked
 	// worktrees share one object store and one `.git/worktrees/` admin tree, so a
 	// checkout inside a worktree and a `worktree add` in the main repo contend on
 	// the same locks. Keying by working dir would let exactly the observed failure

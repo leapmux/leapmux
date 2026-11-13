@@ -914,6 +914,7 @@ func TestFailStartup_KeepCloseLeavesWorktreeAlone(t *testing.T) {
 			// Record the close the way a real CloseTab does: cancelAndClear
 			// runs while the startup is still in flight, before closed_at.
 			h := svc.AgentStartup.begin(dbAgent.ID, func() {})
+			bindAgentWorktreeStartupForTest(svc, &gm, dbAgent.ID, h)
 			svc.AgentStartup.cancelAndClear(dbAgent.ID, tc.disposition)
 			require.NoError(t, closeErr(svc.Queries.CloseAgent(ctx, dbAgent.ID)))
 
@@ -934,13 +935,10 @@ func TestFailStartup_KeepCloseLeavesWorktreeAlone(t *testing.T) {
 	}
 }
 
-// TestFailStartup_UncontestedFailureStillRollsBack is the other side of the
-// same fork: with NO close recorded, a failed startup owns the rollback --
-// nothing else will undo the mutation, and leaving it would strand a worktree
-// and a branch the user never saw. It is what makes closeDisposition's `ok`
-// return load-bearing rather than decorative: without it, "no close raced" and
-// "a KEEP close raced" both arrive as the zero value and one of the two is
-// always handled wrongly.
+// TestFailStartup_UncontestedFailureStillRollsBack covers an unchanged worktree
+// used only by the failed startup. Without a close, automatic cleanup removes
+// that owned artifact. A KEEP close must preserve it. Both carry the zero
+// disposition, so closeDisposition's ok flag must distinguish them.
 func TestFailStartup_UncontestedFailureStillRollsBack(t *testing.T) {
 	t.Parallel()
 
@@ -954,6 +952,7 @@ func TestFailStartup_UncontestedFailureStillRollsBack(t *testing.T) {
 
 	dbAgent := createAgentRowForTest(t, svc, gm.WorkingDir)
 	// No begin(): nothing raced this startup, so it owns its own rollback.
+	bindAgentWorktreeStartupForTest(svc, &gm, dbAgent.ID, nil)
 	svc.failAgentStartup(&dbAgent, gm, context.Canceled, nil, nil)
 
 	_, statErr := os.Stat(gm.Rollback.CreatedWorktree.WorktreePath)
@@ -979,6 +978,7 @@ func TestFailStartup_ArchiveRollsBackOnlyIncompleteGitMutation(t *testing.T) {
 			dbAgent := createAgentRowForTest(t, svc, gm.WorkingDir)
 			handle := svc.AgentStartup.begin(dbAgent.ID, func() {})
 			require.NotNil(t, handle)
+			bindAgentWorktreeStartupForTest(svc, &gm, dbAgent.ID, handle)
 			if testCase.phase0Complete {
 				svc.linkWorktreeAfterPhase0(&svc.AgentStartup.startupCore, handle, gm.WorktreeID,
 					leapmuxv1.TabType_TAB_TYPE_AGENT, dbAgent.ID, false)
@@ -999,6 +999,15 @@ func TestFailStartup_ArchiveRollsBackOnlyIncompleteGitMutation(t *testing.T) {
 			assert.Equal(t, int64(1), links)
 		})
 	}
+}
+
+// These fixtures call failure directly, so they must supply the startup
+// ownership record that runAgentPhase0 normally attaches to the result.
+func bindAgentWorktreeStartupForTest(svc *Service, result *gitModeResult, agentID string, entry *startupEntry) {
+	result.bindCreatedWorktreeStartup(worktreeRollbackStartup{
+		key:      newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, ""),
+		registry: &svc.AgentStartup.startupCore, entry: entry,
+	})
 }
 
 // createWorktreeForTest runs the real create-worktree git mode and returns its

@@ -195,11 +195,14 @@ func (k WorkerPublicKeys) Proto() *leapmuxv1.WorkerPublicKeys {
 
 // Worker represents a registered worker node.
 type Worker struct {
-	ID           string
-	RegisteredBy string
-	Status       leapmuxv1.WorkerStatus
-	CreatedAt    time.Time
-	LastSeenAt   *time.Time
+	ID string
+	// AuthTokenHash stays internal. Recovery and stream publication use this
+	// digest to check that the authenticated credential is still current.
+	AuthTokenHash []byte
+	RegisteredBy  string
+	Status        leapmuxv1.WorkerStatus
+	CreatedAt     time.Time
+	LastSeenAt    *time.Time
 	// PublicKeys is the pinned key set. Nothing updates it; new keys need a
 	// new registration, which creates a new row.
 	PublicKeys WorkerPublicKeys
@@ -899,8 +902,17 @@ type CreateWorkerParams struct {
 
 // RotateWorkerAuthTokenParams replaces the digest of a live Worker's token.
 type RotateWorkerAuthTokenParams struct {
-	ID            string
-	AuthTokenHash []byte
+	ID                    string
+	AuthTokenHash         []byte
+	ExpectedAuthTokenHash []byte
+}
+
+// Validate requires both digests, so a caller cannot request an unconditional update.
+func (p RotateWorkerAuthTokenParams) Validate() error {
+	if len(p.AuthTokenHash) != 32 || len(p.ExpectedAuthTokenHash) != 32 {
+		return fmt.Errorf("%w: worker token rotation requires two 32-byte digests", ErrInvalidArgument)
+	}
+	return nil
 }
 
 // RegistrationKeyHashOrNil represents every absent digest as SQL NULL.
@@ -1035,8 +1047,9 @@ type SoftDeleteWorkspaceParams struct {
 }
 
 // UpsertTabParams writes one row of the derived tab index the CRDT manager
-// maintains. Rendered is stated on every row: the column has no DEFAULT, so
-// a writer that forgot it fails instead of storing "not rendered".
+// maintains. Rendered reports whether the row is rendered. The adapters always
+// bind this field, so omitting it from a Go literal stores false. The column
+// requires a non-NULL value and has no SQL default.
 //
 // UserID is userid.UserID like every other owner field on a *Params struct in
 // this file: the value is minted once at the store call (hub/service's
@@ -1873,10 +1886,11 @@ type CreateAPITokenParams struct {
 	// oauthapp.ServiceAccountClientID is that answer.
 	ClientID         string
 	InstallationName string
-	// GrantedScopes is the canonical scope string. The column has no default,
-	// so a caller that omits it fails the INSERT rather than storing a silent
-	// empty grant. Build it with authscope.ScopeSet.Storable, which refuses
-	// the unscoped grant -- no stored credential carries one.
+	// GrantedScopes is the canonical scope string. Build it with
+	// authscope.ScopeSet.Storable, which accepts an empty grant and refuses the
+	// unscoped grant. The adapters always bind this field, so omitting it from
+	// a Go literal stores the empty grant. The column requires a non-NULL value
+	// and has no SQL default; that does not detect an omitted Go field.
 	GrantedScopes    string
 	SecretHash       []byte
 	RefreshHash      []byte
@@ -1964,8 +1978,10 @@ type CreateDelegationTokenParams struct {
 	ID       string
 	UserID   userid.UserID
 	WorkerID string
-	// GrantedScopes is the canonical scope string; see DelegationToken. The
-	// column has no default, so an unstated grant fails the INSERT.
+	// GrantedScopes is the canonical scope string; see DelegationToken. Build it
+	// with authscope.ScopeSet.Storable, which accepts an empty grant and refuses
+	// the unscoped grant. The adapters bind an omitted Go field as the empty
+	// grant. The non-NULL column has no SQL default and cannot detect that omission.
 	GrantedScopes    string
 	SecretHash       []byte
 	RefreshHash      []byte

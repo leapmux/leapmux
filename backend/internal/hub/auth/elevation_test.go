@@ -12,14 +12,11 @@ import (
 
 func ptrTime(t time.Time) *time.Time { return &t }
 
-// TestNewElevation_AnAbsentDeadlineIsNeverElevated pins the one thing the
-// constructor still decides.
-//
-// It used to take elevation_proven_at as a second argument and refuse half a
-// pair. That guard moved into the schema -- user_sessions carries
-// CHECK ((elevation_proven_at IS NULL) = (elevation_expires_at IS NULL)) in
-// all three dialects -- so half a pair is now unwritable rather than tolerated
-// at every read. storetest covers the constraint; this covers what is left.
+// TestNewElevation_AnAbsentDeadlineIsNeverElevated checks that either missing
+// column produces no elevation. All three schemas also require the complete
+// pair. The constructor retains its read guard because TiDB can leave CHECK
+// enforcement disabled. The schema tests cover the write constraint; this test
+// covers admission from stored state.
 func TestNewElevation_AnAbsentDeadlineIsNeverElevated(t *testing.T) {
 	t.Parallel()
 
@@ -27,12 +24,10 @@ func TestNewElevation_AnAbsentDeadlineIsNeverElevated(t *testing.T) {
 	assert.True(t, auth.NewElevation(ptrTime(now), nil).IsZero())
 	assert.False(t, auth.NewElevation(ptrTime(now), ptrTime(now.Add(time.Hour))).IsZero())
 
-	// BOTH halves, or nothing. The schema's CHECK is the write-side home for
-	// this, but a CHECK is not something the admission read can stand on:
-	// TiDB parses and ignores one unless tidb_enable_check_constraint is ON,
-	// and the hub's attempt to set that variable discards its error. A lone
-	// deadline would otherwise admit a sensitive action on a row whose factor
-	// was never proven.
+	// Both halves, or nothing. The schema's CHECK enforces the write when
+	// enabled. TiDB can leave enforcement disabled, and the Hub logs failed
+	// attempts to enable it without refusing startup. Admission must still
+	// reject a lone deadline whose factor was never proven.
 	assert.True(t, auth.NewElevation(nil, ptrTime(now.Add(time.Hour))).IsZero(),
 		"a deadline with no anchor is not an elevation")
 	assert.True(t, auth.NewElevation(nil, nil).IsZero())

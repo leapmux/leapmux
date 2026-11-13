@@ -464,14 +464,11 @@ func (h *OAuthServerHandler) handleTokenDeviceCode(w http.ResponseWriter, r *htt
 			// Consume is the single-use consumption that must stay atomic with
 			// token creation, so it -- and only it -- remains in the
 			// transaction.
-			affected, err := tx.DeviceAuthorizations().Consume(r.Context(), deviceCodeHash, h.now().UTC())
-			if err != nil {
+			err := spendDeviceGrant(r.Context(), tx, deviceCodeHash, h.now().UTC())
+			if err != nil && !errors.Is(err, errAuthorizationGrantUnavailable) {
 				return fmt.Errorf("consume device authorization: %w", err)
 			}
-			if affected != 1 {
-				return errAuthorizationGrantUnavailable
-			}
-			return nil
+			return err
 		},
 	})
 }
@@ -498,7 +495,7 @@ func (h *OAuthServerHandler) answerElevationPoll(w http.ResponseWriter, r *http.
 			"that app credential is not verified; start the verification again")
 		return
 	}
-	if err := h.spendDeviceGrant(r.Context(), deviceCodeHash); err != nil {
+	if err := spendDeviceGrant(r.Context(), h.store, deviceCodeHash, h.now().UTC()); err != nil {
 		if errors.Is(err, errAuthorizationGrantUnavailable) {
 			writeOAuthError(w, http.StatusBadRequest, "invalid_grant", "device_code expired or already consumed")
 			return
@@ -509,12 +506,12 @@ func (h *OAuthServerHandler) answerElevationPoll(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]any{"elevated": true})
 }
 
-// spendDeviceGrant consumes a device grant outside a transaction and maps the
-// two ways it can fail. ONE mapping for the elevation poll and the consent
-// mint's consume closure, so the "already consumed" answer cannot drift in
-// code or message between the two stages that spend the same row.
-func (h *OAuthServerHandler) spendDeviceGrant(ctx context.Context, deviceCodeHash []byte) error {
-	affected, err := h.store.DeviceAuthorizations().Consume(ctx, deviceCodeHash, h.now().UTC())
+// spendDeviceGrant consumes one device grant through the selected store. The
+// consent caller supplies its transaction; an elevation poll supplies the base
+// store. Store errors pass through unchanged, and any row count other than one
+// reports errAuthorizationGrantUnavailable. Each caller samples its clock at use.
+func spendDeviceGrant(ctx context.Context, st store.Store, deviceCodeHash []byte, now time.Time) error {
+	affected, err := st.DeviceAuthorizations().Consume(ctx, deviceCodeHash, now)
 	if err != nil {
 		return err
 	}
@@ -616,9 +613,9 @@ type apiTokenResponse struct {
 	// authenticated as without a second call.
 	UserID   string `json:"user_id,omitempty"`
 	Username string `json:"username,omitempty"`
-	// RefreshExpiresIn is how long the credential can keep refreshing before the
-	// account must authorize the app again -- the absolute lifetime, not the
-	// access token's hour.
+	// RefreshExpiresIn is the number of seconds until the current refresh token
+	// expires. Rotation advances that deadline by up to RefreshTokenTTL, capped
+	// by the credential's absolute lifetime.
 	RefreshExpiresIn int `json:"refresh_expires_in,omitempty"`
 }
 
@@ -639,7 +636,7 @@ func refreshInternalError(err error) refreshResponse {
 //
 // It reports refresh_expires_in and scope, exactly as the minting response
 // does. Omitting them made the rotation answer look like a credential with no
-// absolute deadline and no grant: `refresh_expires_in` carries omitempty, so a
+// refresh deadline and no grant: `refresh_expires_in` carries omitempty, so a
 // client never advanced the deadline it stores and `auth status` printed a date
 // further into the past on every rotation.
 func refreshTokenResponse(tokenID, accessBearer, refreshBearer string, expiresIn, refreshExpiresIn int, scope string) refreshResponse {

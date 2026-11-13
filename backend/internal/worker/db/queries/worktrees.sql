@@ -11,7 +11,7 @@
 -- Winning the insert is not the same as owning the id, and returning the row
 -- makes that mechanical: a loser that assumed its own id would hand back an id
 -- no row carries, and every later ref-count and close keyed on it would miss.
-INSERT INTO worktrees (id, worktree_path, repo_root, branch_name) VALUES (?, ?, ?, ?)
+INSERT INTO worktrees (id, worktree_path, repo_root, repo_git_dir, branch_name) VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(worktree_path) WHERE deleted_at IS NULL
 DO UPDATE SET worktree_path = excluded.worktree_path
 RETURNING *;

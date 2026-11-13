@@ -14,7 +14,6 @@ import (
 	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/id"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
-	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/util/pathutil"
 )
 
@@ -32,14 +31,10 @@ func removalGitDir(ctx context.Context, wt db.Worktree) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !info.IsWorktree || !pathutil.SamePath(info.TopLevel, pathutil.Canonicalize(wt.WorktreePath)) || !pathutil.SamePath(info.RepoRoot, pathutil.Canonicalize(wt.RepoRoot)) {
+	if !info.IsWorktree || !pathutil.SamePath(info.TopLevel, pathutil.Canonicalize(wt.WorktreePath)) || !pathutil.SamePath(info.CommonDir, pathutil.Canonicalize(wt.RepoGitDir)) {
 		return "", errors.New("the removal target is no longer the tracked linked worktree")
 	}
-	directory, err := gitutil.Output(ctx, wt.WorktreePath, "rev-parse", "--path-format=absolute", "--git-dir")
-	if err != nil {
-		return "", err
-	}
-	return pathutil.Canonicalize(strings.TrimSpace(directory)), nil
+	return info.GitDir, nil
 }
 
 func readRemovalMarker(path string) (string, error) {
@@ -60,7 +55,12 @@ func readRemovalMarker(path string) (string, error) {
 // captureWorktreeRemovalIdentity runs before resource retirement. Recovery with
 // a saved snapshot only validates this identity and never creates a new marker.
 func (svc *Service) captureWorktreeRemovalIdentity(ctx context.Context, wt db.Worktree, key ownedTabKey) (*worktreeRemovalIdentity, error) {
-	defer svc.lockGitIndex(wt.RepoRoot)()
+	defer svc.lockGitIndex(wt.RepoGitDir)()
+	return svc.captureWorktreeRemovalIdentityLocked(ctx, wt, key)
+}
+
+// The caller holds the repository index lock.
+func (svc *Service) captureWorktreeRemovalIdentityLocked(ctx context.Context, wt db.Worktree, key ownedTabKey) (*worktreeRemovalIdentity, error) {
 	directory, err := removalGitDir(ctx, wt)
 	if err != nil {
 		return nil, err

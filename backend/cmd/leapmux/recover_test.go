@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -210,6 +211,43 @@ func TestCLI_RemoveEncryptionKey_OldVersion(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, ks.Versions(), 1)
 	assert.Equal(t, uint32(2), ks.ActiveVersion())
+}
+
+func TestCLI_RemoveEncryptionKey_RefusesInvalidVersion(t *testing.T) {
+	for _, version := range []string{"0", "-1", "4294967296", "4294967297", "18446744073709551615"} {
+		t.Run(version, func(t *testing.T) {
+			dir := setupTestDataDir(t)
+			require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
+			keyPath := filepath.Join(dir, "encryption.key")
+			before, err := os.ReadFile(keyPath)
+			require.NoError(t, err)
+
+			err = runRemoveEncryptionKey(testCmdCtx, []string{"--version", version, "--data-dir", dir})
+			assert.Error(t, err)
+
+			after, err := os.ReadFile(keyPath)
+			require.NoError(t, err)
+			assert.True(t, bytes.Equal(before, after), "an invalid version must not change the key ring")
+			ks, err := keystore.LoadFromFile(keyPath)
+			require.NoError(t, err)
+			assert.Equal(t, []uint32{1, 2}, ks.Versions())
+			assert.Equal(t, uint32(2), ks.ActiveVersion())
+		})
+	}
+}
+
+func TestCLI_RemoveEncryptionKey_ReportsAbsentMaximumVersion(t *testing.T) {
+	dir := setupTestDataDir(t)
+	keyPath := filepath.Join(dir, "encryption.key")
+	before, err := os.ReadFile(keyPath)
+	require.NoError(t, err)
+
+	err = runRemoveEncryptionKey(testCmdCtx, []string{"--version", "4294967295", "--data-dir", dir})
+	assert.ErrorContains(t, err, "key version 4294967295 not in ring")
+
+	after, err := os.ReadFile(keyPath)
+	require.NoError(t, err)
+	assert.True(t, bytes.Equal(before, after), "an absent version must not change the key ring")
 }
 
 func TestCLI_ReencryptSecrets(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"math"
 	"strings"
 
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -37,8 +38,8 @@ func runRemoveEncryptionKey(cmd cmdCtx, args []string) error {
 	return withRecoverStore(cmd, args, func(fs *flag.FlagSet) {
 		version = fs.Uint("version", 0, "key version to remove")
 	}, func(ctx context.Context, cfg *config.Config, st store.Store) error {
-		if *version < 1 {
-			return fmt.Errorf("--version is required (must be >= 1)")
+		if *version == 0 || *version > math.MaxUint32 {
+			return fmt.Errorf("--version must be between 1 and %d", uint64(math.MaxUint32))
 		}
 
 		path := cfg.EncryptionKeyFilePath()
@@ -139,7 +140,8 @@ const pepperRotationEffects = "- Signs out every session.\n" +
 	"- Invalidates API and delegation tokens and confidential app secrets.\n" +
 	"- Invalidates live registration keys and pending device codes.\n"
 
-// runRotatePepper replaces the HMAC pepper for every stored bearer secret.
+// runRotatePepper replaces the HMAC pepper for the credential classes listed
+// in pepperRotationEffects.
 // The resulting invalidations require --yes. The encryption key ring stays intact.
 func runRotatePepper(cmd cmdCtx, args []string) error {
 	var yes bool

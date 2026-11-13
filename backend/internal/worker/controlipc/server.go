@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -35,6 +34,7 @@ type Server struct {
 	url      string
 	listener net.Listener
 	httpSrv  *http.Server
+	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	stopOnce sync.Once
 }
@@ -68,11 +68,6 @@ func Listen(opts Options) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen %s: %w", opts.SocketURL, err)
 	}
-	if err := restrictSocketPermissions(opts.SocketURL); err != nil {
-		_ = ln.Close()
-		return nil, err
-	}
-
 	mux := http.NewServeMux()
 	svc := &handler{tokens: tokens, router: opts.Router, ownerUsername: opts.OwnerUsername}
 	connectServer := connect.NewServer()
@@ -86,14 +81,17 @@ func Listen(opts Options) (*Server, error) {
 	protocols := &http.Protocols{}
 	protocols.SetHTTP1(true)
 	protocols.SetUnencryptedHTTP2(true)
+	baseCtx, cancel := context.WithCancel(context.Background())
 	srv := &http.Server{
-		Handler:   mux,
-		Protocols: protocols,
+		Handler:     mux,
+		Protocols:   protocols,
+		BaseContext: func(net.Listener) context.Context { return baseCtx },
 	}
 	s := &Server{
 		url:      opts.SocketURL,
 		listener: ln,
 		httpSrv:  srv,
+		cancel:   cancel,
 	}
 	s.wg.Add(1)
 	go func() {
@@ -108,21 +106,19 @@ func Listen(opts Options) (*Server, error) {
 // URL returns the listener URL (unix:<path> / npipe:<name>).
 func (s *Server) URL() string { return s.url }
 
-// Close terminates the server and removes the socket file (Unix only).
-// Idempotent — double Close (factory teardown + test cleanup both
-// invoke it on the same Server) must not panic on close-of-closed.
+// Close cancels active requests, closes their connections and the listener,
+// and joins the accept loop. The Unix listener removes its socket once.
+// Close is idempotent. It does not wait for application handlers, because a
+// handler can close its own server while removing its tab.
 func (s *Server) Close() error {
 	if s == nil {
 		return nil
 	}
 	s.stopOnce.Do(func() {
-		ctx, cancel := context.WithCancel(context.Background())
-		cancel()
-		_ = s.httpSrv.Shutdown(ctx)
+		s.cancel()
+		_ = s.httpSrv.Close()
 		locallisten.CloseAccepted(s.listener)
-		if scheme, target, err := locallisten.Parse(s.url); err == nil && scheme == locallisten.SchemeUnix {
-			_ = os.Remove(target)
-		}
+		_ = s.listener.Close()
 		s.wg.Wait()
 	})
 	return nil
@@ -144,25 +140,6 @@ func withAuth(h *handler, next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(contextWithToken(r.Context(), info, token)))
 	})
-}
-
-// restrictSocketPermissions chmods the unix socket to 0600 so only the
-// owning uid can connect. On Windows the named pipe inherits the
-// process's default DACL — no additional restriction needed since
-// LeapMux assumes the worker process and the spawned agent run as the
-// same user.
-func restrictSocketPermissions(socketURL string) error {
-	scheme, target, err := locallisten.Parse(socketURL)
-	if err != nil {
-		return err
-	}
-	if scheme != locallisten.SchemeUnix {
-		return nil
-	}
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	return os.Chmod(target, 0o600)
 }
 
 // SocketKind tags the spawned-entity flavour folded into a per-spawn
@@ -206,7 +183,8 @@ func shortPrefix(s string, n int) string {
 	return s[:n]
 }
 
-// SocketDir returns the private directory for this Worker's control sockets.
+// SocketDir returns the preferred private directory for control sockets.
+// PrepareSocketDirectory selects a short private namespace when this path cannot fit.
 func SocketDir(dataDir string) string {
 	return filepath.Join(dataDir, "run", "control")
 }

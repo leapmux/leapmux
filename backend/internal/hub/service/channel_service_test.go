@@ -1137,18 +1137,10 @@ func TestOpenChannel_ClosesWhenCredentialExpires(t *testing.T) {
 	requireWorkerConnectionRegistration(t, env.worker, conn)
 
 	channelSvc := service.NewChannelService(env.store, env.worker, env.channels, env.pending, allowAllAuthFreshness{})
-	// The deadline has to clear the OpenChannel round trip below (a worker
-	// registration, a pending ChannelOpen request/response, and a store read)
-	// and still land well inside the one-second Eventually that follows. 50ms
-	// cleared neither reliably: OpenChannel itself returned "authentication
-	// expired" once this package ran under -race, where every one of those steps
-	// is several times slower, and the test then failed at its FIRST require --
-	// reporting a broken expiry path for what was really a stopwatch. 300ms
-	// keeps roughly a 3x margin on both sides.
-	ctx := auth.WithUser(context.Background(), &auth.UserInfo{
-		ID:                  userid.MustNew(env.user.ID),
-		Username:            env.user.Username,
-		CredentialExpiresAt: auth.DeadlineAt(time.Now().Add(300 * time.Millisecond)),
+	const sessionID = "channel-expiry-test"
+	ctx := auth.WithUser(testutil.DeadlineContext(t), &auth.UserInfo{
+		ID: userid.MustNew(env.user.ID), Username: env.user.Username,
+		Credential: auth.SessionCredential(sessionID), CredentialExpiresAt: auth.NeverExpires(),
 	})
 	resp, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
 		WorkerId:         env.workerID,
@@ -1157,20 +1149,23 @@ func TestOpenChannel_ClosesWhenCredentialExpires(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, env.channels.Exists(resp.GetChannelId()))
 
-	require.Eventually(t, func() bool {
-		return !env.channels.Exists(resp.GetChannelId())
-	}, time.Second, 10*time.Millisecond, "channel must close when its authenticating credential expires")
-
-	var closeSeen bool
-	for !closeSeen {
+	info, exists := env.channels.GetChannelInfo(resp.GetChannelId())
+	require.True(t, exists)
+	assert.Equal(t, auth.SessionCredential(sessionID), info.AuthInfo.Credential)
+	assert.True(t, info.AuthInfo.CredentialExpiresAt.IsNever())
+	env.channels.RescheduleExpiryBySession(sessionID, auth.DeadlineAt(time.Now().Add(-time.Minute)))
+	for {
 		select {
 		case msg := <-env.sent:
 			if closeMsg := msg.GetChannelClose(); closeMsg != nil {
 				assert.Equal(t, resp.GetChannelId(), closeMsg.GetChannelId())
-				closeSeen = true
+				assert.False(t, env.channels.Exists(resp.GetChannelId()))
+				_, exists := env.channels.GetChannelInfo(resp.GetChannelId())
+				assert.False(t, exists)
+				return
 			}
-		case <-time.After(time.Second):
-			require.Fail(t, "credential expiry must notify the worker")
+		case <-ctx.Done():
+			t.Fatal("credential expiry must notify the Worker: ", ctx.Err())
 		}
 	}
 }

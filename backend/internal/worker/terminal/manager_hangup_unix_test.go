@@ -3,7 +3,9 @@
 package terminal
 
 import (
+	"bufio"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/internal/util/shellquote"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 )
 
@@ -39,75 +43,119 @@ const hangUpShellTimeout = 30 * time.Second
 // hangUpGrace is the per-shell escalation grace the tests pass.
 const hangUpGrace = 2 * time.Second
 
-const hangUpHelperAddress = "LEAPMUX_TEST_HANGUP_HELPER_ADDRESS"
-const hangUpReadyMarker = "LMX_HANGUP_TRAP_READY"
+const hangUpReadyMarker = "LMX_TEARDOWN_READY"
 
-// TestHelperHangUpIgnoringProcess runs only in the fixture's child process.
+// TestHelperHangUpIgnoringProcess is the fixture's single process. It ignores the
+// hang-up before reporting readiness and exits when its control peer closes.
 func TestHelperHangUpIgnoringProcess(t *testing.T) {
-	address := os.Getenv(hangUpHelperAddress)
-	if address == "" {
+	separator := slices.Index(os.Args, "--")
+	if separator < 0 || len(os.Args) != separator+3 || os.Args[separator+1] != "leapmux-test-hangup" {
 		return
 	}
 	signal.Ignore(syscall.SIGHUP)
-	connection, err := net.Dial("tcp", address)
+	connection, err := net.DialTimeout("tcp", os.Args[separator+2], hangUpShellTimeout)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = connection.Close() })
+	defer func() { _ = connection.Close() }()
+	require.NoError(t, connection.SetReadDeadline(time.Now().Add(hangUpShellTimeout)))
+	var admitted [1]byte
+	_, err = io.ReadFull(connection, admitted[:])
+	require.NoError(t, err)
+	require.Equal(t, byte(1), admitted[0], "the parent must own the accepted control connection")
 	_, err = fmt.Fprintln(os.Stdout, hangUpReadyMarker)
 	require.NoError(t, err)
 	_, err = io.Copy(io.Discard, connection)
 	require.NoError(t, err)
 }
 
-// hangUpIgnoringOptions configures one process with no children to respawn during
-// termination. The control connection also releases it if a test fails before Stop.
+// hangUpIgnoringOptions starts no descendants that can respawn between the
+// owner's descendant kill and root signal. Closing the control peer also ends
+// the fixture when a failed assertion prevents Stop from running.
 func hangUpIgnoringOptions(t *testing.T, id string) Options {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	root := t.TempDir()
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	require.NoError(t, err)
-	accepted := make(chan net.Conn, 1)
+	type acceptResult struct {
+		connection *net.TCPConn
+		err        error
+	}
+	accepted := make(chan acceptResult, 1)
 	go func() {
-		connection, err := listener.Accept()
-		if err != nil && !errors.Is(err, net.ErrClosed) {
-			t.Errorf("accept the hang-up helper connection: %v", err)
+		connection, err := listener.AcceptTCP()
+		if err == nil {
+			err = connection.SetWriteDeadline(time.Now().Add(hangUpShellTimeout))
+			if err == nil {
+				_, err = connection.Write([]byte{1})
+			}
 		}
-		accepted <- connection
+		accepted <- acceptResult{connection: connection, err: err}
 	}()
 	t.Cleanup(func() {
 		_ = listener.Close()
-		if connection := <-accepted; connection != nil {
-			_ = connection.Close()
+		result := <-accepted
+		if result.connection != nil {
+			_ = result.connection.Close()
+		}
+		if result.err != nil && !errors.Is(result.err, net.ErrClosed) {
+			t.Errorf("accept blocked-PTY helper connection: %v", result.err)
 		}
 	})
+	require.NoError(t, listener.SetDeadline(time.Now().Add(hangUpShellTimeout)))
 	executable, err := os.Executable()
 	require.NoError(t, err)
-	quote := func(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }
-	shell := filepath.Join(t.TempDir(), "hangup-helper")
-	testutil.WriteExecutable(t, shell, "#!/bin/sh\nexec "+quote(executable)+" -test.run='^TestHelperHangUpIgnoringProcess$' --\n")
+	command := shellquote.POSIX.Command(executable,
+		"-test.run=^TestHelperHangUpIgnoringProcess$", "--", "leapmux-test-hangup", listener.Addr().String())
+	shell := filepath.Join(root, "blocked-pty-helper")
+	testutil.WriteExecutable(t, shell, "#!/bin/sh\nexec "+command+"\n")
 	return Options{
-		ID: id, Shell: shell, WorkingDir: t.TempDir(),
-		// SIGKILL prevents the helper's TestMain cleanup. Keep its temporary
-		// HOME below a directory that this parent test removes.
-		ExtraEnv: []string{hangUpHelperAddress + "=" + listener.Addr().String(), "TMPDIR=" + t.TempDir()},
+		ID: id, Shell: shell, WorkingDir: root,
+		// A forced stop skips the child's TestMain cleanup. Its temporary HOME
+		// must stay below a directory that this parent test removes.
+		ExtraEnv: []string{"TMPDIR=" + root},
 	}
 }
 
 func TestHangUpIgnoringFixtureCleanupEndsTheProcess(t *testing.T) {
 	t.Parallel()
 	m := NewManager()
-	const id = "cleanup-helper"
+	const id = "blocked-helper-cleanup"
+	t.Cleanup(func() {
+		m.StopTerminal(id)
+		ctx, cancel := context.WithTimeout(context.Background(), hangUpShellTimeout)
+		defer cancel()
+		assert.NoError(t, m.WaitForExitContext(ctx, id))
+	})
+	var term *Terminal
 	require.True(t, t.Run("release the control connection", func(t *testing.T) {
-		startHangUpIgnoringTerminal(t, m, id, nil)
+		ready := make(chan struct{})
+		var readyOnce sync.Once
+		var output testutil.LogBuffer
+		// A child subtest's canceled context must not supply the termination.
+		// Only its fixture cleanup closes the helper's control connection.
+		require.NoError(t, m.StartTerminal(context.Background(), hangUpIgnoringOptions(t, id),
+			func(data []byte, _ int64, _ []Signal) {
+				_, _ = output.Write(data)
+				if strings.Contains(output.String(), hangUpReadyMarker) {
+					readyOnce.Do(func() { close(ready) })
+				}
+			}, nil))
+		term = hangUpTerminal(m, id)
+		select {
+		case <-ready:
+		case <-time.After(hangUpShellTimeout):
+			t.Fatal("the blocked-PTY helper did not report readiness")
+		}
 	}))
-	term := hangUpTerminal(m, id)
 	require.NotNil(t, term)
 	ctx, cancel := context.WithTimeout(t.Context(), hangUpShellTimeout)
 	defer cancel()
 	select {
 	case <-term.exitCh:
 	case <-ctx.Done():
-		t.Fatal("fixture cleanup did not end the hang-up helper")
+		t.Fatal("fixture cleanup did not end the blocked-PTY helper")
 	}
-	assert.Zero(t, term.Wait(), "the control connection releases the helper without a signal")
+	assert.Zero(t, term.Wait(), "control EOF must end the helper without a signal")
+	assert.False(t, term.stopped, "fixture cleanup must not force termination")
 	require.NoError(t, m.WaitForExitContext(ctx, id))
 }
 
@@ -177,7 +225,7 @@ func TestTerminalTerminationSurvivesBlockedPTY(t *testing.T) {
 				select {
 				case <-readHeld:
 				case <-ctx.Done():
-					t.Fatal("the process never reported hang-up readiness")
+					t.Fatal("the blocked-PTY helper never reported readiness")
 				}
 				term := hangUpTerminal(m, "blocked")
 				require.NotNil(t, term)
@@ -194,7 +242,7 @@ func TestTerminalTerminationSurvivesBlockedPTY(t *testing.T) {
 					blocked.beforeClose = block
 				}
 				// The output callback holds the reader between PTY calls.
-				// The live process cannot reach exit teardown before this swap.
+				// The live helper cannot reach exit teardown before this swap.
 				term.ptmx = blocked
 				releaseRead()
 				if blockedOperation == "write" {
@@ -318,27 +366,95 @@ func TestManager_HangUpAllEndsAShell(t *testing.T) {
 	assert.False(t, term.stopped, "the escalation cannot satisfy this test")
 }
 
-// A nohup job survives the sweep: the hang-up reaches the shell, the shell
-// exits, and the escalation that would kill the job never runs.
+// TestHelperNohupJob is the one process whose survival the test observes.
+// It creates no descendants and exits on release, EOF, or its read deadline.
+func TestHelperNohupJob(t *testing.T) {
+	separator := slices.Index(os.Args, "--")
+	if separator < 0 || len(os.Args) != separator+3 || os.Args[separator+1] != "leapmux-test-nohup" {
+		return
+	}
+	connection, err := net.DialTimeout("tcp", os.Args[separator+2], hangUpShellTimeout)
+	if err != nil {
+		os.Exit(2)
+	}
+	if connection.SetDeadline(time.Now().Add(hangUpShellTimeout)) != nil {
+		os.Exit(3)
+	}
+	commands := bufio.NewScanner(connection)
+	if _, err := fmt.Fprintln(connection, "ready"); err != nil {
+		os.Exit(4)
+	}
+	for commands.Scan() {
+		command := commands.Text()
+		if command == "release" {
+			os.Exit(0)
+		}
+		challenge, ok := strings.CutPrefix(command, "ping ")
+		if !ok || challenge == "" {
+			os.Exit(5)
+		}
+		if _, err := fmt.Fprintln(connection, "pong "+challenge); err != nil {
+			os.Exit(6)
+		}
+	}
+	if commands.Err() != nil {
+		os.Exit(7)
+	}
+	// Do not close the connection before exit: its EOF proves this helper
+	// ended, rather than merely stopped using its control connection.
+	os.Exit(0)
+}
+
+// A nohup job survives the sweep: the shell exits on hang-up without the
+// escalation that would kill the job. A fresh reply proves live execution.
 func TestManager_HangUpAllLeavesANohupJobAlive(t *testing.T) {
 	m := NewManager()
-	pidFile := t.TempDir() + "/nohup.pid"
+	t.Cleanup(func() {
+		m.StopTerminal("nohup")
+		m.WaitForExit("nohup")
+	})
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = listener.Close() })
+	require.NoError(t, listener.SetDeadline(time.Now().Add(hangUpShellTimeout)))
+	executable, err := os.Executable()
+	require.NoError(t, err)
+	command := shellquote.POSIX.Command("nohup", executable,
+		"-test.run=^TestHelperNohupJob$", "--", "leapmux-test-nohup", listener.Addr().String())
 	handlerRan := make(chan string, 1)
-	startHangUpTerminal(t, m, Options{ID: "nohup"}, handlerRan,
-		"nohup sh -c 'echo $$ > "+pidFile+"; exec sleep 1000' >/dev/null 2>&1 &")
-	pid := waitForShellJobPID(t, pidFile)
-	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
+	startHangUpTerminal(t, m, Options{ID: "nohup"}, handlerRan, command+" >/dev/null 2>&1 &")
+	connection, err := listener.AcceptTCP()
+	require.NoError(t, err)
+	reader := bufio.NewReader(connection)
+	t.Cleanup(func() {
+		defer func() { _ = connection.Close() }()
+		if err := connection.SetDeadline(time.Now().Add(hangUpShellTimeout)); err != nil {
+			t.Errorf("set helper cleanup deadline: %v", err)
+			return
+		}
+		_, _ = io.WriteString(connection, "release\n")
+		_, err := reader.ReadByte()
+		assert.ErrorIs(t, err, io.EOF, "the released helper must exit and close its connection")
+	})
+	require.NoError(t, connection.SetDeadline(time.Now().Add(hangUpShellTimeout)))
+	line, err := reader.ReadString('\n')
+	require.NoError(t, err)
+	require.Equal(t, "ready\n", line)
 
 	ids := m.HangUpAll(hangUpGrace)
-
 	assert.Nil(t, ids)
 	waitForHandler(t, handlerRan, "nohup")
-	// The job's parent is gone; give the re-parenting a moment before the
-	// liveness read, so the assertion cannot pass on a not-yet-reaped zombie.
-	assert.Eventually(t, func() bool {
-		return syscall.Kill(pid, 0) == nil
-	}, hangUpShellTimeout, 10*time.Millisecond,
-		"the nohup job must survive the sweep")
+	term := hangUpTerminal(m, "nohup")
+	require.NotNil(t, term)
+	assert.True(t, term.IsExited())
+	assert.False(t, term.stopped, "the sweep must not force termination")
+	challenge := rand.Text()
+	require.NoError(t, connection.SetDeadline(time.Now().Add(hangUpShellTimeout)))
+	_, err = fmt.Fprintln(connection, "ping "+challenge)
+	require.NoError(t, err)
+	reply, err := reader.ReadString('\n')
+	require.NoError(t, err, "the nohup job must execute after the shell exits")
+	assert.Equal(t, "pong "+challenge+"\n", reply)
 }
 
 // A foreground job dies with the shell: the hang-up ends the session's

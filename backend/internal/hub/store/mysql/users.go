@@ -607,3 +607,20 @@ func (s *userStore) RevokeUserTokens(ctx context.Context, userID userid.UserID) 
 		return bumpUserAuthGenerationLocked(ctx, conn, owner)
 	}, emitCredentialEvent)
 }
+
+// LockAccountLifecycle orders creation against transitions to zero live users.
+func (s *userStore) LockAccountLifecycle(ctx context.Context) (bool, error) {
+	if !s.conn.inTx() {
+		return false, store.ErrLockingReadOutsideTransaction
+	}
+	if _, err := s.conn.q.LockAccountLifecycle(ctx); err != nil {
+		return false, fmt.Errorf("lock account lifecycle singleton: %w", s.conn.queryError(err))
+	}
+	// A locking read sees current committed rows even under MySQL REPEATABLE READ.
+	_, err := s.conn.q.LockAnyLiveUser(ctx)
+	err = s.conn.queryError(err)
+	if errors.Is(err, store.ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}

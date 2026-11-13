@@ -74,6 +74,7 @@ func (r *teardownRecorder) snapshot() (sessions, users, bearers []string) {
 }
 
 type elevationEnv struct {
+	service  *service.UserService
 	client   leapmuxv1connect.UserServiceClient
 	store    store.Store
 	token    string
@@ -116,6 +117,7 @@ func setupElevationTest(t *testing.T) *elevationEnv {
 	t.Cleanup(server.Close)
 
 	return &elevationEnv{
+		service:  userSvc,
 		client:   leapmuxv1connect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
 		store:    st,
 		token:    token,
@@ -277,9 +279,8 @@ func TestElevateSession_WrongFactorDoesNotReadAsADeadSession(t *testing.T) {
 	assert.Nil(t, row.ElevationExpiresAt)
 }
 
-// TestElevateSession_RefusesABearer pins the structural rule end to end: a
-// CLI credential cannot elevate itself, so it can never reach a
-// passkey-management RPC however long it lives.
+// Session-elevation handlers accept browser sessions only. API credentials
+// obtain their own elevation through browser approval at /oauth/step-up.
 func TestElevateSession_RefusesABearer(t *testing.T) {
 	t.Parallel()
 
@@ -297,14 +298,36 @@ func TestElevateSession_RefusesABearer(t *testing.T) {
 		SecretHash: tv.HashSecret(secret), ExpiresAt: &expires,
 	}))
 
-	// The bearer path is not wired into this env's interceptor, so drive the
-	// refusal through the handler's own guard instead: a session-less
-	// credential has nothing to stamp.
-	req := &leapmuxv1.ElevateSessionRequest{CurrentPassword: "testpass"}
-	ctx, info := connect.NewClientContext(ctx)
-	info.RequestHeader().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
-	_, err = env.client.ElevateSession(ctx, req)
-	require.Error(t, err)
-	assert.Contains(t, []connect.Code{connect.CodeUnauthenticated, connect.CodeFailedPrecondition},
-		connect.CodeOf(err), "a bearer must never obtain an elevation")
+	base := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(env.userID), Credential: auth.APICredential(tokenID)})
+	var response *leapmuxv1.ElevateSessionResponse
+	info, err := callUnderServerInfo(base, func(ctx context.Context) error {
+		var callErr error
+		response, callErr = env.service.ElevateSession(ctx, &leapmuxv1.ElevateSessionRequest{CurrentPassword: "testpass"})
+		return callErr
+	})
+	assertCannotVerify(t, info, err)
+	assert.Nil(t, response)
+	assert.Contains(t, err.Error(), "this credential cannot verify your identity")
+	assert.Empty(t, info.ResponseHeader().Get(service.CredentialRejectedHeader))
+	row, err := env.store.APITokens().GetByID(ctx, tokenID)
+	require.NoError(t, err)
+	assert.Nil(t, row.ElevationExpiresAt)
+}
+
+func TestElevateSession_BearerTransportRefusesScopeNeverEvenAfterElevation(t *testing.T) {
+	t.Parallel()
+	env := setupUserTest(t)
+	bearer := env.bearerFor(t)
+	_, err := env.client.ListUserSettings(bearerReq(context.Background(), &leapmuxv1.ListUserSettingsRequest{}, bearer))
+	require.NoError(t, err, "the bearer must authenticate on a permitted read")
+	for _, elevated := range []bool{false, true} {
+		if elevated {
+			elevateAPITokenRow(t, env.store, tokenIDOf(t, bearer), env.userID)
+			env.contexts.EvictByUserID(env.userID)
+		}
+		ctx, info := connect.NewClientContext(context.Background())
+		info.RequestHeader().Set("Authorization", "Bearer "+bearer)
+		_, err := env.client.ElevateSession(ctx, &leapmuxv1.ElevateSessionRequest{CurrentPassword: "testpass"})
+		assertOutOfScope(t, info, err)
+	}
 }

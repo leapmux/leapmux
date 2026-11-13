@@ -24,6 +24,12 @@
 -- explicitly.
 SET NAMES utf8mb4 COLLATE utf8mb4_bin;
 
+-- Account creation and deletion take this lock before any user-auth lock.
+CREATE TABLE account_lifecycle_lock (
+    singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1)
+) COLLATE=utf8mb4_bin;
+INSERT INTO account_lifecycle_lock (singleton_id) VALUES (1);
+
 -- Users
 -- users.id carries CHECK (id <> '') because it is the parent key every
 -- owner-keyed row hangs off. store.CreateUserParams.Validate refuses a blank id
@@ -135,7 +141,7 @@ CREATE TABLE user_sessions (
     elevation_expires_at  DATETIME(3),
     user_agent      TEXT NOT NULL,
     ip_address      VARCHAR(255) NOT NULL DEFAULT '',
-    -- Both or neither, enforced HERE rather than re-checked at every read.
+    -- Both or neither: the schema requires the pair, and Go also validates it.
     -- Half a pair is not a state the rest of the hub should have to consider:
     -- a deadline with no anchor is one the slide statement cannot clamp,
     -- because it has nothing to measure the absolute cap from. Same shape as
@@ -230,9 +236,11 @@ CREATE INDEX idx_workers_deregistering_at ON workers(deregistering_at);
 -- Active worker registration keys.
 --
 -- Created by an authenticated user via the frontend. The worker presents
--- the row's `id` as a bearer credential (Authorization: Bearer <key>) on
--- the WorkerConnectorService.Register RPC; the hub atomically consumes
--- the row and creates a workers row in one transaction.
+-- the registration key as a bearer credential (Authorization: Bearer <key>)
+-- on the WorkerConnectorService.Register RPC. The public row id is generated
+-- independently. key_hash stores HMAC-SHA256 of the key, keyed by the token
+-- pepper. The hub finds the row by key_hash, then atomically consumes the row
+-- and creates a workers row in one transaction.
 --
 -- The store implements soft-delete by setting expires_at to a past instant.
 -- The cleanup loop hard-deletes rows whose expires_at is older than the
@@ -876,3 +884,4 @@ DROP TABLE IF EXISTS worker_registration_keys;
 DROP TABLE IF EXISTS workers;
 DROP TABLE IF EXISTS user_sessions;
 DROP TABLE IF EXISTS users;
+DROP TABLE IF EXISTS account_lifecycle_lock;

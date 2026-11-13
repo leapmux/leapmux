@@ -13,7 +13,7 @@ import (
 )
 
 // ListOwnedTabsForWorker resolves the calling worker via its bearer token (the
-// same auth_token Connect uses) and returns every owned-tab row for that
+// same token the Worker's WebSocket stream uses) and returns every owned-tab row for that
 // worker. It gives the periodic worker-side orphan reconciler a snapshot of
 // `workspace_tab_owned` filtered to the calling worker.
 func (s *WorkerConnectorService) ListOwnedTabsForWorker(

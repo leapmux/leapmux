@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/authscope"
+	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"connectrpc.com/connect/v2"
@@ -147,11 +149,11 @@ func TestInterceptor_SoloModeRejectsPasswordlessTCP(t *testing.T) {
 }
 
 // TestInterceptor_SoloMode_YieldsToAPresentedBearer pins the solo decision on
-// the Connect surface: reaching the port authenticates the synthetic user, but
+// the Connect surface: admitted local IPC authenticates the synthetic user, but
 // a caller that PRESENTS an lmx_ bearer is asking to be its app, so the solo
 // rung steps aside and the credential's grant binds.
 //
-// Without the yield, the narrow subtest below would pass -- the solo user is
+// Without the yield, the narrow credential would receive success. The solo user is
 // unscoped, so answering "you are the solo user" would hand a file:read
 // credential every permission the account has, silently discarding the
 // narrowing its owner accepted on a consent screen.
@@ -169,16 +171,22 @@ func TestInterceptor_SoloMode_YieldsToAPresentedBearer(t *testing.T) {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, SoloUser: soloUser, TokenValidator: tv})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, SoloUser: soloUser, TokenValidator: tv})
 	connectServer := connect.NewServer(interceptor)
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 	connecthttp.Mount(mux, connectServer)
 
-	server := httptest.NewServer(mux)
+	// The server-side mark simulates a connection admitted by the IPC listener.
+	server := httptest.NewUnstartedServer(mux)
+	server.Config.BaseContext = func(net.Listener) context.Context { return peer.WithLocalIPC(context.Background()) }
+	server.Start()
 	t.Cleanup(server.Close)
 
 	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
+
+	_, err = client.GetCurrentUser(context.Background(), &leapmuxv1.GetCurrentUserRequest{})
+	require.NoError(t, err, "the fixture must admit a credentialless IPC caller")
 
 	soloRow, err := st.Users().GetByUsername(context.Background(), "solo")
 	require.NoError(t, err)
@@ -211,6 +219,12 @@ func TestInterceptor_SoloMode_YieldsToAPresentedBearer(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
 		"a malformed bearer must be refused, not answered as the solo user")
+	_, err = st.APITokens().Revoke(context.Background(), tokenID)
+	require.NoError(t, err)
+	contexts.EvictBearer(auth.NewBearerRef(auth.BearerKindAPI, tokenID))
+	_, err = client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
+		"Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)))
+	require.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
 func TestInterceptor_PrivateProcedure_InvalidCookie(t *testing.T) {
@@ -861,7 +875,7 @@ func TestLogout_SlideDoesNotResurrectCookie(t *testing.T) {
 	require.NoError(t, err)
 
 	values := info.ResponseHeader().Values("Set-Cookie")
-	require.Len(t, values, 1, "logout must answer with exactly one session cookie")
+	require.Len(t, values, 2, "logout must clear both session spellings")
 	parsed, err := http.ParseSetCookie(values[0])
 	require.NoError(t, err)
 	assert.Empty(t, parsed.Value)

@@ -15,6 +15,7 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/coder/websocket"
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -754,7 +755,33 @@ func TestUserEventsHandler_CountsTheSuccessArmsAndTheDuration(t *testing.T) {
 
 	// A first connect presents no cursor, so it takes the FALLBACK arm.
 	coldBefore := testutil.ToFloat64(metrics.UserEventsSubscribeTotal.WithLabelValues("initial", "no_cursor"))
-	observedBefore := testutil.CollectAndCount(metrics.UserEventsSubscribeDuration)
+	registryForMetrics := prometheus.NewPedanticRegistry()
+	registryForMetrics.MustRegister(metrics.UserEventsSubscribeDuration)
+	sampleCount := func(mode string) uint64 {
+		families, err := registryForMetrics.Gather()
+		require.NoError(t, err)
+		var count uint64
+		matched := false
+		for _, family := range families {
+			if family.GetName() != "leapmux_userevents_subscribe_duration_seconds" {
+				continue
+			}
+			for _, metric := range family.GetMetric() {
+				for _, label := range metric.GetLabel() {
+					if label.GetName() != "mode" || label.GetValue() != mode {
+						continue
+					}
+					require.False(t, matched, "duplicate histogram child for mode %s", mode)
+					require.NotNil(t, metric.GetHistogram())
+					matched = true
+					count = metric.GetHistogram().GetSampleCount()
+				}
+			}
+		}
+		return count
+	}
+	initialObservations := sampleCount("initial")
+	deltaObservations := sampleCount("delta")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -771,8 +798,8 @@ func TestUserEventsHandler_CountsTheSuccessArmsAndTheDuration(t *testing.T) {
 
 	require.Equal(t, coldBefore+1, testutil.ToFloat64(metrics.UserEventsSubscribeTotal.WithLabelValues("initial", "no_cursor")),
 		"a cursorless connect must land in {initial, no_cursor}, not some other cell")
-	require.Greater(t, testutil.CollectAndCount(metrics.UserEventsSubscribeDuration), observedBefore-1,
-		"the duration histogram must be observed at all")
+	require.Equal(t, initialObservations+1, sampleCount("initial"))
+	require.Equal(t, deltaObservations, sampleCount("delta"))
 
 	// ...and a connect that presents that snapshot's own cursor RESUMEs.
 	require.NotNil(t, maxHlc, "fixture: the snapshot must carry a max_hlc to resume from")
@@ -792,6 +819,8 @@ func TestUserEventsHandler_CountsTheSuccessArmsAndTheDuration(t *testing.T) {
 
 	require.Equal(t, deltaBefore+1, testutil.ToFloat64(metrics.UserEventsSubscribeTotal.WithLabelValues("delta", "resumed")),
 		"a resumed connect must land in {delta, resumed}")
+	require.Equal(t, initialObservations+1, sampleCount("initial"))
+	require.Equal(t, deltaObservations+1, sampleCount("delta"))
 }
 
 // TestUserEventsHandler_CountsAConnectThatNeverReachedSubscribe closes the hole

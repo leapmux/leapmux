@@ -122,6 +122,10 @@ type UserStore interface {
 	// keys would otherwise both read the same base blob and the second
 	// commit would erase the first's key. Callers must hold a transaction.
 	GetPrefsForUpdate(ctx context.Context, id string) (string, error)
+	// LockAccountLifecycle requires a transaction. Acquire it before user-auth
+	// locks whenever creating an account or removing a live account. Its result
+	// reports current live-user existence after acquiring the shared lock.
+	LockAccountLifecycle(ctx context.Context) (bool, error)
 	HasAny(ctx context.Context) (bool, error)
 	Count(ctx context.Context) (int64, error)
 	ListAll(ctx context.Context, p ListAllUsersParams) (Page[User], error)

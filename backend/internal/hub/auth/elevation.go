@@ -61,9 +61,10 @@ type Elevation struct {
 // is unwritable rather than tolerated at every read. But this is the ADMISSION
 // side, and a CHECK is not a guarantee it can stand on: the mysql dialect's
 // own migration header records that TiDB parses and IGNORES a CHECK unless
-// tidb_enable_check_constraint is ON, and the hub's attempt to turn that
-// variable on discards its error, so a connection user without
-// SYSTEM_VARIABLES_ADMIN leaves enforcement off in silence.
+// tidb_enable_check_constraint is ON. The Hub logs a failed attempt to turn
+// that variable on and checks its value, but permits startup when enforcement
+// stays disabled. A connection user without SYSTEM_VARIABLES_ADMIN can leave
+// enforcement disabled despite those logs.
 //
 // A lone elevation_expires_at would then admit a sensitive action on a row
 // whose factor was never proven, and no Go path could see that it read

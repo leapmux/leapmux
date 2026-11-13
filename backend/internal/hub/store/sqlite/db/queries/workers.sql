@@ -23,7 +23,8 @@ SELECT * FROM workers WHERE auth_token_hash = ?;
 
 -- name: RotateWorkerAuthToken :execrows
 UPDATE workers SET auth_token_hash = sqlc.arg(auth_token_hash)
-WHERE id = sqlc.arg(id) AND deleted_at IS NULL AND deregistering_at IS NULL;
+WHERE id = sqlc.arg(id) AND deleted_at IS NULL AND deregistering_at IS NULL
+  AND auth_token_hash = sqlc.arg(expected_auth_token_hash);
 
 -- name: ListWorkersByUserID :many
 SELECT * FROM workers

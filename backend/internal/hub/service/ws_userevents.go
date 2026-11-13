@@ -385,7 +385,8 @@ func (h *UserEventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	mgr, err := h.registry.Get(r.Context(), userID)
 	if err != nil {
 		countConnectWithoutBootstrap()
-		http.Error(w, "registry get: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("userevents: registry lookup failed", "user_id", user.ID, "error", err)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 

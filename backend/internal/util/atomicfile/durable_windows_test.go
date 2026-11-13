@@ -80,3 +80,20 @@ func TestDurableWindowsPublicationFlags(t *testing.T) {
 	assert.Equal(t, "new", string(data), "the destination keeps its whole previous document")
 	assert.Equal(t, 1, notFound, "a non-conflict native failure is returned without a retry")
 }
+
+func TestCreateFileDurableWindowsUsesExclusiveWriteThrough(t *testing.T) {
+ original := moveFileExDurable
+ t.Cleanup(func() { moveFileExDurable = original })
+ var flags []uint32
+ moveFileExDurable = func(from, to *uint16, option uint32) error {
+  flags = append(flags, option)
+  return original(from, to, option)
+ }
+ path := filepath.Join(t.TempDir(), "ring")
+ require.NoError(t, CreateFileDurable(path, []byte("original ring"), 0o600))
+ require.ErrorIs(t, CreateFileDurable(path, []byte("another ring"), 0o600), os.ErrExist)
+ require.Equal(t, []uint32{windows.MOVEFILE_WRITE_THROUGH, windows.MOVEFILE_WRITE_THROUGH}, flags)
+ data, err := os.ReadFile(path)
+ require.NoError(t, err)
+ require.Equal(t, "original ring", string(data))
+}

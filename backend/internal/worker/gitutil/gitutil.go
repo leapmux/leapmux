@@ -1,6 +1,7 @@
 package gitutil
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,10 +9,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode"
+
+	"github.com/leapmux/leapmux/util/pathutil"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -24,60 +29,77 @@ import (
 // unique repos would otherwise fork one git subprocess per repo in parallel.
 const batchGetGitStatusMaxConcurrent = 8
 
-// BatchGetGitStatus returns one GitRepoStatus per input directory,
-// deduplicating identical paths so a request listing many tabs rooted at
-// the same repo only runs a single `git status` shell-out. Unique paths
-// are fanned out concurrently (capped at batchGetGitStatusMaxConcurrent);
-// results are mapped back to every position that asked for that path.
-// Empty-string entries yield nil. The supplied context is threaded into
-// every shell-out so a caller cancelling mid-fan kills in-flight git
-// processes.
+// BatchGetGitStatus returns statuses in input order, sharing one probe for
+// duplicate nonempty paths. Cancellation returns only results already merged.
+// Active probes retain shared capacity until they actually finish.
 func BatchGetGitStatus(ctx context.Context, dirs []string) []*leapmuxv1.GitRepoStatus {
+	return statusBatchExecutor.get(ctx, dirs)
+}
+
+type gitStatusBatchExecutor struct {
+	slots chan struct{}
+	probe func(context.Context, string) *leapmuxv1.GitRepoStatus
+}
+
+var statusBatchExecutor = &gitStatusBatchExecutor{
+	slots: make(chan struct{}, batchGetGitStatusMaxConcurrent), probe: GetGitStatus,
+}
+
+type gitStatusCompletion struct {
+	directory string
+	status    *leapmuxv1.GitRepoStatus
+}
+
+func (executor *gitStatusBatchExecutor) get(ctx context.Context, dirs []string) []*leapmuxv1.GitRepoStatus {
 	results := make([]*leapmuxv1.GitRepoStatus, len(dirs))
-	unique := make(map[string][]int, len(dirs))
-	for i, d := range dirs {
-		if d == "" {
+	indexes := make(map[string][]int)
+	var unique []string
+	for index, directory := range dirs {
+		if directory == "" {
 			continue
 		}
-		unique[d] = append(unique[d], i)
+		if _, exists := indexes[directory]; !exists {
+			unique = append(unique, directory)
+		}
+		indexes[directory] = append(indexes[directory], index)
 	}
-	sem := make(chan struct{}, batchGetGitStatusMaxConcurrent)
-	var wg sync.WaitGroup
-	for dir, indexes := range unique {
-		// Select on ctx as well as the semaphore: an uninterruptible
-		// kernel syscall in a worker goroutine (NFS in stuck state,
-		// FUSE wedged) holds its slot indefinitely even after
-		// exec.CommandContext fires SIGKILL — D-state processes don't
-		// release until the syscall returns. Without this select, the
-		// producer goroutine wedges on `sem <- struct{}{}` forever and
-		// the caller's goroutine leaks. Bailing on ctx.Done lets
-		// cancellation reclaim the producer (any in-flight workers will
-		// still exit when their syscall eventually returns, but the
-		// dispatcher goroutine that called us doesn't leak).
-		select {
-		case sem <- struct{}{}:
-		case <-ctx.Done():
-			wg.Wait()
+	completed := make(chan gitStatusCompletion, cap(executor.slots))
+	admitted, merged := 0, 0
+	for merged < len(unique) {
+		if ctx.Err() != nil {
 			return results
 		}
-		wg.Add(1)
-		go func(dir string, indexes []int) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			gs := GetGitStatus(ctx, dir)
-			for _, idx := range indexes {
-				results[idx] = gs
+		var admission chan struct{}
+		if admitted < len(unique) {
+			admission = executor.slots
+		}
+		select {
+		case <-ctx.Done():
+			return results
+		case completion := <-completed:
+			for _, index := range indexes[completion.directory] {
+				results[index] = completion.status
 			}
-		}(dir, indexes)
+			merged++
+		case admission <- struct{}{}:
+			directory := unique[admitted]
+			admitted++
+			go executor.run(ctx, directory, completed)
+		}
 	}
-	wg.Wait()
 	return results
 }
 
-// IsLinkedWorktreeGitDir reports whether a `git rev-parse --git-dir` output
-// points at a linked worktree's gitdir (.git/worktrees/<name>).
-func IsLinkedWorktreeGitDir(gitDir string) bool {
-	return strings.Contains(filepath.ToSlash(gitDir), ".git/worktrees")
+func (executor *gitStatusBatchExecutor) run(ctx context.Context, directory string, completed chan<- gitStatusCompletion) {
+	defer func() { <-executor.slots }()
+	if ctx.Err() != nil {
+		return
+	}
+	status := executor.probe(ctx, directory)
+	select {
+	case completed <- gitStatusCompletion{directory: directory, status: status}:
+	case <-ctx.Done():
+	}
 }
 
 // StripRemotePrefix strips the remote prefix from a branch ref so the
@@ -165,6 +187,7 @@ func NewGitCmd(ctx context.Context, args ...string) *exec.Cmd {
 	}
 	pinnedArgs = append(pinnedArgs, args...)
 	cmd := exec.CommandContext(ctx, "git", pinnedArgs...)
+	cmd.WaitDelay = 5 * time.Second
 	cmd.Env = envutil.PinEnv(os.Environ(), gitEnvPins...)
 	cmd.Stdin = nil
 	procutil.HideConsoleWindow(cmd)
@@ -433,45 +456,58 @@ func GetToplevel(ctx context.Context, dir string) string {
 	return GetToplevelInfo(ctx, dir).Toplevel
 }
 
-// ToplevelInfo bundles the working-tree root with the worktree disposition
-// so a single `rev-parse` invocation can answer both "where is the repo
-// rooted?" and "is this a linked worktree?". `--git-dir` returns the
-// per-worktree `.git/worktrees/<name>` for a linked worktree and the
-// shared `.git` for the main repo; `--git-common-dir` always points at
-// the shared `.git`. They differ iff the path resolves to a linked
-// worktree.
+// ToplevelInfo contains the selected checkout root and its linked disposition.
 type ToplevelInfo struct {
 	Toplevel   string
 	IsWorktree bool
 }
 
-// GetToplevelInfo runs a single rev-parse for both the working-tree root
-// and the worktree disposition. Returns a zero value (empty toplevel,
-// IsWorktree=false) when the path is not inside a git repository or
-// `rev-parse` fails for any other reason.
-//
-// `git rev-parse` emits one line per requested flag with no `-z` mode
-// available for these directory queries. Parse from the END so a path
-// containing embedded newlines (legal POSIX, vanishingly rare) doesn't
-// silently zero the result: the last two lines are always the `.git`
-// paths (which by convention don't contain newlines), and everything
-// before them is the (possibly multi-line) toplevel.
+// GetToplevelInfo is best effort. Operational failures return its zero value.
 func GetToplevelInfo(ctx context.Context, dir string) ToplevelInfo {
-	output, err := Output(ctx, dir, "rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir")
+	paths, err := QueryWorktreePaths(ctx, dir)
 	if err != nil {
 		return ToplevelInfo{}
 	}
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	if len(lines) < 3 {
-		return ToplevelInfo{}
+	return ToplevelInfo{Toplevel: paths.TopLevel, IsWorktree: !pathutil.SamePath(paths.GitDir, paths.CommonDir)}
+}
+
+// WorktreePaths separates checkout and administrative paths.
+type WorktreePaths struct{ TopLevel, GitDir, CommonDir string }
+
+func queryGitPath(ctx context.Context, dir, option string) (string, error) {
+	output, err := Output(ctx, dir, "rev-parse", "--path-format=absolute", option)
+	if err != nil {
+		return "", err
 	}
-	gitDir := strings.TrimSpace(lines[len(lines)-2])
-	gitCommonDir := strings.TrimSpace(lines[len(lines)-1])
-	toplevel := strings.TrimSpace(strings.Join(lines[:len(lines)-2], "\n"))
-	return ToplevelInfo{
-		Toplevel:   toplevel,
-		IsWorktree: gitDir != gitCommonDir,
+	path, framed := strings.CutSuffix(output, "\n")
+	if !framed || path == "" || !filepath.IsAbs(path) {
+		return "", fmt.Errorf("git %s returned an invalid path response", option)
 	}
+	return pathutil.Canonicalize(path), nil
+}
+
+// QueryToplevel removes one framing LF, then canonicalizes the complete path.
+func QueryToplevel(ctx context.Context, dir string) (string, error) {
+	return queryGitPath(ctx, dir, "--show-toplevel")
+}
+
+// QueryWorktreePaths gives each unrestricted path its own output stream.
+func QueryWorktreePaths(ctx context.Context, dir string) (WorktreePaths, error) {
+	var paths WorktreePaths
+	var err error
+	paths.TopLevel, err = QueryToplevel(ctx, dir)
+	if err != nil {
+		return WorktreePaths{}, err
+	}
+	paths.GitDir, err = queryGitPath(ctx, dir, "--absolute-git-dir")
+	if err != nil {
+		return WorktreePaths{}, err
+	}
+	paths.CommonDir, err = queryGitPath(ctx, dir, "--git-common-dir")
+	if err != nil {
+		return WorktreePaths{}, err
+	}
+	return paths, nil
 }
 
 // HasRefs probes each of the given fully-qualified refs in a single
@@ -489,8 +525,12 @@ func HasRefs(ctx context.Context, dir string, refs ...string) (map[string]bool, 
 	if runErr != nil {
 		// `git show-ref` exits 1 when none of the requested refs exist;
 		// that's a successful "not found" probe, not a git failure.
+		var commandError *CommandError
 		var exitErr *exec.ExitError
-		if errors.As(runErr, &exitErr) && exitErr.ExitCode() == 1 {
+		if errors.As(runErr, &commandError) && commandError.CleanupError == nil {
+			exitErr, _ = commandError.RunError.(*exec.ExitError)
+		}
+		if exitErr != nil && exitErr.ExitCode() == 1 && len(exitErr.Stderr) == 0 {
 			return found, nil
 		}
 		return nil, runErr
@@ -660,28 +700,15 @@ func ValidateBranchName(name string) error {
 
 // IsBranchInUse checks if a branch is currently checked out by any worktree
 // (including the main working copy). Uses `git worktree list --porcelain`.
-func IsBranchInUse(ctx context.Context, repoRoot, branchName string) (bool, error) {
+func IsBranchInUse(ctx context.Context, dir, branchName string) (bool, error) {
 	if err := ValidateBranchName(branchName); err != nil {
 		return false, err
 	}
-
-	output, err := Output(ctx, repoRoot, "worktree", "list", "--porcelain")
+	paths, err := QueryWorktreePaths(ctx, dir)
 	if err != nil {
-		return false, fmt.Errorf("git worktree list: %w", err)
+		return false, err
 	}
-
-	target := "refs/heads/" + branchName
-	for _, line := range strings.Split(output, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "branch ") {
-			branch := strings.TrimPrefix(line, "branch ")
-			if branch == target {
-				return true, nil
-			}
-		}
-	}
-
-	return false, nil
+	return (Repository{GitDir: paths.CommonDir}).IsBranchInUse(ctx, branchName)
 }
 
 // DeleteBranch force-deletes a local git branch. dir may be any path inside
@@ -690,10 +717,19 @@ func DeleteBranch(ctx context.Context, dir, branchName string) error {
 	if err := ValidateBranchName(branchName); err != nil {
 		return err
 	}
-
 	cmd := NewGitCmd(ctx, "-C", dir, "branch", "-D", branchName)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("git branch -D %s: %s", branchName, strings.TrimSpace(string(output)))
+	return deleteBranchCommand(ctx, cmd, branchName)
+}
+
+func deleteBranchCommand(ctx context.Context, cmd *exec.Cmd, branchName string) error {
+	var output bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &output
+	runErr, cleanupErr := runGitCommand(cmd)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		runErr = errors.Join(ctxErr, runErr)
+	}
+	if runErr != nil || cleanupErr != nil {
+		return fmt.Errorf("git branch -D %s: %s: %w", branchName, strings.TrimSpace(output.String()), &CommandError{RunError: runErr, CleanupError: cleanupErr})
 	}
 	return nil
 }

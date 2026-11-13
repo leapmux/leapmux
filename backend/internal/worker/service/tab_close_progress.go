@@ -29,6 +29,7 @@ type worktreeRemovalCheckpoint struct {
 	WorktreeID       string
 	WorktreePath     string
 	RepoRoot         string
+	RepoGitDir       string
 	Branch           string
 	Commit           string
 	DirectoryRemoved bool

@@ -57,9 +57,31 @@ type WorkerConnectorService struct {
 	crdtRegistry CRDTRegistry
 	// clock drives each stream's hello deadline so a test can advance it.
 	clock quartz.Clock
-	// identityDeliveries orders every WorkerIdentity frame, the greeting
-	// included; see ownerDeliveryLocks.
-	identityDeliveries ownerDeliveryLocks
+	// identityDeliveries serializes, per owner, every identity delivery as one
+	// critical section: read the username, then publish the name. The stream handler publishes
+	// by registering the connection, whose greeting carries the name (see
+	// registerGreetedConn). RedeliverWorkerIdentity takes its snapshot of the owner's
+	// connections inside the section, reads, and enqueues to each one.
+	//
+	// Frames then reach a worker in the order of their reads. A rename's re-delivery
+	// starts after the rename commits, so its read sees the new name, and a delivery
+	// whose read started earlier finishes before it. The last frame a worker
+	// receives therefore never holds a name older than the newest rename:
+	//   - A stream handler that read the old name holds the lock until the registry holds
+	//     its connection, so the re-delivery's snapshot finds that connection.
+	//   - A stream handler that starts after the re-delivery reads the new name.
+	//
+	// Without it, a read that returned the old name could enqueue after the
+	// re-delivery of the new one, or a re-delivery could miss a connection that was
+	// about to register. The worker would keep the old name until the next account
+	// change.
+	//
+	// The locks are striped by a hash of the owner id, so memory stays fixed
+	// however many accounts exist. Two owners on one stripe only wait for each
+	// other. The zero value is ready to use.
+	identityDeliveries keyedMutexes
+	// credentialPublications orders token replacement against stream publication.
+	credentialPublications keyedMutexes
 	// queuePool is the WORKER outbound queue budget every worker stream's
 	// writer draws from. Deliberately not shared with the frontend relays:
 	// reclaiming can only ever cost a member of the same pool, and dropping a
@@ -115,6 +137,9 @@ func NewWorkerConnectorService(d WorkerConnectorServiceDeps) *WorkerConnectorSer
 	}
 	if d.DeregisterEffects == nil {
 		panic("service: NewWorkerConnectorService requires deregistration effects")
+	}
+	if d.Store != nil && d.Hasher.IsZero() {
+		panic("service: NewWorkerConnectorService requires a secret hasher when a store is configured")
 	}
 	return &WorkerConnectorService{
 		hasher: d.Hasher,
@@ -381,44 +406,44 @@ func (s *WorkerConnectorService) workerStoreContext(parent context.Context, time
 	}
 }
 
-// ownerDeliveryLocks serializes, per owner, every identity delivery as one
-// critical section: read the username, then publish the name. The stream handler publishes
-// by registering the connection, whose greeting carries the name (see
-// registerGreetedConn). RedeliverWorkerIdentity takes its snapshot of the owner's
-// connections inside the section, reads, and enqueues to each one.
-//
-// Frames then reach a worker in the order of their reads. A rename's re-delivery
-// starts after the rename commits, so its read sees the new name, and a delivery
-// whose read started earlier finishes before it. The last frame a worker
-// receives therefore never holds a name older than the newest rename:
-//   - A stream handler that read the old name holds the lock until the registry holds
-//     its connection, so the re-delivery's snapshot finds that connection.
-//   - A stream handler that starts after the re-delivery reads the new name.
-//
-// Without it, a read that returned the old name could enqueue after the
-// re-delivery of the new one, or a re-delivery could miss a connection that was
-// about to register. The worker would keep the old name until the next account
-// change.
-//
-// The locks are striped by a hash of the owner id, so memory stays fixed
-// however many accounts exist. Two owners on one stripe only wait for each
-// other. The zero value is ready to use.
-type ownerDeliveryLocks struct {
-	stripes [64]sync.Mutex
-}
+// keyedMutexes keeps synchronization memory fixed as identities grow.
+// Different keys on one stripe wait for each other; the zero value is usable.
+type keyedMutexes struct{ stripes [64]sync.Mutex }
 
-// lock takes owner's stripe and returns the function that releases it.
-func (l *ownerDeliveryLocks) lock(owner string) (unlock func()) {
-	mu := l.forOwner(owner)
+func (l *keyedMutexes) lock(key string) (unlock func()) {
+	mu := l.forKey(key)
 	mu.Lock()
 	return mu.Unlock
 }
-
-func (l *ownerDeliveryLocks) forOwner(owner string) *sync.Mutex {
+func (l *keyedMutexes) forKey(key string) *sync.Mutex {
 	h := fnv.New32a()
-	_, _ = h.Write([]byte(owner))
+	_, _ = h.Write([]byte(key))
 	return &l.stripes[h.Sum32()%uint32(len(l.stripes))]
 }
+
+// RotateWorkerAuthToken orders a conditional token replacement against stream
+// publication and ends the replaced credential's established stream.
+func (s *WorkerConnectorService) RotateWorkerAuthToken(ctx context.Context, p store.RotateWorkerAuthTokenParams) (int64, error) {
+	unlock := s.credentialPublications.lock(p.ID)
+	defer unlock()
+	rows, err := s.store.Workers().RotateAuthToken(ctx, p)
+	if err != nil || rows == 0 {
+		return rows, err
+	}
+	// Store-only compositions have no connection registry to invalidate.
+	if s.workerMgr != nil {
+		if conn := s.workerMgr.ConnForTrustedPath(p.ID); conn != nil {
+			conn.Fence()
+		}
+	}
+	return rows, nil
+}
+
+// A stalled database read must not hold a credential stripe indefinitely.
+const workerCredentialReadTimeout = 5 * time.Second
+const workerCredentialReadTimerTag = "worker-credential-read"
+
+var errWorkerCredentialReplaced = errors.New("the worker credential was replaced before stream publication")
 
 // workerIdentityFrame is the WorkerIdentity message for a worker that owner
 // registered. ownerUsername is empty when the username is unknown.
@@ -490,10 +515,13 @@ func (s *WorkerConnectorService) RedeliverWorkerIdentity(owner string) {
 // returns the connection and its pump, and what workermgr.Manager.Register
 // answers.
 //
-// The read and the registration are one critical section of the owner's delivery
-// lock; see ownerDeliveryLocks. The section ends when Register returns, on both
+// The credential lock orders the current-digest check and publication against
+// token replacement. It is always acquired before the owner delivery lock.
+// The owner lock keeps its name read and identity publication in the same order
+// as RedeliverWorkerIdentity. The section ends when Register returns, on both
 // outcomes, and the deferred unlock also covers a panic in the read or in
-// Register. A failed read greets with no username; see ownerUsername. The worker
+// Register. A failed owner-name read greets with no username; see ownerUsername.
+// The worker
 // then holds none until the next account change or reconnect.
 //
 // The greeting goes through Register rather than a send here, because Register
@@ -512,6 +540,17 @@ func (s *WorkerConnectorService) registerGreetedConn(
 	hello *leapmuxv1.WorkerHello,
 	send func(context.Context, *leapmuxv1.ConnectResponse) error,
 ) (conn *workermgr.Conn, pump *workermgr.SendPump, replaced bool, err error) {
+	credentialUnlock := s.credentialPublications.lock(worker.ID)
+	defer credentialUnlock()
+	credentialReadCtx, releaseCredentialRead := s.workerStoreContext(connCtx, workerCredentialReadTimeout, workerCredentialReadTimerTag)
+	current, err := s.store.Workers().GetByIDIncludeDeleted(credentialReadCtx, worker.ID)
+	releaseCredentialRead()
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("read worker before stream publication: %w", err)
+	}
+	if subtle.ConstantTimeCompare(current.AuthTokenHash, worker.AuthTokenHash) != 1 {
+		return nil, nil, false, errWorkerCredentialReplaced
+	}
 	owner := worker.RegisteredBy
 	unlock := s.identityDeliveries.lock(owner)
 	defer unlock()
@@ -591,6 +630,8 @@ func (s *WorkerConnectorService) serveWorkerStream(reqCtx context.Context, worke
 	conn, pump, replaced, err := s.registerGreetedConn(connCtx, cancelConn, worker, hello, stream.Send)
 	if err != nil {
 		switch {
+		case errors.Is(err, errWorkerCredentialReplaced):
+			return refuseWorkerStream(websocket.StatusPolicyViolation, channelwire.WorkerCloseReasonCredentialReplaced, err)
 		case errors.Is(err, workermgr.ErrRegistryFenced):
 			// This request passed WebSocket admission before shutdown fenced
 			// the registry. The Worker retries a service-restart close.

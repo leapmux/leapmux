@@ -83,8 +83,13 @@ func setupPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender mail
 // reachable without a second copy of this construction.
 func setupEmptyPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender mail.Sender) passkeyAuthTestEnv {
 	t.Helper()
+	return setupEmptyPasskeyAuthTestServerWithStore(t, hubtestutil.OpenTestStore(t), seed, mailSender)
+}
 
-	st := hubtestutil.OpenTestStore(t)
+// setupEmptyPasskeyAuthTestServerWithStore allows a test to synchronize the
+// real store at an account-creation boundary without replacing its SQL writes.
+func setupEmptyPasskeyAuthTestServerWithStore(t *testing.T, st store.Store, seed authTestSeed, mailSender mail.Sender) passkeyAuthTestEnv {
+	t.Helper()
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)
 	ks, err := keystore.New(map[uint32][32]byte{1: key})

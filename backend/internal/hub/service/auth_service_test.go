@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1304,6 +1305,18 @@ func TestAuthService_LogoutDeleteFailureReturnsInternal(t *testing.T) {
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
 	assert.Contains(t, logoutInfo.ResponseHeader().Get("Set-Cookie"), "Max-Age=0",
 		"failed server-side revocation must still clear the browser's HttpOnly cookie")
+	clears := logoutInfo.ResponseHeader().Values("Set-Cookie")
+	require.Len(t, clears, 2)
+	clearedNames := make(map[string]bool)
+	for _, line := range clears {
+		cookie, parseErr := http.ParseSetCookie(line)
+		require.NoError(t, parseErr)
+		assert.Negative(t, cookie.MaxAge)
+		assert.Empty(t, cookie.Value)
+		clearedNames[cookie.Name] = true
+	}
+	assert.True(t, clearedNames[auth.CookieName])
+	assert.True(t, clearedNames[auth.SecureCookieName])
 
 	getUserCtx, getUserInfo := connect.NewClientContext(context.Background())
 	getUserInfo.RequestHeader().Set("Cookie", auth.CookieName+"="+token)
@@ -1313,7 +1326,7 @@ func TestAuthService_LogoutDeleteFailureReturnsInternal(t *testing.T) {
 
 // --- Setup mode tests ---
 
-func TestSetupSignUp_CreatesAdminWithVerifiedEmail(t *testing.T) {
+func TestSetupSignUp_CreatesAdminWithUnverifiedEmail(t *testing.T) {
 	t.Parallel()
 
 	// Signup disabled, but no users exist — setup mode should apply.
@@ -2383,4 +2396,276 @@ func TestAuthService_LogoutRequiresTheVictimsSessionSecret(t *testing.T) {
 	require.NoError(t, err)
 	_, err = st.Sessions().GetByID(t.Context(), sessionID, time.Now().UTC())
 	assert.ErrorIs(t, err, store.ErrNotFound)
+}
+
+// setupStateAuthEnv keeps the store, settings and encryption key shared while
+// newClient creates a separate AuthService instance for restart comparisons.
+type setupStateAuthEnv struct {
+	store    store.Store
+	settings *settings.Manager
+	keystore *keystore.Keystore
+	client   authTestClient
+}
+
+func newSetupStateAuthEnv(t *testing.T, st store.Store, signupEnabled bool) *setupStateAuthEnv {
+	t.Helper()
+	key, err := keystore.GenerateKey()
+	require.NoError(t, err)
+	ks, err := keystore.New(map[uint32][32]byte{1: key})
+	require.NoError(t, err)
+	set := servicetest.NewSettingsManager(t, st, ks)
+	require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, passkeyTestOrigin))
+	require.NoError(t, settings.KeySignupEnabled.Set(context.Background(), set, signupEnabled))
+	env := &setupStateAuthEnv{store: st, settings: set, keystore: ks}
+	env.client = env.newClient(t)
+	return env
+}
+
+func (e *setupStateAuthEnv) newClient(t *testing.T) authTestClient {
+	t.Helper()
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{
+		SessionHasher: hubtestutil.TestSecretHasher(), Store: e.store,
+	})
+	t.Cleanup(contexts.Stop)
+	deps := servicetest.AuthServiceDeps(e.store, testConfig(), e.settings,
+		auth.NewCredentialLifecycleEffects(contexts, nil, nil))
+	deps.Keystore = e.keystore
+	authSvc := service.NewAuthService(deps)
+	server := connect.NewServer(interceptor)
+	mountAuthAndSystem(server, authSvc, e.settings)
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
+	httpServer := httptest.NewServer(mux)
+	t.Cleanup(httpServer.Close)
+	return newAuthTestClient(httpServer.Client(), httpServer.URL)
+}
+
+func requireSetupState(t *testing.T, client authTestClient, setupRequired, signupEnabled bool) {
+	t.Helper()
+	info, err := client.GetSystemInfo(passkeyCtx(context.Background()), &leapmuxv1.GetSystemInfoRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, setupRequired, info.GetSetupRequired())
+	assert.Equal(t, signupEnabled, info.GetSignupEnabled())
+	assert.True(t, info.GetPasskeyEnabled(), "the shared fixture must support real passkey ceremonies")
+}
+
+func deleteOnlySetupUser(t *testing.T, admin *adminUserEnv) {
+	t.Helper()
+	ctx := context.Background()
+	count, err := admin.st.Users().Count(ctx)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), count, "the forced deletion must remove the sole live account")
+	_, err = admin.client.DeleteUser(authedReq(ctx, &leapmuxv1.DeleteUserRequest{
+		User: service.SelectUserByID(admin.adminID), Force: true,
+	}, admin.token))
+	require.NoError(t, err)
+	hasUser, err := admin.st.Users().HasAny(ctx)
+	require.NoError(t, err)
+	require.False(t, hasUser)
+	deleted, err := admin.st.Users().GetByIDIncludeDeleted(ctx, admin.adminID)
+	require.NoError(t, err)
+	require.NotNil(t, deleted.DeletedAt)
+}
+
+func TestSetupState_FinalUserDeletionMatchesFreshService(t *testing.T) {
+	t.Parallel()
+
+	for _, signupEnabled := range []bool{false, true} {
+		for _, serviceInstance := range []string{"running", "fresh"} {
+			for _, signupMethod := range []string{"password", "passkey"} {
+				t.Run(fmt.Sprintf("signup_enabled=%t/%s/%s", signupEnabled, serviceInstance, signupMethod), func(t *testing.T) {
+					admin := setupAdminUserTest(t)
+					env := newSetupStateAuthEnv(t, admin.st, signupEnabled)
+					// Observe a live user through the same AuthService that must
+					// recognize the final deletion without a restart.
+					requireSetupState(t, env.client, false, signupEnabled)
+					deleteOnlySetupUser(t, admin)
+
+					fresh := env.newClient(t)
+					requireSetupState(t, env.client, true, signupEnabled)
+					requireSetupState(t, fresh, true, signupEnabled)
+					client := env.client
+					if serviceInstance == "fresh" {
+						client = fresh
+					}
+
+					var report *leapmuxv1.SessionReport
+					if signupMethod == "password" {
+						resp, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
+							Username: "replacement", DisplayName: "Replacement", Password: "replacement-password",
+						})
+						require.NoError(t, err)
+						report = resp.GetSessionReport()
+					} else {
+						begin := beginPasskeySignUp(t, client, "replacement", "replacement@example.test")
+						ceremony := newPasskeyCeremony()
+						credential, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
+						require.NoError(t, err)
+						resp, err := finishPasskeySignUp(t, client, begin.GetChallenge().GetSessionId(), credential)
+						require.NoError(t, err)
+						report = resp.GetSessionReport()
+						assert.Equal(t, int32(1), report.GetUser().GetPasskeyCount())
+					}
+					require.NotNil(t, report.GetUser())
+					assert.True(t, report.GetUser().GetIsAdmin(), "the replacement is the first live user")
+					stored, err := admin.st.Users().GetByID(context.Background(), report.GetUser().GetId())
+					require.NoError(t, err)
+					assert.True(t, stored.IsAdmin)
+					count, err := admin.st.Users().Count(context.Background())
+					require.NoError(t, err)
+					assert.Equal(t, int64(1), count)
+					requireSetupState(t, env.client, false, signupEnabled)
+					requireSetupState(t, fresh, false, signupEnabled)
+				})
+			}
+		}
+	}
+}
+
+func TestSetupState_NonFinalDeletionKeepsSetupClosed(t *testing.T) {
+	t.Parallel()
+
+	for _, signupEnabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("signup_enabled=%t", signupEnabled), func(t *testing.T) {
+			ctx := context.Background()
+			admin := setupAdminUserTest(t)
+			env := newSetupStateAuthEnv(t, admin.st, signupEnabled)
+			created, err := admin.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
+				Username: "secondary", Password: "secondary-password",
+			}, admin.token))
+			require.NoError(t, err)
+			require.NotNil(t, created.GetUser())
+			requireSetupState(t, env.client, false, signupEnabled)
+			_, err = admin.client.DeleteUser(authedReq(ctx, &leapmuxv1.DeleteUserRequest{
+				User: service.SelectUserByID(created.GetUser().GetId()),
+			}, admin.token))
+			require.NoError(t, err)
+			count, err := admin.st.Users().Count(ctx)
+			require.NoError(t, err)
+			require.Equal(t, int64(1), count)
+			remaining, err := admin.st.Users().GetByID(ctx, admin.adminID)
+			require.NoError(t, err)
+			require.True(t, remaining.IsAdmin)
+			requireSetupState(t, env.client, false, signupEnabled)
+			requireSetupState(t, env.newClient(t), false, signupEnabled)
+
+			resp, err := env.client.SignUp(ctx, &leapmuxv1.SignUpRequest{
+				Username: "ordinary", Password: "ordinary-password",
+			})
+			if !signupEnabled {
+				require.Error(t, err)
+				assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+				_, err = env.client.BeginPasskeySignUp(passkeyCtx(ctx), beginPasskeySignUpRequest("ordinarykey", ""))
+				require.Error(t, err)
+				assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, resp.GetSessionReport().GetUser())
+			assert.False(t, resp.GetSessionReport().GetUser().GetIsAdmin())
+			stored, err := admin.st.Users().GetByID(ctx, resp.GetSessionReport().GetUser().GetId())
+			require.NoError(t, err)
+			assert.False(t, stored.IsAdmin)
+		})
+	}
+}
+
+func TestFinishPasskeySignUp_FinalDeletionReopensSetupDuringCeremony(t *testing.T) {
+	t.Parallel()
+
+	admin := setupAdminUserTest(t)
+	env := newSetupStateAuthEnv(t, admin.st, true)
+	requireSetupState(t, env.client, false, true)
+	begin := beginPasskeySignUp(t, env.client, "ceremonyreplacement", "ceremony@example.test")
+	ceremony := newPasskeyCeremony()
+	credential, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
+	require.NoError(t, err)
+	// The ceremony began under ordinary signup. At completion there are no
+	// live users, so the setup exemption must override disabled signup.
+	require.NoError(t, settings.KeySignupEnabled.Set(context.Background(), env.settings, false))
+	deleteOnlySetupUser(t, admin)
+	resp, err := finishPasskeySignUp(t, env.client, begin.GetChallenge().GetSessionId(), credential)
+	require.NoError(t, err)
+	require.NotNil(t, resp.GetSessionReport().GetUser())
+	assert.True(t, resp.GetSessionReport().GetUser().GetIsAdmin())
+	assert.Equal(t, int32(1), resp.GetSessionReport().GetUser().GetPasskeyCount())
+	stored, err := admin.st.Users().GetByID(context.Background(), resp.GetSessionReport().GetUser().GetId())
+	require.NoError(t, err)
+	assert.True(t, stored.IsAdmin)
+	requireSetupState(t, env.client, false, false)
+}
+
+type setupStateHasAnyFault struct {
+	store.UserStore
+	fail  atomic.Bool
+	calls atomic.Int64
+}
+
+func (s *setupStateHasAnyFault) HasAny(ctx context.Context) (bool, error) {
+	s.calls.Add(1)
+	if s.fail.Load() {
+		return false, errors.New("forced live-user lookup failure")
+	}
+	return s.UserStore.HasAny(ctx)
+}
+
+type setupStateFaultStore struct {
+	store.Store
+	users *setupStateHasAnyFault
+}
+
+func (s setupStateFaultStore) Users() store.UserStore { return s.users }
+
+func TestSetupState_ReadFaultAfterPositiveObservationFailsClosed(t *testing.T) {
+	t.Parallel()
+
+	admin := setupAdminUserTest(t)
+	users := &setupStateHasAnyFault{UserStore: admin.st.Users()}
+	env := newSetupStateAuthEnv(t, setupStateFaultStore{Store: admin.st, users: users}, false)
+	requireSetupState(t, env.client, false, false)
+	// Prepare a valid ceremony before the read fault so Finish also reaches
+	// its live-user check, independently of Begin's admission.
+	require.NoError(t, settings.KeySignupEnabled.Set(context.Background(), env.settings, true))
+	begin := beginPasskeySignUp(t, env.client, "blockedfinish", "blockedfinish@example.test")
+	ceremony := newPasskeyCeremony()
+	credential, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
+	require.NoError(t, err)
+	require.NoError(t, settings.KeySignupEnabled.Set(context.Background(), env.settings, false))
+	before := users.calls.Load()
+	require.Positive(t, before)
+	users.fail.Store(true)
+
+	for _, tc := range []struct {
+		name string
+		call func() error
+	}{
+		{"system info", func() error {
+			_, err := env.client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
+			return err
+		}},
+		{"password signup", func() error {
+			_, err := env.client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
+				Username: "blockedpassword", Password: "blocked-password",
+			})
+			return err
+		}},
+		{"passkey signup", func() error {
+			_, err := env.client.BeginPasskeySignUp(passkeyCtx(context.Background()), beginPasskeySignUpRequest("blockedpasskey", ""))
+			return err
+		}},
+		{"passkey signup finish", func() error {
+			_, err := finishPasskeySignUp(t, env.client, begin.GetChallenge().GetSessionId(), credential)
+			return err
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			require.Error(t, err)
+			assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+		})
+	}
+	assert.Equal(t, before+4, users.calls.Load(), "every setup decision must consult the store")
+	count, err := admin.st.Users().Count(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), count, "a failed lookup must not create a replacement user")
 }

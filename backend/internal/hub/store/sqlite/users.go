@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -486,4 +487,15 @@ func (s *userStore) RevokeUserTokens(ctx context.Context, userID userid.UserID) 
 		}
 		return &store.CredentialEvent{Kind: store.RevocationEventKindUserTokens, SubjectID: row.ID, UserID: row.ID, UserAuthGeneration: row.AuthGeneration}, nil
 	}, emitCredentialEvent)
+}
+
+// LockAccountLifecycle orders creation against transitions to zero live users.
+func (s *userStore) LockAccountLifecycle(ctx context.Context) (bool, error) {
+	if !s.conn.inTx() {
+		return false, store.ErrLockingReadOutsideTransaction
+	}
+	if _, err := s.conn.q.LockAccountLifecycle(ctx); err != nil {
+		return false, fmt.Errorf("lock account lifecycle singleton: %w", s.conn.queryError(err))
+	}
+	return s.HasAny(ctx)
 }

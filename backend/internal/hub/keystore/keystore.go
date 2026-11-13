@@ -6,13 +6,14 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
+	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
@@ -83,11 +84,11 @@ type Keystore struct {
 	keys          map[uint32][keySize]byte
 	aeads         map[uint32]cipher.AEAD
 	activeVersion uint32
-	// pepper is a standalone HMAC key for stored bearer secrets and app client
-	// secrets. It is INDEPENDENT of the encryption key
-	// ring: rotating encryption keys never changes it, so existing tokens
-	// keep validating across rotations. It is regenerated (which
-	// invalidates every token) only via RegeneratePepper.
+	// pepper is a standalone HMAC key for credential digests. It is
+	// independent of the encryption key ring: rotating encryption keys never
+	// changes it, so existing tokens keep validating across rotations. It is
+	// regenerated only via RegeneratePepper, which invalidates credentials
+	// hashed with this pepper.
 	pepper    [keySize]byte
 	hasPepper bool
 }
@@ -123,8 +124,8 @@ func (ks *Keystore) ActiveVersion() uint32 { return ks.activeVersion }
 // Pepper returns the dedicated HMAC pepper used to hash bearer-token secrets
 // and app client secrets. It is a standalone secret, independent of
 // the encryption key ring, so rotating or removing encryption keys never
-// changes it. Regenerate it — which invalidates every existing token — via
-// RegeneratePepper.
+// changes it. Regenerate it via RegeneratePepper to invalidate credentials
+// hashed with this pepper.
 func (ks *Keystore) Pepper() [keySize]byte { return ks.pepper }
 
 // Versions returns all key versions in the ring, sorted ascending.
@@ -196,55 +197,76 @@ func (ks *Keystore) Decrypt(ciphertext, aad []byte) ([]byte, error) {
 // not exist. The file is created with mode 0600. An existing key-ring file that
 // predates the pepper (no pepper line) is seeded with a fresh pepper in place.
 func LoadOrGenerate(path string) (*Keystore, error) {
-	// Try to open exclusively to avoid TOCTOU race between Stat and WriteFile.
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return nil, fmt.Errorf("keystore: create directory: %w", err)
+	// A valid existing ring may live in an immutable secret directory.
+	existing, err := LoadFromFile(path)
+	if err == nil && existing.hasPepper {
+		return existing, nil
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err == nil {
-		// File didn't exist — generate a new key ring with a pepper.
-		key, genErr := GenerateKey()
-		if genErr != nil {
-			_ = f.Close()
-			_ = os.Remove(path)
-			return nil, genErr
-		}
-		pepper, pepErr := GenerateKey()
-		if pepErr != nil {
-			_ = f.Close()
-			_ = os.Remove(path)
-			return nil, pepErr
-		}
-		encoded := "1:" + base64.StdEncoding.EncodeToString(key[:]) + "\n" +
-			pepperTag + ":" + base64.StdEncoding.EncodeToString(pepper[:]) + "\n"
-		if _, writeErr := f.WriteString(encoded); writeErr != nil {
-			_ = f.Close()
-			_ = os.Remove(path)
-			return nil, fmt.Errorf("keystore: write %s: %w", path, writeErr)
-		}
-		_ = f.Close()
-	} else if !os.IsExist(err) {
-		return nil, fmt.Errorf("keystore: create %s: %w", path, err)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
 	}
-
-	ks, err := LoadFromFile(path)
+	var loaded *Keystore
+	err = withKeyRingMutation(path, func(destination string) error {
+		current, readErr := LoadFromFile(destination)
+		if readErr == nil {
+			if !current.hasPepper {
+				if err := current.ensurePepper(); err != nil {
+					return err
+				}
+				if err := writeKeyRing(destination, current.keys, current.pepper); err != nil {
+					return err
+				}
+			}
+			loaded = current
+			return nil
+		}
+		if !errors.Is(readErr, os.ErrNotExist) {
+			return readErr
+		}
+		key, err := GenerateKey()
+		if err != nil {
+			return err
+		}
+		pepper, err := GenerateKey()
+		if err != nil {
+			return err
+		}
+		keys := map[uint32][keySize]byte{1: key}
+		encoded, err := serializeKeyRing(keys, pepper)
+		if err != nil {
+			return err
+		}
+		if err := atomicfile.CreateFileDurable(destination, encoded, 0o600); err != nil {
+			if !errors.Is(err, os.ErrExist) {
+				return fmt.Errorf("publish key ring: %w", err)
+			}
+			winner, readErr := LoadFromFile(destination)
+			if readErr != nil {
+				return readErr
+			}
+			if !winner.hasPepper {
+				if err := winner.ensurePepper(); err != nil {
+					return err
+				}
+				if err := writeKeyRing(destination, winner.keys, winner.pepper); err != nil {
+					return err
+				}
+			}
+			loaded = winner
+			return nil
+		}
+		loaded, err = New(keys)
+		if err != nil {
+			return err
+		}
+		loaded.pepper = pepper
+		loaded.hasPepper = true
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	// Seed a pepper in place for legacy key-ring files written before the
-	// dedicated pepper existed, so it is stable from here on.
-	if !ks.hasPepper {
-		pepper, genErr := GenerateKey()
-		if genErr != nil {
-			return nil, genErr
-		}
-		ks.pepper = pepper
-		ks.hasPepper = true
-		if err := writeKeyRing(path, ks.keys, ks.pepper); err != nil {
-			return nil, err
-		}
-	}
-	return ks, nil
+	return loaded, nil
 }
 
 // LoadFromFile loads a key ring from a file. Each line is either
@@ -345,28 +367,35 @@ func GenerateKey() ([keySize]byte, error) {
 // RotateKey adds a new key to the ring file at path. Returns the new version
 // number. The token pepper is preserved unchanged across rotation.
 func RotateKey(path string) (uint32, error) {
-	ks, err := LoadFromFile(path)
+	var newVersion uint32
+	err := withKeyRingMutation(path, func(path string) error {
+		ks, err := LoadFromFile(path)
+		if err != nil {
+			return err
+		}
+
+		newVersion = ks.activeVersion + 1
+		if newVersion == 0 {
+			return fmt.Errorf("keystore: maximum key version (%d) reached", ^uint32(0))
+		}
+
+		newKey, err := GenerateKey()
+		if err != nil {
+			return err
+		}
+
+		ks.keys[newVersion] = newKey
+		ks.activeVersion = newVersion
+
+		if err := ks.ensurePepper(); err != nil {
+			return err
+		}
+		if err := writeKeyRing(path, ks.keys, ks.pepper); err != nil {
+			return err
+		}
+		return nil
+	})
 	if err != nil {
-		return 0, err
-	}
-
-	newVersion := ks.activeVersion + 1
-	if newVersion == 0 {
-		return 0, fmt.Errorf("keystore: maximum key version (%d) reached", ^uint32(0))
-	}
-
-	newKey, err := GenerateKey()
-	if err != nil {
-		return 0, err
-	}
-
-	ks.keys[newVersion] = newKey
-	ks.activeVersion = newVersion
-
-	if err := ks.ensurePepper(); err != nil {
-		return 0, err
-	}
-	if err := writeKeyRing(path, ks.keys, ks.pepper); err != nil {
 		return 0, err
 	}
 	return newVersion, nil
@@ -380,41 +409,47 @@ func RotateKey(path string) (uint32, error) {
 // first verify no ciphertext still depends on the version (see the admin
 // encryption-key remove command).
 func RemoveKey(path string, version uint32) error {
-	ks, err := LoadFromFile(path)
-	if err != nil {
-		return err
-	}
+	return withKeyRingMutation(path, func(path string) error {
+		ks, err := LoadFromFile(path)
+		if err != nil {
+			return err
+		}
 
-	if version == ks.activeVersion {
-		return fmt.Errorf("keystore: cannot remove active key version %d", version)
-	}
+		if version == ks.activeVersion {
+			return fmt.Errorf("keystore: cannot remove active key version %d", version)
+		}
 
-	if _, exists := ks.keys[version]; !exists {
-		return fmt.Errorf("keystore: key version %d not in ring", version)
-	}
+		if _, exists := ks.keys[version]; !exists {
+			return fmt.Errorf("keystore: key version %d not in ring", version)
+		}
 
-	delete(ks.keys, version)
-	if err := ks.ensurePepper(); err != nil {
-		return err
-	}
-	return writeKeyRing(path, ks.keys, ks.pepper)
+		delete(ks.keys, version)
+		if err := ks.ensurePepper(); err != nil {
+			return err
+		}
+		return writeKeyRing(path, ks.keys, ks.pepper)
+	})
 }
 
 // RegeneratePepper replaces the token pepper in the ring file at path with a
-// fresh random pepper, leaving the encryption key ring untouched. This
-// invalidates every stored bearer credential and app client secret because
-// their HMAC digests can no longer be reproduced. Clients must replace the
+// fresh random pepper, leaving the encryption key ring untouched. After the
+// Hub restarts, credentials hashed with the old pepper no longer validate.
+// These include session secrets, Worker auth tokens, registration keys, device
+// codes, API and delegation token secrets, and confidential app client secrets.
+// The new pepper cannot reproduce their stored HMAC digests. Clients must replace the
 // affected credentials. The change takes effect on the next Hub start.
 func RegeneratePepper(path string) error {
-	keys, _, _, err := loadRing(path)
-	if err != nil {
-		return err
-	}
-	pepper, err := GenerateKey()
-	if err != nil {
-		return err
-	}
-	return writeKeyRing(path, keys, pepper)
+	return withKeyRingMutation(path, func(path string) error {
+		keys, _, _, err := loadRing(path)
+		if err != nil {
+			return err
+		}
+		pepper, err := GenerateKey()
+		if err != nil {
+			return err
+		}
+		return writeKeyRing(path, keys, pepper)
+	})
 }
 
 // ensurePepper generates and sets a pepper if one is not already present.
@@ -433,19 +468,15 @@ func (ks *Keystore) ensurePepper() error {
 	return nil
 }
 
-// writeKeyRing writes the key ring (encryption versions plus the token pepper)
-// to a file with mode 0600.
-func writeKeyRing(path string, keys map[uint32][keySize]byte, pepper [keySize]byte) error {
+// serializeKeyRing encodes encryption versions and the token pepper without I/O.
+func serializeKeyRing(keys map[uint32][keySize]byte, pepper [keySize]byte) ([]byte, error) {
 	// Defense in depth: never persist an all-zero pepper. Every caller passes
 	// a freshly generated pepper (or one loaded from disk), so this should be
 	// unreachable — but enforcing it at the single write choke point means a
 	// future ring-mutating helper that forgets to seed the pepper fails loudly
-	// instead of silently signing every token with a publicly-known key.
+	// instead of computing credential digests with a publicly known key.
 	if pepper == ([keySize]byte{}) {
-		return fmt.Errorf("keystore: refusing to write all-zero pepper")
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return fmt.Errorf("keystore: create directory: %w", err)
+		return nil, fmt.Errorf("keystore: refusing to write all-zero pepper")
 	}
 
 	versions := sortedVersions(keys)
@@ -460,13 +491,21 @@ func writeKeyRing(path string, keys map[uint32][keySize]byte, pepper [keySize]by
 	}
 	// The dedicated HMAC pepper for stored bearer secrets and app client secrets.
 	// Regenerate via: leapmux recover encryption-key rotate-pepper
-	sb.WriteString("# HMAC pepper for every stored bearer secret (regenerate via: leapmux recover encryption-key rotate-pepper)\n")
+	sb.WriteString("# HMAC pepper for Hub credential digests (regenerate via: leapmux recover encryption-key rotate-pepper)\n")
 	sb.WriteString(pepperTag)
 	sb.WriteByte(':')
 	sb.WriteString(base64.StdEncoding.EncodeToString(pepper[:]))
 	sb.WriteByte('\n')
 
-	if err := os.WriteFile(path, []byte(sb.String()), 0o600); err != nil {
+	return []byte(sb.String()), nil
+}
+
+func writeKeyRing(path string, keys map[uint32][keySize]byte, pepper [keySize]byte) error {
+	data, err := serializeKeyRing(keys, pepper)
+	if err != nil {
+		return err
+	}
+	if err := atomicfile.WriteFileDurable(path, data, 0o600); err != nil {
 		return fmt.Errorf("keystore: write %s: %w", path, err)
 	}
 	return nil

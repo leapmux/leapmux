@@ -33,7 +33,7 @@ The Hub's record of one **app**: its name, its redirect addresses, the permissio
 
 ### Channel (E2EE)
 
-The end-to-end-encrypted connection between your browser (or CLI) and a single Worker, multiplexed over one WebSocket and relayed — but never decrypted — by the Hub. One channel is opened per Worker and reused: all of that Worker's agent transcripts, terminal streams, and file requests share the same channel, kept separate by correlation IDs. The channel is periodically re-handshaked to refresh keys. See [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
+The end-to-end-encrypted connection between your browser (or CLI) and a single Worker, multiplexed over one WebSocket and relayed — but never decrypted — by the Hub. One channel is opened per Worker and reused: all of that Worker's agent transcripts, terminal streams, and file requests share the same channel, kept separate by correlation IDs. The initiator normally requests an encrypted in-band rekey after one hour or when nonce usage requires it. A successful rekey refreshes the transport keys without closing the channel or repeating the Hub's channel authorization. If the current key epoch reaches the 70-minute hard limit, the client closes the channel and must complete a new handshake before reuse. A change in the expected user also requires a new channel. See [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
 
 ### Connection (app authorization)
 
@@ -67,7 +67,7 @@ A tab popped out of the tiled layout into a movable, resizable, opacity-adjustab
 
 ### Frontend
 
-The SolidJS web app — running in your browser or embedded in the native desktop app — that renders the tiling UI: the layout, agent chats, terminals, and the file browser. It is where you click, type, and read. The **Worker** holds agent state, and the browser caches rendered message text and code for seven days after last use in IndexedDB. The cache is not keyed to the account, and signing out does not clear it. One of the three core components alongside the **Hub** and the **Worker**. See [Concepts & Architecture](/docs/getting-started/concepts/).
+The SolidJS web app — running in your browser or embedded in the native desktop app — that renders the tiling UI: the layout, agent chats, terminals, and the file browser. It is where you click, type, and read. The **Worker** holds agent state, and the browser caches rendered message text and code in IndexedDB. After startup, it attempts to remove entries whose recorded last-use time is at least seven days old. Cleanup is best-effort and runs at most once per page load, so entries can remain longer. There is no guaranteed deletion deadline. The cache is not keyed to the account, and signing out does not clear it. One of the three core components alongside the **Hub** and the **Worker**. See [Concepts & Architecture](/docs/getting-started/concepts/).
 
 ## G
 
@@ -167,7 +167,14 @@ The ceremony that proves a factor for a credential rather than for a browser ses
 
 ### Tab
 
-A single piece of content inside a tile. There are three kinds: **Agent** (a coding-agent chat), **Terminal** (a shell/PTY), and **File** (a file viewer or diff). You open tabs from the tab bar, rename non-file tabs by double-clicking, close them with the X or a middle-click, and drag them between tiles and workspaces. See [Tabs & Layout](/docs/using/tabs-and-layout/).
+A single piece of content inside a tile. There are four kinds:
+
+- **Agent** — a coding-agent chat.
+- **Terminal** — a shell or pseudo-terminal (PTY).
+- **File** — a file viewer or diff.
+- **Image** — one image an agent returned, opened from its chat row so you can zoom it.
+
+Open Agent, Terminal, and File tabs from the tab bar. Open Image tabs from agent chats. Rename non-file tabs by double-clicking. Close tabs with the X or a middle-click. Drag tabs between tiles and workspaces. See [Tabs & Layout](/docs/using/tabs-and-layout/).
 
 ### Tile (leaf / split / grid)
 

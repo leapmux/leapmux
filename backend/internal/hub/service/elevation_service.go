@@ -671,7 +671,7 @@ func refuseIfActingAuthorityMovedFrom(ctx context.Context, st store.Store, locke
 // was. The most consequential action the gate protects was the one action
 // that did not count as use, so a user who elevated at 11:58 and consented at
 // 11:59 met the prompt again at 12:01. "Each sensitive action slides that
-// window forward" is the rule the design and operating/security.md both
+// window forward" is the rule the design and site/content/docs/admin/security.md both
 // state; this is what makes it true of every surface rather than of one.
 //
 // now is a parameter so each surface passes its own clock seam, exactly as
@@ -941,7 +941,8 @@ func elevateSessionRow(
 	return until, n > 0, nil
 }
 
-// grantSessionElevation elevates one session and drops the cached UserInfo.
+// grantSessionElevation validates the proved factor and stamps the acting
+// session under one user-auth lock. It drops cached UserInfo only after commit.
 //
 // It is the path every FACTOR takes -- a password, a passkey, and the OAuth
 // re-authentication leg, the third of which lives in an HTTP handler rather
@@ -960,13 +961,42 @@ func grantSessionElevation(
 	sessionID string,
 	userID userid.UserID,
 	now time.Time,
+	proof sessionElevationProof,
 ) (time.Time, error) {
-	until, live, err := elevateSessionRow(ctx, st, sessionID, userID, now)
+	if proof == nil {
+		return time.Time{}, errors.New("session elevation requires a verified factor")
+	}
+	var until time.Time
+	err := st.RunInUserAuthTransaction(ctx, userID, func(tx store.Store) error {
+		current, err := tx.Users().GetByID(ctx, userID.String())
+		if err != nil {
+			return err
+		}
+		if err := proof.validate(ctx, tx, current); err != nil {
+			return err
+		}
+		session, err := tx.Sessions().GetByID(ctx, sessionID, now)
+		if err != nil {
+			return err
+		}
+		if session.UserID != current.ID || session.AuthGeneration < current.AuthGeneration {
+			return errElevationSessionEnded
+		}
+		var live bool
+		until, live, err = elevateSessionRow(ctx, tx, sessionID, userID, now)
+		if err != nil {
+			return err
+		}
+		if !live {
+			return errElevationSessionEnded
+		}
+		return nil
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		return time.Time{}, errElevationSessionEnded
+	}
 	if err != nil {
 		return time.Time{}, err
-	}
-	if !live {
-		return time.Time{}, errElevationSessionEnded
 	}
 	// The cached UserInfo still carries the OLD deadline, and this process
 	// is the one serving the next request. Drop it through the lane whose
@@ -980,11 +1010,13 @@ func grantSessionElevation(
 // and maps the shared refusals to Connect codes. Both factor paths report the
 // SAME field, so a client has one success path; the two response messages
 // differ only because a proto response type may serve one RPC.
-func (s *UserService) grantElevation(ctx context.Context, userInfo *auth.UserInfo, sessionID string) (time.Time, error) {
-	until, err := grantSessionElevation(ctx, s.store, s.lifecycle, sessionID, userInfo.ID, s.now())
+func (s *UserService) grantElevation(ctx context.Context, userInfo *auth.UserInfo, sessionID string, proof sessionElevationProof) (time.Time, error) {
+	until, err := grantSessionElevation(ctx, s.store, s.lifecycle, sessionID, userInfo.ID, s.now(), proof)
 	switch {
 	case errors.Is(err, errElevationSessionEnded):
 		return time.Time{}, wrappedConnectError(connect.CodeUnauthenticated, err)
+	case errors.Is(err, errElevationProofChanged):
+		return time.Time{}, wrappedConnectError(connect.CodeFailedPrecondition, err)
 	case err != nil:
 		return time.Time{}, wrappedConnectError(connect.CodeInternal, err)
 	}
@@ -1037,7 +1069,7 @@ func (s *UserService) ElevateSession(ctx context.Context, req *leapmuxv1.Elevate
 	if err := verifyElevationPassword(ctx, user, req.GetCurrentPassword()); err != nil {
 		return nil, err
 	}
-	until, err := s.grantElevation(ctx, userInfo, sessionID)
+	until, err := s.grantElevation(ctx, userInfo, sessionID, passwordElevationProof{passwordHash: user.PasswordHash, authGeneration: user.AuthGeneration})
 	if err != nil {
 		return nil, err
 	}
@@ -1105,10 +1137,11 @@ func (s *UserService) FinishPasskeyElevation(ctx context.Context, req *leapmuxv1
 	}
 	// This verifies the assertion OUTSIDE the elevation write, for the same
 	// reason the password path hashes outside it.
-	if err := wa.FinishElevation(ctx, user.ID, ceremonyID, credentialJSON); err != nil {
+	identity, err := wa.FinishElevation(ctx, user.ID, ceremonyID, credentialJSON)
+	if err != nil {
 		return nil, mapElevationAssertionError(ctx, user.ID, err)
 	}
-	until, err := s.grantElevation(ctx, userInfo, actingSessionID)
+	until, err := s.grantElevation(ctx, userInfo, actingSessionID, passkeyElevationProof{identity: identity})
 	if err != nil {
 		return nil, err
 	}

@@ -51,7 +51,7 @@ func TestPrivateResourcesRejectBroadAccessEntries(t *testing.T) {
 		require.NoError(t, windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
 			windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil))
 		if isDirectory {
-			require.Error(t, verifyPrivateDir(path))
+			require.Error(t, useronly.VerifyDirectory(path))
 		} else {
 			require.Error(t, verifyPrivateFile(path))
 		}
@@ -78,7 +78,7 @@ func TestPrivateResourcesUseProtectedACLs(t *testing.T) {
 		owned, err := useronly.OwnedByCurrentUser(foreign)
 		require.NoError(t, err)
 		require.False(t, owned, "the Windows directory must provide a foreign-owner fixture")
-		err = verifyPrivateDir(foreign)
+		err = useronly.VerifyDirectory(foreign)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "another account")
 	})

@@ -32,5 +32,7 @@ func TestOAuthRequireSessionKeepsTheBearerRungOff(t *testing.T) {
 	handler := &OAuthServerHandler{store: st, validator: validator, sessionHasher: validator.Hasher()}
 	request := httptest.NewRequest(http.MethodPost, "/oauth/consent", nil)
 	request.Header.Set("Authorization", "Bearer "+bearer)
-	require.Nil(t, handler.requireSession(request), "an app cannot supply its own browser consent")
+	user, err := handler.requireSession(request)
+	require.Nil(t, user, "an app cannot supply its own browser consent")
+	require.ErrorIs(t, err, auth.ErrHTTPUnauthenticated)
 }

@@ -1,6 +1,6 @@
 import type { GetGitInfoResponse } from '~/generated/proto/leapmux/v1/git_pb'
 import { createRoot } from 'solid-js'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { workerClient } from '~/api/clients'
 import { GitMode } from '~/hooks/useGitModeState'
 import { settle } from '~/test-support/async'
@@ -37,10 +37,12 @@ function gitResp(overrides: Partial<GetGitInfoResponse> = {}): GetGitInfoRespons
     isGitRepo: true,
     isWorktree: false,
     repoRoot: '/repo',
+    mainWorktreeRoot: overrides.repoRoot ?? '/repo',
     repoDirName: 'repo',
     isRepoRoot: true,
     isWorktreeRoot: false,
     currentBranch: 'main',
+    attachedBranch: overrides.currentBranch ?? 'main',
     originUrl: '',
     ...overrides,
   } as GetGitInfoResponse
@@ -69,6 +71,7 @@ beforeEach(() => {
 describe('useWorkerDialog', () => {
   it('threads singleWorkerId through to worker and skips listWorkers', async () => {
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const { worker } = useWorkerDialog({
         worker: { singleWorkerId: 'w-fixed', defaultWorkingDir: '/repo' },
       })
@@ -76,13 +79,13 @@ describe('useWorkerDialog', () => {
       expect(worker.workingDir()).toBe('/repo')
       await settle()
       expect(workerClient.listWorkers).not.toHaveBeenCalled()
-      dispose()
     })
   })
 
   it('shares one error sink across submit failures and listWorkers failures', async () => {
     vi.mocked(workerClient.listWorkers).mockRejectedValueOnce(new Error('fleet listing down'))
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const { submit } = useWorkerDialog({
         submit: {
           formatError: () => 'submit failed',
@@ -98,7 +101,6 @@ describe('useWorkerDialog', () => {
         throw new Error('boom')
       })
       expect(submit.error()).toBe('submit failed')
-      dispose()
     })
   })
 
@@ -106,6 +108,7 @@ describe('useWorkerDialog', () => {
     // Probe never resolves — we're proving the seed is enough to render.
     getGitInfo.mockReturnValueOnce(new Promise(() => {}))
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const { pathInfo } = useWorkerDialog({
         worker: { singleWorkerId: 'w1', defaultWorkingDir: '/repo' },
         pathInfo: {
@@ -124,19 +127,18 @@ describe('useWorkerDialog', () => {
       await settle()
       // Probe still in flight, but the seed kept loading at false.
       expect(pathInfo.loading()).toBe(false)
-      dispose()
     })
   })
 
   it('does not seed by default — pathInfo starts empty without pathInfo.seed', async () => {
     getGitInfo.mockReturnValueOnce(new Promise(() => {}))
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const { pathInfo } = useWorkerDialog({
         worker: { singleWorkerId: 'w1', defaultWorkingDir: '/repo' },
       })
       expect(pathInfo.info().isGitRepo).toBe(false)
       expect(pathInfo.showGitOptions()).toBe(false)
-      dispose()
     })
   })
 
@@ -149,13 +151,13 @@ describe('useWorkerDialog', () => {
       repoDirName: 'parent',
     }))
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const { worker } = useWorkerDialog({
         worker: { singleWorkerId: 'w1', defaultWorkingDir: '/wt' },
         pathInfo: { remapWorktreeRoot: true },
       })
       await settle()
       expect(worker.workingDir()).toBe('/parent')
-      dispose()
     })
   })
 
@@ -165,6 +167,7 @@ describe('useWorkerDialog', () => {
     // re-introduce the "which hook owns this field?" ambiguity the
     // refactor removed.
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const dialog = useWorkerDialog({
         worker: { singleWorkerId: 'w-shape', defaultWorkingDir: '/repo' },
       })
@@ -181,7 +184,6 @@ describe('useWorkerDialog', () => {
       expect((dialog.worker as unknown as Record<string, unknown>).toGitSetup).toBeUndefined()
       expect((dialog.worker as unknown as Record<string, unknown>).currentIntent).toBeUndefined()
       await settle()
-      dispose()
     })
   })
 
@@ -192,6 +194,7 @@ describe('useWorkerDialog', () => {
     // synchronously — without it, GitOptions would briefly show Current
     // before the first emit replaces it.
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const { gitMode } = useWorkerDialog({
         worker: { singleWorkerId: 'w1' },
         gitMode: {
@@ -213,19 +216,18 @@ describe('useWorkerDialog', () => {
         mode: { case: 'checkoutBranch', value: 'release' },
       })
       await settle()
-      dispose()
     })
   })
 
   it('omitting gitMode option defaults to GitMode.Current (unseeded behaviour preserved)', async () => {
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const { gitMode } = useWorkerDialog({
         worker: { singleWorkerId: 'w1' },
       })
       expect(gitMode.gitMode()).toBe(GitMode.Current)
       expect(gitMode.currentIntent()).toEqual({ mode: GitMode.Current })
       await settle()
-      dispose()
     })
   })
 
@@ -238,13 +240,13 @@ describe('useWorkerDialog', () => {
       repoDirName: 'parent',
     }))
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const { worker } = useWorkerDialog({
         worker: { singleWorkerId: 'w1', defaultWorkingDir: '/wt' },
         // Default: no remap.
       })
       await settle()
       expect(worker.workingDir()).toBe('/wt')
-      dispose()
     })
   })
 })

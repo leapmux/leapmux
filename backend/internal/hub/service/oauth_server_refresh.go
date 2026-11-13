@@ -194,14 +194,9 @@ func (h *OAuthServerHandler) refresh(ctx context.Context, r *http.Request, parse
 	// would keep ONE browser consent alive for ever.
 	refreshTTL := auth.RefreshWindowFor(row.CreatedAt, now)
 	if refreshTTL <= 0 {
-		// Revoke the ROW, not only the cache. Every other caller of
-		// BearerRevoked reaches it on a row the store already revoked -- the
-		// validator revokes on a confirmed reuse, and a revoked or expired row
-		// is refused before it gets here. This stage is the one that decides a
-		// credential is dead by itself, so it must also record it: without the
-		// write the access token keeps authenticating until its own expiry, up
-		// to an hour after the hub told the client the credential was finished,
-		// and the row keeps listing as live in Preferences.
+		// Record revocation before applying lifecycle effects. Bearer validation
+		// independently enforces the absolute lifetime. Recording revocation
+		// also removes the credential from the live-row listing in Preferences.
 		if _, err := h.store.APITokens().Revoke(ctx, row.ID); err != nil {
 			slog.ErrorContext(ctx, "could not revoke the credential that reached its maximum lifetime",
 				"token_id", row.ID, "err", err)
@@ -216,12 +211,8 @@ func (h *OAuthServerHandler) refresh(ctx context.Context, r *http.Request, parse
 		return refreshOAuthError(http.StatusBadRequest, "invalid_scope", scopeErr.Error())
 	}
 
-	// This stage clips both windows to the SAME ceiling. Bearer validation reads
-	// expires_at alone, so an unclipped access token outlives the absolute
-	// lifetime this stage just enforced: the last rotation before the ceiling
-	// wrote a full hour past it, and the credential kept authenticating for
-	// that hour after the hub already answered "this credential reached its
-	// maximum lifetime".
+	// Clip both stored deadlines to the credential's absolute lifetime. Bearer
+	// validation independently enforces that lifetime.
 	pair := h.deriveRefreshPair(row, parsed, now, refreshTTL)
 
 	if retry {

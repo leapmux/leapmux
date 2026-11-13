@@ -37,9 +37,8 @@ type startupCallbacks struct {
 // closeRaced reports the decision a close recorded against this startup.
 //
 // A nil hook means the caller wired no registry -- only a hand-built test
-// callback set does -- and reports "no close raced". That is the conservative
-// answer: it leaves the failing startup owning its own rollback, so a partial
-// mutation is never left behind by a callback set that simply forgot the hook.
+// callback set does -- and reports "no close raced". Automatic cleanup still
+// checks ownership and current Git state before removing an artifact.
 func (cb startupCallbacks) closeRaced() (closeWorktreeDisposition, bool) {
 	if cb.closeDisposition == nil {
 		return keepWorktreeOnClose, false
@@ -75,16 +74,15 @@ func (cb startupCallbacks) pastPhase0() bool {
 }
 
 // runStartupPhase0 broadcasts the per-mode label (if any) and executes
-// the git-mode mutation. Returns the result (with rollback metadata
-// populated iff a mutation partially succeeded before failing) and any
-// error.
+// the git-mode mutation. Newly owned mutations carry rollback metadata,
+// including mutations that partially succeeded before an error.
 func (svc *Service) runStartupPhase0(ctx context.Context, plan gitModePlan, cb startupCallbacks) (gitModeResult, error) {
 	announceStartupPhase0(plan.PhaseLabel(), cb)
 	return svc.executeGitMode(ctx, plan)
 }
 
 // failStartup is the common tail for every failure after the sync
-// prologue: optionally show a rollback label, roll back any partial
+// prologue: optionally show a rollback label, attempt rollback of a partial
 // git-mode mutation, persist the error, mark the registry failed, and
 // broadcast STARTUP_FAILED last.
 //

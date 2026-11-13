@@ -17,19 +17,11 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/service"
 )
 
-func shortSocketDir(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "leapmux-")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, os.RemoveAll(dir)) })
-	return dir
-}
-
 func TestFactory_SocketIsNotInTheSharedTempDir(t *testing.T) {
-	tmp := shortSocketDir(t)
+	tmp := socketDirectory(t)
 	t.Setenv("XDG_RUNTIME_DIR", "")
 	t.Setenv("TMPDIR", tmp)
-	f := &controlipc.Factory{WorkerID: "worker-A", SocketDir: shortSocketDir(t)}
+	f := &controlipc.Factory{WorkerID: "worker-A", SocketDir: socketDirectory(t)}
 	envs, cleanup, err := f.AgentSpawning(service.AgentSpawnInfo{
 		UserID: userid.MustNew("user-1"), WorkerID: "worker-A", TabID: "agent-1",
 	})
@@ -50,7 +42,7 @@ func TestFactory_SocketDirectoryValidation(t *testing.T) {
 		{"empty", func(*testing.T) string { return "" }, "must be absolute"},
 		{"relative", func(*testing.T) string { return "run/control" }, "must be absolute"},
 		{"wide permissions", func(t *testing.T) string {
-			dir := shortSocketDir(t)
+			dir := socketDirectory(t)
 			require.NoError(t, os.Chmod(dir, 0o755))
 			return dir
 		}, "wider than this account"},
@@ -61,13 +53,13 @@ func TestFactory_SocketDirectoryValidation(t *testing.T) {
 			return "/"
 		}, "belongs to another account"},
 		{"symlink", func(t *testing.T) string {
-			dir := shortSocketDir(t)
+			dir := socketDirectory(t)
 			link := filepath.Join(dir, "link")
-			require.NoError(t, os.Symlink(shortSocketDir(t), link))
+			require.NoError(t, os.Symlink(socketDirectory(t), link))
 			return link
 		}, "not a private directory"},
 		{"file parent", func(t *testing.T) string {
-			parent := filepath.Join(shortSocketDir(t), "run")
+			parent := filepath.Join(socketDirectory(t), "run")
 			require.NoError(t, os.WriteFile(parent, nil, 0o600))
 			return filepath.Join(parent, "control")
 		}, "not a directory"},
@@ -86,7 +78,7 @@ func TestFactory_SocketDirectoryValidation(t *testing.T) {
 }
 
 func TestFactory_CreatesAndRecreatesThePrivateSocketDirectory(t *testing.T) {
-	dir := filepath.Join(shortSocketDir(t), "control")
+	dir := filepath.Join(socketDirectory(t), "control")
 	factory := &controlipc.Factory{SocketDir: dir}
 	for range 2 {
 		env, cleanup, err := factory.AgentSpawning(service.AgentSpawnInfo{UserID: userid.MustNew("user-1"), WorkerID: "worker-A", TabID: "agent-1"})
@@ -101,7 +93,7 @@ func TestFactory_CreatesAndRecreatesThePrivateSocketDirectory(t *testing.T) {
 }
 
 func TestSweepSocketDir_RemovesOnlyLeftoverSockets(t *testing.T) {
-	dir := shortSocketDir(t)
+	dir := socketDirectory(t)
 	socket := filepath.Join(dir, "stale.sock")
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socket, Net: "unix"})
 	require.NoError(t, err)

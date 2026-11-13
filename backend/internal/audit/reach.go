@@ -100,6 +100,11 @@ var workerReachSites = map[string]workerReachKind{
 	// the owner's own identity to the owner's own workers and returns nothing,
 	// so it discloses no worker's liveness to anyone.
 	"internal/hub/service.(*WorkerConnectorService).RedeliverWorkerIdentity": reachServerInitiated,
+	// Token replacement reaches the registry only after its conditional store
+	// update succeeds. Recovery supplies a proof-verified row and digest; local
+	// reissue supplies the bundled Worker's row. The connection is fenced and
+	// never returned, so the result discloses no registry liveness.
+	"internal/hub/service.(*WorkerConnectorService).RotateWorkerAuthToken": reachServerInitiated,
 	// The bundled-Worker guard: an administrator's DeregisterWorker asks whether
 	// the row is connected before it refuses. The caller reached an admin-only
 	// procedure, so the liveness bit is one that surface exists to report; the

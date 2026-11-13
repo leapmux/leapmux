@@ -143,6 +143,7 @@ export function useChangeBranchInspect(args: UseChangeBranchInspectArgs): Change
         repoRoot: resp.repoRoot,
         repoDirName: basename(resp.repoRoot),
         currentBranch: resp.currentBranch,
+        attachedBranch: resp.attachedBranch,
       }))
       setBranches(resp.branches)
       setBranchesLoading(false)

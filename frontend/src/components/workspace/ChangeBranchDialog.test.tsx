@@ -69,6 +69,7 @@ function setupRpcMocks() {
     toplevel: '/repo',
     isWorktree: false,
     currentBranch: 'feature',
+    attachedBranch: 'feature',
     branches,
   })
   vi.mocked(workerTerminal.listAvailableShells).mockResolvedValue({
@@ -110,9 +111,8 @@ function renderDialog(overrides?: Partial<Parameters<typeof ChangeBranchDialog>[
   return props
 }
 
-// The dialog hides its form until both listGitBranches and getGitInfo
-// have resolved, so every behavioral test waits for the "Switch to
-// branch" radio to appear before interacting.
+// The seed renders the form before InspectBranchChange resolves. This helper
+// waits for the Switch to branch radio to appear; it does not wait for the branch list.
 async function awaitFormReady() {
   await waitFor(() => expect(screen.getByText('Switch to branch')).toBeInTheDocument())
 }
@@ -130,7 +130,9 @@ describe('ChangeBranchDialog', () => {
     })
     renderDialog()
     await waitFor(() => expect(screen.getByText(/Switching branches may fail or discard changes/)).toBeVisible())
-    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledWith('w1', { path: '/repo' })
+    expect(workerGit.getGitWorkingTreeState).toHaveBeenCalledWith('w1', { path: '/repo' }, {
+      signal: expect.any(AbortSignal),
+    })
   })
 
   it('renders the three modes', async () => {
@@ -253,6 +255,7 @@ describe('ChangeBranchDialog', () => {
       toplevel: '/repo',
       isWorktree: false,
       currentBranch: 'main',
+      attachedBranch: 'main',
       branches,
     } as Awaited<ReturnType<typeof workerGit.inspectBranchChange>>)
     fireEvent.click(screen.getByText('Create new branch'))
@@ -333,6 +336,7 @@ describe('ChangeBranchDialog', () => {
       toplevel: '/repo',
       isWorktree: false,
       currentBranch: 'main',
+      attachedBranch: 'main',
       branches: [
         ...branches,
         { $typeName: 'leapmux.v1.GitBranchEntry', name: 'feature/auth', isRemote: false },
@@ -497,11 +501,11 @@ describe('ChangeBranchDialog', () => {
     await awaitFormReady()
     fireEvent.click(screen.getByText('Create new worktree'))
 
-    // Switch the "Open as" dropdown to terminal.
+    // Select Terminal in the Open as radio group.
     fireEvent.click(screen.getByRole('radio', { name: 'Terminal' }))
     await waitFor(() => expect(workerTerminal.listAvailableShells).toHaveBeenCalled())
-    // Wait for the createResource-backed shells list to resolve so the
-    // default shell propagates into canSubmit() and unblocks Apply.
+    // Wait for the shell request to resolve so the default shell reaches
+    // submitDisabled and enables Apply.
     const apply = screen.getByRole('button', { name: 'Apply' }) as HTMLButtonElement
     await waitFor(() => expect(apply.disabled).toBe(false))
 
@@ -520,18 +524,15 @@ describe('ChangeBranchDialog', () => {
     })))
   })
 
-  it('cancel closes without firing any RPC', async () => {
+  it('closes on cancel without issuing mutation RPCs', async () => {
     const props = renderDialog()
     await awaitFormReady()
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(props.onClose).toHaveBeenCalledTimes(1))
     expect(workerGit.checkoutBranch).not.toHaveBeenCalled()
     expect(workerGit.createBranch).not.toHaveBeenCalled()
     expect(workerAgent.openAgent).not.toHaveBeenCalled()
     expect(workerTerminal.openTerminal).not.toHaveBeenCalled()
-    // Cancel triggers the dialog close animation, then props.onClose() —
-    // assertion would be flaky in jsdom without timers, so just verify
-    // the dialog disabled-during-busy gate is open.
-    void props
   })
 
   it('switch-branch: picking the current branch disables Apply and surfaces an inline notice', async () => {
@@ -559,6 +560,7 @@ describe('ChangeBranchDialog', () => {
       toplevel: '/repo',
       isWorktree: false,
       currentBranch: 'feature',
+      attachedBranch: 'feature',
       branches: [
         ...branches,
         { $typeName: 'leapmux.v1.GitBranchEntry', name: 'origin/feature', isRemote: true },
@@ -594,10 +596,9 @@ describe('ChangeBranchDialog', () => {
   })
 
   it('worktree mode: shell listing fires exactly once even after toggling Open as back to Agent and again to Terminal', async () => {
-    // Regression guard for the createResource latching memo: the shell
-    // list should be fetched only the first time the user enters
-    // create-worktree + terminal. Without the latch, createResource would
-    // re-run its fetcher on every false→truthy transition of the source.
+    // The worker-scoped list keeps a successful shell response across mode
+    // changes. The first CreateWorktree/Terminal selection fetches the list;
+    // later selections on the same worker reuse it.
     renderDialog()
     await awaitFormReady()
     fireEvent.click(screen.getByText('Create new worktree'))
@@ -681,6 +682,7 @@ describe('ChangeBranchDialog header', () => {
       toplevel: '/repo-worktrees/feature',
       isWorktree: true,
       currentBranch: 'feature',
+      attachedBranch: 'feature',
       branches,
     })
     renderDialog({ gitToplevel: '/repo-worktrees/feature', isWorktree: true })

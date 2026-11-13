@@ -44,6 +44,7 @@ func TestCleanup_WorktreeSoftDelete(t *testing.T) {
 		ID:           "wt-1",
 		WorktreePath: "/tmp/wt1",
 		RepoRoot:     "/repo",
+		RepoGitDir:   regularRepositoryGitDirForTest(t, "/repo"),
 		BranchName:   "feature-1",
 	})
 	require.NoError(t, err)
@@ -73,6 +74,7 @@ func TestCleanup_HardDeleteWorktreesBefore(t *testing.T) {
 		ID:           "wt-old",
 		WorktreePath: "/tmp/wt-old",
 		RepoRoot:     "/repo",
+		RepoGitDir:   regularRepositoryGitDirForTest(t, "/repo"),
 		BranchName:   "old-branch",
 	})
 	require.NoError(t, err)
@@ -110,6 +112,7 @@ func TestCleanup_HardDeleteWorktreesBefore_RetainsRecent(t *testing.T) {
 		ID:           "wt-recent",
 		WorktreePath: "/tmp/wt-recent",
 		RepoRoot:     "/repo",
+		RepoGitDir:   regularRepositoryGitDirForTest(t, "/repo"),
 		BranchName:   "recent-branch",
 	})
 	require.NoError(t, err)
@@ -144,6 +147,7 @@ func TestCleanup_WorktreeTabsCascadeOnHardDelete(t *testing.T) {
 		ID:           "wt-cascade",
 		WorktreePath: "/tmp/wt-cascade",
 		RepoRoot:     "/repo",
+		RepoGitDir:   regularRepositoryGitDirForTest(t, "/repo"),
 		BranchName:   "cascade-branch",
 	})
 	require.NoError(t, err)
@@ -247,7 +251,7 @@ func TestCleanup_SweepsSameInstantBoundaries(t *testing.T) {
 
 	seedWorktree := func(id string, deletedAt time.Time) {
 		_, cwErr := queries.CreateWorktree(ctx, gendb.CreateWorktreeParams{
-			ID: id, WorktreePath: "/tmp/" + id, RepoRoot: "/repo", BranchName: id,
+			ID: id, WorktreePath: "/tmp/" + id, RepoRoot: "/repo", RepoGitDir: regularRepositoryGitDirForTest(t, "/repo"), BranchName: id,
 		})
 		require.NoError(t, cwErr)
 		_, err := sqlDB.ExecContext(ctx, "UPDATE worktrees SET deleted_at = ? WHERE id = ?", timefmt.Format(deletedAt), id)

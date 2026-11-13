@@ -65,6 +65,14 @@ func (h *OAuthServerHandler) handleStepUpAuthorization(w http.ResponseWriter, r 
 		Store:     h.store,
 		Validator: h.validator,
 	})
+	if errors.Is(err, auth.ErrHTTPForbidden) {
+		writeOAuthError(w, http.StatusForbidden, "insufficient_scope", "this credential cannot request verification")
+		return
+	}
+	if err != nil && !errors.Is(err, auth.ErrHTTPUnauthenticated) {
+		writeInternalError(w, "app step-up authentication failed", err)
+		return
+	}
 	if err != nil || user == nil {
 		writeOAuthError(w, http.StatusUnauthorized, "invalid_token", "a command-line credential is required")
 		return

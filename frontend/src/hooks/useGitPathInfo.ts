@@ -14,7 +14,7 @@ const EMPTY_PROBE_KEY: readonly [string, string] = ['', '']
 
 export interface UseGitPathInfoOptions {
   /**
-   * Opt-in: invoked once with the canonical repo root the first time the
+   * Opt-in: invoked once with the real main checkout root the first time the
    * probe resolves to a worktree root. Lets callers reroute their
    * `path` signal from a worktree-root default to the parent repo so
    * GitOptions presents branch operations against the repo. The hook
@@ -42,6 +42,7 @@ export interface GitInfoFields {
   repoRoot: string
   repoDirName: string
   currentBranch: string
+  attachedBranch: string
   /**
    * Non-empty when the worker could not classify the path as a git
    * repo for a non-"not a repo" reason (dubious-ownership, EACCES,
@@ -62,6 +63,7 @@ export const EMPTY_INFO: GitInfoFields = {
   repoRoot: '',
   repoDirName: '',
   currentBranch: '',
+  attachedBranch: '',
   errorHint: '',
 }
 
@@ -155,39 +157,34 @@ export function useGitPathInfo(
   const fetcher = createGuardedFetch<{ wid: string, p: string }, Awaited<ReturnType<typeof workerGit.getGitInfo>>>({
     fetch: ({ wid, p }, signal) => workerGit.getGitInfo(wid, { path: p }, { signal }),
     applySuccess: (resp, args) => {
-      // First-probe-on-worktree-root → remap: the caller's path setter
-      // will switch to the canonical repoRoot, retriggering the probe.
-      // Skip the setInfo here so the dialog never paints worktree-scoped
-      // currentBranch before the repoRoot's probe lands.
-      const willRemap = !firstProbeSeen
-        && resp.isWorktreeRoot
-        && !!resp.repoRoot
-        && !!options.remapWorktreeRoot
-      if (!willRemap) {
-        const next: GitInfoFields = {
-          isGitRepo: resp.isGitRepo,
-          isRepoRoot: resp.isRepoRoot,
-          isWorktreeRoot: resp.isWorktreeRoot,
-          repoRoot: resp.repoRoot,
-          repoDirName: resp.repoDirName,
-          currentBranch: resp.currentBranch,
-          errorHint: resp.errorHint,
-        }
-        // Skip the setInfo when the probe payload is identical to what's
-        // already in the signal — every setInfo replaces the value by
-        // identity and refires every downstream accessor, even when
-        // nothing actually changed (e.g. a refresh() after a no-op
-        // operation, or a path/wid change that lands on the same repo).
-        if (!shallowEqual(info(), next))
-          setInfo(next)
-      }
       probeAnswered = true
       if (!firstProbeSeen) {
         firstProbeSeen = true
         firstProbeWorkerId = args.wid
-        if (resp.isWorktreeRoot && resp.repoRoot)
-          options.remapWorktreeRoot?.(resp.repoRoot)
+        if (resp.isWorktreeRoot && resp.mainWorktreeRoot)
+          options.remapWorktreeRoot?.(resp.mainWorktreeRoot)
       }
+      // Publish only if the callback kept this probe's target. A real remap
+      // must not expose the worktree branch before the new root probe lands.
+      if (workerId() !== args.wid || path() !== args.p)
+        return
+      const next: GitInfoFields = {
+        isGitRepo: resp.isGitRepo,
+        isRepoRoot: resp.isRepoRoot,
+        isWorktreeRoot: resp.isWorktreeRoot,
+        repoRoot: resp.repoRoot,
+        repoDirName: resp.repoDirName,
+        currentBranch: resp.currentBranch,
+        attachedBranch: resp.attachedBranch,
+        errorHint: resp.errorHint,
+      }
+      // Skip the setInfo when the probe payload is identical to what's
+      // already in the signal — every setInfo replaces the value by
+      // identity and refires every downstream accessor, even when
+      // nothing actually changed (e.g. a refresh() after a no-op
+      // operation, or a path/wid change that lands on the same repo).
+      if (!shallowEqual(info(), next))
+        setInfo(next)
     },
     onError: (err, args) => {
       log.warn('Failed to get git info', err)

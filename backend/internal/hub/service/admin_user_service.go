@@ -588,39 +588,44 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *leapmuxv1.Delete
 	var workerIDs []string
 	var committedGeneration int64
 	err = commitUnderElevation(ctx, s.store, actor, s.now, func() error {
-		return s.store.RunInUserAuthTransaction(ctx, delUID, func(tx store.Store) error {
-			// Registration holds this same owner lock. Collect before deleting,
-			// through this transaction, so every worker deleted here is told to
-			// stop. Replace the snapshot on each transaction attempt.
-			var err error
-			workerIDs, err = liveWorkerIDs(ctx, tx, delUID)
-			if err != nil {
-				return err
+		return s.store.RunInTransaction(ctx, func(lifecycleTx store.Store) error {
+			if _, err := lifecycleTx.Users().LockAccountLifecycle(ctx); err != nil {
+				return fmt.Errorf("lock account lifecycle for user deletion: %w", err)
 			}
-			if err := tx.Workers().MarkAllDeletedByUser(ctx, delUID); err != nil {
-				return fmt.Errorf("mark workers deleted: %w", err)
-			}
-			if err := tx.Workspaces().SoftDeleteAllByUser(ctx, delUID); err != nil {
-				return fmt.Errorf("soft-delete workspaces: %w", err)
-			}
-			// User deletion implies every credential the user had dies with
-			// it. The teardown must run BEFORE the soft-delete below:
-			// LockUserAuthState filters `deleted_at IS NULL`, so a revoke
-			// that ran after tx.Users().Delete would abort the transaction
-			// and lose the cross-process teardown. store.RevokeUserTokens
-			// states the rule.
-			if _, _, committedGeneration, err = RevokeCredentialsAfterRotation(ctx, tx, delUID, false); err != nil {
-				return err
-			}
-			// Soft-delete does not CASCADE; clear passkey state now so
-			// credential_id uniqueness and encrypted material do not linger.
-			if err := RevokePasskeyAuthState(ctx, tx, user.ID); err != nil {
-				return err
-			}
-			if err := tx.Users().Delete(ctx, user.ID); err != nil {
-				return fmt.Errorf("delete user: %w", err)
-			}
-			return nil
+			return lifecycleTx.RunInUserAuthTransaction(ctx, delUID, func(tx store.Store) error {
+				// Registration holds this same owner lock. Collect before deleting,
+				// through this transaction, so every worker deleted here is told to
+				// stop. Replace the snapshot on each transaction attempt.
+				var err error
+				workerIDs, err = liveWorkerIDs(ctx, tx, delUID)
+				if err != nil {
+					return err
+				}
+				if err := tx.Workers().MarkAllDeletedByUser(ctx, delUID); err != nil {
+					return fmt.Errorf("mark workers deleted: %w", err)
+				}
+				if err := tx.Workspaces().SoftDeleteAllByUser(ctx, delUID); err != nil {
+					return fmt.Errorf("soft-delete workspaces: %w", err)
+				}
+				// User deletion implies every credential the user had dies with
+				// it. The teardown must run BEFORE the soft-delete below:
+				// LockUserAuthState filters `deleted_at IS NULL`, so a revoke
+				// that ran after tx.Users().Delete would abort the transaction
+				// and lose the cross-process teardown. store.RevokeUserTokens
+				// states the rule.
+				if _, _, committedGeneration, err = RevokeCredentialsAfterRotation(ctx, tx, delUID, false); err != nil {
+					return err
+				}
+				// Soft-delete does not CASCADE; clear passkey state now so
+				// credential_id uniqueness and encrypted material do not linger.
+				if err := RevokePasskeyAuthState(ctx, tx, user.ID); err != nil {
+					return err
+				}
+				if err := tx.Users().Delete(ctx, user.ID); err != nil {
+					return fmt.Errorf("delete user: %w", err)
+				}
+				return nil
+			})
 		})
 	})
 	if err != nil {

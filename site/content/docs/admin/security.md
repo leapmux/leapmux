@@ -77,7 +77,7 @@ Four specifics matter:
 
 - **Workspace titles are visible, agent content is not.** Name your workspaces with that in mind. Tab positions and tiling geometry are layout metadata the Hub stores so your arrangement can sync across devices (see [Device Sync](/docs/using/device-sync/)).
 - **Worker public keys are visible; private keys never leave the Worker.** The Worker registers its public composite keys with the Hub once, and the Hub refuses a connection that presents other ones. Its private halves stay in the Worker's local state.
-- **Agent and terminal state live in the Worker's local SQLite database.** It is never uploaded to the Hub. This includes agent and subagent transcripts, to-do lists, and the background-task registry. The browser also caches rendered message text and code for seven days after last use in IndexedDB. That cache is not keyed to the account, and signing out does not clear it. See [Encryption & Data](/docs/admin/encryption-and-data/) for where that data lives and how to back it up.
+- **Agent and terminal state live in the Worker's local SQLite database.** It is never uploaded to the Hub. This includes agent and subagent transcripts, to-do lists, and the background-task registry. The browser caches rendered message text and code in IndexedDB. After startup, it attempts to remove entries whose recorded last-use time is at least seven days old. Cleanup is best-effort and runs at most once per page load, so entries can remain longer. There is no guaranteed deletion deadline. That cache is not keyed to the account, and signing out does not clear it. See [Encryption & Data](/docs/admin/encryption-and-data/) for where that data lives and how to back it up.
 - **The Worker tells the Hub nothing about the machine** — no hostname, OS, or path field exists in anything it registers or sends on its stream. A different component does send one: `leapmux control` login registers a device name against the API token so you can recognize the device later, defaulting to `user@host` — often the same machine the Worker runs on. Pass `--device-name` at login to choose the label yourself. Step-up verification always registers the default `user@host` label, regardless of the label you chose at login.
 
 ## The E2EE protocol
@@ -225,7 +225,7 @@ The Hub pins the keys too, so a stolen Worker auth token alone cannot attach oth
 
 Treat `state.json` as a secret for that reason.
 
-The Hub cannot cut such a holder off at once: deregistering the Worker stops its token only when the Worker acknowledges the stop, or 7 days later. New keys need a new registration, which creates a new Worker ID, so a re-registered Worker is a different Worker to every client's pin.
+A successful registration recovery replaces the Worker token and closes the replaced token's established stream. The Hub also refuses a delayed hello authenticated with that replaced token. Recovery requires proof of the pinned private keys. Deregistering the Worker instead stops its token only when the Worker acknowledges the stop, or 7 days later. New keys need a new registration, which creates a new Worker ID, so a re-registered Worker is a different Worker to every client's pin.
 
 ### The "Worker public key changed" dialog
 
@@ -253,7 +253,9 @@ Both follow the same rule: first contact auto-pins, any later mismatch aborts th
 
 ## Solo mode: a reduced threat model
 
-Solo mode collapses the local IPC trust boundary on purpose. It runs the Hub and the Worker in one process. Its account, `solo`, starts with no password. Local IPC always receives the synthetic administrator because only the local operating-system user can open that socket.
+Solo mode collapses the local IPC trust boundary on purpose. It runs the Hub and the Worker in one process. Its account, `solo`, starts with no password. Local IPC receives the synthetic administrator only after the listener admits the operating-system account.
+
+On Linux and macOS, each Unix listener checks the accepted peer's user ID against the effective user ID of the process that runs LeapMux. It disconnects a different account before HTTP receives the connection. This check also covers connections queued before the socket changes to mode `0600`. Other Unix platforms refuse these listeners unless native peer verification is available. Windows creates each named pipe with an access-control list for the current account's security identifier (SID).
 
 A TCP caller does not receive that administrator. Before a password exists, it can call only `SetInitialSoloPassword`. The first successful caller stores the password and an elevated session in one transaction. All concurrent losers and later calls fail. This setup flow prevents passwordless administration, but it does not identify the first caller.
 
@@ -263,7 +265,7 @@ Give the `solo` account a password and the rule changes for every TCP address at
 
 | Transport | `solo` password | Result |
 |---|---|---|
-| Local socket (the desktop app) | either | No sign-in. Only a process running as you can open it. |
+| Local socket (the desktop app) | either | No sign-in. The listener admits only your operating-system account. |
 | TCP, any address | not set | Only first-password setup. The first successful caller claims the account. |
 | TCP, any address | set | Sign in as `solo`. This covers `127.0.0.1` and every address you added. |
 
@@ -447,7 +449,7 @@ A copy of the database therefore holds none of those secrets in plaintext. OAuth
 The key ring is managed with `leapmux recover encryption-key rotate | remove | reencrypt | rotate-pepper`. The full keystore, key-rotation runbook, database backends, and backup/restore guidance live in [Encryption & Data](/docs/admin/encryption-and-data/).
 
 {{< callout type="warning" >}}
-The `encryption.key` file holds more than the encryption key ring. It also carries the **token pepper**, which protects every stored bearer secret and confidential app client secret. Back up the file and database together: without the key file, the encrypted columns are permanently undecryptable.
+The `encryption.key` file holds more than the encryption key ring. It also carries the **token pepper**, which protects the credential classes listed below. Back up the file and database together: without the key file, the encrypted columns are permanently undecryptable.
 
 `rotate-pepper` takes effect on the next Hub restart, because a running Hub keeps its startup pepper in memory. Rotating the pepper, or losing the key file, has these effects:
 
@@ -455,6 +457,8 @@ The `encryption.key` file holds more than the encryption key ring. It also carri
 - Invalidates every Worker auth token
 - Invalidates API and delegation tokens and app client secrets
 - Invalidates live registration keys and pending device codes
+
+Account-recovery links do not use the pepper. Pepper rotation does not invalidate them. Their existing expiry, attempt limits, and consumption checks still apply.
 
 Solo mode and the desktop app reissue their own Worker's token. For each standalone Worker:
 
@@ -484,7 +488,7 @@ If you run a Hub for a team, the security of the deployment rests largely on the
 
 1. **Protect the Hub host.** It can read all control-plane data — accounts, workspace records, layout, Worker registration metadata — and it sees transport metadata for every channel (traffic analysis is in scope). Treat it as a sensitive service: minimal access, patched OS, monitored.
 2. **Terminate TLS in front of the Hub.** The Frontend↔Hub and Worker↔Hub legs are not E2EE; they rely on transport TLS. Put the Hub behind a reverse proxy with valid certificates. See [Reverse Proxy](/docs/admin/reverse-proxy/).
-3. **Protect the `encryption.key` file as a credential.** It contains base64 key material in a plain text file at mode `0600`. No master password, key management service, or hardware security module wraps that material. Filesystem permissions provide its only protection. It holds the encryption key ring and the token pepper for every stored bearer secret and app client secret. Anyone who reads it can decrypt the protected columns and compute digests for bearer secrets. Back it up with the database. Encrypt both backups. Restrict access.
+3. **Protect the `encryption.key` file as a credential.** It contains base64 key material in a plain text file at mode `0600`. No master password, key management service, or hardware security module wraps that material. Filesystem permissions provide its only protection. It holds the encryption key ring and the token pepper for the credential classes listed below. Anyone who reads it can decrypt the protected columns and compute digests for bearer secrets. Back it up with the database. Encrypt both backups. Restrict access.
 
    Pepper rotation or a lost key file signs out every session and invalidates Worker tokens. It also invalidates API and delegation tokens, live registration keys, pending device codes, and app client secrets. Solo mode and the desktop app reissue their own Worker's token. For each standalone Worker:
 

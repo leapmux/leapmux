@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -22,20 +23,40 @@ type rollbackWorktree struct {
 	WorktreeID   string
 	WorktreePath string
 	RepoRoot     string
+	RepoGitDir   string
 	BranchName   string
+	// Creation evidence and the failing tab are runtime-only. Recovery drops rollback rights.
+	initialBranchCommit string
+	startup             worktreeRollbackStartup
+}
+
+type worktreeRollbackStartup struct {
+	key      ownedTabKey
+	registry *startupCore
+	entry    *startupEntry
+}
+
+func (startup worktreeRollbackStartup) preservesArtifact() bool {
+	if startup.registry == nil || startup.entry == nil {
+		return false
+	}
+	_, closeRaced := startup.registry.dispositionOf(startup.entry)
+	return closeRaced || ((startup.registry.archiveStopped(startup.entry) || startup.registry.shutdownStopped(startup.entry)) && startup.registry.phase0Complete(startup.entry))
 }
 
 type rollbackBranch struct {
-	// RepoRoot is the MAIN repo root, the key gitIndexLocks uses. Carried on the
-	// struct rather than re-probed at rollback time: currentCheckoutTarget
-	// already has it from its own queryGitPathInfo, and a rollback runs on a
-	// failure path where an extra git fork is the last thing wanted.
+	// RepoGitDir captures the common directory used to choose gitIndexLocks.
+	// Later probes validate that authority and never replace it with another repository.
 	RepoRoot         string
+	RepoGitDir       string
 	WorkingDir       string
 	CreatedBranch    string
 	OriginalBranch   string
 	OriginalCommit   string
 	OriginalDetached bool
+	// initialBranchCommit comes from the immutable creation intent. Recovered
+	// phase-0 results discard rollback rights, so this evidence stays runtime-only.
+	initialBranchCommit string
 }
 
 type gitModeRollback struct {
@@ -76,10 +97,10 @@ type gitModePlan struct {
 	// WorkingDir; for others it equals WorkingDir.
 	PlannedWorkingDir string
 
-	// RepoRoot is the main repo's top-level directory (used to scope git
-	// commands that must run against the main repo, e.g. `git worktree
-	// add`). Populated for modes that need it.
-	RepoRoot string
+	// RepoRoot supplies placement. RepoGitDir supplies stable identity
+	// and the administrative context for repository-wide commands.
+	RepoRoot   string
+	RepoGitDir string
 
 	// BranchName is the new branch to be created (createWorktree or
 	// createBranch). Pre-validated with gitutil.ValidateBranchName.
@@ -261,7 +282,7 @@ func (svc *Service) validateCreateWorktree(ctx context.Context, workingDir, bran
 		// -b X` against a branch that IS in use, and the user would see
 		// git's bare error instead of the validator's curated
 		// "branch X is checked out in another worktree".
-		inUse, err := gitutil.IsBranchInUse(gctx, repoRoot, branch)
+		inUse, err := (gitutil.Repository{GitDir: info.CommonDir}).IsBranchInUse(gctx, branch)
 		if err != nil {
 			return err
 		}
@@ -327,6 +348,7 @@ func (svc *Service) validateCreateWorktree(ctx context.Context, workingDir, bran
 		WorkingDir:        workingDir,
 		PlannedWorkingDir: worktreePath,
 		RepoRoot:          repoRoot,
+		RepoGitDir:        info.CommonDir,
 		BranchName:        branch,
 		BaseBranch:        baseBranch,
 		StartPoint:        startPoint,
@@ -482,12 +504,18 @@ func (svc *Service) validateCheckoutBranch(ctx context.Context, workingDir, bran
 type gitModeResult struct {
 	WorkingDir string
 	WorktreeID string
-	// RepoRoot is the MAIN repo root, recorded by attachWorktreeIfPresent from
-	// the probe it already runs. It is the gitIndexLocks key, so having it here
-	// lets the checkout paths lock without a second git fork. Empty when the
-	// working dir is not a git repo at all -- there is nothing to serialize then.
-	RepoRoot string
-	Rollback gitModeRollback
+	// RepoRoot supplies placement. RepoGitDir supplies identity and the mutex
+	// key from the existing metadata probe. Both are empty outside Git.
+	RepoRoot   string
+	RepoGitDir string
+	Rollback   gitModeRollback
+}
+
+// bindCreatedWorktreeStartup identifies the startup tab excluded from rollback's live-owner check.
+func (result *gitModeResult) bindCreatedWorktreeStartup(startup worktreeRollbackStartup) {
+	if created := result.Rollback.CreatedWorktree; created != nil {
+		created.startup = startup
+	}
 }
 
 // executeGitMode performs the mutations described by plan. Runs on the async
@@ -518,25 +546,48 @@ func (svc *Service) executeCreateWorktree(ctx context.Context, plan gitModePlan)
 	rollback := &rollbackWorktree{
 		WorktreePath: plan.WorktreePath,
 		RepoRoot:     plan.RepoRoot,
+		RepoGitDir:   plan.RepoGitDir,
 		BranchName:   plan.BranchName,
 	}
 	result := gitModeResult{
 		WorkingDir: plan.WorktreePath,
+		RepoRoot:   plan.RepoRoot,
+		RepoGitDir: plan.RepoGitDir,
 		Rollback:   gitModeRollback{CreatedWorktree: rollback},
 	}
 
 	// Logged BEFORE the lock, with the lock key, so a repeat of the
 	// `index.lock: File exists` failure below is readable from the log alone:
 	// two of these for one branch means two adds really did race (and, if their
-	// repo_root strings differ, that they serialized on different keys), while
+	// repo_git_dir strings differ, that they serialized on different keys), while
 	// one means the leftover predates this process.
 	slog.Info("creating worktree",
-		"repo_root", plan.RepoRoot, "worktree_path", plan.WorktreePath, "branch_name", plan.BranchName)
+		"repo_root", plan.RepoRoot, "repo_git_dir", plan.RepoGitDir, "worktree_path", plan.WorktreePath, "branch_name", plan.BranchName)
 
 	// Under the repo's index lock: a concurrent checkout / commit / second
 	// worktree add in the same repository would otherwise make one of the two
 	// fail outright on index.lock rather than wait.
-	addErr := svc.withGitIndexLock(plan.RepoRoot, func() error {
+	addErr := svc.withGitIndexLock(plan.RepoGitDir, func() error {
+		if plan.StartPoint == "" {
+			return errors.New("worktree startup requires an initial commit")
+		}
+		var resolved string
+		var err error
+		if plan.StartPoint == "HEAD" {
+			// HEAD belongs to the selected checkout. Other refs, including the
+			// immutable durable intent's object ID, use the common repository.
+			resolved, err = gitutil.Output(ctx, plan.WorkingDir, "rev-parse", "--verify", plan.StartPoint+"^{commit}")
+		} else {
+			resolved, err = (gitutil.Repository{GitDir: plan.RepoGitDir}).Output(ctx, "rev-parse", "--verify", plan.StartPoint+"^{commit}")
+		}
+		if err != nil {
+			return fmt.Errorf("resolve the worktree's initial commit: %w", err)
+		}
+		initial := strings.TrimSpace(resolved)
+		if initial == "" {
+			return errors.New("worktree startup requires a resolved initial commit")
+		}
+		rollback.initialBranchCommit = initial
 		// Prune first, and this is not hygiene -- it is required for the add to
 		// succeed at all after an interrupted attempt.
 		//
@@ -564,16 +615,15 @@ func (svc *Service) executeCreateWorktree(ctx context.Context, plan gitModePlan)
 		// deterministically yet, so deliberately NOT patched by hand here:
 		// deleting an index.lock that a live git process still holds trades a
 		// rare failure for a corrupt index.
-		if pruneErr := gitutil.Run(ctx, plan.RepoRoot, "worktree", "prune"); pruneErr != nil {
+		if pruneErr := (gitutil.Repository{GitDir: plan.RepoGitDir}).Run(ctx, "worktree", "prune"); pruneErr != nil {
 			slog.Warn("worktree prune before add failed; continuing",
 				"repo_root", plan.RepoRoot, "error", pruneErr)
 		}
-		return gitutil.Run(ctx, plan.RepoRoot, "worktree", "add", "-b", plan.BranchName, plan.WorktreePath, plan.StartPoint)
+		return (gitutil.Repository{GitDir: plan.RepoGitDir}).Run(ctx, "worktree", "add", "-b", plan.BranchName, plan.WorktreePath, rollback.initialBranchCommit)
 	})
 	if addErr != nil {
-		// Worktree add failed before the dir was created. Drop the
-		// rollback pointer so the caller doesn't emit a spurious
-		// "rolling back" label for a worktree that never existed.
+		// A failed add can leave partial Git state. It does not prove this
+		// request owns the directory and branch, so it supplies no rollback rights.
 		return gitModeResult{}, fmt.Errorf("failed to create worktree: %w", addErr)
 	}
 	slog.Info("worktree created", "worktree_path", plan.WorktreePath, "branch_name", plan.BranchName)
@@ -585,7 +635,7 @@ func (svc *Service) executeCreateWorktree(ctx context.Context, plan gitModePlan)
 	// `git worktree add` was just invoked with these exact values, so
 	// they're authoritative for the new worktree — skip the queryGit-
 	// PathInfo fork that would re-derive them.
-	wtID, err := svc.ensureTrackedWorktreeWith(ctx, plan.WorktreePath, plan.RepoRoot, plan.BranchName)
+	wtID, err := svc.ensureTrackedWorktreeWith(ctx, plan.WorktreePath, plan.RepoRoot, plan.RepoGitDir, plan.BranchName)
 	if err != nil {
 		return result, fmt.Errorf("failed to track worktree: %w", err)
 	}
@@ -599,104 +649,98 @@ func (svc *Service) executeUseWorktreePath(ctx context.Context, plan gitModePlan
 	if err != nil {
 		return gitModeResult{}, err
 	}
-	return gitModeResult{
-		WorkingDir: plan.WorktreePath,
-		WorktreeID: wtID,
-	}, nil
+	tracked, err := svc.Queries.GetWorktreeByID(ctx, wtID)
+	if err != nil {
+		return gitModeResult{}, err
+	}
+	return gitModeResult{WorkingDir: plan.WorktreePath, WorktreeID: wtID, RepoRoot: tracked.RepoRoot, RepoGitDir: tracked.RepoGitDir}, nil
 }
 
 func (svc *Service) executeCreateBranch(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
-	// Capture the current checkout now so the rollback can restore
-	// HEAD if `git checkout -b` partially succeeds.
-	currentTarget, err := currentCheckoutTarget(ctx, plan.WorkingDir)
+	branch, base, err := validateBranchCreationArgs(plan.BranchName, plan.BaseBranch)
 	if err != nil {
-		return gitModeResult{}, fmt.Errorf("failed to capture current checkout: %w", err)
-	}
-
-	if err := ctx.Err(); err != nil {
 		return gitModeResult{}, err
 	}
-
-	currentTarget.CreatedBranch = plan.BranchName
-	// `git checkout -b` mutates the index, so it runs under the repo's index
-	// lock -- currentCheckoutTarget above already resolved the main repo root, so
-	// this costs no extra fork. The comment below notes an "index race" as one
-	// reason the checkout can abort after writing the ref; this removes the
-	// worker's own contribution to that race.
-	createErr := svc.withGitIndexLock(currentTarget.RepoRoot, func() error {
-		return createBranchInDir(ctx, plan.WorkingDir, plan.BranchName, plan.BaseBranch)
-	})
-	if err := createErr; err != nil {
-		// BranchNameError aborts inside createBranchInDir before any
-		// git subprocess is invoked, so no rollback is needed and
-		// surfacing one would emit a spurious "rolling back branch X"
-		// label plus a misleading Warn log from `git branch -D` on a
-		// branch that never existed. For all other failures `git
-		// checkout -b` may have written refs/heads/<new> before the
-		// checkout step aborted (pre-checkout hook, index race), so
-		// the Rollback metadata must travel back so the caller's
-		// HasPartialMutation can run the cleanup.
-		if gitutil.IsBranchNameError(err) {
-			return gitModeResult{}, err
+	var result gitModeResult
+	err = svc.withRepoIndexLockForDir(ctx, plan.WorkingDir, func(current *gitPathInfo) error {
+		if plan.RepoGitDir != "" && !pathutil.SamePath(plan.RepoGitDir, current.CommonDir) {
+			return errors.New("the planned checkout belongs to a different git repository")
 		}
-		return gitModeResult{
-			Rollback: gitModeRollback{CreatedBranch: currentTarget},
-		}, err
-	}
-
-	// Mirror executeCheckoutBranch / executeUseCurrent: when the working
-	// dir lives inside a linked worktree, the new branch was created in
-	// that worktree, so the tab must be linked to its worktree row.
-	// Without the linkage a later CloseTab(REMOVE) silently degrades
-	// to KEEP. Carry the rollback so a probe failure still triggers the
-	// just-created branch's cleanup.
-	result := gitModeResult{
-		WorkingDir: plan.WorkingDir,
-		Rollback:   gitModeRollback{CreatedBranch: currentTarget},
-	}
-	if err := svc.attachWorktreeIfPresent(ctx, &result, plan.WorkingDir); err != nil {
-		return result, err
-	}
-	return result, nil
+		reference := "refs/heads/" + branch
+		found, err := gitutil.HasRefs(ctx, plan.WorkingDir, reference)
+		if err != nil {
+			return err
+		}
+		if found[reference] {
+			return fmt.Errorf("branch %q already exists", branch)
+		}
+		target, err := rollbackBranchFromPathInfo(plan.WorkingDir, current)
+		if err != nil {
+			return err
+		}
+		initialCommit := current.HeadSHA
+		if base != "" {
+			resolved, err := gitutil.Output(ctx, plan.WorkingDir, "rev-parse", "--verify", base+"^{commit}")
+			if err != nil {
+				return fmt.Errorf("resolve the new branch's initial commit: %w", err)
+			}
+			initialCommit = strings.TrimSpace(resolved)
+		}
+		if initialCommit == "" {
+			return errors.New("branch startup requires a resolved initial commit")
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		target.CreatedBranch = branch
+		target.initialBranchCommit = initialCommit
+		mutationErr := createBranchInDir(ctx, plan.WorkingDir, branch, initialCommit)
+		if mutationErr != nil {
+			// A canceled start or an early Git refusal creates no branch. Verify the
+			// artifact while this mutex still excludes another service creator.
+			probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gitReadTimeout)
+			created, probeErr := gitutil.HasRefs(probeCtx, plan.WorkingDir, reference)
+			cancel()
+			if probeErr != nil {
+				slog.Warn("branch rollback ownership could not be verified; keeping git state", "branch", branch, "error", probeErr)
+				return mutationErr
+			}
+			if !created[reference] {
+				return mutationErr
+			}
+		}
+		result = gitModeResult{WorkingDir: plan.WorkingDir, RepoRoot: current.RepoRoot, RepoGitDir: current.CommonDir, Rollback: gitModeRollback{CreatedBranch: target}}
+		if mutationErr != nil {
+			return mutationErr
+		}
+		// Association and mutation share the same repository hold. A later tab
+		// operation cannot change HEAD between this operation and its tracking read.
+		return svc.attachWorktreeIfPresent(ctx, &result, plan.WorkingDir)
+	})
+	return result, err
 }
 
 func (svc *Service) executeCheckoutBranch(ctx context.Context, plan gitModePlan) (gitModeResult, error) {
-	// Probe + register the worktree association BEFORE the checkout so
-	// a ctx-cancel / DB / git probe failure aborts cleanly, instead of
-	// stranding the working dir on the new branch with no tab linkage.
-	// Once `git checkout` has moved HEAD, we have no clean rollback path
-	// (the user may be staring at the new branch); a pre-checkout abort
-	// keeps the failure side-effect-free.
-	//
-	// Mirror executeCreateBranch's return shape: pass the populated
-	// `result` back even on error so the caller can observe any
-	// WorktreeID the attach already wrote. The two paths used to return
-	// `gitModeResult{}` (checkout) and `result` (createBranch) for the
-	// same failure mode, which made it impossible for shared post-
-	// failure logic to read worktree linkage off a checkout failure.
 	result := gitModeResult{WorkingDir: plan.WorkingDir}
-	if err := svc.attachWorktreeIfPresent(ctx, &result, plan.WorkingDir); err != nil {
-		return result, err
-	}
-	// Under the repo's index lock. attachWorktreeIfPresent above recorded the
-	// main repo root from the probe it already ran, so this costs no extra fork.
-	checkoutErr := svc.withGitIndexLock(result.RepoRoot, func() error {
-		return checkoutBranchInDir(ctx, plan.WorkingDir, plan.CheckoutTarget)
+	err := svc.withRepoIndexLockForDir(ctx, plan.WorkingDir, func(current *gitPathInfo) error {
+		if plan.RepoGitDir != "" && !pathutil.SamePath(plan.RepoGitDir, current.CommonDir) {
+			return errors.New("the planned checkout belongs to a different git repository")
+		}
+		// Register before checkout: a failed association must leave HEAD alone.
+		if err := svc.attachWorktreeIfPresent(ctx, &result, plan.WorkingDir); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := checkoutBranchInDir(ctx, plan.WorkingDir, plan.CheckoutTarget); err != nil {
+			return err
+		}
+		// This best-effort read stays under the same hold as its own checkout.
+		svc.restampWorktreeBranch(ctx, result.WorktreeID, plan.WorkingDir)
+		return nil
 	})
-	if checkoutErr != nil {
-		return result, checkoutErr
-	}
-	// Keep the worktree row's branch_name in sync with the post-checkout
-	// HEAD. attachWorktreeIfPresent above creates the row on first
-	// touch with branch_name pinned to PRE-checkout HEAD; without this
-	// re-stamp the row drifts the moment HEAD moves, and the fallback
-	// path in removeWorktreeFromDisk (when its live re-probe fails)
-	// would delete the stale branch_name instead of the live one. Best
-	// effort: a row write failure is logged but doesn't abort — the
-	// checkout already succeeded and the live re-probe at delete time
-	// is the real source of truth.
-	svc.restampWorktreeBranch(ctx, result.WorktreeID, plan.WorkingDir)
-	return result, nil
+	return result, err
 }
 
 // restampWorktreeBranch refreshes the worktree row's branch_name from
@@ -716,8 +760,8 @@ func (svc *Service) restampWorktreeBranch(ctx context.Context, worktreeID, worki
 			"worktree_id", worktreeID, "working_dir", workingDir, "error", err)
 		return
 	}
-	// info.BranchName is empty on detached HEAD AND on unborn HEAD;
-	// both leave the column at whatever value the previous stamp set.
+	// Detached HEAD has no attached branch and keeps the previous stored name.
+	// An unborn symbolic HEAD still supplies its branch name.
 	// A future detached-HEAD-aware schema could distinguish the two,
 	// but as long as removeWorktreeFromDisk re-probes live HEAD before
 	// trusting wt.BranchName, an out-of-sync row is recoverable.
@@ -759,6 +803,7 @@ func (svc *Service) attachWorktreeIfPresent(ctx context.Context, result *gitMode
 	// Recorded regardless of IsWorktree: the checkout paths need the index-lock
 	// key even when the dir is the main repo itself.
 	result.RepoRoot = info.RepoRoot
+	result.RepoGitDir = info.CommonDir
 	if !info.IsWorktree {
 		return nil
 	}
@@ -824,17 +869,17 @@ func (svc *Service) registerTabForWorktreeAfterClose(worktreeID string, tabType 
 }
 
 func (svc *Service) ensureTrackedWorktree(ctx context.Context, worktreePath string) (string, error) {
-	return svc.ensureTrackedWorktreeWith(ctx, worktreePath, "", "")
+	return svc.ensureTrackedWorktreeWith(ctx, worktreePath, "", "", "")
 }
 
 // ensureTrackedWorktreeWith is the same as ensureTrackedWorktree but
-// lets the caller supply known repoRoot and branchName values to skip
+// lets the caller supply known repoRoot, repoGitDir and branchName values to skip
 // the `git rev-parse` probe on the cold path. Callers that have just
 // created the worktree (e.g. `executeCreateWorktree`) already know
 // these fields; paying the fork latency twice for the same data is
-// pure dialog-open overhead. Pass "" for either field to fall back to
+// pure dialog-open overhead. Pass "" for a field to fall back to
 // queryGitPathInfo.
-func (svc *Service) ensureTrackedWorktreeWith(ctx context.Context, worktreePath, repoRoot, branchName string) (string, error) {
+func (svc *Service) ensureTrackedWorktreeWith(ctx context.Context, worktreePath, repoRoot, repoGitDir, branchName string) (string, error) {
 	canonicalPath := pathutil.Canonicalize(worktreePath)
 
 	existing, err := svc.Queries.GetWorktreeByPath(ctx, canonicalPath)
@@ -845,13 +890,16 @@ func (svc *Service) ensureTrackedWorktreeWith(ctx context.Context, worktreePath,
 		return "", err
 	}
 
-	if repoRoot == "" || branchName == "" {
+	if repoRoot == "" || repoGitDir == "" || branchName == "" {
 		info, err := queryGitPathInfo(ctx, canonicalPath)
 		if err != nil {
 			return "", err
 		}
 		if repoRoot == "" {
 			repoRoot = info.RepoRoot
+		}
+		if repoGitDir == "" {
+			repoGitDir = info.CommonDir
 		}
 		if branchName == "" {
 			branchName = info.BranchName
@@ -868,6 +916,7 @@ func (svc *Service) ensureTrackedWorktreeWith(ctx context.Context, worktreePath,
 		ID:           id.Generate(),
 		WorktreePath: canonicalPath,
 		RepoRoot:     repoRoot,
+		RepoGitDir:   repoGitDir,
 		BranchName:   branchName,
 	})
 	if err != nil {
@@ -901,7 +950,7 @@ func worktreeRemoveArgs(worktreePath string) []string {
 // A listing this cannot read answers true: the caller uses it to suppress a
 // failure report, and a failure the worker cannot disprove must reach the user.
 func (svc *Service) gitStillListsWorktree(ctx context.Context, wt db.Worktree) bool {
-	entries, err := listGitWorktrees(ctx, wt.RepoRoot)
+	entries, err := listRepositoryWorktrees(ctx, gitutil.Repository{GitDir: wt.RepoGitDir})
 	if err != nil {
 		slog.Warn("could not list worktrees to confirm a failed removal; reporting the failure",
 			"worktree_id", wt.ID, "repo_root", wt.RepoRoot, "error", err)
@@ -928,13 +977,19 @@ func (svc *Service) removeWorktreeFromDisk(wt db.Worktree) error {
 
 // removeWorktreeFromDiskRecorded keeps one destructive implementation for all closes.
 func (svc *Service) removeWorktreeFromDiskRecorded(ctx context.Context, wt db.Worktree, journal worktreeRemovalJournal) error {
-	defer svc.lockGitIndex(wt.RepoRoot)()
+	defer svc.lockGitIndex(wt.RepoGitDir)()
+	return svc.removeWorktreeFromDiskRecordedLocked(ctx, wt, journal, worktreeRemoveArgs(wt.WorktreePath))
+}
+
+// The caller holds the index lock. Removal owners take the outer removal and
+// lifecycle locks before entering this function.
+func (svc *Service) removeWorktreeFromDiskRecordedLocked(ctx context.Context, wt db.Worktree, journal worktreeRemovalJournal, removeArgs []string) error {
 	checkpoint := journal.Checkpoint()
-	if checkpoint != nil && (checkpoint.WorktreeID != wt.ID || !pathutil.SamePath(pathutil.Canonicalize(checkpoint.WorktreePath), pathutil.Canonicalize(wt.WorktreePath)) || !pathutil.SamePath(pathutil.Canonicalize(checkpoint.RepoRoot), pathutil.Canonicalize(wt.RepoRoot))) {
+	if checkpoint != nil && (checkpoint.WorktreeID != wt.ID || !pathutil.SamePath(pathutil.Canonicalize(checkpoint.WorktreePath), pathutil.Canonicalize(wt.WorktreePath)) || !pathutil.SamePath(checkpoint.RepoGitDir, wt.RepoGitDir)) {
 		return errors.New("the saved removal identifies a different worktree")
 	}
 	if checkpoint == nil {
-		intent := worktreeRemovalCheckpoint{WorktreeID: wt.ID, WorktreePath: wt.WorktreePath, RepoRoot: wt.RepoRoot}
+		intent := worktreeRemovalCheckpoint{WorktreeID: wt.ID, WorktreePath: wt.WorktreePath, RepoRoot: wt.RepoRoot, RepoGitDir: wt.RepoGitDir}
 		// A failed live probe omits branch cleanup. The SQL branch can be stale.
 		if info, err := queryGitPathInfo(ctx, wt.WorktreePath); err == nil {
 			intent.Branch = info.BranchName
@@ -967,7 +1022,7 @@ func (svc *Service) removeWorktreeFromDiskRecorded(ctx context.Context, wt db.Wo
 			if info.BranchName != checkpoint.Branch || info.HeadSHA != checkpoint.Commit {
 				return errors.New("the worktree branch or commit changed after removal was prepared")
 			}
-			removeErr = gitutil.Run(ctx, wt.RepoRoot, worktreeRemoveArgs(wt.WorktreePath)...)
+			removeErr = (gitutil.Repository{GitDir: wt.RepoGitDir}).Run(ctx, removeArgs...)
 			removed = removeErr == nil
 		}
 		if !removed {
@@ -990,21 +1045,13 @@ func (svc *Service) removeWorktreeFromDiskRecorded(ctx context.Context, wt db.Wo
 }
 
 // finishRecordedWorktreeRemoval never removes a directory. Expected-ref deletion
-// preserves a branch recreated or advanced after an interrupted removal.
+// preserves a branch whose tip differs from the recorded removal commit.
 func (svc *Service) finishRecordedWorktreeRemoval(ctx context.Context, wt db.Worktree, checkpoint worktreeRemovalCheckpoint) error {
 	var cleanup errgroup.Group
 	if checkpoint.Branch != "" && checkpoint.Commit != "" {
 		cleanup.Go(func() error {
-			inUse, err := gitutil.IsBranchInUse(ctx, wt.RepoRoot, checkpoint.Branch)
-			if err != nil {
-				slog.Warn("read branch usage after worktree removal failed; keeping its branch", "branch", checkpoint.Branch, "error", err)
-				return nil
-			}
-			if inUse {
-				return nil
-			}
-			if err := gitutil.Run(ctx, wt.RepoRoot, "update-ref", "-d", "refs/heads/"+checkpoint.Branch, checkpoint.Commit); err != nil {
-				slog.Warn("delete unchanged worktree branch failed; keeping its current ref", "branch", checkpoint.Branch, "error", err)
+			if err := deleteUnusedBranchAtCommit(ctx, gitutil.Repository{GitDir: wt.RepoGitDir}, checkpoint.Branch, checkpoint.Commit); err != nil {
+				slog.Warn("worktree branch cleanup did not complete", "branch", checkpoint.Branch, "error", err)
 			}
 			return nil
 		})
@@ -1036,9 +1083,17 @@ func currentCheckoutTarget(ctx context.Context, workingDir string) (*rollbackBra
 	if err != nil {
 		return nil, err
 	}
+	return rollbackBranchFromPathInfo(workingDir, info)
+}
+
+func rollbackBranchFromPathInfo(workingDir string, info *gitPathInfo) (*rollbackBranch, error) {
+	if info == nil {
+		return nil, errors.New("current checkout metadata is required")
+	}
 	if info.BranchName != "" {
 		return &rollbackBranch{
 			RepoRoot:       info.RepoRoot,
+			RepoGitDir:     info.CommonDir,
 			WorkingDir:     workingDir,
 			OriginalBranch: info.BranchName,
 		}, nil
@@ -1048,6 +1103,7 @@ func currentCheckoutTarget(ctx context.Context, workingDir string) (*rollbackBra
 	}
 	return &rollbackBranch{
 		RepoRoot:         info.RepoRoot,
+		RepoGitDir:       info.CommonDir,
 		WorkingDir:       workingDir,
 		OriginalCommit:   info.HeadSHA,
 		OriginalDetached: true,
@@ -1079,7 +1135,14 @@ func (svc *Service) rollbackGitModeAfterClose(result gitModeResult, disposition 
 		if reason, err := svc.worktreeRemovalBlockedReason(bgCtx(), created.WorktreePath, verdict.info); err != nil || reason != "" {
 			return
 		}
-		svc.rollbackCreatedWorktree(*created)
+		wt, err := svc.createdWorktreeRecord(bgCtx(), *created)
+		if err != nil {
+			slog.Warn("read created worktree for confirmed removal failed", "error", err)
+			return
+		}
+		if err := svc.removeWorktreeFromDisk(wt); err != nil {
+			slog.Warn("confirmed created-worktree removal failed", "worktree_path", created.WorktreePath, "error", err)
+		}
 	case keepWorktreeOnClose, strandWorktreeOnClose:
 		// Both dispositions preserve Git artifacts. The reconciler cleans dead links only.
 	}
@@ -1088,13 +1151,10 @@ func (svc *Service) rollbackGitModeAfterClose(result gitModeResult, disposition 
 // rollbackGitModeAfterStartup applies the rollback policy for a startup that is
 // ending without having handed its tab over.
 //
-// `raced` is closeDisposition's ok flag, and it is the authority for "was this
-// startup overtaken by a close" -- the disposition alone cannot say, because a
-// KEEP close and a startup nothing closed both arrive as the zero value
-// keepWorktreeOnClose. The two need opposite handling: a startup that failed on
-// its own OWNS the rollback, since no close is coming to decide the worktree's
-// fate and leaving the mutation in place would strand a worktree and a branch
-// the user never saw. One a close overtook must defer to that close instead.
+// `raced` is closeDisposition's ok flag. A KEEP close and an ordinary failure
+// both carry keepWorktreeOnClose, so the disposition alone cannot select the
+// policy. An ordinary failure attempts guarded automatic cleanup. A close
+// supplies the user's explicit worktree decision instead.
 func (svc *Service) rollbackGitModeAfterStartup(result gitModeResult, disposition closeWorktreeDisposition, raced bool) {
 	if !raced {
 		svc.rollbackGitMode(result)
@@ -1114,86 +1174,124 @@ func (svc *Service) rollbackGitMode(result gitModeResult) {
 
 func (svc *Service) rollbackCreatedWorktree(r rollbackWorktree) {
 	ctx := bgCtx()
-
-	// Under the repo's index lock for the same reason as removeWorktreeFromDisk:
-	// a rollback races whatever else is starting in this repository, and losing
-	// that race would leave the half-created worktree on disk.
-	defer svc.lockGitIndex(r.RepoRoot)()
-
-	// `git worktree remove` must complete before `git branch -D` — git
-	// refuses to delete a branch still checked out in a worktree. The DB
-	// DeleteWorktree is independent of either git step, so run it in
-	// parallel with the branch cleanup.
-	if err := gitutil.Run(ctx, r.RepoRoot, "worktree", "remove", "--force", r.WorktreePath); err != nil {
-		slog.Warn("failed to roll back worktree",
-			"worktree_path", r.WorktreePath, "repo_root", r.RepoRoot, "error", err)
+	mutex := svc.worktreeRemovalLock(r.WorktreeID)
+	mutex.Lock()
+	defer mutex.Unlock()
+	defer svc.worktreeLifecycle.remove(r.WorktreePath)()
+	defer svc.lockGitIndex(r.RepoGitDir)()
+	preserve := func(reason string, err error) {
+		slog.Warn("automatic worktree rollback preserved its artifact", "worktree_path", r.WorktreePath, "reason", reason, "error", err)
 	}
+	if r.startup.preservesArtifact() {
+		preserve("a lifecycle interruption owns the decision", nil)
+		return
+	}
+	if r.initialBranchCommit == "" {
+		preserve("initial commit evidence is missing", nil)
+		return
+	}
+	if err := gitutil.ValidateBranchName(r.BranchName); err != nil {
+		preserve("the created branch identity is invalid", err)
+		return
+	}
+	verdict := svc.checkWorktreeRemovalEligibility(ctx, r.WorktreePath, r.WorktreePath, r.startup.key)
+	if verdict.refusal != "" || verdict.err != nil || verdict.otherLiveTabs {
+		preserve("the worktree is not exclusively eligible", verdict.err)
+		return
+	}
+	info := verdict.info
+	if !pathutil.SamePath(info.CommonDir, r.RepoGitDir) || info.BranchName != r.BranchName || info.HeadSHA != r.initialBranchCommit {
+		preserve("repository, branch or commit changed after creation", nil)
+		return
+	}
+	// Git can remove ignored files without --force. Include them in progress.
+	status, err := gitutil.Output(ctx, r.WorktreePath, "status", "--porcelain", "--untracked-files=normal", "--ignored=matching", "--ignore-submodules=none")
+	if err != nil || strings.TrimSpace(status) != "" {
+		preserve("working-tree state is changed or unreadable", err)
+		return
+	}
+	if reason, err := svc.worktreeRemovalBlockedReason(ctx, r.WorktreePath, info); err != nil || reason != "" {
+		preserve("Git refuses worktree removal", err)
+		return
+	}
+	wt, err := svc.createdWorktreeRecord(ctx, r)
+	if err != nil {
+		preserve("the tracking record changed or cannot be read", err)
+		return
+	}
+	identity, err := svc.captureWorktreeRemovalIdentityLocked(ctx, wt, r.startup.key)
+	if err != nil {
+		preserve("worktree identity cannot be captured", err)
+		return
+	}
+	defer releaseRemovalIdentityBestEffort(identity)
+	journal := &memoryWorktreeRemovalJournal{identity: identity, checkpoint: &worktreeRemovalCheckpoint{
+		WorktreeID: wt.ID, WorktreePath: wt.WorktreePath, RepoRoot: wt.RepoRoot, RepoGitDir: wt.RepoGitDir,
+		Branch: r.BranchName, Commit: r.initialBranchCommit,
+	}}
+	// Automatic cleanup never authorizes Git to discard dirty or untracked
+	// files. Native Git checks that refusal again at the actual removal.
+	if r.startup.preservesArtifact() {
+		preserve("a lifecycle interruption owns the decision", nil)
+		return
+	}
+	if err := svc.removeWorktreeFromDiskRecordedLocked(ctx, wt, journal, []string{"worktree", "remove", wt.WorktreePath}); err != nil {
+		preserve("native removal did not complete", err)
+	}
+}
 
-	var wg errgroup.Group
-	if r.BranchName != "" {
-		wg.Go(func() error {
-			if err := gitutil.DeleteBranch(ctx, r.RepoRoot, r.BranchName); err != nil {
-				slog.Warn("failed to roll back worktree branch",
-					"branch", r.BranchName, "repo_root", r.RepoRoot, "error", err)
-			}
-			return nil
-		})
+func (svc *Service) createdWorktreeRecord(ctx context.Context, r rollbackWorktree) (db.Worktree, error) {
+	if r.WorktreeID == "" {
+		return db.Worktree{WorktreePath: r.WorktreePath, RepoRoot: r.RepoRoot, RepoGitDir: r.RepoGitDir, BranchName: r.BranchName}, nil
 	}
-	if r.WorktreeID != "" {
-		wg.Go(func() error {
-			if err := svc.Queries.DeleteWorktree(ctx, r.WorktreeID); err != nil {
-				slog.Warn("failed to roll back tracked worktree",
-					"worktree_id", r.WorktreeID, "error", err)
-			}
-			return nil
-		})
+	stored, err := svc.Queries.GetWorktreeByID(ctx, r.WorktreeID)
+	if err != nil {
+		return db.Worktree{}, err
 	}
-	_ = wg.Wait()
+	if stored.DeletedAt.Valid || !pathutil.SamePath(stored.WorktreePath, r.WorktreePath) || !pathutil.SamePath(stored.RepoGitDir, r.RepoGitDir) {
+		return db.Worktree{}, errors.New("the created worktree tracking identity changed")
+	}
+	return stored, nil
 }
 
 func (svc *Service) rollbackCreatedBranch(r rollbackBranch) {
 	ctx := bgCtx()
-
-	// Under the repo's index lock. The note below already named "a stale
-	// index.lock, a sibling git fighting for the same repo" among the reasons the
-	// HEAD recovery can fail; this is what stops the worker BEING that sibling.
-	defer svc.lockGitIndex(r.RepoRoot)()
-
-	// Restore the original HEAD first so `git branch -D <created>` isn't
-	// blocked by "Cannot delete branch X checked out at …" — but ALWAYS
-	// attempt the delete even when the restore fails. Otherwise a
-	// non-fatal restore error (a working-tree dirty fragment left by the
-	// partial checkout, a stale index.lock, a sibling git fighting for
-	// the same repo) silently leaves the half-created branch ref behind,
-	// and the caller's "rolling back branch %q" UI label is a lie. An
-	// orphan ref then blocks a retry with the same name.
+	defer svc.lockGitIndex(r.RepoGitDir)()
+	if err := gitutil.ValidateBranchName(r.CreatedBranch); err != nil {
+		slog.Warn("branch rollback has an invalid branch identity; keeping git state", "error", err)
+		return
+	}
+	current, err := queryGitPathInfo(ctx, r.WorkingDir)
+	if err != nil || !pathutil.SamePath(current.CommonDir, r.RepoGitDir) {
+		slog.Warn("branch rollback refused a changed or unreadable repository", "working_dir", r.WorkingDir, "error", err)
+		return
+	}
+	if r.initialBranchCommit == "" {
+		slog.Warn("branch rollback has no initial commit evidence; keeping git state", "branch", r.CreatedBranch)
+		return
+	}
+	repository := gitutil.Repository{GitDir: r.RepoGitDir}
+	reference := "refs/heads/" + r.CreatedBranch
+	tip, err := repository.Output(ctx, "rev-parse", "--verify", reference+"^{commit}")
+	if err != nil || strings.TrimSpace(tip) != r.initialBranchCommit {
+		slog.Warn("branch changed after creation or cannot be read; keeping its checkout and ref", "branch", r.CreatedBranch, "error", err)
+		return
+	}
+	// Preserve a later successful checkout. If restoration itself fails after
+	// changing HEAD, owned-ref cleanup must still inspect whether deletion is safe.
 	var restoreErr error
-	if r.OriginalDetached {
-		restoreErr = gitutil.Run(ctx, r.WorkingDir, "checkout", "--detach", r.OriginalCommit)
-		if restoreErr != nil {
-			slog.Warn("failed to restore detached HEAD before deleting branch",
-				"working_dir", r.WorkingDir, "commit", r.OriginalCommit, "error", restoreErr)
+	if current.BranchName == r.CreatedBranch {
+		if r.OriginalDetached {
+			restoreErr = gitutil.Run(ctx, r.WorkingDir, "checkout", "--detach", r.OriginalCommit)
+		} else {
+			restoreErr = gitutil.Run(ctx, r.WorkingDir, "checkout", r.OriginalBranch)
 		}
-	} else {
-		restoreErr = gitutil.Run(ctx, r.WorkingDir, "checkout", r.OriginalBranch)
 		if restoreErr != nil {
-			slog.Warn("failed to restore branch before deleting branch",
-				"working_dir", r.WorkingDir, "branch", r.OriginalBranch, "error", restoreErr)
+			slog.Warn("failed to restore checkout before branch rollback", "working_dir", r.WorkingDir, "error", restoreErr)
 		}
 	}
-
-	if err := gitutil.DeleteBranch(ctx, r.WorkingDir, r.CreatedBranch); err != nil {
-		// If the restore failed AND the delete failed, git is most
-		// likely refusing because the created branch is still the
-		// current HEAD — log both so the operator sees the chain.
-		if restoreErr != nil {
-			slog.Warn("failed to roll back branch creation after restore failure",
-				"working_dir", r.WorkingDir, "branch", r.CreatedBranch,
-				"restore_error", restoreErr, "delete_error", err)
-		} else {
-			slog.Warn("failed to roll back branch creation",
-				"working_dir", r.WorkingDir, "branch", r.CreatedBranch, "error", err)
-		}
+	if err := deleteUnusedBranchAtCommit(ctx, repository, r.CreatedBranch, r.initialBranchCommit); err != nil {
+		slog.Warn("branch rollback cleanup did not complete", "branch", r.CreatedBranch, "error", err)
 	}
 }
 
@@ -1265,18 +1363,8 @@ func (svc *Service) removeTabFromWorktreeContext(ctx context.Context, tabType le
 
 var errNotGitRepo = errors.New("path is not inside a git repository")
 
-// notGitRepoErr wraps the underlying git stderr that triggered an
-// errNotGitRepo classification, so callers that want to log the real
-// diagnostic (dubious-ownership, EACCES, corrupted config) can do so
-// while routing decisions keyed on `errors.Is(err, errNotGitRepo)`
-// keep working. queryGitPathInfo only returns this type when the
-// 3-arg rev-parse retry exits non-zero with a non-ctx error — every
-// other "not a repo" path still returns errNotGitRepo bare for
-// brevity (those paths don't capture stderr).
-//
-// Unwrap returns the underlying error so a future caller can route
-// on a more specific type (e.g. distinguishing dubious-ownership);
-// the Is method anchors the errNotGitRepo classification chain.
+// notGitRepoErr retains the diagnostic for verified native worktree absence.
+// Config, I/O, policy and cleanup failures never receive this classification.
 type notGitRepoErr struct {
 	underlying error
 }
@@ -1310,16 +1398,42 @@ func wrapNotGitRepo(underlying error) error {
 	return &notGitRepoErr{underlying: underlying}
 }
 
-// unwrappedDiagnostic returns the underlying git stderr / error
-// message that triggered an errNotGitRepo classification, or "" when
-// the caller has no diagnostic to surface (bare errNotGitRepo). Used
-// by the GetGitInfo / GetGitFileStatus handlers to populate the
-// response's error_hint without leaking the "not a git repository"
-// prefix the dialog already renders from is_git_repo=false.
+// unwrappedDiagnostic returns the original diagnostic of verified native
+// absence. A plain errNotGitRepo carries none. Response builders forward the
+// diagnostic as error_hint.
 func unwrappedDiagnostic(err error) string {
 	var n *notGitRepoErr
 	if errors.As(err, &n) && n != nil && n.underlying != nil {
 		return n.underlying.Error()
 	}
 	return ""
+}
+
+// deleteUnusedBranchAtCommit retains branch -D's worktree guard and config cleanup,
+// while the atomic expected-value delete preserves a ref whose tip changed.
+func deleteUnusedBranchAtCommit(ctx context.Context, repository gitutil.Repository, branch, commit string) error {
+	if err := gitutil.ValidateBranchName(branch); err != nil {
+		return err
+	}
+	if commit == "" {
+		return errors.New("branch deletion requires an expected commit")
+	}
+	inUse, err := repository.IsBranchInUse(ctx, branch)
+	if err != nil {
+		return err
+	}
+	if inUse {
+		return fmt.Errorf("branch %q is still checked out in a worktree", branch)
+	}
+	if err := repository.Run(ctx, "update-ref", "--no-deref", "-d", "refs/heads/"+branch, commit); err != nil {
+		return err
+	}
+	if err := repository.Run(ctx, "config", "--remove-section", "branch."+branch); err != nil {
+		native := nativeGitExit(err)
+		missing := "fatal: no such section: branch." + branch + "\n"
+		if native == nil || native.ExitCode() != 128 || string(native.Stderr) != missing {
+			return err
+		}
+	}
+	return nil
 }

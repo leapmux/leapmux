@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sync/atomic"
+	"net/http"
 	"time"
 
 	"connectrpc.com/connect/v2"
@@ -90,7 +90,6 @@ type AuthService struct {
 	captcha       CaptchaService
 	listen        ListenReporter
 	soloGate      *auth.SoloGate
-	hasAnyUser    atomic.Bool // one-way latch: once true, never re-queried
 
 	// The clock GetCurrentUser reports the elevation deadline against. It
 	// must be the same seam UserService grants on, or a test that advances
@@ -103,6 +102,9 @@ type AuthService struct {
 func NewAuthService(deps AuthServiceDeps) *AuthService {
 	if deps.Lifecycle == nil {
 		panic("auth service requires credential lifecycle effects")
+	}
+	if deps.Store != nil && deps.SessionHasher.IsZero() {
+		panic("auth service requires a session secret hasher when a store is configured")
 	}
 	captchaSvc := deps.Captcha
 	if captchaSvc == nil {
@@ -189,34 +191,35 @@ func (s *AuthService) listenAddr() string {
 	return s.listen.PrimaryListenAddr()
 }
 
-// checkHasAnyUser returns true if at least one user exists. A one-way latch
-// caches the result: once true, nothing queries the DB again (users cannot
-// be un-created).
+// checkHasAnyUser reports whether the store currently holds a live user.
+// User deletion can reopen setup, so every decision reads the store.
 func (s *AuthService) checkHasAnyUser(ctx context.Context) (bool, error) {
-	if s.hasAnyUser.Load() {
-		return true, nil
-	}
-	v, err := s.store.Users().HasAny(ctx)
-	if err != nil {
-		return false, err
-	}
-	if v {
-		s.hasAnyUser.Store(true)
-		return true, nil
-	}
-	return false, nil
+	return s.store.Users().HasAny(ctx)
 }
 
-// setSessionCookie writes the cookie for a session that this response
-// established. The sign-in paths share this helper so the secure-name choice
-// and the header write cannot differ between them.
-//
-// Set, not Add: this cookie is the response's answer about the session, and it
-// replaces anything already written for that name. The interceptor's slide
-// refresh does not touch a response that already carries a session cookie,
-// which is what keeps these two writers from overwriting each other.
+// sessionCookieHeaderValues replaces the session family while preserving other
+// cookies, including OAuth browser bindings and unparseable header values.
+func sessionCookieHeaderValues(existing []string, cookies ...*http.Cookie) []string {
+	values := make([]string, 0, len(existing)+len(cookies))
+	for _, line := range existing {
+		cookie, err := http.ParseSetCookie(line)
+		if err == nil && (cookie.Name == auth.CookieName || cookie.Name == auth.SecureCookieName) {
+			continue
+		}
+		values = append(values, line)
+	}
+	for _, cookie := range cookies {
+		values = append(values, cookie.String())
+	}
+	return values
+}
+
+// setSessionCookie writes the active session first and clears its alternate
+// spelling. A handler's result replaces any refresh of either spelling.
 func (s *AuthService) setSessionCookie(ctx context.Context, h *connect.Header, token string, expiresAt time.Time) {
-	h.Set("Set-Cookie", auth.BuildSessionCookie(token, expiresAt, s.secureCookies(ctx)).String())
+	secure := s.secureCookies(ctx)
+	h.SetValues("Set-Cookie", sessionCookieHeaderValues(h.Values("Set-Cookie"),
+		auth.BuildSessionCookie(token, expiresAt, secure), auth.ClearSessionCookie(!secure)))
 }
 
 func (s *AuthService) Login(ctx context.Context, req *leapmuxv1.LoginRequest) (*leapmuxv1.LoginResponse, error) {
@@ -350,8 +353,9 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *leapmuxv1
 		// verification to report.
 		SessionReport: signInReport(ctx, s.store, storedUser, nil, timestamppb.New(elevationExpiresAt)),
 	}
-	info.ResponseHeader().Set("Set-Cookie", auth.BuildSessionCookie(
-		session.Token, session.ExpiresAt, settings.SecureCookiesFor(ctx, snap)).String())
+	secure := settings.SecureCookiesFor(ctx, snap)
+	info.ResponseHeader().SetValues("Set-Cookie", sessionCookieHeaderValues(info.ResponseHeader().Values("Set-Cookie"),
+		auth.BuildSessionCookie(session.Token, session.ExpiresAt, secure), auth.ClearSessionCookie(!secure)))
 	return resp, nil
 }
 
@@ -361,19 +365,22 @@ func (s *AuthService) Logout(ctx context.Context, req *leapmuxv1.LogoutRequest) 
 	if err != nil {
 		return nil, err
 	}
+	secure := s.secureCookies(ctx)
 	sessionID := user.Credential.SessionID()
 	if sessionID != "" {
 		if _, err := s.store.Sessions().Delete(ctx, sessionID); err != nil {
 			// The clearing cookie rides the response header, which the
 			// transport writes alongside the error status: a logged-out
 			// client must drop its cookie even when the store delete failed.
-			info.ResponseHeader().Set("Set-Cookie", auth.ClearSessionCookie(s.secureCookies(ctx)).String())
+			info.ResponseHeader().SetValues("Set-Cookie", sessionCookieHeaderValues(info.ResponseHeader().Values("Set-Cookie"),
+				auth.ClearSessionCookie(secure), auth.ClearSessionCookie(!secure)))
 			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("delete session: %w", err))
 		}
 		s.lifecycle.SessionRevoked(sessionID)
 	}
 	resp := &leapmuxv1.LogoutResponse{}
-	info.ResponseHeader().Set("Set-Cookie", auth.ClearSessionCookie(s.secureCookies(ctx)).String())
+	info.ResponseHeader().SetValues("Set-Cookie", sessionCookieHeaderValues(info.ResponseHeader().Values("Set-Cookie"),
+		auth.ClearSessionCookie(secure), auth.ClearSessionCookie(!secure)))
 	return resp, nil
 }
 
@@ -463,6 +470,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 
 	if s.emailVerificationRequired(ctx) {
 		createdUser, storedCode, err := createUserInTx(ctx, s.store, createUserTxParams{
+			admission:             userCreationRequireExisting,
 			username:              username,
 			displayName:           displayName,
 			pendingEmail:          email,
@@ -494,21 +502,21 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 			}), nil),
 		}
 		s.setSessionCookie(ctx, info.ResponseHeader(), session.Token, session.ExpiresAt)
-		s.hasAnyUser.Store(true)
 		return resp, nil
 	}
 
 	// No verification required — email goes directly to email column.
-	user, err := CreateUser(ctx, s.store, CreateUserParams{
-		Username:              username,
-		PasswordHash:          hash,
-		DisplayName:           displayName,
-		Email:                 email,
-		FirstCredentialExempt: true,
-		IsAdmin:               false,
+	user, _, err := createUserInTx(ctx, s.store, createUserTxParams{
+		admission:             userCreationRequireExisting,
+		username:              username,
+		passwordHash:          hash,
+		displayName:           displayName,
+		email:                 email,
+		firstCredentialExempt: true,
+		isAdmin:               false,
 	})
 	if err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, err)
+		return nil, mapSignupCommitError(err)
 	}
 
 	return s.signUpResponse(ctx, user)
@@ -522,8 +530,8 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 // -- but account recovery stays closed for that address until they verify it
 // from Preferences › Account.
 func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName, email, passwordHash string) (*leapmuxv1.SignUpResponse, error) {
-	// Re-check to handle the race condition where another request created a
-	// user between the initial check and now.
+	// Refuse early if setup ended. The creation transaction checks admission
+	// again while it holds the account lifecycle lock.
 	hasUser, err := s.store.Users().HasAny(ctx)
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
@@ -538,19 +546,19 @@ func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName
 		}
 	}
 
-	user, err := CreateUser(ctx, s.store, CreateUserParams{
-		Username:              username,
-		PasswordHash:          passwordHash,
-		DisplayName:           displayName,
-		Email:                 email,
-		FirstCredentialExempt: true,
-		IsAdmin:               true,
+	user, _, err := createUserInTx(ctx, s.store, createUserTxParams{
+		admission:             userCreationRequireEmpty,
+		username:              username,
+		passwordHash:          passwordHash,
+		displayName:           displayName,
+		email:                 email,
+		firstCredentialExempt: true,
+		isAdmin:               true,
 	})
 	if err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, err)
+		return nil, mapSignupCommitError(err)
 	}
 
-	s.hasAnyUser.Store(true)
 	return s.signUpResponse(ctx, user)
 }
 
@@ -599,11 +607,9 @@ func (s *AuthService) GetOAuthProviders(ctx context.Context, req *leapmuxv1.GetO
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
-	// Sourced from cfg directly, not s.renderer.HubURL — the renderer is
-	// the email-templating seam; OAuth login URLs are an unrelated kind
-	// of absolute URL the OAuth flow needs the frontend to redirect to.
-	// They happen to resolve to the same value today, but they're
-	// conceptually different and should not be conflated.
+	// Resolve login URLs from current settings and the listener reporter.
+	// Keep this separate from s.renderer.BaseURL: login URLs also use the
+	// current request's trusted-proxy HTTPS policy.
 	baseURL := s.baseURL(ctx)
 
 	var pbProviders []*leapmuxv1.OAuthProviderInfo
@@ -707,13 +713,25 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 		return nil, err
 	}
 
+	if !s.signupEnabled(ctx) {
+		return nil, connect.Errorf(connect.CodeFailedPrecondition, "sign-up is disabled")
+	}
+	oauthProvider, provErr := s.store.OAuthProviders().GetByID(ctx, pending.ProviderID)
+	if provErr != nil {
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("lookup provider: %w", provErr))
+	}
+	if !oauthProvider.Enabled {
+		return nil, connect.Errorf(connect.CodeFailedPrecondition, "OAuth provider is disabled")
+	}
+
 	username, err := validate.SanitizeSlug("username", req.GetUsername())
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
-	// OAuth completion is never setup mode: only an administrator can
-	// configure a provider, so an account already exists whenever a pending
-	// OAuth signup does. Both reserved rules therefore apply.
+	// OAuth completion creates ordinary accounts and requires a live existing
+	// user under the creation lock. Pending flows can survive final-user
+	// deletion, so the earlier provider setup cannot supply that guarantee.
+	// Both reserved-username rules apply.
 	if err := s.validateSignupUsername(ctx, username, false); err != nil {
 		return nil, err
 	}
@@ -745,11 +763,6 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 		return nil, wrappedConnectError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
 	}
 
-	// Look up the provider's trust_email setting.
-	oauthProvider, provErr := s.store.OAuthProviders().GetByID(ctx, pending.ProviderID)
-	if provErr != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("lookup provider: %w", provErr))
-	}
 	trustEmail := oauthProvider.TrustEmail
 
 	var userEmail string
@@ -812,6 +825,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 
 	var nextResend *time.Time
 	user, storedCode, err = createUserInTx(ctx, s.store, createUserTxParams{
+		admission:     userCreationRequireExisting,
 		userID:        linkUserID,
 		username:      username,
 		displayName:   displayName,
@@ -862,8 +876,8 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 	}
 	s.setSessionCookie(ctx, info.ResponseHeader(), session.Token, session.ExpiresAt)
 	// The pending row is consumed, so its browser binding has nothing left
-	// to bind. Add, never Set: setSessionCookie above owns the one
-	// Set-Cookie line for the session, and a Set here would delete it.
+	// to bind. Add, never Set: setSessionCookie above owns the session
+	// family, and a Set here would delete its cookie headers.
 	for _, c := range auth.ClearOAuthSignupNonceCookie(signupToken) {
 		info.ResponseHeader().Add("Set-Cookie", c.String())
 	}
@@ -906,8 +920,12 @@ func reencryptPendingTokens(ctx context.Context, ks *keystore.Keystore, st store
 // code. A uniqueness conflict is AlreadyExists with a stable message: the
 // unique index, not the pre-checks, is the real guard against a race, and
 // a permanent conflict reported as a retryable fault with raw driver text
-// misleads both the client and the operator. Everything else is Internal.
+// misleads both the client and the operator. A changed admission state is
+// FailedPrecondition. Every other failure is Internal.
 func mapSignupCommitError(err error) error {
+	if errors.Is(err, errSetupAlreadyComplete) || errors.Is(err, errSignupRequiresExistingUser) {
+		return wrappedConnectError(connect.CodeFailedPrecondition, err)
+	}
 	if errors.Is(err, store.ErrConflict) {
 		return connect.Errorf(connect.CodeAlreadyExists, "username or email already taken")
 	}

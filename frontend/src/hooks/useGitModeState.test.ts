@@ -1,6 +1,6 @@
 import type { GitModeIntent } from '~/hooks/useGitModeState'
 import { createEffect, createRoot } from 'solid-js'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, onTestFinished } from 'vitest'
 import {
   CHANGE_BRANCH_MODES,
   changeBranchInitialIntent,
@@ -21,12 +21,9 @@ import {
 import { shallowEqual } from '~/lib/shallowEqual'
 import { flush } from '~/test-support/async'
 
-// GitOptions uses `shallowEqual` as the createMemo equality callback so
-// it dedupes structurally-identical GitModeIntent values. Without it
-// the memo would emit a fresh object on every keystroke and the
-// parent's onGitModeChange would fire even when the active-mode
-// payload didn't change. The tests below pin the variant-by-variant
-// equality semantics that GitOptions relies on.
+// useGitModeState uses shallowEqual as the intent signal's equality callback.
+// It suppresses downstream notifications when GitOptions or a direct caller
+// supplies an unchanged intent. These tests cover equality for each intent variant.
 
 function switchBranch(checkoutBranch: string, checkoutBranchError: string | null = null): GitModeIntent {
   return { mode: GitMode.SwitchBranch, checkoutBranch, checkoutBranchError }
@@ -194,43 +191,39 @@ describe('useGitModeState', () => {
     // refire every `<Show when={state.gitMode() === X}>` and every
     // gitMode-keyed effect on every keystroke. The memo's default `===`
     // equality drops same-mode emissions.
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const s = useGitModeState()
-        let runs = 0
-        createEffect(() => {
-          void s.gitMode()
-          runs++
-        })
-        await flush()
-        expect(runs).toBe(1)
-
-        // Enter CreateBranch — mode changes, expect a refire.
-        s.handleGitModeChange(createBranch({ createBranch: 'feat', createBranchBase: 'main' }))
-        await flush()
-        expect(runs).toBe(2)
-
-        // Per-keystroke field update inside CreateBranch — mode unchanged,
-        // gitMode() subscriber must stay quiet.
-        s.handleGitModeChange(createBranch({ createBranch: 'featu', createBranchBase: 'main' }))
-        s.handleGitModeChange(createBranch({ createBranch: 'featur', createBranchBase: 'main' }))
-        s.handleGitModeChange(createBranch({ createBranch: 'feature', createBranchBase: 'main' }))
-        await flush()
-        expect(runs).toBe(2)
-
-        // Base-branch field change inside CreateBranch — still same mode.
-        s.handleGitModeChange(createBranch({ createBranch: 'feature', createBranchBase: 'dev' }))
-        await flush()
-        expect(runs).toBe(2)
-
-        // Mode flip — must refire.
-        s.handleGitModeChange(switchBranch('main'))
-        await flush()
-        expect(runs).toBe(3)
-
-        dispose()
-        done()
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const s = useGitModeState()
+      let runs = 0
+      createEffect(() => {
+        void s.gitMode()
+        runs++
       })
+      await flush()
+      expect(runs).toBe(1)
+
+      // Enter CreateBranch — mode changes, expect a refire.
+      s.handleGitModeChange(createBranch({ createBranch: 'feat', createBranchBase: 'main' }))
+      await flush()
+      expect(runs).toBe(2)
+
+      // Per-keystroke field update inside CreateBranch — mode unchanged,
+      // gitMode() subscriber must stay quiet.
+      s.handleGitModeChange(createBranch({ createBranch: 'featu', createBranchBase: 'main' }))
+      s.handleGitModeChange(createBranch({ createBranch: 'featur', createBranchBase: 'main' }))
+      s.handleGitModeChange(createBranch({ createBranch: 'feature', createBranchBase: 'main' }))
+      await flush()
+      expect(runs).toBe(2)
+
+      // Base-branch field change inside CreateBranch — still same mode.
+      s.handleGitModeChange(createBranch({ createBranch: 'feature', createBranchBase: 'dev' }))
+      await flush()
+      expect(runs).toBe(2)
+
+      // Mode flip — must refire.
+      s.handleGitModeChange(switchBranch('main'))
+      await flush()
+      expect(runs).toBe(3)
     })
   })
 
@@ -239,36 +232,32 @@ describe('useGitModeState', () => {
     // intent signal. Without it, every handleGitModeChange call would
     // notify subscribers even when the payload didn't change — defeating
     // every consumer's own dedup work.
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const s = useGitModeState()
-        let runs = 0
-        createEffect(() => {
-          // Track currentIntent identity; bumps on every setIntent call
-          // unless the signal's `equals` short-circuits it.
-          void s.currentIntent()
-          runs++
-        })
-        await flush()
-        expect(runs).toBe(1)
-
-        s.handleGitModeChange(switchBranch('main'))
-        await flush()
-        expect(runs).toBe(2)
-
-        // Identical-shape intent: equals should drop it.
-        s.handleGitModeChange(switchBranch('main'))
-        await flush()
-        expect(runs).toBe(2)
-
-        // A real change does fire.
-        s.handleGitModeChange(switchBranch('dev'))
-        await flush()
-        expect(runs).toBe(3)
-
-        dispose()
-        done()
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const s = useGitModeState()
+      let runs = 0
+      createEffect(() => {
+        // Track currentIntent identity; bumps on every setIntent call
+        // unless the signal's `equals` short-circuits it.
+        void s.currentIntent()
+        runs++
       })
+      await flush()
+      expect(runs).toBe(1)
+
+      s.handleGitModeChange(switchBranch('main'))
+      await flush()
+      expect(runs).toBe(2)
+
+      // Identical-shape intent: equals should drop it.
+      s.handleGitModeChange(switchBranch('main'))
+      await flush()
+      expect(runs).toBe(2)
+
+      // A real change does fire.
+      s.handleGitModeChange(switchBranch('dev'))
+      await flush()
+      expect(runs).toBe(3)
     })
   })
 })
@@ -290,8 +279,7 @@ describe('isChangeBranchMode', () => {
   })
 
   it('exposes exactly the three admitted modes via CHANGE_BRANCH_MODES', () => {
-    // Pin the publicly-exposed tuple so a future addition to GitMode
-    // requires updating both the predicate and the dialog.
+    // Pin the three modes that the predicate and ChangeBranchDialog admit.
     expect([...CHANGE_BRANCH_MODES].toSorted()).toEqual(
       [GitMode.SwitchBranch, GitMode.CreateBranch, GitMode.CreateWorktree].toSorted(),
     )
@@ -527,10 +515,9 @@ describe('changeBranchInitialIntent', () => {
 
 // ----- Labels and the serialized token -----
 //
-// Two tables keyed by GitMode, and both are exhaustive by construction
-// (`Record<GitMode, …>`). The pinned tuple below is what makes THAT claim
-// checkable from a test: a sixth mode fails the compile at the table and this
-// tuple, so neither can be updated alone.
+// The label and token tables use Record<GitMode, …>, so the compiler requires
+// an entry for each mode. The runtime count assertion below detects a new
+// label-table entry missing from the pinned tuple.
 //
 // Do NOT iterate `Object.values(GitMode)` instead. An unannotated numeric enum
 // emits reverse mappings, so it yields TEN entries -- five names and five
@@ -624,8 +611,8 @@ describe('dirtyWarningCopy', () => {
   it('explains the discard-or-fail risk for SwitchBranch', () => {
     const copy = dirtyWarningCopy(GitMode.SwitchBranch)
     expect(copy).toMatch(/uncommitted changes/i)
-    // The switch warning is the only one that mentions failure/discard
-    // — the other two transfer the changes one way or another.
+    // Only the switch warning mentions failure or discarded changes. The
+    // other warnings state whether the new branch or worktree includes the changes.
     expect(copy).toMatch(/fail|discard/i)
   })
 

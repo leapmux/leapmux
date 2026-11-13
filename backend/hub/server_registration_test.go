@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr"
+	"github.com/leapmux/leapmux/internal/sendq"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
@@ -317,7 +319,7 @@ func registeredLocalWorkerForTest(t *testing.T) (*Server, *WorkerCredentials) {
 	t.Helper()
 	st := hubtestutil.OpenTestStore(t)
 	owner := storetest.SeedUser(t, st, "local-token-owner")
-	server := &Server{store: st, hasher: hubtestutil.TestSecretHasher()}
+	server := &Server{store: st, hasher: hubtestutil.TestSecretHasher(), workerConnector: localTokenConnectorForTest(st)}
 	credentials, err := server.RegisterWorker(t.Context(), owner.ID, workerkeystest.Keys(0x31))
 	require.NoError(t, err)
 	return server, credentials
@@ -405,9 +407,17 @@ func TestReissueLocalWorkerTokenPreservesRotationFailures(t *testing.T) {
 	server, credentials := registeredLocalWorkerForTest(t)
 	failure := errors.New("token rotation failed")
 	server.store = retireFaultStore{Store: server.store, failTokenRotation: failure}
+	server.workerConnector = localTokenConnectorForTest(server.store)
 	token, err := server.ReissueLocalWorkerToken(t.Context(), credentials.WorkerID)
 	require.ErrorIs(t, err, failure)
 	assert.NotErrorIs(t, err, store.ErrNotFound)
 	assert.Empty(t, token)
 	hubtestutil.RequireWorkerToken(t, server.store, credentials.WorkerID, credentials.AuthToken)
+}
+
+func localTokenConnectorForTest(st store.Store) *service.WorkerConnectorService {
+	return service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{
+		Store: st, Hasher: hubtestutil.TestSecretHasher(), Clock: quartz.NewReal(),
+		QueuePool: sendq.NewMaxBytesPoolForTest(), DeregisterEffects: service.NewWorkerDeregisterEffects(nil, nil, nil),
+	})
 }

@@ -8,8 +8,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -169,7 +167,6 @@ func (s *controlServer) Close() error {
 	s.closeOnce.Do(func() {
 		s.closeErr = errors.Join(ignoreClosed(s.httpSrv.Close()), ignoreClosed(s.ln.Close()))
 		locallisten.CloseAccepted(s.ln)
-		s.removeSocket()
 	})
 	return s.closeErr
 }
@@ -180,14 +177,6 @@ func ignoreClosed(err error) error {
 		return nil
 	}
 	return err
-}
-
-// removeSocket deletes the Unix socket file; a Windows named pipe needs
-// no removal. A stale socket file would make the next bind fail.
-func (s *controlServer) removeSocket() {
-	if path, ok := strings.CutPrefix(s.liveID.ControlURL, "unix:"); ok {
-		_ = os.Remove(filepath.Clean(path))
-	}
 }
 
 // writeControlJSON emits one JSON document with the content type the

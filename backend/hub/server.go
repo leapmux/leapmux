@@ -274,6 +274,7 @@ type Server struct {
 	backgroundLoops   []<-chan struct{}
 	authContexts      *auth.AuthContextRegistry
 	workerMgr         *workermgr.Manager
+	workerConnector   *service.WorkerConnectorService
 	crdtRegistry      *crdt.Registry
 	revocationWatcher runtimeLeaseWatcher
 	// workerEffects runs the out-of-database half of a worker's removal, for
@@ -378,7 +379,8 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		resolvedByEntry[e] = resolvePort(parsed, ln).DialAddr()
 	}
 	// The local IPC URLs come from the same list. The default factory uses
-	// locallisten so each gets the platform socket (and the 0600 mode on Unix).
+	// locallisten so each gets the platform socket. Unix listeners check native
+	// peer credentials before accepting HTTP and also use mode 0600.
 	// ListenEntries guarantees at least one; see its INVARIANT.
 	var localLns []net.Listener
 	var localListenURLs []string
@@ -1152,6 +1154,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		webSockets:        webSockets,
 		authContexts:      authContexts,
 		workerMgr:         wMgr,
+		workerConnector:   connectorSvc,
 		crdtRegistry:      crdtRegistry,
 		revocationWatcher: revWatcher,
 		workerEffects:     workerEffects,
@@ -1325,12 +1328,19 @@ func (s *Server) ReissueLocalWorkerToken(ctx context.Context, workerID string) (
 		return "", ErrNotAutoRegistered
 	}
 	token := id.Generate()
-	rows, err := s.store.Workers().RotateAuthToken(ctx, store.RotateWorkerAuthTokenParams{ID: workerID, AuthTokenHash: s.hasher.Hash(token)})
+	rows, err := s.workerConnector.RotateWorkerAuthToken(ctx, store.RotateWorkerAuthTokenParams{ID: workerID, AuthTokenHash: s.hasher.Hash(token), ExpectedAuthTokenHash: worker.AuthTokenHash})
 	if err != nil {
 		return "", err
 	}
 	if rows == 0 {
-		return "", fmt.Errorf("reissue local worker %s: %w", workerID, store.ErrNotFound)
+		current, readErr := s.store.Workers().GetByIDIncludeDeleted(ctx, workerID)
+		if readErr != nil {
+			return "", fmt.Errorf("read local worker after token replacement: %w", readErr)
+		}
+		if current.DeletedAt != nil || current.DeregisteringAt != nil {
+			return "", fmt.Errorf("reissue local worker %s: %w", workerID, store.ErrNotFound)
+		}
+		return "", fmt.Errorf("reissue local worker %s: token changed concurrently: %w", workerID, store.ErrConflict)
 	}
 	return token, nil
 }

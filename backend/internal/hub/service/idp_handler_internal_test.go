@@ -130,8 +130,9 @@ func newProviderCacheTestHandler() *IdPHandler {
 // dropProviderLocked never runs for that id again and re-adding the
 // provider mints a fresh one: the entry stayed for the life of the process.
 //
-// A DISABLE is the self-healing case, and only that one: the row survives,
-// so a later request rebuilds and evicts.
+// Disablement needs the same protection. loadEnabledProvider returns
+// 403 before rebuilding a disabled provider, so later requests cannot
+// evict an entry inserted after invalidation.
 func TestCacheProviderRefusesAProviderInvalidatedMidBuild(t *testing.T) {
 	t.Parallel()
 

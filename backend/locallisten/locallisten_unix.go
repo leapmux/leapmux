@@ -14,34 +14,30 @@ import (
 )
 
 func listenUnix(path string) (net.Listener, error) {
+	return listenUnixWithPermissions(path, os.Chmod)
+}
+
+// The permission operation is a private seam for checking connections queued
+// between bind and chmod. Production always supplies os.Chmod.
+func listenUnixWithPermissions(path string, chmod func(string, os.FileMode) error) (net.Listener, error) {
+	if err := unixPeerCredentialsAvailable(); err != nil {
+		return nil, err
+	}
 	if limit := MaxUnixSocketPathBytes(); len(path) > limit {
 		return nil, fmt.Errorf("%w: %q is %d bytes; the limit is %d", ErrSocketPathTooLong, path, len(path), limit)
 	}
 	if err := removeStaleSocket(path); err != nil {
 		return nil, fmt.Errorf("unix listen: %w", err)
 	}
-	listener, err := net.Listen("unix", path)
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		return nil, fmt.Errorf("unix listen %s: %w", path, err)
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
+	if err := chmod(path, 0o600); err != nil {
 		_ = listener.Close()
-		_ = os.Remove(path)
 		return nil, fmt.Errorf("unix listen: chmod %s: %w", path, err)
 	}
-	return &unixListener{Listener: listener, path: path}, nil
-}
-
-// unixListener unlinks the socket file when the listener closes.
-type unixListener struct {
-	net.Listener
-	path string
-}
-
-func (l *unixListener) Close() error {
-	err := l.Listener.Close()
-	_ = os.Remove(l.path)
-	return err
+	return &unixListener{listener: listener, readPeerUID: peerUID}, nil
 }
 
 func listenNpipe(name string) (net.Listener, error) {
@@ -83,4 +79,54 @@ func npipeDialer(string) func(ctx context.Context) (net.Conn, error) {
 	return func(context.Context) (net.Conn, error) {
 		return nil, fmt.Errorf("%w: npipe transport requires Windows", ErrUnsupportedScheme)
 	}
+}
+
+// unixListener admits only the account that runs this process. Its native
+// listener remains the sole owner of socket unlinking. Do not expose AcceptUnix:
+// every returned connection must pass the same credential check.
+type unixListener struct {
+	listener    *net.UnixListener
+	readPeerUID func(*net.UnixConn) (uint32, error)
+}
+
+func (l *unixListener) Accept() (net.Conn, error) {
+	for {
+		connection, err := l.listener.AcceptUnix()
+		if err != nil {
+			return nil, err
+		}
+		uid, err := l.readPeerUID(connection)
+		if err != nil {
+			return nil, fmt.Errorf("unix accept: read peer credentials: %w", errors.Join(err, connection.Close()))
+		}
+		if uid != uint32(os.Geteuid()) {
+			if err := connection.Close(); err != nil {
+				return nil, fmt.Errorf("unix accept: close refused peer: %w", err)
+			}
+			continue
+		}
+		return connection, nil
+	}
+}
+
+func (l *unixListener) Addr() net.Addr { return l.listener.Addr() }
+
+// Close delegates unlinking to the native listener. Repeated closes cannot
+// remove a replacement socket that now occupies the same pathname.
+func (l *unixListener) Close() error { return l.listener.Close() }
+
+func peerUID(connection *net.UnixConn) (uint32, error) {
+	raw, err := connection.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
+	var uid uint32
+	var credentialErr error
+	if err := raw.Control(func(fd uintptr) { uid, credentialErr = socketPeerUID(fd) }); err != nil {
+		return 0, err
+	}
+	if credentialErr != nil {
+		return 0, credentialErr
+	}
+	return uid, nil
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"sync"
 
 	"log/slog"
 	"time"
@@ -44,6 +45,8 @@ const releaseRevokeTimeout = 5 * time.Second
 // crossworker.Client, and the hub via a hub-bound HTTP client.
 type Factory struct {
 	// SocketDir is the absolute private directory for Unix control sockets.
+	// PrepareSocketDirectory sets it for production. Configure the factory before
+	// its first spawn; configuration must remain unchanged while it serves.
 	SocketDir   string
 	WorkerID    string
 	Dispatcher  *channel.Dispatcher
@@ -66,6 +69,16 @@ type Factory struct {
 	// It is the worker service's OwnerUsername, read at every Whoami so a
 	// spawned process sees a rename. nil is allowed (tests) and reports "".
 	OwnerUsername func(userid.UserID) string
+
+	mu             sync.Mutex
+	directory      *SocketDirectory
+	preparationErr error
+	started        bool
+	prepared       bool
+	closed         bool
+	servers        map[*Server]func()
+	closeOnce      sync.Once
+	closeErr       error
 }
 
 // HubBridge is the subset of hub-side calls the IPC router needs.
@@ -125,6 +138,18 @@ func (f *Factory) spawn(socketKind SocketKind, sc spawnCommon) ([]string, func()
 	if sc.UserID.IsZero() {
 		return nil, nil, service.ErrMissingIdentity
 	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return nil, nil, errors.New("control IPC factory is closed")
+	}
+	if f.preparationErr != nil {
+		return nil, nil, f.preparationErr
+	}
+	if f.directory != nil && f.SocketDir != f.directory.Path() {
+		return nil, nil, errors.New("control IPC socket directory differs from its prepared namespace")
+	}
+	f.started = true
 	if runtime.GOOS != "windows" {
 		if !filepath.IsAbs(f.SocketDir) {
 			return nil, nil, fmt.Errorf("controlipc: socket directory must be absolute, got %q", f.SocketDir)
@@ -165,6 +190,10 @@ func (f *Factory) spawn(socketKind SocketKind, sc spawnCommon) ([]string, func()
 		f.Delegation.Acquire(sc.UserID)
 	}
 	cleanup := f.makeCleanup(socketKind, sc, srv)
+	if f.servers == nil {
+		f.servers = make(map[*Server]func())
+	}
+	f.servers[srv] = cleanup
 	return EnvVars(socketURL, token, tokenInfo), cleanup, nil
 }
 
@@ -227,17 +256,23 @@ func (f *Factory) TerminalSpawning(info service.TerminalSpawnInfo) ([]string, fu
 // spawn's own entity: a quake terminal has no advertised TabID, so logging
 // TabID would omit the identity of the terminal being stopped.
 func (f *Factory) makeCleanup(socketKind SocketKind, sc spawnCommon, srv *Server) func() {
+	var once sync.Once
 	return func() {
-		if err := srv.Close(); err != nil {
-			slog.Warn("remote IPC close failed", socketKind.logKey(), sc.SocketID, "error", err)
-		}
-		if f.Delegation != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), releaseRevokeTimeout)
-			defer cancel()
-			if err := f.Delegation.Release(ctx, sc.UserID); err != nil {
-				slog.Warn("delegation release failed", socketKind.logKey(), sc.SocketID, "user_id", sc.UserID, "error", err)
+		once.Do(func() {
+			if err := srv.Close(); err != nil {
+				slog.Warn("remote IPC close failed", socketKind.logKey(), sc.SocketID, "error", err)
 			}
-		}
+			f.mu.Lock()
+			delete(f.servers, srv)
+			f.mu.Unlock()
+			if f.Delegation != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), releaseRevokeTimeout)
+				defer cancel()
+				if err := f.Delegation.Release(ctx, sc.UserID); err != nil {
+					slog.Warn("delegation release failed", socketKind.logKey(), sc.SocketID, "user_id", sc.UserID, "error", err)
+				}
+			}
+		})
 	}
 }
 
@@ -313,4 +348,54 @@ func (a hubBridgeAdapter) CallInner(ctx context.Context, userID userid.UserID, p
 		return nil, errors.New("hub bridge not configured")
 	}
 	return a.b.CallHub(ctx, userID, procedure, payload)
+}
+
+// PrepareSocketDirectory acquires and sweeps the selected namespace before the
+// factory serves a spawn. A refusal remains attached to every later spawn.
+func (f *Factory) PrepareSocketDirectory(dataDir string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed || f.started || f.prepared {
+		return errors.New("control IPC directory must be prepared once before spawning")
+	}
+	f.prepared = true
+	directory, err := PrepareSocketDirectory(dataDir)
+	if err == nil {
+		err = directory.Sweep()
+	}
+	if err != nil {
+		f.preparationErr = errors.Join(err, directory.Close())
+		return f.preparationErr
+	}
+	f.directory = directory
+	f.SocketDir = directory.Path()
+	f.preparationErr = nil
+	return nil
+}
+
+// Close stops admission and closes every retained listener before releasing the
+// directory lock. Delegation cleanup completes outside the factory mutex.
+func (f *Factory) Close() error {
+	if f == nil {
+		return nil
+	}
+	f.closeOnce.Do(func() {
+		f.mu.Lock()
+		f.closed = true
+		cleanups := make([]func(), 0, len(f.servers))
+		var failures []error
+		for server, cleanup := range f.servers {
+			failures = append(failures, server.Close())
+			cleanups = append(cleanups, cleanup)
+		}
+		failures = append(failures, f.directory.Close())
+		f.mu.Unlock()
+		var pending sync.WaitGroup
+		for _, cleanup := range cleanups {
+			pending.Go(cleanup)
+		}
+		pending.Wait()
+		f.closeErr = errors.Join(failures...)
+	})
+	return f.closeErr
 }

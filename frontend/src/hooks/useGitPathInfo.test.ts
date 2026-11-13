@@ -1,6 +1,6 @@
 import type { GetGitInfoResponse } from '~/generated/proto/leapmux/v1/git_pb'
-import { createEffect, createRoot, createSignal } from 'solid-js'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createEffect, createRoot, createSignal, getOwner, runWithOwner } from 'solid-js'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { deferred, flush } from '~/test-support/async'
 
 const getGitInfo = vi.fn<(workerId: string, req: { workerId: string, path: string }) => Promise<GetGitInfoResponse>>()
@@ -20,10 +20,12 @@ function gitResp(overrides: Partial<GetGitInfoResponse> = {}): GetGitInfoRespons
     isGitRepo: true,
     isWorktree: false,
     repoRoot: '/repo',
+    mainWorktreeRoot: overrides.repoRoot ?? '/repo',
     repoDirName: 'repo',
     isRepoRoot: true,
     isWorktreeRoot: false,
     currentBranch: 'main',
+    attachedBranch: overrides.currentBranch ?? 'main',
     originUrl: '',
     ...overrides,
   } as GetGitInfoResponse
@@ -35,19 +37,16 @@ beforeEach(() => {
 
 describe('useGitPathInfo', () => {
   it('does not probe when workerId or path is empty', async () => {
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId] = createSignal('')
-        const [path] = createSignal('/repo')
-        const info = useGitPathInfo(workerId, path)
-        await flush()
-        expect(getGitInfo).not.toHaveBeenCalled()
-        expect(info.loading()).toBe(false)
-        expect(info.info().isGitRepo).toBe(false)
-        expect(info.showGitOptions()).toBe(false)
-        dispose()
-        done()
-      })
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId] = createSignal('')
+      const [path] = createSignal('/repo')
+      const info = useGitPathInfo(workerId, path)
+      await flush()
+      expect(getGitInfo).not.toHaveBeenCalled()
+      expect(info.loading()).toBe(false)
+      expect(info.info().isGitRepo).toBe(false)
+      expect(info.showGitOptions()).toBe(false)
     })
   })
 
@@ -60,29 +59,26 @@ describe('useGitPathInfo', () => {
       repoDirName: 'repo',
       currentBranch: 'feature-x',
     }))
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId, setWorkerId] = createSignal('')
-        const [path] = createSignal('/repo')
-        const info = useGitPathInfo(workerId, path)
-        setWorkerId('A')
-        await flush()
-        expect(getGitInfo).toHaveBeenCalledTimes(1)
-        expect(getGitInfo.mock.calls[0]).toEqual([
-          'A',
-          { path: '/repo' },
-        ])
-        expect(info.info().isGitRepo).toBe(true)
-        expect(info.info().isRepoRoot).toBe(true)
-        expect(info.info().isWorktreeRoot).toBe(false)
-        expect(info.info().repoRoot).toBe('/repo')
-        expect(info.info().repoDirName).toBe('repo')
-        expect(info.info().currentBranch).toBe('feature-x')
-        expect(info.showGitOptions()).toBe(true)
-        expect(info.loading()).toBe(false)
-        dispose()
-        done()
-      })
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId, setWorkerId] = createSignal('')
+      const [path] = createSignal('/repo')
+      const info = useGitPathInfo(workerId, path)
+      setWorkerId('A')
+      await flush()
+      expect(getGitInfo).toHaveBeenCalledTimes(1)
+      expect(getGitInfo.mock.calls[0]).toEqual([
+        'A',
+        { path: '/repo' },
+      ])
+      expect(info.info().isGitRepo).toBe(true)
+      expect(info.info().isRepoRoot).toBe(true)
+      expect(info.info().isWorktreeRoot).toBe(false)
+      expect(info.info().repoRoot).toBe('/repo')
+      expect(info.info().repoDirName).toBe('repo')
+      expect(info.info().currentBranch).toBe('feature-x')
+      expect(info.showGitOptions()).toBe(true)
+      expect(info.loading()).toBe(false)
     })
   })
 
@@ -92,20 +88,17 @@ describe('useGitPathInfo', () => {
       isRepoRoot: false,
       isWorktreeRoot: false,
     }))
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId, setWorkerId] = createSignal('')
-        const [path] = createSignal('/repo/subdir')
-        const info = useGitPathInfo(workerId, path)
-        setWorkerId('A')
-        await flush()
-        // Inside a repo but not at the root -- GitOptions hides itself,
-        // since it can't safely treat the path as a repo to mutate.
-        expect(info.info().isGitRepo).toBe(true)
-        expect(info.showGitOptions()).toBe(false)
-        dispose()
-        done()
-      })
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId, setWorkerId] = createSignal('')
+      const [path] = createSignal('/repo/subdir')
+      const info = useGitPathInfo(workerId, path)
+      setWorkerId('A')
+      await flush()
+      // Inside a repo but not at the root -- GitOptions hides itself,
+      // since it can't safely treat the path as a repo to mutate.
+      expect(info.info().isGitRepo).toBe(true)
+      expect(info.showGitOptions()).toBe(false)
     })
   })
 
@@ -115,37 +108,31 @@ describe('useGitPathInfo', () => {
       isRepoRoot: false,
       isWorktreeRoot: true,
     }))
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId, setWorkerId] = createSignal('')
-        const [path] = createSignal('/repo/wt')
-        const info = useGitPathInfo(workerId, path)
-        setWorkerId('A')
-        await flush()
-        expect(info.showGitOptions()).toBe(true)
-        dispose()
-        done()
-      })
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId, setWorkerId] = createSignal('')
+      const [path] = createSignal('/repo/wt')
+      const info = useGitPathInfo(workerId, path)
+      setWorkerId('A')
+      await flush()
+      expect(info.showGitOptions()).toBe(true)
     })
   })
 
   it('loading flips true during the probe and back to false on resolve', async () => {
     const d = deferred<GetGitInfoResponse>()
     getGitInfo.mockImplementationOnce(() => d.promise)
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId, setWorkerId] = createSignal('')
-        const [path] = createSignal('/repo')
-        const info = useGitPathInfo(workerId, path)
-        setWorkerId('A')
-        await flush()
-        expect(info.loading()).toBe(true)
-        d.resolve(gitResp())
-        await flush()
-        expect(info.loading()).toBe(false)
-        dispose()
-        done()
-      })
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId, setWorkerId] = createSignal('')
+      const [path] = createSignal('/repo')
+      const info = useGitPathInfo(workerId, path)
+      setWorkerId('A')
+      await flush()
+      expect(info.loading()).toBe(true)
+      d.resolve(gitResp())
+      await flush()
+      expect(info.loading()).toBe(false)
     })
   })
 
@@ -153,77 +140,128 @@ describe('useGitPathInfo', () => {
     getGitInfo
       .mockResolvedValueOnce(gitResp({ isWorktreeRoot: true, isRepoRoot: false, repoRoot: '/repo' }))
       .mockResolvedValueOnce(gitResp({ isWorktreeRoot: false, isRepoRoot: true, repoRoot: '/repo' }))
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId, setWorkerId] = createSignal('')
-        const [path, setPath] = createSignal('/repo/wt')
-        const info = useGitPathInfo(workerId, path)
-        setWorkerId('A')
-        await flush()
-        expect(info.showGitOptions()).toBe(true)
-        expect(info.info().isWorktreeRoot).toBe(true)
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId, setWorkerId] = createSignal('')
+      const [path, setPath] = createSignal('/repo/wt')
+      const info = useGitPathInfo(workerId, path)
+      setWorkerId('A')
+      await flush()
+      expect(info.showGitOptions()).toBe(true)
+      expect(info.info().isWorktreeRoot).toBe(true)
 
-        // Caller remaps to the repo root. The hook intentionally
-        // skips setLoading(true) when showGitOptions is already
-        // true, so consumers don't see the GitOptions panel flicker
-        // out during the re-probe.
-        setPath('/repo')
-        await flush()
-        expect(getGitInfo).toHaveBeenCalledTimes(2)
-        expect(info.info().isWorktreeRoot).toBe(false)
-        expect(info.info().isRepoRoot).toBe(true)
-        expect(info.showGitOptions()).toBe(true)
-        dispose()
-        done()
-      })
+      // Caller remaps to the repo root. The hook intentionally
+      // skips setLoading(true) when showGitOptions is already
+      // true, so consumers don't see the GitOptions panel flicker
+      // out during the re-probe.
+      setPath('/repo')
+      await flush()
+      expect(getGitInfo).toHaveBeenCalledTimes(2)
+      expect(info.info().isWorktreeRoot).toBe(false)
+      expect(info.info().isRepoRoot).toBe(true)
+      expect(info.showGitOptions()).toBe(true)
     })
   })
 
   it('resets identity to falsy values when workerId becomes empty after a successful probe', async () => {
     getGitInfo.mockResolvedValueOnce(gitResp({ isRepoRoot: true }))
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId, setWorkerId] = createSignal('')
-        const [path] = createSignal('/repo')
-        const info = useGitPathInfo(workerId, path)
-        setWorkerId('A')
-        await flush()
-        expect(info.info().isGitRepo).toBe(true)
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId, setWorkerId] = createSignal('')
+      const [path] = createSignal('/repo')
+      const info = useGitPathInfo(workerId, path)
+      setWorkerId('A')
+      await flush()
+      expect(info.info().isGitRepo).toBe(true)
 
-        // Worker disconnects / dialog reuses the hook for a new flow.
-        setWorkerId('')
-        await flush()
-        expect(info.info().isGitRepo).toBe(false)
-        expect(info.info().repoRoot).toBe('')
-        expect(info.info().currentBranch).toBe('')
-        expect(info.showGitOptions()).toBe(false)
-        dispose()
-        done()
-      })
+      // Worker disconnects / dialog reuses the hook for a new flow.
+      setWorkerId('')
+      await flush()
+      expect(info.info().isGitRepo).toBe(false)
+      expect(info.info().repoRoot).toBe('')
+      expect(info.info().currentBranch).toBe('')
+      expect(info.showGitOptions()).toBe(false)
     })
   })
 
   it('on RPC failure: logs but does not throw, and clears identity', async () => {
     getGitInfo.mockResolvedValueOnce(gitResp({ isGitRepo: true, isRepoRoot: true }))
     getGitInfo.mockRejectedValueOnce(new Error('boom'))
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId, setWorkerId] = createSignal('')
-        const [path, setPath] = createSignal('/repo')
-        const info = useGitPathInfo(workerId, path)
-        setWorkerId('A')
-        await flush()
-        expect(info.info().isGitRepo).toBe(true)
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId, setWorkerId] = createSignal('')
+      const [path, setPath] = createSignal('/repo')
+      const info = useGitPathInfo(workerId, path)
+      setWorkerId('A')
+      await flush()
+      expect(info.info().isGitRepo).toBe(true)
 
-        // Re-trigger via path change — the production-only refresh
-        // pathway (the hook never exposed a manual refresh API).
-        setPath('/repo-2')
-        await flush()
-        expect(info.info().isGitRepo).toBe(false)
-        expect(info.loading()).toBe(false)
-        dispose()
-        done()
+      // Re-trigger via path change — the production-only refresh
+      // pathway (the hook never exposed a manual refresh API).
+      setPath('/repo-2')
+      await flush()
+      expect(info.info().isGitRepo).toBe(false)
+      expect(info.loading()).toBe(false)
+    })
+  })
+
+  it.each(['no-op', 'same-path'] as const)('publishes a worktree snapshot after a %s remap callback', async (behavior) => {
+    getGitInfo
+      .mockResolvedValueOnce(gitResp({
+        isRepoRoot: false,
+        isWorktreeRoot: true,
+        repoRoot: '/repo',
+        currentBranch: 'feature',
+      }))
+      .mockResolvedValueOnce(gitResp({
+        isRepoRoot: false,
+        isWorktreeRoot: true,
+        repoRoot: '/repo',
+        currentBranch: 'other-feature',
+      }))
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId] = createSignal('A')
+      const [path, setPath] = createSignal('/wt')
+      const remap = vi.fn(() => {
+        if (behavior === 'same-path')
+          setPath(path())
       })
+      const info = useGitPathInfo(workerId, path, { remapWorktreeRoot: remap })
+      await flush()
+      expect(remap).toHaveBeenCalledExactlyOnceWith('/repo')
+      expect(getGitInfo).toHaveBeenCalledTimes(1)
+      expect(info.info().currentBranch).toBe('feature')
+      expect(info.info().isWorktreeRoot).toBe(true)
+      expect(info.showGitOptions()).toBe(true)
+
+      setPath('/other-wt')
+      await flush()
+      expect(getGitInfo).toHaveBeenCalledTimes(2)
+      expect(remap).toHaveBeenCalledTimes(1)
+      expect(info.info().currentBranch).toBe('other-feature')
+    })
+  })
+
+  it('discards a first worktree probe after the owner is disposed', async () => {
+    const probe = deferred<GetGitInfoResponse>()
+    getGitInfo.mockReturnValueOnce(probe.promise)
+    const remap = vi.fn()
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const info = useGitPathInfo(() => 'A', () => '/wt', { remapWorktreeRoot: remap })
+      await flush()
+      expect(getGitInfo).toHaveBeenCalledTimes(1)
+      dispose()
+      probe.resolve(gitResp({
+        isRepoRoot: false,
+        isWorktreeRoot: true,
+        repoRoot: '/repo',
+        currentBranch: 'stale',
+      }))
+      await flush()
+      expect(remap).not.toHaveBeenCalled()
+      expect(info.info().currentBranch).toBe('')
     })
   })
 
@@ -232,23 +270,20 @@ describe('useGitPathInfo', () => {
       .mockResolvedValueOnce(gitResp({ isWorktreeRoot: true, isRepoRoot: false, repoRoot: '/main/repo' }))
       .mockResolvedValueOnce(gitResp({ isWorktreeRoot: false, isRepoRoot: true, repoRoot: '/main/repo' }))
     const remap = vi.fn<(p: string) => void>()
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId, setWorkerId] = createSignal('')
-        const [path, setPath] = createSignal('/main/repo-worktrees/feature')
-        remap.mockImplementation(setPath)
-        useGitPathInfo(workerId, path, { remapWorktreeRoot: remap })
-        setWorkerId('A')
-        await flush()
-        expect(remap).toHaveBeenCalledTimes(1)
-        expect(remap).toHaveBeenCalledWith('/main/repo')
-        // Second probe lands on the canonical repo root — remap must
-        // NOT fire again (it's one-shot, and the firstProbeSeen flag controls it).
-        expect(getGitInfo).toHaveBeenCalledTimes(2)
-        expect(remap).toHaveBeenCalledTimes(1)
-        dispose()
-        done()
-      })
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId, setWorkerId] = createSignal('')
+      const [path, setPath] = createSignal('/main/repo-worktrees/feature')
+      remap.mockImplementation(setPath)
+      useGitPathInfo(workerId, path, { remapWorktreeRoot: remap })
+      setWorkerId('A')
+      await flush()
+      expect(remap).toHaveBeenCalledTimes(1)
+      expect(remap).toHaveBeenCalledWith('/main/repo')
+      // Second probe lands on the canonical repo root — remap must
+      // NOT fire again (it's one-shot, and the firstProbeSeen flag controls it).
+      expect(getGitInfo).toHaveBeenCalledTimes(2)
+      expect(remap).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -267,58 +302,56 @@ describe('useGitPathInfo', () => {
       .mockReturnValueOnce(rootProbe.promise)
     const remap = vi.fn<(p: string) => void>()
     const seen: string[] = []
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId, setWorkerId] = createSignal('')
-        const [path, setPath] = createSignal('/main/repo-worktrees/feature')
-        remap.mockImplementation(setPath)
-        const info = useGitPathInfo(workerId, path, { remapWorktreeRoot: remap })
-        createEffect(() => {
-          seen.push(info.info().currentBranch)
-        })
-        setWorkerId('A')
-        // First probe (worktree) lands.
-        wtProbe.resolve(gitResp({
-          isWorktreeRoot: true,
-          isRepoRoot: false,
-          repoRoot: '/main/repo',
-          currentBranch: 'worktree-feature',
-        }))
-        await flush()
-        // Second probe (repo root) lands.
-        rootProbe.resolve(gitResp({
-          isWorktreeRoot: false,
-          isRepoRoot: true,
-          repoRoot: '/main/repo',
-          currentBranch: 'main',
-        }))
-        await flush()
-        // The first observed branch is the initial empty string (from
-        // EMPTY_INFO). The next non-empty value must be 'main' (repo
-        // root) — never 'worktree-feature'.
-        expect(seen[0]).toBe('')
-        expect(seen).not.toContain('worktree-feature')
-        expect(info.info().currentBranch).toBe('main')
-        dispose()
-        done()
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId, setWorkerId] = createSignal('')
+      const [path, setPath] = createSignal('/main/repo-worktrees/feature')
+      remap.mockImplementation(setPath)
+      const info = useGitPathInfo(workerId, path, { remapWorktreeRoot: remap })
+      createEffect(() => {
+        seen.push(info.info().currentBranch)
       })
+      setWorkerId('A')
+      // First probe (worktree) lands.
+      wtProbe.resolve(gitResp({
+        isWorktreeRoot: true,
+        isRepoRoot: false,
+        repoRoot: '/main/repo',
+        currentBranch: 'worktree-feature',
+      }))
+      await flush()
+      expect(getGitInfo).toHaveBeenCalledTimes(2)
+      expect(seen).toEqual([''])
+      expect(info.info().currentBranch).toBe('')
+      expect(info.showGitOptions()).toBe(false)
+      // Second probe (repo root) lands.
+      rootProbe.resolve(gitResp({
+        isWorktreeRoot: false,
+        isRepoRoot: true,
+        repoRoot: '/main/repo',
+        currentBranch: 'main',
+      }))
+      await flush()
+      // The first observed branch is the initial empty string (from
+      // EMPTY_INFO). The next non-empty value must be 'main' (repo
+      // root) — never 'worktree-feature'.
+      expect(seen[0]).toBe('')
+      expect(seen).not.toContain('worktree-feature')
+      expect(info.info().currentBranch).toBe('main')
     })
   })
 
   it('does not call the remapWorktreeRoot option when first probe is a regular repo root', async () => {
     getGitInfo.mockResolvedValueOnce(gitResp({ isWorktreeRoot: false, isRepoRoot: true, repoRoot: '/repo' }))
     const remap = vi.fn<(p: string) => void>()
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId, setWorkerId] = createSignal('')
-        const [path] = createSignal('/repo')
-        useGitPathInfo(workerId, path, { remapWorktreeRoot: remap })
-        setWorkerId('A')
-        await flush()
-        expect(remap).not.toHaveBeenCalled()
-        dispose()
-        done()
-      })
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId, setWorkerId] = createSignal('')
+      const [path] = createSignal('/repo')
+      useGitPathInfo(workerId, path, { remapWorktreeRoot: remap })
+      setWorkerId('A')
+      await flush()
+      expect(remap).not.toHaveBeenCalled()
     })
   })
 
@@ -328,17 +361,14 @@ describe('useGitPathInfo', () => {
     // and re-probe an empty wid/path no-op).
     getGitInfo.mockResolvedValueOnce(gitResp({ isWorktreeRoot: true, isRepoRoot: false, repoRoot: '' }))
     const remap = vi.fn<(p: string) => void>()
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId, setWorkerId] = createSignal('')
-        const [path] = createSignal('/some/path')
-        useGitPathInfo(workerId, path, { remapWorktreeRoot: remap })
-        setWorkerId('A')
-        await flush()
-        expect(remap).not.toHaveBeenCalled()
-        dispose()
-        done()
-      })
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId, setWorkerId] = createSignal('')
+      const [path] = createSignal('/some/path')
+      useGitPathInfo(workerId, path, { remapWorktreeRoot: remap })
+      setWorkerId('A')
+      await flush()
+      expect(remap).not.toHaveBeenCalled()
     })
   })
 
@@ -351,22 +381,19 @@ describe('useGitPathInfo', () => {
       .mockResolvedValueOnce(gitResp({ isWorktreeRoot: false, isRepoRoot: true, repoRoot: '/repo' }))
       .mockResolvedValueOnce(gitResp({ isWorktreeRoot: true, isRepoRoot: false, repoRoot: '/other' }))
     const remap = vi.fn<(p: string) => void>()
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId, setWorkerId] = createSignal('')
-        const [path, setPath] = createSignal('/repo')
-        useGitPathInfo(workerId, path, { remapWorktreeRoot: remap })
-        setWorkerId('A')
-        await flush()
-        expect(remap).not.toHaveBeenCalled()
-        setPath('/other-worktree')
-        await flush()
-        // firstProbeResult is no longer null, so even though this probe
-        // landed on a worktree root, the remap must not fire.
-        expect(remap).not.toHaveBeenCalled()
-        dispose()
-        done()
-      })
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId, setWorkerId] = createSignal('')
+      const [path, setPath] = createSignal('/repo')
+      useGitPathInfo(workerId, path, { remapWorktreeRoot: remap })
+      setWorkerId('A')
+      await flush()
+      expect(remap).not.toHaveBeenCalled()
+      setPath('/other-worktree')
+      await flush()
+      // firstProbeSeen is already true for this worker, so a later path that
+      // resolves to a worktree root must not trigger remapping.
+      expect(remap).not.toHaveBeenCalled()
     })
   })
 
@@ -382,23 +409,20 @@ describe('useGitPathInfo', () => {
       .mockResolvedValueOnce(gitResp({ isWorktreeRoot: false, isRepoRoot: true, repoRoot: '/repo-A' }))
       .mockResolvedValueOnce(gitResp({ isWorktreeRoot: true, isRepoRoot: false, repoRoot: '/repo-B-main' }))
     const remap = vi.fn<(p: string) => void>()
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId, setWorkerId] = createSignal('A')
-        const [path] = createSignal('/some/path')
-        useGitPathInfo(workerId, path, { remapWorktreeRoot: remap })
-        await flush()
-        // First probe on worker A — regular repo root, no remap call.
-        expect(remap).not.toHaveBeenCalled()
-        // Worker swap to B; B's probe lands on a worktree root and the
-        // remap MUST fire (pre-fix it would have been silently skipped).
-        setWorkerId('B')
-        await flush()
-        expect(remap).toHaveBeenCalledTimes(1)
-        expect(remap).toHaveBeenCalledWith('/repo-B-main')
-        dispose()
-        done()
-      })
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId, setWorkerId] = createSignal('A')
+      const [path] = createSignal('/some/path')
+      useGitPathInfo(workerId, path, { remapWorktreeRoot: remap })
+      await flush()
+      // First probe on worker A — regular repo root, no remap call.
+      expect(remap).not.toHaveBeenCalled()
+      // Worker swap to B; B's probe lands on a worktree root and the
+      // remap MUST fire (pre-fix it would have been silently skipped).
+      setWorkerId('B')
+      await flush()
+      expect(remap).toHaveBeenCalledTimes(1)
+      expect(remap).toHaveBeenCalledWith('/repo-B-main')
     })
   })
 
@@ -411,20 +435,17 @@ describe('useGitPathInfo', () => {
       .mockResolvedValueOnce(gitResp({ isWorktreeRoot: true, isRepoRoot: false, repoRoot: '/repo' }))
       .mockResolvedValueOnce(gitResp({ isWorktreeRoot: true, isRepoRoot: false, repoRoot: '/repo' }))
     const remap = vi.fn<(p: string) => void>()
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId] = createSignal('A')
-        const [path, setPath] = createSignal('/wt-1')
-        useGitPathInfo(workerId, path, { remapWorktreeRoot: remap })
-        await flush()
-        expect(remap).toHaveBeenCalledTimes(1)
-        // Path swap on same worker — no re-remap.
-        setPath('/wt-2')
-        await flush()
-        expect(remap).toHaveBeenCalledTimes(1)
-        dispose()
-        done()
-      })
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId] = createSignal('A')
+      const [path, setPath] = createSignal('/wt-1')
+      useGitPathInfo(workerId, path, { remapWorktreeRoot: remap })
+      await flush()
+      expect(remap).toHaveBeenCalledTimes(1)
+      // Path swap on same worker — no re-remap.
+      setPath('/wt-2')
+      await flush()
+      expect(remap).toHaveBeenCalledTimes(1)
     })
   })
 
@@ -433,25 +454,22 @@ describe('useGitPathInfo', () => {
       .mockResolvedValueOnce(gitResp({ isWorktreeRoot: true, isRepoRoot: false, repoRoot: '/main/repo' }))
       .mockResolvedValueOnce(gitResp({ isWorktreeRoot: true, isRepoRoot: false, repoRoot: '/other/repo' }))
     const remap = vi.fn<(p: string) => void>()
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId] = createSignal('A')
-        const [path, setPath] = createSignal('/main/wt')
-        useGitPathInfo(workerId, path, { remapWorktreeRoot: remap })
-        await flush()
-        expect(remap).toHaveBeenCalledTimes(1)
-        expect(remap).toHaveBeenCalledWith('/main/repo')
-        // Path cycles to empty — flag resets. Next non-empty probe
-        // counts as a fresh first probe.
-        setPath('')
-        await flush()
-        setPath('/other/wt')
-        await flush()
-        expect(remap).toHaveBeenCalledTimes(2)
-        expect(remap).toHaveBeenLastCalledWith('/other/repo')
-        dispose()
-        done()
-      })
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId] = createSignal('A')
+      const [path, setPath] = createSignal('/main/wt')
+      useGitPathInfo(workerId, path, { remapWorktreeRoot: remap })
+      await flush()
+      expect(remap).toHaveBeenCalledTimes(1)
+      expect(remap).toHaveBeenCalledWith('/main/repo')
+      // Path cycles to empty — flag resets. Next non-empty probe
+      // counts as a fresh first probe.
+      setPath('')
+      await flush()
+      setPath('/other/wt')
+      await flush()
+      expect(remap).toHaveBeenCalledTimes(2)
+      expect(remap).toHaveBeenLastCalledWith('/other/repo')
     })
   })
 
@@ -470,31 +488,29 @@ describe('useGitPathInfo', () => {
     getGitInfo
       .mockResolvedValueOnce(sameResp)
       .mockResolvedValueOnce(sameResp)
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId] = createSignal('A')
-        const [path, setPath] = createSignal('/repo')
-        const info = useGitPathInfo(workerId, path)
-        await flush()
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const owner = getOwner()
+      const [workerId] = createSignal('A')
+      const [path, setPath] = createSignal('/repo')
+      const info = useGitPathInfo(workerId, path)
+      await flush()
 
-        let observed = 0
-        createEffect(() => {
-          void info.info().currentBranch
-          observed++
-        })
-        // First effect-run is the initial subscription; baseline.
-        expect(observed).toBe(1)
+      let observed = 0
+      runWithOwner(owner, () => createEffect(() => {
+        void info.info().currentBranch
+        observed++
+      }))
+      // First effect-run is the initial subscription; baseline.
+      expect(observed).toBe(1)
 
-        // Re-probe by changing the path the production reactive
-        // pathway uses to retrigger.
-        setPath('/repo-2')
-        await flush()
-        // Second probe returned an identical payload — the guard skips
-        // setInfo, so the effect must NOT re-run.
-        expect(observed).toBe(1)
-        dispose()
-        done()
-      })
+      // Re-probe by changing the path the production reactive
+      // pathway uses to retrigger.
+      setPath('/repo-2')
+      await flush()
+      // Second probe returned an identical payload — the guard skips
+      // setInfo, so the effect must NOT re-run.
+      expect(observed).toBe(1)
     })
   })
 
@@ -505,25 +521,23 @@ describe('useGitPathInfo', () => {
     getGitInfo
       .mockResolvedValueOnce(gitResp({ isRepoRoot: true, repoRoot: '/repo', currentBranch: 'main' }))
       .mockResolvedValueOnce(gitResp({ isRepoRoot: true, repoRoot: '/repo', currentBranch: 'feature' }))
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId] = createSignal('A')
-        const [path, setPath] = createSignal('/repo')
-        const info = useGitPathInfo(workerId, path)
-        await flush()
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const owner = getOwner()
+      const [workerId] = createSignal('A')
+      const [path, setPath] = createSignal('/repo')
+      const info = useGitPathInfo(workerId, path)
+      await flush()
 
-        const seen: string[] = []
-        createEffect(() => {
-          seen.push(info.info().currentBranch)
-        })
-        expect(seen).toEqual(['main'])
+      const seen: string[] = []
+      runWithOwner(owner, () => createEffect(() => {
+        seen.push(info.info().currentBranch)
+      }))
+      expect(seen).toEqual(['main'])
 
-        setPath('/repo-2')
-        await flush()
-        expect(seen).toEqual(['main', 'feature'])
-        dispose()
-        done()
-      })
+      setPath('/repo-2')
+      await flush()
+      expect(seen).toEqual(['main', 'feature'])
     })
   })
 
@@ -538,30 +552,28 @@ describe('useGitPathInfo', () => {
     getGitInfo
       .mockRejectedValueOnce(new Error('probe-1 failed'))
       .mockRejectedValueOnce(new Error('probe-2 failed'))
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId] = createSignal('A')
-        const [path, setPath] = createSignal('/repo')
-        const info = useGitPathInfo(workerId, path)
-        await flush()
-        // After the first failure, info() is EMPTY_INFO.
-        expect(info.info().isGitRepo).toBe(false)
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const owner = getOwner()
+      const [workerId] = createSignal('A')
+      const [path, setPath] = createSignal('/repo')
+      const info = useGitPathInfo(workerId, path)
+      await flush()
+      // After the first failure, info() is EMPTY_INFO.
+      expect(info.info().isGitRepo).toBe(false)
 
-        let observed = 0
-        createEffect(() => {
-          void info.info().currentBranch
-          observed++
-        })
-        expect(observed).toBe(1)
+      let observed = 0
+      runWithOwner(owner, () => createEffect(() => {
+        void info.info().currentBranch
+        observed++
+      }))
+      expect(observed).toBe(1)
 
-        // Trigger another probe — also rejects, also lands on
-        // EMPTY_INFO. With the guard, downstream effects do NOT re-run.
-        setPath('/repo-2')
-        await flush()
-        expect(observed).toBe(1)
-        dispose()
-        done()
-      })
+      // Trigger another probe — also rejects, also lands on
+      // EMPTY_INFO. With the guard, downstream effects do NOT re-run.
+      setPath('/repo-2')
+      await flush()
+      expect(observed).toBe(1)
     })
   })
 
@@ -570,28 +582,25 @@ describe('useGitPathInfo', () => {
     const fast = deferred<GetGitInfoResponse>()
     getGitInfo.mockImplementationOnce(() => slow.promise)
     getGitInfo.mockImplementationOnce(() => fast.promise)
-    await new Promise<void>((done) => {
-      createRoot(async (dispose) => {
-        const [workerId, setWorkerId] = createSignal('')
-        const [path, setPath] = createSignal('/repo')
-        const info = useGitPathInfo(workerId, path)
-        setWorkerId('A')
-        await flush()
-        // First probe in flight for /repo.
-        setPath('/other')
-        await flush()
-        // Second probe in flight for /other. Resolve the SECOND first
-        // (fast path returns first), then the stale slow one.
-        fast.resolve(gitResp({ currentBranch: 'other-branch' }))
-        await flush()
-        expect(info.info().currentBranch).toBe('other-branch')
-        slow.resolve(gitResp({ currentBranch: 'stale-branch' }))
-        await flush()
-        // The stale response must NOT overwrite the fresh one.
-        expect(info.info().currentBranch).toBe('other-branch')
-        dispose()
-        done()
-      })
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const [workerId, setWorkerId] = createSignal('')
+      const [path, setPath] = createSignal('/repo')
+      const info = useGitPathInfo(workerId, path)
+      setWorkerId('A')
+      await flush()
+      // First probe in flight for /repo.
+      setPath('/other')
+      await flush()
+      // Second probe in flight for /other. Resolve the SECOND first
+      // (fast path returns first), then the stale slow one.
+      fast.resolve(gitResp({ currentBranch: 'other-branch' }))
+      await flush()
+      expect(info.info().currentBranch).toBe('other-branch')
+      slow.resolve(gitResp({ currentBranch: 'stale-branch' }))
+      await flush()
+      // The stale response must NOT overwrite the fresh one.
+      expect(info.info().currentBranch).toBe('other-branch')
     })
   })
 
@@ -599,35 +608,32 @@ describe('useGitPathInfo', () => {
     it('pre-fills the snapshot so showGitOptions() returns true before the probe lands', async () => {
       const pending = deferred<GetGitInfoResponse>()
       getGitInfo.mockReturnValueOnce(pending.promise)
-      await new Promise<void>((done) => {
-        createRoot(async (dispose) => {
-          const [workerId] = createSignal('A')
-          const [path] = createSignal('/repo')
-          const info = useGitPathInfo(workerId, path, {
-            seed: {
-              isGitRepo: true,
-              isRepoRoot: true,
-              repoRoot: '/repo',
-              repoDirName: 'repo',
-            },
-          })
-          // No flushing yet: every read must work off the seed.
-          expect(info.info().isGitRepo).toBe(true)
-          expect(info.info().isRepoRoot).toBe(true)
-          expect(info.info().repoRoot).toBe('/repo')
-          expect(info.info().repoDirName).toBe('repo')
-          expect(info.showGitOptions()).toBe(true)
-          // The probe is in flight but loading must stay false because
-          // showGitOptions is already true (skipLoadingFlash kicks in).
-          await flush()
-          expect(info.loading()).toBe(false)
-          pending.resolve(gitResp({ currentBranch: 'main' }))
-          await flush()
-          // The probe lands and fills in the volatile fields.
-          expect(info.info().currentBranch).toBe('main')
-          dispose()
-          done()
+      await createRoot(async (dispose) => {
+        onTestFinished(dispose)
+        const [workerId] = createSignal('A')
+        const [path] = createSignal('/repo')
+        const info = useGitPathInfo(workerId, path, {
+          seed: {
+            isGitRepo: true,
+            isRepoRoot: true,
+            repoRoot: '/repo',
+            repoDirName: 'repo',
+          },
         })
+        // No flushing yet: every read must work off the seed.
+        expect(info.info().isGitRepo).toBe(true)
+        expect(info.info().isRepoRoot).toBe(true)
+        expect(info.info().repoRoot).toBe('/repo')
+        expect(info.info().repoDirName).toBe('repo')
+        expect(info.showGitOptions()).toBe(true)
+        // The probe is in flight but loading must stay false because
+        // showGitOptions is already true (skipLoadingFlash kicks in).
+        await flush()
+        expect(info.loading()).toBe(false)
+        pending.resolve(gitResp({ currentBranch: 'main' }))
+        await flush()
+        // The probe lands and fills in the volatile fields.
+        expect(info.info().currentBranch).toBe('main')
       })
     })
 
@@ -641,27 +647,24 @@ describe('useGitPathInfo', () => {
         repoDirName: 'parent',
         currentBranch: 'feature',
       }))
-      await new Promise<void>((done) => {
-        createRoot(async (dispose) => {
-          const [workerId] = createSignal('A')
-          const [path] = createSignal('/wt')
-          const info = useGitPathInfo(workerId, path, {
-            seed: {
-              isGitRepo: true,
-              isRepoRoot: true,
-              repoRoot: '/wt',
-              repoDirName: 'wt',
-            },
-          })
-          await flush()
-          // Probe corrects the seed.
-          expect(info.info().isRepoRoot).toBe(false)
-          expect(info.info().isWorktreeRoot).toBe(true)
-          expect(info.info().repoRoot).toBe('/parent')
-          expect(info.info().repoDirName).toBe('parent')
-          dispose()
-          done()
+      await createRoot(async (dispose) => {
+        onTestFinished(dispose)
+        const [workerId] = createSignal('A')
+        const [path] = createSignal('/wt')
+        const info = useGitPathInfo(workerId, path, {
+          seed: {
+            isGitRepo: true,
+            isRepoRoot: true,
+            repoRoot: '/wt',
+            repoDirName: 'wt',
+          },
         })
+        await flush()
+        // Probe corrects the seed.
+        expect(info.info().isRepoRoot).toBe(false)
+        expect(info.info().isWorktreeRoot).toBe(true)
+        expect(info.info().repoRoot).toBe('/parent')
+        expect(info.info().repoDirName).toBe('parent')
       })
     })
 
@@ -676,31 +679,28 @@ describe('useGitPathInfo', () => {
         isRepoRoot: true,
         currentBranch: 'feature', // volatile field changes vs. seed
       }))
-      await new Promise<void>((done) => {
-        createRoot(async (dispose) => {
-          const [workerId] = createSignal('A')
-          const [path] = createSignal('/repo')
-          const info = useGitPathInfo(workerId, path, {
-            seed: {
-              isGitRepo: true,
-              isRepoRoot: true,
-              repoRoot: '/repo',
-              repoDirName: 'repo',
-            },
-          })
-          const observed: boolean[] = []
-          createEffect(() => {
-            observed.push(info.showGitOptions())
-          })
-          // Initial subscription captures the seed value.
-          await flush()
-          // Probe lands; volatile fields change but showGitOptions
-          // stays true, so the effect must NOT refire.
-          await flush()
-          expect(observed).toEqual([true])
-          dispose()
-          done()
+      await createRoot(async (dispose) => {
+        onTestFinished(dispose)
+        const [workerId] = createSignal('A')
+        const [path] = createSignal('/repo')
+        const info = useGitPathInfo(workerId, path, {
+          seed: {
+            isGitRepo: true,
+            isRepoRoot: true,
+            repoRoot: '/repo',
+            repoDirName: 'repo',
+          },
         })
+        const observed: boolean[] = []
+        createEffect(() => {
+          observed.push(info.showGitOptions())
+        })
+        // Initial subscription captures the seed value.
+        await flush()
+        // Probe lands; volatile fields change but showGitOptions
+        // stays true, so the effect must NOT refire.
+        await flush()
+        expect(observed).toEqual([true])
       })
     })
 
@@ -712,28 +712,25 @@ describe('useGitPathInfo', () => {
         isRepoRoot: false,
         isWorktreeRoot: false,
       }))
-      await new Promise<void>((done) => {
-        createRoot(async (dispose) => {
-          const [workerId] = createSignal('A')
-          const [path] = createSignal('/not-a-repo')
-          const info = useGitPathInfo(workerId, path, {
-            seed: {
-              isGitRepo: true,
-              isRepoRoot: true,
-              repoRoot: '/not-a-repo',
-              repoDirName: 'not-a-repo',
-            },
-          })
-          const observed: boolean[] = []
-          createEffect(() => {
-            observed.push(info.showGitOptions())
-          })
-          await flush()
-          await flush()
-          expect(observed).toEqual([true, false])
-          dispose()
-          done()
+      await createRoot(async (dispose) => {
+        onTestFinished(dispose)
+        const [workerId] = createSignal('A')
+        const [path] = createSignal('/not-a-repo')
+        const info = useGitPathInfo(workerId, path, {
+          seed: {
+            isGitRepo: true,
+            isRepoRoot: true,
+            repoRoot: '/not-a-repo',
+            repoDirName: 'not-a-repo',
+          },
         })
+        const observed: boolean[] = []
+        createEffect(() => {
+          observed.push(info.showGitOptions())
+        })
+        await flush()
+        await flush()
+        expect(observed).toEqual([true, false])
       })
     })
 
@@ -743,25 +740,22 @@ describe('useGitPathInfo', () => {
       // match EMPTY_INFO field-for-field still tripped a setInfo(EMPTY_INFO)
       // and re-emitted every downstream accessor for no value. The
       // shallow-equal check suppresses the redundant write.
-      await new Promise<void>((done) => {
-        createRoot(async (dispose) => {
-          const [workerId] = createSignal('')
-          const [path] = createSignal('/repo')
-          const info = useGitPathInfo(workerId, path, {
-            seed: { isGitRepo: false },
-          })
-          const observed: boolean[] = []
-          createEffect(() => {
-            observed.push(info.info().isGitRepo)
-          })
-          await flush()
-          // Mount-time subscription captures the seed value once.
-          // The empty-wid branch must not refire it.
-          expect(observed).toEqual([false])
-          expect(getGitInfo).not.toHaveBeenCalled()
-          dispose()
-          done()
+      await createRoot(async (dispose) => {
+        onTestFinished(dispose)
+        const [workerId] = createSignal('')
+        const [path] = createSignal('/repo')
+        const info = useGitPathInfo(workerId, path, {
+          seed: { isGitRepo: false },
         })
+        const observed: boolean[] = []
+        createEffect(() => {
+          observed.push(info.info().isGitRepo)
+        })
+        await flush()
+        // Mount-time subscription captures the seed value once.
+        // The empty-wid branch must not refire it.
+        expect(observed).toEqual([false])
+        expect(getGitInfo).not.toHaveBeenCalled()
       })
     })
 
@@ -772,20 +766,17 @@ describe('useGitPathInfo', () => {
       // is not online. This branch runs in that window, and discarding the
       // seed there left showGitOptions() false -- so `skipLoadingFlash` did
       // not fire and the dialog painted the spinner it was seeded to avoid.
-      await new Promise<void>((done) => {
-        createRoot(async (dispose) => {
-          const [workerId] = createSignal('')
-          const [path] = createSignal('/repo')
-          const info = useGitPathInfo(workerId, path, {
-            seed: { isGitRepo: true, isRepoRoot: true, currentBranch: 'main' },
-          })
-          await flush()
-          expect(getGitInfo).not.toHaveBeenCalled()
-          expect(info.showGitOptions()).toBe(true)
-          expect(info.info().currentBranch).toBe('main')
-          dispose()
-          done()
+      await createRoot(async (dispose) => {
+        onTestFinished(dispose)
+        const [workerId] = createSignal('')
+        const [path] = createSignal('/repo')
+        const info = useGitPathInfo(workerId, path, {
+          seed: { isGitRepo: true, isRepoRoot: true, currentBranch: 'main' },
         })
+        await flush()
+        expect(getGitInfo).not.toHaveBeenCalled()
+        expect(info.showGitOptions()).toBe(true)
+        expect(info.info().currentBranch).toBe('main')
       })
     })
 
@@ -795,25 +786,22 @@ describe('useGitPathInfo', () => {
       // above.
       const probe = deferred<GetGitInfoResponse>()
       getGitInfo.mockReturnValueOnce(probe.promise)
-      await new Promise<void>((done) => {
-        createRoot(async (dispose) => {
-          const [workerId, setWorkerId] = createSignal('')
-          const [path] = createSignal('/repo')
-          const info = useGitPathInfo(workerId, path, {
-            seed: { isGitRepo: true, isRepoRoot: true, currentBranch: 'main' },
-          })
-          await flush()
-          setWorkerId('A')
-          await flush()
-          expect(getGitInfo).toHaveBeenCalledTimes(1)
-          expect(info.loading()).toBe(false)
-          expect(info.showGitOptions()).toBe(true)
-          probe.resolve(gitResp({ currentBranch: 'feature-x' }))
-          await flush()
-          expect(info.info().currentBranch).toBe('feature-x')
-          dispose()
-          done()
+      await createRoot(async (dispose) => {
+        onTestFinished(dispose)
+        const [workerId, setWorkerId] = createSignal('')
+        const [path] = createSignal('/repo')
+        const info = useGitPathInfo(workerId, path, {
+          seed: { isGitRepo: true, isRepoRoot: true, currentBranch: 'main' },
         })
+        await flush()
+        setWorkerId('A')
+        await flush()
+        expect(getGitInfo).toHaveBeenCalledTimes(1)
+        expect(info.loading()).toBe(false)
+        expect(info.showGitOptions()).toBe(true)
+        probe.resolve(gitResp({ currentBranch: 'feature-x' }))
+        await flush()
+        expect(info.info().currentBranch).toBe('feature-x')
       })
     })
 
@@ -822,48 +810,81 @@ describe('useGitPathInfo', () => {
       // superseded, so clearing the worker must clear the snapshot rather than
       // resurrecting the repository the dialog no longer targets.
       getGitInfo.mockResolvedValueOnce(gitResp({ currentBranch: 'feature-x' }))
-      await new Promise<void>((done) => {
-        createRoot(async (dispose) => {
-          const [workerId, setWorkerId] = createSignal('')
-          const [path] = createSignal('/repo')
-          const info = useGitPathInfo(workerId, path, {
-            seed: { isGitRepo: true, isRepoRoot: true, currentBranch: 'main' },
-          })
-          setWorkerId('A')
-          await flush()
-          expect(info.info().currentBranch).toBe('feature-x')
-
-          setWorkerId('')
-          await flush()
-          expect(info.info().isGitRepo).toBe(false)
-          expect(info.info().currentBranch).toBe('')
-          expect(info.showGitOptions()).toBe(false)
-          dispose()
-          done()
+      await createRoot(async (dispose) => {
+        onTestFinished(dispose)
+        const [workerId, setWorkerId] = createSignal('')
+        const [path] = createSignal('/repo')
+        const info = useGitPathInfo(workerId, path, {
+          seed: { isGitRepo: true, isRepoRoot: true, currentBranch: 'main' },
         })
+        setWorkerId('A')
+        await flush()
+        expect(info.info().currentBranch).toBe('feature-x')
+
+        setWorkerId('')
+        await flush()
+        expect(info.info().isGitRepo).toBe(false)
+        expect(info.info().currentBranch).toBe('')
+        expect(info.showGitOptions()).toBe(false)
       })
     })
 
     it('drops the seed once a probe FAILED and the worker id is cleared', async () => {
       getGitInfo.mockRejectedValueOnce(new Error('boom'))
-      await new Promise<void>((done) => {
-        createRoot(async (dispose) => {
-          const [workerId, setWorkerId] = createSignal('')
-          const [path] = createSignal('/repo')
-          const info = useGitPathInfo(workerId, path, {
-            seed: { isGitRepo: true, isRepoRoot: true, currentBranch: 'main' },
-          })
-          setWorkerId('A')
-          await flush()
-          expect(info.showGitOptions()).toBe(false)
-
-          setWorkerId('')
-          await flush()
-          expect(info.info().isGitRepo).toBe(false)
-          dispose()
-          done()
+      await createRoot(async (dispose) => {
+        onTestFinished(dispose)
+        const [workerId, setWorkerId] = createSignal('')
+        const [path] = createSignal('/repo')
+        const info = useGitPathInfo(workerId, path, {
+          seed: { isGitRepo: true, isRepoRoot: true, currentBranch: 'main' },
         })
+        setWorkerId('A')
+        await flush()
+        expect(info.showGitOptions()).toBe(false)
+
+        setWorkerId('')
+        await flush()
+        expect(info.info().isGitRepo).toBe(false)
       })
+    })
+  })
+})
+
+describe('useGitPathInfo attached branch identity', () => {
+  it('keeps a bare-backed checkout selected and publishes its branch identity', async () => {
+    getGitInfo.mockResolvedValueOnce(gitResp({
+      isWorktreeRoot: true,
+      isRepoRoot: false,
+      repoRoot: '/repo.git',
+      mainWorktreeRoot: '',
+      currentBranch: 'feature',
+      attachedBranch: 'feature',
+    }))
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const remap = vi.fn()
+      const result = useGitPathInfo(() => 'worker', () => '/checkout', { remapWorktreeRoot: remap })
+      await flush()
+      expect(remap).not.toHaveBeenCalled()
+      expect(result.info().repoRoot).toBe('/repo.git')
+      expect(result.info().attachedBranch).toBe('feature')
+      expect(result.showGitOptions()).toBe(true)
+    })
+  })
+
+  it('keeps a display seed separate from authoritative attachment', async () => {
+    const response = deferred<GetGitInfoResponse>()
+    getGitInfo.mockReturnValueOnce(response.promise)
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const result = useGitPathInfo(() => 'worker', () => '/checkout', {
+        seed: { currentBranch: 'a1b2c3d' },
+      })
+      expect(result.info().attachedBranch).toBe('')
+      response.resolve(gitResp({ currentBranch: 'a1b2c3d', attachedBranch: '' }))
+      await flush()
+      expect(result.info().currentBranch).toBe('a1b2c3d')
+      expect(result.info().attachedBranch).toBe('')
     })
   })
 })

@@ -211,7 +211,12 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *leapmuxv1.Fi
 		email = ""
 		pendingEmail = draft.Email
 	}
+	admission := userCreationRequireExisting
+	if isFirstUser {
+		admission = userCreationRequireEmpty
+	}
 	createdUser, storedCode, err := createUserInTx(ctx, s.store, createUserTxParams{
+		admission:    admission,
 		now:          s.now,
 		userID:       draft.UserID,
 		username:     draft.Username,
@@ -248,7 +253,6 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *leapmuxv1.Fi
 		nextResend = &next
 	}
 
-	s.hasAnyUser.Store(true)
 	loginUID, mintErr := mintRowUserID(createdUser.ID)
 	if mintErr != nil {
 		return nil, mintErr
@@ -366,6 +370,9 @@ func RevokeCredentialsAfterRotation(
 // passkey-less account that still holds the username.
 func rollbackUnusableSignup(ctx context.Context, st store.Store, userID string) error {
 	return st.RunInTransaction(ctx, func(tx store.Store) error {
+		if _, err := tx.Users().LockAccountLifecycle(ctx); err != nil {
+			return fmt.Errorf("lock account lifecycle for signup rollback: %w", err)
+		}
 		if err := RevokePasskeyAuthState(ctx, tx, userID); err != nil {
 			return err
 		}

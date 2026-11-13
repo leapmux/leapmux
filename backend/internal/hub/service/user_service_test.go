@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/authscope"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"connectrpc.com/connect/v2"
@@ -53,10 +54,9 @@ type userTestEnv struct {
 	// lifecycle.UserInfoInvalidated). Without that, the next call reads a
 	// cache entry minted before the elevation existed.
 	contexts *auth.AuthContextRegistry
-	// tv backs the interceptor's bearer rung, so a test can present a REAL
-	// API credential and not just a session cookie. The two rungs answer
-	// the elevation gate differently -- a bearer has no row to stamp -- and
-	// only a live bearer exercises that.
+	// tv backs the interceptor's bearer rung. A live API credential exercises
+	// bearer authentication, scope restrictions, and browser-approved elevation
+	// separately from browser-session authentication.
 	tv *auth.TokenValidator
 }
 
@@ -935,10 +935,9 @@ func TestRequestEmailChange_Admin_ImmediateChangeLandsUnverified(t *testing.T) {
 // --- RequestEmailChange: non-admin, verification off, immediate unverified change ---
 
 // TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified
-// covers the non-admin case of the collapsed immediate-change branch: with
-// verification off, the change applies immediately but the new address must
-// land UNVERIFIED (verified == userInfo.IsAdmin == false), unlike the admin
-// case which trusts it.
+// covers the non-admin case of the immediate-change branch. With verification
+// off, the change applies immediately and leaves the new address unverified,
+// as it does for administrators.
 func TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified(t *testing.T) {
 	t.Parallel()
 
@@ -974,7 +973,7 @@ func TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified(t *
 	user, err := st.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)
 	assert.Equal(t, "new@example.com", user.Email, "the change applies immediately when verification is off")
-	assert.False(t, user.EmailVerified, "a non-admin immediate change must land unverified (verified == IsAdmin)")
+	assert.False(t, user.EmailVerified, "a new address nobody confirmed must remain unverified")
 }
 
 // --- RequestEmailChange: duplicate email rejected ---
@@ -2106,8 +2105,19 @@ func TestUnlinkOAuthProvider_LastLink_NoPassword_Blocked(t *testing.T) {
 func TestUnlinkOAuthProvider_ConcurrentRequestsCannotStripEveryLoginMethod(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	env := setupOAuthUserTest(t).elevated(t)
+	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+	arrivals := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	var calls sync.WaitGroup
+	env := setupOAuthUserTestOver(t, func(st store.Store) store.Store {
+		return unlinkAdmissionStore{Store: st, arrivals: arrivals, release: release}
+	}).elevated(t)
+	t.Cleanup(func() {
+		cancel()
+		releaseOnce.Do(func() { close(release) })
+		calls.Wait()
+	})
 
 	// Two links, no password, no passkey: removing EITHER is allowed, and
 	// removing BOTH is not.
@@ -2121,25 +2131,57 @@ func TestUnlinkOAuthProvider_ConcurrentRequestsCannotStripEveryLoginMethod(t *te
 		}))
 	}
 
-	// The first removal is allowed: one link remains.
-	_, err := env.client.UnlinkOAuthProvider(authedReq(ctx, &leapmuxv1.UnlinkOAuthProviderRequest{
-		ProviderId: "gh-a",
-	}, env.token))
-	require.NoError(t, err)
-
-	// The second is refused: nothing would remain. This is the state a lost
-	// race produced when the rule counted a list read before the lock.
-	_, err = env.client.UnlinkOAuthProvider(authedReq(ctx, &leapmuxv1.UnlinkOAuthProviderRequest{
-		ProviderId: "gh-b",
-	}, env.token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-	assert.Contains(t, err.Error(), "set a password first")
-
+	type result struct {
+		providerID string
+		err        error
+	}
+	results := make(chan result, 2)
+	for _, providerID := range []string{"gh-a", "gh-b"} {
+		calls.Add(1)
+		go func() {
+			defer calls.Done()
+			_, err := env.client.UnlinkOAuthProvider(authedReq(ctx, &leapmuxv1.UnlinkOAuthProviderRequest{ProviderId: providerID}, env.token))
+			results <- result{providerID: providerID, err: err}
+		}()
+	}
+	for range 2 {
+		select {
+		case <-arrivals:
+		case <-ctx.Done():
+			t.Fatal("both requests must pass the early rule: ", ctx.Err())
+		}
+	}
+	releaseOnce.Do(func() { close(release) })
+	var succeeded, refused []string
+	for range 2 {
+		select {
+		case result := <-results:
+			if result.err == nil {
+				succeeded = append(succeeded, result.providerID)
+			} else {
+				assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(result.err))
+				assert.Contains(t, result.err.Error(), "set a password first")
+				refused = append(refused, result.providerID)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	require.Len(t, succeeded, 1)
+	require.Len(t, refused, 1)
 	links, err := env.store.OAuthUserLinks().ListByUser(ctx, userid.MustNew(env.userID))
 	require.NoError(t, err)
-	require.Len(t, links, 1, "the account keeps the login method it has left")
-	assert.Equal(t, "gh-b", links[0].ProviderID)
+	require.Len(t, links, 1)
+	assert.Equal(t, refused[0], links[0].ProviderID)
+	provider, err := env.store.OAuthProviders().GetByID(ctx, links[0].ProviderID)
+	require.NoError(t, err)
+	assert.True(t, provider.Enabled)
+	user, err := env.store.Users().GetByID(ctx, env.userID)
+	require.NoError(t, err)
+	assert.False(t, user.HasUsablePassword())
+	passkeys, err := env.store.PasskeyCredentials().CountByUser(ctx, env.userID)
+	require.NoError(t, err)
+	assert.Zero(t, passkeys)
 }
 
 // A link whose provider an administrator DISABLED is not a login method, so
@@ -2209,11 +2251,10 @@ func TestUnlinkOAuthProvider_NotFound(t *testing.T) {
 
 // --- The plain elevation gate: RequestEmailChange and UnlinkOAuthProvider ---
 //
-// Both move a durable identity. The account email receives the
-// recovery link, and on an admin edit it lands VERIFIED with no round
-// trip; an OAuth link is the login method -- and for an OAuth-only account,
-// the very factor that account elevates with. A session alone must not move
-// either.
+// Both move a durable identity. The account email receives the recovery link,
+// and an immediate administrator change leaves the new address unverified.
+// An OAuth link is the login method and, for an OAuth-only account, the factor
+// that account elevates with. A session alone must not move either.
 
 // assertElevationRequired pins the refusal SHAPE, not just the code.
 //
@@ -3143,19 +3184,52 @@ func TestResendVerificationEmail_FailedSendReportsFailureWindow(t *testing.T) {
 		"the retry lands inside the failure window the response just reported")
 }
 
-func TestBeginPasskeyRegistration_OAuthOnly_NoReauthRequired(t *testing.T) {
+func TestBeginPasskeyRegistration_FreshVerifiedSessionStartsFirstPasskeyWithoutElevation(t *testing.T) {
 	t.Parallel()
-
-	env := setupOAuthUserTest(t)
-
-	reqCtx, req := authedReq(context.Background(), &leapmuxv1.BeginPasskeyRegistrationRequest{}, env.token)
-	_, err := env.client.BeginPasskeyRegistration(reqCtx, req)
-	// Ceremony may fail for missing keystore/RP config; auth must not require reauth proof.
-	if err != nil {
-		assert.NotEqual(t, connect.CodeUnauthenticated, connect.CodeOf(err))
-		assert.NotContains(t, err.Error(), "reauth proof required")
-		assert.NotContains(t, err.Error(), "verify your email")
+	env := setupUserTest(t)
+	ctx := context.Background()
+	userID := id.Generate()
+	require.NoError(t, env.store.Users().Create(ctx, store.CreateUserParams{
+		ID: userID, Username: "first-passkey", PasswordHash: password.PlaceholderHash,
+		Email: "first-passkey@example.com", EmailVerified: true, FirstCredentialExempt: false,
+	}))
+	created, err := auth.CreateSession(ctx, env.store, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration)
+	require.NoError(t, err)
+	row, err := env.store.Sessions().GetByID(ctx, created.ID, time.Now().UTC())
+	require.NoError(t, err)
+	assert.Nil(t, row.ElevationExpiresAt)
+	user, err := env.store.Users().GetByID(ctx, userID)
+	require.NoError(t, err)
+	assert.False(t, user.HasUsablePassword())
+	count, err := env.store.PasskeyCredentials().CountByUser(ctx, userID)
+	require.NoError(t, err)
+	require.Zero(t, count)
+	callCtx := func() context.Context {
+		ctx, info := connect.NewClientContext(context.Background())
+		info.RequestHeader().Set("Cookie", auth.CookieName+"="+created.Token)
+		info.RequestHeader().Set("Origin", passkeyRegistrationOrigin)
+		return ctx
 	}
+	begin, err := env.client.BeginPasskeyRegistration(callCtx(), &leapmuxv1.BeginPasskeyRegistrationRequest{})
+	require.NoError(t, err)
+	require.NotEmpty(t, begin.GetChallenge().GetSessionId())
+	require.NotEmpty(t, begin.GetChallenge().GetOptionsJson())
+	challenge, err := env.store.WebAuthnSessions().Get(ctx, begin.GetChallenge().GetSessionId())
+	require.NoError(t, err)
+	assert.Equal(t, userID, challenge.UserID)
+	assert.Equal(t, leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_REGISTER, challenge.Kind)
+	ceremony := newPasskeyCeremony()
+	ceremony.rp.Origin = passkeyRegistrationOrigin
+	credentialJSON, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
+	require.NoError(t, err)
+	_, err = env.client.FinishPasskeyRegistration(callCtx(), &leapmuxv1.FinishPasskeyRegistrationRequest{
+		Credential:   &leapmuxv1.WebAuthnCredential{SessionId: begin.GetChallenge().GetSessionId(), CredentialJson: credentialJSON},
+		FriendlyName: "First passkey",
+	})
+	require.NoError(t, err)
+	count, err = env.store.PasskeyCredentials().CountByUser(ctx, userID)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, count)
 }
 
 func TestBeginPasskeyRegistration_UnverifiedShell_Rejected(t *testing.T) {
@@ -3490,4 +3564,24 @@ func TestUserService_ListAndRenamePasskeys_SoloRejected(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "solo mode")
+}
+
+type unlinkAdmissionStore struct {
+	store.Store
+	arrivals chan<- struct{}
+	release  <-chan struct{}
+}
+
+func (s unlinkAdmissionStore) RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(store.Store) error) error {
+	select {
+	case s.arrivals <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return s.Store.RunInUserAuthTransaction(ctx, userID, fn)
 }

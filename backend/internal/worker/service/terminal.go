@@ -969,11 +969,16 @@ func (svc *Service) succeedTerminalStartup(terminalID string, h *startupEntry) {
 // runTerminalPhase0 broadcasts the per-mode label and executes the
 // git-mode mutation.
 func (svc *Service) runTerminalPhase0(ctx context.Context, terminalID string, plan gitModePlan, h *startupEntry) (gitModeResult, error) {
+	var result gitModeResult
+	var err error
 	if h.creation != nil {
 		h.creation.announcePhase0(svc.terminalStartupCallbacks(terminalID, h))
-		return h.creation.runCreationPhase0(ctx)
+		result, err = h.creation.runCreationPhase0(ctx)
+	} else {
+		result, err = svc.runStartupPhase0(ctx, plan, svc.terminalStartupCallbacks(terminalID, h))
 	}
-	return svc.runStartupPhase0(ctx, plan, svc.terminalStartupCallbacks(terminalID, h))
+	result.bindCreatedWorktreeStartup(worktreeRollbackStartup{key: newOwnedTabKey(leapmuxv1.TabType_TAB_TYPE_TERMINAL, terminalID, ""), registry: &svc.TerminalStartup.startupCore, entry: h})
+	return result, err
 }
 
 // failTerminalStartup is the common tail for every failure after the sync

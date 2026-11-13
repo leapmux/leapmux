@@ -44,6 +44,7 @@ func (svc *Service) prepareCreationStartup(ctx context.Context, plan gitModePlan
 			return intent, err
 		}
 		intent.Plan.RepoRoot = info.RepoRoot
+		intent.Plan.RepoGitDir = info.CommonDir
 		intent.OriginalHead = info.HeadSHA
 		intent.OriginalBranch = info.BranchName
 		reference := "HEAD"
@@ -185,7 +186,7 @@ func (op *creationOperation) checkpointPhase0(ctx context.Context, result gitMod
 func (op *creationOperation) recoverCreationGit(ctx context.Context, intent *creationStartupIntent) (gitModeResult, bool, error) {
 	svc := op.coordinator.svc
 	plan := intent.Plan
-	unlock := svc.lockGitIndex(plan.RepoRoot)
+	unlock := svc.lockGitIndex(plan.RepoGitDir)
 	defer unlock()
 	adoptCurrent := func() (gitModeResult, bool, error) {
 		result, err := svc.executeUseCurrent(ctx, plan)
@@ -198,31 +199,34 @@ func (op *creationOperation) recoverCreationGit(ctx context.Context, intent *cre
 	case gitModeCreateWorktree:
 		info, probeErr := queryGitPathInfo(ctx, plan.WorktreePath)
 		if probeErr == nil {
-			if !info.IsWorktree || pathutil.Canonicalize(info.TopLevel) != pathutil.Canonicalize(plan.WorktreePath) || pathutil.Canonicalize(info.RepoRoot) != pathutil.Canonicalize(plan.RepoRoot) || info.BranchName != plan.BranchName || !matchesBase(plan.WorktreePath, info.HeadSHA) {
+			if !info.IsWorktree || pathutil.Canonicalize(info.TopLevel) != pathutil.Canonicalize(plan.WorktreePath) || !pathutil.SamePath(info.CommonDir, plan.RepoGitDir) || info.BranchName != plan.BranchName || !matchesBase(plan.WorktreePath, info.HeadSHA) {
 				return gitModeResult{}, false, errors.New("the interrupted creation's worktree conflicts with current Git state; existing files were kept")
 			}
-			worktreeID, err := svc.ensureTrackedWorktreeWith(ctx, plan.WorktreePath, plan.RepoRoot, plan.BranchName)
-			return gitModeResult{WorkingDir: plan.WorktreePath, WorktreeID: worktreeID, RepoRoot: plan.RepoRoot}, true, err
+			worktreeID, err := svc.ensureTrackedWorktreeWith(ctx, plan.WorktreePath, plan.RepoRoot, plan.RepoGitDir, plan.BranchName)
+			return gitModeResult{WorkingDir: plan.WorktreePath, WorktreeID: worktreeID, RepoRoot: plan.RepoRoot, RepoGitDir: plan.RepoGitDir}, true, err
 		}
 		if _, statErr := os.Stat(plan.WorktreePath); !errors.Is(statErr, os.ErrNotExist) {
 			return gitModeResult{}, false, errors.New("the interrupted creation's path is unavailable or already occupied; existing files were kept")
 		}
-		branchCommit, branchErr := gitutil.Output(ctx, plan.RepoRoot, "rev-parse", "--verify", "refs/heads/"+plan.BranchName+"^{commit}")
+		branchCommit, branchErr := (gitutil.Repository{GitDir: plan.RepoGitDir}).Output(ctx, "rev-parse", "--verify", "refs/heads/"+plan.BranchName+"^{commit}")
 		if branchErr != nil {
 			return gitModeResult{}, false, nil
 		}
 		if strings.TrimSpace(branchCommit) != intent.ExpectedCommit {
 			return gitModeResult{}, false, errors.New("the interrupted creation's branch differs from its expected commit; existing files were kept")
 		}
-		if err := gitutil.Run(ctx, plan.RepoRoot, "worktree", "add", plan.WorktreePath, plan.BranchName); err != nil {
+		if err := (gitutil.Repository{GitDir: plan.RepoGitDir}).Run(ctx, "worktree", "add", plan.WorktreePath, plan.BranchName); err != nil {
 			return gitModeResult{}, false, err
 		}
-		worktreeID, err := svc.ensureTrackedWorktreeWith(ctx, plan.WorktreePath, plan.RepoRoot, plan.BranchName)
-		return gitModeResult{WorkingDir: plan.WorktreePath, WorktreeID: worktreeID, RepoRoot: plan.RepoRoot}, true, err
+		worktreeID, err := svc.ensureTrackedWorktreeWith(ctx, plan.WorktreePath, plan.RepoRoot, plan.RepoGitDir, plan.BranchName)
+		return gitModeResult{WorkingDir: plan.WorktreePath, WorktreeID: worktreeID, RepoRoot: plan.RepoRoot, RepoGitDir: plan.RepoGitDir}, true, err
 	case gitModeCreateBranch, gitModeCheckoutBranch:
 		info, err := queryGitPathInfo(ctx, plan.WorkingDir)
 		if err != nil {
 			return gitModeResult{}, false, err
+		}
+		if !pathutil.SamePath(info.CommonDir, plan.RepoGitDir) {
+			return gitModeResult{}, false, errors.New("the interrupted checkout belongs to a different git repository")
 		}
 		target := plan.BranchName
 		if plan.Mode == gitModeCheckoutBranch {
@@ -567,18 +571,23 @@ func (op *creationOperation) validateSavedCheckpoint(ctx context.Context, intent
 	if !directory.IsDir() {
 		return errors.New("the saved startup directory was replaced by a file")
 	}
-	expectedRepository := result.RepoRoot
-	if expectedRepository == "" {
-		expectedRepository = intent.Plan.RepoRoot
+	expectedGitDir := intent.Plan.RepoGitDir
+	if expectedGitDir == "" {
+		expectedGitDir = result.RepoGitDir
+	} else if result.RepoGitDir != "" && !pathutil.SamePath(expectedGitDir, result.RepoGitDir) {
+		return errors.New("the saved result changed its planned repository identity")
 	}
-	if expectedRepository == "" && result.WorktreeID == "" {
+	if expectedGitDir == "" {
+		if result.WorktreeID != "" || result.RepoRoot != "" || intent.Plan.RepoRoot != "" {
+			return errors.New("the saved Git startup has no common repository identity")
+		}
 		return nil
 	}
 	info, err := queryGitPathInfo(ctx, result.WorkingDir)
 	if err != nil {
 		return fmt.Errorf("read the saved startup repository: %w", err)
 	}
-	if expectedRepository == "" || !pathutil.SamePath(pathutil.Canonicalize(info.RepoRoot), pathutil.Canonicalize(expectedRepository)) {
+	if expectedGitDir == "" || !pathutil.SamePath(info.CommonDir, expectedGitDir) {
 		return errors.New("the saved startup directory belongs to a different repository; existing files were kept")
 	}
 	if result.WorktreeID != "" {
@@ -586,7 +595,7 @@ func (op *creationOperation) validateSavedCheckpoint(ctx context.Context, intent
 		if err != nil {
 			return fmt.Errorf("read the saved tracked worktree: %w", err)
 		}
-		if tracked.DeletedAt.Valid || !info.IsWorktree || !pathutil.SamePath(pathutil.Canonicalize(tracked.WorktreePath), pathutil.Canonicalize(info.TopLevel)) || !pathutil.SamePath(pathutil.Canonicalize(tracked.RepoRoot), pathutil.Canonicalize(expectedRepository)) {
+		if tracked.DeletedAt.Valid || !pathutil.SamePath(tracked.RepoGitDir, expectedGitDir) || !info.IsWorktree || !pathutil.SamePath(pathutil.Canonicalize(tracked.WorktreePath), pathutil.Canonicalize(info.TopLevel)) {
 			return errors.New("the saved tracked worktree no longer matches this startup; existing files were kept")
 		}
 	}

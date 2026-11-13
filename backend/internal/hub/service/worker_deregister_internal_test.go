@@ -423,15 +423,17 @@ type retryWorkerDeletionStore struct {
 	replayed     bool
 }
 
-func (s *retryWorkerDeletionStore) RunInUserAuthTransaction(ctx context.Context, owner userid.UserID, fn func(store.Store) error) error {
-	if !owner.Matches(s.owner) || s.replayed {
-		return s.Store.RunInUserAuthTransaction(ctx, owner, fn)
+// Replay the outer transaction, which owns the lifecycle lock and rollback.
+// A nested user-auth transaction must not retry part of that unit of work.
+func (s *retryWorkerDeletionStore) RunInTransaction(ctx context.Context, fn func(store.Store) error) error {
+	if s.replayed {
+		return s.Store.RunInTransaction(ctx, fn)
 	}
 	s.replayed = true
 	rollback := errors.New("roll back the first deletion attempt")
-	err := s.Store.RunInUserAuthTransaction(ctx, owner, func(tx store.Store) error {
+	err := s.Store.RunInTransaction(ctx, func(tx store.Store) error {
 		if err := tx.Workers().Create(ctx, store.CreateWorkerParams{
-			ID: s.rolledBackID, AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()), RegisteredBy: owner,
+			ID: s.rolledBackID, AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()), RegisteredBy: userid.MustNew(s.owner),
 			PublicKeys: storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 		}); err != nil {
 			return err
@@ -448,12 +450,12 @@ func (s *retryWorkerDeletionStore) RunInUserAuthTransaction(ctx context.Context,
 		return err
 	}
 	if err := s.Store.Workers().Create(ctx, store.CreateWorkerParams{
-		ID: s.committedID, AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()), RegisteredBy: owner,
+		ID: s.committedID, AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()), RegisteredBy: userid.MustNew(s.owner),
 		PublicKeys: storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}); err != nil {
 		return err
 	}
-	return s.Store.RunInUserAuthTransaction(ctx, owner, func(tx store.Store) error {
+	return s.Store.RunInTransaction(ctx, func(tx store.Store) error {
 		if err := fn(tx); err != nil {
 			return err
 		}
@@ -468,17 +470,19 @@ type workerBeforeOwnerLockStore struct {
 	inserted bool
 }
 
-func (s *workerBeforeOwnerLockStore) RunInUserAuthTransaction(ctx context.Context, owner userid.UserID, fn func(store.Store) error) error {
-	if owner.Matches(s.owner) && !s.inserted {
+// The worker commits before the outer lifecycle transaction begins. SQLite
+// cannot admit a separate registration after that transaction takes its writer lock.
+func (s *workerBeforeOwnerLockStore) RunInTransaction(ctx context.Context, fn func(store.Store) error) error {
+	if !s.inserted {
 		if err := s.Store.Workers().Create(ctx, store.CreateWorkerParams{
-			ID: s.workerID, AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()), RegisteredBy: owner,
+			ID: s.workerID, AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()), RegisteredBy: userid.MustNew(s.owner),
 			PublicKeys: storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 		}); err != nil {
 			return err
 		}
 		s.inserted = true
 	}
-	return s.Store.RunInUserAuthTransaction(ctx, owner, fn)
+	return s.Store.RunInTransaction(ctx, fn)
 }
 
 // otherWorkerID returns the id in ids that is not self. The cross-worker

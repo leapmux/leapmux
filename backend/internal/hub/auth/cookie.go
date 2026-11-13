@@ -44,11 +44,6 @@ func cookieName(secure bool) string {
 // every name this package builds takes that prefix under secure_cookies.
 // One constructor makes that true for every cookie the package builds,
 // rather than true in four literals that a fifth can forget.
-//
-// newCookie clamps maxAge rather than trusting it. int(ttl.Seconds()) truncates
-// toward zero, and Go writes NO Max-Age attribute for 0, so a sub-second
-// positive TTL would produce a cookie that lives for the whole browsing
-// session and a sub-second negative one would fail to clear.
 func newCookie(name, value string, maxAge int, secure bool) *http.Cookie {
 	return &http.Cookie{
 		Name:     name,
@@ -62,8 +57,10 @@ func newCookie(name, value string, maxAge int, secure bool) *http.Cookie {
 }
 
 // cookieMaxAge converts a TTL to the whole seconds a cookie can express,
-// never to 0. See newCookie for why 0 is the one value that must not reach
-// a cookie.
+// never to 0. int(ttl.Seconds()) truncates toward zero, and Go writes no
+// Max-Age attribute for 0. Without this conversion, a positive subsecond TTL
+// would produce a cookie that lives for the whole browsing session, and a
+// negative subsecond TTL would fail to clear it.
 func cookieMaxAge(ttl time.Duration) int {
 	if seconds := int(ttl.Seconds()); seconds != 0 {
 		return seconds
@@ -302,27 +299,27 @@ type sessionRefresh struct {
 // response established, and that is always newer than the slide the interceptor
 // observed on the way in.
 //
-// The test is the cookie's NAME, not the presence of any cookie at all. A
-// browser keeps the last cookie per name, so only a cookie of this name can
-// overwrite this one. A guard that left every Set-Cookie alone would stop
-// refreshing the session on the first response that also carried an unrelated
+// Either session spelling represents the handler's final session decision.
+// An unrelated cookie must not suppress the refresh. A guard that left every
+// Set-Cookie alone would stop refreshing the session on the first response
+// that also carried an unrelated
 // cookie, silently and with nothing to point at the cause.
 func (r sessionRefresh) applyTo(h *connect.Header, secure bool) {
 	if r.token == "" {
 		return
 	}
-	name := cookieName(secure)
 	for _, line := range h.Values("Set-Cookie") {
 		c, err := http.ParseSetCookie(line)
 		// An unparseable cookie counts as a collision. The handler wrote
 		// something this code cannot read, and losing one refresh costs a
 		// throttle window, where overwriting a cookie meant for the browser
 		// could sign a user in again after a logout.
-		if err != nil || c.Name == name {
+		if err != nil || c.Name == CookieName || c.Name == SecureCookieName {
 			return
 		}
 	}
 	h.Add("Set-Cookie", BuildSessionCookie(r.token, r.expiresAt, secure).String())
+	h.Add("Set-Cookie", ClearSessionCookie(!secure).String())
 }
 
 // ClearSessionCookie creates a cookie that clears the session.

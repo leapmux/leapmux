@@ -1,7 +1,7 @@
 /// <reference types="vitest/globals" />
 import type { InspectBranchChangeResponse } from '~/generated/proto/leapmux/v1/git_pb'
-import { createRoot } from 'solid-js'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { createRoot, onCleanup } from 'solid-js'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { workerGit } from '~/api/workerRpc'
 import { useChangeBranchInspect } from '~/hooks/useChangeBranchInspect'
 
@@ -18,6 +18,7 @@ function makeResp(overrides: Partial<InspectBranchChangeResponse> = {}): Inspect
     toplevel: '/repo',
     isWorktree: false,
     currentBranch: 'main',
+    attachedBranch: overrides.currentBranch ?? 'main',
     branches: [],
     ...overrides,
   } as InspectBranchChangeResponse
@@ -38,6 +39,7 @@ describe('useChangeBranchInspect', () => {
     // Held pending so the test can observe the pre-RPC seed state.
     vi.mocked(workerGit.inspectBranchChange).mockReturnValue(new Promise<never>(() => {}))
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const inspect = useChangeBranchInspect({
         workerId: 'w1',
         gitToplevel: '/repo',
@@ -58,7 +60,6 @@ describe('useChangeBranchInspect', () => {
       // render its loading placeholder for the preloaded path).
       expect(inspect.branches()).toBeNull()
       expect(inspect.branchesLoading()).toBe(true)
-      dispose()
     })
   })
 
@@ -71,6 +72,7 @@ describe('useChangeBranchInspect', () => {
     // accepts an `isWorktree` arg that drives the seed.
     vi.mocked(workerGit.inspectBranchChange).mockReturnValue(new Promise<never>(() => {}))
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const inspect = useChangeBranchInspect({
         workerId: 'w1',
         gitToplevel: '/repo/wt-foo',
@@ -83,7 +85,6 @@ describe('useChangeBranchInspect', () => {
       // gate); the worktree flavour just paints the worktree affordances
       // instead of the main-repo ones.
       expect(inspect.pathInfo.showGitOptions()).toBe(true)
-      dispose()
     })
   })
 
@@ -98,6 +99,7 @@ describe('useChangeBranchInspect', () => {
     // preview is gated on `!i.repoRoot` and hides until the value lands.
     vi.mocked(workerGit.inspectBranchChange).mockReturnValue(new Promise<never>(() => {}))
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const inspect = useChangeBranchInspect({
         workerId: 'w1',
         gitToplevel: '/repos/main/worktrees/feat-x',
@@ -108,11 +110,11 @@ describe('useChangeBranchInspect', () => {
       expect(inspect.pathInfo.info().repoDirName).toBe('')
       // Non-worktree dialogs still seed repoRoot synchronously — verify
       // the carve-out is scoped to the worktree variant.
-      dispose()
     })
 
     vi.mocked(workerGit.inspectBranchChange).mockReturnValue(new Promise<never>(() => {}))
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const inspect = useChangeBranchInspect({
         workerId: 'w1',
         gitToplevel: '/repos/main',
@@ -120,7 +122,6 @@ describe('useChangeBranchInspect', () => {
       })
       expect(inspect.pathInfo.info().repoRoot).toBe('/repos/main')
       expect(inspect.pathInfo.info().repoDirName).toBe('main')
-      dispose()
     })
   })
 
@@ -132,6 +133,7 @@ describe('useChangeBranchInspect', () => {
     // form on every dialog open.
     vi.mocked(workerGit.inspectBranchChange).mockReturnValue(new Promise<never>(() => {}))
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const inspect = useChangeBranchInspect({
         workerId: 'w1',
         gitToplevel: '/repo',
@@ -139,7 +141,6 @@ describe('useChangeBranchInspect', () => {
       })
       await flushMicrotasks()
       expect(inspect.pathInfo.loading()).toBe(false)
-      dispose()
     })
   })
 
@@ -152,6 +153,7 @@ describe('useChangeBranchInspect', () => {
       ],
     }))
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const inspect = useChangeBranchInspect({
         workerId: 'w1',
         gitToplevel: '/repo',
@@ -166,7 +168,6 @@ describe('useChangeBranchInspect', () => {
       expect(inspect.pathInfo.info().isRepoRoot).toBe(false)
       expect(inspect.branches()).toHaveLength(2)
       expect(inspect.branchesLoading()).toBe(false)
-      dispose()
     })
   })
 
@@ -174,6 +175,7 @@ describe('useChangeBranchInspect', () => {
   it('sends the toplevel to the worker that owns it, and nothing else', async () => {
     vi.mocked(workerGit.inspectBranchChange).mockResolvedValue(makeResp())
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       useChangeBranchInspect({
         workerId: 'w1',
         gitToplevel: '/repo',
@@ -183,13 +185,13 @@ describe('useChangeBranchInspect', () => {
       expect(workerGit.inspectBranchChange).toHaveBeenCalledWith('w1', { path: '/repo' }, {
         signal: expect.any(AbortSignal),
       })
-      dispose()
     })
   })
 
   it('refresh() re-issues the RPC', async () => {
     vi.mocked(workerGit.inspectBranchChange).mockResolvedValue(makeResp())
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const inspect = useChangeBranchInspect({
         workerId: 'w1',
         gitToplevel: '/repo',
@@ -200,7 +202,6 @@ describe('useChangeBranchInspect', () => {
       inspect.refresh()
       await flushMicrotasks()
       expect(workerGit.inspectBranchChange).toHaveBeenCalledTimes(2)
-      dispose()
     })
   })
 
@@ -208,6 +209,7 @@ describe('useChangeBranchInspect', () => {
     const onError = vi.fn()
     vi.mocked(workerGit.inspectBranchChange).mockRejectedValue(new Error('boom'))
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       useChangeBranchInspect({
         workerId: 'w1',
         gitToplevel: '/repo',
@@ -216,7 +218,6 @@ describe('useChangeBranchInspect', () => {
       })
       await flushMicrotasks()
       expect(onError).toHaveBeenCalledWith(expect.any(Error))
-      dispose()
     })
   })
 
@@ -235,6 +236,7 @@ describe('useChangeBranchInspect', () => {
     // worktree "Branch" with a blank name beside the error banner.
     vi.mocked(workerGit.inspectBranchChange).mockRejectedValue(new Error('not a git repository'))
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const inspect = useChangeBranchInspect({
         workerId: 'w1',
         gitToplevel: '/repo',
@@ -253,13 +255,13 @@ describe('useChangeBranchInspect', () => {
       expect(inspect.pathInfo.info().isRepoRoot).toBe(true)
       expect(inspect.pathInfo.info().isWorktreeRoot).toBe(false)
       expect(inspect.pathInfo.info().currentBranch).toBe('main')
-      dispose()
     })
   })
 
   it('keeps a worktree seed on RPC failure', async () => {
     vi.mocked(workerGit.inspectBranchChange).mockRejectedValue(new Error('worker offline'))
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const inspect = useChangeBranchInspect({
         workerId: 'w1',
         gitToplevel: '/repo-worktrees/feature',
@@ -272,7 +274,6 @@ describe('useChangeBranchInspect', () => {
       expect(inspect.pathInfo.info().isRepoRoot).toBe(false)
       expect(inspect.pathInfo.info().currentBranch).toBe('feature')
       expect(inspect.pathInfo.showGitOptions()).toBe(false)
-      dispose()
     })
   })
 
@@ -284,6 +285,7 @@ describe('useChangeBranchInspect', () => {
     // doesn't sit spinning on a doomed RPC.
     const onError = vi.fn()
     await createRoot(async (dispose) => {
+      onTestFinished(dispose)
       const inspect = useChangeBranchInspect({
         workerId: 'w1',
         gitToplevel: '',
@@ -295,7 +297,51 @@ describe('useChangeBranchInspect', () => {
       expect(onError).toHaveBeenCalledTimes(1)
       expect((onError.mock.calls[0]?.[0] as Error).message).toMatch(/no resolved repo path/)
       expect(inspect.branchesLoading()).toBe(false)
-      dispose()
+    })
+  })
+
+  it.each(['before await', 'after await'] as const)('propagates a failure %s and disposes the pending inspection', async (boundary) => {
+    let signal: AbortSignal | undefined
+    const cleanup = vi.fn()
+    const aborted = vi.fn()
+    const failure = new Error('intentional root failure')
+    onTestFinished(() => {
+      expect(signal?.aborted).toBe(true)
+      expect(aborted).toHaveBeenCalledTimes(1)
+      expect(cleanup).toHaveBeenCalledTimes(1)
+    })
+    vi.mocked(workerGit.inspectBranchChange).mockImplementation((_workerId, _request, options) => {
+      signal = options?.signal
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => {
+          aborted()
+          reject(signal?.reason)
+        }, { once: true })
+      })
+    })
+    await expect(createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      onCleanup(cleanup)
+      useChangeBranchInspect({ workerId: 'w1', gitToplevel: '/repo', branchName: 'main' })
+      if (boundary === 'after await')
+        await flushMicrotasks()
+      throw failure
+    })).rejects.toBe(failure)
+    expect(signal).toBeInstanceOf(AbortSignal)
+    expect(signal?.aborted).toBe(false)
+  })
+})
+
+describe('useChangeBranchInspect attached branch identity', () => {
+  it('keeps a detached response separate from the sidebar display seed', async () => {
+    vi.mocked(workerGit.inspectBranchChange).mockResolvedValueOnce(makeResp({ currentBranch: 'a1b2c3d', attachedBranch: '' }))
+    await createRoot(async (dispose) => {
+      onTestFinished(dispose)
+      const inspect = useChangeBranchInspect({ workerId: 'w1', gitToplevel: '/repo', branchName: 'a1b2c3d' })
+      expect(inspect.pathInfo.info().attachedBranch).toBe('')
+      await flushMicrotasks()
+      expect(inspect.pathInfo.info().currentBranch).toBe('a1b2c3d')
+      expect(inspect.pathInfo.info().attachedBranch).toBe('')
     })
   })
 })

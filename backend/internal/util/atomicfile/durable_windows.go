@@ -82,7 +82,7 @@ func renameNoReplace(oldpath, newpath string) error {
 	if err != nil {
 		return err
 	}
-	if err := windows.MoveFileEx(from, to, windows.MOVEFILE_WRITE_THROUGH); err != nil {
+	if err := moveFileExDurable(from, to, windows.MOVEFILE_WRITE_THROUGH); err != nil {
 		if errors.Is(err, windows.ERROR_ALREADY_EXISTS) || errors.Is(err, windows.ERROR_FILE_EXISTS) {
 			return os.ErrExist
 		}

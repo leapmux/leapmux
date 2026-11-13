@@ -147,9 +147,9 @@ message WorkerTabState {
   WorkspaceArchiveState archive_state = 2;
 }
 
-// WorkerManagementService is called BY Frontend on Hub via ConnectRPC.
-// Manages worker registration keys and listings. All RPCs require an
-// authenticated user session.
+// WorkerManagementService manages worker registration keys and listings on Hub
+// via ConnectRPC. It accepts authenticated user credentials, including scoped
+// API credentials with the scope required by each method below.
 service WorkerManagementService {
   option (leapmux.v1.host) = SERVICE_HOST_HUB;
   // Mint a new registration key. The key expires in 5 minutes and is

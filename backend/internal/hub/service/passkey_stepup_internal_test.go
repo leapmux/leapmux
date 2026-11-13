@@ -64,7 +64,7 @@ func firstCredentialSession(t *testing.T, st store.Store, user *store.User, now 
 }
 
 // liveElevatedSessionAt seeds a session with a current elevation and returns
-// the UserInfo a request on it would carry, together with the session token.
+// the UserInfo a request on it would carry, together with the public session ID.
 func liveElevatedSessionAt(t *testing.T, st store.Store, user *store.User, now time.Time) (*auth.UserInfo, string) {
 	t.Helper()
 	uid := userid.MustNew(user.ID)
@@ -78,7 +78,7 @@ func liveElevatedSessionAt(t *testing.T, st store.Store, user *store.User, now t
 	}, now)
 	require.NoError(t, err)
 	require.EqualValues(t, 1, n)
-	return &auth.UserInfo{ID: uid, Credential: auth.SessionCredential(createdSession.ID)}, createdSession.Token
+	return &auth.UserInfo{ID: uid, Credential: auth.SessionCredential(createdSession.ID)}, createdSession.ID
 }
 
 // The locked re-check is the guard a concurrent rotation must not skip:
@@ -153,8 +153,11 @@ func TestRecheckStepUpUnderLock(t *testing.T) {
 		require.NoError(t, recheckStepUpUnderLock(context.Background(), st, user, user, elevated, entryStepUp(info), now),
 			"precondition: the live session passes")
 
-		_, err := st.Sessions().Delete(context.Background(), sessionID)
+		n, err := st.Sessions().Delete(context.Background(), sessionID)
 		require.NoError(t, err)
+		require.EqualValues(t, 1, n)
+		_, err = st.Sessions().GetByID(context.Background(), info.Credential.SessionID(), now)
+		require.ErrorIs(t, err, store.ErrNotFound)
 		assert.NoError(t,
 			recheckStepUpUnderLock(context.Background(), st, user, user, elevated, entryStepUp(info), now),
 			"a concurrent sign-out must not roll back a change the user started")
@@ -326,8 +329,11 @@ func TestRecheckStepUpUnderLock_RefusesARevokedCredentialEpoch(t *testing.T) {
 	// (which moves the epoch) and delete the other sessions.
 	_, _, err := auth.RevokeAllUserCredentials(ctx, st, userid.MustNew(user.ID))
 	require.NoError(t, err)
-	_, err = st.Sessions().Delete(ctx, sessionID)
+	n, err := st.Sessions().Delete(ctx, sessionID)
 	require.NoError(t, err)
+	require.EqualValues(t, 1, n)
+	_, err = st.Sessions().GetByID(ctx, info.Credential.SessionID(), now)
+	require.ErrorIs(t, err, store.ErrNotFound)
 
 	locked, err := st.Users().GetByID(ctx, user.ID)
 	require.NoError(t, err)

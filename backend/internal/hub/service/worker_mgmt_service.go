@@ -24,9 +24,10 @@ const (
 	// extended) registration key.
 	RegistrationKeyTTL = 5 * time.Minute
 	// RegistrationKeyExtendBuffer is the window before expiry within
-	// which a caller may extend a key. The hub refuses an extension when more
-	// than this much time remains so a runaway frontend cannot keep a key
-	// alive forever.
+	// which a caller may extend a key. The hub refuses an extension while at
+	// least this much time remains. This avoids renewing a key while enough
+	// time remains. A caller can keep a live key valid by renewing it within
+	// this window.
 	RegistrationKeyExtendBuffer = 2 * time.Minute
 )
 
@@ -81,6 +82,9 @@ func NewWorkerManagementService(st store.Store, hasher auth.SecretHasher, mgr *w
 	}
 	if sender == nil {
 		panic("service: NewWorkerManagementService requires a mail sender (use mail.NewDisabledSender)")
+	}
+	if hasher.IsZero() {
+		panic("service: NewWorkerManagementService requires a secret hasher")
 	}
 	return &WorkerManagementService{
 		hasher: hasher,

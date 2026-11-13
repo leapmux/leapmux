@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/authscope"
@@ -186,6 +187,87 @@ type staticUserStore struct {
 }
 
 func (s staticUserStore) GetByID(context.Context, string) (*store.User, error) { return s.row, nil }
+
+func TestAPITokenEffectiveDeadline_CacheAndLease(t *testing.T) {
+	created := time.Now().UTC().Truncate(time.Millisecond)
+	absolute := created.Add(AbsoluteTokenLifetime)
+	earlier := created.Add(time.Hour)
+	later := absolute.Add(time.Hour)
+	for _, tc := range []struct {
+		name      string
+		createdAt time.Time
+		expiresAt *time.Time
+		want      CredentialDeadline
+	}{
+		{"no explicit expiry", created, nil, DeadlineAt(absolute)},
+		{"later explicit expiry", created, &later, DeadlineAt(absolute)},
+		{"equal explicit expiry", created, &absolute, DeadlineAt(absolute)},
+		{"earlier explicit expiry", created, &earlier, DeadlineAt(earlier)},
+		{"unknown creation", time.Time{}, &earlier, DeadlineAt(earlier)},
+		{"no known deadline", time.Time{}, nil, NeverExpires()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api := &countingAPITokenStore{rows: make(map[string]*store.APIToken)}
+			base := bearerValidationOverrideStore{
+				api: api, users: staticUserStore{row: &store.User{ID: "user", Username: "user"}},
+			}
+			validator, err := NewTokenValidator(base, []byte("0123456789abcdef0123456789abcdef"))
+			require.NoError(t, err)
+			secret := MintAccessSecret()
+			api.rows["deadline-token"] = &store.APIToken{
+				ID: "deadline-token", UserID: "user", ClientID: "client",
+				GrantedScopes: "account:read", ClientScopes: "account:read",
+				SecretHash: validator.HashSecret(secret), CreatedAt: tc.createdAt, ExpiresAt: tc.expiresAt,
+			}
+			now := created
+			deadline, finite := tc.want.At()
+			if finite {
+				now = deadline.Add(-time.Second)
+			}
+			validator.Now = func() time.Time { return now }
+			state := &authState{}
+			a := &authInterceptor{sessionHasher: testSecretHasher(), servingCtx: t.Context(), store: base, tokenValidator: validator, state: state}
+			bearer := "Bearer " + FormatBearer(BearerKindAPI, "deadline-token", secret)
+			user, accepted, err := a.tryAuthenticateBearer(t.Context(), bearer)
+			require.NoError(t, err)
+			require.True(t, accepted)
+			assert.Equal(t, tc.want, user.CredentialExpiresAt)
+
+			registry := &AuthContextRegistry{state: state}
+			leaseCtx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			release, outcome := registry.RegisterAuthenticatedLease(t.Context(), user, cancel)
+			require.Equal(t, LeaseGranted, outcome)
+			t.Cleanup(release)
+			state.revocationMu.Lock()
+			deadlines := make([]CredentialDeadline, 0, len(state.leases))
+			timers := 0
+			for _, lease := range state.leases {
+				deadlines = append(deadlines, lease.user.CredentialExpiresAt)
+				if lease.timer != nil {
+					timers++
+				}
+			}
+			state.revocationMu.Unlock()
+			assert.Equal(t, []CredentialDeadline{tc.want}, deadlines)
+			if finite {
+				assert.Equal(t, 1, timers)
+			} else {
+				assert.Zero(t, timers)
+			}
+			assert.NoError(t, leaseCtx.Err())
+
+			if finite {
+				now = deadline
+				user, accepted, err = a.tryAuthenticateBearer(t.Context(), bearer)
+				assert.ErrorIs(t, err, ErrTokenExpired)
+				assert.False(t, accepted)
+				assert.Nil(t, user)
+				assert.Equal(t, int32(2), api.callCount("deadline-token"))
+			}
+		})
+	}
+}
 
 func (s validationErrorSessionStore) ValidateWithUser(context.Context, string, time.Time) (*store.SessionWithUser, error) {
 	return nil, s.err
@@ -492,45 +574,52 @@ func TestBearerRevocationDuringValidationRejectsResult(t *testing.T) {
 }
 
 func TestBearerSingleflightFollowerDoesNotInheritLeaderCancellation(t *testing.T) {
-	pepper := []byte("0123456789abcdef0123456789abcdef")
-	secret := MintAccessSecret()
-	tokenID := "token"
-	api := &contextBlockingAPITokenStore{
-		row:     &store.APIToken{ID: tokenID, UserID: "user", CreatedAt: time.Now()},
-		started: make(chan struct{}),
-		release: make(chan struct{}),
-	}
-	base := bearerValidationOverrideStore{
-		api:   api,
-		users: staticUserStore{row: &store.User{ID: "user", Username: "user"}},
-	}
-	validator, err := NewTokenValidator(base, pepper)
-	require.NoError(t, err)
-	api.row.SecretHash = validator.HashSecret(secret)
-	a := &authInterceptor{sessionHasher: testSecretHasher(), servingCtx: context.Background(), store: base, tokenValidator: validator, state: &authState{}}
-	bearer := "Bearer " + FormatBearer(BearerKindAPI, tokenID, secret)
+	synctest.Test(t, func(t *testing.T) {
+		pepper := []byte("0123456789abcdef0123456789abcdef")
+		secret := MintAccessSecret()
+		tokenID := "token"
+		api := &contextBlockingAPITokenStore{
+			row:     &store.APIToken{ID: tokenID, UserID: "user", CreatedAt: time.Now()},
+			started: make(chan struct{}),
+			release: make(chan struct{}),
+		}
+		defer func() {
+			select {
+			case <-api.release:
+			default:
+				close(api.release)
+			}
+		}()
 
-	leaderCtx, cancelLeader := context.WithCancel(context.Background())
-	leaderResult := make(chan error, 1)
-	go func() {
-		_, _, err := a.tryAuthenticateBearer(leaderCtx, bearer)
-		leaderResult <- err
-	}()
-	<-api.started
+		base := bearerValidationOverrideStore{
+			api:   api,
+			users: staticUserStore{row: &store.User{ID: "user", Username: "user"}},
+		}
+		validator, err := NewTokenValidator(base, pepper)
+		require.NoError(t, err)
+		api.row.SecretHash = validator.HashSecret(secret)
+		a := &authInterceptor{sessionHasher: testSecretHasher(), servingCtx: context.Background(), store: base, tokenValidator: validator, state: &authState{}}
+		bearer := "Bearer " + FormatBearer(BearerKindAPI, tokenID, secret)
 
-	followerResult := make(chan error, 1)
-	followerStarted := make(chan struct{})
-	go func() {
-		close(followerStarted)
-		_, _, err := a.tryAuthenticateBearer(context.Background(), bearer)
-		followerResult <- err
-	}()
-	<-followerStarted
-	time.Sleep(20 * time.Millisecond)
-	cancelLeader()
-	require.ErrorIs(t, <-leaderResult, context.Canceled)
-	close(api.release)
-	require.NoError(t, <-followerResult)
+		leaderCtx, cancelLeader := context.WithCancel(context.Background())
+		leaderResult := make(chan error, 1)
+		go func() {
+			_, _, err := a.tryAuthenticateBearer(leaderCtx, bearer)
+			leaderResult <- err
+		}()
+		<-api.started
+
+		followerResult := make(chan error, 1)
+		go func() {
+			_, _, err := a.tryAuthenticateBearer(context.Background(), bearer)
+			followerResult <- err
+		}()
+		synctest.Wait()
+		cancelLeader()
+		require.ErrorIs(t, <-leaderResult, context.Canceled)
+		close(api.release)
+		require.NoError(t, <-followerResult)
+	})
 }
 
 // TestBearerSingleflightFollowersGetDistinctUserInfo pins the invariant that
@@ -540,54 +629,61 @@ func TestBearerSingleflightFollowerDoesNotInheritLeaderCancellation(t *testing.T
 // requests would be a latent cross-request data race the moment any handler
 // mutates the context user.
 func TestBearerSingleflightFollowersGetDistinctUserInfo(t *testing.T) {
-	pepper := []byte("0123456789abcdef0123456789abcdef")
-	secret := MintAccessSecret()
-	tokenID := "token"
-	api := &contextBlockingAPITokenStore{
-		row:     &store.APIToken{ID: tokenID, UserID: "user", CreatedAt: time.Now()},
-		started: make(chan struct{}),
-		release: make(chan struct{}),
-	}
-	base := bearerValidationOverrideStore{
-		api:   api,
-		users: staticUserStore{row: &store.User{ID: "user", Username: "user"}},
-	}
-	validator, err := NewTokenValidator(base, pepper)
-	require.NoError(t, err)
-	api.row.SecretHash = validator.HashSecret(secret)
-	a := &authInterceptor{sessionHasher: testSecretHasher(), servingCtx: context.Background(), store: base, tokenValidator: validator, state: &authState{}}
-	bearer := "Bearer " + FormatBearer(BearerKindAPI, tokenID, secret)
+	synctest.Test(t, func(t *testing.T) {
+		pepper := []byte("0123456789abcdef0123456789abcdef")
+		secret := MintAccessSecret()
+		tokenID := "token"
+		api := &contextBlockingAPITokenStore{
+			row:     &store.APIToken{ID: tokenID, UserID: "user", CreatedAt: time.Now()},
+			started: make(chan struct{}),
+			release: make(chan struct{}),
+		}
+		defer func() {
+			select {
+			case <-api.release:
+			default:
+				close(api.release)
+			}
+		}()
 
-	type result struct {
-		user *UserInfo
-		err  error
-	}
-	leaderResult := make(chan result, 1)
-	go func() {
-		u, _, err := a.tryAuthenticateBearer(context.Background(), bearer)
-		leaderResult <- result{u, err}
-	}()
-	<-api.started
+		base := bearerValidationOverrideStore{
+			api:   api,
+			users: staticUserStore{row: &store.User{ID: "user", Username: "user"}},
+		}
+		validator, err := NewTokenValidator(base, pepper)
+		require.NoError(t, err)
+		api.row.SecretHash = validator.HashSecret(secret)
+		a := &authInterceptor{sessionHasher: testSecretHasher(), servingCtx: context.Background(), store: base, tokenValidator: validator, state: &authState{}}
+		bearer := "Bearer " + FormatBearer(BearerKindAPI, tokenID, secret)
 
-	followerResult := make(chan result, 1)
-	followerStarted := make(chan struct{})
-	go func() {
-		close(followerStarted)
-		u, _, err := a.tryAuthenticateBearer(context.Background(), bearer)
-		followerResult <- result{u, err}
-	}()
-	<-followerStarted
-	time.Sleep(20 * time.Millisecond)
-	close(api.release)
+		type result struct {
+			user *UserInfo
+			err  error
+		}
+		leaderResult := make(chan result, 1)
+		go func() {
+			u, _, err := a.tryAuthenticateBearer(context.Background(), bearer)
+			leaderResult <- result{u, err}
+		}()
+		<-api.started
 
-	leader := <-leaderResult
-	follower := <-followerResult
-	require.NoError(t, leader.err)
-	require.NoError(t, follower.err)
-	require.NotNil(t, leader.user)
-	require.NotNil(t, follower.user)
-	assert.NotSame(t, leader.user, follower.user,
-		"followers collapsed into one singleflight must each receive their own *UserInfo clone")
+		followerResult := make(chan result, 1)
+		go func() {
+			u, _, err := a.tryAuthenticateBearer(context.Background(), bearer)
+			followerResult <- result{u, err}
+		}()
+		synctest.Wait()
+		close(api.release)
+
+		leader := <-leaderResult
+		follower := <-followerResult
+		require.NoError(t, leader.err)
+		require.NoError(t, follower.err)
+		require.NotNil(t, leader.user)
+		require.NotNil(t, follower.user)
+		assert.NotSame(t, leader.user, follower.user,
+			"followers collapsed into one singleflight must each receive their own *UserInfo clone")
+	})
 }
 
 func TestSoloAuthenticationAdvancesPastUserRevocation(t *testing.T) {
@@ -825,9 +921,10 @@ func TestUserRevocationCacheEvictionIsGenerationSelective(t *testing.T) {
 // only the `userID == ""` guard does, and until this test existed deleting it
 // as "redundant with userid.UserID" left the entire suite passing.
 //
-// The generation is the observable: without the guard the call still bumps it
-// and records a junk revocation mark under the empty key, which invalidates
-// every warm cache entry in the process while revoking nothing.
+// The generation and mark are observables: without the guard the call
+// advances the ordering sequence and records a junk revocation mark under
+// the empty key. A blank id must change neither, even though neither change
+// revokes a real user's cached credentials.
 func TestBlankUserIDRevocationEvictsNothingAndBumpsNoGeneration(t *testing.T) {
 	newFixture := func() (*authState, *AuthContextRegistry, bearerCacheKeyParts) {
 		state := &authState{}
@@ -851,7 +948,7 @@ func TestBlankUserIDRevocationEvictsNothingAndBumpsNoGeneration(t *testing.T) {
 		sc.RevokeUserAuthContextAtGeneration("", 5)
 
 		assert.Equal(t, before, state.revocationGen.Load(),
-			"a blank id must not bump the revocation generation: it revokes nobody while invalidating every warm cache entry")
+			"a blank id must not advance the revocation ordering sequence")
 		_, marked := state.userRevocations.Load("")
 		assert.False(t, marked, "a blank id must not record a revocation mark")
 		_, sessionExists := state.sessions.Load("sess")
@@ -895,19 +992,22 @@ func TestAuthenticatedLeaseRegistrationRejectsRevokedIdentity(t *testing.T) {
 }
 
 func TestAuthenticatedLeaseExpiresWithCredential(t *testing.T) {
-	sc := &AuthContextRegistry{state: &authState{}}
-	ctx, cancel := context.WithCancel(context.Background())
-	release, outcome := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
-		ID: userid.MustNew("user"), Credential: SessionCredential("session"), CredentialExpiresAt: DeadlineAt(time.Now().Add(20 * time.Millisecond)),
-	}, cancel)
-	require.Equal(t, LeaseGranted, outcome)
-	defer release()
-
-	select {
-	case <-ctx.Done():
-	case <-time.After(time.Second):
-		t.Fatal("lease remained active after credential expiry")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		sc := &AuthContextRegistry{state: &authState{}}
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		release, outcome := sc.RegisterAuthenticatedLease(context.Background(), &UserInfo{
+			ID: userid.MustNew("user"), Credential: SessionCredential("session"), CredentialExpiresAt: DeadlineAt(time.Now().Add(time.Hour)),
+		}, cancel)
+		require.Equal(t, LeaseGranted, outcome)
+		defer release()
+		time.Sleep(time.Hour - time.Nanosecond)
+		synctest.Wait()
+		require.NoError(t, ctx.Err())
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		require.ErrorIs(t, ctx.Err(), context.Canceled)
+	})
 }
 
 // The global sequence orders validation against scoped marks; advancing it
@@ -1343,7 +1443,7 @@ func TestBlankUserIDEvictionEvictsNothingAndBumpsNoGeneration(t *testing.T) {
 		sc.EvictByUserID("")
 
 		assert.Equal(t, before, state.revocationGen.Load(),
-			"a blank id must not bump the revocation generation: it evicts nobody while invalidating every warm cache entry")
+			"a blank id must not advance the revocation ordering sequence")
 		_, marked := state.userInvalidations.Load("")
 		assert.False(t, marked, "a blank id must not record a user-invalidation mark")
 		_, sessionExists := state.sessions.Load("sess")

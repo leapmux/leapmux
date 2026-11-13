@@ -385,7 +385,8 @@ func TestCreateUserInTx_MintsThePendingExpiryFromTheCallerSeam(t *testing.T) {
 	fixed := time.Date(2031, 3, 4, 5, 6, 7, 0, time.UTC)
 
 	user, code, err := createUserInTx(ctx, st, createUserTxParams{
-		username: "seamed", displayName: "Seamed",
+		admission: userCreationUnrestricted,
+		username:  "seamed", displayName: "Seamed",
 		pendingEmail: "seamed@example.com", passwordHash: "hash", firstCredentialExempt: true,
 		now: func() time.Time { return fixed },
 	})
@@ -414,7 +415,8 @@ func TestVerifyPendingEmailToken_ReadsTheCallerSeam(t *testing.T) {
 	issuedAt := time.Now().UTC()
 
 	user, code, err := createUserInTx(ctx, st, createUserTxParams{
-		username: "expiring", displayName: "Expiring",
+		admission: userCreationUnrestricted,
+		username:  "expiring", displayName: "Expiring",
 		pendingEmail: "expiring@example.com", passwordHash: "hash", firstCredentialExempt: true,
 		now: func() time.Time { return issuedAt },
 	})
@@ -455,7 +457,8 @@ func TestCreateUserInTx_EnforcesTheAdminInvariants(t *testing.T) {
 		t.Parallel()
 		st := setupCreateUserTestDB(t)
 		user, code, err := createUserInTx(ctx, st, createUserTxParams{
-			username: "unforced-admin", displayName: "Unforced", isAdmin: true,
+			admission: userCreationUnrestricted,
+			username:  "unforced-admin", displayName: "Unforced", isAdmin: true,
 			email: "admin@example.com", emailVerified: false,
 			passwordHash: "hash", firstCredentialExempt: true,
 		})
@@ -472,7 +475,8 @@ func TestCreateUserInTx_EnforcesTheAdminInvariants(t *testing.T) {
 		t.Parallel()
 		st := setupCreateUserTestDB(t)
 		user, code, err := createUserInTx(ctx, st, createUserTxParams{
-			username: "promoted-admin", displayName: "Promoted", isAdmin: true,
+			admission: userCreationUnrestricted,
+			username:  "promoted-admin", displayName: "Promoted", isAdmin: true,
 			email: "", pendingEmail: "admin@example.com",
 			passwordHash: "hash", firstCredentialExempt: true,
 		})
@@ -496,7 +500,8 @@ func TestCreateUserInTx_EnforcesTheAdminInvariants(t *testing.T) {
 		t.Parallel()
 		st := setupCreateUserTestDB(t)
 		user, code, err := createUserInTx(ctx, st, createUserTxParams{
-			username: "pending-user", displayName: "Pending",
+			admission: userCreationUnrestricted,
+			username:  "pending-user", displayName: "Pending",
 			pendingEmail: "user@example.com", passwordHash: "hash", firstCredentialExempt: true,
 		})
 		require.NoError(t, err)
@@ -513,14 +518,16 @@ func TestCreateUserInTx_EnforcesTheAdminInvariants(t *testing.T) {
 		t.Parallel()
 		st := setupCreateUserTestDB(t)
 		loser, _, err := createUserInTx(ctx, st, createUserTxParams{
-			username: "loser", displayName: "Loser",
+			admission: userCreationUnrestricted,
+			username:  "loser", displayName: "Loser",
 			pendingEmail: "contested@example.com", passwordHash: "hash", firstCredentialExempt: true,
 		})
 		require.NoError(t, err)
 		require.Equal(t, "contested@example.com", loser.PendingEmail)
 
 		_, _, err = createUserInTx(ctx, st, createUserTxParams{
-			username: "winner", displayName: "Winner",
+			admission: userCreationUnrestricted,
+			username:  "winner", displayName: "Winner",
 			email: "contested@example.com", emailVerified: true,
 			passwordHash: "hash", firstCredentialExempt: true,
 		})

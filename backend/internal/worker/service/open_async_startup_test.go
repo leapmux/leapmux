@@ -1329,6 +1329,7 @@ func TestExecuteCreateWorktree_FailureIsRecoverable(t *testing.T) {
 		Mode:         gitModeCreateWorktree,
 		WorkingDir:   bogusRoot,
 		RepoRoot:     bogusRoot,
+		RepoGitDir:   regularRepositoryGitDirForTest(t, bogusRoot),
 		BranchName:   "feature/x",
 		StartPoint:   "HEAD",
 		WorktreePath: filepath.Join(bogusRoot, "wt"),

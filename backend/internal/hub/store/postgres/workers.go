@@ -67,7 +67,10 @@ func (s *workerStore) GetByAuthTokenHashIncludeDeleted(ctx context.Context, hash
 }
 
 func (s *workerStore) RotateAuthToken(ctx context.Context, p store.RotateWorkerAuthTokenParams) (int64, error) {
-	n, err := s.conn.q.RotateWorkerAuthToken(ctx, gendb.RotateWorkerAuthTokenParams{ID: p.ID, AuthTokenHash: p.AuthTokenHash})
+	if err := p.Validate(); err != nil {
+		return 0, err
+	}
+	n, err := s.conn.q.RotateWorkerAuthToken(ctx, gendb.RotateWorkerAuthTokenParams{ID: p.ID, AuthTokenHash: p.AuthTokenHash, ExpectedAuthTokenHash: p.ExpectedAuthTokenHash})
 	return n, mapErr(err)
 }
 
@@ -196,8 +199,9 @@ func (s *workerStore) MarkAllDeletedByUser(ctx context.Context, registeredBy use
 
 func fromDBWorker(w gendb.Worker) *store.Worker {
 	return &store.Worker{
-		ID:           w.ID,
-		RegisteredBy: w.RegisteredBy,
+		ID:            w.ID,
+		AuthTokenHash: w.AuthTokenHash,
+		RegisteredBy:  w.RegisteredBy,
 		PublicKeys: store.WorkerPublicKeys{
 			X25519: w.X25519PublicKey,
 			Mlkem:  w.MlkemPublicKey,

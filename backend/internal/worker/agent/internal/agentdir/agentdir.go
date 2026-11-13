@@ -15,7 +15,8 @@
 // Windows the parent is <base>\leapmux-agents, because Windows has no numeric
 // user id. The owner check keeps other users out of it.
 //
-// Control sockets live separately under <data-dir>/run/control.
+// Control sockets live separately under <data-dir>/run/control when it fits.
+// Deep data directories use a private short namespace selected by controlipc.
 //
 // # Bases
 //
