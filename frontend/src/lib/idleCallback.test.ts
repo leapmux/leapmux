@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { cancelIdle, requestIdle } from './idleCallback'
+import { cancelIdle, FALLBACK_IDLE_BUDGET_MS, requestIdle } from './idleCallback'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -70,5 +70,24 @@ describe('idleCallback', () => {
     cancelIdle(requestIdle(cb2))
     vi.advanceTimersByTime(2)
     expect(cb2).not.toHaveBeenCalled()
+  })
+
+  it('gives the fallback callback a deadline of one work slice', () => {
+    vi.stubGlobal('requestIdleCallback', undefined)
+    vi.stubGlobal('cancelIdleCallback', undefined)
+    vi.useFakeTimers()
+
+    let deadline: IdleDeadline | undefined
+    requestIdle((received) => {
+      deadline = received
+    })
+    vi.advanceTimersByTime(2)
+
+    expect(deadline?.didTimeout).toBe(false)
+    const remaining = deadline?.timeRemaining() ?? -1
+    expect(remaining).toBeGreaterThan(0)
+    expect(remaining).toBeLessThanOrEqual(FALLBACK_IDLE_BUDGET_MS)
+    vi.advanceTimersByTime(FALLBACK_IDLE_BUDGET_MS)
+    expect(deadline?.timeRemaining()).toBe(0)
   })
 })

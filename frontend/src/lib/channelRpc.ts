@@ -1,13 +1,12 @@
 import type { ChannelErrorSource } from './channelError'
-import type { Reassembler } from './reassembler'
 /**
  * Per-channel RPC / stream multiplexer for the E2EE channel.
  *
  * Owns correlation-id → pending unary / stream-listener registration, response
  * delivery, reassembly-limit rejection, and waiter drain. Extracted from
  * ChannelManager so the request state machine is unit-testable without a
- * WebSocket / Noise harness. ChannelManager keeps rekey gating on `call` /
- * `stream`, then delegates here.
+ * WebSocket / Noise harness. The channel session worker encrypts what this
+ * sends, and holds a send back while a rekey is due (see ChannelSession.send).
  *
  * See https://github.com/leapmux/leapmux/issues/292.
  */
@@ -19,13 +18,6 @@ import { formatErrorMessage } from './errors'
 import { createLogger } from './logger'
 
 const log = createLogger('channel')
-
-/**
- * The first correlation id that a channel allocates. No request ever receives 0,
- * so a zero-valued id stays distinguishable from an allocated one; the Go tunnel
- * client's allocator skips 0 for the same reason (backend/tunnel/channel.go).
- */
-export const FIRST_REQUEST_ID = 1
 
 /** The ChannelError for the in-band error of an inner RPC or stream. */
 function inBandChannelError(source: 'rpc' | 'stream', error: RpcError): ChannelError {
@@ -77,15 +69,14 @@ export interface StreamListener {
 }
 
 /**
- * The slice of an ActiveChannel the RPC mux drives: correlation registries,
- * reassembly buffers, and the id allocator.
+ * The slice of an ActiveChannel the RPC mux drives: correlation registries and
+ * the id allocator.
  */
 export interface RpcChannel {
   channelId: string
   workerId: string
   pendingRequests: Map<number, PendingRequest>
   streamListeners: Map<number, StreamListener>
-  reassembly: Reassembler
   nextRequestId: number
 }
 
@@ -95,28 +86,24 @@ export interface StreamHandle {
   onEnd: (cb: () => void) => void
   onError: (cb: (err: Error) => void) => void
   /**
-   * Register the stream listener and encrypt+send. ChannelManager calls this
-   * on the fast path synchronously, or after ensureRekeyed on the deferred path.
-   * Returns a ChannelError when send fails (caller delivers via onError / throw).
-   */
-  attachAndSend: () => ChannelError | null
-  /**
-   * Deliver an error that happened before attach (rekey failure, channel closed
-   * mid-gate). Uses onError when set; otherwise logs — matching the prior
-   * ChannelManager.stream deferred-path behavior.
-   */
-  deliverDeferredError: (err: Error, logWhat: string) => void
-  /**
-   * End the stream for its consumer with `err`, as deliverDeferredError reports
-   * it. No listener fires after this one, so a frame that is still in flight
-   * cannot follow the failure.
+   * End the stream for its consumer with `err`, through its onError listener,
+   * or a log line when it has none. No listener fires after this one, so a
+   * frame that is still in flight cannot follow the failure.
    */
   fail: (err: Error, logWhat: string) => void
 }
 
 export interface ChannelRpcDeps {
-  /** Encrypt+send one outbound frame. Throws on failure (session/transport/size). */
-  send: (ch: RpcChannel, plaintext: Uint8Array, requestId: number) => void
+  /**
+   * Hand one outbound message to the channel session, which encrypts it and puts
+   * it on the wire. `startsRequest` is true for the message that opens a request
+   * or a stream. It throws for a message over the size limit, and when the session
+   * worker does not run. A failure on the wire arrives later, through the
+   * manager's `onSendFailure`, which closes the channel and so fails the request.
+   */
+  send: (ch: RpcChannel, plaintext: Uint8Array, requestId: number, startsRequest: boolean) => void
+  /** The request or the stream of `correlationId` ended: the session drops what it kept for it. */
+  release: (ch: RpcChannel, correlationId: number) => void
   /**
    * Decide the channel's fate after send threw. Called after the mux has already
    * unregistered the request id.
@@ -178,13 +165,9 @@ export class ChannelRpcMux {
     this.deps = deps
   }
 
-  /**
-   * Register a unary RPC, install timeout/abort cleanup, and encrypt+send.
-   * Caller must have already passed rekey gating.
-   */
-  callAfterRekey(
+  /** Register a unary RPC, install timeout/abort cleanup, and send. */
+  call(
     ch: RpcChannel,
-    channelId: string,
     method: string,
     payload: Uint8Array,
     timeoutMs?: number,
@@ -210,7 +193,7 @@ export class ChannelRpcMux {
         this.unregisterRequest(ch, requestId)
         cleanup()
         log.debug('inner RPC request timed out', { channel_id: ch.channelId, id: requestId, method })
-        reject(new ChannelError('client', `RPC call '${method}' timed out after ${timeoutSec}s (channel=${channelId})`))
+        reject(new ChannelError('client', `RPC call '${method}' timed out after ${timeoutSec}s (channel=${ch.channelId})`))
       }, effectiveTimeoutMs)
       /* eslint-enable ts/no-use-before-define */
 
@@ -262,9 +245,10 @@ export class ChannelRpcMux {
   }
 
   /**
-   * Allocate a stream correlation id and return a handle. The caller (after any
-   * rekey gate) must invoke `attachAndSend` to register the listener and put the
-   * request on the wire.
+   * Allocate a stream correlation id, register its listener, and send the
+   * opening request. The registration comes first, so a reply that arrives in
+   * the same turn finds its listener. Throws the send failure, after it
+   * unregistered the listener.
    */
   beginStream(ch: RpcChannel, method: string, payload: Uint8Array): StreamHandle {
     const requestId = ch.nextRequestId++
@@ -279,30 +263,20 @@ export class ChannelRpcMux {
       payload_len: payload.length,
     })
 
-    const plaintext = buildRequestPlaintext(method, payload)
-    const attachAndSend = (): ChannelError | null => {
-      ch.streamListeners.set(requestId, {
-        onMessage: msg => messageCb?.(msg),
-        onEnd: () => endCb?.(),
-        onError: err => errorCb?.(err),
-      })
-      return this.trySend(ch, plaintext, requestId)
-    }
-
-    const report = (listener: ((err: Error) => void) | null, err: Error, logWhat: string): void => {
-      if (listener)
-        listener(err)
-      else
-        log.warn(logWhat, { channel_id: ch.channelId, error: err.message })
-    }
+    ch.streamListeners.set(requestId, {
+      onMessage: msg => messageCb?.(msg),
+      onEnd: () => endCb?.(),
+      onError: err => errorCb?.(err),
+    })
+    const sendErr = this.trySend(ch, buildRequestPlaintext(method, payload), requestId)
+    if (sendErr)
+      throw sendErr
 
     return {
       requestId,
       onMessage: (cb) => { messageCb = cb },
       onEnd: (cb) => { endCb = cb },
       onError: (cb) => { errorCb = cb },
-      attachAndSend,
-      deliverDeferredError: (err, logWhat) => report(errorCb, err, logWhat),
       fail: (err, logWhat) => {
         // Clear the listeners first, so a listener that throws cannot leave
         // them in place.
@@ -310,15 +284,18 @@ export class ChannelRpcMux {
         messageCb = null
         endCb = null
         errorCb = null
-        report(listener, err, logWhat)
+        if (listener)
+          listener(err)
+        else
+          log.warn(logWhat, { channel_id: ch.channelId, error: err.message })
       },
     }
   }
 
-  /** Encrypt+send one outbound frame; unregister + onSendFailure on throw. */
+  /** Send the message that opens a request; unregister + onSendFailure on throw. */
   trySend(ch: RpcChannel, plaintext: Uint8Array, requestId: number): ChannelError | null {
     try {
-      this.deps.send(ch, plaintext, requestId)
+      this.deps.send(ch, plaintext, requestId, true)
       return null
     }
     catch (err) {
@@ -349,10 +326,13 @@ export class ChannelRpcMux {
     const plaintext = buildStreamRequestPlaintext(action)
     if (action.case === 'cancel') {
       // Drop the local registration first so a racing end frame is discarded.
+      // The release reaches the session before the cancel, so a cancel whose
+      // stream never left the session's held lane never leaves it either.
       this.unregisterRequest(ch, correlationId)
     }
     try {
-      this.deps.send(ch, plaintext, correlationId)
+      // Never a starting send: that would make a cancelled id live again.
+      this.deps.send(ch, plaintext, correlationId, false)
       return null
     }
     catch (err) {
@@ -364,7 +344,7 @@ export class ChannelRpcMux {
   }
 
   /**
-   * Fail every waiter on a channel and release its buffers.
+   * Fail every waiter on a channel.
    *
    * `streamTermination` differs by caller: a local close is an orderly end its
    * consumer asked for, while a transport failure is an error the consumer must see.
@@ -384,8 +364,6 @@ export class ChannelRpcMux {
         this.deps.safeCall(() => listener.onError(err), 'stream onError listener')
     }
     ch.streamListeners.clear()
-
-    ch.reassembly.clear()
   }
 
   /** Route a completed InnerRpcResponse to its pending request. */
@@ -468,7 +446,8 @@ export class ChannelRpcMux {
   }
 
   /**
-   * Drop every handler registered for a request and, with them, its reassembly buffer.
+   * Drop every handler registered for a request, and tell the session, which then
+   * drops its reassembly buffer.
    *
    * A correlation id is either a pending unary or a stream, never both, so clearing
    * both maps is safe and keeps the rule -- a reassembly buffer lives and dies with the
@@ -477,16 +456,7 @@ export class ChannelRpcMux {
   unregisterRequest(ch: RpcChannel, correlationId: number): void {
     ch.pendingRequests.delete(correlationId)
     ch.streamListeners.delete(correlationId)
-    ch.reassembly.drop(correlationId)
-  }
-
-  /**
-   * Report a reassembly-limit breach to the request that owns the id, then tombstone
-   * the id so the rest of its chunks are dropped in silence.
-   */
-  failReassembly(ch: RpcChannel, correlationId: number, message: string): void {
-    this.rejectPendingRequest(ch, correlationId, 'client', message)
-    ch.reassembly.poison(correlationId)
+    this.deps.release(ch, correlationId)
   }
 
   /** Reject a pending request or error an active stream. */
@@ -500,31 +470,9 @@ export class ChannelRpcMux {
     const listener = ch.streamListeners.get(correlationId)
     if (listener) {
       this.unregisterRequest(ch, correlationId)
-      // Isolate the app callback: failReassembly poisons the id AFTER this returns,
-      // and a throwing onError would skip the poison.
+      // Isolate the app callback, so that a throwing onError cannot unwind
+      // through the event dispatch of the channel session worker.
       this.deps.safeCall(() => listener.onError(new ChannelError(source, message)), 'stream onError listener')
     }
-  }
-
-  /** Whether any handler is registered for this correlation id (unary, stream, or rekey). */
-  hasHandler(ch: RpcChannel, correlationId: number, rekeyRequestId: number | null): boolean {
-    return ch.pendingRequests.has(correlationId)
-      || ch.streamListeners.has(correlationId)
-      || correlationId === rekeyRequestId
-  }
-
-  /**
-   * Whether this channel ever allocated `correlationId`, whether its request is
-   * still live or has retired.
-   *
-   * Every id comes from `nextRequestId++`, and the counter only grows, so the
-   * channel allocated exactly the ids in [FIRST_REQUEST_ID, nextRequestId). This
-   * reads that range and keeps no record of its own. An inbound frame for an
-   * allocated id that has no handler answers a request that this side retired on
-   * purpose: an aborted or timed-out call, or a cancelled stream whose worker
-   * still sends its end frame. A frame for any other id is a protocol violation.
-   */
-  wasAllocated(ch: RpcChannel, correlationId: number): boolean {
-    return correlationId >= FIRST_REQUEST_ID && correlationId < ch.nextRequestId
   }
 }

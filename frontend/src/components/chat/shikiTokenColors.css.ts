@@ -99,10 +99,10 @@ function codeSurfaceTheme(selector: string, kind: CodeSurfaceKind): void {
  * in the base rule and the dark-theme color under `html[data-theme="dark"]`.
  *
  * Single-sources the `--shiki-light` / `--shiki-dark` (+ optional `*-bg`) variable
- * pair that Shiki output (`pre.shiki span`, `span[data-shiki-token]`, the inline
- * `span[style]` decorations) keys off across every highlighted surface -- the token
- * worker, the markdown pipeline, the editor parser, the ANSI renderer, and the Read
- * tool view all emit it via dualThemeTokenOptions. Routing every wrapper through
+ * pair that Shiki output (`pre.shiki span`, `span[data-shiki-token]`, the composer's
+ * token decorations) keys off across every highlighted surface -- the token worker
+ * (which also serves the composer), the markdown pipeline, the ANSI renderer, and the
+ * Read tool view all emit it via dualThemeTokenOptions. Routing every wrapper through
  * this helper keeps a variable rename from silently missing one of the ~dozen
  * selectors that style the same contract.
  *

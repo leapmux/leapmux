@@ -115,8 +115,7 @@ function chatModules(): string[] {
       // Test DATA co-located with the module it describes; see `chatLayerStructure.test.ts`.
       && !name.endsWith('.fixtures.ts')
       && name !== 'testUtils.ts'
-      && name !== 'testUtils.tsx'
-      && name !== 'testMocks.ts',
+      && name !== 'testUtils.tsx',
   })
 }
 

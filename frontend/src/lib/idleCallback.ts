@@ -1,3 +1,6 @@
+import { monotonicNow } from './monotonicNow'
+import { WORK_SLICE_MS } from './workSlices'
+
 /**
  * `requestIdleCallback` with a `setTimeout` fallback for environments that lack it
  * (older Safari, jsdom). Returns an opaque handle for {@link cancelIdle}.
@@ -20,11 +23,30 @@ function hasIdleCallback(): boolean {
 }
 
 /**
+ * The idle time that the fallback grants its callback, in milliseconds. The
+ * fallback cannot know whether the browser is idle, so it grants one work slice,
+ * not the 50 ms that a real idle period can hold.
+ */
+export const FALLBACK_IDLE_BUDGET_MS = WORK_SLICE_MS
+
+/** A deadline that runs out FALLBACK_IDLE_BUDGET_MS after now. */
+function fallbackDeadline(): IdleDeadline {
+  const end = monotonicNow() + FALLBACK_IDLE_BUDGET_MS
+  return {
+    didTimeout: false,
+    timeRemaining: () => Math.max(0, end - monotonicNow()),
+  }
+}
+
+/**
  * `options.timeout` caps how long the callback waits for an idle window, for a
  * caller whose work must happen even on a page that never goes idle. The
  * fallback ignores it, because a timer already runs the callback immediately.
+ *
+ * The callback receives the deadline of its idle period. A caller that splits
+ * its work reads `deadline.timeRemaining()` between steps.
  */
-export function requestIdle(callback: () => void, options?: IdleRequestOptions): number {
+export function requestIdle(callback: (deadline: IdleDeadline) => void, options?: IdleRequestOptions): number {
   // `options` is forwarded only when a caller gave one, so the ordinary call
   // stays a one-argument call rather than passing an explicit `undefined`.
   if (hasIdleCallback()) {
@@ -32,7 +54,7 @@ export function requestIdle(callback: () => void, options?: IdleRequestOptions):
       ? requestIdleCallback(callback)
       : requestIdleCallback(callback, options)
   }
-  return setTimeout(callback, 1) as unknown as number
+  return setTimeout(() => callback(fallbackDeadline()), 1) as unknown as number
 }
 
 /** Cancel a callback scheduled by {@link requestIdle}. */

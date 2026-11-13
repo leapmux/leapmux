@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 import { failedResult } from '~/components/chat/model/toolCall'
 import { imagesForRow } from '~/components/chat/results/rowImages'
 import { ToolMessage } from '~/components/chat/results/ToolMessage'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { nativeOutputPathsPrecedePreview } from '../../../../tests/e2e/helpers/nativeToolOutputFilePaths'
 import { toolCallMeta } from './tools/meta'
@@ -88,7 +89,7 @@ describe('ToolMessage', () => {
     expect(container.querySelectorAll('[data-testid="tool-output-file-paths"]')).toHaveLength(1)
   })
 
-  it('keeps agent properties and output paths before the report', () => {
+  it('keeps agent properties and output paths before the report', async () => {
     const call = Object.assign(toolCallFixture('agent', {
       result: {
         agents: [
@@ -109,6 +110,7 @@ describe('ToolMessage', () => {
       outputFilePaths: ['/native/agent-report.log'],
     })
     const { container } = render(() => <ToolMessage row={toolRow(call)} />)
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     const preview = text.indexOf('PROPERTY_ORDER_AGENT_PREVIEW')
     expect(preview).toBeGreaterThanOrEqual(0)
@@ -298,7 +300,7 @@ describe('ToolMessage', () => {
     expect(mixed.container.textContent).toContain('Error')
   })
 
-  it('keeps the shared outcome header away from a body that states the outcome', () => {
+  it('keeps the shared outcome header away from a body that states the outcome', async () => {
     const agents = [
       {
         description: 'Fix the build',
@@ -316,16 +318,18 @@ describe('ToolMessage', () => {
       }))}
       />
     ))
+    await settleWorkerReplies()
     expect(container.textContent).toContain('it broke')
     expect(container.textContent).not.toContain('Error')
   })
 
-  it('uses the agent prompt expand key on an agent request row', () => {
+  it('uses the agent prompt expand key on an agent request row', async () => {
     const call = toolCallFixture('agent', {
       status: 'in_progress',
       request: { description: 'Fix the build', prompt: 'Run the tests.' },
     })
     const { container } = render(() => <ToolMessage row={toolRow(call, 'request', { result: false })} />)
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Fix the build')
     expect(container.textContent).toContain('Run the tests.')
   })
@@ -340,8 +344,11 @@ describe('ToolMessage', () => {
  */
 const picture = (name: string): ImageResultSource => ({ mimeType: 'image/png', data: name })
 
-/** Supply image actions so each button reports its index. Without them, the view draws only an image. */
-function drawToolImages(row: ReturnType<typeof toolRow>): { container: HTMLElement, opened: number[], drawn: string[] } {
+/**
+ * Supply image actions so each button reports its index. Without them, the view draws only an image.
+ * Clicks each button once every worker reply landed, so the row holds its whole result.
+ */
+async function drawToolImages(row: ReturnType<typeof toolRow>): Promise<{ container: HTMLElement, opened: number[], drawn: string[] }> {
   const opened: number[] = []
   const context: ToolResultRenderContext = {
     images: {
@@ -353,6 +360,7 @@ function drawToolImages(row: ReturnType<typeof toolRow>): { container: HTMLEleme
     },
   }
   const { container } = render(() => <ToolMessage row={row} context={context} />)
+  await settleWorkerReplies()
   const buttons = [
     ...container.querySelectorAll<HTMLButtonElement>('button[aria-label="Open image"]'),
   ]
@@ -387,36 +395,36 @@ describe('the result side of a paired tool span (ToolMessage)', () => {
   const requestRow = toolRow(call, 'request', { result: true })
   const resultRow = toolRow(call, 'result', { request: true })
 
-  it('draws no result-side content on a request row whose result row is beside it', () => {
-    const { container, opened } = drawToolImages(requestRow)
+  it('draws no result-side content on a request row whose result row is beside it', async () => {
+    const { container, opened } = await drawToolImages(requestRow)
     expect(container.textContent).not.toContain('rich extra content')
     expect(container.textContent).not.toContain('the file body')
     expect(container.textContent).not.toMatch(/truncated/i)
     expect(opened).toEqual([])
   })
 
-  it('draws each result-side item exactly once on the result row', () => {
-    const { container, opened } = drawToolImages(resultRow)
+  it('draws each result-side item exactly once on the result row', async () => {
+    const { container, opened } = await drawToolImages(resultRow)
     expect(container.textContent?.match(/rich extra content/g)).toHaveLength(1)
     expect(container.textContent?.match(/the file body/g)).toHaveLength(1)
     expect(opened).toEqual([0, 1])
   })
 
-  it('opens each picture at the index `imagesForRow` reports for the row that drew it', () => {
+  it('opens each picture at the index `imagesForRow` reports for the row that drew it', async () => {
     for (const row of [requestRow, resultRow]) {
       const listed = imagesForRow(row)
-      const { opened, drawn } = drawToolImages(row)
+      const { opened, drawn } = await drawToolImages(row)
       expect(opened).toEqual(listed.map((_source, index) => index))
       expect(drawn).toEqual(listed.map(source => `data:image/png;base64,${source.data}`))
     }
   })
 
-  it('reports only indexes that still address the same picture after a reload', () => {
+  it('reports only indexes that still address the same picture after a reload', async () => {
     // An image tab stores (seq, index). messageToolResultImages resolves that pair from the completed result.
     // A different index order resolves to another image or no image after reload.
     const afterReload = imagesForRow(toolRow(call, 'result'))
     for (const row of [requestRow, resultRow]) {
-      const { opened } = drawToolImages(row)
+      const { opened } = await drawToolImages(row)
       expect(opened.map(index => afterReload[index]?.data))
         .toEqual(imagesForRow(row).map(source => source.data))
     }
@@ -434,7 +442,7 @@ describe('the result side of a paired tool span (ToolMessage)', () => {
  * These two calls cover every source and each boundary between sources.
  */
 describe('the picture a tool row opens (ToolMessage)', () => {
-  it('opens the picture that `imagesForRow` holds at the index it reports', () => {
+  it('opens the picture that `imagesForRow` holds at the index it reports', async () => {
     const cases: { call: ToolCall, expected: string[] }[] = [
       {
         call: toolCallFixture('mcp', {
@@ -478,7 +486,7 @@ describe('the picture a tool row opens (ToolMessage)', () => {
       const listed = imagesForRow(row)
       expect(listed.map(source => source.data)).toEqual(expected)
 
-      const { container, opened, drawn } = drawToolImages(row)
+      const { container, opened, drawn } = await drawToolImages(row)
       expect(container.querySelectorAll('button[aria-label="Open image"]')).toHaveLength(expected.length)
 
       // Each button reports the index of the image that it draws.
@@ -520,7 +528,7 @@ describe('ToolMessage output DOM ownership', () => {
     expect(toolCallMeta(row).copyableContent()).toBe(metadataJson)
   })
 
-  it.each([false, true])('keeps metadata and paths before actual output when expanded is %s', (expanded) => {
+  it.each([false, true])('keeps metadata and paths before actual output when expanded is %s', async (expanded) => {
     const output = [
       marker,
       ...Array.from({ length: 8 }, (_, index) => `native line ${index}`),
@@ -551,6 +559,7 @@ describe('ToolMessage output DOM ownership', () => {
         }}
       />
     ))
+    await settleWorkerReplies()
     const outputs = container.querySelectorAll('[data-tool-output-preview]')
     expect(outputs).toHaveLength(1)
     expect(outputs[0]?.textContent).toContain(marker)
@@ -586,7 +595,7 @@ describe('ToolMessage output DOM ownership', () => {
     expect(toolCallMeta(row).copyableContent()).toBe(structuredJson)
   })
 
-  it('keeps output ownership off a paired request row and on its result row', () => {
+  it('keeps output ownership off a paired request row and on its result row', async () => {
     const call = Object.assign(toolCallFixture('mcp', {
       result: {
         content: [
@@ -597,7 +606,9 @@ describe('ToolMessage output DOM ownership', () => {
       outputFilePaths: [path],
     })
     const request = render(() => <ToolMessage row={toolRow(call, 'request', { result: true })} />)
+    await settleWorkerReplies()
     const result = render(() => <ToolMessage row={toolRow(call, 'result', { request: true })} />)
+    await settleWorkerReplies()
     expect(request.container.querySelector('[data-tool-output-preview]')).toBeNull()
     expect(result.container.querySelector('[data-tool-output-preview]')?.textContent).toBe(marker)
     expect(nativeOutputPathsPrecedePreview([result.container], [marker])).toBe(true)

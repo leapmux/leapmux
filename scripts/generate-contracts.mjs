@@ -556,6 +556,20 @@ export function checkPagination(v) {
 }
 
 // ---------------------------------------------------------------------------
+// file-read: the default size of one file read
+// ---------------------------------------------------------------------------
+
+export function checkFileRead(v, wire) {
+  mustBe(Number.isSafeInteger(v.readLimitBytes) && v.readLimitBytes > 0, 'file-read.json', 'readLimitBytes must be a positive safe integer')
+  // The worker caps every read at the payload budget. A default above the
+  // default budget is therefore cut on every worker that keeps the default
+  // max_message_size, and the stated default never applies.
+  mustBe(v.readLimitBytes <= wire.maxMessageSizeBytes, 'file-read.json', `readLimitBytes must be <= maxMessageSizeBytes in wire.json (${wire.maxMessageSizeBytes}), the default payload budget that caps every read`)
+  mustBe(v.readLimitBytes % 1024 === 0, 'file-read.json', 'readLimitBytes must be a whole number of KiB, because the help text of `leapmux control file read --limit` and `git read --limit` states the default in KiB')
+  return {}
+}
+
+// ---------------------------------------------------------------------------
 // session-info: the agent_session_info wire vocabulary
 // ---------------------------------------------------------------------------
 
@@ -7246,6 +7260,29 @@ export const MAX_PAGE_LIMIT = ${v.maxPageLimit} as const
 `
 }
 
+export function emitGoFileRead(v) {
+  return `${GO_HEADER('file-read.json')}package contracts
+
+// FileReadLimitBytes is the default size of one file read. The worker reads
+// this many bytes when a ReadFile or a ReadGitFile request gives no limit. The
+// file viewer shows at most this many bytes of a text file, and the browser
+// asks for this many bytes in each page of a paged read.
+const FileReadLimitBytes = ${v.readLimitBytes}
+`
+}
+
+export function emitTsFileRead(v) {
+  return `${TS_HEADER('file-read.json')}
+/**
+ * The default size of one file read. The worker reads this many bytes when a
+ * ReadFile or a ReadGitFile request gives no limit. The file viewer shows at
+ * most this many bytes of a text file, and the browser asks for this many
+ * bytes in each page of a paged read.
+ */
+export const FILE_READ_LIMIT_BYTES = ${v.readLimitBytes} as const
+`
+}
+
 /**
  * One queued agent input's caps. The browser pre-checks a composer draft and
  * the Worker enforces the same numbers, so both must measure ONE quantity:
@@ -7548,6 +7585,18 @@ const DOMAINS = [
       checkPagination(v)
       out['backend/generated/contracts/pagination.go'] = emitGoPagination(v)
       out['frontend/src/generated/contracts/pagination.ts'] = emitTsPagination(v)
+    },
+  },
+  {
+    name: 'file-read',
+    reads: ['wire'],
+    emit(out, read) {
+      const v = read('file-read')
+      // wire.json is read here too: the default read must fit the default
+      // payload budget, which caps every read.
+      checkFileRead(v, read('wire'))
+      out['backend/generated/contracts/file-read.go'] = emitGoFileRead(v)
+      out['frontend/src/generated/contracts/file-read.ts'] = emitTsFileRead(v)
     },
   },
   {

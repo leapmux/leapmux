@@ -285,6 +285,26 @@ describe('cross-workspace accessors', () => {
       }, { workspaceId: 'ws-test', rootTileId: 'root-leaf' })
     })
 
+    // Every reader of one node shares one array, so a reader that sorted it in
+    // place would reorder every other reader's answer: the array is frozen.
+    it('hands the active workspace\'s readers one frozen array', () => {
+      withTestBridge(() => {
+        createRoot((dispose) => {
+          const store = createTestLayoutStore()
+          store.splitTile('root-leaf', 'horizontal')
+
+          const order = store.tileOrderFor('ws-test')
+          const before = [...order]
+          expect(before).toHaveLength(2)
+          expect(store.getAllTileIds(), 'the active workspace shares the entry of its node').toBe(order)
+          expect(Object.isFrozen(order)).toBe(true)
+          expect(() => (order as string[]).reverse()).toThrow(TypeError)
+          expect(store.tileOrderFor('ws-test')).toEqual(before)
+          dispose()
+        })
+      }, { workspaceId: 'ws-test', rootTileId: 'root-leaf' })
+    })
+
     it('hands back a new array once the order actually changes', () => {
       withTestBridge(() => {
         createRoot((dispose) => {

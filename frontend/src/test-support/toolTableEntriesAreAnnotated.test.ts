@@ -102,8 +102,7 @@ function providerModules(): string[] {
       // Test data stays with the provider that it describes; see `providers/README.md`.
       && !name.endsWith('.fixtures.ts')
       && name !== 'testUtils.ts'
-      && name !== 'testUtils.tsx'
-      && name !== 'testMocks.ts',
+      && name !== 'testUtils.tsx',
   })
 }
 

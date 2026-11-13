@@ -180,7 +180,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        delayed = createDelayedSet(active, 500, immediate).delayedIds
+        delayed = createDelayedSet(active, 500, () => immediate()).delayedIds
       })
       setActive(['a']) // enters while "flinging" -> painted at once, no delay wait
       expect([
@@ -199,7 +199,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        delayed = createDelayedSet(active, 500, immediate).delayedIds
+        delayed = createDelayedSet(active, 500, () => immediate()).delayedIds
       })
       expect([
         ...delayed(),
@@ -222,7 +222,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        delayed = createDelayedSet(active, 500, immediate).delayedIds
+        delayed = createDelayedSet(active, 500, () => immediate()).delayedIds
       })
       vi.advanceTimersByTime(200) // partway through the delay, nothing shown yet
       expect([
@@ -246,7 +246,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        delayed = createDelayedSet(active, 500, immediate).delayedIds
+        delayed = createDelayedSet(active, 500, () => immediate()).delayedIds
       })
       expect([
         ...delayed(),
@@ -255,6 +255,72 @@ describe('chatSkeletonCrossfade', () => {
       expect([
         ...delayed(),
       ]).toEqual([]) // drops immediately (createLingerSet fades it)
+      dispose()
+    })
+  })
+
+  describe('createDelayedSet showImmediately', () => {
+    it('shows an id at once when showImmediately holds for it, and keeps the delay for the rest', () => {
+      const [active, setActive] = createSignal<string[]>([])
+      let delayed!: () => ReadonlySet<string>
+      let dispose!: () => void
+      createRoot((d) => {
+        dispose = d
+        delayed = createDelayedSet(active, 500, id => id === 'fling').delayedIds
+      })
+      setActive(['fling', 'plain'])
+      expect([
+        ...delayed(),
+      ]).toEqual(['fling'])
+      vi.advanceTimersByTime(500)
+      expect([
+        ...delayed(),
+      ].sort()).toEqual(['fling', 'plain'])
+      dispose()
+    })
+
+    it('keeps a shown id after showImmediately stops holding for it, while it stays active', () => {
+      const [active, setActive] = createSignal<string[]>([])
+      const [upgrading, setUpgrading] = createSignal(true)
+      let delayed!: () => ReadonlySet<string>
+      let dispose!: () => void
+      createRoot((d) => {
+        dispose = d
+        delayed = createDelayedSet(active, 500, () => upgrading()).delayedIds
+      })
+      setActive(['a'])
+      // The fling upgrade finishes while the row's content is still rendering.
+      setUpgrading(false)
+      expect([
+        ...delayed(),
+      ]).toEqual(['a'])
+      setActive([])
+      expect([
+        ...delayed(),
+      ]).toEqual([])
+      dispose()
+    })
+
+    it('shows an id that is already waiting on its delay once showImmediately starts holding for it', () => {
+      const [active, setActive] = createSignal<string[]>([])
+      const [upgrading, setUpgrading] = createSignal(false)
+      let delayed!: () => ReadonlySet<string>
+      let dispose!: () => void
+      createRoot((d) => {
+        dispose = d
+        delayed = createDelayedSet(active, 500, () => upgrading()).delayedIds
+      })
+      setActive(['a'])
+      vi.advanceTimersByTime(100)
+      setUpgrading(true)
+      expect([
+        ...delayed(),
+      ]).toEqual(['a'])
+      // The cancelled timer never re-adds or drops it.
+      vi.advanceTimersByTime(1000)
+      expect([
+        ...delayed(),
+      ]).toEqual(['a'])
       dispose()
     })
   })
@@ -371,6 +437,67 @@ describe('chatSkeletonCrossfade', () => {
         ...registry.skeletonIds(),
       ]).toEqual([])
       dispose()
+    })
+
+    it('keeps a row in upgradingIds through its crossfade, and drops it once the row is real', () => {
+      const [fast, setFast] = createSignal(true)
+      let registry!: FlingSkeletonRegistry
+      let dispose!: () => void
+      createRoot((d) => {
+        dispose = d
+        registry = createFlingSkeletonRegistry(measuredVirt(fast), 1000)
+        registry.trackRow('a')
+      })
+      expect([
+        ...registry.upgradingIds(),
+      ]).toEqual(['a'])
+      setFast(false) // skeleton -> crossfade
+      expect([
+        ...registry.skeletonIds(),
+      ]).toEqual([])
+      expect([
+        ...registry.upgradingIds(),
+      ]).toEqual(['a'])
+      vi.advanceTimersByTime(1000) // crossfade -> real
+      expect([
+        ...registry.upgradingIds(),
+      ]).toEqual([])
+      dispose()
+    })
+
+    it('never lists a row that mounts real in upgradingIds', () => {
+      const [fast] = createSignal(false)
+      let registry!: FlingSkeletonRegistry
+      let dispose!: () => void
+      createRoot((d) => {
+        dispose = d
+        registry = createFlingSkeletonRegistry(measuredVirt(fast), 1000)
+        registry.trackRow('a')
+      })
+      expect([
+        ...registry.upgradingIds(),
+      ]).toEqual([])
+      dispose()
+    })
+
+    it('drops an upgrading row from upgradingIds when it unmounts mid-crossfade', () => {
+      const [fast, setFast] = createSignal(true)
+      let registry!: FlingSkeletonRegistry
+      let disposeRegistry!: () => void
+      createRoot((d) => {
+        disposeRegistry = d
+        registry = createFlingSkeletonRegistry(measuredVirt(fast), 1000)
+      })
+      const unmountRow = createRoot((d) => {
+        registry.trackRow('a')
+        return d
+      })
+      setFast(false)
+      unmountRow()
+      expect([
+        ...registry.upgradingIds(),
+      ]).toEqual([])
+      disposeRegistry()
     })
 
     it('does not add an unmeasured row (it mounts real, never a skeleton)', () => {

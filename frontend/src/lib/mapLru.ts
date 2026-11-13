@@ -50,7 +50,7 @@ export function capMapInsertionOrder<K, V>(
  * consulted so a legitimately-stored `undefined` value is still treated as a hit.
  *
  * The single home for the "on hit, delete + re-set to re-front the entry" idiom the
- * render/token/word-diff caches all share, so the touch-on-read contract can't drift.
+ * render/token/diff caches all share, so the touch-on-read contract can't drift.
  */
 export function lruGet<K, V>(map: Map<K, V>, key: K): V | undefined {
   if (!map.has(key))
@@ -67,7 +67,7 @@ export function lruGet<K, V>(map: Map<K, V>, key: K): V | undefined {
  * then shed insertion-order-oldest entries past `max`. `opts` (protect / onEvict) is
  * forwarded to `capMapInsertionOrder`. Mutates `map`.
  *
- * The single home for the "delete + set + cap" idiom the render/token/fragment/word-diff
+ * The single home for the "delete + set + cap" idiom the render/token/fragment/diff
  * caches all share, so their bound + eviction can't drift apart.
  */
 export function lruSet<K, V>(

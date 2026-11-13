@@ -38,17 +38,23 @@ type replaySink struct {
 	sender   channel.ResponseWriter
 	replayID uint64
 	onRetire func()
+	// current reports whether the session that the replay serves still serves
+	// its stream. A nil current serves no session.
+	current func() bool
 
 	mu   sync.Mutex
 	dead error
 }
 
-// newReplaySink requires an explicit retirement callback. Only an ownerless replay passes nil.
-func newReplaySink(sender channel.ResponseWriter, replayID uint64, onRetire func()) *replaySink {
-	return &replaySink{sender: sender, replayID: replayID, onRetire: onRetire}
+// newReplaySink requires an explicit retirement callback and an explicit check
+// of the session that the replay serves. Only an ownerless replay passes nil
+// for both.
+func newReplaySink(sender channel.ResponseWriter, replayID uint64, onRetire func(), current func() bool) *replaySink {
+	return &replaySink{sender: sender, replayID: replayID, onRetire: onRetire, current: current}
 }
 
-// send emits one event, or does nothing once the transport is known dead.
+// send emits one event, or does nothing once the transport is known dead or
+// the session no longer serves the stream.
 func (s *replaySink) send(resp *leapmuxv1.WatchEventsResponse) {
 	if !s.alive() {
 		return
@@ -138,13 +144,19 @@ func marshalWatchEvent(resp *leapmuxv1.WatchEventsResponse, entityID string) ([]
 	return payload, nil
 }
 
-// alive reports whether sends are still reaching the client. Callers
-// check it between entities to skip the DB reads, git shell-outs and PTY
-// snapshots that would only feed sends nobody receives.
+// alive reports whether sends still reach a client that reads them: the
+// transport works, and the session that the replay serves still serves the
+// stream. Callers check it between entities to skip the DB reads, git
+// shell-outs and PTY snapshots that would only feed sends nobody receives.
+//
+// It reads the session after it releases the latch, because the check of the
+// session takes the owner lock of the watchers, and onRetire can reenter the
+// sink.
 func (s *replaySink) alive() bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.dead == nil
+	dead := s.dead
+	s.mu.Unlock()
+	return dead == nil && (s.current == nil || s.current())
 }
 
 // WatchEvents opens a long-lived bidirectional subscription. The opening

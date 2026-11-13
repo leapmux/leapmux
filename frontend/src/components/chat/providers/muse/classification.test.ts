@@ -4,7 +4,6 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerRow } from '~/test-support/toolCallFixture'
 import { classifyMuseMessage } from './classification'
 import '~/components/chat/providers'
-import '~/components/chat/providers/testMocks'
 
 describe('classifyMuseMessage', () => {
   it.each([

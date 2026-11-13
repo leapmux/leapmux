@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js'
 import { createEffect, createSignal, createUniqueId, on, onCleanup, onMount, Show } from 'solid-js'
-import { MarkdownText } from '~/components/chat/messageRenderers'
+import { MarkdownText } from '~/components/chat/MarkdownText'
 import { CollapsibleToggle } from '~/components/common/CollapsibleToggle'
 import { Tooltip } from '~/components/common/Tooltip'
 import * as styles from './GoalObjective.css'

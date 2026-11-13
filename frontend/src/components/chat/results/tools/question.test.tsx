@@ -1,5 +1,6 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { checkKindModule } from '~/test-support/kindTestHarness'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { ToolMessage } from '../ToolMessage'
@@ -51,7 +52,7 @@ describe('question renderer', () => {
       .toBe('Which environment should the build reach?')
   })
 
-  it('marks the answers as returned output and leaves the question unmarked', () => {
+  it('marks the answers as returned output and leaves the question unmarked', async () => {
     const request = {
       questions: [
         {
@@ -74,11 +75,13 @@ describe('question renderer', () => {
       }))}
       />
     ))
+    await settleWorkerReplies()
     const outputs = answered.container.querySelectorAll('[data-tool-output-preview]')
     expect(outputs).toHaveLength(1)
     expect(outputs[0]?.textContent).toContain('Staging')
     expect(outputs[0]?.textContent).not.toContain('Which env?')
     const asking = render(() => <ToolMessage row={toolRow(toolCallFixture('question', { status: 'in_progress', request }), 'request')} />)
+    await settleWorkerReplies()
     expect(asking.container.textContent).toContain('Which env?')
     expect(asking.container.querySelector('[data-tool-output-preview]')).toBeNull()
   })
@@ -87,7 +90,7 @@ describe('question renderer', () => {
   // call. A dismissal states no answer, so the provider's own note is all it can draw:
   // a row that drew nothing measured zero height, and the transcript held every later
   // row hidden behind it.
-  it('draws the note of a result that states no answer', () => {
+  it('draws the note of a result that states no answer', async () => {
     const request = {
       questions: [
         {
@@ -101,6 +104,7 @@ describe('question renderer', () => {
     }
     const result = { answers: [], note: 'User dismissed the question without answering.' }
     const dismissed = render(() => <ToolMessage row={toolRow(toolCallFixture('question', { request, result }))} />)
+    await settleWorkerReplies()
     const outputs = dismissed.container.querySelectorAll('[data-tool-output-preview]')
     expect(outputs).toHaveLength(1)
     expect(outputs[0]?.textContent).toContain('User dismissed the question without answering.')
@@ -110,7 +114,7 @@ describe('question renderer', () => {
     expect(questionRenderer.resultMeta(resolved).copyableContent?.()).toBe('User dismissed the question without answering.')
   })
 
-  it('draws the answers before the note of a result that states both', () => {
+  it('draws the answers before the note of a result that states both', async () => {
     const request = {
       questions: [
         {
@@ -129,6 +133,7 @@ describe('question renderer', () => {
       note: 'The reader typed nothing else.',
     }
     const answered = render(() => <ToolMessage row={toolRow(toolCallFixture('question', { request, result }))} />)
+    await settleWorkerReplies()
     const output = answered.container.querySelector('[data-tool-output-preview]')?.textContent ?? ''
     expect(output.indexOf('Blue')).toBeGreaterThanOrEqual(0)
     expect(output.indexOf('Blue')).toBeLessThan(output.indexOf('The reader typed nothing else.'))

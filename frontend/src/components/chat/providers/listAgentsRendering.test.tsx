@@ -3,8 +3,9 @@ import type { MessageContentRenderContext } from '../messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { providerToolMeta } from '~/test-support/toolCallFixture'
-import './testMocks'
+import '~/components/chat/providers'
 
 const { renderMessageContent } = await import('../messageContentRenderer')
 
@@ -84,19 +85,22 @@ describe('claude ListAgents tool_use rendering', () => {
 describe('claude ListAgents tool_result rendering', () => {
   // The CLI hands the whole listing over as ONE pre-formatted string under
   // `listing`, and maps that same string into the block content.
-  it('renders the structured listing', () => {
+  it('renders the structured listing', async () => {
     const container = renderToolResult('', { listing: LISTING })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Explore the parser')
     expect(container.textContent).toContain('Remote Control session')
   })
 
-  it('falls back to the block content when no structured payload is present', () => {
+  it('falls back to the block content when no structured payload is present', async () => {
     const container = renderToolResult(LISTING)
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Explore the parser')
   })
 
-  it('prefers the structured listing over the block content', () => {
+  it('prefers the structured listing over the block content', async () => {
     const container = renderToolResult('stale text', { listing: LISTING })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Explore the parser')
     expect(container.textContent).not.toContain('stale text')
   })

@@ -3,6 +3,7 @@ import type { ToolRequestByKind } from '../../../model/tools'
 import type { ClaudeToolRow } from './toolCommon'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { memoizeByObject } from '~/lib/memoizeByObject'
 import { proseResult, unparsedResult } from '../../../model/toolCall'
 import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
 import { claudeToolFailureResult } from './failure'
@@ -22,10 +23,18 @@ export interface RemoteTriggerResult {
   trigger: Record<string, unknown> | null
 }
 
+/** A typed `tool_use_result` payload: it states the endpoint's HTTP status as a number. */
+type StructuredToolUseResult = Record<string, unknown> & { status: number }
+
+function isStructuredToolUseResult(toolUseResult: Record<string, unknown> | null | undefined): toolUseResult is StructuredToolUseResult {
+  return typeof toolUseResult?.status === 'number'
+}
+
 // Memoize structured-payload parses by `tool_use_result` identity, so a row that
 // is built more than once in a render -- the body, the toolbar's own derivation
 // from the same row -- does not re-run JSON.parse on the same response body.
-const structuredCache = new WeakMap<Record<string, unknown>, RemoteTriggerResult | null>()
+const cachedStructuredResult = memoizeByObject((toolUseResult: StructuredToolUseResult) =>
+  buildSource(toolUseResult.status, pickString(toolUseResult, 'json')))
 
 /**
  * Build a {@link RemoteTriggerResult} from a Claude `RemoteTrigger`
@@ -37,14 +46,8 @@ export function claudeRemoteTriggerFromToolResult(
   toolUseResult: Record<string, unknown> | null | undefined,
   resultContent: string,
 ): RemoteTriggerResult | null {
-  if (toolUseResult && typeof toolUseResult.status === 'number') {
-    const cached = structuredCache.get(toolUseResult)
-    if (cached !== undefined)
-      return cached
-    const built = buildSource(toolUseResult.status, pickString(toolUseResult, 'json'))
-    structuredCache.set(toolUseResult, built)
-    return built
-  }
+  if (isStructuredToolUseResult(toolUseResult))
+    return cachedStructuredResult(toolUseResult)
 
   const match = /^HTTP (\d+)\n([\s\S]*)$/.exec(resultContent)
   if (!match)

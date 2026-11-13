@@ -8,31 +8,19 @@ import rehypeStringify from 'rehype-stringify'
 import remarkRehype from 'remark-rehype'
 import { visit } from 'unist-util-visit'
 import { createMarkdownParser } from './markdownParse'
+import { markdownSourceFallbackHtml } from './markdownSourceFallback'
 import { rehypeBlockRemoteImages } from './rehypeBlockRemoteImages'
 import { shikiStyleClassTransformer } from './shikiStyleClass'
 import { dualThemeTokenOptions } from './shikiThemes'
 import { UNTRUSTED_LINK_ATTRIBUTE } from './untrustedLinkClicks'
 
 /**
- * The remark+rehype+Shiki markdown pipeline configuration, shared by BOTH the
- * main-thread synchronous renderer (renderMarkdown.ts, which holds a
- * createHighlighterCoreSync instance on the JS regex engine) and the off-thread
+ * The remark+rehype+Shiki markdown pipeline configuration of the off-thread
  * worker (markdownWorker.ts, which holds a createHighlighterCore instance on the
- * Oniguruma WASM engine, lazily loading grammars). Centralizing the plugin chain +
- * theme set here is load-bearing: both paths emit the same themed `pre.shiki`
- * structure the CSS targets (markdownContent.css.ts), with `--shiki-light` /
- * `--shiki-dark` dual-theme variables.
- *
- * The two paths may now use DIFFERENT engines, so their token boundaries can
- * differ in edge cases -- but they never coexist in one runtime (the worker runs
- * in the browser; the sync path runs only when `Worker` is undefined, i.e.
- * tests/SSR), so the shared `markdownCache` is filled by exactly one of them per
- * session and there is no flash from a sync->worker swap.
- *
- * The eager 20-grammar set the sync fallback needs lives with its sole consumer in
- * renderMarkdown.ts (`shikiLangs`), NOT here -- so the lazy worker/editor paths that
- * import this module for the pipeline factory don't drag in 20 eager grammar chunks
- * they never use.
+ * Oniguruma WASM engine, lazily loading grammars). It emits the themed
+ * `pre.shiki` structure that the CSS targets (markdownContent.css.ts), with
+ * `--shiki-light` / `--shiki-dark` dual-theme variables. The main thread never
+ * parses Markdown (see requestMarkdownHtml in renderMarkdown.ts).
  */
 
 // Case-sensitive on purpose: only a lowercase `http(s)://` scheme is treated as
@@ -55,8 +43,9 @@ const HTTP_URL_RE = /^https?:\/\//
  * `language-JSON` class throws "Language `JSON` not found" -- which `onError` +
  * `fallbackLanguage` then silently render plain, even though the grammar IS loaded.
  * The worker already lower-cases the fence languages it pre-loads (extractFenceLanguages),
- * and the token worker / editor parser feed `codeToTokens` the lower-cased
- * `resolveBundledLang` result; this keeps the markdown fence path consistent with both.
+ * and the token worker (which also tokenizes the composer's code blocks) feeds
+ * `codeToTokens` the lower-cased `resolveBundledLang` result; this keeps the markdown
+ * fence path consistent with both.
  */
 function remarkLowercaseCodeLang() {
   return (tree: MdastRoot) => {
@@ -183,9 +172,9 @@ export function createMarkdownProcessor(highlighter: HighlighterCore, pair: Synt
       transformers: [
         shikiStyleClassTransformer(),
       ],
-      // A fence whose language isn't loaded (worker: lazy-load missed it; sync
-      // fallback: outside the 20-lang set) or that errors degrades to a plain
-      // `text` block instead of throwing the whole document to plain.
+      // A fence whose language is not loaded (the lazy load missed it, or the
+      // highlighter holds no grammar for it) renders as a plain `text` block
+      // instead of throwing the whole document to plain.
       fallbackLanguage: 'text',
       // An unknown/unloaded fence is handled by `fallbackLanguage` WITHOUT reaching
       // here -- `onError` fires only when a LOADED grammar throws at tokenize time
@@ -201,10 +190,9 @@ export function createMarkdownProcessor(highlighter: HighlighterCore, pair: Synt
 }
 
 /**
- * Markdown->HTML processor WITHOUT Shiki: the fast synchronous placeholder render
- * (used while the worker's highlighted result is in flight) and the fallback when
- * Shiki throws. Code blocks render as plain `<pre><code class="language-x">` —
- * container-styled but not theme-colored until the highlighted result swaps in.
+ * Markdown->HTML processor WITHOUT Shiki: the fallback when Shiki throws, and the
+ * worker's render when its highlighter cannot initialize. Code blocks render as
+ * plain `<pre><code class="language-x">` -- container-styled but not theme-colored.
  */
 export const plainMarkdownProcessor = withHardeningTail(
   createMarkdownParser()
@@ -213,10 +201,65 @@ export const plainMarkdownProcessor = withHardeningTail(
 )
 
 /**
+ * The HTML of one body. `parsed` is false when the parser failed and the HTML
+ * shows the escaped source (see markdownSourceFallbackHtml). Every processor
+ * shares that parser, so another attempt fails the same way.
+ */
+export interface MarkdownRenderOutput {
+  html: string
+  parsed: boolean
+}
+
+/**
+ * Render `text` with the plain processor, or show its escaped source when the
+ * parser itself fails. Never throws.
+ *
+ * A failure here is not a highlighter problem: remark-parse and the GFM plugins
+ * recurse once per nesting level, so deeply nested input (about 2,400 `>` markers
+ * on one line in V8) overflows the stack in every processor alike. Retrying with
+ * another processor cannot help, so the body shows as its source instead.
+ */
+export function renderPlainOrSource(text: string): MarkdownRenderOutput {
+  try {
+    return {
+      html: String(plainMarkdownProcessor.processSync(text)),
+      parsed: true,
+    }
+  }
+  catch (error) {
+    return sourceAfterParseFailure(text, error)
+  }
+}
+
+/** Show `text` as its escaped source, because the parser failed on it with `error`. */
+function sourceAfterParseFailure(text: string, error: unknown): MarkdownRenderOutput {
+  if (import.meta.env.DEV)
+    console.warn('[markdownProcessor] Markdown parsing failed; showing the source as plain text:', error)
+  return {
+    html: markdownSourceFallbackHtml(text),
+    parsed: false,
+  }
+}
+
+/**
+ * Whether `error` is a stack overflow. The engines report one differently:
+ * - V8 and JavaScriptCore throw a RangeError, "Maximum call stack size exceeded".
+ * - SpiderMonkey throws an InternalError, "too much recursion".
+ * Another RangeError, such as "Invalid string length", is not an overflow.
+ */
+function isStackOverflow(error: unknown): boolean {
+  return error instanceof Error
+    && (error.name === 'RangeError' || error.name === 'InternalError')
+    && /call stack size exceeded|too much recursion/i.test(error.message)
+}
+
+/**
  * Render `text` through `processor` (highlighted), degrading to the plain
- * (un-highlighted) processor when the highlighted pipeline throws. Single-sources
- * the "on failure, fall back to plain" rule that BOTH the main-thread synchronous
- * path and the worker apply, so the two can't drift on what counts as a fallback.
+ * (un-highlighted) processor when the highlighted pipeline throws, and to the
+ * escaped source when the parser overflows its stack or the plain processor throws
+ * too. Never throws. Single-sources
+ * the fallback rule that BOTH the main-thread synchronous path and the worker
+ * apply, so the two can't drift on what counts as a fallback.
  *
  * This is the WIDER net of the two error paths, not the narrower one. A grammar
  * that throws at tokenize time -- the Safari regex-engine case -- is raised
@@ -229,14 +272,23 @@ export const plainMarkdownProcessor = withHardeningTail(
 export function renderWithPlainFallback(
   processor: ReturnType<typeof createMarkdownProcessor>,
   text: string,
-): string {
+): MarkdownRenderOutput {
   try {
-    return String(processor.processSync(text))
+    return {
+      html: String(processor.processSync(text)),
+      parsed: true,
+    }
   }
   catch (error) {
+    // A stack overflow is the parser running out of stack on deep nesting. The
+    // plain processor shares that parser, so it would fail the same way after the
+    // same work, and that work is quadratic: 100,000 nested `>` markers hold a
+    // worker for about 26 seconds per attempt. Show the source at once.
+    if (isStackOverflow(error))
+      return sourceAfterParseFailure(text, error)
     if (import.meta.env.DEV)
       console.warn('[markdownProcessor] highlighted render failed; falling back to plain:', error)
-    return String(plainMarkdownProcessor.processSync(text))
+    return renderPlainOrSource(text)
   }
 }
 

@@ -306,7 +306,7 @@ func TestReplayAgentCatchUp_ReplaysControlRequestAgentProvider(t *testing.T) {
 	dbAgent, err := svc.Queries.GetAgentByID(ctx, "agent-1")
 	require.NoError(t, err)
 
-	svc.replayAgentCatchUp(newReplaySink(w, 0, nil), &leapmuxv1.WatchAgentEntry{AgentId: "agent-1"}, dbAgent, nil)
+	svc.replayAgentCatchUp(newReplaySink(w, 0, nil, nil), &leapmuxv1.WatchAgentEntry{AgentId: "agent-1"}, dbAgent, nil)
 
 	var replayed *leapmuxv1.AgentControlRequest
 	for _, stream := range w.streamsSnapshot() {

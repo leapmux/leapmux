@@ -67,8 +67,20 @@ function lookup(name: string, scope: Scope): Binding | undefined {
   return undefined
 }
 
+/**
+ * The methods whose calls the scan reports, written as `.evaluate` or `['evaluate']`.
+ *
+ * A source that holds none of these names holds no offender. Most e2e files never
+ * mention them, and parsing a file costs far more than the scan of its tree, so the
+ * check skips the parse for them. A method name spelled with escape sequences evades
+ * the check; the guard does not look for one.
+ */
+const REPORTED_METHODS: readonly string[] = ['evaluate', 'evaluateAll']
+
 /** Find unsafe chat reads without confusing browser DOM nodes or variables from separate scopes. */
 export function racyChatReads(source: string, fileName = 'e2e.ts'): Array<{ index: number, text: string }> {
+  if (!REPORTED_METHODS.some(method => source.includes(method)))
+    return []
   const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true)
   const root: Scope = {
     functionScope: true,
@@ -183,7 +195,7 @@ export function racyChatReads(source: string, fileName = 'e2e.ts'): Array<{ inde
   const visit = (node: ts.Node) => {
     if (ts.isCallExpression(node)) {
       const method = member(node.expression)
-      if (method && ['evaluate', 'evaluateAll'].includes(method.name)) {
+      if (method && REPORTED_METHODS.includes(method.name)) {
         if (locator(method.receiver, scopes.get(node) ?? root)) {
           found.push({
             index: node.getStart(file),

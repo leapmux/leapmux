@@ -128,9 +128,11 @@ func RunGitWorktrees(rawCtx any, args []string) error {
 
 func RunGitRead(rawCtx any, args []string) error {
 	cmd := asCtx(rawCtx)
-	f := bindPathCmd(cmd, false, `absolute file path to read; the worker resolves the file's repo, computes the path relative to the repo root, and runs "git show <ref>:<rel-path>" (required)`)
+	f := bindPathCmd(cmd, false, `absolute file path to read; the worker resolves the file's repo, computes the path relative to the repo root, resolves "<ref>:<rel-path>" with "git rev-parse --verify", and reads that blob with "git cat-file --batch" (required)`)
 	var refStr string
 	f.FS.StringVar(&refStr, "ref", "head", `which version to read: "head" (last committed) or "staged" (index)`)
+	var limit int64
+	f.FS.Int64Var(&limit, "limit", 0, readLimitUsage)
 	if err := parseFlags(f.FS, args, cmd.Description()); err != nil {
 		return err
 	}
@@ -155,12 +157,14 @@ func RunGitRead(rawCtx any, args []string) error {
 	}
 	var resp leapmuxv1.ReadGitFileResponse
 	return workerUnaryEmitOn(c, workerID, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure,
-		&leapmuxv1.ReadGitFileRequest{Path: f.Path, Ref: ref}, &resp,
+		&leapmuxv1.ReadGitFileRequest{Path: f.Path, Ref: ref, Limit: limit}, &resp,
 		func() any {
 			return map[string]any{
-				"ref":     refStr,
-				"path":    f.Path,
-				"content": string(resp.GetContent()),
+				"ref":        refStr,
+				"path":       f.Path,
+				"exists":     resp.GetExists(),
+				"total_size": resp.GetTotalSize(),
+				"content":    string(resp.GetContent()),
 			}
 		})
 }

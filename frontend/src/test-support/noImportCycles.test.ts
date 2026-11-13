@@ -1,7 +1,7 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { collectFiles, frontendRoot, posixRelative } from '~/test-support/sourceTree'
+import { collectFiles, frontendRoot, posixRelative, resolveSourceSpecifier, SOURCE_EXTENSIONS } from '~/test-support/sourceTree'
 
 // Module-graph guard: no import cycle in `src/`.
 //
@@ -50,8 +50,6 @@ const BARE_IMPORT = /(?:^|\n)[ \t]*import\s+['"]([^'"]+)['"]/g
 
 const TYPE_ONLY = /\b(?:import|export)\s+type\b/
 
-const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx']
-
 /**
  * The directories whose contents are not hand-written source: generated proto
  * stubs and the vendored spinner data. A cycle there is not a defect anyone
@@ -75,39 +73,6 @@ function edgeKey(from: string, to: string): string {
   return `${from} -> ${to}`
 }
 
-/**
- * The file a specifier points at, as an absolute path, or null when it
- * resolves outside `src/` (a package) or matches nothing.
- *
- * Mirrors the resolution the bundler applies to the two forms this repo
- * writes: the `~/` alias for an absolute path under `src/`, and a relative
- * path. Both may omit the extension, and both may name a directory that
- * carries an `index` file.
- */
-function resolveSpecifier(specifier: string, fromFile: string): string | null {
-  let base: string
-  if (specifier.startsWith('~/'))
-    base = join(srcRoot, specifier.slice(2))
-  else if (specifier.startsWith('.'))
-    base = resolve(dirname(fromFile), specifier)
-  else
-    return null // A package. It cannot close a cycle back into `src/`.
-
-  for (const extension of SOURCE_EXTENSIONS) {
-    if (existsSync(base + extension))
-      return base + extension
-  }
-  // An explicit extension in the specifier, or a directory with an index.
-  if (existsSync(base) && SOURCE_EXTENSIONS.some(e => base.endsWith(e)))
-    return base
-  for (const extension of SOURCE_EXTENSIONS) {
-    const indexFile = join(base, `index${extension}`)
-    if (existsSync(indexFile))
-      return indexFile
-  }
-  return null
-}
-
 /** Every runtime import edge out of one module, as repo-relative paths. */
 function importsOf(file: string): string[] {
   const text = readFileSync(file, 'utf-8')
@@ -120,7 +85,7 @@ function importsOf(file: string): string[] {
       continue
     if (TYPE_ONLY.test(imported))
       continue
-    const resolved = resolveSpecifier(specifier, file)
+    const resolved = resolveSourceSpecifier(specifier, file)
     if (resolved)
       targets.add(posixRelative(frontendRoot, resolved))
   }
@@ -128,7 +93,7 @@ function importsOf(file: string): string[] {
     const specifier = match[1]
     if (specifier === undefined)
       continue
-    const resolved = resolveSpecifier(specifier, file)
+    const resolved = resolveSourceSpecifier(specifier, file)
     if (resolved)
       targets.add(posixRelative(frontendRoot, resolved))
   }
@@ -245,27 +210,27 @@ describe('module graph', () => {
     const anyFile = join(srcRoot, 'app.tsx')
 
     expect(
-      resolveSpecifier('~/api/transport', anyFile),
+      resolveSourceSpecifier('~/api/transport', anyFile),
       'the `~/` alias no longer resolves, so most of the module graph is invisible to this guard',
     ).toBe(join(srcRoot, 'api', 'transport.ts'))
 
     expect(
-      resolveSpecifier('./elevationPrompt', join(srcRoot, 'lib', 'elevation.ts')),
+      resolveSourceSpecifier('./elevationPrompt', join(srcRoot, 'lib', 'elevation.ts')),
       'a relative specifier no longer resolves',
     ).toBe(join(srcRoot, 'lib', 'elevationPrompt.ts'))
 
     // A directory that carries an index file. `~/lib/crdt` is imported this
     // way, and its barrel was on a cycle until this review.
-    expect(resolveSpecifier('~/lib/crdt', anyFile)).toBe(join(srcRoot, 'lib', 'crdt', 'index.ts'))
+    expect(resolveSourceSpecifier('~/lib/crdt', anyFile)).toBe(join(srcRoot, 'lib', 'crdt', 'index.ts'))
 
     // A package cannot close a cycle back into `src/`, so it stays out.
-    expect(resolveSpecifier('solid-js', anyFile)).toBeNull()
+    expect(resolveSourceSpecifier('solid-js', anyFile)).toBeNull()
 
     // A vanilla-extract stylesheet stays IN. The specifier omits the `.ts`,
     // exactly as the bundler resolves it, but the file behind it is an ordinary
     // TS module with a body that runs -- so it can sit on a cycle like any
     // other, and dropping it would leave a real hazard unscanned.
-    expect(resolveSpecifier('./styles/global.css', anyFile))
+    expect(resolveSourceSpecifier('./styles/global.css', anyFile))
       .toBe(join(srcRoot, 'styles', 'global.css.ts'))
   })
 

@@ -3,6 +3,7 @@ import type { Projection } from '~/lib/crdt'
 import { createEffect, createMemo, createSignal } from 'solid-js'
 import { renderTreeToLocal, sharedTrees, withBridge } from '~/lib/crdt'
 import { makeIdGenerator } from '~/lib/idGenerator'
+import { memoizeByObject } from '~/lib/memoizeByObject'
 import { sameKeys } from '~/lib/sameKeys'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import {
@@ -460,12 +461,11 @@ export function createLayoutStore(opts: CreateLayoutStoreOpts) {
    * the projected shape has none (a leaf drops ratios/direction/rows/cols, and
    * UNSPECIFIED and HORIZONTAL both map to 'horizontal'). NOT the same-value
    * register rewrite, despite what this used to say: `rebuildTree`'s own value
-   * compare already collapses that one. `getAllTileIds` results hang off a
-   * WeakMap keyed by that stable node, so they self-evict with it and need no
+   * compare already collapses that one. `getAllTileIds` results are memoized
+   * per stable node (`tileIdsFor`), so they self-evict with it and need no
    * sweep of their own.
    */
   let previousLocalTrees = new Map<string, LayoutNodeLocal>()
-  const tileIdsByNode = new WeakMap<LayoutNodeLocal, readonly string[]>()
 
   const localTrees = createMemo<Map<string, LayoutNodeLocal>>(() => {
     const proj = opts.projection()
@@ -512,14 +512,7 @@ export function createLayoutStore(opts: CreateLayoutStoreOpts) {
   // node. `readonly` makes that a compile error for TS callers and nothing at
   // all for a JS-boundary consumer; the freeze makes it impossible for both.
   // Paid once per node, not per call, because the result is memoized.
-  const tileIdsFor = (node: LayoutNodeLocal): readonly string[] => {
-    const cached = tileIdsByNode.get(node)
-    if (cached)
-      return cached
-    const ids = Object.freeze(getAllTileIds(node))
-    tileIdsByNode.set(node, ids)
-    return ids
-  }
+  const tileIdsFor = memoizeByObject((node: LayoutNodeLocal): readonly string[] => Object.freeze(getAllTileIds(node)))
 
   // `equals: sameLayoutNode` keeps this memo's non-propagation guarantee
   // self-contained rather than resting on `localTrees` continuing to dedupe:

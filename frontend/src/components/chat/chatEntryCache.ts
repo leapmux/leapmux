@@ -104,8 +104,11 @@ export function heightKeyForEntry(entry: ClassifiedEntry, uiVersion: number): st
  * Deriving this key from the height key would discard these unchanged values on each click:
  * - The extracted row model.
  * - The normalized command body.
- * - The Myers diff.
+ * - The highlighted ANSI output.
  * - The rendered Markdown.
+ *
+ * An edit diff is not among them: the diff worker client caches each diff by its
+ * content (see diffWorkerClient), whatever this key is.
  */
 export function renderKeyForEntry(entry: ClassifiedEntry): string {
   return `${entry.message.id}|${buildContentKey(contentKeyInputsOf(entry))}`

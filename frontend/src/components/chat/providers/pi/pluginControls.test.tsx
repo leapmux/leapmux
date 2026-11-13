@@ -5,6 +5,7 @@ import { compactControl } from '~/components/common/CompactControl.css'
 import { PI_QUESTION_DIALOG } from '~/generated/contracts/pi-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ControlRequestActions, ControlRequestContent } from '~/test-support/controlRequestBanner'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { createControlAnswerState } from '../../controls/types'
@@ -152,6 +153,7 @@ describe('pi select control requests', () => {
     }
     const original = JSON.stringify(request.payload)
     const { findByRole } = render(() => <ControlRequestContent agentProvider={AgentProvider.PI} request={request} messageContext={messageContext} answerState={makeAskState()} />)
+    await settleWorkerReplies()
     expect(await findByRole('region', { name: 'Compact preview' })).toHaveTextContent('complete-preview-end')
     expect(fetchMessage).toHaveBeenCalledOnce()
     expect(fetchMessage).toHaveBeenCalledWith(7n, expect.any(AbortSignal))

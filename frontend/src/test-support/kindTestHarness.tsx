@@ -6,6 +6,7 @@ import { ToolMessage } from '~/components/chat/results/ToolMessage'
 import { rendererFor } from '~/components/chat/results/tools/index'
 import { toolCallMeta } from '~/components/chat/results/tools/meta'
 import { parsedCall } from '~/components/chat/results/tools/renderer'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 
 /** What one kind module states about itself, for ONE kind. */
@@ -66,9 +67,10 @@ export function checkKindModule(check: KindModuleCheck): void {
     expect(titleText(renderer().title(parsedCall(call), undefined))).toContain(check.minimalTitlePart ?? 'RAW TITLE')
   })
 
-  it('draws the result body on a result row', () => {
+  it('draws the result body on a result row', async () => {
     const call = toolCallFixture(check.kind, { result: check.result })
     const { container } = render(() => <ToolMessage row={toolRow(call)} />)
+    await settleWorkerReplies()
     expect(container.querySelector('[data-tool-message]')).not.toBeNull()
     if (check.resultPart !== undefined)
       expect(container.textContent).toContain(check.resultPart)

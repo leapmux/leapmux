@@ -2,10 +2,11 @@ import type { MessageCategory } from '../messageClassifier'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { providerToolMeta } from '~/test-support/toolCallFixture'
 import { resolveMessageForRendering } from './registry'
-import './testMocks'
+import '~/components/chat/providers'
 
 const { renderMessageContent } = await import('../messageContentRenderer')
 
@@ -52,11 +53,12 @@ function agentToolResult(resultContent: string, toolUseResult?: Record<string, u
   }
 }
 
-function renderAgentResult(
+/** The container of the rendered result, once every worker reply landed. */
+async function renderAgentResult(
   resultContent: string,
   toolUseResult?: Record<string, unknown>,
   toolUseInput?: Record<string, unknown>,
-): HTMLElement {
+): Promise<HTMLElement> {
   const category: MessageCategory = { kind: 'tool_result' }
   const toolUseParsed = toolUseInput
     ? resolveMessageForRendering({
@@ -90,20 +92,22 @@ function renderAgentResult(
     category,
     AgentProvider.CLAUDE_CODE,
   )
-  return render(() => result).container
+  const { container } = render(() => result)
+  await settleWorkerReplies()
+  return container
 }
 
 describe('claude Agent tool_result rendering: an async launch', () => {
   // The task title is the only human-written string in the payload, and the one
   // the user recognizes. The agent id is a generated token that says nothing
   // about the work, so it belongs in the field list rather than the headline.
-  it('shows the task in the header rather than the agent id', () => {
-    const text = renderAgentResult(HARNESS_TEXT, asyncLaunch()).textContent ?? ''
+  it('shows the task in the header rather than the agent id', async () => {
+    const text = (await renderAgentResult(HARNESS_TEXT, asyncLaunch())).textContent ?? ''
     expect(text).toContain('Agent "Verify V1 theme pair freeze" launched asynchronously')
   })
 
-  it('lists the agent id, the model and the output file', () => {
-    const text = renderAgentResult(HARNESS_TEXT, asyncLaunch()).textContent ?? ''
+  it('lists the agent id, the model and the output file', async () => {
+    const text = (await renderAgentResult(HARNESS_TEXT, asyncLaunch())).textContent ?? ''
     expect(text).toContain('Agent ID:')
     expect(text).toContain('a7bcba10b2b861663')
     expect(text).toContain('Model:')
@@ -112,26 +116,26 @@ describe('claude Agent tool_result rendering: an async launch', () => {
     expect(text).toContain(OUTPUT_FILE)
   })
 
-  it('shows the prompt as the body, under a label', () => {
-    const text = renderAgentResult(HARNESS_TEXT, asyncLaunch()).textContent ?? ''
+  it('shows the prompt as the body, under a label', async () => {
+    const text = (await renderAgentResult(HARNESS_TEXT, asyncLaunch())).textContent ?? ''
     expect(text).toContain('Prompt')
     expect(text).toContain('Read the code that it names')
   })
 
   // The whole point of the change: a launch has no report, so the old card fell
   // back to the harness instructions and buried the task under them.
-  it('drops the harness instructions entirely', () => {
-    const text = renderAgentResult(HARNESS_TEXT, asyncLaunch()).textContent ?? ''
+  it('drops the harness instructions entirely', async () => {
+    const text = (await renderAgentResult(HARNESS_TEXT, asyncLaunch())).textContent ?? ''
     expect(text).not.toContain('internal metadata')
     expect(text).not.toContain('Do NOT Read or tail')
   })
 
   // resolvedModel alone reports only where the run ended up, which reads as
   // though it ran there throughout.
-  it('reports a mid-run model swap in full', () => {
-    const text = renderAgentResult(HARNESS_TEXT, asyncLaunch({
+  it('reports a mid-run model swap in full', async () => {
+    const text = (await renderAgentResult(HARNESS_TEXT, asyncLaunch({
       modelsUsed: ['claude-sonnet-5', 'claude-opus-5[1m]'],
-    })).textContent ?? ''
+    }))).textContent ?? ''
     expect(text).toContain('Models:')
     expect(text).toContain('claude-sonnet-5 → claude-opus-5[1m]')
   })
@@ -140,17 +144,17 @@ describe('claude Agent tool_result rendering: an async launch', () => {
   // description pushes `launched asynchronously` off the right edge -- and the
   // icon separates only `completed` from everything else, so a failed run and a
   // launched one become indistinguishable.
-  it('caps an overlong task description so the outcome stays in the header', () => {
+  it('caps an overlong task description so the outcome stays in the header', async () => {
     const description = 'Audit every renderer that clips a one-line header '.repeat(4)
-    const text = renderAgentResult(HARNESS_TEXT, asyncLaunch({ description })).textContent ?? ''
+    const text = (await renderAgentResult(HARNESS_TEXT, asyncLaunch({ description }))).textContent ?? ''
     expect(text).toContain('\u2026" launched asynchronously')
     expect(text).not.toContain(description)
   })
 
-  it('keeps a multi-line description to its first line', () => {
-    const text = renderAgentResult(HARNESS_TEXT, asyncLaunch({
+  it('keeps a multi-line description to its first line', async () => {
+    const text = (await renderAgentResult(HARNESS_TEXT, asyncLaunch({
       description: 'Freeze the theme pairs\nand then audit them',
-    })).textContent ?? ''
+    }))).textContent ?? ''
     expect(text).toContain('Agent "Freeze the theme pairs" launched asynchronously')
     expect(text).not.toContain('and then audit them')
   })
@@ -158,28 +162,28 @@ describe('claude Agent tool_result rendering: an async launch', () => {
   // A whitespace-only description took the truthy branch and rendered
   // `Agent '   ' launched asynchronously`; the trim makes it fall back to the id,
   // which is what agentTitle's own doc says happens.
-  it('falls back to the agent id for a blank description', () => {
-    const text = renderAgentResult(HARNESS_TEXT, asyncLaunch({ description: '   ' })).textContent ?? ''
+  it('falls back to the agent id for a blank description', async () => {
+    const text = (await renderAgentResult(HARNESS_TEXT, asyncLaunch({ description: '   ' }))).textContent ?? ''
     expect(text).toContain('Agent a7bcba10b2b861663 launched asynchronously')
   })
 
   // A finished sync run carries no description at all, so the id is all there is.
-  it('falls back to the agent id when the payload carries no description', () => {
-    const text = renderAgentResult(HARNESS_TEXT, asyncLaunch({ description: '' })).textContent ?? ''
+  it('falls back to the agent id when the payload carries no description', async () => {
+    const text = (await renderAgentResult(HARNESS_TEXT, asyncLaunch({ description: '' }))).textContent ?? ''
     expect(text).toContain('Agent a7bcba10b2b861663 launched asynchronously')
   })
 })
 
 describe('claude Agent tool_result rendering: a remote launch', () => {
-  it('shows the task and lists the task id and session url', () => {
-    const text = renderAgentResult('', {
+  it('shows the task and lists the task id and session url', async () => {
+    const text = (await renderAgentResult('', {
       status: 'remote_launched',
       taskId: 'task-remote-1',
       sessionUrl: 'https://claude.ai/session/abc',
       description: 'Audit the migration',
       prompt: PROMPT,
       outputFile: OUTPUT_FILE,
-    }).textContent ?? ''
+    })).textContent ?? ''
     expect(text).toContain('Agent "Audit the migration" launched remotely')
     expect(text).toContain('Task ID:')
     expect(text).toContain('task-remote-1')
@@ -201,38 +205,39 @@ describe('claude Agent tool_result rendering: a finished run', () => {
 
   // The report is the deliverable here, so it stays the body and the prompt does
   // not push it down the card.
-  it('shows the report rather than the prompt', () => {
-    const text = renderAgentResult('', completed).textContent ?? ''
+  it('shows the report rather than the prompt', async () => {
+    const text = (await renderAgentResult('', completed)).textContent ?? ''
     expect(text).toContain('The tide comes in twice a day.')
     expect(text).not.toContain('Read the code that it names')
     expect(text).not.toContain('Prompt')
   })
 
-  it('keeps the agent id in the header when there is no description', () => {
-    const text = renderAgentResult('', completed).textContent ?? ''
+  it('keeps the agent id in the header when there is no description', async () => {
+    const text = (await renderAgentResult('', completed)).textContent ?? ''
     expect(text).toContain('Agent a7bcba10b2b861663 completed')
   })
 
   // A sync result recorded before the structured content existed has only the
   // block text, and that IS the report -- unlike a launch, where it is harness
   // instructions.
-  it('falls back to the block content for a run that carries no content array', () => {
-    const text = renderAgentResult('A plain report.', {
+  it('falls back to the block content for a run that carries no content array', async () => {
+    const text = (await renderAgentResult('A plain report.', {
       status: 'completed',
       agentId: 'a1',
-    }).textContent ?? ''
+    })).textContent ?? ''
+    await settleWorkerReplies()
     expect(text).toContain('A plain report.')
   })
 
-  it('falls through to the catch-all when there is no structured payload at all', () => {
-    const text = renderAgentResult('just text').textContent ?? ''
+  it('falls through to the catch-all when there is no structured payload at all', async () => {
+    const text = (await renderAgentResult('just text')).textContent ?? ''
     expect(text).not.toContain('Agent ID:')
   })
 
   // A synchronous result omits `description`. The paired tool_use input carries
   // the model-written task title, so the header shows it instead of the agent id.
-  it('shows the paired tool_use description for a synchronous result', () => {
-    const text = renderAgentResult(
+  it('shows the paired tool_use description for a synchronous result', async () => {
+    const text = (await renderAgentResult(
       '',
       {
         status: 'completed',
@@ -243,15 +248,15 @@ describe('claude Agent tool_result rendering: a finished run', () => {
         resolvedModel: 'claude-opus-5[1m]',
       },
       { description: 'SCAN triage + angle recommendation' },
-    ).textContent ?? ''
+    )).textContent ?? ''
     expect(text).toContain('Agent "SCAN triage + angle recommendation" completed')
     expect(text).not.toContain('Agent a7bcba10b2b861663 completed')
   })
 
   // The paired input is the NEW description source, so its blank case must
   // fall through to the id exactly as a blank result description does.
-  it('falls back to the agent id when the paired tool_use description is blank', () => {
-    const text = renderAgentResult(
+  it('falls back to the agent id when the paired tool_use description is blank', async () => {
+    const text = (await renderAgentResult(
       '',
       {
         status: 'completed',
@@ -262,7 +267,7 @@ describe('claude Agent tool_result rendering: a finished run', () => {
         resolvedModel: 'claude-opus-5[1m]',
       },
       { description: '   ' },
-    ).textContent ?? ''
+    )).textContent ?? ''
     expect(text).toContain('Agent a7bcba10b2b861663 completed')
     expect(text).not.toContain('Agent "')
   })
@@ -300,16 +305,16 @@ describe('claude toolbar actions for Agent', () => {
 
 describe('claude Agent tool_result rendering: field-list edge cases', () => {
   // One entry is not a swap, so the singular label is the honest one.
-  it('reports a single-entry modelsUsed as the plain model', () => {
-    const text = renderAgentResult(HARNESS_TEXT, asyncLaunch({
+  it('reports a single-entry modelsUsed as the plain model', async () => {
+    const text = (await renderAgentResult(HARNESS_TEXT, asyncLaunch({
       modelsUsed: ['claude-opus-5[1m]'],
-    })).textContent ?? ''
+    }))).textContent ?? ''
     expect(text).toContain('Model:')
     expect(text).not.toContain('Models:')
   })
 
-  it('lists the worktree of an isolated run', () => {
-    const text = renderAgentResult('', {
+  it('lists the worktree of an isolated run', async () => {
+    const text = (await renderAgentResult('', {
       status: 'completed',
       agentId: 'a1',
       content: [
@@ -317,7 +322,7 @@ describe('claude Agent tool_result rendering: field-list edge cases', () => {
       ],
       worktreePath: '/tmp/wt/feature',
       worktreeBranch: 'feature-x',
-    }).textContent ?? ''
+    })).textContent ?? ''
     expect(text).toContain('Branch:')
     expect(text).toContain('feature-x')
     expect(text).toContain('Worktree:')
@@ -326,8 +331,8 @@ describe('claude Agent tool_result rendering: field-list edge cases', () => {
 
   // Neither a report nor a prompt: the card is its header and fields, with no
   // empty body block below them.
-  it('renders no body when the payload carries neither report nor prompt', () => {
-    const container = renderAgentResult('', {
+  it('renders no body when the payload carries neither report nor prompt', async () => {
+    const container = await renderAgentResult('', {
       status: 'async_launched',
       agentId: 'a1',
       description: 'Something',
@@ -338,11 +343,11 @@ describe('claude Agent tool_result rendering: field-list edge cases', () => {
 
   // A launch whose payload lost its agent id still says what it is, rather than
   // rendering a header with a gap where the identity should be.
-  it('keeps a readable header when the launch carries no identity at all', () => {
-    const text = renderAgentResult('', {
+  it('keeps a readable header when the launch carries no identity at all', async () => {
+    const text = (await renderAgentResult('', {
       status: 'async_launched',
       prompt: 'do the thing',
-    }).textContent ?? ''
+    })).textContent ?? ''
     expect(text).toContain('Agent launched asynchronously')
   })
 })

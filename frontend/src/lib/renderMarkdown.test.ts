@@ -1,63 +1,30 @@
-import { IDBFactory } from 'fake-indexeddb'
 import { createEffect, createRoot } from 'solid-js'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_THEME_ID } from '~/styles/themes'
-import { _resetArtifactStoreForTest, getArtifact, putArtifact } from './renderArtifactStore'
-import { _getMarkdownCacheSize, _resetMarkdownCache, markdownArtifactNs, renderMarkdown, shikiHighlighter } from './renderMarkdown'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { raiseStackOverflowFor } from '~/test-support/markdownParseOverflow'
+import { plainMarkdownProcessor } from './markdownProcessor'
+import { _getMarkdownCacheSize, _resetMarkdownCache, requestMarkdownHtml } from './renderMarkdown'
 import { _resetShikiStyleClassesForTest } from './shikiStyleClass'
 import { readInjectedShikiRules } from './shikiStyleClass.testkit'
+import { shikiHighlighter } from './shikiSyncHighlighter'
 import { syntaxPairFor } from './syntaxThemes'
 import { setSyntaxTheme } from './syntaxThemeStore'
 
-const originalWorkerDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'Worker')
+// ---------------------------------------------------------------------------
+// renderMarkdown with the real Markdown worker
+//
+// The stand-in Worker of the jsdom tests runs the real worker's handler (see
+// ~/test-support/fakeWorker), so each body renders through the same pipeline as
+// in the browser. A worker that the test answers by hand is in
+// `renderMarkdown.heldWorker.test.ts`.
+// ---------------------------------------------------------------------------
 
-function restoreWorker() {
-  if (originalWorkerDescriptor) {
-    Object.defineProperty(globalThis, 'Worker', originalWorkerDescriptor)
-    return
-  }
-  Reflect.deleteProperty(globalThis, 'Worker')
-}
-
-interface CapturedWorker {
-  onmessage: ((event: MessageEvent) => void) | null
-  messages: Array<{ id: number, text: string }>
-}
-
-// Shared across the whole file: the worker CLIENT module caches its first
-// spawned Worker instance, so a per-test array would miss messages posted to a
-// worker spawned in an earlier test. Tests filter by their unique text instead.
-const workers: CapturedWorker[] = []
-
-function installCapturingWorker(): void {
-  Object.defineProperty(globalThis, 'Worker', {
-    configurable: true,
-    writable: true,
-    value: class CapturingWorker {
-      onmessage: ((event: MessageEvent) => void) | null = null
-      onerror: (() => void) | null = null
-      messages: Array<{ id: number, text: string }> = []
-      terminate = vi.fn()
-
-      constructor() {
-        workers.push(this)
-      }
-
-      postMessage(message: { id: number, text: string }) {
-        this.messages.push(message)
-      }
-    },
-  })
-}
-
-function dispatchesFor(text: string): Array<{ worker: CapturedWorker, id: number }> {
-  return workers.flatMap(worker => worker.messages
-    .filter(m => m.text === text)
-    .map(m => ({ worker, id: m.id })))
-}
-
-function injectedRules(): string {
-  return readInjectedShikiRules()
+/** The HTML of `text`, which is pending until the worker that renders it answers. */
+async function renderedHtml(text: string): Promise<string | undefined> {
+  expect(requestMarkdownHtml(text)).toBeUndefined()
+  await settleWorkerReplies()
+  return requestMarkdownHtml(text)
 }
 
 describe('renderMarkdown shared token-style classes', () => {
@@ -66,17 +33,8 @@ describe('renderMarkdown shared token-style classes', () => {
     _resetShikiStyleClassesForTest()
   })
 
-  afterEach(() => {
-    restoreWorker()
-    vi.unstubAllGlobals()
-    _resetArtifactStoreForTest()
-  })
-
-  it('renders fenced code with class-based token spans and injects the rules (sync path)', () => {
-    // jsdom has no Worker, so this exercises the synchronous highlighted
-    // fallback -- the same createMarkdownProcessor pipeline (and transformer)
-    // the worker runs.
-    const html = renderMarkdown('```js\nconst x = 1\n```')
+  it('renders fenced code with class-based token spans and injects the rules', async () => {
+    const html = await renderedHtml('```js\nconst x = 1\n```') ?? ''
     // Token spans carry shared classes, never inline styles. (The <pre> keeps
     // its per-block rootStyle -- one element -- so scope the assertion to spans.)
     expect(html).toContain('class="sk-')
@@ -88,123 +46,9 @@ describe('renderMarkdown shared token-style classes', () => {
     ].map(m => m[1])
     expect(classes.length).toBeGreaterThan(0)
     for (const className of new Set(classes))
-      expect(injectedRules()).toContain(`.${className}{`)
-    expect(injectedRules()).toContain('--shiki-light')
-    expect(injectedRules()).toContain('--shiki-dark')
-  })
-
-  it('serves a persisted {html, styles} render artifact and injects its rules without dispatching the worker', async () => {
-    vi.stubGlobal('indexedDB', new IDBFactory())
-    installCapturingWorker()
-    const text = 'persisted warm start body'
-    await putArtifact(markdownArtifactNs(), text, {
-      h: '<p data-persisted="">persisted warm start body</p>',
-      s: { 'sk-00000000-1s': '--shiki-light:#123;--shiki-dark:#456' },
-    })
-
-    // First call returns the plain placeholder and starts the async warm-start.
-    expect(renderMarkdown(text)).not.toContain('data-persisted')
-
-    await vi.waitFor(() => {
-      expect(renderMarkdown(text)).toBe('<p data-persisted="">persisted warm start body</p>')
-    })
-    // The dictionary's rules were injected before the HTML could render.
-    expect(injectedRules()).toContain('.sk-00000000-1s{--shiki-light:#123;--shiki-dark:#456}')
-    // The warm-start never dispatched this text to a worker.
-    expect(dispatchesFor(text)).toHaveLength(0)
-  })
-
-  it('rejects a legacy plain-string render artifact and falls through to the worker', async () => {
-    vi.stubGlobal('indexedDB', new IDBFactory())
-    installCapturingWorker()
-    const text = 'legacy artifact body'
-    // The pre-{h,s} artifact shape: a bare HTML string.
-    await putArtifact(markdownArtifactNs(), text, '<p>legacy</p>')
-
-    renderMarkdown(text)
-
-    // The malformed hit is a miss: the render dispatches to the worker.
-    await vi.waitFor(() => {
-      expect(dispatchesFor(text)).toHaveLength(1)
-    })
-    const dispatch = dispatchesFor(text)[0]
-    if (dispatch === undefined)
-      throw new Error('expected a worker dispatch')
-    dispatch.worker.onmessage?.({
-      data: {
-        id: dispatch.id,
-        html: '<p>legacy fallback</p>',
-        retryable: false,
-        styles: {},
-      },
-    } as MessageEvent)
-    await vi.waitFor(() => {
-      expect(renderMarkdown(text)).toBe('<p>legacy fallback</p>')
-    })
-  })
-
-  it('rejects an oversized persisted html render artifact and falls through to the worker', async () => {
-    vi.stubGlobal('indexedDB', new IDBFactory())
-    installCapturingWorker()
-    const text = 'oversized artifact body'
-    await putArtifact(markdownArtifactNs(), text, {
-      h: `<p>${'x'.repeat(512 * 1024)}</p>`,
-      s: {},
-    })
-
-    renderMarkdown(text)
-
-    await vi.waitFor(() => {
-      expect(dispatchesFor(text)).toHaveLength(1)
-    })
-    const dispatch = dispatchesFor(text)[0]
-    if (dispatch === undefined)
-      throw new Error('expected a worker dispatch')
-    dispatch.worker.onmessage?.({
-      data: {
-        id: dispatch.id,
-        html: '<p>oversized fallback</p>',
-        retryable: false,
-        styles: {},
-      },
-    } as MessageEvent)
-    await vi.waitFor(() => {
-      expect(renderMarkdown(text)).toBe('<p>oversized fallback</p>')
-    })
-  })
-
-  it('injects a worker result\'s style dictionary and persists {html, styles}', async () => {
-    vi.stubGlobal('indexedDB', new IDBFactory())
-    installCapturingWorker()
-    const text = 'worker highlighted body'
-
-    renderMarkdown(text)
-    await vi.waitFor(() => expect(dispatchesFor(text)).toHaveLength(1))
-
-    const dispatch = dispatchesFor(text)[0]
-    if (dispatch === undefined)
-      throw new Error('expected a worker dispatch')
-    dispatch.worker.onmessage?.({
-      data: {
-        id: dispatch.id,
-        html: '<pre class="shiki"><code><span class="sk-00000001-13">x</span></code></pre>',
-        retryable: false,
-        styles: { 'sk-00000001-13': '--shiki-light:#aaa' },
-      },
-    } as MessageEvent)
-
-    await vi.waitFor(() => {
-      expect(renderMarkdown(text)).toContain('sk-00000001-13')
-    })
-    // The worker has no document; the main thread injected the shipped rules.
-    expect(injectedRules()).toContain('.sk-00000001-13{--shiki-light:#aaa}')
-    // Persisted for the next session's warm start, dictionary included.
-    await vi.waitFor(async () => {
-      await expect(getArtifact(markdownArtifactNs(), text)).resolves.toEqual({
-        h: '<pre class="shiki"><code><span class="sk-00000001-13">x</span></code></pre>',
-        s: { 'sk-00000001-13': '--shiki-light:#aaa' },
-      })
-    })
+      expect(readInjectedShikiRules()).toContain(`.${className}{`)
+    expect(readInjectedShikiRules()).toContain('--shiki-light')
+    expect(readInjectedShikiRules()).toContain('--shiki-dark')
   })
 })
 
@@ -216,20 +60,22 @@ describe('renderMarkdown syntax theme invalidation', () => {
   it('bumps the version so a consumer that reads only markdownVersion re-renders', async () => {
     // Every other mutation of these caches pairs the clear with a version bump.
     // The syntax-theme invalidator did not, and a chat row survived only because
-    // its own cache namespace folds in `syntaxThemeGeneration()`. `MarkdownFileView`
-    // reads neither -- its memo depends on the file text and on `markdownVersion()`
-    // alone -- so an open markdown file kept the abandoned theme's baked token
-    // colours against a code surface already repainted for the new one.
+    // its own cache namespace folds in `syntaxThemeGeneration()`. A consumer that
+    // calls requestMarkdownHtml alone depends on the text and on `markdownVersion`
+    // and nothing else, so it kept the abandoned theme's baked token colours
+    // against a code surface already repainted for the new one.
     const text = '# heading'
     let runs = 0
     const dispose = createRoot((disposeRoot) => {
       createEffect(() => {
-        renderMarkdown(text)
+        requestMarkdownHtml(text)
         runs += 1
       })
       return disposeRoot
     })
-    await Promise.resolve()
+    // The render lands first, which re-runs the consumer by itself.
+    await settleWorkerReplies()
+    expect(requestMarkdownHtml(text)).toContain('heading')
     const before = runs
     expect(before).toBeGreaterThan(0)
 
@@ -245,6 +91,7 @@ describe('renderMarkdown syntax theme invalidation', () => {
     // Put the module state back for the rest of the file.
     await setSyntaxTheme(syntaxPairFor(DEFAULT_THEME_ID), shikiHighlighter)
     dispose()
+    await settleWorkerReplies()
   })
 })
 
@@ -253,80 +100,70 @@ describe('renderMarkdown cache and gfm', () => {
     _resetMarkdownCache()
   })
 
-  it('should render markdown with syntax highlighting', () => {
-    const html = renderMarkdown('```js\nconst x = 1\n```', true)
+  it('should render markdown with syntax highlighting', async () => {
+    const html = await renderedHtml('```js\nconst x = 1\n```')
     expect(html).toContain('class="shiki')
     expect(html).toContain('const')
+    // Tokenized: the keyword sits in a span of its own.
+    expect(html).not.toContain('const x = 1')
   })
 
-  it('should render plain text', () => {
-    const html = renderMarkdown('hello world', true)
+  it('should render plain text', async () => {
+    const html = await renderedHtml('hello world')
     expect(html).toContain('hello world')
   })
 
-  it('should render inline code', () => {
-    const html = renderMarkdown('use `const x = 1`', true)
+  it('should render inline code', async () => {
+    const html = await renderedHtml('use `const x = 1`')
     expect(html).toContain('<code>')
     expect(html).toContain('const x = 1')
   })
 
-  it('should render code blocks with unknown languages without crashing', () => {
+  it('should render code blocks with unknown languages without crashing', async () => {
     // Unknown language should fall back gracefully (no Shiki highlighting).
-    const html = renderMarkdown('```unknownlang123\nfoo bar\n```', true)
+    const html = await renderedHtml('```unknownlang123\nfoo bar\n```')
     expect(html).toContain('foo bar')
   })
 
-  it('should render GFM tables', () => {
+  it('should render GFM tables', async () => {
     const md = '| a | b |\n|---|---|\n| 1 | 2 |'
-    const html = renderMarkdown(md, true)
+    const html = await renderedHtml(md)
     expect(html).toContain('<table>')
     expect(html).toContain('<td>')
   })
 
-  it('should cache results', () => {
+  it('should cache results', async () => {
     expect(_getMarkdownCacheSize()).toBe(0)
-    const html1 = renderMarkdown('cached test')
+    const html1 = await renderedHtml('cached test')
     expect(_getMarkdownCacheSize()).toBe(1)
-    const html2 = renderMarkdown('cached test')
+    const html2 = requestMarkdownHtml('cached test')
     // Second call must hit the cache -- size stays at 1, not 2.
     expect(_getMarkdownCacheSize()).toBe(1)
     expect(html1).toBe(html2)
   })
 
-  it('should bypass cache when skipCache is true', () => {
-    expect(_getMarkdownCacheSize()).toBe(0)
-    renderMarkdown('cached test', true)
+  it('returns an empty body as empty HTML without caching it', () => {
+    expect(requestMarkdownHtml('')).toBe('')
     expect(_getMarkdownCacheSize()).toBe(0)
   })
-})
 
-/**
- * The synchronous highlighter must boot already holding the pair the app
- * starts on.
- *
- * It cannot await a chunk, so that one pair is imported statically. Nothing in
- * the type system ties that import to `SYNTAX_THEMES.default`, and the two DID
- * drift apart once: pointing Default at another pair while the static import
- * stayed behind leaves every synchronous call site -- `renderAnsi`, the
- * editor, the tool renderers, the Read view -- naming a theme Shiki has not
- * loaded, which throws on the first highlight of the session.
- */
-describe('shikiHighlighter startup themes', () => {
-  it('registers the pair the theme catalogue names for Default', () => {
-    const pair = syntaxPairFor(DEFAULT_THEME_ID)
-    const loaded = shikiHighlighter.getLoadedThemes()
-    expect(loaded).toContain(pair.light)
-    expect(loaded).toContain(pair.dark)
-  })
+  it('answers a body whose parse overflows the stack with its escaped source, parsing it once', async () => {
+    // Every unified processor raises the RangeError of an overflow for this body.
+    const text = '> overflowing <b>deep</b>'
+    const processSync = raiseStackOverflowFor(plainMarkdownProcessor, text)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const html = await renderedHtml(text)
 
-  it('highlights synchronously under that pair without registering anything', () => {
-    // The assertion that would actually have caught the drift: naming an
-    // unregistered theme throws rather than degrading.
-    const pair = syntaxPairFor(DEFAULT_THEME_ID)
-    expect(() => shikiHighlighter.codeToHtml('const a = 1', {
-      lang: 'typescript',
-      themes: { light: pair.light, dark: pair.dark },
-      defaultColor: false,
-    })).not.toThrow()
+      expect(html).toContain('data-markdown-source-fallback')
+      expect(html).toContain('&#x3C;b>deep&#x3C;/b>')
+      expect(html).not.toContain('<b>')
+      // The plain processor shares the parser, so a second parse could only fail again.
+      expect(processSync.mock.calls.filter(([value]) => value === text)).toHaveLength(1)
+    }
+    finally {
+      processSync.mockRestore()
+      warn.mockRestore()
+    }
   })
 })

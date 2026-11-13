@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fileEditDiffHunks } from '../../../model/fileEditDiff'
+import { fileEditDrawnHunks } from '~/test-support/fileEditHunks'
 import { ampCreateFileChange, ampEditFileChange, ampEditFileResultChange, ampFilePathFromUri, ampPatchRequestChanges, ampPatchResultChanges } from './fileEdit'
 
 const UNIFIED = 'Index: /work/a.ts\n===================================================================\n--- /work/a.ts\n+++ /work/a.ts\n@@ -1,1 +1,1 @@\n-old\n+new\n'
@@ -57,7 +57,7 @@ describe('ampPatchResultChanges', () => {
     expect(changes).toHaveLength(1)
     expect(changes?.[0]?.filePath).toBe('/work/a.ts')
     expect(changes?.[0]?.operation).toBe('edit')
-    expect(fileEditDiffHunks(changes![0]!)).toHaveLength(1)
+    expect(fileEditDrawnHunks(changes![0]!)).toHaveLength(1)
   })
 
   it('keeps an add, a delete and a move that state no diff', () => {

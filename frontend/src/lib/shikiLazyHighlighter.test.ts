@@ -1,62 +1,18 @@
 import { bundledLanguages } from 'shiki/langs'
 import { describe, expect, it } from 'vitest'
-import { createLazyOnigurumaHighlighter, resolveBundledLang } from './shikiLazyHighlighter'
+import { createLazyOnigurumaHighlighter } from './shikiLazyHighlighter'
 import { syntaxThemePair } from './shikiThemes'
-
-describe('resolveBundledLang', () => {
-  it('resolves canonical bundled ids', () => {
-    expect(resolveBundledLang('typescript')).toBe('typescript')
-    expect(resolveBundledLang('ruby')).toBe('ruby')
-  })
-
-  it('resolves alias keys that Shiki bundles directly', () => {
-    // Shiki ships aliases as their own bundledLanguages keys.
-    expect(resolveBundledLang('ts')).toBe('ts')
-    expect(resolveBundledLang('c++')).toBe('c++')
-  })
-
-  it('returns undefined for unknown languages and built-ins without a grammar', () => {
-    expect(resolveBundledLang('definitely-not-a-language')).toBeUndefined()
-    // `ansi` is a Shiki built-in tokenized on the main thread, not a bundled grammar.
-    expect(resolveBundledLang('ansi')).toBeUndefined()
-  })
-
-  it('does not treat Object.prototype keys as bundled languages', () => {
-    // bundledLanguages is a plain `{...base, ...alias}` object, so a naive `key in obj`
-    // check would match inherited prototype members -- then loadLanguage(bundledLanguages[key])
-    // gets the Object constructor / prototype and throws. These keys reach the resolver from
-    // user input (fence languages, code-block attrs, file extensions), so they must be rejected.
-    for (const key of [
-      'constructor',
-      '__proto__',
-      'toString',
-      'valueOf',
-      'hasOwnProperty',
-      'isPrototypeOf',
-    ])
-      expect(resolveBundledLang(key), key).toBeUndefined()
-  })
-
-  it('resolves case-insensitively to the lowercase bundled key', () => {
-    // Shiki bundles every id/alias lowercase; a mixed-case id (e.g. a `JSON` code-block
-    // attribute or a `TS` fence) should still resolve instead of falling through to plain.
-    expect(resolveBundledLang('TypeScript')).toBe('typescript')
-    expect(resolveBundledLang('JSON')).toBe('json')
-    expect(resolveBundledLang('TS')).toBe('ts')
-  })
-})
 
 describe('createLazyOnigurumaHighlighter', () => {
   it('lazily loads a non-eager language and tokenizes with dual-theme CSS variables', async () => {
     const hl = createLazyOnigurumaHighlighter()
-    expect(hl.isLanguageLoaded('ruby')).toBe(false)
     expect(hl.getHighlighter()).toBeNull()
 
     expect(await hl.ensureLanguage('ruby')).toBe('loaded')
-    expect(hl.isLanguageLoaded('ruby')).toBe(true)
 
     const highlighter = hl.getHighlighter()
     expect(highlighter).not.toBeNull()
+    expect(highlighter!.getLoadedLanguages()).toContain('ruby')
     const { tokens } = highlighter!.codeToTokens('puts 1', {
       lang: 'ruby',
       // The pair this isolate holds -- Default's, unless a test set another.
@@ -72,7 +28,8 @@ describe('createLazyOnigurumaHighlighter', () => {
   it('returns "unsupported" (no throw) for an unknown language', async () => {
     const hl = createLazyOnigurumaHighlighter()
     expect(await hl.ensureLanguage('definitely-not-a-language')).toBe('unsupported')
-    expect(hl.isLanguageLoaded('definitely-not-a-language')).toBe(false)
+    // An unknown id starts nothing, not even the highlighter.
+    expect(hl.getHighlighter()).toBeNull()
   })
 
   it('surfaces every bundled key in getLoadedLanguages after loading it (two-registry agreement)', async () => {
@@ -117,7 +74,7 @@ describe('createLazyOnigurumaHighlighter', () => {
     // Both calls share the single in-flight promise rather than loading twice.
     expect(p1).toBe(p2)
     expect(await Promise.all([p1, p2])).toEqual(['loaded', 'loaded'])
-    expect(hl.isLanguageLoaded('go')).toBe(true)
+    expect(hl.getHighlighter()!.getLoadedLanguages()).toContain('go')
     // A later call short-circuits via the loaded set.
     expect(await hl.ensureLanguage('go')).toBe('loaded')
   })

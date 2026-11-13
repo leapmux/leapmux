@@ -2,7 +2,7 @@ import type { Component } from 'solid-js'
 import type { QuestionOption } from '../model/question'
 import { Show } from 'solid-js'
 import * as styles from '../ControlRequestBanner.css'
-import { MarkdownText } from '../messageRenderers'
+import { MarkdownText } from '../MarkdownText'
 import { questionOption, questionPreview } from './QuestionOptionItem.css'
 import { questionOptionValue } from './types'
 

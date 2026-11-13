@@ -241,6 +241,14 @@ export interface DropdownMenuProps {
 
   /** Callback when the popover opens or closes. */
   'onToggle'?: (open: boolean) => void
+  /**
+   * Callback before the popover opens or closes, from its `beforetoggle` event.
+   *
+   * The browser shows the popover before it fires `toggle`, so content that a
+   * caller mounts in `onToggle` paints a frame after the popover does. Content
+   * mounted here is in place before the first paint.
+   */
+  'onBeforeToggle'?: (opening: boolean) => void
 }
 
 export interface DropdownMenuItemContentProps {
@@ -853,12 +861,17 @@ export function DropdownMenu(props: DropdownMenuProps) {
     props.onToggle?.(opening)
   }
 
+  const handleBeforeToggle = (e: ToggleEvent) => {
+    props.onBeforeToggle?.(e.newState === 'open')
+  }
+
   const popoverRefCallback = (el: HTMLElement) => {
     popoverEl = el
     props.popoverRef?.(el)
 
     // Use native addEventListener for the toggle event to avoid any
     // framework-level event handling differences.
+    el.addEventListener('beforetoggle', handleBeforeToggle)
     el.addEventListener('toggle', handleToggle)
   }
 
@@ -946,6 +959,7 @@ export function DropdownMenu(props: DropdownMenuProps) {
   })
 
   onCleanup(() => {
+    popoverEl?.removeEventListener('beforetoggle', handleBeforeToggle)
     popoverEl?.removeEventListener('toggle', handleToggle)
     window.removeEventListener('scroll', repositionOnExternalScroll, true)
     resizeObserver?.disconnect()

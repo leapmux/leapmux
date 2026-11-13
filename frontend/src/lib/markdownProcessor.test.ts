@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createMarkdownProcessor, extractFenceLanguages, plainMarkdownProcessor, renderWithPlainFallback } from '~/lib/markdownProcessor'
+import { createMarkdownProcessor, extractFenceLanguages, plainMarkdownProcessor, renderPlainOrSource, renderWithPlainFallback } from '~/lib/markdownProcessor'
+import { MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE, MARKDOWN_SOURCE_FALLBACK_NOTICE } from '~/lib/markdownSourceFallback'
 import { BLOCKED_IMAGE_CHIP_TEXT } from '~/lib/rehypeBlockRemoteImages'
 import { createLazyOnigurumaHighlighter } from '~/lib/shikiLazyHighlighter'
 import { collectShikiStyles } from '~/lib/shikiStyleClass'
@@ -12,15 +13,16 @@ type Processor = Parameters<typeof renderWithPlainFallback>[0]
 
 // Every processor exported here must apply the same hardening tail: the Shiki
 // one feeds the worker + the sync main-thread render, the plain one feeds the
-// streaming placeholder and the Shiki-failure fallback. Hardening one but not
-// the other would leave the vector open on whichever path happened to render
-// the message.
+// Shiki-failure fallback and the worker's render when its highlighter cannot
+// initialize. Hardening one but not the other would leave the vector open on
+// whichever path happened to render the message.
 //
 // Memoized because Shiki is a singleton by design -- the production callers do
-// the same (`editorHighlighter ??= createLazyOnigurumaHighlighter()`). Building
-// one per call constructed a dozen Oniguruma WASM engines per run of this file,
-// none of them disposed, which trips Shiki's own "10 instances have been
-// created" warning.
+// the same: each worker builds one highlighter at module scope
+// (`const hl = createLazyOnigurumaHighlighter()` in markdownWorker.ts and
+// shikiWorker.ts). Building one per call constructed a dozen Oniguruma WASM
+// engines per run of this file, none of them disposed, which trips Shiki's own
+// "10 instances have been created" warning.
 let sharedProcessors: Promise<[string, (md: string) => string][]> | null = null
 
 function processors(): Promise<[string, (md: string) => string][]> {
@@ -42,14 +44,14 @@ function processors(): Promise<[string, (md: string) => string][]> {
 }
 
 describe('renderWithPlainFallback', () => {
-  it('returns the processor output when it succeeds', () => {
+  it('returns the processor output, parsed, when it succeeds', () => {
     const ok = {
       processSync: (t: string) => `<pre class="shiki">${t}</pre>`,
     } as unknown as Processor
-    expect(renderWithPlainFallback(ok, 'const x = 1')).toContain('class="shiki"')
+    expect(renderWithPlainFallback(ok, 'const x = 1')).toEqual({ html: '<pre class="shiki">const x = 1</pre>', parsed: true })
   })
 
-  it('degrades to a plain (un-highlighted) render when the processor throws', () => {
+  it('degrades to a plain (un-highlighted) render, parsed, when the processor throws', () => {
     // Shiki's regex engine can throw on certain grammars; the fallback must still render
     // the body (un-highlighted) rather than propagate -- this is the single-sourced rule
     // both the main-thread sync path and the worker rely on.
@@ -58,9 +60,11 @@ describe('renderWithPlainFallback', () => {
         throw new Error('shiki regex boom')
       },
     } as unknown as Processor
-    const html = renderWithPlainFallback(throwing, '```js\nconst x = 1\n```')
+    const { html, parsed } = renderWithPlainFallback(throwing, '```js\nconst x = 1\n```')
     expect(html).toContain('const x = 1')
     expect(html).not.toContain('class="shiki')
+    // The plain processor parsed the body, so a retry with the highlighter may color it.
+    expect(parsed).toBe(true)
   })
 
   it('warns in development when it falls back', () => {
@@ -86,6 +90,197 @@ describe('renderWithPlainFallback', () => {
     }
   })
 
+  it('shows the escaped source at once when the parse overflows the stack, with no second parse', () => {
+    // The plain processor shares the parser, so a retry would overflow the same way.
+    const plain = vi.spyOn(plainMarkdownProcessor, 'processSync')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const overflowing = {
+        processSync: () => {
+          throw new RangeError('Maximum call stack size exceeded')
+        },
+      } as unknown as Processor
+
+      const { html, parsed } = renderWithPlainFallback(overflowing, '> > deep <b>raw</b>')
+
+      expect(html).toContain(MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE)
+      expect(html).toContain(MARKDOWN_SOURCE_FALLBACK_NOTICE)
+      expect(html).not.toContain('<b>')
+      expect(plain).not.toHaveBeenCalled()
+      expect(parsed).toBe(false)
+    }
+    finally {
+      plain.mockRestore()
+      warn.mockRestore()
+    }
+  })
+
+  it('shows the escaped source at once when SpiderMonkey reports the overflow, with no second parse', () => {
+    // Firefox throws an InternalError, "too much recursion", where V8 and
+    // JavaScriptCore throw a RangeError.
+    const plain = vi.spyOn(plainMarkdownProcessor, 'processSync')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const overflowing = {
+        processSync: () => {
+          const error = new Error('too much recursion')
+          error.name = 'InternalError'
+          throw error
+        },
+      } as unknown as Processor
+
+      const { html, parsed } = renderWithPlainFallback(overflowing, '> > deep')
+
+      expect(html).toContain(MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE)
+      expect(plain).not.toHaveBeenCalled()
+      expect(parsed).toBe(false)
+    }
+    finally {
+      plain.mockRestore()
+      warn.mockRestore()
+    }
+  })
+
+  it('shows the escaped source at once for the overflow message of JavaScriptCore', () => {
+    const plain = vi.spyOn(plainMarkdownProcessor, 'processSync')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const overflowing = {
+        processSync: () => {
+          throw new RangeError('Maximum call stack size exceeded.')
+        },
+      } as unknown as Processor
+
+      const { html, parsed } = renderWithPlainFallback(overflowing, '> > deep')
+
+      expect(html).toContain(MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE)
+      expect(plain).not.toHaveBeenCalled()
+      expect(parsed).toBe(false)
+    }
+    finally {
+      plain.mockRestore()
+      warn.mockRestore()
+    }
+  })
+
+  it('renders plain Markdown for a RangeError that is not a stack overflow', () => {
+    // The highlighted pipeline can exceed the longest string on a huge body
+    // ("Invalid string length"). The plain processor makes no token spans, so it
+    // can still render the body.
+    const plain = vi.spyOn(plainMarkdownProcessor, 'processSync')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const failing = {
+        processSync: () => {
+          throw new RangeError('Invalid string length')
+        },
+      } as unknown as Processor
+
+      const { html, parsed } = renderWithPlainFallback(failing, '# heading')
+
+      expect(html).toContain('<h1>heading</h1>')
+      expect(html).not.toContain(MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE)
+      expect(plain).toHaveBeenCalledOnce()
+      expect(parsed).toBe(true)
+    }
+    finally {
+      plain.mockRestore()
+      warn.mockRestore()
+    }
+  })
+
+  // The overflow test reads the name and the message, so it must not take every
+  // RangeError or InternalError, nor a value that only looks like one, for an overflow.
+  it.each([
+    [
+      'an InternalError that is not an overflow',
+      () => Object.assign(new Error('allocation size overflow'), { name: 'InternalError' }),
+    ],
+    [
+      'an error of another name with the overflow message',
+      () => new TypeError('Maximum call stack size exceeded'),
+    ],
+    [
+      'a thrown value that is not an Error',
+      () => ({ name: 'RangeError', message: 'Maximum call stack size exceeded' }),
+    ],
+    [
+      'a thrown string',
+      () => 'too much recursion',
+    ],
+  ])('renders plain Markdown for %s', (_label, thrown) => {
+    const plain = vi.spyOn(plainMarkdownProcessor, 'processSync')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const failing = {
+        processSync: () => {
+          throw thrown()
+        },
+      } as unknown as Processor
+
+      const { html, parsed } = renderWithPlainFallback(failing, '# heading')
+
+      expect(html).toContain('<h1>heading</h1>')
+      expect(html).not.toContain(MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE)
+      expect(plain).toHaveBeenCalledOnce()
+      expect(parsed).toBe(true)
+    }
+    finally {
+      plain.mockRestore()
+      warn.mockRestore()
+    }
+  })
+
+  it('logs the same warning for a parse failure in both processors', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const plain = vi.spyOn(plainMarkdownProcessor, 'processSync').mockImplementation(() => {
+      throw new RangeError('Maximum call stack size exceeded')
+    })
+    try {
+      const overflowing = {
+        processSync: () => {
+          throw new RangeError('Maximum call stack size exceeded')
+        },
+      } as unknown as Processor
+
+      renderWithPlainFallback(overflowing, 'a')
+      renderPlainOrSource('a')
+
+      expect(warn).toHaveBeenCalledTimes(2)
+      expect(warn.mock.calls[0]?.[0]).toBe(warn.mock.calls[1]?.[0])
+    }
+    finally {
+      plain.mockRestore()
+      warn.mockRestore()
+    }
+  })
+
+  it('shows the escaped source when the plain processor throws too', () => {
+    const plain = vi.spyOn(plainMarkdownProcessor, 'processSync').mockImplementation(() => {
+      throw new Error('plugin failure')
+    })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const throwing = {
+        processSync: () => {
+          throw new Error('highlighter disposed')
+        },
+      } as unknown as Processor
+
+      const { html, parsed } = renderWithPlainFallback(throwing, '# heading')
+
+      expect(html).toContain(MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE)
+      expect(html).toContain('# heading')
+      expect(html).not.toContain('<h1>')
+      expect(plain).toHaveBeenCalledOnce()
+      expect(parsed).toBe(false)
+    }
+    finally {
+      plain.mockRestore()
+      warn.mockRestore()
+    }
+  })
+
   it('stays quiet when the processor succeeds', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
@@ -98,6 +293,36 @@ describe('renderWithPlainFallback', () => {
       expect(warn).not.toHaveBeenCalled()
     }
     finally {
+      warn.mockRestore()
+    }
+  })
+})
+
+describe('renderPlainOrSource', () => {
+  it('renders plain Markdown without Shiki, parsed', () => {
+    const { html, parsed } = renderPlainOrSource('# heading\n\n```js\nconst x = 1\n```')
+    expect(html).toContain('<h1>heading</h1>')
+    expect(html).toContain('language-js')
+    expect(html).not.toContain('class="shiki')
+    expect(parsed).toBe(true)
+  })
+
+  it('shows the escaped source when the parser throws, and never throws itself', () => {
+    const plain = vi.spyOn(plainMarkdownProcessor, 'processSync').mockImplementation(() => {
+      throw new RangeError('Maximum call stack size exceeded')
+    })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      let output = { html: '', parsed: true }
+      expect(() => {
+        output = renderPlainOrSource('<script>alert(1)</script>')
+      }).not.toThrow()
+      expect(output.html).toContain(MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE)
+      expect(output.html).not.toContain('<script>')
+      expect(output.parsed).toBe(false)
+    }
+    finally {
+      plain.mockRestore()
       warn.mockRestore()
     }
   })
@@ -147,7 +372,7 @@ describe('createMarkdownProcessor with the lazy Oniguruma highlighter', () => {
     const processor = createMarkdownProcessor(highlighter, syntaxThemePair())
 
     const md = '```python\nprint(1)\n```\n\n```not-a-language\nstill shown\n```'
-    const html = renderWithPlainFallback(processor, md)
+    const { html } = renderWithPlainFallback(processor, md)
 
     // The preloaded python fence is highlighted: tokenized into separate colored
     // spans (so `print` is isolated in its own span) with dual-theme vars.
@@ -171,7 +396,7 @@ describe('createMarkdownProcessor with the lazy Oniguruma highlighter', () => {
       await hl.ensureLanguage(lang)
     const processor = createMarkdownProcessor(highlighter, syntaxThemePair())
 
-    const html = renderWithPlainFallback(processor, md)
+    const { html } = renderWithPlainFallback(processor, md)
     // python was discovered by the scan, loaded, and the block is tokenized (not plain).
     expect(html).toContain('class="shiki')
     expect(html).toContain('--shiki-light')
@@ -194,7 +419,7 @@ describe('createMarkdownProcessor with the lazy Oniguruma highlighter', () => {
     expect(await hl.ensureLanguage('ansi')).toBe('unsupported')
     const processor = createMarkdownProcessor(highlighter, syntaxThemePair())
 
-    const html = renderWithPlainFallback(processor, md)
+    const { html } = renderWithPlainFallback(processor, md)
     // The ansi green lands on the `green` token's shared style class (see
     // shikiStyleClass) -- proof the fence is tokenized, not rendered plain, and
     // the escape sequences are consumed into colors.
@@ -227,7 +452,7 @@ describe('createMarkdownProcessor with the lazy Oniguruma highlighter', () => {
       await hl.ensureLanguage(lang)
     const processor = createMarkdownProcessor(highlighter, syntaxThemePair())
 
-    const html = renderWithPlainFallback(processor, md)
+    const { html } = renderWithPlainFallback(processor, md)
     // Tokenized (not the fallback single span): `print` is isolated in its own span.
     // Before the fix this was `>print(1)<` (the whole line as one plain `text` span).
     expect(html).toContain('class="shiki')
@@ -361,7 +586,7 @@ describe('remote-image blocking in both processors', () => {
         throw new Error('shiki regex boom')
       },
     } as unknown as Processor
-    const html = renderWithPlainFallback(throwing, '![diagram](https://evil.example/x.png)')
+    const { html } = renderWithPlainFallback(throwing, '![diagram](https://evil.example/x.png)')
     expect(html).not.toContain('<img')
     expect(html).toContain(BLOCKED_IMAGE_CHIP_TEXT)
   })

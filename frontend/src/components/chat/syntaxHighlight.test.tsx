@@ -1,60 +1,64 @@
 import type { MarkdownRenderContext } from './renderContext'
-import { render, waitFor } from '@solidjs/testing-library'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { render } from '@solidjs/testing-library'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { _resetTokenCache, setCachedTokens, toCachedTokens } from '~/lib/tokenCache'
+import { recordWorkerRequests, settleWorkerReplies } from '~/test-support/fakeWorker'
 import { CommandHighlightHtml, JsonHighlightHtml } from './syntaxHighlight'
-
-// Replace the asynchronous token client with a controlled response.
-// The tests still exercise the shared token hook.
-vi.mock('~/lib/shikiWorkerClient', () => ({
-  tokenizeAsync: vi.fn(),
-}))
 
 const pausedContext: MarkdownRenderContext = {
   syntaxHighlightingPaused: () => true,
 }
 
-describe('json/bash async token highlighting', () => {
-  beforeEach(async () => {
-    vi.clearAllMocks()
-    // Reset the shared token cache.
-    // Tokens from another test must not suppress the required dispatch.
-    _resetTokenCache()
-  })
+/** The language and the code of each tokenize request that reaches the Shiki worker from now on. */
+function recordTokenizeRequests(): () => Array<[string, string]> {
+  const requests = recordWorkerRequests('lib/shikiWorker.ts')
+  return () => requests.map(({ lang, code }) => [lang, code])
+}
 
+/** The text of each token span, in document order. */
+function tokenTexts(container: HTMLElement): string[] {
+  return [
+    ...container.querySelectorAll('[data-shiki-token]'),
+  ].map(token => token.textContent ?? '')
+}
+
+beforeEach(() => {
+  // Reset the shared token cache.
+  // Tokens from another test must not suppress the required dispatch.
+  _resetTokenCache()
+})
+
+describe('json/bash async token highlighting', () => {
   it('dispatches eligible JSON to the worker and renders token spans', async () => {
-    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
-    vi.mocked(tokenizeAsync).mockResolvedValue([
-      [
-        { content: '{', className: 'sk-json-test' },
-      ],
-    ])
+    const tokenized = recordTokenizeRequests()
 
     const { container } = render(() => <JsonHighlightHtml code={'{"a":1}'} />)
+    await settleWorkerReplies()
 
-    await waitFor(() => {
-      expect(tokenizeAsync).toHaveBeenCalledWith('json', '{"a":1}', expect.any(Function))
-      expect(container.querySelector('[data-shiki-token]')).not.toBeNull()
-    })
-    // The token span carries its shared style class (see shikiStyleClass).
-    expect(container.querySelector('.sk-json-test')).not.toBeNull()
+    expect(tokenized()).toEqual([
+      ['json', '{"a":1}'],
+    ])
+    expect(tokenTexts(container).join('')).toBe('{"a":1}')
+    expect(tokenTexts(container)).toContain('"a"')
+    // Each token span carries its shared style class (see shikiStyleClass).
+    for (const token of container.querySelectorAll('[data-shiki-token]'))
+      expect(token.className).toMatch(/^sk-/)
   })
 
   it('dispatches eligible Bash with the bash language', async () => {
-    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
-    vi.mocked(tokenizeAsync).mockResolvedValue([
-      [
-        { content: 'echo', className: 'sk-bash-test' },
-      ],
+    const tokenized = recordTokenizeRequests()
+
+    const { container } = render(() => <CommandHighlightHtml code="echo hi" />)
+    await settleWorkerReplies()
+
+    expect(tokenized()).toEqual([
+      ['bash', 'echo hi'],
     ])
-
-    render(() => <CommandHighlightHtml code="echo hi" />)
-
-    await waitFor(() => expect(tokenizeAsync).toHaveBeenCalledWith('bash', 'echo hi', expect.any(Function)))
+    expect(tokenTexts(container)).toContain('echo')
   })
 
-  it('serves cached tokens synchronously without dispatching to the worker', async () => {
-    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
+  it('serves cached tokens synchronously without dispatching to the worker', () => {
+    const tokenized = recordTokenizeRequests()
     const cached = toCachedTokens([
       [
         {
@@ -70,17 +74,18 @@ describe('json/bash async token highlighting', () => {
 
     // One token was cached above; `?.` is the type-level guard alone.
     expect(container.querySelector(`.${cached[0]?.[0]?.className ?? ''}`)).not.toBeNull()
-    expect(tokenizeAsync).not.toHaveBeenCalled()
+    expect(tokenized()).toEqual([])
   })
 
   it('does not dispatch oversized JSON (over the char cap) and shows raw text', async () => {
     // JSON and Bash use the same highlight limit.
-    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
+    const tokenized = recordTokenizeRequests()
     const huge = `{"a":"${'x'.repeat(20001)}"}` // > 20000 chars
 
     const { container } = render(() => <JsonHighlightHtml code={huge} />)
+    await settleWorkerReplies()
 
-    expect(tokenizeAsync).not.toHaveBeenCalled()
+    expect(tokenized()).toEqual([])
     expect(container.querySelector('[data-shiki-token]')).toBeNull()
     expect(container.textContent).toContain('xxxxx') // raw JSON text still rendered
   })
@@ -88,32 +93,23 @@ describe('json/bash async token highlighting', () => {
   it('does not dispatch empty code (nothing to tokenize)', async () => {
     // Empty text requires no worker dispatch.
     // Size eligibility admits zero characters, so currentKey must refuse that dispatch.
-    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
+    const tokenized = recordTokenizeRequests()
 
     const { container } = render(() => <JsonHighlightHtml code="" />)
+    await settleWorkerReplies()
 
-    expect(tokenizeAsync).not.toHaveBeenCalled()
+    expect(tokenized()).toEqual([])
     expect(container.querySelector('[data-shiki-token]')).toBeNull()
   })
 
   it('does not dispatch while syntax highlighting is paused', async () => {
-    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
+    const tokenized = recordTokenizeRequests()
 
-    render(() => <JsonHighlightHtml code={'{"a":1}'} context={pausedContext} />)
+    const { container } = render(() => <JsonHighlightHtml code={'{"a":1}'} context={pausedContext} />)
+    await settleWorkerReplies()
 
-    expect(tokenizeAsync).not.toHaveBeenCalled()
-  })
-
-  it('renders raw text when the worker returns null (unknown/failed grammar)', async () => {
-    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
-    vi.mocked(tokenizeAsync).mockResolvedValue(null)
-
-    const { container } = render(() => <CommandHighlightHtml code="echo hi" />)
-
-    await waitFor(() => expect(tokenizeAsync).toHaveBeenCalledWith('bash', 'echo hi', expect.any(Function)))
-    await Promise.resolve()
+    expect(tokenized()).toEqual([])
     expect(container.querySelector('[data-shiki-token]')).toBeNull()
-    expect(container.textContent).toContain('echo hi')
   })
 })
 
@@ -125,15 +121,11 @@ describe('JsonHighlightHtml output ownership', () => {
   })
 
   it('keeps ownership on the same host when tokenized JSON arrives', async () => {
-    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
-    vi.mocked(tokenizeAsync).mockResolvedValue([
-      [
-        { content: '{"count":0}', className: 'sk-owned-result' },
-      ],
-    ])
     const { container } = render(() => <JsonHighlightHtml dataToolOutputPreview code={'{"count":0}'} />)
     const host = container.firstElementChild
-    await waitFor(() => expect(container.querySelector('[data-shiki-token]')).not.toBeNull())
+    expect(container.querySelector('[data-shiki-token]')).toBeNull()
+    await settleWorkerReplies()
+    expect(container.querySelector('[data-shiki-token]')).not.toBeNull()
     expect(container.firstElementChild).toBe(host)
     expect(host?.getAttribute('data-tool-output-preview')).toBe('')
     expect(host?.textContent).toBe('{"count":0}')

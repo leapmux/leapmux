@@ -86,4 +86,15 @@ describe('makeIdentitySession', () => {
       }
     }
   })
+
+  it('does nothing in destroy, and keeps answering', () => {
+    const session = makeIdentitySession()
+    for (const cipher of [session.send, session.receive]) {
+      cipher.destroy()
+      cipher.destroy()
+      expect(cipher.encrypt(new Uint8Array([1, 2]))).toEqual(new Uint8Array([1, 2]))
+      expect(cipher.decrypt(new Uint8Array([3]))).toEqual(new Uint8Array([3]))
+      expect(cipher.nonce()).toBe(0)
+    }
+  })
 })

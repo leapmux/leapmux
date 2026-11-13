@@ -9,6 +9,7 @@ import { ResultDivider } from '~/components/chat/resultDividerRenderers'
 import { extractChatRow, extractedRow } from '~/components/chat/rowExtraction'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '~/lib/jsonPick'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 
 // Shared render-and-probe helpers for the two shared message render paths: the
 // notification thread (standalone or consolidated) and the turn-end divider. Each
@@ -53,15 +54,20 @@ export function renderThreadElement(messages: unknown[], provider?: AgentProvide
     : null
 }
 
-/** Render a JSX element and return its trimmed text content ('' when null). */
-export function elementText(el: JSXElement | null): string {
+/**
+ * Render a JSX element and return its trimmed text content ('' when null), once
+ * every worker reply landed: a Markdown body shows nothing until its render does.
+ */
+export async function elementText(el: JSXElement | null): Promise<string> {
   if (el === null)
     return ''
-  return render(() => el).container.textContent?.trim() ?? ''
+  const { container } = render(() => el)
+  await settleWorkerReplies()
+  return container.textContent?.trim() ?? ''
 }
 
-/** Render a notification list (optionally with a provider) to trimmed text. */
-export function renderThreadText(messages: unknown[], provider?: AgentProvider): string {
+/** Render a notification list (optionally with a provider) to trimmed text (see elementText). */
+export function renderThreadText(messages: unknown[], provider?: AgentProvider): Promise<string> {
   return elementText(renderThreadElement(messages, provider))
 }
 

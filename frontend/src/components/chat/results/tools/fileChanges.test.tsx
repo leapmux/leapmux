@@ -1,6 +1,7 @@
 import type { FileEditDiff } from '../../model/fileEditDiff'
 import { render } from '@solidjs/testing-library'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { TOOL_CALL_STATUSES } from '../../model/toolCallStatus'
 import { ToolMessage } from '../ToolMessage'
@@ -28,14 +29,16 @@ function renderEdit(changes: FileEditDiff[]) {
 }
 
 describe('file change title presentation', () => {
-  it('uses one self-contained title layout for single-file and multi-file statistics', () => {
+  it('uses one self-contained title layout for single-file and multi-file statistics', async () => {
     const single = renderEdit([
       edit('/project/a.ts'),
     ])
+    await settleWorkerReplies()
     const multiple = renderEdit([
       edit('/project/a.ts'),
       edit('/project/b.ts'),
     ])
+    await settleWorkerReplies()
 
     const singleBadge = single.getByTestId('git-diff-stats')
     const multipleBadges = multiple.getAllByTestId('git-diff-stats')

@@ -16,7 +16,7 @@ import { compactControl } from '~/components/common/CompactControl.css'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { spinner } from '~/styles/animations.css'
-import { MarkdownText } from './messageRenderers'
+import { MarkdownText } from './MarkdownText'
 import { autoReview, autoReviewActions, autoReviewHeader, autoReviewHeaderDenied, controlResponseMessage, resultDivider, subagentReport, subagentReportHeader } from './messageStyles.css'
 import { AUTO_REVIEW_APPROVE_LABEL, AUTO_REVIEW_APPROVE_TOOLTIP, AUTO_REVIEW_APPROVED_LABEL } from './notificationEntries'
 
@@ -93,7 +93,7 @@ function AutoReviewBlock(props: {
         {props.block.title}
       </div>
       <Show when={props.block.rationale}>
-        {rationale => <MarkdownText text={rationale()} />}
+        {rationale => <MarkdownText text={rationale()} context={props.context} />}
       </Show>
       <Show when={approved() || (props.block.approvable && props.context?.reviews !== undefined)}>
         <div class={autoReviewActions}>
@@ -126,7 +126,8 @@ function AutoReviewBlock(props: {
  *
  * A run of consecutive `text` blocks joins into ONE comma-separated paragraph, and
  * every other block is its own element. Returns null when nothing renders. `context`
- * supplies the capabilities that an interactive block uses.
+ * supplies the capabilities that an interactive block uses, and the readiness scope
+ * and the priority of the row that each Markdown body renders in.
  */
 export function renderNotificationBlocks(blocks: readonly NotificationBlock[], context?: RowRenderContext): JSXElement {
   const elements: JSXElement[] = []
@@ -166,7 +167,7 @@ export function renderNotificationBlocks(blocks: readonly NotificationBlock[], c
             />
             {`${block.label || 'Subagent'} ${verb}`}
           </div>
-          <MarkdownText text={block.text} />
+          <MarkdownText text={block.text} context={context} />
         </div>,
       )
       continue

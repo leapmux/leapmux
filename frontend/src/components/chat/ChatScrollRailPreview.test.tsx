@@ -2,6 +2,7 @@ import type { DotCluster } from './chatRailPolicy'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { DotPreviewCard } from './ChatScrollRailPreview'
 
 // The card's pointer, wheel and selection behaviour is driven end-to-end through the real rail in
@@ -60,7 +61,7 @@ describe('DotPreviewCard height reporting', () => {
 })
 
 describe('DotPreviewCard rendering', () => {
-  it('renders the preview for the dot it was handed, resolved by that dot\'s seq', () => {
+  it('renders the preview for the dot it was handed, resolved by that dot\'s seq', async () => {
     // The card takes `(seq) => text` and the whole cluster, rather than a thunk closed over one
     // dot: it must ask for ITS dot's preview, not for whichever dot the closure captured.
     const previewFor = vi.fn((seq: bigint) => (seq === 7n
@@ -73,6 +74,7 @@ describe('DotPreviewCard rendering', () => {
       })}
       />
     ))
+    await settleWorkerReplies()
     expect(previewFor).toHaveBeenCalledWith(7n)
     expect(getByTestId('chat-scroll-rail-preview')).toHaveTextContent('the seventh message')
   })

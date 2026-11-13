@@ -1,6 +1,7 @@
 import type { SyntaxThemePair } from './syntaxThemes'
 import type { InternedTokenLines } from './tokenCache'
-import { createLazyOnigurumaHighlighter, resolveBundledLang } from './shikiLazyHighlighter'
+import { resolveBundledLang } from './bundledLanguage'
+import { createLazyOnigurumaHighlighter } from './shikiLazyHighlighter'
 import { dualThemeTokenOptions, setSyntaxThemePair } from './shikiThemes'
 import { internTokenLines, mergeLineTokens } from './tokenCache'
 
@@ -33,41 +34,32 @@ export interface TokenizeResponse {
 // grammars up front and can tokenize any of Shiki's ~332 bundled languages.
 const hl = createLazyOnigurumaHighlighter()
 
-globalThis.onmessage = async (e: MessageEvent<TokenizeRequest>) => {
-  const msg = e.data
-  if (msg.type !== 'tokenize')
-    return
+/**
+ * Tokenize one request and return its reply. An unknown language, a grammar that
+ * fails to load and any error answer null tokens, so that the client shows plain
+ * text.
+ *
+ * It does not adopt the request's pair as this isolate's pair: the message
+ * handler below does that first (see there). The unit tests run this function on
+ * the main thread through a stand-in Worker, where that step would change the
+ * pair of the page.
+ */
+export async function answerTokenizeRequest(msg: TokenizeRequest): Promise<TokenizeResponse> {
   // Single null-tokens responder (plain-text fallback), so the unknown-lang and
   // error paths can't drift in shape.
-  const respondPlain = (): void => {
-    const response: TokenizeResponse = { type: 'tokenize-result', id: msg.id, tokens: null }
-    globalThis.postMessage(response)
-  }
+  const plain: TokenizeResponse = { type: 'tokenize-result', id: msg.id, tokens: null }
   try {
-    // Adopt the request's pair BEFORE the first `ensureThemes`, which awaits
-    // `ensureReady` inside. The lazy highlighter's first-time init registers
-    // whatever pair this isolate currently names, and nothing else sets it
-    // here -- so without this line every fresh worker fetched and parsed the
-    // DEFAULT pair's two TextMate documents that it would then never tokenize
-    // with, and awaited that import before the first block could highlight.
-    // `~/lib/markdownWorker` adopts the pair in the same order and for the
-    // same reason.
-    //
-    // The module state decides the INIT registration and nothing else. The
-    // pair itself travels to `codeToTokens` as an ARGUMENT below, so a second
-    // message arriving while this one is suspended on a theme or grammar
+    // The pair travels to `ensureThemes` and `codeToTokens` as an ARGUMENT, so a
+    // second message arriving while this one is suspended on a theme or grammar
     // import cannot decide this request's colours.
-    setSyntaxThemePair(msg.syntax)
     await hl.ensureThemes(msg.syntax)
     const lang = resolveBundledLang(msg.lang)
     // Unknown id (or a built-in like `ansi`, which has no bundled grammar and is
     // tokenized on the main thread): respond null so the renderer shows plain text.
     // A transient load 'failed' also responds null; the client never caches a null
     // result, so a later re-mount re-dispatches and recovers (its own retry policy).
-    if (!lang || (await hl.ensureLanguage(lang)) !== 'loaded') {
-      respondPlain()
-      return
-    }
+    if (!lang || (await hl.ensureLanguage(lang)) !== 'loaded')
+      return plain
     const result = hl.getHighlighter()!.codeToTokens(msg.code, {
       lang,
       ...dualThemeTokenOptions(msg.syntax),
@@ -76,10 +68,28 @@ globalThis.onmessage = async (e: MessageEvent<TokenizeRequest>) => {
     // only applies these merges on its codeToHast path, so the raw codeToTokens
     // output carries one extra span per indented line (see mergeLineTokens).
     const tokens: InternedTokenLines = internTokenLines(mergeLineTokens(result.tokens))
-    const response: TokenizeResponse = { type: 'tokenize-result', id: msg.id, tokens }
-    globalThis.postMessage(response)
+    return { type: 'tokenize-result', id: msg.id, tokens }
   }
   catch {
-    respondPlain()
+    return plain
   }
+}
+
+globalThis.onmessage = async (e: MessageEvent<TokenizeRequest>) => {
+  const msg = e.data
+  if (msg.type !== 'tokenize')
+    return
+  // Adopt the request's pair BEFORE the first `ensureThemes`, which awaits
+  // `ensureReady` inside. The lazy highlighter's first-time init registers
+  // whatever pair this isolate currently names, and nothing else sets it
+  // here -- so without this line every fresh worker fetched and parsed the
+  // DEFAULT pair's two TextMate documents that it would then never tokenize
+  // with, and awaited that import before the first block could highlight.
+  // `~/lib/markdownWorker` adopts the pair in the same order and for the
+  // same reason.
+  //
+  // The module state decides the INIT registration and nothing else (see
+  // answerTokenizeRequest).
+  setSyntaxThemePair(msg.syntax)
+  globalThis.postMessage(await answerTokenizeRequest(msg))
 }

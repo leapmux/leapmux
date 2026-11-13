@@ -83,25 +83,55 @@ export interface DirectoryTreeStateJSON {
   truncatedDirs?: Record<string, number>
 }
 
+/** The part of the tree's state that a payload stores and a restore returns. */
+export interface PersistedTreeState {
+  expandedPaths: Record<string, boolean>
+  childrenCache: Record<string, TreeNodeData[]>
+  truncatedDirs: Record<string, number>
+}
+
 /**
  * The stored shape, as an OBJECT.
  *
  * Not a string: `sessionStorageSet` serializes whatever it is handed, so a
  * pre-stringified payload is stringified a second time -- once to build it,
- * once to escape every quotation mark of it inside the wrapper. This effect
- * runs on every store write, and a `/`-rooted tree caches many more directory
- * listings than a home-rooted one did.
+ * once to escape every quotation mark of it inside the wrapper. A `/`-rooted
+ * tree caches many more directory listings than a home-rooted one did.
+ *
+ * It keeps the listings of two kinds of directory only:
+ * - each expanded directory
+ * - the reveal target, which a reveal lists without expanding it. A restore
+ *   without that listing would fetch it again.
+ *
+ * The cache never drops a listing, so a payload with every listing grows with
+ * each directory the user ever opened, and so does the tree that a restore
+ * mounts. A collapsed directory lists again when it opens.
  */
-export function serializeState(
-  expandedPaths: Record<string, boolean>,
-  childrenCache: Record<string, TreeNodeData[]>,
-  truncatedDirs: Record<string, number>,
-): DirectoryTreeStateJSON {
+export function serializeState(state: PersistedTreeState, revealTarget: string, flavor: PathFlavor): DirectoryTreeStateJSON {
+  const { expandedPaths, childrenCache, truncatedDirs } = state
+  const listedPaths = Object.keys(expandedPaths)
+  if (revealTarget) {
+    // `samePath`, not a key lookup: the cache spells a path as the worker
+    // lists it, and a typed target can use another separator or case.
+    const targetKey = Object.keys(childrenCache).find(path => samePath(path, revealTarget, flavor))
+    if (targetKey !== undefined)
+      listedPaths.push(targetKey)
+  }
+  const keptListings: Record<string, TreeNodeData[]> = {}
+  const keptTruncation: Record<string, number> = {}
+  for (const path of listedPaths) {
+    const entries = childrenCache[path]
+    if (entries !== undefined)
+      keptListings[path] = entries
+    const total = truncatedDirs[path]
+    if (total !== undefined)
+      keptTruncation[path] = total
+  }
   return {
     v: DIRECTORY_TREE_STATE_VERSION,
     expandedPaths,
-    childrenCache,
-    truncatedDirs,
+    childrenCache: keptListings,
+    truncatedDirs: keptTruncation,
   }
 }
 
@@ -113,7 +143,7 @@ export function serializeState(
  * in the payload: a partial restore would have to prove, for each surviving
  * key, that the old shape still reads correctly under the new code.
  */
-export function deserializeState(json: DirectoryTreeStateJSON | undefined): { expandedPaths: Record<string, boolean>, childrenCache: Record<string, TreeNodeData[]>, truncatedDirs: Record<string, number> } | null {
+export function deserializeState(json: DirectoryTreeStateJSON | undefined): PersistedTreeState | null {
   try {
     if (!json || typeof json !== 'object' || json.v !== DIRECTORY_TREE_STATE_VERSION)
       return null

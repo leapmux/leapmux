@@ -2,23 +2,16 @@ import type { MessageCategory } from '../messageClassifier'
 import type { MessageContentRenderContext } from '../messageContentRenderer'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal, untrack } from 'solid-js'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { pngBase64 } from '~/test-support/pngFixture'
 import { imageActionsFrom } from '../renderContext'
 import { toolOutcomeLabel } from '../results/toolOutcomeLabel'
 import { toolResultCollapsed } from '../toolStyles.css'
 import './claude/plugin'
 import './codex/plugin'
-import './testMocks'
-
-vi.mock('~/lib/shikiWorkerClient', () => ({
-  tokenizeAsync: async (_lang: string, code: string) => code.split('\n').map(() => []),
-}))
-
-vi.mock('~/lib/tokenCache', () => ({
-  getCachedTokens: () => null,
-}))
+import '~/components/chat/providers'
 
 const { renderMessageContent } = await import('../messageContentRenderer')
 
@@ -65,13 +58,14 @@ describe('claude MCP tool_result rendering', () => {
     expect(container.textContent).toContain('Resource failure details')
   })
 
-  it('renders text content blocks via the shared MCP body', () => {
+  it('renders text content blocks via the shared MCP body', async () => {
     const parsed = makeMcpToolResult([
       { type: 'text', text: '## Search Result\n\nFound 3 matches.' },
     ])
     const { container } = renderClaudeToolResult(parsed, {
       spanType: 'mcp__claude_ai_Tavily__tavily_search',
     })
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('Search Result')
     expect(text).toContain('Found 3 matches.')
@@ -88,11 +82,12 @@ describe('claude MCP tool_result rendering', () => {
     expect(text).toContain('Authentication failed')
   })
 
-  it('falls back to plain text content when result is a string', () => {
+  it('falls back to plain text content when result is a string', async () => {
     const parsed = makeMcpToolResult('Plain string result')
     const { container } = renderClaudeToolResult(parsed, {
       spanType: 'mcp__github__list_issues',
     })
+    await settleWorkerReplies()
     expect(container.textContent ?? '').toContain('Plain string result')
   })
 
@@ -251,7 +246,7 @@ describe('claude MCP tool_result rendering', () => {
 // ---------------------------------------------------------------------------
 
 describe('codex mcpToolCall rendering', () => {
-  it('collapses completed output when the user selects Collapse', () => {
+  it('collapses completed output when the user selects Collapse', async () => {
     const [expanded, setExpanded] = createSignal(true)
     const { container, getByRole } = renderCodexItem({
       type: 'mcpToolCall',
@@ -267,13 +262,14 @@ describe('codex mcpToolCall rendering', () => {
       getMessageUiState: () => expanded(),
       setMessageUiState: (_key, value) => setExpanded(value),
     })
+    await settleWorkerReplies()
     expect(container.querySelector(`.${toolResultCollapsed}`)).toBeNull()
     fireEvent.click(getByRole('button', { name: 'Collapse' }))
     expect(untrack(expanded)).toBe(false)
     expect(container.querySelector(`.${toolResultCollapsed}`)).not.toBeNull()
   })
 
-  it('renders server/tool header and result content', () => {
+  it('renders server/tool header and result content', async () => {
     const { container } = renderCodexItem({
       type: 'mcpToolCall',
       server: 'tavily',
@@ -287,6 +283,7 @@ describe('codex mcpToolCall rendering', () => {
         structuredContent: null,
       },
     })
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('tavily / tavily_search')
     expect(text).toContain('Mcp tavily search body')
@@ -331,7 +328,7 @@ describe('codex mcpToolCall rendering', () => {
 })
 
 describe('codex dynamicToolCall rendering', () => {
-  it('renders namespace as the server label and inputText content', () => {
+  it('renders namespace as the server label and inputText content', async () => {
     const { container } = renderCodexItem({
       type: 'dynamicToolCall',
       namespace: 'openai',
@@ -342,6 +339,7 @@ describe('codex dynamicToolCall rendering', () => {
         { type: 'inputText', text: 'Page title: Example' },
       ],
     })
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('openai / browser')
     expect(text).toContain('Page title: Example')

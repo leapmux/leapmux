@@ -27,8 +27,13 @@ const frontendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..'
 /** A file that no scoped block matches. It carries antfu's options alone. */
 const BASELINE_FILE = 'vitest.config.ts'
 
-/** One file inside each tree that the scoped blocks match. */
-const SCOPED_FILES = ['src/app.tsx', 'tests/e2e/helpers/mail.ts']
+/**
+ * One file inside each tree that a scoped `no-restricted-syntax` block matches: the
+ * block for `src/` and `tests/`, the block that bans JSX in a provider plugin, and the
+ * block for the E2E files. The provider probe needs no file on disk, because the
+ * resolved configuration reads the path alone.
+ */
+const SCOPED_FILES = ['src/app.tsx', 'src/components/chat/providers/auditProbe.tsx', 'tests/e2e/helpers/mail.ts']
 
 /**
  * One file inside each chat tree the blocks in `eslint.config.ts` scope, with a
@@ -43,12 +48,17 @@ interface LintSample {
 }
 
 /**
- * Imports across a layer boundary. Each probe imports a leaf module of the other layer,
- * a module with no imports of its own. `chat-pipeline/layer-imports` and the import
- * patterns read the path alone, so any module of the layer proves the rule. The parser
- * builds the type information of each probe edit from every module that the probe
- * imports. A probe of `providers/registry` thus put the whole provider tree into each
- * update, which cost about ten seconds of the setup.
+ * Imports across a layer boundary. Each probe imports a small module of the other layer.
+ * The layer probes take a leaf module, a module with no imports of its own.
+ * `chat-pipeline/layer-imports` and the import patterns read the path alone, so any
+ * module of the layer proves the rule. The parser builds the type information of each
+ * probe edit from every module that the probe imports. A probe of `providers/registry`
+ * thus put the whole provider tree into each update, which cost about ten seconds of the
+ * setup.
+ *
+ * The model may import three modules of `../diff/`, and no other: `diffBuilder`,
+ * `diffTypes` and `unifiedDiffParser`. No module of `../diff/` outside those three is a
+ * leaf, so its probe takes `diffWorker`, which imports only sibling diff modules.
  */
 const RESTRICTED_IMPORT_SAMPLES: LintSample[] = [
   { label: 'model static type import', file: 'src/components/chat/model/auditProbe.ts', source: 'import type { TOOL_FILE_PATH_KEYS } from \'../providers/toolInputKeys\'' },
@@ -59,6 +69,7 @@ const RESTRICTED_IMPORT_SAMPLES: LintSample[] = [
   { label: 'model require call', file: 'src/components/chat/model/auditProbe.ts', source: 'require(\'../results/collapse\')' },
   { label: 'model import-equals declaration', file: 'src/components/chat/model/auditProbe.ts', source: 'import collapse = require(\'../results/collapse\')' },
   { label: 'model import type', file: 'src/components/chat/model/auditProbe.ts', source: 'type ProviderModule = typeof import(\'../providers/toolInputKeys\')' },
+  { label: 'model import of a diff module that is not pure', file: 'src/components/chat/model/auditProbe.ts', source: 'import type { DiffRequest } from \'../diff/diffWorker\'' },
   { label: 'provider side-effect import', file: 'src/components/chat/providers/auditProbe.ts', source: 'import \'../results/collapse\'' },
   { label: 'provider dynamic import', file: 'src/components/chat/providers/auditProbe.ts', source: 'void import(\'../results/collapse\')' },
   { label: 'provider require call', file: 'src/components/chat/providers/auditProbe.ts', source: 'require(\'../results/collapse\')' },
@@ -107,7 +118,24 @@ const WORKING_DIR_BRAND_SAMPLES: LintSample[] = [
   { label: 'unit-test brand by a relative path in a helper', file: 'tests/e2e/helpers/auditProbe.ts', source: 'import { unitWorkingDir } from \'../../../src/test-support/unitWorkingDir\'\nvoid unitWorkingDir' },
 ]
 
+/**
+ * A regex literal under the `m` flag that opens with `^\s*` or `^\s+`. `\s` also matches a
+ * line terminator, so the scan takes time quadratic in a run of blank lines, and the base
+ * selectors refuse it in `src/` and `tests/`. `afterLineIndent` from `~/lib/regexp` is the
+ * linear form.
+ */
+const LINE_START_WHITESPACE_SAMPLES: LintSample[] = [
+  { label: '^\\s* under the m flag in src', file: 'src/components/chat/auditProbe.ts', source: 'void /^\\s*x/m' },
+  { label: '^\\s+ under the g and m flags in an E2E helper', file: 'tests/e2e/helpers/auditProbe.ts', source: 'void /^\\s+x/gm' },
+  { label: '^\\s* inside a leading non-capturing group', file: 'tests/e2e/auditProbe.spec.ts', source: 'void /^(?:\\s*[-+*]\\s|\\d)/m' },
+]
+
 const ALLOWED_ARCHITECTURE_SAMPLES: LintSample[] = [
+  // A line-start pattern that cannot cross a line terminator, or that has no `m` flag,
+  // so that `^` matches at the start of the text alone.
+  { label: '^\\s* without the m flag', file: 'src/components/chat/auditProbe.ts', source: 'void /^\\s*x/' },
+  { label: '^ * under the m flag', file: 'src/components/chat/auditProbe.ts', source: 'void /^ *x/m' },
+  { label: 'line indentation class under the m flag', file: 'tests/e2e/helpers/auditProbe.ts', source: 'void /^[^\\S\\n\\r\\u2028\\u2029]*x/m' },
   // The module of the brand makes it, and a unit test opens no agent.
   { label: 'working directory brand in its own module', file: 'tests/e2e/helpers/providerWorkingDir.ts', source: 'const dir = \'/run\' as ProviderWorkingDir\nvoid dir' },
   { label: 'working directory assertion in a unit test', file: 'tests/e2e/helpers/auditProbe.test.ts', source: 'const dir = \'/run\' as ProviderWorkingDir\nvoid dir' },
@@ -250,6 +278,9 @@ const ARCHITECTURE_RULE_IDS = new Set([
 /** The DOM-`title` ban, which must survive beside the base selectors. */
 const TITLE_SELECTOR = 'JSXOpeningElement[name.type="JSXIdentifier"][name.name=/^[a-z]/] > JSXAttribute[name.name="title"]'
 
+/** The ban on `^\s*` and `^\s+` under the `m` flag, which must survive beside the base selectors. */
+const LINE_START_WHITESPACE_SELECTOR = String.raw`Literal[regex.flags=/m/][regex.pattern=/^\^(\(\?:)?\\s[*+]/]`
+
 /**
  * Resolve `no-restricted-syntax` for each file, and lint each sample, in one
  * SUBPROCESS, so the configuration loads once for every probe.
@@ -348,6 +379,7 @@ const SAMPLES: LintSample[] = [
   ...CONTRACT_TABLE_SAMPLES,
   ...REGISTRATION_SAMPLES,
   ...WORKING_DIR_BRAND_SAMPLES,
+  ...LINE_START_WHITESPACE_SAMPLES,
   ...ALLOWED_ARCHITECTURE_SAMPLES,
 ]
 
@@ -360,7 +392,7 @@ describe('no-restricted-syntax keeps the base selectors', () => {
   // The limit is explicit because the default one does not fit the work.
   //
   // This hook boots one Node subprocess. The subprocess loads `eslint.config.ts`
-  // through jiti, resolves three files, and lints each probe with the rules
+  // through jiti, resolves four files, and lints each probe with the rules
   // that the assertions read. Two costs remain, and neither can shrink:
   //
   // - The load of the real configuration, which is the subject of the guard.
@@ -421,6 +453,16 @@ describe('no-restricted-syntax keeps the base selectors', () => {
     ).toBe(true)
   })
 
+  // The lint samples below prove the ban in two of the scoped trees. This check reads
+  // every scoped tree, the provider plugins included.
+  it.each(SCOPED_FILES)('still bans a line-start whitespace run under the m flag for %s', (file) => {
+    expect(
+      selectorsFor(resolved[file]),
+      `${file} must keep the ban on \`^\\s*\` under the m flag. Without it such a pattern `
+      + 'takes time quadratic in a run of blank lines.',
+    ).toContain(LINE_START_WHITESPACE_SELECTOR)
+  })
+
   it.each(RESTRICTED_IMPORT_SAMPLES)('rejects every layer import form: $label', ({ label }) => {
     expect(ruleIds[label] ?? []).toContainEqual(expect.stringMatching(/^(?:chat-pipeline\/layer-imports|no-restricted-syntax|ts\/no-restricted-imports)$/))
   })
@@ -452,6 +494,10 @@ describe('no-restricted-syntax keeps the base selectors', () => {
   })
 
   it.each(WORKING_DIR_BRAND_SAMPLES)('rejects a working directory of a native agent that is not made by its rule: $label', ({ label }) => {
+    expect(ruleIds[label] ?? []).toContain('no-restricted-syntax')
+  })
+
+  it.each(LINE_START_WHITESPACE_SAMPLES)('rejects a line-start whitespace run under the m flag: $label', ({ label }) => {
     expect(ruleIds[label] ?? []).toContain('no-restricted-syntax')
   })
 

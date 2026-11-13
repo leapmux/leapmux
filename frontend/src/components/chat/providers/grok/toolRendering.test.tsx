@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { providerToolCall } from '~/test-support/toolCallFixture'
 import { acpTextContent, renderACPToolPair } from '../acp/testUtils'
-import { input } from '../testUtils'
 
-import '../testMocks'
+import { input } from '../testUtils'
+import '~/components/chat/providers'
 import './plugin'
 
 /** Grok's first `tool_call`: the name as the title, and its identity in `_meta`. */
@@ -123,7 +124,7 @@ describe('grok tool rendering', () => {
     expect(call.result.matchCount).toBe(1)
   })
 
-  it('draws a finished subagent with its report and its id', () => {
+  it('draws a finished subagent with its report and its id', async () => {
     const { container } = renderACPToolPair(AgentProvider.GROK_BUILD, opening('spawn_subagent', { prompt: 'List the files', description: 'List files' }), {
       kind: 'other',
       title: 'List files',
@@ -138,6 +139,7 @@ describe('grok tool rendering', () => {
         duration_ms: 1500,
       },
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Agent "List files" completed')
     expect(container.textContent).toContain('sub-1')
     expect(container.querySelector('strong')?.textContent).toBe('Listed')

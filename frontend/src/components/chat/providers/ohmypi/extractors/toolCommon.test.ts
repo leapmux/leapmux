@@ -44,6 +44,25 @@ describe('ohMyPiExtractTool', () => {
     expect(ohMyPiExtractTool(frame)?.isError).toBe(true)
   })
 
+  it('answers null for a frame with no tool name, and reads that frame once', () => {
+    let idReads = 0
+    const frame = {
+      type: 'tool_execution_end',
+      get toolCallId(): string {
+        idReads++
+        return 'c'
+      },
+    }
+    expect(ohMyPiExtractTool(frame)).toBeNull()
+    expect(ohMyPiExtractTool(frame)).toBeNull()
+    expect(idReads).toBe(1)
+  })
+
+  it('answers null for an absent frame', () => {
+    expect(ohMyPiExtractTool(null)).toBeNull()
+    expect(ohMyPiExtractTool(undefined)).toBeNull()
+  })
+
   it('refuses a frame with no call id or no tool name', () => {
     expect(ohMyPiExtractTool({ toolName: 'bash' })).toBeNull()
     expect(ohMyPiExtractTool({ toolCallId: 'c' })).toBeNull()

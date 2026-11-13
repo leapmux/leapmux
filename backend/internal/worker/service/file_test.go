@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -599,8 +600,9 @@ func repeatedByte(n int, b byte) []byte {
 // limit comes straight off the wire and is used as make([]byte, limit),
 // so unclamped it lets one request choose the worker's allocation size.
 // A value above the producer ceiling is also unserviceable on its own
-// terms: the response it builds is one the channel refuses, and on the
-// unary path that refusal reaches the caller as nothing at all.
+// terms: the response it builds is one the channel refuses, and the
+// caller then gets a ResourceExhausted error (sendInnerResponse) instead
+// of any content.
 //
 // The file is sparse (Truncate, not written bytes) so the boundary is
 // exercised without materialising it, and meta_only_if_truncated is the
@@ -638,6 +640,59 @@ func TestReadFile_ClampsAnOversizeLimit(t *testing.T) {
 		"a limit above the producer ceiling must be clamped, which makes this file truncated")
 }
 
+// readLargeFile writes a file of twice the default read limit, and reads it
+// with one ReadFile of limit on a service that setupTestService builds with
+// opts. It answers the response and the size of the file.
+func readLargeFile(t *testing.T, limit int64, opts ...setupOption) (*leapmuxv1.ReadFileResponse, int) {
+	t.Helper()
+	svc, d, w := setupTestService(t, opts...)
+	path := filepath.Join(svc.HomeDir, "large.bin")
+	totalSize := 2 * contracts.FileReadLimitBytes
+	require.NoError(t, os.WriteFile(path, repeatedByte(totalSize, 'a'), 0o644))
+
+	dispatch(d, leapmuxv1connect.WorkerFileServiceReadFileProcedure, &leapmuxv1.ReadFileRequest{
+		Path:  path,
+		Limit: limit,
+	}, w)
+
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ReadFileResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	return &resp, totalSize
+}
+
+// A limit of zero or less reads the default. total_size states the size of the
+// whole file, so a caller reads the rest with offset.
+func TestReadFile_ZeroLimitReadsTheDefault(t *testing.T) {
+	t.Parallel()
+
+	for _, limit := range []int64{0, -1} {
+		t.Run(fmt.Sprintf("limit %d", limit), func(t *testing.T) {
+			t.Parallel()
+
+			resp, totalSize := readLargeFile(t, limit)
+
+			assert.EqualValues(t, totalSize, resp.GetTotalSize())
+			// Compared as numbers, so a failure does not print the content.
+			assert.Equal(t, contracts.FileReadLimitBytes, len(resp.GetContent()))
+		})
+	}
+}
+
+// The budget also caps the default, on a worker whose max_message_size is
+// below it.
+func TestReadFile_ZeroLimitReadsAtMostThePayloadBudget(t *testing.T) {
+	t.Parallel()
+
+	const budget = contracts.FileReadLimitBytes / 4
+	resp, totalSize := readLargeFile(t, 0, withMaxMessageSize(budget))
+
+	assert.EqualValues(t, totalSize, resp.GetTotalSize())
+	// Compared as numbers, so a failure does not print the content.
+	assert.Equal(t, budget, len(resp.GetContent()))
+}
+
 func TestPayloadBudget_UsesConfiguredMaxMessageSize(t *testing.T) {
 	t.Parallel()
 
@@ -660,6 +715,38 @@ func TestPayloadBudget_UsesNegotiatedChannelBudgetWhenTighter(t *testing.T) {
 		"worker knob must win when the channel budget is higher")
 	assert.Equal(t, int64(4<<20), svc.payloadBudget(&budgetWriter{budget: 0}),
 		"zero budget (non-channel writer) must fall back to the worker knob")
+}
+
+func TestReadLimit(t *testing.T) {
+	t.Parallel()
+
+	const largeBudget = 4 * contracts.FileReadLimitBytes
+	const smallBudget = contracts.FileReadLimitBytes / 4
+	for _, tc := range []struct {
+		name      string
+		budget    int
+		requested int64
+		want      int64
+	}{
+		{name: "zero reads the default", budget: largeBudget, requested: 0, want: contracts.FileReadLimitBytes},
+		{name: "a negative limit reads the default", budget: largeBudget, requested: -1, want: contracts.FileReadLimitBytes},
+		{name: "a limit below the budget stays", budget: largeBudget, requested: 1, want: 1},
+		{name: "a limit at the budget stays", budget: largeBudget, requested: largeBudget, want: largeBudget},
+		{name: "a limit above the budget is cut to it", budget: largeBudget, requested: largeBudget + 1, want: largeBudget},
+		{name: "the largest limit is cut to the budget", budget: largeBudget, requested: math.MaxInt64, want: largeBudget},
+		{name: "a budget below the default cuts the default", budget: smallBudget, requested: 0, want: smallBudget},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			svc := &Service{Config: Config{MaxMessageSize: tc.budget}}
+			assert.Equal(t, tc.want, svc.readLimit(tc.requested, nil))
+		})
+	}
+
+	// The budget of the channel caps the read too, when it is the tighter one.
+	svc := &Service{Config: Config{MaxMessageSize: largeBudget}}
+	assert.Equal(t, int64(smallBudget), svc.readLimit(0, &budgetWriter{budget: smallBudget}))
 }
 
 type budgetWriter struct {

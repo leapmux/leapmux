@@ -1,19 +1,24 @@
 import type { StructuredPatchHunk } from '../diff'
 import type { FileEditBase, FileEditContent, FileEditDiff } from '../model/fileEditDiff'
+import type { RenderReadinessScope } from '../renderReadiness'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
-import { fileEditContent, fileEditDiffFromHunks, fileEditDiffFromWholeFile, fileEditDiffHunks, fileEditHasDiff, normalizeStructuredPatchHunks, pickFileEditDiff } from '../model/fileEditDiff'
-import { FileEditDiffBody } from './fileEditDiff'
+import { createMemo, createRoot } from 'solid-js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { recordWorkerRequests, settleWorkerReplies } from '~/test-support/fakeWorker'
+import { fileEditDrawnHunks } from '~/test-support/fileEditHunks'
+import { holdComputedDiffs, requestedDiffInputs, resetHeldComputedDiffs } from '~/test-support/heldComputedDiffs'
+import { LINE_DIFF_MAX_EDITS, replacedWholeHunks } from '../diff/diffCompute'
+import { computeDiff } from '../diff/diffSearch'
+import { diffAddedInline, diffRemovedInline } from '../diff/diffStyles.css'
+import { fileEditContent, fileEditDiffFromHunks, fileEditDiffFromWholeFile, fileEditDiffInput, fileEditHasDiff, normalizeStructuredPatchHunks, pickFileEditDiff } from '../model/fileEditDiff'
+import { createRenderReadinessScope } from '../renderReadiness'
+import { fileEditCopyFinal, fileEditCopyHunks, FileEditDiffBody, FileEditDiffTitle } from './fileEditDiff'
 
-const tokenizeAsyncMock = vi.hoisted(() => vi.fn(async (_lang: string, code: string) =>
-  code.split('\n').map(line => [
-    { content: line, htmlStyle: {} },
-  ]),
-))
+vi.mock('~/components/chat/diff/diffWorkerClient', async () => (await import('~/test-support/heldComputedDiffs')).heldDiffWorkerClient())
 
-vi.mock('~/lib/shikiWorkerClient', () => ({
-  tokenizeAsync: tokenizeAsyncMock,
-}))
+afterEach(() => {
+  resetHeldComputedDiffs()
+})
 
 const PATCH: StructuredPatchHunk[] = [
   {
@@ -44,7 +49,7 @@ function source(over: Partial<FileEditBase> & Partial<FileEditContent> = {}): Fi
 }
 
 describe('fileEditContent', () => {
-  // The PATCH wins when it carries hunks, because that is what `fileEditDiffHunks`
+  // The PATCH wins when it carries hunks, because that is what `fileEditDiffInput`
   // draws -- a source that kept the sides beside it stated a second answer nothing
   // would ever read. Claude's tool_use_result is the producer that holds both.
   it('answers the patch when it carries hunks, and drops the sides', () => {
@@ -69,7 +74,7 @@ describe('fileEditContent', () => {
       filePath: 'a.ts',
       ...fileEditContent(null, 'old', 'new'),
     }
-    expect(fileEditDiffHunks(patched)).toEqual(PATCH)
+    expect(fileEditDrawnHunks(patched)).toEqual(PATCH)
     expect(fileEditHasDiff(patched)).toBe(true)
     expect(fileEditHasDiff(sided)).toBe(true)
   })
@@ -121,7 +126,7 @@ describe('fileEditHasDiff', () => {
   it('renders a deletion when the replacement is empty', () => {
     const deletion = source({ oldStr: 'gone\n', newStr: '' })
     expect(fileEditHasDiff(deletion)).toBe(true)
-    expect(fileEditDiffHunks(deletion)).toEqual([
+    expect(fileEditDrawnHunks(deletion)).toEqual([
       {
         oldStart: 1,
         oldLines: 1,
@@ -279,9 +284,9 @@ describe('fileEditDiffFromWholeFile', () => {
     expect(fileEditHasDiff(fileEditDiffFromWholeFile('/x', 'a', 'add'))).toBe(true)
   })
 
-  it('produces an object that fileEditDiffHunks renders via the string-diff path', () => {
-    const hunks = fileEditDiffHunks(fileEditDiffFromWholeFile('/x', 'one\ntwo', 'add'))
-    // rawDiffToHunks turns "" → "one\ntwo" into a single hunk with the new lines.
+  it('produces an object that the diff worker diffs via the string-diff path', () => {
+    const hunks = fileEditDrawnHunks(fileEditDiffFromWholeFile('/x', 'one\ntwo', 'add'))
+    // computeDiff turns "" → "one\ntwo" into a single hunk with the new lines.
     expect(hunks.length).toBeGreaterThan(0)
   })
 })
@@ -355,7 +360,7 @@ describe('pickFileEditDiff', () => {
 
 describe('FileEditDiffBody', () => {
   it('forwards premeasure context so diff tokenization is skipped', async () => {
-    tokenizeAsyncMock.mockClear()
+    const tokenizeRequests = recordWorkerRequests('lib/shikiWorker.ts')
     const originalFile = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join('\n')
 
     render(() => (
@@ -381,9 +386,258 @@ describe('FileEditDiffBody', () => {
     ))
 
     fireEvent.click(screen.getByText('9 lines hidden'))
+    await settleWorkerReplies()
+
+    expect(screen.getByText('line 1')).toBeInTheDocument()
+    expect(tokenizeRequests).toEqual([])
+  })
+})
+
+describe('FileEditDiffBody while the diff worker computes', () => {
+  const sides = () => source({ oldStr: 'a\nb\nc\n', newStr: 'a\nB\nc\n' })
+
+  it('draws a skeleton of its own outside a chat row, then the diff', async () => {
+    holdComputedDiffs(true)
+    render(() => (
+      <FileEditDiffBody
+        source={sides()}
+        diff={{
+          view: () => 'unified',
+        }}
+      />
+    ))
+
+    expect(screen.getByTestId('diff-pending')).toBeInTheDocument()
+    expect(screen.queryByText('B')).not.toBeInTheDocument()
+
+    holdComputedDiffs(false)
+    await settleWorkerReplies()
+
+    expect(screen.queryByTestId('diff-pending')).not.toBeInTheDocument()
+    expect(screen.getByText('B')).toBeInTheDocument()
+  })
+
+  it('holds its chat row through the readiness scope, and draws no skeleton of its own', async () => {
+    holdComputedDiffs(true)
+    let scope: RenderReadinessScope | undefined
+    render(() => {
+      scope = createRenderReadinessScope()
+      return (
+        <FileEditDiffBody
+          source={sides()}
+          diff={{
+            view: () => 'unified',
+          }}
+          context={{ readiness: scope }}
+        />
+      )
+    })
+
+    expect(scope?.pending()).toBe(true)
+    expect(screen.queryByTestId('diff-pending')).not.toBeInTheDocument()
+
+    holdComputedDiffs(false)
+    await settleWorkerReplies()
+
+    expect(scope?.pending()).toBe(false)
+    expect(screen.getByText('B')).toBeInTheDocument()
+  })
+
+  // The word highlights set only a background, so the row keeps its height when
+  // they land, and it need not wait for them.
+  describe('of a patch', () => {
+    const patch = () => source({
+      structuredPatch: [
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          lines: ['-let first = 1', '+let second = 1'],
+        },
+      ],
+    })
+
+    /** The highlighted words of each drawn line of the given kind. */
+    function highlightedWords(container: HTMLElement, inlineClass: string): Array<string | null> {
+      return [
+        ...container.querySelectorAll(`.${inlineClass}`),
+      ].map(span => span.textContent)
+    }
+
+    it('draws its lines at once, holds no chat row, and adds the word highlights when the diff lands', async () => {
+      holdComputedDiffs(true)
+      const change = patch()
+      let scope: RenderReadinessScope | undefined
+      const { container } = render(() => {
+        scope = createRenderReadinessScope()
+        return (
+          <FileEditDiffBody
+            source={change}
+            diff={{
+              view: () => 'unified',
+            }}
+            context={{ readiness: scope }}
+          />
+        )
+      })
+
+      expect(scope?.pending()).toBe(false)
+      expect(container.querySelector('[data-file-diff]')?.textContent).toContain('let first = 1')
+      expect(container.querySelector('[data-file-diff]')?.textContent).toContain('let second = 1')
+      expect(highlightedWords(container, diffRemovedInline)).toEqual([])
+      expect(requestedDiffInputs()).toContain(fileEditDiffInput(change))
+
+      holdComputedDiffs(false)
+      await settleWorkerReplies()
+
+      expect(highlightedWords(container, diffRemovedInline)).toEqual(['first'])
+      expect(highlightedWords(container, diffAddedInline)).toEqual(['second'])
+      expect(scope?.pending()).toBe(false)
+    })
+
+    it('draws no skeleton of its own outside a chat row while the diff worker computes', () => {
+      holdComputedDiffs(true)
+      const { container } = render(() => (
+        <FileEditDiffBody
+          source={patch()}
+          diff={{
+            view: () => 'unified',
+          }}
+        />
+      ))
+
+      expect(screen.queryByTestId('diff-pending')).not.toBeInTheDocument()
+      expect(container.querySelector('[data-file-diff]')?.textContent).toContain('let second = 1')
+    })
+  })
+
+  it('reveals the unchanged lines of the old side through the gap separators', async () => {
+    const oldStr = Array.from({ length: 12 }, (_, i) => `line ${i + 1}\n`).join('')
+    render(() => (
+      <FileEditDiffBody
+        source={source({
+          oldStr,
+          newStr: oldStr.replace('line 12\n', 'line twelve\n'),
+        })}
+        diff={{
+          view: () => 'unified',
+        }}
+      />
+    ))
+    await settleWorkerReplies()
+
+    // Three lines of context keep lines 9 to 11, so the gap holds lines 1 to 8.
+    expect(screen.queryByText('line 1')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('8 lines hidden'))
     await Promise.resolve()
 
     expect(screen.getByText('line 1')).toBeInTheDocument()
-    expect(tokenizeAsyncMock).not.toHaveBeenCalled()
+    expect(screen.getByText('line 8')).toBeInTheDocument()
+  })
+})
+
+describe('FileEditDiffTitle', () => {
+  it('states no line counts while the diff worker computes, then the counts of the diff', async () => {
+    holdComputedDiffs(true)
+    render(() => <FileEditDiffTitle source={source({ oldStr: 'a\nb\n', newStr: 'a\nB\nC\n' })} />)
+
+    expect(screen.queryByTestId('git-diff-stats')).not.toBeInTheDocument()
+
+    holdComputedDiffs(false)
+    await settleWorkerReplies()
+
+    expect(screen.getByTestId('git-diff-stats')).toHaveTextContent('+2 -1')
+  })
+
+  it('states the line counts of a patch at once, and asks the diff worker for nothing', () => {
+    holdComputedDiffs(true)
+    render(() => <FileEditDiffTitle source={source({ structuredPatch: PATCH })} />)
+
+    expect(screen.getByTestId('git-diff-stats')).toHaveTextContent('+1 -1')
+    expect(requestedDiffInputs()).toEqual([])
+  })
+
+  it('states no line counts for a diff that replaces the whole old text', () => {
+    // Every line differs, so the diff needs more than LINE_DIFF_MAX_EDITS line edits,
+    // and the counts of its whole replacement would state every line as changed.
+    const lineCount = LINE_DIFF_MAX_EDITS / 2 + 1
+    const oldStr = Array.from({ length: lineCount }, (_, i) => `old${i}\n`).join('')
+    const newStr = Array.from({ length: lineCount }, (_, i) => `new${i}\n`).join('')
+    render(() => <FileEditDiffTitle source={source({ oldStr, newStr })} />)
+
+    expect(screen.queryByTestId('git-diff-stats')).not.toBeInTheDocument()
+  })
+})
+
+describe('fileEditCopyHunks', () => {
+  const sides = () => source({ oldStr: 'a\nb\nc\n', newStr: 'a\nB\nc\n' })
+  const input = { kind: 'texts', oldText: 'a\nb\nc\n', newText: 'a\nB\nc\n' } as const
+
+  it('answers the hunks of a patch, and asks the diff worker for nothing', () => {
+    holdComputedDiffs(true)
+
+    expect(fileEditCopyHunks(fileEditDiffInput(source({ structuredPatch: PATCH })))).toEqual(PATCH)
+    expect(requestedDiffInputs()).toEqual([])
+  })
+
+  it('asks for the diff of two sides, and answers the whole old side replaced until it is ready', () => {
+    holdComputedDiffs(true)
+
+    expect(fileEditCopyHunks(fileEditDiffInput(sides()))).toEqual(replacedWholeHunks(input.oldText, input.newText))
+    expect(requestedDiffInputs()).toEqual([input])
+  })
+
+  it('answers no hunk for equal sides while the diff worker computes, as the final diff does', () => {
+    holdComputedDiffs(true)
+
+    expect(fileEditCopyHunks(fileEditDiffInput(source({ oldStr: 'same\n', newStr: 'same\n' })))).toEqual([])
+  })
+
+  it('answers the computed hunks once the diff is ready', async () => {
+    const change = fileEditDiffInput(sides())
+    fileEditCopyHunks(change)
+    await settleWorkerReplies()
+
+    expect(fileEditCopyHunks(change)).toEqual(computeDiff(input).hunks)
+  })
+
+  it('re-runs a memo that read the stand-in when the diff lands', async () => {
+    holdComputedDiffs(true)
+    const change = sides()
+
+    const { hunks, dispose } = createRoot((dispose) => {
+      const hunks = createMemo(() => fileEditCopyHunks(fileEditDiffInput(change)))
+      return { hunks, dispose }
+    })
+    expect(hunks()).toEqual(replacedWholeHunks(input.oldText, input.newText))
+
+    holdComputedDiffs(false)
+    await settleWorkerReplies()
+
+    expect(hunks()).toEqual(computeDiff(input).hunks)
+    dispose()
+  })
+})
+
+describe('fileEditCopyFinal', () => {
+  it('answers true for a patch, which needs no diff', () => {
+    holdComputedDiffs(true)
+
+    expect(fileEditCopyFinal(source({ structuredPatch: PATCH }))).toBe(true)
+  })
+
+  it('answers false until the diff of two sides is ready, then true', async () => {
+    holdComputedDiffs(true)
+    const change = source({ oldStr: 'a\n', newStr: 'b\n' })
+
+    expect(fileEditCopyFinal(change)).toBe(false)
+
+    holdComputedDiffs(false)
+    // The released client asks the worker, which answers after this call.
+    expect(fileEditCopyFinal(change)).toBe(false)
+    await settleWorkerReplies()
+
+    expect(fileEditCopyFinal(change)).toBe(true)
   })
 })

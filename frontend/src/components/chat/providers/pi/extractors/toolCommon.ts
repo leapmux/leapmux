@@ -2,6 +2,7 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import { PI_EVENT } from '~/generated/contracts/pi-protocol'
 import { asContentArray, splitToolResultContent } from '~/lib/contentBlocks'
 import { pickObject, pickString } from '~/lib/jsonPick'
+import { memoizeByObject } from '~/lib/memoizeByObject'
 import { PI_TOOL_RESULT_FIELD } from '../protocol'
 
 /**
@@ -53,27 +54,17 @@ export function piToolResult(result: Record<string, unknown> | null | undefined)
 // Memoize by payload identity. One row build walks the same parsed payload
 // through the kind dispatch and again through each per-tool extractor (every
 // one calls `piExtractTool`), so without a cache the content blocks are walked
-// several times per render. WeakMap-keyed so entries are collected when the
-// payload object is dropped from the chat store.
-const toolCache = new WeakMap<Record<string, unknown>, PiToolExecution | null>()
-
-/** Unwrap a tool_execution event payload into a normalized shape. */
-export function piExtractTool(payload: Record<string, unknown> | null | undefined): PiToolExecution | null {
-  if (!payload)
-    return null
-  const cached = toolCache.get(payload)
-  if (cached !== undefined)
-    return cached
+// several times per render. The memo holds each payload weakly, so an entry is
+// collected when the payload object is dropped from the chat store.
+const cachedTool = memoizeByObject((payload: Record<string, unknown>): PiToolExecution | null => {
   const toolCallId = pickString(payload, 'toolCallId')
   const toolName = pickString(payload, 'toolName')
-  if (!toolCallId || !toolName) {
-    toolCache.set(payload, null)
+  if (!toolCallId || !toolName)
     return null
-  }
   const args = pickObject(payload, 'args') ?? {}
   const result = pickObject(payload, 'result')
   const partial = pickObject(payload, 'partialResult')
-  const tool: PiToolExecution = {
+  return {
     toolCallId,
     toolName,
     args,
@@ -89,8 +80,13 @@ export function piExtractTool(payload: Record<string, unknown> | null | undefine
       : {}),
     isError: payload.isError === true,
   }
-  toolCache.set(payload, tool)
-  return tool
+})
+
+/** Unwrap a tool_execution event payload into a normalized shape. */
+export function piExtractTool(payload: Record<string, unknown> | null | undefined): PiToolExecution | null {
+  return payload
+    ? cachedTool(payload)
+    : null
 }
 
 /** Accept only the start event for the same tool call and tool name. */

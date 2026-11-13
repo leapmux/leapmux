@@ -4,10 +4,12 @@ import {
   collectNewShikiStyles,
   collectShikiStyles,
   ensureShikiStyleRules,
+  isShikiStyleClassName,
   recordShikiStyle,
   shikiStyleClassName,
   shikiStyleClassTransformer,
   shikiStyleDecl,
+  shikiStylesUsedBy,
 } from './shikiStyleClass'
 
 beforeEach(() => {
@@ -166,8 +168,8 @@ describe('ensureShikiStyleRules', () => {
     expect(bySelector.get(`.${foreign}`)).toBe('#222')
     // The known class was injected exactly once (recorded first, then skipped in the dict).
     expect(rules).toHaveLength(2)
-    // Re-shipping the same (full) dictionary adds nothing -- the worker sends
-    // its accumulated superset with every response.
+    // Shipping a class again adds nothing: each rule is injected once, whoever
+    // ships it. A worker replaced on its own re-ships what it re-records.
     ensureShikiStyleRules({ [foreign]: '--shiki-light:#222' })
     expect(injectedRules()).toHaveLength(2)
   })
@@ -187,6 +189,80 @@ describe('ensureShikiStyleRules', () => {
     expect(bySelector.get(`.${a}`)).toBe('#a1')
     expect(bySelector.get(`.${b}`)).toBe('#b2')
     expect(bySelector.get(`.${c}`)).toBe('#c3')
+  })
+})
+
+describe('isShikiStyleClassName', () => {
+  it('accepts every name that shikiStyleClassName mints', () => {
+    for (const decl of ['a', '--shiki-light:#abc', '--shiki-light:#24292E;--shiki-dark:#E1E4E8'])
+      expect(isShikiStyleClassName(shikiStyleClassName(decl))).toBe(true)
+  })
+
+  it('rejects a name of another form', () => {
+    const otherForms = [
+      '',
+      'line',
+      'shiki',
+      'sk-abc-1',
+      'sk-0000000G-1',
+      'sk-00000000-',
+      'xsk-00000000-1',
+      'sk-00000000-1 x',
+    ]
+    for (const name of otherForms)
+      expect(isShikiStyleClassName(name)).toBe(false)
+  })
+})
+
+describe('shikiStylesUsedBy', () => {
+  /** A span with the given classes, as hast-util-to-html serializes it. */
+  function span(classes: string): string {
+    return `<span class="${classes}">x</span>`
+  }
+
+  it('returns the declarations that earlier worker replies shipped, for a reply that ships none', () => {
+    const a = shikiStyleClassName('--shiki-light:#a1')
+    const b = shikiStyleClassName('--shiki-light:#b2')
+    ensureShikiStyleRules({ [a]: '--shiki-light:#a1' })
+    ensureShikiStyleRules({ [b]: '--shiki-light:#b2' })
+
+    const html = `<pre class="shiki"><code>${span(a)}${span(b)}${span(a)}</code></pre>`
+
+    expect(shikiStylesUsedBy(html)).toEqual({
+      [a]: '--shiki-light:#a1',
+      [b]: '--shiki-light:#b2',
+    })
+  })
+
+  it('returns a declaration that this thread recorded', () => {
+    const name = recordShikiStyle('--shiki-light:#abc')!
+    expect(shikiStylesUsedBy(span(name))).toEqual({ [name]: '--shiki-light:#abc' })
+  })
+
+  it('reads a token-style class among other classes of one attribute', () => {
+    const name = recordShikiStyle('--shiki-light:#abc')!
+    expect(shikiStylesUsedBy(span(`line  ${name}`))).toEqual({ [name]: '--shiki-light:#abc' })
+  })
+
+  it('returns an empty dictionary for HTML that uses no token-style class', () => {
+    expect(shikiStylesUsedBy('')).toEqual({})
+    expect(shikiStylesUsedBy('<p>sk-00000000-1 in text</p>')).toEqual({})
+    expect(shikiStylesUsedBy(span('line shiki'))).toEqual({})
+  })
+
+  it('reads the class attribute alone, not an attribute whose name ends in "class"', () => {
+    const name = recordShikiStyle('--shiki-light:#abc')!
+    // A class name that this thread does not know would make the whole HTML unknown.
+    const unknown = shikiStyleClassName('--shiki-light:#def')
+
+    expect(shikiStylesUsedBy(`<span data-class="${unknown}" class="${name}">x</span>`)).toEqual({ [name]: '--shiki-light:#abc' })
+  })
+
+  it('returns undefined when this thread knows no declaration for one class', () => {
+    const known = recordShikiStyle('--shiki-light:#abc')!
+    const unknown = shikiStyleClassName('--shiki-light:#def')
+
+    expect(shikiStylesUsedBy(`${span(known)}${span(unknown)}`)).toBeUndefined()
   })
 })
 

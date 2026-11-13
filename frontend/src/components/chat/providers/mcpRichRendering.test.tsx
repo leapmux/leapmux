@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { copilotToolComplete, copilotToolStart } from '~/test-support/copilotFixtures'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
 import { pngBase64 } from '~/test-support/pngFixture'
@@ -11,7 +12,6 @@ import { renderMessageContent } from '../messageContentRenderer'
 import { providerFor } from './registry'
 import { input } from './testUtils'
 import './index'
-import './testMocks'
 
 const imageData = pngBase64(12, 8)
 
@@ -289,7 +289,7 @@ describe.each([
     { type: 'text', text: 'Rich **body**' },
     image,
   ])
-  it.each(cases)('renders provider $provider text and images through the shared components', ({ provider, request, result, supplemental }) => {
+  it.each(cases)('renders provider $provider text and images through the shared components', async ({ provider, request, result, supplemental }) => {
     const start = input(request, null, provider)
     const end = result
     const plugin = providerFor(provider)!
@@ -317,6 +317,7 @@ describe.each([
         }),
       }, category, provider),
     ])
+    await settleWorkerReplies()
     expect(container.querySelector('strong')?.textContent).toBe('body')
     expect(container.textContent).toContain('native args')
     expect(container.querySelector('img')?.getAttribute('src')).toContain(imageData)

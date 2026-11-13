@@ -54,9 +54,11 @@ export function skeletonMaskSvg(seed: string): string {
 }
 
 /**
- * The skeleton body a row shows while its real content isn't ready. Sized
- * inline to the row's reserved height (measured or estimated) so it can never
- * perturb the offset map.
+ * A shimmer of ragged text bars at a fixed height, the placeholder of content
+ * that is not ready yet: a chat row (see ChatRowSkeleton), or an asynchronous
+ * body that waits for its worker, such as a Markdown body or an edit diff.
+ * `testId` states which content waits behind the shimmer, so a check that counts
+ * one kind of skeleton never counts another.
  *
  * The block carries `role="status"`, exactly as Oat's docs show — and that
  * attribute is LOAD-BEARING for the styling, not just semantics: Oat's
@@ -64,13 +66,13 @@ export function skeletonMaskSvg(seed: string): string {
  * element WITHOUT the role gets no skeleton styles at all (0 height,
  * transparent — the invisible-skeleton failure mode).
  */
-export function ChatRowSkeleton(props: { height: number, seed: string }): JSX.Element {
+export function SkeletonLines(props: { height: number, seed: string, testId: string }): JSX.Element {
   const maskUrl = createMemo(() => `url("${skeletonMaskSvg(props.seed)}")`)
   const maskSize = `100% ${SKELETON_TILE_LINES * SKELETON_LINE_PITCH_PX}px`
   return (
     <div
       class={rowSkeleton}
-      data-testid="row-skeleton"
+      data-testid={props.testId}
       style={{ height: `${props.height}px` }}
     >
       <div
@@ -87,4 +89,13 @@ export function ChatRowSkeleton(props: { height: number, seed: string }): JSX.El
       />
     </div>
   )
+}
+
+/**
+ * The skeleton body a row shows while its real content isn't ready. Sized
+ * inline to the row's reserved height (measured or estimated) so it can never
+ * perturb the offset map.
+ */
+export function ChatRowSkeleton(props: { height: number, seed: string }): JSX.Element {
+  return <SkeletonLines height={props.height} seed={props.seed} testId="row-skeleton" />
 }

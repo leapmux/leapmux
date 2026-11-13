@@ -9,6 +9,7 @@ import process from 'node:process'
 import { expect } from '@playwright/test'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
+import { afterLineIndent } from '../../../src/lib/regexp'
 import { findBinaryOnPath, requireBinary } from '../helpers/binaryOnPath'
 import { withCleanupSync } from '../helpers/cleanup'
 import { MCP_ECHO_SERVER_NAME } from '../helpers/mcpEchoServer'
@@ -145,7 +146,7 @@ function readKimiShellLauncher(executable: string): string {
 function kimiNpmRuntime(executable: string, environment: NodeJS.ProcessEnv) {
   const source = readKimiShellLauncher(executable)
   const calls = [
-    ...source.matchAll(/^\s*exec\s+(node|"\$basedir\/node")\s+"\$basedir\/([^"$`\r\n]+)"\s+"\$@"\s*$/gm),
+    ...source.matchAll(afterLineIndent(/exec\s+(node|"\$basedir\/node")\s+"\$basedir\/([^"$`\r\n]+)"\s+"\$@"\s*$/g)),
   ]
   const targets = new Set(calls.map(call => resolve(dirname(executable), call[2]!)))
   if (targets.size !== 1)

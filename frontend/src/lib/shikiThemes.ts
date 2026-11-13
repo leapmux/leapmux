@@ -128,9 +128,10 @@ export function syntaxThemeKey(): string {
  * This contract is load-bearing: the CSS that themes Shiki output (the
  * `pre.shiki` / `[data-shiki-token]` rules in messageStyles / toolStyles /
  * markdownContent) keys off exactly these variables. Single-sourcing it here
- * keeps the `defaultColor` flag from drifting between the token worker, the
- * markdown pipeline, the editor parser, the ANSI renderer, and the Read tool
- * view -- a mismatch in one path would silently theme that surface differently.
+ * keeps the `defaultColor` flag from drifting between the token worker (which
+ * also serves the composer), the markdown pipeline, the ANSI renderer, and the
+ * Read tool view -- a mismatch in one path would silently theme that surface
+ * differently.
  *
  * A FUNCTION, not a constant: it reads the current pair, so a call site that
  * captured it once would keep tokenizing with the theme that was current when

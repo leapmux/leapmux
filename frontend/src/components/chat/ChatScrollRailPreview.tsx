@@ -4,7 +4,7 @@ import { MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { hasScrollRoom } from './chatScrollGeometry'
 import * as styles from './ChatScrollRail.css'
-import { MarkdownText } from './messageRenderers'
+import { MarkdownText } from './MarkdownText'
 
 // ---------------------------------------------------------------------------
 // Scroll-rail dot preview presentation

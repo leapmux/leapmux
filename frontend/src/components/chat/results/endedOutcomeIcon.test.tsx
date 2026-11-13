@@ -4,7 +4,7 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentResultBody } from './agentResult'
 import { StatusResultBody } from './statusResult'
-import '../providers/testMocks'
+import '~/components/chat/providers'
 
 function glyphOf(container: HTMLElement): string | undefined {
   return [

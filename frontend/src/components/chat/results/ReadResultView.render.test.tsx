@@ -1,21 +1,29 @@
-import { render, waitFor } from '@solidjs/testing-library'
+import { render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 import { readInjectedShikiRules } from '~/lib/shikiStyleClass.testkit'
+import { _resetTokenCache } from '~/lib/tokenCache'
+import { holdWorkerReplies, recordWorkerRequests, settleWorkerReplies } from '~/test-support/fakeWorker'
 import { EXPANDED_TEXT_DISPLAY_CHAR_LIMIT, EXPANDED_TEXT_DISPLAY_LINE_LIMIT } from '../safeTextDisplay'
 import { ReadResultView } from './ReadResultView'
 
-vi.mock('~/lib/shikiWorkerClient', () => ({
-  tokenizeAsync: vi.fn().mockResolvedValue([
-    [
-      { content: 'const x = 1', className: 'sk-read-test' },
-    ],
-  ]),
-}))
+/** The language and the code of each tokenize request that reaches the Shiki worker from now on. */
+function recordTokenizeRequests(): () => Array<[string, string]> {
+  const requests = recordWorkerRequests('lib/shikiWorker.ts')
+  return () => requests.map(({ lang, code }) => [lang, code])
+}
+
+/** The text of each token span, in document order. */
+function tokenTexts(container: HTMLElement): string[] {
+  return [
+    ...container.querySelectorAll('[data-shiki-token]'),
+  ].map(token => token.textContent ?? '')
+}
 
 describe('ReadResultView', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
+    // Several tests read the same code, and a cached answer sends no request.
+    _resetTokenCache()
   })
 
   // A provider that leaves lines out of a read states the gap as a row with no number.
@@ -88,7 +96,7 @@ describe('ReadResultView', () => {
   })
 
   it('does not enqueue tokenization while visible scrolling has syntax highlighting paused', async () => {
-    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
+    const tokenized = recordTokenizeRequests()
 
     render(() => (
       <ReadResultView
@@ -99,12 +107,13 @@ describe('ReadResultView', () => {
         syntaxHighlightingPaused
       />
     ))
+    await settleWorkerReplies()
 
-    expect(tokenizeAsync).not.toHaveBeenCalled()
+    expect(tokenized()).toEqual([])
   })
 
   it('does not enqueue tokenization while text selection is active', async () => {
-    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
+    const tokenized = recordTokenizeRequests()
 
     render(() => (
       <ReadResultView
@@ -115,12 +124,13 @@ describe('ReadResultView', () => {
         textSelectionActive={() => true}
       />
     ))
+    await settleWorkerReplies()
 
-    expect(tokenizeAsync).not.toHaveBeenCalled()
+    expect(tokenized()).toEqual([])
   })
 
-  it('enqueues tokenization after an initially active text selection clears', async () => {
-    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
+  it('enqueues tokenization after an initially active text selection clears', () => {
+    const tokenized = recordTokenizeRequests()
     const [selectionActive, setSelectionActive] = createSignal(true)
 
     render(() => (
@@ -133,15 +143,17 @@ describe('ReadResultView', () => {
       />
     ))
 
-    expect(tokenizeAsync).not.toHaveBeenCalled()
+    expect(tokenized()).toEqual([])
 
     setSelectionActive(false)
 
-    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1', expect.any(Function))
+    expect(tokenized()).toEqual([
+      ['typescript', 'const x = 1'],
+    ])
   })
 
-  it('enqueues tokenization when syntax highlighting is not paused', async () => {
-    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
+  it('enqueues tokenization when syntax highlighting is not paused', () => {
+    const tokenized = recordTokenizeRequests()
 
     render(() => (
       <ReadResultView
@@ -152,33 +164,13 @@ describe('ReadResultView', () => {
       />
     ))
 
-    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1', expect.any(Function))
+    expect(tokenized()).toEqual([
+      ['typescript', 'const x = 1'],
+    ])
   })
 
-  it('falls back to plain text when worker tokenization returns null', async () => {
-    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
-    vi.mocked(tokenizeAsync).mockResolvedValueOnce(null)
-
-    const { container } = render(() => (
-      <ReadResultView
-        lines={[
-          { num: 1, text: 'const x = 1' },
-        ]}
-        filePath="example.ts"
-      />
-    ))
-
-    await waitFor(() => {
-      expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1', expect.any(Function))
-    })
-    await Promise.resolve()
-
-    expect(container.textContent).toContain('const x = 1')
-    expect(container.querySelector('.sk-read-test')).toBeNull()
-  })
-
-  it('limits one large file line before it reaches tokenization or the DOM', async () => {
-    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
+  it('limits one large file line before it reaches tokenization or the DOM', () => {
+    const tokenized = recordTokenizeRequests()
     const text = `READ_HEAD${'x'.repeat(100_000)}READ_TAIL`
     const { container } = render(() => (
       <ReadResultView
@@ -193,7 +185,11 @@ describe('ReadResultView', () => {
     expect(container.textContent).toContain('READ_HEAD')
     expect(container.textContent).toContain('READ_TAIL')
     expect(container.textContent).toContain('Display limited')
-    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', expect.not.stringContaining('x'.repeat(10_000)), expect.any(Function))
+    expect(tokenized()).toHaveLength(1)
+    const [[lang, code]] = tokenized() as [[string, string]]
+    expect(lang).toBe('typescript')
+    expect(code).toContain('READ_HEAD')
+    expect(code).not.toContain('x'.repeat(10_000))
   })
 
   it('limits the total rows of an expanded structured read', () => {
@@ -248,15 +244,13 @@ describe('ReadResultView', () => {
       />
     ))
 
-    await waitFor(() => {
-      expect(container.querySelector('.sk-read-test')).not.toBeNull()
-    })
+    await settleWorkerReplies()
+    expect(tokenTexts(container)).toContain('const')
 
     setPaused(true)
+    await settleWorkerReplies()
 
-    await waitFor(() => {
-      expect(container.querySelector('.sk-read-test')).not.toBeNull()
-    })
+    expect(tokenTexts(container)).toContain('const')
   })
 
   it('keeps existing tokens while text selection is active after highlight completes', async () => {
@@ -271,15 +265,13 @@ describe('ReadResultView', () => {
       />
     ))
 
-    await waitFor(() => {
-      expect(container.querySelector('.sk-read-test')).not.toBeNull()
-    })
+    await settleWorkerReplies()
+    expect(tokenTexts(container)).toContain('const')
 
     setSelectionActive(true)
+    await settleWorkerReplies()
 
-    await waitFor(() => {
-      expect(container.querySelector('.sk-read-test')).not.toBeNull()
-    })
+    expect(tokenTexts(container)).toContain('const')
   })
 
   it('defers an in-flight tokenization that lands while paused, then applies it on resume (no re-dispatch)', async () => {
@@ -287,11 +279,8 @@ describe('ReadResultView', () => {
     // came up is STASHED and applied once the pause lifts -- not discarded and recomputed.
     // (A pause re-runs the dispatch effect; the hook must keep the in-flight dispatch
     // live and stash its result rather than cancel + re-dispatch the same work.)
-    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
-    let resolveTokens: ((tokens: Awaited<ReturnType<typeof tokenizeAsync>>) => void) | undefined
-    vi.mocked(tokenizeAsync).mockImplementationOnce(() => new Promise((resolve) => {
-      resolveTokens = resolve
-    }))
+    const tokenized = recordTokenizeRequests()
+    const replies = holdWorkerReplies('lib/shikiWorker.ts')
     const [paused, setPaused] = createSignal(false)
     const { container } = render(() => (
       <ReadResultView
@@ -303,27 +292,23 @@ describe('ReadResultView', () => {
       />
     ))
 
-    expect(tokenizeAsync).toHaveBeenCalledWith('typescript', 'const x = 1', expect.any(Function))
+    expect(tokenized()).toEqual([
+      ['typescript', 'const x = 1'],
+    ])
 
     // Pause, then the in-flight worker resolves WHILE paused: stashed, not yet applied
     // (replacing text nodes mid-scroll is what the pause guards against).
     setPaused(true)
-    resolveTokens?.([
-      [
-        { content: 'const x = 1', className: 'sk-read-stash' },
-      ],
-    ])
-    await Promise.resolve()
+    await replies.release()
 
-    expect(container.querySelector('.sk-read-stash')).toBeNull()
+    expect(container.querySelector('[data-shiki-token]')).toBeNull()
 
-    // Resume: the STASHED result (sk-read-stash) is applied, with no second worker dispatch.
+    // Resume: the STASHED result is applied, with no second worker dispatch.
     setPaused(false)
+    await settleWorkerReplies()
 
-    await waitFor(() => {
-      expect(container.querySelector('.sk-read-stash')).not.toBeNull()
-    })
-    expect(tokenizeAsync).toHaveBeenCalledTimes(1)
+    expect(tokenTexts(container)).toContain('const')
+    expect(tokenized()).toHaveLength(1)
   })
 
   it('marks token spans with data-shiki-token but not the line-number span', async () => {
@@ -340,13 +325,13 @@ describe('ReadResultView', () => {
       />
     ))
 
-    await waitFor(() => {
-      expect(container.querySelector('[data-shiki-token]')).not.toBeNull()
-    })
+    await settleWorkerReplies()
 
     // The colored token span carries the marker.
-    const tokenSpan = container.querySelector('.sk-read-test')
-    expect(tokenSpan).not.toBeNull()
+    const tokenSpan = [
+      ...container.querySelectorAll('span'),
+    ].find(span => span.textContent === 'const')
+    expect(tokenSpan?.className).toMatch(/^sk-/)
     expect(tokenSpan!.hasAttribute('data-shiki-token')).toBe(true)
 
     // The line-number span (inline width style, but NOT a syntax token) must not, or the
@@ -365,7 +350,7 @@ describe('ReadResultView', () => {
     // hook's syncTokenize path must handle it on the main thread (guessLanguage maps
     // `.log` -> `ansi`). The worker must NOT be dispatched, and the colored token spans
     // render synchronously.
-    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
+    const tokenized = recordTokenizeRequests()
 
     const { container } = render(() => (
       <ReadResultView
@@ -377,7 +362,8 @@ describe('ReadResultView', () => {
     ))
 
     // No worker round-trip: ANSI tokenized synchronously, terminal.
-    expect(tokenizeAsync).not.toHaveBeenCalled()
+    await settleWorkerReplies()
+    expect(tokenized()).toEqual([])
     // The visible payload is the ANSI-stripped text, split into themed token spans
     // whose shared style classes define the dual-theme CSS variables (proving
     // tokenization ran, not plain fallback — see shikiStyleClass).

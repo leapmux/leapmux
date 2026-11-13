@@ -1,6 +1,7 @@
 import type { ChannelSocket, ChannelTransport, WorkerKeyBundle } from './channel'
 import type { KeyPinDecision } from './keyPinStore'
-import type { Session } from './noise'
+import type { HandshakeState, Session } from './noise'
+import type { HybridHandshakeState } from './noise-hybrid'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -16,8 +17,9 @@ import {
 } from '~/generated/proto/leapmux/v1/channel_pb'
 import { WorkerWatchService } from '~/generated/proto/leapmux/v1/watch_pb'
 import { WorkerSystemService } from '~/generated/proto/leapmux/v1/worker_system_pb'
+import { blankClassicHandshakeState, blankHybridHandshakeState, createTestSession } from '~/test-support/channelSessionDoubles'
 import { KEY_KEY_PINS, localStorageGet } from './browserStorage'
-import { ChannelManager } from './channel'
+import { ChannelError } from './channel'
 import {
   acceptingKeyPins,
   AutoOpenMockWebSocket,
@@ -25,7 +27,6 @@ import {
   ChannelManagerTestHarness,
   clearAllKeyPins,
   createMockTransport,
-  createTestSession,
   decodeWireMessage,
   encodeWireMessage,
   makeCountingTransport,
@@ -33,8 +34,10 @@ import {
   mockHandshake1,
   mockHandshake2,
   MockWebSocket,
+  newTestChannelManager,
   sessions,
-  settle,
+  sessionStateOf,
+  settleChannelSessions,
   simulatePingAcceptOnWs,
   simulatePingErrorOnWs,
   waitForPendingChannel,
@@ -60,9 +63,9 @@ describe('ChannelManager openChannel', () => {
   // fails every open with a timeout.
   it('proves the session with the ping procedure the worker registers', async () => {
     const openPromise = h.mgr.openChannel('w1')
-    await h.flushMicrotasks()
+    await h.settle()
     h.mockWs.simulateOpen()
-    await h.flushMicrotasks()
+    await h.settle()
 
     const sentMsg = decodeWireMessage(h.mockWs.sent.at(-1)!)
     const envelope = fromBinary(InnerMessageSchema, sessions.get(sentMsg.channelId)!.responder.receive.decrypt(sentMsg.ciphertext))
@@ -71,7 +74,7 @@ describe('ChannelManager openChannel', () => {
     expect(envelope.kind.value.method).toBe('/leapmux.v1.WorkerSystemService/Ping')
     expect(envelope.kind.value.payload).toHaveLength(0)
 
-    h.sendResponseFromWorker(sentMsg.channelId, Number(sentMsg.correlationId), new Uint8Array())
+    await h.sendResponseFromWorker(sentMsg.channelId, Number(sentMsg.correlationId), new Uint8Array())
     await expect(openPromise).resolves.toBe(sentMsg.channelId)
   })
 
@@ -87,9 +90,8 @@ describe('ChannelManager openChannel', () => {
       mlkemPublicKey: new Uint8Array(0),
       slhdsaPublicKey: new Uint8Array(0),
     }))()
-    const boomMgr = new ChannelManager(createMockTransport(new MockWebSocket()), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const boomMgr = newTestChannelManager(createMockTransport(new MockWebSocket()), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       keyPins: pins,
     })
     try {
@@ -114,9 +116,8 @@ describe('ChannelManager openChannel', () => {
       mlkemPublicKey: new Uint8Array(0),
       slhdsaPublicKey: new Uint8Array(0),
     }))()
-    const rejectMgr = new ChannelManager(createMockTransport(new MockWebSocket()), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const rejectMgr = newTestChannelManager(createMockTransport(new MockWebSocket()), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       keyPins: pins,
     })
     try {
@@ -157,16 +158,15 @@ describe('ChannelManager openChannel', () => {
         closed.push(channelId)
       },
     }
-    const brokenMgr = new ChannelManager(transport, {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const brokenMgr = newTestChannelManager(transport, {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       rpcTimeoutFn: () => 20,
     })
     try {
       const openPromise = brokenMgr.openChannel('w1')
-      await h.flushMicrotasks()
+      await h.settle()
       brokenWs.simulateOpen()
-      await h.flushMicrotasks()
+      await h.settle()
       // The worker never answers the ping.
       await expect(openPromise).rejects.toThrow(`RPC call '${procedureOf(WorkerSystemService.method.ping)}' timed out`)
       expect(closed).toHaveLength(1)
@@ -191,7 +191,9 @@ describe('ChannelManager openChannel', () => {
         closed.push(channelId)
       },
     }
-    const omittedMgr = new ChannelManager(transport, { handshake1: mockHandshake1, handshake2: mockHandshake2 })
+    const omittedMgr = newTestChannelManager(transport, {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
+    })
     try {
       await expect(omittedMgr.openChannel('w1')).rejects.toThrow(/empty authenticated user id/)
       expect(closed).toHaveLength(1)
@@ -215,9 +217,8 @@ describe('ChannelManager openChannel', () => {
         closed.push(channelId)
       },
     }
-    const omittedMgr = new ChannelManager(transport, {
-      handshake1: mockHandshake1,
-      handshake2,
+    const omittedMgr = newTestChannelManager(transport, {
+      session: { handshake1: mockHandshake1, handshake2 },
     })
     try {
       await expect(omittedMgr.openChannel('w1')).rejects.toThrow(/no max_message_size/)
@@ -241,7 +242,9 @@ describe('ChannelManager openChannel', () => {
         closed.push(channelId)
       },
     }
-    const badMgr = new ChannelManager(transport, { handshake1: mockHandshake1, handshake2: mockHandshake2 })
+    const badMgr = newTestChannelManager(transport, {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
+    })
     try {
       await expect(badMgr.openChannel('w1')).rejects.toThrow(/max_message_size 1 out of bounds/)
       expect(closed).toHaveLength(1)
@@ -262,7 +265,9 @@ describe('ChannelManager openChannel', () => {
         closed.push(channelId)
       },
     }
-    const badMgr = new ChannelManager(transport, { handshake1: mockHandshake1, handshake2: mockHandshake2 })
+    const badMgr = newTestChannelManager(transport, {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
+    })
     try {
       await expect(badMgr.openChannel('w1')).rejects.toThrow(new RegExp(`max_message_size ${tooLarge} out of bounds`))
       expect(closed).toHaveLength(1)
@@ -282,7 +287,9 @@ describe('ChannelManager openChannel', () => {
         closed.push(channelId)
       },
     }
-    const zeroMgr = new ChannelManager(transport, { handshake1: mockHandshake1, handshake2: mockHandshake2 })
+    const zeroMgr = newTestChannelManager(transport, {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
+    })
     try {
       await expect(zeroMgr.openChannel('w1')).rejects.toThrow(/no max_message_size/)
       expect(closed).toHaveLength(1)
@@ -298,22 +305,24 @@ describe('ChannelManager openChannel', () => {
     const ch = (h.mgr as any).channels.get(channelId)
     expect(ch.maxMessageSize).toBe(negotiated)
     expect(ch.maxReassembledMessageSize).toBe(maxReassembledMessageSize(negotiated))
-    expect(ch.reassembly).toBeTruthy()
+    // The session worker reassembles inbound messages up to the same ceiling.
+    const session = sessionStateOf(channelId)
+    expect(session.maxReassembledMessageSize).toBe(maxReassembledMessageSize(negotiated))
+    expect(session.reassembly.size()).toBe(0)
   })
 
   it('adopts a non-default negotiated maxMessageSize and derives reassembled headroom', async () => {
     const negotiated = 1 << 20
     const customWs = new MockWebSocket()
-    const customMgr = new ChannelManager(createMockTransport(customWs, { maxMessageSize: negotiated }), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const customMgr = newTestChannelManager(createMockTransport(customWs, { maxMessageSize: negotiated }), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
     })
     try {
       const openPromise = customMgr.openChannel('w1')
-      await h.flushMicrotasks()
+      await h.settle()
       customWs.simulateOpen()
-      await h.flushMicrotasks()
-      h.simulatePingAccept(customWs)
+      await h.settle()
+      await h.simulatePingAccept(customWs)
       const channelId = await openPromise
       const ch = (customMgr as any).channels.get(channelId)
       expect(ch.maxMessageSize).toBe(negotiated)
@@ -327,16 +336,15 @@ describe('ChannelManager openChannel', () => {
 
   it('accepts negotiated maxMessageSize exactly at MAX_CHUNK_SIZE', async () => {
     const floorWs = new MockWebSocket()
-    const floorMgr = new ChannelManager(createMockTransport(floorWs, { maxMessageSize: MAX_CHUNK_SIZE }), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const floorMgr = newTestChannelManager(createMockTransport(floorWs, { maxMessageSize: MAX_CHUNK_SIZE }), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
     })
     try {
       const openPromise = floorMgr.openChannel('w1')
-      await h.flushMicrotasks()
+      await h.settle()
       floorWs.simulateOpen()
-      await h.flushMicrotasks()
-      h.simulatePingAccept(floorWs)
+      await h.settle()
+      await h.simulatePingAccept(floorWs)
       const channelId = await openPromise
       const ch = (floorMgr as any).channels.get(channelId)
       expect(ch.maxMessageSize).toBe(MAX_CHUNK_SIZE)
@@ -350,17 +358,16 @@ describe('ChannelManager openChannel', () => {
   it('derives reassembled headroom from testPayloadBudget when ceiling is omitted', async () => {
     const payload = 1 << 20
     const omitWs = new MockWebSocket()
-    const omitMgr = new ChannelManager(createMockTransport(omitWs, { maxMessageSize: false }), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const omitMgr = newTestChannelManager(createMockTransport(omitWs, { maxMessageSize: false }), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       testPayloadBudget: payload,
     })
     try {
       const openPromise = omitMgr.openChannel('w1')
-      await h.flushMicrotasks()
+      await h.settle()
       omitWs.simulateOpen()
-      await h.flushMicrotasks()
-      h.simulatePingAccept(omitWs)
+      await h.settle()
+      await h.simulatePingAccept(omitWs)
       const channelId = await openPromise
       const ch = (omitMgr as any).channels.get(channelId)
       expect(ch.maxMessageSize).toBe(payload)
@@ -375,17 +382,16 @@ describe('ChannelManager openChannel', () => {
   it('defaults payload to testReassembledCeiling when only the ceiling is set', async () => {
     const ceiling = 50
     const ceilWs = new MockWebSocket()
-    const ceilMgr = new ChannelManager(createMockTransport(ceilWs, { maxMessageSize: false }), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const ceilMgr = newTestChannelManager(createMockTransport(ceilWs, { maxMessageSize: false }), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       testReassembledCeiling: ceiling,
     })
     try {
       const openPromise = ceilMgr.openChannel('w1')
-      await h.flushMicrotasks()
+      await h.settle()
       ceilWs.simulateOpen()
-      await h.flushMicrotasks()
-      h.simulatePingAccept(ceilWs)
+      await h.settle()
+      await h.simulatePingAccept(ceilWs)
       const channelId = await openPromise
       const ch = (ceilMgr as any).channels.get(channelId)
       expect(ch.maxMessageSize).toBe(ceiling)
@@ -413,19 +419,71 @@ describe('ChannelManager openChannel', () => {
         closed.push(channelId)
       },
     }
-    const failingMgr = new ChannelManager(transport, {
-      handshake1: mockHandshake1,
-      handshake2: () => {
-        throw new Error('handshake message 2 failed to verify')
+    const failingMgr = newTestChannelManager(transport, {
+      session: {
+        handshake1: mockHandshake1,
+        handshake2: () => {
+          throw new Error('handshake message 2 failed to verify')
+        },
       },
     })
     try {
-      await expect(failingMgr.openChannel('w1')).rejects.toThrow(/failed to verify/)
+      const failure = await failingMgr.openChannel('w1').catch((err: unknown) => err)
+      expect(failure).toBeInstanceOf(ChannelError)
+      expect(failure).toMatchObject({ source: 'transport', message: 'handshake message 2 failed to verify' })
       expect(closed).toHaveLength(1)
       expect(failingMgr.hasOpenChannel('w1')).toBe(false)
     }
     finally {
       failingMgr.closeAll()
+    }
+  })
+
+  // An open that fails before handshake 2 must still zero the handshake state in
+  // the session worker: the ephemeral key and the chaining key would otherwise
+  // stay in its heap for the life of the page.
+  it('abandons the handshake in the session worker when the Hub refuses the open', async () => {
+    const base = createMockTransport(new MockWebSocket())
+    const transport: ChannelTransport = {
+      ...base,
+      async openChannel() {
+        throw new ChannelError('rpc', 'the worker is offline')
+      },
+    }
+    let state: HybridHandshakeState | undefined
+    const handshake1 = vi.fn((_x: Uint8Array, _m: Uint8Array) => {
+      state = blankHybridHandshakeState()
+      state.e.privateKey.fill(1)
+      state.ss.ck.fill(2)
+      state.ss.k.fill(3)
+      state.mlkemSS.fill(4)
+      return {
+        handshakeState: state,
+        message1: new Uint8Array(1616),
+      }
+    })
+    const handshake2 = vi.fn(mockHandshake2)
+    const refusedMgr = newTestChannelManager(transport, {
+      session: { handshake1, handshake2, idleRekeyIntervalMs: 0 },
+      installWakeListener: false,
+      keyPins: acceptingKeyPins(),
+    })
+    try {
+      await expect(refusedMgr.openChannel('w1')).rejects.toThrow('the worker is offline')
+      await settleChannelSessions()
+
+      expect(handshake1).toHaveBeenCalledOnce()
+      expect(handshake2).not.toHaveBeenCalled()
+      for (const secret of [
+        state!.e.privateKey,
+        state!.ss.ck,
+        state!.ss.k,
+        state!.mlkemSS,
+      ])
+        expect(secret.every(byte => byte === 0)).toBe(true)
+    }
+    finally {
+      refusedMgr.closeAll()
     }
   })
 
@@ -444,9 +502,8 @@ describe('ChannelManager openChannel', () => {
         closed.push(channelId)
       },
     }
-    const throwingMgr = new ChannelManager(transport, {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const throwingMgr = newTestChannelManager(transport, {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       keyPins: {
         resolve: async () => () => {
           throw new Error('pin store rejected the write')
@@ -455,11 +512,12 @@ describe('ChannelManager openChannel', () => {
     })
     try {
       const openPromise = throwingMgr.openChannel('w1')
-      await h.flushMicrotasks()
+      const rejected = expect(openPromise).rejects.toThrow(/pin store rejected the write/)
+      await h.settle()
       ws.simulateOpen()
-      await h.flushMicrotasks()
-      h.simulatePingAccept(ws)
-      await expect(openPromise).rejects.toThrow(/pin store rejected the write/)
+      await h.settle()
+      await h.simulatePingAccept(ws)
+      await rejected
       // Not a ghost: the pool must not serve it, and the Hub was told to drop it.
       expect(throwingMgr.hasOpenChannel('w1')).toBe(false)
       expect(closed).toHaveLength(1)
@@ -478,16 +536,15 @@ describe('ChannelManager openChannel', () => {
   // to every later caller.
   it('rejects the open when the session cannot round-trip a ping', async () => {
     const brokenWs = new MockWebSocket()
-    const brokenMgr = new ChannelManager(createMockTransport(brokenWs), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const brokenMgr = newTestChannelManager(createMockTransport(brokenWs), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       rpcTimeoutFn: () => 20,
     })
     try {
       const openPromise = brokenMgr.openChannel('w1')
-      await h.flushMicrotasks()
+      await h.settle()
       brokenWs.simulateOpen()
-      await h.flushMicrotasks()
+      await h.settle()
       // The worker never answers the ping: the session is dead in at least one
       // direction. The open must fail rather than cache a broken channel.
       await expect(openPromise).rejects.toThrow(`RPC call '${procedureOf(WorkerSystemService.method.ping)}' timed out`)
@@ -513,7 +570,9 @@ describe('ChannelManager openChannel', () => {
         return { ...r, userId: '' } // Hub omitted the identity
       },
     }
-    const omittedMgr = new ChannelManager(transport, { handshake1: mockHandshake1, handshake2: mockHandshake2 })
+    const omittedMgr = newTestChannelManager(transport, {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
+    })
     try {
       await expect(omittedMgr.openChannel('w1')).rejects.toThrow(/empty authenticated user id/)
       // No claim may be asserted at all -- not a local id, not an empty one:
@@ -537,9 +596,8 @@ describe('ChannelManager openChannel', () => {
   // disagreement the page cannot otherwise see.
   it('rejects the open when the Hub authenticates a different user than expected', async () => {
     const divergedWs = new MockWebSocket()
-    const mgr = new ChannelManager(createMockTransport(divergedWs), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const mgr = newTestChannelManager(createMockTransport(divergedWs), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       // The mock Hub authenticates every open as 'hub-authenticated-user'.
       expectedUserId: () => 'stale-user-a',
     })
@@ -559,9 +617,8 @@ describe('ChannelManager openChannel', () => {
   // would silently serve a channel bound to a different, non-empty user.
   it('rejects the open when the expected identity is a degenerate empty string', async () => {
     const emptyWs = new MockWebSocket()
-    const mgr = new ChannelManager(createMockTransport(emptyWs), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const mgr = newTestChannelManager(createMockTransport(emptyWs), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       expectedUserId: () => '',
     })
     try {
@@ -577,17 +634,16 @@ describe('ChannelManager openChannel', () => {
   // undefined means "no opinion", which is different from "expects nobody".
   it('opens normally when the page has no expected identity yet', async () => {
     sessions.clear()
-    const mgr = new ChannelManager(createMockTransport(h.mockWs), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const mgr = newTestChannelManager(createMockTransport(h.mockWs), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       expectedUserId: () => undefined,
     })
     try {
       const openPromise = mgr.openChannel('w1')
-      await h.flushMicrotasks()
+      await h.settle()
       h.mockWs.simulateOpen()
-      await h.flushMicrotasks()
-      h.simulatePingAccept()
+      await h.settle()
+      await h.simulatePingAccept()
       await expect(openPromise).resolves.toBeTruthy()
     }
     finally {
@@ -598,17 +654,16 @@ describe('ChannelManager openChannel', () => {
   // The matching case must proceed — the check only fires on a real disagreement.
   it('opens when the Hub agrees with the expected identity', async () => {
     sessions.clear()
-    const mgr = new ChannelManager(createMockTransport(h.mockWs), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const mgr = newTestChannelManager(createMockTransport(h.mockWs), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       expectedUserId: () => 'hub-authenticated-user',
     })
     try {
       const openPromise = mgr.openChannel('w1')
-      await h.flushMicrotasks()
+      await h.settle()
       h.mockWs.simulateOpen()
-      await h.flushMicrotasks()
-      h.simulatePingAccept()
+      await h.settle()
+      await h.simulatePingAccept()
       await expect(openPromise).resolves.toBeTruthy()
     }
     finally {
@@ -656,12 +711,12 @@ describe('ChannelManager encryption modes', () => {
     // Mock classic handshake functions.
     function mockClassicHS1(_remoteX25519Pub: Uint8Array) {
       return {
-        handshakeState: {} as any,
+        handshakeState: blankClassicHandshakeState(),
         message1: new Uint8Array(48),
       }
     }
 
-    function mockClassicHS2(_state: any, _message2: Uint8Array) {
+    function mockClassicHS2(_state: HandshakeState, _message2: Uint8Array) {
       const entries = [
         ...classicSessions.entries(),
       ]
@@ -671,18 +726,20 @@ describe('ChannelManager encryption modes', () => {
       return lastEntry[1].initiator
     }
 
-    const classicMgr = new ChannelManager(classicTransport, {
-      classicHandshake1: mockClassicHS1,
-      classicHandshake2: mockClassicHS2,
+    const classicMgr = newTestChannelManager(classicTransport, {
+      session: {
+        classicHandshake1: mockClassicHS1,
+        classicHandshake2: mockClassicHS2,
+      },
       keyPins: acceptingKeyPins(),
     })
 
     const openPromise = classicMgr.openChannel('w-classic')
-    await h.flushMicrotasks()
+    await h.settle()
     classicWs.readyState = MockWebSocket.OPEN
     classicWs.simulateOpen()
-    await h.flushMicrotasks()
-    h.simulatePingAccept(classicWs, classicSessions)
+    await h.settle()
+    await h.simulatePingAccept(classicWs, classicSessions)
 
     const channelId = await openPromise
     const pair = classicSessions.get(channelId)!
@@ -738,13 +795,13 @@ describe('ChannelManager open-time verification', () => {
         racerResult = id
         return id
       })
-      await settle()
+      await settleChannelSessions()
 
       // The racer must be waiting on the SAME open, not holding the unproven channel.
       expect(racerResult).toBeNull()
       expect(transport.openChannel).toHaveBeenCalledTimes(1)
 
-      simulatePingAcceptOnWs(ws!, 'ch-1')
+      await simulatePingAcceptOnWs(ws!, 'ch-1')
 
       expect(await open).toBe('ch-1')
       expect(await racer).toBe('ch-1')
@@ -769,7 +826,7 @@ describe('ChannelManager open-time verification', () => {
       const open = cm.getOrOpenChannel('worker-1')
       await waitForPendingChannel(cm, 'ch-1')
       const racer = cm.getOrOpenChannel('worker-1')
-      await settle()
+      await settleChannelSessions()
 
       // Attach rejection handlers BEFORE delivering the error — bun treats an
       // unhandled pending.reject as a test failure. Do not wrap the expects in
@@ -784,7 +841,7 @@ describe('ChannelManager open-time verification', () => {
         () => { throw new Error('racer should have rejected') },
         (e: unknown) => { racerErr = e },
       )
-      simulatePingErrorOnWs(ws!, 'ch-1', 'session is dead')
+      await simulatePingErrorOnWs(ws!, 'ch-1', 'session is dead')
       await Promise.all([openDone, racerDone])
       expect(String(openErr)).toContain('session is dead')
       expect(String(racerErr)).toContain('session is dead')
@@ -828,7 +885,7 @@ describe('ChannelManager open-time verification', () => {
         () => { throw new Error('raced call should have rejected') },
         (e: unknown) => { racedErr = e },
       )
-      simulatePingErrorOnWs(ws!, 'ch-1', 'session is dead')
+      await simulatePingErrorOnWs(ws!, 'ch-1', 'session is dead')
       await Promise.all([openDone, racedDone])
       expect(String(openErr)).toContain('session is dead')
       expect(String(racedErr)).toContain('session is dead')
@@ -879,8 +936,8 @@ describe('ChannelManager key pinning across concurrent opens', () => {
       const p2 = cm.getOrOpenChannel('w2')
       await waitForPendingChannel(cm, 'ch-1')
       await waitForPendingChannel(cm, 'ch-2')
-      simulatePingAcceptOnWs(ws!, 'ch-1')
-      simulatePingAcceptOnWs(ws!, 'ch-2')
+      await simulatePingAcceptOnWs(ws!, 'ch-1')
+      await simulatePingAcceptOnWs(ws!, 'ch-2')
       await Promise.all([p1, p2])
 
       expect(Object.keys(localStorageGet<Record<string, unknown>>(KEY_KEY_PINS) ?? {}).sort()).toEqual(['w1', 'w2'])
@@ -913,8 +970,8 @@ describe('ChannelManager key pinning across concurrent opens', () => {
       const p2 = cm.getOrOpenChannel('w2')
       await waitForPendingChannel(cm, 'ch-1')
       await waitForPendingChannel(cm, 'ch-2')
-      simulatePingAcceptOnWs(ws!, 'ch-1')
-      simulatePingAcceptOnWs(ws!, 'ch-2')
+      await simulatePingAcceptOnWs(ws!, 'ch-1')
+      await simulatePingAcceptOnWs(ws!, 'ch-2')
       await Promise.all([p1, p2])
       expect(confirmKeyPin).not.toHaveBeenCalled()
 
@@ -922,7 +979,7 @@ describe('ChannelManager key pinning across concurrent opens', () => {
       keys.set('w1', 9)
       const p3 = cm.openChannel('w1')
       await waitForPendingChannel(cm, 'ch-3')
-      simulatePingAcceptOnWs(ws!, 'ch-3')
+      await simulatePingAcceptOnWs(ws!, 'ch-3')
       await p3
 
       expect(confirmKeyPin).toHaveBeenCalledOnce()
@@ -947,9 +1004,10 @@ describe('ChannelManager key pinning across concurrent opens', () => {
     const cm = makeIdentityCipherManager(transport)
     try {
       const open = cm.getOrOpenChannel('w1')
+      const rejected = expect(open).rejects.toThrow('session is dead')
       await waitForPendingChannel(cm, 'ch-1')
-      simulatePingErrorOnWs(ws!, 'ch-1', 'session is dead')
-      await expect(open).rejects.toThrow('session is dead')
+      await simulatePingErrorOnWs(ws!, 'ch-1', 'session is dead')
+      await rejected
 
       expect(localStorageGet<Record<string, unknown>>(KEY_KEY_PINS) ?? {}).toEqual({})
     }

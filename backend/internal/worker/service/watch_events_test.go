@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -22,6 +23,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/util/sqltime"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -947,11 +949,57 @@ func TestWatchEvents_BindStreamRefusalReleasesOwnership(t *testing.T) {
 	waitAgentWatchCount(t, svc, "agent-1", 0)
 }
 
-// TestWatchEvents_PromoteAfterCancelSkipsReplay pins the ownership re-check
-// before the catch-up burst: a promote revision racing a cancel must NOT ship a
-// catch-up replay to a retired session. Without the re-check the replay loop
-// only gated sends on transport-death, not ownership, so a superseded session
-// could emit a full catch-up burst the client no longer reads.
+// cancelOnEventWriter cancels its bound stream, once, right after the session
+// sends the first event for which cancelAt holds. The cancel then lands at a
+// fixed point of the session's work, whatever the scheduler does.
+type cancelOnEventWriter struct {
+	*testResponseWriter
+	cancelAt  func(*leapmuxv1.WatchEventsResponse) bool
+	cancelled atomic.Bool
+}
+
+func (w *cancelOnEventWriter) SendStream(m *leapmuxv1.InnerStreamMessage) error {
+	err := w.testResponseWriter.SendStream(m)
+	var resp leapmuxv1.WatchEventsResponse
+	if proto.Unmarshal(m.GetPayload(), &resp) == nil && w.cancelAt(&resp) && w.cancelled.CompareAndSwap(false, true) {
+		w.deliverStreamRequest(nil, true)
+	}
+	return err
+}
+
+// subscribeAgentNotify opens a watch of agent-1 in NOTIFY mode through writer.
+func subscribeAgentNotify(t *testing.T, svc *Service, d testRPCDispatcher, writer channel.ResponseWriter) {
+	t.Helper()
+	subscribe, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{
+		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
+	})
+	require.NoError(t, err)
+	dispatchTestRequest(d, context.Background(), channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
+		Method: leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, Payload: subscribe,
+	}, writer)
+	waitAgentWatchCount(t, svc, "agent-1", 1)
+}
+
+// promoteAgentToFull sends revision 1, which promotes the watch of agent-1 to
+// FULL mode and so starts its catch-up replay.
+func promoteAgentToFull(t *testing.T, w *testResponseWriter) {
+	t.Helper()
+	promote, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{
+		UpdateId: 1,
+		Agents:   []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
+	})
+	require.NoError(t, err)
+	w.deliverStreamRequest(promote, false)
+}
+
+// TestWatchEvents_PromoteAfterCancelSkipsReplay pins that a cancel that retires
+// the session while it applies a promote revision keeps the catch-up replay
+// from going out. The ownership re-check before the burst returns early, and
+// the replay sink sends nothing for a session that is no longer current.
+//
+// The cancel must arrive inside apply. A promote that the session applies whole
+// before the cancel arrives replays correctly, so a test that sends the cancel
+// after the promote and waits would depend on the scheduler.
 func TestWatchEvents_PromoteAfterCancelSkipsReplay(t *testing.T) {
 	t.Parallel()
 
@@ -961,27 +1009,60 @@ func TestWatchEvents_PromoteAfterCancelSkipsReplay(t *testing.T) {
 		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
-	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
-		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
-	}, w)
-	waitAgentWatchCount(t, svc, "agent-1", 1)
+	// apply sends the ack of the promote after it registers the promote and
+	// before its last ownership check, so the cancel lands between the two.
+	cancelling := &cancelOnEventWriter{testResponseWriter: w, cancelAt: func(resp *leapmuxv1.WatchEventsResponse) bool {
+		return resp.GetUpdateAck().GetUpdateId() == 1
+	}}
+	subscribeAgentNotify(t, svc, d, cancelling)
 	require.Equal(t, 0, countCatchUpCompletes(w))
 
-	// Promote to FULL, then cancel the stream before the replay can land. The
-	// ownership re-check in apply must suppress the catch-up burst.
-	promote, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{
-		UpdateId: 1,
-		Agents:   []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
-	})
-	require.NoError(t, err)
-	w.deliverStreamRequest(promote, false)
-	w.deliverStreamRequest(nil, true) // cancel retires ownership via OnCancel
+	promoteAgentToFull(t, w)
 
-	// Give the apply goroutine a moment to observe the cancel; the replay must
-	// be suppressed (no CatchUpComplete for the retired session).
-	time.Sleep(100 * time.Millisecond)
+	// The session sends its End frame after apply returns, so every send of the
+	// promote comes before it.
+	waitStreamEnded(t, w)
+	require.True(t, cancelling.cancelled.Load(), "the session must send the ack of the promote")
 	assert.Equal(t, 0, countCatchUpCompletes(w),
-		"a promote racing a cancel must not ship a catch-up replay")
+		"a cancel that retires the session before its catch-up burst must keep the burst from going out")
+}
+
+// TestWatchEvents_CancelDuringTheCatchUpBurstStopsIt pins that the catch-up
+// replay stops once its session no longer serves the stream. The channel sends
+// a frame on a stream that the client cancelled, so the session itself must
+// stop: otherwise the rest of the burst, a page of messages and its
+// CatchUpComplete, goes out to a client that no longer reads it.
+func TestWatchEvents_CancelDuringTheCatchUpBurstStopsIt(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+		ID: "agent-1", WorkingDir: "/tmp",
+	}))
+	for i := range 3 {
+		_, err := createMessageRow(ctx, svc.Queries, db.CreateMessageParams{ContentCompression: leapmuxv1.ContentCompression_CONTENT_COMPRESSION_NONE,
+			ID: fmt.Sprintf("msg-%d", i+1), AgentID: "agent-1",
+			Source: leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, Content: []byte("hi"),
+			CreatedAt: sqltime.NewSQLiteTime(time.Now()),
+		})
+		require.NoError(t, err)
+	}
+
+	// The replay sends CatchUpStart before its first page of messages.
+	cancelling := &cancelOnEventWriter{testResponseWriter: w, cancelAt: func(resp *leapmuxv1.WatchEventsResponse) bool {
+		return resp.GetAgentEvent().GetCatchUpStart() != nil
+	}}
+	subscribeAgentNotify(t, svc, d, cancelling)
+	promoteAgentToFull(t, w)
+
+	waitStreamEnded(t, w)
+	require.True(t, cancelling.cancelled.Load(), "the replay must send its CatchUpStart")
+	events := decodeAgentEvents(w)
+	require.NotEmpty(t, events)
+	assert.NotNil(t, events[len(events)-1].GetCatchUpStart(),
+		"no event of the replay may follow the cancel, but the last event is %v", events[len(events)-1])
+	assert.Equal(t, 0, countCatchUpCompletes(w))
 }
 
 // TestReplayIncludesBackgroundTasksSnapshot pins the background-task step of
@@ -1070,7 +1151,7 @@ func TestReplayOfAChildTabSurvivesAFailedRootGoalRead(t *testing.T) {
 	replay := func(t *testing.T) replayStages {
 		t.Helper()
 		writer := &testResponseWriter{channelID: "child-goal-replay"}
-		svc.replayAgentCatchUp(newReplaySink(writer, 0, nil), &leapmuxv1.WatchAgentEntry{AgentId: childID}, row, nil)
+		svc.replayAgentCatchUp(newReplaySink(writer, 0, nil, nil), &leapmuxv1.WatchAgentEntry{AgentId: childID}, row, nil)
 		var seen replayStages
 		for _, stream := range writer.streamsSnapshot() {
 			event := decodeWatchAgentEvent(t, stream)

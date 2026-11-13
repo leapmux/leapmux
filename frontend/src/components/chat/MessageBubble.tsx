@@ -5,6 +5,7 @@ import type { MessageRenderCache } from './messageRenderCache'
 import type { MessageUiKey } from './messageUiKeys'
 import type { ChatRow } from './model/row'
 import type { RowRenderContext, ToolProgressSource } from './renderContext'
+import type { RenderReadiness } from './renderReadiness'
 import type { ToolCallMeta } from './results/tools/meta'
 import type { RowExtractionContext } from './rowModelCache'
 import type { PreparedMessage } from './rowPreparation'
@@ -87,54 +88,79 @@ function sourceLabel(source: MessageSource): string {
   }
 }
 
-function injectCopyButtons(container: HTMLElement): Array<() => void> {
-  const disposers: Array<() => void> = []
-  const preElements = container.querySelectorAll('pre')
-  for (const pre of preElements) {
-    if (pre.querySelector('.copy-code-button'))
-      continue
-    // A large Markdown body degrades to one plain-text preview in a <pre>. Its row
-    // action copies the complete source; a code button here would copy the limited view.
-    if (pre.hasAttribute('data-large-text-display'))
-      continue
-    // Skip shiki <pre> inside tool messages — copy is handled by ToolHeaderActions.
-    if (pre.closest('[data-tool-message]'))
-      continue
-    // The raw hidden-message JSON needs no guard here: it now renders as token <span>s
-    // (JsonHighlightHtml), not a <pre>, so this querySelectorAll('pre') sweep never sees
-    // it. Copy for that block is handled by the row's ToolHeaderActions.
+/**
+ * Give `pre` a copy button, and return the function that removes it again. Returns
+ * undefined for a `<pre>` that needs no button.
+ */
+function injectCopyButton(pre: HTMLPreElement): (() => void) | undefined {
+  if (pre.querySelector('.copy-code-button'))
+    return undefined
+  // Skip shiki <pre> inside tool messages — copy is handled by ToolHeaderActions.
+  if (pre.closest('[data-tool-message]'))
+    return undefined
+  // The raw hidden-message JSON needs no guard here: it now renders as token <span>s
+  // (JsonHighlightHtml), not a <pre>, so the querySelectorAll('pre') sweep never sees
+  // it. Copy for that block is handled by the row's ToolHeaderActions.
 
-    const host = document.createElement('div')
-    host.style.display = 'contents'
+  const host = document.createElement('div')
+  host.style.display = 'contents'
 
-    const dispose = render(() => {
-      const { copied, copy } = useCopyButton(() => {
-        const code = pre.querySelector('code')
-        return code?.textContent || pre.textContent || ''
-      })
-      return (
-        <IconButton
-          class="copy-code-button"
-          icon={copied()
-            ? Check
-            : Copy}
-          title={copied()
-            ? 'Copied'
-            : 'Copy'}
-          onClick={copy}
-        />
-      )
-    }, host)
+  const dispose = render(() => {
+    const { copied, copy } = useCopyButton(() => {
+      const code = pre.querySelector('code')
+      return code?.textContent || pre.textContent || ''
+    })
+    return (
+      <IconButton
+        class="copy-code-button"
+        icon={copied()
+          ? Check
+          : Copy}
+        title={copied()
+          ? 'Copied'
+          : 'Copy'}
+        onClick={copy}
+      />
+    )
+  }, host)
 
-    disposers.push(dispose)
-    // Mark the <pre> so the copy-button positioning (absolute, top-right) and its
-    // relative anchor apply regardless of where the <pre> lives -- a markdown body or a
-    // non-markdown block (e.g. a result-divider error <pre>). Without this the button
-    // anchored only inside `.markdownContent` and fell inline elsewhere.
-    pre.classList.add(codeCopyHostClass)
-    pre.appendChild(host)
+  // Mark the <pre> so the copy-button positioning (absolute, top-right) and its
+  // relative anchor apply regardless of where the <pre> lives -- a markdown body or a
+  // non-markdown block (e.g. a result-divider error <pre>). Without this the button
+  // anchored only inside `.markdownContent` and fell inline elsewhere.
+  pre.classList.add(codeCopyHostClass)
+  pre.appendChild(host)
+  // Disposing the root empties the host but leaves it in the <pre>, so remove it
+  // too. A <pre> that outlives the injection would otherwise collect one empty host
+  // for each injection that follows.
+  return () => {
+    dispose()
+    host.remove()
   }
-  return disposers
+}
+
+/**
+ * Give a copy button to each `<pre>` that `pres` yields, until the idle period runs
+ * out, and add each removal function to `disposers`. Handles one `<pre>` at least,
+ * so the work advances even in an idle period that has no time left.
+ *
+ * Returns true when `pres` has no `<pre>` left, and false when it may still hold one.
+ */
+function injectCopyButtons(
+  pres: Iterator<HTMLPreElement>,
+  deadline: IdleDeadline,
+  disposers: Array<() => void>,
+): boolean {
+  for (;;) {
+    const next = pres.next()
+    if (next.done === true)
+      return true
+    const dispose = injectCopyButton(next.value)
+    if (dispose !== undefined)
+      disposers.push(dispose)
+    if (deadline.timeRemaining() <= 0)
+      return false
+  }
 }
 
 /**
@@ -203,6 +229,14 @@ interface MessageBubbleProps {
   host?: MessageBubbleHost
   /** Hidden premeasurement pass: keep layout structure, skip interactive/expensive chrome. */
   premeasureMode?: boolean
+  /**
+   * The readiness scope of this row copy. Each body that a worker renders -- a
+   * Markdown body, or an edit diff (FileEditDiffBody) -- reports to it while its
+   * render is pending, and a diff view reports to it until its last line mounts,
+   * so the copy stays hidden and commits no height until every body is ready.
+   * Absent outside ChatView.
+   */
+  readiness?: RenderReadiness
 }
 
 export const MessageBubble: Component<MessageBubbleProps> = (props) => {
@@ -448,6 +482,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     get setMessageUiState() { return props.premeasureMode ? undefined : props.host?.setMessageUiState },
     get premeasureMode() { return props.premeasureMode === true },
     get rowOffscreen() { return props.host?.rowOffscreen },
+    get readiness() { return props.readiness },
   }
 
   // The row's own PROSE: what the agent said, what it thought, the plan it proposed,
@@ -540,60 +575,84 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     let disposers: Array<() => void> = []
     let idle: number | undefined
     let observer: MutationObserver | undefined
-    let reinjectAfterSelection = false
+    // The <pre> elements of the current content that the injection has not reached
+    // yet. Undefined when the next slice must start over the current content.
+    let pendingPres: Iterator<HTMLPreElement> | undefined
+    let resumeAfterSelection = false
     const isTextSelectionActive = () => untrack(() => props.host?.textSelectionActive?.() ?? false)
     const disposeAll = () => {
       for (const d of disposers)
         d()
       disposers = []
     }
-    // (Re-)inject copy buttons over the CURRENT content. Disconnect the observer across
-    // the injection so our own appendChild(host) writes don't re-trigger it (which would
-    // loop). Dispose the prior roots first: an async re-render replaces the markdown
-    // <div>'s innerHTML wholesale, orphaning the old buttons' Solid roots, so we drop them
-    // and re-apply to the new <pre> elements.
-    const reinject = () => {
-      observer?.disconnect()
-      disposeAll()
-      disposers = injectCopyButtons(el)
-      observer?.observe(el, { childList: true, subtree: true })
+    // An injection under a live selection would move the selected nodes. While a
+    // selection is active, return true, and resume the injection when it ends.
+    const waitsForSelection = (): boolean => {
+      if (!isTextSelectionActive())
+        return false
+      resumeAfterSelection = true
+      return true
     }
-    // Defer (re-)injection to idle: the querySelectorAll('pre') + per-<pre> button render
+    // Inject copy buttons into the CURRENT content for the rest of one idle period.
+    // Returns true when the content has no <pre> left. Disconnect the observer across
+    // the slice so our own appendChild(host) writes don't re-trigger it (which would
+    // loop). A new run disposes the prior roots first: an async re-render replaces the
+    // markdown <div>'s innerHTML wholesale, orphaning the old buttons' Solid roots, so
+    // we drop them and re-apply to the new <pre> elements.
+    const injectSlice = (deadline: IdleDeadline): boolean => {
+      observer?.disconnect()
+      if (pendingPres === undefined) {
+        disposeAll()
+        pendingPres = el.querySelectorAll('pre').values()
+      }
+      const done = injectCopyButtons(pendingPres, deadline, disposers)
+      observer?.observe(el, { childList: true, subtree: true })
+      if (done)
+        pendingPres = undefined
+      return done
+    }
+    // Defer injection to idle: the querySelectorAll('pre') + per-<pre> button render
     // is post-mount chrome, not part of the first paint. A row that flings past unmounts
     // and cancels the handle before it fires, so the work is skipped for rows that scroll
-    // by and runs only for rows that settle visible. The debounce also coalesces the burst
-    // of mutations from one re-render into a single re-injection.
-    const schedule = () => {
-      if (isTextSelectionActive()) {
-        reinjectAfterSelection = true
-        return
-      }
+    // by and runs only for rows that settle visible. The injection continues in the next
+    // idle period while <pre> elements remain: a body can hold thousands of code blocks,
+    // and one Solid root for each in a single task would hold the main thread for
+    // seconds.
+    const requestSlice = (): void => {
       if (idle !== undefined)
         cancelIdle(idle)
-      idle = requestIdle(() => {
+      idle = undefined
+      if (waitsForSelection())
+        return
+      idle = requestIdle((deadline) => {
         idle = undefined
-        if (isTextSelectionActive()) {
-          reinjectAfterSelection = true
+        if (waitsForSelection())
           return
-        }
-        reinject()
+        if (!injectSlice(deadline))
+          requestSlice()
       })
+    }
+    // Start over the current content. The debounce also coalesces the burst of
+    // mutations from one re-render into a single new run.
+    const schedule = () => {
+      pendingPres = undefined
+      requestSlice()
     }
     createEffect(() => {
       if (props.host?.textSelectionActive?.())
         return
-      if (!reinjectAfterSelection)
+      if (!resumeAfterSelection)
         return
-      reinjectAfterSelection = false
-      schedule()
+      resumeAfterSelection = false
+      requestSlice()
     })
-    // Re-apply on a CONTENT change, not just the first render: a code block's body is
-    // produced by renderMarkdown, whose syntax highlighting now lands ASYNCHRONOUSLY (the
-    // worker's highlighted HTML replaces the plain placeholder's innerHTML, wiping the
-    // injected buttons). A one-shot injection raced that swap -- inject before it and the
-    // button is wiped; after it and the button lands -- so a code block "sometimes" had no
-    // copy button. Observing contentRef re-injects after the swap and after an
-    // expand-collapse change, regardless of timing.
+    // Re-apply on a CONTENT change, not just the first render: a Markdown body's HTML
+    // lands ASYNCHRONOUSLY from the worker (it replaces the body's pending skeleton, and a
+    // theme change replaces the HTML again, wiping the injected buttons). A one-shot
+    // injection raced that swap -- inject before it and the button is wiped; after it and
+    // the button lands -- so a code block "sometimes" had no copy button. Observing
+    // contentRef re-injects after the swap and after an expand-collapse change,
+    // regardless of timing.
     //
     // But IGNORE mutations the copy buttons cause themselves -- the IconButton swapping its
     // Copy<->Check icon (and title) when clicked is a subtree mutation. Re-injecting on

@@ -8,12 +8,13 @@ import { MIMO_TASK_ACTION, MIMO_TASK_STATUS, MIMO_TOOL, MIMO_TOOL_STATUS } from 
 import { ALL_PROVIDERS } from '~/generated/contracts/providers'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolStart } from '~/test-support/copilotFixtures'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
 import { makeTranscriptMessage } from '~/test-support/messageFactory'
 import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
 import { providerRow } from '~/test-support/toolCallFixture'
 import { createTranscriptScenario } from '~/test-support/transcriptScenario'
-import '~/components/chat/providers/testMocks'
+import '~/components/chat/providers'
 
 // The provider rendering corpus: the extraction and jsdom-rendering assertions
 // the E2E suite used to prove with a browser, a worker and a database. Each
@@ -58,6 +59,8 @@ async function bubbleText(scenario: ReturnType<typeof createTranscriptScenario>,
     if ((rendered.container.textContent ?? '').trim() === '')
       throw new Error('The bubble drew nothing')
   })
+  // A Markdown body or a diff of the bubble shows once its worker reply lands.
+  await settleWorkerReplies()
   const text = rendered.container.textContent ?? ''
   rendered.unmount()
   return text
@@ -70,6 +73,8 @@ async function bubbleDom<T>(scenario: ReturnType<typeof createTranscriptScenario
     if ((rendered.container.textContent ?? '').trim() === '')
       throw new Error('The bubble drew nothing')
   })
+  // A Markdown body or a diff of the bubble shows once its worker reply lands.
+  await settleWorkerReplies()
   try {
     return read(rendered.container)
   }

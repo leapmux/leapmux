@@ -2,13 +2,13 @@ import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { MIMO_ACTOR_ACTION, MIMO_TOOL } from '~/generated/contracts/mimo-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
 import { renderMessageContent } from '../messageContentRenderer'
 import { providerFor } from './registry'
 import { input } from './testUtils'
 import './index'
-import './testMocks'
 
 describe.each([
   AgentProvider.CLAUDE_CODE,
@@ -107,8 +107,9 @@ describe.each([
     }
   }
 
-  it('shows the pending prompt as formatted Markdown', () => {
+  it('shows the pending prompt as formatted Markdown', async () => {
     const { container } = renderRequest(false)
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Inspect project structure (explore)')
     expect(container.querySelector('strong')?.textContent).toBe('Instruction')
     expect(container.querySelector('ol li')?.textContent).toContain('Read the entry points.')
@@ -121,6 +122,7 @@ describe.each([
 
   it('keeps a completed request compact and lets the user open its prompt', async () => {
     const { container, getByRole } = renderRequest(true)
+    await settleWorkerReplies()
     expect(container.textContent).not.toContain('Instruction')
     await fireEvent.click(getByRole('button', { name: 'Show prompt' }))
     expect(container.querySelector('strong')?.textContent).toBe('Instruction')

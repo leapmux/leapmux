@@ -1756,10 +1756,22 @@ export function treeRow(page: Page, name: string, options: { exact?: boolean } =
 
 /**
  * Read every visible tree row's label in display order to check sorting.
- * The row text also contains its mounted three-dot menu items, even when that menu is closed. Read the label alone.
+ * Once its three-dot menu has opened, the row text also contains the menu's items, which stay mounted after it closes. Read the label alone.
  */
 export function treeRowNames(page: Page): Locator {
   return page.locator(`[data-testid="tree-row"]${VISIBLE} [data-testid="tree-row-name"]`)
+}
+
+/** Select the `filter` tab of the file tree, open `fileName` from it, and wait for the diff mode toolbar of the file viewer. */
+export async function openFileInDiffMode(page: Page, filter: 'changed' | 'staged', fileName: string): Promise<void> {
+  await page.locator(`[data-testid="files-filter-${filter}"]`).click()
+  await treeRow(page, fileName).click()
+  await expect(page.locator('[data-testid="diff-mode-toolbar"]')).toBeVisible()
+}
+
+/** The visible elements whose whole text is `text`. */
+export function visibleText(page: Page, text: string): Locator {
+  return visibleOnly(page.getByText(text, { exact: true }))
 }
 
 /**
@@ -2313,8 +2325,9 @@ export async function boxOf(locator: Locator): Promise<{ x: number, y: number, w
  * Pick an option from a `DropdownMenu`.
  *
  * The app renders no native `<select>` any more (see the dropdown rule in
- * AGENTS.md), so `selectOption` has nothing to drive. A menu keeps its items
- * mounted, so this helper scopes the click to the row that owns them.
+ * AGENTS.md), so `selectOption` has nothing to drive. A menu mounts its items at
+ * its first open and keeps them mounted, so this helper opens the menu and
+ * scopes the click to the row that owns them.
  */
 // `~/components/common/LoadingMenu` writes these test IDs. `src/test-support/menu.ts` holds the equivalent Vitest query templates.
 // DOM queries and Playwright locators use different APIs, so they cannot share query code. Apply test-ID changes in all three files.

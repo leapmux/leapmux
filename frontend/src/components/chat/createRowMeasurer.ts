@@ -1,3 +1,4 @@
+import type { RenderReadinessScope } from './renderReadiness'
 import { batch } from 'solid-js'
 import { rowLayoutMeasurement } from './rowLayoutMeasurement'
 
@@ -20,11 +21,40 @@ export interface ResizeObserverLike {
   disconnect: () => void
 }
 
+/**
+ * The readiness of one mounted row copy, as the measurer reads it: whether the
+ * height of the copy is final, and the moment it turns final.
+ */
+export type RowContentReadiness = Pick<RenderReadinessScope, 'measurable' | 'onMeasurable'>
+
 export interface RowMeasurer {
-  /** Observe a freshly-mounted row and take its immediate measurement. */
-  attachRow: (id: string, el: HTMLElement) => void
+  /**
+   * Observe a freshly-mounted row and take its immediate measurement.
+   *
+   * `readiness` is the readiness of this row copy. While it is not measurable, the
+   * copy waits for content (a Markdown body or an edit diff that a worker still
+   * computes), or a body mounts new content behind the content that it shows (a
+   * diff view that switches between unified and split). Its height is wrong by
+   * exactly that content, so the measurer reads nothing from it: committing the
+   * height would move every row below twice. When the copy turns measurable, the
+   * measurer measures it again at the next flush, whether or not it resized: the
+   * content usually resizes it, but nothing guarantees that, and a missed read
+   * would leave the row unmeasured. Without `readiness`, the row is always
+   * measurable.
+   *
+   * Call it within the row copy's reactive owner when it passes `readiness`: the
+   * subscription to the copy's readiness ends when that owner is disposed.
+   */
+  attachRow: (id: string, el: HTMLElement, readiness?: RowContentReadiness) => void
   /** Stop observing an unmounting row (its cached height is kept for a flash-free return). */
   detachRow: (el: HTMLElement) => void
+  /**
+   * Measure the mounted row `id` again at the next flush, whether or not it
+   * resized: its height key changed, and the height that it shows may hold under
+   * the new key, which only a read can confirm. A row that is not mounted has
+   * nothing to read, and a copy that is not measurable waits for its turn.
+   */
+  measureAgain: (id: string) => void
   /** Whether at least one visible-row measurement is queued behind the deferral gate. */
   hasDeferredMeasurements: () => boolean
   /** Commit any measurements queued while visible measurement commits were deferred. */
@@ -50,6 +80,12 @@ export interface RowMeasurerDeps {
    * so it is owned by the virtualizer and threaded in rather than owned here.
    */
   mountedIds: Set<string>
+  /**
+   * Called when the last element of row `id` detaches, after the measurer removes
+   * the id from `mountedIds`. A detach of an element that a newer element of the
+   * same row replaced does not call it.
+   */
+  onRowUnmounted?: (id: string) => void
   /**
    * Schedule `flush` to run before paint. Default: queueMicrotask -- a microtask
    * queued from a ResizeObserver callback runs after the callback but BEFORE paint, so
@@ -96,6 +132,8 @@ export interface RowMeasureFlushStats {
   reads: number
   committed: number
   skippedDetached: number
+  /** Rows not read because they are not measurable: they wait for content, or replace it (see `RowMeasurer.attachRow`). */
+  skippedNotReady: number
   skippedUnchanged: number
 }
 
@@ -117,6 +155,10 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
   // mounted-protection only for the element that still owns it, or it would un-protect
   // the freshly-mounted row from height-cache eviction.
   const idToEl = new Map<string, Element>()
+  // The readiness of each attached row copy that passed one. Keyed by ELEMENT, not by
+  // id: under an attach-before-detach remount, two copies of one id coexist, and each
+  // copy waits for its own content.
+  const readinessByEl = new WeakMap<Element, RowContentReadiness>()
   const pending = new Set<Element>()
   const deferred = new Set<Element>()
   const imageListeners = new Map<HTMLElement, EventListener>()
@@ -129,12 +171,17 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
 
   const readMeasurement = (
     el: Element,
-    stats?: Pick<RowMeasureFlushStats, 'reads' | 'skippedDetached' | 'skippedUnchanged'>,
+    stats?: Pick<RowMeasureFlushStats, 'reads' | 'skippedDetached' | 'skippedNotReady' | 'skippedUnchanged'>,
   ): MeasurementRead | undefined => {
     const id = elToId.get(el)
     if (id === undefined || !el.isConnected || idToEl.get(id) !== el) {
       if (stats)
         stats.skippedDetached++
+      return undefined
+    }
+    if (readinessByEl.get(el)?.measurable() === false) {
+      if (stats)
+        stats.skippedNotReady++
       return undefined
     }
     const height = rowLayoutMeasurement(el)
@@ -176,6 +223,7 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
       reads: 0,
       committed: 0,
       skippedDetached: 0,
+      skippedNotReady: 0,
       skippedUnchanged: 0,
     }
     for (const el of pending) {
@@ -191,8 +239,9 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
       return
     }
     // Commit all measurements in one reactive batch so the offset map, the row
-    // transforms, and the scroll position update once. The layout check rejects
-    // unready reads before they reach the height cache.
+    // transforms, and the scroll position update once. readMeasurement already
+    // dropped the unready reads, so none reaches the height cache: a row copy that
+    // is not measurable (see attachRow), and a row whose layout check fails.
     stats.committed = commitReads(reads)
     deps.onFlush?.(stats)
   }
@@ -251,14 +300,31 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
     imageListeners.delete(el)
   }
 
-  const attachRow = (id: string, el: HTMLElement) => {
+  const attachRow = (id: string, el: HTMLElement, readiness?: RowContentReadiness) => {
     elToId.set(el, id)
     idToEl.set(id, el)
     deps.mountedIds.add(id)
     // Each attach takes a fresh read even when the previous element was the same.
     lastMeasurementByEl.delete(el)
+    if (readiness !== undefined) {
+      readinessByEl.set(el, readiness)
+      // A copy need not resize when its content lands, or when a body shows the
+      // content that replaced the old, so its turn to measurable queues a read of
+      // its own. A copy that a newer element replaced, or that left the document,
+      // has nothing left to measure.
+      readiness.onMeasurable(() => {
+        if (idToEl.get(id) !== el || !el.isConnected)
+          return
+        pending.add(el)
+        scheduleFlush()
+      })
+    }
+    else {
+      readinessByEl.delete(el)
+    }
     observeImages(el)
-    // Measure a mounted row immediately. The observer retries an unready read.
+    // Measure a mounted row immediately. The resize observer retries a read that
+    // the layout check rejected, because the row resizes once it lays out.
     const read = readMeasurement(el)
     if (shouldDeferMeasurement())
       deferred.add(el)
@@ -272,13 +338,15 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
     ro?.unobserve(el)
     pending.delete(el)
     deferred.delete(el)
+    readinessByEl.delete(el)
     const id = elToId.get(el)
     // Relinquish the id's mounted-protection only if THIS element still owns it. Under
     // an attach-before-detach remount the id was already re-claimed by a new element, so
     // deleting it here would un-protect the now-mounted row from height-cache eviction
     // (a measure overflowing the cap could then evict its just-measured height, forcing a
     // fallback-height + visible re-pin). The newer element's later detach clears it.
-    if (id !== undefined && idToEl.get(id) === el) {
+    const unmounted = id !== undefined && idToEl.get(id) === el
+    if (unmounted) {
       deps.mountedIds.delete(id)
       idToEl.delete(id)
     }
@@ -287,6 +355,16 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
     // pending measurement to the wrong id. The cached HEIGHT (keyed by id in the
     // virtualizer, not here) is untouched, so re-entering the row stays flash-free.
     elToId.delete(el)
+    if (unmounted)
+      deps.onRowUnmounted?.(id)
+  }
+
+  const measureAgain = (id: string) => {
+    const el = idToEl.get(id)
+    if (el === undefined)
+      return
+    pending.add(el)
+    scheduleFlush()
   }
 
   const dispose = () => {
@@ -305,6 +383,7 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
   return {
     attachRow,
     detachRow,
+    measureAgain,
     hasDeferredMeasurements: () => deferred.size > 0,
     flushDeferredMeasurements,
     flushNow: flush,

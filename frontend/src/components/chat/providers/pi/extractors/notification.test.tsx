@@ -11,7 +11,7 @@ await import('../plugin')
 
 // A single Pi notification renders as a one-element thread under the Pi provider,
 // the path MessageBubble uses for a standalone notification.
-const renderPiText = (parsed: unknown): string => renderThreadText([parsed], AgentProvider.PI)
+const renderPiText = (parsed: unknown): Promise<string> => renderThreadText([parsed], AgentProvider.PI)
 const rendersWithIcon = (parsed: unknown): boolean => renderThreadHasIcon([parsed], AgentProvider.PI)
 
 describe('piNotificationEntry compaction and retries', () => {
@@ -57,8 +57,8 @@ describe('piNotificationEntry compaction and retries', () => {
     })).toBeNull()
   })
 
-  it('does not print an unknown summary source', () => {
-    expect(renderPiText({ type: 'summarization_retry_attempt_start', source: 'futureSource' })).toBe('Retrying the summary')
+  it('does not print an unknown summary source', async () => {
+    expect(await renderPiText({ type: 'summarization_retry_attempt_start', source: 'futureSource' })).toBe('Retrying the summary')
   })
 
   it('reads the post size from estimatedTokensAfter', () => {
@@ -99,21 +99,21 @@ describe('piNotificationEntry compaction and retries', () => {
       ])
   })
 
-  it('words the branch summary source', () => {
-    expect(renderPiText({ type: 'summarization_retry_attempt_start', source: 'branchSummary' })).toBe('Retrying the branch summary')
+  it('words the branch summary source', async () => {
+    expect(await renderPiText({ type: 'summarization_retry_attempt_start', source: 'branchSummary' })).toBe('Retrying the branch summary')
   })
   // Pi's compaction pair and its two retry families are STRUCTURED entries, so the
   // shared formatter writes their sentences. That is what makes a stall on Pi read the
   // same as a stall on Claude, where the two wordings used to differ.
-  const line = (event: Record<string, unknown>): string => renderPiText(event)
+  const line = (event: Record<string, unknown>): Promise<string> => renderPiText(event)
 
-  it('draws no stored compaction start, whatever the reason', () => {
+  it('draws no stored compaction start, whatever the reason', async () => {
     for (const reason of ['manual', 'threshold', 'mystery'])
-      expect(line({ type: 'compaction_start', reason })).toBe('')
+      expect(await line({ type: 'compaction_start', reason })).toBe('')
   })
 
-  it('draws compaction_end as "Context compacted (reason, pre)" with the pre size', () => {
-    expect(line({
+  it('draws compaction_end as "Context compacted (reason, pre)" with the pre size', async () => {
+    expect(await line({
       type: 'compaction_end',
       reason: 'threshold',
       result: { tokensBefore: 12345 },
@@ -121,14 +121,14 @@ describe('piNotificationEntry compaction and retries', () => {
       .toBe('Context compacted (threshold, 12.3k)')
   })
 
-  it('carries the reason through as the trigger for every reason value', () => {
-    expect(line({
+  it('carries the reason through as the trigger for every reason value', async () => {
+    expect(await line({
       type: 'compaction_end',
       reason: 'manual',
       result: { tokensBefore: 200000 },
     }))
       .toBe('Context compacted (manual, 200.0k)')
-    expect(line({
+    expect(await line({
       type: 'compaction_end',
       reason: 'overflow',
       result: { tokensBefore: 200000 },
@@ -136,14 +136,14 @@ describe('piNotificationEntry compaction and retries', () => {
       .toBe('Context compacted (overflow, 200.0k)')
   })
 
-  it('draws the reason alone when tokensBefore is absent', () => {
-    expect(line({ type: 'compaction_end', reason: 'manual', result: {} })).toBe('Context compacted (manual)')
+  it('draws the reason alone when tokensBefore is absent', async () => {
+    expect(await line({ type: 'compaction_end', reason: 'manual', result: {} })).toBe('Context compacted (manual)')
   })
 
   // `result.tokensBefore` is an estimate that can be non-integer; the shared
   // formatter rounds it rather than leaking decimals.
-  it('rounds a fractional pre size from result.tokensBefore', () => {
-    expect(line({
+  it('rounds a fractional pre size from result.tokensBefore', async () => {
+    expect(await line({
       type: 'compaction_end',
       reason: 'manual',
       result: { tokensBefore: 512.7 },
@@ -151,35 +151,35 @@ describe('piNotificationEntry compaction and retries', () => {
       .toBe('Context compacted (manual, 513)')
   })
 
-  it('draws the pre size alone when the reason is absent', () => {
-    expect(line({
+  it('draws the pre size alone when the reason is absent', async () => {
+    expect(await line({
       type: 'compaction_end',
       result: { tokensBefore: 12345 },
     })).toBe('Context compacted (12.3k)')
   })
 
-  it('draws a bare "Context compacted" when neither reason nor tokensBefore is present', () => {
-    expect(line({ type: 'compaction_end', result: {} })).toBe('Context compacted')
+  it('draws a bare "Context compacted" when neither reason nor tokensBefore is present', async () => {
+    expect(await line({ type: 'compaction_end', result: {} })).toBe('Context compacted')
   })
 
-  it('draws a failed compaction as an error without a success boundary', () => {
+  it('draws a failed compaction as an error without a success boundary', async () => {
     const failed = {
       type: 'compaction_end',
       reason: 'manual',
       aborted: false,
       errorMessage: 'Nothing to compact (session too small)',
     }
-    expect(line(failed)).toBe('Compaction failed (Nothing to compact (session too small))')
+    expect(await line(failed)).toBe('Compaction failed (Nothing to compact (session too small))')
     expect(piCompactionBoundary(input(failed))).toBeNull()
-    expect(line({ type: 'compaction_end', result: null })).toBe('Compaction failed')
+    expect(await line({ type: 'compaction_end', result: null })).toBe('Compaction failed')
   })
 
-  it('flags an aborted compaction explicitly', () => {
-    expect(line({ type: 'compaction_end', aborted: true, reason: 'threshold' })).toBe('Context compaction aborted')
+  it('flags an aborted compaction explicitly', async () => {
+    expect(await line({ type: 'compaction_end', aborted: true, reason: 'threshold' })).toBe('Context compaction aborted')
   })
 
-  it('draws auto_retry_start with the attempt and the wait', () => {
-    expect(line({
+  it('draws auto_retry_start with the attempt and the wait', async () => {
+    expect(await line({
       type: 'auto_retry_start',
       attempt: 1,
       maxAttempts: 3,
@@ -187,8 +187,8 @@ describe('piNotificationEntry compaction and retries', () => {
     })).toBe('API retry 1/3 in 2s')
   })
 
-  it('draws auto_retry_start with the error beside the wait', () => {
-    expect(line({
+  it('draws auto_retry_start with the error beside the wait', async () => {
+    expect(await line({
       type: 'auto_retry_start',
       attempt: 1,
       maxAttempts: 3,
@@ -198,19 +198,19 @@ describe('piNotificationEntry compaction and retries', () => {
       .toBe('API retry 1/3 in 2s (overloaded)')
   })
 
-  it('draws a retry that worked as an end to the stall', () => {
-    expect(line({ type: 'auto_retry_end', success: true, attempt: 2 })).toBe('API retry 2 succeeded')
+  it('draws a retry that worked as an end to the stall', async () => {
+    expect(await line({ type: 'auto_retry_end', success: true, attempt: 2 })).toBe('API retry 2 succeeded')
   })
 
-  it('draws a retry that gave up, with its final error', () => {
-    expect(line({ type: 'auto_retry_end', success: false, finalError: 'gave up' })).toBe('API retry gave up (gave up)')
-    expect(line({ type: 'auto_retry_end', success: false })).toBe('API retry gave up')
+  it('draws a retry that gave up, with its final error', async () => {
+    expect(await line({ type: 'auto_retry_end', success: false, finalError: 'gave up' })).toBe('API retry gave up (gave up)')
+    expect(await line({ type: 'auto_retry_end', success: false })).toBe('API retry gave up')
   })
 
   // The three summarization events state a stall in the SUMMARY that compaction
   // writes, which is a different thing from an API stall and reads differently.
-  it('draws the summarization retries under their own scope', () => {
-    expect(line({
+  it('draws the summarization retries under their own scope', async () => {
+    expect(await line({
       type: 'summarization_retry_scheduled',
       attempt: 1,
       maxAttempts: 3,
@@ -218,9 +218,9 @@ describe('piNotificationEntry compaction and retries', () => {
       errorMessage: 'overloaded',
     }))
       .toBe('Summary retry 1/3 in 2s (overloaded)')
-    expect(line({ type: 'summarization_retry_attempt_start', source: 'compaction' }))
+    expect(await line({ type: 'summarization_retry_attempt_start', source: 'compaction' }))
       .toBe('Retrying the compaction summary')
-    expect(line({ type: 'summarization_retry_finished' })).toBe('Summary retry finished')
+    expect(await line({ type: 'summarization_retry_finished' })).toBe('Summary retry finished')
   })
 })
 
@@ -310,37 +310,37 @@ describe('pi single-notification rendering (markup)', () => {
   // entries, which the shared renderer draws with its compaction-divider row, so Pi
   // matches Claude/Codex visually (icon + label); every other Pi notification is a
   // plain `text` entry rendered as a line.
-  it('renders no divider for a stored compaction start', () => {
+  it('renders no divider for a stored compaction start', async () => {
     const msg = { type: 'compaction_start', reason: 'manual' }
     expect(rendersWithIcon(msg)).toBe(false)
-    expect(renderPiText(msg)).toBe('')
+    expect(await renderPiText(msg)).toBe('')
   })
 
-  it('renders a completed compaction_end as a divider with the icon', () => {
+  it('renders a completed compaction_end as a divider with the icon', async () => {
     const msg = {
       type: 'compaction_end',
       reason: 'threshold',
       result: { tokensBefore: 12345 },
     }
     expect(rendersWithIcon(msg)).toBe(true)
-    expect(renderPiText(msg)).toBe('Context compacted (threshold, 12.3k)')
+    expect(await renderPiText(msg)).toBe('Context compacted (threshold, 12.3k)')
   })
 
-  it('renders an aborted compaction as a plain line, not a divider', () => {
+  it('renders an aborted compaction as a plain line, not a divider', async () => {
     // An aborted compaction produced no boundary, so it has no divider icon.
     const msg = { type: 'compaction_end', aborted: true, reason: 'threshold' }
     expect(rendersWithIcon(msg)).toBe(false)
-    expect(renderPiText(msg)).toBe('Context compaction aborted')
+    expect(await renderPiText(msg)).toBe('Context compaction aborted')
   })
 
-  it('renders non-compaction notifications as plain text without an icon', () => {
+  it('renders non-compaction notifications as plain text without an icon', async () => {
     const msg = { type: 'auto_retry_end', success: true, attempt: 2 }
     expect(rendersWithIcon(msg)).toBe(false)
-    expect(renderPiText(msg)).toBe('API retry 2 succeeded')
+    expect(await renderPiText(msg)).toBe('API retry 2 succeeded')
   })
 
-  it('renders nothing for a shape neither Pi nor the shared switch owns', () => {
-    expect(renderPiText({ type: 'totally_unknown_pi_event' })).toBe('')
+  it('renders nothing for a shape neither Pi nor the shared switch owns', async () => {
+    expect(await renderPiText({ type: 'totally_unknown_pi_event' })).toBe('')
   })
 })
 
@@ -412,8 +412,8 @@ describe('pi notification thread: no multi-event truncation', () => {
   // render EVERY entry, not just the first. Before the Pi notificationThreadEntry
   // wiring, renderNotificationThread had no Pi branch and MessageBubble showed
   // only messages[0], silently dropping the rest.
-  it('renders both an auto_retry and a following compaction boundary', () => {
-    const text = renderThreadText([
+  it('renders both an auto_retry and a following compaction boundary', async () => {
+    const text = await renderThreadText([
       {
         type: 'auto_retry_start',
         attempt: 1,

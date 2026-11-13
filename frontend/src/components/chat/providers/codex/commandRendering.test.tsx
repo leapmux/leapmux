@@ -1,36 +1,33 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { MessageContentRenderContext } from '../../messageContentRenderer'
 import { fireEvent, render, waitFor } from '@solidjs/testing-library'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { dismissActiveTooltip, SHOW_DELAY_MS } from '~/components/common/Tooltip'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { _resetTokenCache } from '~/lib/tokenCache'
+import { recordWorkerRequests, settleWorkerReplies } from '~/test-support/fakeWorker'
 import { makeTranscriptMessage } from '~/test-support/messageFactory'
 import { pngBase64 } from '~/test-support/pngFixture'
 import { createTranscriptScenario } from '~/test-support/transcriptScenario'
 import { renderMessageContent } from '../../messageContentRenderer'
 import './plugin'
 
+// Each test reads which code its rows send to the Shiki worker, and a cached
+// token answer sends nothing.
+beforeEach(() => {
+  _resetTokenCache()
+})
+
 afterEach(() => {
   dismissActiveTooltip()
   vi.useRealTimers()
 })
 
-const tokenizeAsyncCalls = vi.hoisted(() => vi.fn())
-const tokenizeAsyncMock = vi.hoisted(() => vi.fn(async (lang: string, code: string) => {
-  tokenizeAsyncCalls(lang, code)
-  return code.split('\n').map(line => [
-    { content: line, className: 'sk-codex-command-test' },
-  ])
-}))
-
-vi.mock('~/lib/shikiWorkerClient', () => ({
-  tokenizeAsync: tokenizeAsyncMock,
-}))
-
-vi.mock('~/lib/tokenCache', () => ({
-  getCachedTokens: () => null,
-  makeKey: (lang: string, code: string) => `${lang}\0${code}`,
-}))
+/** The language and the code of each tokenize request that reaches the Shiki worker from now on. */
+function recordTokenizeRequests(): () => Array<[string, string]> {
+  const requests = recordWorkerRequests('lib/shikiWorker.ts')
+  return () => requests.map(({ lang, code }) => [lang, code])
+}
 
 vi.mock('~/context/PreferencesContext', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/context/PreferencesContext')>()
@@ -158,7 +155,7 @@ describe('codex native exec rendering', () => {
 describe('codex command actions', () => {
   it('limits collapsed action rendering and builds rich tooltips only on demand', async () => {
     vi.useFakeTimers()
-    tokenizeAsyncCalls.mockClear()
+    const tokenized = recordTokenizeRequests()
     const commandActions = Array.from({ length: 20 }, (_, index) => ({
       type: 'read',
       command: `sed -n '${index + 1}p' src/file.ts`,
@@ -174,7 +171,7 @@ describe('codex command actions', () => {
 
     expect(container.querySelectorAll('[data-command-action]').length).toBeLessThanOrEqual(3)
     expect(container).toHaveTextContent('18 actions omitted')
-    expect(tokenizeAsyncCalls).not.toHaveBeenCalled()
+    expect(tokenized()).toEqual([])
     expect(container.querySelector('[aria-label="Show all actions"]')).not.toBeNull()
 
     const firstAction = container.querySelector('[data-command-action="read"]')
@@ -182,9 +179,11 @@ describe('codex command actions', () => {
     if (!firstAction)
       throw new Error('The collapsed command row has no read action.')
     fireEvent.mouseEnter(firstAction)
-    expect(tokenizeAsyncCalls).not.toHaveBeenCalled()
+    expect(tokenized()).toEqual([])
     await vi.advanceTimersByTimeAsync(SHOW_DELAY_MS)
-    expect(tokenizeAsyncCalls).toHaveBeenCalledTimes(1)
+    expect(tokenized()).toEqual([
+      ['bash', 'sed -n \'1p\' src/file.ts'],
+    ])
   })
 
   it('renders structured actions and the process identifier through the shared execute renderer', () => {
@@ -217,8 +216,8 @@ describe('codex command actions', () => {
   })
 
   it('syntax-highlights a raw command that an unknown action draws', async () => {
-    tokenizeAsyncCalls.mockClear()
-    renderCodexItem({
+    const tokenized = recordTokenizeRequests()
+    const { container } = renderCodexItem({
       type: 'commandExecution',
       command: 'compound command',
       status: 'inProgress',
@@ -227,12 +226,21 @@ describe('codex command actions', () => {
       ],
     })
 
-    await waitFor(() => expect(tokenizeAsyncCalls).toHaveBeenCalledWith('bash', 'printf visible-action'))
+    expect(tokenized()).toEqual([
+      ['bash', 'printf visible-action'],
+    ])
+    await settleWorkerReplies()
+    // Shiki colours the command word apart from its argument.
+    const command = [
+      ...container.querySelectorAll('[data-command-action] span'),
+    ]
+      .find(span => span.textContent === 'printf')
+    expect(command?.className).toMatch(/^sk-/)
   })
 
   it('puts one known action in the title with a highlighted command tooltip', async () => {
     vi.useFakeTimers()
-    tokenizeAsyncCalls.mockClear()
+    const tokenized = recordTokenizeRequests()
     const { container } = renderCodexItem({
       type: 'commandExecution',
       command: 'compound command',
@@ -254,8 +262,10 @@ describe('codex command actions', () => {
     if (!title)
       throw new Error('The command row has no execute title.')
     fireEvent.mouseEnter(title)
-    expect(tokenizeAsyncCalls).not.toHaveBeenCalled()
+    expect(tokenized()).toEqual([])
     await vi.advanceTimersByTimeAsync(SHOW_DELAY_MS)
-    expect(tokenizeAsyncCalls).toHaveBeenCalledWith('bash', 'sed -n \'1,5p\' src/main.ts')
+    expect(tokenized()).toEqual([
+      ['bash', 'sed -n \'1,5p\' src/main.ts'],
+    ])
   })
 })

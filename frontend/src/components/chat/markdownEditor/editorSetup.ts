@@ -1,6 +1,5 @@
 import type { Ctx } from '@milkdown/ctx'
 import type { Node, NodeType, Schema } from '@milkdown/prose/model'
-import type { EditorView } from '@milkdown/prose/view'
 import type { TrailingDebounced } from '~/lib/debounce'
 import type { CodeLangHandlers } from '~/lib/editor/codeLangPlugin'
 import type { Draft, DraftMetadataRecord } from '~/lib/editor/draftPersistence'
@@ -8,7 +7,6 @@ import type { PluginRefs } from '~/lib/editor/keyboardPlugins'
 import type { LinkClickHandlers } from '~/lib/editor/linkPlugin'
 import { defaultValueCtx, Editor, editorViewCtx, editorViewOptionsCtx, rootCtx } from '@milkdown/core'
 import { clipboard } from '@milkdown/plugin-clipboard'
-import { highlight, highlightPluginConfig } from '@milkdown/plugin-highlight'
 import { history } from '@milkdown/plugin-history'
 import { listener, listenerCtx } from '@milkdown/plugin-listener'
 import {
@@ -23,9 +21,10 @@ import {
 import { gfm, strikethroughInputRule as milkdownStrikethroughInputRule } from '@milkdown/preset-gfm'
 import { Plugin, PluginKey } from '@milkdown/prose/state'
 import { $prose } from '@milkdown/utils'
-import { createHighlightPlugin } from 'prosemirror-highlight'
 import { trailingDebounce } from '~/lib/debounce'
+import { createCodeHighlightPlugin } from '~/lib/editor/codeHighlightPlugin'
 import { createAutoDetectLanguageExtractor, createCodeLangPlugin } from '~/lib/editor/codeLangPlugin'
+import { createCodeTokenCache } from '~/lib/editor/codeTokenCache'
 import { saveDraft } from '~/lib/editor/draftPersistence'
 import { createLinkBoundaryPlugin, createListItemEnterPlugin, createMarkdownPastePlugin, createSelectionWrapPlugin } from '~/lib/editor/inputPlugins'
 import { createBulletListAfterHardBreakInputRule, createCodeBlockInputRule, createEmphasisStarInputRule, createEmphasisUnderscoreInputRule, createHrInputRule, createInlineCodeInputRule, createLinkInputRule, createOrderedListAfterHardBreakInputRule, createStrikethroughInputRule, createStrongInputRule } from '~/lib/editor/inputRules'
@@ -42,20 +41,10 @@ import {
   createSuppressTextSubstitutionPlugin,
   createTabKeyPlugin,
 } from '~/lib/editor/keyboardPlugins'
-import { createLazyShikiParser } from '~/lib/editor/lazyShikiParser'
 import { createLinkClickPlugin, createLinkShortcutPlugin } from '~/lib/editor/linkPlugin'
-import { createLazyOnigurumaHighlighter } from '~/lib/shikiLazyHighlighter'
+import { tokenizeUncached } from '~/lib/shikiWorkerClient'
 import { serializeEditorDocument } from './documentMarkdown'
 import { readDraftFromEditor } from './draftManagement'
-
-// One Oniguruma-backed highlighter shared across all editor mounts. Created
-// lazily (cheap closure here; the WASM engine + grammars load only when the
-// first code block is highlighted), so opening the composer isn't blocked.
-let editorHighlighter: ReturnType<typeof createLazyOnigurumaHighlighter> | undefined
-function getEditorHighlighter(): ReturnType<typeof createLazyOnigurumaHighlighter> {
-  editorHighlighter ??= createLazyOnigurumaHighlighter()
-  return editorHighlighter
-}
 
 /**
  * The node type whose presence as the only block keeps the composer collapsed.
@@ -125,6 +114,14 @@ export function computeDocStats(doc: Node): DocStats {
     return { multiLine: true, text: '' }
   return { multiLine: false, text }
 }
+
+/**
+ * The code tokens of every editor that `buildEditor` makes in the session. An
+ * editor that mounts again, such as the composer after a switch to another tab
+ * and back, paints its code blocks from here instead of waiting for the token
+ * worker.
+ */
+const editorCodeTokens = createCodeTokenCache()
 
 /** Options for building the Milkdown editor. */
 export interface EditorSetupOptions {
@@ -251,14 +248,17 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
   const inlineCodeInputRule = createInlineCodeInputRule()
   const strikethroughInputRule = createStrikethroughInputRule()
 
-  const shikiParser = createLazyShikiParser(getEditorHighlighter())
-  const languageExtractor = createAutoDetectLanguageExtractor()
+  // Code blocks tokenize in the Shiki token worker; see createCodeHighlightPlugin.
+  const codeHighlightPlugin = $prose(() => createCodeHighlightPlugin({
+    languageExtractor: createAutoDetectLanguageExtractor(),
+    tokenize: tokenizeUncached,
+    tokenCache: editorCodeTokens,
+  }))
 
   const editor = Editor.make()
     .config((ctx: Ctx) => {
       ctx.set(rootCtx, opts.editorRoot)
       ctx.set(defaultValueCtx, opts.initialContent)
-      ctx.set(highlightPluginConfig.key, { parser: shikiParser, languageExtractor })
       ctx.update(editorViewOptionsCtx, prev => ({
         ...prev,
         attributes: {
@@ -330,7 +330,7 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
     .use(history)
     .use(markdownPastePlugin)
     .use(clipboard)
-    .use(highlight)
+    .use(codeHighlightPlugin)
     .use(listener)
     .use(placeholderPlugin)
     .use(listItemEnterPlugin)
@@ -362,56 +362,4 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
     editor.use(createDocTransactionPlugin)
 
   return editor.create()
-}
-
-/**
- * Repaint every highlighted code block in `view` under the CURRENT syntax theme.
- *
- * A fresh plugin INSTANCE, because nothing weaker repaints. prosemirror-highlight
- * keys its `DecorationCache` on the node, and `calculateDecoration` reads
- * through that cache -- so the supported `prosemirror-highlight-refresh` meta
- * recomputes nothing for a block whose node did not change, which is every
- * block when only the theme moved. `apply` also short-circuits unless the
- * transaction changed the document. A new plugin starts with an empty cache,
- * and `init` recomputes from scratch.
- *
- * This is plain ProseMirror `reconfigure`, not a reach into Milkdown: the
- * plugin is located by the key name `prosemirror-highlight` sets on itself, and
- * rebuilt from the same two inputs this module already owns.
- *
- * WHY REBUILDING IS SAFE HERE. A syntax-theme change reaches the app from the
- * Preferences dialog or the no-workspace empty state -- neither of which
- * coexists with an editable composer. The one path that
- * can fire while the composer is focused is an OS `prefers-color-scheme` flip
- * (or a cross-tab write) while the syntax theme is PINNED with `mode: 'system'`,
- * because that collapses the pair to one half. `reconfigure` preserves the
- * document and the selection, so the cost there is nil -- except during an IME
- * composition, which must not be interrupted.
- *
- * A composition DEFERS the repaint; it does not cancel it. Dropping it was
- * wrong for the reason the paragraph above gives: `DecorationCache` is keyed on
- * the NODE, so the composition-ending transaction recomputes only the block the
- * composition touched, and every OTHER code block in the composer kept the
- * abandoned theme's baked colours for the rest of the session. The
- * `compositionend` listener re-runs the repaint once, and it is registered on
- * the view's own DOM so it dies with the view.
- */
-export function refreshEditorHighlight(view: EditorView): void {
-  if (view.composing) {
-    // Once, and only for this deferral: `{ once: true }` drops the listener
-    // when it fires, so a burst of theme changes during one composition still
-    // repaints a single time at its end.
-    view.dom.addEventListener('compositionend', () => refreshEditorHighlight(view), { once: true })
-    return
-  }
-  const plugins = view.state.plugins
-  const index = plugins.findIndex(p => (p.spec.key as { key?: string } | undefined)?.key?.startsWith('prosemirror-highlight'))
-  if (index < 0)
-    return
-  const next = plugins.slice()
-  next[index] = createHighlightPlugin({
-    parser: createLazyShikiParser(getEditorHighlighter()),
-    languageExtractor: createAutoDetectLanguageExtractor(),
-  })
-  view.updateState(view.state.reconfigure({ plugins: next }))
 }

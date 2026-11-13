@@ -11,6 +11,7 @@ import { replaceAll } from '@milkdown/utils'
 import { children, createEffect, createSignal, getOwner, on, onCleanup, onMount, runWithOwner, Show, untrack } from 'solid-js'
 import { isTauriApp, readClipboardImage } from '~/api/platformBridge'
 import { usePreferences } from '~/context/PreferencesContext'
+import { refreshCodeHighlight } from '~/lib/editor/codeHighlightPlugin'
 import { loadDraft, saveDraft } from '~/lib/editor/draftPersistence'
 import { createLogger } from '~/lib/logger'
 import { dismissSoftKeyboard, isSoftKeyboardVisible } from '~/lib/softKeyboard'
@@ -22,7 +23,7 @@ import { clearDraft, createDraftSwapper, readDraftFromEditor, restoreCursor, sav
 import { applyCodeBlockLanguage, applyLinkHref, removeLinkRange } from './editorCommands'
 import { createEditorLayout } from './editorLayout'
 import { setupEditorRefHandlers } from './editorRefHandlers'
-import { buildEditor, computeDocStats, refreshEditorHighlight } from './editorSetup'
+import { buildEditor, computeDocStats } from './editorSetup'
 import { LinkPopover } from './LinkPopover'
 import * as styles from './MarkdownEditor.css'
 import { decidePasteHandling } from './pasteDecision'
@@ -381,16 +382,23 @@ export const MarkdownEditor: Component<MarkdownEditorProps> = (props) => {
   // Repaint the composer's code blocks when the syntax theme changes.
   //
   // Shiki bakes each token's colour in at tokenize time, so an already-decorated
-  // block keeps the abandoned theme until something recomputes it -- and
-  // prosemirror-highlight recomputes only on a document change. Without this the
+  // block keeps the abandoned theme until something recomputes it -- and the
+  // highlight plugin recomputes only on a document change or a refresh. Without this the
   // composer visibly disagreed with the chat beside it, which the user had just
   // repainted, for the rest of the session.
+  //
+  // A syntax-theme change reaches the app from the Preferences dialog or the
+  // no-workspace empty state, and neither coexists with an editable composer.
+  // The one change that can come while the composer has focus is an OS
+  // `prefers-color-scheme` flip (or a write from another tab) while the syntax
+  // theme is PINNED with `mode: 'system'`. `refreshCodeHighlight` holds that
+  // refresh until an IME composition ends.
   createEffect(on(syntaxThemeGeneration, () => {
     if (!editorInstance)
       return
     try {
       editorInstance.action((ctx: Ctx) => {
-        refreshEditorHighlight(ctx.get(editorViewCtx))
+        refreshCodeHighlight(ctx.get(editorViewCtx))
       })
     }
     catch {

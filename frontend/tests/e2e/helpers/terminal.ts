@@ -60,9 +60,10 @@ export async function getTerminalRows(page: Page): Promise<number> {
 export async function waitForTerminalText(page: Page, text: string): Promise<void> {
   if (text === '')
     throw new Error('A terminal text wait needs text, because every terminal contains the empty string.')
+  // The outer `expect` holds the label, as waitTimeoutBeforeTestDeadline requires.
   await expect(async () => {
-    expect(await getTerminalText(page), 'the active terminal shows the text').toContain(text)
-  }).toPass({
+    expect(await getTerminalText(page)).toContain(text)
+  }, `the active terminal shows the text ${JSON.stringify(text)}`).toPass({
     timeout: waitTimeoutBeforeTestDeadline(),
   })
 }
@@ -84,10 +85,11 @@ export async function waitForTerminalText(page: Page, text: string): Promise<voi
  */
 export async function waitForTerminalReady(page: Page): Promise<void> {
   const marker = `RDY${Math.random().toString(36).slice(2, 8).toUpperCase()}`
+  // The outer `expect` holds the label, as waitTimeoutBeforeTestDeadline requires.
   await expect(async () => {
     await typeInTerminal(page, `echo ${marker.slice(0, 3)}""${marker.slice(3)}`)
     expect(await getTerminalText(page)).toContain(marker)
-  }).toPass({
+  }, 'the shell of the active terminal echoes a typed marker').toPass({
     timeout: waitTimeoutBeforeTestDeadline(),
   })
 }
@@ -142,13 +144,14 @@ export async function sendActiveTerminalInput(page: Page, text: string): Promise
 export async function clickTerminalText(page: Page, text: string): Promise<void> {
   interface Point { x: number, y: number, awayY: number }
   let point: Point | null = null
+  // The outer `expect` holds the label, as waitTimeoutBeforeTestDeadline requires.
   await expect(async () => {
     point = await page.evaluate(
       t => ((window as any).__activeTerminalPointAt?.(t) ?? null) as Point | null,
       text,
     )
-    expect(point, `no terminal cell shows ${text}`).not.toBeNull()
-  }).toPass({
+    expect(point).not.toBeNull()
+  }, `no terminal cell shows ${text}`).toPass({
     timeout: waitTimeoutBeforeTestDeadline(),
   })
 

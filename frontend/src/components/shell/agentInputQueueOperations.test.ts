@@ -12,6 +12,7 @@ import {
 import { ChannelError } from '~/lib/channelError'
 import { createAgentInputQueueStore } from '~/stores/agentInputQueue.store'
 import { deferred } from '~/test-support/async'
+import { holdWorkerReplies, settleWorkerReplies } from '~/test-support/fakeWorker'
 import { createAgentInputQueueOperations } from './agentInputQueueOperations'
 
 /**
@@ -490,6 +491,7 @@ describe('agent input queue operations schedule', () => {
 // An expired schedule is valid only for an exact unanswered delivery.
 describe('createAgentInputQueueOperations retryPendingMessage', () => {
   const at = '2030-01-01T09:00:00.000Z'
+  type EnqueueResponse = ReturnType<typeof deferred<{ snapshot: undefined }>>
 
   it.each([
     new ChannelError('rpc', 'queue full', { code: Code.InvalidArgument }),
@@ -536,13 +538,53 @@ describe('createAgentInputQueueOperations retryPendingMessage', () => {
       ops.sendMessage('later', [], at),
       ops.sendMessage('later', [], at),
     ])
-    try {
-      expect(enqueueAgentInput).toHaveBeenCalledTimes(1)
-    }
-    finally {
-      response.reject(error)
-      await settled
-    }
+    // Each send hashes its payload in the hash worker before it looks for an
+    // in-flight request.
+    await settleWorkerReplies()
+    expect(enqueueAgentInput).toHaveBeenCalled()
+    response.reject(error)
+    const results = await settled
+    // The second send joined the first request instead of sending its own.
+    expect(enqueueAgentInput).toHaveBeenCalledTimes(1)
+    expect(results.map(result => result.status)).toEqual(['rejected', 'rejected'])
+  })
+
+  // The hash of the payload runs off the main thread, so the first request can
+  // settle while a second identical send still hashes. The second send started
+  // while the first was in flight, so it shares the first one's outcome, as it
+  // did when the hash ran in one task.
+  it.each([
+    {
+      outcome: 'accepted',
+      answer: (response: EnqueueResponse) => response.resolve({ snapshot: undefined }),
+    },
+    {
+      outcome: 'refused',
+      answer: (response: EnqueueResponse) => response.reject(new ChannelError('rpc', 'queue full', { code: Code.InvalidArgument })),
+    },
+  ])('joins an identical send that settles as $outcome while the second send hashes', async ({ answer }) => {
+    const { ops } = setup()
+    const response: EnqueueResponse = deferred()
+    enqueueAgentInput.mockReturnValueOnce(response.promise)
+    enqueueAgentInput.mockResolvedValue({ snapshot: undefined })
+    const first = ops.sendMessage('later', [], at)
+    await settleWorkerReplies()
+    expect(enqueueAgentInput).toHaveBeenCalledOnce()
+
+    // The second hash waits until the first request settles.
+    const hash = holdWorkerReplies('lib/fieldDigestWorker.ts')
+    const second = Promise.allSettled([
+      ops.sendMessage('later', [], at),
+    ])
+    answer(response)
+    const [firstResult] = await Promise.allSettled([first])
+    await settleWorkerReplies()
+    expect(hash.pending()).toBe(1)
+    await hash.release()
+    const [secondResult] = await second
+
+    expect(enqueueAgentInput).toHaveBeenCalledOnce()
+    expect(secondResult!.status).toBe(firstResult!.status)
   })
 
   it('keeps earlier uncertainty when a later attempt receives a refusal', async () => {

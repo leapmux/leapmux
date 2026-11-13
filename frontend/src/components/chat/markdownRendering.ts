@@ -1,91 +1,82 @@
 import type { MarkdownRenderContext } from './renderContext'
-import { getCachedMarkdownHtml, renderMarkdown, renderMarkdownCachedOrPlain, renderMarkdownPlain } from '~/lib/renderMarkdown'
+import { getCachedMarkdownHtml, requestMarkdownHtml } from '~/lib/renderMarkdown'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
-import { cachedRenderValueForString, getCachedRenderValueForString, setCachedRenderValueForString } from './messageRenderCache'
-import { largeMarkdownPlainHtml, markdownNeedsPlainTextDisplay } from './safeTextDisplay'
+import { getCachedRenderValueForString, setCachedRenderValueForString } from './messageRenderCache'
+import { isDisplayHeld } from './renderContext'
+
+/**
+ * The longest HTML, in characters, that the row cache keeps for one body. A
+ * longer render stays only in the shared cache, which limits the characters that
+ * it holds in total (see MARKDOWN_CACHE_MAX_CHARS in ~/lib/renderMarkdown). The
+ * row cache keeps a row's entries for as long as the row stays among the recent
+ * ones, so a large render there would outlive the shared cache's eviction and
+ * defeat that limit. A remount of such a body after an eviction renders it again.
+ * The limit matches the largest HTML that the parsed-fragment cache keeps.
+ */
+export const MAX_ROW_CACHED_MARKDOWN_HTML_CHARS = 256 * 1024
+
+/** Store `html` in the row cache unless it is too large to keep there, and return it. */
+function rowCacheMarkdownHtml(context: MarkdownRenderContext | undefined, text: string, html: string): string {
+  if (html.length > MAX_ROW_CACHED_MARKDOWN_HTML_CHARS)
+    return html
+  return setCachedRenderValueForString(context, markdownCacheNamespace(), text, html)
+}
 
 /** Return the per-row cache namespace for the current syntax theme. */
 export function markdownCacheNamespace(): string {
   return `markdown-html:${syntaxThemeGeneration()}`
 }
 
-/** Return true when a renderer must keep the displayed syntax stable. */
-export function shouldPauseSyntaxHighlighting(context: MarkdownRenderContext | undefined): boolean {
-  return context?.premeasureMode === true || context?.syntaxHighlightingPaused?.() === true || isTextSelectionActive(context)
+/**
+ * Return the HTML of `text` under the current theme from the row cache, or
+ * undefined when the row holds none.
+ *
+ * The lookup hashes the whole text (see stringCacheKey), so a body reads it in a
+ * memo of its own. That memo re-runs only when the text, the theme or the row
+ * changes. The memo that calls {@link markdownHtmlForContext} re-runs at each
+ * completion of ANY body while this body waits for the worker, and a lookup there
+ * hashed the text again at each one.
+ */
+export function rowCachedMarkdownHtml(text: string, context: MarkdownRenderContext | undefined): string | undefined {
+  return getCachedRenderValueForString<string>(context, markdownCacheNamespace(), text)
 }
 
-function isTextSelectionActive(context: MarkdownRenderContext | undefined): boolean {
-  return context?.textSelectionActive?.() === true
+/** What a body already holds for its text, for {@link markdownHtmlForContext}. */
+export interface MarkdownBodyHtml {
+  /** The HTML that the body shows now for the same text, if any. */
+  displayed: string | undefined
+  /** The row cache's HTML of the same text under the current theme: {@link rowCachedMarkdownHtml}. */
+  rowCached: string | undefined
 }
 
-function cachedHighlightedMarkdown(
+/**
+ * Return the HTML that a chat body shows for `text`, or undefined while the worker
+ * renders it. The main thread never parses Markdown here (see requestMarkdownHtml).
+ *
+ * The body keeps the HTML that it displays in two cases:
+ * - While the reader selects text or the view scrolls, so the DOM under the
+ *   selection or the scroll anchor does not change.
+ * - While a theme change renders the new HTML, so the body keeps its old colours
+ *   instead of disappearing. A theme changes colours only, never geometry.
+ *
+ * A body that shows nothing yet dispatches its render in every case, the hidden
+ * premeasure pass included: premeasure is where a row completes its Markdown, and
+ * the row stays hidden until it has.
+ */
+export function markdownHtmlForContext(
   text: string,
   context: MarkdownRenderContext | undefined,
+  { displayed, rowCached }: MarkdownBodyHtml,
 ): string | undefined {
-  const rowCached = getCachedRenderValueForString<string>(context, markdownCacheNamespace(), text)
+  if (displayed !== undefined && isDisplayHeld(context))
+    return displayed
   if (rowCached !== undefined)
     return rowCached
-  const sharedCached = getCachedMarkdownHtml(text)
-  return sharedCached === undefined
-    ? undefined
-    : setCachedRenderValueForString(context, markdownCacheNamespace(), text, sharedCached)
-}
-
-function rememberDisplayedMarkdown(
-  context: MarkdownRenderContext | undefined,
-  text: string,
-  html: string,
-): string {
-  return setCachedRenderValueForString(context, 'markdown-displayed', text, html)
-}
-
-/** Render markdown without replacing selected text or stale theme colors. */
-export function renderMarkdownForContext(text: string, context: MarkdownRenderContext | undefined): string {
-  if (markdownNeedsPlainTextDisplay(text)) {
-    return cachedRenderValueForString(
-      context,
-      'markdown-large-plain',
-      text,
-      () => largeMarkdownPlainHtml(text),
-    )
-  }
-  if (context?.premeasureMode)
-    return cachedRenderValueForString(context, 'markdown-plain', text, () => renderMarkdownPlain(text))
-  if (isTextSelectionActive(context)) {
-    const displayed = getCachedRenderValueForString<string>(context, 'markdown-displayed', text)
-    if (displayed !== undefined)
-      return displayed
-    const highlighted = cachedHighlightedMarkdown(text, context)
-    return rememberDisplayedMarkdown(
-      context,
-      text,
-      highlighted ?? cachedRenderValueForString(context, 'markdown-plain', text, () => renderMarkdownPlain(text)),
-    )
-  }
-  if (context?.syntaxHighlightingPaused?.()) {
-    const highlighted = cachedHighlightedMarkdown(text, context)
-    if (highlighted !== undefined)
-      return rememberDisplayedMarkdown(context, text, highlighted)
-    const html = renderMarkdownCachedOrPlain(text)
-    const cached = getCachedMarkdownHtml(text)
-    return rememberDisplayedMarkdown(
-      context,
-      text,
-      cached === undefined
-        ? html
-        : setCachedRenderValueForString(context, markdownCacheNamespace(), text, cached),
-    )
-  }
-  const rowCached = getCachedRenderValueForString<string>(context, markdownCacheNamespace(), text)
-  if (rowCached !== undefined)
-    return rememberDisplayedMarkdown(context, text, rowCached)
-  const html = renderMarkdown(text, false, context?.rowOffscreen)
-  const cached = getCachedMarkdownHtml(text)
-  return rememberDisplayedMarkdown(
-    context,
-    text,
-    cached === undefined
-      ? html
-      : setCachedRenderValueForString(context, markdownCacheNamespace(), text, cached),
-  )
+  const shared = getCachedMarkdownHtml(text)
+  if (shared !== undefined)
+    return rowCacheMarkdownHtml(context, text, shared)
+  const requested = requestMarkdownHtml(text, context?.rowOffscreen)
+  if (requested !== undefined)
+    return rowCacheMarkdownHtml(context, text, requested)
+  return displayed
 }

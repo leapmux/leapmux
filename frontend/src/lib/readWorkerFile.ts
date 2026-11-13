@@ -1,11 +1,20 @@
 import type { ReadFileResponse } from '~/generated/proto/leapmux/v1/file_pb'
 import { workerFile } from '~/api/workerRpc'
+import { FILE_READ_LIMIT_BYTES } from '~/generated/contracts/file-read'
 
 /**
- * The most bytes one page request asks for.
- * The limit leaves room for the response metadata on the smallest supported channel.
+ * The most bytes one page request asks for: the default size of one file read.
+ *
+ * A page may ask for more than the payload budget of a small channel. That is
+ * safe for three reasons:
+ *
+ * - ReadFile caps its limit at the payload budget.
+ * - Both ends of the channel accept the budget plus `innerEnvelopeHeadroomBytes`
+ *   (contracts/wire.json), which carries the metadata of the response.
+ * - `readRange` accepts a page that is shorter than it asked for, and asks
+ *   again for the rest of its range.
  */
-const PAGE_BYTES = 48 * 1024
+const PAGE_BYTES = FILE_READ_LIMIT_BYTES
 
 /**
  * How many page requests run at the same time.

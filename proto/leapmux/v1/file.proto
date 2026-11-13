@@ -88,7 +88,12 @@ message DirectoryListing {
 message ReadFileRequest {
   string path = 1;
   int64 offset = 2;
-  int64 limit = 3; // Max bytes; 0 = default (60KB)
+  // The most bytes of content to return. 0 or less reads the default,
+  // readLimitBytes in contracts/file-read.json. The worker caps a larger limit
+  // at its payload budget: the smaller of its max_message_size and the budget
+  // of the channel. total_size states the size of the whole file, so a caller
+  // reads the rest with offset.
+  int64 limit = 3;
   // When true and the file size exceeds the read window
   // (offset + effective limit), the server returns an empty content
   // payload with the file's total_size populated, skipping the actual

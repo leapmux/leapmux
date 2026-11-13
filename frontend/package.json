@@ -28,7 +28,6 @@
     "@milkdown/core": "^7.22.1",
     "@milkdown/ctx": "^7.22.1",
     "@milkdown/plugin-clipboard": "^7.22.1",
-    "@milkdown/plugin-highlight": "^7.22.1",
     "@milkdown/plugin-history": "^7.22.1",
     "@milkdown/plugin-listener": "^7.22.1",
     "@milkdown/preset-gfm": "^7.22.1",

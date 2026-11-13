@@ -1,156 +1,65 @@
 import type { MarkdownRenderResult } from './markdownWorkerClient'
-import themeGithubDark from '@shikijs/themes/github-dark'
-import themeGithubLight from '@shikijs/themes/github-light'
-import { createHighlighterCoreSync } from 'shiki/core'
-import { createJavaScriptRegexEngine } from 'shiki/engine/javascript'
-// Eager grammars for the synchronous (no-Worker) fallback highlighter below. The
-// async worker/editor paths lazy-load grammars instead, so these imports live here
-// -- next to their only consumer -- rather than in the shared markdownProcessor.
-import langBash from 'shiki/langs/bash.mjs'
-import langC from 'shiki/langs/c.mjs'
-import langCpp from 'shiki/langs/cpp.mjs'
-import langCss from 'shiki/langs/css.mjs'
-import langDiff from 'shiki/langs/diff.mjs'
-import langGo from 'shiki/langs/go.mjs'
-import langHtml from 'shiki/langs/html.mjs'
-import langJava from 'shiki/langs/java.mjs'
-import langJavascript from 'shiki/langs/javascript.mjs'
-import langJson from 'shiki/langs/json.mjs'
-import langJsx from 'shiki/langs/jsx.mjs'
-import langMarkdown from 'shiki/langs/markdown.mjs'
-import langPython from 'shiki/langs/python.mjs'
-import langRust from 'shiki/langs/rust.mjs'
-import langSql from 'shiki/langs/sql.mjs'
-import langToml from 'shiki/langs/toml.mjs'
-import langTsx from 'shiki/langs/tsx.mjs'
-import langTypescript from 'shiki/langs/typescript.mjs'
-import langXml from 'shiki/langs/xml.mjs'
-import langYaml from 'shiki/langs/yaml.mjs'
-import { createSignal } from 'solid-js'
+import type { WorkerDemand } from './workerDemand'
 import { capMapInsertionOrder, lruGet, lruSet } from '~/lib/mapLru'
-import { createMarkdownProcessor, plainMarkdownProcessor, renderWithPlainFallback } from './markdownProcessor'
+import { markdownSourceFallbackHtml } from './markdownSourceFallback'
 import { renderMarkdownInWorker } from './markdownWorkerClient'
 import { createPersistedArtifact } from './persistedArtifact'
-import { ensureShikiStyleRules } from './shikiStyleClass'
-import { createPairKeyedCache, syntaxThemePair, themeStillCurrent } from './shikiThemes'
-import { withTransparentBg } from './syntaxThemes'
+import { ensureShikiStyleRules, isShikiStyleClassName, shikiStylesUsedBy } from './shikiStyleClass'
+import { syntaxThemePair, themeStillCurrent } from './shikiThemes'
 import { onSyntaxThemeChange } from './syntaxThemeStore'
-
-/** The bundled Shiki language grammars the synchronous fallback highlighter pre-loads. */
-const shikiLangs = [
-  langTypescript,
-  langJavascript,
-  langPython,
-  langRust,
-  langGo,
-  langJava,
-  langBash,
-  langJson,
-  langHtml,
-  langCss,
-  langYaml,
-  langToml,
-  langSql,
-  langMarkdown,
-  langDiff,
-  langC,
-  langCpp,
-  langJsx,
-  langTsx,
-  langXml,
-]
-
-// Synchronous Shiki highlighter, pre-loaded with the bundled languages. Still
-// exported for the OTHER synchronous highlighting call sites (renderAnsi,
-// ReadResultView, the markdown editor, tool renderers) that highlight short,
-// bounded snippets where a worker round-trip would be overkill. Markdown bodies no
-// longer use it on the hot path -- see renderMarkdown below.
-// The initial pair is the Default theme's, which is GitHub's, imported
-// STATICALLY: a synchronous highlighter cannot await a chunk, so the one pair
-// the app starts on has to sit in the main bundle. Every other pair arrives
-// lazily -- `setSyntaxTheme` registers it here before pointing the shared
-// options at it, so a synchronous call site never names an unregistered theme.
-export const shikiHighlighter = createHighlighterCoreSync({
-  themes: [
-    withTransparentBg(themeGithubLight),
-    withTransparentBg(themeGithubDark),
-  ],
-  langs: shikiLangs,
-  engine: createJavaScriptRegexEngine(),
-})
-
-// The full highlighted-markdown processor on the MAIN thread. Used only as the
-// fallback when no Worker is available (unit tests / SSR) -- in the browser the
-// worker renders instead, off the UI thread (see renderMarkdown).
-//
-// Built LAZILY and keyed on the pair, for the same reason the worker's copy is:
-// `createMarkdownProcessor` bakes the pair in, so a module-scope `const` froze
-// this path on the pair that was current at IMPORT time -- always the static
-// Default pair, since nothing can have chosen a theme before this module
-// evaluates. Every fallback render then highlighted in GitHub's colours whatever
-// the user picked, and cached that under the chosen theme's key.
-const syncProcessorFor = createPairKeyedCache<ReturnType<typeof createMarkdownProcessor>>()
-
-function getSyncProcessor(): ReturnType<typeof createMarkdownProcessor> {
-  const pair = syntaxThemePair()
-  return syncProcessorFor(pair, () => createMarkdownProcessor(shikiHighlighter, pair))
-}
+import { createCoalescedVersion, createWorkerDemand } from './workerDemand'
 
 // LRU cache for rendered markdown HTML: avoids re-rendering identical content on
 // re-mount (the virtualized chat list mounts a row ~4-5x as it scrolls in and out).
-// Holds the HIGHLIGHTED result -- whether produced synchronously (fallback) or by
-// the worker -- so a cache hit serves the final HTML with no flash. Sized well above
-// a viewport's worth of distinct messages so a normal scroll session stops
-// re-rendering rather than re-paying the worker round-trip after eviction.
+// Holds the FINAL result of the worker, so a cache hit serves the final HTML with no
+// flash. Sized well above a viewport's worth of distinct messages so a normal scroll
+// session stops re-rendering rather than re-paying the worker round-trip after
+// eviction.
 const CACHE_MAX_SIZE = 1024
+
+/**
+ * The most characters (UTF-16 code units, as `String.length` counts them) that
+ * the cached entries hold together, counting the source text (the key) and the
+ * HTML (the value) of each entry. Write every entry through cacheMarkdownHtml,
+ * which keeps this limit.
+ *
+ * The entry count alone does not limit memory, because a body of any size
+ * reaches this cache. A highlighted render measured about 9 times the length of
+ * its source for fenced code and about 2 times for prose, so one 2 MB tool
+ * result of code holds about 20 million characters. V8 stores one or two bytes
+ * per character, so this limit is 32 to 64 MB. A session of ordinary bodies, a
+ * few KB each, stays far below it, and there the entry count decides.
+ */
+export const MARKDOWN_CACHE_MAX_CHARS = 32 * 1024 * 1024
+
 const markdownCache = new Map<string, string>()
 
-// Plain (unhighlighted) PLACEHOLDER renders, cached separately from the highlighted
-// markdownCache (a plain entry must not satisfy the markdownCache lookup, or the
-// highlight would never be dispatched). The version signal bumps on every worker
-// completion and re-evaluates EVERY on-screen markdown body; without this cache, each
-// body still awaiting its highlight would re-run the synchronous plain remark render on
-// every bump -- a thundering herd that measured ~3s cumulative across a scroll. Caching
-// the placeholder makes those re-evals O(1). The entry is dropped once the highlighted
-// result lands (the markdownCache hit serves it thereafter), so it never goes stale.
-const placeholderCache = new Map<string, string>()
-
 // Bumped whenever an async worker render completes and fills the cache, so a
-// consumer that called renderMarkdown in a reactive context (every chat call site
-// does, via a memo or a reactive `innerHTML`) re-renders and picks up the
-// highlighted HTML in place of the plain placeholder it first received. Module-level
-// so all markdown consumers share one invalidation; the memo/`innerHTML` equality
-// check means only the rows whose HTML actually changed touch the DOM.
-const [markdownVersion, setMarkdownVersion] = createSignal(0)
-// Texts whose worker render is in flight, so concurrent/re-rendered consumers of the
-// same body don't each dispatch a duplicate render.
-const inFlight = new Set<string>()
+// consumer that called requestMarkdownHtml in a reactive context (every chat call
+// site does, via a memo) re-renders and picks up the HTML it was waiting for.
+// Module-level so all markdown consumers share one invalidation; the memo equality
+// check means only the bodies whose HTML actually changed touch the DOM. A burst of
+// completions (a screenful of bodies finishing within a tick) bumps it once.
+const markdownVersion = createCoalescedVersion()
+
+/**
+ * The renders in flight, keyed by text. Concurrent and re-rendered consumers of
+ * the same body share one render rather than each dispatching a duplicate, and
+ * the priority gate reads the render's demand at each dispatch opportunity: a
+ * prefetch alone leaves it low, and a consumer raises it while its row needs the
+ * body (see createWorkerDemand).
+ *
+ * An entry belongs to the render that created it, and only that render removes
+ * it (see ensureRender). A theme change and a reset clear the map, which
+ * abandons every render in flight.
+ */
+const inFlight = new Map<string, WorkerDemand>()
+
 // Per-text count of transient-failure retries (a grammar chunk load / highlighter init
-// that failed and may recover). Bounds re-dispatch so a genuinely broken grammar
-// eventually caches its plain render instead of re-dispatching forever -- mirrors the
-// editor parser's MAX_LANG_LOAD_RETRIES budget, keeping the three Oniguruma consumers'
-// recovery policy consistent.
+// that failed and may recover). Limits re-dispatch so a genuinely broken grammar
+// eventually caches its degraded render instead of re-dispatching forever.
 const retryCount = new Map<string, number>()
 const MAX_MARKDOWN_RENDER_RETRIES = 3
-// Coalesce a burst of completions (a screenful of bodies finishing within a tick)
-// into a single version bump, so consumers re-render once rather than once per body.
-let bumpScheduled = false
-function scheduleVersionBump(): void {
-  if (bumpScheduled)
-    return
-  bumpScheduled = true
-  queueMicrotask(() => {
-    bumpScheduled = false
-    setMarkdownVersion(v => v + 1)
-  })
-}
-
-// Whether off-thread rendering is available. False under unit tests / SSR (jsdom
-// defines no Worker), where renderMarkdown falls back to a synchronous highlight so
-// the rendered output is identical to the browser's eventual result.
-function canUseWorker(): boolean {
-  return typeof Worker !== 'undefined'
-}
 
 // --- persisted highlighted-markdown artifacts (IndexedDB) -------------------
 // Reload warm-start: a clean worker render is served on the next session
@@ -159,7 +68,6 @@ function canUseWorker(): boolean {
 // Per-entry bounds: one pathological body must not dominate the store.
 const PERSIST_MAX_TEXT_LENGTH = 256 * 1024
 const PERSIST_MAX_HTML_LENGTH = 512 * 1024
-const RE_SHIKI_STYLE_CLASS = /^sk-[0-9a-f]{8}-[0-9a-z]+$/
 
 /**
  * Persisted artifact value: the highlighted HTML plus the className ->
@@ -181,7 +89,7 @@ function isPersistedMarkdownArtifact(value: unknown): value is PersistedMarkdown
   if (s === null || typeof s !== 'object' || Array.isArray(s))
     return false
   return Object.entries(s).every(([className, decl]) =>
-    RE_SHIKI_STYLE_CLASS.test(className) && typeof decl === 'string')
+    isShikiStyleClassName(className) && typeof decl === 'string')
 }
 
 const markdownArtifact = createPersistedArtifact<PersistedMarkdownArtifact, MarkdownRenderResult>({
@@ -193,42 +101,48 @@ const markdownArtifact = createPersistedArtifact<PersistedMarkdownArtifact, Mark
 
 export const markdownArtifactNs = markdownArtifact.ns
 
+/**
+ * Drop every cached render and abandon every render in flight. Each map keyed by
+ * text belongs here, so that no path can clear one and leave another stale.
+ */
+function clearRenderState(): void {
+  markdownCache.clear()
+  inFlight.clear()
+  retryCount.clear()
+}
+
 // A rendered markdown body carries Shiki's baked token colours, so it is stale
 // the moment the syntax theme changes. The IndexedDB copies are orphaned instead
 // of dropped -- `markdownArtifactNs()` folds the theme in, so entries written
 // under the old pair are simply never looked up again, and the store's TTL sweep
 // collects them.
+
 onSyntaxThemeChange(() => {
-  markdownCache.clear()
-  placeholderCache.clear()
-  // `inFlight` and `retryCount` go with them, exactly as `_resetMarkdownCache`
-  // does. A body still rendering under the OLD pair is skipped by the
-  // `inFlight.has(text)` dedup guard, so the re-render after a theme change
-  // returned the plain placeholder and never re-dispatched -- and when the old
+  // `inFlight` and `retryCount` go with the cache, exactly as in
+  // `_resetMarkdownCache`. A body still rendering under the OLD pair would
+  // otherwise hit the dedup guard in `ensureRender` (`inFlight.get(text)`), so
+  // the re-render after a theme change never re-dispatched -- and when the old
   // reply landed it wrote the abandoned theme's HTML into the cache this line
   // just cleared and bumped the version, so the row repainted in the theme the
   // user had just left while its neighbours moved on.
-  inFlight.clear()
-  retryCount.clear()
+  clearRenderState()
   // Then TELL the consumers, the way every other mutation of these caches does.
   // A chat row happens to re-render anyway, because its own cache namespace
   // folds in `syntaxThemeGeneration()`. A consumer that reads only
-  // `markdownVersion()` -- `MarkdownFileView`, whose memo depends on the file
-  // text and nothing else -- was never told, so an open markdown file kept the
-  // abandoned theme's baked token colours against a code surface repainted for
-  // the new one, until some unrelated body's completion bumped the version.
-  scheduleVersionBump()
+  // `markdownVersion` -- a Markdown body with no render context, such as the
+  // file viewer's, whose memo depends on the text and nothing else -- was never
+  // told, so an open markdown file kept the abandoned theme's baked token
+  // colours against a code surface repainted for the new one, until some
+  // unrelated body's completion bumped the version.
+  markdownVersion.bump()
 })
 
 /** Visible for testing: drop all cached entries and in-flight tracking. */
 export function _resetMarkdownCache(): void {
-  markdownCache.clear()
-  placeholderCache.clear()
   // Clear inFlight too: a text left "in flight" (its worker render never resolved)
   // would otherwise be skipped forever by the dedup guard, so a clear-and-retry could
   // never actually retry -- and a text dispatched in one test would leak into the next.
-  inFlight.clear()
-  retryCount.clear()
+  clearRenderState()
 }
 
 /** Visible for testing: number of cached entries. */
@@ -236,210 +150,218 @@ export function _getMarkdownCacheSize(): number {
   return markdownCache.size
 }
 
-/** Visible for testing: number of cached plain placeholders. */
-export function _getPlaceholderCacheSize(): number {
-  return placeholderCache.size
+/** The characters that the cached entries hold together (see MARKDOWN_CACHE_MAX_CHARS). */
+function markdownCacheChars(): number {
+  let chars = 0
+  for (const [text, html] of markdownCache)
+    chars += text.length + html.length
+  return chars
 }
 
-/** Render plain Markdown without Shiki. The caller decides whether to cache it. */
-function plainRender(text: string): string {
-  return String(plainMarkdownProcessor.processSync(text))
-}
-
-/** Cached plain placeholder -- shown while the worker's highlighted result is in flight. */
-function renderPlain(text: string): string {
-  const cached = lruGet(placeholderCache, text) // hit re-fronts to MRU end
-  if (cached !== undefined)
-    return cached
-  const result = plainRender(text)
-  lruSet(placeholderCache, text, result, CACHE_MAX_SIZE)
-  return result
+/** Visible for testing: the characters that the cached entries hold together. */
+export function _getMarkdownCacheChars(): number {
+  return markdownCacheChars()
 }
 
 /**
- * Render markdown without syntax highlighting or worker dispatch.
+ * Cache `html` as the final render of `text`, at the most-recently-used end. Then
+ * evict the least-recently-used entries until the cache keeps both of its limits.
  *
- * Hidden chat premeasurement needs markdown block geometry (paragraph/list/code
- * structure) but must not enqueue Shiki work for rows the user may never see.
- * This shares the cached plain-placeholder path used by visible markdown while
- * highlighted HTML is still in flight.
+ * It never evicts the entry that it just wrote, even when that entry alone holds
+ * more than MARKDOWN_CACHE_MAX_CHARS. A consumer waits for it and reads it after
+ * the version bump. A miss there would dispatch the body again, and again after
+ * each reply.
  */
-export function renderMarkdownPlain(text: string): string {
-  return renderPlain(text)
+function cacheMarkdownHtml(text: string, html: string): void {
+  lruSet(markdownCache, text, html, CACHE_MAX_SIZE)
+  let chars = markdownCacheChars()
+  for (const [cachedText, cachedHtml] of markdownCache) {
+    if (chars <= MARKDOWN_CACHE_MAX_CHARS || cachedText === text)
+      break
+    markdownCache.delete(cachedText)
+    chars -= cachedText.length + cachedHtml.length
+  }
 }
 
 /**
- * Return completed highlighted markdown from the shared cache without
- * subscribing to worker-completion invalidations. Selection-preserving chat
- * renders use this to keep already-highlighted DOM stable while refusing a
- * plain→highlighted swap that would clear the browser selection.
+ * Return completed markdown HTML from the shared cache without subscribing to
+ * worker-completion invalidations or dispatching a render. Selection-preserving
+ * chat renders use this to keep already-displayed DOM stable.
  */
 export function getCachedMarkdownHtml(text: string): string | undefined {
   return lruGet(markdownCache, text) // hit re-fronts to MRU end
 }
 
 /**
- * Return highlighted markdown when it is already cached, otherwise return the
- * plain placeholder without dispatching a worker render. Used during scroll:
- * already-highlighted rows must not blink back to plain, but cache misses should
- * not start new syntax jobs on the scroll-critical path.
+ * Start the off-thread render of `text` unless one is in flight, and return its
+ * in-flight entry. The render always completes later, never in this call.
+ *
+ * The caller has checked the cache.
  */
-export function renderMarkdownCachedOrPlain(text: string): string {
-  const cached = getCachedMarkdownHtml(text)
-  if (cached !== undefined)
-    return cached
-  return renderPlain(text)
-}
-
-/** Full synchronous highlighted render (main-thread Shiki). The no-Worker fallback. */
-function renderHighlightedSync(text: string): string {
-  return renderWithPlainFallback(getSyncProcessor(), text)
+function ensureRender(text: string): WorkerDemand {
+  const existing = inFlight.get(text)
+  if (existing !== undefined)
+    return existing
+  const render = createWorkerDemand()
+  inFlight.set(text, render)
+  // The theme this dispatch belongs to, captured once. The reply may land
+  // after the user changed it, and a body highlighted under the abandoned
+  // theme must neither be cached nor persisted under the new one -- the
+  // invalidator already cleared the cache, so writing into it would restore
+  // exactly what the clear removed and no later read would re-dispatch,
+  // because a cache hit never does.
+  const dispatchPair = syntaxThemePair()
+  const dispatchNs = markdownArtifactNs()
+  const complete = (result: MarkdownRenderResult | null): void => {
+    // Inject the reply's shared token-style rules FIRST, whatever becomes of its
+    // HTML: the worker minted the class names but has no document (see
+    // shikiStyleClass). The worker sends each declaration only once, so a rule
+    // dropped here is never sent again, and a later render that uses its class
+    // shows uncoloured tokens. Injection is idempotent per class. It is also the
+    // one step here that can throw, so it runs before the bookkeeping below: a
+    // throw leaves the render in flight, for `complete(null)` to finish.
+    if (result !== null)
+      ensureShikiStyleRules(result.styles)
+    // Only the render that owns the entry may finish the body. A theme change or
+    // a reset abandons the render (see `inFlight`), and a later request may then
+    // have started a newer render of the same body. An abandoned render therefore
+    // leaves the entry, the retry count and the cache alone.
+    if (inFlight.get(text) !== render)
+      return
+    inFlight.delete(text)
+    // A render that still owned its entry ran under the current theme, because
+    // every theme change abandons the renders in flight. The check stays because
+    // tokenized output must pass it before every write (see themeStillCurrent).
+    // The entry is released already, so a later request renders the body again.
+    if (!themeStillCurrent(dispatchPair))
+      return
+    // A transient degrade (a grammar chunk load or the highlighter init failed): the
+    // render is (partly) plain but a retry may recover it, so DON'T cache it. Bump the
+    // version so a re-render re-dispatches -- limited, so a grammar that never loads
+    // still caches its degraded render eventually instead of re-dispatching forever.
+    if (result?.retryable && (retryCount.get(text) ?? 0) < MAX_MARKDOWN_RENDER_RETRIES) {
+      // delete+set moves this actively-retrying text to the most-recently-used end BEFORE
+      // capping. A bare set() on an existing key keeps its original insertion position, so
+      // capMapInsertionOrder could evict the very entry still bouncing through the retry
+      // loop -- resetting its count and re-granting the full budget. Moving it to MRU means
+      // the cap evicts a genuinely idle entry instead, keeping the retry bound meaningful.
+      const next = (retryCount.get(text) ?? 0) + 1
+      retryCount.delete(text)
+      retryCount.set(text, next)
+      // Cap the map: entries are otherwise removed only on the final path below, so a
+      // text that degrades retryably and whose reactive consumer then unmounts (scrolled
+      // away before the version bump re-dispatches) would leak forever -- unlike the
+      // LRU cache. Evicting the insertion-order-oldest entry at worst resets a long-idle
+      // text's retry count, which just grants it the full budget again on a later re-render.
+      capMapInsertionOrder(retryCount, CACHE_MAX_SIZE)
+      markdownVersion.bump()
+      return
+    }
+    retryCount.delete(text)
+    // A null result means no worker could render: it crashed, could not start (also
+    // where no Worker exists), rejected, or ran past the render's time budget. Show
+    // the escaped source rather than parse on the main thread, and cache it, so the
+    // body does not re-dispatch to a broken worker, or tie up a fresh one again,
+    // forever.
+    cacheMarkdownHtml(text, result?.html ?? markdownSourceFallbackHtml(text))
+    markdownVersion.bump()
+  }
+  // Persist only a CLEAN highlighted render for the reload warm-start: a retryable
+  // degrade or a crash (null) is not a durable result. The HTML length is checked
+  // HERE rather than inside the shared helper: it limits the VALUE, and only this
+  // consumer has one whose size is worth limiting apart from its key.
+  //
+  // Store the declaration of every token-style class that the HTML uses, not the
+  // reply's own: a reply carries only the declarations that its worker minted for
+  // the first time. A render whose dictionary this thread cannot complete is not
+  // persisted, because a reload could not colour its tokens.
+  const persist = (result: MarkdownRenderResult | null): void => {
+    if (result === null || result.retryable || result.html.length > PERSIST_MAX_HTML_LENGTH)
+      return
+    const styles = shikiStylesUsedBy(result.html)
+    if (styles !== undefined)
+      markdownArtifact.write(dispatchNs, text, { h: result.html, s: styles })
+  }
+  // The `Promise` constructor turns a synchronous throw of the worker bridge into a
+  // rejection, so every failure takes one path: the `catch`, which shows the source.
+  // `persist` runs after `complete`, which injected the reply's own rules: the
+  // dictionary that it stores needs them.
+  const dispatchToWorker = (): void => {
+    void new Promise<MarkdownRenderResult | null>(resolve => resolve(renderMarkdownInWorker(text, dispatchPair, render.isLow)))
+      .then((result) => {
+        complete(result)
+        persist(result)
+      })
+      .catch(() => complete(null))
+  }
+  // Reload warm-start: serve the persisted highlighted render when one exists,
+  // else dispatch. Without a store this is a SYNCHRONOUS undefined, so the
+  // dispatch keeps its same-frame timing.
+  const persisted = markdownArtifact.read(text)
+  if (persisted === undefined) {
+    dispatchToWorker()
+    return render
+  }
+  // Both handlers are load-bearing: a consumer waits for this render, and a chat row
+  // stays hidden until it lands. A failed READ falls back to the worker. A failed
+  // completion ends as a worker's does, with the escaped source; the render still
+  // owns its entry then (see `complete`), so no other render of the body starts.
+  void persisted
+    .then(
+      (result) => {
+        if (result === undefined)
+          dispatchToWorker()
+        else
+          complete(result)
+      },
+      () => dispatchToWorker(),
+    )
+    .catch(() => complete(null))
+  return render
 }
 
 /**
- * Render markdown to HTML.
+ * Return the final HTML of a Markdown body, or undefined while it renders.
  *
- * In the browser the expensive Shiki highlighting runs OFF the main thread: a
- * cache miss returns a fast plain (unhighlighted) placeholder immediately and
- * dispatches the highlight to a worker; when it lands, the result is cached and a
- * version signal bumps so the (reactive) caller re-renders with the highlighted
- * HTML in place. This keeps a large code-heavy body from blocking a frame -- a
- * single synchronous render measured up to ~1s on the main thread.
- *
- * Without a Worker (unit tests / SSR) it renders synchronously and highlighted, so
- * the output is identical to the browser's eventual result.
- *
- * `skipCache` (streaming / transient text) bypasses the cache entirely: in the
- * browser it returns an UNCACHED plain render without dispatching a worker render
- * (the text changes every frame, so highlighting it would thrash AND caching each
- * distinct frame would churn the placeholder cache the on-screen bodies rely on);
- * under tests it renders synchronously highlighted.
+ * This NEVER parses Markdown on the main thread: a single synchronous parse
+ * measured about 1.5 s for a 512 KB body in V8, and remark recurses deeply enough
+ * to overflow the stack on nested input. A cache miss dispatches the render to a
+ * worker and returns undefined; when the worker answers, the result is cached and
+ * a version signal bumps, so a reactive caller reads again and receives the HTML.
+ * The caller shows its pending state until then, and a chat row stays hidden
+ * behind its loading skeleton.
  *
  * `isLowPriority` (re-read at each dispatch opportunity) orders this body's
- * worker render behind currently-high ones — rows outside the near-viewport
- * band pass it so viewport rows upgrade first (see createWorkerPriorityGate).
+ * worker render behind currently-high ones -- rows outside the near-viewport
+ * band pass it so viewport rows render first (see createWorkerPriorityGate). A
+ * caller that passes none raises the body to full priority.
  */
-export function renderMarkdown(text: string, skipCache = false, isLowPriority?: () => boolean): string {
-  if (skipCache) {
-    return canUseWorker()
-      ? plainRender(text)
-      : renderHighlightedSync(text)
-  }
+export function requestMarkdownHtml(text: string, isLowPriority?: () => boolean): string | undefined {
+  // An empty body renders to nothing, so it needs no worker round trip.
+  if (text === '')
+    return ''
 
   // Subscribe to the version signal so an async worker completion re-renders this
   // (reactive) caller. Read BEFORE the cache lookup so the dependency is always
   // registered, including on the cache-hit path.
-  markdownVersion()
+  markdownVersion.read()
 
   const cached = lruGet(markdownCache, text) // hit re-fronts to MRU end
   if (cached !== undefined)
     return cached
 
-  if (!canUseWorker()) {
-    // No worker: render synchronously and cache.
-    const html = renderHighlightedSync(text)
-    lruSet(markdownCache, text, html, CACHE_MAX_SIZE)
-    return html
-  }
+  ensureRender(text).note(isLowPriority)
+  return undefined
+}
 
-  // Dispatch the highlight off-thread (once per distinct text) and return the plain
-  // placeholder now. On completion the highlighted HTML is cached and the version
-  // bumps, re-rendering this caller with it. A null result (worker crash) caches the
-  // plain render so it degrades gracefully instead of retrying forever.
-  let completedSynchronously = false
-  if (!inFlight.has(text)) {
-    inFlight.add(text)
-    // The theme this dispatch belongs to, captured once. The reply may land
-    // after the user changed it, and a body highlighted under the abandoned
-    // theme must neither be cached nor persisted -- the invalidator already
-    // cleared the cache, so writing into it would restore exactly what the
-    // clear removed and no later read would re-dispatch, because a cache hit
-    // never does.
-    const dispatchPair = syntaxThemePair()
-    const dispatchNs = markdownArtifactNs()
-    const complete = (result: MarkdownRenderResult | null): void => {
-      if (!themeStillCurrent(dispatchPair)) {
-        // The theme moved. Drop this result and let the invalidator's own
-        // version bump drive the re-render under the current pair.
-        //
-        // WITHOUT TOUCHING `inFlight`. The invalidator already cleared it, and
-        // a re-render under the new pair has since re-added this text, so
-        // deleting here would drop a dispatch that is still outstanding and let
-        // the next version bump dispatch the same body a third time.
-        retryCount.delete(text)
-        return
-      }
-      inFlight.delete(text)
-      // A transient degrade (a grammar chunk load or the highlighter init failed): the
-      // render is (partly) plain but a retry may recover it, so DON'T cache it. Bump the
-      // version so a re-render re-dispatches -- bounded, so a grammar that never loads
-      // still caches its plain render eventually instead of re-dispatching forever.
-      if (result?.retryable && (retryCount.get(text) ?? 0) < MAX_MARKDOWN_RENDER_RETRIES) {
-        // delete+set moves this actively-retrying text to the most-recently-used end BEFORE
-        // capping. A bare set() on an existing key keeps its original insertion position, so
-        // capMapInsertionOrder could evict the very entry still bouncing through the retry
-        // loop -- resetting its count and re-granting the full budget. Moving it to MRU means
-        // the cap evicts a genuinely idle entry instead, keeping the retry bound meaningful.
-        const next = (retryCount.get(text) ?? 0) + 1
-        retryCount.delete(text)
-        retryCount.set(text, next)
-        // Bound the map: entries are otherwise removed only on the terminal path below, so a
-        // text that degrades retryably and whose reactive consumer then unmounts (scrolled
-        // away before the version bump re-dispatches) would leak forever -- unlike the two
-        // LRU caches. Evicting the insertion-order-oldest entry at worst resets a long-idle
-        // text's retry count, which just grants it the full budget again on a later re-render.
-        capMapInsertionOrder(retryCount, CACHE_MAX_SIZE)
-        scheduleVersionBump()
-        return
-      }
-      retryCount.delete(text)
-      // Inject the shared token-style rules BEFORE the HTML can render: the
-      // worker minted the class names but has no document (see shikiStyleClass).
-      if (result)
-        ensureShikiStyleRules(result.styles)
-      lruSet(markdownCache, text, result?.html ?? plainRender(text), CACHE_MAX_SIZE)
-      // The highlighted (or fallback) result now serves from markdownCache, so the
-      // plain placeholder for this text is dead -- drop it to bound the cache.
-      placeholderCache.delete(text)
-      scheduleVersionBump()
-    }
-    const dispatchToWorker = (): void => {
-      try {
-        renderMarkdownInWorker(text, dispatchPair, isLowPriority)
-          .then((result) => {
-            // Persist only a CLEAN highlighted render for the reload warm-start:
-            // a retryable degrade or a crash (null) is not a durable result.
-            // The HTML length is guarded HERE rather than inside the shared
-            // helper: it bounds the VALUE, and only this consumer has one whose
-            // size is worth bounding apart from its key.
-            if (result && !result.retryable && result.html.length <= PERSIST_MAX_HTML_LENGTH)
-              markdownArtifact.write(dispatchNs, text, { h: result.html, s: result.styles })
-            complete(result)
-          })
-          .catch(() => complete(null))
-      }
-      catch {
-        complete(null)
-        completedSynchronously = true
-      }
-    }
-    // Reload warm-start: serve the persisted highlighted render when one exists,
-    // else dispatch. Without a store this is a SYNCHRONOUS undefined, so the
-    // dispatch keeps its same-frame timing.
-    const persisted = markdownArtifact.read(text)
-    if (persisted === undefined) {
-      dispatchToWorker()
-    }
-    else {
-      void persisted.then((result) => {
-        if (result !== undefined)
-          complete(result)
-        else
-          dispatchToWorker()
-      })
-    }
-  }
-  return completedSynchronously
-    ? markdownCache.get(text)!
-    : renderPlain(text)
+/**
+ * Start rendering `text` at low priority, so a body that mounts later -- the body
+ * of a collapsed section, when the reader expands it -- finds its HTML cached.
+ * Subscribes to nothing and returns nothing. A consumer that requests the same
+ * body before it lands raises its priority (see createWorkerDemand).
+ */
+export function prefetchMarkdownHtml(text: string): void {
+  if (text === '' || markdownCache.has(text))
+    return
+  ensureRender(text)
 }

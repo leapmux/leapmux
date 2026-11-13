@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { providerToolCall } from '~/test-support/toolCallFixture'
 import { renderToolRows } from '~/test-support/toolRowRendering'
 import { failedResult, proseResult } from '../../model/toolCall'
 import { acpTextContent, renderACPToolPair } from '../acp/testUtils'
-import { input } from '../testUtils'
 
-import '../testMocks'
+import { input } from '../testUtils'
+import '~/components/chat/providers'
 import './plugin'
 
 /** One finished call, read through the plugin with its opening frame paired. */
@@ -87,7 +88,7 @@ describe('qwen tool rendering', () => {
     expect(call?.kind === 'execute' && call.result && 'commands' in call.result && call.result.commands[0]).toMatchObject({ signal: 'SIGTERM', output: 'partial' })
   })
 
-  it('draws a foreground subagent with its report and summary', () => {
+  it('draws a foreground subagent with its report and summary', async () => {
     const { container } = renderACPToolPair(AgentProvider.QWEN_CODE, {
       title: 'Agent',
       kind: 'other',
@@ -110,6 +111,7 @@ describe('qwen tool rendering', () => {
         },
       },
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Agent "Child probe" completed')
     expect(container.textContent).toContain('Tool calls:1')
     expect(container.textContent).toContain('Duration:2.1s')

@@ -1,7 +1,38 @@
-import { describe, expect, it } from 'vitest'
+import type { FileEditContent, FileEditDiff } from '~/components/chat/model/fileEditDiff'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { failedResult, unparsedResult } from '~/components/chat/model/toolCall'
 import { toolCallMeta } from '~/components/chat/results/tools/meta'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { holdComputedDiffs, resetHeldComputedDiffs } from '~/test-support/heldComputedDiffs'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
+
+vi.mock('~/components/chat/diff/diffWorkerClient', async () => (await import('~/test-support/heldComputedDiffs')).heldDiffWorkerClient())
+
+afterEach(() => {
+  resetHeldComputedDiffs()
+})
+
+/**
+ * One edit of `/p/a.ts` that counts each build of its copyable text. The copyable
+ * text reads `notice` once per build, and nothing else on these rows reads it.
+ */
+function countedChange(content: FileEditContent): { change: FileEditDiff, builds: () => number } {
+  let builds = 0
+  const change: FileEditDiff = {
+    filePath: '/p/a.ts',
+    ...content,
+    // The VALUE is nothing; the read is the counter. A defined string keeps the
+    // getter's type inside the facts' optional member under exact-optional rules.
+    get notice(): string {
+      builds++
+      return 'notice-read'
+    },
+  }
+  return {
+    change,
+    builds: () => builds,
+  }
+}
 
 describe('toolCallMeta', () => {
   it('answers the same copyable text from every read, with hasCopyable agreeing', () => {
@@ -21,21 +52,8 @@ describe('toolCallMeta', () => {
   // `hasCopyable` is derived from the text, and the toolbar reads it on every
   // reactive pass -- so an edit row formatted its whole unified diff once per
   // streamed token. The ROW is the revision, so one build serves every pass.
-  // `notice` is read by the copyable text alone, which is what makes it the counter.
   it('builds one row\'s copyable text once across separate reads', () => {
-    let copyableBuilds = 0
-    const change = {
-      filePath: '/p/a.ts',
-      oldStr: 'x',
-      newStr: 'y',
-      structuredPatch: null,
-      // The VALUE is nothing; the read is the counter. A defined string keeps the
-      // getter's type inside the facts' optional member under exact-optional rules.
-      get notice(): string {
-        copyableBuilds++
-        return 'notice-read'
-      },
-    }
+    const { change, builds } = countedChange({ oldStr: 'x', newStr: 'y', structuredPatch: null })
     const call = toolCallFixture('edit', {
       status: 'completed',
       result: {
@@ -44,12 +62,150 @@ describe('toolCallMeta', () => {
     })
     const row = toolRow(call)
     expect(toolCallMeta(row).hasCopyable).toBe(true)
-    expect(copyableBuilds).toBe(1)
+    expect(builds()).toBe(1)
     expect(toolCallMeta(row).copyableContent()).toContain('/p/a.ts')
-    expect(copyableBuilds).toBe(1)
+    expect(builds()).toBe(1)
     // A different row object is a different revision, and it builds its own.
     expect(toolCallMeta(toolRow(call)).copyableContent()).toContain('/p/a.ts')
-    expect(copyableBuilds).toBe(2)
+    expect(builds()).toBe(2)
+  })
+
+  // The diff worker answers after the row mounts, so the first copyable text of
+  // an edit is a stand-in. Keeping it for good would copy the stand-in for the
+  // life of the row, and building it again on every read repeats the work.
+  it('keeps an edit\'s stand-in copyable text until its diff is ready, then builds the final text once', async () => {
+    const { change, builds } = countedChange({ oldStr: 'a\nb\nc\n', newStr: 'a\nB\nc\n', structuredPatch: null })
+    const row = toolRow(toolCallFixture('edit', {
+      status: 'completed',
+      result: {
+        changes: [change],
+      },
+    }))
+    holdComputedDiffs(true)
+
+    const standIn = toolCallMeta(row).copyableContent()
+    expect(standIn).toContain('-a\n-b\n-c\n+a\n+B\n+c\n')
+    expect(builds()).toBe(1)
+    expect(toolCallMeta(row).copyableContent()).toBe(standIn)
+    expect(builds()).toBe(1)
+
+    holdComputedDiffs(false)
+    // The released client asks the worker, which answers after this read.
+    expect(toolCallMeta(row).copyableContent()).toBe(standIn)
+    expect(builds()).toBe(1)
+    await settleWorkerReplies()
+
+    const final = toolCallMeta(row).copyableContent()
+    expect(final).toContain(' a\n-b\n+B\n c\n')
+    expect(builds()).toBe(2)
+    expect(toolCallMeta(row).copyableContent()).toBe(final)
+    expect(builds()).toBe(2)
+  })
+
+  it('keeps the copyable text of an edit whose patch came with it from the first read', () => {
+    const { change, builds } = countedChange({
+      structuredPatch: [
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          lines: ['-x', '+y'],
+        },
+      ],
+    })
+    const row = toolRow(toolCallFixture('edit', {
+      status: 'completed',
+      result: {
+        changes: [change],
+      },
+    }))
+    holdComputedDiffs(true)
+
+    expect(toolCallMeta(row).copyableContent()).toContain('-x\n+y\n')
+    expect(builds()).toBe(1)
+    toolCallMeta(row).copyableContent()
+    expect(builds()).toBe(1)
+  })
+
+  // The text is final only once EVERY change states its final diff: a first
+  // change whose patch came with it must not end the stand-in of a later one.
+  it('keeps the stand-in copyable text of a row whose first change has its patch until the diff of a later change is ready', async () => {
+    const patched: FileEditDiff = {
+      filePath: '/p/patched.ts',
+      structuredPatch: [
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          lines: ['-x', '+y'],
+        },
+      ],
+    }
+    const { change, builds } = countedChange({ oldStr: 'a\nb\nc\n', newStr: 'a\nB\nc\n', structuredPatch: null })
+    const row = toolRow(toolCallFixture('edit', {
+      status: 'completed',
+      result: {
+        changes: [
+          patched,
+          change,
+        ],
+      },
+    }))
+    holdComputedDiffs(true)
+
+    const standIn = toolCallMeta(row).copyableContent()
+    expect(standIn).toContain('-x\n+y\n')
+    expect(standIn).toContain('-a\n-b\n-c\n+a\n+B\n+c\n')
+    toolCallMeta(row).copyableContent()
+    expect(builds()).toBe(1)
+
+    holdComputedDiffs(false)
+    toolCallMeta(row).copyableContent()
+    await settleWorkerReplies()
+
+    const final = toolCallMeta(row).copyableContent()
+    expect(final).toContain('-x\n+y\n')
+    expect(final).toContain(' a\n-b\n+B\n c\n')
+    expect(final).not.toContain('-a\n-b\n-c\n+a\n+B\n+c\n')
+    expect(builds()).toBe(2)
+  })
+
+  it('keeps a requested edit\'s stand-in copyable text until its diff is ready, on a paired request row', async () => {
+    const { change, builds } = countedChange({ oldStr: 'a\nb\nc\n', newStr: 'a\nB\nc\n', structuredPatch: null })
+    const call = toolCallFixture('edit', {
+      status: 'completed',
+      request: {
+        changes: [change],
+      },
+      result: {
+        changes: [
+          {
+            filePath: '/p/a.ts',
+            oldStr: 'x',
+            newStr: 'y',
+            structuredPatch: null,
+          },
+        ],
+      },
+    })
+    const requestRow = toolRow(call, 'request', { result: true })
+    holdComputedDiffs(true)
+
+    expect(toolCallMeta(requestRow).copyableContent()).toContain('-a\n-b\n-c\n+a\n+B\n+c\n')
+    expect(builds()).toBe(1)
+    toolCallMeta(requestRow).copyableContent()
+    expect(builds()).toBe(1)
+
+    holdComputedDiffs(false)
+    toolCallMeta(requestRow).copyableContent()
+    await settleWorkerReplies()
+
+    expect(toolCallMeta(requestRow).copyableContent()).toContain(' a\n-b\n+B\n c\n')
+    expect(builds()).toBe(2)
+    toolCallMeta(requestRow).copyableContent()
+    expect(builds()).toBe(2)
   })
 
   it('ors an unparsed result into the request meta and keeps a requested diff\'s hasDiff', () => {

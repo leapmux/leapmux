@@ -552,7 +552,7 @@ These groups inspect a Worker's filesystem and git state read-only. The Worker i
 | `file stat` | `--path <path>` (required) | Stat info |
 | `file roots` | none beyond the entity selectors | `{roots}` |
 
-`file read --limit 0` means the default 60 KB cap.
+`file read` and `git read` read at most `--limit` bytes. `--limit 0`, the default, reads 256 KiB. The Worker caps a larger `--limit` at the message size of the channel (`max_message_size`, 16 MiB unless your administrator changed it). `total_size` gives the size of the whole file, so a `content` shorter than `total_size` shows where the read stopped. Read the rest of a large file with `file read --offset`; `git read` has no offset.
 
 `file list` answers a LIST of directory listings, one per entry, each
 `{path, entries, truncated, total_entries}`. Without `--from-root` that list
@@ -575,9 +575,11 @@ like any other Linux host.
 | `git status` | `--path <dir>` (defaults to `$LEAPMUX_CONTROL_WORKING_DIR`) | `{info, files}` |
 | `git branches` | `--path <dir>` | Branch list |
 | `git worktrees` | `--path <dir>` | Worktree list |
-| `git read` | `--path <file>` (required), `--ref head\|staged` | `{ref, path, content}` |
+| `git read` | `--path <file>` (required), `--ref head\|staged`, `--limit N` | `{ref, path, exists, total_size, content}` |
 
 `git status`/`branches`/`worktrees` default `--path` to the spawn's working dir; `git read` keeps `--path` required (it is a file path) and defaults `--ref` to `head`.
+
+`git read --limit` caps the content as `file read --limit` does: see [`file`](#file). A negative `--limit` fails. `exists` is false when the file is absent at the ref, which tells it apart from an empty file.
 
 ```bash
 leapmux control git status            # uses $LEAPMUX_CONTROL_WORKING_DIR inside an agent

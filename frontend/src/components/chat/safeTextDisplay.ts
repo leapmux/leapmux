@@ -1,4 +1,5 @@
 import { snapUtf16CutBackward, snapUtf16CutForward } from '~/lib/utf16Cut'
+import { hasMoreLinesThan } from './results/collapse'
 
 /** Maximum source characters that one expanded body retains. */
 export const EXPANDED_TEXT_DISPLAY_CHAR_LIMIT = 64 * 1024
@@ -9,16 +10,11 @@ export const TEXT_DISPLAY_LINE_CHAR_LIMIT = 4 * 1024
 /** Maximum source rows that one expanded text body retains. */
 export const EXPANDED_TEXT_DISPLAY_LINE_LIMIT = 1_000
 
-/** Maximum Markdown source that the synchronous plain renderer can parse. */
-export const MARKDOWN_PARSE_CHAR_LIMIT = 32 * 1024
-
 const CONTENT_OMISSION = '\n… content omitted from display …\n'
 const LINES_OMISSION = '… lines omitted from display …'
 const LINE_OMISSION = '…'
 
 export const LIMITED_TEXT_DISPLAY_NOTICE = 'Display limited to keep this page responsive. The full content remains available.'
-export const PLAIN_TEXT_DISPLAY_NOTICE = 'Large content uses a plain-text display to keep this page responsive.'
-export const LARGE_TEXT_DISPLAY_CLASS = 'large-text-display'
 
 export interface SafeTextDisplay {
   text: string
@@ -66,19 +62,6 @@ export function hasLineLongerThan(text: string, maxLineChars: number): boolean {
     start = newline + 1
   }
   return false
-}
-
-function hasMoreLinesThan(text: string, maxLines: number): boolean {
-  let remaining = maxLines
-  let index = 0
-  while (remaining > 0) {
-    const newline = text.indexOf('\n', index)
-    if (newline === -1)
-      return false
-    remaining--
-    index = newline + 1
-  }
-  return true
 }
 
 function limitLineCount(text: string, maxLines: number): SafeTextDisplay {
@@ -197,28 +180,4 @@ export function limitTextForDisplay(text: string, limits: TextDisplayLimits = {}
   const rows = limitLineCount(total.text, positiveInteger(limits.maxLines, EXPANDED_TEXT_DISPLAY_LINE_LIMIT))
   const lines = limitLineChars(rows.text, positiveInteger(limits.maxLineChars, TEXT_DISPLAY_LINE_CHAR_LIMIT))
   return { text: lines.text, limited: total.limited || rows.limited || lines.limited }
-}
-
-/** Report whether Markdown must use a plain-text display. */
-export function markdownNeedsPlainTextDisplay(text: string): boolean {
-  if (text.length > MARKDOWN_PARSE_CHAR_LIMIT)
-    return true
-  return hasMoreLinesThan(text, EXPANDED_TEXT_DISPLAY_LINE_LIMIT)
-    || hasLineLongerThan(text, TEXT_DISPLAY_LINE_CHAR_LIMIT)
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
-/** Build safe HTML for Markdown source that is too large to parse. */
-export function largeMarkdownPlainHtml(text: string): string {
-  const display = limitTextForDisplay(text)
-  const notice = display.limited ? LIMITED_TEXT_DISPLAY_NOTICE : PLAIN_TEXT_DISPLAY_NOTICE
-  return `<pre class="${LARGE_TEXT_DISPLAY_CLASS}" data-large-text-display>${escapeHtml(display.text)}</pre><p>${escapeHtml(notice)}</p>`
 }

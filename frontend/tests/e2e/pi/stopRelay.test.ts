@@ -26,8 +26,16 @@ afterEach(async () => {
   rmSync(directory, { recursive: true, force: true })
 })
 
+/** What a fixture run passes to the relay beside its source and its input. */
+interface FixtureRun {
+  /** The arguments that the relay receives at run time. */
+  argv?: string[]
+  /** Sees the child once its input is written. */
+  afterSpawn?: (child: ReturnType<typeof spawn>) => void
+}
+
 /** Run a real Node child. Its fixture output belongs only to this unit test. */
-async function runFixture(source: string, input: string, options: Partial<PiStopRelayOptions> = {}, argv: string[] = []) {
+async function runFixture(source: string, input: string, options: Partial<PiStopRelayOptions> = {}, { argv = [], afterSpawn }: FixtureRun = {}) {
   const native = join(directory, 'native child.cjs')
   const relay = join(directory, 'relay.cjs')
   writeFileSync(native, source)
@@ -48,6 +56,14 @@ async function runFixture(source: string, input: string, options: Partial<PiStop
   child.stderr.on('data', chunk => stderr.push(Buffer.from(chunk)))
   const result = new Promise<{ code: number | null, output: Buffer, stderr: Buffer }>((resolveResult, reject) => {
     child.once('error', reject)
+    // The relay can exit before it reads its input: it does when its native child
+    // fails to spawn. The write then meets a closed pipe and fails with EPIPE, which
+    // changes no result. With no listener, that error escaped as an uncaught
+    // exception and failed the whole test run. Any other input error fails the run.
+    child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+      if (error.code !== 'EPIPE')
+        reject(error)
+    })
     child.once('close', code => resolveResult({
       code,
       output: Buffer.concat(output),
@@ -55,7 +71,13 @@ async function runFixture(source: string, input: string, options: Partial<PiStop
     }))
   })
   child.stdin.end(input)
+  afterSpawn?.(child)
   return result
+}
+
+/** The error that a write to a pipe raises once the reader has closed it. */
+function closedPipeError(): NodeJS.ErrnoException {
+  return Object.assign(new Error('write EPIPE'), { code: 'EPIPE', errno: -32, syscall: 'write' })
 }
 
 describe('piStopRelayProgram', () => {
@@ -86,6 +108,28 @@ describe('piStopRelayProgram', () => {
     expect(result.code).toBe(1)
     expect(result.output.length).toBe(0)
     expect(result.stderr.toString()).toContain('ENOENT')
+  })
+
+  it('tolerates the EPIPE of a relay that exits before it reads its input', async () => {
+    // The relay exits as soon as its native child fails to spawn, so the write to its
+    // input can meet a closed pipe. Whether it does depends on the order in which
+    // Node handles the closed pipe and the exit, so the test raises the error itself.
+    const result = await runFixture('', '', {
+      executable: join(directory, 'absent-native'),
+    }, {
+      afterSpawn: child => child.stdin?.emit('error', closedPipeError()),
+    })
+    expect(result.code).toBe(1)
+    expect(result.stderr.toString()).toContain('ENOENT')
+  })
+
+  it('fails the fixture on an input error other than a closed pipe', async () => {
+    const failure = Object.assign(new Error('write EIO'), { code: 'EIO' })
+    await expect(runFixture('', '', {
+      executable: join(directory, 'absent-native'),
+    }, {
+      afterSpawn: child => child.stdin?.emit('error', failure),
+    })).rejects.toBe(failure)
   })
 
   it.each([
@@ -120,7 +164,7 @@ describe('piStopRelayProgram', () => {
       '한글 and spaces',
       'quote"text',
     ]
-    const result = await runFixture(`process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(JSON.stringify(process.argv.slice(2))));`, '', {}, argv)
+    const result = await runFixture(`process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(JSON.stringify(process.argv.slice(2))));`, '', {}, { argv })
     expect(result.code).toBe(0)
     expect(JSON.parse(result.output.toString())).toEqual(argv)
   })

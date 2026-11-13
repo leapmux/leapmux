@@ -363,9 +363,10 @@ export async function waitForWorkerTabTitle(
     throw new Error('A stored tab title check needs a title, because a tab with no title would match an empty one.')
   // `expect.poll` cannot retry a read here: it ends at the first read that throws, and only a failed match starts its
   // next attempt. `toPass` retries the read and the match together.
+  // The outer `expect` holds `message`, as waitTimeoutBeforeTestDeadline requires.
   await expect(async () => {
-    expect((await list()).map(tab => tab.title), message).toContain(title)
-  }).toPass({
+    expect((await list()).map(tab => tab.title)).toContain(title)
+  }, message).toPass({
     timeout: waitTimeoutBeforeTestDeadline(),
   })
 }

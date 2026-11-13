@@ -1,46 +1,4 @@
 import type { DiffGap, DiffGapSummary, StructuredPatchHunk } from './diffTypes'
-import { diffLines } from 'diff'
-
-const TRAILING_NEWLINE_RE = /\n$/
-
-/**
- * Convert raw old/new strings into StructuredPatchHunk[] format,
- * normalizing the input for the shared diff builders.
- */
-export function rawDiffToHunks(oldStr: string, newStr: string): StructuredPatchHunk[] {
-  const changes = diffLines(oldStr, newStr)
-  const lines: string[] = []
-  let oldLines = 0
-  let newLines = 0
-  for (const change of changes) {
-    const prefix = change.added
-      ? '+'
-      : change.removed ? '-' : ' '
-    const rawLines = change.value.replace(TRAILING_NEWLINE_RE, '').split('\n')
-    for (const line of rawLines) {
-      lines.push(prefix + line)
-      if (change.added) {
-        newLines++
-      }
-      else if (change.removed) {
-        oldLines++
-      }
-      else {
-        oldLines++
-        newLines++
-      }
-    }
-  }
-  return [
-    {
-      oldStart: 1,
-      oldLines,
-      newStart: 1,
-      newLines,
-      lines,
-    },
-  ]
-}
 
 /** Format structuredPatch hunks as a unified diff string suitable for copying. */
 export function formatUnifiedDiffText(hunks: StructuredPatchHunk[], filePath?: string): string {
@@ -182,7 +140,7 @@ export function computeSyntheticGapMap(hunks: StructuredPatchHunk[]): Map<number
  * Group diff line entries by their `hunkIndex` field.
  * Returns an array of groups in hunk-index order.
  */
-export function groupByHunk<T extends { hunkIndex: number }>(entries: T[]): T[][] {
+export function groupByHunk<T extends { hunkIndex: number }>(entries: readonly T[]): T[][] {
   const first = entries[0]
   if (first === undefined)
     return []
@@ -201,6 +159,25 @@ export function groupByHunk<T extends { hunkIndex: number }>(entries: T[]): T[][
   }
   groups.push(currentGroup)
   return groups
+}
+
+/** Whether two hunks state the same lines at the same place. */
+function sameHunk(a: StructuredPatchHunk, b: StructuredPatchHunk): boolean {
+  return a.oldStart === b.oldStart
+    && a.oldLines === b.oldLines
+    && a.newStart === b.newStart
+    && a.newLines === b.newLines
+    && a.lines.length === b.lines.length
+    && a.lines.every((line, i) => line === b.lines[i])
+}
+
+/**
+ * Whether two lists of hunks state the same lines, hunk by hunk. Two lists of
+ * the same identity answer at once. Otherwise the answer reads every line, so
+ * call it only when the hunks change, not when their marks change.
+ */
+export function sameHunks(a: readonly StructuredPatchHunk[], b: readonly StructuredPatchHunk[]): boolean {
+  return a === b || (a.length === b.length && a.every((hunk, i) => hunk === b[i] || sameHunk(hunk, b[i]!)))
 }
 
 /** Count the total number of lines across all hunks. */
@@ -224,4 +201,104 @@ export function diffStatsFromHunks(hunks: StructuredPatchHunk[]): { added: numbe
     }
   }
   return { added, deleted }
+}
+
+/** Where one change block of a hunk ends (see changeBlockAt). */
+export interface ChangeBlock {
+  /** The index of the first addition. The removals run from the block's start to here. */
+  addedStart: number
+  /** The index after the last addition. */
+  end: number
+}
+
+/**
+ * The change block that starts at `lines[start]`: a run of removals, then the
+ * run of additions after it. Either run may be empty. Undefined when that line
+ * is neither a removal nor an addition. A view pairs the n-th removal of a
+ * block with its n-th addition. The diff worker, the renderer and the line
+ * limit all read the blocks here, so they cannot disagree about which lines pair.
+ */
+export function changeBlockAt(lines: readonly string[], start: number): ChangeBlock | undefined {
+  const prefix = lines[start]?.[0]
+  if (prefix !== '-' && prefix !== '+')
+    return undefined
+  let i = start
+  while (i < lines.length && lines[i]?.[0] === '-')
+    i++
+  const addedStart = i
+  while (i < lines.length && lines[i]?.[0] === '+')
+    i++
+  return { addedStart, end: i }
+}
+
+/**
+ * The most diff lines that a chat row draws. It is the default `drawnLineLimit`
+ * of a DiffInput, which the computed diff carries to DiffView. Each line mounts
+ * about nine DOM nodes, and a chat row mounts each line twice: in the hidden
+ * premeasure copy and in the visible copy. A rewrite of a long file changes
+ * every line. The file viewer mounts one copy, so it draws every line.
+ */
+export const DIFF_DRAWN_LINE_LIMIT = 2000
+
+/**
+ * At most `limit` lines of `hunks`, from the start, and how many lines the view
+ * does not draw. A hunk that the limit cuts keeps the line counts of its kept lines.
+ *
+ * The cut keeps both sides of the change block that it falls in, a run of
+ * removals and the run of additions after it. Each side keeps its first lines,
+ * up to half of what the limit leaves, and a side with fewer lines gives the
+ * rest to the other. A rewrite of a long file is one such block, and a cut of
+ * its first lines alone would draw only removed lines. The kept lines pair as
+ * the uncut block pairs them, so each word diff still applies.
+ */
+export function limitDiffLines(hunks: StructuredPatchHunk[], limit: number): { hunks: StructuredPatchHunk[], hiddenLines: number } {
+  const total = countHunkLines(hunks)
+  if (total <= limit)
+    return { hunks, hiddenLines: 0 }
+  const kept: StructuredPatchHunk[] = []
+  let budget = Math.max(limit, 0)
+  for (const hunk of hunks) {
+    if (budget === 0)
+      break
+    if (hunk.lines.length <= budget) {
+      kept.push(hunk)
+      budget -= hunk.lines.length
+      continue
+    }
+    const lines = cutHunkLines(hunk.lines, budget)
+    budget = 0
+    kept.push({
+      oldStart: hunk.oldStart,
+      oldLines: lines.filter(line => !line.startsWith('+')).length,
+      newStart: hunk.newStart,
+      newLines: lines.filter(line => !line.startsWith('-')).length,
+      lines,
+    })
+  }
+  return { hunks: kept, hiddenLines: total - countHunkLines(kept) }
+}
+
+/** At most `budget` lines of one hunk, cut as {@link limitDiffLines} states. */
+function cutHunkLines(lines: readonly string[], budget: number): string[] {
+  const kept: string[] = []
+  let i = 0
+  while (i < lines.length && kept.length < budget) {
+    const block = changeBlockAt(lines, i)
+    if (block === undefined) {
+      kept.push(lines[i]!)
+      i++
+      continue
+    }
+    const removed = block.addedStart - i
+    const added = block.end - block.addedStart
+    const left = budget - kept.length
+    const keptRemoved = Math.min(removed, Math.max(Math.ceil(left / 2), left - added))
+    const keptAdded = Math.min(added, left - keptRemoved)
+    kept.push(
+      ...lines.slice(i, i + keptRemoved),
+      ...lines.slice(block.addedStart, block.addedStart + keptAdded),
+    )
+    i = block.end
+  }
+  return kept
 }

@@ -151,7 +151,7 @@ const loaded = new Map<string, Promise<ThemeRegistrationRaw>>()
  *
  * EVERY theme this app registers goes through here -- the lazily imported ones
  * in LOADERS above, and the two the synchronous highlighter carries in the main
- * bundle (see `~/lib/renderMarkdown`) -- so the rule cannot hold on one path and
+ * bundle (see `~/lib/shikiSyncHighlighter`) -- so the rule cannot hold on one path and
  * not the other. `main` had that single authority in `transparentBgThemes`; the
  * split into two hand-applied copies is what this restores.
  *
@@ -174,7 +174,7 @@ export function withTransparentBg(doc: unknown, name?: string): ThemeRegistratio
  * own wrapper owns the block background.
  *
  * Memoized by name: the same theme is asked for by the two workers' highlighters
- * and the editor's, and a theme is immutable once loaded.
+ * and the main thread's synchronous one, and a theme is immutable once loaded.
  */
 export function loadSyntaxTheme(name: string): Promise<ThemeRegistrationRaw> {
   const cached = loaded.get(name)
@@ -196,11 +196,11 @@ export function loadSyntaxTheme(name: string): Promise<ThemeRegistrationRaw> {
   // `name` is stamped on unconditionally. Shiki registers a theme under the
   // DOCUMENT's own name, so the fallback above registered itself as
   // `github-dark` and the name that was asked for stayed permanently absent:
-  // `ensureThemesRegistered` re-loaded and re-registered on every call, the
-  // editor's `areThemesLoaded` never converged, and every `codeToTokens`
-  // naming that half threw. Stamping it makes "the theme this call loads is
-  // registered under the name this call asked for" a property rather than a
-  // coincidence of the loader keys matching the upstream documents' names.
+  // `ensureThemesRegistered` re-loaded and re-registered on every call, and
+  // every `codeToTokens` that specified that half threw. Stamping it makes "the
+  // theme this call loads is registered under the name this call asked for" a
+  // property rather than a coincidence of the loader keys matching the upstream
+  // documents' names.
   const promise = loader().then(m => withTransparentBg(m.default ?? m, name))
   // Drop a REJECTED load so a later call retries. Caching the rejection would
   // leave a transient chunk-import failure permanently unhighlighted.

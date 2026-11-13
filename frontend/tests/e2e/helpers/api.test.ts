@@ -66,7 +66,12 @@ function controlledChannelManager(closeHandler = closeAll) {
     closeChannel: async () => { throw new Error('The controlled manager must not close a transport channel.') },
     createWebSocket: () => { throw new Error('The controlled manager must not open a WebSocket.') },
   }
-  return Object.assign(new ChannelManager(transport, { installWakeListener: false }), { callWorker, closeAll: closeHandler })
+  return Object.assign(new ChannelManager(transport, {
+    installWakeListener: false,
+    spawnSessionWorker: () => {
+      throw new Error('The controlled manager must not start a channel session.')
+    },
+  }), { callWorker, closeAll: closeHandler })
 }
 const channel = controlledChannelManager()
 

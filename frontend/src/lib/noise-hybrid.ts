@@ -1,4 +1,5 @@
 import type { Session } from './noise'
+import type { SlhDsaVerify } from './slhDsaVerifyHere'
 import { x25519 } from '@noble/curves/ed25519.js'
 import { blake2b } from '@noble/hashes/blake2.js'
 /**
@@ -13,7 +14,6 @@ import { blake2b } from '@noble/hashes/blake2.js'
  */
 import { ml_kem1024 } from '@noble/post-quantum/ml-kem.js'
 
-import { slh_dsa_shake_256f } from '@noble/post-quantum/slh-dsa.js'
 import { AEAD_TAG_SIZE, SLHDSA_SIG_SIZE, X25519_PUBLIC_KEY_SIZE } from '~/generated/contracts/wire'
 import { concatBytes } from './bytes'
 import { SymmetricState } from './noise'
@@ -148,52 +148,60 @@ export function deriveRekeySecrets(
  * @param state - Handshake state from initiatorHandshake1
  * @param message2 - Responder's message (49904 bytes)
  * @param remoteSlhdsaPub - Worker's SLH-DSA-SHAKE-256f public key (64 bytes)
+ * @param verify - Verifies the signature. The verification costs about 26 ms of
+ *   JavaScript, so the channel runs the whole handshake in the channel session
+ *   worker, and passes verifySlhDsaHere there. It has no default, so that no
+ *   caller verifies on the main thread by omission.
  * @returns Established encrypted Session
  */
-export function initiatorHandshake2(
+export async function initiatorHandshake2(
   state: HybridHandshakeState,
   message2: Uint8Array,
   remoteSlhdsaPub: Uint8Array,
-): Session {
+  verify: SlhDsaVerify,
+): Promise<Session> {
   const { ss, e, mlkemSS, mlkemCT } = state
 
-  const expectedLen = NOISE_MSG_LEN + SLHDSA_SIG_SIZE
-  if (message2.length !== expectedLen) {
-    throw new Error(`noise-hybrid: message2 wrong size (${message2.length} !== ${expectedLen})`)
+  // The handshake state is single-use, and every way out zeroes it: the success,
+  // and each failure of a malformed or forged message 2. The state stays intact
+  // while the verification runs, because the split after it reads the chaining
+  // key and the ML-KEM shared secret.
+  try {
+    const expectedLen = NOISE_MSG_LEN + SLHDSA_SIG_SIZE
+    if (message2.length !== expectedLen) {
+      throw new Error(`noise-hybrid: message2 wrong size (${message2.length} !== ${expectedLen})`)
+    }
+
+    const noiseMsg2 = message2.slice(0, NOISE_MSG_LEN)
+    const slhdsaSig = message2.slice(NOISE_MSG_LEN)
+
+    // <- e, ee
+    const re = noiseMsg2.slice(0, X25519_PUBLIC_KEY_SIZE)
+    ss.mixHash(re)
+
+    // ee: DH(e, re)
+    const dhEE = x25519.getSharedSecret(e.privateKey, re)
+    ss.mixKey(dhEE)
+    dhEE.fill(0)
+
+    // Decrypt payload (should be empty).
+    const encPayload = noiseMsg2.slice(X25519_PUBLIC_KEY_SIZE)
+    ss.decryptAndHash(encPayload)
+
+    // Compute transcript: BLAKE2b(handshake_hash || mlkem_ct || mlkem_ss)
+    const transcript = blake2b(concatBytes(ss.h, mlkemCT, mlkemSS))
+
+    // Verify SLH-DSA signature.
+    if (!await verify(slhdsaSig, transcript, remoteSlhdsaPub))
+      throw new Error('noise-hybrid: SLH-DSA signature verification failed')
+
+    // Hybrid split: mix ML-KEM shared secret into chaining key before deriving cipher keys.
+    const [c1, c2] = ss.hybridSplit(mlkemSS)
+
+    // Initiator convention: send=c2, receive=c1
+    return { send: c2, receive: c1 }
   }
-
-  const noiseMsg2 = message2.slice(0, NOISE_MSG_LEN)
-  const slhdsaSig = message2.slice(NOISE_MSG_LEN)
-
-  // <- e, ee
-  const re = noiseMsg2.slice(0, X25519_PUBLIC_KEY_SIZE)
-  ss.mixHash(re)
-
-  // ee: DH(e, re)
-  const dhEE = x25519.getSharedSecret(e.privateKey, re)
-  ss.mixKey(dhEE)
-  dhEE.fill(0)
-
-  // Decrypt payload (should be empty).
-  const encPayload = noiseMsg2.slice(X25519_PUBLIC_KEY_SIZE)
-  ss.decryptAndHash(encPayload)
-
-  // Compute transcript: BLAKE2b(handshake_hash || mlkem_ct || mlkem_ss)
-  const transcript = blake2b(concatBytes(ss.h, mlkemCT, mlkemSS))
-
-  // Verify SLH-DSA signature.
-  const valid = slh_dsa_shake_256f.verify(slhdsaSig, transcript, remoteSlhdsaPub)
-  if (!valid) {
+  finally {
     clearHandshakeState(state)
-    throw new Error('noise-hybrid: SLH-DSA signature verification failed')
   }
-
-  // Hybrid split: mix ML-KEM shared secret into chaining key before deriving cipher keys.
-  const [c1, c2] = ss.hybridSplit(mlkemSS)
-
-  // Zero sensitive handshake material.
-  clearHandshakeState(state)
-
-  // Initiator convention: send=c2, receive=c1
-  return { send: c2, receive: c1 }
 }

@@ -4,6 +4,7 @@ import type { ImageRenderActions } from '../renderContext'
 import { render, waitFor } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { pngBase64 } from '~/test-support/pngFixture'
 import { providerRowImages, providerToolMeta } from '~/test-support/toolCallFixture'
@@ -14,16 +15,7 @@ import './claude/plugin'
 import './codex/plugin'
 import './opencode/plugin'
 import './pi/plugin'
-import './testMocks'
-
-vi.mock('~/lib/shikiWorkerClient', () => ({
-  tokenizeAsync: async (_lang: string, code: string) => code.split('\n').map(() => []),
-}))
-
-vi.mock('~/lib/tokenCache', () => ({
-  getCachedTokens: () => null,
-  makeKey: (lang: string, code: string) => `${lang}\0${code}`,
-}))
+import '~/components/chat/providers'
 
 const { renderMessageContent } = await import('../messageContentRenderer')
 
@@ -165,7 +157,7 @@ describe('claude Read on an image', () => {
     expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL)
   })
 
-  it('renders text and image together when a tool returns both', () => {
+  it('renders text and image together when a tool returns both', async () => {
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult([
       { type: 'text', text: 'captured the page' },
       {
@@ -173,6 +165,7 @@ describe('claude Read on an image', () => {
         source: { type: 'base64', media_type: 'image/png', data: PNG },
       },
     ]), { spanType: 'mcp__playwright__screenshot' })
+    await settleWorkerReplies()
     expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL)
     expect(container.textContent ?? '').toContain('captured the page')
   })

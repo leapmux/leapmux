@@ -1,18 +1,22 @@
 import type { Component } from 'solid-js'
 import type { UnsupportedReason } from './UnsupportedFileView'
+import type { ComparedVersions, ShownVersionDiff, VersionRead } from './versionDiff'
+import type { ComputedDiff } from '~/components/chat/diff/diffCompute'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { GitFileStatusEntry } from '~/generated/proto/leapmux/v1/common_pb'
 import type { FileViewMode } from '~/lib/fileType'
 import type { FileDiffBase, FileDisplayMode, FileViewMode as TabFileViewMode } from '~/stores/tab.types'
-import { batch, createEffect, createMemo, createSignal, Match, on, onCleanup, Show, Switch } from 'solid-js'
+import { batch, createComputed, createEffect, createMemo, createSignal, Match, on, onCleanup, Show, Switch } from 'solid-js'
 import { isTauriApp } from '~/api/platformBridge'
 import { workerFile, workerGit } from '~/api/workerRpc'
-import { DiffView, rawDiffToHunks } from '~/components/chat/diff'
 import { diffAdded, diffRemoved } from '~/components/chat/diff/diffStyles.css'
+import { requestComputedDiff } from '~/components/chat/diff/diffWorkerClient'
+import { createRenderReadinessScope } from '~/components/chat/renderReadiness'
 import { FileActionsMenu } from '~/components/common/FileActionsMenu'
 import { createFileSaveActions } from '~/components/common/fileSaveActions'
 import { showWarnToast } from '~/components/common/Toast'
 import { usePreferences } from '~/context/PreferencesContext'
+import { FILE_READ_LIMIT_BYTES } from '~/generated/contracts/file-read'
 import { GitFileStatusCode } from '~/generated/proto/leapmux/v1/common_pb'
 import { GitFileRef } from '~/generated/proto/leapmux/v1/git_pb'
 import { PREFIX_FILE_SCROLL, sessionStorageGet, sessionStorageRemove, sessionStorageSet } from '~/lib/browserStorage'
@@ -30,9 +34,78 @@ import { ImageFileView } from './ImageFileView'
 import { MarkdownFileView } from './MarkdownFileView'
 import { TextFileView } from './TextFileView'
 import { UnsupportedFileView } from './UnsupportedFileView'
+import { ABSENT_VERSION, compareVersions, shownVersionDiff } from './versionDiff'
+import { VersionDiffView } from './VersionDiffView'
 import { ViewToggle } from './ViewToggle'
 
-const MAX_FILE_SIZE = 256 * 1024 // 256 KiB
+/** The limit of each git read: the HEAD and staged versions stop where the working copy does. */
+const GIT_READ_LIMIT = BigInt(FILE_READ_LIMIT_BYTES)
+
+/** What the viewer loads for the view mode of the tab: the unified and split views load one diff of a base (see diffSourceMode). */
+type DiffSourceMode = 'working' | 'head' | 'staged' | 'diff:head-vs-working' | 'diff:head-vs-staged'
+
+/**
+ * What a ref or diff mode loaded:
+ *
+ * - `ref`: the version that a ref mode shows, null when the file does not exist at the ref.
+ * - `diff`: the two versions that a diff mode compares.
+ * - `binary`: nothing, for a file whose extension marks it binary. The diff mode
+ *   states its git status instead.
+ * - `failed`: the reason that a read failed.
+ */
+type GitModeContent
+  = | { kind: 'ref', version: VersionRead | null }
+    | { kind: 'diff', versions: ComparedVersions }
+    | { kind: 'binary' }
+    | { kind: 'failed', message: string }
+
+/** The content of one ref or diff mode load, with the file and the mode that it read. */
+interface GitModeLoad {
+  workerId: string
+  filePath: string
+  mode: DiffSourceMode
+  content: GitModeContent
+}
+
+/**
+ * The diff that diff mode draws: none (another mode, a binary file, or a version
+ * that has not loaded), computing in the diff worker, or ready.
+ */
+type ViewerDiff
+  = | { status: 'none' }
+    | { status: 'computing' }
+    | { status: 'ready', diff: ComputedDiff, versions: ComparedVersions }
+
+/**
+ * Whether two answers of the viewer diff are the same: the same status and the
+ * same diff of the same versions. A memo that compares with this keeps its value
+ * when it runs again with the same answer, so its readers do not run again: the
+ * scroll restore among them would move the scroll back to the first change.
+ */
+function sameViewerDiff(a: ViewerDiff, b: ViewerDiff): boolean {
+  if (a.status === 'ready' || b.status === 'ready') {
+    return a.status === 'ready' && b.status === 'ready'
+      && a.diff === b.diff && a.versions === b.versions
+  }
+  return a.status === b.status
+}
+
+/** Whether the limit cut the content of a read. */
+function readTruncated(resp: { content: Uint8Array, totalSize: bigint }): boolean {
+  return BigInt(resp.content.length) < resp.totalSize
+}
+
+/**
+ * A read version as the ref and diff modes take it: at most FILE_READ_LIMIT_BYTES bytes,
+ * as each git read returns. The working copy of an image loads up to the larger
+ * image limit, and its diff must stop where the git versions stop.
+ */
+function limitedVersion(resp: { content: Uint8Array, totalSize: bigint }): VersionRead {
+  return {
+    bytes: resp.content.subarray(0, FILE_READ_LIMIT_BYTES),
+    truncated: resp.content.length > FILE_READ_LIMIT_BYTES || readTruncated(resp),
+  }
+}
 
 /**
  * Build the binary-file diff message from the file's git-status entry.
@@ -142,6 +215,17 @@ export const FileViewer: Component<{
   const isDesktop = isTauriApp()
   const prefs = usePreferences()
 
+  // The file and the view mode, each a memo of its value. The tile reads each
+  // prop from the whole tab object (see TileRenderer), so a patch of any field
+  // of the tab, such as a switch between unified and split, re-reads every prop
+  // with its old value too. The loads, the scroll restore and the child views
+  // below read these memos, which change only with a value, so such a patch
+  // reloads nothing, scrolls nothing, and draws nothing again: an image view
+  // that read the raw path would create its blob URL again and flash blank.
+  const workerIdValue = createMemo(() => props.workerId)
+  const filePathValue = createMemo(() => props.filePath)
+  const fileViewModeValue = createMemo(() => props.fileViewMode)
+
   const flavor = createMemo(() => detectFlavor(props.filePath))
   // Single source of truth for the file extension. Every is*Ext check
   // and every detectFileViewMode call below reads through this memo, so
@@ -173,13 +257,11 @@ export const FileViewer: Component<{
   const isImagePath = createMemo(() => isImageExt(ext()))
   const oversizeImage = createMemo(() => isImagePath() && totalSize() > MAX_FILE_IMAGE_BYTES)
 
-  // Diff mode state
-  const [diffOldContent, setDiffOldContent] = createSignal<string | null>(null)
-  const [diffNewContent, setDiffNewContent] = createSignal<string | null>(null)
-  const [diffLoading, setDiffLoading] = createSignal(false)
+  // The last ref or diff mode load. One signal holds both versions of a diff, so
+  // a reader never sees one version of a load beside the other of an older one.
+  const [gitModeLoad, setGitModeLoad] = createSignal<GitModeLoad | null>(null)
 
-  const isDiffMode = () => props.fileViewMode === 'unified-diff' || props.fileViewMode === 'split-diff'
-  const isRefMode = () => props.fileViewMode === 'head' || props.fileViewMode === 'staged'
+  const isDiffMode = () => fileViewModeValue() === 'unified-diff' || fileViewModeValue() === 'split-diff'
 
   // Whether a diff exists to render. A file with no git-status entry
   // is either outside the repo or unchanged from HEAD — neither case
@@ -221,14 +303,17 @@ export const FileViewer: Component<{
   const fetchFirstChunk = (workerId: string, filePath: string, signal?: AbortSignal) =>
     workerFile.readFile(workerId, {
       path: filePath,
-      limit: BigInt(MAX_FILE_SIZE),
+      limit: BigInt(FILE_READ_LIMIT_BYTES),
     }, signal
       ? { signal }
       : undefined)
 
   // Load working copy content.
   createEffect(on(
-    () => [props.workerId, props.filePath] as const,
+    () => [
+      workerIdValue(),
+      filePathValue(),
+    ] as const,
     async ([workerId, filePath]) => {
       let resolveBytes!: (bytes: Uint8Array | null) => void
       currentBytesPromise = new Promise<Uint8Array | null>((r) => {
@@ -337,9 +422,8 @@ export const FileViewer: Component<{
   // vs. split) doesn't re-fire the fetch effect. The diff bytes only
   // depend on workerId / filePath / diffBase; the view choice is
   // render-only.
-  type DiffSourceMode = 'working' | 'head' | 'staged' | 'diff:head-vs-working' | 'diff:head-vs-staged'
   const diffSourceMode = createMemo<DiffSourceMode>(() => {
-    const fv = props.fileViewMode
+    const fv = fileViewModeValue()
     if (!fv || fv === 'working')
       return 'working'
     if (fv === 'head' || fv === 'staged')
@@ -349,12 +433,30 @@ export const FileViewer: Component<{
       : 'head-vs-working'
     return `diff:${base}`
   })
+  /** Whether the view shows the working copy as it is, with no git version. */
+  const isWorkingMode = () => diffSourceMode() === 'working'
 
-  // Load diff content when in diff or ref mode.
+  /**
+   * What the current ref or diff mode loaded, or undefined while it loads and in
+   * working mode. A load of another file or mode is not the current one.
+   */
+  const gitModeContent = createMemo((): GitModeContent | undefined => {
+    const load = gitModeLoad()
+    return load !== null
+      && load.workerId === props.workerId
+      && load.filePath === props.filePath
+      && load.mode === diffSourceMode()
+      ? load.content
+      : undefined
+  })
+  /** Whether a ref or diff mode waits for its versions. */
+  const diffLoading = () => !isWorkingMode() && gitModeContent() === undefined
+
+  // Load the versions of the ref or diff mode.
   createEffect(on(
     () => [
-      props.workerId,
-      props.filePath,
+      workerIdValue(),
+      filePathValue(),
       diffSourceMode(),
     ] as const,
     async ([workerId, filePath, mode]) => {
@@ -371,109 +473,106 @@ export const FileViewer: Component<{
         controller.abort()
       })
 
-      // Each run takes the flag over at its start. A superseded run leaves the
-      // flag alone in its `finally`, and this branch reads nothing, so nothing
-      // else would clear a flag that the read it replaced had set.
+      // Working mode shows no git version. Drop the last load, which holds up
+      // to two versions of FILE_READ_LIMIT_BYTES.
       if (mode === 'working') {
-        setDiffLoading(false)
-        setDiffOldContent(null)
-        setDiffNewContent(null)
+        setGitModeLoad(null)
         return
       }
+      // An empty path waits for the real one, as the working-copy load does. The
+      // worker rejects a read of it, and the pane would state that failure.
+      if (!workerId || !filePath)
+        return
 
-      setDiffLoading(true)
+      const store = (content: GitModeContent) => {
+        if (active)
+          setGitModeLoad({ workerId, filePath, mode, content })
+      }
+      /** The version at `ref`, or null when the file does not exist there. */
+      const readGitVersion = async (ref: GitFileRef): Promise<VersionRead | null> => {
+        const resp = await workerGit.readGitFile(workerId, { path: filePath, ref, limit: GIT_READ_LIMIT }, rpcOpts)
+        return resp.exists
+          ? limitedVersion(resp)
+          : null
+      }
+      // head-vs-working: prefer the working-copy bytes that the load effect reads,
+      // rather than a second readFile of the same range. It awaits that load, so
+      // the bytes are stable. It reads afresh when that load has no bytes: a
+      // binary file, an image above the image limit, or a failed load.
+      const readWorkingVersion = async (): Promise<VersionRead> => {
+        const bytes = await currentBytesPromise
+        return limitedVersion(bytes
+          ? {
+              content: bytes,
+              totalSize: BigInt(totalSize()),
+            }
+          : await fetchFirstChunk(workerId, filePath, controller.signal))
+      }
+
       try {
         if (mode === 'head' || mode === 'staged') {
-          const ref = mode === 'head'
+          const version = await readGitVersion(mode === 'head'
             ? GitFileRef.HEAD
-            : GitFileRef.STAGED
-          const resp = await workerGit.readGitFile(workerId, { path: filePath, ref }, rpcOpts)
-          if (!active)
-            return
-          if (resp.exists) {
-            setDiffOldContent(new TextDecoder().decode(resp.content))
-          }
-          else {
-            setDiffOldContent(null)
-          }
+            : GitFileRef.STAGED)
+          store({ kind: 'ref', version })
+          return
         }
-        else {
-          // Binary files render the git-status-driven indicator
-          // instead of decoded-text DiffView — skip the fetch entirely
-          // for the common (extension-based) binary case. Unknown-
-          // extension binaries still pay the wasted fetch since the
-          // sniff runs in the load effect, but the render path won't
-          // display the decoded garbage.
-          if (isLikelyBinaryExt(extname(filePath))) {
-            setDiffOldContent(null)
-            setDiffNewContent(null)
-            return
-          }
-          // HEAD ref runs in parallel with whatever the "new" side
-          // needs — they target the same worker but don't depend on
-          // each other.
-          const headPromise = workerGit.readGitFile(workerId, {
-            path: filePath,
-            ref: GitFileRef.HEAD,
-          }, rpcOpts)
-          // Handled here as well as at the await below. When the new side
-          // fails first, or this run is superseded, the function leaves
-          // before it awaits the HEAD read, and the abort above then rejects
-          // that read with nobody listening.
-          headPromise.catch(() => {})
-          const decoder = new TextDecoder()
-          let newText: string
-          if (mode === 'diff:head-vs-staged') {
-            const stagedResp = await workerGit.readGitFile(workerId, {
-              path: filePath,
-              ref: GitFileRef.STAGED,
-            }, rpcOpts)
-            newText = stagedResp.exists
-              ? decoder.decode(stagedResp.content)
-              : ''
-          }
-          else {
-            // head-vs-working: prefer the working-copy bytes loaded by
-            // the content-loading effect rather than issuing a second
-            // readFile for the same range. Awaits load completion so
-            // the bytes are stable. Falls back to a fresh readFile
-            // when content() is null — binary files in diff mode, the
-            // load effect's early-return path, etc.
-            const bytes = await currentBytesPromise
-            if (bytes) {
-              newText = decoder.decode(bytes)
-            }
-            else {
-              const workingResp = await fetchFirstChunk(workerId, filePath, controller.signal)
-              newText = decoder.decode(workingResp.content)
-            }
-          }
-          const headResp = await headPromise
-          if (!active)
-            return
-          setDiffOldContent(headResp.exists
-            ? decoder.decode(headResp.content)
-            : '')
-          setDiffNewContent(newText)
+        // Binary files render the git-status-driven indicator
+        // instead of decoded-text DiffView — skip the fetch entirely
+        // for the common (extension-based) binary case. Unknown-
+        // extension binaries still pay the wasted fetch since the
+        // sniff runs in the load effect, but the render path won't
+        // display the decoded garbage.
+        if (isLikelyBinaryExt(extname(filePath))) {
+          store({ kind: 'binary' })
+          return
         }
+        // HEAD ref runs in parallel with whatever the "new" side
+        // needs — they target the same worker but don't depend on
+        // each other.
+        const headRead = readGitVersion(GitFileRef.HEAD)
+        // Handled here as well as at the await below. When the new side
+        // fails first, or this run is superseded, the function leaves
+        // before it awaits the HEAD read, and the abort above then rejects
+        // that read with nobody listening.
+        headRead.catch(() => {})
+        const newVersion = mode === 'diff:head-vs-staged'
+          ? (await readGitVersion(GitFileRef.STAGED)) ?? ABSENT_VERSION
+          : await readWorkingVersion()
+        const oldVersion = (await headRead) ?? ABSENT_VERSION
+        store({
+          kind: 'diff',
+          versions: compareVersions(oldVersion, newVersion),
+        })
       }
-      catch {
-        // If git read fails, clear diff content. A superseded run's failure,
-        // the abort included, describes reads that nobody waits for.
-        if (active) {
-          setDiffOldContent(null)
-          setDiffNewContent(null)
-        }
-      }
-      finally {
-        // A newer run owns the flag from its start.
-        if (active)
-          setDiffLoading(false)
+      catch (err) {
+        // A superseded run's failure, the abort included, describes reads that
+        // nobody waits for, and `store` ignores it.
+        store({
+          kind: 'failed',
+          message: formatErrorMessage(err, 'Failed to read the file from git'),
+        })
       }
     },
   ))
 
   const isTruncated = () => content() !== null && content()!.length < totalSize()
+  /** Whether the read limit cut a version that the current ref or diff mode shows. */
+  const gitVersionTruncated = () => {
+    const loaded = gitModeContent()
+    switch (loaded?.kind) {
+      case 'ref':
+        return loaded.version?.truncated === true
+      case 'diff':
+        return loaded.versions.oldTruncated || loaded.versions.newTruncated
+      default:
+        return false
+    }
+  }
+  /** Whether a version that the current mode shows is cut at FILE_READ_LIMIT_BYTES. */
+  const shownVersionTruncated = () => isWorkingMode()
+    ? isTruncated()
+    : gitVersionTruncated()
 
   const cardReason = createMemo<UnsupportedReason | null>(() => {
     if (oversizeImage())
@@ -489,9 +588,28 @@ export const FileViewer: Component<{
   // own dispatch).
   const shouldShowUnsupported = () =>
     !loading() && !error()
-    && (props.fileViewMode === undefined || props.fileViewMode === 'working')
+    && isWorkingMode()
     && !showAnyway()
     && cardReason() !== null
+
+  /**
+   * Whether the status bar offers the return to the download view. That view
+   * belongs to working mode, so the bar of a ref or diff mode offers nothing.
+   */
+  const downloadViewReturnShown = () => isWorkingMode() && showAnyway() && cardReason() !== null
+
+  /**
+   * Whether the status bar has something to say. In working mode it states the
+   * size and any truncation. In the ref and diff modes it states only a
+   * truncation, because the size it holds is the working copy's.
+   */
+  const statusBarShown = () => {
+    if (loading() || error())
+      return false
+    if (!isWorkingMode())
+      return gitVersionTruncated()
+    return !shouldShowUnsupported() && (totalSize() > 0 || isTruncated())
+  }
 
   const handleShowAnyway = async () => {
     // Snapshot worker/path at click time. If the user navigates away
@@ -531,7 +649,7 @@ export const FileViewer: Component<{
     setShowAnyway(true)
   }
 
-  const showToolbar = () => props.fileViewMode !== undefined
+  const showToolbar = () => fileViewModeValue() !== undefined
   const showFloatingActions = () => !loading() && !error()
   const hasTopChrome = () => showToolbar() || showFloatingActions()
 
@@ -539,21 +657,62 @@ export const FileViewer: Component<{
   // beside the FileActionsMenu in the top-right floating slot. Other
   // modes show just the actions menu.
   const showViewToggle = () =>
-    !loading() && !error() && !isDiffMode() && !isRefMode()
+    !loading() && !error() && isWorkingMode()
     && (viewMode() === 'markdown' || (viewMode() === 'image' && isSvgExt(ext())))
 
-  const diffHunks = createMemo(() => {
-    if (!isDiffMode())
-      return []
-    const old = diffOldContent()
-    const nw = diffNewContent()
-    if (old === null || nw === null)
-      return []
-    return rawDiffToHunks(old, nw)
+  // The diff of the two versions, which the diff worker computes (see
+  // diffWorkerClient). A binary file that draws its notice diffs nothing. The
+  // versions hold one input object for the whole load, so each run asks for the
+  // diff of the same object.
+  const viewerDiff = createMemo((): ViewerDiff => {
+    const loaded = gitModeContent()
+    if (loaded?.kind !== 'diff' || binaryDiffMessage() !== null)
+      return { status: 'none' }
+    const diff = requestComputedDiff(loaded.versions.input)
+    return diff === undefined
+      ? { status: 'computing' }
+      : { status: 'ready', diff, versions: loaded.versions }
+  }, { status: 'none' }, { equals: sameViewerDiff })
+  /**
+   * Where the diff view reports that it has not mounted every line yet. It
+   * mounts its lines in slices of main-thread work (see DiffView), and a scroll
+   * restore before the last line would clamp to a shorter page. The view also
+   * reports here that it replaces its layout: it mounts the layout of a new view
+   * mode (unified or split) behind the one that it shows. The viewer keeps the
+   * old layout in view meanwhile, so the switch shows no loading state, but the
+   * scroll restore waits for the new layout.
+   */
+  const diffReadiness = createRenderReadinessScope()
+  /**
+   * Whether the current ref or diff mode has nothing to draw yet: its versions
+   * load, the diff worker computes their diff, or the diff view mounts its lines.
+   * The loading indicator and the scroll restore wait for this one answer.
+   */
+  const gitModePending = () => diffLoading() || viewerDiff().status === 'computing' || diffReadiness.pending()
+  /** What diff mode draws once the diff is ready: the diff stops where a read of one version stops. */
+  const shownDiff = createMemo((): ShownVersionDiff | undefined => {
+    const current = viewerDiff()
+    return current.status === 'ready'
+      ? shownVersionDiff(current.diff, current.versions)
+      : undefined
   })
+  /** The version that a ref mode shows, null when the file does not exist at the ref, or undefined in another state. */
+  const refVersion = (): { version: VersionRead | null } | undefined => {
+    const loaded = gitModeContent()
+    return loaded?.kind === 'ref'
+      ? loaded
+      : undefined
+  }
+  /** The reason that the read of a ref or diff mode failed, or undefined. */
+  const gitReadFailure = (): string | undefined => {
+    const loaded = gitModeContent()
+    return loaded?.kind === 'failed'
+      ? loaded.message
+      : undefined
+  }
 
   const diffViewPref = (): DiffViewPreference =>
-    props.fileViewMode === 'split-diff'
+    fileViewModeValue() === 'split-diff'
       ? 'split'
       : 'unified'
 
@@ -576,34 +735,50 @@ export const FileViewer: Component<{
   // Save scroll position when the view mode changes or on unmount.
   // Values are TTL-wrapped via `sessionStorageSet` so stale entries get
   // dropped by `runCleanup` on next app load.
-  let lastSavedKey: string | undefined
+  /**
+   * The scroll key of the mode whose content the viewer shows, or undefined
+   * from a change of the key until the restore below runs for the new key.
+   */
+  let shownScrollKey: string | undefined
+  /** Save the scroll position of the mode whose content the viewer shows. */
   const saveScrollPosition = () => {
-    const key = lastSavedKey ?? scrollStorageKey()
-    if (contentRef && contentRef.scrollTop > 0)
-      sessionStorageSet(key, contentRef.scrollTop)
+    if (shownScrollKey === undefined || !contentRef)
+      return
+    if (contentRef.scrollTop > 0)
+      sessionStorageSet(shownScrollKey, contentRef.scrollTop)
     else
-      sessionStorageRemove(key)
+      sessionStorageRemove(shownScrollKey)
   }
   onCleanup(saveScrollPosition)
+  // Save the scroll position of the mode that the reader leaves while its
+  // content is still in place: a computation runs before the DOM changes. The
+  // next mode can hide its content while it loads or while its diff mounts, and
+  // the container then scrolls to the top.
+  createComputed(on(scrollStorageKey, (key, previousKey) => {
+    if (key === previousKey)
+      return
+    saveScrollPosition()
+    shownScrollKey = undefined
+  }, { defer: true }))
 
-  // Restore saved scroll position or scroll to first diff entry.
+  // Restore saved scroll position or scroll to first diff entry, once the content
+  // of the mode shows: its versions loaded, its diff mounted, and a new diff
+  // layout swapped in.
   createEffect(on(
     () => [
       loading(),
-      diffLoading(),
+      gitModePending(),
+      diffReadiness.replacing(),
       isDiffMode(),
-      diffHunks().length,
-      props.fileViewMode,
+      shownDiff()?.diff.hunks.length ?? 0,
+      fileViewModeValue(),
     ] as const,
-    ([fileLoading, dLoading, diffMode, hunkCount, _fvMode]) => {
-      if (fileLoading || dLoading || !contentRef)
+    ([fileLoading, gitPending, layoutSwitching, diffMode, hunkCount, _fvMode]) => {
+      if (fileLoading || gitPending || layoutSwitching || !contentRef)
         return
 
-      // Save scroll for the previous mode before switching.
       const key = scrollStorageKey()
-      if (lastSavedKey && lastSavedKey !== key)
-        saveScrollPosition()
-      lastSavedKey = key
+      shownScrollKey = key
 
       const savedScroll = readScrollEntry(key)
       if (savedScroll != null) {
@@ -651,7 +826,7 @@ export const FileViewer: Component<{
     <div class={styles.container}>
       <Show when={showToolbar()}>
         <DiffModeToolbar
-          mode={props.fileViewMode!}
+          mode={fileViewModeValue()!}
           {...(props.fileDiffBase !== undefined
             ? { diffBase: props.fileDiffBase }
             : {})}
@@ -669,8 +844,8 @@ export const FileViewer: Component<{
             <ViewToggle mode={displayMode()} onToggle={m => props.onDisplayModeChange?.(m)} showSplit />
           </Show>
           <FileActionsMenu
-            workerId={props.workerId}
-            path={props.filePath}
+            workerId={workerIdValue()}
+            path={filePathValue()}
             flavor={flavor()}
             {...(props.rootPath !== undefined
               ? { rootPath: props.rootPath }
@@ -708,28 +883,35 @@ export const FileViewer: Component<{
         classList={{
           [styles.hasFloatingToolbar]: hasTopChrome(),
         }}
+        data-testid="file-viewer-content"
         ref={contentRef}
       >
-        <Show when={loading() || diffLoading()}>
-          <div class={styles.loadingState}>Loading...</div>
+        <Show when={loading() || gitModePending()}>
+          <div class={styles.loadingState} data-testid="file-viewer-loading">Loading...</div>
         </Show>
         <Show when={error()}>
           <div class={styles.errorState}>{error()}</div>
         </Show>
         <Show when={!loading() && !error()}>
           {/* Ref mode: show HEAD or staged content as text */}
-          <Show when={isRefMode() && !diffLoading() && diffOldContent() !== null}>
-            <TextFileView
-              content={new TextEncoder().encode(diffOldContent()!)}
-              filePath={props.filePath}
-              totalSize={diffOldContent()!.length}
-              {...(props.onQuote !== undefined
-                ? { onQuote: props.onQuote }
-                : {})}
-            />
-          </Show>
-          <Show when={isRefMode() && !diffLoading() && diffOldContent() === null}>
-            <div class={styles.errorState}>File does not exist at this ref</div>
+          <Show when={refVersion()}>
+            {ref => (
+              <Show
+                when={ref().version}
+                fallback={<div class={styles.errorState}>File does not exist at this ref</div>}
+              >
+                {version => (
+                  <TextFileView
+                    content={version().bytes}
+                    filePath={filePathValue()}
+                    totalSize={version().bytes.length}
+                    {...(props.onQuote !== undefined
+                      ? { onQuote: props.onQuote }
+                      : {})}
+                  />
+                )}
+              </Show>
+            )}
           </Show>
 
           {/* Diff mode: binary indicator OR unified/split text diff. */}
@@ -738,28 +920,31 @@ export const FileViewer: Component<{
               {binaryDiffMessage()}
             </div>
           </Show>
-          <Show when={isDiffMode() && !diffLoading() && binaryDiffMessage() === null && diffOldContent() !== null && diffNewContent() !== null}>
-            <DiffView
-              hunks={diffHunks()}
-              view={diffViewPref()}
-              filePath={props.filePath}
-              {...(diffOldContent() !== null
-                ? {
-                    originalFile: diffOldContent()!,
-                  }
-                : {})}
-            />
+          {/* A binary file draws its git status, which needs no read, so the failure of its read states nothing. */}
+          <Show when={binaryDiffMessage() === null && gitReadFailure()}>
+            {message => <div class={styles.errorState}>{message()}</div>}
+          </Show>
+          <Show when={shownDiff()}>
+            {shown => (
+              <VersionDiffView
+                shown={shown()}
+                view={diffViewPref()}
+                filePath={filePathValue()}
+                readLimit={FILE_READ_LIMIT_BYTES}
+                readiness={diffReadiness}
+              />
+            )}
           </Show>
 
           {/* Working mode or no mode: show normal file content. */}
-          <Show when={!isDiffMode() && !isRefMode()}>
+          <Show when={isWorkingMode()}>
             <Show
               when={showAnyway()}
               fallback={(
                 <Switch>
                   <Match when={shouldShowUnsupported()}>
                     <UnsupportedFileView
-                      filePath={props.filePath}
+                      filePath={filePathValue()}
                       flavor={flavor()}
                       totalSize={totalSize()}
                       reason={cardReason()!}
@@ -783,7 +968,7 @@ export const FileViewer: Component<{
                   <Match when={viewMode() === 'text' && content()}>
                     <TextFileView
                       content={content()!}
-                      filePath={props.filePath}
+                      filePath={filePathValue()}
                       totalSize={totalSize()}
                       {...(props.onQuote !== undefined
                         ? { onQuote: props.onQuote }
@@ -793,7 +978,7 @@ export const FileViewer: Component<{
                   <Match when={viewMode() === 'markdown' && content()}>
                     <MarkdownFileView
                       content={content()!}
-                      filePath={props.filePath}
+                      filePath={filePathValue()}
                       totalSize={totalSize()}
                       mode={displayMode()}
                       {...(props.onQuote !== undefined
@@ -804,7 +989,7 @@ export const FileViewer: Component<{
                   <Match when={viewMode() === 'image' && content()}>
                     <ImageFileView
                       content={content()!}
-                      filePath={props.filePath}
+                      filePath={filePathValue()}
                       totalSize={totalSize()}
                       mode={displayMode()}
                       {...(props.onQuote !== undefined
@@ -828,12 +1013,14 @@ export const FileViewer: Component<{
           </Show>
         </Show>
       </div>
-      <Show when={!loading() && !error() && !isDiffMode() && !isRefMode() && !shouldShowUnsupported() && (totalSize() > 0 || isTruncated())}>
+      <Show when={statusBarShown()}>
         <div
           class={styles.statusBar}
-          classList={{ [styles.statusBarInteractive]: showAnyway() && cardReason() !== null }}
+          classList={{
+            [styles.statusBarInteractive]: downloadViewReturnShown(),
+          }}
         >
-          <Show when={showAnyway() && cardReason() !== null}>
+          <Show when={downloadViewReturnShown()}>
             <button
               type="button"
               class={styles.statusActionButton}
@@ -844,12 +1031,13 @@ export const FileViewer: Component<{
               Show download view
             </button>
           </Show>
-          <Show when={isTruncated()}>
+          <Show when={shownVersionTruncated()}>
             <span class={styles.truncationWarning}>
-              {`Truncated at ${formatBytes(MAX_FILE_SIZE)}`}
+              {`Truncated at ${formatBytes(FILE_READ_LIMIT_BYTES)}`}
             </span>
           </Show>
-          <Show when={totalSize() > 0}>
+          {/* The size of the working copy, which only working mode shows. */}
+          <Show when={isWorkingMode() && totalSize() > 0}>
             <span class={styles.statusMeta}>{formatBytes(totalSize())}</span>
           </Show>
         </div>

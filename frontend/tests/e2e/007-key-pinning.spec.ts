@@ -63,6 +63,25 @@ test.describe('Key Pinning', () => {
     expect(pin!.firstSeen).toBeGreaterThan(0)
   })
 
+  /**
+   * The Noise session of every channel runs in the channel session worker: the handshake, the SLH-DSA signature check
+   * of a post-quantum open (about 26 ms of JavaScript), encryption and decryption. No main-thread fallback exists, so
+   * the channel opens only when that worker runs; this proves that it loads and stays up in the built app.
+   */
+  test('runs the channel session, and its signature check, in a Web Worker', async ({
+    page,
+    workspace,
+    leapmuxServer,
+  }) => {
+    const { adminToken, adminUserId, workerId } = leapmuxServer
+
+    await loginViaToken(page, adminToken)
+    await openWorkspace(page, workspace.workspaceId)
+    await expect.poll(() => getKeyPin(page, adminUserId, workerId)).not.toBeNull()
+
+    await expect.poll(() => page.workers().some(worker => worker.url().includes('channelSessionWorker'))).toBe(true)
+  })
+
   test('accept: key mismatch dialog appears, user accepts, workspace loads', async ({
     page,
     workspace,

@@ -17,7 +17,7 @@ function event(type: string, payload: Record<string, unknown> = {}): Record<stri
   }
 }
 
-const renderZCodeText = (parsed: unknown): string => renderThreadText([parsed], AgentProvider.ZCODE)
+const renderZCodeText = (parsed: unknown): Promise<string> => renderThreadText([parsed], AgentProvider.ZCODE)
 
 describe('describeZCodeNotification', () => {
   describe('permission.resolved', () => {
@@ -135,17 +135,17 @@ describe('zcodeNotificationEntry', () => {
 })
 
 describe('zcode notification rendering (markup)', () => {
-  it('renders a standalone notification as a plain line with no divider icon', () => {
+  it('renders a standalone notification as a plain line with no divider icon', async () => {
     const msg = event(ZCODE_EVENT.SessionClosed, { reason: 'idle timeout' })
-    expect(renderZCodeText(msg)).toBe('Session closed — idle timeout')
+    expect(await renderZCodeText(msg)).toBe('Session closed — idle timeout')
     // A plain notification line draws no divider. Only a compaction entry does.
     expect(renderThreadHasIcon([msg], AgentProvider.ZCODE)).toBe(false)
   })
 
   // Regression guard: a consolidated wrapper must render EVERY entry. A provider with
   // no notificationThreadEntry hook renders only messages[0], silently dropping the rest.
-  it('renders every entry of a consolidated thread', () => {
-    const text = renderThreadText([
+  it('renders every entry of a consolidated thread', async () => {
+    const text = await renderThreadText([
       event(ZCODE_EVENT.TurnSteerQueued, { inputPreview: 'also run the linter' }),
       event(ZCODE_EVENT.TurnSteerDrained),
       event(ZCODE_EVENT.PermissionResolved, { decision: ZCODE_DECISION.Deny, toolName: ZCODE_TOOL.Bash }),
@@ -157,7 +157,7 @@ describe('zcode notification rendering (markup)', () => {
 
   // The completed compaction row is the boundary of the rewrite, so it draws the
   // divider, with the sizes before and after it.
-  it('renders a completed compaction as a divider with its sizes', () => {
+  it('renders a completed compaction as a divider with its sizes', async () => {
     const msg = event(ZCODE_EVENT.SessionUpdated, {
       operationId: 'c1',
       status: ZCODE_COMPACTION_STATUS.Completed,
@@ -167,11 +167,11 @@ describe('zcode notification rendering (markup)', () => {
       truePostCompactTokenCount: 12000,
     })
     expect(renderThreadHasIcon([msg], AgentProvider.ZCODE)).toBe(true)
-    expect(renderZCodeText(msg)).toBe('Context compacted (auto, 180.0k → 12.0k)')
+    expect(await renderZCodeText(msg)).toBe('Context compacted (auto, 180.0k → 12.0k)')
   })
 
-  it('renders nothing for a shape neither ZCode nor the shared switch owns', () => {
-    expect(renderZCodeText(event('totally_unknown_zcode_event'))).toBe('')
+  it('renders nothing for a shape neither ZCode nor the shared switch owns', async () => {
+    expect(await renderZCodeText(event('totally_unknown_zcode_event'))).toBe('')
   })
 })
 
@@ -180,8 +180,8 @@ describe('zcode notification rendering (markup)', () => {
 // the end of the aborted turn with no frame at all. ZCode's describer returns null
 // for it, and the shared switch supplies the line.
 describe('the stop row LeapMux writes', () => {
-  it('renders in the shared vocabulary rather than as raw JSON', () => {
-    expect(renderZCodeText({ type: 'interrupted' })).toBe('Interrupted')
+  it('renders in the shared vocabulary rather than as raw JSON', async () => {
+    expect(await renderZCodeText({ type: 'interrupted' })).toBe('Interrupted')
   })
 })
 

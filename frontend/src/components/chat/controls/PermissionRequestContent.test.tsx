@@ -2,6 +2,7 @@ import type { ControlRequest } from '~/stores/control.store'
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { prettifyJson } from '~/lib/jsonFormat'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { PermissionRequestContent } from './PermissionRequestContent'
 
 const PERMISSION_REQUIRED_RE = /Permission Required/
@@ -37,8 +38,9 @@ function argumentsText(container: HTMLElement): string | undefined {
 describe('PermissionRequestContent', () => {
   // A runtime can state a request in prose, such as a subagent's plan. The body
   // draws it as markdown, not as a JSON string among the arguments.
-  it('draws the text of the request as markdown', () => {
+  it('draws the text of the request as markdown', async () => {
     const { container } = renderBody({ title: 'ExitPlanMode', text: '# The plan\n\n- First step' })
+    await settleWorkerReplies()
     expect(container.querySelector('h1')?.textContent).toBe('The plan')
     expect(container.querySelector('li')?.textContent).toBe('First step')
     expect(container.querySelector('pre')).toBeNull()

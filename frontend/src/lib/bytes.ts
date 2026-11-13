@@ -25,3 +25,22 @@ export function concatBytes(...arrays: Uint8Array[]): Uint8Array {
   }
   return result
 }
+
+/**
+ * Return a view that covers the whole of its own `ArrayBuffer`, so that a
+ * structured clone or a transfer moves exactly the bytes of `view`.
+ *
+ * A clone or a transfer moves the whole buffer behind a view, not the bytes that
+ * the view covers. A subarray of a large buffer would carry the rest of that
+ * buffer, and a transfer would detach it from every other view on it.
+ *
+ * Returns `view` itself when it already covers the whole of an `ArrayBuffer`.
+ * Otherwise it returns a copy, which shares its buffer with no other view. A view
+ * on a `SharedArrayBuffer` is always copied, because a transfer cannot move one.
+ */
+export function ownedBytes(view: Uint8Array): Uint8Array<ArrayBuffer> {
+  const buffer = view.buffer
+  if (buffer instanceof ArrayBuffer && view.byteOffset === 0 && view.byteLength === buffer.byteLength)
+    return view as Uint8Array<ArrayBuffer>
+  return view.slice()
+}

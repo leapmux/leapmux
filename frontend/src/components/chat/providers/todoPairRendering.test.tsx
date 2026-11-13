@@ -8,7 +8,6 @@ import { toolUseHeader } from '../toolStyles.css'
 import { providerFor } from './registry'
 import { input } from './testUtils'
 import './index'
-import './testMocks'
 
 describe.each([AgentProvider.CLAUDE_CODE, AgentProvider.ZCODE])('paired to-do layout (%s)', (provider) => {
   it.each([false, true])('puts the checklist in the result row (empty: %s)', (empty) => {

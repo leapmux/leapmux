@@ -9,7 +9,7 @@ import { resolveMessageForRendering } from './providers/registry'
 import './providers/claude/plugin'
 import './providers/opencode/plugin'
 import './providers/cursor/plugin'
-import './providers/testMocks'
+import '~/components/chat/providers'
 
 const { messageToolResultImages, resolveChatImage } = await import('./chatImageResolve')
 

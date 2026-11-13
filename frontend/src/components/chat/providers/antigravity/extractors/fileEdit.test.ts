@@ -1,5 +1,8 @@
+import type { DiffInput } from '../../../diff/diffTypes'
 import { describe, expect, it } from 'vitest'
-import { fileEditCopyableText, fileEditDiffHunks } from '../../../model/fileEditDiff'
+import { fileEditDrawnHunks } from '~/test-support/fileEditHunks'
+import { computeDiff } from '../../../diff/diffSearch'
+import { fileEditCopyableText } from '../../../model/fileEditDiff'
 import { antigravityLandedChanges } from './fileEdit'
 import { antigravityStep } from './toolCommon'
 
@@ -36,7 +39,7 @@ describe('antigravityLandedChanges', () => {
     ])
     expect(changes).not.toBeNull()
     const change = changes![0]!
-    expect(fileEditDiffHunks(change)).toMatchObject([
+    expect(fileEditDrawnHunks(change)).toMatchObject([
       {
         oldLines: 2,
         newLines: 2,
@@ -44,8 +47,9 @@ describe('antigravityLandedChanges', () => {
       },
     ])
     expect(change.showLineNumbers).toBe(false)
-    expect(fileEditCopyableText(change)).toContain('+committed')
-    expect(fileEditCopyableText(change)).not.toContain('+proposed')
+    const hunksOf = (input: DiffInput) => computeDiff(input).hunks
+    expect(fileEditCopyableText(change, hunksOf)).toContain('+committed')
+    expect(fileEditCopyableText(change, hunksOf)).not.toContain('+proposed')
   })
 
   it.each([
@@ -64,7 +68,7 @@ describe('antigravityLandedChanges', () => {
       0,
     ],
   ])('retains insertion and deletion counts for %j', (lines, oldLines, newLines) => {
-    expect(fileEditDiffHunks(landed(lines)![0]!)).toMatchObject([
+    expect(fileEditDrawnHunks(landed(lines)![0]!)).toMatchObject([
       { oldLines, newLines },
     ])
   })
@@ -93,7 +97,7 @@ describe('antigravityLandedChanges', () => {
     }
     const changes = landed([line])
     expect(changes).not.toBeNull()
-    expect(fileEditDiffHunks(changes![0]!)).toMatchObject([
+    expect(fileEditDrawnHunks(changes![0]!)).toMatchObject([
       {
         oldLines: 0,
         newLines: 1,
@@ -108,7 +112,7 @@ describe('antigravityLandedChanges', () => {
       { type: 'UNIFIED_DIFF_LINE_TYPE_INSERT' },
     ])
     expect(changes).not.toBeNull()
-    expect(fileEditDiffHunks(changes![0]!)).toMatchObject([
+    expect(fileEditDrawnHunks(changes![0]!)).toMatchObject([
       {
         oldLines: 0,
         newLines: 2,

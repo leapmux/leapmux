@@ -15,8 +15,42 @@ const loggers = new Map<string, Logger>()
 
 let debugEnabled = false
 
+/** The listeners of `onDebugEnabledChange`, in registration order. */
+const debugListeners = new Set<(enabled: boolean) => void>()
+
+/**
+ * Turn debug logging on or off, and tell each `onDebugEnabledChange` listener
+ * when the value changes. Setting the current value notifies nobody, so that a
+ * listener that forwards the flag to a module which sets it again cannot loop.
+ */
 export function setDebugEnabled(enabled: boolean) {
+  if (enabled === debugEnabled)
+    return
   debugEnabled = enabled
+  for (const listener of debugListeners) {
+    try {
+      listener(enabled)
+    }
+    catch (err) {
+      // One failing listener must not keep the flag from the others.
+      console.error('[logger] a debug flag listener failed:', err)
+    }
+  }
+}
+
+/**
+ * Call `listener` with the new value each time `setDebugEnabled` changes the
+ * flag. The channel session client uses this to forward the flag to its worker,
+ * which has a logger of its own. Returns the function that removes the listener.
+ */
+export function onDebugEnabledChange(listener: (enabled: boolean) => void): () => void {
+  // Wrap the listener, so that registering one function twice gives two
+  // registrations, and each unsubscribe removes its own.
+  const registration = (enabled: boolean) => listener(enabled)
+  debugListeners.add(registration)
+  return () => {
+    debugListeners.delete(registration)
+  }
 }
 
 export function isDebugEnabled(): boolean {

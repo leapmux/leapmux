@@ -36,7 +36,7 @@ export function virtualizerNoOps(): Omit<
     flushDeferredMeasurements: () => false,
     lastMeasurement: () => undefined,
     takeMeasurementBatch: () => EMPTY_MEASUREMENT_BATCH,
-    hasMeasuredHeight: () => false,
+    hasConfirmedHeight: () => false,
   }
 }
 

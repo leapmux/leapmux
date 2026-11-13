@@ -48,6 +48,14 @@ export function shikiStyleClassName(decl: string): string {
   return `sk-${fnv1a32Hex(decl)}-${decl.length.toString(36)}`
 }
 
+/** Every name that `shikiStyleClassName` can return, and nothing else. */
+const RE_SHIKI_STYLE_CLASS_NAME = /^sk-[0-9a-f]{8}-[0-9a-z]+$/
+
+/** Whether `name` has the form of a token-style class (see shikiStyleClassName). */
+export function isShikiStyleClassName(name: string): boolean {
+  return RE_SHIKI_STYLE_CLASS_NAME.test(name)
+}
+
 /** className -> declaration, everything recorded in THIS thread. */
 const declByClassName = new Map<string, string>()
 /**
@@ -69,8 +77,11 @@ const declByClassName = new Map<string, string>()
  * of DISTINCT declarations, which saturates per theme.
  */
 const unshippedByClassName = new Map<string, string>()
-/** Class names whose CSS rule has been injected into this thread's document. */
-const injectedClassNames = new Set<string>()
+/**
+ * className -> declaration of each rule injected into this thread's document,
+ * whoever recorded the declaration: this thread, or a worker that shipped it.
+ */
+const injectedDeclByClassName = new Map<string, string>()
 let styleEl: HTMLStyleElement | null = null
 
 /**
@@ -114,14 +125,14 @@ function insertStyleRule(el: HTMLStyleElement, className: string, decl: string):
 }
 
 function injectRule(className: string, decl: string): void {
-  if (injectedClassNames.has(className))
+  if (injectedDeclByClassName.has(className))
     return
   // Worker / SSR: no document to inject into (ensureStyleEl returns null). The declarations
   // still travel (via collectShikiStyles) to the main thread, which injects them.
   const el = ensureStyleEl()
   if (!el)
     return
-  injectedClassNames.add(className)
+  injectedDeclByClassName.set(className, decl)
   insertStyleRule(el, className, decl)
 }
 
@@ -157,11 +168,42 @@ export function ensureShikiStyleRules(styles: Record<string, string>): void {
   if (!el)
     return
   for (const [className, decl] of Object.entries(styles)) {
-    if (injectedClassNames.has(className))
+    if (injectedDeclByClassName.has(className))
       continue
-    injectedClassNames.add(className)
+    injectedDeclByClassName.set(className, decl)
     insertStyleRule(el, className, decl)
   }
+}
+
+// The value of each `class` attribute in serialized HTML. The Markdown pipeline
+// serializes with rehype-stringify, which quotes an attribute value with `"`.
+const RE_CLASS_ATTRIBUTE = /\sclass="([^"]*)"/g
+
+/**
+ * The declaration of every token-style class that `html` uses, keyed by class
+ * name. Undefined when this thread knows no declaration for one of them.
+ *
+ * A worker reply cannot answer this. It carries only the declarations that its
+ * worker records for the first time (see collectNewShikiStyles), so it omits each
+ * class that an earlier render of the same worker minted. This thread knows every
+ * declaration that it recorded or injected, and a worker's HTML can show here only
+ * after its declarations were injected. Store this dictionary with any copy of the
+ * HTML that a later document renders, such as a persisted render: that document
+ * must inject the rules before the class names mean anything.
+ */
+export function shikiStylesUsedBy(html: string): Record<string, string> | undefined {
+  const styles: Record<string, string> = {}
+  for (const [, classList = ''] of html.matchAll(RE_CLASS_ATTRIBUTE)) {
+    for (const className of classList.split(/\s+/)) {
+      if (!isShikiStyleClassName(className) || Object.hasOwn(styles, className))
+        continue
+      const decl = injectedDeclByClassName.get(className) ?? declByClassName.get(className)
+      if (decl === undefined)
+        return undefined
+      styles[className] = decl
+    }
+  }
+  return styles
 }
 
 /**
@@ -180,17 +222,19 @@ export function collectShikiStyles(): Record<string, string> {
  * Empties the pending set, so each declaration is handed over exactly once.
  *
  * The markdown worker ships this alongside rendered HTML, and the main thread
- * injects the rules its class names refer to. It used to ship the FULL record
- * on every response: `declByClassName` is never pruned, so a session that
- * samples several of the thirty theme variants accumulates each one's distinct
- * declarations and then clones the whole accumulation across `postMessage` for
- * every message rendered afterwards -- work that grows with how long the tab
- * has been open and how many themes the user tried, for a dictionary whose new
- * entries are almost always none.
+ * injects the rules. It is not the dictionary of that HTML, which can use a
+ * class that an earlier call handed over (see shikiStylesUsedBy).
+ *
+ * It used to ship the FULL record on every response: `declByClassName` is
+ * never pruned, so a session that samples several of the thirty theme variants
+ * accumulates each one's distinct declarations and then clones the whole
+ * accumulation across `postMessage` for every message rendered afterwards --
+ * work that grows with how long the tab has been open and how many themes the
+ * user tried, for a dictionary whose new entries are almost always none.
  *
  * A DELTA IS EXACT HERE because one worker serves one client, and neither side
  * forgets while the other remembers. The receiver accumulates for the life of
- * the document (`injectedClassNames`, also never pruned), and the only thing
+ * the document (`injectedDeclByClassName`, also never pruned), and the only thing
  * that resets it is a page load -- which destroys this worker and its pending
  * set with it. A worker that is replaced on its own starts with an empty
  * record and re-ships what it re-records, which the receiver then skips.
@@ -241,7 +285,7 @@ export function shikiStyleClassTransformer(): ShikiTransformer {
 export function _resetShikiStyleClassesForTest(): void {
   declByClassName.clear()
   unshippedByClassName.clear()
-  injectedClassNames.clear()
+  injectedDeclByClassName.clear()
   styleEl?.remove()
   styleEl = null
 }

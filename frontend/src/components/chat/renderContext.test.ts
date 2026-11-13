@@ -1,8 +1,8 @@
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { describe, expect, it, vi } from 'vitest'
-import { imageActionsFrom, reviewActionsFrom, subagentsFrom } from './renderContext'
+import { imageActionsFrom, isDisplayHeld, reviewActionsFrom, shouldPauseSyntaxHighlighting, subagentsFrom } from './renderContext'
 
-// The two assemblies are the ONLY way the narrow capabilities are built, so their
+// The three assemblies are the ONLY way the narrow capabilities are built, so their
 // edge answers are the ones every isolated mount inherits: a host that supplies
 // nothing gets no capability, and an optional member stays optional rather than
 // silently becoming a no-op.
@@ -127,5 +127,82 @@ describe('reviewActionsFrom', () => {
       approveAutoReviewDenial: () => refuse,
     })
     await expect(actions.approveDenied('r1')).rejects.toThrow('refused')
+  })
+})
+
+describe('shouldPauseSyntaxHighlighting', () => {
+  it.each([
+    [
+      'the hidden premeasure pass',
+      { premeasureMode: true },
+    ],
+    [
+      'a scroll',
+      {
+        syntaxHighlightingPaused: () => true,
+      },
+    ],
+    [
+      'a text selection',
+      {
+        textSelectionActive: () => true,
+      },
+    ],
+  ] as const)('pauses during %s', (_label, context) => {
+    expect(shouldPauseSyntaxHighlighting(context)).toBe(true)
+  })
+
+  it.each([
+    ['no context', undefined],
+    ['a context that sets no flag', {}],
+    [
+      'a context whose flags are all false',
+      {
+        premeasureMode: false,
+        syntaxHighlightingPaused: () => false,
+        textSelectionActive: () => false,
+      },
+    ],
+  ] as const)('does not pause with %s', (_label, context) => {
+    expect(shouldPauseSyntaxHighlighting(context)).toBe(false)
+  })
+})
+
+// A held display keeps the DOM that a body shows. The hidden premeasure copy shows
+// no reader anything, so it holds nothing: it takes the final HTML at once.
+describe('isDisplayHeld', () => {
+  it.each([
+    [
+      'a scroll',
+      {
+        syntaxHighlightingPaused: () => true,
+      },
+    ],
+    [
+      'a text selection',
+      {
+        textSelectionActive: () => true,
+      },
+    ],
+  ] as const)('holds the display during %s', (_label, context) => {
+    expect(isDisplayHeld(context)).toBe(true)
+  })
+
+  it.each([
+    ['no context', undefined],
+    ['a context that sets no flag', {}],
+    [
+      'the hidden premeasure pass alone',
+      { premeasureMode: true },
+    ],
+    [
+      'a context whose flags are all false',
+      {
+        syntaxHighlightingPaused: () => false,
+        textSelectionActive: () => false,
+      },
+    ],
+  ] as const)('does not hold the display with %s', (_label, context) => {
+    expect(isDisplayHeld(context)).toBe(false)
   })
 })

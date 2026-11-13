@@ -1,9 +1,9 @@
 import type { StructuredPatchHunk } from '../diff/diffTypes'
 import type { FileEditDiff } from './fileEditDiff'
 import { describe, expect, it } from 'vitest'
-import { diffStatsFromHunks } from '../diff'
+import { fileEditDrawnHunks } from '~/test-support/fileEditHunks'
+import { diffStatsFromHunks } from '../diff/diffBuilder'
 import { applyPatchFileChanges } from './applyPatch'
-import { fileEditDiffHunks } from './fileEditDiff'
 
 // The reader answers null or a list; each test states which section it means, and
 // these guards turn that statement into a value the typed helpers below can take.
@@ -15,7 +15,7 @@ function fileAt(files: FileEditDiff[] | null, index = 0): FileEditDiff {
 }
 
 function firstHunkOf(file: FileEditDiff): StructuredPatchHunk {
-  const hunk = fileEditDiffHunks(file)[0]
+  const hunk = fileEditDrawnHunks(file)[0]
   if (hunk === undefined)
     throw new Error('expected at least one hunk')
   return hunk
@@ -32,7 +32,7 @@ describe('applyPatchFileChanges', () => {
     const files = applyPatchFileChanges('*** Begin Patch\n*** Update File: src/code.ts\n@@ function first\n context\n-removed\n+added\n@@ function second\n-another removal\n+another addition\n+extra line\n*** End of File\n*** Delete File: removed.ts\n*** End Patch')
     expect(files).toHaveLength(2)
     expect(fileAt(files).showLineNumbers).toBe(false)
-    expect(diffStatsFromHunks(fileEditDiffHunks(fileAt(files, 0)))).toEqual({ added: 3, deleted: 2 })
+    expect(diffStatsFromHunks(fileEditDrawnHunks(fileAt(files, 0)))).toEqual({ added: 3, deleted: 2 })
     expect(files![1]).toMatchObject({ filePath: 'removed.ts', operation: 'delete' })
   })
 
@@ -44,7 +44,7 @@ describe('applyPatchFileChanges', () => {
     expect(files).toHaveLength(1)
     expect(files![0]).toMatchObject({ filePath: 'src/code.ts', operation: 'edit' })
     expect(firstHunkOf(fileAt(files, 0)).lines).toEqual([' context', ' ', '+added'])
-    expect(diffStatsFromHunks(fileEditDiffHunks(fileAt(files, 0)))).toEqual({ added: 1, deleted: 0 })
+    expect(diffStatsFromHunks(fileEditDrawnHunks(fileAt(files, 0)))).toEqual({ added: 1, deleted: 0 })
   })
 
   // A blank line that SEPARATES two sections is not a context line. Consuming it
@@ -76,7 +76,7 @@ describe('applyPatchFileChanges', () => {
   it('preserves a move with changed content', () => {
     const files = applyPatchFileChanges('*** Begin Patch\n*** Update File: old.ts\n*** Move to: new.ts\n@@\n-old\n+new\n*** End Patch')
     expect(files?.[0]).toMatchObject({ filePath: 'new.ts', previousPath: 'old.ts', operation: 'move' })
-    expect(diffStatsFromHunks(fileEditDiffHunks(fileAt(files, 0)))).toEqual({ added: 1, deleted: 1 })
+    expect(diffStatsFromHunks(fileEditDrawnHunks(fileAt(files, 0)))).toEqual({ added: 1, deleted: 1 })
   })
 
   // A move that changes no content is the whole section: a header, a `Move to`,

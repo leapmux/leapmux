@@ -2,12 +2,14 @@ import type { MessageCompletion } from './assembledMessage'
 import type { ChatRow } from './model/row'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { ERROR_MARKER, INTERRUPTION_MARKER } from './assembledMessage'
 import { renderExtractedRow } from './rowRenderers'
 
-/** The text of one extracted row, drawn with `completion`. */
-function drawnText(row: ChatRow, completion: MessageCompletion | null): string {
+/** The text of one extracted row, drawn with `completion`, once its Markdown landed. */
+async function drawnText(row: ChatRow, completion: MessageCompletion | null): Promise<string> {
   const { container } = render(() => renderExtractedRow({ kind: 'row', row, completion }, undefined))
+  await settleWorkerReplies()
   return container.textContent ?? ''
 }
 
@@ -17,34 +19,34 @@ const INTERRUPTED_DIVIDER: ChatRow = {
 }
 
 describe('renderExtractedRow', () => {
-  it('draws the finality marker without an error or interruption claim', () => {
-    const text = drawnText({ kind: 'assistant-text', text: 'Native partial text' }, 'finished')
+  it('draws the finality marker without an error or interruption claim', async () => {
+    const text = await drawnText({ kind: 'assistant-text', text: 'Native partial text' }, 'finished')
     expect(text).toContain('Native partial text')
     expect(text).toContain('Text ended without a known outcome.')
     expect(text).not.toContain(ERROR_MARKER)
     expect(text).not.toContain(INTERRUPTION_MARKER)
   })
 
-  it('draws the interruption marker under the text that a stop cut', () => {
-    const text = drawnText({ kind: 'assistant-text', text: 'Half a sen' }, 'interrupted')
+  it('draws the interruption marker under the text that a stop cut', async () => {
+    const text = await drawnText({ kind: 'assistant-text', text: 'Half a sen' }, 'interrupted')
     expect(text).toContain('Half a sen')
     expect(text).toContain(INTERRUPTION_MARKER)
   })
 
-  it('draws the error marker under the text that a failure cut', () => {
-    expect(drawnText({ kind: 'assistant-text', text: 'Half a sen' }, 'error')).toContain(ERROR_MARKER)
+  it('draws the error marker under the text that a failure cut', async () => {
+    expect(await drawnText({ kind: 'assistant-text', text: 'Half a sen' }, 'error')).toContain(ERROR_MARKER)
   })
 
-  it('draws no marker under complete text', () => {
-    const text = drawnText({ kind: 'assistant-text', text: 'Whole.' }, 'complete')
+  it('draws no marker under complete text', async () => {
+    const text = await drawnText({ kind: 'assistant-text', text: 'Whole.' }, 'complete')
     expect(text).not.toContain(INTERRUPTION_MARKER)
     expect(text).not.toContain(ERROR_MARKER)
   })
 
   // The note of a steer the model echoed draws as an inline chip beside the text
   // it interrupted, not as part of the text itself.
-  it('draws each steer note of a segmented text as its own chip', () => {
-    const text = drawnText({
+  it('draws each steer note of a segmented text as its own chip', async () => {
+    const text = await drawnText({
       kind: 'assistant-text',
       text: 'Done. probe handled',
       segments: [
@@ -64,8 +66,8 @@ describe('renderExtractedRow', () => {
   // truncated TEXT, so under a divider it claimed a cut that a turn with no text, or
   // with complete text, never had -- on every stopped turn of every provider whose
   // divider carries the turn's completion.
-  it.each(['interrupted', 'error'] as const)('draws no text marker under a divider of a turn that ended %s', (completion) => {
-    const text = drawnText(INTERRUPTED_DIVIDER, completion)
+  it.each(['interrupted', 'error'] as const)('draws no text marker under a divider of a turn that ended %s', async (completion) => {
+    const text = await drawnText(INTERRUPTED_DIVIDER, completion)
     expect(text).toContain('Turn interrupted (1.2s)')
     expect(text).not.toContain(INTERRUPTION_MARKER)
     expect(text).not.toContain(ERROR_MARKER)

@@ -1,10 +1,12 @@
 import type { JSX } from 'solid-js'
-import type { DiffLineEntry, SplitLineEntry, StructuredPatchHunk } from './diffTypes'
+import type { WordDiffPart } from './diffCompute'
+import type { DiffLineEntry, DiffLineMarks, DiffMarkSources, LineMarksSource, SplitLineEntry, SplitRowEntry, SplitRowMarks, StructuredPatchHunk } from './diffTypes'
 import type { CachedToken } from '~/lib/tokenCache'
 import { For } from 'solid-js'
 import { joinClassNames } from '~/lib/classNames'
+import { changeBlockAt } from './diffBuilder'
+import { pairKey } from './diffCompute'
 import { diffAddedInline, diffRemovedInline } from './diffStyles.css'
-import { pairedWordDiff } from './wordDiffCache'
 
 /**
  * Render a line's text using Shiki tokens when available.
@@ -34,7 +36,7 @@ export function renderTokenizedLine(text: string, tokens: CachedToken[] | null):
  * gets both the Shiki foreground color and the diff background highlight.
  */
 function renderTokenizedWordDiff(
-  wordDiffParts: Array<{ value: string, added?: boolean, removed?: boolean }>,
+  wordDiffParts: readonly WordDiffPart[],
   tokens: CachedToken[] | null,
   highlightClass: string,
   filterFn: (part: { added?: boolean, removed?: boolean }) => boolean,
@@ -119,51 +121,87 @@ function renderTokenizedWordDiff(
 }
 
 /**
- * Render inline word-level highlights for a removed line. The word diff is
- * computed via pairedWordDiff (see wordDiffCache): memoized, so the added-
- * side renderer's identical call and every later re-render (premeasure +
- * visible double mount, token arrival, view toggles) reuse it.
+ * Draw the text of one side of a diff line with its marks. The diff worker
+ * computed the word diff of a paired line with the line diff (see diffCompute):
+ * a removed line highlights the words that the pair removes, and an added line
+ * the words that it adds. A line without a word diff draws whole.
  */
-function renderRemovedInline(
-  oldLine: string,
-  newLine: string,
-  oldTokens: CachedToken[] | null,
-): JSX.Element {
-  const parts = pairedWordDiff(oldLine, newLine)
-  return renderTokenizedWordDiff(
-    parts,
-    oldTokens,
-    diffRemovedInline,
-    p => !p.added,
-  )
+export function renderMarkedLine(text: string, type: SplitLineEntry['type'], marks: DiffLineMarks): JSX.Element | string {
+  if (marks.words !== undefined && type === 'removed')
+    return renderTokenizedWordDiff(marks.words, marks.tokens, diffRemovedInline, p => !p.added)
+  if (marks.words !== undefined && type === 'added')
+    return renderTokenizedWordDiff(marks.words, marks.tokens, diffAddedInline, p => !p.removed)
+  return renderTokenizedLine(text, marks.tokens)
 }
 
-/** Render inline word-level highlights for an added line. */
-function renderAddedInline(
-  oldLine: string,
-  newLine: string,
-  newTokens: CachedToken[] | null,
-): JSX.Element {
-  const parts = pairedWordDiff(oldLine, newLine)
-  return renderTokenizedWordDiff(
-    parts,
-    newTokens,
-    diffAddedInline,
-    p => !p.removed,
-  )
+/**
+ * Whether two marks draw the same. Each compares by identity: a line keeps the
+ * same tokens and the same word diff until the tokenizer or the diff worker
+ * answers again.
+ */
+export function sameLineMarks(a: DiffLineMarks, b: DiffLineMarks): boolean {
+  return a.tokens === b.tokens && a.words === b.words
+}
+
+/** Whether two marks of a split row draw the same on both sides. */
+export function sameSplitRowMarks(a: SplitRowMarks, b: SplitRowMarks): boolean {
+  return sameLineMarks(a.left, b.left) && sameLineMarks(a.right, b.right)
+}
+
+/** The marks of a line that has no tokens and no word diff. */
+const PLAIN_MARKS: DiffLineMarks = { tokens: null, words: undefined }
+
+/**
+ * The marks of one side of a line, from the latest sources: the tokens of its
+ * line, and the word diff of its pair. A side without a source draws plain.
+ */
+function lineMarks(source: LineMarksSource | null, sources: DiffMarkSources): DiffLineMarks {
+  if (source === null)
+    return PLAIN_MARKS
+  const tokens = source.side === 'old'
+    ? sources.oldTokens
+    : sources.newTokens
+  return {
+    tokens: tokens?.[source.tokenLine] ?? null,
+    words: source.pair === undefined
+      ? undefined
+      : sources.wordDiffs.get(source.pair),
+  }
+}
+
+/** The marks of a line of the unified view, from the latest sources. */
+export function unifiedLineMarks(line: DiffLineEntry, sources: DiffMarkSources): DiffLineMarks {
+  return lineMarks(line.marksSource, sources)
+}
+
+/** The marks of both sides of a row of the split view, from the latest sources. */
+export function splitRowMarks(row: SplitRowEntry, sources: DiffMarkSources): SplitRowMarks {
+  return {
+    left: lineMarks(row.left.marksSource, sources),
+    right: lineMarks(row.right.marksSource, sources),
+  }
+}
+
+/** The cell of a split row that has no line on its side. */
+const EMPTY_SPLIT_LINE: SplitLineEntry = {
+  text: '',
+  type: 'empty',
+  num: null,
+  marksSource: null,
 }
 
 /**
  * Discriminated event yielded by `walkHunks`. Captures the structural shape of
  * a diff line (paired removal/addition, unpaired addition/removal, or context)
  * without committing to a particular output shape — `buildUnifiedLines` and
- * `buildSplitLines` translate the same event stream into different layouts.
+ * `buildSplitRows` translate the same event stream into different layouts.
+ * The token lines index the tokens of each side (see LineMarksSource).
  */
 type HunkEvent
-  = | { kind: 'context', oldNum: number, newNum: number, content: string, oldTokens: CachedToken[] | null, newTokens: CachedToken[] | null, hunkIndex: number }
-    | { kind: 'paired', oldNum: number, newNum: number, removedContent: string, addedContent: string, oldTokens: CachedToken[] | null, newTokens: CachedToken[] | null, hunkIndex: number }
-    | { kind: 'removed', oldNum: number, content: string, tokens: CachedToken[] | null, hunkIndex: number }
-    | { kind: 'added', newNum: number, content: string, tokens: CachedToken[] | null, hunkIndex: number }
+  = | { kind: 'context', oldNum: number, newNum: number, content: string, oldTokenLine: number, newTokenLine: number, hunkIndex: number }
+    | { kind: 'paired', oldNum: number, newNum: number, removedContent: string, addedContent: string, oldTokenLine: number, newTokenLine: number, pair: string, hunkIndex: number }
+    | { kind: 'removed', oldNum: number, content: string, tokenLine: number, hunkIndex: number }
+    | { kind: 'added', newNum: number, content: string, tokenLine: number, hunkIndex: number }
   /**
    * Synthetic delimiter emitted after each `-`/`+` block. Lets unified-view
    * consumers flush queued '+' rows so the original ordering ("all removals
@@ -179,12 +217,7 @@ type HunkEvent
  * (so consumers can render inline word diffs); leftover removals/additions
  * emit `removed`/`added`.
  */
-function walkHunks(
-  hunks: StructuredPatchHunk[],
-  oldTokens: CachedToken[][] | null,
-  newTokens: CachedToken[][] | null,
-  emit: (event: HunkEvent) => void,
-): void {
+function walkHunks(hunks: readonly StructuredPatchHunk[], emit: (event: HunkEvent) => void): void {
   let oldTokenLine = 0
   let newTokenLine = 0
 
@@ -198,129 +231,96 @@ function walkHunks(
     let i = 0
 
     while (i < lines.length) {
-      const current = lines[i]
-      if (current === undefined)
-        break
-      const prefix = current[0] || ' '
-
-      if (prefix === '-' || prefix === '+') {
-        // Collect consecutive removed lines, then consecutive added lines for
-        // pairing. A bare `+` block (no preceding `-`) takes the same path
-        // with zero removals so that a `blockEnd` is always emitted — the
-        // unified-view consumer relies on `blockEnd` to flush queued `+`
-        // rows before the next context line.
-        const removedLines: string[] = []
-        const removedTokenIndices: number[] = []
-        while (i < lines.length) {
-          const line = lines[i]
-          if (line === undefined || line[0] !== '-')
-            break
-          removedLines.push(line.slice(1))
-          removedTokenIndices.push(oldTokenLine++)
-          i++
-        }
-        const addedLines: string[] = []
-        const addedTokenIndices: number[] = []
-        while (i < lines.length) {
-          const line = lines[i]
-          if (line === undefined || line[0] !== '+')
-            break
-          addedLines.push(line.slice(1))
-          addedTokenIndices.push(newTokenLine++)
-          i++
-        }
-
-        const paired = Math.min(removedLines.length, addedLines.length)
-        for (let j = 0; j < paired; j++) {
-          const removedContent = removedLines[j]
-          const addedContent = addedLines[j]
-          const oldTokenIndex = removedTokenIndices[j]
-          const newTokenIndex = addedTokenIndices[j]
-          if (removedContent === undefined || addedContent === undefined || oldTokenIndex === undefined || newTokenIndex === undefined)
-            continue
-          emit({
-            kind: 'paired',
-            oldNum: oldLine++,
-            newNum: newLine++,
-            removedContent,
-            addedContent,
-            oldTokens: oldTokens?.[oldTokenIndex] ?? null,
-            newTokens: newTokens?.[newTokenIndex] ?? null,
-            hunkIndex: hi,
-          })
-        }
-        for (let j = paired; j < removedLines.length; j++) {
-          const content = removedLines[j]
-          const tokenIndex = removedTokenIndices[j]
-          if (content === undefined || tokenIndex === undefined)
-            continue
-          emit({
-            kind: 'removed',
-            oldNum: oldLine++,
-            content,
-            tokens: oldTokens?.[tokenIndex] ?? null,
-            hunkIndex: hi,
-          })
-        }
-        for (let j = paired; j < addedLines.length; j++) {
-          const content = addedLines[j]
-          const tokenIndex = addedTokenIndices[j]
-          if (content === undefined || tokenIndex === undefined)
-            continue
-          emit({
-            kind: 'added',
-            newNum: newLine++,
-            content,
-            tokens: newTokens?.[tokenIndex] ?? null,
-            hunkIndex: hi,
-          })
-        }
-        emit({ kind: 'blockEnd' })
-      }
-      else {
-        const text = current.slice(1)
+      const block = changeBlockAt(lines, i)
+      if (block === undefined) {
         emit({
           kind: 'context',
           oldNum: oldLine++,
           newNum: newLine++,
-          content: text,
-          oldTokens: oldTokens?.[oldTokenLine] ?? null,
-          newTokens: newTokens?.[newTokenLine] ?? null,
+          content: lines[i]!.slice(1),
+          oldTokenLine: oldTokenLine++,
+          newTokenLine: newTokenLine++,
           hunkIndex: hi,
         })
-        oldTokenLine++
-        newTokenLine++
         i++
+        continue
       }
+
+      // A change block pairs its n-th removal with its n-th addition. A bare `+`
+      // block (no preceding `-`) takes the same path with zero removals so that a
+      // `blockEnd` is always emitted — the unified-view consumer relies on
+      // `blockEnd` to flush queued `+` rows before the next context line.
+      const removed = block.addedStart - i
+      const added = block.end - block.addedStart
+      const paired = Math.min(removed, added)
+      for (let j = 0; j < paired; j++) {
+        const removedContent = lines[i + j]!.slice(1)
+        const addedContent = lines[block.addedStart + j]!.slice(1)
+        emit({
+          kind: 'paired',
+          oldNum: oldLine++,
+          newNum: newLine++,
+          removedContent,
+          addedContent,
+          oldTokenLine: oldTokenLine + j,
+          newTokenLine: newTokenLine + j,
+          pair: pairKey(removedContent, addedContent),
+          hunkIndex: hi,
+        })
+      }
+      for (let j = paired; j < removed; j++) {
+        emit({
+          kind: 'removed',
+          oldNum: oldLine++,
+          content: lines[i + j]!.slice(1),
+          tokenLine: oldTokenLine + j,
+          hunkIndex: hi,
+        })
+      }
+      for (let j = paired; j < added; j++) {
+        emit({
+          kind: 'added',
+          newNum: newLine++,
+          content: lines[block.addedStart + j]!.slice(1),
+          tokenLine: newTokenLine + j,
+          hunkIndex: hi,
+        })
+      }
+      emit({ kind: 'blockEnd' })
+      oldTokenLine += removed
+      newTokenLine += added
+      i = block.end
     }
   }
 }
 
-/** Build unified diff lines from structuredPatch hunks with optional syntax tokens. */
-export function buildUnifiedLines(
-  hunks: StructuredPatchHunk[],
-  oldTokens: CachedToken[][] | null,
-  newTokens: CachedToken[][] | null,
-): DiffLineEntry[] {
+/**
+ * Build the lines of the unified view from structuredPatch hunks. Each line
+ * states where its marks are (see LineMarksSource), and a view reads them with
+ * unifiedLineMarks, so the lines of a diff stay the same when its tokens or its
+ * word diffs land.
+ */
+export function buildUnifiedLines(hunks: readonly StructuredPatchHunk[]): DiffLineEntry[] {
   const result: DiffLineEntry[] = []
   // Within a `-`/`+` block, emit all '-' rows first, then all '+' rows. Queue
   // pending '+' rows and flush on `blockEnd`.
-  const pendingAdded: Array<{ newNum: number, content: JSX.Element, hunkIndex: number }> = []
+  const pendingAdded: DiffLineEntry[] = []
   const flushPending = () => {
-    for (const a of pendingAdded) {
-      result.push({
-        oldNum: null,
-        newNum: a.newNum,
-        prefix: '+',
-        content: a.content,
-        type: 'added',
-        hunkIndex: a.hunkIndex,
-      })
-    }
+    for (const added of pendingAdded)
+      result.push(added)
     pendingAdded.length = 0
   }
+  const added = (newNum: number, text: string, marksSource: LineMarksSource, hunkIndex: number): DiffLineEntry => ({
+    oldNum: null,
+    newNum,
+    prefix: '+',
+    text,
+    type: 'added',
+    hunkIndex,
+    marksSource,
+  })
 
-  walkHunks(hunks, oldTokens, newTokens, (e) => {
+  walkHunks(hunks, (e) => {
     if (e.kind === 'blockEnd') {
       flushPending()
       return
@@ -330,9 +330,10 @@ export function buildUnifiedLines(
         oldNum: e.oldNum,
         newNum: e.newNum,
         prefix: ' ',
-        content: renderTokenizedLine(e.content, e.oldTokens),
+        text: e.content,
         type: 'context',
         hunkIndex: e.hunkIndex,
+        marksSource: { side: 'old', tokenLine: e.oldTokenLine, pair: undefined },
       })
       return
     }
@@ -341,15 +342,12 @@ export function buildUnifiedLines(
         oldNum: e.oldNum,
         newNum: null,
         prefix: '-',
-        content: renderRemovedInline(e.removedContent, e.addedContent, e.oldTokens),
+        text: e.removedContent,
         type: 'removed',
         hunkIndex: e.hunkIndex,
+        marksSource: { side: 'old', tokenLine: e.oldTokenLine, pair: e.pair },
       })
-      pendingAdded.push({
-        newNum: e.newNum,
-        content: renderAddedInline(e.removedContent, e.addedContent, e.newTokens),
-        hunkIndex: e.hunkIndex,
-      })
+      pendingAdded.push(added(e.newNum, e.addedContent, { side: 'new', tokenLine: e.newTokenLine, pair: e.pair }, e.hunkIndex))
       return
     }
     if (e.kind === 'removed') {
@@ -357,93 +355,92 @@ export function buildUnifiedLines(
         oldNum: e.oldNum,
         newNum: null,
         prefix: '-',
-        content: renderTokenizedLine(e.content, e.tokens),
+        text: e.content,
         type: 'removed',
         hunkIndex: e.hunkIndex,
+        marksSource: { side: 'old', tokenLine: e.tokenLine, pair: undefined },
       })
       return
     }
     // Bare '+' (without preceding '-') queues so it follows any pending '-' rows in the same block.
-    pendingAdded.push({
-      newNum: e.newNum,
-      content: renderTokenizedLine(e.content, e.tokens),
-      hunkIndex: e.hunkIndex,
-    })
+    pendingAdded.push(added(e.newNum, e.content, { side: 'new', tokenLine: e.tokenLine, pair: undefined }, e.hunkIndex))
   })
   flushPending()
   return result
 }
 
-/** Build split diff lines from structuredPatch hunks with optional syntax tokens. */
-export function buildSplitLines(
-  hunks: StructuredPatchHunk[],
-  oldTokens: CachedToken[][] | null,
-  newTokens: CachedToken[][] | null,
-): { left: SplitLineEntry[], right: SplitLineEntry[] } {
-  const left: SplitLineEntry[] = []
-  const right: SplitLineEntry[] = []
+/**
+ * Build the rows of the split view from structuredPatch hunks, as
+ * buildUnifiedLines builds the lines of the unified view. A row pairs a removed
+ * line with the added line beside it, and draws an empty cell on the side that
+ * has no line. A view reads the marks of a row with splitRowMarks.
+ */
+export function buildSplitRows(hunks: readonly StructuredPatchHunk[]): SplitRowEntry[] {
+  const rows: SplitRowEntry[] = []
 
-  walkHunks(hunks, oldTokens, newTokens, (e) => {
+  walkHunks(hunks, (e) => {
     if (e.kind === 'blockEnd')
       return
     if (e.kind === 'context') {
-      left.push({
-        content: renderTokenizedLine(e.content, e.oldTokens),
-        type: 'context',
-        num: e.oldNum,
-        hunkIndex: e.hunkIndex,
-      })
-      right.push({
-        content: renderTokenizedLine(e.content, e.newTokens),
-        type: 'context',
-        num: e.newNum,
+      rows.push({
+        left: {
+          text: e.content,
+          type: 'context',
+          num: e.oldNum,
+          marksSource: { side: 'old', tokenLine: e.oldTokenLine, pair: undefined },
+        },
+        right: {
+          text: e.content,
+          type: 'context',
+          num: e.newNum,
+          marksSource: { side: 'new', tokenLine: e.newTokenLine, pair: undefined },
+        },
         hunkIndex: e.hunkIndex,
       })
       return
     }
     if (e.kind === 'paired') {
-      left.push({
-        content: renderRemovedInline(e.removedContent, e.addedContent, e.oldTokens),
-        type: 'removed',
-        num: e.oldNum,
-        hunkIndex: e.hunkIndex,
-      })
-      right.push({
-        content: renderAddedInline(e.removedContent, e.addedContent, e.newTokens),
-        type: 'added',
-        num: e.newNum,
+      rows.push({
+        left: {
+          text: e.removedContent,
+          type: 'removed',
+          num: e.oldNum,
+          marksSource: { side: 'old', tokenLine: e.oldTokenLine, pair: e.pair },
+        },
+        right: {
+          text: e.addedContent,
+          type: 'added',
+          num: e.newNum,
+          marksSource: { side: 'new', tokenLine: e.newTokenLine, pair: e.pair },
+        },
         hunkIndex: e.hunkIndex,
       })
       return
     }
     if (e.kind === 'removed') {
-      left.push({
-        content: renderTokenizedLine(e.content, e.tokens),
-        type: 'removed',
-        num: e.oldNum,
-        hunkIndex: e.hunkIndex,
-      })
-      right.push({
-        content: '',
-        type: 'empty',
-        num: null,
+      rows.push({
+        left: {
+          text: e.content,
+          type: 'removed',
+          num: e.oldNum,
+          marksSource: { side: 'old', tokenLine: e.tokenLine, pair: undefined },
+        },
+        right: EMPTY_SPLIT_LINE,
         hunkIndex: e.hunkIndex,
       })
       return
     }
-    left.push({
-      content: '',
-      type: 'empty',
-      num: null,
-      hunkIndex: e.hunkIndex,
-    })
-    right.push({
-      content: renderTokenizedLine(e.content, e.tokens),
-      type: 'added',
-      num: e.newNum,
+    rows.push({
+      left: EMPTY_SPLIT_LINE,
+      right: {
+        text: e.content,
+        type: 'added',
+        num: e.newNum,
+        marksSource: { side: 'new', tokenLine: e.tokenLine, pair: undefined },
+      },
       hunkIndex: e.hunkIndex,
     })
   })
 
-  return { left, right }
+  return rows
 }

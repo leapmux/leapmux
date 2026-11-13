@@ -4,6 +4,7 @@ import { parserCtx, schemaCtx, serializerCtx } from '@milkdown/core'
 import { DOMParser, DOMSerializer } from '@milkdown/prose/model'
 import { Plugin, PluginKey, TextSelection } from '@milkdown/prose/state'
 import { $prose } from '@milkdown/utils'
+import { afterLineIndent } from '~/lib/regexp'
 
 /** Bracket pair map: opening -> closing, closing -> opening (for wrap detection). */
 const BRACKET_PAIRS: Record<string, string> = {
@@ -94,8 +95,24 @@ export function createSelectionWrapPlugin() {
   })
 }
 
-const MARKDOWN_BLOCK_SYNTAX_RE = /^(?:\s*[-+*]\s|#{1,6}\s|\d+\.\s|```|>\s)/m
+// A bullet may follow indentation; the other block syntax starts its line.
+// afterLineIndent keeps the scan for a bullet linear in a run of blank lines.
+const MARKDOWN_BULLET_RE = afterLineIndent(/[-+*]\s/)
+const MARKDOWN_BLOCK_SYNTAX_RE = /^(?:#{1,6}\s|\d+\.\s|```|>\s)/m
 const MARKDOWN_INLINE_SYNTAX_RE = /\*\*\S[^*]*\*\*|__\S[^_]*__|~~\S[^~]*~~|`[^`\n]+`/
+
+/**
+ * True when pasted plain text holds Markdown syntax that an HTML paste would lose.
+ *
+ * This covers block syntax (lists, headings, code fences, blockquotes) and inline
+ * formatting (bold, strikethrough, inline code). The clipboard can lose `text/html`
+ * and keep only this syntax, as in a headless browser or a paste across apps.
+ */
+export function hasMarkdownSyntax(text: string): boolean {
+  return MARKDOWN_BULLET_RE.test(text)
+    || MARKDOWN_BLOCK_SYNTAX_RE.test(text)
+    || MARKDOWN_INLINE_SYNTAX_RE.test(text)
+}
 
 const LEADING_BR_RE = /^<br \/>\n/
 const TRAILING_BR_RE = /\n<br \/>$/
@@ -183,15 +200,7 @@ export function createMarkdownPastePlugin() {
           if (!text)
             return false
 
-          // Only intercept if the plain text contains markdown syntax that would
-          // be lost in HTML paste. This includes block-level syntax (lists,
-          // headings, code fences, blockquotes) and inline formatting (bold,
-          // strikethrough, inline code) which may be stripped when the clipboard
-          // loses text/html (e.g. headless browsers, cross-app paste).
-          const hasMarkdownSyntax
-            = MARKDOWN_BLOCK_SYNTAX_RE.test(text)
-              || MARKDOWN_INLINE_SYNTAX_RE.test(text)
-          if (!hasMarkdownSyntax)
+          if (!hasMarkdownSyntax(text))
             return false
 
           try {

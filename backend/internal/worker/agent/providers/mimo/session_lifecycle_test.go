@@ -893,6 +893,9 @@ func TestManualCompactionSuccessfulRouteWithoutCompletedPartReleasesTheQueue(t *
 		defer a.Mu.Unlock()
 		return !a.turnActive && a.manualCompactionID == ""
 	}, "a successful route without a completed part releases the queue")
+	// The release publishes the turn state only after it unlocks the fields
+	// above, so wait for that publish before reading the published states.
+	waitFor(t, func() bool { return len(sink.TurnActives()) >= 2 }, "the release publishes the end of the turn")
 	assert.False(t, a.manualCompactionReady)
 	assert.Equal(t, []bool{true, false}, sink.TurnActives())
 	require.NoError(t, a.SendInput("continue after no-op", nil))

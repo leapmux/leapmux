@@ -2,7 +2,8 @@ import type { Setter } from 'solid-js'
 import { Plugin, PluginKey } from '@milkdown/prose/state'
 import { Decoration, DecorationSet } from '@milkdown/prose/view'
 import { $prose } from '@milkdown/utils'
-import { resolveBundledLang } from '~/lib/shikiLazyHighlighter'
+import { resolveBundledLang } from '~/lib/bundledLanguage'
+import { afterLineIndent } from '~/lib/regexp'
 
 /** Handlers for the code language label plugin. */
 export interface CodeLangHandlers {
@@ -14,24 +15,29 @@ export interface CodeLangHandlers {
   getCodeLangNodePos: () => number
 }
 
-// Simple heuristic-based language detection patterns
-const LANG_PATTERNS: [RegExp, string][] = [
-  [/^\s*(?:import\s[^\n]+?from\s+['"]|export\s+(?:default\s+)?|const\s+\w+\s*[=:]|let\s+\w+\s*[=:]|interface\s+\w+|type\s+\w+\s*=)/m, 'typescript'],
-  [/^\s*(function\s+\w+|var\s+\w+\s*=|===|!==|console\.(log|error|warn)|document\.|window\.)/m, 'javascript'],
-  [/^\s*(def\s+\w+|class\s+\w.*:|import\s+\w+|from\s+\w+\s+import|if\s+__name__\s*==)/m, 'python'],
-  [/^\s*(fn\s+\w+|let\s+mut\s+|impl\s+|pub\s+(fn|struct|enum|mod)|use\s+\w+::|#\[derive)/m, 'rust'],
-  [/^\s*(func\s+\w+|package\s+\w+|import\s+"[^"]+"|:=\s|fmt\.(Print|Sprint|Fprint))/m, 'go'],
-  [/^\s*(public\s+(class|interface|static|void|abstract)|private\s+|protected\s+|@Override|System\.out\.print)/m, 'java'],
-  [/^\s*(#include\s*[<"]|int\s+main\s*\(|void\s+\w+\s*\(|printf\s*\(|std::)/m, 'cpp'],
-  [/^\s*(SELECT\s+|INSERT\s+|UPDATE\s+|DELETE\s+|CREATE\s+(TABLE|INDEX|DATABASE)|ALTER\s+TABLE|FROM\s+\w+\s+WHERE)/im, 'sql'],
-  [/^\s*(<\?xml|<html|<div|<span|<body|<!DOCTYPE)/im, 'html'],
-  [/^\s*(?:\{\s*"[^"]+"\s*:|\[\s*\{)/m, 'json'],
-  [/^\s*(\w+:\s*\n|\w+:\s*[|>])/m, 'yaml'],
-  [/^\s*(\[\w+\]|\w+\s*=\s*)/m, 'toml'],
-  [/^\s*(#!\s*\/bin\/(ba)?sh|#!\/usr\/bin\/env\s+(ba)?sh|\$\s+\w+|echo\s+|export\s+\w+=)/m, 'bash'],
-  [/^\s*(@import|@media|@keyframes|\.\w+\s*\{|#\w+\s*\{)/m, 'css'],
-  [/^\s*(diff\s+--git|---\s+a\/|@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@|[+-]{3}\s+)/m, 'diff'],
-]
+// Simple heuristic-based language detection patterns. Each one looks for a keyword at
+// the start of a line, after its indentation; afterLineIndent keeps that scan linear
+// in a run of blank lines, which detection crosses on every edit of a code block.
+const LANG_PATTERNS: readonly (readonly [RegExp, string])[] = ([
+  [/import\s[^\n]+?from\s+['"]|export\s+(?:default\s+)?|const\s+\w+\s*[=:]|let\s+\w+\s*[=:]|interface\s+\w+|type\s+\w+\s*=/, 'typescript'],
+  [/function\s+\w+|var\s+\w+\s*=|===|!==|console\.(log|error|warn)|document\.|window\./, 'javascript'],
+  [/def\s+\w+|class\s+\w.*:|import\s+\w+|from\s+\w+\s+import|if\s+__name__\s*==/, 'python'],
+  [/fn\s+\w+|let\s+mut\s+|impl\s+|pub\s+(fn|struct|enum|mod)|use\s+\w+::|#\[derive/, 'rust'],
+  [/func\s+\w+|package\s+\w+|import\s+"[^"]+"|:=\s|fmt\.(Print|Sprint|Fprint)/, 'go'],
+  [/public\s+(class|interface|static|void|abstract)|private\s+|protected\s+|@Override|System\.out\.print/, 'java'],
+  [/#include\s*[<"]|int\s+main\s*\(|void\s+\w+\s*\(|printf\s*\(|std::/, 'cpp'],
+  [/SELECT\s+|INSERT\s+|UPDATE\s+|DELETE\s+|CREATE\s+(TABLE|INDEX|DATABASE)|ALTER\s+TABLE|FROM\s+\w+\s+WHERE/i, 'sql'],
+  [/<\?xml|<html|<div|<span|<body|<!DOCTYPE/i, 'html'],
+  [/\{\s*"[^"]+"\s*:|\[\s*\{/, 'json'],
+  [/\w+:\s*\n|\w+:\s*[|>]/, 'yaml'],
+  [/\[\w+\]|\w+\s*=\s*/, 'toml'],
+  [/#!\s*\/bin\/(ba)?sh|#!\/usr\/bin\/env\s+(ba)?sh|\$\s+\w+|echo\s+|export\s+\w+=/, 'bash'],
+  [/@import|@media|@keyframes|\.\w+\s*\{|#\w+\s*\{/, 'css'],
+  [/diff\s+--git|---\s+a\/|@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@|[+-]{3}\s+/, 'diff'],
+] satisfies [RegExp, string][]).map(([body, lang]) => {
+  const pattern = afterLineIndent(body)
+  return [pattern, lang] as const
+})
 
 /**
  * Detect a programming language from code content using heuristics.
@@ -49,12 +55,13 @@ function detectLanguage(code: string): string | null {
 }
 
 /**
- * Creates a languageExtractor for prosemirror-highlight that auto-detects
+ * Creates a languageExtractor for the code highlight plugin that auto-detects
  * the language of code blocks via heuristics when no explicit language is set.
  * This does NOT modify the code_block node's `language` attribute — it only
  * provides the detected language to the syntax highlighter. An explicit language
- * is passed through verbatim; the lazy parser resolves/loads it (or renders
- * plain when Shiki has no grammar for it).
+ * is passed through verbatim. `createCodeHighlightPlugin` resolves it with
+ * `resolveBundledLang` and leaves a block plain when Shiki has no grammar for it,
+ * and the token worker loads the grammar.
  */
 export function createAutoDetectLanguageExtractor() {
   return (node: { attrs: Record<string, unknown>, textContent: string }): string | undefined => {

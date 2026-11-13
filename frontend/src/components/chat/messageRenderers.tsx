@@ -13,11 +13,9 @@ import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
-import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { inlineFlex } from '~/styles/shared.css'
-import { markdownContent } from './markdownEditor/markdownContent.css'
-import { renderMarkdownForContext } from './markdownRendering'
+import { MarkdownPrefetch, MarkdownText } from './MarkdownText'
 import { attachmentItem, attachmentList, controlResponseLabel, controlResponseMessage, thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
 import { MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 import { CONTROL_RESPONSE_FEEDBACK_LEAD } from './persistedControlResponse'
@@ -29,8 +27,6 @@ import {
   toolUseIcon,
 } from './toolStyles.css'
 import { ToolUseLayout } from './widgets/ToolUseLayout'
-
-export { markdownCacheNamespace, renderMarkdownForContext, shouldPauseSyntaxHighlighting } from './markdownRendering'
 
 /**
  * Read the parent-driven tool-result-expanded flag from a render context.
@@ -76,18 +72,6 @@ export function useSharedExpandedState(
   return [expanded, setExpanded]
 }
 
-/**
- * Render markdown text via the shared remark pipeline. The HTML is produced
- * via remark + sanitizer, never arbitrary user input. It is applied through
- * the parsed-fragment cache (~/lib/htmlFragmentCache) rather than an
- * `innerHTML` binding, so a re-mounting row clones the already-parsed
- * template instead of making the browser re-parse the same markup.
- */
-export function MarkdownText(props: { text: string, context?: MarkdownRenderContext }): JSX.Element {
-  const html = createMemo(() => renderMarkdownForContext(props.text, props.context))
-  return <div class={markdownContent} ref={cachedInnerHtml(html)} />
-}
-
 type ThinkingBubbleProps = {
   icon: LucideIcon
   label: string
@@ -113,12 +97,7 @@ export function ThinkingBubble(props: ThinkingBubbleProps): JSX.Element {
     const text = props.text
     return text !== undefined
       ? (
-          <MarkdownText
-            text={text}
-            {...(props.context !== undefined
-              ? { context: props.context }
-              : {})}
-          />
+          <MarkdownText text={text} context={props.context} />
         )
       : null
   }
@@ -139,7 +118,12 @@ export function ThinkingBubble(props: ThinkingBubbleProps): JSX.Element {
           <Icon icon={ChevronRight} size="sm" class={toolUseIcon} />
         </span>
       </div>
-      <Show when={expanded()}>
+      <Show
+        when={expanded()}
+        fallback={props.text !== undefined
+          ? <MarkdownPrefetch text={props.text} context={props.context} />
+          : null}
+      >
         <div class={thinkingContent}>
           {body()}
         </div>
@@ -211,12 +195,7 @@ export function UserContentMessage(props: { text: string, attachments: UserMessa
         </div>
       </Show>
       <Show when={hasText()}>
-        <MarkdownText
-          text={props.text}
-          {...(props.context !== undefined
-            ? { context: props.context }
-            : {})}
-        />
+        <MarkdownText text={props.text} context={props.context} />
       </Show>
     </Show>
   )
@@ -246,12 +225,7 @@ export function renderControlResponseRow(
       <div class={controlResponseMessage}>
         <div>
           <div>{CONTROL_RESPONSE_FEEDBACK_LEAD}</div>
-          <MarkdownText
-            text={display.message}
-            {...(context !== undefined
-              ? { context }
-              : {})}
-          />
+          <MarkdownText text={display.message} context={context} />
         </div>
       </div>
     )

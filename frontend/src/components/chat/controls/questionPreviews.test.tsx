@@ -3,13 +3,14 @@ import { createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ControlRequestContent } from '~/test-support/controlRequestBanner'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { AskUserQuestionContent } from './AskUserQuestionControl'
 import { createControlAnswerState } from './types'
 import '../providers/claude/plugin'
 import '../providers/zcode/plugin'
 
 describe('question option previews', () => {
-  it.each([false, true])('keeps the selected response when display details arrive (multiSelect=%s)', (multiSelect) => {
+  it.each([false, true])('keeps the selected response when display details arrive (multiSelect=%s)', async (multiSelect) => {
     const answerState = createControlAnswerState()
     const [option, setOption] = createSignal({ label: '1. A — First', value: '1. A — First', preview: '' })
     const request = { requestId: 'question', agentId: 'agent', payload: {} }
@@ -30,13 +31,14 @@ describe('question option previews', () => {
     ))
     fireEvent.click(getByRole(multiSelect ? 'checkbox' : 'radio'))
     setOption({ label: 'A', value: '1. A — First', preview: 'Recovered preview' })
+    await settleWorkerReplies()
     expect(getByRole(multiSelect ? 'checkbox' : 'radio')).toBeChecked()
     expect(getByRole(multiSelect ? 'checkbox' : 'radio')).toHaveAttribute('value', '1. A — First')
     expect(answerState.selections()[0]).toEqual(['1. A — First'])
     expect(getByRole('region', { name: 'A preview' })).toHaveTextContent('Recovered preview')
   })
 
-  it.each([false, true])('renders a code preview without changing selection (multiSelect=%s)', (multiSelect) => {
+  it.each([false, true])('renders a code preview without changing selection (multiSelect=%s)', async (multiSelect) => {
     const answerState = createControlAnswerState()
     const { container, getByRole } = render(() => (
       <ControlRequestContent
@@ -64,6 +66,7 @@ describe('question option previews', () => {
         answerState={answerState}
       />
     ))
+    await settleWorkerReplies()
     expect(container.querySelector('pre code')?.textContent).toContain('const answer = 42')
     const preview = getByRole('region', { name: 'Simple preview' })
     expect(getByRole(multiSelect ? 'checkbox' : 'radio')).toHaveAttribute('value', 'Simple')
@@ -73,7 +76,7 @@ describe('question option previews', () => {
     expect(answerState.selections()[0]).toEqual(['Simple'])
   })
 
-  it('recovers a ZCode preview from native question fields', () => {
+  it('recovers a ZCode preview from native question fields', async () => {
     const text = '┌────────┐\n│ sample │\n└────────┘'
     const { getByRole } = render(() => (
       <ControlRequestContent
@@ -98,6 +101,7 @@ describe('question option previews', () => {
         answerState={createControlAnswerState()}
       />
     ))
+    await settleWorkerReplies()
     expect(getByRole('region', { name: 'Box preview' }).textContent).toContain(text)
   })
 

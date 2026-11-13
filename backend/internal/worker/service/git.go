@@ -1,12 +1,16 @@
 package service
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -58,6 +62,12 @@ const branchMutationTimeout = 30 * time.Second
 // bounding the worst case.
 const gitReadTimeout = 30 * time.Second
 
+// gitBlobWaitDelay is the longest time that readGitBlob waits, after it kills
+// `git cat-file`, for a process that still holds its pipes, such as a child of
+// git that hangs. Wait then closes the pipes and returns. The read has its
+// result by then, so an early close loses nothing that it answers.
+const gitBlobWaitDelay = time.Second
+
 // wipCommitMessage is the placeholder commit message used to sweep up
 // uncommitted changes before `pushBranch` runs `git push`. Centralised so
 // tests and future call sites grep for the same string.
@@ -102,6 +112,113 @@ func runBranchMutationCustom(parent context.Context, timeout time.Duration, send
 		return
 	}
 	sendProtoResponse(sender, success)
+}
+
+// errGitBlobNotFound reports that a spec names no blob: the path does not
+// exist at the ref, or it names a directory.
+var errGitBlobNotFound = errors.New("no file at the ref")
+
+// gitBlob is the start of one blob, as readGitBlob reads it.
+type gitBlob struct {
+	// content holds at most the limit that the read was given.
+	content []byte
+	// totalSize is the size of the whole blob.
+	totalSize int64
+}
+
+// readGitBlob reads at most the first `limit` bytes of the blob that spec
+// (`<ref>:<path>`) gives in the repository at repoRoot, and the size of the
+// whole blob. It answers errGitBlobNotFound when spec gives no blob.
+//
+// It reads no more of the blob than it answers. `git show` writes the whole
+// blob, and a buffer of its output costs the full size of a generated or binary
+// file of hundreds of MB for a view of 256 KiB. The read resolves spec to an
+// object ID first, so the size and the content come from one object even when
+// the ref or the index changes between the two commands. The ID, not the spec,
+// goes to `git cat-file --batch`, because that command reads one name per line
+// and a path can hold a newline.
+func readGitBlob(ctx context.Context, repoRoot, spec string, limit int64) (gitBlob, error) {
+	oid, err := gitutil.Output(ctx, repoRoot, "rev-parse", "--verify", "--quiet", spec)
+	if err != nil {
+		// `--verify --quiet` exits with 1, and prints nothing, for a name that
+		// resolves to no object. Every other failure is an error of the read.
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return gitBlob{}, errGitBlobNotFound
+		}
+		return gitBlob{}, fmt.Errorf("resolve %s: %w", spec, err)
+	}
+
+	// Cancelling readCtx kills git, which may still be writing the rest of a
+	// blob that the read does not need.
+	readCtx, stopRead := context.WithCancel(ctx)
+	defer stopRead()
+	cmd := gitutil.NewGitCmd(readCtx, "-C", repoRoot, "cat-file", "--batch")
+	cmd.Stdin = strings.NewReader(strings.TrimSpace(oid) + "\n")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	cmd.WaitDelay = gitBlobWaitDelay
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return gitBlob{}, fmt.Errorf("pipe the output of git cat-file: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return gitBlob{}, fmt.Errorf("start git cat-file: %w", err)
+	}
+	blob, readErr := readBatchBlob(stdout, limit)
+	// The kill alone does not end every process that holds the pipes. On
+	// Windows, the git on PATH is a launcher that runs the real git as a child
+	// process, and the kill ends the launcher only. The real git keeps stderr
+	// open while it waits to write the rest of the blob, so Wait, which closes
+	// this pipe only after stderr ends, would never return. Closing the pipe
+	// first fails that write, and the real git exits.
+	_ = stdout.Close()
+	stopRead()
+	// The kill above ends git with an error that says nothing about the bytes
+	// already read, so the result of Wait matters only when the read failed.
+	waitErr := cmd.Wait()
+	if readErr == nil || errors.Is(readErr, errGitBlobNotFound) {
+		return blob, readErr
+	}
+	if msg := strings.TrimSpace(stderr.String()); msg != "" {
+		return gitBlob{}, fmt.Errorf("%w: %s", readErr, msg)
+	}
+	if waitErr != nil {
+		return gitBlob{}, fmt.Errorf("%w: %w", readErr, waitErr)
+	}
+	return gitBlob{}, readErr
+}
+
+// readBatchBlob reads one answer of `git cat-file --batch` from r: the header
+// `<oid> <type> <size>`, then the content. It reads at most `limit` bytes of the
+// content of a blob, and nothing after them. A limit of zero or less reads no
+// content, so the read never allocates more than limit bytes, whatever the
+// size of the blob. It answers errGitBlobNotFound for an object that is missing
+// or that is not a blob, such as the tree of a directory.
+func readBatchBlob(r io.Reader, limit int64) (gitBlob, error) {
+	br := bufio.NewReader(r)
+	header, err := br.ReadString('\n')
+	if err != nil {
+		return gitBlob{}, fmt.Errorf("read the header of git cat-file: %w", err)
+	}
+	fields := strings.Fields(header)
+	switch {
+	case len(fields) == 2 && (fields[1] == "missing" || fields[1] == "ambiguous"):
+		return gitBlob{}, errGitBlobNotFound
+	case len(fields) != 3:
+		return gitBlob{}, fmt.Errorf("unexpected header of git cat-file: %q", strings.TrimSpace(header))
+	case fields[1] != "blob":
+		return gitBlob{}, errGitBlobNotFound
+	}
+	size, err := strconv.ParseInt(fields[2], 10, 64)
+	if err != nil || size < 0 {
+		return gitBlob{}, fmt.Errorf("unexpected size in the header of git cat-file: %q", fields[2])
+	}
+	content := make([]byte, min(size, max(limit, 0)))
+	if _, err := io.ReadFull(br, content); err != nil {
+		return gitBlob{}, fmt.Errorf("read the content of git cat-file: %w", err)
+	}
+	return gitBlob{content: content, totalSize: size}, nil
 }
 
 // registerGitHandlers registers handlers for git operations on the local filesystem.
@@ -289,6 +406,16 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			return
 		}
 
+		if r.GetLimit() < 0 {
+			sendInvalidArgument(sender, "limit must not be negative")
+			return
+		}
+		// A zero limit reads the default, as ReadFile does. readLimit caps
+		// every limit at what one response carries: the request has no offset,
+		// so a caller cannot ask again in smaller pieces for a response that
+		// the channel refused. total_size states where the limit cut the blob.
+		limit := svc.readLimit(r.GetLimit(), sender)
+
 		ctx, cancel := context.WithTimeout(ctx, gitReadTimeout)
 		defer cancel()
 
@@ -322,22 +449,26 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			return
 		}
 
-		// Run git show <ref>:<relative_path>.
-		showArg := refStr + ":" + relPath
-		content, err := gitutil.Bytes(ctx, repoRoot, "show", showArg)
-		if err != nil {
-			// File may not exist in the given ref.
+		// A tree path in a git spec separates its parts with "/" only, while
+		// filepath.Rel separates them with "\" on Windows.
+		blob, err := readGitBlob(ctx, repoRoot, refStr+":"+filepath.ToSlash(relPath), limit)
+		if errors.Is(err, errGitBlobNotFound) {
 			sendProtoResponse(sender, &leapmuxv1.ReadGitFileResponse{
 				Path:   absPath,
 				Exists: false,
 			})
 			return
 		}
-
+		if err != nil {
+			slog.Debug("read git file failed", "path", absPath, "ref", refStr, "error", err)
+			sendInternalError(sender, "failed to read the file from git")
+			return
+		}
 		sendProtoResponse(sender, &leapmuxv1.ReadGitFileResponse{
-			Path:    absPath,
-			Content: content,
-			Exists:  true,
+			Path:      absPath,
+			Content:   blob.content,
+			Exists:    true,
+			TotalSize: blob.totalSize,
 		})
 	})
 

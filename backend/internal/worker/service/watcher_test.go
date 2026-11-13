@@ -1086,7 +1086,7 @@ func TestReplaySink_StopsSendingOnceTheTransportDies(t *testing.T) {
 
 	w := newDeadTransportWriter("ch-1")
 	retired := 0
-	sink := newReplaySink(w, 0, func() { retired++ })
+	sink := newReplaySink(w, 0, func() { retired++ }, nil)
 
 	for i := 0; i < 10; i++ {
 		sink.send(&leapmuxv1.WatchEventsResponse{
@@ -1100,6 +1100,34 @@ func TestReplaySink_StopsSendingOnceTheTransportDies(t *testing.T) {
 	assert.Equal(t, 1, retired)
 }
 
+// TestReplaySink_StopsOnceItsSessionNoLongerServesTheStream pins the check of
+// the session. The channel sends a frame on a stream that the client
+// cancelled, so a replay must stop by itself once its session is cancelled or
+// replaced. An ended session is no failure of the replay, so the sink retires
+// nothing.
+func TestReplaySink_StopsOnceItsSessionNoLongerServesTheStream(t *testing.T) {
+	t.Parallel()
+
+	w := newTestWatcher("ch-1")
+	retired := 0
+	serving := true
+	sink := newReplaySink(w, 0, func() { retired++ }, func() bool { return serving })
+	event := &leapmuxv1.WatchEventsResponse{
+		Event: &leapmuxv1.WatchEventsResponse_AgentEvent{AgentEvent: testAgentEvent("agent-1")},
+	}
+
+	sink.send(event)
+	require.True(t, sink.alive())
+	serving = false
+	for range 3 {
+		sink.send(event)
+	}
+
+	assert.Equal(t, int64(1), w.streamCount.Load(), "no send may follow the end of the session")
+	assert.False(t, sink.alive())
+	assert.Zero(t, retired)
+}
+
 // TestReplaySink_KeepsGoingWhenOneMessageIsRejected pins the other side.
 // An oversized event is the channel refusing ONE message on a healthy
 // stream; abandoning the rest of a page refresh over it would lose every
@@ -1110,7 +1138,7 @@ func TestReplaySink_KeepsGoingWhenOneMessageIsRejected(t *testing.T) {
 	w := newTestWatcher("ch-1")
 	w.failSends(fmt.Errorf("message too large: %w", channel.ErrMessageRejected))
 	retired := 0
-	sink := newReplaySink(w, 0, func() { retired++ })
+	sink := newReplaySink(w, 0, func() { retired++ }, nil)
 
 	for i := 0; i < 5; i++ {
 		sink.send(&leapmuxv1.WatchEventsResponse{
@@ -1138,7 +1166,7 @@ func TestReplaySinkRetiresBeforePreparationError(t *testing.T) {
 		retired++
 		assert.False(t, sink.alive(), "failure is latched before the callback")
 		sink.send(&leapmuxv1.WatchEventsResponse{})
-	})
+	}, nil)
 	sink.fail(nil)
 	assert.Zero(t, retired)
 	assert.True(t, sink.alive())
@@ -1218,7 +1246,7 @@ func TestReplaySink_KeepsGoingWhenOneEventCannotBeMarshalled(t *testing.T) {
 
 	w := newTestWatcher("ch-1")
 	retired := 0
-	sink := newReplaySink(w, 0, func() { retired++ })
+	sink := newReplaySink(w, 0, func() { retired++ }, nil)
 
 	unencodable := &leapmuxv1.AgentEvent{
 		AgentId: string([]byte{0x80}),

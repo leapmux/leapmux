@@ -2,6 +2,7 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolComplete, copilotToolStart } from '~/test-support/copilotFixtures'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
 import { renderMessageContent } from '../messageContentRenderer'
@@ -10,7 +11,6 @@ import { toolUseHeader } from '../toolStyles.css'
 import { providerFor } from './registry'
 import { input } from './testUtils'
 import './index'
-import './testMocks'
 
 function mcpMessages(provider: AgentProvider) {
   const args = { query: 'rendering' }
@@ -191,7 +191,7 @@ describe.each([
   AgentProvider.GROK_BUILD,
   AgentProvider.KIRO,
 ])('paired MCP requests and results (%s)', (provider) => {
-  it('renders one header and one argument section for the pair', () => {
+  it('renders one header and one argument section for the pair', async () => {
     const { request, result, spanType } = mcpMessages(provider)
     const plugin = providerFor(provider)!
     const sources = (current: Record<string, unknown>, role: 'request' | 'result') => testMessageSources({
@@ -213,6 +213,7 @@ describe.each([
         sources: sources(result, 'result'),
       }, plugin?.transcript.classify(input(result)), provider),
     ])
+    await settleWorkerReplies()
     expect(container.querySelectorAll(`.${toolUseHeader}`)).toHaveLength(1)
     expect(container.textContent?.match(/Arguments/g)).toHaveLength(1)
     expect(container.textContent?.match(/"query"/g)).toHaveLength(1)
@@ -329,7 +330,7 @@ describe('retained MCP completion', () => {
     AgentProvider.KIRO,
     AgentProvider.QWEN_CODE,
     AgentProvider.MIMO_CODE,
-  ])('renders one interruption header for provider %s', (provider) => {
+  ])('renders one interruption header for provider %s', async (provider) => {
     const { request, result, spanType } = mcpMessages(provider)
     const original = JSON.stringify(result)
     const parsed = {
@@ -345,6 +346,7 @@ describe('retained MCP completion', () => {
         request: () => input(request),
       }),
     }, plugin?.transcript.classify(parsed), provider, MessageCompletion.INTERRUPTED))
+    await settleWorkerReplies()
     expect(container.textContent?.match(/Interrupted/g)).toHaveLength(1)
     expect(container.textContent).not.toContain('Text truncated')
     expect(container.textContent).not.toContain('Failed')

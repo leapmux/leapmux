@@ -2,6 +2,7 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { ZCODE_EVENT, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { toolBodyContent, toolUseHeader } from '../../toolStyles.css'
 import { resolveMessageForRendering } from '../registry'
@@ -29,7 +30,7 @@ function parsedOf(parent: Record<string, unknown>) {
 }
 
 describe('zcode assistant renderer', () => {
-  it('renders the model-response text', () => {
+  it('renders the model-response text', async () => {
     const { container } = render(() => (
       <ZCodeRowView parsed={{
         type: ZCODE_EVENT.SessionUpdated,
@@ -37,6 +38,7 @@ describe('zcode assistant renderer', () => {
       }}
       />
     ))
+    await settleWorkerReplies()
     expect(container.textContent).toContain('the answer')
   })
 
@@ -98,7 +100,7 @@ describe('zcode tool execution renderer', () => {
     expect(edit.textContent).toContain('/tmp/a.ts')
   })
 
-  it('renders a subagent spawn with its description and prompt', () => {
+  it('renders a subagent spawn with its description and prompt', async () => {
     const { container } = render(() => (
       <ZCodeRowView parsed={scheduled(ZCODE_TOOL.Agent, {
         description: 'check tests',
@@ -106,6 +108,7 @@ describe('zcode tool execution renderer', () => {
       })}
       />
     ))
+    await settleWorkerReplies()
     expect(container.textContent).toContain('check tests')
     expect(container.textContent).not.toContain('Agent: check tests')
     expect(container.textContent).toContain('run the failing ones')
@@ -226,7 +229,7 @@ describe('zcode tool result renderer', () => {
     expect(container.textContent).not.toContain('wouldHaveBeenNew')
   })
 
-  it('renders an unknown-tool result as the result content', () => {
+  it('renders an unknown-tool result as the result content', async () => {
     const { container } = render(() => (
       <ZCodeRowView
         parsed={toolEvent(ZCODE_TOOL_KIND.Result, {
@@ -235,6 +238,7 @@ describe('zcode tool result renderer', () => {
         context={{ spanType: 'SomeToolAddedLater' }}
       />
     ))
+    await settleWorkerReplies()
     expect(container.textContent).toContain('a/b.ts')
   })
 })

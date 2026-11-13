@@ -7,6 +7,7 @@
 
 import type { MessageRenderCache } from './messageRenderCache'
 import type { MessageUiKey } from './messageUiKeys'
+import type { RenderReadiness } from './renderReadiness'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
@@ -14,8 +15,8 @@ import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 
 /**
  * What the markdown and ANSI body renderers need from their surroundings: the
- * caches and the two pause flags that keep a hidden or scroll-critical pass from
- * dispatching syntax work.
+ * caches, the two pause flags that keep a hidden or scroll-critical pass from
+ * dispatching syntax work, and where a body reports that its content is pending.
  */
 export interface MarkdownRenderContext {
   /**
@@ -25,9 +26,37 @@ export interface MarkdownRenderContext {
    * markdown context, and undefined is the live "absent for now" state.
    */
   renderCache?: MessageRenderCache | undefined
-  /** Hidden premeasurement pass: keep structure, skip timers, workers and highlighting. */
+  /**
+   * Hidden premeasurement pass: keep structure, skip timers and syntax work. A
+   * Markdown body is the exception: it renders in the worker in this pass too,
+   * because the row measures and reveals only once its Markdown is final.
+   */
   premeasureMode?: boolean
-  /** The visible pass is scroll-critical: defer Shiki/worker syntax jobs until it clears. */
+  /**
+   * Where an asynchronous body reports that its content is pending, so its row
+   * copy stays hidden and commits no height until the body is ready. These bodies
+   * report here:
+   * - A Markdown body while the Markdown worker renders it.
+   * - An edit diff over two texts (through ToolResultRenderContext) while the
+   *   diff worker computes its hunks. A patch draws its hunks without the diff
+   *   worker, and its word highlights follow, so it does not wait for the worker.
+   * - A diff view (DiffView) until the last of its lines mounts, because it
+   *   mounts them in slices of main-thread work.
+   *
+   * A diff view that switches between unified and split reports here too, as
+   * replacing its content (see RenderReadiness.trackReplacing): the copy keeps
+   * showing the old layout and stays visible, but commits no height until the
+   * new layout shows.
+   *
+   * Absent outside a chat row: a body that waits for a worker then shows its own
+   * skeleton. The file viewer passes a scope of its own to its diff view.
+   */
+  readiness?: RenderReadiness | undefined
+  /**
+   * The visible pass is scroll-critical: defer Shiki/worker syntax jobs until it
+   * clears. A Markdown body that shows nothing yet still dispatches its render,
+   * because its row stays hidden until the render lands.
+   */
   syntaxHighlightingPaused?: () => boolean
   /** A browser text selection is active: do not replace selected text nodes. */
   textSelectionActive?: () => boolean
@@ -38,6 +67,19 @@ export interface MarkdownRenderContext {
    * markdown context, and undefined is the live "absent for now" state.
    */
   rowOffscreen?: (() => boolean) | undefined
+}
+
+/** Return true when a renderer must keep the displayed syntax stable. */
+export function shouldPauseSyntaxHighlighting(context: MarkdownRenderContext | undefined): boolean {
+  return context?.premeasureMode === true || isDisplayHeld(context)
+}
+
+/**
+ * Return true while the DOM that a body shows must not change: the view scrolls,
+ * and a change would move the scroll anchor, or the reader selects text in it.
+ */
+export function isDisplayHeld(context: MarkdownRenderContext | undefined): boolean {
+  return context?.syntaxHighlightingPaused?.() === true || context?.textSelectionActive?.() === true
 }
 
 /** The per-row UI toggles a remount-sensitive renderer keeps through its host. */

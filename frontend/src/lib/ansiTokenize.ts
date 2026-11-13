@@ -1,5 +1,5 @@
 import type { CachedToken } from './tokenCache'
-import { shikiHighlighter } from './renderMarkdown'
+import { shikiHighlighter } from './shikiSyncHighlighter'
 import { dualThemeTokenOptions } from './shikiThemes'
 import { mergeLineTokens, toCachedTokens } from './tokenCache'
 

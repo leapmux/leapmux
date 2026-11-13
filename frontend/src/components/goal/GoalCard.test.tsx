@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentGoalSchema, AgentGoalStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { protoGoalToStore } from '~/stores/chatGoal'
 import * as statusDotStyles from '~/styles/statusDot.css'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { GoalCard } from './GoalCard'
 
 function goal(over: Partial<SessionGoal> = {}): SessionGoal {
@@ -14,7 +15,7 @@ function goal(over: Partial<SessionGoal> = {}): SessionGoal {
 const ALL: GoalAction[] = ['set', 'clear', 'pause', 'resume']
 
 describe('GoalCard', () => {
-  it('shows the objective and no status for an unconfirmed status', () => {
+  it('shows the objective and no status for an unconfirmed status', async () => {
     const { getByTestId, queryByTestId } = render(() => (
       <GoalCard goal={{
         current: goal({ statusDetail: 'cannot confirm' }),
@@ -24,6 +25,7 @@ describe('GoalCard', () => {
       }}
       />
     ))
+    await settleWorkerReplies()
     expect(getByTestId('goal-objective').textContent).toBe('every test passes')
     expect(queryByTestId('goal-status-dot')).toBeNull()
     expect(queryByTestId('goal-status-detail')).toBeNull()
@@ -75,7 +77,7 @@ describe('GoalCard', () => {
     expect(container.querySelector('[role="status"]')?.textContent).toBe('Session goal active: every test passes')
   })
 
-  it('shows the objective and its status', () => {
+  it('shows the objective and its status', async () => {
     const { getByTestId } = render(() => (
       <GoalCard goal={{
         current: goal(),
@@ -84,6 +86,7 @@ describe('GoalCard', () => {
       }}
       />
     ))
+    await settleWorkerReplies()
     expect(getByTestId('goal-objective').textContent).toBe('every test passes')
     expect(getByTestId('goal-status-dot').getAttribute('data-status')).toBe('active')
   })
@@ -210,7 +213,7 @@ describe('GoalCard', () => {
   })
 
   // The read-only surface displays the goal and offers no change controls.
-  it('offers no actions menu when the surface has no handler', () => {
+  it('offers no actions menu when the surface has no handler', async () => {
     const { queryByTestId, getByTestId } = render(() => (
       <GoalCard goal={{
         current: goal(),
@@ -219,6 +222,7 @@ describe('GoalCard', () => {
       }}
       />
     ))
+    await settleWorkerReplies()
     expect(queryByTestId('goal-actions-trigger')).toBeNull()
     // Keep the goal visible when its actions are absent.
     expect(getByTestId('goal-objective').textContent).toContain('every test passes')
@@ -348,7 +352,7 @@ describe('GoalCard', () => {
    * The sidebar and an open ThinkingIndicator popover can display the same goal.
    * Only the card with announce set supplies a live region.
    */
-  it('holds no live region unless it owns the announcement', () => {
+  it('holds no live region unless it owns the announcement', async () => {
     const { container } = render(() => (
       <GoalCard goal={{
         current: goal(),
@@ -357,6 +361,7 @@ describe('GoalCard', () => {
       }}
       />
     ))
+    await settleWorkerReplies()
     expect(container.querySelectorAll('[role="status"][aria-live="polite"]')).toHaveLength(0)
     // The objective is still on screen; only the announcement is elsewhere.
     expect(container.textContent).toContain('every test passes')
@@ -383,7 +388,7 @@ describe('GoalCard', () => {
 })
 
 describe('unknown goal presentation', () => {
-  it('shows a neutral unknown status and retains the native detail and counters', () => {
+  it('shows a neutral unknown status and retains the native detail and counters', async () => {
     const current = protoGoalToStore(create(AgentGoalSchema, {
       nativeId: 'unknown-goal',
       objective: 'Keep the **objective**',
@@ -400,6 +405,7 @@ describe('unknown goal presentation', () => {
         announce
       />
     ))
+    await settleWorkerReplies()
     const dot = getByTestId('goal-status-dot')
     expect(getByTestId('goal-objective').textContent).toContain('Keep the objective')
     expect(getByTestId('goal-status-detail')).toHaveTextContent('provider-future-state')
@@ -415,9 +421,10 @@ describe('unknown goal presentation', () => {
     expect(getByTestId('goal-card')).not.toHaveTextContent('Needs attention')
   })
 
-  it('keeps an unknown read-only goal visible without inventing progress or controls', () => {
+  it('keeps an unknown read-only goal visible without inventing progress or controls', async () => {
     const current = protoGoalToStore(create(AgentGoalSchema, { objective: 'Keep the goal', status: AgentGoalStatus.UNKNOWN }))
     const { getByTestId, queryByTestId } = render(() => <GoalCard goal={{ current, progress: {}, actions: [] }} />)
+    await settleWorkerReplies()
     expect(getByTestId('goal-card')).toHaveTextContent('Keep the goal')
     expect(queryByTestId('goal-progress')).toBeNull()
     expect(queryByTestId('goal-status-detail')).toBeNull()

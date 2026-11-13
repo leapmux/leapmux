@@ -1,5 +1,6 @@
 import { render } from '@solidjs/testing-library'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { checkKindModule } from '~/test-support/kindTestHarness'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { ToolMessage } from '../ToolMessage'
@@ -42,8 +43,9 @@ describe('report renderer', () => {
       { result: hasResultRow },
     )
 
-    it('draws the plan while the approval is open', () => {
+    it('draws the plan while the approval is open', async () => {
       const { container } = render(() => <ToolMessage row={planCall()} />)
+      await settleWorkerReplies()
       expect(container.textContent).toContain('PLANMARKER-7')
     })
 

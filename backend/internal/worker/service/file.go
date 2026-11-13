@@ -18,6 +18,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/channelwire"
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/worker/channel"
@@ -29,21 +30,15 @@ import (
 // Larger directories are truncated to avoid slow transfers and unusable UIs.
 const maxDirEntries = 256
 
-// defaultReadLimit is the max bytes returned by ReadFile when the request
-// omits limit (or passes <= 0). Kept near one Noise transport chunk so a
-// default page stays a single chunk after protobuf/AEAD overhead; callers
-// that need more raise limit explicitly, up to the sender's payload budget.
-const defaultReadLimit int64 = 60 * 1024 // 60 KB
-
 // payloadBudget is the largest response body this sender accepts: the tighter
 // of the worker's configured max_message_size and the channel's negotiated
 // payload budget (min(hub, worker)) when the writer is channel-backed.
 //
 // A response above it is one the receiver refuses, and on the unary path that
-// refusal surfaces as ResourceExhausted. Two handlers here spend it, for
-// different reasons: ReadFile clamps what a caller may ASK for, and
-// ListDirectory stops adding listings to a chain before the reply outgrows
-// it.
+// refusal surfaces as ResourceExhausted. Three handlers here spend it, for
+// different reasons: ReadFile and ReadGitFile clamp what a caller may ASK for
+// (readLimit), and ListDirectory stops adding listings to a chain before the
+// reply outgrows it.
 func (svc *Service) payloadBudget(sender channel.ResponseWriter) int64 {
 	configured := channelwire.ResolveMaxMessageSize(svc.MaxMessageSize)
 	if sender != nil {
@@ -52,6 +47,27 @@ func (svc *Service) payloadBudget(sender channel.ResponseWriter) int64 {
 		}
 	}
 	return int64(configured)
+}
+
+// readLimit resolves the limit of a ReadFile or a ReadGitFile request to the
+// most bytes that the read returns. A limit of zero or less reads the default,
+// contracts.FileReadLimitBytes.
+//
+// No read returns more than the payload budget of the sender. The limit comes
+// straight off the request, and the handler allocates a buffer of that size,
+// so an uncapped limit lets one request choose how much memory the worker
+// reserves, up to gigabytes. A response above the budget is also one that the
+// channel refuses, and sendInnerResponse can answer it only with
+// ResourceExhausted. Cutting the read is the useful answer: the response
+// carries total_size, so the caller sees the cut, and a ReadFile caller reads
+// the rest with offset. The stdout scanners of the agents hold themselves to
+// the same producer ceiling.
+func (svc *Service) readLimit(requested int64, sender channel.ResponseWriter) int64 {
+	limit := requested
+	if limit <= 0 {
+		limit = contracts.FileReadLimitBytes
+	}
+	return min(limit, svc.payloadBudget(sender))
 }
 
 // registerFileHandlers registers handlers for file operations on the local filesystem.
@@ -152,26 +168,7 @@ func registerFileHandlers(d ownerOnlyRegistrar, svc *Service) {
 		totalSize := info.Size()
 
 		offset := r.GetOffset()
-		limit := r.GetLimit()
-		if limit <= 0 {
-			limit = defaultReadLimit
-		}
-		// Clamp against the producer ceiling. limit comes straight off the
-		// request and is used below as make([]byte, limit), so an
-		// unclamped value is a request field that chooses the worker's
-		// allocation size -- and any value over the ceiling also builds a
-		// response the channel then refuses, which sendProtoResponse
-		// cannot report. Truncating is the honest answer: the response
-		// already carries total_size, so a caller reading a large file
-		// pages rather than being told nothing.
-		//
-		// The clamp is the same producer ceiling the agent stdout scanners
-		// hold themselves to. Without it the limit field also picks the
-		// worker's allocation size, so a single request could ask it to
-		// reserve gigabytes.
-		if max := svc.payloadBudget(sender); limit > max {
-			limit = max
-		}
+		limit := svc.readLimit(r.GetLimit(), sender)
 
 		// meta_only_if_truncated: when the file would be truncated by the
 		// read window, return total_size with an empty content payload so

@@ -1,5 +1,6 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { checkKindModule } from '~/test-support/kindTestHarness'
 import { WebFetchResultBody } from '../webFetchResult'
 
@@ -13,8 +14,9 @@ describe('fetch renderer', () => {
     resultPart: 'page text',
   })
 
-  it('marks the fetched page as returned output without marking the summary', () => {
+  it('marks the fetched page as returned output without marking the summary', async () => {
     const { container } = render(() => <WebFetchResultBody source={{ result: 'page text', code: 200, codeText: 'OK' }} />)
+    await settleWorkerReplies()
     const outputs = container.querySelectorAll('[data-tool-output-preview]')
     expect(outputs).toHaveLength(1)
     expect(outputs[0]?.textContent).toBe('page text')

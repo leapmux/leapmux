@@ -1,11 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  largeMarkdownPlainHtml,
-  LIMITED_TEXT_DISPLAY_NOTICE,
-  limitTextForDisplay,
-  MARKDOWN_PARSE_CHAR_LIMIT,
-  markdownNeedsPlainTextDisplay,
-} from './safeTextDisplay'
+import { limitTextForDisplay } from './safeTextDisplay'
 
 describe('safe text display', () => {
   it('keeps a small value unchanged', () => {
@@ -42,24 +36,20 @@ describe('safe text display', () => {
     expect(result.text.split('\n').length).toBeLessThanOrEqual(101)
   })
 
+  it('limits the line count only past the maximum', () => {
+    const limits = { maxChars: 1_000, maxLineChars: 100, maxLines: 3 }
+
+    expect(limitTextForDisplay('a\nb\nc', limits)).toEqual({ text: 'a\nb\nc', limited: false })
+    expect(limitTextForDisplay('a\nb\nc\nd', limits)).toEqual({
+      text: 'a\nb\n… lines omitted from display …\nd',
+      limited: true,
+    })
+  })
+
   it('does not split a surrogate pair at either retained edge', () => {
     const result = limitTextForDisplay(`start${'x'.repeat(30)}😀${'y'.repeat(30)}end`, { maxChars: 40, maxLineChars: 40 })
 
     expect(result.text).not.toContain('\uFFFD')
     expect(() => new TextEncoder().encode(result.text)).not.toThrow()
-  })
-
-  it('routes large or long-line Markdown to the plain display', () => {
-    expect(markdownNeedsPlainTextDisplay('x'.repeat(MARKDOWN_PARSE_CHAR_LIMIT + 1))).toBe(true)
-    expect(markdownNeedsPlainTextDisplay('x'.repeat(5_000))).toBe(true)
-    expect(markdownNeedsPlainTextDisplay('# Small\n\nBody')).toBe(false)
-  })
-
-  it('escapes large Markdown before it builds the plain display', () => {
-    const html = largeMarkdownPlainHtml(`<script>unsafe</script>${'x'.repeat(100_000)}`)
-
-    expect(html).not.toContain('<script>')
-    expect(html).toContain('&lt;script&gt;unsafe&lt;/script&gt;')
-    expect(html).toContain(LIMITED_TEXT_DISPLAY_NOTICE)
   })
 })

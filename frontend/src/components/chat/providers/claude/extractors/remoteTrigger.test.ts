@@ -62,6 +62,40 @@ describe('claudeRemoteTriggerFromToolResult', () => {
     expect(source!.trigger).toBeNull()
     expect(source!.json).toBe('not-json')
   })
+
+  it('parses the content text when tool_use_result states no numeric status', () => {
+    const source = claudeRemoteTriggerFromToolResult(
+      { status: '200', json: '{"trigger":{"id":"ignored"}}' },
+      'HTTP 404\n{"trigger":{"id":"trig_3"}}',
+    )
+    expect(source!.status).toBe(404)
+    expect(source!.trigger).toEqual({ id: 'trig_3' })
+  })
+
+  it('answers the same result for the same tool_use_result, and parses its JSON once', () => {
+    let jsonReads = 0
+    const toolUseResult = {
+      status: 200,
+      get json(): string {
+        jsonReads++
+        return '{"trigger":{"id":"trig_1"}}'
+      },
+    }
+
+    const first = claudeRemoteTriggerFromToolResult(toolUseResult, '')
+    expect(first!.trigger).toEqual({ id: 'trig_1' })
+    expect(claudeRemoteTriggerFromToolResult(toolUseResult, '')).toBe(first)
+    expect(jsonReads).toBe(1)
+  })
+
+  it('parses a new tool_use_result again, because it is a new revision of the row', () => {
+    const toolUseResult = { status: 200, json: '{"trigger":{"id":"trig_1"}}' }
+    const first = claudeRemoteTriggerFromToolResult(toolUseResult, '')
+
+    const second = claudeRemoteTriggerFromToolResult({ ...toolUseResult }, '')
+    expect(second).not.toBe(first)
+    expect(second).toStrictEqual(first)
+  })
 })
 
 /** One Claude REQUEST row, carrying the arguments a trigger call reads and nothing else. */

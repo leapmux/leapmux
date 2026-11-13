@@ -64,8 +64,17 @@ export interface ToolKindMeta {
   collapsible: boolean
   /** The row draws a diff, so the toolbar offers the split/unified toggle. */
   hasDiff: boolean
-  /** Lazy. Null when nothing is copyable. The caller builds it at most once. */
+  /** Lazy. Null when nothing is copyable. The caller builds it at most once, once it is final. */
   copyableContent: () => string | null
+  /**
+   * False while `copyableContent` states a stand-in for text that waits on work in
+   * a worker, such as an edit's diff. `copyableContent` asks for that work itself.
+   * Both getters are reactive: a memo that reads either one while the work waits
+   * re-runs when it lands. The stand-in is null exactly when the final text is.
+   * The caller keeps a stand-in only until this answers true, and then builds the
+   * text again. Absent means final.
+   */
+  copyableFinal?: () => boolean
   copyLabel?: string
   expandLabel?: string
   /** The scroll-rail snippet. Defaults to `copyableContent`. */

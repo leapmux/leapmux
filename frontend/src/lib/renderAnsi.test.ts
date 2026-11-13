@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { containsAnsi, escapeHtml, renderAnsi, stripAnsi } from './renderAnsi'
-import { shikiHighlighter } from './renderMarkdown'
 import { _resetShikiStyleClassesForTest } from './shikiStyleClass'
 import { readInjectedShikiRules } from './shikiStyleClass.testkit'
+import { shikiHighlighter } from './shikiSyncHighlighter'
 
 const ESC = '\x1B'
 const RED = `${ESC}[31m`

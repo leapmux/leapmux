@@ -2,25 +2,17 @@ import type { MessageCategory } from '../messageClassifier'
 import type { MessageContentRenderContext } from '../messageContentRenderer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { render } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { AgentProvider, ContentCompression } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { resolveMessageForRendering } from './registry'
 import './claude/plugin'
 import './codex/plugin'
 import './opencode/plugin'
 import './pi/plugin'
-import './testMocks'
-
-vi.mock('~/lib/shikiWorkerClient', () => ({
-  tokenizeAsync: async (_lang: string, code: string) => code.split('\n').map(() => []),
-}))
-
-vi.mock('~/lib/tokenCache', () => ({
-  getCachedTokens: () => null,
-  makeKey: (lang: string, code: string) => `${lang}\0${code}`,
-}))
+import '~/components/chat/providers'
 
 const { renderMessageContent } = await import('../messageContentRenderer')
 
@@ -135,12 +127,13 @@ function renderPiToolResult(toolName: string, resultPayload: Record<string, unkn
 // for a write that has not landed. It claims nothing about the file, and the
 // result row replaces it with the diff that did land.
 describe('claude Edit/Write tool_use states its requested change', () => {
-  it('edit tool_use shows file path, stats and the substitution it asks for', () => {
+  it('edit tool_use shows file path, stats and the substitution it asks for', async () => {
     const { container } = renderClaudeToolUse('Edit', {
       file_path: '/tmp/example.ts',
       old_string: 'oldLineMarkerABC',
       new_string: 'newLineMarkerABC',
     })
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('example.ts')
     expect(text).toContain('Requested changes')
@@ -203,7 +196,7 @@ describe('claude Edit tool_result diff selection', () => {
     expect(text).not.toContain('File modified.')
   })
 
-  it('falls back to the linked tool_use diff when result has no structured patch', () => {
+  it('falls back to the linked tool_use diff when result has no structured patch', async () => {
     const parsed = makeClaudeToolResultMessage({
       tool_name: 'Edit',
       filePath: '/tmp/file.ts',
@@ -213,6 +206,7 @@ describe('claude Edit tool_result diff selection', () => {
         request: () => (editToolUseParsed),
       }),
     })
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('fallbackOldZZZ')
     expect(text).toContain('fallbackNewZZZ')
@@ -367,13 +361,14 @@ describe('claude Write tool_result diff selection', () => {
 // ---------------------------------------------------------------------------
 
 describe('pi Edit/Write tool_use states its requested change', () => {
-  it('edit tool_use shows the file, its statistics, and the change it asks for', () => {
+  it('edit tool_use shows the file, its statistics, and the change it asks for', async () => {
     const { container } = renderPiToolUse('edit', {
       path: '/tmp/example.ts',
       edits: [
         { oldText: 'piOldToolUseMarker', newText: 'piNewToolUseMarker' },
       ],
     })
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('example.ts')
     expect(text).toContain('+1')
@@ -420,7 +415,7 @@ describe('pi Edit tool_result diff selection', () => {
     expect(text).not.toContain('Modified.')
   })
 
-  it('falls back to linked edit tool_use diffs when the result has no diff', () => {
+  it('falls back to linked edit tool_use diffs when the result has no diff', async () => {
     const { container } = renderPiToolResult('edit', {
       content: [
         { type: 'text', text: 'Modified.' },
@@ -432,6 +427,7 @@ describe('pi Edit tool_result diff selection', () => {
         { oldText: 'piFallbackOldMarker', newText: 'piFallbackNewMarker' },
       ],
     })
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('piFallbackOldMarker')
     expect(text).toContain('piFallbackNewMarker')
@@ -579,7 +575,7 @@ describe('opencode tool_call_update diff selection', () => {
   // with at every state of the call (invariant I7). It carries no replacement text
   // here, so it synthesizes no diff of its own and the content array stays the one
   // source of the body below.
-  it('renders the diff embedded in the update content array', () => {
+  it('renders the diff embedded in the update content array', async () => {
     const { container } = renderOpenCodeUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'edit',
@@ -595,12 +591,13 @@ describe('opencode tool_call_update diff selection', () => {
         },
       ],
     })
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('opencodeContentOldX')
     expect(text).toContain('opencodeContentNewX')
   })
 
-  it('falls back to a diff synthesized from rawInput when content has no diff', () => {
+  it('falls back to a diff synthesized from rawInput when content has no diff', async () => {
     const { container } = renderOpenCodeUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'edit',
@@ -613,6 +610,7 @@ describe('opencode tool_call_update diff selection', () => {
       },
       content: [],
     })
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('opencodeRawOldY')
     expect(text).toContain('opencodeRawNewY')
@@ -666,7 +664,7 @@ describe('opencode tool_call_update diff selection', () => {
   // parses as `(!effectiveDiff()) !== null` and is always true, so the
   // text-output branch rendered alongside the diff. The fix gates on
   // `effectiveDiff() === null`.
-  it('does not duplicate text output below the diff when both are present', () => {
+  it('does not duplicate text output below the diff when both are present', async () => {
     const { container } = renderOpenCodeUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'edit',
@@ -686,6 +684,7 @@ describe('opencode tool_call_update diff selection', () => {
         },
       ],
     })
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('duplicateGuardOldA')
     expect(text).toContain('duplicateGuardNewA')
@@ -700,7 +699,7 @@ describe('opencode tool_call_update diff selection', () => {
   // requested change beside them did not. The finished flag tells the sides
   // apart, so this pair must draw both halves however many times the message
   // was parsed.
-  it('keeps the requested edit beside reported words when the result side is a re-parse of the row', () => {
+  it('keeps the requested edit beside reported words when the result side is a re-parse of the row', async () => {
     const parse = (content: Record<string, unknown>) => resolveMessageForRendering(parseMessageContent(makeFakeMessage(content)), AgentProvider.OPENCODE)
     const request = parse({
       sessionUpdate: 'tool_call',
@@ -734,6 +733,7 @@ describe('opencode tool_call_update diff selection', () => {
       { kind: 'tool_use' } as MessageCategory,
       AgentProvider.OPENCODE,
     ))
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('No file changes occurred.')
     expect(text).toContain('Requested changes')

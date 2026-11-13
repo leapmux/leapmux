@@ -2,6 +2,7 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { todoList } from '~/components/todo/TodoList.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { providerToolMeta } from '~/test-support/toolCallFixture'
 import { renderMessageContent } from '../../messageContentRenderer'
 import { renderACPToolPair } from '../acp/testUtils'
@@ -9,10 +10,10 @@ import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import './plugin'
 import '../kilo/plugin'
-import '../testMocks'
+import '~/components/chat/providers'
 
 describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol renderer (%s)', (provider) => {
-  it('renders a native subagent report through the shared agent body', () => {
+  it('renders a native subagent report through the shared agent body', async () => {
     const { container } = renderACPToolPair(provider, {
       title: 'task',
       kind: 'think',
@@ -28,6 +29,7 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
         },
       ],
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Inspect project structure (explore)')
     expect(container.textContent).toContain('Agent "Inspect project structure" completed')
     expect(container.textContent).toContain('Agent ID:child-1')
@@ -36,7 +38,7 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
     expect(container.textContent).not.toContain('"prompt"')
   })
 
-  it('shows the requested prompt for a background subagent launch', () => {
+  it('shows the requested prompt for a background subagent launch', async () => {
     const { container } = renderACPToolPair(provider, {
       title: 'task',
       kind: 'think',
@@ -52,6 +54,7 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
         },
       ],
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('launched asynchronously')
     expect(container.textContent).toContain('Prompt')
     expect(container.textContent).toContain('Inspect the entry points.')
@@ -78,7 +81,7 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
     expect(container.textContent).not.toContain('Arguments')
   })
 
-  it('keeps an MCP tool with a todos argument in the generic tool renderer', () => {
+  it('keeps an MCP tool with a todos argument in the generic tool renderer', async () => {
     const { container } = renderACPToolPair(provider, {
       title: 'calendar_sync',
       kind: 'other',
@@ -95,6 +98,7 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
         },
       ],
     })
+    await settleWorkerReplies()
     expect(container.querySelectorAll(`.${todoList}`)).toHaveLength(0)
     expect(container.textContent).toContain('Schedule published')
   })

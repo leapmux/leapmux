@@ -5,17 +5,17 @@ import { shallowEqualSets } from '~/lib/shallowEqual'
 // ---------------------------------------------------------------------------
 // Ordered tail reveal
 //
-// Newly appended messages mount UNMEASURED and are hidden-until-measured: a
-// loading skeleton paints each reserved slot until the premeasure pass commits a
-// real height, then the real row fades in. Every row reveals on its OWN
-// measurement, so when several messages are appended at once the one that
-// measures first pops in first -- making a later message appear ahead of an
-// earlier one that is still a skeleton.
+// Newly appended messages mount hidden: a loading skeleton paints each reserved
+// slot until the row has loaded, then the real row fades in. The caller decides
+// what "loading" means (see `isLoading` below). Every row reveals once it ITSELF
+// has loaded, so when several messages are appended at once the one that loads
+// first pops in first -- making a later message appear ahead of an earlier one
+// that is still a skeleton.
 //
-// This gate holds a measured tail row hidden until every EARLIER still-loading
+// This gate holds a loaded tail row hidden until every EARLIER still-loading
 // row in the same append cohort has revealed, so a burst of appended messages
 // always reveals in document order (never a later one first), even if the later
-// one finishes measuring first.
+// one finishes loading first.
 //
 // Scope: only the tail-anchored cohort of not-yet-revealed rows is ordered.
 // Rows already shown to the user are tracked in a sticky `released` set and are
@@ -25,15 +25,22 @@ import { shallowEqualSets } from '~/lib/shallowEqual'
 // ---------------------------------------------------------------------------
 
 /**
- * A reactive set of MEASURED rows to keep hidden purely to preserve in-order
- * reveal of an append burst: a ready row is held while any earlier row in its
+ * A reactive set of LOADED rows to keep hidden purely to preserve in-order
+ * reveal of an append burst: a loaded row is held while any earlier row in its
  * tail-anchored cohort is still loading. Empty in the steady state (nothing
- * loading) and while scrolling already-measured history.
+ * loading) and while scrolling already-loaded history.
  *
  * @param orderedIds the visible rows' ids in document order (the rendered slice).
- * @param isLoading  whether a row is still hidden awaiting its OWN measurement
- *                   (its loading skeleton is showing). MUST read reactively --
- *                   the gate re-runs when a row's loading state flips.
+ * @param isLoading  whether a row is still loading, and so hidden on its own
+ *                   account. MUST read reactively -- the gate re-runs when a
+ *                   row's loading state flips. ChatView counts three cases:
+ *                   - A row that awaits its own measurement.
+ *                   - A row whose asynchronous body (Markdown, an edit diff)
+ *                     is still pending, even when its height is known.
+ *                   - A row that has not mounted yet. The row <For> mounts it
+ *                     later in the same update, but until then the gate must
+ *                     hold every later row behind it, because a release is
+ *                     permanent.
  *
  * Call within a reactive owner: it allocates one memo and keeps a sticky
  * `released` set across runs.
@@ -75,7 +82,7 @@ export function createOrderedTailReveal(
           blocked = true
           continue
         }
-        // Ready (measured) but not yet released.
+        // Loaded but not yet released.
         if (blocked)
           held.add(id)
         else

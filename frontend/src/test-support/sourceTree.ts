@@ -130,3 +130,43 @@ function walk(
   }
   return found
 }
+
+/**
+ * The extensions of a source module, in the order that the bundler tries them
+ * for an import specifier that omits its extension.
+ */
+export const SOURCE_EXTENSIONS: readonly string[] = ['.ts', '.tsx', '.js', '.jsx']
+
+/**
+ * The file an import specifier points at, as an absolute path, or null when it
+ * resolves outside `src/` (a package) or matches nothing.
+ *
+ * Mirrors the resolution the bundler applies to the two forms this repo
+ * writes: the `~/` alias for an absolute path under `src/`, and a relative
+ * path. Both may omit the extension, and both may name a directory that
+ * carries an `index` file. Every guard that walks the import graph resolves
+ * through this, so the alias rules live in one place.
+ */
+export function resolveSourceSpecifier(specifier: string, fromFile: string): string | null {
+  let base: string
+  if (specifier.startsWith('~/'))
+    base = join(frontendRoot, 'src', specifier.slice(2))
+  else if (specifier.startsWith('.'))
+    base = resolve(dirname(fromFile), specifier)
+  else
+    return null // A package, outside `src/`.
+
+  for (const extension of SOURCE_EXTENSIONS) {
+    if (existsSync(base + extension))
+      return base + extension
+  }
+  // An explicit extension in the specifier, or a directory with an index.
+  if (existsSync(base) && SOURCE_EXTENSIONS.some(e => base.endsWith(e)))
+    return base
+  for (const extension of SOURCE_EXTENSIONS) {
+    const indexFile = join(base, `index${extension}`)
+    if (existsSync(indexFile))
+      return indexFile
+  }
+  return null
+}

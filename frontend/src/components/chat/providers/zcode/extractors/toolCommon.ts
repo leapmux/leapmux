@@ -5,6 +5,7 @@ import type { TodoItem } from '~/models/todo'
 import { rawTodosToItems } from '~/components/chat/normalizers/todo'
 import { ZCODE_EVENT, ZCODE_STORED_PART, ZCODE_STORED_PART_STATUS, ZCODE_STORED_PART_TYPE, ZCODE_STORED_TOOL, ZCODE_SUPPLEMENT, ZCODE_SUPPLEMENT_PAYLOAD, ZCODE_TOOL_KIND, ZCODE_TOOL_PREFIX } from '~/generated/contracts/zcode-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { memoizeByObject } from '~/lib/memoizeByObject'
 import { parseToolOutcome } from '../../../toolOutcome'
 import { retainedRowIsFinal } from '../../registry'
 import { zcodeToolSupplement } from '../toolSupplement'
@@ -142,22 +143,17 @@ function zcodeProgressResult(payload: Record<string, unknown>): ZCodeToolResult 
 }
 
 // Cache by envelope identity because the body and toolbar read the same event.
-// The WeakMap releases an entry with its envelope.
-const updateCache = new WeakMap<Record<string, unknown>, ZCodeToolUpdate | null>()
+// The memo releases an entry with its envelope.
+const cachedToolUpdate = memoizeByObject(buildZCodeToolUpdate)
 
 /**
  * Unwrap a persisted `tool.updated` row. Returns null for any other row, so a
  * caller can use it as its own type guard.
  */
 export function zcodeExtractTool(parsed: unknown): ZCodeToolUpdate | null {
-  if (!isObject(parsed))
-    return null
-  const cached = updateCache.get(parsed)
-  if (cached !== undefined)
-    return cached
-  const update = buildZCodeToolUpdate(parsed)
-  updateCache.set(parsed, update)
-  return update
+  return isObject(parsed)
+    ? cachedToolUpdate(parsed)
+    : null
 }
 
 function buildZCodeToolUpdate(parsed: Record<string, unknown>): ZCodeToolUpdate | null {

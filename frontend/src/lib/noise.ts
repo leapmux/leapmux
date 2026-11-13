@@ -167,6 +167,8 @@ export class CipherState {
   private prev: CipherState | null = null
   /** Monotonic deadline (ms, monotonicNow timeline) after which `prev` must be dropped; 0 ⇒ none. */
   private prevExpiresAt = 0
+  /** Set by `destroy`: the keys are zero, and every later encrypt or decrypt throws. */
+  private destroyed = false
 
   constructor(key: Uint8Array) {
     this.k = key
@@ -174,6 +176,9 @@ export class CipherState {
   }
 
   encrypt(plaintext: Uint8Array): Uint8Array {
+    if (this.destroyed) {
+      throw new Error('noise: cipher state destroyed')
+    }
     if (plaintext.length > MAX_PLAINTEXT_SIZE) {
       throw new Error(`noise: plaintext too large (${plaintext.length} > ${MAX_PLAINTEXT_SIZE})`)
     }
@@ -186,6 +191,9 @@ export class CipherState {
   }
 
   decrypt(ciphertext: Uint8Array): Uint8Array {
+    if (this.destroyed) {
+      throw new Error('noise: cipher state destroyed')
+    }
     if (this.n > HARD_NONCE_LIMIT) {
       throw new Error('noise: nonce overflow (hard limit)')
     }
@@ -255,6 +263,13 @@ export class CipherState {
    * nonce is a uint32 in bytes 4–7. Matching the Go implementation.
    */
   rekeyWithSecret(dhSecret: Uint8Array, pqSecret: Uint8Array | null, retainPrev: boolean): void {
+    if (this.destroyed) {
+      // Every exit zeroes the fresh secrets, as the success path below does: a
+      // caller hands them over and keeps no copy to clear.
+      dhSecret.fill(0)
+      pqSecret?.fill(0)
+      throw new Error('noise: cipher state destroyed')
+    }
     const [ck1] = hkdf(this.k, dhSecret)
     // pqSecret is null on a classical channel; hkdf still runs a second
     // (degenerate, IKM-less) stage keyed only off ck1 — NOT skipped — so the
@@ -300,6 +315,17 @@ export class CipherState {
   nonce(): number {
     return this.n
   }
+
+  /**
+   * Zero the current key and the previous key, and refuse every later encrypt or
+   * decrypt. A closed channel calls this, so that its keys do not stay in the
+   * heap until the garbage collector reclaims them. Idempotent.
+   */
+  destroy(): void {
+    this.k.fill(0)
+    this.clearPrev()
+    this.destroyed = true
+  }
 }
 
 /**
@@ -317,6 +343,7 @@ export interface CipherStateLike {
   rekeyWithSecret: (dhSecret: Uint8Array, pqSecret: Uint8Array | null, retainPrev: boolean) => void
   clearPrev: () => void
   nonce: () => number
+  destroy: () => void
 }
 
 /** Session holds the send and receive cipher states after a completed handshake. */
@@ -391,32 +418,34 @@ export function clearClassicalHandshakeState(state: HandshakeState): void {
  */
 export function initiatorHandshake2(state: HandshakeState, message2: Uint8Array): Session {
   const { ss, e } = state
+  try {
+    // <- e, ee
+    // Read responder's ephemeral public key (first 32 bytes).
+    if (message2.length < 32) {
+      throw new Error('noise: message2 too short')
+    }
+    const re = message2.slice(0, 32)
+    ss.mixHash(re)
 
-  // <- e, ee
-  // Read responder's ephemeral public key (first 32 bytes).
-  if (message2.length < 32) {
-    throw new Error('noise: message2 too short')
+    // ee: DH(e, re)
+    const dhResult = dh(e.privateKey, re)
+    ss.mixKey(dhResult)
+    dhResult.fill(0)
+
+    // Decrypt payload (should be empty).
+    const payload = message2.slice(32)
+    ss.decryptAndHash(payload)
+
+    // Split into send/receive cipher states.
+    // The Noise split returns (cs1, cs2). The flynn/noise Go library convention:
+    //   Responder: send=cs1, receive=cs2
+    //   Initiator: send=cs2, receive=cs1
+    const [c1, c2] = ss.split()
+    return { send: c2, receive: c1 }
   }
-  const re = message2.slice(0, 32)
-  ss.mixHash(re)
-
-  // ee: DH(e, re)
-  const dhResult = dh(e.privateKey, re)
-  ss.mixKey(dhResult)
-  dhResult.fill(0)
-
-  // Decrypt payload (should be empty).
-  const payload = message2.slice(32)
-  ss.decryptAndHash(payload)
-
-  // Split into send/receive cipher states.
-  // The Noise split returns (cs1, cs2). The flynn/noise Go library convention:
-  //   Responder: send=cs1, receive=cs2
-  //   Initiator: send=cs2, receive=cs1
-  const [c1, c2] = ss.split()
-
-  // Zero sensitive handshake material.
-  clearClassicalHandshakeState(state)
-
-  return { send: c2, receive: c1 }
+  finally {
+    // Zero sensitive handshake material on every exit: a short or forged
+    // message 2 must not leave the ephemeral key and the chaining key in the heap.
+    clearClassicalHandshakeState(state)
+  }
 }

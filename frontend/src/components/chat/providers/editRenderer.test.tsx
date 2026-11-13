@@ -1,18 +1,10 @@
 import type { MessageCategory } from '../messageClassifier'
 import { render } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import './claude/plugin'
-import './testMocks'
-
-vi.mock('~/lib/shikiWorkerClient', () => ({
-  tokenizeAsync: async (_lang: string, code: string) => code.split('\n').map(() => []),
-}))
-
-vi.mock('~/lib/tokenCache', () => ({
-  getCachedTokens: () => null,
-  makeKey: (lang: string, code: string) => `${lang}\0${code}`,
-}))
+import '~/components/chat/providers'
 
 const { renderMessageContent } = await import('../messageContentRenderer')
 
@@ -56,13 +48,14 @@ describe('claude Edit tool_use rendering', () => {
   // The pending row draws the shared "Requested changes" card, which states the
   // substitution the call ASKS for and claims nothing about the file. The result
   // row replaces it with the diff that landed.
-  it('states the substitution it requests, under the shared request heading', () => {
+  it('states the substitution it requests, under the shared request heading', async () => {
     const { container } = renderEditToolUse({
       file_path: '/tmp/example.ts',
       old_string: 'const beforeExpansion = true;\n',
       new_string: 'const afterExpansion = true;\n',
       replace_all: false,
     })
+    await settleWorkerReplies()
 
     const text = container.textContent ?? ''
     // Header surfaces the file path.

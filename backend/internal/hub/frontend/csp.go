@@ -83,8 +83,9 @@ var (
 //
 //   - font-src 'self': Hack NF ships with the app.
 //
-//   - worker-src 'self' blob:. The app's own workers (markdown, Shiki, the two
-//     lazily loaded ALTCHA solvers) are same-origin asset URLs, but the ALTCHA
+//   - worker-src 'self' blob:. The app's own workers (markdown, Shiki, the
+//     channel session, the field digest, the diff worker, the two lazily loaded
+//     ALTCHA solvers) are same-origin asset URLs, but the ALTCHA
 //     WIDGET builds its default solver worker from a Blob and runs it through
 //     createObjectURL -- see createObjectURL/new Worker in
 //     node_modules/altcha/dist/main/altcha.js, bundled into the captchaForm

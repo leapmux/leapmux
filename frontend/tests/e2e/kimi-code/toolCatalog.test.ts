@@ -618,6 +618,37 @@ describe('createKimiCatalogCapture', () => {
     })
   })
 
+  // An npm shell launcher indents each `exec` line inside its `if` branches, with
+  // spaces or a tab. A comment that holds an `exec` line starts no payload.
+  it('identifies the payload of a shell launcher that indents its exec lines', () => {
+    const script = join(directory, 'main.mjs')
+    writeFileSync(script, 'Native script body.\n')
+    const localNode = join(directory, 'node')
+    writeFileSync(localNode, 'Local interpreter.\n', { mode: 0o700 })
+    const emptyPath = join(directory, 'empty-path')
+    mkdirSync(emptyPath)
+    const launcher = join(directory, 'indented-kimi')
+    writeFileSync(launcher, [
+      '#!/bin/sh',
+      '# exec node "$basedir/old.mjs" "$@"',
+      'if [ -x "$basedir/node" ]; then',
+      '  exec "$basedir/node"  "$basedir/main.mjs" "$@"',
+      '',
+      '',
+      'else',
+      '\texec node  "$basedir/main.mjs" "$@"',
+      'fi',
+      '',
+    ].join('\n'), { mode: 0o700 })
+    const capture = createKimiCatalogCapture(join(directory, 'indented-wrapper'), { binaryName: 'kimi', executable: launcher }, { PATH: emptyPath, HOME: directory })
+    expect(capture).toMatchObject({
+      executable: realpathSync(launcher),
+      runtimeExecutable: realpathSync(localNode),
+      runtimeInvocation: localNode,
+      runtimeArgsPrefix: [script],
+    })
+  })
+
   it('accepts a shell launcher exactly at its read limit', () => {
     const script = join(directory, 'main.mjs')
     writeFileSync(script, 'Native script body.\n')

@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerAgent } from '~/api/workerRpc'
 import { codeCopyHostClass } from '~/components/chat/markdownEditor/markdownContent.css'
@@ -12,10 +13,13 @@ import { PreferencesProvider, usePreferences } from '~/context/PreferencesContex
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { makeMessage, rawContent, wrapContent } from '~/test-support/messageFactory'
 import { toolFrame } from '~/test-support/mimoFixtures'
 
-// jsdom does not provide ResizeObserver or Worker.
+// jsdom does not provide ResizeObserver. The stand-in Worker of the jsdom setup
+// renders each Markdown body, so a test waits for the replies
+// (settleWorkerReplies) before it reads one.
 beforeAll(() => {
   if (!globalThis.ResizeObserver) {
     Object.defineProperty(globalThis, 'ResizeObserver', {
@@ -25,21 +29,6 @@ beforeAll(() => {
         observe() {}
         unobserve() {}
         disconnect() {}
-      },
-    })
-  }
-  if (!globalThis.Worker) {
-    Object.defineProperty(globalThis, 'Worker', {
-      configurable: true,
-      writable: true,
-      value: class {
-        onmessage: ((e: MessageEvent) => void) | null = null
-        onerror: ((e: ErrorEvent) => void) | null = null
-        postMessage() {}
-        terminate() {}
-        addEventListener() {}
-        removeEventListener() {}
-        dispatchEvent() { return false }
       },
     })
   }
@@ -230,7 +219,11 @@ async function copyRawJson(): Promise<Record<string, unknown>> {
 }
 
 interface ControlledCopyCallbacks {
-  runIdle: () => number
+  /**
+   * Run the pending idle callbacks, each with a deadline whose `timeRemaining`
+   * is `timeRemaining` (50 ms by default). Returns how many ran.
+   */
+  runIdle: (timeRemaining?: () => number) => number
   deliverMutations: (target: Node) => number
 }
 
@@ -267,7 +260,7 @@ async function withControlledCopyCallbacks(run: (callbacks: ControlledCopyCallba
   vi.stubGlobal('MutationObserver', ControlledMutationObserver)
   try {
     await run({
-      runIdle: () => {
+      runIdle: (timeRemaining = () => 50) => {
         const pending = [
           ...idleCallbacks.values(),
         ]
@@ -275,7 +268,7 @@ async function withControlledCopyCallbacks(run: (callbacks: ControlledCopyCallba
         for (const callback of pending) {
           callback({
             didTimeout: false,
-            timeRemaining: () => 50,
+            timeRemaining,
           })
         }
         return pending.length
@@ -339,7 +332,7 @@ function askUserQuestionToolUse(questions: Array<{ header: string }>) {
 // ---------------------------------------------------------------------------
 
 describe('askUserQuestion thread rendering', () => {
-  it('shows question text for single-question tool_use', () => {
+  it('shows question text for single-question tool_use', async () => {
     const parent = askUserQuestionToolUse([
       { header: 'Uncommitted' },
     ])
@@ -353,6 +346,7 @@ describe('askUserQuestion thread rendering', () => {
         <MessageBubble message={msg} />
       </PreferencesProvider>
     ))
+    await settleWorkerReplies()
 
     const bubble = screen.getByTestId('message-content')
     expect(bubble).toHaveTextContent('Question about Uncommitted?')
@@ -360,7 +354,7 @@ describe('askUserQuestion thread rendering', () => {
     expect(bubble).toHaveTextContent('Option B')
   })
 
-  it('shows question count for multi-question tool_use', () => {
+  it('shows question count for multi-question tool_use', async () => {
     const parent = askUserQuestionToolUse([
       { header: 'Auth' },
       { header: 'Database' },
@@ -375,6 +369,7 @@ describe('askUserQuestion thread rendering', () => {
         <MessageBubble message={msg} />
       </PreferencesProvider>
     ))
+    await settleWorkerReplies()
 
     const bubble = screen.getByTestId('message-content')
     // The row starts with the first question's header. The body includes both questions.
@@ -767,17 +762,19 @@ describe('thinking message expansion preference', () => {
     ))
   }
 
-  it('shows thinking content by default when expandAgentThoughts is enabled', () => {
+  it('shows thinking content by default when expandAgentThoughts is enabled', async () => {
     renderThinkingBubble('Expanded thinking content')
+    await settleWorkerReplies()
 
     expect(screen.getByText('Thinking')).toBeInTheDocument()
     expect(screen.getByText('Expanded thinking content')).toBeInTheDocument()
   })
 
-  it('starts collapsed when expandAgentThoughts is disabled and toggles on click', () => {
+  it('starts collapsed when expandAgentThoughts is disabled and toggles on click', async () => {
     localStorageSet(KEY_BROWSER_PREFS, { expandAgentThoughts: false })
 
     renderThinkingBubble('Collapsed by preference')
+    await settleWorkerReplies()
 
     expect(screen.getByText('Thinking')).toBeInTheDocument()
     expect(screen.queryByText('Collapsed by preference')).not.toBeInTheDocument()
@@ -789,7 +786,7 @@ describe('thinking message expansion preference', () => {
     expect(screen.queryByText('Collapsed by preference')).not.toBeInTheDocument()
   })
 
-  it('updates untouched thinking bubbles when the global preference changes', () => {
+  it('updates untouched thinking bubbles when the global preference changes', async () => {
     const thinkingText = 'Follows current preference'
     const innerMsg = {
       type: 'assistant',
@@ -820,6 +817,7 @@ describe('thinking message expansion preference', () => {
         <TestHarness />
       </PreferencesProvider>
     ))
+    await settleWorkerReplies()
 
     expect(screen.getByText(thinkingText)).toBeInTheDocument()
 
@@ -991,7 +989,11 @@ describe('messageBubble rawJson', () => {
     })
   })
 
-  it('does not inject a partial-copy button into a large plain-text Markdown display', async () => {
+  it('renders a large Markdown body as Markdown and gives its code block a copy button', async () => {
+    // 100,000 characters: three times the size that used to switch a body to a
+    // capped plain-text display. The whole body now renders as Markdown.
+    const filler = 'filler '.repeat(Math.ceil(100_000 / 'filler '.length))
+    const text = `# MARKDOWN_HEAD\n\n${filler}\n\n\`\`\`js\nconst MARKDOWN_TAIL = 1\n\`\`\``
     await withControlledCopyCallbacks(async (callbacks) => {
       const msg = makeMsg({
         source: MessageSource.AGENT,
@@ -999,7 +1001,7 @@ describe('messageBubble rawJson', () => {
           type: 'assistant',
           message: {
             content: [
-              { type: 'text', text: `MARKDOWN_HEAD${'x'.repeat(100_000)}MARKDOWN_TAIL` },
+              { type: 'text', text },
             ],
           },
         }),
@@ -1010,15 +1012,16 @@ describe('messageBubble rawJson', () => {
           <MessageBubble message={msg} />
         </PreferencesProvider>
       ))
+      await settleWorkerReplies()
 
       const content = screen.getByTestId('message-content')
-      expect(content.querySelector('pre[data-large-text-display]')).toBeInTheDocument()
+      expect(content.querySelector('h1')?.textContent).toBe('MARKDOWN_HEAD')
+      expect(content.textContent).toContain(filler.trim())
+      expect(content.querySelector('pre code')?.textContent).toContain('const MARKDOWN_TAIL = 1')
+      expect(content.querySelector('[data-markdown-source-fallback]')).not.toBeInTheDocument()
+      expect(content.textContent).not.toContain('plain-text display')
       expect(callbacks.runIdle()).toBeGreaterThan(0)
-      content.appendChild(document.createTextNode(''))
-      expect(callbacks.deliverMutations(content)).toBeGreaterThan(0)
-      expect(callbacks.runIdle()).toBeGreaterThan(0)
-      expect(content.querySelector('.copy-code-button')).not.toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'Copy Markdown', hidden: true })).toBeInTheDocument()
+      expect(content.querySelector('pre .copy-code-button')).toBeInTheDocument()
     })
   })
 
@@ -1083,6 +1086,7 @@ describe('messageBubble rawJson', () => {
           <MessageBubble message={msg} />
         </PreferencesProvider>
       ))
+      await settleWorkerReplies()
 
       const content = screen.getByTestId('message-content')
       expect(callbacks.runIdle()).toBeGreaterThan(0)
@@ -1099,6 +1103,186 @@ describe('messageBubble rawJson', () => {
       expect(callbacks.runIdle()).toBe(0)
       expect(content.querySelector('.copy-code-button')).toBe(btn)
       expect(btn).toHaveAccessibleName('Copied')
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Copy buttons of the code blocks, injected at idle time
+// ---------------------------------------------------------------------------
+
+describe('MessageBubble copy buttons', () => {
+  /** An agent message whose Markdown holds `count` fenced code blocks. */
+  function codeBlocksMessage(count: number) {
+    const text = Array.from({ length: count }, (_, index) => `\`\`\`js\nconst block${index} = ${index}\n\`\`\``).join('\n\n')
+    return makeMsg({
+      source: MessageSource.AGENT,
+      content: rawContent({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text },
+          ],
+        },
+      }),
+    })
+  }
+
+  /** An idle period that has no time left. */
+  const NO_TIME_LEFT = () => 0
+
+  /** Run idle callbacks until none waits, and return how many ran. */
+  function runIdleUntilDone(callbacks: ControlledCopyCallbacks, timeRemaining?: () => number): number {
+    let total = 0
+    for (let ran = callbacks.runIdle(timeRemaining); ran > 0; ran = callbacks.runIdle(timeRemaining)) {
+      total += ran
+      if (total > 1_000)
+        throw new Error('The copy-button injection did not finish in 1,000 idle callbacks.')
+    }
+    return total
+  }
+
+  function buttonCount(content: HTMLElement): number {
+    return content.querySelectorAll('pre .copy-code-button').length
+  }
+
+  it('injects one code block in each idle period that has no time left', async () => {
+    await withControlledCopyCallbacks(async (callbacks) => {
+      render(() => (
+        <PreferencesProvider>
+          <MessageBubble message={codeBlocksMessage(12)} />
+        </PreferencesProvider>
+      ))
+      await settleWorkerReplies()
+      const content = screen.getByTestId('message-content')
+      expect(content.querySelectorAll('pre')).toHaveLength(12)
+
+      expect(callbacks.runIdle(NO_TIME_LEFT)).toBe(1)
+      expect(buttonCount(content)).toBe(1)
+      expect(callbacks.runIdle(NO_TIME_LEFT)).toBe(1)
+      expect(buttonCount(content)).toBe(2)
+
+      expect(runIdleUntilDone(callbacks, NO_TIME_LEFT)).toBeGreaterThanOrEqual(10)
+      expect(buttonCount(content)).toBe(12)
+    })
+  })
+
+  it('injects every code block in one idle period that has the time', async () => {
+    await withControlledCopyCallbacks(async (callbacks) => {
+      render(() => (
+        <PreferencesProvider>
+          <MessageBubble message={codeBlocksMessage(12)} />
+        </PreferencesProvider>
+      ))
+      await settleWorkerReplies()
+      const content = screen.getByTestId('message-content')
+
+      expect(callbacks.runIdle()).toBe(1)
+      expect(buttonCount(content)).toBe(12)
+      expect(callbacks.runIdle()).toBe(0)
+    })
+  })
+
+  it('starts over the new content when the content changes during the injection', async () => {
+    await withControlledCopyCallbacks(async (callbacks) => {
+      render(() => (
+        <PreferencesProvider>
+          <MessageBubble message={codeBlocksMessage(4)} />
+        </PreferencesProvider>
+      ))
+      await settleWorkerReplies()
+      const content = screen.getByTestId('message-content')
+      const oldPres = [
+        ...content.querySelectorAll('pre'),
+      ]
+      expect(callbacks.runIdle(NO_TIME_LEFT)).toBe(1)
+      expect(buttonCount(content)).toBe(1)
+
+      // A worker result replaces the body while three code blocks still wait.
+      const body = oldPres[0]!.parentElement!
+      body.innerHTML = '<pre><code>new 1</code></pre><pre><code>new 2</code></pre>'
+      expect(callbacks.deliverMutations(content)).toBeGreaterThan(0)
+      runIdleUntilDone(callbacks, NO_TIME_LEFT)
+
+      expect(buttonCount(content)).toBe(2)
+      for (const pre of oldPres)
+        expect(pre.querySelector('.copy-code-button')).toBeNull()
+    })
+  })
+
+  it('leaves one button in a code block that survives a re-injection', async () => {
+    await withControlledCopyCallbacks(async (callbacks) => {
+      render(() => (
+        <PreferencesProvider>
+          <MessageBubble message={codeBlocksMessage(1)} />
+        </PreferencesProvider>
+      ))
+      await settleWorkerReplies()
+      const content = screen.getByTestId('message-content')
+      const pre = content.querySelector('pre')!
+      runIdleUntilDone(callbacks)
+      const hostsBefore = pre.querySelectorAll(':scope > div').length
+      expect(pre.querySelectorAll('.copy-code-button')).toHaveLength(1)
+
+      // A change elsewhere in the bubble injects every code block again.
+      content.appendChild(document.createElement('span'))
+      expect(callbacks.deliverMutations(content)).toBeGreaterThan(0)
+      runIdleUntilDone(callbacks)
+
+      expect(pre.querySelectorAll('.copy-code-button')).toHaveLength(1)
+      expect(pre.querySelectorAll(':scope > div')).toHaveLength(hostsBefore)
+    })
+  })
+
+  it('waits for a text selection to end, then continues where it stopped', async () => {
+    await withControlledCopyCallbacks(async (callbacks) => {
+      const [selecting, setSelecting] = createSignal(false)
+      render(() => (
+        <PreferencesProvider>
+          <MessageBubble message={codeBlocksMessage(3)} host={{ textSelectionActive: selecting }} />
+        </PreferencesProvider>
+      ))
+      await settleWorkerReplies()
+      const content = screen.getByTestId('message-content')
+      expect(callbacks.runIdle(NO_TIME_LEFT)).toBe(1)
+      const first = content.querySelector('.copy-code-button')
+      expect(first).not.toBeNull()
+
+      // An injection under a selection would move the selected nodes.
+      setSelecting(true)
+      runIdleUntilDone(callbacks, NO_TIME_LEFT)
+      expect(buttonCount(content)).toBe(1)
+
+      setSelecting(false)
+      runIdleUntilDone(callbacks, NO_TIME_LEFT)
+      expect(buttonCount(content)).toBe(3)
+      // The injection continued: it did not render the first button again.
+      expect(content.querySelector('.copy-code-button')).toBe(first)
+    })
+  })
+
+  // A row that scrolls away unmounts its bubble while the injection still runs.
+  it('stops the injection and removes its buttons when the bubble unmounts in the middle', async () => {
+    await withControlledCopyCallbacks(async (callbacks) => {
+      const { unmount } = render(() => (
+        <PreferencesProvider>
+          <MessageBubble message={codeBlocksMessage(4)} />
+        </PreferencesProvider>
+      ))
+      await settleWorkerReplies()
+      const content = screen.getByTestId('message-content')
+      const pres = [
+        ...content.querySelectorAll('pre'),
+      ]
+      expect(callbacks.runIdle(NO_TIME_LEFT)).toBe(1)
+      expect(buttonCount(content)).toBe(1)
+
+      unmount()
+
+      // The next slice was requested, and the unmount cancelled it.
+      expect(callbacks.runIdle(NO_TIME_LEFT)).toBe(0)
+      for (const pre of pres)
+        expect(pre.querySelector('.copy-code-button')).toBeNull()
     })
   })
 })

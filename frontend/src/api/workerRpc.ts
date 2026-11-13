@@ -27,6 +27,7 @@ import { WorkerSystemService } from '~/generated/proto/leapmux/v1/worker_system_
 import { WorkerTabService } from '~/generated/proto/leapmux/v1/worker_tab_pb'
 import { ChannelManager, KeyPinStore } from '~/lib/channel'
 import { ChannelError } from '~/lib/channelError'
+import { spawnChannelSessionWorker } from '~/lib/channelSessionClient'
 import { emitDevEvent } from '~/lib/devInstrument'
 import { procedureOf } from '~/lib/rpcProcedure'
 import { sleep } from '~/lib/sleep'
@@ -106,6 +107,8 @@ class BrowserChannelTransport implements ChannelTransport {
 }
 
 export const channelManager = new ChannelManager(new BrowserChannelTransport(), {
+  // The manager spawns the worker lazily, at the first open, never at import.
+  spawnSessionWorker: spawnChannelSessionWorker,
   rpcTimeoutFn: apiLoadingTimeoutMs,
   expectedUserId: () => expectedUserIdFn?.(),
   keyPins: keyPinStore,

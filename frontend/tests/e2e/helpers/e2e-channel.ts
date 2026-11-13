@@ -13,6 +13,7 @@ import { fromJson } from '@bufbuild/protobuf'
 import { GetWorkerHandshakeParamsResponseSchema } from '../../../src/generated/proto/leapmux/v1/channel_pb'
 import { hydrateStorageAccount, setStorageAccount } from '../../../src/lib/browserStorage'
 import { ChannelManager, KeyPinStore } from '../../../src/lib/channel'
+import { createInProcessSessionHost } from '../../../src/lib/channelSessionInProcess'
 import { authedHeaders, getUserId } from './api'
 import { fetchHub, hubTransportUrl } from './hubTransport'
 
@@ -123,6 +124,9 @@ export async function createTestChannelManager(hubUrl: string, cookie: string): 
   // eviction) short-circuits to "no expectation" and the whole feature runs
   // unexercised in e2e.
   return new ChannelManager(new FetchChannelTransport(hubUrl, cookie), {
+    // Node has no Worker, so the channel sessions run in process, behind a
+    // MessageChannel pair. closeAll shuts the host down, which closes its ports.
+    spawnSessionWorker: createInProcessSessionHost().spawn,
     rpcTimeoutFn: () => 60_000,
     expectedUserId: () => userId,
     // Auto-accept key changes in e2e tests (fresh server instances each time).

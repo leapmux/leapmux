@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerRow } from '~/test-support/toolCallFixture'
 import '~/components/chat/providers'
-import '~/components/chat/providers/testMocks'
 
 function nativeItem(kind: string, fields: Record<string, unknown> = {}) {
   return {

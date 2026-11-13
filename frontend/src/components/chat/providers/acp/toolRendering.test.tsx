@@ -3,6 +3,7 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { testMessageSources } from '~/test-support/messageRenderSources'
@@ -19,7 +20,7 @@ import '../goose/plugin'
 import '../reasonix/plugin'
 import '../cursor/plugin'
 import '../copilot/plugin'
-import '../testMocks'
+import '~/components/chat/providers'
 
 function renderTool(tool: Record<string, unknown>, context?: MessageContentRenderContext) {
   const plugin = providerFor(AgentProvider.OPENCODE)!
@@ -61,7 +62,7 @@ describe('acp tool rendering', () => {
     expect(container.querySelector('[data-task-checkbox="pending"]')).not.toBeNull()
   })
 
-  it.each(['completed'])('shows one requested diff and retains a %s edit result', (status) => {
+  it.each(['completed'])('shows one requested diff and retains a %s edit result', async (status) => {
     const { container } = renderACPToolPair(AgentProvider.OPENCODE, {
       title: 'edit',
       kind: 'edit',
@@ -75,6 +76,7 @@ describe('acp tool rendering', () => {
         },
       ],
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('No file changes occurred.')
     expect(container.textContent?.match(/Requested changes/g)).toHaveLength(1)
     expect(container.querySelectorAll('[data-file-diff]')).toHaveLength(1)
@@ -392,7 +394,7 @@ describe('acp tool rendering', () => {
     AgentProvider.GOOSE,
     AgentProvider.REASONIX,
     AgentProvider.CURSOR,
-  ])('shows an unmatched completion by its content alone (%s)', (provider) => {
+  ])('shows an unmatched completion by its content alone (%s)', async (provider) => {
     const result = {
       sessionUpdate: 'tool_call_update',
       toolCallId: 'orphan',
@@ -411,6 +413,7 @@ describe('acp tool rendering', () => {
         request: () => undefined,
       }),
     }, plugin?.transcript.classify(input(result)), provider))
+    await settleWorkerReplies()
     expect(container.textContent).toContain('recovered output')
     for (const invented of [
       'Run command',
@@ -514,7 +517,7 @@ describe('acp tool rendering', () => {
     expect(container.textContent).not.toContain('unrelated.md')
   })
 
-  it('shows statistics from the applied diff instead of a single replacement fragment', () => {
+  it('shows statistics from the applied diff instead of a single replacement fragment', async () => {
     const { container } = renderTool({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'edit',
@@ -530,6 +533,7 @@ describe('acp tool rendering', () => {
         },
       ],
     }, { premeasureMode: true })
+    await settleWorkerReplies()
     expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toContain('+3')
     expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toContain('-3')
   })
@@ -559,7 +563,7 @@ describe('acp tool rendering', () => {
     expect(new TextDecoder().decode(message.content)).toBe(JSON.stringify(original))
   })
 
-  it('resolves a result request through the message host', () => {
+  it('resolves a result request through the message host', async () => {
     const request = {
       sessionUpdate: 'tool_call',
       toolCallId: 'edit',
@@ -595,6 +599,7 @@ describe('acp tool rendering', () => {
         />
       </PreferencesProvider>
     ))
+    await settleWorkerReplies()
     expect(container.textContent).toContain('hostAfter')
   })
 
@@ -603,7 +608,7 @@ describe('acp tool rendering', () => {
     expect(plugin?.transcript.spanRole?.(input({ sessionUpdate: 'tool_call', toolCallId: 'edit', status: 'pending' }))).toBe('request')
     expect(plugin?.transcript.spanRole?.(input({ sessionUpdate: 'tool_call_update', toolCallId: 'edit', status: 'completed' }))).toBe('result')
   })
-  it('renders every changed file in a completed call', () => {
+  it('renders every changed file in a completed call', async () => {
     const tool = {
       sessionUpdate: 'tool_call_update',
       toolCallId: 'edit',
@@ -628,6 +633,7 @@ describe('acp tool rendering', () => {
       ],
     }
     const { container } = renderTool(tool, { premeasureMode: true })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('firstAfter')
     expect(container.textContent).toContain('secondAfter')
     const meta = providerToolMeta(AgentProvider.OPENCODE, tool, { spanType: 'edit' })
@@ -635,7 +641,7 @@ describe('acp tool rendering', () => {
     expect(meta?.copyableContent()).toContain('secondAfter')
   })
 
-  it('uses the linked request when a result omits the input and kind', () => {
+  it('uses the linked request when a result omits the input and kind', async () => {
     const request = {
       sessionUpdate: 'tool_call',
       toolCallId: 'edit',
@@ -659,6 +665,7 @@ describe('acp tool rendering', () => {
         request: () => (input(request)),
       }),
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('afterRequest')
   })
 

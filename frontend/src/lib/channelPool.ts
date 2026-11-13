@@ -29,9 +29,12 @@ export interface PooledChannel {
 export interface ChannelPoolGetOrOpenDeps<T extends PooledChannel> {
   openChannel: (workerId: string) => Promise<string>
   closeChannel: (channelId: string) => Promise<void>
-  pastHardCeiling: (ch: T) => boolean
-  shouldInitiateRekey: (ch: T) => boolean
-  ensureRekeyed: (ch: T) => Promise<void>
+  /**
+   * Make the channel's session ready to serve: close it past the hard ceiling,
+   * or rekey it when a rekey is due. Rejects when the session cannot serve, which
+   * closes the channel too.
+   */
+  ensureReady: (ch: T) => Promise<void>
   expectedUserId: () => string | undefined
 }
 
@@ -126,7 +129,8 @@ export class ChannelPool<T extends PooledChannel = PooledChannel> {
 
   /**
    * Whether a verified pooled channel must be closed and reopened for identity
-   * drift. Age uses in-band rekey until the hard ceiling, then close.
+   * drift. Age uses in-band rekey until the hard ceiling, then close (see
+   * ChannelPoolGetOrOpenDeps.ensureReady).
    */
   identityDrift(ch: T, expectedUserId: string | undefined): boolean {
     return this.identityMismatch(expectedUserId, ch.userId)
@@ -167,7 +171,7 @@ export class ChannelPool<T extends PooledChannel = PooledChannel> {
 
   /** Get an open channel for a worker, or open a new one via deps.openChannel. */
   async getOrOpenChannel(workerId: string, deps: ChannelPoolGetOrOpenDeps<T>): Promise<string> {
-    // After any await (close / rekey), re-scan: a concurrent open may have
+    // After any await (close / ensureReady), re-scan: a concurrent open may have
     // registered another verified channel for this worker while we were parked.
     for (;;) {
       let rescan = false
@@ -185,24 +189,22 @@ export class ChannelPool<T extends PooledChannel = PooledChannel> {
             rescan = true
             break
           }
-          if (deps.pastHardCeiling(ch)) {
-            log.debug('reopening pooled channel past session-key hard ceiling', { channel_id: channelId, worker_id: workerId })
-            await deps.closeChannel(channelId)
-            rescan = true
-            break
-          }
           try {
-            if (deps.shouldInitiateRekey(ch))
-              await deps.ensureRekeyed(ch)
+            await deps.ensureReady(ch)
           }
-          catch {
-            // Ack timeout closes the channel and rejects; fall through to reopen
-            // rather than surfacing a rotation error to the caller.
+          catch (err) {
+            // The session ended (the hard ceiling, an Ack timeout, a dead session
+            // worker), which closes the channel; fall through to reopen rather
+            // than surfacing a rotation error to the caller. Close a channel that
+            // is still pooled here: the rescan would otherwise find it again and
+            // ask the same session forever.
+            log.debug('reopening pooled channel after its session could not serve', { channel_id: channelId, worker_id: workerId, error: err })
+            if (this.channels.get(channelId) === ch)
+              await deps.closeChannel(channelId)
             rescan = true
             break
           }
-          // ensureRekeyed may close the channel on Ack timeout (caught above),
-          // hard-ceiling reject, or a send failure.
+          // The channel may have closed while ensureReady waited.
           if (!this.channels.has(channelId) || this.channels.get(channelId)?.state !== 'verified') {
             rescan = true
             break

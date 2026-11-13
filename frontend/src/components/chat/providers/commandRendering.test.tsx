@@ -4,12 +4,14 @@ import type { MessageContentRenderContext } from '../messageContentRenderer'
 import type { PreparedMessage } from '../rowPreparation'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { create } from '@bufbuild/protobuf'
-import { fireEvent, render, waitFor } from '@solidjs/testing-library'
+import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { MIMO_TOOL, MIMO_TOOL_STATUS } from '~/generated/contracts/mimo-protocol'
 import { AgentChatMessageSchema, AgentProvider, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { _resetTokenCache } from '~/lib/tokenCache'
 import { copilotToolComplete } from '~/test-support/copilotFixtures'
+import { holdWorkerReplies, recordWorkerRequests, settleWorkerReplies } from '~/test-support/fakeWorker'
 import { kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { toolFrame } from '~/test-support/mimoFixtures'
@@ -23,29 +25,9 @@ import './claude/plugin'
 import './codex/plugin'
 import './opencode/plugin'
 import './pi/plugin'
-import './testMocks'
 
 const normalizedCommandBodyCalls = vi.hoisted(() => vi.fn())
-const tokenizeAsyncCalls = vi.hoisted(() => vi.fn())
-const tokenizeAsyncMock = vi.hoisted(() => vi.fn(async (lang: string, code: string) => {
-  tokenizeAsyncCalls(lang, code)
-  return code.split('\n').map(line => [
-    {
-      content: line,
-      className: 'sk-cmd-test',
-    },
-  ])
-}))
 const renderAnsiCalls = vi.hoisted(() => vi.fn())
-
-vi.mock('~/lib/shikiWorkerClient', () => ({
-  tokenizeAsync: tokenizeAsyncMock,
-}))
-
-vi.mock('~/lib/tokenCache', () => ({
-  getCachedTokens: () => null,
-  makeKey: (lang: string, code: string) => `${lang}\0${code}`,
-}))
 
 vi.mock('~/lib/renderAnsi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/lib/renderAnsi')>()
@@ -83,6 +65,18 @@ const { COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT } = await import('../chatHeightShared
 const { CollapsibleContent } = await import('../results/CollapsibleContent')
 const { CommandInputBody, CommandInputSummary } = await import('../results/multiLineCommandBody')
 
+// Several tests tokenize the same command, and a cached answer sends no request
+// to the Shiki worker.
+beforeEach(() => {
+  _resetTokenCache()
+})
+
+/** The language and the code of each tokenize request that reaches the Shiki worker from now on. */
+function recordTokenizeRequests(): () => Array<[string, string]> {
+  const requests = recordWorkerRequests('lib/shikiWorker.ts')
+  return () => requests.map(({ lang, code }) => [lang, code])
+}
+
 /**
  * Render one Pi tool row through the dispatcher, the way a mounted row does.
  *
@@ -103,7 +97,7 @@ function renderPiToolRow(props: { payload: Record<string, unknown> }) {
 
 describe('pi command syntax', () => {
   it('uses PowerShell syntax for the PowerShell tool', async () => {
-    tokenizeAsyncCalls.mockClear()
+    const tokenized = recordTokenizeRequests()
     const command = 'Get-ChildItem -Path .'
     renderPiToolRow({
       payload: {
@@ -113,8 +107,8 @@ describe('pi command syntax', () => {
         args: { command },
       },
     })
-    await waitFor(() => expect(tokenizeAsyncCalls).toHaveBeenCalled())
-    expect(tokenizeAsyncCalls).toHaveBeenCalledWith('powershell', command)
+    await settleWorkerReplies()
+    expect(tokenized()).toContainEqual(['powershell', command])
   })
 })
 
@@ -389,7 +383,6 @@ describe('canonical command status label across providers', () => {
 
 describe('command summary syntax highlighting selection stability', () => {
   it('renders collapsed command summaries from the full command text', async () => {
-    tokenizeAsyncCalls.mockClear()
     const command = [
       'printf first-line',
       'printf second-line',
@@ -486,7 +479,7 @@ describe('command summary syntax highlighting selection stability', () => {
   })
 
   it('does not tokenize command input over the command highlight limit', async () => {
-    tokenizeAsyncCalls.mockClear()
+    const tokenized = recordTokenizeRequests()
     const command = `git diff -- ${'frontend/src/components/chat/messageRenderers.tsx '.repeat(Math.ceil(COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT / 50) + 1)}`
 
     const { container } = render(() => (
@@ -500,12 +493,12 @@ describe('command summary syntax highlighting selection stability', () => {
 
     expect(container.textContent).toContain('git diff --')
     expect(command.length).toBeGreaterThan(COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT)
-    expect(tokenizeAsyncCalls).not.toHaveBeenCalled()
+    expect(tokenized()).toEqual([])
     expect(container.querySelector('span[data-shiki-token]')).toBeNull()
   })
 
   it('renders command input as plain text while syntax highlighting is paused', async () => {
-    tokenizeAsyncCalls.mockClear()
+    const tokenized = recordTokenizeRequests()
 
     const { container } = render(() => (
       <CommandHighlightHtml
@@ -520,7 +513,7 @@ describe('command summary syntax highlighting selection stability', () => {
     await Promise.resolve()
 
     expect(container.textContent).toContain('echo paused')
-    expect(tokenizeAsyncCalls).not.toHaveBeenCalled()
+    expect(tokenized()).toEqual([])
   })
 
   it('defers an in-flight command tokenization that lands while paused, then applies it on resume (no re-dispatch)', async () => {
@@ -528,15 +521,8 @@ describe('command summary syntax highlighting selection stability', () => {
     // came up is STASHED and applied once the pause lifts -- not discarded and recomputed.
     // (A pause re-runs the dispatch effect; the hook keeps the in-flight dispatch live and
     // stashes its result rather than cancel + re-dispatch the same work.)
-    tokenizeAsyncCalls.mockClear()
-    type TestTokens = Array<Array<{ content: string, className: string }>>
-    let resolveTokens: ((tokens: TestTokens) => void) | undefined
-    tokenizeAsyncMock.mockImplementationOnce((lang: string, code: string) => {
-      tokenizeAsyncCalls(lang, code)
-      return new Promise<TestTokens>((resolve) => {
-        resolveTokens = resolve
-      })
-    })
+    const tokenized = recordTokenizeRequests()
+    const replies = holdWorkerReplies('lib/shikiWorker.ts')
     const [paused, setPaused] = createSignal(false)
     const { container } = render(() => (
       <CommandHighlightHtml
@@ -548,33 +534,26 @@ describe('command summary syntax highlighting selection stability', () => {
       />
     ))
 
-    expect(tokenizeAsyncCalls).toHaveBeenCalledWith('bash', 'echo paused')
+    expect(tokenized()).toEqual([
+      ['bash', 'echo paused'],
+    ])
 
     // Pause, then the in-flight worker resolves WHILE paused: stashed, not yet applied.
     setPaused(true)
-    resolveTokens?.([
-      [
-        {
-          content: 'echo paused',
-          className: 'sk-cmd-stash',
-        },
-      ],
-    ])
-    await Promise.resolve()
+    await replies.release()
 
     expect(container.querySelector('span[data-shiki-token]')).toBeNull()
 
     // Resume: the STASHED result is applied, with no second worker dispatch.
     setPaused(false)
+    await settleWorkerReplies()
 
-    await waitFor(() => {
-      expect(container.querySelector('span[data-shiki-token]')).not.toBeNull()
-    })
-    expect(tokenizeAsyncCalls).toHaveBeenCalledTimes(1)
+    expect(container.querySelector('span[data-shiki-token]')?.textContent).toBe('echo')
+    expect(tokenized()).toHaveLength(1)
   })
 
   it('tokenizes command input after an initially active text selection clears', async () => {
-    tokenizeAsyncCalls.mockClear()
+    const tokenized = recordTokenizeRequests()
     const [selectionActive, setSelectionActive] = createSignal(true)
 
     render(() => (
@@ -585,13 +564,14 @@ describe('command summary syntax highlighting selection stability', () => {
       />
     ))
 
-    await Promise.resolve()
-    expect(tokenizeAsyncCalls).not.toHaveBeenCalled()
+    await settleWorkerReplies()
+    expect(tokenized()).toEqual([])
 
     setSelectionActive(false)
-    await Promise.resolve()
 
-    expect(tokenizeAsyncCalls).toHaveBeenCalledWith('bash', 'echo selected')
+    expect(tokenized()).toEqual([
+      ['bash', 'echo selected'],
+    ])
   })
 
   it('expands the command summary in place, clipping and unclipping one area', async () => {
@@ -770,7 +750,7 @@ describe('command summary syntax highlighting selection stability', () => {
   })
 
   it('tokenizes command input asynchronously when syntax highlighting is allowed', async () => {
-    tokenizeAsyncCalls.mockClear()
+    const tokenized = recordTokenizeRequests()
 
     const { container } = render(() => (
       <CommandHighlightHtml
@@ -780,14 +760,18 @@ describe('command summary syntax highlighting selection stability', () => {
       />
     ))
 
-    await Promise.resolve()
+    expect(container.querySelector('span[data-shiki-token]')).toBeNull()
+    await settleWorkerReplies()
 
     expect(container.textContent).toContain('echo highlighted')
-    expect(tokenizeAsyncCalls).toHaveBeenCalledWith('bash', 'echo highlighted')
+    expect(tokenized()).toEqual([
+      ['bash', 'echo highlighted'],
+    ])
     const token = container.querySelector('span[data-shiki-token]') as HTMLElement | null
-    expect(token).not.toBeNull()
+    expect(token?.textContent).toBe('echo')
     // The token's style rides in its shared class (see shikiStyleClass), not an inline style.
-    expect(token?.classList.contains('sk-cmd-test')).toBe(true)
+    expect(token?.className).toMatch(/^sk-/)
+    expect(token?.getAttribute('style')).toBeNull()
   })
 
   it('does not rewrite highlighted command DOM when syntax highlighting is paused', async () => {
@@ -803,13 +787,15 @@ describe('command summary syntax highlighting selection stability', () => {
         }}
       />
     ))
+    await settleWorkerReplies()
     const summary = container.querySelector('.summary')!
+    expect(summary.querySelector('span[data-shiki-token]')?.textContent).toBe('echo')
     const records: MutationRecord[] = []
     const observer = new MutationObserver(mutations => records.push(...mutations))
     observer.observe(summary, { childList: true, subtree: true, characterData: true })
 
     setPaused(true)
-    await Promise.resolve()
+    await settleWorkerReplies()
     observer.disconnect()
 
     expect(records).toHaveLength(0)

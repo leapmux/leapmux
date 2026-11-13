@@ -46,7 +46,7 @@ describe('lettaPlugin a failed model request', () => {
   })
 
   /** The text that the transcript draws for a mixed notification row. */
-  function noticeText(): string {
+  async function noticeText(): Promise<string> {
     const message = makeMessage({
       agentProvider: AgentProvider.LETTA,
       content: wrapContent(lettaMixedErrorThread()),
@@ -54,17 +54,17 @@ describe('lettaPlugin a failed model request', () => {
     const { extraction } = prepareChatRow(message)
     if (extraction.kind !== 'row' || extraction.row.kind !== 'notification')
       throw new Error('The stored thread is not a notification row.')
-    return elementText(renderNotificationBlocks(flattenNotificationEntries(extraction.row.thread.entries)))
+    return await elementText(renderNotificationBlocks(flattenNotificationEntries(extraction.row.thread.entries)))
   }
 
   // The browser reads a row through the same preparation as the transcript. The marker
   // sits in the loop errors, behind the snapshot that opens the stored thread.
-  it('draws the native error that a stored thread holds after its snapshot', () => {
-    expect(noticeText()).toContain(LETTA_MODEL_ERROR_MARKER)
+  it('draws the native error that a stored thread holds after its snapshot', async () => {
+    expect(await noticeText()).toContain(LETTA_MODEL_ERROR_MARKER)
   })
 
-  it('draws no raw snapshot beside the native error', () => {
-    expect(noticeText()).not.toContain('update_subagent_state')
+  it('draws no raw snapshot beside the native error', async () => {
+    expect(await noticeText()).not.toContain('update_subagent_state')
   })
 
   it('reads a notice through the notification reader that a direct plugin supplies', () => {

@@ -53,6 +53,7 @@ import {
   offeredSettingsOptions,
   openAgentInfoCard,
   openAppAs,
+  openFileInDiffMode,
   openTerminalViaUI,
   openWorkspace,
   openWorkspaceRowMenu,
@@ -81,6 +82,7 @@ import {
   toolRows,
   toolRunningBadge,
   treeRow,
+  visibleText,
   waitForAgentIdle,
   waitForAgentStarted,
   waitForControlBanner,
@@ -1953,6 +1955,33 @@ describe('treeRow', () => {
     const { root } = fakeTree()
     expect((treeRow(root, 'src', { exact: true }) as unknown as { path: string }).path)
       .toBe(`${rows}[has=(page >> testid=tree-row-name >> text=src exact)].first`)
+  })
+})
+
+describe('openFileInDiffMode', () => {
+  it('selects the filter tab, opens the file from it, then waits for the diff mode toolbar', async () => {
+    const { root, log } = fakeTree()
+
+    await openFileInDiffMode(root, 'staged', 'script.sh')
+
+    expect(log).toEqual([
+      'click page >> [data-testid="files-filter-staged"]',
+      'click page >> [data-testid="tree-row"]:visible[hasText=script.sh].first',
+      'to.be.visible page >> [data-testid="diff-mode-toolbar"]',
+    ])
+  })
+
+  it('fails when the diff mode toolbar does not show', async () => {
+    const { root } = fakeTree(expression => expression !== 'to.be.visible')
+
+    await expect(openFileInDiffMode(root, 'changed', 'long.txt')).rejects.toThrow(/toBeVisible/)
+  })
+})
+
+describe('visibleText', () => {
+  it('matches the whole text, and only a visible element', () => {
+    const { root } = fakeTree()
+    expect((visibleText(root, 'row 001') as unknown as { path: string }).path).toBe('page >> text=row 001 exact[visible=true]')
   })
 })
 

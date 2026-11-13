@@ -1,6 +1,7 @@
 import type { AgentRun } from '../../../model/tools/agent'
 import { PI_CUSTOM_TYPE, PI_EVENT, PI_ROLE } from '~/generated/contracts/pi-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { memoizeByObject } from '~/lib/memoizeByObject'
 import { formatDuration, formatNumber } from '../../../rendererUtils'
 import { piContentText } from '../messageContent'
 
@@ -117,15 +118,10 @@ function extractSubagentNotificationSources(payload: Record<string, unknown>): A
   return sources.length ? sources : null
 }
 
-const notificationCache = new WeakMap<Record<string, unknown>, AgentRun[] | null>()
-
-/** Classification, rendering, and copying share one parse of each immutable message. */
-/** The finished subagents one consolidated notification reports. */
-export function piSubagentNotifications(payload: Record<string, unknown>): AgentRun[] | null {
-  const cached = notificationCache.get(payload)
-  if (cached !== undefined)
-    return cached
-  const sources = extractSubagentNotificationSources(payload)
-  notificationCache.set(payload, sources)
-  return sources
-}
+/**
+ * The finished subagents one consolidated notification reports.
+ *
+ * Classification, rendering, and copying share one parse of each immutable message.
+ */
+export const piSubagentNotifications: (payload: Record<string, unknown>) => AgentRun[] | null
+  = memoizeByObject(extractSubagentNotificationSources)

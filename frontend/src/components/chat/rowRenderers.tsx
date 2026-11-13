@@ -9,8 +9,8 @@ import MessageSquare from 'lucide-solid/icons/message-square'
 import { For, untrack } from 'solid-js'
 import { assertNever } from '~/lib/assertNever'
 import { completionMarker } from './assembledMessage'
+import { MarkdownText } from './MarkdownText'
 import {
-  MarkdownText,
   PlanExecutionMessage,
   renderControlResponseRow,
   ThinkingMessage,

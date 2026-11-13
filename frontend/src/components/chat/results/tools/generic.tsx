@@ -3,8 +3,8 @@ import type { JSX } from 'solid-js'
 import type { GenericToolKind } from '../../model/toolCall'
 import type { ParsedCall, ResolvedCall, ToolKindMeta, ToolKindRenderer, ToolRowView } from './renderer'
 import { Show } from 'solid-js'
-import { prettifyJson } from '~/lib/jsonFormat'
 import { isObject } from '~/lib/jsonPick'
+import { genericArgsText } from '../../model/tools/generic'
 import { humanizeWireWord } from '../../rendererUtils'
 import { toolInputCode, toolInputSummary, toolInputText } from '../../toolStyles.css'
 import { CollapsibleContent } from '../CollapsibleContent'
@@ -60,12 +60,6 @@ export function genericTitle(displayName: string, input: unknown): JSX.Element {
   )
 }
 
-function argsTextOf(args: Record<string, unknown>, argsText?: string): string {
-  return argsText ?? (Object.keys(args).length > 0
-    ? prettifyJson(args)
-    : '')
-}
-
 function PendingArguments(props: { text: string, view: ToolRowView }): JSX.Element {
   const collapsed = useCollapsedLines({
     text: () => props.text,
@@ -100,7 +94,7 @@ function plainImageTabName(call: { label?: string, name: string }): string {
  */
 export function genericRequestBody(call: ParsedCall<GenericToolKind>, view: ToolRowView): JSX.Element | null {
   const text = view.drawsResult && call.result === undefined
-    ? argsTextOf(call.request.args, call.request.argsText)
+    ? genericArgsText(call.request)
     : ''
   return <Show when={text}>{args => <PendingArguments text={args()} view={view} />}</Show>
 }
@@ -128,7 +122,7 @@ export function genericResultBody(call: ResolvedCall<GenericToolKind>, view: Too
 
 /** What the toolbar offers a generic result row, whatever generic kind drew it. */
 export function genericResultMeta(call: ResolvedCall<GenericToolKind>): ToolKindMeta {
-  const argsJson = argsTextOf(call.request.args, call.request.argsText)
+  const argsJson = genericArgsText(call.request)
   return {
     collapsible: genericResultCollapsible(call.result, argsJson),
     hasDiff: false,

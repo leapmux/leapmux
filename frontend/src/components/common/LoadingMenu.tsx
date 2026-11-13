@@ -4,6 +4,7 @@ import { createMemo, createSignal, For, Match, Show, Switch } from 'solid-js'
 import { ClippedText } from '~/components/common/ClippedText'
 import { DropdownMenu, DropdownMenuCheckableItem } from '~/components/common/DropdownMenu'
 import { Icon } from '~/components/common/Icon'
+import { pluralize } from '~/lib/plural'
 import { menuItemDetail } from '~/styles/shared.css'
 import * as styles from './LoadingMenu.css'
 
@@ -145,6 +146,39 @@ export interface LoadingMenuProps {
 const FILTER_MIN_OPTIONS = 12
 
 /**
+ * The most rows a FILTERED menu mounts for one query, beside the rows that every
+ * query draws: the pinned options, and the option of the current value.
+ *
+ * Each row costs a `ClippedText` tooltip and its own memos, and a list with no
+ * upper limit -- a repository's branches -- mounted every one of them at the
+ * first open. Past this count the filter is the faster way to find an entry
+ * anyway, so the menu states how many it leaves out and asks for a query. A menu
+ * with no filter box mounts every row, because nothing else could reach the rest.
+ */
+export const MAX_DRAWN_OPTIONS = 200
+
+/**
+ * The rows that one query draws: every option that `exempt` keeps, and the first
+ * `limit` others in the given order. `hidden` counts the options left out.
+ */
+export function limitDrawnOptions<T>(options: readonly T[], limit: number, exempt: (option: T) => boolean): { options: readonly T[], hidden: number } {
+  if (options.length <= limit)
+    return { options, hidden: 0 }
+  const drawn: T[] = []
+  let limited = 0
+  for (const option of options) {
+    if (exempt(option)) {
+      drawn.push(option)
+    }
+    else if (limited < limit) {
+      drawn.push(option)
+      limited++
+    }
+  }
+  return { options: drawn, hidden: options.length - drawn.length }
+}
+
+/**
  * The renderer for one option's detail: the caller's own element when it gave
  * one, and the plain text otherwise. Undefined for an option with no detail.
  *
@@ -154,18 +188,11 @@ const FILTER_MIN_OPTIONS = 12
  * drawn: the trigger and the row each need their own, and one DOM node cannot
  * sit in two places.
  *
- * `live` false takes the TEXT even when a renderer exists. A caller's element
- * can be expensive -- `SessionSelect`'s is a live `RelativeTime` that subscribes
- * to the shared ticker -- and a row inside a menu nobody has opened should not
- * pay for it. The two read the same, because the text IS what the element draws.
  */
-function detailRenderer(
-  detail: LoadingMenuOptionDetail | undefined,
-  live = true,
-): (() => JSX.Element) | undefined {
+function detailRenderer(detail: LoadingMenuOptionDetail | undefined): (() => JSX.Element) | undefined {
   if (detail === undefined)
     return undefined
-  return () => (live && detail.render
+  return () => (detail.render
     ? detail.render()
     : detail.text())
 }
@@ -188,8 +215,8 @@ function detailRenderer(
  */
 export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
   const [query, setQuery] = createSignal('')
-  // Whether the menu has ever been opened; see `items`. One-way: it never goes
-  // back to false, so a reopen mounts nothing again.
+  // Whether the menu has ever been opened. The rows mount at the first open,
+  // and stay: a reopen mounts nothing again. See the `items` call below.
   const [everOpened, setEverOpened] = createSignal(false)
   // A signal, not a plain `let`: `select` reads it to dismiss a filtered menu.
   const [popoverEl, setPopoverEl] = createSignal<HTMLElement>()
@@ -250,6 +277,23 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
       || (o.detail?.text().toLowerCase().includes(q) ?? false),
     )
   })
+
+  /**
+   * A row that every query draws, past the limit as well. A pinned row is a way
+   * out of the list. The row of the current value is how the user finds the
+   * current choice: without it, a value past the limit -- the checked-out branch
+   * of a large repository -- left the open menu with no checked row.
+   */
+  const alwaysDrawn = (option: LoadingMenuOption) => option.pinned === true || option.value === props.value
+
+  /** The rows the current query draws; see MAX_DRAWN_OPTIONS. */
+  const drawn = createMemo(() => limitDrawnOptions(
+    visible(),
+    filtering()
+      ? MAX_DRAWN_OPTIONS
+      : Number.POSITIVE_INFINITY,
+    alwaysDrawn,
+  ))
 
   /** The option the value names, or undefined when the list does not hold it. */
   const selected = () => props.options.find(o => o.value === props.value)
@@ -329,17 +373,16 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
         <div class={styles.emptyNote}>No matches</div>
       </Match>
       <Match when={visible().length > 0}>
-        <For each={visible()}>
+        <For each={drawn().options}>
           {(option, i) => {
             // Spread-ready detail, as a GETTER called in spread position: the
-            // read stays where the original expression evaluated, so the
-            // deferral contract below is unchanged. One read per evaluation
-            // keeps presence and value decided together -- a second
+            // read stays where the original expression evaluated. One read per
+            // evaluation keeps presence and value decided together -- a second
             // `detailRenderer(...)` call beside the first could not be
             // narrowed, and the spread keeps the key absent exactly when the
             // renderer answers undefined -- an option with no detail.
             const detailProps = () => {
-              const detail = detailRenderer(option.detail, everOpened())
+              const detail = detailRenderer(option.detail)
               return detail !== undefined
                 ? { detail }
                 : {}
@@ -348,7 +391,7 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
               <>
                 {/* A heading whenever the group changes, so Local and Remote read
                     apart the way `<optgroup>` used to render them. */}
-                <Show when={option.group && option.group !== visible()[i() - 1]?.group}>
+                <Show when={option.group && option.group !== drawn().options[i() - 1]?.group}>
                   <div class={styles.groupHeading}>{option.group}</div>
                 </Show>
                 <DropdownMenuCheckableItem
@@ -359,20 +402,7 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
                   // whatever the user's data is long enough to be: a branch name,
                   // a session title. Clipped with no route back is the state a
                   // tooltip exists to prevent.
-                  //
-                  // Deferred to the first OPEN, and that is the whole reason this
-                  // is a prop rather than always-on. `DropdownMenu` renders its
-                  // children on MOUNT, and `ClippedText` wraps every instance in
-                  // a `Tooltip` -- a MutationObserver and listeners on two
-                  // elements, per row. Paid eagerly that is one such allocation
-                  // per option of every menu on screen, open or not: fifty for a
-                  // full session list, and `BranchSelect`'s list has no upper
-                  // limit at all. A row nobody has seen needs no route back.
-                  revealClippedLabel={everOpened()}
-                  // Same deferral, same reason: `SessionSelect`'s detail is a live
-                  // `RelativeTime` that subscribes to the shared ticker, so an
-                  // unopened picker held one subscriber per session. The text form
-                  // renders until then, so the row reads the same either way.
+                  revealClippedLabel
                   // `detailRenderer` returns undefined exactly when the option has
                   // no detail, so the spread keeps the key absent for those rows.
                   {...detailProps()}
@@ -384,6 +414,15 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
             )
           }}
         </For>
+        <Show when={drawn().hidden > 0}>
+          <div class={styles.emptyNote} data-testid="loading-menu-more">
+            {`${pluralize(drawn().hidden, 'more option')} ${drawn().hidden === 1
+              ? 'is'
+              : 'are'} not shown. ${query().trim() === ''
+              ? 'Type to filter the list.'
+              : 'Type more to narrow the list.'}`}
+          </div>
+        </Show>
       </Match>
     </Switch>
   )
@@ -398,9 +437,14 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
       // replaces -- so the popover follows its width. See the prop.
       matchTriggerWidth
       popoverRef={setPopoverEl}
+      // The rows mount before the popover first shows, so it never paints a
+      // frame without them, and its first position fits the full list.
+      onBeforeToggle={(opening) => {
+        if (opening)
+          setEverOpened(true)
+      }}
       onToggle={(open) => {
         if (open) {
-          setEverOpened(true)
           props.onOpen?.()
           // Put the caret in the filter box. `popover="auto"` moves focus
           // nowhere on its own, so without this the filter buys back none of
@@ -469,8 +513,20 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
           `role="menu"` around several groups. A role on the popover would give
           that panel two nested menus. The unfiltered form needs none of this --
           `DropdownMenu` renders a real `<menu>` there. */}
-      <Show when={filtering()} fallback={items()}>
-        <div role="menu" aria-label={props.ariaLabel} class={styles.filteredList}>{items()}</div>
+      {/*
+        The rows mount at the first open. `DropdownMenu` renders its children
+        while the popover is closed, and each row costs a `ClippedText` tooltip
+        (a MutationObserver and listeners on two elements), a live detail such
+        as `SessionSelect`'s ticking `RelativeTime`, and its own memos. A closed
+        picker paid that for every option -- `BranchSelect`'s list has no upper
+        limit -- and most pickers on screen are never opened. An open filtered
+        picker mounts at most MAX_DRAWN_OPTIONS of them, beside the rows that
+        every query draws.
+      */}
+      <Show when={everOpened()}>
+        <Show when={filtering()} fallback={items()}>
+          <div role="menu" aria-label={props.ariaLabel} class={styles.filteredList}>{items()}</div>
+        </Show>
       </Show>
     </DropdownMenu>
   )

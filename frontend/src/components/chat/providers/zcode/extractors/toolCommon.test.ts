@@ -144,9 +144,20 @@ describe('zcodeExtractTool', () => {
   })
 
   it('caches a null result too, rather than re-deriving it', () => {
-    const row = { type: ZCODE_EVENT.SessionUpdated, payload: {} }
+    let typeReads = 0
+    const row = {
+      get type(): string {
+        typeReads++
+        return ZCODE_EVENT.SessionUpdated
+      },
+      payload: {},
+    }
     expect(zcodeExtractTool(row)).toBeNull()
+    const readsAfterFirst = typeReads
+    expect(readsAfterFirst).toBeGreaterThan(0)
+
     expect(zcodeExtractTool(row)).toBeNull()
+    expect(typeReads).toBe(readsAfterFirst)
   })
 })
 

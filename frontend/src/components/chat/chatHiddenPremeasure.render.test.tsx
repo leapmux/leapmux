@@ -1,9 +1,10 @@
 import type { ClassifiedEntry } from './chatEntryCache'
 import type { MessageCategory } from './messageClassifier'
+import type { RenderReadiness } from './renderReadiness'
 import type { VirtualItem } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import { render, screen } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
+import { cleanup, render, screen } from '@solidjs/testing-library'
+import { createSignal, Show } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { makeMessage } from '~/test-support/messageFactory'
@@ -81,18 +82,28 @@ function renderPremeasureRow(
   }
 }
 
+/**
+ * Queue each animation frame for the test to run by hand, run `body`, then
+ * unmount everything it rendered and restore the globals. The unmount runs
+ * first, so a row that cancels its frame on disposal still reaches the stub.
+ */
+function withFrameQueue(body: (frames: FrameRequestCallback[]) => void): void {
+  const frames: FrameRequestCallback[] = []
+  vi.stubGlobal('requestAnimationFrame', (handler: FrameRequestCallback) => frames.push(handler))
+  vi.stubGlobal('cancelAnimationFrame', vi.fn())
+  try {
+    body(frames)
+  }
+  finally {
+    cleanup()
+    vi.unstubAllGlobals()
+  }
+}
+
 describe('chat hidden premeasure rendering', () => {
-  // The root publishes what a reader -- a screen reader, or an e2e measurement --
-  // needs to tell a hidden COPY of a row from the row itself. Both markers are
-  // load-bearing and neither is visible from inside a row, so nothing else fails
-  // if one is dropped: the copy simply starts passing for the real thing.
   it.each(['load', 'error'])('keeps an empty image row unready until its %s event', (eventName) => {
-    const frames: FrameRequestCallback[] = []
-    vi.stubGlobal('requestAnimationFrame', (handler: FrameRequestCallback) => frames.push(handler))
-    vi.stubGlobal('cancelAnimationFrame', vi.fn())
-    installControllableResizeObserver()
-    let unmount: (() => void) | undefined
-    try {
+    withFrameQueue((frames) => {
+      installControllableResizeObserver()
       let complete = false
       const onMeasure = vi.fn(() => true)
       const rendered = render(() => (
@@ -108,7 +119,6 @@ describe('chat hidden premeasure rendering', () => {
           onMeasure={onMeasure}
         />
       ))
-      unmount = rendered.unmount
       const row = rendered.container.firstElementChild!.firstElementChild as HTMLElement
       const image = row.querySelector('img')!
       vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 400, 0))
@@ -121,20 +131,212 @@ describe('chat hidden premeasure rendering', () => {
       image.dispatchEvent(new Event(eventName))
       frames.shift()?.(16)
       expect(onMeasure).toHaveBeenCalledWith('empty', 0, undefined, expect.any(Number), true)
-    }
-    finally {
-      unmount?.()
-      vi.unstubAllGlobals()
-    }
+    })
+  })
+
+  it('commits no height while a Markdown body is pending, and measures once it is ready without a resize', () => {
+    withFrameQueue((frames) => {
+      installControllableResizeObserver()
+      const [pending, setPending] = createSignal(true)
+      const onMeasure = vi.fn(() => true)
+      // eslint-disable-next-line solid/reactivity -- the scope reads the accessor inside its own memo
+      const renderBubble = vi.fn((_entry: ClassifiedEntry, readiness: RenderReadiness) => {
+        readiness.track(pending)
+        return <div data-testid="bubble">body</div>
+      })
+      render(() => (
+        <ChatHiddenPremeasure
+          candidates={[
+            {
+              entry: entryWithSpanLines(0, 'assistant_text'),
+              item: { id: 'markdown', hasSpanLines: false, heightKey: 'k1' },
+            },
+          ]}
+          contentWidthPx={400}
+          renderBubble={renderBubble}
+          onMeasure={onMeasure}
+        />
+      ))
+      const row = premeasureRowOf(screen.getByTestId('bubble'))
+      vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 400, 120))
+
+      // The row has a height, but its Markdown is not final: nothing commits.
+      while (frames.length > 0)
+        frames.shift()?.(0)
+      expect(onMeasure).not.toHaveBeenCalled()
+
+      // The body becomes ready. No resize fires, but the row measures anyway.
+      setPending(false)
+      expect(frames).toHaveLength(1)
+      frames.shift()?.(16)
+      expect(onMeasure).toHaveBeenCalledOnce()
+      expect(onMeasure).toHaveBeenCalledWith('markdown', 120, 'k1', expect.any(Number), true)
+    })
+  })
+
+  // A diff view that switches its layout keeps the old one in view while the new
+  // one mounts behind it: the copy shows complete content, but its height is about
+  // to change.
+  it('commits no height while a body replaces its content, and measures once the copy shows the new content', () => {
+    withFrameQueue((frames) => {
+      installControllableResizeObserver()
+      const [replacing, setReplacing] = createSignal(true)
+      const onMeasure = vi.fn(() => true)
+      render(() => (
+        <ChatHiddenPremeasure
+          candidates={[
+            {
+              entry: entryWithSpanLines(0, 'tool_result'),
+              item: { id: 'diff', hasSpanLines: false, heightKey: 'k1' },
+            },
+          ]}
+          contentWidthPx={400}
+          renderBubble={(_entry, readiness) => {
+            readiness.trackReplacing(replacing)
+            return <div data-testid="bubble">body</div>
+          }}
+          onMeasure={onMeasure}
+        />
+      ))
+      const row = premeasureRowOf(screen.getByTestId('bubble'))
+      vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 400, 80))
+
+      while (frames.length > 0)
+        frames.shift()?.(0)
+      expect(onMeasure).not.toHaveBeenCalled()
+
+      setReplacing(false)
+      expect(frames).toHaveLength(1)
+      frames.shift()?.(16)
+      expect(onMeasure).toHaveBeenCalledOnce()
+      expect(onMeasure).toHaveBeenCalledWith('diff', 80, 'k1', expect.any(Number), true)
+    })
+  })
+
+  it('measures nothing again for a load event of an element that is not an image', () => {
+    withFrameQueue((frames) => {
+      installControllableResizeObserver()
+      const onMeasure = vi.fn(() => true)
+      render(() => (
+        <ChatHiddenPremeasure
+          candidates={[
+            {
+              entry: entryWithSpanLines(0, 'assistant_text'),
+              item: { id: 'media', hasSpanLines: false, heightKey: 'k1' },
+            },
+          ]}
+          contentWidthPx={400}
+          renderBubble={() => (
+            <div data-testid="bubble">
+              <video />
+              <img alt="settled" />
+            </div>
+          )}
+          onMeasure={onMeasure}
+        />
+      ))
+      const row = premeasureRowOf(screen.getByTestId('bubble'))
+      vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 400, 40))
+      for (const image of row.querySelectorAll('img')) {
+        Object.defineProperty(image, 'complete', {
+          get: () => true,
+        })
+      }
+      while (frames.length > 0)
+        frames.shift()?.(0)
+      expect(onMeasure).toHaveBeenCalledOnce()
+
+      row.querySelector('video')!.dispatchEvent(new Event('load'))
+      expect(frames).toHaveLength(0)
+
+      row.querySelector('img')!.dispatchEvent(new Event('load'))
+      expect(frames).toHaveLength(1)
+    })
+  })
+
+  it('measures again when an image that mounts with a ready body settles', () => {
+    // A Markdown body renders in the worker, so its image mounts after the row.
+    withFrameQueue((frames) => {
+      installControllableResizeObserver()
+      const [pending, setPending] = createSignal(true)
+      const onMeasure = vi.fn(() => true)
+      let height = 24
+      const rendered = render(() => (
+        <ChatHiddenPremeasure
+          candidates={[
+            {
+              entry: entryWithSpanLines(0, 'assistant_text'),
+              item: { id: 'late', hasSpanLines: false, heightKey: 'k1' },
+            },
+          ]}
+          contentWidthPx={400}
+          renderBubble={(_entry, readiness) => {
+            readiness.track(pending)
+            return (
+              <Show when={!pending()}>
+                <img alt="late" src="data:image/png;base64,iVBORw0KGgo=" />
+              </Show>
+            )
+          }}
+          onMeasure={onMeasure}
+        />
+      ))
+      const row = rendered.container.firstElementChild!.firstElementChild as HTMLElement
+      vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 0, 400, height))
+      while (frames.length > 0)
+        frames.shift()?.(0)
+      expect(row.querySelector('img')).toBeNull()
+
+      setPending(false)
+      const image = row.querySelector('img')!
+      let complete = false
+      Object.defineProperty(image, 'complete', {
+        get: () => complete,
+      })
+      frames.shift()?.(16)
+      // The image still decodes: the height commits unsettled, and the resize
+      // observer stops, so only the image's own event can measure the row again.
+      expect(onMeasure).toHaveBeenLastCalledWith('late', 24, 'k1', expect.any(Number), false)
+
+      height = 64
+      complete = true
+      image.dispatchEvent(new Event('load'))
+      frames.shift()?.(32)
+      expect(onMeasure).toHaveBeenLastCalledWith('late', 64, 'k1', expect.any(Number), true)
+    })
+  })
+
+  it('hands each row copy its own readiness scope', () => {
+    const scopes: RenderReadiness[] = []
+    const entry = entryWithSpanLines(0)
+    render(() => (
+      <ChatHiddenPremeasure
+        candidates={[
+          {
+            entry,
+            item: { id: 'a', hasSpanLines: false },
+          },
+          {
+            entry,
+            item: { id: 'b', hasSpanLines: false },
+          },
+        ]}
+        contentWidthPx={400}
+        renderBubble={(_entry, readiness) => {
+          scopes.push(readiness)
+          return null
+        }}
+        onMeasure={vi.fn()}
+      />
+    ))
+
+    expect(scopes).toHaveLength(2)
+    expect(scopes[0]).not.toBe(scopes[1])
   })
 
   it('skips a hidden view and measures its empty row after layout returns', () => {
-    const frames: FrameRequestCallback[] = []
-    vi.stubGlobal('requestAnimationFrame', (handler: FrameRequestCallback) => frames.push(handler))
-    vi.stubGlobal('cancelAnimationFrame', vi.fn())
-    installControllableResizeObserver()
-    let unmount: (() => void) | undefined
-    try {
+    withFrameQueue((frames) => {
+      installControllableResizeObserver()
       const onMeasure = vi.fn(() => true)
       const rendered = render(() => (
         <ChatHiddenPremeasure
@@ -149,7 +351,6 @@ describe('chat hidden premeasure rendering', () => {
           onMeasure={onMeasure}
         />
       ))
-      unmount = rendered.unmount
       const root = rendered.container.firstElementChild as HTMLElement
       const row = root.firstElementChild as HTMLElement
       root.style.display = 'none'
@@ -162,19 +363,11 @@ describe('chat hidden premeasure rendering', () => {
       triggerResizeObserverForSync(row)
       frames.shift()?.(16)
       expect(onMeasure).toHaveBeenCalledWith('empty', 0, undefined, expect.any(Number), true)
-    }
-    finally {
-      unmount?.()
-      vi.unstubAllGlobals()
-    }
+    })
   })
 
   it('measures only the current empty candidate after replacement before the frame', () => {
-    const frames: FrameRequestCallback[] = []
-    vi.stubGlobal('requestAnimationFrame', (handler: FrameRequestCallback) => frames.push(handler))
-    vi.stubGlobal('cancelAnimationFrame', vi.fn())
-    let unmount: (() => void) | undefined
-    try {
+    withFrameQueue((frames) => {
       const entry = entryWithSpanLines(0, 'tool_result')
       const item = { id: 'empty', heightKey: 'live', hasSpanLines: false }
       const [candidates, setCandidates] = createSignal([
@@ -184,7 +377,6 @@ describe('chat hidden premeasure rendering', () => {
       const rendered = render(() => (
         <ChatHiddenPremeasure candidates={candidates()} contentWidthPx={400} renderBubble={() => null} onMeasure={onMeasure} />
       ))
-      unmount = rendered.unmount
       const oldRow = rendered.container.firstElementChild!.firstElementChild as HTMLElement
       vi.spyOn(oldRow, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 400, 100))
       setCandidates([
@@ -199,13 +391,13 @@ describe('chat hidden premeasure rendering', () => {
       frames.shift()?.(0)
       expect(onMeasure).toHaveBeenCalledTimes(1)
       expect(onMeasure).toHaveBeenCalledWith('empty', 0, 'live', expect.any(Number), true)
-    }
-    finally {
-      unmount?.()
-      vi.unstubAllGlobals()
-    }
+    })
   })
 
+  // The root publishes what a reader -- a screen reader, or an e2e measurement --
+  // needs to tell a hidden COPY of a row from the row itself. Both markers are
+  // load-bearing and neither is visible from inside a row, so nothing else fails
+  // if one is dropped: the copy simply starts passing for the real thing.
   it('marks its root as a hidden copy, reachable from any bubble inside it', () => {
     const { row } = renderPremeasureRow('user_text', MessageSource.USER)
     const root = row.parentElement!
@@ -685,6 +877,7 @@ describe('chat hidden premeasure rendering', () => {
           heightKey: 'same-native-key',
           connected: true,
           settled: true,
+          measurable: true,
         },
       ])
       currentRectangle.mockReturnValue(new DOMRect(0, 0, 752, 101))

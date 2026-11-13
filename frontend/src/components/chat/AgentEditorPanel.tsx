@@ -265,7 +265,7 @@ export const AgentEditorPanel: Component<AgentEditorPanelProps> = (props) => {
   const enqueueInFlight = () => actionState().enqueueInFlight()
   const interrupting = () => actionState().interrupting.loading()
   const handleInterruptClick = () => {
-    // eslint-disable-next-line solid/reactivity -- the click must settle the tab that sent this request, even after focus moves.
+    // The click must settle the tab that sent this request, even after focus moves.
     const state = actionState()
     state.interrupting.start()
     const stopLoading = () => state.interrupting.stop()

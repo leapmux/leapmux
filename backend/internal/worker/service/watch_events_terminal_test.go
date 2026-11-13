@@ -382,7 +382,7 @@ func TestReplayTerminalCatchUpStatesTheDerivedStatus(t *testing.T) {
 			svc, _, _ := setupTestService(t)
 			row := tc.setup(t, svc, "term-replay")
 			w := newTestWriter()
-			svc.replayTerminalCatchUp(newReplaySink(w, 0, nil), row.ID, 0, row)
+			svc.replayTerminalCatchUp(newReplaySink(w, 0, nil, nil), row.ID, 0, row)
 			waitForWireTerminalStatuses(t, w, 1)
 
 			var changes []*leapmuxv1.TerminalStatusChange

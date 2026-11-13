@@ -316,7 +316,7 @@ func TestTerminalReplayNeverBlocksOnAStalledSender(t *testing.T) {
 
 	replaying := newTestWriter()
 	replaying.channelID = "replaying-channel"
-	sink := newReplaySink(replaying, 0, nil)
+	sink := newReplaySink(replaying, 0, nil, nil)
 	replayed := runStalledTestWork(t, stalled, func() {
 		for _, terminalID := range []string{id, other} {
 			row, err := svc.Queries.GetTerminal(context.Background(), terminalID)
@@ -360,7 +360,7 @@ func replayIntoStalledDrain(t *testing.T, svc *Service, id string, stalled *stal
 	replaying.before = func() { runOnAnotherGoroutine(func() { publishTerminalReady(svc, id) }) }
 
 	replayed := runStalledTestWork(t, stalled, func() {
-		svc.replayTerminalCatchUp(newReplaySink(replaying, 0, nil), id, 0, row)
+		svc.replayTerminalCatchUp(newReplaySink(replaying, 0, nil, nil), id, 0, row)
 	})
 	select {
 	case <-stalled.parked:
@@ -441,7 +441,7 @@ func TestTerminalStatusKeepsItsOrderUnderConcurrentEmittersAndReplays(t *testing
 			}
 		})
 		emitters.Go(func() {
-			sink := newReplaySink(newTestWriter(), 0, nil)
+			sink := newReplaySink(newTestWriter(), 0, nil, nil)
 			for range rounds {
 				svc.replayTerminalCatchUp(sink, id, 0, row)
 			}
@@ -548,7 +548,7 @@ func TestReplayTerminalStatusDerivesInsideTheQueueLock(t *testing.T) {
 
 	manager := NewWatcherManager()
 	w := newTestWriter()
-	manager.ReplayTerminalStatus("term", newReplaySink(w, 0, nil), func() *leapmuxv1.TerminalEvent {
+	manager.ReplayTerminalStatus("term", newReplaySink(w, 0, nil, nil), func() *leapmuxv1.TerminalEvent {
 		assertLockHeld(t, &manager.terminalStatuses.mu, "the derive must hold the queue's lock")
 		return terminalExitedEvent("term")
 	})
@@ -570,7 +570,7 @@ func TestReplayTerminalStatusReachesOnlyItsSubscriber(t *testing.T) {
 	watchTerminal(svc, "term", watcher)
 
 	subscriber := newTestWriter()
-	svc.replayTerminalCatchUp(newReplaySink(subscriber, 0, nil), "term", 0, row)
+	svc.replayTerminalCatchUp(newReplaySink(subscriber, 0, nil, nil), "term", 0, row)
 
 	assert.Equal(t, []leapmuxv1.TerminalStatus{leapmuxv1.TerminalStatus_TERMINAL_STATUS_EXITED},
 		waitForWireTerminalStatuses(t, subscriber, 1))
@@ -598,7 +598,7 @@ func TestTerminalReplayStatusOfARetiredSinkIsDropped(t *testing.T) {
 	}
 
 	subscriber := newTestWriter()
-	sink := newReplaySink(subscriber, 0, nil)
+	sink := newReplaySink(subscriber, 0, nil, nil)
 	svc.Watchers.ReplayTerminalStatus(id, sink, func() *leapmuxv1.TerminalEvent {
 		return &leapmuxv1.TerminalEvent{TerminalId: id}
 	})
@@ -620,7 +620,7 @@ func TestReplaySinkRetiresOnceAcrossGoroutines(t *testing.T) {
 	w := newTestWatcher("failing-sink")
 	w.failSends(channel.ErrTransportGone)
 	var retired atomic.Int32
-	sink := newReplaySink(w, 0, func() { retired.Add(1) })
+	sink := newReplaySink(w, 0, func() { retired.Add(1) }, nil)
 
 	var senders sync.WaitGroup
 	for range 8 {

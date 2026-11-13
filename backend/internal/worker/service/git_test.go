@@ -5,14 +5,18 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/id"
@@ -5113,6 +5117,28 @@ func canonicalRepoDir(t *testing.T) string {
 	return resolved
 }
 
+// commitTrackedFile writes content to tracked.txt in repoDir, commits it, and
+// returns the path of the file.
+func commitTrackedFile(t *testing.T, repoDir, content string) string {
+	t.Helper()
+	filePath := filepath.Join(repoDir, "tracked.txt")
+	require.NoError(t, os.WriteFile(filePath, []byte(content), 0o644))
+	run(t, repoDir, "git", "add", "tracked.txt")
+	run(t, repoDir, "git", "commit", "-m", "add tracked")
+	return filePath
+}
+
+// readGitFileResponse decodes the one response of a ReadGitFile dispatch that
+// failed with no error.
+func readGitFileResponse(t *testing.T, w *testResponseWriter) *leapmuxv1.ReadGitFileResponse {
+	t.Helper()
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ReadGitFileResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	return &resp
+}
+
 // ReadGitFile must reject GIT_FILE_REF_UNSPECIFIED (the proto zero
 // value) with InvalidArgument rather than silently falling back to HEAD.
 // A silent HEAD fallback would mask a future enum addition that callers
@@ -5121,11 +5147,7 @@ func TestReadGitFile_RejectsUnspecifiedRef(t *testing.T) {
 	t.Parallel()
 
 	_, d, w := setupTestService(t)
-	repoDir := canonicalRepoDir(t)
-	filePath := filepath.Join(repoDir, "tracked.txt")
-	require.NoError(t, os.WriteFile(filePath, []byte("committed\n"), 0o644))
-	run(t, repoDir, "git", "add", "tracked.txt")
-	run(t, repoDir, "git", "commit", "-m", "add tracked")
+	filePath := commitTrackedFile(t, canonicalRepoDir(t), "committed\n")
 
 	dispatch(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, &leapmuxv1.ReadGitFileRequest{
 		Path: filePath,
@@ -5141,11 +5163,7 @@ func TestReadGitFile_HeadReturnsCommittedContent(t *testing.T) {
 	t.Parallel()
 
 	_, d, w := setupTestService(t)
-	repoDir := canonicalRepoDir(t)
-	filePath := filepath.Join(repoDir, "tracked.txt")
-	require.NoError(t, os.WriteFile(filePath, []byte("committed\n"), 0o644))
-	run(t, repoDir, "git", "add", "tracked.txt")
-	run(t, repoDir, "git", "commit", "-m", "add tracked")
+	filePath := commitTrackedFile(t, canonicalRepoDir(t), "committed\n")
 	// Overwrite the working tree so HEAD content must come from git
 	// rather than the filesystem — proves the handler reads from the
 	// ref, not from disk.
@@ -5156,12 +5174,152 @@ func TestReadGitFile_HeadReturnsCommittedContent(t *testing.T) {
 		Ref:  leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD,
 	}, w)
 
-	require.Empty(t, w.errors)
-	require.Len(t, w.responses, 1)
-	var resp leapmuxv1.ReadGitFileResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	resp := readGitFileResponse(t, w)
 	assert.True(t, resp.GetExists())
 	assert.Equal(t, "committed\n", string(resp.GetContent()))
+	assert.Equal(t, int64(len("committed\n")), resp.GetTotalSize(), "a zero limit reads a file below the default whole")
+}
+
+// The file viewer reads at most 256 KiB of each version. A limit cuts the
+// content and the total size still reports the whole file, so the viewer can
+// say that it truncated the file.
+func TestReadGitFile_LimitCutsContentAndReportsTotalSize(t *testing.T) {
+	t.Parallel()
+
+	const committed = "0123456789\n"
+	for _, tc := range []struct {
+		name    string
+		limit   int64
+		content string
+	}{
+		{name: "below the size", limit: 4, content: "0123"},
+		{name: "at the size", limit: int64(len(committed)), content: committed},
+		{name: "above the size", limit: 100, content: committed},
+		{name: "one byte", limit: 1, content: "0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, d, w := setupTestService(t)
+			filePath := commitTrackedFile(t, canonicalRepoDir(t), committed)
+
+			dispatch(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, &leapmuxv1.ReadGitFileRequest{
+				Path:  filePath,
+				Ref:   leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD,
+				Limit: tc.limit,
+			}, w)
+
+			resp := readGitFileResponse(t, w)
+			assert.True(t, resp.GetExists())
+			assert.Equal(t, tc.content, string(resp.GetContent()))
+			assert.Equal(t, int64(len(committed)), resp.GetTotalSize())
+		})
+	}
+}
+
+// A blob far larger than the pipe between git and the worker: the read takes
+// the first bytes and stops git, which still has the rest to write.
+func TestReadGitFile_LimitReadsThePrefixOfALargeBlob(t *testing.T) {
+	t.Parallel()
+
+	large := strings.Repeat("0123456789abcdef", 256*1024) // 4 MiB
+	_, d, w := setupTestService(t)
+	filePath := commitTrackedFile(t, canonicalRepoDir(t), large)
+
+	dispatch(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, &leapmuxv1.ReadGitFileRequest{
+		Path:  filePath,
+		Ref:   leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD,
+		Limit: 1000,
+	}, w)
+
+	resp := readGitFileResponse(t, w)
+	assert.True(t, resp.GetExists())
+	assert.Equal(t, large[:1000], string(resp.GetContent()))
+	assert.Equal(t, int64(len(large)), resp.GetTotalSize())
+}
+
+// assertGitReadPrefix asserts that resp holds the first n bytes of whole, and
+// the size of all of it. It compares the lengths first, as numbers, so a
+// failure does not print megabytes of content.
+func assertGitReadPrefix(t *testing.T, resp *leapmuxv1.ReadGitFileResponse, whole string, n int) {
+	t.Helper()
+	assert.True(t, resp.GetExists())
+	assert.Equal(t, int64(len(whole)), resp.GetTotalSize())
+	require.Equal(t, n, len(resp.GetContent()), "the length of the content")
+	assert.True(t, whole[:n] == string(resp.GetContent()), "the content must be the start of the blob")
+}
+
+// `git read` sends no limit unless the user gives --limit. A zero limit reads
+// the default, as ReadFile does, and total_size states the size of the whole
+// blob.
+func TestReadGitFile_ZeroLimitReadsTheDefault(t *testing.T) {
+	t.Parallel()
+
+	large := strings.Repeat("0123456789abcdef", 2*contracts.FileReadLimitBytes/16)
+	_, d, w := setupTestService(t)
+	filePath := commitTrackedFile(t, canonicalRepoDir(t), large)
+
+	dispatch(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, &leapmuxv1.ReadGitFileRequest{
+		Path: filePath,
+		Ref:  leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD,
+	}, w)
+
+	assertGitReadPrefix(t, readGitFileResponse(t, w), large, contracts.FileReadLimitBytes)
+}
+
+// One response carries at most the payload budget. A larger limit would build
+// a response that the channel refuses, and that `git read` cannot ask again
+// for in smaller pieces, because the request has no offset.
+func TestReadGitFile_ClampsALimitAboveThePayloadBudget(t *testing.T) {
+	t.Parallel()
+
+	const budget = 1 << 20
+	large := strings.Repeat("0123456789abcdef", 2*budget/16)
+	_, d, w := setupTestService(t, withMaxMessageSize(budget))
+	filePath := commitTrackedFile(t, canonicalRepoDir(t), large)
+
+	dispatch(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, &leapmuxv1.ReadGitFileRequest{
+		Path:  filePath,
+		Ref:   leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD,
+		Limit: 8 << 20,
+	}, w)
+
+	assertGitReadPrefix(t, readGitFileResponse(t, w), large, budget)
+}
+
+// The budget also caps the default, on a worker whose max_message_size is
+// below it.
+func TestReadGitFile_ZeroLimitReadsAtMostThePayloadBudget(t *testing.T) {
+	t.Parallel()
+
+	const budget = contracts.FileReadLimitBytes / 4
+	large := strings.Repeat("0123456789abcdef", 2*contracts.FileReadLimitBytes/16)
+	_, d, w := setupTestService(t, withMaxMessageSize(budget))
+	filePath := commitTrackedFile(t, canonicalRepoDir(t), large)
+
+	dispatch(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, &leapmuxv1.ReadGitFileRequest{
+		Path: filePath,
+		Ref:  leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD,
+	}, w)
+
+	assertGitReadPrefix(t, readGitFileResponse(t, w), large, budget)
+}
+
+func TestReadGitFile_RejectsNegativeLimit(t *testing.T) {
+	t.Parallel()
+
+	_, d, w := setupTestService(t)
+	filePath := commitTrackedFile(t, canonicalRepoDir(t), "committed\n")
+
+	dispatch(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, &leapmuxv1.ReadGitFileRequest{
+		Path:  filePath,
+		Ref:   leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD,
+		Limit: -1,
+	}, w)
+
+	require.Empty(t, w.responses, "a negative limit must not return a response")
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, int32(codes.InvalidArgument), w.errors[0].code)
 }
 
 func TestReadGitFile_StagedReturnsIndexContent(t *testing.T) {
@@ -5169,10 +5327,7 @@ func TestReadGitFile_StagedReturnsIndexContent(t *testing.T) {
 
 	_, d, w := setupTestService(t)
 	repoDir := canonicalRepoDir(t)
-	filePath := filepath.Join(repoDir, "tracked.txt")
-	require.NoError(t, os.WriteFile(filePath, []byte("v1\n"), 0o644))
-	run(t, repoDir, "git", "add", "tracked.txt")
-	run(t, repoDir, "git", "commit", "-m", "v1")
+	filePath := commitTrackedFile(t, repoDir, "v1\n")
 	// Stage v2; leave the working tree at v3 so we can distinguish the
 	// index from both HEAD and the worktree.
 	require.NoError(t, os.WriteFile(filePath, []byte("v2-staged\n"), 0o644))
@@ -5180,21 +5335,20 @@ func TestReadGitFile_StagedReturnsIndexContent(t *testing.T) {
 	require.NoError(t, os.WriteFile(filePath, []byte("v3-dirty\n"), 0o644))
 
 	dispatch(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, &leapmuxv1.ReadGitFileRequest{
-		Path: filePath,
-		Ref:  leapmuxv1.GitFileRef_GIT_FILE_REF_STAGED,
+		Path:  filePath,
+		Ref:   leapmuxv1.GitFileRef_GIT_FILE_REF_STAGED,
+		Limit: 4,
 	}, w)
 
-	require.Empty(t, w.errors)
-	require.Len(t, w.responses, 1)
-	var resp leapmuxv1.ReadGitFileResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	resp := readGitFileResponse(t, w)
 	assert.True(t, resp.GetExists())
-	assert.Equal(t, "v2-staged\n", string(resp.GetContent()))
+	assert.Equal(t, "v2-s", string(resp.GetContent()))
+	assert.Equal(t, int64(len("v2-staged\n")), resp.GetTotalSize())
 }
 
 // A path that isn't present at the requested ref must respond with a
 // successful response carrying Exists=false rather than surfacing the
-// `git show` failure as an RPC error — the frontend distinguishes
+// git failure as an RPC error — the frontend distinguishes
 // "file not in this ref" (collapse the diff view) from "transport
 // failed" (show an error banner).
 func TestReadGitFile_MissingFileAtRefReturnsExistsFalse(t *testing.T) {
@@ -5211,12 +5365,336 @@ func TestReadGitFile_MissingFileAtRefReturnsExistsFalse(t *testing.T) {
 		Ref:  leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD,
 	}, w)
 
-	require.Empty(t, w.errors)
-	require.Len(t, w.responses, 1)
-	var resp leapmuxv1.ReadGitFileResponse
-	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	resp := readGitFileResponse(t, w)
 	assert.False(t, resp.GetExists(), "missing-at-ref must surface as Exists=false")
 	assert.Empty(t, resp.GetContent())
+}
+
+// A directory at the ref is a tree, not a file to read.
+func TestReadGitFile_DirectoryAtRefReturnsExistsFalse(t *testing.T) {
+	t.Parallel()
+
+	_, d, w := setupTestService(t)
+	repoDir := canonicalRepoDir(t)
+	dirPath := filepath.Join(repoDir, "dir")
+	require.NoError(t, os.MkdirAll(dirPath, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dirPath, "inside.txt"), []byte("inside\n"), 0o644))
+	run(t, repoDir, "git", "add", "dir")
+	run(t, repoDir, "git", "commit", "-m", "add dir")
+
+	dispatch(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, &leapmuxv1.ReadGitFileRequest{
+		Path: dirPath,
+		Ref:  leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD,
+	}, w)
+
+	resp := readGitFileResponse(t, w)
+	assert.False(t, resp.GetExists())
+	assert.Empty(t, resp.GetContent())
+}
+
+// A file below the root of the repository: the spec joins the ref and the path
+// of the file relative to the root.
+func TestReadGitFile_ReadsAFileBelowTheRootOfTheRepository(t *testing.T) {
+	t.Parallel()
+
+	_, d, w := setupTestService(t)
+	repoDir := canonicalRepoDir(t)
+	dirPath := filepath.Join(repoDir, "dir", "nested")
+	require.NoError(t, os.MkdirAll(dirPath, 0o755))
+	filePath := filepath.Join(dirPath, "inside.txt")
+	require.NoError(t, os.WriteFile(filePath, []byte("inside\n"), 0o644))
+	run(t, repoDir, "git", "add", "dir")
+	run(t, repoDir, "git", "commit", "-m", "add a nested file")
+	// The working tree differs from HEAD, so the content must come from git.
+	require.NoError(t, os.WriteFile(filePath, []byte("changed on disk\n"), 0o644))
+
+	dispatch(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, &leapmuxv1.ReadGitFileRequest{
+		Path: filePath,
+		Ref:  leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD,
+	}, w)
+
+	resp := readGitFileResponse(t, w)
+	assert.True(t, resp.GetExists())
+	assert.Equal(t, "inside\n", string(resp.GetContent()))
+	assert.Equal(t, int64(len("inside\n")), resp.GetTotalSize())
+}
+
+// `git rev-parse --verify --quiet` exits with 1 only for a spec that resolves to
+// no object. Every other failure is a failure of the read, which the handler
+// answers as an internal error, not as a file that is absent at the ref.
+func TestReadGitBlob_ReportsAFailureOtherThanAMissingObjectAsAnError(t *testing.T) {
+	t.Parallel()
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, tc := range []struct {
+		name     string
+		ctx      context.Context
+		repoRoot func(t *testing.T) string
+	}{
+		// git exits with 128 outside a repository.
+		{name: "a directory that is no repository", ctx: context.Background(), repoRoot: func(t *testing.T) string { return t.TempDir() }},
+		// The command never starts.
+		{name: "a cancelled context", ctx: cancelled, repoRoot: func(t *testing.T) string {
+			repoDir := canonicalRepoDir(t)
+			commitTrackedFile(t, repoDir, "committed\n")
+			return repoDir
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := readGitBlob(tc.ctx, tc.repoRoot(t), "HEAD:tracked.txt", 100)
+
+			require.Error(t, err)
+			assert.NotErrorIs(t, err, errGitBlobNotFound)
+			assert.ErrorContains(t, err, "resolve HEAD:tracked.txt: ")
+		})
+	}
+}
+
+// The read resolves the spec to an object ID first, and `git cat-file --batch`
+// reads one name per line, so a path that holds a newline still names one blob.
+func TestReadGitBlob_ReadsAPathThatHoldsANewline(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a Windows file name cannot hold a newline")
+	}
+	t.Parallel()
+
+	repoDir := canonicalRepoDir(t)
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "a"), []byte("the file a\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "a\nb.txt"), []byte("the file a, newline, b.txt\n"), 0o644))
+	run(t, repoDir, "git", "add", "a", "a\nb.txt")
+	run(t, repoDir, "git", "commit", "-m", "add a file whose name holds a newline")
+
+	blob, err := readGitBlob(context.Background(), repoDir, "HEAD:a\nb.txt", 100)
+
+	require.NoError(t, err)
+	assert.Equal(t, "the file a, newline, b.txt\n", string(blob.content))
+	assert.Equal(t, int64(len("the file a, newline, b.txt\n")), blob.totalSize)
+}
+
+// On Windows, the git on PATH is a launcher that runs the real git as a child
+// process, and the kill that ends a read ends the launcher only. The real git
+// keeps the pipes open while it waits to write the rest of a blob that the read
+// does not need, so a Wait that waits for the pipes does not end on its own. The
+// read closes its end of the output first: the real git then fails its write and
+// exits, and the read returns after it. A shell script stands in for the launcher
+// here. On Windows, every test that reads a prefix of a large blob runs the real
+// launcher.
+func TestReadGitBlob_EndsTheGitThatAKilledLauncherRuns(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in launcher is a shell script")
+	}
+	repoDir, large := commitLargeTrackedFile(t)
+	endedLog := filepath.Join(t.TempDir(), "ended.log")
+	t.Setenv("GIT_ENDED_LOG", endedLog)
+	// The subshell runs git as its child, and records the arguments of each git
+	// that ends. The line after the subshell keeps the shell from replacing
+	// itself with the subshell, so the kill ends the script and not the subshell.
+	putGitLauncherOnPath(t, "#!/bin/sh\n(\n\t\"$REAL_GIT\" \"$@\"\n\techo \"$*\" >> \"$GIT_ENDED_LOG\"\n)\nexit $?\n")
+
+	blob, err := readTrackedFilePrefix(t, repoDir)
+
+	require.NoError(t, err)
+	assert.Equal(t, large[:1000], string(blob.content))
+	assert.Equal(t, int64(len(large)), blob.totalSize)
+	// The real git had ended when the read returned. Without the close, only the
+	// WaitDelay of the read ends the wait, while the real git still waits to write.
+	ended, err := os.ReadFile(endedLog)
+	require.NoError(t, err)
+	assert.Contains(t, string(ended), "cat-file --batch\n")
+}
+
+// A process that holds the stderr of git and never writes, such as a child of
+// git that hangs, does not end when the read closes its end of the output. The
+// read still returns, gitBlobWaitDelay after the kill, with the prefix that it
+// read.
+func TestReadGitBlob_ReturnsWhileAnotherProcessHoldsTheStderrOfGit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in launcher is a shell script")
+	}
+	repoDir, large := commitLargeTrackedFile(t)
+	holderPIDFile := filepath.Join(t.TempDir(), "holder.pid")
+	t.Setenv("GIT_HOLDER_PID_FILE", holderPIDFile)
+	t.Cleanup(func() {
+		data, err := os.ReadFile(holderPIDFile)
+		if errors.Is(err, os.ErrNotExist) {
+			return // The script started no holder, and the test reports that.
+		}
+		require.NoError(t, err)
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		require.NoError(t, err)
+		holder, err := os.FindProcess(pid)
+		require.NoError(t, err)
+		_ = holder.Kill() // The error only says that the holder ended already.
+	})
+	// For `git cat-file`, the script starts a process that inherits the stderr of
+	// git, never writes to it, and outlives the test unless the cleanup ends it.
+	putGitLauncherOnPath(t, "#!/bin/sh\ncase \" $* \" in\n*\" cat-file \"*)\n\tsleep 600 > /dev/null &\n\techo $! > \"$GIT_HOLDER_PID_FILE\"\n\t;;\nesac\n\"$REAL_GIT\" \"$@\"\nexit $?\n")
+
+	blob, err := readTrackedFilePrefix(t, repoDir)
+
+	require.NoError(t, err)
+	assert.Equal(t, large[:1000], string(blob.content))
+	assert.Equal(t, int64(len(large)), blob.totalSize)
+	require.FileExists(t, holderPIDFile, "the script must start the process that holds stderr")
+}
+
+// commitLargeTrackedFile commits 4 MiB to tracked.txt in a new repository, far
+// more than a pipe holds, and returns the repository and the content.
+func commitLargeTrackedFile(t *testing.T) (repoDir, content string) {
+	t.Helper()
+	repoDir = canonicalRepoDir(t)
+	content = strings.Repeat("0123456789abcdef", 256*1024)
+	commitTrackedFile(t, repoDir, content)
+	return repoDir, content
+}
+
+// putGitLauncherOnPath makes script the first git on PATH for the rest of the
+// test. The script finds the real git in $REAL_GIT. A test that calls it must
+// not call t.Parallel, because t.Setenv panics in a parallel test.
+func putGitLauncherOnPath(t *testing.T, script string) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	require.NoError(t, err)
+	dir := t.TempDir()
+	testutil.WriteExecutable(t, filepath.Join(dir, "git"), script)
+	t.Setenv("REAL_GIT", realGit)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// readTrackedFilePrefix reads the first 1,000 bytes of tracked.txt at HEAD in
+// repoDir, and fails the test when the read does not return.
+func readTrackedFilePrefix(t *testing.T, repoDir string) (gitBlob, error) {
+	t.Helper()
+	var blob gitBlob
+	var err error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		blob, err = readGitBlob(context.Background(), repoDir, "HEAD:tracked.txt", 1000)
+	}()
+	select {
+	case <-done:
+		return blob, err
+	case <-time.After(30 * time.Second):
+		t.Fatal("readGitBlob did not return after it read the prefix of the blob")
+		return gitBlob{}, nil
+	}
+}
+
+// endlessReader answers the byte 'x' for every read and never ends, as git
+// would for a blob too large to read whole.
+type endlessReader struct{}
+
+func (endlessReader) Read(p []byte) (int, error) {
+	for i := range p {
+		p[i] = 'x'
+	}
+	return len(p), nil
+}
+
+// countingReader counts the bytes that its reader answers.
+type countingReader struct {
+	r    io.Reader
+	read int
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.read += n
+	return n, err
+}
+
+func TestReadBatchBlob_ReadsAtMostTheLimitOfABlob(t *testing.T) {
+	t.Parallel()
+
+	const header = "94954abda49de8615a048f8d2e64b5de848e27a1 blob 1000000000\n"
+	source := &countingReader{r: io.MultiReader(strings.NewReader(header), endlessReader{})}
+
+	blob, err := readBatchBlob(source, 10)
+
+	require.NoError(t, err)
+	assert.Equal(t, "xxxxxxxxxx", string(blob.content))
+	assert.Equal(t, int64(1000000000), blob.totalSize)
+	// The header and the content come through one buffered read of 4 KiB.
+	assert.LessOrEqual(t, source.read, len(header)+10+4096, "the read must stop at the limit, not at the end of the blob")
+}
+
+func TestReadBatchBlob(t *testing.T) {
+	t.Parallel()
+
+	const oid = "94954abda49de8615a048f8d2e64b5de848e27a1"
+	for _, tc := range []struct {
+		name      string
+		answer    string
+		limit     int64
+		content   string
+		totalSize int64
+	}{
+		{name: "a zero limit reads no content", answer: oid + " blob 5\nhello\n", limit: 0, content: "", totalSize: 5},
+		{name: "a negative limit reads no content", answer: oid + " blob 5\nhello\n", limit: -1, content: "", totalSize: 5},
+		{name: "a limit above the size reads the whole blob", answer: oid + " blob 5\nhello\n", limit: 100, content: "hello", totalSize: 5},
+		{name: "a limit at the size reads the whole blob", answer: oid + " blob 5\nhello\n", limit: 5, content: "hello", totalSize: 5},
+		{name: "a limit below the size cuts the content", answer: oid + " blob 5\nhello\n", limit: 2, content: "he", totalSize: 5},
+		{name: "an empty blob", answer: oid + " blob 0\n\n", limit: 10, content: "", totalSize: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			blob, err := readBatchBlob(strings.NewReader(tc.answer), tc.limit)
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.content, string(blob.content))
+			assert.Equal(t, tc.totalSize, blob.totalSize)
+		})
+	}
+}
+
+func TestReadBatchBlob_AnswersNotFoundForAnObjectThatIsNoBlob(t *testing.T) {
+	t.Parallel()
+
+	const oid = "56c2439f6a8ed9ea912c1e9b62945fc54cd56c55"
+	for _, answer := range []string{
+		oid + " missing\n",
+		oid + " ambiguous\n",
+		oid + " tree 33\n100644 f.txt\n",
+	} {
+		_, err := readBatchBlob(strings.NewReader(answer), 10)
+
+		assert.ErrorIs(t, err, errGitBlobNotFound, "answer %q", answer)
+	}
+}
+
+func TestReadBatchBlob_FailsOnABrokenAnswer(t *testing.T) {
+	t.Parallel()
+
+	const oid = "94954abda49de8615a048f8d2e64b5de848e27a1"
+	for _, tc := range []struct {
+		name   string
+		answer string
+		limit  int64
+		want   string
+	}{
+		{name: "no answer", answer: "", want: "read the header of git cat-file: EOF"},
+		{name: "a header with no newline", answer: oid + " blob 5", want: "read the header of git cat-file: EOF"},
+		{name: "a header of four fields", answer: oid + " blob 5 extra\n", want: "unexpected header of git cat-file"},
+		{name: "a size that is no number", answer: oid + " blob five\n", want: "unexpected size in the header of git cat-file"},
+		{name: "a negative size", answer: oid + " blob -1\n", want: "unexpected size in the header of git cat-file"},
+		{name: "content shorter than the size", answer: oid + " blob 10\nhello", limit: 100, want: "read the content of git cat-file: unexpected EOF"},
+		{name: "content that ends before the limit", answer: oid + " blob 10\nhel", limit: 5, want: "read the content of git cat-file: unexpected EOF"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := readBatchBlob(strings.NewReader(tc.answer), tc.limit)
+
+			require.Error(t, err)
+			assert.NotErrorIs(t, err, errGitBlobNotFound)
+			assert.ErrorContains(t, err, tc.want)
+		})
+	}
 }
 
 // TestResolvePushStatus_CountsLiveUnpushedCommits proves the live

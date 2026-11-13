@@ -3,7 +3,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { renderToolRows } from '~/test-support/toolRowRendering'
 import { acpTextContent } from '../acp/testUtils'
 
-import '../testMocks'
+import '~/components/chat/providers'
 import './plugin'
 
 /**
