@@ -90,6 +90,14 @@ func (s *watchSession) OnCancel() {
 	s.cancel()
 }
 
+// current reports whether this session still serves its stream: OnCancel has
+// not run, and no successor owns the channel. The channel still sends a frame on
+// a stream that the client cancelled, so a session that is not current must send
+// nothing more.
+func (s *watchSession) current() bool {
+	return s.ctx.Err() == nil && s.svc.Watchers.isOwner(s.channelID, s.sessionID)
+}
+
 func (s *watchSession) run(release func()) {
 	if release != nil {
 		defer release()
@@ -148,7 +156,7 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 
 	// Re-check after DB work: OnCancel may have retired this session, or a
 	// successor may own the channel — either way, do not re-register.
-	if s.ctx.Err() != nil || !s.svc.Watchers.isOwner(s.channelID, s.sessionID) {
+	if !s.current() {
 		return
 	}
 
@@ -174,7 +182,7 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 	// revision whose registrations were never installed — the client would
 	// commit it as authority and believe a FULL interest the worker does not
 	// hold. A superseded session sends nothing; the successor owns the ack.
-	if s.ctx.Err() != nil || !s.svc.Watchers.isOwner(s.channelID, s.sessionID) {
+	if !s.current() {
 		return
 	}
 
@@ -229,15 +237,14 @@ func (s *watchSession) apply(r *leapmuxv1.WatchEventsRequest) {
 
 	// Re-check ownership before the (expensive, multi-send) catch-up burst:
 	// OnCancel or a successor BeginSession can retire this session during the
-	// resolve/register window above, and the replay loop stops sends only on
-	// transport/preparation failure (replaySink.alive), not on ownership. Without this check
-	// a superseded/cancelled session ships a full catch-up burst via a sender
-	// the client no longer reads.
-	if s.ctx.Err() != nil || !s.svc.Watchers.isOwner(s.channelID, s.sessionID) {
+	// resolve/register window above. The sink stops each later send once the
+	// session is no longer current, and this check also skips the git batch and
+	// the reads that would feed a burst that nobody reads.
+	if !s.current() {
 		return
 	}
 
-	sink := newReplaySink(s.sender, r.GetUpdateId(), s.OnCancel)
+	sink := newReplaySink(s.sender, r.GetUpdateId(), s.OnCancel, s.current)
 
 	// The git-status batch feeds only the agent replay below, so start it
 	// BEFORE the terminal catch-up and let the two overlap: the terminal
