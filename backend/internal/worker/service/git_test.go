@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -5471,6 +5472,116 @@ func TestReadGitBlob_ReadsAPathThatHoldsANewline(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "the file a, newline, b.txt\n", string(blob.content))
 	assert.Equal(t, int64(len("the file a, newline, b.txt\n")), blob.totalSize)
+}
+
+// On Windows, the git on PATH is a launcher that runs the real git as a child
+// process, and the kill that ends a read ends the launcher only. The real git
+// keeps the pipes open while it waits to write the rest of a blob that the read
+// does not need, so a Wait that waits for the pipes does not end on its own. The
+// read closes its end of the output first: the real git then fails its write and
+// exits, and the read returns after it. A shell script stands in for the launcher
+// here. On Windows, every test that reads a prefix of a large blob runs the real
+// launcher.
+func TestReadGitBlob_EndsTheGitThatAKilledLauncherRuns(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in launcher is a shell script")
+	}
+	repoDir, large := commitLargeTrackedFile(t)
+	endedLog := filepath.Join(t.TempDir(), "ended.log")
+	t.Setenv("GIT_ENDED_LOG", endedLog)
+	// The subshell runs git as its child, and records the arguments of each git
+	// that ends. The line after the subshell keeps the shell from replacing
+	// itself with the subshell, so the kill ends the script and not the subshell.
+	putGitLauncherOnPath(t, "#!/bin/sh\n(\n\t\"$REAL_GIT\" \"$@\"\n\techo \"$*\" >> \"$GIT_ENDED_LOG\"\n)\nexit $?\n")
+
+	blob, err := readTrackedFilePrefix(t, repoDir)
+
+	require.NoError(t, err)
+	assert.Equal(t, large[:1000], string(blob.content))
+	assert.Equal(t, int64(len(large)), blob.totalSize)
+	// The real git had ended when the read returned. Without the close, only the
+	// WaitDelay of the read ends the wait, while the real git still waits to write.
+	ended, err := os.ReadFile(endedLog)
+	require.NoError(t, err)
+	assert.Contains(t, string(ended), "cat-file --batch\n")
+}
+
+// A process that holds the stderr of git and never writes, such as a child of
+// git that hangs, does not end when the read closes its end of the output. The
+// read still returns, gitBlobWaitDelay after the kill, with the prefix that it
+// read.
+func TestReadGitBlob_ReturnsWhileAnotherProcessHoldsTheStderrOfGit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in launcher is a shell script")
+	}
+	repoDir, large := commitLargeTrackedFile(t)
+	holderPIDFile := filepath.Join(t.TempDir(), "holder.pid")
+	t.Setenv("GIT_HOLDER_PID_FILE", holderPIDFile)
+	t.Cleanup(func() {
+		data, err := os.ReadFile(holderPIDFile)
+		if errors.Is(err, os.ErrNotExist) {
+			return // The script started no holder, and the test reports that.
+		}
+		require.NoError(t, err)
+		pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		require.NoError(t, err)
+		holder, err := os.FindProcess(pid)
+		require.NoError(t, err)
+		_ = holder.Kill() // The error only says that the holder ended already.
+	})
+	// For `git cat-file`, the script starts a process that inherits the stderr of
+	// git, never writes to it, and outlives the test unless the cleanup ends it.
+	putGitLauncherOnPath(t, "#!/bin/sh\ncase \" $* \" in\n*\" cat-file \"*)\n\tsleep 600 > /dev/null &\n\techo $! > \"$GIT_HOLDER_PID_FILE\"\n\t;;\nesac\n\"$REAL_GIT\" \"$@\"\nexit $?\n")
+
+	blob, err := readTrackedFilePrefix(t, repoDir)
+
+	require.NoError(t, err)
+	assert.Equal(t, large[:1000], string(blob.content))
+	assert.Equal(t, int64(len(large)), blob.totalSize)
+	require.FileExists(t, holderPIDFile, "the script must start the process that holds stderr")
+}
+
+// commitLargeTrackedFile commits 4 MiB to tracked.txt in a new repository, far
+// more than a pipe holds, and returns the repository and the content.
+func commitLargeTrackedFile(t *testing.T) (repoDir, content string) {
+	t.Helper()
+	repoDir = canonicalRepoDir(t)
+	content = strings.Repeat("0123456789abcdef", 256*1024)
+	commitTrackedFile(t, repoDir, content)
+	return repoDir, content
+}
+
+// putGitLauncherOnPath makes script the first git on PATH for the rest of the
+// test. The script finds the real git in $REAL_GIT. A test that calls it must
+// not call t.Parallel, because t.Setenv panics in a parallel test.
+func putGitLauncherOnPath(t *testing.T, script string) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	require.NoError(t, err)
+	dir := t.TempDir()
+	testutil.WriteExecutable(t, filepath.Join(dir, "git"), script)
+	t.Setenv("REAL_GIT", realGit)
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// readTrackedFilePrefix reads the first 1,000 bytes of tracked.txt at HEAD in
+// repoDir, and fails the test when the read does not return.
+func readTrackedFilePrefix(t *testing.T, repoDir string) (gitBlob, error) {
+	t.Helper()
+	var blob gitBlob
+	var err error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		blob, err = readGitBlob(context.Background(), repoDir, "HEAD:tracked.txt", 1000)
+	}()
+	select {
+	case <-done:
+		return blob, err
+	case <-time.After(30 * time.Second):
+		t.Fatal("readGitBlob did not return after it read the prefix of the blob")
+		return gitBlob{}, nil
+	}
 }
 
 // endlessReader answers the byte 'x' for every read and never ends, as git

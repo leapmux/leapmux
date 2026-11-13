@@ -62,6 +62,12 @@ const branchMutationTimeout = 30 * time.Second
 // bounding the worst case.
 const gitReadTimeout = 30 * time.Second
 
+// gitBlobWaitDelay is the longest time that readGitBlob waits, after it kills
+// `git cat-file`, for a process that still holds its pipes, such as a child of
+// git that hangs. Wait then closes the pipes and returns. The read has its
+// result by then, so an early close loses nothing that it answers.
+const gitBlobWaitDelay = time.Second
+
 // wipCommitMessage is the placeholder commit message used to sweep up
 // uncommitted changes before `pushBranch` runs `git push`. Centralised so
 // tests and future call sites grep for the same string.
@@ -151,6 +157,7 @@ func readGitBlob(ctx context.Context, repoRoot, spec string, limit int64) (gitBl
 	cmd.Stdin = strings.NewReader(strings.TrimSpace(oid) + "\n")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
+	cmd.WaitDelay = gitBlobWaitDelay
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return gitBlob{}, fmt.Errorf("pipe the output of git cat-file: %w", err)
@@ -159,6 +166,13 @@ func readGitBlob(ctx context.Context, repoRoot, spec string, limit int64) (gitBl
 		return gitBlob{}, fmt.Errorf("start git cat-file: %w", err)
 	}
 	blob, readErr := readBatchBlob(stdout, limit)
+	// The kill alone does not end every process that holds the pipes. On
+	// Windows, the git on PATH is a launcher that runs the real git as a child
+	// process, and the kill ends the launcher only. The real git keeps stderr
+	// open while it waits to write the rest of the blob, so Wait, which closes
+	// this pipe only after stderr ends, would never return. Closing the pipe
+	// first fails that write, and the real git exits.
+	_ = stdout.Close()
 	stopRead()
 	// The kill above ends git with an error that says nothing about the bytes
 	// already read, so the result of Wait matters only when the read failed.
