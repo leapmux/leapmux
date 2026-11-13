@@ -1259,6 +1259,7 @@ tasks:
       # Linux also covers application frontend tests, scripts and schemas.
       - task: test-frontend-native
       - task: test-ci-monitor
+      - task: test-ci-results
       - task: test-backend-no-docker-run
       - task: test-desktop-run
       - task: test-cache-native
@@ -1280,6 +1281,11 @@ tasks:
       # directories so a test's environment cannot remove native coverage.
       - cd frontend && bun run test scripts/ tests/e2e/helpers/
 
+  test-ci-results:
+    desc: Test report capture and compressed archives on the native filesystem and process APIs
+    cmds:
+      - node scripts/run-bun-tests.mjs ci-results --timeout 30000 ./scripts/run-test-suite.test.mjs ./scripts/archive-test-results.test.mjs ./scripts/run-bun-tests.test.mjs ./scripts/test-results-path.test.mjs
+
   test-native-linux:
     desc: Test native modules and check Go code on the Linux runner architecture
     cmds:
@@ -1288,6 +1294,7 @@ tasks:
       # test-desktop includes host Clippy, so it runs only once here.
       - task: test-frontend-native
       - task: test-ci-monitor
+      - task: test-ci-results
       - task: test-backend-no-docker
       - task: test-desktop
       - task: test-cache-native

@@ -10,6 +10,7 @@ const readYaml = path => Bun.YAML.parse(readFileSync(resolve(root, path), 'utf8'
 const expression = body => `\${{ ${body} }}`
 // Each native runner tests the resource monitor's probes for its own OS.
 const MONITOR_TEST = 'node scripts/run-bun-tests.mjs ci-monitor --timeout 30000 scripts/ci-resource-monitor.test.mjs scripts/ci-resource-monitor/'
+const CI_RESULTS_TEST = 'node scripts/run-bun-tests.mjs ci-results --timeout 30000 ./scripts/run-test-suite.test.mjs ./scripts/archive-test-results.test.mjs ./scripts/run-bun-tests.test.mjs ./scripts/test-results-path.test.mjs'
 const CACHE_NATIVE_TEST = 'node scripts/run-bun-tests.mjs cache-native --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs ./scripts/test-support.test.mjs ./scripts/run-go-tool.test.mjs ./scripts/download-go-modules.test.mjs ./scripts/download-cli-tools.test.mjs'
 const fixtures = []
 
@@ -108,17 +109,20 @@ describe('native CI validation', () => {
     expect(linux.filter(command => command.includes('cargo clippy'))).toHaveLength(1)
     expect(linux.filter(command => command.includes('bun run test'))).toEqual(['cd frontend && bun run test scripts/ tests/e2e/helpers/'])
     expect(linux).toContain(MONITOR_TEST)
+    expect(linux).toContain(CI_RESULTS_TEST)
     expect(linux).toContain(CACHE_NATIVE_TEST)
-    expect(linux.filter(command => command !== MONITOR_TEST && command !== CACHE_NATIVE_TEST).join('\n')).not.toMatch(/bun test|bun run (?:lint|typecheck)|validate-json|renovate/)
+    expect(linux.filter(command => command !== MONITOR_TEST && command !== CI_RESULTS_TEST && command !== CACHE_NATIVE_TEST).join('\n')).not.toMatch(/bun test|run-bun-tests|bun run (?:lint|typecheck)|validate-json|renovate/)
   })
 
   it.each([
     '',
     'frontend-native',
     'ci-monitor',
+    'ci-results',
     'backend',
     'desktop-go',
     'rust-test',
+    'cache-native',
     'rust-lint',
   ])('propagates failures and stops subsequent native commands: %s', (failure) => {
     const tasks = readYaml('Taskfile.yaml').tasks
@@ -128,6 +132,7 @@ describe('native CI validation', () => {
     const stages = [
       'frontend-native',
       'ci-monitor',
+      'ci-results',
       'backend',
       'desktop-go',
       'rust-test',
@@ -137,6 +142,7 @@ describe('native CI validation', () => {
       'test-native',
       'test-frontend-native',
       'test-ci-monitor',
+      'test-ci-results',
       'test-backend-no-docker-run',
       'test-desktop-run',
     ].map(name => [
@@ -154,6 +160,7 @@ describe('native CI validation', () => {
     for (const name of [
       'test-frontend-native',
       'test-ci-monitor',
+      'test-ci-results',
       'test-backend-no-docker-run',
       'test-desktop-run',
       'test-native',
@@ -176,9 +183,9 @@ describe('native CI validation', () => {
     // the recorded order of the whole run is the stage list with the
     // cache-native stage inserted after it.
     const recorded = [
-      ...stages.slice(0, 5),
+      ...stages.slice(0, -1),
       'cache-native',
-      ...stages.slice(5),
+      ...stages.slice(-1),
     ]
     const executedActual = readFileSync(join(dir, 'executed'), 'utf8').trim().split('\n')
     expect(executedActual).toEqual(failure
@@ -212,8 +219,9 @@ describe('native CI validation', () => {
     expect(native).toContain('cd desktop/rust && cargo clippy --locked --all-targets -- -D warnings')
     expect(native).toContain('cd frontend && bun run test scripts/ tests/e2e/helpers/')
     expect(native).toContain(MONITOR_TEST)
+    expect(native).toContain(CI_RESULTS_TEST)
     expect(native).toContain(CACHE_NATIVE_TEST)
-    expect(native.filter(cmd => cmd !== MONITOR_TEST && cmd !== CACHE_NATIVE_TEST).join('\n')).not.toMatch(/golangci-lint|GOOS=|bun run (?:lint|typecheck)|bun test|renovate/)
+    expect(native.filter(cmd => cmd !== MONITOR_TEST && cmd !== CI_RESULTS_TEST && cmd !== CACHE_NATIVE_TEST).join('\n')).not.toMatch(/golangci-lint|GOOS=|run-bun-tests|bun run (?:lint|typecheck)|bun test|renovate/)
     expect(native.filter(cmd => cmd.includes('bun run test'))).toEqual(['cd frontend && bun run test scripts/ tests/e2e/helpers/'])
     // The no-Docker run tests every package. The container tests skip themselves.
     const backend = native.find(cmd => cmd.includes('cd backend && node ../scripts/run-go-tool.mjs gotestsum'))
