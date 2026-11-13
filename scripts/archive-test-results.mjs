@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { appendFileSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 
@@ -92,22 +92,25 @@ export function archiveTestResults({ root = checkout, name = 'test-results.tar.g
   const parent = join(root, '.tmp/test-results-archives')
   mkdirSync(parent, { recursive: true })
   const staging = mkdtempSync(join(parent, 'packing-'))
+  const contents = join(staging, 'files')
   const draft = join(staging, name)
   const destination = join(parent, name)
   const failures = []
   try {
-    // GNU tar and BSD tar accept NUL-separated filenames. Prefix each name so it cannot become an option.
+    // Windows tar interprets file-list bytes through its active code page, which can change UTF-8 filenames.
+    // Node copies the selected files through Unicode filesystem APIs. Tar discovers their names through directory traversal.
+    for (const file of files) {
+      const target = join(contents, file)
+      mkdirSync(dirname(target), { recursive: true })
+      copyFileSync(join(root, file), target)
+    }
     const result = run('tar', [
       '-czf',
-      draft,
-      '-C',
-      root,
-      '--null',
-      '-T',
-      '-',
+      `../${name}`,
+      '.',
     ], {
-      input: `${files.map(file => `./${file}`).join('\0')}\0`,
-      stdio: ['pipe', 'inherit', 'inherit'],
+      cwd: contents,
+      stdio: ['ignore', 'inherit', 'inherit'],
     })
     if (result.error || result.status !== 0)
       throw new Error(`tar failed to compress test results: ${result.error?.message ?? result.signal ?? result.status}`)

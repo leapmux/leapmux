@@ -11,6 +11,32 @@ const scratch = scratchDirectories()
 afterEach(scratch.cleanup)
 
 describe('archiveTestResults', () => {
+  it('preserves Unicode paths without passing filenames through tar arguments or input lists', () => {
+    const root = scratch.create('archive 日本語 paths')
+    const file = '.tmp/test-results/space 日本語.log'
+    writeFiles(root, { [file]: 'Unicode report contents\n' })
+    let invoked = false
+    const archive = archiveTestResults({
+      root,
+      run: (command, args, options) => {
+        invoked = true
+        expect(options.input).toBeUndefined()
+        expect(args).not.toContain('-T')
+        expect(args.every(arg => /^[\x20-\x7E]+$/.test(arg))).toBe(true)
+        return spawnSync(command, args, options)
+      },
+    })
+    expect(invoked).toBe(true)
+    const destination = scratch.create('extracted-unicode-reports')
+    const extracted = spawnSync('tar', ['-xzf', '-'], {
+      cwd: destination,
+      input: readFileSync(archive),
+      encoding: 'utf8',
+    })
+    expect(extracted.status, extracted.stderr).toBe(0)
+    expect(readFileSync(join(destination, file), 'utf8')).toBe('Unicode report contents\n')
+  })
+
   it.each([0, 1])('writes GitHub output for an input file count of %i', (count) => {
     const root = scratch.create('archive-cli')
     if (count)
