@@ -136,6 +136,8 @@ describe('cleanupLauncherFixtureProject', () => {
 describe('launcherFixtureDiagnostics', () => {
   it('keeps the exact error text of Playwright\'s own run and the report and console paths', () => {
     const root = directory()
+    const consoleText = 'Both fixture cases passed.\nAggregateError: Test cleanup failed\nhelper timeout42\n'
+    writeFileSync(join(root, 'console.log'), consoleText)
     const result = {
       status: 'timedOut',
       errors: [
@@ -176,12 +178,43 @@ describe('launcherFixtureDiagnostics', () => {
       root,
       reportPath: join(root, 'combined.json'),
       consolePath: join(root, 'console.log'),
+      code: 1,
+      console: consoleText,
       errors: [
         { message: 'fixture global error77' },
       ],
       cases,
     })
     expect(details).toContain('Fixture detail42')
+  })
+
+  it('keeps the exit code and fixture failures when the launcher console is unavailable', () => {
+    const root = directory()
+    const consolePath = join(root, 'missing-console.log')
+    const details: unknown = JSON.parse(launcherFixtureDiagnostics({
+      root,
+      records: join(root, 'records'),
+      report: {
+        errors: [
+          { message: 'fixture failure42' },
+        ],
+      },
+      cases: [],
+      code: 1,
+      parallelRelease: false,
+      reportPath: join(root, 'combined.json'),
+      consolePath,
+    }))
+    expect(details).toMatchObject({
+      code: 1,
+      errors: [
+        { message: 'fixture failure42' },
+      ],
+      console: expect.stringContaining('The launcher console could not be read:'),
+    })
+    expect(details).toMatchObject({
+      console: expect.stringContaining(consolePath),
+    })
   })
 })
 

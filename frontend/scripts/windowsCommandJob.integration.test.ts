@@ -152,6 +152,23 @@ function requireEnded(captured: { pid: number, creationTime: string }[]): void {
 }
 
 windowsOnly('Windows command job native integration', () => {
+  it('allows verification helper startup after a command with a short native shutdown delay', async () => {
+    const data = fixture()
+    const resource = spawnCommandProcess(process.execPath, ['-e', 'process.exit(0)'], {
+      cwd: data.directory,
+      stdio: 'ignore',
+    }, { ownTree: true, shutdownDelayMs: 1 })
+    const completion = closed(resource.child)
+    try {
+      expect(await completion).toEqual({ code: 0, signal: null })
+      // The root already exited. Verification needs no native wait, but PowerShell and Add-Type still have to start.
+      await resource.stop()
+    }
+    finally {
+      await resource.stop()
+    }
+  }, WINDOWS_NATIVE_DEADLINE_MS)
+
   it('preserves quoted arguments, stdin, environment, and the working directory', async () => {
     const data = fixture()
     const args = [
