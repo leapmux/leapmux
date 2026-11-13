@@ -32,11 +32,28 @@ const DOM_TITLE_RESTRICTED_SYNTAX = {
 } as const
 
 /**
+ * The ban on a regex literal under the `m` flag that opens with `^\s*` or
+ * `^\s+`, alone or inside a leading non-capturing group.
+ *
+ * `\s` also matches a line terminator. So at each line start where the rest of
+ * the pattern fails, the whitespace run rescans every blank line below it, and
+ * a scan takes time quadratic in a run of blank lines. `afterLineIndent` from
+ * `~/lib/regexp` matches the indentation of one line only, in linear time.
+ *
+ * The selector reads a regex LITERAL. It cannot see a pattern that
+ * `new RegExp(...)` builds from a string.
+ */
+const LINE_START_WHITESPACE_RESTRICTED_SYNTAX = {
+  selector: String.raw`Literal[regex.flags=/m/][regex.pattern=/^\^(\(\?:)?\\s[*+]/]`,
+  message: '`^\\s*` or `^\\s+` under the m flag takes time quadratic in a run of blank lines, because `\\s` also matches a line terminator. Wrap the rest of the pattern in afterLineIndent from ~/lib/regexp, which matches the indentation of one line only.',
+} as const
+
+/**
  * Every `no-restricted-syntax` option list in this file starts from these.
  * ESLint replaces rule options rather than merging them, so a scoped block
  * that omits one of these deletes it for exactly the tree it matches.
  */
-const BASE_RESTRICTED_SYNTAX = [...ANTFU_RESTRICTED_SYNTAX, DOM_TITLE_RESTRICTED_SYNTAX]
+const BASE_RESTRICTED_SYNTAX = [...ANTFU_RESTRICTED_SYNTAX, DOM_TITLE_RESTRICTED_SYNTAX, LINE_START_WHITESPACE_RESTRICTED_SYNTAX]
 
 /**
  * The Dexie import ban the storage block puts on all of `src/`, factored for
@@ -257,8 +274,8 @@ export default antfu({
   ],
   rules: {
     // Spread the base selectors: ESLint REPLACES a rule's options rather than
-    // merging them, so omitting them would delete the `const enum`, `export =`
-    // and DOM-`title` bans for exactly this tree.
+    // merging them, so omitting them would delete the `const enum`, `export =`,
+    // DOM-`title` and line-start whitespace bans for exactly this tree.
     'no-restricted-syntax': [
       'error',
       ...BASE_RESTRICTED_SYNTAX,
@@ -285,8 +302,8 @@ export default antfu({
   ignores: ['tests/e2e/**/*.test.ts', 'tests/e2e/helpers/providerWorkingDir.ts'],
   rules: {
     // Spread the base selectors: ESLint REPLACES a rule's options rather than
-    // merging them, so omitting them would delete the `const enum`, `export =`
-    // and DOM-`title` bans for exactly this tree.
+    // merging them, so omitting them would delete the `const enum`, `export =`,
+    // DOM-`title` and line-start whitespace bans for exactly this tree.
     'no-restricted-syntax': [
       'error',
       ...BASE_RESTRICTED_SYNTAX,

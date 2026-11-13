@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { normalizeStructuredPatchHunks } from '../model/fileEditDiff'
-import { parseUnifiedDiff } from './unifiedDiffParser'
+import { isNoNewlineMarker, parseUnifiedDiff } from './unifiedDiffParser'
 
 describe('parseUnifiedDiff', () => {
   it('returns null for text that holds no hunk', () => {
@@ -61,5 +61,22 @@ describe('parseUnifiedDiff', () => {
         lines: ['-old', '+new'],
       },
     ])
+  })
+})
+
+describe('isNoNewlineMarker', () => {
+  it('matches the marker that the diff package emits', () => {
+    expect(isNoNewlineMarker('\\ No newline at end of file')).toBe(true)
+  })
+
+  it('matches nothing else that starts with a backslash', () => {
+    expect(isNoNewlineMarker('\\')).toBe(false)
+    expect(isNoNewlineMarker('\\ No newline')).toBe(false)
+  })
+
+  it('matches no hunk line, whatever its text', () => {
+    expect(isNoNewlineMarker(' \\ No newline at end of file')).toBe(false)
+    expect(isNoNewlineMarker('+\\ No newline at end of file')).toBe(false)
+    expect(isNoNewlineMarker('')).toBe(false)
   })
 })

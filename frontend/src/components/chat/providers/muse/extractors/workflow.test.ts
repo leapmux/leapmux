@@ -2,10 +2,10 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { renderExtractedRow } from '~/components/chat/rowRenderers'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { providerRow, providerToolCall } from '~/test-support/toolCallFixture'
 import { MUSE_NATIVE_WORKFLOW_COMPLETE_FRAME, MUSE_NATIVE_WORKFLOW_FAILED_FRAME, MUSE_NATIVE_WORKFLOW_LAUNCH_FRAME } from '../toolResults.fixtures'
 import '~/components/chat/providers'
-import '~/components/chat/providers/testMocks'
 
 interface WorkflowFrame extends Record<string, unknown> {
   params: {
@@ -208,13 +208,14 @@ describe('museWorkflowResult', () => {
   it.each([
     ['completed', MUSE_NATIVE_WORKFLOW_COMPLETE_FRAME, 'MUSE_WORKFLOW_42'],
     ['failed', MUSE_NATIVE_WORKFLOW_FAILED_FRAME, 'workflow script promise rejected: Error: MUSE_WORKFLOW_ERROR_42'],
-  ])('draws the native %s workflow output through the neutral renderer', (status, native, output) => {
+  ])('draws the native %s workflow output through the neutral renderer', async (status, native, output) => {
     const row = providerRow(AgentProvider.MUSE_CODE, JSON.parse(native))
     expect(row?.kind).toBe('tool')
     if (row?.kind !== 'tool')
       throw new Error('The native workflow output requires a tool row.')
     expect(row.call.status).toBe(status)
     const { container } = render(() => renderExtractedRow({ kind: 'row', row, completion: null }, undefined))
+    await settleWorkerReplies()
     expect(container.textContent).toContain(output)
     expect(container.textContent).not.toContain('<workflow-launch-reconciled>')
     expect(container.textContent).not.toContain('resumeFromRunId')

@@ -26,11 +26,16 @@ afterEach(async () => {
   rmSync(directory, { recursive: true, force: true })
 })
 
-/**
- * Run a real Node child. Its fixture output belongs only to this unit test.
- * `afterSpawn` sees the child once its input is written.
- */
-async function runFixture(source: string, input: string, options: Partial<PiStopRelayOptions> = {}, argv: string[] = [], afterSpawn?: (child: ReturnType<typeof spawn>) => void) {
+/** What a fixture run passes to the relay beside its source and its input. */
+interface FixtureRun {
+  /** The arguments that the relay receives at run time. */
+  argv?: string[]
+  /** Sees the child once its input is written. */
+  afterSpawn?: (child: ReturnType<typeof spawn>) => void
+}
+
+/** Run a real Node child. Its fixture output belongs only to this unit test. */
+async function runFixture(source: string, input: string, options: Partial<PiStopRelayOptions> = {}, { argv = [], afterSpawn }: FixtureRun = {}) {
   const native = join(directory, 'native child.cjs')
   const relay = join(directory, 'relay.cjs')
   writeFileSync(native, source)
@@ -111,7 +116,9 @@ describe('piStopRelayProgram', () => {
     // Node handles the closed pipe and the exit, so the test raises the error itself.
     const result = await runFixture('', '', {
       executable: join(directory, 'absent-native'),
-    }, [], child => child.stdin?.emit('error', closedPipeError()))
+    }, {
+      afterSpawn: child => child.stdin?.emit('error', closedPipeError()),
+    })
     expect(result.code).toBe(1)
     expect(result.stderr.toString()).toContain('ENOENT')
   })
@@ -120,7 +127,9 @@ describe('piStopRelayProgram', () => {
     const failure = Object.assign(new Error('write EIO'), { code: 'EIO' })
     await expect(runFixture('', '', {
       executable: join(directory, 'absent-native'),
-    }, [], child => child.stdin?.emit('error', failure))).rejects.toBe(failure)
+    }, {
+      afterSpawn: child => child.stdin?.emit('error', failure),
+    })).rejects.toBe(failure)
   })
 
   it.each([
@@ -155,7 +164,7 @@ describe('piStopRelayProgram', () => {
       '한글 and spaces',
       'quote"text',
     ]
-    const result = await runFixture(`process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(JSON.stringify(process.argv.slice(2))));`, '', {}, argv)
+    const result = await runFixture(`process.stdin.resume(); process.stdin.on('end', () => process.stdout.write(JSON.stringify(process.argv.slice(2))));`, '', {}, { argv })
     expect(result.code).toBe(0)
     expect(JSON.parse(result.output.toString())).toEqual(argv)
   })

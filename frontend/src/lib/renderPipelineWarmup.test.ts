@@ -27,7 +27,6 @@ describe('renderPipelineWarmup', () => {
     vi.mocked(renderMarkdownInWorker).mockClear()
     vi.mocked(tokenizeAsync).mockClear()
     vi.mocked(sweepArtifacts).mockClear()
-    vi.stubGlobal('Worker', class {})
     // The desktop viewport keeps these cases on the unconstrained path.
     vi.stubGlobal('matchMedia', (query: string) => ({
       matches: false,
@@ -76,12 +75,14 @@ describe('renderPipelineWarmup', () => {
     expect(callbacks).toHaveLength(1)
   })
 
-  it('is a no-op without Worker support', () => {
+  // Each warm-up job resolves null where no worker can start, as every worker
+  // client does, so the schedule needs no check of its own.
+  it('schedules the warm-up where no Worker exists too', () => {
     vi.stubGlobal('Worker', undefined)
     const ric = vi.fn()
     vi.stubGlobal('requestIdleCallback', ric)
     scheduleRenderPipelineWarmup()
-    expect(ric).not.toHaveBeenCalled()
+    expect(ric).toHaveBeenCalledOnce()
   })
 
   it('falls back to a timeout when requestIdleCallback is unavailable (Safari)', async () => {

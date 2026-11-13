@@ -1,5 +1,5 @@
 import type { SaveActionsSpies } from '~/test-support/saveActionsMocks'
-import { render, screen, waitFor, within } from '@solidjs/testing-library'
+import { fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import {
   fileDownloadMock,
@@ -98,6 +98,17 @@ async function findRowByText(text: string): Promise<HTMLElement> {
   })
 }
 
+/**
+ * Open the three-dot menu of one row. The menu mounts its items at its first
+ * open, so a test of an item opens the menu first. Every variant of the menu
+ * holds "Copy path", so the check below fails a menu that did not open, and an
+ * assertion of an absent item cannot pass on such a menu.
+ */
+function openRowMenu(row: HTMLElement): void {
+  fireEvent.click(within(row).getByTestId('tree-context-button'))
+  expect(within(row).getByTestId('tree-copy-path-button')).toBeInTheDocument()
+}
+
 beforeEach(() => {
   listDirectoryImpl.mockReset()
   resetSaveActionsSpies(spies)
@@ -107,12 +118,12 @@ describe('DirectoryTree context menu — web', () => {
   it('renders the Download item for files but not directories', async () => {
     setupTree()
     const fileRow = await findRowByText('archive.zip')
+    openRowMenu(fileRow)
     expect(within(fileRow).queryByTestId('tree-download-button')).toBeInTheDocument()
 
     const dirRow = await findRowByText('src')
+    openRowMenu(dirRow)
     expect(within(dirRow).queryByTestId('tree-download-button')).not.toBeInTheDocument()
-    // Sanity: the menu rendered for the dir row too (common items present).
-    expect(within(dirRow).queryByTestId('tree-copy-path-button')).toBeInTheDocument()
   })
 })
 
@@ -124,11 +135,13 @@ describe('DirectoryTree context menu — desktop', () => {
   it('renders Save as / Save to Downloads for files and neither for directories', async () => {
     setupTree()
     const fileRow = await findRowByText('archive.zip')
+    openRowMenu(fileRow)
     expect(within(fileRow).queryByTestId('tree-save-as-button')).toBeInTheDocument()
     expect(within(fileRow).queryByTestId('tree-save-to-downloads-button')).toBeInTheDocument()
     expect(within(fileRow).queryByTestId('tree-download-button')).not.toBeInTheDocument()
 
     const dirRow = await findRowByText('src')
+    openRowMenu(dirRow)
     expect(within(dirRow).queryByTestId('tree-save-as-button')).not.toBeInTheDocument()
     expect(within(dirRow).queryByTestId('tree-save-to-downloads-button')).not.toBeInTheDocument()
     expect(within(dirRow).queryByTestId('tree-download-button')).not.toBeInTheDocument()

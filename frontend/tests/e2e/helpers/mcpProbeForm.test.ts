@@ -10,6 +10,7 @@ import { useControlResponseHandling } from '~/components/chat/controlResponseHan
 import { createControlAnswerState } from '~/components/chat/controls/types'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { accountStorageKey, flushStorageWrites, localStorageLoad, PREFIX_CONTROL_STATE, resetBrowserStorageForTests, setStorageAccountForTests } from '~/lib/browserStorage'
+import { afterLineIndent } from '~/lib/regexp'
 import { requestInstanceId } from '~/stores/control.store'
 import { ControlRequestContent } from '~/test-support/controlRequestBanner'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
@@ -51,9 +52,9 @@ useTestStorage()
  * line comment after code stays, because `//` also occurs inside a string.
  */
 function testsThatReloadBeforeTheDraftLands(source: string): number {
-  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(afterLineIndent(/\/\/.*$/g), '')
   let count = 0
-  for (const body of code.split(/^\s*\w*[Tt]est(?:\.\w+)?\(/m)) {
+  for (const body of code.split(afterLineIndent(/\w*[Tt]est(?:\.\w+)?\(/))) {
     for (const fill of body.matchAll(/\bfillMcpProbeForm\(/g)) {
       const afterFill = body.slice(fill.index)
       const reload = afterFill.search(/\bpage\.reload\(/)

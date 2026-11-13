@@ -1,7 +1,7 @@
 import type { GenericToolRequest } from './generic'
 import { describe, expect, it } from 'vitest'
 import { prettifyJson } from '~/lib/jsonFormat'
-import { genericArgsText } from './generic'
+import { genericArgsText, unknownContentText } from './generic'
 
 /** A request whose one argument counts how often a formatter reads it. */
 function countingRequest(): { request: GenericToolRequest, reads: () => number } {
@@ -62,5 +62,62 @@ describe('genericArgsText', () => {
 
     expect(genericArgsText({ args: request.args })).toContain('needle')
     expect(reads()).toBeGreaterThan(readsAfterFirst)
+  })
+})
+
+/** An unknown content item whose raw value counts how often a formatter reads it. */
+function countingUnknownItem(): { item: { type: 'unknown', raw: unknown }, reads: () => number } {
+  let reads = 0
+  const raw = {
+    get payload(): string {
+      reads++
+      return 'opaque'
+    },
+  }
+  return {
+    item: { type: 'unknown', raw },
+    reads: () => reads,
+  }
+}
+
+describe('unknownContentText', () => {
+  it('formats the raw value of the item as JSON', () => {
+    const raw = { kind: 'future-block', size: 3 }
+
+    expect(unknownContentText({ type: 'unknown', raw })).toBe(prettifyJson(raw))
+  })
+
+  it('formats a raw JSON text as prettifyJson does', () => {
+    const raw = '{"kind":"future-block","size":3}'
+
+    expect(unknownContentText({ type: 'unknown', raw })).toBe(prettifyJson(raw))
+  })
+
+  it.each([
+    ['null', null],
+    ['an empty string', ''],
+    ['zero', 0],
+  ])('formats %s as prettifyJson does, although the value is falsy', (_label, raw) => {
+    expect(unknownContentText({ type: 'unknown', raw })).toBe(prettifyJson(raw))
+  })
+
+  it('formats one item once, however often a reader asks', () => {
+    const { item, reads } = countingUnknownItem()
+
+    const first = unknownContentText(item)
+    const readsAfterFirst = reads()
+    expect(first).toContain('opaque')
+    expect(readsAfterFirst).toBe(1)
+
+    expect(unknownContentText(item)).toBe(first)
+    expect(reads()).toBe(readsAfterFirst)
+  })
+
+  it('formats a new item again, because it is a new revision of the row', () => {
+    const { item, reads } = countingUnknownItem()
+    unknownContentText(item)
+
+    expect(unknownContentText({ type: 'unknown', raw: item.raw })).toContain('opaque')
+    expect(reads()).toBe(2)
   })
 })

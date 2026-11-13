@@ -135,7 +135,7 @@ var controlTree = cmdGroup{
 				{Name: "status", Summary: "Show git info + per-file change list", Run: controlRun(cmdcontrol.RunGitStatus)},
 				{Name: "branches", Summary: "List git branches", Run: controlRun(cmdcontrol.RunGitBranches)},
 				{Name: "worktrees", Summary: "List git worktrees", Run: controlRun(cmdcontrol.RunGitWorktrees)},
-				{Name: "read", Summary: "Read a file at HEAD or in the index", Run: controlRun(cmdcontrol.RunGitRead)},
+				{Name: "read", Summary: "Read a file at HEAD or in the index (with optional --limit)", Run: controlRun(cmdcontrol.RunGitRead)},
 			},
 		},
 		{

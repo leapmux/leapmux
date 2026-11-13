@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest'
 import { toolUseHeader } from '../toolStyles.css'
 import { COLLAPSED_RESULT_ROWS } from './collapse'
 import { StatusResultBody, taskResultCollapsible } from './statusResult'
-import '../providers/testMocks'
+import '~/components/chat/providers'
 
 function source(overrides: Partial<TaskResult> = {}): TaskResult {
   return {

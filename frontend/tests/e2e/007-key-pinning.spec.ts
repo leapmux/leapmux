@@ -64,11 +64,11 @@ test.describe('Key Pinning', () => {
   })
 
   /**
-   * A post-quantum channel open verifies the Worker's SLH-DSA signature, which costs about 26 ms of JavaScript, in a
-   * dedicated Web Worker. The client falls back to the main thread when that worker cannot run, so the open would pass
-   * either way; this proves that the worker loads and stays up in the built app.
+   * The Noise session of every channel runs in the channel session worker: the handshake, the SLH-DSA signature check
+   * of a post-quantum open (about 26 ms of JavaScript), encryption and decryption. No main-thread fallback exists, so
+   * the channel opens only when that worker runs; this proves that it loads and stays up in the built app.
    */
-  test('verifies the post-quantum handshake signature in a Web Worker', async ({
+  test('runs the channel session, and its signature check, in a Web Worker', async ({
     page,
     workspace,
     leapmuxServer,
@@ -79,7 +79,7 @@ test.describe('Key Pinning', () => {
     await openWorkspace(page, workspace.workspaceId)
     await expect.poll(() => getKeyPin(page, adminUserId, workerId)).not.toBeNull()
 
-    await expect.poll(() => page.workers().some(worker => worker.url().includes('slhDsaVerifyWorker'))).toBe(true)
+    await expect.poll(() => page.workers().some(worker => worker.url().includes('channelSessionWorker'))).toBe(true)
   })
 
   test('accept: key mismatch dialog appears, user accepts, workspace loads', async ({

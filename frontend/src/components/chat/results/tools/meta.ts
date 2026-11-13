@@ -48,33 +48,41 @@ export function plainMeta(text: string): ToolKindMeta {
   }
 }
 
+/** The side of a row that stated its copyable text. */
+type CopyableSide = 'primary' | 'request'
+
 /** One row's copyable text, and the words that describe the side which stated it. */
 interface RowCopyable {
   /** The text Copy writes and Quote quotes. Null when the row states none. */
   text: string | null
   /** The `copyLabel` of the side the text came from. Undefined when that side words none. */
   label: string | undefined
+  /** The side the text came from. Null when neither side stated one. */
+  side: CopyableSide | null
+  /** False while the text is that side's stand-in (see `ToolKindMeta.copyableFinal`). */
+  final: boolean
 }
 
 /**
- * One row's copyable text, built at most once for each revision of that row.
+ * One row's copyable text, built at most once for each revision of that row, and
+ * once more when a stand-in turns final.
  *
  * `hasCopyable` is derived from the text, and the toolbar reads it on every reactive
- * pass -- so the text was built on every pass. For an edit row that is the Myers diff
- * and the unified-diff format, once per streamed token, for a body nobody asked to
- * copy. The ROW object is the revision: `cachedChatRow` replaces it exactly when the
- * row's content changes, and every other caller builds a fresh row, so keying on it
- * holds the build to once per change without a second rule that could disagree with
- * the text it describes.
+ * pass -- so the text was built on every pass. For an edit row that is the
+ * unified-diff format of every line of its diff, once per streamed token, for a body
+ * nobody asked to copy. The ROW object is the revision: `cachedChatRow` replaces it
+ * exactly when the row's content changes, and every other caller builds a fresh row,
+ * so keying on it holds the build to once per change without a second rule that could
+ * disagree with the text it describes.
  *
  * The entry wraps the value because `null` is a real answer -- the row is copyable-free
  * -- and must not read as a miss. It carries the LABEL for the same reason: which side
  * answered is known only while the text is built, and reading it a second time would
  * format that unified diff again.
  *
- * A side whose text is a stand-in (`ToolKindMeta.copyableFinal`) stores no entry: an
- * edit's diff arrives from the diff worker after the row mounts, and the next read
- * builds the final text.
+ * A side's stand-in (`ToolKindMeta.copyableFinal`) serves only until that side
+ * answers final: an edit's diff arrives from the diff worker after the row mounts,
+ * and the first read after it builds the final text.
  */
 const copyableByRow = new WeakMap<ToolCallRow, RowCopyable>()
 
@@ -108,13 +116,24 @@ export function toolCallMeta(row: ToolCallRow): ToolCallMeta {
     ? plainMeta(plain.text)
     : undefined
   const primary = result ?? fallback
+  // The meta of a side, from this call: a cached entry outlives the call that built it.
+  const sideMeta = (side: CopyableSide | null): Partial<ToolKindMeta> | undefined => side === 'primary'
+    ? primary
+    : side === 'request'
+      ? request
+      : undefined
+  // A side without `copyableFinal` states final text, and so does the extra
+  // content that no side stated.
+  const sideFinal = (side: CopyableSide | null): boolean => sideMeta(side)?.copyableFinal?.() ?? true
   // The BODY text and its words, built together. The primary side answers first and
   // the request side answers when it states nothing, so the label must follow the same
   // fallback: a command whose run printed nothing copies the COMMAND, and reading the
   // label off `primary` alone offered that command under the bare word "Copy".
   const build = (): RowCopyable => {
     const cached = copyableByRow.get(row)
-    if (cached)
+    // A stand-in serves until its side answers final. That answer is reactive, so a
+    // memo that reads the stand-in re-runs when its diff lands.
+    if (cached !== undefined && (cached.final || !sideFinal(cached.side)))
       return cached
     const primaryText = primary?.copyableContent() ?? null
     const requestText = primaryText === null && drawsRequest
@@ -128,28 +147,27 @@ export function toolCallMeta(row: ToolCallRow): ToolCallMeta {
     ].filter(Boolean).join('\n\n') || null
     // Neither side answered, so the text is the call's EXTRA content and neither
     // side's words describe it.
-    const label = primaryText !== null
-      ? primary?.copyLabel
+    const side: CopyableSide | null = primaryText !== null
+      ? 'primary'
       : requestText !== null
-        ? request.copyLabel
-        : undefined
-    const built: RowCopyable = { text, label }
-    // A stand-in waits for the next read. Only the side that answered decides: a
-    // stand-in is null exactly when its final text is, so the final text comes from
-    // the same side, and `hasCopyable` and `copyLabel` already hold.
-    const answered = primaryText !== null
-      ? primary
-      : requestText !== null
-        ? request
-        : undefined
-    if (answered?.copyableFinal?.() ?? true)
-      copyableByRow.set(row, built)
-    return built
+        ? 'request'
+        : null
+    // Only the side that answered decides whether the text is final. A stand-in is
+    // null exactly when its final text is, so the final text comes from the same
+    // side, and `hasCopyable` and `copyLabel` already hold.
+    const entry: RowCopyable = {
+      text,
+      label: sideMeta(side)?.copyLabel,
+      side,
+      final: sideFinal(side),
+    }
+    copyableByRow.set(row, entry)
+    return entry
   }
   const copyableContent = (): string | null => build().text
-  // Both label fields ride the same cached build; absent stays absent rather than
-  // an explicitly undefined key, which each toolbar's `??` last resort reads the same.
-  const copyLabel = build().label
+  // One build answers both fields below. The getter reads the entry again, so a
+  // stand-in that turns final later gives the final text.
+  const built = build()
   // Expand opens whatever the row CLIPS, so the words come from the side that
   // holds it. Three cases, in this order:
   //
@@ -169,9 +187,11 @@ export function toolCallMeta(row: ToolCallRow): ToolCallMeta {
     collapsible: (primary?.collapsible ?? false) || (drawsRequest && (request.collapsible ?? false)),
     hasDiff: (primary?.hasDiff ?? false) || (drawsRequest && (request.hasDiff ?? false)),
     copyableContent,
-    hasCopyable: copyableContent() !== null,
-    ...(copyLabel !== undefined
-      ? { copyLabel }
+    hasCopyable: built.text !== null,
+    // Absent stays absent rather than an explicitly undefined key, which each
+    // toolbar's `??` last resort reads the same.
+    ...(built.label !== undefined
+      ? { copyLabel: built.label }
       : {}),
     ...(expandLabel !== undefined
       ? { expandLabel }

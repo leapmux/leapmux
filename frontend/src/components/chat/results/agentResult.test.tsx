@@ -1,9 +1,10 @@
 import type { AgentRun } from '../model/tools/agent'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { toolResultCollapsed } from '../toolStyles.css'
 import { AgentResultBody } from './agentResult'
-import '../providers/testMocks'
+import '~/components/chat/providers'
 
 function source(body: string): AgentRun {
   return {
@@ -18,7 +19,7 @@ function source(body: string): AgentRun {
 }
 
 describe('AgentResultBody', () => {
-  it.each([false, true])('marks the report without marking properties or the body label when expanded is %s', (expanded) => {
+  it.each([false, true])('marks the report without marking properties or the body label when expanded is %s', async (expanded) => {
     const body = [
       'NATIVE_AGENT_OUTPUT',
       ...Array.from({ length: 8 }, (_, index) => `report line ${index}`),
@@ -35,6 +36,7 @@ describe('AgentResultBody', () => {
         }}
       />
     ))
+    await settleWorkerReplies()
     const outputs = container.querySelectorAll('[data-tool-output-preview]')
     expect(outputs).toHaveLength(1)
     expect(outputs[0]?.textContent).toContain('NATIVE_AGENT_OUTPUT')

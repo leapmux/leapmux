@@ -51,9 +51,7 @@ describe('channelPool', () => {
     const id = await pool.getOrOpenChannel('w1', {
       openChannel,
       closeChannel: async () => {},
-      pastHardCeiling: () => false,
-      shouldInitiateRekey: () => false,
-      ensureRekeyed: async () => {},
+      ensureReady: async () => {},
       expectedUserId: () => 'user-a',
     })
     expect(id).toBe('c1')
@@ -72,17 +70,13 @@ describe('channelPool', () => {
     const a = pool.getOrOpenChannel('w1', {
       openChannel,
       closeChannel: async () => {},
-      pastHardCeiling: () => false,
-      shouldInitiateRekey: () => false,
-      ensureRekeyed: async () => {},
+      ensureReady: async () => {},
       expectedUserId: () => undefined,
     })
     const b = pool.getOrOpenChannel('w1', {
       openChannel,
       closeChannel: async () => {},
-      pastHardCeiling: () => false,
-      shouldInitiateRekey: () => false,
-      ensureRekeyed: async () => {},
+      ensureReady: async () => {},
       expectedUserId: () => undefined,
     })
     expect(openChannel).toHaveBeenCalledOnce()
@@ -104,9 +98,7 @@ describe('channelPool', () => {
     const id = await pool.getOrOpenChannel('w1', {
       openChannel,
       closeChannel,
-      pastHardCeiling: () => false,
-      shouldInitiateRekey: () => false,
-      ensureRekeyed: async () => {},
+      ensureReady: async () => {},
       expectedUserId: () => 'user-b',
     })
     expect(closeChannel).toHaveBeenCalledWith('c1')
@@ -114,35 +106,56 @@ describe('channelPool', () => {
     expect(id).toBe('c2')
   })
 
-  it('closes and reopens past hard ceiling in getOrOpenChannel', async () => {
+  // Past the hard ceiling the session worker ends the session, which closes the
+  // channel, before it answers.
+  it('reopens in getOrOpenChannel when ensureReady rejects because the session ended', async () => {
     const pool = new ChannelPool()
     pool.set('c1', ch({ channelId: 'c1', workerId: 'w1' }))
-    const closeChannel = vi.fn(async () => {
-      pool.delete('c1')
+    const closeChannel = vi.fn(async () => {})
+    const openChannel = vi.fn(async () => 'c2')
+    const id = await pool.getOrOpenChannel('w1', {
+      openChannel,
+      closeChannel,
+      ensureReady: async () => {
+        pool.delete('c1')
+        throw new Error('session key past hard ceiling')
+      },
+      expectedUserId: () => undefined,
+    })
+    expect(closeChannel).not.toHaveBeenCalled()
+    expect(openChannel).toHaveBeenCalledOnce()
+    expect(id).toBe('c2')
+  })
+
+  it('closes a channel that ensureReady rejected but left in the pool, so the rescan cannot ask it again', async () => {
+    const pool = new ChannelPool()
+    pool.set('c1', ch({ channelId: 'c1', workerId: 'w1' }))
+    const closeChannel = vi.fn(async (id: string) => {
+      pool.delete(id)
+    })
+    const ensureReady = vi.fn(async () => {
+      throw new Error('channel session worker is not running')
     })
     const openChannel = vi.fn(async () => 'c2')
     const id = await pool.getOrOpenChannel('w1', {
       openChannel,
       closeChannel,
-      pastHardCeiling: () => true,
-      shouldInitiateRekey: () => false,
-      ensureRekeyed: async () => {},
+      ensureReady,
       expectedUserId: () => undefined,
     })
-    expect(closeChannel).toHaveBeenCalledWith('c1')
+    expect(ensureReady).toHaveBeenCalledOnce()
+    expect(closeChannel).toHaveBeenCalledExactlyOnceWith('c1')
     expect(id).toBe('c2')
   })
 
-  it('falls through to reopen in getOrOpenChannel when ensureRekeyed rejects', async () => {
+  it('falls through to reopen in getOrOpenChannel when ensureReady rejects after a rekey timeout', async () => {
     const pool = new ChannelPool()
     pool.set('c1', ch({ channelId: 'c1', workerId: 'w1' }))
     const openChannel = vi.fn(async () => 'c2')
     const id = await pool.getOrOpenChannel('w1', {
       openChannel,
       closeChannel: async (id) => { pool.delete(id) },
-      pastHardCeiling: () => false,
-      shouldInitiateRekey: () => true,
-      ensureRekeyed: async () => {
+      ensureReady: async () => {
         pool.delete('c1')
         throw new Error('rekey timeout')
       },
@@ -152,16 +165,14 @@ describe('channelPool', () => {
     expect(id).toBe('c2')
   })
 
-  it('reopens in getOrOpenChannel when ensureRekeyed leaves the channel unverified', async () => {
+  it('reopens in getOrOpenChannel when ensureReady leaves the channel unverified', async () => {
     const pool = new ChannelPool()
     pool.set('c1', ch({ channelId: 'c1', workerId: 'w1' }))
     const openChannel = vi.fn(async () => 'c2')
     const id = await pool.getOrOpenChannel('w1', {
       openChannel,
       closeChannel: async () => {},
-      pastHardCeiling: () => false,
-      shouldInitiateRekey: () => true,
-      ensureRekeyed: async () => {
+      ensureReady: async () => {
         // Soft close without throwing: still must not hand out a dead channel.
         pool.set('c1', ch({ channelId: 'c1', workerId: 'w1', state: 'closed' }))
       },
@@ -182,9 +193,7 @@ describe('channelPool', () => {
     const first = pool.getOrOpenChannel('w1', {
       openChannel,
       closeChannel: async () => {},
-      pastHardCeiling: () => false,
-      shouldInitiateRekey: () => false,
-      ensureRekeyed: async () => {},
+      ensureReady: async () => {},
       expectedUserId: () => undefined,
     })
     expect(openChannel).toHaveBeenCalledOnce()
@@ -197,9 +206,7 @@ describe('channelPool', () => {
     const second = await pool.getOrOpenChannel('w1', {
       openChannel: openChannel2,
       closeChannel: async () => {},
-      pastHardCeiling: () => false,
-      shouldInitiateRekey: () => false,
-      ensureRekeyed: async () => {},
+      ensureReady: async () => {},
       expectedUserId: () => undefined,
     })
     expect(openChannel2).toHaveBeenCalledOnce()
@@ -232,9 +239,7 @@ describe('channelPool', () => {
         await closeGate
         pool.delete(id)
       },
-      pastHardCeiling: () => false,
-      shouldInitiateRekey: () => false,
-      ensureRekeyed: async () => {},
+      ensureReady: async () => {},
       expectedUserId: () => 'user-b', // drift on c1
     })
     await Promise.resolve()
@@ -245,7 +250,7 @@ describe('channelPool', () => {
     expect(openChannel).not.toHaveBeenCalled()
   })
 
-  it('re-scans after rekey in getOrOpenChannel so a concurrent verified channel is reused', async () => {
+  it('re-scans after ensureReady in getOrOpenChannel so a concurrent verified channel is reused', async () => {
     const pool = new ChannelPool()
     pool.set('c1', ch({ channelId: 'c1', workerId: 'w1' }))
     let releaseRekey!: () => void
@@ -256,9 +261,7 @@ describe('channelPool', () => {
     const pending = pool.getOrOpenChannel('w1', {
       openChannel,
       closeChannel: async () => {},
-      pastHardCeiling: () => false,
-      shouldInitiateRekey: () => true,
-      ensureRekeyed: async () => {
+      ensureReady: async () => {
         await rekeyGate
         // Concurrent open replaced c1 while we were parked on rekey.
         pool.delete('c1')

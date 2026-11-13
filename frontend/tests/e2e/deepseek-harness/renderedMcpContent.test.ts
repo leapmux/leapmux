@@ -1,15 +1,21 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { requestMarkdownHtml } from '../../../src/lib/renderMarkdown'
+import { settleWorkerReplies } from '../../../src/test-support/fakeWorker'
 import { deepseekHarnessMcpTextDisplay, deepseekHarnessRenderedMcpContent } from './renderedMcpContent'
 
 /** The size above which Markdown used to show as capped plain text. Every size now renders as Markdown. */
 const FORMER_PLAIN_DISPLAY_CHARS = 32 * 1024
 
-/** The HTML that the actual Markdown renderer shows for `text`. jsdom has no Worker, so it renders synchronously. */
-function renderedMarkdown(text: string): string {
+/**
+ * The HTML that the actual Markdown renderer shows for `text`, once the Markdown
+ * worker answered. The stand-in Worker of the jsdom tests runs the real worker.
+ */
+async function renderedMarkdown(text: string): Promise<string> {
+  requestMarkdownHtml(text)
+  await settleWorkerReplies()
   const html = requestMarkdownHtml(text)
   if (html === undefined)
-    throw new Error('Markdown rendered asynchronously in a test without a Worker.')
+    throw new Error('the Markdown worker did not answer')
   return html
 }
 
@@ -46,9 +52,9 @@ describe('deepseekHarnessRenderedMcpContent', () => {
     ])).toBeNull()
   })
 
-  it('reads actual short paragraphs, a large paragraph, and repeated images in their rendered order', () => {
+  it('reads actual short paragraphs, a large paragraph, and repeated images in their rendered order', async () => {
     const middle = 'native line\n'.repeat(1200)
-    const root = result(`<p>First native text.</p>${image}${renderedMarkdown(middle)}${image}<p>Last native text.</p>`)
+    const root = result(`<p>First native text.</p>${image}${await renderedMarkdown(middle)}${image}<p>Last native text.</p>`)
     // A large paragraph renders whole, every line kept: no omission and no cap.
     const largeText = Array.from({ length: 1200 }).fill('native line').join('\n')
     expect(deepseekHarnessRenderedMcpContent(root)).toEqual([
@@ -207,11 +213,11 @@ describe('deepseekHarnessMcpTextDisplay', () => {
     expect(() => deepseekHarnessMcpTextDisplay(native)).toThrow('unsupported')
   })
 
-  it('matches the paragraphs and images that the actual Markdown renderer shows', () => {
+  it('matches the paragraphs and images that the actual Markdown renderer shows', async () => {
     const tail = 'NATIVETOOLOUTPUT-complete-42'
     const notice = '(Omitted 672056 bytes. Full formatted result stored at: /private/native/mcp__results__inspect.txt. Use read with offset/limit, or grep this path to search within it.)'
     const blocks = ['0 false\n\n0 false', `${tail}\n\n${notice}`, 'First line.\nLast line.']
-    const root = result(`${renderedMarkdown(blocks[0]!)}${image}${renderedMarkdown(blocks[1]!)}${image}${renderedMarkdown(blocks[2]!)}`)
+    const root = result(`${await renderedMarkdown(blocks[0]!)}${image}${await renderedMarkdown(blocks[1]!)}${image}${await renderedMarkdown(blocks[2]!)}`)
     expect(deepseekHarnessRenderedMcpContent(root)).toEqual([
       ...deepseekHarnessMcpTextDisplay(blocks[0]!),
       { type: 'image', index: 0 },

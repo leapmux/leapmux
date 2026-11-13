@@ -2,22 +2,18 @@ import type { MessageCategory } from './messageClassifier'
 import type { MessageContentRenderContext } from './messageContentRenderer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { render } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider, ContentCompression, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
+import { _resetMarkdownCache, getCachedMarkdownHtml } from '~/lib/renderMarkdown'
 import { assembledMessageRow } from '~/test-support/assembledMessages'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { renderMessageContent } from './messageContentRenderer'
-import { UnrecognizedMessage } from './messageRenderers'
+import { ThinkingMessage, UnrecognizedMessage } from './messageRenderers'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
 import { resolveMessageForRendering } from './providers/registry'
 import './providers'
-
-// Mock shiki worker to avoid Web Worker unavailability in test environment.
-// Vitest auto-hoists vi.mock calls above imports.
-vi.mock('~/lib/shikiWorkerClient', () => ({
-  tokenizeAsync: vi.fn().mockResolvedValue(null),
-}))
 
 /** Build a tool_use assistant message for the given tool name and input. */
 function makeToolUseMessage(name: string, input: Record<string, unknown>) {
@@ -191,7 +187,7 @@ describe('write/edit tool_use messages state the change they request', () => {
     expect(container.textContent).not.toContain('package main')
   })
 
-  it('states an Edit as the substitution it requests', () => {
+  it('states an Edit as the substitution it requests', async () => {
     const editInput = {
       file_path: '/tmp/test.go',
       old_string: 'beforeMarkerXYZ',
@@ -201,6 +197,7 @@ describe('write/edit tool_use messages state the change they request', () => {
     const { container } = render(() =>
       renderMessageContent(makeToolUseMessage('Edit', editInput), undefined, category, AgentProvider.CLAUDE_CODE),
     )
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Requested changes')
     expect(container.textContent).toContain('beforeMarkerXYZ')
     expect(container.textContent).toContain('afterMarkerXYZ')
@@ -277,7 +274,7 @@ describe('renderMessageContent provider resolution', () => {
     expect(container.textContent).not.toContain('Turn ended (1.1s)')
   })
 
-  it('renders the durable interruption marker after retained provider output', () => {
+  it('renders the durable interruption marker after retained provider output', async () => {
     const parsed = {
       type: 'assembled_message',
       kind: 'text',
@@ -285,7 +282,9 @@ describe('renderMessageContent provider resolution', () => {
       completion: 'interrupted',
     }
     const result = renderMessageContent(parsed, undefined, { kind: 'assistant_text' })
+    await settleWorkerReplies()
     const { container } = render(() => result)
+    await settleWorkerReplies()
     expect(container.textContent).toContain('partial output')
     expect(container.textContent).toContain('Text truncated by interruption.')
   })
@@ -352,6 +351,28 @@ describe('the row no renderer claimed', () => {
   })
 })
 
+// A collapsed body renders nothing, so only its prefetch puts its HTML in the
+// shared cache, where an expand finds it.
+describe('ThinkingMessage', () => {
+  beforeEach(() => {
+    _resetMarkdownCache()
+  })
+
+  it('prefetches its collapsed body in the visible copy of a row', async () => {
+    render(() => <ThinkingMessage text="collapsed thought" context={{ expandAgentThoughts: false }} />)
+    await settleWorkerReplies()
+
+    expect(getCachedMarkdownHtml('collapsed thought')).toBe('<p>collapsed thought</p>')
+  })
+
+  it('prefetches nothing for its collapsed body in the hidden premeasure copy', async () => {
+    render(() => <ThinkingMessage text="collapsed thought" context={{ expandAgentThoughts: false, premeasureMode: true }} />)
+    await settleWorkerReplies()
+
+    expect(getCachedMarkdownHtml('collapsed thought')).toBeUndefined()
+  })
+})
+
 describe('thinking renderer honors context.expandUiKey', () => {
   it('reads expand-state under the context-supplied key, not its own THINKING literal', () => {
     const parsed = {
@@ -404,20 +425,22 @@ describe('a user row whose provider has no plugin', () => {
   // shape, so it needs no plugin to draw. An agent tab projected from the CRDT carries no
   // agentProvider until useTabHydrators fetches the worker-side metadata. Without
   // the neutral branch this fell through to the raw-JSON span.
-  it('draws the same card a registered provider would, not raw JSON', () => {
+  it('draws the same card a registered provider would, not raw JSON', async () => {
     const parsed = { content: 'hello there' }
     const category = { kind: 'user_content' } as MessageCategory
 
     const neutral = render(() => renderMessageContent(parsed, undefined, category, AgentProvider.UNSPECIFIED))
+    await settleWorkerReplies()
     expect(neutral.container.textContent).toContain('hello there')
     expect(neutral.container.textContent).not.toContain('"content"')
 
     // Keep the markup identical to the plugin path to prevent a hydration-time resize.
     const viaPlugin = render(() => renderMessageContent(parsed, undefined, category, AgentProvider.CLAUDE_CODE))
+    await settleWorkerReplies()
     expect(neutral.container.innerHTML).toBe(viaPlugin.container.innerHTML)
   })
 
-  it('lists the attachments carried on the same payload', () => {
+  it('lists the attachments carried on the same payload', async () => {
     const parsed = {
       content: 'see this',
       attachments: [
@@ -426,6 +449,7 @@ describe('a user row whose provider has no plugin', () => {
     }
     const { container } = render(() =>
       renderMessageContent(parsed, undefined, { kind: 'user_content' } as MessageCategory, AgentProvider.UNSPECIFIED))
+    await settleWorkerReplies()
     expect(container.textContent).toContain('diagram.png')
     // Not merely present in a serialized blob: the raw-JSON span this replaced
     // also "contained" the filename, so assert the payload's own keys are gone.

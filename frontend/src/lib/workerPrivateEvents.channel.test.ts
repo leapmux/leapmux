@@ -67,23 +67,34 @@ describe('openWorkerPrivateEventStream on a real channel', () => {
     ]
   }
 
+  /**
+   * Run the fake clock forward by `ms`, then let the channel sessions take every
+   * message. A reconnect that the clock starts asks the session worker whether
+   * the pooled channel is ready before it opens its stream, and the fake clock
+   * does not hold the worker's port.
+   */
+  async function advance(ms: number): Promise<void> {
+    await vi.advanceTimersByTimeAsync(ms)
+    await h.settle()
+  }
+
   it('reconnects after a frame that does not decode, and the new stream delivers events', async () => {
     const renamed = vi.fn()
     const stop = openWorkerPrivateEventStream({ workerId: 'w1', onTabRenamed: renamed })
-    await vi.advanceTimersByTimeAsync(0)
+    await advance(0)
     const [first] = liveStreamIds()
     if (first === undefined)
       throw new Error('The subscriber must open a stream.')
 
-    h.sendStreamMessageFromWorker(channelId, first, Uint8Array.of(0xFF))
+    await h.sendStreamMessageFromWorker(channelId, first, Uint8Array.of(0xFF))
 
     expect(liveStreamIds(), 'a decode failure ends the stream').toEqual([])
-    await vi.advanceTimersByTimeAsync(250)
+    await advance(250)
     const [second] = liveStreamIds()
     expect(second).toBeDefined()
     expect(second).not.toBe(first)
 
-    h.sendStreamMessageFromWorker(channelId, second!, tabRenamedFrame('tab-1'))
+    await h.sendStreamMessageFromWorker(channelId, second!, tabRenamedFrame('tab-1'))
     expect(renamed).toHaveBeenCalledExactlyOnceWith({
       tabId: 'tab-1',
       tabType: TabType.AGENT,
@@ -100,25 +111,25 @@ describe('openWorkerPrivateEventStream on a real channel', () => {
       workerId: 'w1',
       onTabRenamed: () => {},
     })
-    await vi.advanceTimersByTimeAsync(0)
-    h.sendStreamMessageFromWorker(channelId, liveStreamIds()[0]!, Uint8Array.of(0xFF))
-    await vi.advanceTimersByTimeAsync(250)
-    h.sendStreamMessageFromWorker(channelId, liveStreamIds()[0]!, Uint8Array.of(0xFF))
+    await advance(0)
+    await h.sendStreamMessageFromWorker(channelId, liveStreamIds()[0]!, Uint8Array.of(0xFF))
+    await advance(250)
+    await h.sendStreamMessageFromWorker(channelId, liveStreamIds()[0]!, Uint8Array.of(0xFF))
 
-    await vi.advanceTimersByTimeAsync(499)
+    await advance(499)
     expect(liveStreamIds(), 'the second reconnect waits for the doubled delay').toEqual([])
-    await vi.advanceTimersByTimeAsync(1)
+    await advance(1)
     expect(liveStreamIds()).toHaveLength(1)
     stop()
   })
 
   /** Deliver a frame that decodes, then one that fails the stream. */
-  function sendGoodThenBadFrame(): void {
+  async function sendGoodThenBadFrame(): Promise<void> {
     const [stream] = liveStreamIds()
     if (stream === undefined)
       throw new Error('The subscriber must hold a stream.')
-    h.sendStreamMessageFromWorker(channelId, stream, tabRenamedFrame('tab-1'))
-    h.sendStreamMessageFromWorker(channelId, stream, Uint8Array.of(0xFF))
+    await h.sendStreamMessageFromWorker(channelId, stream, tabRenamedFrame('tab-1'))
+    await h.sendStreamMessageFromWorker(channelId, stream, Uint8Array.of(0xFF))
     expect(liveStreamIds(), 'the bad frame ends the stream').toEqual([])
   }
 
@@ -130,22 +141,22 @@ describe('openWorkerPrivateEventStream on a real channel', () => {
       workerId: 'w1',
       onTabRenamed: () => {},
     })
-    await vi.advanceTimersByTimeAsync(0)
+    await advance(0)
 
-    sendGoodThenBadFrame()
-    await vi.advanceTimersByTimeAsync(250)
+    await sendGoodThenBadFrame()
+    await advance(250)
     expect(liveStreamIds()).toHaveLength(1)
 
-    sendGoodThenBadFrame()
-    await vi.advanceTimersByTimeAsync(499)
+    await sendGoodThenBadFrame()
+    await advance(499)
     expect(liveStreamIds(), 'the second reconnect waits for the doubled delay').toEqual([])
-    await vi.advanceTimersByTimeAsync(1)
+    await advance(1)
     expect(liveStreamIds()).toHaveLength(1)
 
-    sendGoodThenBadFrame()
-    await vi.advanceTimersByTimeAsync(999)
+    await sendGoodThenBadFrame()
+    await advance(999)
     expect(liveStreamIds(), 'the third reconnect doubles again').toEqual([])
-    await vi.advanceTimersByTimeAsync(1)
+    await advance(1)
     expect(liveStreamIds()).toHaveLength(1)
     stop()
   })
@@ -155,19 +166,19 @@ describe('openWorkerPrivateEventStream on a real channel', () => {
       workerId: 'w1',
       onTabRenamed: () => {},
     })
-    await vi.advanceTimersByTimeAsync(0)
-    sendGoodThenBadFrame()
-    await vi.advanceTimersByTimeAsync(250)
-    sendGoodThenBadFrame()
-    await vi.advanceTimersByTimeAsync(500)
+    await advance(0)
+    await sendGoodThenBadFrame()
+    await advance(250)
+    await sendGoodThenBadFrame()
+    await advance(500)
     expect(liveStreamIds()).toHaveLength(1)
 
-    await vi.advanceTimersByTimeAsync(STREAM_HEALTHY_AFTER_MS)
-    sendGoodThenBadFrame()
+    await advance(STREAM_HEALTHY_AFTER_MS)
+    await sendGoodThenBadFrame()
 
-    await vi.advanceTimersByTimeAsync(249)
+    await advance(249)
     expect(liveStreamIds()).toEqual([])
-    await vi.advanceTimersByTimeAsync(1)
+    await advance(1)
     expect(liveStreamIds(), 'the streak restarts at the minimum delay').toHaveLength(1)
     stop()
   })
@@ -177,17 +188,17 @@ describe('openWorkerPrivateEventStream on a real channel', () => {
       workerId: 'w1',
       onTabRenamed: () => {},
     })
-    await vi.advanceTimersByTimeAsync(0)
-    sendGoodThenBadFrame()
-    await vi.advanceTimersByTimeAsync(250)
+    await advance(0)
+    await sendGoodThenBadFrame()
+    await advance(250)
     expect(liveStreamIds()).toHaveLength(1)
 
-    await vi.advanceTimersByTimeAsync(STREAM_HEALTHY_AFTER_MS - 1)
-    sendGoodThenBadFrame()
+    await advance(STREAM_HEALTHY_AFTER_MS - 1)
+    await sendGoodThenBadFrame()
 
-    await vi.advanceTimersByTimeAsync(499)
+    await advance(499)
     expect(liveStreamIds(), 'one millisecond short of the window proves nothing').toEqual([])
-    await vi.advanceTimersByTimeAsync(1)
+    await advance(1)
     expect(liveStreamIds()).toHaveLength(1)
     stop()
   })
@@ -200,11 +211,11 @@ describe('openWorkerPrivateEventStream on a real channel', () => {
     })
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const stop = openWorkerPrivateEventStream({ workerId: 'w1', onTabRenamed: renamed })
-    await vi.advanceTimersByTimeAsync(0)
+    await advance(0)
     const [only] = liveStreamIds()
 
-    h.sendStreamMessageFromWorker(channelId, only!, tabRenamedFrame('tab-1'))
-    h.sendStreamMessageFromWorker(channelId, only!, tabRenamedFrame('tab-2'))
+    await h.sendStreamMessageFromWorker(channelId, only!, tabRenamedFrame('tab-1'))
+    await h.sendStreamMessageFromWorker(channelId, only!, tabRenamedFrame('tab-2'))
 
     expect(renamed).toHaveBeenCalledTimes(2)
     expect(liveStreamIds()).toEqual([only])

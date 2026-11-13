@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { installControllableResizeObserver, triggerResizeObserversSync } from '~/test-support/resizeObserverStub'
 import { GoalObjective } from './GoalObjective'
 import * as styles from './GoalObjective.css'
@@ -24,8 +25,9 @@ describe('GoalObjective', () => {
 
   // The whole point of the change: a goal is markdown, so the card shows what
   // the markup MEANS rather than its asterisks.
-  it('renders the objective as markdown', () => {
+  it('renders the objective as markdown', async () => {
     const { getByTestId } = render(() => <GoalObjective objective="ship the **auth refactor**" />)
+    await settleWorkerReplies()
     const box = getByTestId('goal-objective')
     expect(box.querySelector('strong')?.textContent).toBe('auth refactor')
     expect(box.textContent).not.toContain('**')
@@ -136,8 +138,9 @@ describe('GoalObjective', () => {
       vi.restoreAllMocks()
     })
 
-    it('shows the whole objective as markdown once the box hides something', () => {
+    it('shows the whole objective as markdown once the box hides something', async () => {
       const { getByTestId } = render(() => <GoalObjective objective="a long **goal**" />)
+      await settleWorkerReplies()
       const box = getByTestId('goal-objective')
       statesLayout(box, 200, 84)
       triggerResizeObserversSync()

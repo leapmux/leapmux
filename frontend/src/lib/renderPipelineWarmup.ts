@@ -4,13 +4,21 @@ import { syntaxThemePair } from './shikiThemes'
 // ---------------------------------------------------------------------------
 // Idle warm-start for the render pipeline
 //
-// Both render workers initialize lazily, so the FIRST visible code block used
+// The render workers initialize lazily, so the FIRST visible code block used
 // to pay the whole cold-start bill on the UI's critical path: spawning the
 // worker (module fetch + eval), compiling the Oniguruma WASM engine, loading a
 // grammar, and (for markdown) building the remark processor. Kicking one
-// trivial job through each worker at idle moves all of that to a moment nobody
-// is waiting on. The same idle slot runs the persisted-artifact sweep (TTL +
-// entry cap), which wants exactly one execution per session.
+// trivial job at idle through the two workers that nearly every session uses --
+// the Markdown worker of the standard lane and the Shiki token worker -- moves
+// all of that to a moment nobody is waiting on. The same idle slot runs the
+// persisted-artifact sweep (TTL + entry cap), which wants exactly one execution
+// per session.
+//
+// The other workers stay cold until their first job, which pays their cold
+// start: the Markdown worker of the large lane until a body over
+// LARGE_MARKDOWN_BODY_CHARS arrives (see markdownWorkerClient), and the diff
+// worker until a diff needs it. A warm-up would spawn each of them in every
+// session, also in the sessions that never use it.
 //
 // The worker CLIENTS are imported dynamically inside warmUpNow — a static
 // import here would pull shikiWorkerClient onto entry-client's modulepreload
@@ -83,14 +91,14 @@ function warmUpNow(): void {
 
 /**
  * Schedule the one-shot warm-up at browser idle. Safe to call from any client
- * entry point; repeat calls and non-browser environments (SSR, jsdom without
- * Worker) are no-ops.
+ * entry point; repeat calls and an environment without a window are no-ops.
+ * Where no worker can start, each warm-up job resolves null (see warmUpNow).
  *
  * On a constrained network the warm-up is delayed rather than idle-forced, so
  * multi-megabyte worker fetches do not compete with shell hydration on LTE.
  */
 export function scheduleRenderPipelineWarmup(): void {
-  if (scheduled || typeof window === 'undefined' || typeof Worker === 'undefined')
+  if (scheduled || typeof window === 'undefined')
     return
   scheduled = true
   if (isConstrainedStartupNetwork()) {

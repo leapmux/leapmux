@@ -4,7 +4,6 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerToolMeta } from '~/test-support/toolCallFixture'
 import { input } from './testUtils'
 import './index'
-import './testMocks'
 
 function claudeResult(content: unknown[], toolUseResult?: Record<string, unknown>) {
   return {

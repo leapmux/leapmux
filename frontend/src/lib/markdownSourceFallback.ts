@@ -43,10 +43,13 @@ export function markdownSourceFallbackHtml(text: string): string {
         tagName: 'pre',
         properties: {
           className: [MARKDOWN_SOURCE_FALLBACK_CLASS],
-          dataMarkdownSourceFallback: '',
+          [MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE]: '',
         },
         children: [
-          { type: 'text', value: text },
+          // The HTML parser drops one line feed right after `<pre>`, so a source
+          // that starts with a line break would lose it, on the screen and in its
+          // Copy text. This line feed is the one that the parser drops.
+          { type: 'text', value: `\n${text}` },
         ],
       },
       {

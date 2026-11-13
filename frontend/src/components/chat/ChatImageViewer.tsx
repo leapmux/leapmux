@@ -35,7 +35,16 @@ export function ChatImageViewer(props: {
   const [resolution, setResolution] = createSignal<ChatImageResolution>({ status: 'pending' })
   const [zoom, setZoom] = createSignal<ZoomMode>('fit')
 
-  // `on()` keeps these props as the complete dependency list. A bare effect
+  // The tile passes each prop through a getter over the whole image tab, so a
+  // patch of the tab notifies every prop, even one whose value it kept. A memo
+  // passes the notification on only when its value changes.
+  const workerId = createMemo(() => props.workerId)
+  const agentId = createMemo(() => props.agentId)
+  const seq = createMemo(() => props.seq)
+  const imageIndex = createMemo(() => props.imageIndex)
+  const messages = createMemo(() => props.messages)
+
+  // `on()` keeps these values as the complete dependency list. A bare effect
   // tracks whatever its body reads, and this body reads the chat store:
   // `resolveChatImage` is async, so it runs synchronously as far as the first
   // `await`, and when the message is already in the loaded window it reaches
@@ -43,14 +52,15 @@ export function ChatImageViewer(props: {
   // The effect then re-runs for every row the agent appends, and each re-run
   // resets the resolution to `pending`: `ImageRender` unmounts, its blob URL is
   // revoked, the pan is lost, and the image decodes again. `on()` runs the body
-  // untracked, so only a new reference resolves again.
+  // untracked, and the memos above change only with a value, so only a new
+  // reference resolves again.
   createEffect(on(
     () => ({
-      workerId: props.workerId,
-      agentId: props.agentId,
-      seq: props.seq,
-      imageIndex: props.imageIndex,
-      messages: props.messages,
+      workerId: workerId(),
+      agentId: agentId(),
+      seq: seq(),
+      imageIndex: imageIndex(),
+      messages: messages(),
     }),
     (ref) => {
       let live = true

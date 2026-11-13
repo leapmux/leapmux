@@ -98,6 +98,9 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
   // we capture the owner here and re-enter it on first use.
   const componentOwner = getOwner()
   const [menuOpen, setMenuOpen] = createSignal(false)
+  // Whether the menu has ever opened. The items mount at the first open and
+  // stay: a reopen mounts nothing again. See the `<Show>` around the items.
+  const [everOpened, setEverOpened] = createSignal(false)
   let ownedActions: FileSaveActions | null = null
   const ensureOwnedActions = (): FileSaveActions => {
     if (!ownedActions) {
@@ -110,17 +113,10 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
     return ownedActions
   }
   const actions = (): FileSaveActions => props.actions ?? ensureOwnedActions()
-  // Reading `actions().op()` here triggers `ensureOwnedActions`.
-  // Gate it on `menuOpen()` so the disabled-binding refire at mount
-  // (popover hidden) doesn't allocate for rows the user never opens.
-  // Externally-injected actions skip the gate — their busy state is
-  // shared with another surface and must stay live even when this
-  // menu's popover is closed.
-  const busy = () => {
-    if (props.actions)
-      return props.actions.op() !== null
-    return menuOpen() && actions().op() !== null
-  }
+  // Reading `actions().op()` here triggers `ensureOwnedActions`. Only the
+  // `disabled` binding of a save item reads it, and the items mount at the
+  // first open, so a menu that never opens allocates nothing.
+  const busy = () => actions().op() !== null
 
   // A directory's own byte count says nothing about what it holds, so only a
   // file offers a size.
@@ -128,17 +124,18 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
   // A memo, not a plain function: the row values are real JSX, so every call
   // CONSTRUCTS a `RelativeTimeAgo` -> `Tooltip` -> `Icon` tree, mounts its
   // effects and subscribes it to the shared tick. `MenuInfoButton` reads the
-  // list twice (once to decide whether to render, once to render), and every
-  // row in the tree keeps one of these menus mounted while closed, so an
-  // unmemoized builder paid for a whole discarded component tree per row on
-  // every turn-end stat refresh.
+  // list twice (once to decide whether to render, once to render), and a menu
+  // that opened once keeps its items mounted while closed, so an unmemoized
+  // builder paid for a whole discarded component tree per opened row on every
+  // turn-end stat refresh.
   const infoRows = createMemo((): MenuInfoRow[] => {
-    // Gated for the same reason as `busy()` above, and it must be the MEMO
-    // rather than a `<Show>` around the block: `DropdownMenu` renders its
-    // children eagerly, and `createMemo` runs its body at setup. An ungated
-    // builder therefore mounted a `RelativeTime` -> `Tooltip` tree and a
-    // 15-second tick subscriber for EVERY tree row, the vast majority of which
-    // are never opened. A `<Show>` would have hidden the DOM and kept both.
+    // Gated on `menuOpen()`, and it must be the MEMO rather than a `<Show>`
+    // around the block: `createMemo` runs its body at setup, outside the
+    // `<Show>` that mounts the items. An ungated builder therefore mounted a
+    // `RelativeTime` -> `Tooltip` tree and a 15-second tick subscriber for
+    // EVERY tree row, the vast majority of which are never opened. A `<Show>`
+    // would have hidden the DOM and kept both. The gate is `menuOpen()`, not
+    // the first open, because the items stay mounted after a close.
     if (!menuOpen())
       return []
     const rows: MenuInfoRow[] = []
@@ -166,6 +163,16 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
       {...(props.placement !== undefined
         ? { placement: props.placement }
         : {})}
+      // The items and the info block mount before the popover shows, so it
+      // never paints a frame without them, and its first position fits them.
+      // The close still waits for `toggle`, which drops the info block once the
+      // popover has hidden.
+      onBeforeToggle={(opening) => {
+        if (!opening)
+          return
+        setEverOpened(true)
+        setMenuOpen(true)
+      }}
       onToggle={setMenuOpen}
       {...(props.contextMenuFor !== undefined
         ? { contextMenuFor: props.contextMenuFor }
@@ -177,97 +184,106 @@ export const FileActionsMenu: Component<FileActionsMenuProps> = (props) => {
         'data-testid': props.triggerTestId ?? 'file-actions-trigger',
       })}
     >
-      <MenuInfoButton
-        rows={infoRows()}
-        copyText={infoJson}
-        toastMessage={props.isDir ? 'Directory info copied to clipboard' : 'File info copied to clipboard'}
-        data-testid={tid('info-button')}
-      />
-      {/* Paired with the block above, so the separator disappears with it. */}
-      <Show when={infoRows().length > 0}>
-        <hr />
-      </Show>
-      <Show when={props.onMention}>
-        <button
-          role="menuitem"
-          data-testid={tid('mention-button')}
-          onClick={() => props.onMention?.(props.path)}
-        >
-          <Icon icon={AtSign} size="sm" />
-          Mention in chat
-        </button>
-      </Show>
-      <Show when={props.isDir && props.onOpenTerminal}>
-        <button
-          role="menuitem"
-          data-testid={tid('open-terminal-button')}
-          onClick={() => props.onOpenTerminal?.(props.path)}
-        >
-          <Icon icon={TerminalIcon} size="sm" />
-          Open a terminal tab here
-        </button>
-      </Show>
-      <button
-        role="menuitem"
-        data-testid={tid('copy-path-button')}
-        onClick={() => void copyTextToClipboard(props.path)}
-      >
-        <Icon icon={Copy} size="sm" />
-        Copy path
-      </button>
       {/*
-        Hidden for a ROOT base. Every absolute path is under `/` (or `C:\`),
-        so `relativizePath` deliberately refuses it and answers the absolute
-        path -- byte for byte what "Copy path" above already copies. The
-        directory picker's tree is rooted at the filesystem root, so without
-        this the menu offers two items that do the same thing.
+        The items mount at the first open. `DropdownMenu` renders its children
+        while the popover is closed, and each item costs an icon, a button and
+        its bindings. Every directory tree row holds one of these menus, and a
+        directory that opens again mounts its rows again. The user opens few of
+        these menus.
       */}
-      <Show when={props.rootPath !== undefined && !isFilesystemRoot(props.rootPath, props.flavor)}>
+      <Show when={everOpened()}>
+        <MenuInfoButton
+          rows={infoRows()}
+          copyText={infoJson}
+          toastMessage={props.isDir ? 'Directory info copied to clipboard' : 'File info copied to clipboard'}
+          data-testid={tid('info-button')}
+        />
+        {/* Paired with the block above, so the separator disappears with it. */}
+        <Show when={infoRows().length > 0}>
+          <hr />
+        </Show>
+        <Show when={props.onMention}>
+          <button
+            role="menuitem"
+            data-testid={tid('mention-button')}
+            onClick={() => props.onMention?.(props.path)}
+          >
+            <Icon icon={AtSign} size="sm" />
+            Mention in chat
+          </button>
+        </Show>
+        <Show when={props.isDir && props.onOpenTerminal}>
+          <button
+            role="menuitem"
+            data-testid={tid('open-terminal-button')}
+            onClick={() => props.onOpenTerminal?.(props.path)}
+          >
+            <Icon icon={TerminalIcon} size="sm" />
+            Open a terminal tab here
+          </button>
+        </Show>
         <button
           role="menuitem"
-          data-testid={tid('copy-relative-path-button')}
-          onClick={() => {
-            const rel = relativizePath(props.path, props.rootPath!, props.homeDir, props.flavor)
-            void copyTextToClipboard(rel)
-          }}
+          data-testid={tid('copy-path-button')}
+          onClick={() => void copyTextToClipboard(props.path)}
         >
           <Icon icon={Copy} size="sm" />
-          Copy relative path
+          Copy path
         </button>
-      </Show>
-      <Show when={!props.isDir}>
-        <Show
-          when={isTauriApp()}
-          fallback={(
+        {/*
+          Hidden for a ROOT base. Every absolute path is under `/` (or `C:\`),
+          so `relativizePath` deliberately refuses it and answers the absolute
+          path -- byte for byte what "Copy path" above already copies. The
+          directory picker's tree is rooted at the filesystem root, so without
+          this the menu offers two items that do the same thing.
+        */}
+        <Show when={props.rootPath !== undefined && !isFilesystemRoot(props.rootPath, props.flavor)}>
+          <button
+            role="menuitem"
+            data-testid={tid('copy-relative-path-button')}
+            onClick={() => {
+              const rel = relativizePath(props.path, props.rootPath!, props.homeDir, props.flavor)
+              void copyTextToClipboard(rel)
+            }}
+          >
+            <Icon icon={Copy} size="sm" />
+            Copy relative path
+          </button>
+        </Show>
+        <Show when={!props.isDir}>
+          <Show
+            when={isTauriApp()}
+            fallback={(
+              <button
+                role="menuitem"
+                data-testid={tid('download-button')}
+                disabled={busy()}
+                onClick={() => actions().handleDownload()}
+              >
+                <Icon icon={Download} size="sm" />
+                Download
+              </button>
+            )}
+          >
             <button
               role="menuitem"
-              data-testid={tid('download-button')}
+              data-testid={tid('save-as-button')}
               disabled={busy()}
-              onClick={() => actions().handleDownload()}
+              onClick={() => actions().handleSaveAs()}
             >
               <Icon icon={Download} size="sm" />
-              Download
+              Save as...
             </button>
-          )}
-        >
-          <button
-            role="menuitem"
-            data-testid={tid('save-as-button')}
-            disabled={busy()}
-            onClick={() => actions().handleSaveAs()}
-          >
-            <Icon icon={Download} size="sm" />
-            Save as...
-          </button>
-          <button
-            role="menuitem"
-            data-testid={tid('save-to-downloads-button')}
-            disabled={busy()}
-            onClick={() => actions().handleSaveToDownloads()}
-          >
-            <Icon icon={Download} size="sm" />
-            Save to Downloads
-          </button>
+            <button
+              role="menuitem"
+              data-testid={tid('save-to-downloads-button')}
+              disabled={busy()}
+              onClick={() => actions().handleSaveToDownloads()}
+            >
+              <Icon icon={Download} size="sm" />
+              Save to Downloads
+            </button>
+          </Show>
         </Show>
       </Show>
     </DropdownMenu>

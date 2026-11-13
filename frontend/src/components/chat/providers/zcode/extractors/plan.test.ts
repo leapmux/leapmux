@@ -3,7 +3,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerRow } from '~/test-support/toolCallFixture'
 import { zcodeControlPlanText, zcodePlanText } from './plan'
 import '../plugin'
-import '../../testMocks'
+import '~/components/chat/providers'
 
 function request(params: Record<string, unknown>) {
   return {

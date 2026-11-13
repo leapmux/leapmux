@@ -12,13 +12,13 @@ import '../plugin'
 describe('claude rate-limit notifications', () => {
   // rate_limit_event renders through claudeNotificationThreadEntry; classify only
   // routes a non-allowed status here, so it requires the Claude provider pre-pass.
-  it('renders a generic "Rate limit update" for a malformed (non-object) payload', () => {
+  it('renders a generic "Rate limit update" for a malformed (non-object) payload', async () => {
     // The deleted standalone renderer had this fallback; the entry path preserves
     // it so a malformed payload still surfaces a line instead of vanishing.
     const el = renderThreadElement([
       { type: 'rate_limit_event', rate_limit_info: 'oops' },
     ], AgentProvider.CLAUDE_CODE)
-    expect(elementText(el)).toBe('Rate limit update')
+    expect(await elementText(el)).toBe('Rate limit update')
   })
 })
 
@@ -668,7 +668,7 @@ describe('claudeNotificationEntry', () => {
       ])
   })
 
-  it('reads the stop-hook-error notification as a failed Stop hook', () => {
+  it('reads the stop-hook-error notification as a failed Stop hook', async () => {
     const frame = {
       type: 'system',
       subtype: 'notification',
@@ -678,7 +678,7 @@ describe('claudeNotificationEntry', () => {
     expect(claudeNotificationEntry(frame)).toEqual([
       { kind: 'hook', outcome: 'failed', event: 'Stop' },
     ])
-    expect(elementText(renderThreadElement([frame], AgentProvider.CLAUDE_CODE))).toBe('Hook Stop failed')
+    expect(await elementText(renderThreadElement([frame], AgentProvider.CLAUDE_CODE))).toBe('Hook Stop failed')
   })
 
   // A frame that carries no words gets no entry: an empty notification is worse

@@ -1,19 +1,12 @@
 import type { MessageCategory } from '../messageClassifier'
 import type { MessageContentRenderContext } from '../messageContentRenderer'
 import { render } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import './claude/plugin'
 import './opencode/plugin'
-import './testMocks'
-
-vi.mock('~/lib/shikiWorkerClient', () => ({
-  tokenizeAsync: async (_lang: string, code: string) => code.split('\n').map(() => []),
-}))
-
-vi.mock('~/lib/tokenCache', () => ({
-  getCachedTokens: () => null,
-}))
+import '~/components/chat/providers'
 
 const { renderMessageContent } = await import('../messageContentRenderer')
 
@@ -45,7 +38,7 @@ function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: Messag
 }
 
 describe('claude WebFetch tool_result rendering', () => {
-  it('renders HTTP status and body via the shared body', () => {
+  it('renders HTTP status and body via the shared body', async () => {
     const parsed = makeResult({
       tool_name: 'WebFetch',
       code: 200,
@@ -55,21 +48,23 @@ describe('claude WebFetch tool_result rendering', () => {
       result: '# Hello WebFetchBody',
     }, '')
     const { container } = renderClaudeToolResult(parsed, { spanType: 'WebFetch' })
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('200')
     expect(text).toContain('OK')
     expect(text).toContain('Hello WebFetchBody')
   })
 
-  it('falls through to text rendering when tool_use_result lacks code', () => {
+  it('falls through to text rendering when tool_use_result lacks code', async () => {
     const parsed = makeResult({ tool_name: 'WebFetch' }, 'plain webfetch fallback')
     const { container } = renderClaudeToolResult(parsed, { spanType: 'WebFetch' })
+    await settleWorkerReplies()
     expect(container.textContent ?? '').toContain('plain webfetch fallback')
   })
 })
 
 describe('opencode fetch tool_call_update rendering', () => {
-  it('renders the shared WebFetchResultBody when rawOutput carries code', () => {
+  it('renders the shared WebFetchResultBody when rawOutput carries code', async () => {
     const { container } = renderOpenCodeUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'fetch',
@@ -83,13 +78,14 @@ describe('opencode fetch tool_call_update rendering', () => {
         result: '# Hello AcpWebFetchBody',
       },
     })
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('200')
     expect(text).toContain('OK')
     expect(text).toContain('Hello AcpWebFetchBody')
   })
 
-  it('falls back to the generic text branch when no recognizable HTTP shape', () => {
+  it('falls back to the generic text branch when no recognizable HTTP shape', async () => {
     const { container } = renderOpenCodeUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'fetch',
@@ -102,6 +98,7 @@ describe('opencode fetch tool_call_update rendering', () => {
         },
       ],
     })
+    await settleWorkerReplies()
     expect(container.textContent ?? '').toContain('opaque acp fetch output')
   })
 })

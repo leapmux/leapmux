@@ -1,5 +1,6 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { render, waitFor } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { MAX_INLINE_IMAGE_BASE64_LEN } from '~/lib/imageBlocks'
@@ -7,10 +8,12 @@ import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { ChatImageViewer, decodeImageBytes } from './ChatImageViewer'
 import './providers/claude/plugin'
-import './providers/testMocks'
+import '~/components/chat/providers'
 
 // A one-pixel PNG's first bytes; only the decode matters here, not the image.
 const PNG_BASE64 = 'iVBORw0KGgo='
+// The first bytes of a JPEG, for a second image that differs from the first.
+const JPEG_BASE64 = '/9j/4AAQSkZJRg=='
 const PNG_BYTES = [
   0x89,
   0x50,
@@ -177,5 +180,99 @@ describe('ChatImageViewer', () => {
     })
     expect(container.textContent).not.toContain('Loading image')
     expect(container.querySelector('img')).toBeNull()
+  })
+
+  // The tile passes each prop through a getter over the whole image tab, so a
+  // patch of the tab notifies every prop, even one whose value it kept. Without
+  // value memos that notification resolves the image again: the image unmounts,
+  // its blob URL is revoked, the pan and zoom are lost, and it decodes again.
+  it('keeps the image that it draws, and decodes it once, when a patch of the tab keeps the reference', async () => {
+    const message = claudeImageMessage([
+      { type: 'image', data: PNG_BASE64, mimeType: 'image/png' },
+    ])
+    const messages = testMessageContext({
+      messageBySeq: () => message,
+      fetchMessage: vi.fn(async () => undefined),
+    })
+    const reference = {
+      workerId: 'w-1',
+      agentId: 'a-1',
+      seq: 7n,
+      imageIndex: 0,
+    }
+    const [tab, setTab] = createSignal(reference)
+    const { container } = render(() => (
+      <ChatImageViewer
+        workerId={tab().workerId}
+        agentId={tab().agentId}
+        seq={tab().seq}
+        imageIndex={tab().imageIndex}
+        title="screenshot"
+        messages={messages}
+      />
+    ))
+    const drawn = await waitFor(() => {
+      const el = container.querySelector('img')
+      expect(el).not.toBeNull()
+      return el!
+    })
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL')
+
+    setTab({ ...reference })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(container.querySelector('img')).toBe(drawn)
+    expect(createObjectURL).not.toHaveBeenCalled()
+    createObjectURL.mockRestore()
+  })
+
+  // The memos pass a real change on: a patch that points the tab at another
+  // image draws that image.
+  it('draws the image that a patch of the tab points at instead', async () => {
+    const message = claudeImageMessage([
+      { type: 'image', data: PNG_BASE64, mimeType: 'image/png' },
+      { type: 'image', data: JPEG_BASE64, mimeType: 'image/jpeg' },
+    ])
+    const messages = testMessageContext({
+      messageBySeq: () => message,
+      fetchMessage: vi.fn(async () => undefined),
+    })
+    const reference = {
+      workerId: 'w-1',
+      agentId: 'a-1',
+      seq: 7n,
+      imageIndex: 0,
+    }
+    const [tab, setTab] = createSignal(reference)
+    const { container } = render(() => (
+      <ChatImageViewer
+        workerId={tab().workerId}
+        agentId={tab().agentId}
+        seq={tab().seq}
+        imageIndex={tab().imageIndex}
+        title="screenshot"
+        messages={messages}
+      />
+    ))
+    const first = await waitFor(() => {
+      const el = container.querySelector('img')
+      expect(el).not.toBeNull()
+      return el!
+    })
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL')
+
+    setTab({ ...reference, imageIndex: 1 })
+
+    const second = await waitFor(() => {
+      const el = container.querySelector('img')
+      expect(el).not.toBeNull()
+      expect(el).not.toBe(first)
+      return el!
+    })
+    expect(second.getAttribute('src')).toMatch(/^blob:/)
+    expect(createObjectURL).toHaveBeenCalledOnce()
+    expect((createObjectURL.mock.calls[0]?.[0] as Blob).type).toBe('image/jpeg')
+    createObjectURL.mockRestore()
   })
 })

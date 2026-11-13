@@ -3,12 +3,12 @@ import { describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { diffAdded } from './diff/diffStyles.css'
 import { MessageBubble } from './MessageBubble'
 import './providers'
-import './providers/testMocks'
 
 function resultMessage() {
   return makeMessage({
@@ -59,6 +59,7 @@ describe('message context rendering', () => {
     const { container } = render(() => (
       <PreferencesProvider><MessageBubble message={message} host={{ messages: context }} /></PreferencesProvider>
     ))
+    await settleWorkerReplies()
     await waitFor(() => expect(container.textContent).toContain('Persisted task title'))
     expect(container.textContent).toContain('Persisted description')
   })

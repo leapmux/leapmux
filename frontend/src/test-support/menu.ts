@@ -36,27 +36,30 @@ function popover(testId: string): HTMLElement {
 }
 
 /**
- * Every option row one menu offers, in order.
- *
- * The one place the role that makes this group a one-of-N choice is spelled, so
- * the three readers below cannot disagree about what an option IS.
+ * The role that makes the rows of one menu a one-of-N choice. Spelled once, so
+ * the readers and the pickers below cannot disagree about what an option IS.
  */
-function menuItems(testId: string): HTMLElement[] {
-  mountRows(testId)
-  return within(popover(testId)).queryAllByRole('menuitemradio', { hidden: true })
+const OPTION_ROLE = 'menuitemradio'
+
+/** The option rows that one menu holds now, in order. */
+function mountedRows(testId: string): HTMLElement[] {
+  return within(popover(testId)).queryAllByRole(OPTION_ROLE, { hidden: true })
 }
 
 /**
- * Open a menu that has never mounted its rows, so they exist to read.
+ * Every option row one menu offers, in order.
  *
+ * A menu that has never mounted its rows is opened first, so they exist to read.
  * A menu that holds rows stays as it is, so a reader does not open a menu, and
- * run its `onOpen`, a second time. A disabled trigger opens nothing, and its
- * menu reads as empty, as a user finds it.
+ * run its `onOpen`, a second time. A disabled trigger opens nothing, and its menu
+ * reads as empty, as a user finds it.
  */
-function mountRows(testId: string): void {
-  const rows = within(popover(testId)).queryAllByRole('menuitemradio', { hidden: true })
-  if (rows.length === 0)
-    openMenu(testId)
+function menuItems(testId: string): HTMLElement[] {
+  const rows = mountedRows(testId)
+  if (rows.length > 0)
+    return rows
+  openMenu(testId)
+  return mountedRows(testId)
 }
 
 /** The option labels one menu offers, in order. */
@@ -96,14 +99,18 @@ export function openMenu(testId: string): void {
 
 /** Activate the option with this exact label. */
 export function pickMenuOption(testId: string, label: string | RegExp): void {
-  mountRows(testId)
-  fireEvent.click(within(popover(testId)).getByRole('menuitemradio', { name: label, hidden: true }))
+  menuItems(testId)
+  // A second query, because only a role query matches a row by its accessible name.
+  fireEvent.click(within(popover(testId)).getByRole(OPTION_ROLE, { name: label, hidden: true }))
 }
 
 /** Activate the option carrying this value, whatever its label reads. */
 export function pickMenuValue(testId: string, value: string): void {
-  mountRows(testId)
-  fireEvent.click(within(popover(testId)).getByTestId(`loading-menu-option-${value}`))
+  const optionTestId = `loading-menu-option-${value}`
+  const row = menuItems(testId).find(el => el.getAttribute('data-testid') === optionTestId)
+  if (row === undefined)
+    throw new Error(`The menu ${testId} has no option with the value ${JSON.stringify(value)}.`)
+  fireEvent.click(row)
 }
 
 /** The menu's trigger button — what the row shows without being opened. */

@@ -1,5 +1,5 @@
 import { globalStyle, style } from '@vanilla-extract/css'
-import { MARKDOWN_SOURCE_FALLBACK_CLASS } from '~/lib/markdownSourceFallback'
+import { MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE, MARKDOWN_SOURCE_FALLBACK_CLASS } from '~/lib/markdownSourceFallback'
 import {
   BLOCKED_IMAGE_CHIP_CLASS,
   BLOCKED_IMAGE_CLASS,
@@ -21,8 +21,13 @@ globalStyle(`${markdownContent} a`, {
   textDecoration: 'underline',
 })
 
+// Every `<pre>` of rendered markdown is a code block, except the source
+// fallback below, which shows prose. `:where()` adds no specificity, so the
+// exclusion changes which elements the code block rules match, and nothing else.
+const codeBlock = `${markdownContent} pre:where(:not(.${MARKDOWN_SOURCE_FALLBACK_CLASS}))`
+
 // Code blocks: move scroll to <code> so the copy button stays fixed.
-globalStyle(`${markdownContent} pre`, codeBlockPre('hidden'))
+globalStyle(codeBlock, codeBlockPre('hidden'))
 globalStyle(`${markdownContent} pre code`, codeBlockCode)
 // Rendered (read-only) markdown code blocks WRAP long lines like every other read-only
 // code surface (tool output, Read, diff) instead of scrolling horizontally, which is
@@ -32,25 +37,37 @@ globalStyle(`${markdownContent} pre code`, codeBlockCode)
 globalStyle(`${markdownContent} pre code`, codeWrap)
 
 // The escaped source of a body that the parser could not render (see
-// ~/lib/markdownSourceFallback): wrapped like prose, in the surrounding font.
-globalStyle(`.${MARKDOWN_SOURCE_FALLBACK_CLASS}`, {
+// ~/lib/markdownSourceFallback): wrapped like prose, in the surrounding font and
+// colour, with no field and no padding, on every surface that shows markdown.
+//
+// The selector requires the data attribute beside the class, which the fallback
+// always carries. The attribute adds specificity, so this rule outranks the
+// `pre` rule of a host, such as the monospace font of a chat message. Oat's own
+// `pre` field sits in a cascade layer, so any rule here outranks it.
+globalStyle(`pre.${MARKDOWN_SOURCE_FALLBACK_CLASS}[${MARKDOWN_SOURCE_FALLBACK_ATTRIBUTE}]`, {
   ...codeWrap,
   margin: 0,
+  padding: 0,
+  borderRadius: 0,
+  overflow: 'visible',
+  backgroundColor: 'transparent',
+  color: 'inherit',
   fontFamily: 'inherit',
   fontSize: 'inherit',
+  fontVariantLigatures: 'inherit',
   lineHeight: 'inherit',
 })
 
 // Shiki dual-theme support via CSS variables (color only -- the wrapper owns the bg).
 //
-// The SURFACE is every `<pre>`, not only the highlighted ones. A markdown body
+// The SURFACE is every code block, not only the highlighted ones. A markdown body
 // renders a plain `<pre><code>` when the highlighted pipeline throws or the
 // worker's highlighter cannot initialize (see ~/lib/markdownProcessor), and
 // scoping the field to `pre.shiki` made that block a differently coloured surface
 // from its highlighted neighbours. The token
 // colours still land on `.shiki` alone, because a plain `<pre>` carries no
 // `--shiki-*` to read.
-codeSurface(`${markdownContent} pre`, 'block', [
+codeSurface(codeBlock, 'block', [
   { suffix: '.shiki' },
   { suffix: '.shiki span' },
 ])

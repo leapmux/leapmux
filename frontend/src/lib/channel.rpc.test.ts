@@ -1,8 +1,11 @@
 import type { MessageShape } from '@bufbuild/protobuf'
+import type { ChannelManager } from './channel'
 import type { LoggerCapture } from '~/test-support/loggerCapture'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { MAX_CHUNK_SIZE } from '~/generated/contracts/wire'
 import {
+  ChannelMessageFlags,
   InnerMessageSchema,
   InnerRpcRequestSchema,
   InnerRpcResponseSchema,
@@ -10,7 +13,6 @@ import {
 import { StatFileRequestSchema, StatFileResponseSchema, WorkerFileService } from '~/generated/proto/leapmux/v1/file_pb'
 import { WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode, WorkerWatchService } from '~/generated/proto/leapmux/v1/watch_pb'
 import { captureLoggerOutput } from '~/test-support/loggerCapture'
-import { ChannelManager } from './channel'
 import {
   agePastMaxAge,
   channelInternals,
@@ -24,7 +26,9 @@ import {
   mockHandshake1,
   mockHandshake2,
   MockWebSocket,
+  newTestChannelManager,
   sessions,
+  sessionStateOf,
 } from './channel.test-support'
 import { ChannelError } from './channelError'
 
@@ -63,23 +67,27 @@ describe('ChannelManager call', () => {
       kind: { case: 'response', value: resp },
     })
     const ct = pair.responder.send.encrypt(toBinary(InnerMessageSchema, envelope))
+    let settled = false
+    void callPromise.then(() => {
+      settled = true
+    }, () => {
+      settled = true
+    })
     h.mockWs.simulateMessage(encodeWireMessageWithBigIntId(channelId, ct, unsafeId))
+    await h.settle()
 
     // The pending call is untouched: not resolved, not rejected.
-    const settled = await Promise.race([
-      callPromise.then(() => 'settled' as const, () => 'settled' as const),
-      new Promise<'pending'>(resolve => setTimeout(resolve, 20, 'pending')),
-    ])
-    expect(settled).toBe('pending')
+    expect(settled).toBe(false)
 
     // ...and the real response still routes.
-    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([4, 5, 6]))
+    await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([4, 5, 6]))
     await expect(callPromise).resolves.toEqual(new Uint8Array([4, 5, 6]))
   })
 
   it('should send a request and receive a response', async () => {
     const channelId = await h.openTestChannel('w1')
     const callPromise = h.mgr.call(channelId, 'TestMethod', new Uint8Array([1, 2, 3]))
+    await h.settle()
 
     const requestSentIndex = h.mockWs.sent.length - 1
 
@@ -99,7 +107,7 @@ describe('ChannelManager call', () => {
     expect(Number(sentMsg.correlationId)).toBe(FIRST_TEST_REQUEST_ID)
 
     // Send a response from the worker.
-    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([4, 5, 6]))
+    await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([4, 5, 6]))
 
     const resp = await callPromise
     expect(resp).toEqual(new Uint8Array([4, 5, 6]))
@@ -108,10 +116,12 @@ describe('ChannelManager call', () => {
   it('should reject on error response', async () => {
     const channelId = await h.openTestChannel('w1')
     const callPromise = h.mgr.call(channelId, 'TestMethod', new Uint8Array())
+    // Attach the expectation first: the call rejects while the reply settles.
+    const rejected = expect(callPromise).rejects.toThrow('something went wrong')
 
-    h.sendErrorResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, 'something went wrong')
+    await h.sendErrorResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, 'something went wrong')
 
-    await expect(callPromise).rejects.toThrow('something went wrong')
+    await rejected
   })
 
   it('should reject if channel is not open', async () => {
@@ -137,15 +147,30 @@ describe('ChannelManager call', () => {
     expect((err as ChannelError).source).toBe('client')
   })
 
+  // The close reaches the session worker after the send, so the worker still
+  // encrypts the request and posts its frame. The request already failed, and
+  // the Hub dropped the channel.
+  it('drops a frame that the session worker encrypted for a channel that closed meanwhile', async () => {
+    const channelId = await h.openTestChannel('w1')
+    const sentBefore = h.mockWs.sent.length
+    const call = expect(h.mgr.call(channelId, 'Test', new Uint8Array([1]))).rejects.toThrow('channel closed')
+
+    await h.mgr.closeChannel(channelId)
+    await h.settle()
+
+    await call
+    expect(h.mockWs.sent).toHaveLength(sentBefore)
+  })
+
   it('rejects promptly when the socket is not OPEN instead of hanging until the RPC timeout', async () => {
     const channelId = await h.openTestChannel('w1')
     // The socket goes to CLOSED WITHOUT its close event draining the channel
     // (a stale/superseded socket the current-socket fence dropped): the channel
-    // is still 'verified', so a call reaches the send. sendChannelMessage must
-    // THROW here rather than log-and-return, so call()'s catch unregisters and
-    // rejects fast -- otherwise the request sits in pendingRequests until the
-    // ~15s timeout. No fake timers are advanced, so this only resolves if the
-    // rejection is immediate.
+    // is still 'verified', so a call reaches the send. The relay must THROW when
+    // the session worker's frame reaches it rather than log-and-return, so the
+    // manager closes the channel and fails the request at once -- otherwise the
+    // request sits in pendingRequests until the ~15s timeout. No fake timers are
+    // advanced, so this only resolves if the rejection is prompt.
     h.mockWs.readyState = MockWebSocket.CLOSED
     await expect(h.mgr.call(channelId, 'Test', new Uint8Array([1]))).rejects.toThrow(/WebSocket not open/)
   })
@@ -157,8 +182,8 @@ describe('ChannelManager call', () => {
     const call2 = h.mgr.call(channelId, 'Method2', new Uint8Array([2]))
 
     // Respond in reverse order.
-    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID + 1, new Uint8Array([20]))
-    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([10]))
+    await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID + 1, new Uint8Array([20]))
+    await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([10]))
 
     const [resp1, resp2] = await Promise.all([call1, call2])
     expect(resp1).toEqual(new Uint8Array([10]))
@@ -223,7 +248,7 @@ describe('ChannelManager call', () => {
     // throw, double-resolve, or surface as an unhandled rejection.
     // The pendingRequest entry was deleted at abort time, so the
     // dispatcher quietly drops the message.
-    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([7, 8, 9]))
+    await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([7, 8, 9]))
     // No assertion needed beyond "doesn't crash" — vitest fails
     // the test on unhandled rejections from the now-detached
     // promise, so the absence of those failures is the signal.
@@ -261,7 +286,7 @@ describe('ChannelManager callWorker', () => {
     const sentBefore = h.mockWs.sent.length
 
     const callPromise = h.mgr.callWorker('w1', WorkerFileService.method.statFile, { path: '/repo/a.txt' })
-    await h.flushMicrotasks()
+    await h.settle()
 
     expect(h.mockWs.sent).toHaveLength(sentBefore + 1)
     const sentMsg = decodeWireMessage(h.mockWs.sent.at(-1)!)
@@ -273,7 +298,7 @@ describe('ChannelManager callWorker', () => {
     expect(envelope.kind.value.method).toBe('/leapmux.v1.WorkerFileService/StatFile')
     expect(fromBinary(StatFileRequestSchema, envelope.kind.value.payload).path).toBe('/repo/a.txt')
 
-    h.sendResponseFromWorker(channelId, Number(sentMsg.correlationId), toBinary(StatFileResponseSchema, create(StatFileResponseSchema, {
+    await h.sendResponseFromWorker(channelId, Number(sentMsg.correlationId), toBinary(StatFileResponseSchema, create(StatFileResponseSchema, {
       info: { name: 'a.txt', path: '/repo/a.txt', size: 42n },
     })))
     const resp = await callPromise
@@ -299,12 +324,13 @@ describe('ChannelManager callWorker', () => {
     const channelId = await h.openTestChannel('w1')
 
     const callPromise = h.mgr.callWorker('w1', WorkerFileService.method.statFile, { path: '/missing' })
-    await h.flushMicrotasks()
+    await h.settle()
     const sentMsg = decodeWireMessage(h.mockWs.sent.at(-1)!)
     sessions.get(channelId)!.responder.receive.decrypt(sentMsg.ciphertext)
-    h.sendErrorResponseFromWorker(channelId, Number(sentMsg.correlationId), 'no such file')
+    const rejected = expect(callPromise).rejects.toMatchObject({ source: 'rpc', code: 2, message: 'no such file' })
+    await h.sendErrorResponseFromWorker(channelId, Number(sentMsg.correlationId), 'no such file')
 
-    await expect(callPromise).rejects.toMatchObject({ source: 'rpc', code: 2, message: 'no such file' })
+    await rejected
   })
 })
 
@@ -334,7 +360,8 @@ describe('ChannelManager stream', () => {
   afterEach(() => h.teardown())
 
   /** Consume the opening request of a stream, and return what the worker reads. */
-  function readOpeningRequest(channelId: string) {
+  async function readOpeningRequest(channelId: string) {
+    await h.settle()
     const sent = decodeWireMessage(h.mockWs.sent.at(-1)!)
     const { kind } = fromBinary(InnerMessageSchema, sessions.get(channelId)!.responder.receive.decrypt(sent.ciphertext))
     if (kind.case !== 'request')
@@ -350,8 +377,8 @@ describe('ChannelManager stream', () => {
       updateIds.push(ackedUpdateId(msg))
     })
 
-    h.sendStreamMessageFromWorker(channelId, handle.requestId, watchAckFrame(1n))
-    h.sendStreamMessageFromWorker(channelId, handle.requestId, watchAckFrame(2n))
+    await h.sendStreamMessageFromWorker(channelId, handle.requestId, watchAckFrame(1n))
+    await h.sendStreamMessageFromWorker(channelId, handle.requestId, watchAckFrame(2n))
 
     expect(updateIds).toEqual([1n, 2n])
   })
@@ -367,7 +394,7 @@ describe('ChannelManager stream', () => {
       ],
     })
 
-    const request = readOpeningRequest(channelId)
+    const request = await readOpeningRequest(channelId)
     expect(request.method).toBe('/leapmux.v1.WorkerWatchService/WatchEvents')
     const decoded = fromBinary(WatchEventsRequestSchema, request.payload)
     expect(decoded.updateId).toBe(17n)
@@ -379,7 +406,7 @@ describe('ChannelManager stream', () => {
 
     h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, {})
 
-    expect(readOpeningRequest(channelId).payload).toEqual(new Uint8Array())
+    expect((await readOpeningRequest(channelId)).payload).toEqual(new Uint8Array())
   })
 
   it('delivers a frame with no payload as an empty message', async () => {
@@ -390,7 +417,7 @@ describe('ChannelManager stream', () => {
     handle.onMessage(onMessage)
     handle.onError(onError)
 
-    h.sendStreamMessageFromWorker(channelId, handle.requestId, new Uint8Array())
+    await h.sendStreamMessageFromWorker(channelId, handle.requestId, new Uint8Array())
 
     expect(onMessage).toHaveBeenCalledOnce()
     expect(onMessage.mock.calls[0]?.[0].event.case).toBeUndefined()
@@ -404,7 +431,7 @@ describe('ChannelManager stream', () => {
       const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, {})
       handle.onMessage(() => {})
 
-      h.sendStreamMessageFromWorker(channelId, handle.requestId, watchAckFrame(1n))
+      await h.sendStreamMessageFromWorker(channelId, handle.requestId, watchAckFrame(1n))
 
       expect(capture.messages('debug', 'channel')).toContain('stream message')
     }
@@ -431,10 +458,10 @@ describe('ChannelManager stream', () => {
       handle.onMessage(onMessage)
       handle.onEnd(onEnd)
       handle.onError(onError)
-      readOpeningRequest(channelId)
+      await readOpeningRequest(channelId)
       const sentBefore = h.mockWs.sent.length
 
-      h.sendStreamMessageFromWorker(channelId, handle.requestId, UNDECODABLE_FRAME)
+      await h.sendStreamMessageFromWorker(channelId, handle.requestId, UNDECODABLE_FRAME)
 
       expect(onMessage).not.toHaveBeenCalled()
       expect(onEnd).not.toHaveBeenCalled()
@@ -459,17 +486,18 @@ describe('ChannelManager stream', () => {
       handle.onEnd(onEnd)
       handle.onError(onError)
 
-      h.sendStreamMessageFromWorker(channelId, handle.requestId, UNDECODABLE_FRAME)
-      h.sendStreamMessageFromWorker(channelId, handle.requestId, watchAckFrame(1n))
-      h.sendStreamEndFromWorker(channelId, handle.requestId)
+      await h.sendStreamMessageFromWorker(channelId, handle.requestId, UNDECODABLE_FRAME)
+      await h.sendStreamMessageFromWorker(channelId, handle.requestId, watchAckFrame(1n))
+      await h.sendStreamEndFromWorker(channelId, handle.requestId)
 
       expect(onMessage).not.toHaveBeenCalled()
       expect(onEnd).not.toHaveBeenCalled()
       expect(onError).toHaveBeenCalledOnce()
     })
 
-    // The rekey delays the cancel frame, and with it the end of the registration,
-    // so the stream's frames can still arrive. The owner must not hear of them.
+    // The rekey delays the cancel frame in the session worker, so the stream's
+    // frames can still arrive. The registration ends at once, and the owner must
+    // not hear of them.
     describe('while the cancel waits for a rekey', () => {
       async function failedDuringRekey() {
         const channelId = await h.openTestChannel('w1')
@@ -482,9 +510,9 @@ describe('ChannelManager stream', () => {
         handle.onMessage(listeners.onMessage)
         handle.onEnd(listeners.onEnd)
         handle.onError(listeners.onError)
-        readOpeningRequest(channelId)
-        agePastMaxAge(channelInternals(h.mgr, channelId) as unknown as { lastRekeyAt: number })
-        h.sendStreamMessageFromWorker(channelId, handle.requestId, UNDECODABLE_FRAME)
+        await readOpeningRequest(channelId)
+        agePastMaxAge(sessionStateOf(channelId))
+        await h.sendStreamMessageFromWorker(channelId, handle.requestId, UNDECODABLE_FRAME)
         expect(listeners.onError).toHaveBeenCalledOnce()
         return { channelId, handle, listeners }
       }
@@ -492,16 +520,15 @@ describe('ChannelManager stream', () => {
       it('fires no listener for a later frame, and cancels after the rekey', async () => {
         const { channelId, handle, listeners } = await failedDuringRekey()
 
-        h.sendStreamMessageFromWorker(channelId, handle.requestId, UNDECODABLE_FRAME)
-        h.sendStreamMessageFromWorker(channelId, handle.requestId, watchAckFrame(1n))
+        await h.sendStreamMessageFromWorker(channelId, handle.requestId, UNDECODABLE_FRAME)
+        await h.sendStreamMessageFromWorker(channelId, handle.requestId, watchAckFrame(1n))
 
         expect(listeners.onMessage).not.toHaveBeenCalled()
         expect(listeners.onError).toHaveBeenCalledOnce()
-        expect(channelInternals(h.mgr, channelId).streamListeners.has(handle.requestId), 'the cancel has not left yet').toBe(true)
+        expect(channelInternals(h.mgr, channelId).streamListeners.has(handle.requestId), 'the registration ends before the cancel leaves').toBe(false)
 
-        await h.flushMicrotasks()
-        h.simulateRekeyAck()
-        await h.flushMicrotasks()
+        await h.settle()
+        await h.simulateRekeyAck()
 
         expect(Number(decodeWireMessage(h.mockWs.sent.at(-1)!).correlationId)).toBe(handle.requestId)
         expect(channelInternals(h.mgr, channelId).streamListeners.has(handle.requestId)).toBe(false)
@@ -511,7 +538,7 @@ describe('ChannelManager stream', () => {
       it('fires no listener for a later end frame', async () => {
         const { channelId, handle, listeners } = await failedDuringRekey()
 
-        h.sendStreamEndFromWorker(channelId, handle.requestId)
+        await h.sendStreamEndFromWorker(channelId, handle.requestId)
 
         expect(listeners.onEnd).not.toHaveBeenCalled()
         expect(listeners.onError).toHaveBeenCalledOnce()
@@ -522,7 +549,7 @@ describe('ChannelManager stream', () => {
         const { channelId, listeners } = await failedDuringRekey()
 
         await h.mgr.closeChannel(channelId)
-        await h.flushMicrotasks()
+        await h.settle()
 
         expect(listeners.onEnd).not.toHaveBeenCalled()
         expect(listeners.onError).toHaveBeenCalledOnce()
@@ -536,10 +563,10 @@ describe('ChannelManager stream', () => {
         throw new Error('listener bug')
       })
       handle.onMessage(() => {})
-      readOpeningRequest(channelId)
+      await readOpeningRequest(channelId)
       const sentBefore = h.mockWs.sent.length
 
-      expect(() => h.sendStreamMessageFromWorker(channelId, handle.requestId, UNDECODABLE_FRAME)).not.toThrow()
+      await expect(h.sendStreamMessageFromWorker(channelId, handle.requestId, UNDECODABLE_FRAME)).resolves.toBeUndefined()
 
       expect(channelInternals(h.mgr, channelId).streamListeners.has(handle.requestId)).toBe(false)
       expect(cancelFrameCount(channelId, sentBefore)).toBe(1)
@@ -552,7 +579,7 @@ describe('ChannelManager stream', () => {
         const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, {})
         handle.onMessage(() => {})
 
-        h.sendStreamMessageFromWorker(channelId, handle.requestId, UNDECODABLE_FRAME)
+        await h.sendStreamMessageFromWorker(channelId, handle.requestId, UNDECODABLE_FRAME)
 
         expect(capture.messages('warn', 'channel')).toEqual(['stream decode failed with no onError listener'])
         expect(channelInternals(h.mgr, channelId).streamListeners.has(handle.requestId)).toBe(false)
@@ -572,8 +599,8 @@ describe('ChannelManager stream', () => {
       const received: bigint[] = []
       healthy.onMessage(msg => received.push(ackedUpdateId(msg)))
 
-      h.sendStreamMessageFromWorker(channelId, broken.requestId, UNDECODABLE_FRAME)
-      h.sendStreamMessageFromWorker(channelId, healthy.requestId, watchAckFrame(5n))
+      await h.sendStreamMessageFromWorker(channelId, broken.requestId, UNDECODABLE_FRAME)
+      await h.sendStreamMessageFromWorker(channelId, healthy.requestId, watchAckFrame(5n))
 
       expect(received).toEqual([5n])
     })
@@ -585,7 +612,7 @@ describe('ChannelManager stream', () => {
     const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, {})
     handle.onEnd(endFn)
 
-    h.sendStreamEndFromWorker(channelId, handle.requestId)
+    await h.sendStreamEndFromWorker(channelId, handle.requestId)
 
     expect(endFn).toHaveBeenCalledOnce()
   })
@@ -596,7 +623,7 @@ describe('ChannelManager stream', () => {
     const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, {})
     handle.onError(errorFn)
 
-    h.sendStreamErrorFromWorker(channelId, handle.requestId, 'stream broke')
+    await h.sendStreamErrorFromWorker(channelId, handle.requestId, 'stream broke')
 
     expect(errorFn).toHaveBeenCalledOnce()
     expect(errorFn.mock.calls[0]?.[0]?.message).toBe('stream broke')
@@ -614,7 +641,7 @@ describe('ChannelManager stream', () => {
     const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, {})
     handle.onError(errorFn)
 
-    h.sendErrorResponseFromWorker(channelId, handle.requestId, 'workspace not accessible')
+    await h.sendErrorResponseFromWorker(channelId, handle.requestId, 'workspace not accessible')
 
     expect(errorFn).toHaveBeenCalledOnce()
     expect(errorFn.mock.calls[0]?.[0]?.message).toBe('workspace not accessible')
@@ -632,7 +659,7 @@ describe('ChannelManager stream', () => {
     handle.onError(errorFn)
     handle.onEnd(endFn)
 
-    h.sendResponseFromWorker(channelId, handle.requestId, new Uint8Array([7]))
+    await h.sendResponseFromWorker(channelId, handle.requestId, new Uint8Array([7]))
 
     expect(errorFn).not.toHaveBeenCalled()
     expect(endFn).not.toHaveBeenCalled()
@@ -643,20 +670,29 @@ describe('ChannelManager stream', () => {
     expect(() => h.mgr.stream('nonexistent', WorkerWatchService.method.watchEvents, {})).toThrow('channel not open')
   })
 
-  it('surfaces a send failure (throws + unregisters) when the socket is not OPEN', async () => {
+  it('surfaces a send failure through onError, and unregisters, when the socket is not OPEN', async () => {
     const channelId = await h.openTestChannel('w1')
-    // Grab the channel object up front: the throw's onSendFailure closes the
-    // channel (a 'transport' error) and removes it from the manager's map, but
-    // stream()'s catch unregisters the listener on THIS same object first.
+    // Grab the channel object up front: the send failure closes the channel (a
+    // 'transport' error) and removes it from the manager's map.
     const internals = channelInternals(h.mgr, channelId)
     // The socket is CLOSED but the channel is still 'verified' (a stale socket
-    // whose close event was dropped). stream()'s initial request send must
-    // throw rather than be silently dropped, or the stream listener stays
-    // registered producing no data and no error until the channel is torn down.
+    // whose close event was dropped). The relay must refuse the opening request
+    // rather than drop it silently, or the stream listener stays registered
+    // producing no data and no error until the channel is torn down.
     h.mockWs.readyState = MockWebSocket.CLOSED
-    expect(() => h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, {})).toThrow(/WebSocket not open/)
-    // The catch unregistered the listener rather than leaking it.
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, {})
+    const onError = vi.fn()
+    const onEnd = vi.fn()
+    handle.onError(onError)
+    handle.onEnd(onEnd)
+    await h.settle()
+
+    expect(onError).toHaveBeenCalledOnce()
+    expect(onError.mock.calls[0]![0].message).toMatch(/WebSocket not open/)
+    expect(onEnd).not.toHaveBeenCalled()
+    // The close unregistered the listener rather than leaking it.
     expect(internals.streamListeners.size).toBe(0)
+    expect(h.mgr.isOpen(channelId)).toBe(false)
   })
 
   it('should unregister the stream even when onError throws', async () => {
@@ -671,7 +707,7 @@ describe('ChannelManager stream', () => {
     // its reassembly slot registered forever (four of them exhaust
     // MAX_INCOMPLETE_CHUNKED and wedge the channel). It must also not unwind
     // into the WebSocket message dispatch.
-    expect(() => h.sendStreamErrorFromWorker(channelId, handle.requestId, 'stream broke')).not.toThrow()
+    await expect(h.sendStreamErrorFromWorker(channelId, handle.requestId, 'stream broke')).resolves.toBeUndefined()
     expect(channelInternals(h.mgr, channelId).streamListeners.has(handle.requestId)).toBe(false)
   })
 
@@ -682,7 +718,7 @@ describe('ChannelManager stream', () => {
       throw new Error('listener bug')
     })
 
-    expect(() => h.sendStreamEndFromWorker(channelId, handle.requestId)).not.toThrow()
+    await expect(h.sendStreamEndFromWorker(channelId, handle.requestId)).resolves.toBeUndefined()
     expect(channelInternals(h.mgr, channelId).streamListeners.has(handle.requestId)).toBe(false)
   })
 
@@ -703,8 +739,8 @@ describe('ChannelManager stream', () => {
     // A throwing per-chunk callback must be isolated (safeCall) so it neither
     // unwinds into the WS message dispatch nor stops later chunks arriving. It
     // is also no decode failure, so it must not end the stream.
-    expect(() => h.sendStreamMessageFromWorker(channelId, handle.requestId, watchAckFrame(1n))).not.toThrow()
-    expect(() => h.sendStreamMessageFromWorker(channelId, handle.requestId, watchAckFrame(2n))).not.toThrow()
+    await expect(h.sendStreamMessageFromWorker(channelId, handle.requestId, watchAckFrame(1n))).resolves.toBeUndefined()
+    await expect(h.sendStreamMessageFromWorker(channelId, handle.requestId, watchAckFrame(2n))).resolves.toBeUndefined()
     expect(received).toEqual([2n])
     expect(onError).not.toHaveBeenCalled()
     // Still live: a non-terminal throw does not unregister.
@@ -715,6 +751,7 @@ describe('ChannelManager stream', () => {
     const channelId = await h.openTestChannel('w1')
     const receive = sessions.get(channelId)!.responder.receive
     const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, {})
+    await h.settle()
     // The session decrypts in arrival order, so the opening frame comes first.
     receive.decrypt(decodeWireMessage(h.mockWs.sent.at(-1)!).ciphertext)
     const streamActionOfLastFrame = () => {
@@ -728,6 +765,7 @@ describe('ChannelManager stream', () => {
 
     const sentBefore = h.mockWs.sent.length
     handle.send({ updateId: 9n })
+    await h.settle()
     expect(h.mockWs.sent.length).toBeGreaterThan(sentBefore)
     const revision = streamActionOfLastFrame()
     if (revision.case !== 'payload')
@@ -735,6 +773,7 @@ describe('ChannelManager stream', () => {
     expect(fromBinary(WatchEventsRequestSchema, revision.value).updateId).toBe(9n)
 
     expect(() => handle.cancel()).not.toThrow()
+    await h.settle()
     expect(streamActionOfLastFrame().case).toBe('cancel')
     expect(channelInternals(h.mgr, channelId).streamListeners.has(handle.requestId)).toBe(false)
   })
@@ -779,14 +818,14 @@ describe('ChannelManager late frames', () => {
     controller.abort(new Error('aborted'))
     await expect(callPromise).rejects.toThrow('aborted')
 
-    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
+    await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
 
     expect(capture.messages('warn', 'channel')).toEqual([])
     expect(retiredDrops()).toHaveLength(1)
 
     // The drop leaves the channel healthy: the next call still gets its answer.
     const nextCall = h.mgr.call(channelId, 'TestMethod', new Uint8Array())
-    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID + 1, new Uint8Array([2]))
+    await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID + 1, new Uint8Array([2]))
     await expect(nextCall).resolves.toEqual(new Uint8Array([2]))
   })
 
@@ -798,7 +837,7 @@ describe('ChannelManager late frames', () => {
       vi.advanceTimersByTime(1_000)
       await expect(callPromise).rejects.toThrow('timed out after 1s')
 
-      h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
+      await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
 
       expect(capture.messages('warn', 'channel')).toEqual([])
       expect(retiredDrops()).toHaveLength(1)
@@ -820,8 +859,8 @@ describe('ChannelManager late frames', () => {
     // An event that the worker sent before it read the cancel, then the end frame
     // that the cancel itself produces (watchSession.run sends End when its
     // context ends).
-    h.sendStreamMessageFromWorker(channelId, handle.requestId, watchAckFrame(1n))
-    h.sendStreamEndFromWorker(channelId, handle.requestId)
+    await h.sendStreamMessageFromWorker(channelId, handle.requestId, watchAckFrame(1n))
+    await h.sendStreamEndFromWorker(channelId, handle.requestId)
 
     expect(onMessage).not.toHaveBeenCalled()
     expect(onEnd).not.toHaveBeenCalled()
@@ -849,10 +888,11 @@ describe('ChannelManager late frames', () => {
     const mid = Math.floor(plaintext.length / 2)
     h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(plaintext.slice(0, mid)), { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
     h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(plaintext.slice(mid)), { id: FIRST_TEST_REQUEST_ID, flags: 0 }))
+    await h.settle()
 
     expect(capture.messages('warn', 'channel')).toEqual([])
     expect(retiredDrops()).toHaveLength(2)
-    expect(channelInternals(h.mgr, channelId).reassembly.size()).toBe(0)
+    expect(sessionStateOf(channelId).reassembly.size()).toBe(0)
   })
 
   // The documented cost of reading the allocation range instead of recording why
@@ -861,10 +901,10 @@ describe('ChannelManager late frames', () => {
   it('logs a duplicate response to a completed call at debug level', async () => {
     const channelId = await h.openTestChannel('w1')
     const callPromise = h.mgr.call(channelId, 'TestMethod', new Uint8Array())
-    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
+    await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
     await expect(callPromise).resolves.toEqual(new Uint8Array([1]))
 
-    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([2]))
+    await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([2]))
 
     expect(capture.messages('warn', 'channel')).toEqual([])
     expect(retiredDrops()).toHaveLength(1)
@@ -875,7 +915,7 @@ describe('ChannelManager late frames', () => {
 
     // FIRST_TEST_REQUEST_ID is the next id that the counter hands out, and no
     // call has taken it yet.
-    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
+    await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
 
     expect(capture.messages('warn', 'channel')).toEqual([NEVER_ALLOCATED_ID_MESSAGE])
     expect(retiredDrops()).toEqual([])
@@ -891,6 +931,7 @@ describe('ChannelManager message routing', () => {
     await h.openTestChannel('w1')
     // Should not throw.
     h.mockWs.simulateMessage(encodeWireMessage('unknown-channel', new Uint8Array([1, 2, 3])))
+    await h.settle()
   })
 
   it('should route messages to the correct channel', async () => {
@@ -900,8 +941,8 @@ describe('ChannelManager message routing', () => {
     const call1 = h.mgr.call(ch1, 'M1', new Uint8Array())
     const call2 = h.mgr.call(ch2, 'M2', new Uint8Array())
 
-    h.sendResponseFromWorker(ch2, FIRST_TEST_REQUEST_ID, new Uint8Array([20]))
-    h.sendResponseFromWorker(ch1, FIRST_TEST_REQUEST_ID, new Uint8Array([10]))
+    await h.sendResponseFromWorker(ch2, FIRST_TEST_REQUEST_ID, new Uint8Array([20]))
+    await h.sendResponseFromWorker(ch1, FIRST_TEST_REQUEST_ID, new Uint8Array([10]))
 
     const [resp1, resp2] = await Promise.all([call1, call2])
     expect(resp1).toEqual(new Uint8Array([10]))
@@ -919,6 +960,7 @@ describe('ChannelManager chunking', () => {
     const sentBefore = h.mockWs.sent.length
 
     const callPromise = h.mgr.call(channelId, 'Test', new Uint8Array([1, 2, 3]))
+    await h.settle()
 
     const sentAfter = h.mockWs.sent.length
     expect(sentAfter - sentBefore).toBe(1) // Just 1 frame
@@ -930,27 +972,75 @@ describe('ChannelManager chunking', () => {
     expect(msg.flags).toBe(0) // UNSPECIFIED
 
     // Complete the call so it doesn't stay pending during cleanup.
-    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([42]))
+    await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([42]))
     await callPromise
   })
 
   it('should send multiple chunks for large plaintext', async () => {
-    // Create a manager with a small max chunk awareness.
-    // We can't easily test actual chunking without matching MAX_CHUNK_SIZE,
-    // but we can verify the chunk splitting logic by checking the wire output.
     const channelId = await h.openTestChannel('w1')
+    const pair = sessions.get(channelId)!
+    const sentBefore = h.mockWs.sent.length
+    const payload = Uint8Array.from({ length: MAX_CHUNK_SIZE * 2 + 10 }, (_, i) => i % 251)
+
+    const callPromise = h.mgr.call(channelId, 'Test', payload)
+    await h.settle()
+
+    // The envelope is a little longer than the payload, so it takes three chunks.
+    const frames = h.mockWs.sent.slice(sentBefore).map(frame => decodeWireMessage(frame))
+    expect(frames.map(frame => ({
+      id: Number(frame.correlationId),
+      flags: frame.flags,
+    }))).toEqual([
+      { id: FIRST_TEST_REQUEST_ID, flags: ChannelMessageFlags.MORE },
+      { id: FIRST_TEST_REQUEST_ID, flags: ChannelMessageFlags.MORE },
+      { id: FIRST_TEST_REQUEST_ID, flags: ChannelMessageFlags.UNSPECIFIED },
+    ])
+    // The Worker decrypts them in wire order and joins them into the request.
+    const chunks = frames.map(frame => pair.responder.receive.decrypt(frame.ciphertext))
+    const joined = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.length, 0))
+    let offset = 0
+    for (const chunk of chunks) {
+      joined.set(chunk, offset)
+      offset += chunk.length
+    }
+    const envelope = fromBinary(InnerMessageSchema, joined)
+    if (envelope.kind.case !== 'request')
+      throw new Error('the chunks must join into an inner request')
+    expect(envelope.kind.value.method).toBe('Test')
+    expect(envelope.kind.value.payload).toEqual(payload)
+
+    await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([42]))
+    await expect(callPromise).resolves.toEqual(new Uint8Array([42]))
+  })
+
+  // The Worker reads its receive nonce in wire order, so a single-frame call
+  // that the caller sends after a chunked one must follow its last chunk.
+  it('sends the chunks of a call and a later single-frame call in nonce order', async () => {
+    const channelId = await h.openTestChannel('w1')
+    const pair = sessions.get(channelId)!
     const sentBefore = h.mockWs.sent.length
 
-    // Send a request — the payload itself is small enough for one chunk.
-    // This just validates the normal path works.
-    const callPromise = h.mgr.call(channelId, 'Test', new Uint8Array(10))
-    const sentAfter = h.mockWs.sent.length
-    expect(sentAfter - sentBefore).toBe(1)
+    const big = h.mgr.call(channelId, 'Big', new Uint8Array(MAX_CHUNK_SIZE + 10))
+    const small = h.mgr.call(channelId, 'Small', new Uint8Array([1]))
+    await h.settle()
 
-    // Complete the call.
-    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([42]))
-    const resp = await callPromise
-    expect(resp).toEqual(new Uint8Array([42]))
+    const frames = h.mockWs.sent.slice(sentBefore).map(frame => decodeWireMessage(frame))
+    expect(frames.map(frame => ({
+      id: Number(frame.correlationId),
+      flags: frame.flags,
+    }))).toEqual([
+      { id: FIRST_TEST_REQUEST_ID, flags: ChannelMessageFlags.MORE },
+      { id: FIRST_TEST_REQUEST_ID, flags: ChannelMessageFlags.UNSPECIFIED },
+      { id: FIRST_TEST_REQUEST_ID + 1, flags: ChannelMessageFlags.UNSPECIFIED },
+    ])
+    // A frame out of nonce order would fail to decrypt here.
+    for (const frame of frames)
+      expect(() => pair.responder.receive.decrypt(frame.ciphertext)).not.toThrow()
+
+    await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
+    await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID + 1, new Uint8Array([2]))
+    await expect(big).resolves.toEqual(new Uint8Array([1]))
+    await expect(small).resolves.toEqual(new Uint8Array([2]))
   })
 
   it('should reassemble multi-chunk response', async () => {
@@ -1014,7 +1104,7 @@ describe('ChannelManager chunking', () => {
 
     // The dropped frame advanced the receive nonce: the peer's NEXT
     // ciphertext still decrypts and resolves the call.
-    h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([42]))
+    await h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([42]))
     const result = await callPromise
     expect(result).toEqual(new Uint8Array([42]))
   })
@@ -1022,18 +1112,17 @@ describe('ChannelManager chunking', () => {
   it('should drop oversized chunked messages', async () => {
     // Create a manager with a very small max message size.
     sessions.clear()
-    const smallMgr = new ChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const smallMgr = newTestChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       testPayloadBudget: 50,
       testReassembledCeiling: 50,
     })
 
     const openPromise = smallMgr.openChannel('w1')
-    await h.flushMicrotasks()
+    await h.settle()
     h.mockWs.simulateOpen()
-    await h.flushMicrotasks()
-    h.simulatePingAccept()
+    await h.settle()
+    await h.simulatePingAccept()
 
     const channelId = await openPromise
     const pair = sessions.get(channelId)!
@@ -1062,18 +1151,17 @@ describe('ChannelManager chunking', () => {
   // moves the bypass to the other framing.
   it('should drop a chunked message whose final chunk exceeds the limit', async () => {
     sessions.clear()
-    const smallMgr = new ChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const smallMgr = newTestChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       testPayloadBudget: 50,
       testReassembledCeiling: 50,
     })
 
     const openPromise = smallMgr.openChannel('w1')
-    await h.flushMicrotasks()
+    await h.settle()
     h.mockWs.simulateOpen()
-    await h.flushMicrotasks()
-    h.simulatePingAccept()
+    await h.settle()
+    await h.simulatePingAccept()
 
     const channelId = await openPromise
     const pair = sessions.get(channelId)!
@@ -1108,6 +1196,8 @@ describe('ChannelManager chunking', () => {
     const chunk5 = new Uint8Array([5])
     const ct5 = pair.responder.send.encrypt(chunk5)
     h.mockWs.simulateMessage(encodeWireMessage(channelId, ct5, { id: 5, flags: 1 }))
+    await h.settle()
+    expect(h.mgr.isOpen(channelId)).toBe(true)
 
     // Channel should still be functional — close notification works.
     h.mockWs.simulateMessage(encodeCloseMessage(channelId))
@@ -1116,18 +1206,17 @@ describe('ChannelManager chunking', () => {
 
   it('should throw on send when plaintext exceeds maxMessageSize', async () => {
     sessions.clear()
-    const smallMgr = new ChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const smallMgr = newTestChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       testPayloadBudget: 50,
       testReassembledCeiling: 50,
     })
 
     const openPromise = smallMgr.openChannel('w1')
-    await h.flushMicrotasks()
+    await h.settle()
     h.mockWs.simulateOpen()
-    await h.flushMicrotasks()
-    h.simulatePingAccept()
+    await h.settle()
+    await h.simulatePingAccept()
 
     const channelId = await openPromise
 
@@ -1139,18 +1228,17 @@ describe('ChannelManager chunking', () => {
 
   it('should reject on final chunk oversize', async () => {
     sessions.clear()
-    const smallMgr = new ChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const smallMgr = newTestChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       testPayloadBudget: 50,
       testReassembledCeiling: 50,
     })
 
     const openPromise = smallMgr.openChannel('w1')
-    await h.flushMicrotasks()
+    await h.settle()
     h.mockWs.simulateOpen()
-    await h.flushMicrotasks()
-    h.simulatePingAccept()
+    await h.settle()
+    await h.simulatePingAccept()
 
     const channelId = await openPromise
     const pair = sessions.get(channelId)!
@@ -1172,18 +1260,17 @@ describe('ChannelManager chunking', () => {
 
   it('should route chunking errors to stream listeners', async () => {
     sessions.clear()
-    const smallMgr = new ChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const smallMgr = newTestChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       testPayloadBudget: 50,
       testReassembledCeiling: 50,
     })
 
     const openPromise = smallMgr.openChannel('w1')
-    await h.flushMicrotasks()
+    await h.settle()
     h.mockWs.simulateOpen()
-    await h.flushMicrotasks()
-    h.simulatePingAccept()
+    await h.settle()
+    await h.simulatePingAccept()
 
     const channelId = await openPromise
     const pair = sessions.get(channelId)!
@@ -1198,6 +1285,7 @@ describe('ChannelManager chunking', () => {
 
     const chunk2 = pair.responder.send.encrypt(new Uint8Array(30))
     h.mockWs.simulateMessage(encodeWireMessage(channelId, chunk2, { id: handle.requestId, flags: 1 }))
+    await h.settle()
 
     expect(errorFn).toHaveBeenCalledOnce()
     expect(errorFn.mock.calls[0]?.[0]?.message).toContain('exceeds')
@@ -1208,26 +1296,35 @@ describe('ChannelManager chunking', () => {
   it('should clear reassembly on close', async () => {
     const channelId = await h.openTestChannel('w1')
     const pair = sessions.get(channelId)!
+    const callPromise = h.mgr.call(channelId, 'Test', new Uint8Array())
 
-    // Start a chunked sequence.
+    // Start a chunked sequence for the live call.
     const chunk = new Uint8Array([1, 2, 3])
     const ct = pair.responder.send.encrypt(chunk)
     h.mockWs.simulateMessage(encodeWireMessage(channelId, ct, { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
+    await h.settle()
+    const session = sessionStateOf(channelId)
+    expect(session.reassembly.size()).toBe(1)
+    const rejected = expect(callPromise).rejects.toThrow('channel closed')
 
     // Close the channel — should not crash and should clean up.
     await h.mgr.closeChannel(channelId)
+    await h.settle()
     expect(h.mgr.isOpen(channelId)).toBe(false)
+    await rejected
+    expect(session.ended).toBe(true)
+    expect(session.reassembly.size()).toBe(0)
   })
 
   /** Open a channel on a manager sharing the suite's h.mockWs (already connected after the first open). */
   async function openOn(cm: ChannelManager, workerId = 'w1'): Promise<string> {
     const openPromise = cm.openChannel(workerId)
-    await h.flushMicrotasks()
+    await h.settle()
     if (h.mockWs.readyState !== MockWebSocket.OPEN) {
       h.mockWs.simulateOpen()
-      await h.flushMicrotasks()
+      await h.settle()
     }
-    h.simulatePingAccept()
+    await h.simulatePingAccept()
     return openPromise
   }
 
@@ -1237,9 +1334,8 @@ describe('ChannelManager chunking', () => {
   // unwinding anything it had set up.
   it('leaves no pending entry behind when a payload is too large to send', async () => {
     sessions.clear()
-    const smallMgr = new ChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const smallMgr = newTestChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       testPayloadBudget: 50,
       testReassembledCeiling: 50,
     })
@@ -1260,9 +1356,8 @@ describe('ChannelManager chunking', () => {
   // entry would live as long as the channel.
   it('leaves no stream listener behind when a payload is too large to send', async () => {
     sessions.clear()
-    const smallMgr = new ChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const smallMgr = newTestChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       testPayloadBudget: 50,
       testReassembledCeiling: 50,
     })
@@ -1289,23 +1384,27 @@ describe('ChannelManager chunking', () => {
   // session never encrypted a byte, so it is still perfectly good.
   it('keeps the channel usable after refusing an oversized payload', async () => {
     sessions.clear()
-    const smallMgr = new ChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const smallMgr = newTestChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       testPayloadBudget: 50,
       testReassembledCeiling: 50,
     })
     try {
       const channelId = await openOn(smallMgr)
+      const sentBefore = h.mockWs.sent.length
       await expect(smallMgr.call(channelId, 'Test', new Uint8Array(200))).rejects.toThrow('message too large')
+      await h.settle()
 
+      // The refusal is synchronous and posts nothing to the session worker.
+      expect(h.mockWs.sent).toHaveLength(sentBefore)
       expect(smallMgr.isOpen(channelId)).toBe(true)
       // The next call goes out on the same channel and round-trips normally.
       const callPromise = smallMgr.call(channelId, 'Test', new Uint8Array([7]))
+      await h.settle()
       const sentMsg = decodeWireMessage(h.mockWs.sent.at(-1)!)
       const pair = sessions.get(channelId)!
       pair.responder.receive.decrypt(sentMsg.ciphertext)
-      h.sendResponseFromWorker(channelId, Number(sentMsg.correlationId), new Uint8Array([42]))
+      await h.sendResponseFromWorker(channelId, Number(sentMsg.correlationId), new Uint8Array([42]))
       await expect(callPromise).resolves.toEqual(new Uint8Array([42]))
       expect(await smallMgr.getOrOpenChannel('w1')).toBe(channelId)
     }
@@ -1320,7 +1419,7 @@ describe('ChannelManager chunking', () => {
   // hand it to every later caller and each would fail identically for up to an hour.
   it('closes the channel when encrypting a call fails, so pooled callers re-resolve', async () => {
     const channelId = await h.openTestChannel('w1')
-    channelInternals(h.mgr, channelId).session.send.encrypt = () => {
+    sessionStateOf(channelId).session.send.encrypt = () => {
       throw new Error('noise: nonce overflow (hard limit)')
     }
 
@@ -1330,8 +1429,8 @@ describe('ChannelManager chunking', () => {
 
     // The pooled caller gets a NEW channel rather than the dead one.
     const nextPromise = h.mgr.getOrOpenChannel('w1')
-    await h.flushMicrotasks()
-    h.simulatePingAccept()
+    await h.settle()
+    await h.simulatePingAccept()
     const nextId = await nextPromise
     expect(nextId).not.toBe(channelId)
     expect(h.mgr.isOpen(nextId)).toBe(true)
@@ -1339,11 +1438,18 @@ describe('ChannelManager chunking', () => {
 
   it('closes the channel when encrypting a stream request fails', async () => {
     const channelId = await h.openTestChannel('w1')
-    channelInternals(h.mgr, channelId).session.send.encrypt = () => {
+    sessionStateOf(channelId).session.send.encrypt = () => {
       throw new Error('noise: nonce overflow (hard limit)')
     }
 
-    expect(() => h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, {})).toThrow('nonce overflow')
+    const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, {})
+    const onError = vi.fn()
+    handle.onError(onError)
+    await h.settle()
+
+    expect(onError).toHaveBeenCalledOnce()
+    expect(onError.mock.calls[0]![0]).toMatchObject({ source: 'transport' })
+    expect(onError.mock.calls[0]![0].message).toMatch(/nonce overflow/)
     expect(h.mgr.isOpen(channelId)).toBe(false)
   })
 })
@@ -1353,26 +1459,20 @@ describe('ChannelManager reassembly lifetime', () => {
   beforeEach(() => h.setup())
   afterEach(() => h.teardown())
 
-  async function openSmallMgr(maxMessageSize: number, rpcTimeoutMs?: number): Promise<{ cm: ChannelManager, channelId: string }> {
+  async function openSmallMgr(maxMessageSize: number): Promise<{ cm: ChannelManager, channelId: string }> {
     sessions.clear()
-    const cm = new ChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
+    const cm = newTestChannelManager(createMockTransport(h.mockWs, { maxMessageSize: false }), {
+      session: { handshake1: mockHandshake1, handshake2: mockHandshake2 },
       testPayloadBudget: maxMessageSize,
       testReassembledCeiling: maxMessageSize,
-      ...(rpcTimeoutMs === undefined
-        ? {}
-        : {
-            rpcTimeoutFn: () => rpcTimeoutMs,
-          }),
     })
     const openPromise = cm.openChannel('w1')
-    await h.flushMicrotasks()
+    await h.settle()
     if (h.mockWs.readyState !== MockWebSocket.OPEN) {
       h.mockWs.simulateOpen()
-      await h.flushMicrotasks()
+      await h.settle()
     }
-    h.simulatePingAccept()
+    await h.simulatePingAccept()
     return { cm, channelId: await openPromise }
   }
 
@@ -1393,6 +1493,7 @@ describe('ChannelManager reassembly lifetime', () => {
       // 30 + 30 > 50: the breach.
       h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
       h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
+      await h.settle()
       expect(errorFn).toHaveBeenCalledOnce()
 
       // The peer keeps shovelling. Not one byte may be buffered, and the failure is
@@ -1400,9 +1501,10 @@ describe('ChannelManager reassembly lifetime', () => {
       for (let i = 0; i < 200; i++) {
         h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
       }
+      await h.settle()
       expect(errorFn).toHaveBeenCalledOnce()
 
-      const ch = channelInternals(cm, channelId)
+      const ch = sessionStateOf(channelId)
       const tombstone = ch.reassembly.get(handle.requestId)
       expect(tombstone).toBeDefined()
       expect(tombstone!.poisoned).toBe(true)
@@ -1413,6 +1515,7 @@ describe('ChannelManager reassembly lifetime', () => {
 
       // The message's final chunk reaps the tombstone.
       h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 0 }))
+      await h.settle()
       expect(ch.reassembly.size()).toBe(0)
       expect(errorFn).toHaveBeenCalledOnce()
     }
@@ -1421,13 +1524,11 @@ describe('ChannelManager reassembly lifetime', () => {
     }
   })
 
-  // A throwing stream onError must NOT skip the reassembly poison that follows it.
-  // failReassembly reports the breach (invoking the app's onError) and THEN
-  // tombstones the id. Before safeCall wrapped that onError call, a throw unwound
-  // out of failReassembly -> reassemble -> handleMessage, so poison never ran: the
-  // id was left un-tombstoned (its buffer already reaped), and every later chunk of
-  // the oversize message re-entered the unknown-id warn path -- the per-chunk storm
-  // the tombstone exists to prevent.
+  // A throwing stream onError must NOT undo the reassembly poison. The session
+  // worker tombstones the id BEFORE it tells the main thread, which then invokes
+  // the app's onError; the release that follows keeps the tombstone. Without the
+  // tombstone every later chunk of the oversize message would re-enter the
+  // unknown-id path -- the per-chunk storm the tombstone exists to prevent.
   it('still poisons a breached id when the stream onError throws', async () => {
     const { cm, channelId } = await openSmallMgr(50)
     try {
@@ -1442,19 +1543,19 @@ describe('ChannelManager reassembly lifetime', () => {
       // 30 + 30 > 50: the breach. The throwing onError must not escape the message
       // dispatch.
       h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
-      expect(() => {
-        h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
-      }).not.toThrow()
+      h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
+      await h.settle()
       expect(errorCalls).toBe(1)
 
       // The id is tombstoned despite the throw, so the remaining chunks are dropped
       // silently rather than re-accumulating and re-reporting.
-      const ch = channelInternals(cm, channelId)
+      const ch = sessionStateOf(channelId)
       expect(ch.reassembly.get(handle.requestId)?.poisoned).toBe(true)
       expect(ch.reassembly.liveCount()).toBe(0)
 
       for (let i = 0; i < 50; i++)
         h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
+      await h.settle()
       expect(errorCalls).toBe(1)
     }
     finally {
@@ -1473,8 +1574,9 @@ describe('ChannelManager reassembly lifetime', () => {
     for (let id = 100; id < 104; id++) {
       h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id, flags: 1 }))
     }
+    await h.settle()
 
-    const ch = channelInternals(h.mgr, channelId)
+    const ch = sessionStateOf(channelId)
     expect(ch.reassembly.size()).toBe(0)
     expect(ch.reassembly.liveCount()).toBe(0)
 
@@ -1500,22 +1602,31 @@ describe('ChannelManager reassembly lifetime', () => {
   // (c) A reassembly buffer exists only to feed one request, so it must die with it.
   // The timeout drops the handler; nothing else would ever come back for the bytes.
   it('reaps the reassembly buffer when its request times out', async () => {
-    const { cm, channelId } = await openSmallMgr(1024, 20)
+    const { cm, channelId } = await openSmallMgr(1024)
+    // The fake clock holds the call's timeout alone, so the test ends it.
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout'],
+    })
     try {
       const pair = sessions.get(channelId)!
-      const callPromise = cm.call(channelId, 'Test', new Uint8Array())
+      const callPromise = cm.call(channelId, 'Test', new Uint8Array(), 1_000)
 
       h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
-      const ch = channelInternals(cm, channelId)
+      await h.settle()
+      const ch = sessionStateOf(channelId)
       expect(ch.reassembly.size()).toBe(1)
       expect(ch.reassembly.liveCount()).toBe(1)
 
-      await expect(callPromise).rejects.toThrow('timed out')
+      const rejected = expect(callPromise).rejects.toThrow('timed out')
+      await vi.advanceTimersByTimeAsync(1_000)
+      await rejected
+      await h.settle()
 
       expect(ch.reassembly.size()).toBe(0)
       expect(ch.reassembly.liveCount()).toBe(0)
     }
     finally {
+      vi.useRealTimers()
       cm.closeAll()
     }
   })
@@ -1526,10 +1637,12 @@ describe('ChannelManager reassembly lifetime', () => {
     const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, {})
 
     h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(new Uint8Array(30)), { id: handle.requestId, flags: 1 }))
-    const ch = channelInternals(h.mgr, channelId)
+    await h.settle()
+    const ch = sessionStateOf(channelId)
     expect(ch.reassembly.size()).toBe(1)
 
     h.mgr.removeStreamListener(channelId, handle.requestId)
+    await h.settle()
     expect(ch.reassembly.size()).toBe(0)
     expect(ch.reassembly.liveCount()).toBe(0)
   })
@@ -1546,8 +1659,9 @@ describe('ChannelManager observability hooks onChannelError', () => {
     h.mgr.onChannelError(cb)
 
     const callPromise = h.mgr.call(channelId, 'Test', new Uint8Array())
-    h.sendErrorResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, 'rpc failed')
-    await expect(callPromise).rejects.toThrow('rpc failed')
+    const rejected = expect(callPromise).rejects.toThrow('rpc failed')
+    await h.sendErrorResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, 'rpc failed')
+    await rejected
 
     expect(cb).toHaveBeenCalledOnce()
     expect(cb.mock.calls[0]?.[0]).toBe('w1')
@@ -1563,7 +1677,7 @@ describe('ChannelManager observability hooks onChannelError', () => {
     const handle = h.mgr.stream(channelId, WorkerWatchService.method.watchEvents, {})
     handle.onError(errorFn)
 
-    h.sendStreamErrorFromWorker(channelId, handle.requestId, 'stream broke')
+    await h.sendStreamErrorFromWorker(channelId, handle.requestId, 'stream broke')
 
     expect(cb).toHaveBeenCalledOnce()
     expect(cb.mock.calls[0]?.[0]).toBe('w1')
@@ -1577,8 +1691,9 @@ describe('ChannelManager observability hooks onChannelError', () => {
     unsub()
 
     const callPromise = h.mgr.call(channelId, 'Test', new Uint8Array())
-    h.sendErrorResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, 'rpc failed')
-    await expect(callPromise).rejects.toThrow('rpc failed')
+    const rejected = expect(callPromise).rejects.toThrow('rpc failed')
+    await h.sendErrorResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, 'rpc failed')
+    await rejected
 
     expect(cb).not.toHaveBeenCalled()
   })

@@ -39,11 +39,25 @@ interface TaskScheduler {
  * Resolve in a later task, so that the browser handles input and paints in between.
  *
  * `scheduler.yield` resumes ahead of other queued tasks where the browser has it.
- * Elsewhere a zero-delay timer resumes behind them.
+ * Elsewhere a message on a fresh `MessageChannel` resumes in a task of its own.
+ *
+ * A zero-delay timer cannot take the place of the message. The browser clamps a timer
+ * that nests five or more levels deep to at least 4 ms, and a run of slices nests one
+ * timer in the next. A hidden page fares worse: the browser runs its timers about once
+ * each second at most, so the hash of a 10 MiB attachment, 21 slices long, takes 21
+ * seconds or more.
  */
 export function yieldToEventLoop(): Promise<void> {
   const scheduler = (globalThis as { scheduler?: TaskScheduler }).scheduler
   if (typeof scheduler?.yield === 'function')
     return scheduler.yield()
-  return new Promise(resolve => setTimeout(resolve, 0))
+  return new Promise((resolve) => {
+    const { port1, port2 } = new MessageChannel()
+    port1.onmessage = () => {
+      // A port with a listener keeps a Node process alive until it closes.
+      port1.close()
+      resolve()
+    }
+    port2.postMessage(null)
+  })
 }

@@ -2,8 +2,8 @@ import type { Setter } from 'solid-js'
 import { Plugin, PluginKey } from '@milkdown/prose/state'
 import { Decoration, DecorationSet } from '@milkdown/prose/view'
 import { $prose } from '@milkdown/utils'
+import { resolveBundledLang } from '~/lib/bundledLanguage'
 import { afterLineIndent } from '~/lib/regexp'
-import { resolveBundledLang } from '~/lib/shikiLazyHighlighter'
 
 /** Handlers for the code language label plugin. */
 export interface CodeLangHandlers {
@@ -59,8 +59,9 @@ function detectLanguage(code: string): string | null {
  * the language of code blocks via heuristics when no explicit language is set.
  * This does NOT modify the code_block node's `language` attribute — it only
  * provides the detected language to the syntax highlighter. An explicit language
- * is passed through verbatim; the lazy parser resolves/loads it (or renders
- * plain when Shiki has no grammar for it).
+ * is passed through verbatim. `createCodeHighlightPlugin` resolves it with
+ * `resolveBundledLang` and leaves a block plain when Shiki has no grammar for it,
+ * and the token worker loads the grammar.
  */
 export function createAutoDetectLanguageExtractor() {
   return (node: { attrs: Record<string, unknown>, textContent: string }): string | undefined => {

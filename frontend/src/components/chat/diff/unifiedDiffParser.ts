@@ -2,6 +2,17 @@ import type { StructuredPatchHunk } from './diffTypes'
 
 const UNIFIED_DIFF_HEADER_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/
 
+const NO_NEWLINE_MARKER = '\\ No newline at end of file'
+
+/**
+ * Whether `line` is the marker that a unified diff puts after a line that has no
+ * final newline. The marker describes the file, not a line, and the diff views
+ * draw lines only, so every reader of hunk lines drops it.
+ */
+export function isNoNewlineMarker(line: string): boolean {
+  return line.startsWith(NO_NEWLINE_MARKER)
+}
+
 export interface ParsedUnifiedDiff {
   hunks: StructuredPatchHunk[]
   oldText: string
@@ -17,7 +28,7 @@ export interface ParsedUnifiedDiff {
  * also carries.
  *
  * Returns null when the input has no hunks. Note: the diff stack's
- * `computeDiff` (diffCompute.ts) goes the inverse direction (pre/post text →
+ * `computeDiff` (diffSearch.ts) goes the inverse direction (pre/post text →
  * hunks), so the two complement each other.
  */
 export function parseUnifiedDiff(diff: string): ParsedUnifiedDiff | null {
@@ -61,7 +72,7 @@ export function parseUnifiedDiff(diff: string): ParsedUnifiedDiff | null {
     }
     if (!current)
       continue
-    if (line.startsWith('\\ No newline at end of file'))
+    if (isNoNewlineMarker(line))
       continue
     if (!line.startsWith('+') && !line.startsWith('-') && !line.startsWith(' '))
       continue

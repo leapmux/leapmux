@@ -4,6 +4,7 @@ import type { SyntaxThemePair } from './syntaxThemes'
 import { createHighlighterCore } from 'shiki/core'
 import { createOnigurumaEngine } from 'shiki/engine/oniguruma'
 import { bundledLanguages } from 'shiki/langs'
+import { resolveBundledLang } from './bundledLanguage'
 import { syntaxThemePair } from './shikiThemes'
 import { ensureThemesRegistered } from './syntaxThemes'
 
@@ -52,48 +53,14 @@ export interface LazyHighlighter {
    * re-attempts.
    */
   ensureLanguage: (lang: string) => Promise<LanguageLoadResult>
-  /** Whether `lang` (id or alias) is already loaded -- a synchronous check. */
-  isLanguageLoaded: (lang: string) => boolean
   /**
    * Ensure both halves of `pair` are registered, so a following `codeToTokens`
    * naming them can resolve. Idempotent; a pair already registered costs a set
    * lookup.
    */
   ensureThemes: (pair: SyntaxThemePair) => Promise<void>
-  /**
-   * Whether both halves of `pair` are already registered -- a synchronous check,
-   * the theme counterpart of `isLanguageLoaded`.
-   *
-   * A synchronous tokenize call site cannot await a registration, so it needs to
-   * ask before it names a theme: `codeToTokens` THROWS for a name the core has
-   * not loaded, and a caller that swallows the throw degrades to plain text with
-   * nothing to say why.
-   */
-  areThemesLoaded: (pair: SyntaxThemePair) => boolean
   /** The initialized highlighter, or null before `ensureReady` resolves. */
   getHighlighter: () => HighlighterCore | null
-}
-
-/**
- * Resolve a language id or alias to a Shiki bundled-language key, or undefined
- * when Shiki ships no grammar for it. Shiki's `bundledLanguages` keys ALREADY
- * include aliases (e.g. `ts`, `c++`, `rb`, `kt`), so a single membership check
- * covers both canonical ids and aliases.
- *
- * `Object.hasOwn` (not `key in obj`): `bundledLanguages` is a plain `{...}` object,
- * so `in` would match inherited `Object.prototype` members -- `'constructor'`,
- * `'toString'`, `'__proto__'`, etc. -- and these reach here from user input (fence
- * languages, code-block attributes, file extensions). A false match would then feed
- * the `Object` constructor / prototype into `loadLanguage`, which throws. The id is
- * lower-cased first because every bundled key/alias is lowercase, so a mixed-case id
- * (a `JSON` code-block attribute, a `TS` fence) still resolves instead of falling
- * through to plain.
- */
-export function resolveBundledLang(lang: string): BundledLanguage | undefined {
-  const key = lang.toLowerCase()
-  return Object.hasOwn(bundledLanguages, key)
-    ? (key as BundledLanguage)
-    : undefined
 }
 
 export function createLazyOnigurumaHighlighter(): LazyHighlighter {
@@ -161,24 +128,10 @@ export function createLazyOnigurumaHighlighter(): LazyHighlighter {
   return {
     ensureReady,
     ensureLanguage,
-    isLanguageLoaded: (lang) => {
-      const canonical = resolveBundledLang(lang)
-      return canonical
-        ? loaded.has(canonical)
-        : false
-    },
     getHighlighter: () => highlighter,
     ensureThemes: async (pair) => {
       const hl = await ensureReady()
       await ensureThemesRegistered(hl, pair)
-    },
-    // Asked of the CORE rather than of a local set, so it answers for every
-    // registration this instance received, whoever made it.
-    areThemesLoaded: (pair) => {
-      if (!highlighter)
-        return false
-      const names = new Set(highlighter.getLoadedThemes())
-      return names.has(pair.light) && names.has(pair.dark)
     },
   }
 }

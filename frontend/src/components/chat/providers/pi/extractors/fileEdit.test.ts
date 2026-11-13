@@ -205,6 +205,52 @@ describe('piResolveDiffSources', () => {
     expect(resolvePiResultDiff(payload, { path: '/project/late.ts' }).source?.filePath).toBe('/project/late.ts')
   })
 
+  it('parses the diff of one result payload once, however often the row reads it', () => {
+    let diffReads = 0
+    const payload = {
+      type: 'tool_execution_end',
+      toolCallId: 'call',
+      toolName: 'edit',
+      result: {
+        details: {
+          get diff() {
+            diffReads++
+            return '-1 before\n+1 after'
+          },
+        },
+      },
+    }
+
+    const first = resolvePiResultDiff(payload, { path: '/project/file.ts' })
+    const second = resolvePiResultDiff(payload, { path: '/project/file.ts' })
+
+    expect(diffReads).toBe(1)
+    expect(second.rawDiff).toBe('-1 before\n+1 after')
+    expect(second.source?.structuredPatch).toBe(first.source?.structuredPatch)
+  })
+
+  it('parses a new result payload again, because it is a new revision of the row', () => {
+    let diffReads = 0
+    const payloadOf = () => ({
+      type: 'tool_execution_end',
+      toolCallId: 'call',
+      toolName: 'edit',
+      result: {
+        details: {
+          get diff() {
+            diffReads++
+            return '-1 before\n+1 after'
+          },
+        },
+      },
+    })
+
+    resolvePiResultDiff(payloadOf(), {})
+    resolvePiResultDiff(payloadOf(), {})
+
+    expect(diffReads).toBe(2)
+  })
+
   it('prefers the applied standard patch over the display-oriented numbered diff', () => {
     const payload = {
       type: 'tool_execution_end',

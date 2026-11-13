@@ -101,6 +101,31 @@ describe('DropdownMenu', () => {
     expect(refEl).toHaveAttribute('data-testid', 'popover-ref-test')
   })
 
+  it('reports the opening before the popover shows, and the closing before it hides', async () => {
+    const events: string[] = []
+    render(() => (
+      <DropdownMenu
+        trigger={<button>Open</button>}
+        data-testid="before-toggle"
+        onBeforeToggle={opening => events.push(`before ${opening ? 'open' : 'close'}`)}
+        onToggle={open => events.push(open ? 'opened' : 'closed')}
+      >
+        <button role="menuitem">Item 1</button>
+      </DropdownMenu>
+    ))
+
+    await fireEvent.click(screen.getByText('Open'))
+    expect(events).toEqual(['before open', 'opened'])
+
+    screen.getByTestId('before-toggle').hidePopover()
+    expect(events).toEqual([
+      'before open',
+      'opened',
+      'before close',
+      'closed',
+    ])
+  })
+
   /**
    * A card popover is a `div` AND the `popoverCard` class, and a call site that
    * applied one without the other is what produced both popover bugs this

@@ -1,6 +1,6 @@
 import type { Accessor, Component, JSX } from 'solid-js'
 import type { DirectoryListingData } from './directoryListings'
-import type { DirectoryTreeStateJSON, TreeNodeData } from './directoryTreeState'
+import type { DirectoryTreeStateJSON, PersistedTreeState, TreeNodeData } from './directoryTreeState'
 import type { FileSortOrder } from '~/lib/fileSort'
 import type { PathFlavor } from '~/lib/paths'
 import type { createRepoGitStore, DiffStats } from '~/stores/repoGit.store'
@@ -15,7 +15,7 @@ import { createContextMenuAnchor } from '~/components/common/DropdownMenu'
 import { FileActionsMenu } from '~/components/common/FileActionsMenu'
 import { Icon } from '~/components/common/Icon'
 import { StartupSpinner } from '~/components/common/StartupPanel'
-import { PREFIX_DIRECTORY_TREE, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
+import { onStorageAccountChange, PREFIX_DIRECTORY_TREE, sessionStorageGet, sessionStorageSet, storageAccountId } from '~/lib/browserStorage'
 import { createStableContext } from '~/lib/createStableContext'
 import { DEFAULT_FILE_SORT_ORDER, makeFileComparator } from '~/lib/fileSort'
 import { cancelIdle, requestIdle } from '~/lib/idleCallback'
@@ -44,6 +44,17 @@ import { menuTrigger, sidebarActions } from './sidebarActions.css'
  * anyway, so a page that never goes idle still persists its tree.
  */
 const PERSIST_IDLE_TIMEOUT_MS = 1000
+
+/**
+ * The longest a child group waits for the `transitionend` of its open or close
+ * before it acts anyway.
+ *
+ * A transition starts at the next style recalculation, which can come a frame
+ * or more after the class changes, so this allows more than the transition
+ * itself. A transition that does not run fires no `transitionend` at all, for
+ * example inside a `display: none` ancestor.
+ */
+const TRANSITION_FALLBACK_MS = CHILDREN_TRANSITION_MS + 100
 
 export interface DirectoryTreeHandle {
   collapseAll: () => void
@@ -289,17 +300,116 @@ interface GitIconInfo { class: string, testId: string | undefined }
 const NO_GIT_ICON: GitIconInfo = { class: '', testId: undefined }
 
 /**
- * The children of one directory. They mount closed and open on the next frame:
- * an element that mounts already open does not animate, and fires no
- * `transitionend` for `scrollIntoViewIfNeeded` to wait on.
+ * Whether every child group above a row stopped opening and closing, so that
+ * the row sits where it stays. A row at the top level has no group above it.
  */
-function TreeChildGroup(props: { open: boolean, ref: (el: HTMLDivElement) => void, children: JSX.Element }): JSX.Element {
-  const [entered, setEntered] = createSignal(false)
-  const frame = requestAnimationFrame(() => setEntered(true))
-  onCleanup(() => cancelAnimationFrame(frame))
+const GroupsSettledContext = createStableContext<Accessor<boolean>>('tree/DirectoryTree#groupsSettled', () => true)
+
+/** What a {@link TreeChildGroup} gives the row that owns it. */
+interface TreeChildGroupHandle {
+  /** Whether this group and every group above it stopped opening and closing. */
+  settled: Accessor<boolean>
+}
+
+/**
+ * Calls `done` once: when the transition of `el` itself ends, or after
+ * {@link TRANSITION_FALLBACK_MS}, whichever comes first. Returns a function
+ * that cancels both. A `transitionend` that bubbles up from a nested group or
+ * a chevron does not count.
+ */
+function afterOwnTransition(el: HTMLElement, done: () => void): () => void {
+  const wait = new AbortController()
+  const finish = () => {
+    if (wait.signal.aborted)
+      return
+    wait.abort()
+    done()
+  }
+  const timer = setTimeout(finish, TRANSITION_FALLBACK_MS)
+  wait.signal.addEventListener('abort', () => clearTimeout(timer))
+  el.addEventListener('transitionend', (e) => {
+    if (e.target === el)
+      finish()
+  }, { signal: wait.signal })
+  return () => wait.abort()
+}
+
+/**
+ * The children of one directory, and the whole life of their open and close.
+ *
+ * The group element stays mounted while the directory's listing is cached.
+ * Its rows mount only while it is open or closing, so a closed subtree costs
+ * no rows, no menus and no memos -- a git status change used to recompute the
+ * decorations of every row the tree ever opened. The listing stays cached, so
+ * a reopen fetches nothing.
+ *
+ * The rows mount with the open class, and unmount when the close transition
+ * ends. Both derive from the class state in the same update that changes it,
+ * before anything renders, so a close keeps the rows for its animation and
+ * never mounts them again.
+ *
+ * A group that mounts open does not animate. A group that mounts closed and
+ * then opens before the browser computes its style would take the open class
+ * as its first style, and the browser starts no transition for an element
+ * that had no style before the change. So the first open of such a group
+ * reads its computed style before it applies the class.
+ */
+function TreeChildGroup(props: {
+  open: boolean
+  ref: (handle: TreeChildGroupHandle) => void
+  children: JSX.Element
+}): JSX.Element {
+  const groupsAboveSettled = useContext(GroupsSettledContext)
+  let el!: HTMLDivElement
+  const mountedOpen = untrack(() => props.open)
+
+  // False only from the mount of a closed group to its first open.
+  const [styled, setStyled] = createSignal(mountedOpen)
+  createEffect(() => {
+    if (!props.open || styled())
+      return
+    // The read makes the browser compute the closed style, so the open class
+    // that follows starts a transition from it.
+    void getComputedStyle(el).visibility
+    setStyled(true)
+  })
+
+  // The class state, and how many times it changed. Each change starts one
+  // transition. A memo, so the class and the rows read one state.
+  const motion = createMemo<{ open: boolean, changes: number }>((prev) => {
+    const open = props.open && styled()
+    return open === prev.open
+      ? prev
+      : { open, changes: prev.changes + 1 }
+  }, { open: mountedOpen, changes: 0 })
+  // How many of those changes finished their transition.
+  const [finishedChanges, setFinishedChanges] = createSignal(0)
+  const moving = () => finishedChanges() !== motion().changes
+  createEffect(() => {
+    const { changes } = motion()
+    if (changes === untrack(finishedChanges))
+      return
+    const finish = () => setFinishedChanges(changes)
+    // Under reduced motion the style has no transition, so the change is
+    // already complete.
+    if (prefersReducedMotion()) {
+      finish()
+      return
+    }
+    // A change that comes before this one finishes cancels this wait.
+    onCleanup(afterOwnTransition(el, finish))
+  })
+
+  const settled = () => groupsAboveSettled() && !moving()
+  onMount(() => props.ref({ settled }))
+
   return (
-    <div ref={props.ref} class={styles.childrenWrapper} classList={{ [styles.childrenWrapperExpanded]: props.open && entered() }}>
-      <div class={styles.childrenInner} role="group">{props.children}</div>
+    <div ref={el} class={styles.childrenWrapper} classList={{ [styles.childrenWrapperExpanded]: motion().open }}>
+      <div class={styles.childrenInner} role="group">
+        <GroupsSettledContext.Provider value={settled}>
+          <Show when={motion().open || moving()}>{props.children}</Show>
+        </GroupsSettledContext.Provider>
+      </div>
     </div>
   )
 }
@@ -310,13 +420,16 @@ const TreeNode: Component<{
   depth: number
 }> = (props) => {
   const tree = useTree()
+  // The groups above this row, which move it while they open or close.
+  const groupsSettled = useContext(GroupsSettledContext)
   const [loading, setLoading] = createSignal(false)
   let wrapperRef!: HTMLDivElement
   // `nodeRef` stays for the imperative scroll-into-view callers.
   let nodeRef!: HTMLDivElement
   // The same element as `nodeRef`, for the row menu's attach effect.
   const [nodeEl, setNodeEl] = createContextMenuAnchor()
-  let childrenRef: HTMLDivElement | undefined
+  // This directory's own child group, once its listing is cached.
+  let group: TreeChildGroupHandle | undefined
 
   const expanded = () => tree.isNodeExpanded(props.node.path)
   const isSelected = () => props.selectedPath === props.node.path
@@ -343,22 +456,6 @@ const TreeNode: Component<{
     tree.comparator(),
   ))
   const loaded = () => tree.getChildren(props.node.path) !== undefined
-
-  // A closed directory unmounts its children once the close has animated, so a
-  // closed subtree costs no rows, no menus and no memos -- a git status change
-  // used to recompute the decorations of every row the tree ever opened. The
-  // listing stays cached, so reopening it fetches nothing.
-  const [closing, setClosing] = createSignal(false)
-  createEffect(on(expanded, (isExpanded, wasExpanded) => {
-    if (isExpanded || !wasExpanded) {
-      setClosing(false)
-      return
-    }
-    setClosing(true)
-    const timer = setTimeout(setClosing, CHILDREN_TRANSITION_MS, false)
-    onCleanup(() => clearTimeout(timer))
-  }, { defer: true }))
-  const childrenMounted = () => loaded() && (expanded() || closing())
   // The registry outlives this row, so the row takes its entry with it.
   onCleanup(() => tree.registerRow(props.node.path, undefined))
 
@@ -380,27 +477,24 @@ const TreeNode: Component<{
     }
   }
 
-  const scrollIntoViewIfNeeded = () => {
-    if (!childrenRef) {
-      requestAnimationFrame(doScroll)
+  // Set by an open that brings this directory's children into view. The scroll
+  // waits until the child group stopped moving, so that `wrapperRef` has its
+  // full height when `doScroll` measures it.
+  const [scrollPending, setScrollPending] = createSignal(false)
+  createEffect(() => {
+    if (!scrollPending())
+      return
+    // A close before the open ended leaves no children to show.
+    if (!expanded()) {
+      setScrollPending(false)
       return
     }
-    // Wait for the CSS grid-template-rows expand transition to finish
-    // so that wrapperRef has its full height when we measure.
-    // When prefers-reduced-motion is enabled, transitions are instant
-    // so transitionend never fires — use requestAnimationFrame instead.
-    if (prefersReducedMotion()) {
-      requestAnimationFrame(doScroll)
+    if (group !== undefined && !group.settled())
       return
-    }
-    const onEnd = (e: TransitionEvent) => {
-      if (e.target !== childrenRef)
-        return
-      childrenRef!.removeEventListener('transitionend', onEnd)
-      doScroll()
-    }
-    childrenRef.addEventListener('transitionend', onEnd)
-  }
+    setScrollPending(false)
+    requestAnimationFrame(doScroll)
+  })
+  const scrollIntoViewIfNeeded = () => setScrollPending(true)
 
   // Loads this node's children, and reports whether they arrived.
   //
@@ -540,6 +634,11 @@ const TreeNode: Component<{
     if (props.selectedPath === props.node.path && nodeRef) {
       if (props.node.isDir && !expanded())
         return
+      // A group above this row that still opens clips the rows it holds, and
+      // clipped rows add no scrollable height. A scroll now would stop short
+      // of the row, so it waits until those groups stopped moving.
+      if (!groupsSettled())
+        return
       const container = tree.scrollContainer
       if (!container)
         return
@@ -636,9 +735,9 @@ const TreeNode: Component<{
         </Show>
         <RowLabelWithStats
           // The row's own text is not the name: the three-dot menu renders
-          // inside the row and stays mounted while closed, so its items are
-          // part of the row's textContent. Anything matching on the name needs
-          // this hook.
+          // inside the row, and its items stay mounted after the menu first
+          // opens, so they become part of the row's textContent. Anything
+          // matching on the name needs this hook.
           label={<span data-testid="tree-row-name" class={props.node.hidden ? styles.nodeNameMuted : styles.nodeName}>{props.node.displayName}</span>}
           tooltipLabel={props.node.displayName}
           stats={diffStats()}
@@ -676,11 +775,11 @@ const TreeNode: Component<{
           </div>
         )}
       </Show>
-      <Show when={childrenMounted()}>
+      <Show when={loaded()}>
         <TreeChildGroup
           open={expanded() && !loading()}
-          ref={(el) => {
-            childrenRef = el
+          ref={(handle) => {
+            group = handle
           }}
         >
           <For each={children()}>
@@ -706,6 +805,15 @@ const TreeNode: Component<{
       </Show>
     </div>
   )
+}
+
+/**
+ * Where the tree state in the store came from: the stored key, and the account
+ * whose namespace holds it. A write of that state goes there, or nowhere.
+ */
+interface StateOrigin {
+  key: string
+  account: string | null
 }
 
 export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
@@ -735,10 +843,7 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   // -------------------------------------------------------------------------
   // Centralized tree state: expanded paths + children cache
   // -------------------------------------------------------------------------
-  const [state, setState] = createStore<{
-    expandedPaths: Record<string, boolean>
-    childrenCache: Record<string, TreeNodeData[]>
-    truncatedDirs: Record<string, number>
+  const [state, setState] = createStore<PersistedTreeState & {
     /**
      * Why a directory would not list, by path.
      *
@@ -785,51 +890,61 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   // A listing write bumps this. The persist effect tracks it in place of each
   // entry of each listing.
   const [listingsRevision, setListingsRevision] = createSignal(0)
-  // The idle write that waits, and the key it writes under.
-  let pendingWrite: { key: string, handle: number } | undefined
 
-  /**
-   * The directories whose listings the payload keeps: each expanded one, and the
-   * reveal target. A reveal caches the target's own listing without expanding
-   * it, and a restore without that listing would fetch it again.
-   */
-  const persistedListingPaths = (raw: { expandedPaths: Record<string, boolean>, childrenCache: Record<string, TreeNodeData[]> }): string[] => {
-    const paths = Object.keys(raw.expandedPaths)
-    const target = untrack(revealTarget)
-    if (target) {
-      const flavor = untrack(workerFlavor)
-      const targetKey = Object.keys(raw.childrenCache).find(path => samePath(path, target, flavor))
-      if (targetKey !== undefined)
-        paths.push(targetKey)
-    }
-    return paths
-  }
+  // The account whose namespace the storage calls use. The tree's state
+  // mirrors an account-scoped key, so the tree follows the account: a move
+  // restores the next account's state, as a change of the key does.
+  const [account, setAccount] = createSignal(storageAccountId())
+  onCleanup(onStorageAccountChange(() => setAccount(storageAccountId())))
 
-  const writeState = (key: string) => {
-    // The ROOT unwrapped, then plain fields: reading a field through the store
-    // proxy would subscribe the caller, and the restore effect calls this.
-    const raw = unwrap(state)
-    sessionStorageSet(key, serializeState(raw.expandedPaths, raw.childrenCache, raw.truncatedDirs, persistedListingPaths(raw)))
-  }
+  // Set by the restore effect, which runs before the persist effect, so it is
+  // set before any write. The persist effect reads this and never
+  // `storageKey()`: the key changes before the restore runs, and until then
+  // the store holds the state of the previous key.
+  let origin!: StateOrigin
+  // The idle write that waits, and where its state came from.
+  let pendingWrite: { origin: StateOrigin, handle: number } | undefined
 
-  /** Write a waiting state now, under the key it belongs to. */
+  // Untracked as a whole. The cleanup of the restore effect calls this, and a
+  // cleanup runs inside whichever computation disposes its owner, so a read
+  // here would subscribe that computation.
+  const writeState = (to: StateOrigin) => untrack(() => {
+    // The namespace moved to another account after the restore. A write now
+    // would store this account's tree under the other account's key.
+    if (storageAccountId() !== to.account)
+      return
+    // `unwrap` for the stringify speed that the comment above this section
+    // measures.
+    sessionStorageSet(to.key, serializeState(unwrap(state), revealTarget(), workerFlavor()))
+  })
+
+  /** Write a waiting state now, where it came from. */
   const flushPendingWrite = () => {
     if (pendingWrite === undefined)
       return
-    const { key, handle } = pendingWrite
+    const { origin: to, handle } = pendingWrite
     pendingWrite = undefined
     cancelIdle(handle)
-    writeState(key)
+    writeState(to)
   }
+  // A reload or a tab close runs no Solid cleanup, so only this listener
+  // writes a waiting state then.
+  window.addEventListener('pagehide', flushPendingWrite)
+  onCleanup(() => window.removeEventListener('pagehide', flushPendingWrite))
 
-  // Restore state from sessionStorage when rootPath changes
+  // Restore the state of the current key and account.
   createEffect(() => {
-    const key = storageKey()
-    // The state of the previous key is still in the store: write it under that
-    // key before the restore replaces it.
-    flushPendingWrite()
+    const restoredOrigin: StateOrigin = {
+      key: storageKey(),
+      account: account(),
+    }
+    // The state restored here leaves the store when the key or the account
+    // changes, or when the tree unmounts. Write its waiting change first,
+    // where it came from.
+    onCleanup(flushPendingWrite)
+    origin = restoredOrigin
     try {
-      const stored = sessionStorageGet<DirectoryTreeStateJSON>(key)
+      const stored = sessionStorageGet<DirectoryTreeStateJSON>(restoredOrigin.key)
       if (stored) {
         const restored = deserializeState(stored)
         if (restored) {
@@ -848,27 +963,28 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     })
   })
 
-  // Persist the state after it changes. A restore replaces the three maps,
-  // which the property reads track; an expand or a collapse adds or removes a
-  // key of `expandedPaths`, which `Object.keys` tracks; a listing write bumps
-  // `listingsRevision`.
+  // Persist the state after a change of what the payload holds:
+  // - A restore replaces the three maps, which the property reads track.
+  // - An expand or a collapse adds or removes a key of `expandedPaths`, which
+  //   `Object.keys` tracks.
+  // - A listing write bumps `listingsRevision`.
+  // - The reveal target and the flavor choose the one listing that the payload
+  //   keeps beside those of the expanded directories.
   createEffect(() => {
-    const key = storageKey()
     void Object.keys(state.expandedPaths)
     void state.childrenCache
     void state.truncatedDirs
     listingsRevision()
+    revealTarget()
+    workerFlavor()
     // A waiting write reads the state when it runs, so it covers this change.
     if (pendingWrite !== undefined)
       return
-    const handle = requestIdle(() => {
-      pendingWrite = undefined
-      writeState(key)
-    }, { timeout: PERSIST_IDLE_TIMEOUT_MS })
-    pendingWrite = { key, handle }
+    pendingWrite = {
+      origin,
+      handle: requestIdle(flushPendingWrite, { timeout: PERSIST_IDLE_TIMEOUT_MS }),
+    }
   })
-  // A tree that unmounts before the idle period would lose its last change.
-  onCleanup(flushPendingWrite)
 
   const isNodeExpanded = (path: string) => !!state.expandedPaths[path]
   const setNodeExpanded = (path: string, expanded: boolean) => {
@@ -987,10 +1103,14 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     showFiles: () => props.showFiles ?? false,
     flavor: () => workerFlavor(),
     enabled: () => props.enabled !== false,
-    // The key of the cache the loader speaks for. When it changes the store is
-    // replaced wholesale, so every claim and the chain guard go with it -- see
+    // The key of the cache the loader speaks for: the stored key, and the
+    // account whose namespace holds it. When it changes the store is replaced
+    // wholesale, so every claim and the chain guard go with it -- see
     // `DirectoryListingsOptions.cacheKey`.
-    cacheKey: storageKey,
+    cacheKey: () => JSON.stringify([
+      account(),
+      storageKey(),
+    ]),
     revealTarget,
     getChildren,
     setChildren: setChildrenInStore,
@@ -1039,11 +1159,11 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
   /**
    * Every row the user can see, in the order the tree renders them.
    *
-   * NOT the DOM order. A collapsed directory still renders its children and
-   * hides them with `visibility: hidden`, so a walk of the DOM would step into
-   * rows that are not on screen. This walk stops at a directory the store
-   * calls closed, and it filters and sorts each level exactly as the render
-   * does, so the two orders cannot drift.
+   * NOT the DOM order. A closed directory keeps its rows mounted while its
+   * close animates, and hides them with `visibility: hidden`, so a walk of the
+   * DOM would step into rows that are not on screen. This walk stops at a
+   * directory the store calls closed, and it filters and sorts each level
+   * exactly as the render does, so the two orders cannot drift.
    */
   const visibleRows = createMemo<VisibleRow[]>(() => {
     const rp = rootPath()

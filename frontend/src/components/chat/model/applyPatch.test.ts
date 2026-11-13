@@ -2,7 +2,7 @@ import type { StructuredPatchHunk } from '../diff/diffTypes'
 import type { FileEditDiff } from './fileEditDiff'
 import { describe, expect, it } from 'vitest'
 import { fileEditDrawnHunks } from '~/test-support/fileEditHunks'
-import { diffStatsFromHunks } from '../diff'
+import { diffStatsFromHunks } from '../diff/diffBuilder'
 import { applyPatchFileChanges } from './applyPatch'
 
 // The reader answers null or a list; each test states which section it means, and

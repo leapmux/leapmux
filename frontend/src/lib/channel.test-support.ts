@@ -1,10 +1,14 @@
 import type { MessageInitShape } from '@bufbuild/protobuf'
-import type { ChannelSocket, ChannelTransport, WorkerKeyBundle } from './channel'
+import type { ChannelManagerOpts, ChannelSocket, ChannelTransport, WorkerKeyBundle } from './channel'
+import type { SessionChannel } from './channelSession'
+import type { SessionWorkerHandlers, SessionWorkerPort } from './channelSessionClient'
+import type { ChannelSessionEndpointOptions } from './channelSessionEndpoint'
+import type { InProcessSessionHost } from './channelSessionInProcess'
 import type { KeyPinConfirmFn } from './keyPinStore'
-import type { Session } from './noise'
+import type { HandshakeState, Session } from './noise'
+import type { HybridHandshakeState } from './noise-hybrid'
 import { create, fromBinary, toBinary } from '@bufbuild/protobuf'
-import { chacha20poly1305 } from '@noble/ciphers/chacha.js'
-import { beforeEach, expect, vi } from 'vitest'
+import { afterEach, beforeEach, expect, vi } from 'vitest'
 import { DEFAULT_MAX_MESSAGE_SIZE, MLKEM_PUBLIC_KEY_SIZE, SESSION_KEY_HARD_CEILING_MS, SESSION_KEY_MAX_AGE_MS, SLHDSA_PUBLIC_KEY_SIZE, X25519_PUBLIC_KEY_SIZE } from '~/generated/contracts/wire'
 import {
   ChannelMessageSchema,
@@ -15,12 +19,15 @@ import {
   RekeyAckSchema,
   RekeyRejectSchema,
 } from '~/generated/proto/leapmux/v1/channel_pb'
+import { blankClassicHandshakeState, blankHybridHandshakeState, createTestSession } from '~/test-support/channelSessionDoubles'
 import { makeIdentitySession } from '~/test-support/identitySession'
 import { ChannelManager } from './channel'
 import { frameBytes, unframeBytes } from './channelFraming'
-import { FIRST_REQUEST_ID } from './channelRpc'
+import { createInProcessSessionHost } from './channelSessionInProcess'
+import { FIRST_REQUEST_ID } from './channelSessionProtocol'
 import { clearAllKeyPins, KeyPinStore } from './keyPinStore'
 import { generateRekeyEphemeral } from './noise-hybrid'
+import { yieldToEventLoop } from './workSlices'
 
 /** Accepting TOFU store for tests that pin on first use / accept a changed key. */
 export function acceptingKeyPins(confirmKeyPin?: KeyPinConfirmFn): KeyPinStore {
@@ -38,6 +45,152 @@ beforeEach(() => {
 
 export { clearAllKeyPins }
 
+/** Whether `value` is a Uint8Array of any realm. */
+function isByteArray(value: unknown): value is Uint8Array {
+  return ArrayBuffer.isView(value) && Object.prototype.toString.call(value) === '[object Uint8Array]'
+}
+
+/**
+ * Compare two Uint8Arrays by their bytes, whatever realm each comes from.
+ *
+ * Under the jsdom environment, a test builds its expected bytes in the realm of
+ * jsdom, while the bytes that the in-process session host delivers come from
+ * Node's realm: a MessagePort and structuredClone both build their clones there.
+ * The two Uint8Array classes differ, so the default equality fails on equal
+ * bytes. In a browser, the worker's bytes arrive in the page's own realm.
+ */
+function equalByteArrays(a: unknown, b: unknown): boolean | undefined {
+  if (!isByteArray(a) || !isByteArray(b))
+    return undefined
+  if (a.byteLength !== b.byteLength)
+    return false
+  for (let i = 0; i < a.byteLength; i++) {
+    if (a[i] !== b[i])
+      return false
+  }
+  return true
+}
+
+expect.addEqualityTesters([equalByteArrays])
+
+// ---- Channel session hosts ----
+//
+// The channel session (the Noise keys, encryption, decryption, the rekey) runs
+// in a Web Worker in the browser. Here every test manager hosts it in process,
+// behind a real MessageChannel pair (createInProcessSessionHost), so that a test
+// runs the code that production runs, with its asynchronous delivery. A test
+// awaits `settleChannelSessions()` wherever the browser would wait for the
+// worker: before it reads the frames on the wire, and after it injects one.
+
+/** One test manager's session host, and the ports that it spawned, latest last. */
+interface TestSessionHost {
+  host: InProcessSessionHost
+  ports: SessionWorkerPort[]
+}
+
+/** Every session host of a test manager that the current test built. */
+const hosts = new Set<TestSessionHost>()
+/** The session host of each test manager. */
+const hostOfManager = new WeakMap<ChannelManager, InProcessSessionHost>()
+/** The failure handler of the latest spawned session worker (see failChannelSessionWorker). */
+let latestFailure: ((message: string) => void) | undefined
+
+/** The options of a test manager: the endpoint options of its in-process session host in place of the spawn. */
+export type TestChannelManagerOpts = Omit<ChannelManagerOpts, 'spawnSessionWorker'> & {
+  session?: ChannelSessionEndpointOptions
+}
+
+/**
+ * A ChannelManager whose channel sessions run in an in-process host built from
+ * `opts.session`. The host stays registered until the test ends, which
+ * terminates it.
+ */
+export function newTestChannelManager(transport: ChannelTransport, opts: TestChannelManagerOpts = {}): ChannelManager {
+  const { session, ...managerOpts } = opts
+  const host = createInProcessSessionHost(session)
+  const record: TestSessionHost = { host, ports: [] }
+  hosts.add(record)
+  const manager = new ChannelManager(transport, {
+    ...managerOpts,
+    spawnSessionWorker: () => {
+      const port = host.spawn()
+      record.ports.push(port)
+      return {
+        postMessage: (command, transfer) => port.postMessage(command, transfer),
+        connect: (handlers: SessionWorkerHandlers) => {
+          latestFailure = handlers.failure
+          port.connect(handlers)
+        },
+        terminate: () => port.terminate(),
+      }
+    },
+  })
+  hostOfManager.set(manager, host)
+  return manager
+}
+
+/** The in-process session host of a manager that newTestChannelManager built. */
+export function sessionHostOf(manager: ChannelManager): InProcessSessionHost {
+  const host = hostOfManager.get(manager)
+  if (host === undefined)
+    throw new Error('the manager has no test session host; build it with newTestChannelManager')
+  return host
+}
+
+/** The most rounds that settleChannelSessions waits before it reports a session that never settles. */
+export const MAX_SETTLE_ROUNDS = 1_000
+
+/**
+ * Resolve once no message is in flight between any test manager and its
+ * session worker, in either direction. Each round yields to the event loop
+ * first: a port delivers in a task of its own, and a vitest fake clock does not
+ * hold it.
+ *
+ * A session request that waits for the peer, such as a rekey that waits for its
+ * Ack, holds nothing in flight, so this returns while it waits.
+ */
+export async function settleChannelSessions(): Promise<void> {
+  for (let round = 0; round < MAX_SETTLE_ROUNDS; round++) {
+    await yieldToEventLoop()
+    let idle = true
+    for (const { host } of hosts) {
+      if (host.inFlight() > 0)
+        idle = false
+    }
+    if (idle)
+      return
+  }
+  throw new Error(`the channel session still had messages in flight after ${MAX_SETTLE_ROUNDS} rounds`)
+}
+
+/** The session worker's record of `channelId`: its keys, its rekey state and its reassembly buffers. */
+export function sessionStateOf(channelId: string): SessionChannel {
+  for (const { host } of hosts) {
+    const state = host.endpoint()?.sessionState(channelId)
+    if (state !== undefined)
+      return state
+  }
+  throw new Error(`no channel session ${channelId} in any test session host`)
+}
+
+/** Fail the latest spawned session worker with `message`, as a crash of a real Worker does. */
+export function failChannelSessionWorker(message: string): void {
+  if (latestFailure === undefined)
+    throw new Error('no channel session worker was spawned')
+  latestFailure(message)
+}
+
+afterEach(() => {
+  // A test that did not close its manager leaves ports open, and an open port
+  // keeps the test process alive.
+  for (const { ports } of hosts) {
+    for (const port of ports)
+      port.terminate()
+  }
+  hosts.clear()
+  latestFailure = undefined
+})
+
 /** Age a channel past SESSION_KEY_MAX_AGE_MS using the monotonic clock. */
 export function agePastMaxAge(ch: { lastRekeyAt: number }): void {
   ch.lastRekeyAt = performance.now() - SESSION_KEY_MAX_AGE_MS - 1
@@ -49,79 +202,6 @@ export function agePastHardCeiling(ch: { lastRekeyAt: number }): void {
 }
 
 // ---- Test helpers ----
-
-/** Minimal CipherState for testing (same crypto as the real one). */
-class TestCipherState {
-  private k: Uint8Array
-  private n: number
-
-  constructor(key: Uint8Array) {
-    this.k = key
-    this.n = 0
-  }
-
-  encrypt(plaintext: Uint8Array): Uint8Array {
-    const nonceBytes = new Uint8Array(12)
-    new DataView(nonceBytes.buffer).setUint32(4, this.n, true)
-    const cipher = chacha20poly1305(this.k, nonceBytes, new Uint8Array(0))
-    const ct = cipher.encrypt(plaintext)
-    this.n++
-    return ct
-  }
-
-  decrypt(ciphertext: Uint8Array): Uint8Array {
-    const nonceBytes = new Uint8Array(12)
-    new DataView(nonceBytes.buffer).setUint32(4, this.n, true)
-    const cipher = chacha20poly1305(this.k, nonceBytes, new Uint8Array(0))
-    const pt = cipher.decrypt(ciphertext)
-    this.n++
-    return pt
-  }
-
-  needsRekey(): boolean {
-    return false
-  }
-
-  /**
-   * Test double for the fresh-DH rekey: ignore the secrets (the test harness
-   * uses deterministic tweaked keys so paired sessions stay in sync without
-   * real HKDF) and apply the same deterministic key tweak the old rekey() did.
-   * Both directions of a paired session call this with mirrored keys, so they
-   * produce matching new keys.
-   */
-  rekeyWithSecret(_dhSecret: Uint8Array, _pqSecret: Uint8Array | null, _retainPrev: boolean): void {
-    const next = new Uint8Array(this.k)
-    for (let i = 0; i < next.length; i++)
-      next[i] = ((next[i] ?? 0) + 1) & 0xFF
-    this.k = next
-    this.n = 0
-  }
-
-  /** No-op for the test double (production retains a prev key for the grace window). */
-  clearPrev(): void {}
-
-  nonce(): number {
-    return this.n
-  }
-}
-
-/** Create a matched pair of cipher states (send/receive mirrors). */
-export function createTestSession(): { initiator: Session, responder: Session } {
-  const key1 = new Uint8Array(32)
-  const key2 = new Uint8Array(32)
-  key1[0] = 1 // Different keys for send/receive
-  key2[0] = 2
-  return {
-    initiator: {
-      send: new TestCipherState(key1),
-      receive: new TestCipherState(key2),
-    } satisfies Session,
-    responder: {
-      send: new TestCipherState(key2),
-      receive: new TestCipherState(key1),
-    } satisfies Session,
-  }
-}
 
 /** Encode a ChannelMessage into the wire format (4-byte length prefix + protobuf). */
 export function encodeWireMessage(channelId: string, ciphertext: Uint8Array, opts?: { close?: boolean, id?: number | bigint, flags?: number }): ArrayBuffer {
@@ -159,24 +239,18 @@ export function decodeWireMessage(buf: ArrayBuffer) {
 }
 
 /**
- * A channel's private per-request registries.
+ * A channel's private per-request registries on the main thread.
  *
  * Tests assert on their contents because a leak here has no public surface: a stranded
- * pending entry, an unreachable stream listener or an abandoned reassembly buffer just
- * sits in the map holding memory and a cap slot, and every public method keeps
- * answering exactly as it did before. The map IS the observable.
+ * pending entry or an unreachable stream listener just sits in the map holding memory,
+ * and every public method keeps answering exactly as it did before. The map IS the
+ * observable. The keys and the reassembly buffers live in the session worker: read
+ * them through sessionStateOf.
  */
 export interface ChannelInternals {
   workerId: string
-  session: { send: { encrypt: (pt: Uint8Array) => Uint8Array } }
   pendingRequests: Map<number, unknown>
   streamListeners: Map<number, unknown>
-  // The Reassembler owns the buffers; tests reach through its get/size/liveCount.
-  reassembly: {
-    get: (id: number) => { parts: Uint8Array[], total: number, poisoned: boolean } | undefined
-    size: () => number
-    liveCount: () => number
-  }
   state: 'opening' | 'verified' | 'closed'
 }
 
@@ -222,7 +296,9 @@ export class MockWebSocket {
   }
 
   send(data: ArrayBuffer | Uint8Array) {
-    if (data instanceof Uint8Array) {
+    // ArrayBuffer.isView, not instanceof: a frame from the in-process session
+    // host is a Uint8Array of Node's realm under the jsdom environment.
+    if (ArrayBuffer.isView(data)) {
       this.sent.push(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer)
     }
     else {
@@ -328,14 +404,14 @@ export function createMockTransport(
 
 // ---- Mock handshake functions (injected via ChannelManager DI) ----
 
-export function mockHandshake1(_remoteX25519Pub: Uint8Array, _remoteMlkemPub: Uint8Array) {
+export function mockHandshake1(_remoteX25519Pub: Uint8Array, _remoteMlkemPub: Uint8Array): { handshakeState: HybridHandshakeState, message1: Uint8Array } {
   return {
-    handshakeState: {} as any,
+    handshakeState: blankHybridHandshakeState(),
     message1: new Uint8Array(1616),
   }
 }
 
-export function mockHandshake2(_state: any, _message2: Uint8Array, _remoteSlhdsaPub: Uint8Array) {
+export async function mockHandshake2(_state: HybridHandshakeState, _message2: Uint8Array, _remoteSlhdsaPub: Uint8Array): Promise<Session> {
   const entries = [
     ...sessions.entries(),
   ]
@@ -359,16 +435,21 @@ export class ChannelManagerTestHarness {
   readonly FIRST_TEST_REQUEST_ID = FIRST_TEST_REQUEST_ID
 
   mockWs!: MockWebSocket
+  /** The transport of `mgr`, so that a test can spy on the Hub calls. */
+  transport!: ChannelTransport
   mgr!: ChannelManager
 
   setup(): void {
     clearAllKeyPins()
     sessions.clear()
     this.mockWs = new MockWebSocket()
-    this.mgr = new ChannelManager(createMockTransport(this.mockWs), {
-      handshake1: mockHandshake1,
-      handshake2: mockHandshake2,
-      idleRekeyIntervalMs: 0,
+    this.transport = createMockTransport(this.mockWs)
+    this.mgr = newTestChannelManager(this.transport, {
+      session: {
+        handshake1: mockHandshake1,
+        handshake2: mockHandshake2,
+        idleRekeyIntervalMs: 0,
+      },
       installWakeListener: false,
       keyPins: acceptingKeyPins(),
     })
@@ -378,14 +459,9 @@ export class ChannelManagerTestHarness {
     this.mgr.closeAll()
   }
 
-  /**
-   * Flush pending microtasks so async code that chains multiple
-   * resolved-promise awaits (like openChannel) progresses.
-   */
-  async flushMicrotasks() {
-    for (let i = 0; i < 10; i++) {
-      await Promise.resolve()
-    }
+  /** Wait until the channel sessions have taken every message (see settleChannelSessions). */
+  settle(): Promise<void> {
+    return settleChannelSessions()
   }
 
   /**
@@ -394,7 +470,8 @@ export class ChannelManagerTestHarness {
    * must reply to it or the open never completes. Decrypts the ping (advancing the
    * responder's receive nonce) and replies on its own correlation id.
    */
-  simulatePingAccept(ws: MockWebSocket = this.mockWs, sessionMap = sessions) {
+  async simulatePingAccept(ws: MockWebSocket = this.mockWs, sessionMap = sessions) {
+    await settleChannelSessions()
     const sentMsg = decodeWireMessage(ws.sent.at(-1)!)
     const pair = sessionMap.get(sentMsg.channelId)!
     const inner = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(sentMsg.ciphertext))
@@ -407,10 +484,12 @@ export class ChannelManagerTestHarness {
     ws.simulateMessage(encodeWireMessage(sentMsg.channelId, ciphertext, {
       id: Number(sentMsg.correlationId),
     }))
+    await settleChannelSessions()
   }
 
   /** Answer an in-band RekeyRequest the way the worker does (Receive.rekeyWithSecret → Ack → Send.rekeyWithSecret). */
-  simulateRekeyAck(ws: MockWebSocket = this.mockWs, sessionMap = sessions) {
+  async simulateRekeyAck(ws: MockWebSocket = this.mockWs, sessionMap = sessions) {
+    await settleChannelSessions()
     const sentMsg = decodeWireMessage(ws.sent.at(-1)!)
     const pair = sessionMap.get(sentMsg.channelId)!
     const inner = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(sentMsg.ciphertext))
@@ -433,10 +512,12 @@ export class ChannelManagerTestHarness {
     ws.simulateMessage(encodeWireMessage(sentMsg.channelId, ciphertext, {
       id: Number(sentMsg.correlationId),
     }))
+    await settleChannelSessions()
   }
 
   /** Rate-limit Reject: decrypt Request, leave CipherStates unchanged, reply Reject. */
-  simulateRekeyReject(ws: MockWebSocket = this.mockWs, sessionMap = sessions, retryAfterMs = 0) {
+  async simulateRekeyReject(ws: MockWebSocket = this.mockWs, sessionMap = sessions, retryAfterMs = 0) {
+    await settleChannelSessions()
     const sentMsg = decodeWireMessage(ws.sent.at(-1)!)
     const pair = sessionMap.get(sentMsg.channelId)!
     const inner = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(sentMsg.ciphertext))
@@ -455,86 +536,82 @@ export class ChannelManagerTestHarness {
     ws.simulateMessage(encodeWireMessage(sentMsg.channelId, ciphertext, {
       id: Number(sentMsg.correlationId),
     }))
+    await settleChannelSessions()
   }
 
   async openTestChannel(workerId = 'w1'): Promise<string> {
     const openPromise = this.mgr.openChannel(workerId)
-    // Flush microtasks so openChannel progresses through its awaits
-    // and ensureWebSocket() registers the 'open' listener.
-    await this.flushMicrotasks()
+    // Let the open run its handshake in the session worker, until
+    // ensureWebSocket() registers the 'open' listener.
+    await settleChannelSessions()
     this.mockWs.simulateOpen()
-    await this.flushMicrotasks()
+    await settleChannelSessions()
     // The open completes once the worker answers the session-verifying Ping.
-    this.simulatePingAccept()
+    await this.simulatePingAccept()
     return openPromise
   }
 
-  sendResponseFromWorker(channelId: string, requestId: number, payload: Uint8Array) {
+  /** Inject one framed message from the worker, and wait until the session worker took it. */
+  private async injectFromWorker(channelId: string, requestId: number, envelope: MessageInitShape<typeof InnerMessageSchema>): Promise<void> {
     const pair = sessions.get(channelId)!
-    const resp = create(InnerRpcResponseSchema, {
-      result: { case: 'payload', value: payload },
-    })
-    const envelope = create(InnerMessageSchema, {
-      kind: { case: 'response', value: resp },
-    })
-    const plaintext = toBinary(InnerMessageSchema, envelope)
+    const plaintext = toBinary(InnerMessageSchema, create(InnerMessageSchema, envelope))
     const ciphertext = pair.responder.send.encrypt(plaintext)
     this.mockWs.simulateMessage(encodeWireMessage(channelId, ciphertext, { id: requestId }))
+    await settleChannelSessions()
   }
 
-  sendErrorResponseFromWorker(channelId: string, requestId: number, errorMessage: string) {
-    const pair = sessions.get(channelId)!
-    const resp = create(InnerRpcResponseSchema, {
-      result: {
-        case: 'error',
-        value: { code: 2, message: errorMessage },
+  async sendResponseFromWorker(channelId: string, requestId: number, payload: Uint8Array) {
+    await this.injectFromWorker(channelId, requestId, {
+      kind: {
+        case: 'response',
+        value: create(InnerRpcResponseSchema, {
+          result: { case: 'payload', value: payload },
+        }),
       },
     })
-    const envelope = create(InnerMessageSchema, {
-      kind: { case: 'response', value: resp },
-    })
-    const plaintext = toBinary(InnerMessageSchema, envelope)
-    const ciphertext = pair.responder.send.encrypt(plaintext)
-    this.mockWs.simulateMessage(encodeWireMessage(channelId, ciphertext, { id: requestId }))
   }
 
-  sendStreamMessageFromWorker(channelId: string, requestId: number, payload: Uint8Array) {
-    const pair = sessions.get(channelId)!
-    const msg = create(InnerStreamMessageSchema, {
-      payload,
+  async sendErrorResponseFromWorker(channelId: string, requestId: number, errorMessage: string) {
+    await this.injectFromWorker(channelId, requestId, {
+      kind: {
+        case: 'response',
+        value: create(InnerRpcResponseSchema, {
+          result: {
+            case: 'error',
+            value: { code: 2, message: errorMessage },
+          },
+        }),
+      },
     })
-    const envelope = create(InnerMessageSchema, {
-      kind: { case: 'stream', value: msg },
-    })
-    const plaintext = toBinary(InnerMessageSchema, envelope)
-    const ciphertext = pair.responder.send.encrypt(plaintext)
-    this.mockWs.simulateMessage(encodeWireMessage(channelId, ciphertext, { id: requestId }))
   }
 
-  sendStreamEndFromWorker(channelId: string, requestId: number) {
-    const pair = sessions.get(channelId)!
-    const msg = create(InnerStreamMessageSchema, {
-      end: true,
+  async sendStreamMessageFromWorker(channelId: string, requestId: number, payload: Uint8Array) {
+    await this.injectFromWorker(channelId, requestId, {
+      kind: {
+        case: 'stream',
+        value: create(InnerStreamMessageSchema, { payload }),
+      },
     })
-    const envelope = create(InnerMessageSchema, {
-      kind: { case: 'stream', value: msg },
-    })
-    const plaintext = toBinary(InnerMessageSchema, envelope)
-    const ciphertext = pair.responder.send.encrypt(plaintext)
-    this.mockWs.simulateMessage(encodeWireMessage(channelId, ciphertext, { id: requestId }))
   }
 
-  sendStreamErrorFromWorker(channelId: string, requestId: number, errorMessage: string) {
-    const pair = sessions.get(channelId)!
-    const msg = create(InnerStreamMessageSchema, {
-      error: { message: errorMessage },
+  async sendStreamEndFromWorker(channelId: string, requestId: number) {
+    await this.injectFromWorker(channelId, requestId, {
+      kind: {
+        case: 'stream',
+        value: create(InnerStreamMessageSchema, { end: true }),
+      },
     })
-    const envelope = create(InnerMessageSchema, {
-      kind: { case: 'stream', value: msg },
+  }
+
+  async sendStreamErrorFromWorker(channelId: string, requestId: number, errorMessage: string) {
+    await this.injectFromWorker(channelId, requestId, {
+      kind: {
+        case: 'stream',
+        value: create(InnerStreamMessageSchema, {
+          error: { message: errorMessage },
+        }),
+      },
     })
-    const plaintext = toBinary(InnerMessageSchema, envelope)
-    const ciphertext = pair.responder.send.encrypt(plaintext)
-    this.mockWs.simulateMessage(encodeWireMessage(channelId, ciphertext, { id: requestId }))
   }
 }
 
@@ -583,17 +660,18 @@ export class AutoOpenMockWebSocket extends EventTarget {
  * before it resolves, so a mock worker must reply or the open never completes.
  * The mock sessions encrypt as identity, so the wire message is built directly.
  * The Ping is each channel's first request, hence correlation id FIRST_REQUEST_ID.
+ * Resolves once the session worker took the reply.
  */
-export function simulatePingAcceptOnWs(ws: AutoOpenMockWebSocket, channelId: string) {
-  simulatePingResponseOnWs(ws, channelId, {})
+export async function simulatePingAcceptOnWs(ws: AutoOpenMockWebSocket, channelId: string) {
+  await simulatePingResponseOnWs(ws, channelId, {})
 }
 
 /**
  * Fail the open-time Ping on an identity-cipher mock channel: the worker answers, but
  * with an error, i.e. the session is proven NOT to work.
  */
-export function simulatePingErrorOnWs(ws: AutoOpenMockWebSocket, channelId: string, message: string) {
-  simulatePingResponseOnWs(ws, channelId, {
+export async function simulatePingErrorOnWs(ws: AutoOpenMockWebSocket, channelId: string, message: string) {
+  await simulatePingResponseOnWs(ws, channelId, {
     result: {
       case: 'error',
       value: { code: 2, message },
@@ -601,11 +679,11 @@ export function simulatePingErrorOnWs(ws: AutoOpenMockWebSocket, channelId: stri
   })
 }
 
-function simulatePingResponseOnWs(
+async function simulatePingResponseOnWs(
   ws: AutoOpenMockWebSocket,
   channelId: string,
   response: MessageInitShape<typeof InnerRpcResponseSchema>,
-): void {
+): Promise<void> {
   const resp = create(InnerRpcResponseSchema, response)
   const envelope = create(InnerMessageSchema, {
     kind: { case: 'response', value: resp },
@@ -614,6 +692,7 @@ function simulatePingResponseOnWs(
   ws.dispatchEvent(new MessageEvent('message', {
     data: encodeWireMessage(channelId, plaintext, { id: FIRST_REQUEST_ID }),
   }))
+  await settleChannelSessions()
 }
 
 export function makeMockTransport(onCreateWs: () => AutoOpenMockWebSocket): ChannelTransport {
@@ -638,11 +717,6 @@ export function makeMockTransport(onCreateWs: () => AutoOpenMockWebSocket): Chan
   }
 }
 
-/** Advance real timers enough for the mock handshake and the WS auto-open to settle. */
-export function settle(): Promise<void> {
-  return new Promise(r => setTimeout(r, 10))
-}
-
 /**
  * Wait until `channelId`'s open has reached its verification Ping, which is the point a
  * mock worker can answer it.
@@ -651,8 +725,9 @@ export function settle(): Promise<void> {
  * to get here is genuinely variable: a key-mismatch open awaits the user prompt and a
  * dynamic import('./fingerprint'), which under a loaded full suite comfortably outruns a
  * 10ms sleep. Answering a ping that has not been sent yet leaves the open hanging until
- * the test times out. The channel is inserted and the ping sent in one synchronous step,
- * so observing the channel at all means the ping is on the wire.
+ * the test times out. The channel is inserted and the ping posted to the session worker
+ * in one synchronous step, so observing the channel at all means that a reply injected
+ * now reaches the worker after the ping: the port keeps the order.
  */
 export async function waitForPendingChannel(cm: ChannelManager, channelId: string): Promise<void> {
   const channels = (cm as unknown as { channels: Map<string, unknown> }).channels
@@ -680,13 +755,15 @@ export function makeIdentityCipherManager(
   transport: ChannelTransport,
   opts?: { expectedUserId?: () => string | undefined, keyPins?: KeyPinStore },
 ): ChannelManager {
-  return new ChannelManager(transport, {
-    classicHandshake1: (_rs: Uint8Array) => ({
-      message1: new Uint8Array(48),
-      handshakeState: {} as any,
-    }),
-    classicHandshake2: (_hs: any, _payload: Uint8Array) => makeIdentitySession(),
-    idleRekeyIntervalMs: 0,
+  return newTestChannelManager(transport, {
+    session: {
+      classicHandshake1: (_rs: Uint8Array) => ({
+        message1: new Uint8Array(48),
+        handshakeState: blankClassicHandshakeState(),
+      }),
+      classicHandshake2: (_hs: HandshakeState, _payload: Uint8Array) => makeIdentitySession(),
+      idleRekeyIntervalMs: 0,
+    },
     installWakeListener: false,
     keyPins: acceptingKeyPins(),
     ...opts,

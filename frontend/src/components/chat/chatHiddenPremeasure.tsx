@@ -2,7 +2,7 @@ import type { JSX } from 'solid-js'
 import type { ClassifiedEntry } from './chatEntryCache'
 import type { RenderReadiness } from './renderReadiness'
 import type { VirtualItem } from './useChatVirtualizer'
-import { batch, createEffect, createMemo, createSignal, For, on, onCleanup, untrack } from 'solid-js'
+import { batch, createEffect, createMemo, createSignal, For, on, onCleanup, onMount } from 'solid-js'
 import { emitDevEvent } from '~/lib/devInstrument'
 import { monotonicNow } from '~/lib/monotonicNow'
 import * as styles from './ChatView.css'
@@ -18,7 +18,8 @@ export interface ChatDomPremeasureCandidate {
 
 /**
  * Render the hidden copy of one row. `readiness` is the copy's own scope: its
- * Markdown bodies report to it, and the copy commits no height until they are ready.
+ * asynchronous bodies (Markdown, an edit diff) report to it, and the copy commits
+ * no height until they are ready.
  */
 export type PremeasureBubbleRenderer = (entry: ClassifiedEntry, readiness: RenderReadiness) => JSX.Element
 
@@ -121,11 +122,12 @@ function PremeasureRow(props: {
   let rowEl: HTMLDivElement | undefined
   let scheduledMeasureKey: string | undefined
   const [resizeObservationEnabled, setResizeObservationEnabled] = createSignal(true)
-  // This copy's Markdown bodies render in the worker. Until every one has its final
-  // HTML, the copy's height is wrong, and committing it would reveal the row at that
-  // height and move every row below when the content lands.
+  // This copy's asynchronous bodies wait for a worker: a Markdown body for its HTML,
+  // an edit diff for its hunks. Until every one has its final content, the copy's
+  // height is wrong, and committing it would reveal the row at that height and move
+  // every row below when the content lands.
   const readiness = createRenderReadinessScope()
-  const observationKey = () => `${props.candidate.item.id}\0${props.candidate.item.heightKey ?? ''}`
+  const observationKey = () => premeasureTaskKey(props.candidate.item.id, props.candidate.item.heightKey)
   const hasPendingImages = (): boolean => {
     const root = rowEl
     if (!root)
@@ -136,9 +138,16 @@ function PremeasureRow(props: {
     return Array.from(root.querySelectorAll('img'))
       .some(img => !img.complete)
   }
-  const scheduleMeasure = (id: string, heightKey: string | undefined, onMeasure: typeof props.onMeasure): void => {
+  /**
+   * Queue a measure of the current candidate in the shared frame. It reads the
+   * candidate and `onMeasure` when a trigger calls it, and the read and the commit
+   * below keep those values.
+   */
+  const scheduleMeasure = (): void => {
+    const { entry, item: { id, heightKey } } = props.candidate
+    const onMeasure = props.onMeasure
     const key = premeasureTaskKey(id, heightKey)
-    const seq = props.candidate.entry.message.seq?.toString() ?? null
+    const seq = entry.message.seq?.toString() ?? null
     if (scheduledMeasureKey !== undefined && scheduledMeasureKey !== key)
       props.frame.cancel(scheduledMeasureKey)
     scheduledMeasureKey = key
@@ -147,10 +156,10 @@ function PremeasureRow(props: {
     props.frame.schedule(key, {
       read: () => {
         const started = monotonicNow()
-        const contentPending = readiness.pending()
-        const height = contentPending
-          ? undefined
-          : rowLayoutMeasurement(rowEl)
+        const measurable = readiness.measurable()
+        const height = measurable
+          ? rowLayoutMeasurement(rowEl)
+          : undefined
         const settled = !hasPendingImages()
         emitDevEvent('leapmux:chat-premeasure', () => ({
           phase: 'read',
@@ -160,7 +169,7 @@ function PremeasureRow(props: {
           heightKey: heightKey ?? null,
           connected: rowEl?.isConnected ?? false,
           settled,
-          contentPending,
+          measurable,
         }))
         if (height === undefined)
           return undefined
@@ -176,49 +185,39 @@ function PremeasureRow(props: {
   createEffect(on(observationKey, () => {
     setResizeObservationEnabled(true)
   }))
-  createEffect(() => {
-    const { item } = props.candidate
-    scheduleMeasure(item.id, item.heightKey, props.onMeasure)
-  })
-  // Measure again when the last pending body becomes ready. The new content
-  // usually resizes the copy, but nothing guarantees it, so the resize observer
-  // alone could leave the row unmeasured and hidden forever.
-  createEffect(on(readiness.pending, (pending) => {
-    if (pending)
-      return
-    const { item } = untrack(() => props.candidate)
-    scheduleMeasure(item.id, item.heightKey, props.onMeasure)
-  }, { defer: true }))
+  createEffect(() => scheduleMeasure())
+  // Measure again when the copy becomes measurable: its last pending body is
+  // ready, and no body replaces its content. The new content usually resizes the
+  // copy, but nothing guarantees it, so the resize observer alone could leave the
+  // row unmeasured and hidden forever.
+  // eslint-disable-next-line solid/reactivity -- onMeasurable runs the callback inside its own effect
+  readiness.onMeasurable(scheduleMeasure)
   createEffect(() => {
     const root = rowEl
     observationKey()
     if (!root || !resizeObservationEnabled() || typeof ResizeObserver === 'undefined')
       return
-    const observer = new ResizeObserver(() => {
-      const { item } = props.candidate
-      scheduleMeasure(item.id, item.heightKey, props.onMeasure)
-    })
+    const observer = new ResizeObserver(() => scheduleMeasure())
     observer.observe(root)
     onCleanup(() => observer.disconnect())
   })
-  createEffect(() => {
+  // Measure again when an image settles. An image event does not bubble, so the
+  // row listens in the capture phase. The listener on the row also covers an image
+  // that mounts after the row: a Markdown body's HTML lands from the worker later,
+  // and an accepted unsettled measure has stopped the resize observer by then.
+  onMount(() => {
     const root = rowEl
     if (!root)
       return
-    const { item } = props.candidate
-    const onImageSettled = () => scheduleMeasure(item.id, item.heightKey, props.onMeasure)
-    const images = Array.from(root.querySelectorAll('img'))
-    if (images.length === 0)
-      return
-    for (const img of images) {
-      img.addEventListener('load', onImageSettled)
-      img.addEventListener('error', onImageSettled)
+    const onImageSettled = (event: Event): void => {
+      if (event.target instanceof Element && event.target.localName === 'img')
+        scheduleMeasure()
     }
+    root.addEventListener('load', onImageSettled, true)
+    root.addEventListener('error', onImageSettled, true)
     onCleanup(() => {
-      for (const img of images) {
-        img.removeEventListener('load', onImageSettled)
-        img.removeEventListener('error', onImageSettled)
-      }
+      root.removeEventListener('load', onImageSettled, true)
+      root.removeEventListener('error', onImageSettled, true)
     })
   })
   onCleanup(() => {

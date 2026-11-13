@@ -2,6 +2,7 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import { OH_MY_PI_EVENT, OH_MY_PI_FRAME_FIELD } from '~/generated/contracts/ohmypi-protocol'
 import { asContentArray, splitToolResultContent } from '~/lib/contentBlocks'
 import { pickObject, pickString } from '~/lib/jsonPick'
+import { memoizeByObject } from '~/lib/memoizeByObject'
 
 /**
  * The fields of one omp `tool_execution_*` frame. The three frames carry different
@@ -50,24 +51,14 @@ function ohMyPiToolResult(result: Record<string, unknown>): OhMyPiToolResult {
 
 // Memoized by payload identity: one row build reads the same frame through the kind
 // dispatch and again through each kind reader, and the content blocks are walked once.
-const toolCache = new WeakMap<Record<string, unknown>, OhMyPiToolExecution | null>()
-
-/** One `tool_execution_*` frame read into {@link OhMyPiToolExecution}, or null for another frame. */
-export function ohMyPiExtractTool(payload: Record<string, unknown> | null | undefined): OhMyPiToolExecution | null {
-  if (!payload)
-    return null
-  const cached = toolCache.get(payload)
-  if (cached !== undefined)
-    return cached
+const cachedTool = memoizeByObject((payload: Record<string, unknown>): OhMyPiToolExecution | null => {
   const toolCallId = pickString(payload, OH_MY_PI_FRAME_FIELD.ToolCallID)
   const toolName = pickString(payload, OH_MY_PI_FRAME_FIELD.ToolName)
-  if (!toolCallId || !toolName) {
-    toolCache.set(payload, null)
+  if (!toolCallId || !toolName)
     return null
-  }
   const result = pickObject(payload, OH_MY_PI_FRAME_FIELD.Result)
   const partial = pickObject(payload, OH_MY_PI_FRAME_FIELD.PartialResult)
-  const tool: OhMyPiToolExecution = {
+  return {
     toolCallId,
     toolName,
     args: pickObject(payload, OH_MY_PI_FRAME_FIELD.Args) ?? {},
@@ -84,8 +75,13 @@ export function ohMyPiExtractTool(payload: Record<string, unknown> | null | unde
       : {}),
     isError: payload.isError === true,
   }
-  toolCache.set(payload, tool)
-  return tool
+})
+
+/** One `tool_execution_*` frame read into {@link OhMyPiToolExecution}, or null for another frame. */
+export function ohMyPiExtractTool(payload: Record<string, unknown> | null | undefined): OhMyPiToolExecution | null {
+  return payload
+    ? cachedTool(payload)
+    : null
 }
 
 /** The frame's `type`, when it is one of the three tool frames. */

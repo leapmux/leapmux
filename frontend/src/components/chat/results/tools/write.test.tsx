@@ -1,6 +1,7 @@
 import type { FileEditDiff } from '../../model/fileEditDiff'
 import { render } from '@solidjs/testing-library'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { checkKindModule } from '~/test-support/kindTestHarness'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { ToolMessage } from '../ToolMessage'
@@ -91,7 +92,7 @@ describe('writeRenderer', () => {
 
   // Only an add states a whole-file count. A write that replaces part of an
   // existing file takes the title that every other file change takes.
-  it('titles a write that changes an existing file with the diff badge', () => {
+  it('titles a write that changes an existing file with the diff badge', async () => {
     const view = renderWrite([
       {
         filePath: '/p/old.ts',
@@ -100,6 +101,7 @@ describe('writeRenderer', () => {
         operation: 'edit',
       },
     ])
+    await settleWorkerReplies()
 
     expect(view.container.textContent).toContain('/p/old.ts')
     expect(view.container.textContent).not.toMatch(/\(\d+ lines?\)/)

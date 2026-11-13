@@ -19,6 +19,7 @@ import {
   checkCodexPermissionPresets,
   checkDesktop,
   checkExternalApps,
+  checkFileRead,
   checkGenerationTrace,
   checkHeaders,
   checkListen,
@@ -47,6 +48,7 @@ import {
   emitGoCodexPermissionPresets,
   emitGoDesktop,
   emitGoExternalApps,
+  emitGoFileRead,
   emitGoGenerationTrace,
   emitGoHeaders,
   emitGoListen,
@@ -63,6 +65,7 @@ import {
   emitTsCodexPermissionPresets,
   emitTsDesktop,
   emitTsExternalApps,
+  emitTsFileRead,
   emitTsGenerationTrace,
   emitTsHeaders,
   emitTsListen,
@@ -122,6 +125,7 @@ const HEADERS = readContract('headers')
 const RETRY = readContract('retry')
 const CHAT_HISTORY = readContract('chat-history')
 const PAGINATION = readContract('pagination')
+const FILE_READ = readContract('file-read')
 const TRUSTED_PROXIES = readContract('trusted-proxies')
 const USER_SETTINGS = readContract('user-settings')
 const DESKTOP_FOR_SETTINGS = readContract('desktop')
@@ -361,6 +365,44 @@ describe('checkPagination', () => {
   })
 })
 
+describe('checkFileRead', () => {
+  it('accepts the shipped contract', () => {
+    expect(() => checkFileRead(FILE_READ, WIRE)).not.toThrow()
+  })
+
+  it('rejects a read limit that is not a positive safe integer', () => {
+    for (const readLimitBytes of [
+      0,
+      -1024,
+      1.5,
+      2 ** 53,
+      undefined,
+      '262144',
+    ]) {
+      expectContractError(
+        () => checkFileRead({ ...FILE_READ, readLimitBytes }, WIRE),
+        'readLimitBytes must be a positive safe integer',
+      )
+    }
+  })
+
+  it('rejects a read limit above the default payload budget', () => {
+    expectContractError(
+      () => checkFileRead({ ...FILE_READ, readLimitBytes: WIRE.maxMessageSizeBytes + 1024 }, WIRE),
+      'readLimitBytes must be <= maxMessageSizeBytes in wire.json',
+    )
+    expect(() => checkFileRead({ ...FILE_READ, readLimitBytes: WIRE.maxMessageSizeBytes }, WIRE)).not.toThrow()
+  })
+
+  it('rejects a read limit that is no whole number of KiB', () => {
+    expectContractError(
+      () => checkFileRead({ ...FILE_READ, readLimitBytes: 1000 }, WIRE),
+      'readLimitBytes must be a whole number of KiB',
+    )
+    expect(() => checkFileRead({ ...FILE_READ, readLimitBytes: 1024 }, WIRE)).not.toThrow()
+  })
+})
+
 describe('checkChatHistory', () => {
   it('accepts the shipped contract', () => {
     expect(() => checkChatHistory(CHAT_HISTORY)).not.toThrow()
@@ -526,6 +568,11 @@ describe('emitters', () => {
     const ts = emitTsPagination(PAGINATION)
     expect(ts).toContain('DEFAULT_PAGE_LIMIT = 50 as const')
     expect(ts).toContain('MAX_PAGE_LIMIT = 500 as const')
+  })
+
+  it('emits the file read limit for Go and TypeScript', () => {
+    expect(emitGoFileRead(FILE_READ)).toContain('const FileReadLimitBytes = 262144')
+    expect(emitTsFileRead(FILE_READ)).toContain('export const FILE_READ_LIMIT_BYTES = 262144 as const')
   })
 
   it('emits the chat history limits for Go and TypeScript', () => {
@@ -1924,6 +1971,7 @@ describe('generate', () => {
       'backend/generated/contracts/droid-protocol.go',
       'backend/generated/contracts/external-apps.go',
       'backend/generated/contracts/fastagent-protocol.go',
+      'backend/generated/contracts/file-read.go',
       'backend/generated/contracts/gemini-protocol.go',
       'backend/generated/contracts/generation-trace.go',
       'backend/generated/contracts/goose-protocol.go',
@@ -1981,6 +2029,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/droid-protocol.ts',
       'frontend/src/generated/contracts/external-apps.ts',
       'frontend/src/generated/contracts/fastagent-protocol.ts',
+      'frontend/src/generated/contracts/file-read.ts',
       'frontend/src/generated/contracts/gemini-protocol.ts',
       'frontend/src/generated/contracts/generation-trace.ts',
       'frontend/src/generated/contracts/goose-protocol.ts',

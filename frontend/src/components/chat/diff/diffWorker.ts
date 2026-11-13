@@ -1,5 +1,7 @@
-import type { ComputedDiff, DiffInput } from './diffCompute'
-import { computeDiff, fallbackDiff } from './diffCompute'
+import type { ComputedDiff } from './diffCompute'
+import type { DiffInput, StructuredPatchHunk } from './diffTypes'
+import { fallbackDiff } from './diffCompute'
+import { computeDiff } from './diffSearch'
 
 // ---------------------------------------------------------------------------
 // Diff worker
@@ -15,22 +17,40 @@ export interface DiffRequest {
   input: DiffInput
 }
 
+/**
+ * A computed diff as the worker posts it. For a `hunks` input, `hunks` is null:
+ * the client holds those hunks already, and a structured clone would copy every
+ * line to the worker and back for nothing.
+ */
+export type PostedDiff = Omit<ComputedDiff, 'hunks'> & { hunks: StructuredPatchHunk[] | null }
+
 export interface DiffResponse {
   type: 'diff-result'
   id: number
-  diff: ComputedDiff
+  diff: PostedDiff
 }
 
-/** Answer one request. A diff that throws, such as on a stack overflow, answers with the fallback. */
+/**
+ * Answer one request. A computation that throws, such as on a stack overflow,
+ * answers with the fallback. It logs the error, so that a bug in the computation
+ * leaves a diagnostic, and not only a fallback diff.
+ */
 export function answerDiffRequest(request: DiffRequest): DiffResponse {
   let diff: ComputedDiff
   try {
     diff = computeDiff(request.input)
   }
-  catch {
+  catch (error) {
+    console.warn('[diffWorker] the diff computation failed; drawing the fallback diff:', error)
     diff = fallbackDiff(request.input)
   }
-  return { type: 'diff-result', id: request.id, diff }
+  return {
+    type: 'diff-result',
+    id: request.id,
+    diff: request.input.kind === 'hunks'
+      ? { ...diff, hunks: null }
+      : diff,
+  }
 }
 
 globalThis.onmessage = (event: MessageEvent<DiffRequest>) => {

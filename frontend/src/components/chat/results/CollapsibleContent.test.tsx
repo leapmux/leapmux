@@ -1,10 +1,13 @@
+import type { CollapsibleContentKind } from '~/components/chat/results/CollapsibleContent'
 import { render } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as markdownRendering from '~/components/chat/markdownRendering'
 import { createMessageRenderCacheStore } from '~/components/chat/messageRenderCache'
 import { CollapsibleContent } from '~/components/chat/results/CollapsibleContent'
 import * as safeTextDisplay from '~/components/chat/safeTextDisplay'
 import { toolResultContentAnsi, toolResultContentPre } from '~/components/chat/toolStyles.css'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 
 describe('CollapsibleContent', () => {
   afterEach(() => {
@@ -86,9 +89,9 @@ describe('CollapsibleContent', () => {
     const { container } = render(() => (
       <CollapsibleContent kind="json" text={json} isCollapsed={false} />
     ))
-    // jsdom has no Worker, so the async token path yields null and TokenizedCode
-    // shows the raw JSON text inside the shared toolResultContentAnsi wrapper
-    // (NOT the plain-pre fallback used by other kinds).
+    // Until the token worker answers, TokenizedCode shows the raw JSON text inside
+    // the shared toolResultContentAnsi wrapper (NOT the plain-pre fallback used by
+    // other kinds).
     expect(container.textContent).toContain('"a": 1')
     const div = container.firstElementChild as HTMLElement
     expect(div.classList.contains(toolResultContentAnsi)).toBe(true)
@@ -141,16 +144,17 @@ describe('CollapsibleContent', () => {
     expect(body.textContent).toBe('red')
   })
 
-  it('renders markdown-tool-result body using the full text, not display', () => {
+  it('renders markdown-tool-result body using the full text, not display', async () => {
     // kind="markdown-tool-result" always renders the full text (display is ignored
     // because markdown can't be cleanly truncated by lines).
     const { container } = render(() => (
       <CollapsibleContent kind="markdown-tool-result" text="**bold**" display="ignored" isCollapsed={false} />
     ))
+    await settleWorkerReplies()
     expect(container.querySelector('strong')).not.toBeNull()
   })
 
-  it('renders a large markdown-tool-result body in full, with no display scan or limit notice', () => {
+  it('renders a large markdown-tool-result body in full, with no display scan or limit notice', async () => {
     // Three times the size that used to switch a body to a capped plain-text display.
     const filler = 'native '.repeat(15_000)
     const text = `## Heading\n\n${filler}\n\n- last item`
@@ -158,12 +162,38 @@ describe('CollapsibleContent', () => {
     const { container } = render(() => (
       <CollapsibleContent kind="markdown-tool-result" text={text} isCollapsed={false} />
     ))
+    await settleWorkerReplies()
 
     expect(container.querySelector('h2')?.textContent).toBe('Heading')
     expect(container.querySelector('li')?.textContent).toBe('last item')
     expect(container.textContent).toContain(filler.trim())
     expect(container.textContent).not.toContain('Display limited')
     expect(limit).not.toHaveBeenCalled()
+  })
+
+  it('swaps the body and the limit notice when the kind moves between Markdown and plain text', async () => {
+    const text = `**start**\n${'x'.repeat(100_000)}\nend`
+    const [kind, setKind] = createSignal<CollapsibleContentKind>('markdown-tool-result')
+    const { container } = render(() => (
+      <CollapsibleContent kind={kind()} text={text} isCollapsed={false} />
+    ))
+    await settleWorkerReplies()
+    expect(container.querySelector('strong')?.textContent).toBe('start')
+    expect(container.textContent).not.toContain('Display limited')
+
+    setKind('pre')
+    expect(container.querySelector('strong')).toBeNull()
+    expect(container.firstElementChild?.classList.contains(toolResultContentPre)).toBe(true)
+    expect(container.textContent).toContain('Display limited')
+
+    // A move between two limited kinds keeps the limit and changes the body.
+    setKind('json')
+    expect(container.firstElementChild?.classList.contains(toolResultContentAnsi)).toBe(true)
+    expect(container.textContent).toContain('Display limited')
+
+    setKind('markdown-tool-result')
+    expect(container.querySelector('strong')?.textContent).toBe('start')
+    expect(container.textContent).not.toContain('Display limited')
   })
 })
 
@@ -173,11 +203,12 @@ describe('CollapsibleContent output ownership', () => {
     'ansi-or-pre',
     'markdown-tool-result',
     'json',
-  ] as const)('marks the existing output element for kind %s without adding a wrapper', (kind) => {
+  ] as const)('marks the existing output element for kind %s without adding a wrapper', async (kind) => {
     const text = kind === 'json'
       ? '{"count":0,"enabled":false}'
       : 'native output'
     const { container } = render(() => <CollapsibleContent outputPreview kind={kind} text={text} display={text} isCollapsed={false} />)
+    await settleWorkerReplies()
     expect(container.querySelectorAll('[data-tool-output-preview]')).toHaveLength(1)
     expect(container.firstElementChild?.getAttribute('data-tool-output-preview')).toBe('')
     expect(container.textContent).toContain(kind === 'json'
@@ -214,7 +245,7 @@ describe('CollapsibleContent output ownership', () => {
     { kind: 'ansi-or-pre', text: '\x1B[31msame marker\x1B[0m' },
     { kind: 'markdown-tool-result', text: 'same marker' },
     { kind: 'json', text: '{"same":"marker"}' },
-  ] as const)('does not mark kind $kind text $text without output ownership', ({ kind, text }) => {
+  ] as const)('does not mark kind $kind text $text without output ownership', async ({ kind, text }) => {
     for (const outputPreview of [false, undefined]) {
       const { container, unmount } = render(() => (
         <CollapsibleContent
@@ -227,6 +258,7 @@ describe('CollapsibleContent output ownership', () => {
           isCollapsed={false}
         />
       ))
+      await settleWorkerReplies()
       expect(container.textContent).toContain(kind === 'json'
         ? 'same'
         : 'same marker')

@@ -3,6 +3,7 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ToolSpanRole } from '~/lib/messageSpan'
 import { CODEWHALE_BLOCK_FIELD, CODEWHALE_BLOCK_TYPE, CODEWHALE_ENVELOPE_FIELD, CODEWHALE_EVENT, CODEWHALE_ITEM_FIELD, CODEWHALE_ITEM_METADATA, CODEWHALE_TOOL_FIELD, CODEWHALE_TRANSCRIPT_FIELD, CODEWHALE_TRANSCRIPT_KIND } from '~/generated/contracts/codewhale-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { memoizeByObject } from '~/lib/memoizeByObject'
 import { parseToolOutcome } from '../../../toolOutcome'
 import { retainedRowIsFinal } from '../../registry'
 import { CODEWHALE_DEFERRED_LOAD_SENTENCE, CODEWHALE_RESULT_METADATA } from '../protocol'
@@ -285,30 +286,27 @@ export function codewhaleFrameDrawsNothing(frame: CodewhaleToolFrame): boolean {
 }
 
 // Cache by row identity: the classifier, the span role and the extractor read the same
-// frame, and the WeakMap releases an entry with its row.
-const frameCache = new WeakMap<Record<string, unknown>, CodewhaleToolFrame | null>()
+// frame, and the memo releases an entry with its row.
+const cachedFrame = memoizeByObject((parsed: Record<string, unknown>): CodewhaleToolFrame | null => {
+  const envelope = codewhaleEnvelope(parsed)
+  const child = envelope
+    ? null
+    : codewhaleChildBlock(parsed)
+  return envelope
+    ? itemToolFrame(envelope)
+    : child
+      ? blockToolFrame(child)
+      : null
+})
 
 /**
  * The tool-call frame a row carries, from either transcript, or null for a row that is
  * not one.
  */
 export function codewhaleToolFrame(parsed: unknown): CodewhaleToolFrame | null {
-  if (!isObject(parsed))
-    return null
-  const cached = frameCache.get(parsed)
-  if (cached !== undefined)
-    return cached
-  const envelope = codewhaleEnvelope(parsed)
-  const child = envelope
-    ? null
-    : codewhaleChildBlock(parsed)
-  const frame = envelope
-    ? itemToolFrame(envelope)
-    : child
-      ? blockToolFrame(child)
-      : null
-  frameCache.set(parsed, frame)
-  return frame
+  return isObject(parsed)
+    ? cachedFrame(parsed)
+    : null
 }
 
 /**

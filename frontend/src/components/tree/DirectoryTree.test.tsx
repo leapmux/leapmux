@@ -3,10 +3,11 @@ import type { FileSortOrder } from '~/lib/fileSort'
 import { fireEvent, render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { PREFIX_DIRECTORY_TREE, sessionStorageClearForTests, sessionStorageGet, sessionStorageSet } from '~/lib/browserStorage'
+import { PREFIX_DIRECTORY_TREE, sessionStorageClearForTests, sessionStorageGet, sessionStorageSet, setStorageAccountForTests } from '~/lib/browserStorage'
 import { createRepoGitStore } from '~/stores/repoGit.store'
 import { DirectoryTree } from './DirectoryTree'
 import { DIRECTORY_TREE_STATE_VERSION } from './directoryTreeState'
+import { CHILDREN_TRANSITION_MS, childrenWrapperExpanded } from './sharedTree.css'
 
 const gitStatusStore = createRepoGitStore()
 
@@ -17,6 +18,15 @@ vi.mock('~/api/workerRpc', () => ({
     listDirectory: (...args: unknown[]) => listDirectory(...args),
     statFile: (...args: unknown[]) => statFile(...args),
   },
+}))
+
+/**
+ * The reduced-motion preference that the tree reads. jsdom has no `matchMedia`,
+ * so the real module always reads false, and a test sets this instead.
+ */
+const reducedMotion = vi.hoisted(() => ({ on: false }))
+vi.mock('~/lib/prefersReducedMotion', () => ({
+  prefersReducedMotion: () => reducedMotion.on,
 }))
 
 interface EntryOverrides {
@@ -73,6 +83,22 @@ async function settle(turns = 10): Promise<void> {
     await Promise.resolve()
 }
 
+/**
+ * Drain the microtask queue until `ready` holds.
+ *
+ * No timer runs in between, unlike in `waitFor`. A state that a timer ends,
+ * such as a close that waits for its fallback timer, is therefore still there
+ * when this returns.
+ */
+async function settleUntil(ready: () => boolean, turns = 100): Promise<void> {
+  for (let i = 0; i < turns; i++) {
+    if (ready())
+      return
+    await Promise.resolve()
+  }
+  throw new Error(`The condition did not hold within ${turns} microtasks.`)
+}
+
 function rowFor(name: string): Element | undefined {
   return [
     ...document.querySelectorAll('[data-testid="tree-row"]'),
@@ -82,8 +108,8 @@ function rowFor(name: string): Element | undefined {
 
 /**
  * The rendered row names, in order. Reads the name hook rather than the row's
- * textContent: the three-dot menu renders inside the row and stays mounted
- * while closed, so the row's text also carries its menu items.
+ * textContent: the three-dot menu renders inside the row, and its items stay
+ * mounted after the menu first opens, so the row's text can also carry them.
  */
 function renderedNames(): string[] {
   return [
@@ -99,7 +125,27 @@ beforeEach(() => {
     info: { modTime: '2026-01-01T00:00:00Z' },
   })
   sessionStorageClearForTests()
+  reducedMotion.on = false
 })
+
+/**
+ * Run `body` with fake `setTimeout` and `clearTimeout`, so that no fallback
+ * timer of a child group fires unless the test advances the clock. Microtasks
+ * stay real, so `settle` and `settleUntil` still work. Use neither `waitFor`
+ * nor `findBy*` inside: their own time limit runs on `setTimeout`, so a
+ * condition that never holds waits until the test times out.
+ */
+async function withFakeTimeouts(body: () => Promise<void>): Promise<void> {
+  vi.useFakeTimers({
+    toFake: ['setTimeout', 'clearTimeout'],
+  })
+  try {
+    await body()
+  }
+  finally {
+    vi.useRealTimers()
+  }
+}
 
 describe('DirectoryTree', () => {
   /**
@@ -727,6 +773,119 @@ function renderTree(props: Partial<Parameters<typeof DirectoryTree>[0]> & { root
       {...props}
     />
   ))
+}
+
+interface StoredTree {
+  expandedPaths?: Record<string, boolean>
+  childrenCache?: Record<string, unknown>
+}
+
+/**
+ * A stored tree state in which `${root}/src` is open and lists one directory,
+ * `lib`, so a tree that restores it mounts `src` open.
+ */
+function openSrcState(root: string) {
+  const dir = (path: string, displayName: string) => ({
+    path,
+    displayName,
+    isDir: true,
+    hidden: false,
+    size: 0,
+    modTime: '',
+  })
+  return {
+    v: DIRECTORY_TREE_STATE_VERSION,
+    expandedPaths: { [root]: true, [`${root}/src`]: true },
+    childrenCache: {
+      [root]: [
+        dir(`${root}/src`, 'src'),
+      ],
+      [`${root}/src`]: [
+        dir(`${root}/src/lib`, 'lib'),
+      ],
+    },
+    truncatedDirs: {},
+  }
+}
+
+/** The sorted keys of `expandedPaths` in the tree state stored under `key`. */
+function storedExpandedPaths(key: string): string[] {
+  return Object.keys(sessionStorageGet<StoredTree>(key)?.expandedPaths ?? {}).sort()
+}
+
+/** The sorted directories whose listings the tree state stored under `key` keeps. */
+function storedListingPaths(key: string): string[] {
+  return Object.keys(sessionStorageGet<StoredTree>(key)?.childrenCache ?? {}).sort()
+}
+
+/**
+ * The child group of a directory row: the element that opens and closes.
+ *
+ * The row and its group are siblings inside one node element, and the group
+ * holds the `role="group"` element that lists the children.
+ */
+function groupOf(row: Element): HTMLElement {
+  const group = row.parentElement?.querySelector(':scope > div > [role="group"]')?.parentElement
+  if (!group)
+    throw new Error('The row has no child group.')
+  return group
+}
+
+/** The element that scrolls the tree. */
+function scrollContainer(): HTMLElement {
+  const container = document.querySelector('[role="tree"]')?.parentElement
+  if (!container)
+    throw new Error('The tree has no scroll container.')
+  return container
+}
+
+/**
+ * Records every tree row that enters the document from now on.
+ *
+ * A row that a change mounts again is a new element, so this tells a row that
+ * stayed mounted from one that was rebuilt.
+ */
+function recordAddedRows(): () => Element[] {
+  const added: Element[] = []
+  const collect = (records: MutationRecord[]) => {
+    for (const record of records) {
+      for (const node of record.addedNodes) {
+        if (!(node instanceof Element))
+          continue
+        if (node.matches('[data-testid="tree-row"]'))
+          added.push(node)
+        added.push(...node.querySelectorAll('[data-testid="tree-row"]'))
+      }
+    }
+  }
+  const observer = new MutationObserver(collect)
+  observer.observe(document.body, { childList: true, subtree: true })
+  return () => {
+    collect(observer.takeRecords())
+    observer.disconnect()
+    return added
+  }
+}
+
+/**
+ * Gives chosen elements a layout, because jsdom lays out nothing and reports
+ * every rectangle as zero. Every other element keeps the zero rectangle.
+ */
+function mockLayout(rectOf: (el: Element) => { top: number, bottom: number } | undefined) {
+  return vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+    const { top, bottom } = rectOf(this) ?? { top: 0, bottom: 0 }
+    return {
+      top,
+      bottom,
+      left: 0,
+      right: 0,
+      height: bottom - top,
+      width: 0,
+      x: 0,
+      y: top,
+      toJSON: () => ({}),
+    }
+  })
 }
 
 describe('DirectoryTree reveal', () => {
@@ -1802,6 +1961,33 @@ describe('DirectoryTree win32 separators', () => {
 
     await waitFor(() => expect(rowFor('Alice')).toBeTruthy())
   })
+
+  // The payload keeps the listing of the reveal target, which the cache keys
+  // by the worker's spelling. A target typed in another spelling must still
+  // find it, or a remount fetches the target again.
+  it('persists the listing of a reveal target typed with forward slashes', async () => {
+    mockChain({
+      'C:\\': [
+        dirEntry('C:\\', 'Users', '\\'),
+      ],
+      'C:\\Users': [
+        dirEntry('C:\\Users', 'alice', '\\'),
+      ],
+      'C:\\Users\\alice': [
+        dirEntry('C:\\Users\\alice', 'proj', '\\'),
+      ],
+    }, '\\')
+    const { unmount } = renderTree({ rootPath: 'C:\\', flavor: 'win32', revealPath: 'C:/Users/alice' })
+    await waitFor(() => expect(rowFor('alice')).toBeTruthy())
+    const afterFirst = listDirectory.mock.calls.length
+    unmount()
+
+    renderTree({ rootPath: 'C:\\', flavor: 'win32', revealPath: 'C:/Users/alice' })
+    await waitFor(() => expect(rowFor('alice')).toBeTruthy())
+    await settle()
+
+    expect(listDirectory.mock.calls.length).toBe(afterFirst)
+  })
 })
 
 describe('DirectoryTree expandPath', () => {
@@ -1816,8 +2002,7 @@ describe('DirectoryTree expandPath', () => {
    * find a row that no user can see.
    */
   function expandedPaths(): string[] {
-    const stored = sessionStorageGet<{ expandedPaths?: Record<string, boolean> }>(storeKey)
-    return Object.keys(stored?.expandedPaths ?? {}).sort()
+    return storedExpandedPaths(storeKey)
   }
 
   function mockTwoLevels() {
@@ -1913,12 +2098,7 @@ describe('DirectoryTree expandPath', () => {
     handle.expandPath('C:\\Users')
 
     // The tree writes its state in an idle period.
-    await waitFor(() => {
-      const stored = sessionStorageGet<{ expandedPaths?: Record<string, boolean> }>(
-        `${PREFIX_DIRECTORY_TREE}w1:C:\\:dirs`,
-      )
-      expect(Object.keys(stored?.expandedPaths ?? {}).sort()).toEqual(['C:\\', 'C:\\Users'])
-    })
+    await waitFor(() => expect(storedExpandedPaths(`${PREFIX_DIRECTORY_TREE}w1:C:\\:dirs`)).toEqual(['C:\\', 'C:\\Users']))
   })
 
   // An empty path names no node. The key would persist, and no chevron could
@@ -1950,7 +2130,7 @@ describe('DirectoryTree keyboard navigation', () => {
    *
    * Both children are directories on purpose: the visible order is then a
    * plain name sort, whatever the comparator does with files. `inner.txt`
-   * gives the walk a row that IS in the DOM while its parent is closed.
+   * gives the walk a row that IS in the DOM while its parent closes.
    */
   function mockTree() {
     listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
@@ -2039,7 +2219,8 @@ describe('DirectoryTree keyboard navigation', () => {
     press('ArrowDown')
     expect(document.activeElement).toBe(rowFor('alpha'))
 
-    // Open it and close it again, so its child stays RENDERED while hidden.
+    // Open it and close it again, so its child stays RENDERED, hidden, while
+    // the close animates.
     // That is the row a walk of the DOM would step into: it sits between
     // `alpha` and `beta` there, and nowhere on screen.
     press('ArrowRight')
@@ -2135,26 +2316,362 @@ describe('DirectoryTree keyboard navigation', () => {
   })
 })
 
+describe('DirectoryTree child groups', () => {
+  const root = '/groups'
+
+  /**
+   * `src` holds a directory and a file. The file is the row a selection
+   * scrolls to: the scroll skips a closed directory.
+   */
+  function mockTree() {
+    listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
+      if (req.path === root) {
+        return oneListing([
+          dirEntry(root, 'src'),
+        ])
+      }
+      if (req.path === `${root}/src`) {
+        return oneListing([
+          dirEntry(`${root}/src`, 'lib'),
+          entry(`${root}/src`, 'main.ts'),
+        ])
+      }
+      return oneListing([])
+    })
+  }
+
+  /** Stores a tree state in which `src` is open, so `src` mounts open. */
+  function seedOpenSrc() {
+    sessionStorageSet(`${PREFIX_DIRECTORY_TREE}w1:${root}:files`, openSrcState(root))
+  }
+
+  // The finished close is what unmounts the rows. Unmounting them at the
+  // collapse itself would cut the close animation off.
+  it('keeps the rows of a directory that mounted open until its first close ends', async () => {
+    mockTree()
+    seedOpenSrc()
+    renderTree({ rootPath: root, showFiles: true })
+    await waitFor(() => expect(rowFor('lib')).toBeTruthy())
+    const lib = rowFor('lib')!
+
+    fireEvent.click(rowFor('src')!)
+    await settleUntil(() => rowFor('src')!.getAttribute('aria-expanded') === 'false')
+
+    expect(lib.isConnected).toBe(true)
+    expect(groupOf(rowFor('src')!).classList.contains(childrenWrapperExpanded)).toBe(false)
+    fireEvent.transitionEnd(groupOf(rowFor('src')!))
+    expect(lib.isConnected).toBe(false)
+    expect(rowFor('lib')).toBeUndefined()
+  })
+
+  it('mounts no row when a directory closes', async () => {
+    mockTree()
+    renderTree({ rootPath: root })
+    await waitFor(() => expect(rowFor('src')).toBeTruthy())
+    fireEvent.click(rowFor('src')!)
+    await waitFor(() => expect(rowFor('lib')).toBeTruthy())
+    const lib = rowFor('lib')!
+    const addedRows = recordAddedRows()
+
+    fireEvent.click(rowFor('src')!)
+    await waitFor(() => expect(rowFor('lib')).toBeUndefined())
+
+    expect(addedRows()).toEqual([])
+    expect(lib.isConnected).toBe(false)
+  })
+
+  // A transition that never runs fires no `transitionend`, so a timer ends the
+  // close instead.
+  it('unmounts the rows of a closed directory without a transitionend', async () => {
+    mockTree()
+    seedOpenSrc()
+    renderTree({ rootPath: root, showFiles: true })
+    await waitFor(() => expect(rowFor('lib')).toBeTruthy())
+
+    fireEvent.click(rowFor('src')!)
+
+    await waitFor(() => expect(rowFor('lib')).toBeUndefined())
+  })
+
+  // The rows inside the group and their chevrons run transitions of their own,
+  // and each `transitionend` of those bubbles up to the group.
+  it('keeps the rows of a closing directory through a transitionend that bubbles up from inside its group', async () => {
+    mockTree()
+    seedOpenSrc()
+    renderTree({ rootPath: root, showFiles: true })
+    await waitFor(() => expect(rowFor('lib')).toBeTruthy())
+    const lib = rowFor('lib')!
+
+    await withFakeTimeouts(async () => {
+      fireEvent.click(rowFor('src')!)
+      await settleUntil(() => rowFor('src')!.getAttribute('aria-expanded') === 'false')
+      lib.dispatchEvent(new Event('transitionend', { bubbles: true }))
+      await settle()
+
+      expect(lib.isConnected).toBe(true)
+      groupOf(rowFor('src')!).dispatchEvent(new Event('transitionend', { bubbles: true }))
+      expect(lib.isConnected).toBe(false)
+    })
+  })
+
+  // The transition starts at the next style recalculation, which can come a
+  // frame or more after the class changes, so the wait outlasts the transition.
+  it('keeps the rows of a closing directory past the length of the transition, then unmounts them without a transitionend', async () => {
+    mockTree()
+    seedOpenSrc()
+    renderTree({ rootPath: root, showFiles: true })
+    await waitFor(() => expect(rowFor('lib')).toBeTruthy())
+    const lib = rowFor('lib')!
+
+    await withFakeTimeouts(async () => {
+      fireEvent.click(rowFor('src')!)
+      await settleUntil(() => rowFor('src')!.getAttribute('aria-expanded') === 'false')
+      vi.advanceTimersByTime(CHILDREN_TRANSITION_MS)
+      await settle()
+
+      expect(lib.isConnected).toBe(true)
+      vi.advanceTimersByTime(1000)
+      await settle()
+      expect(lib.isConnected).toBe(false)
+    })
+  })
+
+  // Under reduced motion the style has no transition, so no `transitionend`
+  // comes, and the close is complete when the class changes.
+  it('unmounts the rows of a closed directory at once under reduced motion', async () => {
+    reducedMotion.on = true
+    mockTree()
+    seedOpenSrc()
+    renderTree({ rootPath: root, showFiles: true })
+    await waitFor(() => expect(rowFor('lib')).toBeTruthy())
+    const lib = rowFor('lib')!
+
+    fireEvent.click(rowFor('src')!)
+
+    // Microtasks only: no timer runs, and no `transitionend` fires.
+    await settleUntil(() => !lib.isConnected)
+    expect(rowFor('lib')).toBeUndefined()
+  })
+
+  // A reopen during the close keeps the rows it was about to unmount.
+  it('keeps the rows when a directory reopens before its close ends', async () => {
+    mockTree()
+    seedOpenSrc()
+    renderTree({ rootPath: root, showFiles: true })
+    await waitFor(() => expect(rowFor('lib')).toBeTruthy())
+    const lib = rowFor('lib')!
+    const addedRows = recordAddedRows()
+
+    fireEvent.click(rowFor('src')!)
+    await settleUntil(() => rowFor('src')!.getAttribute('aria-expanded') === 'false')
+    fireEvent.click(rowFor('src')!)
+    await settleUntil(() => rowFor('src')!.getAttribute('aria-expanded') === 'true')
+    // A `transitionend` of the reopen, and the timer of the abandoned close,
+    // must both leave the rows in place.
+    fireEvent.transitionEnd(groupOf(rowFor('src')!))
+    await settle()
+
+    expect(lib.isConnected).toBe(true)
+    expect(addedRows()).toEqual([])
+  })
+
+  // An element that the browser has not styled yet takes the open class as its
+  // first style, so its open would not animate and would fire no
+  // `transitionend`. jsdom computes no transitions, so this pins the order.
+  it('reads the style of a group that mounted closed before it opens', async () => {
+    mockTree()
+    renderTree({ rootPath: root })
+    await waitFor(() => expect(rowFor('src')).toBeTruthy())
+    const realGetComputedStyle = window.getComputedStyle.bind(window)
+    const reads: { el: Element, open: boolean }[] = []
+    const spy = vi.spyOn(window, 'getComputedStyle').mockImplementation((el, pseudo) => {
+      reads.push({
+        el,
+        open: el.classList.contains(childrenWrapperExpanded),
+      })
+      return realGetComputedStyle(el, pseudo)
+    })
+    try {
+      // The first open of an uncached directory: its group mounts closed when
+      // the listing lands, and opens a microtask later.
+      fireEvent.click(rowFor('src')!)
+      await waitFor(() => expect(rowFor('lib')).toBeTruthy())
+
+      const group = groupOf(rowFor('src')!)
+      expect(group.classList.contains(childrenWrapperExpanded)).toBe(true)
+      expect(reads.filter(read => read.el === group)).toEqual([
+        { el: group, open: false },
+      ])
+    }
+    finally {
+      spy.mockRestore()
+    }
+  })
+
+  // A group that mounts open does not animate, so it has nothing to read.
+  it('reads no style for a group that mounted open', async () => {
+    mockTree()
+    seedOpenSrc()
+    const spy = vi.spyOn(window, 'getComputedStyle')
+    try {
+      renderTree({ rootPath: root, showFiles: true })
+      await waitFor(() => expect(rowFor('lib')).toBeTruthy())
+
+      const group = groupOf(rowFor('src')!)
+      expect(spy.mock.calls.filter(call => call[0] === group)).toEqual([])
+    }
+    finally {
+      spy.mockRestore()
+    }
+  })
+
+  describe('scrolling', () => {
+    /**
+     * Lays the tree out so that a scroll is due: the container shows 100px,
+     * the node of `src` ends below that, and so does the row of `main.ts`.
+     */
+    function layOut() {
+      return mockLayout((el) => {
+        if (el === scrollContainer())
+          return { top: 0, bottom: 100 }
+        const src = rowFor('src')
+        if (src && el === src.parentElement)
+          return { top: 80, bottom: 200 }
+        if (el === src)
+          return { top: 80, bottom: 100 }
+        if (el === rowFor('main.ts'))
+          return { top: 500, bottom: 520 }
+        return undefined
+      })
+    }
+
+    // A transition that never runs fires no `transitionend`, and the scroll
+    // that waits for it must not wait forever.
+    it('scrolls an opened directory into view without a transitionend', async () => {
+      mockTree()
+      renderTree({ rootPath: root })
+      await waitFor(() => expect(rowFor('src')).toBeTruthy())
+      const layout = layOut()
+      try {
+        fireEvent.click(rowFor('src')!)
+        await settleUntil(() => rowFor('lib') !== undefined)
+        // The open has not ended, so the children are not at their full height.
+        expect(scrollContainer().scrollTop).toBe(0)
+
+        // 100px of the node overflow, and the clamp keeps its 20px row in
+        // view: 80 - 0 - 20.
+        await waitFor(() => expect(scrollContainer().scrollTop).toBe(60))
+      }
+      finally {
+        layout.mockRestore()
+      }
+    })
+
+    it('scrolls an opened directory into view at once under reduced motion', async () => {
+      reducedMotion.on = true
+      mockTree()
+      renderTree({ rootPath: root })
+      await waitFor(() => expect(rowFor('src')).toBeTruthy())
+      const layout = layOut()
+      try {
+        fireEvent.click(rowFor('src')!)
+
+        // Microtasks only: no timer runs, and no `transitionend` fires.
+        await settleUntil(() => scrollContainer().scrollTop === 60)
+      }
+      finally {
+        layout.mockRestore()
+      }
+    })
+
+    // The scroll waits for the open to end. A close before that leaves no
+    // children to bring into view.
+    it('drops the scroll of an open that a close ends first', async () => {
+      mockTree()
+      renderTree({ rootPath: root })
+      await waitFor(() => expect(rowFor('src')).toBeTruthy())
+      const layout = layOut()
+      try {
+        await withFakeTimeouts(async () => {
+          fireEvent.click(rowFor('src')!)
+          await settleUntil(() => rowFor('lib') !== undefined)
+          fireEvent.click(rowFor('src')!)
+          await settleUntil(() => rowFor('src')!.getAttribute('aria-expanded') === 'false')
+
+          groupOf(rowFor('src')!).dispatchEvent(new Event('transitionend', { bubbles: true }))
+          vi.advanceTimersByTime(1000)
+          await settle()
+
+          expect(rowFor('lib')).toBeUndefined()
+          expect(scrollContainer().scrollTop).toBe(0)
+        })
+      }
+      finally {
+        layout.mockRestore()
+      }
+    })
+
+    it('scrolls an opened directory into view when its open ends', async () => {
+      mockTree()
+      renderTree({ rootPath: root })
+      await waitFor(() => expect(rowFor('src')).toBeTruthy())
+      const layout = layOut()
+      try {
+        fireEvent.click(rowFor('src')!)
+        await settleUntil(() => rowFor('lib') !== undefined)
+        expect(scrollContainer().scrollTop).toBe(0)
+
+        fireEvent.transitionEnd(groupOf(rowFor('src')!))
+
+        expect(scrollContainer().scrollTop).toBe(60)
+      }
+      finally {
+        layout.mockRestore()
+      }
+    })
+
+    // While a group above the row opens, the rows it clips add no scrollable
+    // height, so a scroll to the row then stops short of it.
+    it('scrolls to a selected row once the groups above it finish opening', async () => {
+      mockTree()
+      const [selected, setSelected] = createSignal('')
+      render(() => (
+        <DirectoryTree
+          workerId="w1"
+          gitStatusStore={gitStatusStore}
+          showFiles
+          rootPath={root}
+          selectedPath={selected()}
+          onSelect={() => {}}
+        />
+      ))
+      await waitFor(() => expect(rowFor('src')).toBeTruthy())
+      // Cache the listing of `src`, then close it again.
+      fireEvent.click(rowFor('src')!)
+      await waitFor(() => expect(rowFor('main.ts')).toBeTruthy())
+      fireEvent.click(rowFor('src')!)
+      await waitFor(() => expect(rowFor('main.ts')).toBeUndefined())
+      const layout = layOut()
+      try {
+        // The reveal opens `src` from its cache, in the same update.
+        setSelected(`${root}/src/main.ts`)
+        expect(rowFor('main.ts')).toBeTruthy()
+        expect(scrollContainer().scrollTop).toBe(0)
+
+        fireEvent.transitionEnd(groupOf(rowFor('src')!))
+
+        expect(scrollContainer().scrollTop).toBe(500)
+      }
+      finally {
+        layout.mockRestore()
+      }
+    })
+  })
+})
+
 describe('DirectoryTree closed directories and persistence', () => {
   const root = '/closing'
   const storeKey = `${PREFIX_DIRECTORY_TREE}w1:${root}:dirs`
-
-  interface StoredTree {
-    expandedPaths?: Record<string, boolean>
-    childrenCache?: Record<string, unknown>
-  }
-
-  function stored(): StoredTree | undefined {
-    return sessionStorageGet<StoredTree>(storeKey)
-  }
-
-  function storedExpanded(): string[] {
-    return Object.keys(stored()?.expandedPaths ?? {}).sort()
-  }
-
-  function storedListings(): string[] {
-    return Object.keys(stored()?.childrenCache ?? {}).sort()
-  }
 
   function mockTree() {
     listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
@@ -2205,23 +2722,55 @@ describe('DirectoryTree closed directories and persistence', () => {
   it('writes its state in an idle period, not in the change itself', async () => {
     mockTree()
     const { handle } = renderWithHandle()
-    await waitFor(() => expect(storedExpanded()).toEqual([root]))
+    await waitFor(() => expect(storedExpandedPaths(storeKey)).toEqual([root]))
 
     handle().expandPath(`${root}/src`)
 
-    expect(storedExpanded()).toEqual([root])
-    await waitFor(() => expect(storedExpanded()).toEqual([root, `${root}/src`]))
+    expect(storedExpandedPaths(storeKey)).toEqual([root])
+    await waitFor(() => expect(storedExpandedPaths(storeKey)).toEqual([root, `${root}/src`]))
   })
 
   it('writes a waiting state at once when it unmounts', async () => {
     mockTree()
     const { handle, unmount } = renderWithHandle()
-    await waitFor(() => expect(storedExpanded()).toEqual([root]))
+    await waitFor(() => expect(storedExpandedPaths(storeKey)).toEqual([root]))
 
     handle().expandPath(`${root}/src`)
     unmount()
 
-    expect(storedExpanded()).toEqual([root, `${root}/src`])
+    expect(storedExpandedPaths(storeKey)).toEqual([root, `${root}/src`])
+  })
+
+  // A reload or a tab close runs no Solid cleanup, so the unmount flush never
+  // runs then. `pagehide` does fire.
+  it('writes a waiting state at once when the page hides', async () => {
+    mockTree()
+    const { handle } = renderWithHandle()
+    await waitFor(() => expect(storedExpandedPaths(storeKey)).toEqual([root]))
+
+    handle().expandPath(`${root}/src`)
+    window.dispatchEvent(new Event('pagehide'))
+
+    expect(storedExpandedPaths(storeKey)).toEqual([root, `${root}/src`])
+  })
+
+  it('stops listening for pagehide when it unmounts', () => {
+    mockTree()
+    const add = vi.spyOn(window, 'addEventListener')
+    const remove = vi.spyOn(window, 'removeEventListener')
+    try {
+      const { unmount } = renderTree({ rootPath: root })
+      unmount()
+
+      const added = add.mock.calls.filter(call => call[0] === 'pagehide').map(call => call[1])
+      const removed = remove.mock.calls.filter(call => call[0] === 'pagehide').map(call => call[1])
+      expect(added).toHaveLength(1)
+      expect(removed).toEqual(added)
+    }
+    finally {
+      add.mockRestore()
+      remove.mockRestore()
+    }
   })
 
   it('persists the listings of open directories only', async () => {
@@ -2229,11 +2778,176 @@ describe('DirectoryTree closed directories and persistence', () => {
     renderTree({ rootPath: root })
     await waitFor(() => expect(rowFor('src')).toBeTruthy())
     fireEvent.click(rowFor('src')!)
-    await waitFor(() => expect(storedListings()).toEqual([root, `${root}/src`]))
+    await waitFor(() => expect(storedListingPaths(storeKey)).toEqual([root, `${root}/src`]))
 
     fireEvent.click(rowFor('src')!)
 
-    await waitFor(() => expect(storedExpanded()).toEqual([root]))
-    expect(storedListings()).toEqual([root])
+    await waitFor(() => expect(storedExpandedPaths(storeKey)).toEqual([root]))
+    expect(storedListingPaths(storeKey)).toEqual([root])
+  })
+
+  // The payload keeps the listing of the reveal target, so a selection change
+  // alone changes what it holds, although the store does not change.
+  it('persists the listing of a newly selected directory that the cache holds', async () => {
+    mockTree()
+    const [selected, setSelected] = createSignal('')
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={root}
+        selectedPath={selected()}
+        onSelect={() => {}}
+      />
+    ))
+    await waitFor(() => expect(rowFor('src')).toBeTruthy())
+    fireEvent.click(rowFor('src')!)
+    await waitFor(() => expect(storedListingPaths(storeKey)).toEqual([root, `${root}/src`]))
+    fireEvent.click(rowFor('src')!)
+    await waitFor(() => expect(storedListingPaths(storeKey)).toEqual([root]))
+
+    setSelected(`${root}/src`)
+
+    await waitFor(() => expect(storedListingPaths(storeKey)).toEqual([root, `${root}/src`]))
+  })
+
+  /**
+   * The new root's restore must read the new root's own state.
+   *
+   * A memo that reads the root and runs again alone, such as the visible-row
+   * walk on a toggle of hidden files, reorders the computations that the root
+   * notifies. A persist effect that reads the key can then run before the
+   * restore effect. The restore then writes the old root's state under the new
+   * key, and reads it straight back.
+   */
+  it('restores a new root from its own state after a hidden-files toggle', async () => {
+    listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
+      if (req.path === '/r1') {
+        return oneListing([
+          dirEntry('/r1', 'a'),
+        ])
+      }
+      if (req.path === '/r2') {
+        return oneListing([
+          dirEntry('/r2', 'b'),
+        ])
+      }
+      return oneListing([])
+    })
+    const [treeRoot, setTreeRoot] = createSignal('/r1')
+    const [showHidden, setShowHidden] = createSignal(true)
+    let handle!: DirectoryTreeHandle
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={treeRoot()}
+        showHiddenFiles={showHidden()}
+        selectedPath=""
+        onSelect={() => {}}
+        ref={(h) => {
+          handle = h
+        }}
+      />
+    ))
+    await waitFor(() => expect(rowFor('a')).toBeTruthy())
+    handle.expandPath('/r1/a')
+    await waitFor(() => expect(storedExpandedPaths(`${PREFIX_DIRECTORY_TREE}w1:/r1:dirs`)).toEqual(['/r1', '/r1/a']))
+
+    setShowHidden(false)
+    setTreeRoot('/r2')
+
+    await waitFor(() => expect(rowFor('b')).toBeTruthy())
+    await waitFor(() => expect(storedListingPaths(`${PREFIX_DIRECTORY_TREE}w1:/r2:dirs`)).toEqual(['/r2']))
+    expect(storedExpandedPaths(`${PREFIX_DIRECTORY_TREE}w1:/r2:dirs`)).toEqual(['/r2'])
+    expect(storedExpandedPaths(`${PREFIX_DIRECTORY_TREE}w1:/r1:dirs`)).toEqual(['/r1', '/r1/a'])
+  })
+
+  // The restore of the new root replaces the state in the store. A waiting write
+  // of the old root that ran after the restore would store the state of the new
+  // root under the key of the old one, and nothing would store it under its own.
+  it('writes a waiting state under the root that it came from when the root changes', async () => {
+    listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
+      if (req.path === '/r1') {
+        return oneListing([
+          dirEntry('/r1', 'a'),
+        ])
+      }
+      if (req.path === '/r2') {
+        return oneListing([
+          dirEntry('/r2', 'b'),
+        ])
+      }
+      return oneListing([])
+    })
+    const r1Key = `${PREFIX_DIRECTORY_TREE}w1:/r1:dirs`
+    const r2Key = `${PREFIX_DIRECTORY_TREE}w1:/r2:dirs`
+    const [treeRoot, setTreeRoot] = createSignal('/r1')
+    let handle!: DirectoryTreeHandle
+    render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={treeRoot()}
+        selectedPath=""
+        onSelect={() => {}}
+        ref={(h) => {
+          handle = h
+        }}
+      />
+    ))
+    await waitFor(() => expect(storedExpandedPaths(r1Key)).toEqual(['/r1']))
+
+    handle.expandPath('/r1/a')
+    setTreeRoot('/r2')
+
+    // At once, before any idle period.
+    expect(storedExpandedPaths(r1Key)).toEqual(['/r1', '/r1/a'])
+    await waitFor(() => expect(storedExpandedPaths(r2Key)).toEqual(['/r2']))
+    expect(storedExpandedPaths(r1Key)).toEqual(['/r1', '/r1/a'])
+  })
+
+  describe('an account switch', () => {
+    // The namespace moves before any listener runs, so a write of the waiting
+    // state would store this account's tree under the next account's key.
+    it('writes no waiting state into the namespace of the next account', async () => {
+      mockTree()
+      const { handle, unmount } = renderWithHandle()
+      await waitFor(() => expect(storedExpandedPaths(storeKey)).toEqual([root]))
+
+      handle().expandPath(`${root}/src`)
+      setStorageAccountForTests('user-b')
+      unmount()
+
+      expect(storedExpandedPaths(storeKey)).not.toContain(`${root}/src`)
+    })
+
+    it('writes no state of the previous account at idle time', async () => {
+      mockTree()
+      const { handle } = renderWithHandle()
+      await waitFor(() => expect(storedExpandedPaths(storeKey)).toEqual([root]))
+
+      handle().expandPath(`${root}/src`)
+      setStorageAccountForTests('user-b')
+
+      await waitFor(() => expect(storedListingPaths(storeKey)).toEqual([root]))
+      expect(storedExpandedPaths(storeKey)).toEqual([root])
+    })
+
+    // The tree mirrors an account-scoped key, so it follows the account.
+    it('restores the tree that the next account stored', async () => {
+      mockTree()
+      setStorageAccountForTests('user-b')
+      sessionStorageSet(storeKey, openSrcState(root))
+      setStorageAccountForTests('user-a')
+      renderTree({ rootPath: root })
+      await waitFor(() => expect(rowFor('src')).toBeTruthy())
+      expect(rowFor('src')!.getAttribute('aria-expanded')).toBe('false')
+
+      setStorageAccountForTests('user-b')
+
+      await waitFor(() => expect(rowFor('lib')).toBeTruthy())
+      expect(rowFor('src')!.getAttribute('aria-expanded')).toBe('true')
+    })
   })
 })

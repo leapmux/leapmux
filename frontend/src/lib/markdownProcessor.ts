@@ -15,21 +15,12 @@ import { dualThemeTokenOptions } from './shikiThemes'
 import { UNTRUSTED_LINK_ATTRIBUTE } from './untrustedLinkClicks'
 
 /**
- * The remark+rehype+Shiki markdown pipeline configuration, shared by BOTH the
- * main-thread synchronous renderer (renderMarkdown.ts, which uses the
- * createHighlighterCoreSync instance of shikiSyncHighlighter.ts, on the JS regex
- * engine, with no grammar) and the off-thread
+ * The remark+rehype+Shiki markdown pipeline configuration of the off-thread
  * worker (markdownWorker.ts, which holds a createHighlighterCore instance on the
- * Oniguruma WASM engine, lazily loading grammars). Centralizing the plugin chain +
- * theme set here is load-bearing: both paths emit the same themed `pre.shiki`
- * structure the CSS targets (markdownContent.css.ts), with `--shiki-light` /
- * `--shiki-dark` dual-theme variables.
- *
- * The two paths use DIFFERENT engines and grammar sets, so their tokens differ --
- * but they never coexist in one runtime (the worker runs in the browser; the sync
- * path runs only when `Worker` is undefined, i.e. the jsdom unit tests), so the
- * shared `markdownCache` is filled by exactly one of them per session and there is
- * no flash from a sync->worker swap.
+ * Oniguruma WASM engine, lazily loading grammars). It emits the themed
+ * `pre.shiki` structure that the CSS targets (markdownContent.css.ts), with
+ * `--shiki-light` / `--shiki-dark` dual-theme variables. The main thread never
+ * parses Markdown (see requestMarkdownHtml in renderMarkdown.ts).
  */
 
 // Case-sensitive on purpose: only a lowercase `http(s)://` scheme is treated as
@@ -181,9 +172,9 @@ export function createMarkdownProcessor(highlighter: HighlighterCore, pair: Synt
       transformers: [
         shikiStyleClassTransformer(),
       ],
-      // A fence whose language isn't loaded (worker: lazy-load missed it; sync
-      // fallback: it loads no grammar) or that errors degrades to a plain
-      // `text` block instead of throwing the whole document to plain.
+      // A fence whose language is not loaded (the lazy load missed it, or the
+      // highlighter holds no grammar for it) renders as a plain `text` block
+      // instead of throwing the whole document to plain.
       fallbackLanguage: 'text',
       // An unknown/unloaded fence is handled by `fallbackLanguage` WITHOUT reaching
       // here -- `onError` fires only when a LOADED grammar throws at tokenize time
@@ -210,6 +201,16 @@ export const plainMarkdownProcessor = withHardeningTail(
 )
 
 /**
+ * The HTML of one body. `parsed` is false when the parser failed and the HTML
+ * shows the escaped source (see markdownSourceFallbackHtml). Every processor
+ * shares that parser, so another attempt fails the same way.
+ */
+export interface MarkdownRenderOutput {
+  html: string
+  parsed: boolean
+}
+
+/**
  * Render `text` with the plain processor, or show its escaped source when the
  * parser itself fails. Never throws.
  *
@@ -218,15 +219,38 @@ export const plainMarkdownProcessor = withHardeningTail(
  * on one line in V8) overflows the stack in every processor alike. Retrying with
  * another processor cannot help, so the body shows as its source instead.
  */
-export function renderPlainOrSource(text: string): string {
+export function renderPlainOrSource(text: string): MarkdownRenderOutput {
   try {
-    return String(plainMarkdownProcessor.processSync(text))
+    return {
+      html: String(plainMarkdownProcessor.processSync(text)),
+      parsed: true,
+    }
   }
   catch (error) {
-    if (import.meta.env.DEV)
-      console.warn('[markdownProcessor] Markdown parsing failed; showing the source as plain text:', error)
-    return markdownSourceFallbackHtml(text)
+    return sourceAfterParseFailure(text, error)
   }
+}
+
+/** Show `text` as its escaped source, because the parser failed on it with `error`. */
+function sourceAfterParseFailure(text: string, error: unknown): MarkdownRenderOutput {
+  if (import.meta.env.DEV)
+    console.warn('[markdownProcessor] Markdown parsing failed; showing the source as plain text:', error)
+  return {
+    html: markdownSourceFallbackHtml(text),
+    parsed: false,
+  }
+}
+
+/**
+ * Whether `error` is a stack overflow. The engines report one differently:
+ * - V8 and JavaScriptCore throw a RangeError, "Maximum call stack size exceeded".
+ * - SpiderMonkey throws an InternalError, "too much recursion".
+ * Another RangeError, such as "Invalid string length", is not an overflow.
+ */
+function isStackOverflow(error: unknown): boolean {
+  return error instanceof Error
+    && (error.name === 'RangeError' || error.name === 'InternalError')
+    && /call stack size exceeded|too much recursion/i.test(error.message)
 }
 
 /**
@@ -248,20 +272,20 @@ export function renderPlainOrSource(text: string): string {
 export function renderWithPlainFallback(
   processor: ReturnType<typeof createMarkdownProcessor>,
   text: string,
-): string {
+): MarkdownRenderOutput {
   try {
-    return String(processor.processSync(text))
+    return {
+      html: String(processor.processSync(text)),
+      parsed: true,
+    }
   }
   catch (error) {
-    // A RangeError is the parser running out of stack on deep nesting. The plain
-    // processor shares that parser, so it would fail the same way after the same
-    // work, and that work is quadratic: 100,000 nested `>` markers hold a worker for
-    // about 26 seconds per attempt. Show the source at once.
-    if (error instanceof RangeError) {
-      if (import.meta.env.DEV)
-        console.warn('[markdownProcessor] Markdown parsing failed; showing the source as plain text:', error)
-      return markdownSourceFallbackHtml(text)
-    }
+    // A stack overflow is the parser running out of stack on deep nesting. The
+    // plain processor shares that parser, so it would fail the same way after the
+    // same work, and that work is quadratic: 100,000 nested `>` markers hold a
+    // worker for about 26 seconds per attempt. Show the source at once.
+    if (isStackOverflow(error))
+      return sourceAfterParseFailure(text, error)
     if (import.meta.env.DEV)
       console.warn('[markdownProcessor] highlighted render failed; falling back to plain:', error)
     return renderPlainOrSource(text)

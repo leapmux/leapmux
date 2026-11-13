@@ -1,218 +1,74 @@
 import type { StructuredPatchHunk } from './diffTypes'
-import { describe, expect, it } from 'vitest'
+import { diffWordsWithSpace } from 'diff'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { DIFF_DRAWN_LINE_LIMIT } from './diffBuilder'
 import {
-  computeDiff,
-  DIFF_CONTEXT_LINES,
+  diffWithoutSearch,
+  drawnLineLimitOf,
   fallbackDiff,
   forEachPairedLine,
   LINE_DIFF_MAX_EDITS,
+  maxLineEditsOf,
   pairKey,
+  patchWithoutWordDiffs,
   replacedWholeHunks,
-  WORD_DIFF_MAX_EDITS,
 } from './diffCompute'
+import { computeDiff } from './diffSearch'
 
-/** `count` lines `l1` to `l<count>`, each ending in a newline. */
-function numberedLines(count: number): string {
-  return Array.from({ length: count }, (_, i) => `l${i + 1}\n`).join('')
-}
+// The real word diff, counted, so a test can state how many searches ran.
+vi.mock('diff', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('diff')>()
+  return {
+    ...actual,
+    diffWordsWithSpace: vi.fn(actual.diffWordsWithSpace),
+  }
+})
 
-/** `text` with line `n` (1-based) of numberedLines replaced by `L<n>`. */
-function withLineChanged(text: string, n: number): string {
-  return text.replace(`l${n}\n`, `L${n}\n`)
-}
+beforeEach(() => {
+  vi.mocked(diffWordsWithSpace).mockClear()
+})
 
-/** `count` words that share nothing with the words of another prefix. */
-function words(prefix: string, count: number): string {
-  return Array.from({ length: count }, (_, i) => `${prefix}${i}`).join(' ')
-}
+describe('drawnLineLimitOf', () => {
+  it('answers DIFF_DRAWN_LINE_LIMIT for an input that states no limit', () => {
+    expect(drawnLineLimitOf({ kind: 'texts', oldText: 'a', newText: 'b' })).toBe(DIFF_DRAWN_LINE_LIMIT)
+    expect(drawnLineLimitOf({ kind: 'hunks', hunks: [] })).toBe(DIFF_DRAWN_LINE_LIMIT)
+  })
 
-describe('computeDiff', () => {
-  it('keeps three unchanged lines around a change', () => {
-    const old = numberedLines(20)
-    const diff = computeDiff({
+  it('answers the limit that the input states, zero and infinity included', () => {
+    expect(drawnLineLimitOf({
       kind: 'texts',
-      oldText: old,
-      newText: withLineChanged(old, 10),
-    })
-
-    expect(DIFF_CONTEXT_LINES).toBe(3)
-    expect(diff.replacedWhole).toBe(false)
-    expect(diff.hunks).toEqual([
-      {
-        oldStart: 7,
-        oldLines: 7,
-        newStart: 7,
-        newLines: 7,
-        lines: [
-          ' l7',
-          ' l8',
-          ' l9',
-          '-l10',
-          '+L10',
-          ' l11',
-          ' l12',
-          ' l13',
-        ],
-      },
-    ])
-  })
-
-  it('joins two changes whose contexts touch into one hunk', () => {
-    const old = numberedLines(30)
-    // Six unchanged lines between them: three of context after the first, three before the second.
-    const diff = computeDiff({
+      oldText: 'a',
+      newText: 'b',
+      drawnLineLimit: 10,
+    })).toBe(10)
+    expect(drawnLineLimitOf({ kind: 'hunks', hunks: [], drawnLineLimit: 0 })).toBe(0)
+    expect(drawnLineLimitOf({
       kind: 'texts',
-      oldText: old,
-      newText: withLineChanged(withLineChanged(old, 10), 17),
-    })
+      oldText: 'a',
+      newText: 'b',
+      drawnLineLimit: Number.POSITIVE_INFINITY,
+    })).toBe(Number.POSITIVE_INFINITY)
+  })
+})
 
-    expect(diff.hunks).toHaveLength(1)
-    expect(diff.hunks[0]).toMatchObject({ oldStart: 7, oldLines: 14 })
+describe('maxLineEditsOf', () => {
+  it('answers LINE_DIFF_MAX_EDITS for an input that states no limit', () => {
+    expect(maxLineEditsOf({ kind: 'texts', oldText: 'a', newText: 'b' })).toBe(LINE_DIFF_MAX_EDITS)
   })
 
-  it('splits two changes with more unchanged lines between them than both contexts hold', () => {
-    const old = numberedLines(30)
-    const diff = computeDiff({
+  it('answers the limit that the input states, zero included', () => {
+    expect(maxLineEditsOf({
       kind: 'texts',
-      oldText: old,
-      newText: withLineChanged(withLineChanged(old, 10), 18),
-    })
-
-    expect(diff.hunks.map(hunk => [hunk.oldStart, hunk.oldLines])).toEqual([
-      [7, 7],
-      [15, 7],
-    ])
-  })
-
-  it('answers no hunks for equal texts', () => {
-    expect(computeDiff({ kind: 'texts', oldText: 'a\nb\n', newText: 'a\nb\n' })).toEqual({
-      hunks: [],
-      wordDiffs: new Map(),
-      replacedWhole: false,
-    })
-    expect(computeDiff({ kind: 'texts', oldText: '', newText: '' }).hunks).toEqual([])
-  })
-
-  it('adds every line of a created file', () => {
-    expect(computeDiff({ kind: 'texts', oldText: '', newText: 'a\nb\n' }).hunks).toEqual([
-      {
-        oldStart: 1,
-        oldLines: 0,
-        newStart: 1,
-        newLines: 2,
-        lines: ['+a', '+b'],
-      },
-    ])
-  })
-
-  it('removes every line of a deleted file', () => {
-    expect(computeDiff({ kind: 'texts', oldText: 'a\nb\n', newText: '' }).hunks).toEqual([
-      {
-        oldStart: 1,
-        oldLines: 2,
-        newStart: 1,
-        newLines: 0,
-        lines: ['-a', '-b'],
-      },
-    ])
-  })
-
-  it('drops the markers that state a missing final newline', () => {
-    const diff = computeDiff({ kind: 'texts', oldText: 'a\nb', newText: 'a\nc' })
-
-    expect(diff.hunks).toEqual([
-      {
-        oldStart: 1,
-        oldLines: 2,
-        newStart: 1,
-        newLines: 2,
-        lines: [' a', '-b', '+c'],
-      },
-    ])
-  })
-
-  it('replaces the whole text when the texts need more than LINE_DIFF_MAX_EDITS line edits', () => {
-    // Every line differs, so the diff needs one removal and one addition per line.
-    const lineCount = LINE_DIFF_MAX_EDITS / 2 + 1
-    const old = Array.from({ length: lineCount }, (_, i) => `old${i}`).join('\n')
-    const next = Array.from({ length: lineCount }, (_, i) => `new${i}`).join('\n')
-
-    const diff = computeDiff({ kind: 'texts', oldText: old, newText: next })
-
-    expect(diff.replacedWhole).toBe(true)
-    expect(diff.hunks).toEqual(replacedWholeHunks(old, next))
-    // The rewrite pairs unrelated lines, so it has no word diffs.
-    expect(diff.wordDiffs.size).toBe(0)
-  })
-
-  it('keeps a minimal diff at exactly LINE_DIFF_MAX_EDITS line edits', () => {
-    const lineCount = LINE_DIFF_MAX_EDITS / 2
-    const old = Array.from({ length: lineCount }, (_, i) => `old${i}`).join('\n')
-    const next = Array.from({ length: lineCount }, (_, i) => `new${i}`).join('\n')
-
-    expect(computeDiff({ kind: 'texts', oldText: old, newText: next }).replacedWhole).toBe(false)
-  })
-
-  it('computes the word diff of each paired line', () => {
-    const diff = computeDiff({ kind: 'texts', oldText: 'const a = 1\n', newText: 'const b = 1\n' })
-
-    expect(diff.wordDiffs.get(pairKey('const a = 1', 'const b = 1'))).toEqual([
-      expect.objectContaining({ value: 'const ', added: false, removed: false }),
-      expect.objectContaining({ value: 'a', removed: true }),
-      expect.objectContaining({ value: 'b', added: true }),
-      expect.objectContaining({ value: ' = 1', added: false, removed: false }),
-    ])
-  })
-
-  it('keeps whitespace runs as segments of their own in a word diff', () => {
-    const diff = computeDiff({ kind: 'texts', oldText: '  x\n', newText: '    x\n' })
-
-    const parts = diff.wordDiffs.get(pairKey('  x', '    x'))
-    expect(parts?.filter(part => part.removed).map(part => part.value)).toEqual(['  '])
-    expect(parts?.filter(part => part.added).map(part => part.value)).toEqual(['    '])
-  })
-
-  it('leaves a pair that needs more than WORD_DIFF_MAX_EDITS word edits without a word diff', () => {
-    // Each word and each space between them is a token, so the pair needs far more
-    // edits than the limit.
-    const removed = words('a', WORD_DIFF_MAX_EDITS)
-    const added = words('b', WORD_DIFF_MAX_EDITS)
-
-    const diff = computeDiff({ kind: 'texts', oldText: `${removed}\n`, newText: `${added}\n` })
-
-    expect(diff.replacedWhole).toBe(false)
-    expect(diff.hunks[0]?.lines).toEqual([`-${removed}`, `+${added}`])
-    expect(diff.wordDiffs.has(pairKey(removed, added))).toBe(false)
-  })
-
-  it('keeps the hunks of a patch and computes their word diffs', () => {
-    const hunks: StructuredPatchHunk[] = [
-      {
-        oldStart: 4,
-        oldLines: 2,
-        newStart: 4,
-        newLines: 2,
-        lines: [' keep', '-let a', '+let b'],
-      },
-    ]
-
-    const diff = computeDiff({ kind: 'hunks', hunks })
-
-    expect(diff.hunks).toBe(hunks)
-    expect(diff.replacedWhole).toBe(false)
-    expect([
-      ...diff.wordDiffs.keys(),
-    ]).toEqual([
-      pairKey('let a', 'let b'),
-    ])
-  })
-
-  it('answers an empty patch with no hunks and no word diffs', () => {
-    expect(computeDiff({ kind: 'hunks', hunks: [] })).toEqual({
-      hunks: [],
-      wordDiffs: new Map(),
-      replacedWhole: false,
-    })
+      oldText: 'a',
+      newText: 'b',
+      maxLineEdits: 5000,
+    })).toBe(5000)
+    expect(maxLineEditsOf({
+      kind: 'texts',
+      oldText: 'a',
+      newText: 'b',
+      maxLineEdits: 0,
+    })).toBe(0)
   })
 })
 
@@ -334,21 +190,114 @@ describe('forEachPairedLine', () => {
   })
 })
 
+describe('diffWithoutSearch', () => {
+  it('answers undefined for a patch', () => {
+    expect(diffWithoutSearch({
+      kind: 'hunks',
+      hunks: [
+        {
+          oldStart: 1,
+          oldLines: 0,
+          newStart: 1,
+          newLines: 1,
+          lines: ['+a'],
+        },
+      ],
+    })).toBeUndefined()
+  })
+
+  it('answers undefined for two different texts that both hold lines', () => {
+    expect(diffWithoutSearch({ kind: 'texts', oldText: 'a\n', newText: 'b\n' })).toBeUndefined()
+  })
+
+  it.each([
+    ['a created file', '', 'a\nb\n'],
+    ['a deleted file', 'a\nb\n', ''],
+    ['equal texts', 'same\n', 'same\n'],
+    ['two empty texts', '', ''],
+  ] as const)('answers the diff that computeDiff answers for %s', (_label, oldText, newText) => {
+    const input = { kind: 'texts', oldText, newText } as const
+
+    expect(diffWithoutSearch(input)).toEqual(computeDiff(input))
+  })
+
+  it('searches no word diff', () => {
+    diffWithoutSearch({ kind: 'texts', oldText: '', newText: 'a\nb\n' })
+
+    expect(vi.mocked(diffWordsWithSpace)).not.toHaveBeenCalled()
+  })
+})
+
+describe('patchWithoutWordDiffs', () => {
+  const hunks: StructuredPatchHunk[] = [
+    {
+      oldStart: 1,
+      oldLines: 1,
+      newStart: 1,
+      newLines: 1,
+      lines: ['-let a', '+let b'],
+    },
+  ]
+
+  it('keeps the hunks of the patch, with no word diffs and the line limit of the input', () => {
+    const diff = patchWithoutWordDiffs({ kind: 'hunks', hunks, drawnLineLimit: 3 })
+
+    expect(diff.hunks).toBe(hunks)
+    expect(diff.wordDiffs.size).toBe(0)
+    expect(diff.wholeReplacement).toBeNull()
+    expect(diff.drawnLineLimit).toBe(3)
+  })
+
+  it('draws the hunks that computeDiff draws, and searches no word diff', () => {
+    const input = { kind: 'hunks', hunks } as const
+
+    expect(patchWithoutWordDiffs(input)).toEqual({
+      ...computeDiff(input),
+      wordDiffs: new Map(),
+    })
+    vi.mocked(diffWordsWithSpace).mockClear()
+    patchWithoutWordDiffs(input)
+    expect(vi.mocked(diffWordsWithSpace)).not.toHaveBeenCalled()
+  })
+})
+
 describe('fallbackDiff', () => {
   it('replaces the whole old text with the new one, with no word diffs', () => {
     expect(fallbackDiff({ kind: 'texts', oldText: 'a\n', newText: 'b\n' })).toEqual({
       hunks: replacedWholeHunks('a\n', 'b\n'),
       wordDiffs: new Map(),
-      replacedWhole: true,
+      wholeReplacement: 'not-computed',
+      drawnLineLimit: DIFF_DRAWN_LINE_LIMIT,
     })
+  })
+
+  it('states no replacement when one side is empty, because the whole replacement is then the minimal diff', () => {
+    expect(fallbackDiff({ kind: 'texts', oldText: '', newText: 'b\n' })).toEqual({
+      hunks: replacedWholeHunks('', 'b\n'),
+      wordDiffs: new Map(),
+      wholeReplacement: null,
+      drawnLineLimit: DIFF_DRAWN_LINE_LIMIT,
+    })
+    expect(fallbackDiff({ kind: 'texts', oldText: 'a\n', newText: '' }).wholeReplacement).toBeNull()
   })
 
   it('states no replacement for equal texts', () => {
     expect(fallbackDiff({ kind: 'texts', oldText: 'a\n', newText: 'a\n' })).toEqual({
       hunks: [],
       wordDiffs: new Map(),
-      replacedWhole: false,
+      wholeReplacement: null,
+      drawnLineLimit: DIFF_DRAWN_LINE_LIMIT,
     })
+  })
+
+  it('carries the line limit of the input', () => {
+    expect(fallbackDiff({
+      kind: 'texts',
+      oldText: 'a\n',
+      newText: 'b\n',
+      drawnLineLimit: Number.POSITIVE_INFINITY,
+    }).drawnLineLimit).toBe(Number.POSITIVE_INFINITY)
+    expect(fallbackDiff({ kind: 'hunks', hunks: [], drawnLineLimit: 0 }).drawnLineLimit).toBe(0)
   })
 
   it('keeps the hunks of a patch, with no word diffs', () => {
@@ -366,6 +315,6 @@ describe('fallbackDiff', () => {
 
     expect(diff.hunks).toBe(hunks)
     expect(diff.wordDiffs.size).toBe(0)
-    expect(diff.replacedWhole).toBe(false)
+    expect(diff.wholeReplacement).toBeNull()
   })
 })

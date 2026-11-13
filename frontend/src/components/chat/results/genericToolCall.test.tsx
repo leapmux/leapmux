@@ -2,6 +2,8 @@ import type { GenericToolResult } from '../model/tools/generic'
 import { render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
+import { prettifyJson } from '~/lib/jsonFormat'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { mcpToolCallDisplayName, parseMcpContentItem, parseMcpToolName } from '../model/mcpToolCall'
 import { genericResultCollapsible, genericResultCopyable, GenericToolBody } from './genericToolCall'
 
@@ -165,10 +167,36 @@ describe('GenericToolBody', () => {
   })
 })
 
+describe('GenericToolBody unknown content', () => {
+  it('formats an unknown content block once for the body, its collapse test and Copy', () => {
+    // The formatter reads the getter once per format, so the count is the number of formats.
+    let formats = 0
+    const raw = {
+      get payload(): string {
+        formats++
+        return 'opaque-block'
+      },
+    }
+    const result: GenericToolResult = {
+      content: [
+        { type: 'unknown', raw },
+      ],
+    }
+    const [expanded, setExpanded] = createSignal(false)
+    const { container } = render(() => <GenericToolBody request={{ args: {} }} result={result} status="completed" expanded={expanded} />)
+    setExpanded(true)
+
+    expect(container.textContent).toContain('opaque-block')
+    expect(genericResultCollapsible(result, '')).toBe(false)
+    expect(genericResultCopyable(result)).toBe(prettifyJson({ payload: 'opaque-block' }))
+    expect(formats).toBe(1)
+  })
+})
+
 describe('GenericToolBody output ownership', () => {
   const metadataJson = '{"calls":[{"args":"native-output-marker"}],"count":0}'
 
-  it('puts execution metadata before actual output and preserves original Copy order', () => {
+  it('puts execution metadata before actual output and preserves original Copy order', async () => {
     const result = {
       content: [
         { type: 'text' as const, text: 'native-output-marker' },
@@ -186,6 +214,7 @@ describe('GenericToolBody output ownership', () => {
         expanded={() => true}
       />
     ))
+    await settleWorkerReplies()
     const outputs = container.querySelectorAll('[data-tool-output-preview]')
     expect(outputs).toHaveLength(1)
     expect(outputs[0]?.textContent).toBe('native-output-marker')
@@ -199,7 +228,7 @@ describe('GenericToolBody output ownership', () => {
     expect(genericResultCopyable(result)).toBe(`native-output-marker\n\n${metadataJson}`)
   })
 
-  it('keeps genuine structured output after returned content blocks', () => {
+  it('keeps genuine structured output after returned content blocks', async () => {
     const result = {
       content: [
         { type: 'text' as const, text: 'returned text' },
@@ -207,6 +236,7 @@ describe('GenericToolBody output ownership', () => {
       structuredJson: '{"count":0}',
     }
     const { container } = render(() => <GenericToolBody request={{ args: {} }} result={result} status="completed" />)
+    await settleWorkerReplies()
     expect([
       ...container.querySelectorAll('[data-tool-output-preview]'),
     ].map(element => element.textContent)).toEqual(['returned text', '{"count":0}'])

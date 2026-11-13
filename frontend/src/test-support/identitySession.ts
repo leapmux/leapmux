@@ -3,7 +3,8 @@ import type { CipherStateLike, Session } from '~/lib/noise'
 /**
  * Create an identity session without storage hooks or a ChannelManager harness.
  * Encryption and decryption each return a fresh array with unchanged bytes.
- * Rekey methods do nothing. The nonce stays at zero, and needsRekey returns false.
+ * Rekey methods and destroy do nothing. The nonce stays at zero, and needsRekey
+ * returns false.
  */
 export function makeIdentitySession(): Session {
   return {
@@ -20,5 +21,6 @@ function createIdentityCipherState(): CipherStateLike {
     rekeyWithSecret: () => {},
     clearPrev: () => {},
     nonce: () => 0,
+    destroy: () => {},
   } satisfies CipherStateLike
 }

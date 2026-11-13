@@ -10,7 +10,7 @@ import { classifyMessage } from '../../messageClassifier'
 import { renderMessageContent } from '../../messageContentRenderer'
 import { resolveMessageForRendering } from '../registry'
 import { resolveCodexMessage } from './resolveMessage'
-import '../testMocks'
+import '~/components/chat/providers'
 import './plugin'
 
 const STARTED = {

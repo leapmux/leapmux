@@ -1,23 +1,14 @@
 import type { MessageCategory } from '../messageClassifier'
 import type { MessageContentRenderContext } from '../messageContentRenderer'
 import { render } from '@solidjs/testing-library'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { resolveMessageForRendering } from './registry'
 import './claude/plugin'
 import './opencode/plugin'
 import './pi/plugin'
-import './testMocks'
-
-vi.mock('~/lib/shikiWorkerClient', () => ({
-  tokenizeAsync: async (_lang: string, code: string) => code.split('\n').map(() => []),
-}))
-
-vi.mock('~/lib/tokenCache', () => ({
-  getCachedTokens: () => null,
-  makeKey: (lang: string, code: string) => `${lang}\0${code}`,
-}))
+import '~/components/chat/providers'
 
 const { renderMessageContent } = await import('../messageContentRenderer')
 

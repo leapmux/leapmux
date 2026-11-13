@@ -33,9 +33,23 @@ export interface MarkdownRenderContext {
    */
   premeasureMode?: boolean
   /**
-   * Where a Markdown body reports that its worker render is pending, so its row
-   * copy stays hidden and commits no height until the body is ready. Absent
-   * outside a chat row: the body then shows its own skeleton.
+   * Where an asynchronous body reports that its content is pending, so its row
+   * copy stays hidden and commits no height until the body is ready. These bodies
+   * report here:
+   * - A Markdown body while the Markdown worker renders it.
+   * - An edit diff over two texts (through ToolResultRenderContext) while the
+   *   diff worker computes its hunks. A patch draws its hunks without the diff
+   *   worker, and its word highlights follow, so it does not wait for the worker.
+   * - A diff view (DiffView) until the last of its lines mounts, because it
+   *   mounts them in slices of main-thread work.
+   *
+   * A diff view that switches between unified and split reports here too, as
+   * replacing its content (see RenderReadiness.trackReplacing): the copy keeps
+   * showing the old layout and stays visible, but commits no height until the
+   * new layout shows.
+   *
+   * Absent outside a chat row: a body that waits for a worker then shows its own
+   * skeleton. The file viewer passes a scope of its own to its diff view.
    */
   readiness?: RenderReadiness | undefined
   /**
@@ -53,6 +67,19 @@ export interface MarkdownRenderContext {
    * markdown context, and undefined is the live "absent for now" state.
    */
   rowOffscreen?: (() => boolean) | undefined
+}
+
+/** Return true when a renderer must keep the displayed syntax stable. */
+export function shouldPauseSyntaxHighlighting(context: MarkdownRenderContext | undefined): boolean {
+  return context?.premeasureMode === true || isDisplayHeld(context)
+}
+
+/**
+ * Return true while the DOM that a body shows must not change: the view scrolls,
+ * and a change would move the scroll anchor, or the reader selects text in it.
+ */
+export function isDisplayHeld(context: MarkdownRenderContext | undefined): boolean {
+  return context?.syntaxHighlightingPaused?.() === true || context?.textSelectionActive?.() === true
 }
 
 /** The per-row UI toggles a remount-sensitive renderer keeps through its host. */

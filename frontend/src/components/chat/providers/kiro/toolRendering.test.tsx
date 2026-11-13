@@ -4,7 +4,7 @@ import { providerToolCall } from '~/test-support/toolCallFixture'
 import { acpTextContent, renderACPToolPair } from '../acp/testUtils'
 import { input } from '../testUtils'
 
-import '../testMocks'
+import '~/components/chat/providers'
 import './plugin'
 
 /** One finished call, read through the plugin with its opening frame paired. */

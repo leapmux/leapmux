@@ -2,7 +2,7 @@ import type { MessageCategory } from '../messageClassifier'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import './testMocks'
+import '~/components/chat/providers'
 
 const { renderMessageContent } = await import('../messageContentRenderer')
 type MessageContentRenderContext = import('../messageContentRenderer').MessageContentRenderContext

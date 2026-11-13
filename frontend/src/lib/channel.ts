@@ -19,24 +19,27 @@
  *   - channelRpc.ts — RPC/stream multiplexer
  *   - channelRelay.ts — shared WebSocket + framing
  *   - channelFraming.ts — length-prefix encode/decode
- *   - channelSession.ts — Noise handshake / encrypt / decrypt / in-band rekey
  *   - channelPool.ts — channel map, open dedup, identity reuse
  *   - channelOpen.ts — pin → handshake → verify → commit open path
- *   - channelInbound.ts — decrypt / reassemble / InnerMessage dispatch
+ *   - channelInbound.ts — CLOSE flag / forwarding to the session worker / InnerMessage dispatch
+ *   - channelSessionClient.ts — the main thread's side of the channel session worker
+ *
+ * The Noise session of every channel runs in the channel session worker
+ * (channelSessionWorker.ts): the handshake, encryption, decryption, chunking,
+ * reassembly and the in-band rekey (channelSession.ts, channelSessionInbound.ts,
+ * channelSessionEndpoint.ts). This thread never holds a cipher key.
  *
  * See https://github.com/leapmux/leapmux/issues/292.
  */
 import type { DescMessage, DescMethodServerStreaming, DescMethodUnary, MessageInitShape, MessageShape } from '@bufbuild/protobuf'
+import type { OpeningChannel } from './channelOpen'
 import type { ChannelSocket } from './channelRelay'
-import type { PendingRequest, StreamAction, StreamListener } from './channelRpc'
-import type { ChannelSessionOpts, ChunkedSends } from './channelSession'
-import type { Session } from './noise'
-import type { Reassembler } from './reassembler'
+import type { StreamAction } from './channelRpc'
+import type { SessionWorkerPort } from './channelSessionClient'
 import type { WorkerKeyBundle } from './workerKeyBundle'
 import type { FatalCloseInfo } from './wsCloseCodes'
 import type { EncryptionMode } from '~/generated/proto/leapmux/v1/channel_pb'
 import { create, fromBinary, toBinary, toJsonString } from '@bufbuild/protobuf'
-import { IDLE_REKEY_INTERVAL_MS } from '~/generated/contracts/wire'
 import { WorkerSystemService } from '~/generated/proto/leapmux/v1/worker_system_pb'
 import { abortError, ChannelError, channelNotOpenError } from './channelError'
 import { ChannelInbound } from './channelInbound'
@@ -44,7 +47,7 @@ import { ChannelOpen } from './channelOpen'
 import { ChannelPool } from './channelPool'
 import { ChannelRelay } from './channelRelay'
 import { ChannelRpcMux } from './channelRpc'
-import { ChannelSession } from './channelSession'
+import { ChannelSessionClient } from './channelSessionClient'
 import { formatErrorMessage } from './errors'
 import { fatalCloseError } from './fatalCloseMessage'
 import { KeyPinStore } from './keyPinStore'
@@ -108,72 +111,8 @@ export interface ChannelTransport {
   createWebSocket: () => ChannelSocket
 }
 
-interface ActiveChannel {
-  channelId: string
-  workerId: string
-  session: Session
-  /**
-   * The identity the Hub authenticated this channel's open as. Recorded because
-   * channels are POOLED across in-band rekeys: the open-time cross-check only
-   * proves who the page was when the channel was created, so getOrOpenChannel
-   * re-compares this before handing a pooled channel out (see its identity check).
-   * Age rotation uses rekey; past SESSION_KEY_HARD_CEILING_MS the pool closes and
-   * re-handshakes instead of serving under the over-age key.
-   */
-  userId: string
-  /**
-   * Negotiated application payload budget from OpenChannelResponse.max_message_size.
-   * Clients never configure this; open refuses a missing/out-of-bounds value
-   * (except the test-only ChannelManagerOpts payload/reassembled fallback).
-   */
-  maxMessageSize: number
-  /**
-   * Send/reassembly ceiling: maxReassembledMessageSize(maxMessageSize), or the
-   * test-only testReassembledCeiling when the mock omits negotiation.
-   */
-  maxReassembledMessageSize: number
-  pendingRequests: Map<number, PendingRequest>
-  streamListeners: Map<number, StreamListener>
-  reassembly: Reassembler
-  nextRequestId: number
-  /**
-   * Lifecycle state, gating pool handout -- a single field rather than separate
-   * `verified`/`closed` booleans, whose fourth combination (verified AND closed)
-   * no gate ever distinguished:
-   *   - 'opening': present in the pool so the open-time Ping's reply can route
-   *     (handleMessage looks the channel up by id), but NOT open for business.
-   *     hasOpenChannel and getOrOpenChannel skip it, so a racing caller waits on
-   *     the open (openingChannels dedups it onto the same one) instead of being
-   *     handed a session that may yet prove dead.
-   *   - 'verified': the Ping round-tripped, so the channel may be served.
-   *   - 'closed': torn down. Every path that sets this also deletes the channel
-   *     from the pool, so a channel is only ever observed 'closed' transiently
-   *     by a caller mid-teardown.
-   */
-  state: 'opening' | 'verified' | 'closed'
-  /**
-   * Handshake / last successful in-band rekey time from performance.now()
-   * (monotonic). Used for age / hard-ceiling / reject-backoff policy so NTP
-   * wall-clock steps cannot stretch or shrink key lifetime.
-   */
-  lastRekeyAt: number
-  /** After Reject, suppress age-only retries until this performance.now() value. */
-  rekeyNotBefore: number
-  /** Non-null while waiting for RekeyAck / RekeyReject. */
-  rekeyWait: ((accepted: boolean, retryAfterMs: number) => void) | null
-  rekeyClear: (() => void) | null
-  rekeyAbort: (() => void) | null
-  /** Correlation id of the in-flight RekeyRequest (so Ack/Reject are not dropped as unknown). */
-  rekeyRequestId: number | null
-  /** Chains concurrent ensureRekeyed callers on this channel. */
-  rekeyChain: Promise<void>
-  /** The outbound chunked messages, sent one at a time in work slices. */
-  chunkedSends: ChunkedSends
-  /** Worker ML-KEM pub retained for rekey encapsulation; empty in classic mode. */
-  workerMlkemPub: Uint8Array
-  /** In-flight rekey initiator material; null when no rekey is in progress. */
-  rekeyMaterial: { ePriv: Uint8Array, mlkemSS: Uint8Array | null } | null
-}
+/** A pooled channel, from 'opening' through 'closed'. */
+type ActiveChannel = OpeningChannel
 
 /**
  * Fallback RPC call timeout in milliseconds, used only when the owner
@@ -184,8 +123,16 @@ interface ActiveChannel {
  */
 const FALLBACK_RPC_TIMEOUT_MS = 15_000
 
-/** Optional overrides for testing (dependency injection). */
-export interface ChannelManagerOpts extends ChannelSessionOpts {
+/** The channel session worker factory, and optional overrides for testing (dependency injection). */
+export interface ChannelManagerOpts {
+  /**
+   * Spawn the channel session worker, which holds the Noise session of every
+   * channel. A browser passes spawnChannelSessionWorker; Node and the unit tests
+   * pass the spawn of an in-process host (channelSessionInProcess.ts). The
+   * manager calls it lazily, at the first open, and again after the worker is
+   * lost or shut down.
+   */
+  spawnSessionWorker: () => SessionWorkerPort
   /**
    * Test-only application payload budget used when the transport's openChannel
    * omits maxMessageSize. Production opens always take the negotiated payload
@@ -233,14 +180,10 @@ export interface ChannelManagerOpts extends ChannelSessionOpts {
    */
   expectedUserId?: () => string | undefined
   /**
-   * Idle rekey poll interval in ms (default 60_000, matching Go). Set to 0 to
-   * disable the idle timer (tests that only exercise send-path rekey).
-   */
-  idleRekeyIntervalMs?: number
-  /**
    * Install document visibility / pageshow wake listeners that force a rekey /
    * hard-ceiling check after OS suspend. Default true when `document` exists.
-   * Tests that drive wake via checkChannelsAfterWake pass false.
+   * Tests that drive wake via checkChannelsAfterWake pass false. The idle rekey
+   * timer runs in the session worker (ChannelSessionEndpointOptions).
    */
   installWakeListener?: boolean
   /**
@@ -261,7 +204,7 @@ export class ChannelManager {
   private transport: ChannelTransport
   private pool = new ChannelPool<ActiveChannel>()
   private relay: ChannelRelay
-  private session: ChannelSession
+  private sessionClient: ChannelSessionClient
   private rpc: ChannelRpcMux
   private open: ChannelOpen<ActiveChannel>
   private inbound: ChannelInbound<ActiveChannel>
@@ -270,9 +213,6 @@ export class ChannelManager {
   private rpcTimeoutFn: () => number
   private expectedUserIdFn: () => string | undefined
   private keyPins: KeyPinStore
-  private idleRekeyIntervalMs: number
-  private idleRekeyTimer: ReturnType<typeof setInterval> | null = null
-  private wakeCleanup: (() => void) | null = null
 
   private stateListeners = new Set<() => void>()
   private errorListeners = new Set<(workerId: string, error: ChannelError) => void>()
@@ -286,45 +226,39 @@ export class ChannelManager {
     return this.pool.asMap()
   }
 
-  constructor(transport: ChannelTransport, opts?: ChannelManagerOpts) {
+  constructor(transport: ChannelTransport, opts: ChannelManagerOpts) {
     this.transport = transport
-    this.testPayloadBudget = opts?.testPayloadBudget
-    this.testReassembledCeiling = opts?.testReassembledCeiling
-    this.rpcTimeoutFn = opts?.rpcTimeoutFn ?? (() => FALLBACK_RPC_TIMEOUT_MS)
-    this.expectedUserIdFn = opts?.expectedUserId ?? (() => undefined)
-    this.idleRekeyIntervalMs = opts?.idleRekeyIntervalMs ?? IDLE_REKEY_INTERVAL_MS
-    this.keyPins = opts?.keyPins ?? new KeyPinStore({
+    this.testPayloadBudget = opts.testPayloadBudget
+    this.testReassembledCeiling = opts.testReassembledCeiling
+    this.rpcTimeoutFn = opts.rpcTimeoutFn ?? (() => FALLBACK_RPC_TIMEOUT_MS)
+    this.expectedUserIdFn = opts.expectedUserId ?? (() => undefined)
+    this.keyPins = opts.keyPins ?? new KeyPinStore({
       confirmKeyPin: async () => 'reject',
     })
 
     this.relay = new ChannelRelay({
       createWebSocket: () => this.transport.createWebSocket(),
-      wsOpenTimeoutMs: opts?.wsOpenTimeoutMs ?? 10_000,
+      wsOpenTimeoutMs: opts.wsOpenTimeoutMs ?? 10_000,
       onFrame: (channelId, msg) => this.inbound.handleMessage(channelId, msg),
       onCloseDrain: (successorDialing, fatal) => this.handleRelayCloseDrain(successorDialing, fatal),
       onFatalClose: info => this.notifyFatalClose(info),
     })
 
-    // Omit unset handshake overrides rather than passing them as undefined
-    // (exactOptionalPropertyTypes); ChannelSession defaults absent ones.
-    const sessionOpts: ChannelSessionOpts = {}
-    if (opts?.handshake1 !== undefined)
-      sessionOpts.handshake1 = opts.handshake1
-    if (opts?.handshake2 !== undefined)
-      sessionOpts.handshake2 = opts.handshake2
-    if (opts?.classicHandshake1 !== undefined)
-      sessionOpts.classicHandshake1 = opts.classicHandshake1
-    if (opts?.classicHandshake2 !== undefined)
-      sessionOpts.classicHandshake2 = opts.classicHandshake2
-
-    this.session = new ChannelSession({
-      sendToWire: buf => this.relay.send(buf),
-      closeChannel: channelId => this.closeChannel(channelId),
-      onSendFailure: (ch, err) => this.onSendFailure(ch as ActiveChannel, err),
-    }, sessionOpts)
+    this.sessionClient = new ChannelSessionClient({
+      spawn: opts.spawnSessionWorker,
+      onWire: (channelId, frame) => this.sendFrame(channelId, frame),
+      onDeliver: (channelId, correlationId, plaintext) => this.inbound.deliver(channelId, correlationId, plaintext),
+      onReassemblyFailed: (channelId, correlationId, message) => this.inbound.reassemblyFailed(channelId, correlationId, message),
+      onSessionEnded: (channelId, reason) => {
+        // The channel may be closed already: closeChannel then does nothing.
+        void this.closeChannel(channelId, { streamTermination: 'error', reason })
+      },
+      onWorkerLost: err => this.handleWorkerLost(err),
+    })
 
     this.rpc = new ChannelRpcMux({
-      send: (ch, plaintext, requestId) => this.session.sendEncryptedMessage(ch as ActiveChannel, plaintext, requestId),
+      send: (ch, plaintext, requestId, startsRequest) => this.sendPlaintext(ch as ActiveChannel, plaintext, requestId, startsRequest),
+      release: (ch, correlationId) => this.sessionClient.release(ch.channelId, correlationId),
       onSendFailure: (ch, err) => this.onSendFailure(ch as ActiveChannel, err),
       rpcTimeoutFn: () => this.rpcTimeoutFn(),
       notifyError: (workerId, error) => this.notifyError(workerId, error),
@@ -334,7 +268,7 @@ export class ChannelManager {
     this.open = new ChannelOpen({
       transport: this.transport,
       keyPins: this.keyPins,
-      session: this.session,
+      session: this.sessionClient,
       relay: this.relay,
       pool: this.pool,
       expectedUserId: () => this.expectedUserIdFn(),
@@ -351,17 +285,12 @@ export class ChannelManager {
 
     this.inbound = new ChannelInbound({
       getChannel: id => this.pool.get(id),
-      session: this.session,
       rpc: this.rpc,
-      closeChannel: (id) => { void this.closeChannel(id) },
-      forgetClosedChannel: (channelId) => {
-        this.pool.delete(channelId)
-        this.stopIdleRekeyTimerIfEmpty()
-        this.notifyStateChange()
-      },
+      session: this.sessionClient,
+      closedByPeer: id => this.closedByPeer(id),
     })
 
-    const installWake = opts?.installWakeListener ?? (typeof document !== 'undefined')
+    const installWake = opts.installWakeListener ?? (typeof document !== 'undefined')
     if (installWake)
       this.installWakeListener()
   }
@@ -409,6 +338,10 @@ export class ChannelManager {
     return this.relay.fatalCloseInfo()
   }
 
+  /**
+   * The listeners stay for the life of the page: the browser's manager is a
+   * singleton (~/api/workerRpc), so nothing ever removes them.
+   */
   private installWakeListener(): void {
     if (typeof document === 'undefined')
       return
@@ -425,41 +358,15 @@ export class ChannelManager {
     document.addEventListener('visibilitychange', onVisible)
     if (typeof window !== 'undefined')
       window.addEventListener('pageshow', onPageShow)
-    this.wakeCleanup = () => {
-      document.removeEventListener('visibilitychange', onVisible)
-      if (typeof window !== 'undefined')
-        window.removeEventListener('pageshow', onPageShow)
-    }
   }
 
+  /**
+   * Rekey every session whose rekey is due, and end each one past its hard
+   * ceiling, after the OS suspended the page. The session worker owns the policy
+   * and its clock.
+   */
   checkChannelsAfterWake(): void {
-    for (const ch of this.pool.values()) {
-      if (ch.state !== 'verified')
-        continue
-      if (this.session.needsRekeyGate(ch)) {
-        void this.session.ensureRekeyed(ch).catch((err) => {
-          log.warn('wake/idle rekey failed', {
-            channel_id: ch.channelId,
-            error: err instanceof Error
-              ? err.message
-              : formatErrorMessage(err),
-          })
-        })
-      }
-    }
-  }
-
-  private startIdleRekeyTimer(): void {
-    if (this.idleRekeyIntervalMs <= 0 || this.idleRekeyTimer !== null)
-      return
-    this.idleRekeyTimer = setInterval(() => this.checkChannelsAfterWake(), this.idleRekeyIntervalMs)
-  }
-
-  private stopIdleRekeyTimerIfEmpty(): void {
-    if (this.pool.size > 0 || this.idleRekeyTimer === null)
-      return
-    clearInterval(this.idleRekeyTimer)
-    this.idleRekeyTimer = null
+    this.sessionClient.checkRekey()
   }
 
   /**
@@ -547,7 +454,6 @@ export class ChannelManager {
       throw failure
     }
     channel.state = 'verified'
-    this.startIdleRekeyTimer()
   }
 
   /**
@@ -560,10 +466,20 @@ export class ChannelManager {
     const ghost = this.pool.get(channelId)
     if (!ghost)
       return
-    ghost.state = 'closed'
-    this.pool.delete(channelId)
-    this.stopIdleRekeyTimerIfEmpty()
-    this.rpc.drainChannel(ghost, err, 'error')
+    this.retire(ghost, err, 'error')
+  }
+
+  /**
+   * The one teardown of a pooled channel, which every close path runs. The
+   * channel is closed and out of the pool before any listener runs, so a listener
+   * that re-enters the manager (a stream owner that reconnects at once) can never
+   * find it, and the session worker zeroes its keys.
+   */
+  private retire(ch: ActiveChannel, reason: ChannelError, termination: 'end' | 'error'): void {
+    ch.state = 'closed'
+    this.pool.delete(ch.channelId)
+    this.sessionClient.close(ch.channelId)
+    this.rpc.drainChannel(ch, reason, termination)
   }
 
   /** Close an encrypted channel (does not close the shared WebSocket). */
@@ -575,14 +491,11 @@ export class ChannelManager {
     if (!ch)
       return
 
-    ch.state = 'closed'
-    this.session.abortRekey(ch)
-    const termination = opts?.streamTermination ?? 'end'
-    const reason = opts?.reason ?? new ChannelError('client', 'channel closed', { disconnected: true })
-    this.rpc.drainChannel(ch, reason, termination)
-
-    this.pool.delete(channelId)
-    this.stopIdleRekeyTimerIfEmpty()
+    this.retire(
+      ch,
+      opts?.reason ?? new ChannelError('client', 'channel closed', { disconnected: true }),
+      opts?.streamTermination ?? 'end',
+    )
 
     this.notifyStateChange()
 
@@ -619,23 +532,10 @@ export class ChannelManager {
       return Promise.reject(abortError(signal, method))
     }
 
-    // Gate every send on the hard ceiling (matches Go ensureRekeyed): a
-    // reject backoff makes shouldInitiateRekey false even when age is past 70m.
-    if (this.session.needsRekeyGate(ch)) {
-      return this.session.ensureRekeyed(ch).then(() => {
-        if (ch.state === 'closed' || !this.pool.has(channelId)) {
-          return Promise.reject(channelNotOpenError())
-        }
-        if (signal?.aborted) {
-          return Promise.reject(abortError(signal, method))
-        }
-        return this.rpc.callAfterRekey(ch, channelId, method, payload, timeoutMs, signal)
-      })
-    }
-
-    // Fast path: no rekey needed — register and send synchronously so callers
-    // (and tests) that reply in the same turn still find the pending handler.
-    return this.rpc.callAfterRekey(ch, channelId, method, payload, timeoutMs, signal)
+    // Register and send synchronously. A send while a rekey is due waits in the
+    // session worker until the rekey settles (see ChannelSession.send), and an
+    // abort while it waits releases the id, so the request never reaches the wire.
+    return this.rpc.call(ch, method, payload, timeoutMs, signal)
   }
 
   /**
@@ -655,42 +555,11 @@ export class ChannelManager {
 
     const procedure = procedureOf(method)
     const encode = (msg: MessageInitShape<I>): Uint8Array => toBinary(method.input, create(method.input, msg))
+    // Registers the listener and sends the opening request. A send while a
+    // rekey is due waits in the session worker until the rekey settles, and a
+    // failure that the rekey or the wire meets later closes the channel, which
+    // ends the stream through onError.
     const handle = this.rpc.beginStream(ch, procedure, encode(req))
-
-    // Defer listener registration until after rekey when a rekey/ceiling path
-    // runs: ensureRekeyed may closeChannel→drainChannel with onEnd, and a
-    // request that never hit the wire must terminal only via onError.
-    if (this.session.needsRekeyGate(ch)) {
-      void this.session.ensureRekeyed(ch).then(() => {
-        if (ch.state === 'closed' || !this.pool.has(channelId)) {
-          queueMicrotask(() => {
-            handle.deliverDeferredError(channelNotOpenError(), 'stream send failed with no onError listener')
-          })
-          return
-        }
-        const sendErr = handle.attachAndSend()
-        if (sendErr) {
-          queueMicrotask(() => {
-            handle.deliverDeferredError(sendErr, 'stream send failed with no onError listener')
-          })
-        }
-      }).catch((err) => {
-        const e = err instanceof Error
-          ? err
-          : new ChannelError('client', formatErrorMessage(err))
-        queueMicrotask(() => {
-          handle.deliverDeferredError(e, 'stream rekey failed with no onError listener')
-        })
-      })
-    }
-    else {
-      // Fast path: register and encrypt+send synchronously so the request is
-      // on the wire before the handle returns (existing callers and tests rely
-      // on that).
-      const sendErr = handle.attachAndSend()
-      if (sendErr)
-        throw sendErr
-    }
 
     const sendOnStream = (action: StreamAction): void => {
       const cancel = action.case === 'cancel'
@@ -700,46 +569,7 @@ export class ChannelManager {
           return
         throw channelNotOpenError()
       }
-      const doSend = (): ChannelError | null => this.rpc.sendOnStream(live, handle.requestId, action)
-      if (this.session.needsRekeyGate(live)) {
-        // Rekey must complete before the frame is meaningful; await it so
-        // callers learn about send failure instead of advancing local state
-        // on a fire-and-forget drop. deliverDeferredError fires the handle's
-        // onError listener when registered (the watch stream always registers
-        // one), so a post-rekey channel death clears inflight interest and
-        // triggers a reconnect rather than leaving local state believing the
-        // revision landed.
-        void this.session.ensureRekeyed(live).then(() => {
-          if (live.state === 'closed' || !this.pool.has(channelId)) {
-            if (!cancel) {
-              queueMicrotask(() => {
-                handle.deliverDeferredError(
-                  channelNotOpenError(),
-                  'stream update dropped after rekey with no onError listener',
-                )
-              })
-            }
-            return
-          }
-          const err = doSend()
-          if (err && !cancel) {
-            queueMicrotask(() => {
-              handle.deliverDeferredError(err, 'stream update failed with no onError listener')
-            })
-          }
-        }).catch((err) => {
-          if (cancel)
-            return
-          const e = err instanceof Error
-            ? err
-            : new ChannelError('client', formatErrorMessage(err))
-          queueMicrotask(() => {
-            handle.deliverDeferredError(e, 'stream update rekey failed with no onError listener')
-          })
-        })
-        return
-      }
-      const err = doSend()
+      const err = this.rpc.sendOnStream(live, handle.requestId, action)
       if (err && !cancel)
         throw err
     }
@@ -787,9 +617,7 @@ export class ChannelManager {
     return this.pool.getOrOpenChannel(workerId, {
       openChannel: id => this.openChannelUncached(id),
       closeChannel: id => this.closeChannel(id),
-      pastHardCeiling: ch => this.session.pastHardCeiling(ch),
-      shouldInitiateRekey: ch => this.session.shouldInitiateRekey(ch),
-      ensureRekeyed: ch => this.session.ensureRekeyed(ch),
+      ensureReady: ch => this.sessionClient.ensureReady(ch.channelId),
       expectedUserId: () => this.expectedUserIdFn(),
     })
   }
@@ -817,7 +645,10 @@ export class ChannelManager {
     return this.pool.hasOpenChannelForWorker(workerId)
   }
 
-  /** Close all channels and the shared WebSocket. */
+  /**
+   * Close all channels, the shared WebSocket, and the channel session worker,
+   * which zeroes every key. The next open starts a fresh worker.
+   */
   closeAll(): void {
     // First, invalidate every in-flight open (see closeGeneration): the
     // snapshot below cannot see a channel that has not registered yet.
@@ -831,6 +662,7 @@ export class ChannelManager {
     ])
       void this.closeChannel(channelId)
     this.relay.closeWebSocket()
+    this.sessionClient.shutdown()
   }
 
   /**
@@ -904,16 +736,69 @@ export class ChannelManager {
   // ---- Private methods ----
 
   /**
-   * Decide a channel's fate after sendEncryptedMessage threw.
+   * Hand one outbound message to the session worker. A message over the
+   * channel's ceiling throws to the caller and posts nothing; the one source of
+   * that ceiling is resolveMessageLimits, which the open ran.
+   */
+  private sendPlaintext(ch: ActiveChannel, plaintext: Uint8Array, requestId: number, startsRequest: boolean): void {
+    if (plaintext.length > ch.maxReassembledMessageSize) {
+      throw new ChannelError('client', `message too large: ${plaintext.length} > ${ch.maxReassembledMessageSize}`)
+    }
+    this.sessionClient.send(ch.channelId, requestId, plaintext, startsRequest)
+  }
+
+  /**
+   * Put one frame that the session worker encrypted on the WebSocket. The frames
+   * arrive in nonce order, and leave in the same order. The frames of a closed
+   * channel are dropped: its requests already failed.
+   */
+  private sendFrame(channelId: string, frame: Uint8Array): void {
+    const ch = this.pool.get(channelId)
+    if (!ch || ch.state === 'closed')
+      return
+    try {
+      this.relay.send(frame)
+    }
+    catch (err) {
+      this.onSendFailure(ch, err)
+    }
+  }
+
+  /**
+   * The session worker crashed or got stuck, and took the keys of every channel
+   * with it. Close every channel with `err`, and fence the opens in flight, whose
+   * handshakes lived in that worker. The next open starts a fresh worker.
+   */
+  private handleWorkerLost(err: ChannelError): void {
+    this.pool.bumpCloseGeneration()
+    for (const channelId of [
+      ...this.pool.keys(),
+    ])
+      void this.closeChannel(channelId, { streamTermination: 'error', reason: err })
+  }
+
+  /** The peer sent the CLOSE flag for `channelId`. */
+  private closedByPeer(channelId: string): void {
+    const ch = this.pool.get(channelId)
+    if (!ch)
+      return
+    this.retire(ch, new ChannelError('transport', 'channel closed by server'), 'error')
+    this.notifyStateChange()
+  }
+
+  /**
+   * Decide a channel's fate after a send failed. It runs for a failure that
+   * sendPlaintext threw to the RPC mux, and for a frame that the WebSocket
+   * refused (sendFrame). The session worker ends a session whose encrypt failed
+   * on its own (a `sessionEnded` event).
    *
-   * Only a session-level failure kills the channel. `encrypt` throwing means the Noise
-   * send state is finished (the nonce ceiling), and a chunked send that threw midway
-   * has already put chunks on the wire, leaving the peer's receive nonce ahead of ours
-   * -- either way every later send on this channel is garbage. Cancelling it is what
-   * lets pooled callers re-resolve onto a fresh one: getOrOpenChannel caches by worker
-   * and nothing else evicts a channel before its SESSION_KEY_HARD_CEILING_MS check, so a
-   * poisoned session left in the pool would be handed to every later caller and fail
-   * identically until the hard ceiling. The Go client cancels the same way.
+   * Only a transport or session failure kills the channel. A frame that the
+   * WebSocket refused may be one of several frames of a message, which leaves the
+   * peer's receive nonce out of step with ours -- every later send on this channel
+   * is garbage. Cancelling it is what lets pooled callers re-resolve onto a fresh
+   * one: getOrOpenChannel caches by worker, so a poisoned session left in the pool
+   * would be handed to every later caller and fail identically. The Go client
+   * cancels the same way.
    *
    * A `client` ChannelError -- today, a payload over maxReassembledMessageSize -- is the opposite
    * case: the session never encrypted a byte and is untouched, so tearing the channel
@@ -949,11 +834,8 @@ export class ChannelManager {
       const ch = this.pool.get(channelId)
       if (!ch)
         continue
-      this.rpc.drainChannel(ch, reason, 'error')
-      ch.state = 'closed'
-      this.pool.delete(channelId)
+      this.retire(ch, reason, 'error')
     }
-    this.stopIdleRekeyTimerIfEmpty()
 
     if (!successorDialing) {
       // Same fence as closeAll: in-flight openChannel factories must not

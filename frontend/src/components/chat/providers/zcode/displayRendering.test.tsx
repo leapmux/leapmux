@@ -3,6 +3,7 @@ import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { prettifyJson } from '~/lib/jsonFormat'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { pngBase64 } from '~/test-support/pngFixture'
 import { providerRowImages } from '~/test-support/toolCallFixture'
@@ -12,7 +13,7 @@ import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import { renderZCodeRow, ZCodeRowView } from './testUtils'
 import './plugin'
-import '../testMocks'
+import '~/components/chat/providers'
 
 const PNG = pngBase64(2, 3)
 
@@ -56,7 +57,7 @@ describe('zcode result display hints', () => {
     expect(display.structuredContent).toBe(structured)
   })
 
-  it('renders stored MCP attachments in their original content order', () => {
+  it('renders stored MCP attachments in their original content order', async () => {
     const parsed = result({ kind: 'mcp_tool', serverName: 'docs', toolName: 'read' }, '[Attached image/png: MCP image]')
     const uri = 'zcode-artifact://session/tool-result-image'
     const current = input(parsed)
@@ -103,6 +104,7 @@ describe('zcode result display hints', () => {
       }),
     }
     const { container } = renderZCodeRow(parsed, context)
+    await settleWorkerReplies()
     expect(container.querySelectorAll('img')).toHaveLength(1)
     expect(container.querySelector('img')?.getAttribute('src')).toBe(`data:image/png;base64,${PNG}`)
     expect(container.textContent).toContain('Before image')
@@ -137,6 +139,7 @@ describe('zcode result display hints', () => {
         }}
       />
     ))
+    await settleWorkerReplies()
     expect(header.container.textContent).toContain('retained input')
   })
 
@@ -218,7 +221,7 @@ describe('zcode result display hints', () => {
     ])
   })
 
-  it('keeps image indices when computer-use media omits the first image data', () => {
+  it('keeps image indices when computer-use media omits the first image data', async () => {
     const onOpenImage = vi.fn()
     // `openImage` is set, so the assembled actions are never undefined.
     const images = imageActionsFrom({ openImage: onOpenImage })
@@ -235,6 +238,7 @@ describe('zcode result display hints', () => {
     }, images
       ? { images }
       : {})
+    await settleWorkerReplies()
     expect(container.querySelectorAll('img')).toHaveLength(1)
     const button = container.querySelector('[aria-label="Open image"]')
     expect(button).not.toBeNull()
@@ -256,7 +260,7 @@ describe('zcode result display hints', () => {
     expect(container.querySelector('img')).not.toBeNull()
   })
 
-  it('renders MCP identity and recovers arguments from the request', () => {
+  it('renders MCP identity and recovers arguments from the request', async () => {
     const request = input({
       type: 'tool.updated',
       payload: {
@@ -286,6 +290,7 @@ describe('zcode result display hints', () => {
         }}
       />,
     ])
+    await settleWorkerReplies()
     expect(container.textContent).toContain('docs / lookup')
     expect(container.textContent).toContain('Arguments')
     expect(container.textContent).toContain('renderer')
@@ -329,8 +334,9 @@ describe('zcode result display hints', () => {
     expect(container.textContent).toContain('Message sent')
   })
 
-  it('preserves the text result for an unknown display kind', () => {
+  it('preserves the text result for an unknown display kind', async () => {
     const { container } = renderDisplay({ kind: 'new_display' }, undefined, 'Fallback result marker')
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Fallback result marker')
   })
 })

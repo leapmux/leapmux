@@ -1,3 +1,4 @@
+import type { HandshakeState } from './noise'
 import { chacha20poly1305 } from '@noble/ciphers/chacha.js'
 import { x25519 } from '@noble/curves/ed25519.js'
 /**
@@ -5,8 +6,8 @@ import { x25519 } from '@noble/curves/ed25519.js'
  * This mirrors the Go `noise.ResponderHandshake` function.
  */
 import { blake2b } from '@noble/hashes/blake2.js'
-import { hmac } from '@noble/hashes/hmac.js'
 
+import { hmac } from '@noble/hashes/hmac.js'
 import { describe, expect, it } from 'vitest'
 import { concatBytes } from './bytes'
 import { CipherState, initiatorHandshake1, initiatorHandshake2 } from './noise'
@@ -250,6 +251,58 @@ describe('noise_NK handshake', () => {
 
     expect(() => initiatorHandshake2(handshakeState, new Uint8Array(16))).toThrow('too short')
   })
+
+  /** Whether every byte of `bytes` is zero. */
+  const allZero = (bytes: Uint8Array) => bytes.every(byte => byte === 0)
+
+  /** A handshake state after message 1, with its secrets checked to be non-zero first. */
+  function liveHandshakeState(): HandshakeState {
+    const staticPublic = x25519.getPublicKey(x25519.utils.randomSecretKey())
+    const { handshakeState } = initiatorHandshake1(staticPublic)
+    expect(allZero(handshakeState.e.privateKey)).toBe(false)
+    expect(allZero(handshakeState.ss.ck)).toBe(false)
+    expect(allZero(handshakeState.ss.k)).toBe(false)
+    return handshakeState
+  }
+
+  it('zeroes the handshake state after a handshake that succeeds, and the session keeps its own keys', () => {
+    const staticPrivate = x25519.utils.randomSecretKey()
+    const staticPublic = x25519.getPublicKey(staticPrivate)
+    const { handshakeState, message1 } = initiatorHandshake1(staticPublic)
+    const responder = responderHandshake(staticPrivate, staticPublic, message1)
+    expect(allZero(handshakeState.e.privateKey)).toBe(false)
+
+    const session = initiatorHandshake2(handshakeState, responder.message2)
+
+    expect(allZero(handshakeState.e.privateKey)).toBe(true)
+    expect(allZero(handshakeState.ss.ck)).toBe(true)
+    expect(allZero(handshakeState.ss.k)).toBe(true)
+    // The split copied the keys out, so zeroing the state left the session intact.
+    const ct = session.send.encrypt(new TextEncoder().encode('after the zeroing'))
+    expect(new TextDecoder().decode(simpleCipherDecrypt(responder.receive, ct))).toBe('after the zeroing')
+  })
+
+  it('zeroes the handshake state when message 2 is too short', () => {
+    const state = liveHandshakeState()
+
+    expect(() => initiatorHandshake2(state, new Uint8Array(16))).toThrow('too short')
+
+    expect(allZero(state.e.privateKey)).toBe(true)
+    expect(allZero(state.ss.ck)).toBe(true)
+    expect(allZero(state.ss.k)).toBe(true)
+  })
+
+  it('zeroes the handshake state when message 2 fails to authenticate', () => {
+    const state = liveHandshakeState()
+    // A real ephemeral key, followed by a tag that no key produced.
+    const forged = concatBytes(x25519.getPublicKey(x25519.utils.randomSecretKey()), new Uint8Array(16))
+
+    expect(() => initiatorHandshake2(state, forged)).toThrow(AEAD_TAG_FAILURE)
+
+    expect(allZero(state.e.privateKey)).toBe(true)
+    expect(allZero(state.ss.ck)).toBe(true)
+    expect(allZero(state.ss.k)).toBe(true)
+  })
 })
 
 describe('CipherState limits', () => {
@@ -274,6 +327,46 @@ describe('CipherState limits', () => {
     key[0] = 1
     const cs = new CipherState(key)
     expect(cs.needsRekey()).toBe(false)
+  })
+
+  it('zeroes the key and the previous key in destroy, and refuses every later use', () => {
+    const key = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) key[i] = i + 1
+    const cs = new CipherState(key)
+    const dh = new Uint8Array(32)
+    for (let i = 0; i < 32; i++) dh[i] = 0xA0 + i
+    // The receive direction moves the key array that this test keeps into prev.
+    cs.rekeyWithSecret(dh, null, true)
+    // @ts-expect-error accessing private field to keep the current key
+    const current: Uint8Array = cs.k
+    expect(current.every(byte => byte === 0)).toBe(false)
+
+    cs.destroy()
+
+    expect(key.every(byte => byte === 0)).toBe(true)
+    expect(current.every(byte => byte === 0)).toBe(true)
+    // @ts-expect-error accessing private field to assert prev was dropped
+    expect(cs.prev).toBeNull()
+    expect(() => cs.encrypt(new Uint8Array(1))).toThrow(/destroyed/)
+    expect(() => cs.decrypt(new Uint8Array(17))).toThrow(/destroyed/)
+    // A second destroy does nothing more.
+    expect(() => cs.destroy()).not.toThrow()
+  })
+
+  // A rekey would install fresh keys into a state that every user already
+  // treats as dead, and the keys would then outlive the close that zeroed it.
+  it('refuses a rekey after destroy, zeroes the secrets it was given, and keeps the zeroed key', () => {
+    const cs = new CipherState(new Uint8Array(32).fill(7))
+    cs.destroy()
+    const dhSecret = new Uint8Array(32).fill(9)
+    const pqSecret = new Uint8Array(32).fill(5)
+
+    expect(() => cs.rekeyWithSecret(dhSecret, pqSecret, false)).toThrow(/destroyed/)
+    // A caller relies on the rekey to zero its fresh secrets on every exit.
+    expect(dhSecret.every(byte => byte === 0)).toBe(true)
+    expect(pqSecret.every(byte => byte === 0)).toBe(true)
+    // @ts-expect-error accessing private field to assert no key was installed
+    expect((cs.k as Uint8Array).every(byte => byte === 0)).toBe(true)
   })
 
   it('should change the key, reset nonce, and decrypt new traffic when rekeyWithSecret runs', () => {

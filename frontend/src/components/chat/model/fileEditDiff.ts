@@ -1,7 +1,7 @@
-import type { DiffInput } from '../diff/diffCompute'
-import type { StructuredPatchHunk } from '../diff/diffTypes'
+import type { DiffInput, StructuredPatchHunk } from '../diff/diffTypes'
+import { memoizeByObject } from '~/lib/memoizeByObject'
 import { formatUnifiedDiffText } from '../diff/diffBuilder'
-import { parseUnifiedDiffCached } from '../diff/unifiedDiffParser'
+import { isNoNewlineMarker, parseUnifiedDiffCached } from '../diff/unifiedDiffParser'
 
 /**
  * What one file change DID.
@@ -49,7 +49,7 @@ export function fileEditOldStr(source: FileEditDiff): string {
 }
 
 /** The AFTER side of an edit, or `''` for one stated as a pre-computed patch. */
-export function fileEditNewStr(source: FileEditDiff): string {
+function fileEditNewStr(source: FileEditDiff): string {
   return source.newStr ?? ''
 }
 
@@ -64,8 +64,6 @@ export function fileEditContent(patch: StructuredPatchHunk[] | null | undefined,
     ? { structuredPatch: patch }
     : { structuredPatch: null, oldStr, newStr }
 }
-
-const NO_NEWLINE_MARKER = '\\ No newline at end of file'
 
 function isNonNegativeSafeInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
@@ -91,7 +89,7 @@ function normalizeStructuredPatchHunk(value: unknown): StructuredPatchHunk | nul
     const line = hunk.lines[i]
     if (typeof line !== 'string')
       return null
-    if (line.startsWith(NO_NEWLINE_MARKER)) {
+    if (isNoNewlineMarker(line)) {
       filteredLines ??= hunk.lines.slice(0, i)
       continue
     }
@@ -156,7 +154,8 @@ export function normalizeStructuredPatchHunks(hunks: unknown): StructuredPatchHu
 }
 
 /**
- * One normalization per source object.
+ * The hunks of the patch of `source` that this build can draw, or null when it has
+ * none. One normalization per source object.
  *
  * `normalizeStructuredPatchHunks` walks EVERY LINE of every hunk -- a `startsWith`,
  * an inspection of the first character and a tally against the declared counts -- and
@@ -168,19 +167,12 @@ export function normalizeStructuredPatchHunks(hunks: unknown): StructuredPatchHu
  * the entry expires exactly when the input can differ. That is the same rule
  * `copyableByRow` uses, rather than a second one that could drift.
  */
-const nonEmptyPatchBySource = new WeakMap<FileEditDiff, StructuredPatchHunk[] | null>()
-
-export function nonEmptyStructuredPatch(source: FileEditDiff): StructuredPatchHunk[] | null {
-  const cached = nonEmptyPatchBySource.get(source)
-  if (cached !== undefined)
-    return cached
+const nonEmptyStructuredPatch = memoizeByObject((source: FileEditDiff): StructuredPatchHunk[] | null => {
   const hunks = normalizeStructuredPatchHunks(source.structuredPatch)
-  const answer = hunks && hunks.length > 0
+  return hunks && hunks.length > 0
     ? hunks
     : null
-  nonEmptyPatchBySource.set(source, answer)
-  return answer
-}
+})
 
 /**
  * Build a FileEditDiff for an edit whose unified diff has already
@@ -246,8 +238,13 @@ export function pickFileEditDiff(
  * otherwise the two sides. The drawn diff and the copied diff both read this, so
  * they cannot disagree about which one wins. The diff worker computes the hunks
  * of two sides (see `diffWorkerClient`).
+ *
+ * One input per source object. The diff client keeps each input object's diff
+ * (see `requestComputedDiff`), so the title, the body and the Copy text of one
+ * edit share one diff, and a view that keeps the source keeps its diff. The key is
+ * the SOURCE, for the reason {@link nonEmptyStructuredPatch} gives.
  */
-export function fileEditDiffInput(source: FileEditDiff): DiffInput {
+export const fileEditDiffInput = memoizeByObject((source: FileEditDiff): DiffInput => {
   const patch = nonEmptyStructuredPatch(source)
   return patch === null
     ? {
@@ -256,43 +253,60 @@ export function fileEditDiffInput(source: FileEditDiff): DiffInput {
         newText: fileEditNewStr(source),
       }
     : { kind: 'hunks', hunks: patch }
-}
+})
 
-/** The Copy text of one edit, given the hunks of its {@link fileEditDiffInput}. */
-export function fileEditCopyableText(source: FileEditDiff, hunks: StructuredPatchHunk[]): string {
-  const { filePath, previousPath, operation } = source
+/**
+ * Answer the hunks of the diff of `input`, the input that {@link fileEditDiffInput}
+ * gives for an edit.
+ *
+ * Layer 3 supplies it, because only layer 3 may ask the diff worker for the
+ * hunks of two sides. The Copy text builders below derive the input themselves
+ * and call this only for a source that draws a diff, so a caller cannot pair one
+ * source with the hunks of another.
+ */
+export type DiffHunksOf = (input: DiffInput) => StructuredPatchHunk[]
+
+/**
+ * The Copy text of one edit. `statedOperation` is the operation that the text
+ * words as having happened ("Deleted x"), or undefined for a text that words no
+ * landed operation.
+ */
+function copyableText(source: FileEditDiff, statedOperation: FileChangeOperation | undefined, hunksOf: DiffHunksOf): string {
+  const { filePath, previousPath } = source
   const diff = fileEditHasDiff(source)
-    ? formatUnifiedDiffText(hunks, source.filePath)
+    ? formatUnifiedDiffText(hunksOf(fileEditDiffInput(source)), filePath)
     : ''
   const metadata = previousPath && previousPath !== filePath
     ? `rename from ${previousPath}\nrename to ${filePath}`
-    : !diff && operation === 'delete'
+    : !diff && statedOperation === 'delete'
         ? `Deleted ${filePath}`
-        : !diff && operation === 'add'
+        : !diff && statedOperation === 'add'
             ? `Created ${filePath}`
             : ''
   return [metadata, source.notice, diff].filter(Boolean).join('\n')
 }
 
-/**
- * Preserve the proposed operation when no file content exists to construct a diff.
- * `hunksOf` gives the hunks of each source's {@link fileEditDiffInput}.
- */
-export function requestedFileChangesCopyable(sources: FileEditDiff[], hunksOf: (source: FileEditDiff) => StructuredPatchHunk[]): string {
+/** The Copy text of one edit that landed. */
+export function fileEditCopyableText(source: FileEditDiff, hunksOf: DiffHunksOf): string {
+  return copyableText(source, source.operation, hunksOf)
+}
+
+/** Preserve the proposed operation when no file content exists to construct a diff. */
+export function requestedFileChangesCopyable(sources: FileEditDiff[], hunksOf: DiffHunksOf): string {
   if (sources.length === 0)
     return ''
   return [
     'Requested changes',
     ...sources.map((source) => {
-    // The copy text words a REQUESTED operation itself ("Delete x"), so the operation
-    // is pulled out here: the landed-change wording ("Deleted x") must not state it first.
-      const { operation, ...rest } = source
-      const diff = fileEditCopyableText(rest, hunksOf(source))
+      // The copy text words a REQUESTED operation itself ("Delete x"), so the text of
+      // the change states no operation: the landed-change wording ("Deleted x") must
+      // not state it first.
+      const diff = copyableText(source, undefined, hunksOf)
       if (diff)
         return diff
-      const verb = operation === 'delete'
+      const verb = source.operation === 'delete'
         ? 'Delete'
-        : operation === 'add'
+        : source.operation === 'add'
           ? 'Create'
           : 'Change'
       return `${verb} ${source.filePath}`

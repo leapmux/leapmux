@@ -7,7 +7,6 @@ import { isObject } from '~/lib/jsonPick'
 import { providerRow } from '~/test-support/toolCallFixture'
 import { museNativeParentInput } from './delivery'
 import '~/components/chat/providers'
-import '~/components/chat/providers/testMocks'
 
 const fixturePath = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../../testdata/muse_parent_input_conformance.json')
 const fixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as {

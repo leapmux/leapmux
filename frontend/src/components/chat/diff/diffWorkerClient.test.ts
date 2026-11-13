@@ -1,60 +1,18 @@
-import type { DiffInput } from './diffCompute'
-import type { DiffRequest } from './diffWorker'
+import type { DiffInput, StructuredPatchHunk, TextsDiffInput } from './diffTypes'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { computeDiff, fallbackDiff } from './diffCompute'
-import { answerDiffRequest } from './diffWorker'
+import { WORKER_COLD_START_ALLOWANCE_MS } from '~/lib/workerClient'
+import {
+  answerHeldDiffRequest,
+  answerHeldDiffRequestsUntilIdle,
+  installHeldDiffWorker,
+  onlyHeldDiffWorker,
+  settleDiffReplies,
+} from '~/test-support/heldDiffWorker'
+import { DIFF_DRAWN_LINE_LIMIT } from './diffBuilder'
+import { fallbackDiff, LINE_DIFF_MAX_EDITS } from './diffCompute'
+import { computeDiff } from './diffSearch'
 
 type ClientModule = typeof import('./diffWorkerClient')
-
-/** A stand-in Worker that keeps each request until the test answers it. */
-interface HeldWorker {
-  requests: DiffRequest[]
-  onmessage: ((event: { data: unknown }) => void) | null
-  onerror: (() => void) | null
-}
-
-/** Install a stand-in Worker, and list each one that the client spawns. */
-function installWorker(): HeldWorker[] {
-  const spawned: HeldWorker[] = []
-  vi.stubGlobal('Worker', class implements HeldWorker {
-    requests: DiffRequest[] = []
-    onmessage: ((event: { data: unknown }) => void) | null = null
-    onerror: (() => void) | null = null
-    terminate = vi.fn()
-    constructor() {
-      spawned.push(this)
-    }
-
-    postMessage(request: DiffRequest) {
-      this.requests.push(request)
-    }
-  })
-  return spawned
-}
-
-/** The one worker that the client spawned. */
-function onlyWorker(spawned: readonly HeldWorker[]): HeldWorker {
-  expect(spawned).toHaveLength(1)
-  return spawned[0]!
-}
-
-/** Answer the request for `input` as the real worker would. */
-function answer(worker: HeldWorker, input: DiffInput): void {
-  const request = worker.requests.find(candidate => candidate.input === input)
-  if (request === undefined)
-    throw new Error('expected a request for the input')
-  worker.onmessage?.({
-    data: answerDiffRequest(request),
-  })
-}
-
-/**
- * Let every promise settle: the reply passes through the worker client, the gate,
- * the cache and the version bump, each of which takes microtasks of its own.
- */
-async function settle(): Promise<void> {
-  await new Promise(resolve => setTimeout(resolve, 0))
-}
 
 /** Import the client afresh, so that it spawns from this test's Worker and starts with no cache. */
 async function loadClient(): Promise<ClientModule> {
@@ -62,8 +20,26 @@ async function loadClient(): Promise<ClientModule> {
   return import('./diffWorkerClient')
 }
 
-function texts(oldText: string, newText: string): DiffInput {
+/**
+ * The client and Solid, imported afresh together. After the reset, the client
+ * reads its signal from a fresh copy of Solid, and a memo must come from that
+ * copy too, or it cannot track the signal.
+ */
+async function loadClientWithSolid(): Promise<ClientModule & typeof import('solid-js')> {
+  const client = await loadClient()
+  return {
+    ...client,
+    ...await import('solid-js'),
+  }
+}
+
+function texts(oldText: string, newText: string): TextsDiffInput {
   return { kind: 'texts', oldText, newText }
+}
+
+/** `count` distinct pairs of texts, each with one changed line. */
+function distinctTexts(count: number): DiffInput[] {
+  return Array.from({ length: count }, (_, i) => texts(`old ${i}\n`, `new ${i}\n`))
 }
 
 describe('requestComputedDiff', () => {
@@ -71,29 +47,69 @@ describe('requestComputedDiff', () => {
     vi.unstubAllGlobals()
   })
 
-  it('computes the diff on this thread where no Worker exists', async () => {
+  it('draws the fallback diff where no Worker exists, as for a worker that cannot start', async () => {
     vi.stubGlobal('Worker', undefined)
-    const { computedDiffIfReady, requestComputedDiff } = await loadClient()
+    const { requestComputedDiff } = await loadClient()
     const input = texts('a\n', 'b\n')
 
-    expect(requestComputedDiff(input)).toEqual(computeDiff(input))
-    expect(computedDiffIfReady(texts('c\n', 'd\n'))).toEqual(computeDiff(texts('c\n', 'd\n')))
+    // The calling thread never runs the search, even where no worker can.
+    expect(requestComputedDiff(input)).toBeUndefined()
+    await settleDiffReplies()
+
+    expect(requestComputedDiff(input)).toEqual(fallbackDiff(input))
+  })
+
+  it('answers a diff that needs no search at once, and asks the worker nothing', async () => {
+    const spawned = installHeldDiffWorker()
+    const { requestComputedDiff } = await loadClient()
+
+    for (const input of [
+      texts('', 'a\nb\n'),
+      texts('a\nb\n', ''),
+      texts('same\n', 'same\n'),
+      texts('', ''),
+    ])
+      expect(requestComputedDiff(input)).toEqual(computeDiff(input))
+    await settleDiffReplies()
+
+    expect(spawned.flatMap(worker => worker.messages)).toEqual([])
+  })
+
+  it('re-runs no consumer of a diff that needs no search when another diff lands', async () => {
+    const spawned = installHeldDiffWorker()
+    const { createMemo, createRoot, requestComputedDiff } = await loadClientWithSolid()
+    const created = texts('', 'a\n')
+    const [other] = distinctTexts(1) as [DiffInput]
+
+    await createRoot(async (dispose) => {
+      let runs = 0
+      const diff = createMemo(() => {
+        runs++
+        return requestComputedDiff(created)
+      })
+      expect(diff()).toEqual(computeDiff(created))
+
+      requestComputedDiff(other)
+      await settleDiffReplies()
+      answerHeldDiffRequest(onlyHeldDiffWorker(spawned), other)
+      await settleDiffReplies()
+
+      expect(runs).toBe(1)
+      dispose()
+    })
   })
 
   it('answers undefined until the worker replies, then re-runs the memo that read it', async () => {
-    const spawned = installWorker()
-    const { requestComputedDiff } = await loadClient()
-    // After the reset, the client reads its signal from a fresh copy of Solid; the
-    // memo must come from that copy too, or it cannot track the signal.
-    const { createMemo, createRoot } = await import('solid-js')
+    const spawned = installHeldDiffWorker()
+    const { createMemo, createRoot, requestComputedDiff } = await loadClientWithSolid()
     const input = texts('a\n', 'b\n')
 
     await createRoot(async (dispose) => {
       const diff = createMemo(() => requestComputedDiff(input))
       expect(diff()).toBeUndefined()
 
-      answer(onlyWorker(spawned), input)
-      await settle()
+      answerHeldDiffRequest(onlyHeldDiffWorker(spawned), input)
+      await settleDiffReplies()
 
       expect(diff()).toEqual(computeDiff(input))
       dispose()
@@ -101,39 +117,322 @@ describe('requestComputedDiff', () => {
   })
 
   it('asks the worker once for equal content, and serves the cache after it replies', async () => {
-    const spawned = installWorker()
+    const spawned = installHeldDiffWorker()
     const { requestComputedDiff } = await loadClient()
     const input = texts('a\n', 'b\n')
 
     expect(requestComputedDiff(input)).toBeUndefined()
     expect(requestComputedDiff(texts('a\n', 'b\n'))).toBeUndefined()
-    await settle()
-    const worker = onlyWorker(spawned)
-    expect(worker.requests).toHaveLength(1)
+    await settleDiffReplies()
+    const worker = onlyHeldDiffWorker(spawned)
+    expect(worker.messages).toHaveLength(1)
 
-    answer(worker, input)
-    await settle()
+    answerHeldDiffRequest(worker, input)
+    await settleDiffReplies()
 
     expect(requestComputedDiff(texts('a\n', 'b\n'))).toEqual(computeDiff(input))
-    expect(worker.requests).toHaveLength(1)
+    expect(worker.messages).toHaveLength(1)
   })
 
   it('draws the fallback diff when the worker crashes, and does not ask again', async () => {
-    const spawned = installWorker()
+    const spawned = installHeldDiffWorker()
     const { requestComputedDiff } = await loadClient()
     const input = texts('a\n', 'b\n')
 
     requestComputedDiff(input)
-    await settle()
-    onlyWorker(spawned).onerror?.()
-    await settle()
+    await settleDiffReplies()
+    onlyHeldDiffWorker(spawned).onerror?.()
+    await settleDiffReplies()
 
     expect(requestComputedDiff(input)).toEqual(fallbackDiff(input))
     expect(spawned).toHaveLength(1)
   })
 
+  it('draws the fallback diff for a reply to two texts that holds no hunks, and does not ask again', async () => {
+    const spawned = installHeldDiffWorker()
+    const { requestComputedDiff } = await loadClient()
+    const input = texts('a\n', 'b\n')
+
+    requestComputedDiff(input)
+    await settleDiffReplies()
+    const worker = onlyHeldDiffWorker(spawned)
+    const [request] = worker.messages
+    // The worker posts the hunks of every pair of texts, so this reply is broken.
+    worker.reply({
+      type: 'diff-result',
+      id: request!.id,
+      diff: {
+        ...computeDiff(input),
+        hunks: null,
+      },
+    })
+    await settleDiffReplies()
+
+    expect(requestComputedDiff(input)).toEqual(fallbackDiff(input))
+    expect(worker.messages).toHaveLength(1)
+  })
+
+  it('draws the fallback diff once the worker runs past the time budget of the input, and only then', async () => {
+    vi.useFakeTimers()
+    try {
+      const spawned = installHeldDiffWorker()
+      const { diffTimeBudgetMs, requestComputedDiff } = await loadClient()
+      const input = texts('a\n', 'b\n')
+      // A worker that has answered nothing yet also gets the cold-start allowance.
+      const budget = diffTimeBudgetMs(input) + WORKER_COLD_START_ALLOWANCE_MS
+
+      requestComputedDiff(input)
+      await vi.advanceTimersByTimeAsync(0)
+      const worker = onlyHeldDiffWorker(spawned)
+      expect(worker.messages).toHaveLength(1)
+
+      await vi.advanceTimersByTimeAsync(budget - 1)
+      expect(requestComputedDiff(input)).toBeUndefined()
+      expect(worker.terminate).not.toHaveBeenCalled()
+
+      await vi.advanceTimersByTimeAsync(1)
+      expect(requestComputedDiff(input)).toEqual(fallbackDiff(input))
+      expect(worker.terminate).toHaveBeenCalledOnce()
+    }
+    finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('re-runs no consumer whose diff is ready when another diff lands', async () => {
+    const spawned = installHeldDiffWorker()
+    const { createMemo, createRoot, requestComputedDiff } = await loadClientWithSolid()
+    const [first, second] = distinctTexts(2) as [DiffInput, DiffInput]
+
+    await createRoot(async (dispose) => {
+      let firstRuns = 0
+      const firstDiff = createMemo(() => {
+        firstRuns++
+        return requestComputedDiff(first)
+      })
+      answerHeldDiffRequest(onlyHeldDiffWorker(spawned), first)
+      await settleDiffReplies()
+      expect(firstDiff()).toEqual(computeDiff(first))
+      const runsWhenReady = firstRuns
+
+      const secondDiff = createMemo(() => requestComputedDiff(second))
+      await settleDiffReplies()
+      answerHeldDiffRequest(onlyHeldDiffWorker(spawned), second)
+      await settleDiffReplies()
+
+      expect(secondDiff()).toEqual(computeDiff(second))
+      expect(firstRuns).toBe(runsWhenReady)
+      dispose()
+    })
+  })
+
+  it('asks the worker once for each of more mounted diffs than the cache holds', async () => {
+    const spawned = installHeldDiffWorker()
+    const { createMemo, createRoot, DIFF_CACHE_MAX_ENTRIES, requestComputedDiff } = await loadClientWithSolid()
+    const inputs = distinctTexts(DIFF_CACHE_MAX_ENTRIES + 44)
+
+    await createRoot(async (dispose) => {
+      const diffs = inputs.map(input => createMemo(() => requestComputedDiff(input)))
+      await settleDiffReplies()
+      const worker = onlyHeldDiffWorker(spawned)
+
+      await answerHeldDiffRequestsUntilIdle(worker, inputs.length * 2)
+
+      expect(worker.messages).toHaveLength(inputs.length)
+      expect(diffs.filter(diff => diff() === undefined)).toHaveLength(0)
+      dispose()
+    })
+  })
+
+  it('keeps every diff that one consumer reads, past the cache size', async () => {
+    // As the Copy text of a row with many file changes does: one memo reads them all.
+    const spawned = installHeldDiffWorker()
+    const { createMemo, createRoot, DIFF_CACHE_MAX_ENTRIES, requestComputedDiff } = await loadClientWithSolid()
+    const inputs = distinctTexts(DIFF_CACHE_MAX_ENTRIES + 44)
+
+    await createRoot(async (dispose) => {
+      const diffs = createMemo(() => inputs.map(input => requestComputedDiff(input, () => true)))
+      await settleDiffReplies()
+      const worker = onlyHeldDiffWorker(spawned)
+
+      await answerHeldDiffRequestsUntilIdle(worker, inputs.length * 2)
+
+      expect(worker.messages).toHaveLength(inputs.length)
+      expect(diffs().filter(diff => diff === undefined)).toHaveLength(0)
+      dispose()
+    })
+  })
+
+  it('reads the texts of one input object once while its diff waits', async () => {
+    installHeldDiffWorker()
+    const { requestComputedDiff } = await loadClient()
+    let oldTextReads = 0
+    const input: DiffInput = {
+      kind: 'texts',
+      get oldText() {
+        oldTextReads++
+        return 'a\n'
+      },
+      newText: 'b\n',
+    }
+
+    expect(requestComputedDiff(input)).toBeUndefined()
+    const readsOfFirstRequest = oldTextReads
+    expect(requestComputedDiff(input)).toBeUndefined()
+    expect(requestComputedDiff(input)).toBeUndefined()
+
+    expect(oldTextReads).toBe(readsOfFirstRequest)
+  })
+
+  it('keeps apart two inputs whose texts have the same length and digest', async () => {
+    // FNV-1a maps both of these strings to one digest.
+    const first = texts('x0032vu', 'same')
+    const second = texts('x00auea', 'same')
+    const spawned = installHeldDiffWorker()
+    const { diffInputKey, requestComputedDiff } = await loadClient()
+    expect(diffInputKey(first)).toBe(diffInputKey(second))
+
+    requestComputedDiff(first)
+    await settleDiffReplies()
+    const worker = onlyHeldDiffWorker(spawned)
+    answerHeldDiffRequest(worker, first)
+    await settleDiffReplies()
+
+    // The cache holds the first diff under the shared key, and the second input must
+    // not take it.
+    expect(requestComputedDiff(second)).toBeUndefined()
+    await settleDiffReplies()
+    answerHeldDiffRequest(worker, second)
+    await settleDiffReplies()
+
+    expect(worker.messages).toHaveLength(2)
+    expect(requestComputedDiff(first)).toEqual(computeDiff(first))
+    expect(requestComputedDiff(second)).toEqual(computeDiff(second))
+    expect(requestComputedDiff(texts('x00auea', 'same'))).toEqual(computeDiff(second))
+  })
+
+  it('serves no cached diff to an input with another line limit', async () => {
+    const spawned = installHeldDiffWorker()
+    const { requestComputedDiff } = await loadClient()
+    const chatRow = texts('a 1\nb 1\n', 'a 2\nb 2\n')
+    const viewer: DiffInput = { ...chatRow, drawnLineLimit: Number.POSITIVE_INFINITY }
+
+    requestComputedDiff(chatRow)
+    await settleDiffReplies()
+    const worker = onlyHeldDiffWorker(spawned)
+    answerHeldDiffRequest(worker, chatRow)
+    await settleDiffReplies()
+
+    expect(requestComputedDiff(viewer)).toBeUndefined()
+    await settleDiffReplies()
+    answerHeldDiffRequest(worker, viewer)
+    await settleDiffReplies()
+
+    expect(worker.messages).toHaveLength(2)
+    expect(requestComputedDiff(viewer)).toEqual(computeDiff(viewer))
+    expect(requestComputedDiff(texts('a 1\nb 1\n', 'a 2\nb 2\n'))).toEqual(computeDiff(chatRow))
+  })
+
+  it('serves no cached diff to an input with another line edit limit', async () => {
+    const spawned = installHeldDiffWorker()
+    const { requestComputedDiff } = await loadClient()
+    const chatRow = texts('a 1\nb 1\n', 'a 2\nb 2\n')
+    const viewer: DiffInput = { ...chatRow, maxLineEdits: 5000 }
+
+    requestComputedDiff(chatRow)
+    await settleDiffReplies()
+    const worker = onlyHeldDiffWorker(spawned)
+    answerHeldDiffRequest(worker, chatRow)
+    await settleDiffReplies()
+
+    expect(requestComputedDiff(viewer)).toBeUndefined()
+    await settleDiffReplies()
+    answerHeldDiffRequest(worker, viewer)
+    await settleDiffReplies()
+
+    expect(worker.messages).toHaveLength(2)
+    expect(requestComputedDiff(viewer)).toEqual(computeDiff(viewer))
+  })
+
+  it('serves the cached diff of an input that states no limit to one that states the defaults', async () => {
+    const spawned = installHeldDiffWorker()
+    const { requestComputedDiff } = await loadClient()
+    const absent = texts('a 1\nb 1\n', 'a 2\nb 2\n')
+
+    requestComputedDiff(absent)
+    await settleDiffReplies()
+    const worker = onlyHeldDiffWorker(spawned)
+    answerHeldDiffRequest(worker, absent)
+    await settleDiffReplies()
+
+    expect(requestComputedDiff({
+      ...absent,
+      drawnLineLimit: DIFF_DRAWN_LINE_LIMIT,
+      maxLineEdits: LINE_DIFF_MAX_EDITS,
+    })).toEqual(computeDiff(absent))
+    expect(worker.messages).toHaveLength(1)
+  })
+
+  it('keeps the hunks of a patch that it sent, rather than the copy that the worker posts back', async () => {
+    const spawned = installHeldDiffWorker()
+    const { requestComputedDiff } = await loadClient()
+    const hunks: StructuredPatchHunk[] = [
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ['-let a', '+let b'],
+      },
+    ]
+    const input: DiffInput = { kind: 'hunks', hunks }
+
+    requestComputedDiff(input)
+    await settleDiffReplies()
+    answerHeldDiffRequest(onlyHeldDiffWorker(spawned), input)
+    await settleDiffReplies()
+
+    const diff = requestComputedDiff(input)
+    expect(diff?.hunks).toBe(hunks)
+    expect(diff).toEqual(computeDiff(input))
+  })
+
+  it('serves the cached diff of a patch to an equal patch in other objects, and asks the worker once', async () => {
+    const spawned = installHeldDiffWorker()
+    const { requestComputedDiff } = await loadClient()
+    const patchOf = (): DiffInput => ({
+      kind: 'hunks',
+      hunks: [
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          lines: ['-let a', '+let b'],
+        },
+        {
+          oldStart: 9,
+          oldLines: 0,
+          newStart: 9,
+          newLines: 1,
+          lines: ['+let c'],
+        },
+      ],
+    })
+    const input = patchOf()
+
+    requestComputedDiff(input)
+    await settleDiffReplies()
+    const worker = onlyHeldDiffWorker(spawned)
+    answerHeldDiffRequest(worker, input)
+    await settleDiffReplies()
+
+    expect(requestComputedDiff(patchOf())).toEqual(computeDiff(input))
+    expect(worker.messages).toHaveLength(1)
+  })
+
   it('posts an urgent diff ahead of the low-priority diffs that wait at the gate', async () => {
-    const spawned = installWorker()
+    const spawned = installHeldDiffWorker()
     const { requestComputedDiff } = await loadClient()
     const low = () => true
     const inputs = [
@@ -146,19 +445,19 @@ describe('requestComputedDiff', () => {
     for (const input of inputs)
       requestComputedDiff(input, low)
     requestComputedDiff(urgent)
-    await settle()
-    const worker = onlyWorker(spawned)
+    await settleDiffReplies()
+    const worker = onlyHeldDiffWorker(spawned)
     // The gate posts two at a time and holds the rest.
-    expect(worker.requests.map(request => request.input)).toEqual([inputs[0], inputs[1]])
+    expect(worker.messages.map(request => request.input)).toEqual([inputs[0], inputs[1]])
 
-    answer(worker, inputs[0]!)
-    await settle()
+    answerHeldDiffRequest(worker, inputs[0]!)
+    await settleDiffReplies()
 
-    expect(worker.requests.map(request => request.input)).toEqual([inputs[0], inputs[1], urgent])
+    expect(worker.messages.map(request => request.input)).toEqual([inputs[0], inputs[1], urgent])
   })
 
   it('makes a low-priority diff urgent when a consumer with no priority asks for it', async () => {
-    const spawned = installWorker()
+    const spawned = installHeldDiffWorker()
     const { requestComputedDiff } = await loadClient()
     const low = () => true
     const inputs = [
@@ -171,17 +470,17 @@ describe('requestComputedDiff', () => {
     for (const input of inputs)
       requestComputedDiff(input, low)
     requestComputedDiff(inputs[3]!)
-    await settle()
-    const worker = onlyWorker(spawned)
+    await settleDiffReplies()
+    const worker = onlyHeldDiffWorker(spawned)
 
-    answer(worker, inputs[0]!)
-    await settle()
+    answerHeldDiffRequest(worker, inputs[0]!)
+    await settleDiffReplies()
 
-    expect(worker.requests.map(request => request.input)).toEqual([inputs[0], inputs[1], inputs[3]])
+    expect(worker.messages.map(request => request.input)).toEqual([inputs[0], inputs[1], inputs[3]])
   })
 
   it('follows the priority of the latest consumer while the diff waits', async () => {
-    const spawned = installWorker()
+    const spawned = installHeldDiffWorker()
     const { requestComputedDiff } = await loadClient()
     const low = () => true
     const inputs = [
@@ -195,42 +494,38 @@ describe('requestComputedDiff', () => {
       requestComputedDiff(input, low)
     // The row of the last diff scrolled into the viewport.
     requestComputedDiff(inputs[3]!, () => false)
-    await settle()
-    const worker = onlyWorker(spawned)
+    await settleDiffReplies()
+    const worker = onlyHeldDiffWorker(spawned)
 
-    answer(worker, inputs[0]!)
-    await settle()
+    answerHeldDiffRequest(worker, inputs[0]!)
+    await settleDiffReplies()
 
-    expect(worker.requests.map(request => request.input)).toEqual([inputs[0], inputs[1], inputs[3]])
-  })
-})
-
-describe('computedDiffIfReady', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals()
+    expect(worker.messages.map(request => request.input)).toEqual([inputs[0], inputs[1], inputs[3]])
   })
 
-  it('answers undefined and asks the worker nothing while the diff is not cached', async () => {
-    const spawned = installWorker()
-    const { computedDiffIfReady } = await loadClient()
+  it('keeps a diff that a visible row waits for urgent after an offscreen row asks for it too', async () => {
+    const spawned = installHeldDiffWorker()
+    const { requestComputedDiff } = await loadClient()
+    const low = () => true
+    const inputs = [
+      texts('1', '2'),
+      texts('3', '4'),
+      texts('5', '6'),
+      texts('7', '8'),
+    ]
 
-    expect(computedDiffIfReady(texts('a\n', 'b\n'))).toBeUndefined()
-    await settle()
+    for (const input of inputs.slice(0, 3))
+      requestComputedDiff(input, low)
+    // Two rows draw the same edit: the visible one asks first, the offscreen one last.
+    requestComputedDiff(inputs[3]!, () => false)
+    requestComputedDiff(inputs[3]!, low)
+    await settleDiffReplies()
+    const worker = onlyHeldDiffWorker(spawned)
 
-    expect(spawned).toHaveLength(0)
-  })
+    answerHeldDiffRequest(worker, inputs[0]!)
+    await settleDiffReplies()
 
-  it('answers the diff that the worker computed', async () => {
-    const spawned = installWorker()
-    const { computedDiffIfReady, requestComputedDiff } = await loadClient()
-    const input = texts('a\n', 'b\n')
-
-    requestComputedDiff(input)
-    await settle()
-    answer(onlyWorker(spawned), input)
-    await settle()
-
-    expect(computedDiffIfReady(texts('a\n', 'b\n'))).toEqual(computeDiff(input))
+    expect(worker.messages.map(request => request.input)).toEqual([inputs[0], inputs[1], inputs[3]])
   })
 })
 
@@ -270,6 +565,22 @@ describe('diffTimeBudgetMs', () => {
 })
 
 describe('diffInputKey', () => {
+  /** One patch with `count` added lines of `text`. */
+  function patch(count: number, text: string): DiffInput {
+    return {
+      kind: 'hunks',
+      hunks: [
+        {
+          oldStart: 1,
+          oldLines: 0,
+          newStart: 1,
+          newLines: count,
+          lines: Array.from<string>({ length: count }).fill(`+${text}`),
+        },
+      ],
+    }
+  }
+
   it('keeps two pairs of texts apart when only their split point differs', async () => {
     const { diffInputKey } = await loadClient()
 
@@ -279,24 +590,72 @@ describe('diffInputKey', () => {
 
   it('gives two patches with equal hunks one key', async () => {
     const { diffInputKey } = await loadClient()
-    const hunk = () => ({
-      oldStart: 1,
-      oldLines: 1,
-      newStart: 1,
-      newLines: 1,
-      lines: ['-a', '+b'],
-    })
+
+    expect(diffInputKey(patch(2, 'b'))).toBe(diffInputKey(patch(2, 'b')))
+  })
+
+  it('keeps two patches apart when their lines differ', async () => {
+    const { diffInputKey } = await loadClient()
+
+    expect(diffInputKey(patch(2, 'b'))).not.toBe(diffInputKey(patch(2, 'c')))
+    expect(diffInputKey(patch(2, 'b'))).not.toBe(diffInputKey(patch(3, 'b')))
+  })
+
+  it('keeps two inputs apart when only their line limit differs', async () => {
+    const { diffInputKey } = await loadClient()
 
     expect(diffInputKey({
-      kind: 'hunks',
-      hunks: [
-        hunk(),
-      ],
-    })).toBe(diffInputKey({
-      kind: 'hunks',
-      hunks: [
-        hunk(),
-      ],
+      ...texts('a', 'b'),
+      drawnLineLimit: 10,
+    })).not.toBe(diffInputKey({
+      ...texts('a', 'b'),
+      drawnLineLimit: 11,
+    }))
+    expect(diffInputKey({
+      ...texts('a', 'b'),
+      drawnLineLimit: Number.POSITIVE_INFINITY,
+    })).not.toBe(diffInputKey(texts('a', 'b')))
+    expect(diffInputKey({
+      ...patch(2, 'b'),
+      drawnLineLimit: Number.POSITIVE_INFINITY,
+    })).not.toBe(diffInputKey(patch(2, 'b')))
+  })
+
+  it('keeps two pairs of texts apart when only their line edit limit differs', async () => {
+    const { diffInputKey } = await loadClient()
+
+    expect(diffInputKey({
+      ...texts('a', 'b'),
+      maxLineEdits: 5000,
+    })).not.toBe(diffInputKey({
+      ...texts('a', 'b'),
+      maxLineEdits: 5001,
+    }))
+    expect(diffInputKey({
+      ...texts('a', 'b'),
+      maxLineEdits: 5000,
+    })).not.toBe(diffInputKey(texts('a', 'b')))
+  })
+
+  it('gives two texts that state no line edit limit the key of two at LINE_DIFF_MAX_EDITS', async () => {
+    const { diffInputKey } = await loadClient()
+
+    expect(diffInputKey(texts('a', 'b'))).toBe(diffInputKey({
+      ...texts('a', 'b'),
+      maxLineEdits: LINE_DIFF_MAX_EDITS,
+    }))
+  })
+
+  it('gives an input that states no line limit the key of one at DIFF_DRAWN_LINE_LIMIT', async () => {
+    const { diffInputKey } = await loadClient()
+
+    expect(diffInputKey(texts('a', 'b'))).toBe(diffInputKey({
+      ...texts('a', 'b'),
+      drawnLineLimit: DIFF_DRAWN_LINE_LIMIT,
+    }))
+    expect(diffInputKey(patch(2, 'b'))).toBe(diffInputKey({
+      ...patch(2, 'b'),
+      drawnLineLimit: DIFF_DRAWN_LINE_LIMIT,
     }))
   })
 
@@ -304,5 +663,13 @@ describe('diffInputKey', () => {
     const { diffInputKey } = await loadClient()
 
     expect(diffInputKey({ kind: 'hunks', hunks: [] })).not.toBe(diffInputKey(texts('', '')))
+  })
+
+  it('holds no copy of the texts or of the patch lines', async () => {
+    const { diffInputKey } = await loadClient()
+    const long = 'x'.repeat(100_000)
+
+    expect(diffInputKey(texts(long, `${long}y`)).length).toBeLessThan(64)
+    expect(diffInputKey(patch(10, long)).length).toBeLessThan(64)
   })
 })

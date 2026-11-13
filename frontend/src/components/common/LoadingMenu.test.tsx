@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, within } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clippedText } from '~/styles/shared.css'
 import { hoverForTooltip, stubClipped } from '~/test-support/clipStub'
@@ -112,10 +113,35 @@ describe('the one-of-N menu (LoadingMenu)', () => {
   // `when` clause) left the user picking a branch from the repository that was
   // replaced. Disabling the trigger cannot help once the popover is showing.
   //
-  // `menuOptions` queries with `hidden: true`, so it would see a stale item.
-  it('does NOT render options while loading, even when the list is non-empty', () => {
-    renderMenu({ loadingLabel: 'Loading things...' })
-    expect(menuOptions(MENU)).toEqual([])
+  // The rows mount at the first open, so the menu must be OPEN when the load
+  // starts: a menu that renders while loading has a disabled trigger, nothing can
+  // open it, and it would hold no row whatever the guard did.
+  it('removes the rows of an open menu once it starts loading', () => {
+    const [loading, setLoading] = createSignal(false)
+    render(() => (
+      <LoadingMenu
+        ariaLabel="Thing"
+        value=""
+        onChange={() => {}}
+        emptyLabel="No things"
+        {...(loading()
+          ? { loadingLabel: 'Loading things...' }
+          : {})}
+        options={[
+          { value: 'a', label: 'Alpha' },
+          { value: 'b', label: 'Beta' },
+        ]}
+        data-testid={MENU}
+      />
+    ))
+    expect(menuOptions(MENU)).toEqual(['Alpha', 'Beta'])
+    expect(menuTrigger(MENU)).toHaveAttribute('aria-expanded', 'true')
+
+    setLoading(true)
+
+    // `hidden: true` in the query, so a stale row would count even in a closed popover.
+    expect(within(screen.getByTestId(MENU)).queryAllByRole('menuitemradio', { hidden: true })).toHaveLength(0)
+    expect(within(screen.getByTestId(MENU)).getByText('Loading things...')).toBeInTheDocument()
     expect(menuTriggerText(MENU)).toContain('Loading things...')
   })
 
@@ -291,6 +317,123 @@ describe('the one-of-N menu (LoadingMenu)', () => {
       expect(screen.getByTestId('loading-menu-more')).toHaveTextContent('1 more option is not shown.')
     })
 
+    // The checked row is how the user finds the current choice in the list, and
+    // a value past the limit -- the checked-out branch in a large repository --
+    // would otherwise leave no row checked until the user typed a query.
+    it('keeps the row of the current value that the list holds past the limit', () => {
+      const current = `opt-${MAX_DRAWN_OPTIONS + 3}`
+      renderMenu({
+        value: current,
+        options: options(MAX_DRAWN_OPTIONS + 5),
+        filter: true,
+      })
+
+      const values = menuOptionValues(MENU)
+      expect(values).toHaveLength(MAX_DRAWN_OPTIONS + 1)
+      expect(values.at(-1)).toBe(current)
+      const checked = within(screen.getByTestId(MENU)).getAllByRole('menuitemradio', { hidden: true }).filter(row => row.getAttribute('aria-checked') === 'true')
+      expect(checked.map(row => row.getAttribute('data-testid'))).toEqual([`loading-menu-option-${current}`])
+      expect(screen.getByTestId('loading-menu-more')).toHaveTextContent('4 more options are not shown.')
+    })
+
+    // Like a pinned row, the row of the current value never counts against the
+    // limit, wherever it sits in the list.
+    it('draws the row of the current value once, beside the rows that the limit counts', () => {
+      renderMenu({
+        value: 'opt-3',
+        options: options(MAX_DRAWN_OPTIONS + 5),
+        filter: true,
+      })
+
+      const values = menuOptionValues(MENU)
+      expect(values).toHaveLength(MAX_DRAWN_OPTIONS + 1)
+      expect(values.filter(value => value === 'opt-3')).toHaveLength(1)
+      expect(values.at(-1)).toBe(`opt-${MAX_DRAWN_OPTIONS}`)
+      expect(screen.getByTestId('loading-menu-more')).toHaveTextContent('4 more options are not shown.')
+    })
+
+    // The open menu reads the current value again when it changes, so the row of
+    // a value that moves past the limit stays drawn, and the row of the old one
+    // counts against the limit again.
+    it('follows a value that moves past the limit while the menu is open', () => {
+      const moved = `opt-${MAX_DRAWN_OPTIONS + 3}`
+      const [value, setValue] = createSignal('opt-0')
+      render(() => (
+        <LoadingMenu
+          ariaLabel="Thing"
+          value={value()}
+          onChange={() => {}}
+          emptyLabel="No things"
+          options={options(MAX_DRAWN_OPTIONS + 5)}
+          filter
+          data-testid={MENU}
+        />
+      ))
+      openMenu(MENU)
+      const before = menuOptionValues(MENU)
+      expect(before).toHaveLength(MAX_DRAWN_OPTIONS + 1)
+      expect(before.at(-1)).toBe(`opt-${MAX_DRAWN_OPTIONS}`)
+      expect(before).not.toContain(moved)
+
+      setValue(moved)
+
+      const after = menuOptionValues(MENU)
+      expect(after).toHaveLength(MAX_DRAWN_OPTIONS + 1)
+      expect(after).not.toContain(`opt-${MAX_DRAWN_OPTIONS}`)
+      expect(after.at(-1)).toBe(moved)
+    })
+
+    it('leaves out the row of the current value when the query does not match it', () => {
+      const current = `opt-${MAX_DRAWN_OPTIONS + 3}`
+      renderMenu({
+        value: current,
+        options: [
+          ...options(MAX_DRAWN_OPTIONS + 5),
+          { value: 'other', label: 'Other' },
+        ],
+        filter: true,
+      })
+      openMenu(MENU)
+      fireEvent.input(screen.getByTestId('loading-menu-filter'), {
+        target: { value: 'Other' },
+      })
+
+      expect(menuOptionValues(MENU)).toEqual(['other'])
+    })
+
+    // The user who typed a query that still matches too many rows has already
+    // done what "Type to filter" asks, so the note asks for a narrower query.
+    it('asks for a narrower query when a typed query still matches too many rows', () => {
+      renderMenu({
+        options: options(MAX_DRAWN_OPTIONS + 5),
+        filter: true,
+      })
+      openMenu(MENU)
+      fireEvent.input(screen.getByTestId('loading-menu-filter'), {
+        target: { value: 'Option' },
+      })
+
+      expect(menuOptionValues(MENU)).toHaveLength(MAX_DRAWN_OPTIONS)
+      expect(screen.getByTestId('loading-menu-more')).toHaveTextContent('5 more options are not shown. Type more to narrow the list.')
+    })
+
+    it('asks for a query again once the typed one is cleared', () => {
+      renderMenu({
+        options: options(MAX_DRAWN_OPTIONS + 5),
+        filter: true,
+      })
+      openMenu(MENU)
+      const filter = screen.getByTestId('loading-menu-filter')
+      fireEvent.input(filter, {
+        target: { value: 'Option' },
+      })
+      fireEvent.input(filter, {
+        target: { value: '  ' },
+      })
+
+      expect(screen.getByTestId('loading-menu-more')).toHaveTextContent('5 more options are not shown. Type to filter the list.')
+    })
+
     it('mounts every row of a list with no filter box, because nothing else reaches the rest', () => {
       renderMenu({
         options: options(MAX_DRAWN_OPTIONS + 5),
@@ -446,8 +589,8 @@ describe('the one-of-N menu (LoadingMenu)', () => {
   // What a menu nobody opened must NOT allocate. `DropdownMenu` mounts its
   // children eagerly, so the per-row cost is paid by every mounted menu at rest
   // -- fifty rows for a full session list, and `BranchSelect`'s list has no
-  // upper limit. A row is still mounted and still readable; only the parts that
-  // exist for an interaction wait for one.
+  // upper limit. A closed menu that nobody opened mounts no row at all; its
+  // rows mount at the first open.
   it('mounts no row, and so no tooltip or live detail, until it is opened', () => {
     const drawDetail = vi.fn(() => <em>three days</em>)
     renderMenu({
@@ -725,9 +868,9 @@ describe('LoadingMenu filter threshold', () => {
 })
 
 describe('limitDrawnOptions', () => {
-  const option = (value: string, pinned = false) => (pinned
-    ? { value, label: value, pinned: true }
-    : { value, label: value })
+  /** An option that the exemption below keeps when `exempt` is true. */
+  const option = (value: string, exempt = false) => ({ value, exempt })
+  const isExempt = (o: { exempt: boolean }) => o.exempt
 
   it('keeps the list itself when it fits', () => {
     const list = [
@@ -735,13 +878,13 @@ describe('limitDrawnOptions', () => {
       option('b'),
     ]
 
-    const limited = limitDrawnOptions(list, 2)
+    const limited = limitDrawnOptions(list, 2, isExempt)
 
     expect(limited.options).toBe(list)
     expect(limited.hidden).toBe(0)
   })
 
-  it('keeps the first unpinned options in order, and every pinned one', () => {
+  it('keeps the first options that the limit counts in order, and every exempt one', () => {
     const list = [
       option('pin-1', true),
       option('a'),
@@ -750,23 +893,32 @@ describe('limitDrawnOptions', () => {
       option('pin-2', true),
     ]
 
-    const limited = limitDrawnOptions(list, 2)
+    const limited = limitDrawnOptions(list, 2, isExempt)
 
     expect(limited.options.map(o => o.value)).toEqual(['pin-1', 'a', 'b', 'pin-2'])
     expect(limited.hidden).toBe(1)
   })
 
-  it('keeps only the pinned options at a limit of zero', () => {
+  it('keeps only the exempt options at a limit of zero', () => {
     const limited = limitDrawnOptions([
       option('a'),
       option('pin', true),
-    ], 0)
+    ], 0, isExempt)
 
     expect(limited.options.map(o => o.value)).toEqual(['pin'])
     expect(limited.hidden).toBe(1)
   })
 
+  it('keeps every option at a limit of infinity', () => {
+    const list = [
+      option('a'),
+      option('b'),
+    ]
+
+    expect(limitDrawnOptions(list, Number.POSITIVE_INFINITY, isExempt)).toEqual({ options: list, hidden: 0 })
+  })
+
   it('keeps an empty list empty', () => {
-    expect(limitDrawnOptions([], 0)).toEqual({ options: [], hidden: 0 })
+    expect(limitDrawnOptions([], 0, isExempt)).toEqual({ options: [], hidden: 0 })
   })
 })

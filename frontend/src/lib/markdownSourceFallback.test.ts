@@ -47,6 +47,20 @@ describe('markdownSourceFallbackHtml', () => {
     expect(fallbackDom(source).querySelector('pre')?.textContent).toBe(source)
   })
 
+  it('keeps the leading line breaks of the source, which the HTML parser drops after `<pre>`', () => {
+    for (const source of [
+      '\n\n# Title\n',
+      '\nfirst',
+      '\r\nfirst',
+      '\n',
+    ]) {
+      const pre = fallbackDom(source).querySelector('pre')!
+      // The parser turns a carriage return into a line feed, so compare the
+      // text after the same conversion.
+      expect(pre.textContent, JSON.stringify(source)).toBe(source.replace(/\r\n?/g, '\n'))
+    }
+  })
+
   it('keeps astral characters and surrogate pairs whole', () => {
     const source = 'emoji 😀 and 𝒳'
     expect(fallbackDom(source).querySelector('pre')?.textContent).toBe(source)

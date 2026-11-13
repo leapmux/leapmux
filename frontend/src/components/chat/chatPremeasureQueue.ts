@@ -117,10 +117,16 @@ export function createPremeasureQueue(deps: PremeasureQueueDeps) {
       setUnsettledPremeasureKeys(nextUnsettled)
   })
 
-  const premeasureCandidates = createMemo<ChatDomPremeasureCandidate[]>(() => {
+  // ChatHiddenPremeasure's <For> keys its rows by object identity, so a new object
+  // for an unchanged row disposes its hidden copy and mounts it again. The memo
+  // therefore reuses a row's previous object while the row's entry and height key
+  // stay the same: the copy renders the entry, and its measure commits under the
+  // height key. A change to the pending set then mounts only the rows it adds.
+  const premeasureCandidates = createMemo<ChatDomPremeasureCandidate[]>((previous) => {
     const ids = pendingPremeasureIds()
     if (ids.size === 0)
       return []
+    const previousById = new Map(previous.map(candidate => [candidate.item.id, candidate]))
     const entries = deps.visibleEntryById()
     const unsettled = unsettledPremeasureKeys()
     const candidates: ChatDomPremeasureCandidate[] = []
@@ -129,11 +135,15 @@ export function createPremeasureQueue(deps: PremeasureQueueDeps) {
       if (!ids.has(item.id) || (deps.virt.hasMeasuredHeight(item.id) && !unsettledKeyMatches))
         continue
       const entry = entries.get(item.id)
-      if (entry)
-        candidates.push({ entry, item })
+      if (!entry)
+        continue
+      const kept = previousById.get(item.id)
+      candidates.push(kept !== undefined && kept.entry === entry && kept.item.heightKey === item.heightKey
+        ? kept
+        : { entry, item })
     }
     return candidates
-  })
+  }, [])
 
   const onMeasure = (id: string, height: number, heightKey: string | undefined, measureDurationMs: number, settled: boolean): boolean => {
     // Forced-layout cost of premeasuring this row. When a batch of look-ahead rows

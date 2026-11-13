@@ -5,6 +5,7 @@ import { PreferencesProvider } from '~/context/PreferencesContext'
 import { MESSAGE_SUPPLEMENT_FIELD } from '~/generated/contracts/worker-vocab'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { pngBase64 } from '~/test-support/pngFixture'
@@ -16,7 +17,7 @@ import { toolUseHeader } from '../../toolStyles.css'
 import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
 import './plugin'
-import '../testMocks'
+import '~/components/chat/providers'
 
 function renderTool(toolName: string, args: Record<string, unknown>, result?: Record<string, unknown>, isError = false) {
   const start = {
@@ -55,7 +56,7 @@ describe('pi tool rendering', () => {
   // An end frame for a tool the plugin does not map, with no start row beside it. The
   // row carries the name Pi sent and the content Pi returned, and nothing the mapped
   // table would have supplied.
-  it('shows an unmatched completion by its content alone', () => {
+  it('shows an unmatched completion by its content alone', async () => {
     const payload = {
       type: 'tool_execution_end',
       toolCallId: 'orphan',
@@ -73,12 +74,13 @@ describe('pi tool rendering', () => {
         request: () => undefined,
       }),
     }, category, AgentProvider.PI))
+    await settleWorkerReplies()
     expect(container.textContent).toContain('recovered output')
     for (const invented of ['Run command', 'Read file', 'Search'])
       expect(container.textContent).not.toContain(invented)
   })
 
-  it('resolves stored MCP full tool output through the same path for the transcript and image viewer', () => {
+  it('resolves stored MCP full tool output through the same path for the transcript and image viewer', async () => {
     const data = pngBase64(12, 8)
     const path = '/project/.tmp/pi-mcp-1234567890abcdef.txt'
     const message = makeMessage({
@@ -111,6 +113,7 @@ describe('pi tool rendering', () => {
     })
     const original = message.content.slice()
     const { container } = render(() => <PreferencesProvider><MessageBubble message={message} /></PreferencesProvider>)
+    await settleWorkerReplies()
     expect(container.querySelectorAll('img')).toHaveLength(1)
     expect(container.textContent).toContain('Full stored text')
     expect(container.textContent).not.toContain('Short preview')
@@ -156,12 +159,13 @@ describe('pi tool rendering', () => {
     expect(images?.[0]?.data).toBe(data)
   })
 
-  it('keeps the plan result concise when the request already contains the plan', () => {
+  it('keeps the plan result concise when the request already contains the plan', async () => {
     const plan = '# Welcome plan\n\nRead the sample.'
     const { container } = renderTool('plan_mode_complete', { plan }, {
       content: content(`**Proposed Plan**\n\n${plan}`),
       details: { plan },
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Plan ready for review')
     expect(container.textContent).not.toContain('Welcome plan')
   })
@@ -170,7 +174,7 @@ describe('pi tool rendering', () => {
   // The plan itself is on the REQUEST row, which carries it from the moment the call
   // opens -- see the case below. The reader this replaced consulted that pair, so the
   // same row drew a plan card before the pair landed and the notice afterwards.
-  it('states the notice on the result row rather than the plan again', () => {
+  it('states the notice on the result row rather than the plan again', async () => {
     const payload = {
       type: 'tool_execution_end',
       toolCallId: 'plan',
@@ -182,11 +186,12 @@ describe('pi tool rendering', () => {
       isError: false,
     }
     const { container } = render(() => renderMessageContent(payload, { premeasureMode: true }, providerFor(AgentProvider.PI)!.transcript.classify(input(payload)), AgentProvider.PI))
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Plan ready for review')
     expect(container.textContent).not.toContain('Recovered plan')
   })
 
-  it('renders a completed plan request as Markdown in the transcript', () => {
+  it('renders a completed plan request as Markdown in the transcript', async () => {
     const payload = {
       type: 'tool_execution_start',
       toolCallId: 'plan',
@@ -194,6 +199,7 @@ describe('pi tool rendering', () => {
       args: { plan: '# Welcome plan\n\n- Keep **original bytes**.' },
     }
     const { container, getByRole } = render(() => renderMessageContent(payload, { premeasureMode: true }, providerFor(AgentProvider.PI)!.transcript.classify(input(payload)), AgentProvider.PI))
+    await settleWorkerReplies()
     expect(getByRole('heading', { name: 'Welcome plan' })).toBeInTheDocument()
     expect(container.querySelector('li strong')?.textContent).toBe('original bytes')
     expect(container.querySelector('.lucide-plane-takeoff')).not.toBeNull()
@@ -258,7 +264,7 @@ describe('pi tool rendering', () => {
     expect(container.querySelector('.lucide-circle-alert')).not.toBeNull()
   })
 
-  it('renders a background completion from the native custom message', () => {
+  it('renders a background completion from the native custom message', async () => {
     const payload = {
       type: 'message_end',
       message: {
@@ -279,6 +285,7 @@ describe('pi tool rendering', () => {
     const plugin = providerFor(AgentProvider.PI)!
     const category = plugin?.transcript.classify(input(payload))
     const { container } = render(() => renderMessageContent(payload, { premeasureMode: true }, category, AgentProvider.PI))
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Agent "Workflow probe" completed')
     expect(container.querySelector('li strong')?.textContent).toBe('report')
     expect(container.textContent).toContain('& details')
@@ -286,7 +293,7 @@ describe('pi tool rendering', () => {
     expect(providerToolMeta(AgentProvider.PI, payload, { category })?.copyableContent()).toBe('- Full **report** & details')
   })
 
-  it('renders a visible custom plan as Markdown', () => {
+  it('renders a visible custom plan as Markdown', async () => {
     const payload = {
       type: 'message_end',
       message: {
@@ -298,53 +305,60 @@ describe('pi tool rendering', () => {
     }
     const category = providerFor(AgentProvider.PI)!.transcript.classify(input(payload))
     const { container } = render(() => renderMessageContent(payload, { premeasureMode: true }, category, AgentProvider.PI))
+    await settleWorkerReplies()
     expect(container.querySelector('h2')?.textContent).toBe('Proposed plan')
     expect(container.querySelector('li strong')?.textContent).toBe('sample.ts')
   })
 
-  it('renders a retrieved agent report with its native identity and status', () => {
+  it('renders a retrieved agent report with its native identity and status', async () => {
     const { container } = renderTool('get_subagent_result', { agent_id: 'child-1' }, {
       content: content('Agent: child-1\nType: Explore | Status: completed | Tool uses: 1 | 301 token | Context: 1% | Duration: 9.5s\nDescription: Inspect sample\n\n- **Report**'),
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Agent "Inspect sample" completed')
     expect(container.querySelector('li strong')?.textContent).toBe('Report')
     expect(container.textContent).toMatch(/Agent ID:\s*child-1/)
     expect(container.textContent).not.toContain('Status: completed |')
   })
 
-  it('renders steering instructions with the shared prompt component', () => {
+  it('renders steering instructions with the shared prompt component', async () => {
     const { container } = renderTool('steer_subagent', { agent_id: 'child-1', message: 'Read **sample.ts**' })
+    await settleWorkerReplies()
     expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toContain('child-1')
     expect(container.querySelector('strong')?.textContent).toBe('sample.ts')
     expect(container.textContent).not.toContain('"message"')
   })
 
-  it('shows a rejected steering request as a failure without isError', () => {
+  it('shows a rejected steering request as a failure without isError', async () => {
     const { container } = renderTool('steer_subagent', { agent_id: 'child-1', message: 'Read sample' }, {
       content: content('Agent "child-1" is not running (status: completed). Cannot steer a non-running agent.'),
     })
+    await settleWorkerReplies()
     expect(container.querySelectorAll('.lucide-circle-alert')).toHaveLength(1)
     expect(container.textContent).toContain('Cannot steer a non-running agent.')
   })
 
-  it.each(['constructor', 'toString', '__proto__'])('renders an extension called %s through the generic fallback', (toolName) => {
+  it.each(['constructor', 'toString', '__proto__'])('renders an extension called %s through the generic fallback', async (toolName) => {
     const request = renderTool(toolName, { query: 'marker' })
+    await settleWorkerReplies()
     expect(request.container.textContent).toContain(toolName)
     request.unmount()
     const result = renderTool(toolName, {}, {
       content: content('Extension report'),
     })
+    await settleWorkerReplies()
     expect(result.container.textContent).toContain('Extension report')
   })
 
-  it('renders an agent launch through the shared prompt component', () => {
+  it('renders an agent launch through the shared prompt component', async () => {
     const { container } = renderTool('Agent', { description: 'Inspect sample', subagent_type: 'Explore', prompt: '- Read **sample.ts**' })
+    await settleWorkerReplies()
     expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toBe('Inspect sample (Explore)')
     expect(container.querySelector('li strong')?.textContent).toBe('sample.ts')
     expect(container.textContent).not.toContain('"prompt"')
   })
 
-  it('renders an agent report and native usage through the shared result component', () => {
+  it('renders an agent report and native usage through the shared result component', async () => {
     const { container } = renderTool('Agent', { description: 'Inspect sample', prompt: 'Read sample.ts' }, {
       content: content('Agent completed in 1.2s (1 tool uses, 100 token).\n\n- Read **sample.ts**'),
       details: {
@@ -357,6 +371,7 @@ describe('pi tool rendering', () => {
         durationMs: 1200,
       },
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Agent "Inspect sample" completed')
     expect(container.querySelector('li strong')?.textContent).toBe('sample.ts')
     expect(container.textContent).toMatch(/Agent ID:\s*child-1/)
@@ -365,7 +380,7 @@ describe('pi tool rendering', () => {
     expect(container.textContent).not.toContain('"durationMs"')
   })
 
-  it('uses native agent errors even when the extension returns isError false', () => {
+  it('uses native agent errors even when the extension returns isError false', async () => {
     const { container } = renderTool('Agent', { description: 'Inspect sample' }, {
       content: content('Agent failed: Source unavailable\n\n- Partial **finding**'),
       details: {
@@ -375,6 +390,7 @@ describe('pi tool rendering', () => {
         agentId: 'child-1',
       },
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Agent "Inspect sample" failed')
     expect(container.querySelector('li strong')?.textContent).toBe('finding')
     expect(container.querySelectorAll('.lucide-circle-alert')).toHaveLength(1)

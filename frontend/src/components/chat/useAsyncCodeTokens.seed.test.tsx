@@ -1,15 +1,13 @@
 import type { CachedToken } from '~/lib/tokenCache'
 import { createRoot } from 'solid-js'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { _resetTokenCache, setCachedTokens } from '~/lib/tokenCache'
+import { recordWorkerRequests } from '~/test-support/fakeWorker'
 import { useAsyncCodeTokens } from './useAsyncCodeTokens'
 
-// Real token cache; only the worker client is stubbed (a never-resolving dispatch) so a
-// genuine cache MISS would render plain forever -- proving the highlighted first frame
-// comes from the synchronous seed, not a worker round-trip.
-vi.mock('~/lib/shikiWorkerClient', () => ({
-  tokenizeAsync: vi.fn(() => new Promise<CachedToken[][] | null>(() => {})),
-}))
+// The real token cache and the real Shiki worker. The worker answers a request
+// at the earliest in a microtask after the tick that asks, so a first frame that
+// shows tokens took them from the synchronous seed, not from a worker round-trip.
 
 const TOKENS: CachedToken[][] = [
   [
@@ -32,12 +30,11 @@ function firstFrame(opts: Parameters<typeof useAsyncCodeTokens>[0]): CachedToken
 describe('useAsyncCodeTokens synchronous cache seed', () => {
   afterEach(() => {
     _resetTokenCache()
-    vi.clearAllMocks()
   })
 
-  it('paints cached tokens on the first frame of a warm re-mount (no plain flash)', async () => {
+  it('paints cached tokens on the first frame of a warm re-mount (no plain flash)', () => {
     setCachedTokens('json', '{"a":1}', TOKENS)
-    const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
+    const requests = recordWorkerRequests('lib/shikiWorker.ts')
     expect(firstFrame({
       lang: () => 'json',
       code: () => '{"a":1}',
@@ -45,7 +42,7 @@ describe('useAsyncCodeTokens synchronous cache seed', () => {
       gate: () => ({ premeasure: false, hold: false }),
     })).toEqual(TOKENS)
     // The seed served it -- no worker dispatch was needed.
-    expect(tokenizeAsync).not.toHaveBeenCalled()
+    expect(requests).toEqual([])
   })
 
   it('renders plain on the first frame when the cache misses (cold mount)', () => {

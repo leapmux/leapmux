@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { resolveBundledLang } from './bundledLanguage'
 import { EXT_TO_LANG, guessLanguage } from './languageMap'
-import { resolveBundledLang } from './shikiLazyHighlighter'
 
 describe('guessLanguage', () => {
   it('maps common source extensions to Shiki language ids', () => {

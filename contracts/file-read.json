@@ -1,0 +1,4 @@
+{
+  "_readme": "The default size of one file read, which the Go worker and the TypeScript browser both compile in. The worker reads readLimitBytes when a ReadFileRequest or a ReadGitFileRequest gives a limit of 0 (ReadFile also reads a negative limit as 0). The file viewer shows at most readLimitBytes of a text file, and of each version that it compares. The browser asks for readLimitBytes in each page of a paged read (readWorkerFile). A page may ask for more than the payload budget of a small channel: the worker caps every read at that budget, and readWorkerFile asks again for the rest of a short page. Before this contract, the worker default (60 KB), the viewer cap (256 KiB) and the page size (48 KiB) were three numbers for one concept, so a caller that relied on the default read less than the viewer showed.",
+  "readLimitBytes": 262144
+}

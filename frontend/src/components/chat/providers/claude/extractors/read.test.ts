@@ -1,10 +1,6 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { claudeReadFromToolResult } from './read'
-import '../../testMocks'
-
-vi.mock('~/lib/shikiWorkerClient', () => ({
-  tokenizeAsync: async () => null,
-}))
+import '~/components/chat/providers'
 
 describe('claudeReadFromToolResult', () => {
   it('returns null for non-text variants', () => {

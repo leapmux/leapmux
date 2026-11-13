@@ -125,7 +125,18 @@ export const diffGapSeparator = style({
   borderBottom: '1px dashed var(--border)',
 })
 
-// The notice under a diff that draws only its first lines (see DIFF_DRAWN_LINE_LIMIT)
+// The notice above a diff that removes the whole old text and adds the whole new
+// one in place of the changed lines (see ComputedDiff.wholeReplacement)
+export const diffReplacementNotice = style({
+  marginTop: 'var(--space-1)',
+  fontFamily: 'var(--font-sans)',
+  fontSize: 'var(--text-8)',
+  color: 'var(--muted-foreground)',
+})
+
+// The notice under a diff that stops early: a chat row draws no line past
+// DIFF_DRAWN_LINE_LIMIT, and the file viewer's diff stops where the viewer stops
+// reading one of the versions (see VersionDiffView)
 export const diffTruncationNotice = style({
   padding: 'var(--space-1) var(--space-2)',
   fontFamily: 'var(--font-sans)',
@@ -174,13 +185,30 @@ export const diffGapSeparatorSplit = style({
   gridColumn: '1 / -1',
 })
 
-export const diffSplitColumn = style({
+// The element that holds the lines of one hunk, or the lines that one side of
+// a gap reveals. A diff view mounts its lines into it in slices, so that a
+// slice inserts its own lines and leaves the children of the container alone.
+// It draws no box: its lines lay out as children of the container, which makes
+// them rows of the unified view and cells of the grid of the split view.
+export const diffLineGroup = style({
+  display: 'contents',
+})
+
+// The layout (unified or split) that a diff view shows. It draws no box, so the
+// diff lays out as if the view drew its container alone.
+export const diffLayoutShown = style({
+  display: 'contents',
+})
+
+// The layout that a diff view mounts behind the one that it shows, after a
+// switch between unified and split: invisible and without height, but laid
+// out. Each slice then lays out its own lines, and the swap lays out nothing
+// new. `display: none` would leave the layout of every line to the swap, in one
+// long task.
+export const diffLayoutIncoming = style({
+  visibility: 'hidden',
+  height: 0,
   overflow: 'hidden',
-  selectors: {
-    '&:first-child': {
-      borderRight: '1px solid var(--border)',
-    },
-  },
 })
 
 // Collapses the line-number columns where they duplicate information already

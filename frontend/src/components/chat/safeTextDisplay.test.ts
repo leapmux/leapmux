@@ -36,6 +36,16 @@ describe('safe text display', () => {
     expect(result.text.split('\n').length).toBeLessThanOrEqual(101)
   })
 
+  it('limits the line count only past the maximum', () => {
+    const limits = { maxChars: 1_000, maxLineChars: 100, maxLines: 3 }
+
+    expect(limitTextForDisplay('a\nb\nc', limits)).toEqual({ text: 'a\nb\nc', limited: false })
+    expect(limitTextForDisplay('a\nb\nc\nd', limits)).toEqual({
+      text: 'a\nb\n… lines omitted from display …\nd',
+      limited: true,
+    })
+  })
+
   it('does not split a surrogate pair at either retained edge', () => {
     const result = limitTextForDisplay(`start${'x'.repeat(30)}😀${'y'.repeat(30)}end`, { maxChars: 40, maxLineChars: 40 })
 

@@ -5,6 +5,7 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { COPILOT_EVENT, COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { providerRowImages, providerToolCall, providerToolMeta } from '~/test-support/toolCallFixture'
 import { renderMessageContent } from '../../messageContentRenderer'
@@ -14,7 +15,7 @@ import { toolBodyBorder, toolUseHeader } from '../../toolStyles.css'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import './plugin'
-import '../testMocks'
+import '~/components/chat/providers'
 
 const CALL = 'copilot-tool'
 
@@ -288,7 +289,7 @@ describe('copilot native tool rendering', () => {
     expect(container.querySelectorAll('svg.lucide-circle-alert')).toHaveLength(1)
   })
 
-  it('shows the launch instruction in the request row and the report in the result row', () => {
+  it('shows the launch instruction in the request row and the report in the result row', async () => {
     const args = {
       description: 'Inspect the project',
       prompt: 'Read the entry points.',
@@ -296,12 +297,14 @@ describe('copilot native tool rendering', () => {
       mode: 'sync',
     }
     const request = renderRow(start(args, COPILOT_TOOL.Task))
+    await settleWorkerReplies()
     expect(request.container.textContent).toContain('Read the entry points.')
     expect(request.container.textContent).not.toContain('The entry points exist.')
 
     const { container } = renderResult(args, COPILOT_TOOL.Task, {
       result: { content: '**Findings**\n\nThe entry points exist.' },
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Agent "Inspect the project" completed')
     expect(container.querySelector('strong')?.textContent).toBe('Findings')
   })
@@ -511,18 +514,20 @@ describe('copilot native tool rendering', () => {
 
   // `ProseResultBody` picks the markdown body for `markdown` and a `<pre>` block for
   // `plain`, so a roster answered as plain draws its own asterisks and table pipes.
-  it('draws a subagent roster as markdown rather than as raw characters', () => {
+  it('draws a subagent roster as markdown rather than as raw characters', async () => {
     const { container } = renderResult({}, COPILOT_TOOL.ListAgents, {
       result: { content: '- **explore** reads the code' },
     })
+    await settleWorkerReplies()
     expect(container.querySelector('li strong')?.textContent).toBe('explore')
     expect(container.textContent).not.toContain('**explore**')
   })
 
-  it('draws a completion report as markdown rather than as raw characters', () => {
+  it('draws a completion report as markdown rather than as raw characters', async () => {
     const { container } = renderResult({}, COPILOT_TOOL.TaskComplete, {
       result: { content: '## Result\n\n- Read **two** files.' },
     })
+    await settleWorkerReplies()
     expect(container.querySelector('h2')?.textContent).toBe('Result')
     expect(container.querySelector('li strong')?.textContent).toBe('two')
     expect(container.textContent).not.toContain('## Result')
@@ -621,7 +626,7 @@ describe('copilot native tool rendering', () => {
 
   // A recognized tool keeps its own body: a read stays a read, and the rich blocks
   // ride beside it instead of replacing the file view.
-  it('keeps a recognized tool body when the result also carries rich content', () => {
+  it('keeps a recognized tool body when the result also carries rich content', async () => {
     const { container } = renderResult({ path: '/project/sample.py' }, COPILOT_TOOL.View, {
       result: {
         content: 'answer = 42',
@@ -631,6 +636,7 @@ describe('copilot native tool rendering', () => {
         structuredContent: { bytes: 0 },
       },
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('answer = 42')
     expect(container.textContent).toContain('Read note')
     // The structured payload renders as part of the extra content now, without
@@ -640,7 +646,7 @@ describe('copilot native tool rendering', () => {
 
   // A tool this build does not recognize has no body of its own, so the rich
   // content IS its result.
-  it('renders an unrecognized tool through the shared rich body', () => {
+  it('renders an unrecognized tool through the shared rich body', async () => {
     const { container } = renderResult({ query: 'rendering' }, 'probe_echo', {
       result: {
         content: 'Result',
@@ -649,6 +655,7 @@ describe('copilot native tool rendering', () => {
         ],
       },
     })
+    await settleWorkerReplies()
     expect(container.querySelector('strong')?.textContent).toBe('Rich body')
     expect(container.textContent).toContain('Arguments')
   })
@@ -662,10 +669,11 @@ describe('copilot native tool rendering', () => {
 
   // No start row AND no span type: the completion has only its content to show, and
   // it must show that rather than a tool name it never read.
-  it('shows an unmatched completion by its content alone', () => {
+  it('shows an unmatched completion by its content alone', async () => {
     const { container } = renderRow(complete({
       result: { content: 'recovered output' },
     }), undefined, undefined)
+    await settleWorkerReplies()
     expect(container.textContent).toContain('recovered output')
     for (const invented of ['Run command', 'Read file', 'Search'])
       expect(container.textContent).not.toContain(invented)

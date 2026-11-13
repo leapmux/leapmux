@@ -177,6 +177,87 @@ describe('chatPremeasureQueue', () => {
     })
   })
 
+  it('keeps each candidate object while its entry and height key stay the same', () => {
+    // ChatHiddenPremeasure's <For> keys rows by object identity, so a new object
+    // for an unchanged row remounts its whole hidden bubble.
+    createRoot((dispose) => {
+      const h = makeHarness(['a', 'b', 'c'])
+      h.setRanged([
+        h.candidate('a'),
+        h.candidate('b'),
+      ])
+      const [first, second] = h.queue.premeasureCandidates()
+
+      h.setWarmup([
+        h.candidate('c'),
+      ])
+      const grown = h.queue.premeasureCandidates()
+      expect(grown.map(c => c.item.id)).toEqual(['a', 'b', 'c'])
+      expect(grown[0]).toBe(first)
+      expect(grown[1]).toBe(second)
+
+      // A settled measure retires its own row and leaves the others mounted.
+      h.queue.onMeasure('a', 10, 'k-a', 0, true)
+      const shrunk = h.queue.premeasureCandidates()
+      expect(shrunk.map(c => c.item.id)).toEqual(['b', 'c'])
+      expect(shrunk[0]).toBe(second)
+      expect(shrunk[1]).toBe(grown[2])
+      dispose()
+    })
+  })
+
+  it('gives a row a new candidate object when its entry or its height key changes', () => {
+    createRoot((dispose) => {
+      const entryOf = (id: string) => ({
+        message: { id },
+      } as ClassifiedEntry)
+      const [entries, setEntries] = createSignal<ReadonlyMap<string, ClassifiedEntry>>(new Map<string, ClassifiedEntry>()
+        .set('a', entryOf('a'))
+        .set('b', entryOf('b')))
+      const [items, setItems] = createSignal<VirtualItem[]>([
+        { id: 'a', hasSpanLines: false, heightKey: 'k-a' },
+        { id: 'b', hasSpanLines: false, heightKey: 'k-b' },
+      ])
+      const queue = createPremeasureQueue({
+        virt: {
+          hasMeasuredHeight: () => false,
+          hasPendingPremeasuredHeight: () => false,
+          primeHeight: () => true,
+        },
+        visibleEntryById: entries,
+        virtualItemById: () => new Map(items().map(item => [item.id, item])),
+        virtualItems: items,
+        rangedCandidates: () => items().map(item => ({
+          entry: entries().get(item.id)!,
+          item,
+        })),
+        lookAheadCandidates: () => [],
+      })
+      const [a, b] = queue.premeasureCandidates()
+
+      // The window rebuilds every item object, but the height keys stay the same.
+      setItems(prev => prev.map(item => ({ ...item })))
+      expect(queue.premeasureCandidates()[0]).toBe(a)
+      expect(queue.premeasureCandidates()[1]).toBe(b)
+
+      setItems(prev => prev.map(item => (item.id === 'a'
+        ? { ...item, heightKey: 'k-a2' }
+        : item)))
+      const rekeyed = queue.premeasureCandidates()
+      expect(rekeyed[0]).not.toBe(a)
+      expect(rekeyed[0]?.item.heightKey).toBe('k-a2')
+      expect(rekeyed[1]).toBe(b)
+
+      const rebuiltB = entryOf('b')
+      setEntries(prev => new Map(prev).set('b', rebuiltB))
+      const reclassified = queue.premeasureCandidates()
+      expect(reclassified[0]).toBe(rekeyed[0])
+      expect(reclassified[1]).not.toBe(b)
+      expect(reclassified[1]?.entry).toBe(rebuiltB)
+      dispose()
+    })
+  })
+
   it('records actual virtualizer acceptance and stale-key refusal only in development', () => {
     const events: unknown[] = []
     const record = (event: Event) => {

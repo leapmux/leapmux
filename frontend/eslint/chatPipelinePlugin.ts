@@ -31,6 +31,13 @@ function canonicalModule(filename: string, specifier: string): string {
     : path
 }
 
+/**
+ * The diff modules that the model may import: pure TypeScript that draws nothing and
+ * holds no state. `canonicalModule` strips the `.ts` extension, so the `$` anchor also
+ * matches a specifier that spells it.
+ */
+const MODEL_DIFF_MODULES = /\/components\/chat\/diff\/(?:diffBuilder|diffTypes|unifiedDiffParser)$/
+
 function pipelineImportIsForbidden(filename: string, specifier: string): boolean {
   const normalizedFilename = filename.replaceAll('\\', '/')
   if (specifier === 'lucide-solid' || specifier.startsWith('lucide-solid/'))
@@ -50,7 +57,7 @@ function pipelineImportIsForbidden(filename: string, specifier: string): boolean
     return true
   return canonical.includes('/components/')
     && !canonical.includes('/components/chat/model/')
-    && !canonical.includes('/components/chat/diff/')
+    && !MODEL_DIFF_MODULES.test(canonical)
 }
 
 const layerImports = createRule<[], 'forbiddenImport'>({

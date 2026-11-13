@@ -1,6 +1,7 @@
 import type { TokenizeRequest, TokenizeResponse } from './shikiWorker'
 import type { SyntaxThemePair } from './syntaxThemes'
 import type { CachedToken, InternedTokenLines } from './tokenCache'
+import type { WorkerJobPriority } from './workerPriorityGate'
 import { createPersistedArtifact } from './persistedArtifact'
 import { syntaxThemeKey, syntaxThemePair, themeStillCurrent } from './shikiThemes'
 import { expandInternedTokenLines, getCachedTokens, makeKey, setCachedTokens } from './tokenCache'
@@ -34,6 +35,29 @@ const inFlightByKey = new Map<string, Promise<CachedToken[][] | null>>()
 // Dispatch order gate shared by all tokenize requests: viewport code surfaces
 // preempt overscan ones (see createWorkerPriorityGate).
 const gate = createWorkerPriorityGate()
+
+/**
+ * Ask the worker for the interned tokens of `code` under `pair`, through the
+ * gate. The one place that builds the tokenize message, so the cached and the
+ * uncached paths cannot send different requests.
+ *
+ * Resolves to null when the worker cannot tokenize the code, or fails: it
+ * crashes, or it cannot start (also where no Worker exists).
+ */
+function requestInternedTokens(
+  lang: string,
+  code: string,
+  pair: SyntaxThemePair,
+  priority?: WorkerJobPriority,
+): Promise<InternedTokenLines | null> {
+  return gate.enqueue(() => client.request(id => ({
+    type: 'tokenize',
+    id,
+    lang,
+    code,
+    syntax: pair,
+  })), priority)
+}
 
 // --- persisted token artifacts (IndexedDB) ----------------------------------
 // Reload warm-start for code surfaces. Values are stored in the compact
@@ -87,7 +111,8 @@ export const tokenArtifactNs = tokenArtifact.ns
 
 /**
  * Tokenize code asynchronously via the Web Worker.
- * Checks the cache first and populates it on completion.
+ * Checks the cache first and populates it on completion. Resolves to null when
+ * the worker cannot tokenize the code, or fails (see requestInternedTokens).
  *
  * `isLowPriority` (re-read at each dispatch opportunity) deprioritizes the
  * request behind currently-high ones. A coalesced duplicate keeps the FIRST
@@ -102,9 +127,6 @@ export function tokenizeAsync(
   const cached = getCachedTokens(lang, code)
   if (cached)
     return Promise.resolve(cached)
-
-  if (typeof Worker === 'undefined')
-    return Promise.resolve(null)
 
   // The pair this request is answered under, captured ONCE at dispatch and
   // carried through the wire message, the coalescing key and the artifact
@@ -126,14 +148,7 @@ export function tokenizeAsync(
   if (inFlight)
     return inFlight
 
-  const dispatchToWorker = (): Promise<CachedToken[][] | null> => gate
-    .enqueue(() => client.request(id => ({
-      type: 'tokenize',
-      id,
-      lang,
-      code,
-      syntax: pair,
-    })), isLowPriority)
+  const dispatchToWorker = (): Promise<CachedToken[][] | null> => requestInternedTokens(lang, code, pair, isLowPriority)
     .then((interned) => {
       if (!interned)
         return null
@@ -186,19 +201,14 @@ export function tokenizeAsync(
  * keystroke, such as a code block in the composer: each version would otherwise
  * take a cache entry and a store write, and evict the tokens of the chat.
  *
- * Resolves to null where no Worker exists, or when the worker fails.
+ * The request goes ahead of every queued request of the chat (`'first'`): the
+ * user waits for these colours while typing. An editor asks for one text at a
+ * time, so it holds at most one slot of the gate.
+ *
+ * Resolves to null when the worker cannot tokenize the code, or fails.
  */
 export function tokenizeUncached(lang: string, code: string, pair: SyntaxThemePair): Promise<CachedToken[][] | null> {
-  if (typeof Worker === 'undefined')
-    return Promise.resolve(null)
-  return gate
-    .enqueue(() => client.request(id => ({
-      type: 'tokenize',
-      id,
-      lang,
-      code,
-      syntax: pair,
-    })))
+  return requestInternedTokens(lang, code, pair, 'first')
     .then(interned => (interned === null
       ? null
       : expandInternedTokenLines(interned)))

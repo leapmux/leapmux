@@ -37,12 +37,6 @@ export interface StringRenderCacheEntry<T> {
   value: T
 }
 
-/** The entry a tuple of hashed string inputs addresses: the inputs, kept to verify each hash at read. */
-export interface StringTupleRenderCacheEntry<T> {
-  inputs: readonly string[]
-  value: T
-}
-
 /**
  * The key for one value under a FIXED name -- the row model, per row-revision cache.
  *
@@ -63,17 +57,6 @@ export function fixedCacheKey<T>(name: string): CacheKey<T> {
  */
 export function stringCacheKey<T>(namespace: string, input: string): CacheKey<StringRenderCacheEntry<T>> {
   return brandedKey(`${namespace}:${input.length}:${fnv1a32Hex(input)}`)
-}
-
-/**
- * The key for a tuple of hashed string inputs, such as a diff's two bodies and the
- * file they belong to. Collision verification per part, as above.
- */
-export function stringTupleCacheKey<T>(namespace: string, inputs: readonly string[]): CacheKey<StringTupleRenderCacheEntry<T>> {
-  return brandedKey([
-    namespace,
-    ...inputs.map(input => `${input.length}:${fnv1a32Hex(input)}`),
-  ].join(':'))
 }
 
 export interface MessageRenderCache {
@@ -156,18 +139,6 @@ export function createMessageRenderCacheStore(maxRows = DEFAULT_MAX_RENDER_CACHE
 // A MarkdownRenderContext flows in here, and its reactive getter
 // answers undefined while the owning row is absent for now. Every reader
 // optional-chains, so undefined stays the live "no cache yet" state.
-export function cachedRenderValueForString<T>(
-  context: { renderCache?: MessageRenderCache | undefined } | undefined,
-  namespace: string,
-  input: string,
-  compute: () => T,
-): T {
-  const cached = getCachedRenderValueForString<T>(context, namespace, input)
-  if (cached !== undefined)
-    return cached
-  return setCachedRenderValueForString(context, namespace, input, compute())
-}
-
 export function getCachedRenderValueForString<T>(
   context: { renderCache?: MessageRenderCache | undefined } | undefined,
   namespace: string,
@@ -188,23 +159,5 @@ export function setCachedRenderValueForString<T>(
   value: T,
 ): T {
   context?.renderCache?.set(stringCacheKey<T>(namespace, input), { input, value })
-  return value
-}
-
-export function cachedRenderValueForStrings<T>(
-  context: { renderCache?: MessageRenderCache | undefined } | undefined,
-  namespace: string,
-  inputs: readonly string[],
-  compute: () => T,
-): T {
-  // Collision verification per part, for the reason the single-input read gives.
-  const cached = context?.renderCache?.get(stringTupleCacheKey<T>(namespace, inputs))
-  if (cached?.inputs.length === inputs.length && cached.inputs.every((input, index) => input === inputs[index]))
-    return cached.value
-  const value = compute()
-  context?.renderCache?.set(stringTupleCacheKey<T>(namespace, inputs), {
-    inputs: [...inputs],
-    value,
-  })
   return value
 }

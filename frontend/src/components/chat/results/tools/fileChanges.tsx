@@ -12,7 +12,7 @@ import { relativizePath } from '~/lib/paths'
 import { fileEditCopyableText, fileEditHasDiff, requestedFileChangesCopyable } from '../../model/fileEditDiff'
 import { toolCallStatusOutcome } from '../../model/toolCallStatus'
 import { toolInputText, toolResultPrompt } from '../../toolStyles.css'
-import { fileEditCopyHunks, FileEditDiffBody, FileEditDiffTitle } from '../fileEditDiff'
+import { fileEditCopyFinal, fileEditCopyHunks, FileEditDiffBody, FileEditDiffTitle } from '../fileEditDiff'
 import { RequestedFileChanges } from '../requestedFileChanges'
 
 /**
@@ -110,14 +110,12 @@ export function fileChangesTitle(changes: FileEditDiff[], replaceAll: boolean | 
     : `${paths.size} files changed`
 }
 
-const copyHunksOf = (source: FileEditDiff) => fileEditCopyHunks(source).hunks
-
 /** Whether the Copy text of every change states its final diff; see fileEditCopyHunks. */
-const copyHunksFinal = (changes: FileEditDiff[]) => () => changes.every(source => fileEditCopyHunks(source).final)
+const copyHunksFinal = (changes: FileEditDiff[]) => () => changes.every(source => fileEditCopyFinal(source))
 
 /** The meta a landed set of changes offers. */
 export function fileChangesMeta(changes: FileEditDiff[]): ToolKindMeta {
-  const copyable = () => changes.map(source => fileEditCopyableText(source, copyHunksOf(source))).filter(Boolean).join('\n\n') || null
+  const copyable = () => changes.map(source => fileEditCopyableText(source, fileEditCopyHunks)).filter(Boolean).join('\n\n') || null
   return {
     collapsible: false,
     hasDiff: changes.some(fileEditHasDiff),
@@ -132,7 +130,7 @@ export function requestedFileChangesMeta(changes: FileEditDiff[]): ToolKindMeta 
   return {
     collapsible: false,
     hasDiff: changes.some(fileEditHasDiff),
-    copyableContent: () => requestedFileChangesCopyable(changes, copyHunksOf) || null,
+    copyableContent: () => requestedFileChangesCopyable(changes, fileEditCopyHunks) || null,
     copyableFinal: copyHunksFinal(changes),
     previewText: () => changes.map(source => source.filePath).join('\n') || null,
   }
@@ -160,7 +158,7 @@ export function failedFileChangesMeta(changes: FileEditDiff[]): ToolKindMeta {
   return {
     collapsible: false,
     hasDiff: false,
-    copyableContent: () => requestedFileChangesCopyable(changes, copyHunksOf) || null,
+    copyableContent: () => requestedFileChangesCopyable(changes, fileEditCopyHunks) || null,
     copyableFinal: copyHunksFinal(changes),
   }
 }

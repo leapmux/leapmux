@@ -1,6 +1,7 @@
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { failedResult } from '~/components/chat/model/toolCall'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { checkKindModule } from '~/test-support/kindTestHarness'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { ToolMessage } from '../ToolMessage'
@@ -60,7 +61,7 @@ describe('todo renderer', () => {
    * has no result row beside it, so it draws the result itself -- and the request
    * guard passed as well, so the checklist and its note appeared twice on that row.
    */
-  it('draws the checklist once on a row that carries both halves', () => {
+  it('draws the checklist once on a row that carries both halves', async () => {
     const call = toolCallFixture('todo', {
       request: {
         items: [
@@ -76,6 +77,7 @@ describe('todo renderer', () => {
       },
     })
     const { container } = render(() => <ToolMessage row={toolRow(call, 'update')} />)
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text.match(/MARKER-ONE/g)).toHaveLength(1)
     expect(text.match(/MARKER-NOTE/g)).toHaveLength(1)
@@ -120,11 +122,12 @@ describe('todo renderer', () => {
 
   // The EMPTY case is the one the marker matters most for: the body states
   // `To-do list cleared`, which is a claim the stopped call never made.
-  it('marks the returned note as output and leaves the carried note unmarked', () => {
+  it('marks the returned note as output and leaves the carried note unmarked', async () => {
     const saved = toolCallFixture('todo', {
       result: { items: ONE_TASK, note: 'MARKER-RESULT-NOTE' },
     })
     const result = render(() => <ToolMessage row={toolRow(saved)} />)
+    await settleWorkerReplies()
     const outputs = result.container.querySelectorAll('[data-tool-output-preview]')
     expect(outputs).toHaveLength(1)
     expect(outputs[0]?.textContent).toBe('MARKER-RESULT-NOTE')
@@ -133,6 +136,7 @@ describe('todo renderer', () => {
       request: { items: ONE_TASK, note: 'MARKER-REQUEST-NOTE' },
     })
     const request = render(() => <ToolMessage row={toolRow(carried, 'update')} />)
+    await settleWorkerReplies()
     expect(request.container.textContent).toContain('MARKER-REQUEST-NOTE')
     expect(request.container.querySelector('[data-tool-output-preview]')).toBeNull()
   })

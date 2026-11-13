@@ -34,12 +34,65 @@ describe('yieldToEventLoop', () => {
     vi.unstubAllGlobals()
   })
 
-  it('resumes after a task that was already queued', async () => {
+  it('resumes after every microtask that runs before the next task', async () => {
     const order: string[] = []
-    setTimeout(() => order.push('queued task'), 0)
-    await yieldToEventLoop()
-    order.push('resumed')
-    expect(order).toEqual(['queued task', 'resumed'])
+    const yielded = yieldToEventLoop().then(() => order.push('resumed'))
+    // A microtask that queues another one 100 times: a yield that resolved in a
+    // microtask would resume in the middle of the chain.
+    let hops = 0
+    const hop = () => {
+      hops++
+      if (hops < 100)
+        queueMicrotask(hop)
+      else
+        order.push('microtasks done')
+    }
+    queueMicrotask(hop)
+
+    await yielded
+
+    expect(order).toEqual(['microtasks done', 'resumed'])
+  })
+
+  // Chrome shipped scheduler.postTask several versions before scheduler.yield.
+  it.each([
+    { label: 'no scheduler', scheduler: undefined },
+    {
+      label: 'a scheduler without a yield method',
+      scheduler: {
+        postTask: () => Promise.resolve(),
+      },
+    },
+  ])('yields through a message where the browser has no scheduler.yield: $label', async ({ scheduler }) => {
+    vi.stubGlobal('scheduler', scheduler)
+    const deliveries: Array<() => void> = []
+    const closed = vi.fn()
+    vi.stubGlobal('MessageChannel', class {
+      port1 = {
+        onmessage: null as (() => void) | null,
+        close: closed,
+      }
+
+      port2 = {
+        postMessage: () => deliveries.push(() => this.port1.onmessage?.()),
+      }
+    })
+    let resumed = false
+
+    const yielded = yieldToEventLoop().then(() => {
+      resumed = true
+    })
+    await Promise.resolve()
+    await Promise.resolve()
+
+    // Only the message resumes the work: no timer, which a hidden page throttles.
+    expect(deliveries).toHaveLength(1)
+    expect(resumed).toBe(false)
+    deliveries[0]!()
+    await yielded
+    expect(resumed).toBe(true)
+    // A port with a listener keeps a Node process alive until it closes.
+    expect(closed).toHaveBeenCalledOnce()
   })
 
   it('uses scheduler.yield where the browser has it', async () => {

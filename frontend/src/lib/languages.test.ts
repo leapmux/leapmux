@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { resolveBundledLang } from './bundledLanguage'
 import { LANGUAGES } from './languages'
-import { resolveBundledLang } from './shikiLazyHighlighter'
 
 describe('language option list (LANGUAGES)', () => {
   it('lists Plain Text first, then all bundled grammars', () => {

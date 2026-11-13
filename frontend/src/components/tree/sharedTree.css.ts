@@ -54,7 +54,8 @@ export const chevronPlaceholder = style({
 
 /**
  * How long a directory's children take to open or close. The directory tree
- * also unmounts closed children after this long, once the close has animated.
+ * unmounts closed children when their close transition ends, and derives from
+ * this how long it waits for a `transitionend` that may never come.
  */
 export const CHILDREN_TRANSITION_MS = 150
 

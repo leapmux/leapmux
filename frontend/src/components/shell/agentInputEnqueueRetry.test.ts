@@ -1,26 +1,24 @@
 import type { FileAttachment } from '~/components/chat/attachments'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { AgentInputKind } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AnsweringWorker, holdWorkerReplies, recordWorkerRequests, resetWorkerStandIns, settleWorkerReplies } from '~/test-support/fakeWorker'
 import { createAgentInputEnqueueRetry, MAX_PENDING_ATTEMPTS } from './agentInputEnqueueRetry'
 
-/** Whether every check of the work slice reports it used, and how often the hash yielded. */
-const slicing = vi.hoisted(() => ({ alwaysUsed: false, yields: 0 }))
+// This file runs in the node project, which runs no `vitest.setup.ts`. So it
+// installs the stand-in Worker, which hashes each fingerprint in the real hash
+// worker's handler, and it ends the holds and settles the replies after each
+// test, as that setup does for a jsdom test.
+beforeAll(() => {
+  vi.stubGlobal('Worker', AnsweringWorker)
+})
 
-vi.mock('~/lib/workSlices', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('~/lib/workSlices')>()
-  return {
-    ...actual,
-    createWorkSlicer: () => {
-      const real = actual.createWorkSlicer()
-      return {
-        sliceUsed: () => slicing.alwaysUsed || real.sliceUsed(),
-        nextSlice: async () => {
-          slicing.yields++
-          await real.nextSlice()
-        },
-      }
-    },
-  }
+afterEach(async () => {
+  resetWorkerStandIns()
+  await settleWorkerReplies()
+})
+
+afterAll(() => {
+  vi.unstubAllGlobals()
 })
 
 function attachment(filename: string, data: number[]): FileAttachment {
@@ -282,12 +280,80 @@ describe('agent input enqueue retry pending attempts', () => {
   })
 })
 
-describe('agent input enqueue retry fingerprint', () => {
-  afterEach(() => {
-    slicing.alwaysUsed = false
-    slicing.yields = 0
+// The hash runs off the main thread, so a response can settle an attempt while a
+// second call for the same payload still hashes. The call started while the
+// attempt was pending, so it must join that attempt, as it did when the hash ran
+// in one task: a fresh ID would deliver the payload twice.
+describe('agent input enqueue retry during the hash', () => {
+  /** Start a lookup whose hash waits in the hash worker until `release` runs. */
+  function holdHash<T>(lookup: () => Promise<T>) {
+    const hold = holdWorkerReplies('lib/fieldDigestWorker.ts')
+    return {
+      result: lookup(),
+      release: async () => {
+        // The hash of the lookup waits in the worker until now.
+        await settleWorkerReplies()
+        expect(hold.pending()).toBe(1)
+        await hold.release()
+      },
+    }
+  }
+
+  it('returns the ID of an attempt that the Worker accepts during the hash', async () => {
+    let sequence = 0
+    const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
+    const inFlight = await retry.inputIdFor(message('deploy it'))
+
+    const second = holdHash(() => retry.inputIdFor(message('deploy it')))
+    retry.markAccepted(inFlight)
+    await second.release()
+
+    expect(await second.result).toBe(inFlight)
+    // The accepted attempt stays settled: a later send of the same text is a new message.
+    expect(await retry.inputIdFor(message('deploy it'))).toBe('input-2')
   })
 
+  it('returns the ID of an attempt that the Worker refuses during the hash', async () => {
+    let sequence = 0
+    const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
+    const inFlight = await retry.inputIdFor(message('deploy it'))
+
+    const second = holdHash(() => retry.inputIdFor(message('deploy it')))
+    retry.markRefused(inFlight)
+    await second.release()
+
+    expect(await second.result).toBe(inFlight)
+    expect(await retry.inputIdFor(message('deploy it'))).toBe('input-2')
+  })
+
+  it('acquires an uncertain attempt that the Worker accepts during the hash', async () => {
+    let sequence = 0
+    const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
+    const uncertain = await retry.inputIdFor(message('deploy it'))
+    retry.markUncertain(uncertain)
+
+    const retried = holdHash(() => retry.inputIdForPendingAttempt(message('deploy it')))
+    retry.markAccepted(uncertain)
+    await retried.release()
+
+    expect(await retried.result).toBe(uncertain)
+    expect(await retry.inputIdForPendingAttempt(message('deploy it'))).toBeUndefined()
+  })
+
+  it('mints one ID for two identical calls whose hashes run at the same time', async () => {
+    let sequence = 0
+    const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
+
+    const ids = await Promise.all([
+      retry.inputIdFor(message('deploy it')),
+      retry.inputIdFor(message('deploy it')),
+    ])
+
+    expect(ids).toEqual(['input-1', 'input-1'])
+  })
+})
+
+describe('agent input enqueue retry fingerprint', () => {
   const large = () => ({
     ...message('large'),
     attachments: [
@@ -295,32 +361,52 @@ describe('agent input enqueue retry fingerprint', () => {
     ],
   })
 
-  it('hashes a large attachment in slices that yield to the event loop', async () => {
+  it('passes every field, attachment bytes included, to the hash worker', async () => {
+    const requests = recordWorkerRequests('lib/fieldDigestWorker.ts')
     const retry = createAgentInputEnqueueRetry(() => 'input-1')
-    slicing.alwaysUsed = true
-    const order: string[] = []
-    setTimeout(() => order.push('queued task'), 0)
+    const encoder = new TextEncoder()
+    const payload = {
+      ...message('hello'),
+      scheduledAt: '2030-01-01T09:00:00.000Z',
+      attachments: [
+        attachment('a.txt', [1, 2, 3]),
+        attachment('b.txt', [4]),
+      ],
+    }
 
-    const id = await retry.inputIdFor(large())
-    order.push('fingerprint')
+    await retry.inputIdFor(payload)
 
-    expect(id).toBe('input-1')
-    // 512 KiB + 1 byte is nine 64 KiB pieces; each piece starts a new slice.
-    expect(slicing.yields).toBeGreaterThanOrEqual(9)
-    expect(order).toEqual(['queued task', 'fingerprint'])
-  })
-
-  it('computes the same fingerprint whether or not the hash yields', async () => {
-    let sequence = 0
-    const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
-    slicing.alwaysUsed = true
-    const sliced = await retry.inputIdFor(large())
-    slicing.alwaysUsed = false
-    expect(await retry.inputIdFor(large())).toBe(sliced)
-    // A short payload never runs past one slice, so it does not yield.
-    slicing.yields = 0
-    expect(await retry.inputIdFor(message('short'))).toBe('input-2')
-    expect(slicing.yields).toBe(0)
+    expect(requests).toHaveLength(1)
+    const { fields } = requests[0]!
+    expect(fields.map(field => [...field])).toEqual([
+      [
+        ...encoder.encode('agent-1'),
+      ],
+      [AgentInputKind.USER_MESSAGE],
+      [
+        ...encoder.encode('hello'),
+      ],
+      [
+        ...encoder.encode('2030-01-01T09:00:00.000Z'),
+      ],
+      [
+        ...encoder.encode('a.txt'),
+      ],
+      [
+        ...encoder.encode('text/plain'),
+      ],
+      [1, 2, 3],
+      [
+        ...encoder.encode('b.txt'),
+      ],
+      [
+        ...encoder.encode('text/plain'),
+      ],
+      [4],
+    ])
+    // The attachment bytes go to the hash worker as they are: neither the
+    // fingerprint nor the worker client copies a view that owns its buffer.
+    expect(fields.at(-1)).toBe(payload.attachments[1]!.data)
   })
 
   it('detects a change in the last byte of a large attachment', async () => {

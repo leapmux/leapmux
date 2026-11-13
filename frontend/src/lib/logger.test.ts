@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createLogger, isDebugEnabled, setDebugEnabled } from './logger'
+import { createLogger, isDebugEnabled, onDebugEnabledChange, setDebugEnabled } from './logger'
 
 describe('createLogger', () => {
   it('returns the same instance for the same name (singleton)', () => {
@@ -116,5 +116,95 @@ describe('createLogger', () => {
         log.debug('moveTabToTile:start', buildPayload())
       expect(buildPayload).toHaveBeenCalledTimes(1)
     })
+  })
+})
+
+describe('onDebugEnabledChange', () => {
+  afterEach(() => {
+    setDebugEnabled(false)
+    vi.restoreAllMocks()
+  })
+
+  it('notifies a listener on a change only', () => {
+    const listener = vi.fn()
+    const unsubscribe = onDebugEnabledChange(listener)
+
+    setDebugEnabled(false)
+    expect(listener).not.toHaveBeenCalled()
+    setDebugEnabled(true)
+    setDebugEnabled(true)
+    setDebugEnabled(false)
+
+    expect(listener.mock.calls).toEqual([
+      [true],
+      [false],
+    ])
+    unsubscribe()
+  })
+
+  it('stops notifying a listener after its unsubscribe', () => {
+    const listener = vi.fn()
+    const unsubscribe = onDebugEnabledChange(listener)
+    setDebugEnabled(true)
+
+    unsubscribe()
+    setDebugEnabled(false)
+
+    expect(listener.mock.calls).toEqual([
+      [true],
+    ])
+  })
+
+  it('keeps one registration for each subscribe of the same function', () => {
+    const listener = vi.fn()
+    const first = onDebugEnabledChange(listener)
+    const second = onDebugEnabledChange(listener)
+
+    first()
+    setDebugEnabled(true)
+
+    expect(listener.mock.calls).toEqual([
+      [true],
+    ])
+    second()
+  })
+
+  it('still changes the flag and notifies the other listeners when a listener throws', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const failure = new Error('listener failed')
+    const failing = onDebugEnabledChange(() => {
+      throw failure
+    })
+    const listener = vi.fn()
+    const unsubscribe = onDebugEnabledChange(listener)
+
+    setDebugEnabled(true)
+
+    expect(isDebugEnabled()).toBe(true)
+    expect(listener).toHaveBeenCalledWith(true)
+    expect(errorSpy).toHaveBeenCalledOnce()
+    expect(errorSpy).toHaveBeenCalledWith('[logger] a debug flag listener failed:', failure)
+    failing()
+    unsubscribe()
+  })
+
+  // A listener that forwards the flag to a module which sets it again must not loop.
+  it('notifies nobody again when a listener sets the value that the flag holds', () => {
+    const forwarded: boolean[] = []
+    const forwarding = onDebugEnabledChange((enabled) => {
+      forwarded.push(enabled)
+      setDebugEnabled(enabled)
+    })
+    const listener = vi.fn()
+    const unsubscribe = onDebugEnabledChange(listener)
+
+    setDebugEnabled(true)
+
+    expect(forwarded).toEqual([true])
+    expect(listener.mock.calls).toEqual([
+      [true],
+    ])
+    forwarding()
+    unsubscribe()
   })
 })

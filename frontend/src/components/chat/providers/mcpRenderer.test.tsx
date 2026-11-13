@@ -3,7 +3,8 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { toolUseHeader } from '~/components/chat/toolStyles.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import './testMocks'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import '~/components/chat/providers'
 
 const { renderMessageContent } = await import('../messageContentRenderer')
 
@@ -142,16 +143,16 @@ describe('mcp tool_use rendering', () => {
 })
 
 describe('mcp tool_result rendering', () => {
-  it('should render mcp tool_result as markdown', () => {
+  it('should render mcp tool_result as markdown', async () => {
     const parsed = makeMcpToolResult('# Research Report\n\nThis is a comparison of Go OIDC libraries.')
 
     const { container } = render(() =>
       renderMessageContent(parsed, { spanType: 'mcp__claude_ai_Tavily__tavily_research' }, toolResultCategory, AgentProvider.CLAUDE_CODE),
     )
+    await settleWorkerReplies()
 
-    const text = container.textContent || ''
-    // Should render the markdown content (renderMarkdown is mocked to pass through)
-    expect(text).toContain('Research Report')
-    expect(text).toContain('comparison of Go OIDC libraries')
+    expect(container.querySelector('h1')?.textContent).toBe('Research Report')
+    expect(container.querySelector('p')?.textContent).toBe('This is a comparison of Go OIDC libraries.')
+    expect(container.textContent).not.toContain('# Research Report')
   })
 })

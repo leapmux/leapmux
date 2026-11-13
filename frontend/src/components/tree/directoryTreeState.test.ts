@@ -119,7 +119,7 @@ describe('serializeState and deserializeState', () => {
   }
 
   it('round-trips a payload at the current version', () => {
-    expect(deserializeState(serializeState(state.expandedPaths, state.childrenCache, state.truncatedDirs)))
+    expect(deserializeState(serializeState(state, '', 'posix')))
       .toEqual(state)
   })
 
@@ -127,7 +127,7 @@ describe('serializeState and deserializeState', () => {
   // restore would have to prove, per key, that the old shape still reads
   // correctly under the new code.
   it('discards a payload stamped with another version', () => {
-    const stored = serializeState(state.expandedPaths, state.childrenCache, state.truncatedDirs)
+    const stored = serializeState(state, '', 'posix')
     expect(deserializeState({ ...stored, v: DIRECTORY_TREE_STATE_VERSION + 1 })).toBeNull()
     // An absent `v` and an explicit `v: undefined` read the same in the version
     // check, and the typed shape can only express the absent form.
@@ -138,9 +138,9 @@ describe('serializeState and deserializeState', () => {
   })
 
   it('keeps the listings of expanded directories only', () => {
-    const stored = serializeState(
-      { '/a': true, '/a/open': true },
-      {
+    const stored = serializeState({
+      expandedPaths: { '/a': true, '/a/open': true },
+      childrenCache: {
         '/a': [
           node('/a/open'),
           node('/a/closed'),
@@ -152,17 +152,19 @@ describe('serializeState and deserializeState', () => {
           node('/a/closed/y'),
         ],
       },
-      { '/a/open': 900, '/a/closed': 700 },
-    )
+      truncatedDirs: { '/a/open': 900, '/a/closed': 700 },
+    }, '', 'posix')
     expect(Object.keys(stored.childrenCache)).toEqual(['/a', '/a/open'])
     expect(stored.truncatedDirs).toEqual({ '/a/open': 900 })
     expect(stored.expandedPaths).toEqual({ '/a': true, '/a/open': true })
   })
 
-  it('keeps the listings that the caller lists, beside the expanded ones', () => {
-    const stored = serializeState(
-      { '/a': true },
-      {
+  // A reveal lists its target without expanding it, so a restore without that
+  // listing would fetch it again.
+  it('keeps the listing of the reveal target beside the expanded ones', () => {
+    const stored = serializeState({
+      expandedPaths: { '/a': true },
+      childrenCache: {
         '/a': [
           node('/a/target'),
         ],
@@ -171,14 +173,76 @@ describe('serializeState and deserializeState', () => {
         ],
         '/a/other': [],
       },
-      {},
-      ['/a', '/a/target'],
-    )
+      truncatedDirs: { '/a/target': 400, '/a/other': 300 },
+    }, '/a/target', 'posix')
+    expect(Object.keys(stored.childrenCache)).toEqual(['/a', '/a/target'])
+    expect(stored.truncatedDirs).toEqual({ '/a/target': 400 })
+    // The target stays closed: the payload lists it, and does not expand it.
+    expect(stored.expandedPaths).toEqual({ '/a': true })
+  })
+
+  // The cache spells a path as the worker lists it, and a typed target need
+  // not match that spelling.
+  it('finds the listing of a reveal target spelled another way on win32', () => {
+    const stored = serializeState({
+      expandedPaths: { 'C:\\': true },
+      childrenCache: {
+        'C:\\': [
+          node('C:\\Users'),
+        ],
+        'C:\\Users\\Alice': [
+          node('C:\\Users\\Alice\\proj'),
+        ],
+      },
+      truncatedDirs: {},
+    }, 'c:/users/alice', 'win32')
+    expect(Object.keys(stored.childrenCache)).toEqual(['C:\\', 'C:\\Users\\Alice'])
+  })
+
+  // `/A` and `/a` are two directories on posix.
+  it('matches the reveal target byte for byte on posix', () => {
+    const stored = serializeState({
+      expandedPaths: { '/a': true },
+      childrenCache: {
+        '/a': [],
+        '/a/Target': [],
+      },
+      truncatedDirs: {},
+    }, '/a/target', 'posix')
+    expect(Object.keys(stored.childrenCache)).toEqual(['/a'])
+  })
+
+  it('keeps no extra listing for a reveal target that the cache does not hold', () => {
+    const stored = serializeState({
+      expandedPaths: { '/a': true },
+      childrenCache: {
+        '/a': [],
+        '/a/other': [],
+      },
+      truncatedDirs: {},
+    }, '/a/target', 'posix')
+    expect(Object.keys(stored.childrenCache)).toEqual(['/a'])
+  })
+
+  // An expanded target is kept once, not twice.
+  it('keeps an expanded reveal target once', () => {
+    const stored = serializeState({
+      expandedPaths: { '/a': true, '/a/target': true },
+      childrenCache: {
+        '/a': [],
+        '/a/target': [],
+      },
+      truncatedDirs: {},
+    }, '/a/target', 'posix')
     expect(Object.keys(stored.childrenCache)).toEqual(['/a', '/a/target'])
   })
 
   it('stores no listing for an expanded directory that has none yet', () => {
-    const stored = serializeState({ '/a': true }, {}, {})
+    const stored = serializeState({
+      expandedPaths: { '/a': true },
+      childrenCache: {},
+      truncatedDirs: {},
+    }, '', 'posix')
     expect(stored.childrenCache).toEqual({})
     expect(stored.truncatedDirs).toEqual({})
   })

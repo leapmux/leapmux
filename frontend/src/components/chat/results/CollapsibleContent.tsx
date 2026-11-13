@@ -4,9 +4,9 @@ import { createMemo, Match, Show, Switch } from 'solid-js'
 import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { containsAnsi, renderAnsi, stripAnsi } from '~/lib/renderAnsi'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
-import { shouldPauseSyntaxHighlighting } from '../markdownRendering'
+import { MarkdownText } from '../MarkdownText'
 import { getCachedRenderValueForString, setCachedRenderValueForString } from '../messageRenderCache'
-import { MarkdownText } from '../messageRenderers'
+import { shouldPauseSyntaxHighlighting } from '../renderContext'
 import { LIMITED_TEXT_DISPLAY_NOTICE, limitTextForDisplay } from '../safeTextDisplay'
 import { JsonHighlightHtml } from '../syntaxHighlight'
 import { toolResultCollapsed, toolResultContent, toolResultContentAnsi, toolResultContentPre, toolResultPrompt } from '../toolStyles.css'
@@ -52,24 +52,52 @@ export interface CollapsibleContentProps {
   context?: MarkdownRenderContext
 }
 
+/** The kinds that limit their display text; see limitTextForDisplay. */
+type LimitedTextKind = Exclude<CollapsibleContentKind, 'markdown-tool-result'>
+
+/** The class suffix that clips a collapsed body, with its leading space. */
+function collapsedClassFor(isCollapsed: boolean): string {
+  return isCollapsed
+    ? ` ${toolResultCollapsed}`
+    : ''
+}
+
 /**
  * Render tool text with the shared collapsed display style.
  * useCollapsedLines supplies the selected text and collapse state.
  * This component selects its format and display classes.
  */
 export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element {
-  const collapsedClass = () => props.isCollapsed
-    ? ` ${toolResultCollapsed}`
-    : ''
+  return (
+    <Switch>
+      <Match when={props.kind === 'markdown-tool-result'}>
+        {/* The full body renders as Markdown in the worker, whatever its size. */}
+        <MarkdownText
+          text={props.text}
+          class={`${toolResultContent}${collapsedClassFor(props.isCollapsed)}`}
+          outputPreview={props.outputPreview === true}
+          context={props.context}
+        />
+      </Match>
+      <Match when={props.kind !== 'markdown-tool-result'
+        ? props.kind
+        : undefined}
+      >
+        {kind => <LimitedTextBody {...props} kind={kind()} />}
+      </Match>
+    </Switch>
+  )
+}
+
+/**
+ * The body of a kind that limits its display text: plain text, ANSI or JSON.
+ * The notice under the body states that the limit cut the text.
+ */
+function LimitedTextBody(props: Omit<CollapsibleContentProps, 'kind'> & { kind: LimitedTextKind }): JSX.Element {
+  const collapsedClass = () => collapsedClassFor(props.isCollapsed)
   const outputPreviewAttribute = () => props.outputPreview ? '' : undefined
-  const slice = () => props.display ?? props.text
-  // The Markdown kind renders the full text and never reads this display, so it
-  // skips the scan: the memo runs eagerly, and a body can be megabytes long.
-  const safeDisplay = createMemo(() => props.kind === 'markdown-tool-result'
-    ? { text: '', limited: false }
-    : limitTextForDisplay(slice()))
+  const safeDisplay = createMemo(() => limitTextForDisplay(props.display ?? props.text))
   const safeText = () => safeDisplay().text
-  const rawDisplayLimited = () => safeDisplay().limited
   const isAnsi = createMemo(() => props.kind === 'ansi-or-pre' && containsAnsi(props.text))
   const ansiPlainText = createMemo(() => isAnsi()
     ? stripAnsi(safeText())
@@ -115,17 +143,6 @@ export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element 
   return (
     <>
       <Switch>
-        <Match when={props.kind === 'markdown-tool-result'}>
-          {/* The full body renders as Markdown in the worker, whatever its size. */}
-          <MarkdownText
-            text={props.text}
-            class={`${toolResultContent}${collapsedClass()}`}
-            outputPreview={props.outputPreview === true}
-            {...(props.context !== undefined
-              ? { context: props.context }
-              : {})}
-          />
-        </Match>
         <Match when={props.kind === 'json'}>
           {/* The token surface receives only the safe display text. */}
           <JsonContent />
@@ -140,7 +157,7 @@ export function CollapsibleContent(props: CollapsibleContentProps): JSX.Element 
           <div class={`${toolResultContentPre}${collapsedClass()}`} data-tool-output-preview={outputPreviewAttribute()}>{ansiPlainText()}</div>
         </Match>
       </Switch>
-      <Show when={!props.isCollapsed && rawDisplayLimited()}>
+      <Show when={!props.isCollapsed && safeDisplay().limited}>
         <div class={toolResultPrompt}>{LIMITED_TEXT_DISPLAY_NOTICE}</div>
       </Show>
     </>

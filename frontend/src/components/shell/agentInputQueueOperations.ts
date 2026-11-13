@@ -171,12 +171,17 @@ export function createAgentInputQueueOperations(deps: {
       attachments: fileAttachments,
       scheduledAt,
     }
+    // The hash of the payload runs off the main thread, and the request of an
+    // attempt can settle in between. A call that started while that request was
+    // in flight shares its outcome: `enqueueRetry` returns the attempt that was
+    // pending when the call started, and this copy still holds its request.
+    const inFlightAtCall = new Map(inFlightByInputId)
     const inputId = requirePendingAttempt
       ? await enqueueRetry.inputIdForPendingAttempt(payload)
       : await enqueueRetry.inputIdFor(payload)
     if (inputId === undefined)
       return false
-    const existing = inFlightByInputId.get(inputId)
+    const existing = inFlightByInputId.get(inputId) ?? inFlightAtCall.get(inputId)
     if (existing)
       return existing
     // Scroll before the RPC so a reader above the tail sees the sent message.

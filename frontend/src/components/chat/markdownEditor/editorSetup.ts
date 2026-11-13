@@ -1,6 +1,5 @@
 import type { Ctx } from '@milkdown/ctx'
 import type { Node, NodeType, Schema } from '@milkdown/prose/model'
-import type { EditorView } from '@milkdown/prose/view'
 import type { TrailingDebounced } from '~/lib/debounce'
 import type { CodeLangHandlers } from '~/lib/editor/codeLangPlugin'
 import type { Draft, DraftMetadataRecord } from '~/lib/editor/draftPersistence'
@@ -23,8 +22,9 @@ import { gfm, strikethroughInputRule as milkdownStrikethroughInputRule } from '@
 import { Plugin, PluginKey } from '@milkdown/prose/state'
 import { $prose } from '@milkdown/utils'
 import { trailingDebounce } from '~/lib/debounce'
-import { CODE_HIGHLIGHT_REFRESH, createCodeHighlightPlugin } from '~/lib/editor/codeHighlightPlugin'
+import { createCodeHighlightPlugin } from '~/lib/editor/codeHighlightPlugin'
 import { createAutoDetectLanguageExtractor, createCodeLangPlugin } from '~/lib/editor/codeLangPlugin'
+import { createCodeTokenCache } from '~/lib/editor/codeTokenCache'
 import { saveDraft } from '~/lib/editor/draftPersistence'
 import { createLinkBoundaryPlugin, createListItemEnterPlugin, createMarkdownPastePlugin, createSelectionWrapPlugin } from '~/lib/editor/inputPlugins'
 import { createBulletListAfterHardBreakInputRule, createCodeBlockInputRule, createEmphasisStarInputRule, createEmphasisUnderscoreInputRule, createHrInputRule, createInlineCodeInputRule, createLinkInputRule, createOrderedListAfterHardBreakInputRule, createStrikethroughInputRule, createStrongInputRule } from '~/lib/editor/inputRules'
@@ -114,6 +114,14 @@ export function computeDocStats(doc: Node): DocStats {
     return { multiLine: true, text: '' }
   return { multiLine: false, text }
 }
+
+/**
+ * The code tokens of every editor that `buildEditor` makes in the session. An
+ * editor that mounts again, such as the composer after a switch to another tab
+ * and back, paints its code blocks from here instead of waiting for the token
+ * worker.
+ */
+const editorCodeTokens = createCodeTokenCache()
 
 /** Options for building the Milkdown editor. */
 export interface EditorSetupOptions {
@@ -244,6 +252,7 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
   const codeHighlightPlugin = $prose(() => createCodeHighlightPlugin({
     languageExtractor: createAutoDetectLanguageExtractor(),
     tokenize: tokenizeUncached,
+    tokenCache: editorCodeTokens,
   }))
 
   const editor = Editor.make()
@@ -353,35 +362,4 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
     editor.use(createDocTransactionPlugin)
 
   return editor.create()
-}
-
-/**
- * Repaint every highlighted code block in `view` under the CURRENT syntax theme.
- *
- * The highlight plugin keys each block on the theme as well as its text, so a
- * refresh after a theme change finds every block out of date. Each block keeps
- * the abandoned theme's colours until the worker answers for the new one, so
- * nothing flashes to plain (see createCodeHighlightPlugin).
- *
- * A syntax-theme change reaches the app from the Preferences dialog or the
- * no-workspace empty state -- neither of which coexists with an editable
- * composer. The one path that can fire while the composer is focused is an OS
- * `prefers-color-scheme` flip (or a cross-tab write) while the syntax theme is
- * PINNED with `mode: 'system'`, because that collapses the pair to one half.
- *
- * A composition DEFERS the repaint; it does not cancel it, because a dropped
- * repaint would leave every code block in the abandoned theme's colours. A
- * transaction during an IME composition would disturb it, so the
- * `compositionend` listener re-runs the repaint once, and it is registered on
- * the view's own DOM so it dies with the view.
- */
-export function refreshEditorHighlight(view: EditorView): void {
-  if (view.composing) {
-    // Once, and only for this deferral: `{ once: true }` drops the listener
-    // when it fires, so a burst of theme changes during one composition still
-    // repaints a single time at its end.
-    view.dom.addEventListener('compositionend', () => refreshEditorHighlight(view), { once: true })
-    return
-  }
-  view.dispatch(view.state.tr.setMeta(CODE_HIGHLIGHT_REFRESH, true))
 }

@@ -1,7 +1,8 @@
 import type { Accessor } from 'solid-js'
 import type { AnchorOffsetGeometry } from './chatScrollAnchor'
+import type { RowContentReadiness } from './createRowMeasurer'
 import type { ScrollAnchor } from '~/stores/chatTypes'
-import { batch, createMemo, createSignal, onCleanup } from 'solid-js'
+import { batch, createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { largestIndexWhere, smallestIndexWhere } from '~/lib/binarySearch'
 import { clamp } from '~/lib/clamp'
 import { capMapInsertionOrder } from '~/lib/mapLru'
@@ -218,12 +219,6 @@ export interface UseChatVirtualizerOptions {
   gapSmallPx?: Accessor<number> | number
   /** Inter-row gap (px) for all other adjacent rows (~--space-5). */
   gapLargePx?: Accessor<number> | number
-  /**
-   * Whether a mounted row shows its final content. The visible measurer reads no
-   * height from a row that waits for content; see RowMeasurerDeps.isRowReady. Call
-   * `remeasureRow` when the row turns ready. Absent means every row is ready.
-   */
-  isRowContentReady?: (id: string) => boolean
 }
 
 const DEFAULT_OVERSCAN_PX = 800
@@ -364,11 +359,24 @@ export interface UseChatVirtualizerResult {
   /**
    * The measured-height cache as persistable entries, in LRU order (least
    * recently measured first) — a consumer that caps the persisted set
-   * should keep the TAIL, the most recently measured rows.
+   * should keep the TAIL, the most recently measured rows. A mounted row's
+   * provisional height, which no measure under its key produced, is left out.
    */
   snapshotHeights: () => PersistableRowHeight[]
-  /** Whether the current item for `id` has a fresh measured/pre-measured height. */
+  /**
+   * Whether the current item for `id` has a fresh measured/pre-measured height,
+   * or is a mounted row that keeps the height that it measured under an earlier
+   * key until a read of its element under the new key (see pruneStaleKeyedHeights).
+   */
   hasMeasuredHeight: (id: string) => boolean
+  /**
+   * Whether a measure under the current key of row `id` produced its height: as
+   * `hasMeasuredHeight`, but false for a height that a mounted row keeps from an
+   * earlier key. A toggled row is confirmed at the first read of its element under
+   * the new key, which waits while the row replaces its content (see
+   * RowMeasurer.attachRow). Reactive: a confirmation bumps `geometryVersion`.
+   */
+  hasConfirmedHeight: (id: string) => boolean
   /**
    * Whether a hidden premeasurement already produced a valid height but its
    * geometry commit is queued behind the momentum-scroll deferral gate.
@@ -388,12 +396,16 @@ export interface UseChatVirtualizerResult {
   hasDeferredMeasurements: () => boolean
   /** Commit queued row measurements in one batch. */
   flushDeferredMeasurements: () => boolean
-  /** Ref callback: start observing a rendered row element. */
-  attachRow: (id: string, el: HTMLElement) => void
+  /**
+   * Ref callback: start observing a rendered row element. `readiness` holds the
+   * measurement while the row copy is not measurable (it waits for content, or
+   * replaces it), and measures the copy again when it turns measurable; see
+   * RowMeasurer.attachRow. Call it within the row's reactive owner when it passes
+   * `readiness`.
+   */
+  attachRow: (id: string, el: HTMLElement, readiness?: RowContentReadiness) => void
   /** Cleanup callback: stop observing a row element (keeps its cached height). */
   detachRow: (el: HTMLElement) => void
-  /** Measure a mounted row again at the next flush; see RowMeasurer.remeasureRow. */
-  remeasureRow: (id: string) => void
   /**
    * The ids of the rows currently MOUNTED in the DOM (the precise rendered set,
    * maintained synchronously by attach/detach). A live, read-only view -- consumers
@@ -416,7 +428,16 @@ function fallbackEstimateContribution(height: number): number | undefined {
 }
 
 interface CachedMeasuredHeight {
+  /** The height key of the row that the entry serves. */
   key: string | undefined
+  /**
+   * The height key under which a measure produced `height`. It differs from `key` while a
+   * MOUNTED row keeps the height that it measured under an earlier key (see
+   * pruneStaleKeyedHeights): its element still shows this height, and the next read of the
+   * element confirms or replaces it. Such an entry is provisional: it leaves the cache when
+   * the row unmounts unconfirmed, and no snapshot saves it.
+   */
+  measuredKey: string | undefined
   height: number
   fallbackContribution?: number
   /**
@@ -425,6 +446,18 @@ interface CachedMeasuredHeight {
    */
   kind: string
 }
+
+/** Whether no measure under its key produced the height of `entry` (see CachedMeasuredHeight.measuredKey). */
+function isProvisional(entry: CachedMeasuredHeight): boolean {
+  return entry.key !== entry.measuredKey
+}
+
+/**
+ * What a height commit changed: `moved` when it changed the offset map, `confirmed` when
+ * it only confirmed a provisional height under its key, and `none` otherwise. Each change
+ * owes a geometryVersion bump, because `hasConfirmedHeight` reads through geom().
+ */
+type HeightCommitResult = 'moved' | 'confirmed' | 'none'
 
 /**
  * A multiset of measured row heights that answers the MEDIAN cheaply. Stored as a small
@@ -593,13 +626,36 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       heightEstimate.remove(entry.kind, entry.fallbackContribution)
   }
 
+  // The mounted rows whose height the last prune kept under a new key, provisionally.
+  // An effect below asks the measurer to read each of them again.
+  const rekeyedMountedIds: string[] = []
+
+  // A height measured under an earlier key no longer describes a row that is not
+  // mounted, so the row falls back to the estimate until a measure. A MOUNTED row keeps
+  // its height, provisionally, under the new key: its element still shows that height,
+  // and the measurer reads the element again at its next flush. That read commits the
+  // new height, or confirms the kept one when the row keeps its height under the new
+  // key, which no resize would report. So the row keeps its slot, and the rows below it
+  // move once, when the row's content really changes. A diff view that mounts its new
+  // layout in idle slices behind the old one holds that read until it swaps the layouts
+  // (see RenderReadiness.trackReplacing), and its row stays visible until then. Hiding
+  // the row until a measure under the new key, as an unmeasured row does, would hide it
+  // for the whole mount. A key that changes back to the one that measured the height
+  // confirms it again.
   const pruneStaleKeyedHeights = (list: readonly VirtualItem[]): void => {
     for (const item of list) {
       const cached = heightCache.get(item.id)
-      if (cached !== undefined && cached.key !== item.heightKey) {
-        heightCache.delete(item.id)
-        removeFallbackContribution(cached)
+      if (cached === undefined || cached.key === item.heightKey)
+        continue
+      if (mountedIds.has(item.id)) {
+        const kept = { ...cached, key: item.heightKey }
+        heightCache.set(item.id, kept)
+        if (isProvisional(kept))
+          rekeyedMountedIds.push(item.id)
+        continue
       }
+      heightCache.delete(item.id)
+      removeFallbackContribution(cached)
     }
   }
 
@@ -622,6 +678,17 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // Bumped whenever a measurement changes the geometry, so the `geom` memo and
   // every reactive getter recompute. Plain caches stay non-reactive for speed.
   const [geomVersion, setGeomVersion] = createSignal(0)
+
+  // A provisional height describes only the element that still shows it. When the
+  // row's last element unmounts, the row is unmeasured under its key again.
+  const dropProvisionalHeight = (id: string): void => {
+    const cached = heightCache.get(id)
+    if (cached === undefined || !isProvisional(cached))
+      return
+    heightCache.delete(id)
+    removeFallbackContribution(cached)
+    setGeomVersion(v => v + 1)
+  }
 
   // The gap between row i and i+1 is tightened (small) whenever the LOWER row
   // (i+1) has span lines. SpanLines gives the lower row column-specific
@@ -655,7 +722,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // cost). Stale-keyed height pruning lives here for the same reason: a cached
   // height goes stale only when its item's heightKey changes, which changes the
   // list identity -- and resolvedHeight key-checks anyway, so a commit-time skip
-  // of the prune can never serve a stale height.
+  // of the prune can never serve a stale height. The prune keeps a mounted row's
+  // height under the new key, provisionally (see pruneStaleKeyedHeights).
   const rowIndex = createMemo(() => {
     const list = opts.items()
     pruneStaleKeyedHeights(list)
@@ -742,13 +810,23 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       : undefined
   }
 
-  const hasMeasuredHeight = (id: string): boolean => {
+  // The cache entry of row `id` under its current key, read through geom() so that a
+  // reactive caller re-reads it when a measurement commits.
+  const currentHeightEntry = (id: string): CachedMeasuredHeight | undefined => {
     const g = geom()
     const index = g.indexById.get(id)
-    if (index === undefined)
-      return false
-    const item = g.list[index]
-    return item !== undefined && cachedMeasuredHeight(item) !== undefined
+    const item = index === undefined
+      ? undefined
+      : g.list[index]
+    const cached = heightCache.get(id)
+    return item !== undefined && cached !== undefined && cached.key === item.heightKey
+      ? cached
+      : undefined
+  }
+  const hasMeasuredHeight = (id: string): boolean => currentHeightEntry(id) !== undefined
+  const hasConfirmedHeight = (id: string): boolean => {
+    const entry = currentHeightEntry(id)
+    return entry !== undefined && !isProvisional(entry)
   }
 
   // Debug-only: surface the measured height without exposing the generic fallback
@@ -879,8 +957,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
    * once per batch): validates, updates the cache + estimate medians +
    * eviction, and records the commit diagnostic. `currentKey`/`kind` are
    * passed in so a bulk caller can resolve them from ONE geom() snapshot
-   * instead of re-reading geometry per row. Returns whether the offset map
-   * changed (the caller owes a geometryVersion bump when it did).
+   * instead of re-reading geometry per row. Returns what the commit changed
+   * (the caller owes a geometryVersion bump for any change).
    */
   const applyHeightCommit = (
     id: string,
@@ -889,13 +967,13 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     source: MeasurementCommitInfo['source'],
     currentKey: string | undefined,
     kind: string,
-  ): boolean => {
+  ): HeightCommitResult => {
     // DOM callers verify layout before this numeric commit. A valid empty row
     // has a zero height. It completes measurement without changing the estimate.
     if (!isUsableHeight(height))
-      return false
+      return 'none'
     if (heightKey !== currentKey)
-      return false
+      return 'none'
     const stalePrev = heightCache.get(id)
     if (stalePrev !== undefined && stalePrev.key !== heightKey) {
       heightCache.delete(id)
@@ -915,14 +993,17 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // offset map doesn't change. Still refresh the row's LRU recency (delete +
     // re-set moves it to the most-recently-used end) so a row that stays mounted
     // and re-measures at a stable height can't age to the eviction front and get
-    // evicted while still visible.
+    // evicted while still visible. The measure confirms a provisional height
+    // under its key.
     if (prev !== undefined && Math.abs(prev - height) < MEASURE_EPSILON_PX) {
       const prevContributes = prevEntry?.fallbackContribution !== undefined
       const nextContributes = nextContribution !== undefined
       if (prevContributes === nextContributes && prevEntry !== undefined) {
         heightCache.delete(id)
-        heightCache.set(id, prevEntry)
-        return false
+        heightCache.set(id, { ...prevEntry, measuredKey: heightKey })
+        return isProvisional(prevEntry)
+          ? 'confirmed'
+          : 'none'
       }
     }
     // A row's FIRST measurement is the first DOM height for that row; re-measures
@@ -934,6 +1015,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     heightCache.delete(id)
     heightCache.set(id, {
       key: heightKey,
+      measuredKey: heightKey,
       height,
       kind,
       ...(nextContribution !== undefined
@@ -991,7 +1073,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // overwrites lastMeasurement per row, so only these survive the whole batch.
     batchCommits += 1
     batchDeltaSum += delta
-    return true
+    return 'moved'
   }
   const commitMeasuredHeight = (
     id: string,
@@ -1006,10 +1088,10 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       : list[index]
     if (item === undefined)
       return false
-    const changed = applyHeightCommit(id, height, heightKey, source, item.heightKey, kindOf(item))
-    if (changed)
+    const result = applyHeightCommit(id, height, heightKey, source, item.heightKey, kindOf(item))
+    if (result !== 'none')
       setGeomVersion(v => v + 1)
-    return changed
+    return result === 'moved'
   }
   const measure = (id: string, height: number): boolean =>
     commitMeasuredHeight(id, height, currentHeightKey(id), 'visible')
@@ -1047,6 +1129,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // geometry per row and rebuild the offset map once per entry.
     const g = geom()
     let adopted = 0
+    let changed = false
     for (const entry of entries) {
       const index = g.indexById.get(entry.id)
       if (index === undefined)
@@ -1064,35 +1147,48 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
           deferredPremeasures.set(entry.id, { id: entry.id, height: entry.height, heightKey: entry.heightKey })
         continue
       }
-      if (applyHeightCommit(entry.id, entry.height, entry.heightKey, 'premeasure', item.heightKey, kindOf(item)))
+      const result = applyHeightCommit(entry.id, entry.height, entry.heightKey, 'premeasure', item.heightKey, kindOf(item))
+      if (result === 'moved')
         adopted += 1
+      if (result !== 'none')
+        changed = true
     }
-    if (adopted > 0)
+    if (changed)
       setGeomVersion(v => v + 1)
     return adopted
   }
   const snapshotHeights = (): PersistableRowHeight[] => {
     const out: PersistableRowHeight[] = []
-    for (const [id, cached] of heightCache)
-      out.push({ id, heightKey: cached.key, height: cached.height })
+    for (const [id, cached] of heightCache) {
+      // No measure under its key produced a provisional height.
+      if (!isProvisional(cached))
+        out.push({ id, heightKey: cached.key, height: cached.height })
+    }
     return out
   }
 
   // The ResizeObserver / batched-microtask-flush DOM glue lives in createRowMeasurer
-  // (its only coupling here is `measure` + the shared mountedIds set), keeping this
-  // file the offset engine. The default scheduler/observer are the production ones; a
-  // unit test injects fakes to drive the flush timing deterministically.
+  // (its coupling here is `measure`, the height key, the deferral flag and the shared
+  // mountedIds set), keeping this file the offset engine. The default
+  // scheduler/observer are the production ones; a unit test injects fakes to drive
+  // the flush timing deterministically.
   const measurer = createRowMeasurer({
     measure,
     mountedIds,
+    onRowUnmounted: dropProvisionalHeight,
     currentMeasurementKey: currentHeightKey,
     shouldDeferMeasurement: () => deferMeasurements,
-    ...(opts.isRowContentReady !== undefined
-      ? { isRowReady: opts.isRowContentReady }
-      : {}),
   })
-  const { attachRow, detachRow, remeasureRow } = measurer
+  const { attachRow, detachRow } = measurer
   onCleanup(measurer.dispose)
+  // Read each mounted row that the last prune re-keyed again, at the measurer's next
+  // flush: a row whose new content keeps its height never resizes, and only a read of
+  // its element confirms the height under the new key.
+  createEffect(() => {
+    rowIndex()
+    for (const id of rekeyedMountedIds.splice(0))
+      measurer.measureAgain(id)
+  })
 
   const hasDeferredMeasurements = (): boolean =>
     measurer.hasDeferredMeasurements() || deferredPremeasures.size > 0
@@ -1160,6 +1256,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     primeHeights,
     snapshotHeights,
     hasMeasuredHeight,
+    hasConfirmedHeight,
     hasPendingPremeasuredHeight,
     setVisibleMeasurementDeferral: (defer: boolean) => {
       deferMeasurements = defer
@@ -1170,7 +1267,6 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     flushDeferredMeasurements,
     attachRow,
     detachRow,
-    remeasureRow,
     mountedIds,
   }
 }

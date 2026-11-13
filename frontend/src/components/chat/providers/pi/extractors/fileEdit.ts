@@ -4,6 +4,7 @@ import type { ReadFileResult } from '../../../model/readFileResult'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { PI_TOOL } from '~/generated/contracts/pi-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { memoizeByObject } from '~/lib/memoizeByObject'
 import { parseUnifiedDiffCached } from '../../../diff'
 import { fileEditDiffFromHunks, fileEditDiffFromWholeFile, fileEditHasDiff } from '../../../model/fileEditDiff'
 import { readFileResultFromContent } from '../../../model/readFileResult'
@@ -69,41 +70,42 @@ export function extractPiWrite(payload: Record<string, unknown> | null | undefin
 }
 
 /**
- * Pi edit/write `tool_execution_end` carries the actually-applied diff in
- * `result.details.diff` (Pi's numbered-line format). Resolve it into a
- * `FileEditDiff` against the original `tool_execution_start` args.
- * Returns the parsed source and the raw diff text; the source is null when
- * there is no diff or it fails to parse.
+ * The hunks and the raw text of the diff that one result payload carries.
  *
  * Memoized by payload identity: the row build reads the same payload through
  * `piResolveDiffSources` and again for the raw text an unparseable diff states,
  * so without a cache `parsePiNumberedDiff` runs twice on the same diff text.
  */
-const diffCache = new WeakMap<Record<string, unknown>, { hunks: StructuredPatchHunk[] | null, rawDiff: string }>()
+const parsedResultDiff = memoizeByObject((payload: Record<string, unknown>): { hunks: StructuredPatchHunk[] | null, rawDiff: string } => {
+  const details = piExtractTool(payload)?.result?.details
+  const patch = pickString(details, 'patch')
+  const diff = pickString(details, 'diff')
+  const hunks = parseUnifiedDiffCached(patch)?.hunks ?? parsePiNumberedDiff(diff)
+  return { hunks, rawDiff: patch || diff }
+})
 
 interface ResolvedPiResultDiff {
   source: FileEditDiff | null
   rawDiff: string
 }
 
+/**
+ * Pi edit/write `tool_execution_end` carries the actually-applied diff in
+ * `result.details.diff` (Pi's numbered-line format). Resolve it into a
+ * `FileEditDiff` against the original `tool_execution_start` args.
+ * Returns the parsed source and the raw diff text; the source is null when
+ * there is no diff or it fails to parse.
+ */
 export function resolvePiResultDiff(
   payload: Record<string, unknown>,
   startArgs: Record<string, unknown>,
 ): ResolvedPiResultDiff {
-  let cached = diffCache.get(payload)
-  if (!cached) {
-    const details = piExtractTool(payload)?.result?.details
-    const patch = pickString(details, 'patch')
-    const diff = pickString(details, 'diff')
-    const hunks = parseUnifiedDiffCached(patch)?.hunks ?? parsePiNumberedDiff(diff)
-    cached = { hunks, rawDiff: patch || diff }
-    diffCache.set(payload, cached)
-  }
+  const parsed = parsedResultDiff(payload)
   // The request can arrive after the result. Keep its path outside the parsed-diff cache.
   return {
-    rawDiff: cached.rawDiff,
-    source: cached.hunks?.length
-      ? fileEditDiffFromHunks(pickString(startArgs, 'path'), cached.hunks)
+    rawDiff: parsed.rawDiff,
+    source: parsed.hunks?.length
+      ? fileEditDiffFromHunks(pickString(startArgs, 'path'), parsed.hunks)
       : null,
   }
 }

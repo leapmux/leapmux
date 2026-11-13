@@ -4,20 +4,13 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { resolveMessageForRendering } from './registry'
 import './claude/plugin'
 import './codex/plugin'
 import './opencode/plugin'
-import './testMocks'
-
-vi.mock('~/lib/shikiWorkerClient', () => ({
-  tokenizeAsync: async (_lang: string, code: string) => code.split('\n').map(() => []),
-}))
-
-vi.mock('~/lib/tokenCache', () => ({
-  getCachedTokens: () => null,
-}))
+import '~/components/chat/providers'
 
 const { renderMessageContent } = await import('../messageContentRenderer')
 const { classifyMessage } = await import('../messageClassifier')
@@ -148,12 +141,13 @@ describe('claude TodoWrite renders via the shared TodoListBody', () => {
 // ---------------------------------------------------------------------------
 
 describe('claude TaskCreate renders a single-row card', () => {
-  it('renders the subject as the title and the description as the summary', () => {
+  it('renders the subject as the title and the description as the summary', async () => {
     const { container } = renderClaudeToolUse('TaskCreate', {
       subject: 'Add proto messages',
       description: 'Edit proto/agent.proto',
       activeForm: 'Adding proto',
     })
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('Add proto messages')
     expect(text).toContain('Edit proto/agent.proto')
@@ -186,7 +180,7 @@ describe('claude TaskUpdate renders a single-row card', () => {
     warn.mockRestore()
   })
 
-  it('renders the persisted snapshot on a status-only patch', () => {
+  it('renders the persisted snapshot on a status-only patch', async () => {
     const input = {
       taskId: '42',
       status: 'completed',
@@ -198,6 +192,7 @@ describe('claude TaskUpdate renders a single-row card', () => {
       activeForm: '',
       description: 'Persisted description',
     }))
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('Persisted subject')
     expect(text).toContain('Persisted description')
@@ -245,7 +240,7 @@ describe('claude TaskGet renders a single-row card from the paired tool_result',
     }
   }
 
-  it('renders subject + description from tool_use_result.task', () => {
+  it('renders subject + description from tool_use_result.task', async () => {
     const result = taskResult('TaskGet', {
       id: '9',
       subject: 'Get me',
@@ -257,6 +252,7 @@ describe('claude TaskGet renders a single-row card from the paired tool_result',
         result: () => (result as never),
       }),
     })
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('Get me')
     expect(text).toContain('A long task')
@@ -354,11 +350,12 @@ describe('codex turn/plan/updated renders via the shared TodoListBody', () => {
 // ---------------------------------------------------------------------------
 
 describe('codex plan item renders proposed plan markdown', () => {
-  it('renders the markdown body and the "Proposed Plan" header', () => {
+  it('renders the markdown body and the "Proposed Plan" header', async () => {
     const { container } = renderCodexItem({
       type: 'plan',
       text: '# Codex proposed plan body\n\n- step one',
     })
+    await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('Proposed Plan')
     expect(text).toContain('Codex proposed plan body')

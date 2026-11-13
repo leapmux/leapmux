@@ -5,6 +5,7 @@ import {
   SKELETON_LINE_HEIGHT_PX,
   SKELETON_LINE_PITCH_PX,
   SKELETON_TILE_LINES,
+  SkeletonLines,
   skeletonLineWidthPercent,
   skeletonMaskSvg,
 } from './ChatRowSkeleton'
@@ -65,5 +66,17 @@ describe('ChatRowSkeleton', () => {
     expect(fills[0]?.getAttribute('role')).toBe('status')
     // The mask itself is a jsdom-invisible style (cssstyle drops mask-*);
     // its content is pinned via skeletonMaskSvg above.
+  })
+})
+
+describe('SkeletonLines', () => {
+  it('carries the given test id instead of the row skeleton id', () => {
+    const { container } = render(() => <SkeletonLines height={48} seed="diff-pending" testId="diff-pending" />)
+
+    const root = container.querySelector('[data-testid="diff-pending"]') as HTMLElement
+    expect(root).toBeInTheDocument()
+    expect(root.style.height).toBe('48px')
+    expect(root.querySelector('[role="status"].skeleton.line')).not.toBeNull()
+    expect(container.querySelector('[data-testid="row-skeleton"]')).toBeNull()
   })
 })

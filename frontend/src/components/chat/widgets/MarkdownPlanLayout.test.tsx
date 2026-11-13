@@ -1,12 +1,14 @@
 import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { MarkdownPlanLayout } from '~/components/chat/widgets/MarkdownPlanLayout'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 
 describe('MarkdownPlanLayout', () => {
-  it('renders the markdown body when planText is provided', () => {
+  it('renders the markdown body when planText is provided', async () => {
     const { container } = render(() => (
       <MarkdownPlanLayout toolName="Plan" title="Proposed Plan" planText="# Step 1" />
     ))
+    await settleWorkerReplies()
     expect(container.querySelector('hr')).toBeInTheDocument()
     expect(container.textContent).toContain('Step 1')
   })

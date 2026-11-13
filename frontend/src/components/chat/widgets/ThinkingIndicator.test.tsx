@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentGoalSchema, AgentGoalStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { protoGoalToStore } from '~/stores/chatGoal'
 import { motion } from '~/styles/tokens'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { ThinkingIndicator } from './ThinkingIndicator'
 
 // The token count requires a positive estimate and a visible indicator.
@@ -416,7 +417,7 @@ describe('thinking indicator chips', () => {
   // - The supported actions.
   //
   // Omitting one field would remove content or disable controls.
-  it('passes the rest of the goal surface through to the card', () => {
+  it('passes the rest of the goal surface through to the card', async () => {
     const { getByTestId } = renderChips({
       todos: [
         {
@@ -431,6 +432,7 @@ describe('thinking indicator chips', () => {
       goalActions: ['set', 'clear', 'pause'],
       onGoalAction: vi.fn(),
     })
+    await settleWorkerReplies()
     const card = getByTestId('goal-card')
     expect(card).toHaveTextContent('Keep the suite green')
     expect(card).toHaveTextContent('1,200 tokens')
@@ -514,13 +516,14 @@ describe('thinking indicator chips', () => {
     expect(queryByTestId('thinking-todos-chip')).toBeNull()
   })
 
-  it('reports an unknown goal through the actual chip and silent popover', () => {
+  it('reports an unknown goal through the actual chip and silent popover', async () => {
     const current = protoGoalToStore(create(AgentGoalSchema, { objective: 'Keep the objective', status: AgentGoalStatus.UNKNOWN, statusDetail: 'future-state' }))
     const { getByTestId, container } = renderChips({
       todos: [],
       goal: current,
       goalProgress: { iterations: 3 },
     })
+    await settleWorkerReplies()
     expect(getByTestId('goal-objective')).toHaveTextContent('Keep the objective')
     expect(getByTestId('goal-status-detail')).toHaveTextContent('future-state')
     expect(getByTestId('goal-progress')).toHaveTextContent('3 turns')

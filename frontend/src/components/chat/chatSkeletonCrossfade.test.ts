@@ -180,7 +180,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        delayed = createDelayedSet(active, 500, immediate).delayedIds
+        delayed = createDelayedSet(active, 500, () => immediate()).delayedIds
       })
       setActive(['a']) // enters while "flinging" -> painted at once, no delay wait
       expect([
@@ -199,7 +199,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        delayed = createDelayedSet(active, 500, immediate).delayedIds
+        delayed = createDelayedSet(active, 500, () => immediate()).delayedIds
       })
       expect([
         ...delayed(),
@@ -222,7 +222,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        delayed = createDelayedSet(active, 500, immediate).delayedIds
+        delayed = createDelayedSet(active, 500, () => immediate()).delayedIds
       })
       vi.advanceTimersByTime(200) // partway through the delay, nothing shown yet
       expect([
@@ -246,7 +246,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        delayed = createDelayedSet(active, 500, immediate).delayedIds
+        delayed = createDelayedSet(active, 500, () => immediate()).delayedIds
       })
       expect([
         ...delayed(),
@@ -259,14 +259,14 @@ describe('chatSkeletonCrossfade', () => {
     })
   })
 
-  describe('createDelayedSet showAtOnce', () => {
-    it('shows an id at once when showAtOnce holds for it, and keeps the delay for the rest', () => {
+  describe('createDelayedSet showImmediately', () => {
+    it('shows an id at once when showImmediately holds for it, and keeps the delay for the rest', () => {
       const [active, setActive] = createSignal<string[]>([])
       let delayed!: () => ReadonlySet<string>
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        delayed = createDelayedSet(active, 500, undefined, id => id === 'fling').delayedIds
+        delayed = createDelayedSet(active, 500, id => id === 'fling').delayedIds
       })
       setActive(['fling', 'plain'])
       expect([
@@ -279,14 +279,14 @@ describe('chatSkeletonCrossfade', () => {
       dispose()
     })
 
-    it('keeps a shown id after showAtOnce stops holding, while it stays active', () => {
+    it('keeps a shown id after showImmediately stops holding for it, while it stays active', () => {
       const [active, setActive] = createSignal<string[]>([])
       const [upgrading, setUpgrading] = createSignal(true)
       let delayed!: () => ReadonlySet<string>
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        delayed = createDelayedSet(active, 500, undefined, () => upgrading()).delayedIds
+        delayed = createDelayedSet(active, 500, () => upgrading()).delayedIds
       })
       setActive(['a'])
       // The fling upgrade finishes while the row's content is still rendering.
@@ -301,14 +301,14 @@ describe('chatSkeletonCrossfade', () => {
       dispose()
     })
 
-    it('shows an id that is already waiting on its delay once showAtOnce starts holding', () => {
+    it('shows an id that is already waiting on its delay once showImmediately starts holding for it', () => {
       const [active, setActive] = createSignal<string[]>([])
       const [upgrading, setUpgrading] = createSignal(false)
       let delayed!: () => ReadonlySet<string>
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        delayed = createDelayedSet(active, 500, undefined, () => upgrading()).delayedIds
+        delayed = createDelayedSet(active, 500, () => upgrading()).delayedIds
       })
       setActive(['a'])
       vi.advanceTimersByTime(100)

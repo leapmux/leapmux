@@ -6,7 +6,7 @@ import { CLAUDE_TOOL_NAMES } from './claude/toolNames'
 import { providerFor } from './registry'
 import { input } from './testUtils'
 import './claude/plugin'
-import './testMocks'
+import '~/components/chat/providers'
 
 /** The three span sides an isolated extraction resolves to nothing. */
 const NO_SIDES = {

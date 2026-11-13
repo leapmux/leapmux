@@ -102,13 +102,14 @@ export class ChannelRelay {
    */
   send(buf: Uint8Array): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      // Throw rather than log-and-return: call()/stream() wrap the send in a
-      // try/catch that unregisters the just-registered pending request /
-      // stream listener and rejects the caller. Swallowing this here would
-      // leave that request live until its ~15s RPC timeout (or, for a stream,
+      // Throw rather than log-and-return: the manager puts each frame of the
+      // channel session worker on the wire through sendFrame, whose catch runs
+      // onSendFailure. Swallowing this here would leave the request that the
+      // frame carries live until its ~15s RPC timeout (or, for a stream,
       // forever) if the close event that would otherwise drain it is delayed or
       // superseded by a successor socket. A non-'client' source makes
-      // onSendFailure tear the pooled channel down so the next call re-opens.
+      // onSendFailure tear the pooled channel down, which fails every request on
+      // it, so the next call re-opens.
       // this.ws is only ever an OPEN-or-later socket (it is assigned in onOpen),
       // so a non-OPEN readyState here means CLOSING/CLOSED -- a dead transport.
       throw new ChannelError('transport', 'cannot send channel message: WebSocket not open')
@@ -301,8 +302,9 @@ export class ChannelRelay {
     // Zero-copy view past the 4-byte length prefix. fromBinary decodes
     // synchronously and protobuf-es aliases the `ciphertext` bytes field as a
     // subarray of this input; both are safe because each inbound WS frame owns a
-    // fresh, never-reused ArrayBuffer and ciphertext is consumed (decrypted)
-    // before the frame is dropped -- so no copy is needed.
+    // fresh, never-reused ArrayBuffer, and the session client transfers that
+    // whole buffer to the session worker, so nothing on this thread reads the
+    // frame after it is forwarded -- so no copy is needed.
     const msg: ChannelMessage = fromBinary(ChannelMessageSchema, framed.payload)
 
     this.deps.onFrame(msg.channelId, msg)

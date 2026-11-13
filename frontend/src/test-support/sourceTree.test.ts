@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { isAbsolute, join, sep } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { collectFiles, frontendRoot, posixRelative, SKIP_DIRS } from '~/test-support/sourceTree'
+import { collectFiles, frontendRoot, posixRelative, resolveSourceSpecifier, SKIP_DIRS } from '~/test-support/sourceTree'
 
 // Eight repo guards read their whole verdict through this walk, so a hole here
 // reads as a clean suite rather than as a failure. Pin the filter, the skip
@@ -141,5 +141,60 @@ describe('frontendRoot', () => {
     expect(existsSync(join(frontendRoot, 'package.json'))).toBe(true)
     expect(posixRelative(frontendRoot, join(frontendRoot, 'src', 'test-support', 'sourceTree.ts')))
       .toBe('src/test-support/sourceTree.ts')
+  })
+})
+
+describe('resolveSourceSpecifier', () => {
+  const srcRoot = join(frontendRoot, 'src')
+  const anyFile = join(srcRoot, 'app.tsx')
+
+  it('resolves the `~/` alias to a file under src/', () => {
+    expect(resolveSourceSpecifier('~/api/transport', anyFile)).toBe(join(srcRoot, 'api', 'transport.ts'))
+  })
+
+  it('resolves a relative path against the importing file', () => {
+    expect(resolveSourceSpecifier('./elevationPrompt', join(srcRoot, 'lib', 'elevation.ts')))
+      .toBe(join(srcRoot, 'lib', 'elevationPrompt.ts'))
+    expect(resolveSourceSpecifier('../lib/bytes', join(srcRoot, 'api', 'workerRpc.ts')))
+      .toBe(join(srcRoot, 'lib', 'bytes.ts'))
+  })
+
+  // `.ts` comes first in the order, so a `.tsx` module resolves only when the
+  // walk goes on past a missing `.ts` file.
+  it('resolves a .tsx module whose specifier omits its extension', () => {
+    expect(resolveSourceSpecifier('~/app', join(srcRoot, 'lib', 'bytes.ts'))).toBe(anyFile)
+  })
+
+  it('resolves a directory to its index file', () => {
+    expect(resolveSourceSpecifier('~/lib/crdt', anyFile)).toBe(join(srcRoot, 'lib', 'crdt', 'index.ts'))
+  })
+
+  it('resolves `.` to the index file of the directory of the importing file', () => {
+    expect(resolveSourceSpecifier('.', join(srcRoot, 'lib', 'crdt', 'apply.ts')))
+      .toBe(join(srcRoot, 'lib', 'crdt', 'index.ts'))
+  })
+
+  // A directory exists on disk, so a check of existence alone would answer
+  // the directory itself.
+  it('answers null for a directory that holds no index file', () => {
+    expect(resolveSourceSpecifier('~/components/chat', anyFile)).toBeNull()
+  })
+
+  it('answers null for a file that is not a source module', () => {
+    expect(resolveSourceSpecifier('~/spinners/ocean.json', anyFile)).toBeNull()
+    expect(resolveSourceSpecifier('./styles/dropdown-flip.css', anyFile)).toBeNull()
+  })
+
+  it('resolves a specifier that states its extension', () => {
+    expect(resolveSourceSpecifier('./lib/bytes.ts', anyFile)).toBe(join(srcRoot, 'lib', 'bytes.ts'))
+  })
+
+  it('answers null for a package', () => {
+    expect(resolveSourceSpecifier('solid-js', anyFile)).toBeNull()
+    expect(resolveSourceSpecifier('@noble/ciphers/chacha.js', anyFile)).toBeNull()
+  })
+
+  it('answers null for a path that matches no file', () => {
+    expect(resolveSourceSpecifier('~/lib/noSuchModule', anyFile)).toBeNull()
   })
 })

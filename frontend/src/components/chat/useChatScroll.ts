@@ -42,7 +42,7 @@ export type ChatScrollState = SavedViewportScroll
 export type ChatScrollVirtualizer = Pick<
   UseChatVirtualizerResult,
   'totalHeight' | 'updateViewport' | 'anchorAt' | 'scrollTopForAnchor' | 'scrollTopNearAnchor' | 'geometryVersion'
-  | 'setVisibleMeasurementDeferral' | 'hasDeferredMeasurements' | 'flushDeferredMeasurements' | 'lastMeasurement' | 'hasMeasuredHeight'
+  | 'setVisibleMeasurementDeferral' | 'hasDeferredMeasurements' | 'flushDeferredMeasurements' | 'lastMeasurement' | 'hasConfirmedHeight'
   | 'setFastScrollActive' | 'takeMeasurementBatch'
 >
 
@@ -1403,18 +1403,22 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // anchor stationary; restick follows the growing bottom when pinned there.
     repinToAnchor()
     // Release the toggle row-top hold once the toggled row's resize has settled -- i.e. its
-    // real height has committed again (a toggle changes the row's heightKey, so it goes
-    // unmeasured -> measured; hasMeasuredHeight is false through the estimate phase and true
-    // once the measurement lands). The hold exists ONLY to survive that transition (see
+    // real height has committed again under its new key. A toggle changes the row's
+    // heightKey, and the mounted row keeps its earlier height until the next read of its
+    // element under the new key, which a diff view's sliced layout switch delays for many
+    // frames. hasConfirmedHeight is false through that phase and true once the read lands,
+    // even when the row keeps its height: a confirmation bumps geometryVersion, which
+    // re-runs this effect. The hold exists ONLY to survive that transition (see
     // captureRowTopAnchor); left armed it would linger until the next wheel/key/touch/pointer
-    // gesture, and an intervening SCROLLBAR-THUMB drag -- which fires only `scroll` events, no
-    // pointer event to release it -- would leave the stale row-top pin for the next geometry
-    // change to yank the viewport back to. currentAnchor().id IS the held row while holding;
-    // releasing clears only the re-capture guard (the anchor stays until the next capture), so
-    // any later async re-measure of the same row still keeps it pinned until the user scrolls.
+    // gesture, and a scroll-only move in that time -- a SCROLLBAR-THUMB drag fires only
+    // `scroll` events, no pointer event to release it -- would keep pinning the toggled row
+    // at its new line (see handleScroll) instead of re-capturing the viewport midpoint.
+    // currentAnchor().id IS the held row while holding; releasing clears only the re-capture
+    // guard (the anchor stays until the next capture), so any later async re-measure of the
+    // same row still keeps it pinned until the user scrolls.
     if (isHoldingRowTop()) {
       const heldId = currentAnchor()?.id
-      if (heldId !== undefined && virt.hasMeasuredHeight(heldId))
+      if (heldId !== undefined && virt.hasConfirmedHeight(heldId))
         releaseRowTopHold()
     }
     restickIfAtBottom()

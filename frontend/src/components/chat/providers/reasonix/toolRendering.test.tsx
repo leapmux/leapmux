@@ -1,14 +1,15 @@
 import { describe, expect, it } from 'vitest'
 import { todoList } from '~/components/todo/TodoList.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { diffAdded, diffRemoved } from '../../diff/diffStyles.css'
-import { acpTextContent, renderACPToolPair } from '../acp/testUtils'
 
-import '../testMocks'
+import { acpTextContent, renderACPToolPair } from '../acp/testUtils'
+import '~/components/chat/providers'
 import './plugin'
 
 describe('reasonix capability tools', () => {
-  it('renders the subagent outcome behind a recovered error headline', () => {
+  it('renders the subagent outcome behind a recovered error headline', async () => {
     const { container } = renderACPToolPair(AgentProvider.REASONIX, {
       title: 'task',
       kind: 'other',
@@ -26,6 +27,7 @@ describe('reasonix capability tools', () => {
         },
       },
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Agent "Inspect sample" stopped')
     expect(container.textContent).toContain('context canceled')
     expect(container.querySelector('li strong')?.textContent).toBe('Partial finding')
@@ -35,7 +37,7 @@ describe('reasonix capability tools', () => {
   it.each([
     'Subagent outcome: status=failed retryable=false\n\nFinal answer:\nQuoted report',
     'Started background task "example-job" (An example).',
-  ])('keeps successful read-only output literal: %s', (output) => {
+  ])('keeps successful read-only output literal: %s', async (output) => {
     const { container } = renderACPToolPair(AgentProvider.REASONIX, {
       kind: 'other',
       title: 'read_only_task',
@@ -43,11 +45,12 @@ describe('reasonix capability tools', () => {
     }, {
       content: acpTextContent(output),
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Agent "Inspect sample" completed')
     expect(container.textContent).toContain(output.split('\n')[0])
   })
 
-  it.each([false, true])('uses the shared agent body for read_only_task (wrapped: %s)', (wrapped) => {
+  it.each([false, true])('uses the shared agent body for read_only_task (wrapped: %s)', async (wrapped) => {
     const args = { description: 'Inspect sample', prompt: 'Read sample.py' }
     const { container } = renderACPToolPair(AgentProvider.REASONIX, {
       kind: 'other',
@@ -58,12 +61,13 @@ describe('reasonix capability tools', () => {
     }, {
       content: acpTextContent('- **Read-only finding**'),
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Agent "Inspect sample" completed')
     expect(container.querySelector('li strong')?.textContent).toBe('Read-only finding')
     expect(container.textContent).not.toContain('"arguments"')
   })
 
-  it('renders a structured subagent outcome and its report with shared components', () => {
+  it('renders a structured subagent outcome and its report with shared components', async () => {
     const { container } = renderACPToolPair(AgentProvider.REASONIX, {
       kind: 'other',
       title: 'task',
@@ -71,6 +75,7 @@ describe('reasonix capability tools', () => {
     }, {
       content: acpTextContent('Subagent reference: sa_example\nSubagent outcome: status=completed retryable=false\n\nTo continue this same subagent transcript in a later call, pass this ref as `continue_from`. Start a fresh subagent when the next task is independent.\n\nFinal answer:\n**Findings**\n\nThe entry points exist.'),
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Inspect the project (explore)')
     expect(container.textContent).toContain('Agent "Inspect the project" completed')
     expect(container.textContent).toContain('Agent ID:sa_example')
@@ -122,7 +127,7 @@ describe('reasonix capability tools', () => {
     expect(container.querySelector(`.${todoList}`)?.textContent).toContain('Run checks')
   })
 
-  it('renders every replacement from a multi_edit request', () => {
+  it('renders every replacement from a multi_edit request', async () => {
     const { container } = renderACPToolPair(AgentProvider.REASONIX, {
       title: 'multi_edit',
       kind: 'edit',
@@ -136,13 +141,14 @@ describe('reasonix capability tools', () => {
     }, {
       content: acpTextContent('Applied edits'),
     })
+    await settleWorkerReplies()
     expect(container.querySelectorAll(`.${diffAdded}`)).toHaveLength(2)
     expect(container.textContent).toContain('firstAfter')
     expect(container.textContent).toContain('secondAfter')
     expect(container.textContent).not.toContain('2 files changed')
   })
 
-  it('prefers the actual fuzzy replacement receipt over the requested text', () => {
+  it('prefers the actual fuzzy replacement receipt over the requested text', async () => {
     const { container } = renderACPToolPair(AgentProvider.REASONIX, {
       title: 'edit_file',
       kind: 'edit',
@@ -150,6 +156,7 @@ describe('reasonix capability tools', () => {
     }, {
       content: acpTextContent('edited /project/file.ts\nActual replacement receipt after write:\n@@ replacement 1 of 1 (1 occurrence(s), fuzzy match) @@\n-actualBefore\n+actualAfter\n'),
     })
+    await settleWorkerReplies()
     expect(container.querySelector(`.${diffRemoved}`)?.textContent).toContain('actualBefore')
     expect(container.querySelector(`.${diffAdded}`)?.textContent).toContain('actualAfter')
     expect(container.textContent).not.toContain('requestedBefore')
@@ -180,7 +187,7 @@ describe('reasonix capability tools', () => {
     expect(container.textContent).toContain('/project/new.ts')
   })
 
-  it('renders fetched Markdown when no HTTP status is supplied', () => {
+  it('renders fetched Markdown when no HTTP status is supplied', async () => {
     const { container } = renderACPToolPair(AgentProvider.REASONIX, {
       title: 'web_fetch',
       kind: 'other',
@@ -188,6 +195,7 @@ describe('reasonix capability tools', () => {
     }, {
       content: acpTextContent('## Page title\n\n**Page body**'),
     })
+    await settleWorkerReplies()
     expect(container.querySelector('h2')?.textContent).toBe('Page title')
     expect(container.querySelector('strong')?.textContent).toBe('Page body')
     expect(container.textContent).not.toContain('200')
@@ -273,7 +281,7 @@ describe('reasonix capability tools', () => {
     expect(container.textContent).not.toContain('use_capability')
   })
 
-  it('uses the wrapped MCP server and tool names with the inner arguments', () => {
+  it('uses the wrapped MCP server and tool names with the inner arguments', async () => {
     const { container } = renderACPToolPair(AgentProvider.REASONIX, {
       title: 'use_capability',
       kind: 'other',
@@ -285,6 +293,7 @@ describe('reasonix capability tools', () => {
     }, {
       content: acpTextContent('Session documentation'),
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('docs / search')
     expect(container.textContent).toContain('sessions')
     expect(container.textContent).toContain('Session documentation')

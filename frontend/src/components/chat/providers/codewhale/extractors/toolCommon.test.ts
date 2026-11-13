@@ -249,9 +249,20 @@ describe('codewhaleToolFrame', () => {
     // A copy of the row is another row, and it takes a frame of its own.
     expect(codewhaleToolFrame({ ...row })).not.toBe(first)
     expect(codewhaleToolFrame({ ...row })).toStrictEqual(first)
-    const message = itemFinished(CODEWHALE_ITEM_KIND.AgentMessage, 'x')
+    // A row that states no call answers null, and that answer is cached too: the
+    // second read touches no field of the row.
+    let fieldReads = 0
+    const message = new Proxy(itemFinished(CODEWHALE_ITEM_KIND.AgentMessage, 'x'), {
+      get(target, key, receiver) {
+        fieldReads++
+        return Reflect.get(target, key, receiver)
+      },
+    })
     expect(codewhaleToolFrame(message)).toBeNull()
+    const readsAfterFirst = fieldReads
+    expect(readsAfterFirst).toBeGreaterThan(0)
     expect(codewhaleToolFrame(message)).toBeNull()
+    expect(fieldReads).toBe(readsAfterFirst)
   })
 
   it('answers null for a row that states no call', () => {

@@ -85,7 +85,7 @@ const PreferencesApplier: ParentComponent = (props) => {
   // handler logs it.
   //
   // `syntaxAttrGen` drops stale attribute writes when a later effect run wins
-  // the race after the lazy `renderMarkdown` import — without it an older
+  // the race after the lazy `~/lib/shikiSyncHighlighter` import — without it an older
   // `variant` can land on `<html>` after a newer one.
   let syntaxAttrGen = 0
   createEffect(() => {

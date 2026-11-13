@@ -1,60 +1,34 @@
 import type { InboundChannel } from './channelInbound'
-import type { Session } from './noise'
-import type { LoggerCapture } from '~/test-support/loggerCapture'
 import { create, toBinary } from '@bufbuild/protobuf'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   ChannelMessageFlags,
   ChannelMessageSchema,
   InnerMessageSchema,
   InnerRpcResponseSchema,
+  InnerStreamMessageSchema,
   RekeyAckSchema,
 } from '~/generated/proto/leapmux/v1/channel_pb'
-import { makeIdentitySession } from '~/test-support/identitySession'
-import { captureLoggerOutput } from '~/test-support/loggerCapture'
 import { ChannelError } from './channelError'
 import { ChannelInbound } from './channelInbound'
 import { ChannelRpcMux } from './channelRpc'
-import { ChannelSession, createChunkedSends } from './channelSession'
-import { generateRekeyEphemeral } from './noise-hybrid'
-import { Reassembler } from './reassembler'
 
 function makeChannel(overrides?: Partial<InboundChannel>): InboundChannel {
   return {
     channelId: 'ch-1',
     workerId: 'w1',
-    session: makeIdentitySession(),
-    maxReassembledMessageSize: 1024,
     pendingRequests: new Map(),
     streamListeners: new Map(),
-    reassembly: new Reassembler(1024),
     nextRequestId: 1,
     state: 'verified',
-    lastRekeyAt: 0,
-    rekeyNotBefore: 0,
-    rekeyWait: null,
-    rekeyClear: null,
-    rekeyAbort: null,
-    rekeyRequestId: null,
-    rekeyChain: Promise.resolve(),
-    chunkedSends: createChunkedSends(),
-    workerMlkemPub: new Uint8Array(0),
-    rekeyMaterial: null,
     ...overrides,
   }
 }
 
-function makeInbound(ch: InboundChannel, opts?: {
-  closeChannel?: (id: string) => void
-  forgetClosedChannel?: (id: string) => void
-}) {
-  const session = new ChannelSession({
-    sendToWire: () => {},
-    closeChannel: async () => {},
-    onSendFailure: () => {},
-  })
+function makeInbound(ch: InboundChannel) {
   const rpc = new ChannelRpcMux({
     send: () => {},
+    release: () => {},
     onSendFailure: () => {},
     rpcTimeoutFn: () => 50,
     notifyError: () => {},
@@ -65,155 +39,27 @@ function makeInbound(ch: InboundChannel, opts?: {
       catch { /* isolate */ }
     },
   })
-  const forgetClosedChannel = opts?.forgetClosedChannel ?? vi.fn()
-  const closeChannel = opts?.closeChannel ?? vi.fn()
+  const forwardInbound = vi.fn()
+  const closedByPeer = vi.fn()
   const inbound = new ChannelInbound({
     getChannel: id => id === ch.channelId
       ? ch
       : undefined,
-    session,
     rpc,
-    closeChannel,
-    forgetClosedChannel,
+    session: { forwardInbound },
+    closedByPeer,
   })
-  return {
-    inbound,
-    session,
-    rpc,
-    forgetClosedChannel,
-    closeChannel,
-  }
+  return { inbound, forwardInbound, closedByPeer }
 }
 
-function encryptInner(ch: InboundChannel, plaintext: Uint8Array, correlationId: number, flags = ChannelMessageFlags.UNSPECIFIED) {
-  // Identity-session fixtures use the plaintext as their ciphertext.
+function frame(flags: ChannelMessageFlags, channelId = 'ch-1') {
   return create(ChannelMessageSchema, {
-    channelId: ch.channelId,
-    ciphertext: plaintext,
-    correlationId: BigInt(correlationId),
+    channelId,
+    ciphertext: new Uint8Array([1, 2, 3]),
+    correlationId: 4n,
     flags,
   })
 }
-
-describe('channelInbound', () => {
-  it('peer CLOSE flag drains and forgets the channel', () => {
-    const ch = makeChannel()
-    const onError = vi.fn()
-    ch.streamListeners.set(1, {
-      onMessage: () => {},
-      onEnd: () => {},
-      onError,
-    })
-    const { inbound, forgetClosedChannel } = makeInbound(ch)
-    inbound.handleMessage('ch-1', create(ChannelMessageSchema, {
-      channelId: 'ch-1',
-      ciphertext: new Uint8Array(),
-      correlationId: 0n,
-      flags: ChannelMessageFlags.CLOSE,
-    }))
-    expect(ch.state).toBe('closed')
-    expect(onError).toHaveBeenCalledOnce()
-    expect(onError.mock.calls[0]![0]).toBeInstanceOf(ChannelError)
-    expect(forgetClosedChannel).toHaveBeenCalledWith('ch-1')
-  })
-
-  it('ignores frames for unknown channel ids', () => {
-    const ch = makeChannel()
-    const { inbound, forgetClosedChannel } = makeInbound(ch)
-    inbound.handleMessage('missing', encryptInner(ch, new Uint8Array([1]), 1))
-    expect(forgetClosedChannel).not.toHaveBeenCalled()
-  })
-
-  it('closes the channel when decrypt fails', () => {
-    const ch = makeChannel({
-      session: {
-        send: {
-          encrypt: () => new Uint8Array(),
-          decrypt: () => new Uint8Array(),
-          needsRekey: () => false,
-          rekeyWithSecret: () => {},
-          clearPrev: () => {},
-          nonce: () => 0,
-        },
-        receive: {
-          encrypt: () => new Uint8Array(),
-          decrypt: () => {
-            throw new Error('bad tag')
-          },
-          needsRekey: () => false,
-          rekeyWithSecret: () => {},
-          clearPrev: () => {},
-          nonce: () => 0,
-        },
-      } satisfies Session,
-    })
-    const { inbound, closeChannel } = makeInbound(ch)
-    inbound.handleMessage('ch-1', encryptInner(ch, new Uint8Array([1]), 1))
-    expect(closeChannel).toHaveBeenCalledWith('ch-1')
-  })
-
-  it('delivers a unary response after decrypt', () => {
-    const ch = makeChannel()
-    const { inbound, rpc } = makeInbound(ch)
-    const resolve = vi.fn()
-    ch.pendingRequests.set(3, {
-      resolve,
-      reject: () => {},
-    })
-    const envelope = create(InnerMessageSchema, {
-      kind: {
-        case: 'response',
-        value: create(InnerRpcResponseSchema, {
-          result: {
-            case: 'payload',
-            value: new Uint8Array([7]),
-          },
-        }),
-      },
-    })
-    inbound.handleMessage('ch-1', encryptInner(ch, toBinary(InnerMessageSchema, envelope), 3))
-    expect(resolve).toHaveBeenCalledOnce()
-    expect(ch.pendingRequests.has(3)).toBe(false)
-    void rpc
-  })
-
-  it('drops out-of-range correlation ids without closing', () => {
-    const ch = makeChannel()
-    const { inbound, closeChannel } = makeInbound(ch)
-    inbound.handleMessage('ch-1', create(ChannelMessageSchema, {
-      channelId: 'ch-1',
-      ciphertext: new Uint8Array([1]),
-      correlationId: BigInt(Number.MAX_SAFE_INTEGER) + 1n,
-      flags: ChannelMessageFlags.UNSPECIFIED,
-    }))
-    expect(closeChannel).not.toHaveBeenCalled()
-    expect(ch.state).toBe('verified')
-  })
-
-  it('routes rekeyAck through the session with correlation id', () => {
-    const wait = vi.fn()
-    // Use a real ephemeral so the fresh-DH derivation in handleRekeyOutcome
-    // succeeds (the session itself is a mock; only the routing is under test).
-    const eph = generateRekeyEphemeral()
-    const ch = makeChannel({
-      rekeyWait: wait,
-      rekeyRequestId: 9,
-      rekeyMaterial: { ePriv: eph.privateKey, mlkemSS: null },
-    })
-    const { inbound } = makeInbound(ch)
-    const envelope = create(InnerMessageSchema, {
-      kind: {
-        case: 'rekeyAck',
-        value: create(RekeyAckSchema, { dhPub: eph.publicKey }),
-      },
-    })
-    inbound.handleMessage('ch-1', encryptInner(ch, toBinary(InnerMessageSchema, envelope), 9))
-    expect(wait).toHaveBeenCalledWith(true, 0)
-  })
-})
-
-const RETIRED_ID_MESSAGE = 'dropped a late frame for a retired correlation id'
-const NEVER_ALLOCATED_ID_MESSAGE = 'dropped a frame for a correlation id that this client never allocated'
 
 function responsePlaintext(): Uint8Array {
   return toBinary(InnerMessageSchema, create(InnerMessageSchema, {
@@ -229,71 +75,177 @@ function responsePlaintext(): Uint8Array {
   }))
 }
 
-// A frame whose correlation id has no handler is dropped either way. What these
-// pin is the LEVEL: a late frame for an id this client retired on purpose (an
-// aborted or timed-out call, a cancelled stream's end frame) is expected traffic,
-// while an id this client never allocated is a protocol violation.
-describe('ChannelInbound frames with no handler', () => {
-  let capture: LoggerCapture
-  beforeEach(() => {
-    capture = captureLoggerOutput()
-  })
-  afterEach(() => capture.restore())
+function streamPlaintext(): Uint8Array {
+  return toBinary(InnerMessageSchema, create(InnerMessageSchema, {
+    kind: {
+      case: 'stream',
+      value: create(InnerStreamMessageSchema, {
+        payload: new Uint8Array([8]),
+      }),
+    },
+  }))
+}
 
-  // The counter stands at 5, so ids 1..4 were allocated and have since retired.
-  function deliver(correlationId: number, flags = ChannelMessageFlags.UNSPECIFIED) {
-    const ch = makeChannel({ nextRequestId: 5 })
+describe('ChannelInbound handleMessage', () => {
+  it('calls closedByPeer for a CLOSE frame, and forwards nothing', () => {
+    const ch = makeChannel()
+    const { inbound, forwardInbound, closedByPeer } = makeInbound(ch)
+
+    inbound.handleMessage('ch-1', frame(ChannelMessageFlags.CLOSE))
+
+    expect(closedByPeer).toHaveBeenCalledExactlyOnceWith('ch-1')
+    expect(forwardInbound).not.toHaveBeenCalled()
+  })
+
+  it('ignores frames for unknown channel ids', () => {
+    const ch = makeChannel()
+    const { inbound, forwardInbound, closedByPeer } = makeInbound(ch)
+
+    inbound.handleMessage('missing', frame(ChannelMessageFlags.UNSPECIFIED, 'missing'))
+    inbound.handleMessage('missing', frame(ChannelMessageFlags.CLOSE, 'missing'))
+
+    expect(forwardInbound).not.toHaveBeenCalled()
+    expect(closedByPeer).not.toHaveBeenCalled()
+  })
+
+  it('forwards a data frame unchanged to the session worker', () => {
+    const ch = makeChannel()
+    const { inbound, forwardInbound } = makeInbound(ch)
+    const more = frame(ChannelMessageFlags.MORE)
+    const final = frame(ChannelMessageFlags.UNSPECIFIED)
+
+    inbound.handleMessage('ch-1', more)
+    inbound.handleMessage('ch-1', final)
+
+    expect(forwardInbound.mock.calls).toEqual([
+      ['ch-1', more],
+      ['ch-1', final],
+    ])
+  })
+})
+
+describe('ChannelInbound deliver', () => {
+  it('routes a response to its pending request', () => {
+    const ch = makeChannel()
     const { inbound } = makeInbound(ch)
-    inbound.handleMessage('ch-1', encryptInner(ch, responsePlaintext(), correlationId, flags))
-    return ch
-  }
-
-  it('logs a frame for a retired correlation id at debug level instead of warning', () => {
-    deliver(4)
-    expect(capture.messages('warn', 'channel')).toEqual([])
-    expect(capture.messages('debug', 'channel')).toContain(RETIRED_ID_MESSAGE)
-  })
-
-  it('treats the first id that a channel allocates as retired', () => {
-    deliver(1)
-    expect(capture.messages('warn', 'channel')).toEqual([])
-    expect(capture.messages('debug', 'channel')).toContain(RETIRED_ID_MESSAGE)
-  })
-
-  it('logs a MORE chunk for a retired correlation id at debug level and buffers nothing', () => {
-    const ch = deliver(3, ChannelMessageFlags.MORE)
-    expect(capture.messages('warn', 'channel')).toEqual([])
-    expect(capture.messages('debug', 'channel')).toContain(RETIRED_ID_MESSAGE)
-    expect(ch.reassembly.size()).toBe(0)
-  })
-
-  it('warns for the id that the counter has not handed out yet', () => {
-    deliver(5)
-    expect(capture.messages('warn', 'channel')).toEqual([NEVER_ALLOCATED_ID_MESSAGE])
-    expect(capture.messages('debug', 'channel')).not.toContain(RETIRED_ID_MESSAGE)
-  })
-
-  it('warns for correlation id 0, which no request ever receives', () => {
-    deliver(0)
-    expect(capture.messages('warn', 'channel')).toEqual([NEVER_ALLOCATED_ID_MESSAGE])
-  })
-
-  it('warns for the largest correlation id that the client still routes', () => {
-    deliver(Number.MAX_SAFE_INTEGER)
-    expect(capture.messages('warn', 'channel')).toEqual([NEVER_ALLOCATED_ID_MESSAGE])
-  })
-
-  it('logs nothing about dropping a frame that has a live handler', () => {
-    const ch = makeChannel({ nextRequestId: 5 })
     const resolve = vi.fn()
-    ch.pendingRequests.set(4, {
+    ch.pendingRequests.set(3, {
       resolve,
       reject: () => {},
     })
+
+    inbound.deliver('ch-1', 3, responsePlaintext())
+
+    expect(resolve).toHaveBeenCalledExactlyOnceWith(new Uint8Array([7]))
+    expect(ch.pendingRequests.has(3)).toBe(false)
+  })
+
+  it('routes a stream message to its listener', () => {
+    const ch = makeChannel()
     const { inbound } = makeInbound(ch)
-    inbound.handleMessage('ch-1', encryptInner(ch, responsePlaintext(), 4))
-    expect(resolve).toHaveBeenCalledOnce()
-    expect(capture.messages('warn', 'channel')).toEqual([])
-    expect(capture.messages('debug', 'channel')).not.toContain(RETIRED_ID_MESSAGE)
+    const onMessage = vi.fn()
+    ch.streamListeners.set(5, {
+      onMessage,
+      onEnd: () => {},
+      onError: () => {},
+    })
+
+    inbound.deliver('ch-1', 5, streamPlaintext())
+
+    expect(onMessage).toHaveBeenCalledOnce()
+    expect(onMessage.mock.calls[0]![0].payload).toEqual(new Uint8Array([8]))
+  })
+
+  it('drops a message for a closed or a missing channel', () => {
+    const ch = makeChannel({ state: 'closed' })
+    const { inbound } = makeInbound(ch)
+    const resolve = vi.fn()
+    ch.pendingRequests.set(3, {
+      resolve,
+      reject: () => {},
+    })
+
+    inbound.deliver('ch-1', 3, responsePlaintext())
+    inbound.deliver('missing', 3, responsePlaintext())
+
+    expect(resolve).not.toHaveBeenCalled()
+    expect(ch.pendingRequests.has(3)).toBe(true)
+  })
+
+  it('logs and drops an envelope that does not decode', () => {
+    const ch = makeChannel()
+    const { inbound } = makeInbound(ch)
+    const resolve = vi.fn()
+    ch.pendingRequests.set(3, {
+      resolve,
+      reject: () => {},
+    })
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    // A truncated varint, which no envelope decoder accepts.
+    inbound.deliver('ch-1', 3, Uint8Array.of(0x0A, 0xFF))
+
+    expect(errorSpy).toHaveBeenCalledWith('[channel]', 'Failed to deserialize InnerMessage', expect.anything())
+    expect(resolve).not.toHaveBeenCalled()
+    errorSpy.mockRestore()
+  })
+
+  it('warns about an envelope kind that the main thread does not route', () => {
+    const ch = makeChannel()
+    const { inbound } = makeInbound(ch)
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    inbound.deliver('ch-1', 3, toBinary(InnerMessageSchema, create(InnerMessageSchema, {
+      kind: {
+        case: 'rekeyAck',
+        value: create(RekeyAckSchema, {}),
+      },
+    })))
+
+    expect(warnSpy).toHaveBeenCalledWith('[channel]', 'Unknown inner message type', 'rekeyAck')
+    warnSpy.mockRestore()
+  })
+})
+
+describe('ChannelInbound reassemblyFailed', () => {
+  it('rejects the pending request with a client error that carries the message', async () => {
+    const ch = makeChannel()
+    const { inbound } = makeInbound(ch)
+    const reject = vi.fn()
+    ch.pendingRequests.set(3, {
+      resolve: () => {},
+      reject,
+    })
+
+    inbound.reassemblyFailed('ch-1', 3, 'too many incomplete chunked messages')
+
+    expect(reject).toHaveBeenCalledOnce()
+    const err = reject.mock.calls[0]![0] as ChannelError
+    expect(err).toBeInstanceOf(ChannelError)
+    expect(err.source).toBe('client')
+    expect(err.message).toBe('too many incomplete chunked messages')
+    expect(ch.pendingRequests.has(3)).toBe(false)
+  })
+
+  it('errors a stream listener that waits on the id', () => {
+    const ch = makeChannel()
+    const { inbound } = makeInbound(ch)
+    const onError = vi.fn()
+    ch.streamListeners.set(4, {
+      onMessage: () => {},
+      onEnd: () => {},
+      onError,
+    })
+
+    inbound.reassemblyFailed('ch-1', 4, 'chunked message too large: 60 bytes exceeds 50 byte limit')
+
+    expect(onError).toHaveBeenCalledOnce()
+    expect(onError.mock.calls[0]![0]).toMatchObject({ source: 'client', message: 'chunked message too large: 60 bytes exceeds 50 byte limit' })
+  })
+
+  it('does nothing for a missing channel', () => {
+    const ch = makeChannel()
+    const { inbound } = makeInbound(ch)
+    expect(() => inbound.reassemblyFailed('missing', 3, 'too many incomplete chunked messages')).not.toThrow()
   })
 })

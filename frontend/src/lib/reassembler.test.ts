@@ -256,4 +256,38 @@ describe('reassembler', () => {
     // The id is free to start a fresh sequence.
     expect(r.accept(1, chunk(1), MORE, alwaysHandled).kind).toBe('buffered')
   })
+
+  it('release drops a live buffer and frees its slot', () => {
+    const r = new Reassembler(100, 4)
+    expect(r.accept(1, chunk(1), MORE, alwaysHandled).kind).toBe('buffered')
+    expect(r.accept(2, chunk(1), MORE, alwaysHandled).kind).toBe('buffered')
+    expect(r.liveCount()).toBe(2)
+
+    r.release(1)
+
+    expect(r.get(1)).toBeUndefined()
+    expect(r.liveCount()).toBe(1)
+    expect(r.get(2)?.total).toBe(1)
+  })
+
+  it('release keeps a tombstone, so the rest of the failed message is still dropped', () => {
+    const r = new Reassembler(100, 4)
+    expect(r.accept(1, chunk(1), MORE, alwaysHandled).kind).toBe('buffered')
+    r.poison(1)
+
+    r.release(1)
+
+    expect(r.get(1)?.poisoned).toBe(true)
+    expect(r.accept(1, chunk(1), MORE, alwaysHandled).kind).toBe('drop-poisoned')
+  })
+
+  it('release does nothing for an unknown id', () => {
+    const r = new Reassembler(100, 4)
+    expect(r.accept(1, chunk(1), MORE, alwaysHandled).kind).toBe('buffered')
+
+    r.release(99)
+
+    expect(r.size()).toBe(1)
+    expect(r.liveCount()).toBe(1)
+  })
 })

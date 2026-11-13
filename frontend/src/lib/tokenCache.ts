@@ -226,7 +226,7 @@ export function getCachedTokens(lang: string, code: string): CachedToken[][] | u
 export function setCachedTokens(lang: string, code: string, tokens: CachedToken[][]): void {
   // Shared delete+set+cap (see mapLru.lruSet): overwriting an existing key at capacity
   // re-fronts it rather than dropping an unrelated live entry, and the eviction bound
-  // stays identical to the markdown / fragment / word-diff caches'.
+  // stays identical to the markdown / fragment / diff caches'.
   lruSet(cache, makeKey(lang, code), tokens, CACHE_MAX_SIZE)
 }
 

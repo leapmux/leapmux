@@ -8,14 +8,42 @@ import {
   setStorageAccountForTests,
 } from './src/lib/browserStorage'
 import { setCRDTBridge } from './src/lib/crdt'
+import { setSliceSchedulerForTests } from './src/lib/idleSlices'
 import { installTestBridge, TEST_USER_ID } from './src/test-support/crdtBridge'
+import { installAnsweringWorkers, resetWorkerStandIns, settleWorkerReplies } from './src/test-support/fakeWorker'
 import { installNetworkGuard } from './src/test-support/networkGuard'
+import { unlimitedSliceScheduler } from './src/test-support/sliceSchedulers'
 import '@testing-library/jest-dom/vitest'
 
 // jsdom answers window.scrollTo with a "Not implemented" stub that logs an
 // error on every call. The scroll code under test needs the call recorded,
 // not the platform behavior, so a no-op states that contract quietly.
 window.scrollTo = () => {}
+
+// jsdom's Blob has no `stream()`. The Oniguruma engine of the Markdown and the
+// Shiki workers reads its inlined WASM through it, and the stand-in Worker below
+// runs those workers here. Without it neither highlighter can start, and every
+// render would answer as after a failed start: plain, and retryable.
+if (typeof (Blob.prototype as Partial<Blob>).stream !== 'function') {
+  Blob.prototype.stream = function stream(this: Blob) {
+    const bytes = this.bytes()
+    return new ReadableStream({
+      async start(controller) {
+        controller.enqueue(await bytes)
+        controller.close()
+      },
+    })
+  }
+}
+
+// jsdom has no Worker, and no worker client has a path without one. The
+// stand-in answers each message through the real request handler of the worker
+// module, so a Markdown body, a diff or a token request completes after the
+// stand-in replies, as in the browser. A test awaits it (`findBy*`, `waitFor`,
+// or `settleWorkerReplies`), and a test that needs a client to wait holds the
+// replies of its worker module (`holdWorkerReplies`). A test that stubs its own
+// Worker restores this one with `vi.unstubAllGlobals()`.
+installAnsweringWorkers()
 
 // Refuse every request to the jsdom document host (`http://localhost:3000`).
 // Any process on this machine can listen there, and a 401 from it signs the
@@ -81,9 +109,22 @@ beforeEach(() => {
   // whose presence says nothing about whether persistence is available:
   // `isIndexedDbAvailable` reads `indexedDB` alone.
   setStorageAccountForTests(TEST_USER_ID)
+  // Run sliced work without a budget, so that work which the app spreads over
+  // idle slices (the lines of a diff view) ends in the task that starts it. A
+  // budget in time would make a test pass or fail by the speed of the runner. A
+  // test of the slices installs its own scheduler with `installControlledSlices`.
+  setSliceSchedulerForTests(unlimitedSliceScheduler)
 })
 
-afterEach(() => {
+afterEach(async () => {
+  // A reply of the stand-in Worker that lands after its test re-runs whatever
+  // still reads it: a later test's state, or the render effects of a file whose
+  // jsdom is already gone ("document is not defined"). The holds and the
+  // records of the test end first. A hold that a test leaves would keep the
+  // replies of the next test from their clients, and a client whose reply it
+  // keeps waits forever.
+  resetWorkerStandIns()
+  await settleWorkerReplies()
   if (disposeBridgeRoot) {
     disposeBridgeRoot()
     disposeBridgeRoot = null

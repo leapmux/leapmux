@@ -10,15 +10,12 @@ import ChevronRight from 'lucide-solid/icons/chevron-right'
 import FileIcon from 'lucide-solid/icons/file'
 import FileImageIcon from 'lucide-solid/icons/file-image'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
-import { createEffect, createMemo, createSignal, For, Show, untrack } from 'solid-js'
+import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
-import { cachedInnerHtml } from '~/lib/htmlFragmentCache'
 import { prettifyJson } from '~/lib/jsonFormat'
-import { prefetchMarkdownHtml } from '~/lib/renderMarkdown'
 import { inlineFlex } from '~/styles/shared.css'
-import { markdownContent } from './markdownEditor/markdownContent.css'
-import { markdownHtmlForContext } from './markdownRendering'
+import { MarkdownPrefetch, MarkdownText } from './MarkdownText'
 import { attachmentItem, attachmentList, controlResponseLabel, controlResponseMessage, thinkingChevron, thinkingChevronExpanded, thinkingContent, thinkingHeader } from './messageStyles.css'
 import { MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 import { CONTROL_RESPONSE_FEEDBACK_LEAD } from './persistedControlResponse'
@@ -29,7 +26,6 @@ import {
   toolResultPrompt,
   toolUseIcon,
 } from './toolStyles.css'
-import { ChatRowSkeleton, SKELETON_LINE_PITCH_PX } from './widgets/ChatRowSkeleton'
 import { ToolUseLayout } from './widgets/ToolUseLayout'
 
 /**
@@ -76,95 +72,6 @@ export function useSharedExpandedState(
   return [expanded, setExpanded]
 }
 
-/** The most skeleton lines that a pending Markdown body shows. */
-const MARKDOWN_PENDING_MAX_LINES = 6
-
-/** The number of lines in `text`, counted up to `max`. Reads no further than the last counted newline. */
-function lineCountUpTo(text: string, max: number): number {
-  let lines = 1
-  let index = text.indexOf('\n')
-  while (index !== -1 && lines < max) {
-    lines++
-    index = text.indexOf('\n', index + 1)
-  }
-  return lines
-}
-
-/**
- * The placeholder of a Markdown body outside the chat while the worker renders it:
- * one shimmer line for each source line, up to {@link MARKDOWN_PENDING_MAX_LINES}.
- */
-function MarkdownPendingSkeleton(props: { text: string }): JSX.Element {
-  const height = () => lineCountUpTo(props.text, MARKDOWN_PENDING_MAX_LINES) * SKELETON_LINE_PITCH_PX
-  return <ChatRowSkeleton height={height()} seed="markdown-pending" testId="markdown-pending" />
-}
-
-/**
- * Render a Markdown body through the shared remark pipeline. The HTML is produced
- * via remark + sanitizer, never arbitrary user input. It is applied through the
- * parsed-fragment cache (~/lib/htmlFragmentCache) rather than an `innerHTML`
- * binding, so a re-mounting row clones the already-parsed template instead of
- * making the browser re-parse the same markup.
- *
- * The HTML comes from a worker, so the body can mount before it exists. Until then:
- * - Inside a chat row, it reports itself pending to the row's readiness scope
- *   (`context.readiness`) and draws nothing. The row stays hidden behind its own
- *   skeleton, with its height uncommitted, until every body is ready.
- * - Elsewhere, it shows a skeleton of its own.
- */
-export function MarkdownText(props: {
-  text: string
-  context?: MarkdownRenderContext | undefined
-  /** The class of the body element. Defaults to `markdownContent`. */
-  class?: string
-  /** Mark the body as returned tool output; see CollapsibleContentProps.outputPreview. */
-  outputPreview?: boolean
-}): JSX.Element {
-  // The HTML this body shows, and the text it renders. markdownHtmlForContext keeps
-  // it while the reader selects or scrolls, and while a theme change renders the SAME
-  // text again, so the body keeps its old colours instead of turning into a skeleton.
-  let shown: { text: string, html: string } | undefined
-  const html = createMemo(() => {
-    const text = props.text
-    const next = markdownHtmlForContext(text, props.context, shown?.text === text
-      ? shown.html
-      : undefined)
-    if (next !== undefined)
-      shown = { text, html: next }
-    return next
-  })
-  const pending = () => html() === undefined
-  const readiness = untrack(() => props.context?.readiness)
-  // eslint-disable-next-line solid/reactivity -- the scope reads the accessor inside its own memo
-  readiness?.track(pending)
-  return (
-    <Show
-      when={!pending()}
-      fallback={readiness === undefined
-        ? <MarkdownPendingSkeleton text={props.text} />
-        : null}
-    >
-      <div
-        class={props.class ?? markdownContent}
-        data-tool-output-preview={props.outputPreview === true
-          ? ''
-          : undefined}
-        ref={cachedInnerHtml(() => html() ?? '')}
-      />
-    </Show>
-  )
-}
-
-/**
- * Render nothing, but start rendering `text` at low priority. Place it where a
- * collapsed section hides a Markdown body, so that expanding the section finds the
- * HTML cached: the row then re-measures at once instead of waiting for the worker.
- */
-export function MarkdownPrefetch(props: { text: string }): JSX.Element {
-  createEffect(() => prefetchMarkdownHtml(props.text))
-  return null
-}
-
 type ThinkingBubbleProps = {
   icon: LucideIcon
   label: string
@@ -190,12 +97,7 @@ export function ThinkingBubble(props: ThinkingBubbleProps): JSX.Element {
     const text = props.text
     return text !== undefined
       ? (
-          <MarkdownText
-            text={text}
-            {...(props.context !== undefined
-              ? { context: props.context }
-              : {})}
-          />
+          <MarkdownText text={text} context={props.context} />
         )
       : null
   }
@@ -219,7 +121,7 @@ export function ThinkingBubble(props: ThinkingBubbleProps): JSX.Element {
       <Show
         when={expanded()}
         fallback={props.text !== undefined
-          ? <MarkdownPrefetch text={props.text} />
+          ? <MarkdownPrefetch text={props.text} context={props.context} />
           : null}
       >
         <div class={thinkingContent}>
@@ -293,12 +195,7 @@ export function UserContentMessage(props: { text: string, attachments: UserMessa
         </div>
       </Show>
       <Show when={hasText()}>
-        <MarkdownText
-          text={props.text}
-          {...(props.context !== undefined
-            ? { context: props.context }
-            : {})}
-        />
+        <MarkdownText text={props.text} context={props.context} />
       </Show>
     </Show>
   )
@@ -328,12 +225,7 @@ export function renderControlResponseRow(
       <div class={controlResponseMessage}>
         <div>
           <div>{CONTROL_RESPONSE_FEEDBACK_LEAD}</div>
-          <MarkdownText
-            text={display.message}
-            {...(context !== undefined
-              ? { context }
-              : {})}
-          />
+          <MarkdownText text={display.message} context={context} />
         </div>
       </div>
     )

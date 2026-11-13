@@ -369,7 +369,7 @@ function codeVars(variant: ThemeVariant): Record<string, string> {
 //
 // Default's own variant is the right answer for that window rather than a
 // guess: the synchronous highlighter boots registered on Default's pair (see
-// `~/lib/renderMarkdown`), so Default's colours ARE what the first tokens carry
+// `~/lib/shikiSyncHighlighter`), so Default's colours ARE what the first tokens carry
 // until the chosen pair loads. The two halves stay in step because both read
 // the same catalogue entry.
 // Both halves carry `:not([data-code-variant])`, which is what keeps them out of

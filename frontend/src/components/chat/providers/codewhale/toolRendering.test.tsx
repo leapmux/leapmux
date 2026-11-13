@@ -10,7 +10,7 @@ import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import { MEDIA_DATA_URI, MEDIA_DESCRIPTOR, MEDIA_OUTPUT_FILE_ID, requestSide, toolCompleted, toolStarted } from './toolResults.fixtures'
 import './plugin'
-import '../testMocks'
+import '~/components/chat/providers'
 
 const provider = () => providerFor(AgentProvider.CODEWHALE)!
 

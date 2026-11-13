@@ -1,11 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  cachedRenderValueForString,
-  cachedRenderValueForStrings,
   createMessageRenderCacheStore,
   fixedCacheKey,
+  getCachedRenderValueForString,
+  setCachedRenderValueForString,
   stringCacheKey,
-  stringTupleCacheKey,
 } from './messageRenderCache'
 
 describe('messageRenderCache', () => {
@@ -78,14 +77,15 @@ describe('messageRenderCache', () => {
 
   it('builds stable string-derived keys without embedding large text', () => {
     const store = createMessageRenderCacheStore()
-    const cache = store.forRow('row:1')
+    const context = {
+      renderCache: store.forRow('row:1'),
+    }
     const text = 'same markdown body'
-    const compute = vi.fn(() => '<p>same markdown body</p>')
 
     expect(stringCacheKey<string>('markdown', text).token).toBe(stringCacheKey<string>('markdown', text).token)
-    expect(cachedRenderValueForString({ renderCache: cache }, 'markdown', text, compute)).toBe('<p>same markdown body</p>')
-    expect(cachedRenderValueForString({ renderCache: cache }, 'markdown', text, compute)).toBe('<p>same markdown body</p>')
-    expect(compute).toHaveBeenCalledTimes(1)
+    expect(getCachedRenderValueForString<string>(context, 'markdown', text)).toBeUndefined()
+    expect(setCachedRenderValueForString(context, 'markdown', text, '<p>same markdown body</p>')).toBe('<p>same markdown body</p>')
+    expect(getCachedRenderValueForString<string>(context, 'markdown', text)).toBe('<p>same markdown body</p>')
     expect(stringCacheKey<string>('markdown', `${text}!`).token).not.toBe(stringCacheKey<string>('markdown', text).token)
     // The token carries the digest, never the body itself: a streaming row's text
     // must not sit in the key as well as the entry.
@@ -94,29 +94,17 @@ describe('messageRenderCache', () => {
 
   it('does not reuse a string value when two inputs collide on the compact key', () => {
     const store = createMessageRenderCacheStore()
-    const cache = store.forRow('row:collision')
+    const context = {
+      renderCache: store.forRow('row:collision'),
+    }
     const first = 'wh7lwUUg'
     const second = 'zebMWNKb'
-    const computeFirst = vi.fn(() => 'first-render')
-    const computeSecond = vi.fn(() => 'second-render')
 
     expect(stringCacheKey<string>('markdown', first).token).toBe(stringCacheKey<string>('markdown', second).token)
-    expect(cachedRenderValueForString({ renderCache: cache }, 'markdown', first, computeFirst)).toBe('first-render')
-    expect(cachedRenderValueForString({ renderCache: cache }, 'markdown', second, computeSecond)).toBe('second-render')
+    setCachedRenderValueForString(context, 'markdown', first, 'first-render')
 
-    expect(computeFirst).toHaveBeenCalledTimes(1)
-    expect(computeSecond).toHaveBeenCalledTimes(1)
-  })
-
-  it('does not reuse tuple-string values when one tuple part collides', () => {
-    const store = createMessageRenderCacheStore()
-    const cache = store.forRow('row:tuple-collision')
-    const first = 'wh7lwUUg'
-    const second = 'zebMWNKb'
-
-    expect(stringTupleCacheKey<string>('diff', ['path', first, 'new']).token).toBe(stringTupleCacheKey<string>('diff', ['path', second, 'new']).token)
-    expect(cachedRenderValueForStrings({ renderCache: cache }, 'diff', ['path', first, 'new'], () => 'first-diff')).toBe('first-diff')
-    expect(cachedRenderValueForStrings({ renderCache: cache }, 'diff', ['path', second, 'new'], () => 'second-diff')).toBe('second-diff')
+    expect(getCachedRenderValueForString<string>(context, 'markdown', second)).toBeUndefined()
+    expect(getCachedRenderValueForString<string>(context, 'markdown', first)).toBe('first-render')
   })
 
   it('clear drops every row, which prune cannot', () => {

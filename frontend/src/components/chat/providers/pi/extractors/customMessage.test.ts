@@ -87,3 +87,51 @@ describe('pi custom messages', () => {
     expect(piSubagentNotifications(notification('Preserve this text', { status: '' }))).toBeNull()
   })
 })
+
+describe('piSubagentNotifications', () => {
+  /** A payload that counts each read of its `message`, which every parse of it reads. */
+  function countedPayload(payload: Record<string, unknown>): { payload: Record<string, unknown>, reads: () => number } {
+    let reads = 0
+    const { message, ...rest } = payload
+    return {
+      payload: {
+        ...rest,
+        get message() {
+          reads++
+          return message
+        },
+      },
+      reads: () => reads,
+    }
+  }
+
+  it('answers the same list for the same message, and parses it once', () => {
+    const { payload, reads } = countedPayload(notification('Report'))
+
+    const first = piSubagentNotifications(payload)
+    const readsOfOneParse = reads()
+
+    expect(first?.[0]?.agentId).toBe('child')
+    expect(readsOfOneParse).toBeGreaterThan(0)
+    expect(piSubagentNotifications(payload)).toBe(first)
+    expect(reads()).toBe(readsOfOneParse)
+  })
+
+  it('answers null again for a message that reports no subagent, and parses it once', () => {
+    const { payload, reads } = countedPayload(notification('Report', { id: null }))
+
+    expect(piSubagentNotifications(payload)).toBeNull()
+    const readsOfOneParse = reads()
+    expect(readsOfOneParse).toBeGreaterThan(0)
+    expect(piSubagentNotifications(payload)).toBeNull()
+    expect(reads()).toBe(readsOfOneParse)
+  })
+
+  it('parses a new message object again, because it is a new revision of the row', () => {
+    const first = piSubagentNotifications(notification('Report'))
+    const second = piSubagentNotifications(notification('Report'))
+
+    expect(second).toEqual(first)
+    expect(second).not.toBe(first)
+  })
+})

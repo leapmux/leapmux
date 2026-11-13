@@ -1,6 +1,6 @@
 import type { StructuredPatchHunk } from '~/components/chat/diff/diffTypes'
 import type { FileEditDiff } from '~/components/chat/model/fileEditDiff'
-import { computeDiff } from '~/components/chat/diff/diffCompute'
+import { computeDiff } from '~/components/chat/diff/diffSearch'
 import { fileEditDiffInput } from '~/components/chat/model/fileEditDiff'
 
 /**

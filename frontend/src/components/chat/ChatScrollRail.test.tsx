@@ -6,6 +6,7 @@ import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import { popoverCardPadding } from '~/styles/popover.css'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { POINTER_CLOSE_DELAY_MS, SCRUB_WARM_DEBOUNCE_MS } from './chatDotPreview'
 import { resolveScrollbarOwner } from './chatRailPolicy'
 import { ChatScrollRail } from './ChatScrollRail'
@@ -788,7 +789,7 @@ describe('ChatScrollRail', () => {
     expect(onJumpToSeq).toHaveBeenCalledWith(2n)
   })
 
-  it('opens the dot preview on a dot press, with no hover to open it', () => {
+  it('opens the dot preview on a dot press, with no hover to open it', async () => {
     // A touch has no hover: the card must come from the press itself (the thumb lands on the
     // dot, so the scrub target resolves to it) or a finger would never see a preview.
     HTMLElement.prototype.setPointerCapture = vi.fn()
@@ -801,6 +802,7 @@ describe('ChatScrollRail', () => {
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toBeNull()
     const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"][data-seq="2"]') as HTMLElement
     dot.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 125, pointerId: 1 }))
+    await settleWorkerReplies()
     const previews = container.querySelectorAll('[data-testid="chat-scroll-rail-preview"]')
     expect(previews.length).toBe(1)
     expect(previews[0]).toHaveTextContent('pressed message two')
@@ -993,7 +995,7 @@ describe('ChatScrollRail', () => {
     expect(capture).toHaveBeenCalledTimes(2)
   })
 
-  it('reveals the preview card for the dot the thumb passes over while dragging, and warms it after it settles', () => {
+  it('reveals the preview card for the dot the thumb passes over while dragging, and warms it after it settles', async () => {
     HTMLElement.prototype.setPointerCapture = vi.fn()
     vi.useFakeTimers()
     installImmediateRaf() // override the faked rAF with a synchronous one for the drag frames
@@ -1008,6 +1010,7 @@ describe('ChatScrollRail', () => {
     // Grab the fixed thumb, then scrub to the seq-2 dot at y=125.
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
     rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 125, pointerId: 1 }))
+    await settleWorkerReplies()
     const preview = container.querySelectorAll('[data-testid="chat-scroll-rail-preview"]')
     expect(preview.length).toBe(1) // never two cards
     expect(preview[0]).toHaveTextContent('scrubbed message two')
@@ -1057,7 +1060,7 @@ describe('ChatScrollRail', () => {
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toBeNull()
   })
 
-  it('shows ONE card (the scrub target wins) when a dot is hovered while scrubbing', () => {
+  it('shows ONE card (the scrub target wins) when a dot is hovered while scrubbing', async () => {
     HTMLElement.prototype.setPointerCapture = vi.fn()
     installImmediateRaf()
     const previewFor = (seq: bigint) => (seq === 2n
@@ -1072,6 +1075,7 @@ describe('ChatScrollRail', () => {
     rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 125, pointerId: 1 }))
     const dot4 = container.querySelector('[data-testid="chat-scroll-rail-dot"][data-seq="4"]') as HTMLElement
     fireEvent.pointerEnter(dot4)
+    await settleWorkerReplies()
     const previews = container.querySelectorAll('[data-testid="chat-scroll-rail-preview"]')
     expect(previews.length).toBe(1) // exactly one card, no double
     expect(previews[0]).toHaveTextContent('scrub target two') // scrub wins over the hover
@@ -1094,7 +1098,7 @@ describe('ChatScrollRail', () => {
     expect(dots[1]?.getAttribute('aria-label')).toBe('Your response')
   })
 
-  it('describes a focused dot by the preview card its focus opened', () => {
+  it('describes a focused dot by the preview card its focus opened', async () => {
     const previewFor = (seq: bigint) => (seq === 2n
       ? 'the first message'
       : undefined)
@@ -1111,6 +1115,7 @@ describe('ChatScrollRail', () => {
       throw new Error('expected both dots to mount')
 
     fireEvent.focus(firstDot)
+    await settleWorkerReplies()
     const card = container.querySelector('[data-testid="chat-scroll-rail-preview"]')!
     expect(card.id).not.toBe('')
     expect(firstDot.getAttribute('aria-describedby')).toBe(card.id)
@@ -1232,12 +1237,13 @@ describe('ChatScrollRail dot preview card', () => {
     expect(card.style.top).toBe('12px')
   })
 
-  it('opens the card immediately on hover and renders the resolved preview as markdown', () => {
+  it('opens the card immediately on hover and renders the resolved preview as markdown', async () => {
     const previewFor = (seq: bigint) => (seq === 2n
       ? '**jump** to this message'
       : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const card = hoverFirstDot(container)! // no timers advanced -- it's immediate
+    await settleWorkerReplies()
     expect(card).toHaveTextContent('jump to this message')
     // The markdown is rendered, not shown as raw source: **jump** becomes a bold element.
     const strong = card.querySelector('strong, b')
@@ -1554,7 +1560,7 @@ describe('ChatScrollRail dot preview card', () => {
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toBeNull()
   })
 
-  it('keeps the card on ITS dot while a selection drag crosses the dots beside it', () => {
+  it('keeps the card on ITS dot while a selection drag crosses the dots beside it', async () => {
     const previewFor = (seq: bigint) => (seq === 2n
       ? 'message two'
       : seq === 4n
@@ -1577,16 +1583,18 @@ describe('ChatScrollRail dot preview card', () => {
     // the reader's own selection -- and the selection dies with the text nodes it pointed at.
     fireEvent.pointerLeave(card)
     fireEvent.pointerEnter(secondDot)
+    await settleWorkerReplies()
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toHaveTextContent('message two')
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).not.toHaveTextContent('message four')
 
     // Once the press ends the dots have their say again, so this is a hold, not a permanent lock.
     fireEvent.pointerUp(window)
     fireEvent.pointerEnter(secondDot)
+    await settleWorkerReplies()
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toHaveTextContent('message four')
   })
 
-  it('switches the card to another dot at once, with no close delay in between', () => {
+  it('switches the card to another dot at once, with no close delay in between', async () => {
     vi.useFakeTimers()
     const previewFor = (seq: bigint) => (seq === 2n
       ? 'message two'
@@ -1602,6 +1610,7 @@ describe('ChatScrollRail dot preview card', () => {
     fireEvent.pointerEnter(firstDot)
     fireEvent.pointerLeave(firstDot)
     fireEvent.pointerEnter(secondDot)
+    await settleWorkerReplies()
     const cards = container.querySelectorAll('[data-testid="chat-scroll-rail-preview"]')
     expect(cards.length).toBe(1) // never two, and never the old one for a moment longer
     expect(cards[0]).toHaveTextContent('message four')
@@ -1610,7 +1619,7 @@ describe('ChatScrollRail dot preview card', () => {
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toHaveTextContent('message four')
   })
 
-  it('moves the SAME card element to the new dot\'s Y, and sends its scroll back to the top', () => {
+  it('moves the SAME card element to the new dot\'s Y, and sends its scroll back to the top', async () => {
     const previewFor = (seq: bigint) => (seq === 2n
       ? 'message two'
       : seq === 4n
@@ -1629,6 +1638,7 @@ describe('ChatScrollRail dot preview card', () => {
 
     fireEvent.pointerLeave(firstDot)
     fireEvent.pointerEnter(secondDot)
+    await settleWorkerReplies()
 
     // <Show> is not keyed, so the same element carries the next dot. Both of these would pass
     // silently if the card froze its props at creation: the card would sit at the first dot's Y,
@@ -1856,6 +1866,7 @@ describe('ChatScrollRail dot preview card', () => {
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toBeNull()
 
     fireEvent.pointerEnter(container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement)
+    await settleWorkerReplies()
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toHaveTextContent('message four')
   })
 
@@ -1893,6 +1904,7 @@ describe('ChatScrollRail dot preview card', () => {
     ))
     const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
     fireEvent.pointerEnter(dot)
+    await settleWorkerReplies()
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toHaveTextContent('stale preview')
 
     setMarks([])
@@ -1914,7 +1926,7 @@ describe('ChatScrollRail dot preview card', () => {
     expect(hoverFirstDot(container)).toHaveTextContent('Your message')
   })
 
-  it('shows an aggregate "N messages" header plus the representative preview for a cluster', () => {
+  it('shows an aggregate "N messages" header plus the representative preview for a cluster', async () => {
     // seqs 500..502 in [1, 100000] collapse to one pixel -> a cluster of 3; on the centre axis
     // 502 is nearest the pixel centre -> representative 502.
     const marks = [
@@ -1935,6 +1947,7 @@ describe('ChatScrollRail dot preview card', () => {
       />
     ))
     const card = hoverFirstDot(container)!
+    await settleWorkerReplies()
     expect(card).toHaveTextContent('3 messages') // the aggregate header
     expect(card).toHaveTextContent('the nearest message') // the representative's preview
   })

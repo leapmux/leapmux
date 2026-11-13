@@ -15,6 +15,7 @@ import { AEAD_TAG_SIZE, SLHDSA_SIG_SIZE, X25519_PUBLIC_KEY_SIZE } from '~/genera
 import { concatBytes } from './bytes'
 import { hkdf } from './noise'
 import { clearHandshakeState, initiatorHandshake1, initiatorHandshake2 } from './noise-hybrid'
+import { verifySlhDsaHere } from './slhDsaVerifyHere'
 
 const PROTOCOL_NAME = 'Noise_NK_25519_ChaChaPoly_BLAKE2b'
 /** The error of `chacha20poly1305` from `@noble/ciphers` when the tag does not authenticate the ciphertext. */
@@ -185,7 +186,7 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
     expect(responder.message2.length).toBe(48 + 49856) // noiseMsg2 + slhdsaSig
 
     // Initiator completes handshake.
-    const session = await initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey)
+    const session = await initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey, verifySlhDsaHere)
 
     // Test initiator → responder.
     const msg1 = new TextEncoder().encode('hello from initiator')
@@ -209,7 +210,7 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
       slhdsaKeys.secretKey,
       message1,
     )
-    const session = await initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey)
+    const session = await initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey, verifySlhDsaHere)
 
     for (let i = 0; i < 50; i++) {
       const fwd = new TextEncoder().encode(`forward-${i}`)
@@ -236,12 +237,12 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
 
     // Use a different SLH-DSA public key for verification.
     const wrongKeys = slh_dsa_shake_256f.keygen()
-    await expect(initiatorHandshake2(handshakeState, responder.message2, wrongKeys.publicKey)).rejects.toThrow('SLH-DSA')
+    await expect(initiatorHandshake2(handshakeState, responder.message2, wrongKeys.publicKey, verifySlhDsaHere)).rejects.toThrow('SLH-DSA')
   })
 
   it('should fail with short message2', async () => {
     const { handshakeState } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
-    await expect(initiatorHandshake2(handshakeState, new Uint8Array(16), slhdsaKeys.publicKey)).rejects.toThrow('wrong size')
+    await expect(initiatorHandshake2(handshakeState, new Uint8Array(16), slhdsaKeys.publicKey, verifySlhDsaHere)).rejects.toThrow('wrong size')
   })
 
   it('should fail with oversized message2', async () => {
@@ -256,7 +257,7 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
     // Append an extra byte to the valid message2.
     const oversized = new Uint8Array(responder.message2.length + 1)
     oversized.set(responder.message2)
-    await expect(initiatorHandshake2(handshakeState, oversized, slhdsaKeys.publicKey)).rejects.toThrow('wrong size')
+    await expect(initiatorHandshake2(handshakeState, oversized, slhdsaKeys.publicKey, verifySlhDsaHere)).rejects.toThrow('wrong size')
   })
 
   it('should zero handshake state after completing handshake', async () => {
@@ -274,7 +275,7 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
     expect(handshakeState.mlkemCT.length).toBeGreaterThan(0)
     expect(handshakeState.e.privateKey.length).toBeGreaterThan(0)
 
-    await initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey)
+    await initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey, verifySlhDsaHere)
 
     // After handshake2, all sensitive fields should be zeroed.
     expect(handshakeState.mlkemSS.every(b => b === 0)).toBe(true)
@@ -296,7 +297,7 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
     )
 
     const wrongKeys = slh_dsa_shake_256f.keygen()
-    await expect(initiatorHandshake2(handshakeState, responder.message2, wrongKeys.publicKey)).rejects.toThrow('SLH-DSA')
+    await expect(initiatorHandshake2(handshakeState, responder.message2, wrongKeys.publicKey, verifySlhDsaHere)).rejects.toThrow('SLH-DSA')
 
     // Even on failure, sensitive material should be zeroed.
     expect(handshakeState.mlkemSS.every(b => b === 0)).toBe(true)
@@ -337,7 +338,7 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
     // Initiator should fail because handshake hashes diverged
     // (mixHash(mlkemCT) differs between initiator and responder). The hash is
     // the associated data of the message 2 payload, so its tag fails first.
-    await expect(initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey)).rejects.toThrow(AEAD_TAG_FAILURE)
+    await expect(initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey, verifySlhDsaHere)).rejects.toThrow(AEAD_TAG_FAILURE)
   })
 
   it('should encrypt empty messages', async () => {
@@ -349,12 +350,69 @@ describe('hybrid Noise_NK handshake', { timeout: 120_000 }, () => {
       slhdsaKeys.secretKey,
       message1,
     )
-    const session = await initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey)
+    const session = await initiatorHandshake2(handshakeState, responder.message2, slhdsaKeys.publicKey, verifySlhDsaHere)
 
     const ct = session.send.encrypt(new Uint8Array(0))
     expect(ct.length).toBeGreaterThan(0) // Auth tag
     const pt = simpleCipherDecrypt(responder.receive, ct)
     expect(pt.length).toBe(0)
+  })
+
+  // Every failure of message 2 must zero the single-use state, not only the
+  // failures of the signature check: an ephemeral key or an ML-KEM shared secret
+  // that outlives a forged handshake waits in the heap for the garbage collector.
+  describe('the failure exits before the signature check', () => {
+    function expectZeroedState(state: ReturnType<typeof initiatorHandshake1>['handshakeState']) {
+      expect(state.e.privateKey.every(b => b === 0)).toBe(true)
+      expect(state.mlkemSS.every(b => b === 0)).toBe(true)
+      expect(state.mlkemCT.every(b => b === 0)).toBe(true)
+      expect(state.ss.ck.every(b => b === 0)).toBe(true)
+      expect(state.ss.h.every(b => b === 0)).toBe(true)
+    }
+
+    it('zeroes the state when message 2 has the wrong size', async () => {
+      const { handshakeState } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
+      const verify = vi.fn(() => true)
+
+      await expect(initiatorHandshake2(handshakeState, new Uint8Array(16), slhdsaKeys.publicKey, verify))
+        .rejects
+        .toThrow('noise-hybrid: message2 wrong size (16 !== 49904)')
+
+      expect(verify).not.toHaveBeenCalled()
+      expectZeroedState(handshakeState)
+    })
+
+    it('zeroes the state when the tag of message 2 fails to authenticate', async () => {
+      const { handshakeState, message1 } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
+      const responder = responderHandshake(x25519Priv, x25519Pub, mlkemKeys.secretKey, slhdsaKeys.secretKey, message1)
+      const forged = new Uint8Array(responder.message2)
+      // The last byte of the AEAD tag, which ends the Noise part of message 2.
+      const tagEnd = X25519_PUBLIC_KEY_SIZE + AEAD_TAG_SIZE - 1
+      forged[tagEnd] = (forged[tagEnd] ?? 0) ^ 0x01
+      const verify = vi.fn(() => true)
+
+      await expect(initiatorHandshake2(handshakeState, forged, slhdsaKeys.publicKey, verify))
+        .rejects
+        .toThrow(AEAD_TAG_FAILURE)
+
+      expect(verify).not.toHaveBeenCalled()
+      expectZeroedState(handshakeState)
+    })
+
+    it('zeroes the state when the responder ephemeral is a low-order point', async () => {
+      const { handshakeState } = initiatorHandshake1(x25519Pub, mlkemKeys.publicKey)
+      // An all-zero X25519 share gives an all-zero shared secret, which the curve
+      // library refuses.
+      const lowOrder = new Uint8Array(X25519_PUBLIC_KEY_SIZE + AEAD_TAG_SIZE + SLHDSA_SIG_SIZE)
+      const verify = vi.fn(() => true)
+
+      await expect(initiatorHandshake2(handshakeState, lowOrder, slhdsaKeys.publicKey, verify))
+        .rejects
+        .toThrow('invalid private or public key received')
+
+      expect(verify).not.toHaveBeenCalled()
+      expectZeroedState(handshakeState)
+    })
   })
 
   describe('the injected signature verifier', () => {

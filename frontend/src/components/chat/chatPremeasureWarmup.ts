@@ -22,8 +22,14 @@ import { cancelIdle, requestIdle } from '~/lib/idleCallback'
  * its rows one at a time while the period lasts, so a batch of heavy rows does
  * not become one long task. A tick always holds at least one row, or a page
  * with short idle periods would never warm up. The `enabled` condition drops
- * the band to empty when the user scrolls. Active hidden rows then unmount and
- * their premeasure frame entries cancel.
+ * the band to empty when the user scrolls, so the warm-up adds no row during
+ * the gesture.
+ *
+ * Emptying the band unmounts nothing. The premeasure queue keeps each row that
+ * a band added pending until the row measures or leaves the window, so a row
+ * that waits for its content (a Markdown body or an edit diff in a worker)
+ * stays mounted, and its measure can commit during a wheel or drag gesture.
+ * Only a momentum fling defers that commit (`setVisibleMeasurementDeferral`).
  */
 
 /** The most rows one tick mounts: one shared premeasure frame's worth. */
@@ -52,19 +58,6 @@ export interface PremeasureWarmupDeps {
 
 const EMPTY: ChatDomPremeasureCandidate[] = []
 
-function sameCandidateIds(a: readonly ChatDomPremeasureCandidate[], b: readonly ChatDomPremeasureCandidate[]): boolean {
-  if (a.length !== b.length)
-    return false
-  for (let i = 0; i < a.length; i++) {
-    // The length check above keeps `i` in range on both; the undefined checks are the type-level guard alone.
-    const x = a[i]
-    const y = b[i]
-    if (x === undefined || y === undefined || x.item.id !== y.item.id || x.item.heightKey !== y.item.heightKey)
-      return false
-  }
-  return true
-}
-
 /**
  * Create the warm-up ticker. Call within a reactive owner. The returned
  * accessor is wired into the premeasure queue's `warmupCandidates` band
@@ -73,18 +66,13 @@ function sameCandidateIds(a: readonly ChatDomPremeasureCandidate[], b: readonly 
  */
 export function createPremeasureWarmup(deps: PremeasureWarmupDeps) {
   const [warmupCandidates, setWarmupCandidates] = createSignal<readonly ChatDomPremeasureCandidate[]>(EMPTY)
-  let timer: ReturnType<typeof setTimeout> | undefined
-  let idleHandle: number | undefined
+  // Cancels the stage of the next tick that is waiting now: its delay timer, or
+  // its request for an idle period. Undefined while no tick is scheduled.
+  let cancelPendingTick: (() => void) | undefined
 
-  const cancelTimer = (): void => {
-    if (timer !== undefined) {
-      clearTimeout(timer)
-      timer = undefined
-    }
-    if (idleHandle !== undefined) {
-      cancelIdle(idleHandle)
-      idleHandle = undefined
-    }
+  const cancelScheduledTick = (): void => {
+    cancelPendingTick?.()
+    cancelPendingTick = undefined
   }
 
   /**
@@ -125,16 +113,21 @@ export function createPremeasureWarmup(deps: PremeasureWarmupDeps) {
       : out
   }
 
-  /** Wait `delayMs`, then run the next tick in the next idle period of the browser. */
+  /**
+   * Wait `delayMs`, then run the next tick in the next idle period of the browser.
+   * Replaces the tick that is scheduled already, so at most one tick waits.
+   */
   const scheduleTick = (delayMs: number): void => {
-    timer = setTimeout(() => {
-      timer = undefined
-      idleHandle = requestIdle(tick)
+    cancelScheduledTick()
+    const timer = setTimeout(() => {
+      const idleHandle = requestIdle(tick)
+      cancelPendingTick = () => cancelIdle(idleHandle)
     }, delayMs)
+    cancelPendingTick = () => clearTimeout(timer)
   }
 
   function tick(deadline: IdleDeadline): void {
-    idleHandle = undefined
+    cancelPendingTick = undefined
     if (!untrack(deps.enabled))
       return
     const next = untrack(computeNextBatch)
@@ -146,33 +139,25 @@ export function createPremeasureWarmup(deps: PremeasureWarmupDeps) {
         : EMPTY))
       return
     }
-    // A row of the last batch that still waits for its measure keeps its
-    // candidate object, so it stays mounted rather than mounting again.
-    const mounted = new Map(untrack(warmupCandidates).map(candidate => [candidate.item.id, candidate]))
     const batch: ChatDomPremeasureCandidate[] = []
     for (const candidate of next) {
-      const kept = mounted.get(candidate.item.id)
-      if (kept !== undefined && kept.item.heightKey === candidate.item.heightKey) {
-        batch.push(kept)
-        continue
-      }
       if (batch.length > 0 && deadline.timeRemaining() <= 0)
         break
       batch.push(candidate)
-      // Mounts this row now, so the deadline check above sees its cost.
+      // Each publish mounts this row now, so the deadline check above sees its
+      // cost. The premeasure queue mounts only the rows that it does not hold
+      // yet: a row that an earlier tick added, and that still waits for its
+      // measure, stays mounted.
       setWarmupCandidates(batch.slice())
     }
-    setWarmupCandidates(prev => (sameCandidateIds(prev, batch)
-      ? prev
-      : batch))
     scheduleTick(WARMUP_TICK_MS)
   }
 
   createEffect(() => {
     if (!deps.enabled()) {
-      // Scroll/stream/hidden: stop feeding immediately so the hidden rows
-      // unmount and no new measures land mid-gesture.
-      cancelTimer()
+      // Scroll, stream or hidden pane: add no more rows. The rows that the band
+      // already added stay mounted until they measure (see the header).
+      cancelScheduledTick()
       setWarmupCandidates(EMPTY)
       return
     }
@@ -180,11 +165,10 @@ export function createPremeasureWarmup(deps: PremeasureWarmupDeps) {
     // a parked ticker; read length only — the arming decision doesn't care
     // about content.
     deps.virtualItems()
-    cancelTimer()
     scheduleTick(WARMUP_IDLE_DELAY_MS)
   })
 
-  onCleanup(cancelTimer)
+  onCleanup(cancelScheduledTick)
 
   return { warmupCandidates }
 }

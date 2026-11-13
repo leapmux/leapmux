@@ -1,5 +1,7 @@
+import type { DiffInput } from '../../../diff/diffTypes'
 import { describe, expect, it } from 'vitest'
 import { fileEditDrawnHunks } from '~/test-support/fileEditHunks'
+import { computeDiff } from '../../../diff/diffSearch'
 import { fileEditCopyableText } from '../../../model/fileEditDiff'
 import { antigravityLandedChanges } from './fileEdit'
 import { antigravityStep } from './toolCommon'
@@ -45,8 +47,9 @@ describe('antigravityLandedChanges', () => {
       },
     ])
     expect(change.showLineNumbers).toBe(false)
-    expect(fileEditCopyableText(change, fileEditDrawnHunks(change))).toContain('+committed')
-    expect(fileEditCopyableText(change, fileEditDrawnHunks(change))).not.toContain('+proposed')
+    const hunksOf = (input: DiffInput) => computeDiff(input).hunks
+    expect(fileEditCopyableText(change, hunksOf)).toContain('+committed')
+    expect(fileEditCopyableText(change, hunksOf)).not.toContain('+proposed')
   })
 
   it.each([

@@ -4,10 +4,9 @@ import type { ToolCallStatus } from '../model/toolCallStatus'
 import type { GenericToolRequest, GenericToolResult } from '../model/tools/generic'
 import type { ImageRenderActions, ToolResultRenderContext } from '../renderContext'
 import { createMemo, For, Match, Show, Switch } from 'solid-js'
-import { prettifyJson } from '~/lib/jsonFormat'
 import { getToolResultExpanded } from '../messageRenderers'
 import { isFinishedToolCallStatus } from '../model/toolCallStatus'
-import { genericArgsText } from '../model/tools/generic'
+import { genericArgsText, unknownContentText } from '../model/tools/generic'
 import { toolInputSummary, toolMessage, toolResultError, toolResultPrompt } from '../toolStyles.css'
 import { CollapsibleContent } from './CollapsibleContent'
 import { EMPTY_RESULT_NOTICE } from './emptyResultNotice'
@@ -18,7 +17,7 @@ function contentText(item: McpContentItem): string {
   switch (item.type) {
     case 'text': return item.text
     case 'resource': return [item.uri, item.text].filter(value => value !== undefined).join('\n')
-    case 'unknown': return prettifyJson(item.raw)
+    case 'unknown': return unknownContentText(item)
     case 'image': return item.source.description ?? ''
   }
 }
@@ -291,7 +290,7 @@ function McpContentItemView(props: { item: McpContentItem, imageIndex?: number, 
         {item => (
           <McpTextView
             outputPreview
-            text={prettifyJson(item().raw)}
+            text={unknownContentText(item())}
             expanded={props.expanded}
             {...(props.context !== undefined
               ? { context: props.context }

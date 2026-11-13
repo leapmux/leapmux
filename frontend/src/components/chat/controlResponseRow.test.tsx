@@ -3,6 +3,7 @@ import type { PersistedControlResponse } from './persistedControlResponse'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { renderMessageContent } from './messageContentRenderer'
 import { renderControlResponseRow } from './messageRenderers'
 import { resolveControlResponseSummary } from './persistedControlResponse'
@@ -30,8 +31,9 @@ describe('renderControlResponseRow', () => {
     expect(container.textContent).toBe('Task: Build\nEnv: Dev')
   })
 
-  it('renders feedback under the "Sent feedback:" lead as markdown', () => {
+  it('renders feedback under the "Sent feedback:" lead as markdown', async () => {
     const { container } = row({ kind: 'feedback', message: 'use ripgrep instead' })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Sent feedback:')
     expect(container.textContent).toContain('use ripgrep instead')
   })
@@ -90,7 +92,7 @@ describe('renderMessageContent control_response dispatch', () => {
     expect(renderRow(response, AgentProvider.CODEX).container.textContent).toBe('Allow')
   })
 
-  it('renders Claude rejection feedback through the provider plugin', () => {
+  it('renders Claude rejection feedback through the provider plugin', async () => {
     const response = {
       ...RESPONSE,
       response: {
@@ -101,7 +103,9 @@ describe('renderMessageContent control_response dispatch', () => {
         },
       },
     }
-    const text = renderRow(response, AgentProvider.CLAUDE_CODE).container.textContent ?? ''
+    const { container } = renderRow(response, AgentProvider.CLAUDE_CODE)
+    await settleWorkerReplies()
+    const text = container.textContent ?? ''
     expect(text).toContain('Sent feedback:')
     expect(text).toContain('add tests')
   })

@@ -106,6 +106,61 @@ describe('workerPriorityGate', () => {
     expect(gate.queuedCount()).toBe(0)
   })
 
+  it('posts a first job ahead of every queued job, in arrival order among first jobs', async () => {
+    const gate = createWorkerPriorityGate(1)
+    const started: string[] = []
+    const busy = makeJob(started, 'busy')
+    const high = makeJob(started, 'high')
+    const low = makeJob(started, 'low')
+    const first1 = makeJob(started, 'first1')
+    const first2 = makeJob(started, 'first2')
+    const all = [
+      gate.enqueue(busy.work), // occupies the slot
+      gate.enqueue(high.work),
+      gate.enqueue(low.work, () => true),
+      gate.enqueue(first1.work, 'first'),
+      gate.enqueue(first2.work, 'first'),
+    ]
+    expect(started).toEqual(['busy'])
+
+    busy.release()
+    await new Promise(r => setTimeout(r))
+    expect(started).toEqual(['busy', 'first1'])
+    first1.release()
+    await new Promise(r => setTimeout(r))
+    expect(started).toEqual(['busy', 'first1', 'first2'])
+    first2.release()
+    await new Promise(r => setTimeout(r))
+    // Then the high job, and the low one last.
+    expect(started).toEqual(['busy', 'first1', 'first2', 'high'])
+    high.release()
+    low.release()
+    await Promise.all(all)
+    expect(started).toEqual([
+      'busy',
+      'first1',
+      'first2',
+      'high',
+      'low',
+    ])
+  })
+
+  it('posts a first job at once while a slot is free', async () => {
+    const gate = createWorkerPriorityGate(2)
+    const started: string[] = []
+    const busy = makeJob(started, 'busy')
+    const first = makeJob(started, 'first')
+    const pending = [
+      gate.enqueue(busy.work),
+      gate.enqueue(first.work, 'first'),
+    ]
+    expect(started).toEqual(['busy', 'first'])
+    expect(gate.queuedCount()).toBe(0)
+    busy.release()
+    first.release()
+    await Promise.all(pending)
+  })
+
   it('passes through resolutions, rejections, and synchronous throws, releasing the slot', async () => {
     const gate = createWorkerPriorityGate(1)
     await expect(gate.enqueue(() => Promise.resolve(42))).resolves.toBe(42)

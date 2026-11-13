@@ -22,7 +22,7 @@ describe('agent renderer', () => {
   // The registry knows what the subagent DOES, where a launch may hold the tool's own
   // label alone (Codex's `spawnAgent` calls itself "Subagent"). The row then reads the
   // same as the Background tasks entry it points at.
-  it('prefers the background-task title over the launch description', () => {
+  it('prefers the background-task title over the launch description', async () => {
     const call = toolCallFixture('agent', {
       request: { description: 'Subagent', prompt: 'Go.', registryKey: 'child-1' },
     })
@@ -32,7 +32,7 @@ describe('agent renderer', () => {
     if (navigation === undefined)
       throw new Error('The subagent test needs navigation capabilities')
     const context: ToolResultRenderContext = { subagents: navigation }
-    expect(elementText(agentRenderer.title(parsedCall(call), context))).toContain('Fix the failing build')
+    expect(await elementText(agentRenderer.title(parsedCall(call), context))).toContain('Fix the failing build')
     // A key the registry does not answer for leaves the launch's own words.
     const emptyNavigation = subagentsFrom({
       backgroundTask: () => undefined,
@@ -40,7 +40,7 @@ describe('agent renderer', () => {
     if (emptyNavigation === undefined)
       throw new Error('The subagent test needs empty navigation capabilities')
     const empty: ToolResultRenderContext = { subagents: emptyNavigation }
-    expect(elementText(agentRenderer.title(parsedCall(call), empty))).toContain('Subagent')
+    expect(await elementText(agentRenderer.title(parsedCall(call), empty))).toContain('Subagent')
   })
 
   it('draws a completed outcome when a paired result lists no agents', () => {

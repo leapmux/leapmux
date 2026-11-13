@@ -3,7 +3,7 @@ import type { PlanRenderContext } from '../renderContext'
 import PlaneTakeoff from 'lucide-solid/icons/plane-takeoff'
 import { Show } from 'solid-js'
 import { useCopyButton } from '~/hooks/useCopyButton'
-import { MarkdownText } from '../messageRenderers'
+import { MarkdownText } from '../MarkdownText'
 import { ToolUseLayout } from './ToolUseLayout'
 
 export interface MarkdownPlanLayoutProps {
@@ -56,12 +56,7 @@ export function MarkdownPlanLayout(props: MarkdownPlanLayoutProps): JSX.Element 
       <Show when={props.planText}>
         <hr />
         <div style={{ 'font-size': 'var(--text-regular)' }}>
-          <MarkdownText
-            text={props.planText}
-            {...(props.context !== undefined
-              ? { context: props.context }
-              : {})}
-          />
+          <MarkdownText text={props.planText} context={props.context} />
         </div>
       </Show>
     </ToolUseLayout>

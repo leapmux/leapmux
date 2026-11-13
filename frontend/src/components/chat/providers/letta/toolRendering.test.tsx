@@ -3,6 +3,7 @@ import { batch, createMemo } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createToolProgressStore } from '~/stores/chatToolProgress'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { createMutableTranscript } from '~/test-support/messageContext'
 import { makeMessage, makeTranscriptMessage, rawContent } from '~/test-support/messageFactory'
 import { createTranscriptScenario } from '~/test-support/transcriptScenario'
@@ -10,7 +11,7 @@ import { renderMessageContent } from '../../messageContentRenderer'
 import { createMessageContextResolver, createMessageRenderSources } from '../../messageContextResolver'
 import { classifyLettaMessage } from './classification'
 import './plugin'
-import '../testMocks'
+import '~/components/chat/providers'
 
 describe('letta live tool output', () => {
   it('draws the current native window beside a request with hidden progress records', () => {
@@ -274,6 +275,7 @@ describe('letta native task rendering', () => {
     })
     const { container } = scenario.renderBubble('create-request')
     await waitFor(() => expect(container.textContent).toContain('Inspect the repository'))
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Read the repository files.')
   })
 

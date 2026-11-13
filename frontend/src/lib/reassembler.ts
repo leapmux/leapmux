@@ -37,7 +37,7 @@ interface ChunkBuffer {
  * What Reassembler.accept tells its caller to do with one decrypted chunk.
  * Mirrors the Go enums reassemblyAction (worker/channel/chunker.go) and
  * reassembleAction (tunnel/channel.go): a typed decision rather than a bag of
- * optional fields, so the dispatch in ChannelInbound.reassemble reads as a switch
+ * optional fields, so the dispatch in ChannelSessionInbound.reassemble reads as a switch
  * over outcomes.
  * The two limit breaches are DISTINCT kinds ('too-many' for the in-flight cap,
  * 'too-large' for the size cap) so the dispatcher never string-matches a message
@@ -59,8 +59,8 @@ export type ReassemblyOutcome
  * is unit-testable without driving the whole WebSocket path. Request rejection lives in
  * ChannelRpcMux (it owns pendingRequests/streamListeners); this type owns only buffers.
  *
- * Production surface: ChannelInbound calls `accept`, and ChannelRpcMux calls `poison`,
- * `drop`, and `clear`.
+ * Production surface, all in the channel session worker: ChannelSessionInbound calls
+ * `accept` and `poison`, and ChannelSession calls `release` and `clear`.
  * `start`, `append`, `get`, and `size` are the state-machine building blocks `accept`
  * composes plus read-only observers; they are public ONLY so reassembler.test.ts can
  * drive and assert the machine at each transition (e.g. `append`'s size boundary)
@@ -136,13 +136,13 @@ export class Reassembler {
    * has no handler registry to reap them (backend/internal/worker/channel/chunker.go).
    *
    * The JS tombstone exists only to drop a poisoned message's remaining chunks
-   * without a log line for each (see ChannelRpcMux.failReassembly); evicting the
+   * without a log line for each (see ChannelSessionInbound.failReassembly); evicting the
    * OLDEST when the cap is exceeded -- Map preserves insertion order -- at worst
    * restores those lines for the message least likely to still have chunks in
    * flight. A later stray chunk for the evicted id, its final chunk included,
    * has no live handler, so `accept` returns 'drop-unknown' for it before anything
    * deserializes it: it is discarded, not misrouted. The channel allocated that
-   * id, so ChannelInbound logs the drop at debug level.
+   * id, so ChannelSessionInbound logs the drop at debug level.
    */
   private capTombstones(keep: number): void {
     let tombstones = 0
@@ -170,6 +170,19 @@ export class Reassembler {
   /** Remove `correlationId`'s entry, live or tombstone. */
   drop(correlationId: number): void {
     this.buffers.delete(correlationId)
+  }
+
+  /**
+   * The request or the stream of `correlationId` ended: drop its live buffer, whose
+   * message can no longer reach a consumer, but KEEP a tombstone. A tombstone must
+   * still swallow the rest of a message that breached a limit after its request
+   * ended; `drop` would let the next chunk of that message start a fresh sequence.
+   * Does nothing for an unknown id.
+   */
+  release(correlationId: number): void {
+    const buf = this.buffers.get(correlationId)
+    if (buf !== undefined && !buf.poisoned)
+      this.buffers.delete(correlationId)
   }
 
   /** Drop every buffer (channel teardown). */
@@ -207,16 +220,16 @@ export class Reassembler {
    * without a WebSocket -- mirroring the Go worker's reassembler.accept
    * (backend/internal/worker/channel/chunker.go) and the tunnel client's
    * reassembleLocked (backend/tunnel/channel.go). Acting on the decision --
-   * logging with channel context, rejecting the owning request -- stays with the
-   * caller (ChannelInbound.reassemble).
+   * logging with channel context, failing the owning request -- stays with the
+   * caller (ChannelSessionInbound.reassemble).
    *
    * A size breach ('too-large') or a cap breach ('too-many') returns WITHOUT
-   * poisoning: the caller rejects the owning request (which reaps its buffer) and
-   * THEN poisons, so the tombstone survives to swallow the message's remaining
-   * chunks. JS is single-threaded, so no chunk can arrive between the decision and
-   * the poison and re-enter unrecognised. The Go tunnel client closes the same
-   * window differently: reassembleLocked poisons the id under ch.mu before it
-   * returns.
+   * poisoning: the caller poisons the id and THEN tells the main thread, which
+   * rejects the owning request and releases the id. `release` keeps a tombstone,
+   * so it survives to swallow the message's remaining chunks. JS is
+   * single-threaded, so no chunk can arrive between the decision and the poison
+   * and re-enter unrecognised. The Go tunnel client closes the same window
+   * differently: reassembleLocked poisons the id under ch.mu before it returns.
    */
   accept(
     correlationId: number,

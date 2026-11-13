@@ -1,4 +1,5 @@
 import { snapUtf16CutBackward, snapUtf16CutForward } from '~/lib/utf16Cut'
+import { hasMoreLinesThan } from './results/collapse'
 
 /** Maximum source characters that one expanded body retains. */
 export const EXPANDED_TEXT_DISPLAY_CHAR_LIMIT = 64 * 1024
@@ -61,19 +62,6 @@ export function hasLineLongerThan(text: string, maxLineChars: number): boolean {
     start = newline + 1
   }
   return false
-}
-
-function hasMoreLinesThan(text: string, maxLines: number): boolean {
-  let remaining = maxLines
-  let index = 0
-  while (remaining > 0) {
-    const newline = text.indexOf('\n', index)
-    if (newline === -1)
-      return false
-    remaining--
-    index = newline + 1
-  }
-  return true
 }
 
 function limitLineCount(text: string, maxLines: number): SafeTextDisplay {

@@ -43,7 +43,7 @@ import { MessageContextMenuHostProvider } from './MessageContextMenuHost'
 import { createMessageRenderCacheStore } from './messageRenderCache'
 import { messageRowChrome } from './messageRowLayout'
 import { expandedUiKeyFor, messageUiDefault } from './messageUiKeys'
-import { createRowReadinessRegistry } from './renderReadiness'
+import { createRowReadinessRegistry, useReplacingReadiness } from './renderReadiness'
 import { useChatScroll } from './useChatScroll'
 import { sameVirtualItems, useChatVirtualizer } from './useChatVirtualizer'
 import { ChatRowSkeleton } from './widgets/ChatRowSkeleton'
@@ -91,10 +91,12 @@ export const RAIL_COAST_MAX_MS = 4000
 // duration in lockstep (see tokens.ts).
 export const SKELETON_CROSSFADE_MS = motion.medium
 // How long a row must stay hidden-pending-reveal before its loading skeleton is
-// painted. A fast premeasure / re-measure (message expand-collapse, unified<->split
-// diff-view switch, a freshly appended tail) settles well under this, so the row just
-// fades in with no distracting shimmer; only a genuinely slow wait surfaces a skeleton
-// as a loading affordance. See createDelayedSet.
+// painted. A fast premeasure (a freshly appended tail) settles well under this, so
+// the row just fades in with no distracting shimmer; only a genuinely slow wait
+// surfaces a skeleton as a loading affordance. See createDelayedSet. A mounted row
+// that an expand-collapse or a diff-view switch resizes does not hide at all: it
+// keeps its measured height until the next read of its element commits the new
+// one (see useChatVirtualizer's pruneStaleKeyedHeights).
 export const SKELETON_SHOW_DELAY_MS = 500
 
 /** Imperative scroll API published by ChatView via `onScrollApiReady`. */
@@ -433,10 +435,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // Overscan scales with the live viewport height (clamped) -- see computeOverscanPx.
   const overscanPx = () => computeOverscanPx(viewportHeight())
 
-  // Which visible rows still wait for a Markdown body's worker render. Such a row
-  // stays hidden behind its loading skeleton, and the measurer reads no height from
-  // it, whether or not its height is already known: a reload hydrates persisted
-  // heights for rows whose HTML no cache holds yet.
+  // Which visible rows still wait for an asynchronous body: a Markdown body that the
+  // Markdown worker renders, or an edit diff over two texts whose hunks the diff
+  // worker computes. Such a row stays hidden behind its loading skeleton, and the
+  // measurer reads no height from it, whether or not its height is already known:
+  // a reload hydrates persisted heights for rows whose content no cache holds yet.
   const rowReadiness = createRowReadinessRegistry()
 
   const virt = useChatVirtualizer({
@@ -444,7 +447,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     gapSmallPx,
     gapLargePx,
     overscanPx,
-    isRowContentReady: id => rowReadiness.isReady(id),
   })
   // Point the UI-state cap's protect set at the virtualizer's live mounted rows
   // (a stable Set reference) now that `virt` exists.
@@ -529,8 +531,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     // `renderKeyForEntry`, which is the CONTENT key rather than the measurement one
     // `heightKeyForEntry` builds. It folds no `uiVersion`, so an expand or a
     // diff-view toggle re-measures the row and KEEPS everything the cache holds for
-    // it -- its extracted model, its normalized command body, its Myers diff and its
-    // rendered markdown, none of which the click changed.
+    // it -- its extracted model, its normalized command body and its rendered
+    // markdown, none of which the click changed. An edit's diff is not in this
+    // cache: the diff worker client keeps it in its own cache, keyed by content.
     renderCacheStore.prune(visibleEntries().map(renderKeyForEntry))
   })
 
@@ -659,7 +662,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   })
 
   // An actively premeasured unknown-height row awaiting its OWN DOM height commit.
-  // While true the row renders INVISIBLE (see rowHiddenUntilMeasured) and its
+  // While true the row renders INVISIBLE (see rowHiddenPendingReveal) and its
   // reserved slot is painted by the loading-skeleton overlay instead of blank
   // space. The live tail follows the same rule because its unmeasured content
   // could overlap the thinking indicator.
@@ -669,10 +672,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   )
 
   // A row still loading: awaiting its own measurement, or not ready -- not mounted
-  // yet, or holding a Markdown body whose worker render has not landed. The second
-  // case covers a row whose height is already KNOWN (hydrated after a reload, or
-  // measured before its HTML left the cache): such a row skips premeasure, so only
-  // its own content can hold it.
+  // yet, or holding an asynchronous body (Markdown, an edit diff) whose worker
+  // result has not landed. The second case covers a row whose height is already
+  // KNOWN (hydrated after a reload, or measured before its content left the cache):
+  // such a row skips premeasure, so only its own content can hold it.
   const rowLoading = (id: string): boolean =>
     rowAwaitingMeasurement(id) || !rowReadiness.isReady(id)
 
@@ -690,28 +693,29 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // earlier appended sibling reveals first. The row hides immediately so
   // it cannot overflow its slot. Its loading skeleton is
   // deferred separately (see skeletonSlice) so fast re-measures don't flash a shimmer.
+  //
+  // Shared by the row itself and its gap-bridge overlay entry: a premeasure-hidden,
+  // content-pending, or order-held row stays invisible until it is ready to reveal,
+  // so a tall row can't paint beyond its estimated slot and overlap what follows (a
+  // later row, or the in-flow tail UI). Rows with no active premeasure and no pending
+  // content stay visible so a zero attach read cannot hide content forever.
   const rowHiddenPendingReveal = (id: string): boolean =>
     rowLoading(id) || orderedRevealHeld().has(id)
-
-  // Hide-until-measured, shared by the row itself and its gap-bridge overlay
-  // entry: a premeasure-hidden, content-pending, or order-held row stays invisible
-  // until it is ready to reveal, so a tall row can't paint beyond its estimated slot
-  // and overlap what follows (a later row, or the in-flow tail UI). Rows with no
-  // active premeasure and no pending content stay visible so a zero attach read
-  // cannot hide content forever.
-  const rowHiddenUntilMeasured = (id: string): boolean => rowHiddenPendingReveal(id)
 
   // Fling-skeleton phases for the rendered rows, collected into one reactive set so the
   // gap-bridge overlay (rendered outside the rows) can see which rows are skeletons.
   const flingSkeletons = createFlingSkeletonRegistry(virt, SKELETON_CROSSFADE_MS)
   // Whether a row's span column is NOT currently painted, so its gap bridge must hide: a
-  // premeasure-hidden row (rowHiddenUntilMeasured) OR a fling skeleton, whose inline
+  // row hidden pending reveal (rowHiddenPendingReveal) OR a fling skeleton, whose inline
   // placeholder renders no SpanLines. Otherwise the bridge dangles as a rail segment above
   // a skeleton with nothing to connect to, until the real row upgrades in.
   const rowSpanColumnHidden = (id: string): boolean =>
-    rowHiddenUntilMeasured(id) || flingSkeletons.skeletonIds().has(id)
+    rowHiddenPendingReveal(id) || flingSkeletons.skeletonIds().has(id)
 
-  const renderMessageBubble = (entry: ClassifiedEntry, opts: { premeasureMode?: boolean, readiness?: RenderReadiness } = {}) => (
+  // Every chat-row bubble takes the readiness scope of its row copy, so that an
+  // asynchronous body inside it reports to the row instead of drawing a skeleton of
+  // its own and letting the row commit a height without the body's content.
+  const renderMessageBubble = (entry: ClassifiedEntry, readiness: RenderReadiness, premeasureMode = false) => (
     <MessageBubble
       message={entry.message}
       prepared={entry}
@@ -725,43 +729,44 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       {...(props.onReply !== undefined
         ? { onReply: props.onReply }
         : {})}
-      {...(opts.premeasureMode !== undefined
-        ? { premeasureMode: opts.premeasureMode }
-        : {})}
-      {...(opts.readiness !== undefined
-        ? { readiness: opts.readiness }
-        : {})}
+      premeasureMode={premeasureMode}
+      readiness={readiness}
     />
   )
 
   // Rows hidden pending reveal -- the CANDIDATES for a loading skeleton. Filter
   // preserves the stable entry references, so downstream <For>s only mount/unmount
   // on membership changes.
+  //
+  // A row that has not mounted yet is no candidate. It counts as loading (see
+  // rowLoading), but the row <For> mounts it later in the same update: during a
+  // fling, the overlay would build its skeleton at once and discard it in that update.
   const pendingRevealSlice = createMemo(() =>
-    visibleSlice().filter(entry => rowHiddenPendingReveal(entry.message.id)))
+    visibleSlice().filter(entry => rowReadiness.isMounted(entry.message.id) && rowHiddenPendingReveal(entry.message.id)))
 
   // Only rows still hidden after SKELETON_SHOW_DELAY_MS actually paint a skeleton (see
-  // createDelayedSet): a fast premeasure / re-measure (expand-collapse, diff-view switch,
-  // tail append) reveals with a plain fade-in and no distracting shimmer; a slow wait
-  // still surfaces a skeleton as a loading affordance. The row itself is hidden
-  // immediately regardless (rowHiddenUntilMeasured) so it can never overflow its slot.
+  // createDelayedSet): a fast premeasure (a tail append) reveals with a plain fade-in
+  // and no distracting shimmer; a slow wait still surfaces a skeleton as a loading
+  // affordance. The row itself is hidden immediately regardless (rowHiddenPendingReveal)
+  // so it can never overflow its slot.
   const { delayedIds: skeletonIds } = createDelayedSet(
     () => pendingRevealSlice().map(entry => entry.message.id),
     SKELETON_SHOW_DELAY_MS,
-    virt.fastScrollActive,
-    // A fling skeleton that upgrades into a row whose Markdown is still rendering hides
-    // the row, and the row's fading skeleton copy with it. The overlay skeleton takes
-    // over at once, so the reader never sees the skeleton give way to a blank gap.
-    id => flingSkeletons.upgradingIds().has(id),
+    // The overlay skeleton skips the delay in two cases:
+    //  - A fling is in progress.
+    //  - A fling skeleton upgrades into a row whose content is still rendering. That
+    //    hides the row, and the row's fading skeleton copy with it, so the overlay
+    //    takes over at once: the reader never sees the skeleton give way to a blank gap.
+    id => virt.fastScrollActive() || flingSkeletons.upgradingIds().has(id),
   )
   // The rows currently PAINTING a skeleton overlay: the pending rows whose skeleton has
   // been shown -- either the wait exceeded SKELETON_SHOW_DELAY_MS, or a fast fling promoted
   // it immediately (see createDelayedSet's showImmediately). Fast scrolling into unmeasured
-  // history skeletonises at once so it never flashes blank gaps; a quiet in-place re-measure
-  // (expand-collapse, diff-view switch, tail append) waits out the delay so it reveals with a
-  // plain fade-in and no distracting shimmer. Because the fling promotes into this same set
-  // (not a separate bypass), a row shown mid-fling stays shown when the fling settles before
-  // its delay would have fired, instead of flickering skeleton -> blank -> skeleton.
+  // history skeletonises at once so it never flashes blank gaps; a quiet premeasure (a tail
+  // append) waits out the delay so it reveals with a plain fade-in and no distracting
+  // shimmer. Because the fling promotes into this same set (not a separate bypass), a row
+  // shown mid-fling stays shown when the fling settles before its delay would have fired,
+  // instead of flickering skeleton -> blank -> skeleton.
   const skeletonSlice = createMemo(() =>
     pendingRevealSlice().filter(entry => skeletonIds().has(entry.message.id)))
 
@@ -1114,15 +1119,22 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                         // in flingSkeletons.skeletonIds so the gap-bridge overlay hides
                         // this row's bridge while the skeleton shows.
                         const upgradePhase = flingSkeletons.trackRow(message.id)
-                        // This copy's Markdown bodies report here while their worker
-                        // render is pending. The row stays hidden meanwhile (see
-                        // rowLoading), and is measured again once they are ready:
-                        // the measurer reads nothing from a pending row.
+                        // This copy's asynchronous bodies (Markdown, an edit diff)
+                        // report here while their worker result is pending. The row
+                        // stays hidden meanwhile (see rowLoading). A diff view that
+                        // switches its layout reports here too, as replacing its
+                        // content, which keeps the row visible. attachRow takes the
+                        // same scope: the measurer reads nothing from the copy while
+                        // it is pending or replacing, and measures it again once it
+                        // is measurable.
                         const readiness = rowReadiness.trackRow(message.id)
-                        createEffect(on(readiness.pending, (pending) => {
-                          if (!pending)
-                            virt.remeasureRow(message.id)
-                        }, { defer: true }))
+                        // A fling skeleton stands in for the bubble until the row
+                        // upgrades, and draws the height that the virtualizer holds
+                        // for the row. A read of it would confirm that height under a
+                        // key that the bubble may not fit (the key can change
+                        // mid-fling), so the skeleton counts as content that the
+                        // bubble replaces.
+                        useReplacingReadiness(() => ({ readiness }), () => upgradePhase() === 'skeleton')
 
                         // An assistant message / thought paints a full-bleed band
                         // BEHIND the row: the band is the row's own background and
@@ -1140,18 +1152,18 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                             style={{
                               transform: `translateY(${top()}px)`,
                               // Absolute rows do not reserve flow height for
-                              // siblings — see rowHiddenUntilMeasured for why an
+                              // siblings — see rowHiddenPendingReveal for why an
                               // unmeasured premeasuring row stays invisible.
-                              visibility: rowHiddenUntilMeasured(message.id)
+                              visibility: rowHiddenPendingReveal(message.id)
                                 ? 'hidden'
                                 : undefined,
-                              opacity: rowHiddenUntilMeasured(message.id)
+                              opacity: rowHiddenPendingReveal(message.id)
                                 ? '0'
                                 : '1',
                             }}
                             data-seq={message.seq.toString()}
                             ref={(el) => {
-                              virt.attachRow(message.id, el)
+                              virt.attachRow(message.id, el, readiness)
                               onCleanup(() => virt.detachRow(el))
                             }}
                           >
@@ -1168,7 +1180,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                               // Constructed lazily: while the skeleton shows,
                               // the bubble (markdown, tokens, toolbars) is
                               // never built for this row.
-                                const bubble = renderMessageBubble(entry, { readiness })
+                                const bubble = renderMessageBubble(entry, readiness)
                                 return (
                                   <>
                                     {/*
@@ -1362,7 +1374,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         <ChatHiddenPremeasure
           candidates={premeasureCandidates()}
           contentWidthPx={effectiveContentWidth()}
-          renderBubble={(entry, readiness) => renderMessageBubble(entry, { premeasureMode: true, readiness })}
+          renderBubble={(entry, readiness) => renderMessageBubble(entry, readiness, true)}
           onMeasure={premeasure.onMeasure}
         />
       </MessageContextMenuHostProvider>

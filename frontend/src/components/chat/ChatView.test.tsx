@@ -1,16 +1,19 @@
+import type { RowContentReadiness } from './createRowMeasurer'
 import type { ChatVirtualizerRange, UseChatVirtualizerResult, VirtualItem } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
-import { createEffect, createSignal, For } from 'solid-js'
+import { batch, createEffect, createSignal, For } from 'solid-js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { PreferencesProvider } from '~/context/PreferencesContext'
+import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { COPILOT_EVENT, COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
 import { AgentChatMessageSchema, AgentProvider, AgentStatus, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { copilotFrame, copilotToolComplete, copilotToolStart } from '~/test-support/copilotFixtures'
-import { testMessageContext } from '~/test-support/messageContext'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { testMessageContext, testTranscriptContext } from '~/test-support/messageContext'
 import { flushAnimationFrame, installControllableResizeObserver, triggerResizeObserverFor, triggerResizeObservers } from '~/test-support/resizeObserverStub'
+import { installControlledSlices } from '~/test-support/sliceSchedulers'
 import { railIdle } from './ChatScrollRail.css'
 import { ChatView, RAIL_COAST_MAX_MS, RAIL_VISIBLE_IDLE_MS, SKELETON_SHOW_DELAY_MS, SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS } from './ChatView'
 import { messageListRailActive, railedRowContent, rowSkeletonClosing } from './ChatView.css'
@@ -57,8 +60,8 @@ const virtualizerState = vi.hoisted(() => ({
   measuredIds: new Set<string>(),
   currentHeightKeys: new Map<string, string | undefined>(),
   setDeferred: undefined as undefined | ((deferred: boolean) => void),
-  /** The rows ChatView asked the stub virtualizer to measure again. */
-  remeasuredIds: [] as string[],
+  /** The readiness scope that ChatView handed the stub virtualizer with each row copy. */
+  attachedReadiness: new Map<string, RowContentReadiness>(),
 }))
 
 /**
@@ -142,6 +145,23 @@ vi.mock('./MessageBubble', async () => {
         ? StubBubble(props)
         : actual.MessageBubble(props)
     ),
+  }
+})
+
+/** The seed of each row skeleton that a component built, in order, built and then disposed ones included. */
+const rowSkeletonState = vi.hoisted(() => ({
+  builtSeeds: [] as string[],
+}))
+
+vi.mock('./widgets/ChatRowSkeleton', async () => {
+  const actual = await vi.importActual<typeof import('./widgets/ChatRowSkeleton')>('./widgets/ChatRowSkeleton')
+  return {
+    ...actual,
+    ChatRowSkeleton: (props: Parameters<typeof actual.ChatRowSkeleton>[0]) => {
+      // eslint-disable-next-line solid/reactivity -- records the seed the skeleton was built with
+      rowSkeletonState.builtSeeds.push(props.seed)
+      return actual.ChatRowSkeleton(props)
+    },
   }
 })
 
@@ -270,13 +290,12 @@ vi.mock('./useChatVirtualizer', async () => {
         },
         hasPendingPremeasuredHeight: () => false,
         heightDebugOfId: () => ({}),
-        attachRow: (id: string) => {
+        attachRow: (id: string, _el: HTMLElement, readiness?: RowContentReadiness) => {
           virtualizerState.attachedIds.push(id)
+          if (readiness !== undefined)
+            virtualizerState.attachedReadiness.set(id, readiness)
         },
         detachRow: vi.fn(),
-        remeasureRow: (id: string) => {
-          virtualizerState.remeasuredIds.push(id)
-        },
         primeHeight: vi.fn((id: string, _height: number, heightKey?: string) => {
           if (!virtualizerState.currentHeightKeys.has(id) || virtualizerState.currentHeightKeys.get(id) !== heightKey)
             return false
@@ -290,11 +309,10 @@ vi.mock('./useChatVirtualizer', async () => {
   }
 })
 
-// jsdom does not provide ResizeObserver. It provides no Worker either, and this
-// file installs none: Markdown then renders synchronously, as in every unit test.
-// A stand-in Worker that never answers would leave every Markdown body pending, and
-// every row that holds one hidden behind its skeleton. The pending path has its own
-// tests, with a worker client that the test answers.
+// jsdom does not provide ResizeObserver. The stand-in Worker of the jsdom setup
+// renders each Markdown body, so a row that holds one stays hidden behind its
+// skeleton until a test waits for the replies (settleWorkerReplies). The pending
+// path has its own tests, with a worker client that the test answers.
 beforeAll(() => {
   installControllableResizeObserver()
 })
@@ -706,6 +724,7 @@ describe('ChatView', () => {
       messages: () => messages,
     })
     const view = render(() => <PreferencesProvider><ChatView messages={messages} messageContext={messageContext} /></PreferencesProvider>)
+    await settleWorkerReplies()
     await reportChatViewportSize(view)
     const row = (seq: number) => {
       const element = view.container.querySelector(`[data-seq="${seq}"]`)
@@ -736,6 +755,7 @@ describe('ChatView', () => {
     view.unmount()
 
     const restored = render(() => <PreferencesProvider><ChatView messages={messages} messageContext={messageContext} /></PreferencesProvider>)
+    await settleWorkerReplies()
     try {
       await reportChatViewportSize(restored)
       const virt = virtualizerState.realInstances.at(-1)!
@@ -1080,7 +1100,7 @@ describe('ChatView', () => {
     expect(screen.queryByText('Entered plan mode')).not.toBeInTheDocument()
   })
 
-  it('renders messages', () => {
+  it('renders messages', async () => {
     const messages = [
       makeMessage('user', 'Hello', '1'),
       makeMessage('assistant', 'Hi there', '2'),
@@ -1090,6 +1110,7 @@ describe('ChatView', () => {
         <ChatView messages={messages} />
       </PreferencesProvider>
     ))
+    await settleWorkerReplies()
     expect(screen.getByText('Hello')).toBeInTheDocument()
     expect(screen.getByText('Hi there')).toBeInTheDocument()
   })
@@ -1222,6 +1243,149 @@ describe('ChatView', () => {
     expect(screen.getByTestId('chat-container')).toBeInTheDocument()
   })
 
+  // A switch between unified and split mounts the new layout behind the old one in
+  // idle slices (see DiffView). The switch changes the row's height key, but the
+  // row's visible copy keeps showing the old layout at the old height until the
+  // swap, so the row must stay visible, keep its slot, and commit its new height
+  // once, when its own resize at the swap reports it.
+  it('keeps a revealed diff row visible and its height in place while a switch to split mounts, and commits its height once, at the swap', async () => {
+    const changedLines = 30
+    const diff = [
+      `@@ -1,${changedLines} +1,${changedLines} @@`,
+      ...Array.from({ length: changedLines }, (_, i) => `-const before${i} = ${i}`),
+      ...Array.from({ length: changedLines }, (_, i) => `+const after${i} = ${i}`),
+    ].join('\n')
+    const messages = [
+      makeCodexFileChangeMessage({
+        id: 'edit-row',
+        seq: 1n,
+        spanId: 'edit-span',
+        status: 'completed',
+        diff,
+      }),
+    ]
+    let preferences: ReturnType<typeof usePreferences> | undefined
+    const CapturePreferences = () => {
+      preferences = usePreferences()
+      return null
+    }
+    const view = render(() => (
+      <PreferencesProvider>
+        <CapturePreferences />
+        <ChatView messages={messages} />
+      </PreferencesProvider>
+    ))
+    await settleWorkerReplies()
+    await reportChatViewportSize(view)
+    const row = view.container.querySelector('[data-seq="1"]') as HTMLElement | null
+    expect(row).not.toBeNull()
+    const rowRect = vi.spyOn(row!, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 800, 500))
+    await triggerResizeObserverFor(row!)
+    await waitFor(() => expect(row!.style.visibility).toBe(''))
+    const virt = virtualizerState.realInstances.at(-1)!
+    expect(virt.heightOfId('edit-row')).toBe(500)
+    expect(row!.querySelectorAll('[data-file-diff]')).toHaveLength(1)
+    const premeasureRoot = view.container.querySelector('[data-chat-premeasure-root]')
+    expect(premeasureRoot?.childElementCount).toBe(0)
+    const commitsBeforeSwitch = virt.lastMeasurement()?.commitSeq
+
+    const slices = installControlledSlices(10)
+    preferences!.dual.diffView.setBrowser('split')
+    await settleWorkerReplies()
+
+    // The old layout stays while the new one mounts behind it, and the row keeps
+    // its slot and needs no hidden copy: its visible copy measures itself.
+    expect(row!.querySelectorAll('[data-file-diff]')).toHaveLength(2)
+    expect(slices.waiting()).toBeGreaterThan(0)
+    let slicesRun = 0
+    while (slices.waiting() > 0) {
+      expect(row!.style.visibility).toBe('')
+      expect(premeasureRoot?.childElementCount).toBe(0)
+      expect(virt.heightOfId('edit-row')).toBe(500)
+      expect(virt.lastMeasurement()?.commitSeq).toBe(commitsBeforeSwitch)
+      slices.runSlice()
+      slicesRun += 1
+      await settleWorkerReplies()
+    }
+    expect(slicesRun).toBeGreaterThan(1)
+
+    // The swap shows only the new layout, and the row's resize commits its new height.
+    expect(row!.querySelectorAll('[data-file-diff]')).toHaveLength(1)
+    expect(row!.style.visibility).toBe('')
+    expect(virt.lastMeasurement()?.commitSeq).toBe(commitsBeforeSwitch)
+    rowRect.mockReturnValue(new DOMRect(0, 0, 800, 300))
+    await triggerResizeObserverFor(row!)
+
+    expect(virt.heightOfId('edit-row')).toBe(300)
+    expect(virt.lastMeasurement()).toMatchObject({
+      id: 'edit-row',
+      source: 'visible',
+      assumedHeight: 500,
+      newHeight: 300,
+      commitSeq: commitsBeforeSwitch! + 1,
+    })
+    expect(row!.style.visibility).toBe('')
+  })
+
+  // A diff of added lines draws one line per row in both layouts, so its row keeps
+  // its height through a switch, and no resize reports anything. The row reads
+  // its height once the new layout shows, so the height that it kept holds under
+  // its new key: a snapshot saves it, and the row keeps it when it unmounts.
+  it('confirms the height of a diff row whose new layout keeps its height, once the switch to split shows it', async () => {
+    const addedLines = 30
+    const diff = [
+      `@@ -0,0 +1,${addedLines} @@`,
+      ...Array.from({ length: addedLines }, (_, i) => `+const added${i} = ${i}`),
+    ].join('\n')
+    const messages = [
+      makeCodexFileChangeMessage({
+        id: 'edit-row',
+        seq: 1n,
+        spanId: 'edit-span',
+        status: 'completed',
+        diff,
+      }),
+    ]
+    let preferences: ReturnType<typeof usePreferences> | undefined
+    const CapturePreferences = () => {
+      preferences = usePreferences()
+      return null
+    }
+    const view = render(() => (
+      <PreferencesProvider>
+        <CapturePreferences />
+        <ChatView messages={messages} />
+      </PreferencesProvider>
+    ))
+    await settleWorkerReplies()
+    await reportChatViewportSize(view)
+    const row = view.container.querySelector('[data-seq="1"]') as HTMLElement | null
+    expect(row).not.toBeNull()
+    vi.spyOn(row!, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 800, 500))
+    await triggerResizeObserverFor(row!)
+    await waitFor(() => expect(row!.style.visibility).toBe(''))
+    const virt = virtualizerState.realInstances.at(-1)!
+    expect(virt.hasConfirmedHeight('edit-row')).toBe(true)
+
+    const slices = installControlledSlices(10)
+    preferences!.dual.diffView.setBrowser('split')
+    await settleWorkerReplies()
+
+    // The new layout mounts behind the old one, so the row reads nothing yet.
+    expect(row!.querySelectorAll('[data-file-diff]')).toHaveLength(2)
+    expect(virt.hasConfirmedHeight('edit-row')).toBe(false)
+    while (slices.waiting() > 0) {
+      slices.runSlice()
+      await settleWorkerReplies()
+    }
+
+    expect(row!.querySelectorAll('[data-file-diff]')).toHaveLength(1)
+    expect(virt.hasConfirmedHeight('edit-row')).toBe(true)
+    expect(virt.heightOfId('edit-row')).toBe(500)
+    expect(virt.snapshotHeights().find(height => height.id === 'edit-row')?.height).toBe(500)
+    expect(row!.style.visibility).toBe('')
+  })
+
   it('keeps unmeasured interior and tail rows invisible while reserving their estimated space', async () => {
     const messages = [
       {
@@ -1239,6 +1403,7 @@ describe('ChatView', () => {
         <ChatView messages={messages} />
       </PreferencesProvider>
     ))
+    await settleWorkerReplies()
 
     const row = await waitFor(() => {
       const el = view.container.querySelector('[data-seq="1"]') as HTMLElement | null
@@ -1304,6 +1469,7 @@ describe('ChatView', () => {
         </PreferencesProvider>
       )
     })
+    await settleWorkerReplies()
 
     expect(screen.queryByText('Initial reasoning summary')).not.toBeInTheDocument()
     fireEvent.click(screen.getByText('Thinking'))
@@ -1318,6 +1484,7 @@ describe('ChatView', () => {
       }),
       makeMessage('assistant', 'Follow-up message', 'assistant-2'),
     ])
+    await settleWorkerReplies()
 
     await waitFor(() => expect(screen.getByText('Initial reasoning summary')).toBeInTheDocument())
     expect(screen.getByText('Follow-up message')).toBeInTheDocument()
@@ -2363,7 +2530,7 @@ describe('ChatView', () => {
     expect(view.container).toHaveTextContent('b.txt')
   })
 
-  it('renders persisted codex raw reasoning when no summary exists', () => {
+  it('renders persisted codex raw reasoning when no summary exists', async () => {
     const messages = [
       makeCodexReasoningMessage({
         id: 'reason-done',
@@ -2378,6 +2545,7 @@ describe('ChatView', () => {
         <ChatView messages={messages} />
       </PreferencesProvider>
     ))
+    await settleWorkerReplies()
 
     expect(screen.getByText('persisted raw reasoning')).toBeInTheDocument()
   })
@@ -2403,7 +2571,7 @@ describe('ChatView', () => {
     expect(view.container.querySelector('ul')).toBeNull()
   })
 
-  it('renders each persisted codex summary entry as an unordered list item', () => {
+  it('renders each persisted codex summary entry as an unordered list item', async () => {
     const messages = [
       makeCodexReasoningMessage({
         id: 'reason-done',
@@ -2421,6 +2589,7 @@ describe('ChatView', () => {
         <ChatView messages={messages} />
       </PreferencesProvider>
     ))
+    await settleWorkerReplies()
 
     const list = view.container.querySelector('ul')
     expect(list).not.toBeNull()
@@ -2430,7 +2599,7 @@ describe('ChatView', () => {
     expect(list?.children[1]).toHaveTextContent('Checking Windows reproduction tools')
   })
 
-  it('keeps nested markdown blocks inside their codex summary list item', () => {
+  it('keeps nested markdown blocks inside their codex summary list item', async () => {
     const messages = [
       makeCodexReasoningMessage({
         id: 'reason-done',
@@ -2448,6 +2617,7 @@ describe('ChatView', () => {
         <ChatView messages={messages} />
       </PreferencesProvider>
     ))
+    await settleWorkerReplies()
 
     const outerList = view.container.querySelector('ul')
     const outerItems = outerList?.querySelectorAll(':scope > li')
@@ -2458,7 +2628,7 @@ describe('ChatView', () => {
     expect(outerItems?.[1]?.querySelector('blockquote')).toHaveTextContent('Keep the failure output.')
   })
 
-  it('prefers a persisted codex summary to duplicate raw reasoning', () => {
+  it('prefers a persisted codex summary to duplicate raw reasoning', async () => {
     const messages = [
       makeCodexReasoningMessage({
         id: 'reason-done',
@@ -2474,13 +2644,14 @@ describe('ChatView', () => {
         <ChatView messages={messages} />
       </PreferencesProvider>
     ))
+    await settleWorkerReplies()
 
     expect(screen.getByText('persisted summary')).toBeInTheDocument()
     expect(screen.queryByText('duplicate persisted raw reasoning')).not.toBeInTheDocument()
     expect(view.container.querySelectorAll('ul > li')).toHaveLength(1)
   })
 
-  it('starts codex reasoning collapsed when expandAgentThoughts is disabled', () => {
+  it('starts codex reasoning collapsed when expandAgentThoughts is disabled', async () => {
     localStorageSet(KEY_BROWSER_PREFS, { expandAgentThoughts: false })
 
     const messages = [
@@ -2497,6 +2668,7 @@ describe('ChatView', () => {
         <ChatView messages={messages} />
       </PreferencesProvider>
     ))
+    await settleWorkerReplies()
 
     expect(screen.getByText('Thinking')).toBeInTheDocument()
     expect(screen.queryByText('done')).not.toBeInTheDocument()
@@ -2706,17 +2878,24 @@ describe('chat view virtualized with stubbed deps', () => {
     prefsState.setDiffView?.('unified') // the pref signals are module-scoped; reset between tests
     prefsState.setExpandThoughts?.(true)
     markdownPendingState.setPendingIds?.(new Set())
-    virtualizerState.remeasuredIds = []
+    virtualizerState.attachedReadiness = new Map()
   })
 
   describe('chat view virtualized visible slice', () => {
-    it('does not mount rows between stale pending premeasure ids and the current viewport range', async () => {
+    // The stubs keep their state in module-level objects and signals, so each test
+    // starts from the same empty virtualizer, with no fling and only m0 in range.
+    beforeEach(() => {
       virtualizerState.attachedIds = []
       virtualizerState.measuredIds = new Set()
       virtualizerState.currentHeightKeys = new Map()
+      virtualizerState.setDeferred?.(false)
       hiddenPremeasureState.candidates = []
       hiddenPremeasureState.onMeasure = undefined
+      hiddenPremeasureState.contentWidthPx = undefined
       virtualizerState.setRange?.({ start: 0, end: 1 })
+    })
+
+    it('does not mount rows between stale pending premeasure ids and the current viewport range', async () => {
       const messages = Array.from({ length: 12 }, (_, index) => message(`m${index}`, index + 1))
       const { container } = render(() => (
         <ChatView
@@ -2737,12 +2916,6 @@ describe('chat view virtualized with stubbed deps', () => {
     })
 
     it('keeps an unsettled premeasure row mounted after the first height commit', async () => {
-      virtualizerState.attachedIds = []
-      virtualizerState.measuredIds = new Set()
-      virtualizerState.currentHeightKeys = new Map()
-      hiddenPremeasureState.candidates = []
-      hiddenPremeasureState.onMeasure = undefined
-      virtualizerState.setRange?.({ start: 0, end: 1 })
       render(() => (
         <ChatView
           messages={[
@@ -2772,12 +2945,6 @@ describe('chat view virtualized with stubbed deps', () => {
     })
 
     it('keeps a settled premeasure row pending when its height key is stale', async () => {
-      virtualizerState.attachedIds = []
-      virtualizerState.measuredIds = new Set()
-      virtualizerState.currentHeightKeys = new Map()
-      hiddenPremeasureState.candidates = []
-      hiddenPremeasureState.onMeasure = undefined
-      virtualizerState.setRange?.({ start: 0, end: 1 })
       render(() => (
         <ChatView
           messages={[
@@ -2810,13 +2977,6 @@ describe('chat view virtualized with stubbed deps', () => {
     })
 
     it('uses the same fallback width for queued hidden premeasure keys and layout', async () => {
-      virtualizerState.attachedIds = []
-      virtualizerState.measuredIds = new Set()
-      virtualizerState.currentHeightKeys = new Map()
-      hiddenPremeasureState.candidates = []
-      hiddenPremeasureState.onMeasure = undefined
-      hiddenPremeasureState.contentWidthPx = undefined
-      virtualizerState.setRange?.({ start: 0, end: 1 })
       render(() => (
         <ChatView
           messages={[
@@ -2852,12 +3012,7 @@ describe('chat view virtualized with stubbed deps', () => {
       // tall unmeasured tail overflowed its slot onto the in-flow thinking indicator,
       // and it revealed a frame ahead of an earlier appended sibling still skeletonised.
       // The tail is now hidden-until-measured like any other in-range row.
-      virtualizerState.attachedIds = []
       virtualizerState.measuredIds = new Set(['m0'])
-      virtualizerState.currentHeightKeys = new Map()
-      hiddenPremeasureState.candidates = []
-      hiddenPremeasureState.onMeasure = undefined
-      virtualizerState.setRange?.({ start: 0, end: 1 })
       const [messages, setMessages] = createSignal([
         message('m0', 1),
       ])
@@ -2898,12 +3053,7 @@ describe('chat view virtualized with stubbed deps', () => {
     })
 
     it('renders newly appended interior AND live-tail rows invisible until measured', () => {
-      virtualizerState.attachedIds = []
       virtualizerState.measuredIds = new Set(['m0'])
-      virtualizerState.currentHeightKeys = new Map()
-      hiddenPremeasureState.candidates = []
-      hiddenPremeasureState.onMeasure = undefined
-      virtualizerState.setRange?.({ start: 0, end: 1 })
       const [messages, setMessages] = createSignal([
         message('m0', 1),
       ])
@@ -2939,13 +3089,7 @@ describe('chat view virtualized with stubbed deps', () => {
       // chrome here the shimmer sits on the bare panel and the band appears only at the
       // crossfade, which is the pop-in the tail already avoids.
       vi.useFakeTimers()
-      virtualizerState.attachedIds = []
       virtualizerState.measuredIds = new Set(['m0'])
-      virtualizerState.currentHeightKeys = new Map()
-      virtualizerState.setDeferred?.(false)
-      hiddenPremeasureState.candidates = []
-      hiddenPremeasureState.onMeasure = undefined
-      virtualizerState.setRange?.({ start: 0, end: 1 })
       // The full Claude envelope: `type: 'assistant'` is what makes the row a band.
       const assistantText = (id: string, seq: bigint, text: string): AgentChatMessage => ({
         ...makeMessage('assistant', '', id),
@@ -2984,13 +3128,7 @@ describe('chat view virtualized with stubbed deps', () => {
 
     it('defers loading skeletons past the show-delay, then paints them (including the live tail)', () => {
       vi.useFakeTimers()
-      virtualizerState.attachedIds = []
       virtualizerState.measuredIds = new Set(['m0'])
-      virtualizerState.currentHeightKeys = new Map()
-      virtualizerState.setDeferred?.(false)
-      hiddenPremeasureState.candidates = []
-      hiddenPremeasureState.onMeasure = undefined
-      virtualizerState.setRange?.({ start: 0, end: 1 })
       const [messages, setMessages] = createSignal([
         message('m0', 1),
       ])
@@ -3049,12 +3187,7 @@ describe('chat view virtualized with stubbed deps', () => {
       // blank. This is the fix for the whole-viewport dim: it FAILS against the old global
       // layoutEpochKey (which folded both prefs into every row). kindScopedLayoutKey's own
       // unit tests cover the other half -- that tool / thinking rows DO carry the term.
-      virtualizerState.attachedIds = []
-      virtualizerState.measuredIds = new Set() // all unmeasured -> all are premeasure candidates
-      virtualizerState.currentHeightKeys = new Map()
-      virtualizerState.setDeferred?.(false)
-      hiddenPremeasureState.candidates = []
-      hiddenPremeasureState.onMeasure = undefined
+      // No row is measured (see the beforeEach), so every row is a premeasure candidate.
       prefsState.setDiffView?.('unified')
       prefsState.setExpandThoughts?.(true)
       virtualizerState.setRange?.({ start: 0, end: 3 })
@@ -3093,13 +3226,7 @@ describe('chat view virtualized with stubbed deps', () => {
       // used to pop in first -- so a later message could appear ahead of an earlier one
       // still showing a skeleton. Now a measured tail row is HELD until every earlier
       // still-loading sibling has revealed.
-      virtualizerState.attachedIds = []
       virtualizerState.measuredIds = new Set(['m0'])
-      virtualizerState.currentHeightKeys = new Map()
-      virtualizerState.setDeferred?.(false)
-      hiddenPremeasureState.candidates = []
-      hiddenPremeasureState.onMeasure = undefined
-      virtualizerState.setRange?.({ start: 0, end: 1 })
       const [messages, setMessages] = createSignal([
         message('m0', 1),
       ])
@@ -3137,17 +3264,11 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(tail().style.visibility).not.toBe('hidden')
     })
 
-    it('hides a measured row while its Markdown renders, paints its skeleton, then reveals and re-measures it', () => {
+    it('hides a measured row while its Markdown renders, paints its skeleton, then reveals it and releases its measurement', () => {
       // A reload hydrates persisted heights, so a row can have a known height but no
       // HTML yet. It skips premeasure, so only its own pending content can hold it.
       vi.useFakeTimers()
-      virtualizerState.attachedIds = []
       virtualizerState.measuredIds = new Set(['m0'])
-      virtualizerState.currentHeightKeys = new Map()
-      virtualizerState.setDeferred?.(false)
-      hiddenPremeasureState.candidates = []
-      hiddenPremeasureState.onMeasure = undefined
-      virtualizerState.setRange?.({ start: 0, end: 1 })
       markdownPendingState.setPendingIds?.(new Set(['m0']))
       const { container } = render(() => (
         <ChatView messages={[
@@ -3161,23 +3282,53 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(container.querySelectorAll('[data-testid="row-skeleton"]')).toHaveLength(0)
       vi.advanceTimersByTime(SKELETON_SHOW_DELAY_MS)
       expect(container.querySelectorAll('[data-testid="row-skeleton"]')).toHaveLength(1)
-      expect(virtualizerState.remeasuredIds).toEqual([])
+      // The measurer reads the row through the same scope that hides the row, so it
+      // reads nothing while the row waits.
+      const readiness = virtualizerState.attachedReadiness.get('m0')
+      expect(readiness).toBeDefined()
+      expect(readiness!.measurable()).toBe(false)
 
       markdownPendingState.setPendingIds?.(new Set())
 
       expect(row().style.visibility).not.toBe('hidden')
-      // The measurer read nothing while the row waited, so it measures once now.
-      expect(virtualizerState.remeasuredIds).toEqual(['m0'])
+      // The scope turns measurable, so the measurer measures the row now.
+      expect(readiness!.measurable()).toBe(true)
+    })
+
+    // A content change builds a new entry, which remounts the row with a body
+    // that no cache holds. The row hides until the worker renders that body, so
+    // it never draws a partial body or commits a height for one.
+    it('hides a revealed row while the Markdown of its new content renders, then reveals it', () => {
+      virtualizerState.measuredIds = new Set(['m0'])
+      const { transcript, resolver } = testTranscriptContext([
+        message('m0', 1),
+      ])
+      const { container } = render(() => (
+        <ChatView messages={transcript.sources.messages()} messageContext={resolver} />
+      ))
+      const row = () => container.querySelector('[data-seq="1"]') as HTMLElement
+      const revealed = row()
+      expect(revealed.style.visibility).not.toBe('hidden')
+
+      // The same message arrives with new content, whose Markdown the worker has not rendered.
+      batch(() => {
+        markdownPendingState.setPendingIds?.(new Set(['m0']))
+        transcript.replace({
+          ...message('m0', 1),
+          content: new TextEncoder().encode('message m0, revised'),
+        })
+      })
+
+      expect(row()).not.toBe(revealed)
+      expect(row().style.visibility).toBe('hidden')
+
+      markdownPendingState.setPendingIds?.(new Set())
+
+      expect(row().style.visibility).not.toBe('hidden')
     })
 
     it('holds an appended ready row behind an earlier row whose Markdown still renders', () => {
-      virtualizerState.attachedIds = []
       virtualizerState.measuredIds = new Set(['m0', 'm1', 'm2'])
-      virtualizerState.currentHeightKeys = new Map()
-      virtualizerState.setDeferred?.(false)
-      hiddenPremeasureState.candidates = []
-      hiddenPremeasureState.onMeasure = undefined
-      virtualizerState.setRange?.({ start: 0, end: 1 })
       const [messages, setMessages] = createSignal([
         message('m0', 1),
       ])
@@ -3204,11 +3355,7 @@ describe('chat view virtualized with stubbed deps', () => {
     })
 
     it('shows the loading skeleton at once when a fling skeleton upgrades into a row whose Markdown still renders', async () => {
-      virtualizerState.attachedIds = []
       virtualizerState.measuredIds = new Set(['m0', 'm1'])
-      virtualizerState.currentHeightKeys = new Map()
-      virtualizerState.setRange?.({ start: 0, end: 1 })
-      virtualizerState.setDeferred?.(false)
       markdownPendingState.setPendingIds?.(new Set(['m1']))
       const { container } = render(() => (
         <ChatView messages={[
@@ -3236,13 +3383,44 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(overlaySkeletons()).toHaveLength(1)
     })
 
+    it('builds only the in-row fling skeleton for a measured row that enters mid-fling', async () => {
+      // A row that enters the slice has not mounted when the slice's derivations run,
+      // so it counts as not ready for that moment. During a fling the overlay skips its
+      // show-delay, and must still build no overlay skeleton for that moment.
+      const ids = Array.from({ length: 12 }, (_, index) => `m${index}`)
+      virtualizerState.measuredIds = new Set(ids)
+      const messages = ids.map((id, index) => message(id, index + 1))
+      render(() => (
+        <ChatView messages={messages} />
+      ))
+      await Promise.resolve()
+      rowSkeletonState.builtSeeds = []
+
+      virtualizerState.setDeferred?.(true)
+      virtualizerState.setRange?.({ start: 0, end: 10 })
+      await Promise.resolve()
+      expect([...rowSkeletonState.builtSeeds].sort()).toEqual([
+        'm1',
+        'm2',
+        'm3',
+        'm4',
+        'm5',
+        'm6',
+        'm7',
+        'm8',
+        'm9',
+      ])
+
+      // The next frame of the fling brings two more rows.
+      rowSkeletonState.builtSeeds = []
+      virtualizerState.setRange?.({ start: 0, end: 12 })
+      await Promise.resolve()
+      expect([...rowSkeletonState.builtSeeds].sort()).toEqual(['m10', 'm11'])
+    })
+
     it('premeasures a look-ahead band of rows just beyond the rendered range', async () => {
-      virtualizerState.attachedIds = []
       virtualizerState.measuredIds = new Set(['m0'])
-      virtualizerState.currentHeightKeys = new Map()
-      hiddenPremeasureState.candidates = []
-      hiddenPremeasureState.onMeasure = undefined
-      virtualizerState.setRange?.({ start: 0, end: 1 }) // only m0 is in the rendered range
+      // Only m0 is in the rendered range (see the beforeEach).
       const [messages, setMessages] = createSignal([
         message('m0', 1),
       ])
@@ -3267,11 +3445,7 @@ describe('chat view virtualized with stubbed deps', () => {
     })
 
     it('mounts a fling skeleton for a MEASURED row entering mid-fling, upgrading on settle', async () => {
-      virtualizerState.attachedIds = []
       virtualizerState.measuredIds = new Set(['m0', 'm8', 'm9'])
-      virtualizerState.currentHeightKeys = new Map()
-      virtualizerState.setRange?.({ start: 0, end: 1 })
-      virtualizerState.setDeferred?.(false)
       const messages = Array.from({ length: 12 }, (_, index) => message(`m${index}`, index + 1))
       const { container } = render(() => (
         <ChatView
@@ -3362,10 +3536,33 @@ describe('chat view virtualized with stubbed deps', () => {
       })
     })
 
+    // A fling skeleton draws the height that the virtualizer holds for its row, so
+    // a read of it would only confirm that height, under a key that the bubble may
+    // not fit: the key can change mid-fling.
+    it('keeps a fling skeleton row out of the measurer until the row upgrades to its bubble', async () => {
+      virtualizerState.measuredIds = new Set(['m0', 'm8', 'm9'])
+      const messages = Array.from({ length: 12 }, (_, index) => message(`m${index}`, index + 1))
+      render(() => (
+        <ChatView messages={messages} />
+      ))
+      await Promise.resolve()
+
+      virtualizerState.setDeferred?.(true)
+      virtualizerState.setRange?.({ start: 0, end: 10 })
+      await Promise.resolve()
+
+      const skeletonRow = virtualizerState.attachedReadiness.get('m8')
+      const realRow = virtualizerState.attachedReadiness.get('m0')
+      expect(skeletonRow?.measurable()).toBe(false)
+      expect(realRow?.measurable()).toBe(true)
+
+      virtualizerState.setDeferred?.(false)
+      await Promise.resolve()
+
+      expect(skeletonRow?.measurable()).toBe(true)
+    })
+
     it('attaches wheel and touch listeners as passive on the scroll container', () => {
-      virtualizerState.attachedIds = []
-      virtualizerState.measuredIds = new Set()
-      virtualizerState.currentHeightKeys = new Map()
       // Non-passive wheel/touch listeners force the compositor to wait on the main
       // thread before starting a scroll; nothing in these handlers calls
       // preventDefault, so they must register passive (see

@@ -2,12 +2,13 @@ import { waitFor } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { todoList } from '~/components/todo/TodoList.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { makeTranscriptMessage } from '~/test-support/messageFactory'
 import { createTranscriptScenario } from '~/test-support/transcriptScenario'
 import { diffAdded, diffRemoved } from '../../diff/diffStyles.css'
-import { acpTextContent, renderACPToolPair } from '../acp/testUtils'
 
-import '../testMocks'
+import { acpTextContent, renderACPToolPair } from '../acp/testUtils'
+import '~/components/chat/providers'
 import './plugin'
 
 describe('goose native tools', () => {
@@ -59,7 +60,7 @@ describe('goose native tools', () => {
     expect(container.textContent).not.toContain('Arguments')
   })
 
-  it('renders a delegate report through the shared agent components', () => {
+  it('renders a delegate report through the shared agent components', async () => {
     const { container } = renderACPToolPair(AgentProvider.GOOSE, {
       kind: 'other',
       title: 'delegate',
@@ -72,6 +73,7 @@ describe('goose native tools', () => {
     }, {
       content: acpTextContent('**Findings**\n\nThe entry points exist.'),
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Inspect the project (explore)')
     expect(container.textContent).toContain('Agent "Inspect the project" completed')
     expect(container.querySelector('strong')?.textContent).toBe('Findings')
@@ -118,7 +120,7 @@ describe('goose native tools', () => {
     expect(container.textContent).not.toContain('exit')
   })
 
-  it('shows a subagent edit request without claiming an applied diff', () => {
+  it('shows a subagent edit request without claiming an applied diff', async () => {
     const { container } = renderACPToolPair(AgentProvider.GOOSE, {}, {
       status: 'in_progress',
       _meta: {
@@ -137,6 +139,7 @@ describe('goose native tools', () => {
         },
       },
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('sample.ts')
     expect(container.textContent).toContain('Requested changes')
     expect(container.querySelector(`.${diffRemoved}`)?.textContent).toContain('before')
@@ -144,7 +147,7 @@ describe('goose native tools', () => {
     expect(container.textContent).not.toContain('completed')
   })
 
-  it('does not claim that the task list was cleared when the input is missing', () => {
+  it('does not claim that the task list was cleared when the input is missing', async () => {
     const { container } = renderACPToolPair(AgentProvider.GOOSE, {
       _meta: {
         goose: {
@@ -154,6 +157,7 @@ describe('goose native tools', () => {
     }, {
       content: acpTextContent('Tool outcome'),
     })
+    await settleWorkerReplies()
     expect(container.textContent).not.toContain('cleared')
     expect(container.textContent).toContain('Tool outcome')
   })
@@ -174,7 +178,7 @@ describe('goose native tools', () => {
     expect(container.querySelector(`.${todoList}`)?.textContent).toContain('Pending task')
   })
 
-  it('preserves headings and nested Markdown in a complex task list', () => {
+  it('preserves headings and nested Markdown in a complex task list', async () => {
     const { container } = renderACPToolPair(AgentProvider.GOOSE, {
       rawInput: { content: '## Tasks\n\n- [ ] **Inspect** files\n  - Keep this detail' },
       _meta: {
@@ -185,11 +189,12 @@ describe('goose native tools', () => {
     }, {
       content: acpTextContent('Updated'),
     })
+    await settleWorkerReplies()
     expect(container.querySelector('h2')?.textContent).toBe('Tasks')
     expect(container.querySelector('strong')?.textContent).toBe('Inspect')
     expect(container.querySelector('li li')?.textContent).toContain('Keep this detail')
   })
-  it('keeps the reported edit result separate from the requested changes', () => {
+  it('keeps the reported edit result separate from the requested changes', async () => {
     const { container } = renderACPToolPair(AgentProvider.GOOSE, {
       title: 'edit · sample.py',
       rawInput: { path: 'sample.py', before: 'answer = 41', after: 'answer = 42' },
@@ -201,6 +206,7 @@ describe('goose native tools', () => {
     }, {
       content: acpTextContent('Edited sample.py (1 lines -> 1 lines)'),
     })
+    await settleWorkerReplies()
     expect(container.querySelector(`.${diffRemoved}`)?.textContent).toContain('answer = 41')
     expect(container.querySelector(`.${diffAdded}`)?.textContent).toContain('answer = 42')
     expect(container.textContent).toContain('Edited sample.py (1 lines -> 1 lines)')

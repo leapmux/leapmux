@@ -861,10 +861,8 @@ export function DropdownMenu(props: DropdownMenuProps) {
     props.onToggle?.(opening)
   }
 
-  // `newState` is a field of ToggleEvent. The jsdom popover stub defines it on a
-  // plain Event, so this reads it without the ToggleEvent type.
-  const handleBeforeToggle = (e: Event) => {
-    props.onBeforeToggle?.((e as Event & { newState?: string }).newState === 'open')
+  const handleBeforeToggle = (e: ToggleEvent) => {
+    props.onBeforeToggle?.(e.newState === 'open')
   }
 
   const popoverRefCallback = (el: HTMLElement) => {

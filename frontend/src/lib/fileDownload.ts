@@ -2,6 +2,7 @@ import type { SaveStreamHandle } from '~/api/platformBridge'
 import type { PathFlavor } from '~/lib/paths'
 import { platformBridge } from '~/api/platformBridge'
 import { workerFile } from '~/api/workerRpc'
+import { ownedBytes } from '~/lib/bytes'
 import { basename } from '~/lib/paths'
 
 // 1 MiB chunks: large enough to keep round-trip count manageable for
@@ -52,9 +53,8 @@ interface FileChunk {
  * as a `FileChunk`. The first response carries `totalSize`; once known
  * the loop bound switches from "until empty" to "until totalSize". No
  * accumulator is allocated — callers that need the full bytes must
- * concatenate themselves. Each yielded chunk is laundered through
- * `ensurePlainArrayBufferView` so callers can hand it to `Blob` / Tauri
- * IPC without an extra copy.
+ * concatenate themselves. Each yielded chunk goes through `ownedBytes`, so
+ * callers can hand it to `Blob` / Tauri IPC without an extra copy.
  */
 async function* streamFileChunks(
   workerId: string,
@@ -73,31 +73,10 @@ async function* streamFileChunks(
     const view = resp.content
     if (view.length === 0)
       break
-    const chunk = ensurePlainArrayBufferView(view)
+    const chunk = ownedBytes(view)
     received += chunk.length
     yield { chunk, received, totalSize }
   }
-}
-
-/**
- * Pass-through if `view` already covers an entire plain `ArrayBuffer`;
- * otherwise copy into a fresh `ArrayBuffer`. Avoids the per-chunk
- * memcpy on the common protobuf-runtime case (full-buffer view, plain
- * ArrayBuffer backing) while still defending against `SharedArrayBuffer`
- * backings and surprise-aliasing sub-slices that `Blob`/Tauri callers
- * downstream would otherwise inherit.
- */
-function ensurePlainArrayBufferView(view: Uint8Array): Uint8Array<ArrayBuffer> {
-  if (
-    view.buffer instanceof ArrayBuffer
-    && view.byteOffset === 0
-    && view.byteLength === view.buffer.byteLength
-  ) {
-    return view as Uint8Array<ArrayBuffer>
-  }
-  const copy = new Uint8Array(view.length)
-  copy.set(view)
-  return copy
 }
 
 /**

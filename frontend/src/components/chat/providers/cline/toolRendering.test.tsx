@@ -11,7 +11,7 @@ import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import { clineToolFinishRow, clineToolStartRow } from './toolResults.fixtures'
 import './plugin'
-import '../testMocks'
+import '~/components/chat/providers'
 
 const plugin = () => providerFor(AgentProvider.CLINE)!
 

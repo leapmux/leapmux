@@ -146,7 +146,8 @@ export interface LoadingMenuProps {
 const FILTER_MIN_OPTIONS = 12
 
 /**
- * The most unpinned rows a FILTERED menu mounts for one query.
+ * The most rows a FILTERED menu mounts for one query, beside the rows that every
+ * query draws: the pinned options, and the option of the current value.
  *
  * Each row costs a `ClippedText` tooltip and its own memos, and a list with no
  * upper limit -- a repository's branches -- mounted every one of them at the
@@ -157,21 +158,21 @@ const FILTER_MIN_OPTIONS = 12
 export const MAX_DRAWN_OPTIONS = 200
 
 /**
- * The rows that one query draws: every pinned option, and the first `limit`
- * unpinned ones in the given order. `hidden` counts the unpinned options left out.
+ * The rows that one query draws: every option that `exempt` keeps, and the first
+ * `limit` others in the given order. `hidden` counts the options left out.
  */
-export function limitDrawnOptions(options: readonly LoadingMenuOption[], limit: number): { options: readonly LoadingMenuOption[], hidden: number } {
+export function limitDrawnOptions<T>(options: readonly T[], limit: number, exempt: (option: T) => boolean): { options: readonly T[], hidden: number } {
   if (options.length <= limit)
     return { options, hidden: 0 }
-  const drawn: LoadingMenuOption[] = []
-  let unpinned = 0
+  const drawn: T[] = []
+  let limited = 0
   for (const option of options) {
-    if (option.pinned === true) {
+    if (exempt(option)) {
       drawn.push(option)
     }
-    else if (unpinned < limit) {
+    else if (limited < limit) {
       drawn.push(option)
-      unpinned++
+      limited++
     }
   }
   return { options: drawn, hidden: options.length - drawn.length }
@@ -277,13 +278,22 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
     )
   })
 
+  /**
+   * A row that every query draws, past the limit as well. A pinned row is a way
+   * out of the list. The row of the current value is how the user finds the
+   * current choice: without it, a value past the limit -- the checked-out branch
+   * of a large repository -- left the open menu with no checked row.
+   */
+  const alwaysDrawn = (option: LoadingMenuOption) => option.pinned === true || option.value === props.value
+
   /** The rows the current query draws; see MAX_DRAWN_OPTIONS. */
-  const drawn = createMemo(() => filtering()
-    ? limitDrawnOptions(visible(), MAX_DRAWN_OPTIONS)
-    : {
-        options: visible(),
-        hidden: 0,
-      })
+  const drawn = createMemo(() => limitDrawnOptions(
+    visible(),
+    filtering()
+      ? MAX_DRAWN_OPTIONS
+      : Number.POSITIVE_INFINITY,
+    alwaysDrawn,
+  ))
 
   /** The option the value names, or undefined when the list does not hold it. */
   const selected = () => props.options.find(o => o.value === props.value)
@@ -408,7 +418,9 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
           <div class={styles.emptyNote} data-testid="loading-menu-more">
             {`${pluralize(drawn().hidden, 'more option')} ${drawn().hidden === 1
               ? 'is'
-              : 'are'} not shown. Type to filter the list.`}
+              : 'are'} not shown. ${query().trim() === ''
+              ? 'Type to filter the list.'
+              : 'Type more to narrow the list.'}`}
           </div>
         </Show>
       </Match>
@@ -508,7 +520,8 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
         as `SessionSelect`'s ticking `RelativeTime`, and its own memos. A closed
         picker paid that for every option -- `BranchSelect`'s list has no upper
         limit -- and most pickers on screen are never opened. An open filtered
-        picker mounts at most MAX_DRAWN_OPTIONS of them.
+        picker mounts at most MAX_DRAWN_OPTIONS of them, beside the rows that
+        every query draws.
       */}
       <Show when={everOpened()}>
         <Show when={filtering()} fallback={items()}>

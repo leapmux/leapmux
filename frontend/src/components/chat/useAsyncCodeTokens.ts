@@ -1,6 +1,6 @@
 import type { Accessor } from 'solid-js'
 import type { CachedToken } from '~/lib/tokenCache'
-import { createEffect, createSignal, on, onCleanup, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, on, onCleanup, untrack } from 'solid-js'
 import { tokenizeAsync } from '~/lib/shikiWorkerClient'
 import { syntaxThemeGeneration } from '~/lib/syntaxThemeStore'
 import { getCachedTokens, makeKey } from '~/lib/tokenCache'
@@ -44,6 +44,12 @@ export interface AsyncCodeTokensOptions {
   rowOffscreen?: () => boolean
 }
 
+/** Tokens that the hook applied, with the key of the code that they tokenize. */
+interface KeyedTokens {
+  key: string
+  tokens: CachedToken[][]
+}
+
 /**
  * Shared reactive token state machine for the chat code surfaces -- the Read tool's
  * line-numbered body and the Bash/JSON tool-result bodies. Returns a signal of the
@@ -52,6 +58,12 @@ export interface AsyncCodeTokensOptions {
  * miss to the tokenize worker, and HOLDING the currently-applied tokens steady while
  * scrolling is paused or a text selection is active (a freshly-computed result is
  * stashed and applied once the hold lifts).
+ *
+ * The signal never answers the tokens of an earlier key. A token holds its own
+ * text, and the effects below apply new tokens only after the computations of
+ * the update that changed the code. So a consumer that reads the new code in
+ * such a computation reads null, and draws the new text plain, until the
+ * effects apply its tokens.
  *
  * The consumers differ only in their inputs -- how they resolve the language, what
  * makes a body eligible, where the premeasure/hold gate comes from, and whether a
@@ -63,7 +75,7 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
   // The key whose tokens are currently APPLIED (an unchanged key never re-dispatches),
   // and tokens computed-but-not-yet-applied because the hold gate was up when they landed.
   let appliedKey: string | undefined
-  let pending: { key: string, tokens: CachedToken[][] } | undefined
+  let pending: KeyedTokens | undefined
   // The key of the single in-flight worker dispatch, tracked at the hook level (not per
   // effect-run): a re-run triggered purely by a gate/hold toggle must NOT cancel the
   // dispatch nor start a duplicate -- the same (lang, code) work is still valid, it just
@@ -77,11 +89,14 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
   })
 
   // The (lang, code) identity key, or undefined when the body is ineligible (no lang,
-  // empty, or over a size cap) and should render plain. Single-sources the key both
-  // effects compare against. Empty code is never eligible: there is nothing to tokenize,
-  // so it must short-circuit here rather than spawn the worker and round-trip an empty
-  // string (the per-consumer `eligible` size checks treat 0 chars as within their caps).
-  const currentKey = (): string | undefined => {
+  // empty, or over a size cap) and should render plain. Single-sources the key that both
+  // effects and the returned tokens compare against. Empty code is never eligible: there is
+  // nothing to tokenize, so it must short-circuit here rather than spawn the worker and
+  // round-trip an empty string (the per-consumer `eligible` size checks treat 0 chars as
+  // within their caps). A memo, because every reader would otherwise build a key as long as
+  // the code and run the consumer's eligibility check again; it notifies only when the key
+  // itself changes.
+  const currentKey = createMemo((): string | undefined => {
     const lang = opts.lang()
     const code = opts.code()
     // The syntax theme generation is part of the key, not a separate effect:
@@ -93,7 +108,7 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
     return lang && code.length > 0 && opts.eligible()
       ? `${generation}\0${makeKey(lang, code)}`
       : undefined
-  }
+  })
 
   // Resolve tokens for `code` WITHOUT dispatching the worker: the optional main-thread
   // tokenizer (ANSI) first, then the shared token cache. Reports which source hit, because
@@ -115,7 +130,7 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
   // hook-creation time -- before the first render -- so a warm RE-MOUNT paints highlighted
   // on its first frame instead of flashing the plain `fallback` for a beat. Expanding or
   // collapsing a tool row and switching the diff view (unified<->split) each mount a FRESH
-  // hook instance whose `tokens` starts null; the cache read otherwise lives only in the
+  // hook instance whose `applied` signal starts null; the cache read otherwise lives only in the
   // effect below, which Solid runs AFTER the first render commits, so that first frame was
   // always plain even when the tokens were already cached. (Mirrors the markdown path,
   // which reads its caches synchronously during render for exactly this reason --
@@ -131,7 +146,7 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
   // miss still seeds nothing and the worker dispatch is deferred until the hold lifts, so
   // first-time highlighting stays async/off-thread as intended.) Claiming `appliedKey` makes
   // the main effect's first run early-return (keep the seed) rather than reset to plain.
-  const seedFromCache = (): CachedToken[][] | null => {
+  const seedFromCache = (): KeyedTokens | null => {
     if (opts.gate().premeasure)
       return null
     const key = currentKey()
@@ -143,17 +158,18 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
     if (!resolved)
       return null
     appliedKey = key
-    return resolved.tokens
+    return { key, tokens: resolved.tokens }
   }
 
-  const [tokens, setTokens] = createSignal<CachedToken[][] | null>(seedFromCache())
+  // The tokens that the effects below applied last, with their key.
+  const [applied, setApplied] = createSignal<KeyedTokens | null>(seedFromCache())
 
   // Drop to plain text and forget any applied/pending tokens. Used wherever the body
   // becomes ineligible or its key changes out from under a not-yet-applied result.
   const resetToPlain = (): void => {
     appliedKey = undefined
     pending = undefined
-    setTokens(null)
+    setApplied(null)
   }
 
   // Apply a freshly-computed result for `key`, or stash it when the hold gate is up.
@@ -168,7 +184,7 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
     if (untrack(() => opts.gate().hold))
       pending = { key, tokens: next }
     else
-      setTokens(next)
+      setApplied({ key, tokens: next })
   }
 
   // When the hold gate lifts, apply the tokens that landed while it was up.
@@ -180,37 +196,30 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
     if (!key || pending?.key !== key)
       return
     appliedKey = key
-    setTokens(pending.tokens)
+    setApplied(pending)
     pending = undefined
   })
 
   createEffect(on(
     () => {
       const gate = opts.gate()
-      // Track `eligible()` too: it can flip independently of lang/code (a diff side whose
-      // own code is byte-identical while the OTHER side grows past the line cap, or a
-      // future consumer whose eligibility is driven by external state). Without it in the
-      // deps, such a flip would neither reset an over-cap body to plain nor start
-      // highlighting a now-eligible one until an unrelated lang/code/gate change nudged it.
-      // The syntax generation belongs HERE, not only inside `currentKey()`.
-      // `on(deps, fn)` tracks the deps accessor alone and runs `fn` untracked,
-      // so the generation read in `currentKey()` was invisible to this effect:
-      // the theme changed, the caches cleared, the generation bumped -- and
-      // every applied code surface kept the abandoned theme's baked colours
-      // until an unrelated lang, code, gate or eligibility change happened to
-      // nudge the effect. This effect is the only thing that redispatches a
-      // code surface, so nothing else would have repainted it.
+      // The key tracks every input that makes applied tokens stale: the language, the
+      // code, the eligibility, and the syntax theme generation. The eligibility can flip
+      // independently of lang/code (a diff side whose own code is byte-identical while the
+      // OTHER side grows past the line cap), and a theme change bumps only the generation.
+      // Each must reach the deps HERE: `on(deps, fn)` tracks the deps accessor alone and
+      // runs `fn` untracked, so an input that only `fn` read was invisible to this effect.
+      // A theme generation read that way once left every applied code surface with the
+      // abandoned theme's baked colours until an unrelated change nudged the effect. This
+      // effect is the only thing that redispatches a code surface, so nothing else would
+      // have repainted it.
       return [
-        opts.lang(),
-        opts.code(),
+        currentKey(),
         gate.premeasure,
         gate.hold,
-        opts.eligible(),
-        syntaxThemeGeneration(),
       ] as const
     },
-    ([lang, code, premeasure]) => {
-      const key = currentKey()
+    ([key, premeasure]) => {
       if (premeasure || !key) {
         resetToPlain()
         return
@@ -230,8 +239,10 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
 
       resetToPlain()
 
-      // key is defined, so lang is defined and eligible.
-      const resolvedLang = lang!
+      // key is defined, so lang is defined and eligible. `fn` runs untracked, so these
+      // reads subscribe to nothing; the key already tracks both.
+      const resolvedLang = opts.lang()!
+      const code = opts.code()
 
       // A synchronous result avoids a worker round-trip and a flash of unstyled text:
       //   - the ANSI main-thread tokenizer (not cached -- ANSI tokens are cheap and
@@ -247,7 +258,7 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
         }
         else {
           appliedKey = key
-          setTokens(resolved.tokens)
+          setApplied({ key, tokens: resolved.tokens })
         }
         return
       }
@@ -276,7 +287,7 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
         if (disposed || currentKey() !== key)
           return
         if (!next) {
-          setTokens(null)
+          setApplied(null)
           return
         }
         applyOrStash(key, next)
@@ -284,5 +295,12 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
     },
   ))
 
-  return tokens
+  // Only the tokens of the current key. Between a change of the code and the
+  // effect that applies its tokens, `applied` still holds the earlier key's.
+  return createMemo(() => {
+    const current = applied()
+    return current !== null && current.key === currentKey()
+      ? current.tokens
+      : null
+  })
 }

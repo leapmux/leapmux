@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerFile } from '~/api/workerRpc'
+import { FILE_READ_LIMIT_BYTES } from '~/generated/contracts/file-read'
+import { MAX_CHUNK_SIZE } from '~/generated/contracts/wire'
 import { readWorkerFile } from './readWorkerFile'
 
 vi.mock('~/api/workerRpc', () => ({
@@ -10,7 +12,7 @@ vi.mock('~/api/workerRpc', () => ({
 const read = vi.mocked(workerFile.readFile)
 
 /** The page size the reader asks for, and the window it keeps in flight. */
-const PAGE = 48 * 1024
+const PAGE = FILE_READ_LIMIT_BYTES
 const CONCURRENCY = 4
 const MOD_TIME = '2026-09-11T00:00:00Z'
 
@@ -119,15 +121,35 @@ describe('readWorkerFile', () => {
     })
   })
 
+  // A page may ask for more than the payload budget of a small channel, and the
+  // worker then caps it at that budget. The smallest budget that a worker
+  // accepts is one chunk.
   it('fills a range that a short page leaves incomplete', async () => {
+    const budget = MAX_CHUNK_SIZE
     const bytes = fileBytes(PAGE + 16)
     read.mockResolvedValueOnce(response(new Uint8Array(), BigInt(bytes.length)))
     read.mockImplementation(async (_worker, request) => {
       const offset = Number(request.offset ?? 0n)
-      const length = Math.min(Number(request.limit ?? 0n), 1024)
+      const length = Math.min(Number(request.limit ?? 0n), budget)
       return response(bytes.slice(offset, offset + length), BigInt(bytes.length))
     })
     expect((await readAll(bytes)).content).toEqual(bytes)
+
+    // Each request after a short page asks for the rest of its own range, and
+    // never past its end.
+    const firstRangeOffsets = Array.from({
+      length: Math.ceil(PAGE / budget),
+    }, (_, index) => index * budget)
+    expect(read.mock.calls.slice(1)
+      .map(call => ({
+        offset: Number(call[1].offset),
+        limit: Number(call[1].limit),
+      }))
+      .sort((a, b) => a.offset - b.offset))
+      .toEqual([
+        ...firstRangeOffsets.map(offset => ({ offset, limit: PAGE - offset })),
+        { offset: PAGE, limit: 16 },
+      ])
   })
 
   it('stops when a page reports a different size or modification time', async () => {

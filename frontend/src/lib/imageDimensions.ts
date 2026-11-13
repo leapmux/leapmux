@@ -135,12 +135,12 @@ function decodeBase64Prefix(base64: string, maxBytes: number): Uint8Array | null
   if (prefix.length === 0)
     return null
   try {
-    // Shared decode (base64ToUint8Array): atob + per-char Uint8Array fill, single-sourced
-    // so this header sniffer can't drift from the rest of the codebase's base64 handling.
+    // The shared decoder (base64ToUint8Array), single-sourced so this header sniffer
+    // can't drift from the rest of the codebase's base64 handling.
     return base64ToUint8Array(prefix)
   }
   catch {
-    // atob throws on a malformed 4-char quantum -- treat as unsniffable.
+    // The shared decoder throws on a malformed 4-char quantum -- treat as unsniffable.
     return null
   }
 }

@@ -7,6 +7,7 @@ import { ALL_PROVIDERS } from '~/generated/contracts/providers'
 import { GOAL_STATUS_TOKEN, GOAL_TRANSITION, NOTIFICATION_TYPE } from '~/generated/contracts/worker-vocab'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { elementText, renderDivider, renderThreadElement, renderThreadGlyph, renderThreadHasIcon, renderThreadText } from '~/test-support/messageRenderProbes'
 import { renderNotificationBlocks } from './notificationRenderers'
 
@@ -37,7 +38,7 @@ afterEach(() => {
 // Pass each native notification to its provider's reader.
 // Without that provider, the shared worker reader supplies no native fallback.
 // Claude is the default for these fixtures. Codex cases pass Codex explicitly.
-function renderText(messages: unknown[], provider: AgentProvider = AgentProvider.CLAUDE_CODE): string {
+function renderText(messages: unknown[], provider: AgentProvider = AgentProvider.CLAUDE_CODE): Promise<string> {
   return renderThreadText(messages, provider)
 }
 function renderHasIcon(messages: unknown[], provider: AgentProvider = AgentProvider.CLAUDE_CODE): boolean {
@@ -45,8 +46,8 @@ function renderHasIcon(messages: unknown[], provider: AgentProvider = AgentProvi
 }
 
 /** Check if the rendered output contains a specific substring. */
-function renderedContains(messages: unknown[], text: string, provider?: AgentProvider): boolean {
-  return renderText(messages, provider).includes(text)
+async function renderedContains(messages: unknown[], text: string, provider?: AgentProvider): Promise<boolean> {
+  return (await renderText(messages, provider)).includes(text)
 }
 
 describe('the notification thread: compaction and context_cleared rendering', () => {
@@ -65,15 +66,15 @@ describe('the notification thread: compaction and context_cleared rendering', ()
     status: 'compacting',
   }
 
-  it('context_cleared alone: shows "Context cleared"', () => {
+  it('context_cleared alone: shows "Context cleared"', async () => {
     const messages = [contextClearedMsg]
-    expect(renderedContains(messages, 'Context cleared')).toBe(true)
+    expect(await renderedContains(messages, 'Context cleared')).toBe(true)
   })
 
-  it('compaction alone: shows compaction', () => {
+  it('compaction alone: shows compaction', async () => {
     const messages = [compactBoundaryMsg]
-    expect(renderedContains(messages, 'Context compacted')).toBe(true)
-    expect(renderedContains(messages, 'Context cleared')).toBe(false)
+    expect(await renderedContains(messages, 'Context compacted')).toBe(true)
+    expect(await renderedContains(messages, 'Context cleared')).toBe(false)
   })
 
   it('marks a completed compaction divider but not plain notification text', () => {
@@ -86,23 +87,23 @@ describe('the notification thread: compaction and context_cleared rendering', ()
     expect(plain.container.querySelector('[data-testid="notification-divider"]')).toBeNull()
   })
 
-  it('draws no spinner for an obsolete stored compacting status', () => {
+  it('draws no spinner for an obsolete stored compacting status', async () => {
     const messages = [compactingStatusMsg]
-    expect(renderedContains(messages, 'Compacting context...')).toBe(false)
+    expect(await renderedContains(messages, 'Compacting context...')).toBe(false)
   })
 
-  it('plan_execution renders together with compaction', () => {
+  it('plan_execution renders together with compaction', async () => {
     const planExecMsg = {
       type: 'plan_execution',
       plan_file_path: '/path/plan.md',
     }
     const messages = [planExecMsg, compactBoundaryMsg]
-    const text = renderText(messages)
+    const text = await renderText(messages)
     expect(text).toContain('Executing plan')
     expect(text).toContain('Context compacted')
   })
 
-  it('settings_changed with compaction renders both', () => {
+  it('settings_changed with compaction renders both', async () => {
     const settingsMsg = {
       type: 'settings_changed',
       changes: {
@@ -110,14 +111,14 @@ describe('the notification thread: compaction and context_cleared rendering', ()
       },
     }
     const messages = [settingsMsg, compactBoundaryMsg]
-    const text = renderText(messages)
+    const text = await renderText(messages)
     expect(text).toContain('Context compacted')
     expect(text).toContain('Model')
   })
 
   // Raw notification fixtures.
 
-  it('codex item/started+contextCompaction draws no spinner', () => {
+  it('codex item/started+contextCompaction draws no spinner', async () => {
     // B26 removed the item/started compaction start reader: the worker stores
     // no start (decision 21), so the item draws nothing.
     const messages = [
@@ -130,10 +131,10 @@ describe('the notification thread: compaction and context_cleared rendering', ()
         },
       },
     ]
-    expect(renderText(messages, AgentProvider.CODEX)).toBe('')
+    expect(await renderText(messages, AgentProvider.CODEX)).toBe('')
   })
 
-  it('a bare top-level contextCompaction item draws nothing', () => {
+  it('a bare top-level contextCompaction item draws nothing', async () => {
     // B26 removed the top-level item shape: the worker stores the raw
     // item/completed notification only.
     const messages = [
@@ -143,10 +144,10 @@ describe('the notification thread: compaction and context_cleared rendering', ()
         item: { type: 'contextCompaction', id: 'compact-1' },
       },
     ]
-    expect(renderText(messages, AgentProvider.CODEX)).toBe('')
+    expect(await renderText(messages, AgentProvider.CODEX)).toBe('')
   })
 
-  it('codex item/started for non-compaction items does NOT match the compaction spinner', () => {
+  it('codex item/started for non-compaction items does NOT match the compaction spinner', async () => {
     const messages = [
       {
         method: 'item/started',
@@ -157,19 +158,19 @@ describe('the notification thread: compaction and context_cleared rendering', ()
     ]
     // commandExecution is not a compaction notification.
     // The reader returns no entry, so the thread displays no compaction spinner.
-    expect(renderText(messages, AgentProvider.CODEX)).not.toContain('Compacting context')
+    expect(await renderText(messages, AgentProvider.CODEX)).not.toContain('Compacting context')
   })
 
-  it('draws nothing for the bare {type:"compacting"} envelope of an older build', () => {
+  it('draws nothing for the bare {type:"compacting"} envelope of an older build', async () => {
     // F1 removed the type: no worker writes it, and a stored row contributes
     // no entry (decision 22).
     const messages = [
       { type: 'compacting' },
     ]
-    expect(renderText(messages, AgentProvider.CODEX)).toBe('')
+    expect(await renderText(messages, AgentProvider.CODEX)).toBe('')
   })
 
-  it('legacy synthesized {type:"system",subtype:"compact_boundary",threadId} from Codex still matches Claude\'s shape', () => {
+  it('legacy synthesized {type:"system",subtype:"compact_boundary",threadId} from Codex still matches Claude\'s shape', async () => {
     // This fixture uses the Claude system compact_boundary shape.
     // The Claude reader resolves its metadata.
     const messages = [
@@ -180,7 +181,7 @@ describe('the notification thread: compaction and context_cleared rendering', ()
         turnId: 'turn1',
       },
     ]
-    expect(renderText(messages)).toContain('Context compacted')
+    expect(await renderText(messages)).toContain('Context compacted')
   })
 })
 
@@ -201,73 +202,73 @@ describe('compaction token formatting: pre → post', () => {
 
   // -- consolidated multi-message path -------------------------------------
 
-  it('renders trigger, pre_tokens, and post_tokens as "(trigger, pre → post)"', () => {
+  it('renders trigger, pre_tokens, and post_tokens as "(trigger, pre → post)"', async () => {
     // Manual /compact carries post_tokens directly and no tokens_saved.
     const messages = [
       compactMsg({ trigger: 'manual', pre_tokens: 105424, post_tokens: 8476 }),
     ]
-    expect(renderText(messages)).toBe('Context compacted (manual, 105.4k → 8.5k)')
+    expect(await renderText(messages)).toBe('Context compacted (manual, 105.4k → 8.5k)')
   })
 
-  it('derives post from pre_tokens minus tokens_saved when post_tokens is absent', () => {
+  it('derives post from pre_tokens minus tokens_saved when post_tokens is absent', async () => {
     const messages = [
       compactMsg({ trigger: 'auto', pre_tokens: 100000, tokens_saved: 40000 }),
     ]
-    expect(renderText(messages)).toBe('Context compacted (auto, 100.0k → 60.0k)')
+    expect(await renderText(messages)).toBe('Context compacted (auto, 100.0k → 60.0k)')
   })
 
-  it('prefers explicit post_tokens over deriving from tokens_saved', () => {
+  it('prefers explicit post_tokens over deriving from tokens_saved', async () => {
     const messages = [
       compactMsg({ pre_tokens: 100000, post_tokens: 8000, tokens_saved: 1 }),
     ]
-    expect(renderText(messages)).toBe('Context compacted (100.0k → 8.0k)')
+    expect(await renderText(messages)).toBe('Context compacted (100.0k → 8.0k)')
   })
 
-  it('omits the trigger when it is absent', () => {
+  it('omits the trigger when it is absent', async () => {
     const messages = [
       compactMsg({ pre_tokens: 105424, post_tokens: 8476 }),
     ]
-    expect(renderText(messages)).toBe('Context compacted (105.4k → 8.5k)')
+    expect(await renderText(messages)).toBe('Context compacted (105.4k → 8.5k)')
   })
 
-  it('shows trigger and the pre count alone when neither post_tokens nor tokens_saved is present', () => {
+  it('shows trigger and the pre count alone when neither post_tokens nor tokens_saved is present', async () => {
     const messages = [
       compactMsg({ trigger: 'auto', pre_tokens: 100000 }),
     ]
-    expect(renderText(messages)).toBe('Context compacted (auto, 100.0k)')
+    expect(await renderText(messages)).toBe('Context compacted (auto, 100.0k)')
   })
 
-  it('shows the post count alone when pre_tokens is absent', () => {
+  it('shows the post count alone when pre_tokens is absent', async () => {
     const messages = [
       compactMsg({ post_tokens: 8000 }),
     ]
-    expect(renderText(messages)).toBe('Context compacted (→ 8.0k)')
+    expect(await renderText(messages)).toBe('Context compacted (→ 8.0k)')
   })
 
-  it('shows the trigger alone when no token counts are present', () => {
+  it('shows the trigger alone when no token counts are present', async () => {
     const messages = [
       compactMsg({ trigger: 'manual' }),
     ]
-    expect(renderText(messages)).toBe('Context compacted (manual)')
+    expect(await renderText(messages)).toBe('Context compacted (manual)')
   })
 
-  it('renders no parenthetical when neither trigger nor token counts are present', () => {
+  it('renders no parenthetical when neither trigger nor token counts are present', async () => {
     const messages = [
       compactMsg({}),
     ]
-    expect(renderText(messages)).toBe('Context compacted')
+    expect(await renderText(messages)).toBe('Context compacted')
   })
 
-  it('microcompaction renders a plain "Context microcompacted" with no detail', () => {
+  it('microcompaction renders a plain "Context microcompacted" with no detail', async () => {
     // Ignore metadata-like microcompaction fields.
     // Display no trigger or token count for them.
     const messages = [
       microcompactMsg({ trigger: 'auto', preTokens: 200000, tokensSaved: 50000 }),
     ]
-    expect(renderText(messages)).toBe('Context microcompacted')
+    expect(await renderText(messages)).toBe('Context microcompacted')
   })
 
-  it('reads camelCase keys (compactMetadata / preTokens / postTokens)', () => {
+  it('reads camelCase keys (compactMetadata / preTokens / postTokens)', async () => {
     // The consolidated fixture uses camelCase keys.
     // Resolve those keys and the native snake_case keys.
     const messages = [
@@ -277,38 +278,38 @@ describe('compaction token formatting: pre → post', () => {
         compactMetadata: { trigger: 'auto', preTokens: 100000, postTokens: 8000 },
       },
     ]
-    expect(renderText(messages)).toBe('Context compacted (auto, 100.0k → 8.0k)')
+    expect(await renderText(messages)).toBe('Context compacted (auto, 100.0k → 8.0k)')
   })
 
-  it('drops a lone tokens_saved that has no pre count to anchor a transition', () => {
+  it('drops a lone tokens_saved that has no pre count to anchor a transition', async () => {
     // Without a pre count, the saved count cannot supply a pre-to-post transition.
     // Do not display that saved count as a standalone token figure.
     const messages = [
       compactMsg({ tokens_saved: 5000 }),
     ]
-    expect(renderText(messages)).toBe('Context compacted')
+    expect(await renderText(messages)).toBe('Context compacted')
   })
 
-  it('formats counts across the 1k boundary: 1000 -> "1.0k", 500 -> "500"', () => {
+  it('formats counts across the 1k boundary: 1000 -> "1.0k", 500 -> "500"', async () => {
     // 1000 is >= 1000 so it gets the "k" suffix; 500 stays a bare integer.
     const messages = [
       compactMsg({ pre_tokens: 1000, post_tokens: 500 }),
     ]
-    expect(renderText(messages)).toBe('Context compacted (1.0k → 500)')
+    expect(await renderText(messages)).toBe('Context compacted (1.0k → 500)')
   })
 
   // -- compact_boundary through a provider pre-pass ------------------------
 
-  it('renders a single compact_boundary through the Claude reader alone', () => {
+  it('renders a single compact_boundary through the Claude reader alone', async () => {
     // The synthesized compact_boundary envelope is Claude's own shape; B26
     // removed Codex's copy, so Codex draws nothing for it.
     const msg = compactMsg({ trigger: 'auto', pre_tokens: 100000, post_tokens: 8000 })
     const expected = 'Context compacted (auto, 100.0k → 8.0k)'
-    expect(elementText(renderThreadElement([msg], AgentProvider.CLAUDE_CODE))).toBe(expected)
-    expect(elementText(renderThreadElement([msg], AgentProvider.CODEX))).toBe('')
+    expect(await elementText(renderThreadElement([msg], AgentProvider.CLAUDE_CODE))).toBe(expected)
+    expect(await elementText(renderThreadElement([msg], AgentProvider.CODEX))).toBe('')
   })
 
-  it('microcompaction ignores a metadata wrapper under any key (Claude emits none)', () => {
+  it('microcompaction ignores a metadata wrapper under any key (Claude emits none)', async () => {
     // Ignore both microcompactMetadata and microcompact_metadata.
     // Each fixture must retain the plain label.
     const messages = [
@@ -318,90 +319,90 @@ describe('compaction token formatting: pre → post', () => {
         microcompact_metadata: { trigger: 'auto', preTokens: 200000, tokensSaved: 50000 },
       },
     ]
-    expect(renderText(messages)).toBe('Context microcompacted')
+    expect(await renderText(messages)).toBe('Context microcompacted')
   })
 
-  it('clamps a derived post to 0 when tokens_saved exceeds pre_tokens', () => {
+  it('clamps a derived post to 0 when tokens_saved exceeds pre_tokens', async () => {
     // A saved count above the pre count must not produce a negative post count.
     const messages = [
       compactMsg({ trigger: 'auto', pre_tokens: 30000, tokens_saved: 50000 }),
     ]
-    expect(renderText(messages)).toBe('Context compacted (auto, 30.0k → 0)')
+    expect(await renderText(messages)).toBe('Context compacted (auto, 30.0k → 0)')
   })
 
-  it('renders a zero post when tokens_saved equals pre_tokens', () => {
+  it('renders a zero post when tokens_saved equals pre_tokens', async () => {
     const messages = [
       compactMsg({ pre_tokens: 100000, tokens_saved: 100000 }),
     ]
-    expect(renderText(messages)).toBe('Context compacted (100.0k → 0)')
+    expect(await renderText(messages)).toBe('Context compacted (100.0k → 0)')
   })
 
-  it('renders a no-op transition when tokens_saved is zero', () => {
+  it('renders a no-op transition when tokens_saved is zero', async () => {
     // A reported saved count of zero is present.
     // The derived post count therefore equals the pre count.
     const messages = [
       compactMsg({ pre_tokens: 100000, tokens_saved: 0 }),
     ]
-    expect(renderText(messages)).toBe('Context compacted (100.0k → 100.0k)')
+    expect(await renderText(messages)).toBe('Context compacted (100.0k → 100.0k)')
   })
 
-  it('clamps an explicit negative post_tokens to 0 (not just the derived path)', () => {
+  it('clamps an explicit negative post_tokens to 0 (not just the derived path)', async () => {
     // Restrict both a derived and a directly reported post count to a minimum of zero.
     const messages = [
       compactMsg({ pre_tokens: 100000, post_tokens: -5 }),
     ]
-    expect(renderText(messages)).toBe('Context compacted (100.0k → 0)')
+    expect(await renderText(messages)).toBe('Context compacted (100.0k → 0)')
   })
 
-  it('clamps an explicit negative pre_tokens to 0', () => {
+  it('clamps an explicit negative pre_tokens to 0', async () => {
     const messages = [
       compactMsg({ pre_tokens: -100, post_tokens: 8000 }),
     ]
-    expect(renderText(messages)).toBe('Context compacted (0 → 8.0k)')
+    expect(await renderText(messages)).toBe('Context compacted (0 → 8.0k)')
   })
 
-  it('drops a non-finite (NaN) count instead of rendering "NaN"', () => {
+  it('drops a non-finite (NaN) count instead of rendering "NaN"', async () => {
     // JSON cannot encode NaN, but a constructed payload can contain it.
     // Omit that count while retaining the other side of the transition.
     const messages = [
       compactMsg({ pre_tokens: Number.NaN, post_tokens: 8000 }),
     ]
-    expect(renderText(messages)).toBe('Context compacted (→ 8.0k)')
+    expect(await renderText(messages)).toBe('Context compacted (→ 8.0k)')
   })
 
-  it('drops a non-finite (Infinity) count instead of rendering "InfinityM"', () => {
+  it('drops a non-finite (Infinity) count instead of rendering "InfinityM"', async () => {
     const messages = [
       compactMsg({ pre_tokens: 100000, post_tokens: Number.POSITIVE_INFINITY }),
     ]
-    expect(renderText(messages)).toBe('Context compacted (100.0k)')
+    expect(await renderText(messages)).toBe('Context compacted (100.0k)')
   })
 
   // Divider markup and layout.
 
-  it('renders a single compact boundary as a divider with the icon', () => {
+  it('renders a single compact boundary as a divider with the icon', async () => {
     const msg = compactMsg({ trigger: 'auto', pre_tokens: 100000, post_tokens: 8000 })
     expect(renderHasIcon([msg])).toBe(true)
-    expect(renderText([msg])).toBe('Context compacted (auto, 100.0k → 8.0k)')
+    expect(await renderText([msg])).toBe('Context compacted (auto, 100.0k → 8.0k)')
   })
 
-  it('renders a single microcompact boundary as a divider with the icon', () => {
+  it('renders a single microcompact boundary as a divider with the icon', async () => {
     expect(renderHasIcon([
       microcompactMsg({}),
     ])).toBe(true)
-    expect(renderText([
+    expect(await renderText([
       microcompactMsg({}),
     ])).toBe('Context microcompacted')
   })
 
-  it('draws no divider for an obsolete stored compacting status', () => {
+  it('draws no divider for an obsolete stored compacting status', async () => {
     const msg = { type: 'system', subtype: 'status', status: 'compacting' }
     expect(renderHasIcon([msg])).toBe(false)
-    expect(renderText([msg])).toBe('')
+    expect(await renderText([msg])).toBe('')
   })
 })
 
 describe('the notification thread: message ordering', () => {
-  it('context_cleared before settings_changed preserves order', () => {
+  it('context_cleared before settings_changed preserves order', async () => {
     const messages = [
       { type: 'context_cleared' },
       {
@@ -411,14 +412,14 @@ describe('the notification thread: message ordering', () => {
         },
       },
     ]
-    const text = renderText(messages)
+    const text = await renderText(messages)
     const clearedIdx = text.indexOf('Context cleared')
     const modeIdx = text.indexOf('Permission Mode')
     expect(clearedIdx).toBeGreaterThanOrEqual(0)
     expect(modeIdx).toBeGreaterThan(clearedIdx)
   })
 
-  it('settings_changed before context_cleared preserves order', () => {
+  it('settings_changed before context_cleared preserves order', async () => {
     const messages = [
       {
         type: 'settings_changed',
@@ -428,14 +429,14 @@ describe('the notification thread: message ordering', () => {
       },
       { type: 'context_cleared' },
     ]
-    const text = renderText(messages)
+    const text = await renderText(messages)
     const modeIdx = text.indexOf('Permission Mode')
     const clearedIdx = text.indexOf('Context cleared')
     expect(modeIdx).toBeGreaterThanOrEqual(0)
     expect(clearedIdx).toBeGreaterThan(modeIdx)
   })
 
-  it('uses Workflow label for Codex collaboration mode changes', () => {
+  it('uses Workflow label for Codex collaboration mode changes', async () => {
     updateSettingsLabelCache(AgentProvider.CODEX, [
       {
         id: 'collaboration_mode',
@@ -455,11 +456,11 @@ describe('the notification thread: message ordering', () => {
       },
     ]
     // Use the same provider for the notification and cached labels.
-    const text = renderThreadText(messages, AgentProvider.CODEX)
+    const text = await renderThreadText(messages, AgentProvider.CODEX)
     expect(text).toContain('Workflow')
   })
 
-  it('uses cached option-group labels for arbitrary provider settings', () => {
+  it('uses cached option-group labels for arbitrary provider settings', async () => {
     updateSettingsLabelCache(AgentProvider.OPENCODE, [
       {
         id: 'opencode_mode',
@@ -478,13 +479,13 @@ describe('the notification thread: message ordering', () => {
         },
       },
     ]
-    const text = renderThreadText(messages, AgentProvider.OPENCODE)
+    const text = await renderThreadText(messages, AgentProvider.OPENCODE)
     expect(text).toContain('Execution Mode')
     expect(text).toContain('Safe')
     expect(text).toContain('Fast')
   })
 
-  it('prefers a provider\'s cached label for a well-known axis over the canonical name', () => {
+  it('prefers a provider\'s cached label for a well-known axis over the canonical name', async () => {
     // A provider can replace a well-known group's display label.
     // Consult its cache before displaying the canonical label.
     // An absent inline label must still preserve that provider-specific display.
@@ -506,12 +507,12 @@ describe('the notification thread: message ordering', () => {
         },
       },
     ]
-    const text = renderThreadText(messages, AgentProvider.PI)
+    const text = await renderThreadText(messages, AgentProvider.PI)
     expect(text).toContain('Thinking Level')
     expect(text).not.toContain('Effort')
   })
 
-  it('falls back to the canonical well-known axis name when the cache is unprimed', () => {
+  it('falls back to the canonical well-known axis name when the cache is unprimed', async () => {
     // An absent provider cache entry uses the canonical English label.
     const messages = [
       {
@@ -521,11 +522,11 @@ describe('the notification thread: message ordering', () => {
         },
       },
     ]
-    const text = renderThreadText(messages, AgentProvider.CLAUDE_CODE)
+    const text = await renderThreadText(messages, AgentProvider.CLAUDE_CODE)
     expect(text).toContain('Effort')
   })
 
-  it('interrupted appears in order among other messages', () => {
+  it('interrupted appears in order among other messages', async () => {
     const messages = [
       { type: 'context_cleared' },
       { type: 'interrupted' },
@@ -536,7 +537,7 @@ describe('the notification thread: message ordering', () => {
         },
       },
     ]
-    const text = renderText(messages)
+    const text = await renderText(messages)
     const clearedIdx = text.indexOf('Context cleared')
     const interruptedIdx = text.indexOf('Interrupted')
     const modelIdx = text.indexOf('Model')
@@ -545,7 +546,7 @@ describe('the notification thread: message ordering', () => {
     expect(modelIdx).toBeGreaterThan(interruptedIdx)
   })
 
-  it('api_retry before context_cleared preserves order in one text line', () => {
+  it('api_retry before context_cleared preserves order in one text line', async () => {
     const messages = [
       {
         type: 'system',
@@ -555,14 +556,14 @@ describe('the notification thread: message ordering', () => {
       },
       { type: 'context_cleared' },
     ]
-    const text = renderText(messages)
+    const text = await renderText(messages)
     const retryIdx = text.indexOf('API retry')
     const clearedIdx = text.indexOf('Context cleared')
     expect(retryIdx).toBeGreaterThanOrEqual(0)
     expect(clearedIdx).toBeGreaterThan(retryIdx)
   })
 
-  it('context_cleared before api_retry preserves order after backend dedupe', () => {
+  it('context_cleared before api_retry preserves order after backend dedupe', async () => {
     const messages = [
       { type: 'context_cleared' },
       {
@@ -572,7 +573,7 @@ describe('the notification thread: message ordering', () => {
         max_retries: 3,
       },
     ]
-    const text = renderText(messages)
+    const text = await renderText(messages)
     const clearedIdx = text.indexOf('Context cleared')
     const retryIdx = text.indexOf('API retry')
     expect(clearedIdx).toBeGreaterThanOrEqual(0)
@@ -582,51 +583,51 @@ describe('the notification thread: message ordering', () => {
 
 describe('single-message notification labels', () => {
   // Read each worker notification through the shared extractor as a one-entry thread.
-  it('renders interrupted', () => {
-    expect(renderText([
+  it('renders interrupted', async () => {
+    expect(await renderText([
       { type: 'interrupted' },
     ])).toBe('Interrupted')
   })
 
-  it('renders stop_ignored with the press-again instruction', () => {
-    expect(renderText([
+  it('renders stop_ignored with the press-again instruction', async () => {
+    expect(await renderText([
       { type: 'stop_ignored' },
     ])).toBe('Interrupt ignored — press Interrupt again to force it')
   })
 
-  it('renders input_requeued with the reason the message appears again', () => {
-    expect(renderText([
+  it('renders input_requeued with the reason the message appears again', async () => {
+    expect(await renderText([
       { type: 'input_requeued' },
     ])).toBe('Message queued again — the agent dropped it before the model read it')
   })
 
-  it('renders context_cleared', () => {
-    expect(renderText([
+  it('renders context_cleared', async () => {
+    expect(await renderText([
       { type: 'context_cleared' },
     ])).toBe('Context cleared')
   })
 
   // The worker normalizes the provider's reported status text.
-  it('renders an agent status in the provider\'s own words', () => {
-    expect(renderText([
+  it('renders an agent status in the provider\'s own words', async () => {
+    expect(await renderText([
       { type: 'agent_status', text: 'Switched provider' },
     ])).toBe('Switched provider')
   })
 
-  it('draws nothing for an agent status that states no words', () => {
-    expect(renderText([
+  it('draws nothing for an agent status that states no words', async () => {
+    expect(await renderText([
       { type: 'agent_status', text: '   ' },
     ])).toBe('')
   })
 
-  it('renders agent_error with its error text', () => {
-    expect(renderText([
+  it('renders agent_error with its error text', async () => {
+    expect(await renderText([
       { type: 'agent_error', error: 'boom' },
     ])).toBe('boom')
   })
 
-  it('renders agent_error with the "Unknown error" fallback', () => {
-    expect(renderText([
+  it('renders agent_error with the "Unknown error" fallback', async () => {
+    expect(await renderText([
       { type: 'agent_error' },
     ])).toBe('Unknown error')
   })
@@ -638,32 +639,32 @@ describe('single-message notification labels', () => {
  * This rendering path therefore serves every provider.
  */
 describe('the notification thread: goal transitions', () => {
-  it('announces a new goal with its objective', () => {
-    expect(renderText([
+  it('announces a new goal with its objective', async () => {
+    expect(await renderText([
       { type: 'goal_updated', objective: 'every test passes', goal_status: 'active' },
     ]))
       .toBe('Goal set: every test passes')
   })
 
   // Display the reported transition so a status change does not report a fresh Set.
-  it('names the transition for each finished status', () => {
-    expect(renderText([
+  it('names the transition for each finished status', async () => {
+    expect(await renderText([
       { type: 'goal_updated', objective: 'x', goal_status: 'done' },
     ]))
       .toBe('Goal achieved: x')
-    expect(renderText([
+    expect(await renderText([
       { type: 'goal_updated', objective: 'x', goal_status: 'paused' },
     ]))
       .toBe('Goal paused: x')
-    expect(renderText([
+    expect(await renderText([
       { type: 'goal_updated', objective: 'x', goal_status: 'blocked' },
     ]))
       .toBe('Goal blocked: x')
   })
 
   // Preserve the native detail when it differs from the neutral status token.
-  it('appends the provider status detail when it differs', () => {
-    expect(renderText([
+  it('appends the provider status detail when it differs', async () => {
+    expect(await renderText([
       {
         type: 'goal_updated',
         objective: 'x',
@@ -673,8 +674,8 @@ describe('the notification thread: goal transitions', () => {
     ])).toBe('Goal blocked: x (usageLimited)')
   })
 
-  it('omits a detail that only repeats the neutral status', () => {
-    expect(renderText([
+  it('omits a detail that only repeats the neutral status', async () => {
+    expect(await renderText([
       {
         type: 'goal_updated',
         objective: 'x',
@@ -684,8 +685,8 @@ describe('the notification thread: goal transitions', () => {
     ])).toBe('Goal set: x')
   })
 
-  it('renders nothing for a transition with no readable objective', () => {
-    expect(renderText([
+  it('renders nothing for a transition with no readable objective', async () => {
+    expect(await renderText([
       { type: 'goal_updated', goal_status: 'active' },
     ])).toBe('')
   })
@@ -695,8 +696,8 @@ describe('the notification thread: goal transitions', () => {
    * The status alone cannot distinguish those transitions.
    * The worker compares the prior goal and reports the transition.
    */
-  it('names what the change DID, not the status it left behind', () => {
-    expect(renderText([
+  it('names what the change DID, not the status it left behind', async () => {
+    expect(await renderText([
       {
         type: 'goal_updated',
         objective: 'x',
@@ -704,7 +705,7 @@ describe('the notification thread: goal transitions', () => {
         goal_transition: 'resumed',
       },
     ])).toBe('Goal resumed: x')
-    expect(renderText([
+    expect(await renderText([
       {
         type: 'goal_updated',
         objective: 'x',
@@ -712,7 +713,7 @@ describe('the notification thread: goal transitions', () => {
         goal_transition: 'replaced',
       },
     ])).toBe('Goal replaced: x')
-    expect(renderText([
+    expect(await renderText([
       {
         type: 'goal_updated',
         objective: 'x',
@@ -724,12 +725,12 @@ describe('the notification thread: goal transitions', () => {
 
   // An absent or unrecognized transition uses the status fallback.
   // A recognized status retains its existing label.
-  it('falls back to the status when the transition is absent or unknown', () => {
-    expect(renderText([
+  it('falls back to the status when the transition is absent or unknown', async () => {
+    expect(await renderText([
       { type: 'goal_updated', objective: 'x', goal_status: 'paused' },
     ]))
       .toBe('Goal paused: x')
-    expect(renderText([
+    expect(await renderText([
       {
         type: 'goal_updated',
         objective: 'x',
@@ -739,25 +740,25 @@ describe('the notification thread: goal transitions', () => {
     ])).toBe('Goal achieved: x')
   })
 
-  it('announces a cleared goal, with and without its objective', () => {
-    expect(renderText([
+  it('announces a cleared goal, with and without its objective', async () => {
+    expect(await renderText([
       { type: 'goal_cleared', objective: 'x' },
     ])).toBe('Goal cleared: x')
-    expect(renderText([
+    expect(await renderText([
       { type: 'goal_cleared' },
     ])).toBe('Goal cleared')
   })
 })
 
 describe('the notification thread: plan_updated', () => {
-  it('without update_agent_title shows "Plan updated: <title>"', () => {
+  it('without update_agent_title shows "Plan updated: <title>"', async () => {
     const messages = [
       { type: 'plan_updated', plan_title: 'My Plan', plan_file_path: '/p.md' },
     ]
-    expect(renderText(messages)).toBe('Plan updated: My Plan')
+    expect(await renderText(messages)).toBe('Plan updated: My Plan')
   })
 
-  it('with update_agent_title:true shows "Plan updated and renamed to <title>"', () => {
+  it('with update_agent_title:true shows "Plan updated and renamed to <title>"', async () => {
     const messages = [
       {
         type: 'plan_updated',
@@ -766,24 +767,24 @@ describe('the notification thread: plan_updated', () => {
         update_agent_title: true,
       },
     ]
-    expect(renderText(messages)).toBe('Plan updated and renamed to Auth Refactor')
+    expect(await renderText(messages)).toBe('Plan updated and renamed to Auth Refactor')
   })
 
-  it('with empty plan_title renders nothing', () => {
+  it('with empty plan_title renders nothing', async () => {
     const messages = [
       { type: 'plan_updated', plan_title: '', plan_file_path: '/p.md' },
     ]
-    expect(renderText(messages)).toBe('')
+    expect(await renderText(messages)).toBe('')
   })
 
-  it('with missing plan_title renders nothing', () => {
+  it('with missing plan_title renders nothing', async () => {
     const messages = [
       { type: 'plan_updated', plan_file_path: '/p.md' },
     ]
-    expect(renderText(messages)).toBe('')
+    expect(await renderText(messages)).toBe('')
   })
 
-  it('combined with settings_changed in a thread', () => {
+  it('combined with settings_changed in a thread', async () => {
     const messages = [
       {
         type: 'settings_changed',
@@ -793,12 +794,12 @@ describe('the notification thread: plan_updated', () => {
       },
       { type: 'plan_updated', plan_title: 'Debug Session', plan_file_path: '/p.md' },
     ]
-    const text = renderText(messages)
+    const text = await renderText(messages)
     expect(text).toContain('Model')
     expect(text).toContain('Plan updated: Debug Session')
   })
 
-  it('combined with interrupted in a thread, with auto-rename', () => {
+  it('combined with interrupted in a thread, with auto-rename', async () => {
     const messages = [
       {
         type: 'plan_updated',
@@ -808,7 +809,7 @@ describe('the notification thread: plan_updated', () => {
       },
       { type: 'interrupted' },
     ]
-    const text = renderText(messages)
+    const text = await renderText(messages)
     expect(text).toContain('Plan updated and renamed to Test Plan')
     expect(text).toContain('Interrupted')
   })
@@ -817,7 +818,7 @@ describe('the notification thread: plan_updated', () => {
 describe('settings change formatting: inline label overrides', () => {
   const settingsMsg = (changes: Record<string, unknown>) => ({ type: 'settings_changed', changes })
 
-  it('thread path honors inline label / old_label / new_label overrides', () => {
+  it('thread path honors inline label / old_label / new_label overrides', async () => {
     // The settings cache contains no foo entry.
     // The inline labels must therefore supply this fixture's display text.
     const messages = [
@@ -831,10 +832,10 @@ describe('settings change formatting: inline label overrides', () => {
         },
       }),
     ]
-    expect(renderText(messages)).toBe('My Setting (Old! → New!)')
+    expect(await renderText(messages)).toBe('My Setting (Old! → New!)')
   })
 
-  it('thread path uses the "(new)" fallback when there is no old value', () => {
+  it('thread path uses the "(new)" fallback when there is no old value', async () => {
     const messages = [
       settingsMsg({
         foo: {
@@ -845,10 +846,10 @@ describe('settings change formatting: inline label overrides', () => {
         },
       }),
     ]
-    expect(renderText(messages)).toBe('My Setting (X!)')
+    expect(await renderText(messages)).toBe('My Setting (X!)')
   })
 
-  it('treats an omitted old key as a first-time set (the real first-set wire shape)', () => {
+  it('treats an omitted old key as a first-time set (the real first-set wire shape)', async () => {
     // A first Set can omit old instead of sending an empty value.
     // pickString returns an empty string for that absent field.
     // The formatter then uses the new-only label.
@@ -857,10 +858,10 @@ describe('settings change formatting: inline label overrides', () => {
         foo: { new: 'x', label: 'My Setting', new_label: 'X!' },
       }),
     ]
-    expect(renderText(messages)).toBe('My Setting (X!)')
+    expect(await renderText(messages)).toBe('My Setting (X!)')
   })
 
-  it('keeps the arrow when the old value exists but its display resolves empty', () => {
+  it('keeps the arrow when the old value exists but its display resolves empty', async () => {
     // An empty old_label overrides the old display text.
     // The old value still exists, so retain the transition form.
     const messages = [
@@ -873,10 +874,10 @@ describe('settings change formatting: inline label overrides', () => {
         },
       }),
     ]
-    expect(renderText(messages)).toBe('foo ( → New!)')
+    expect(await renderText(messages)).toBe('foo ( → New!)')
   })
 
-  it('honors an explicit empty-string label override instead of falling back to the key', () => {
+  it('honors an explicit empty-string label override instead of falling back to the key', async () => {
     // Preserve an explicit empty inline label.
     // A truthy fallback would incorrectly display the key.
     const messages = [
@@ -890,28 +891,28 @@ describe('settings change formatting: inline label overrides', () => {
         },
       }),
     ]
-    expect(renderText(messages)).toBe('(O → N)')
+    expect(await renderText(messages)).toBe('(O → N)')
   })
 
-  it('thread path drops entries whose value is unchanged', () => {
+  it('thread path drops entries whose value is unchanged', async () => {
     const messages = [
       settingsMsg({
         foo: { old: 'same', new: 'same', label: 'My Setting' },
       }),
     ]
-    expect(renderText(messages)).toBe('')
+    expect(await renderText(messages)).toBe('')
   })
 
-  it('skips a null change entry without throwing', () => {
+  it('skips a null change entry without throwing', async () => {
     // An untyped changes map can contain null.
     // Skip that entry rather than dereferencing its fields.
     const messages = [
       settingsMsg({ foo: null }),
     ]
-    expect(renderText(messages)).toBe('')
+    expect(await renderText(messages)).toBe('')
   })
 
-  it('skips malformed entries but still renders the well-formed ones', () => {
+  it('skips malformed entries but still renders the well-formed ones', async () => {
     const messages = [
       settingsMsg({
         foo: null,
@@ -919,7 +920,7 @@ describe('settings change formatting: inline label overrides', () => {
         model: { old: 'A', new: 'B' },
       }),
     ]
-    expect(renderText(messages)).toBe('Model (A → B)')
+    expect(await renderText(messages)).toBe('Model (A → B)')
   })
 })
 
@@ -934,21 +935,21 @@ describe('renderNotificationBlocks: the blocks a thread lays out', () => {
     compact_metadata: { trigger: 'auto', pre_tokens: 100000 },
   }
 
-  it('joins consecutive text children into ONE comma-joined paragraph', () => {
-    const one = renderText([contextClearedMsg])
+  it('joins consecutive text children into ONE comma-joined paragraph', async () => {
+    const one = await renderText([contextClearedMsg])
     expect(one).not.toBe('')
-    expect(renderText([contextClearedMsg, contextClearedMsg, contextClearedMsg])).toBe([one, one, one].join(', '))
+    expect(await renderText([contextClearedMsg, contextClearedMsg, contextClearedMsg])).toBe([one, one, one].join(', '))
   })
 
-  it('draws a divider as its own block beside the text paragraph', () => {
-    const both = renderText([compactBoundaryMsg, contextClearedMsg])
-    expect(both).toContain(renderText([contextClearedMsg]))
+  it('draws a divider as its own block beside the text paragraph', async () => {
+    const both = await renderText([compactBoundaryMsg, contextClearedMsg])
+    expect(both).toContain(await renderText([contextClearedMsg]))
     expect(renderHasIcon([compactBoundaryMsg, contextClearedMsg])).toBe(true)
   })
 
-  it('draws nothing for children that produce no entries', () => {
+  it('draws nothing for children that produce no entries', async () => {
     expect(renderThreadElement([null, 'not-an-object'])).toBeNull()
-    expect(renderText([null, 'not-an-object'])).toBe('')
+    expect(await renderText([null, 'not-an-object'])).toBe('')
   })
 })
 
@@ -1014,7 +1015,7 @@ describe('native child completion', () => {
     expect(rendered.text).toContain('The native child could not finish.')
   })
 
-  it('keeps the compaction divider independent from native completion', () => {
+  it('keeps the compaction divider independent from native completion', async () => {
     const boundary = {
       type: 'system',
       subtype: 'compact_boundary',
@@ -1022,23 +1023,24 @@ describe('native child completion', () => {
     }
     expect(renderThreadGlyph([boundary], AgentProvider.CLAUDE_CODE)).not.toBeNull()
     expect(renderDivider(nativeResult(), AgentProvider.CLAUDE_CODE).text).toBe('Turn ended (12ms)')
-    expect(renderText([boundary], AgentProvider.CLAUDE_CODE)).toContain('Context compacted')
+    expect(await renderText([boundary], AgentProvider.CLAUDE_CODE)).toContain('Context compacted')
   })
 })
 
 describe('the notification thread: subagent_report', () => {
-  it.each(ALL_PROVIDERS)('renders the agent label and Markdown report for provider %s', (provider) => {
+  it.each(ALL_PROVIDERS)('renders the agent label and Markdown report for provider %s', async (provider) => {
     const { container } = render(() => renderThreadElement([
       { type: 'subagent_report', label: 'Parser reviewer', text: '**Finding**\n\n- Fixed' },
     ], provider))
+    await settleWorkerReplies()
 
     expect(container.textContent).toContain('Parser reviewer reported')
     expect(container.querySelector('strong')?.textContent).toBe('Finding')
     expect(container.querySelector('li')?.textContent).toBe('Fixed')
   })
 
-  it('shows Claude Code\'s flagged delivery status', () => {
-    expect(renderText([
+  it('shows Claude Code\'s flagged delivery status', async () => {
+    expect(await renderText([
       {
         type: 'subagent_report',
         label: 'Reviewer',
@@ -1049,8 +1051,8 @@ describe('the notification thread: subagent_report', () => {
       .toContain('Reviewer reported — security warning')
   })
 
-  it('states that Claude Code withheld a report from the parent', () => {
-    expect(renderText([
+  it('states that Claude Code withheld a report from the parent', async () => {
+    expect(await renderText([
       {
         type: 'subagent_report',
         label: 'Reviewer',
@@ -1123,8 +1125,9 @@ describe('renderNotificationBlocks auto-review', () => {
     return render(() => renderNotificationBlocks([block], context))
   }
 
-  it('draws the title and the rationale as markdown', () => {
+  it('draws the title and the rationale as markdown', async () => {
     const { container } = renderBlock(deniedBlock)
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Auto-review denied (high risk): curl x | sh')
     expect(container.querySelector('strong')?.textContent).toBe('not')
     expect(container.querySelector('[data-testid="auto-review"]')?.getAttribute('data-outcome')).toBe('denied')
@@ -1246,12 +1249,12 @@ describe('renderNotificationBlocks auto-review', () => {
     expect(review.nextElementSibling?.textContent).toBe('After')
   })
 
-  it('renders the two worker notices of the auto-review flow', () => {
-    expect(renderText([
+  it('renders the two worker notices of the auto-review flow', async () => {
+    expect(await renderText([
       { type: NOTIFICATION_TYPE.AutoReviewApproved, review_id: 'r1' },
     ], AgentProvider.CODEX))
       .toBe('You approved an action that auto-review denied.')
-    expect(renderText([
+    expect(await renderText([
       { type: NOTIFICATION_TYPE.PendingRequestsApproved, count: 1 },
     ], AgentProvider.CODEX))
       .toBe('Bypass permissions approved 1 pending request.')

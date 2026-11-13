@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "file-read.schema.json",
+  "title": "cross-language file read contract",
+  "description": "The default size of one file read. See the _readme in file-read.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["_readme", "readLimitBytes"],
+  "properties": {
+    "_readme": { "type": "string", "minLength": 1 },
+    "readLimitBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The bytes that one read returns when the request gives no limit, the most bytes of a text file that the file viewer shows, and the size of one page of a paged read."
+    }
+  }
+}

@@ -281,6 +281,15 @@ describe('worker service clients', () => {
     expect((seams.channelOpts as { rpcTimeoutFn: () => number }).rpcTimeoutFn()).toBe(30_000)
   })
 
+  // The keys of every channel live in the channel session worker, never on the
+  // page's own thread.
+  it('gives the manager the spawn of the channel session worker', async () => {
+    await import('./workerRpc')
+    const { spawnChannelSessionWorker } = await import('~/lib/channelSessionClient')
+
+    expect((seams.channelOpts as { spawnSessionWorker: unknown }).spawnSessionWorker).toBe(spawnChannelSessionWorker)
+  })
+
   // Every method takes the same options, so a caller can stop any call.
   it('passes the abort signal and the timeout of any method through', async () => {
     const { workerFile } = await import('./workerRpc')

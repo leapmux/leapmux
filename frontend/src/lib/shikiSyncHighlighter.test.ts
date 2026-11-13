@@ -13,11 +13,11 @@ const ESC = '\x1B'
  * the type system ties that import to `SYNTAX_THEMES.default`, and the two DID
  * drift apart once: pointing Default at another pair while the static import
  * stayed behind leaves every synchronous call site -- `renderAnsi` and
- * `ansiSyncTokenize` -- naming a theme Shiki has not loaded, which throws on the
+ * `ansiSyncTokenize` -- specifying a theme Shiki has not loaded, which throws on the
  * first highlight of the session.
  */
 describe('shikiHighlighter', () => {
-  it('registers the pair the theme catalogue names for Default', () => {
+  it('registers the pair that the theme catalogue gives Default', () => {
     const pair = syntaxPairFor(DEFAULT_THEME_ID)
     const loaded = shikiHighlighter.getLoadedThemes()
     expect(loaded).toContain(pair.light)
@@ -25,7 +25,7 @@ describe('shikiHighlighter', () => {
   })
 
   it('colours ANSI output under that pair without registering anything', () => {
-    // The assertion that would actually have caught the drift: naming an
+    // The assertion that would actually have caught the drift: specifying an
     // unregistered theme throws rather than degrading.
     const pair = syntaxPairFor(DEFAULT_THEME_ID)
     const { tokens } = shikiHighlighter.codeToTokens(`${ESC}[31mred${ESC}[0m plain`, {

@@ -165,7 +165,7 @@ test.describe('Worktree Git Modes', () => {
     await expectRepoBranch(repoDir, 'feature-switch')
   })
 
-  test('switch-to-branch mode via UI: a long branch list mounts its first rows and the filter finds the rest', async ({
+  test('mounts the first rows of a long branch list in switch-to-branch mode, and the filter finds the rest', async ({
     page,
     leapmuxServer,
   }) => {
@@ -188,6 +188,11 @@ test.describe('Worktree Git Modes', () => {
     // 251 local branches: the menu mounts 200 rows and states the other 51.
     await expect(menu.getByRole('menuitemradio')).toHaveCount(200)
     await expect(menu.getByTestId('loading-menu-more')).toHaveText('51 more options are not shown. Type to filter the list.')
+
+    // A query that still matches 250 branches asks for a narrower one.
+    await menu.getByTestId('loading-menu-filter').fill('many')
+    await expect(menu.getByRole('menuitemradio')).toHaveCount(200)
+    await expect(menu.getByTestId('loading-menu-more')).toHaveText('50 more options are not shown. Type more to narrow the list.')
 
     await menu.getByTestId('loading-menu-filter').fill('many-249')
     await expect(menu.getByRole('menuitemradio')).toHaveCount(1)

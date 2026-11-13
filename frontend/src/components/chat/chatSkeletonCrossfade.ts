@@ -93,21 +93,21 @@ export function createLingerSet(
  * The mirror image of createLingerSet -- that delays a DROP; this delays an APPEARANCE.
  * It gates the loading skeleton: a row hidden pending measurement enters `activeIds`
  * immediately (so it can't overflow its slot), but its skeleton is painted only once the
- * wait exceeds `delayMs`. A fast premeasure / re-measure (expand-collapse, diff-view
- * switch, tail append) reveals with a plain fade-in and no distracting shimmer, while a
- * slow one still gets a skeleton as a loading affordance.
+ * wait exceeds `delayMs`. A fast premeasure (a tail append) reveals with a plain fade-in
+ * and no distracting shimmer, while a slow one still gets a skeleton as a loading
+ * affordance.
  *
- * `showImmediately` (optional, reactive) skips the delay while true: every currently-active
- * id appears at once. It exists for the fling case -- a fast scroll into unmeasured history
- * must never flash blank gaps, so those rows skeletonise immediately -- and, by promoting
- * them into the shown set rather than a separate bypass, they STAY shown when the flag flips
- * back off mid-delay (a fling settling before a row's timer fires), instead of dropping out
- * and flickering skeleton -> blank -> skeleton.
- *
- * `showAtOnce` (optional, reactive) skips the delay for ONE id: an active id for which it
- * returns true appears at once. It exists for a row that already showed a skeleton of its
- * own -- a fling skeleton upgrading into a row whose content is still rendering -- so the
- * skeleton never gives way to a blank gap for the length of the delay.
+ * `showImmediately` (optional, reactive) skips the delay for each active id for which it
+ * returns true: that id appears at once. The caller composes every reason to skip the delay
+ * into this one predicate. ChatView's reasons:
+ *  - A fling: a fast scroll into unmeasured history must never flash blank gaps, so those
+ *    rows skeletonise immediately.
+ *  - A row that already showed a skeleton of its own: a fling skeleton upgrading into a row
+ *    whose content is still rendering must not give way to a blank gap for the length of
+ *    the delay.
+ * Because a skipped id is promoted into the shown set rather than a separate bypass, it STAYS
+ * shown when the predicate turns false mid-delay (a fling settling before a row's timer
+ * fires), instead of dropping out and flickering skeleton -> blank -> skeleton.
  *
  * Call within a reactive owner: it creates a computed, per-id timers, and an onCleanup
  * that clears them.
@@ -115,8 +115,7 @@ export function createLingerSet(
 export function createDelayedSet(
   activeIds: Accessor<Iterable<string>>,
   delayMs: number,
-  showImmediately?: Accessor<boolean>,
-  showAtOnce?: (id: string) => boolean,
+  showImmediately?: (id: string) => boolean,
 ): { delayedIds: Accessor<ReadonlySet<string>> } {
   const [delayedIds, setDelayedIds] = createSignal<ReadonlySet<string>>(new Set())
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -134,23 +133,27 @@ export function createDelayedSet(
   }
 
   let previous: ReadonlySet<string> = new Set()
-  // A createComputed (not createEffect): when `showImmediately` flips true, its promotions
+  // A createComputed (not createEffect): when `showImmediately` turns true, its promotions
   // must land in the SAME pass the consumer memo (ChatView's skeletonSlice) reads
   // `delayedIds`, so a fling shows every pending row's skeleton with no one-flush lag. An
   // effect-phase write would show them a flush late AND, worse, let a row shown during the
   // fling drop back out when the fling settles before its delay fires.
   createComputed(() => {
     const current = new Set(activeIds())
-    const immediate = showImmediately?.() ?? false
     const shown = untrack(delayedIds)
-    // Active ids: an already-shown one is left alone; while `immediate` a not-yet-shown one
-    // appears at once (cancelling any pending delay so it can't later re-fire); otherwise a
-    // newly-entered one (not in `previous`, no pending timer) starts its delay. An id already
-    // awaiting its timer is left alone so an unrelated recompute doesn't restart it.
+    // For each active id:
+    //  - An id already shown is left alone.
+    //  - An id not shown yet for which `showImmediately` holds appears at once. That
+    //    cancels any pending delay, so the delay cannot fire later.
+    //  - Any other id that newly entered (not in `previous`, no pending timer) starts its
+    //    delay. An id already awaiting its timer is left alone, so an unrelated recompute
+    //    doesn't restart it.
+    // The predicate runs for every id not shown yet, so the computed tracks what the
+    // predicate reads while any id waits.
     for (const id of current) {
       if (shown.has(id))
         continue
-      if (immediate || showAtOnce?.(id) === true) {
+      if (showImmediately?.(id) === true) {
         showNow(id)
         continue
       }
@@ -252,7 +255,7 @@ export interface FlingSkeletonRegistry {
    * The ids of rows whose fling upgrade has not finished (phase 'skeleton' or
    * 'crossfade'). A row that upgrades into content that is still rendering hides, and
    * its fading skeleton copy hides with it; the loading-skeleton overlay must then take
-   * over at once (see createDelayedSet's `showAtOnce`).
+   * over at once (see createDelayedSet's `showImmediately`).
    */
   upgradingIds: Accessor<ReadonlySet<string>>
 }

@@ -2,6 +2,7 @@ import { render, waitFor } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { CURSOR_METHOD, CURSOR_SUPPLEMENT } from '~/generated/contracts/cursor-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { testMessageSources } from '~/test-support/messageRenderSources'
@@ -12,7 +13,7 @@ import { renderMessageContent } from '../../messageContentRenderer'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import './plugin'
-import '../testMocks'
+import '~/components/chat/providers'
 
 function renderTool(fields: Record<string, unknown>, supplemental?: Record<string, unknown>) {
   const tool = {
@@ -42,7 +43,7 @@ function renderTool(fields: Record<string, unknown>, supplemental?: Record<strin
 }
 
 describe('cursor native tool rendering', () => {
-  it('keeps a recovered final report out of the request preview', () => {
+  it('keeps a recovered final report out of the request preview', async () => {
     const { container } = renderTool({
       sessionUpdate: 'tool_call',
       status: 'pending',
@@ -75,6 +76,7 @@ describe('cursor native tool rendering', () => {
         },
       },
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Read the file')
     expect(container.textContent).not.toContain('Native final report')
   })
@@ -132,8 +134,9 @@ describe('cursor native tool rendering', () => {
 
     // While the approval is open there is no completing row, so the proposing row is where
     // the reader has to be able to read the plan.
-    it('renders the recovered plan while the call is still open', () => {
+    it('renders the recovered plan while the call is still open', async () => {
       const { container } = renderRow(call, 'request')
+      await settleWorkerReplies()
       expect(container.textContent).toContain('PLANMARKER-7')
       expect(container.textContent).toContain('Seed an Unreleased section.')
     })
@@ -144,8 +147,9 @@ describe('cursor native tool rendering', () => {
 
     // Once the call completes, the completing row draws the plan and the proposing row
     // must not draw it as well.
-    it('renders the plan on the row that completes the call', () => {
+    it('renders the plan on the row that completes the call', async () => {
       expect(renderRow(done, 'result').container.textContent).toContain('PLANMARKER-7')
+      await settleWorkerReplies()
     })
 
     it('does not repeat the plan on the proposing row once a result exists', () => {
@@ -162,7 +166,7 @@ describe('cursor native tool rendering', () => {
     })
   })
 
-  it('uses the shared agent prompt for a task launch', () => {
+  it('uses the shared agent prompt for a task launch', async () => {
     const { container } = renderTool({
       sessionUpdate: 'tool_call',
       status: 'pending',
@@ -175,12 +179,13 @@ describe('cursor native tool rendering', () => {
         subagentType: { explore: {} },
       },
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Inspect sample (Explore)')
     expect(container.querySelector('li strong')?.textContent).toBe('sample.py')
     expect(container.textContent).not.toContain('"_toolName"')
   })
 
-  it('renders the native subagent report that ACP omits', () => {
+  it('renders the native subagent report that ACP omits', async () => {
     const { container } = renderTool({
       kind: 'other',
       rawInput: { _toolName: 'task', description: 'Inspect sample' },
@@ -214,6 +219,7 @@ describe('cursor native tool rendering', () => {
         },
       },
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Agent "Inspect sample" completed')
     expect(container.querySelector('li strong')?.textContent).toBe('sample.py')
     expect(container.textContent).toMatch(/Agent ID:\s*child-1/)
@@ -221,12 +227,13 @@ describe('cursor native tool rendering', () => {
     expect(container.textContent).not.toContain('Native model wrapper')
   })
 
-  it('shows a missing report explicitly when the native store is absent', () => {
+  it('shows a missing report explicitly when the native store is absent', async () => {
     const { container } = renderTool({
       kind: 'other',
       rawInput: { _toolName: 'task', description: 'Inspect sample' },
       rawOutput: { durationMs: 1000, isBackground: false },
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Agent "Inspect sample" completed')
     expect(container.textContent).toContain('The provider did not supply a report.')
   })
@@ -242,13 +249,14 @@ describe('cursor native tool rendering', () => {
     expect(container.textContent).not.toContain('did not supply a report')
   })
 
-  it('shows one failure status when a subagent launch fails', () => {
+  it('shows one failure status when a subagent launch fails', async () => {
     const { container } = renderTool({
       status: 'failed',
       kind: 'other',
       rawInput: { _toolName: 'task', description: 'Inspect sample' },
       rawOutput: { error: 'Source unavailable' },
     })
+    await settleWorkerReplies()
     expect(container.querySelectorAll('.lucide-circle-alert')).toHaveLength(1)
     expect(container.textContent).toContain('Agent "Inspect sample" failed')
     expect(container.textContent).toContain('Source unavailable')
@@ -257,7 +265,7 @@ describe('cursor native tool rendering', () => {
   it.each([
     { scenario: 'absent', experimental_content: undefined },
     { scenario: 'empty', experimental_content: [] },
-  ])('uses native image content when the usual content array is $scenario', ({ experimental_content }) => {
+  ])('uses native image content when the usual content array is $scenario', async ({ experimental_content }) => {
     const data = pngBase64(12, 8)
     const fields = {
       kind: 'other',
@@ -298,6 +306,7 @@ describe('cursor native tool rendering', () => {
       },
     }
     const { container } = renderTool(fields, { rawOutput })
+    await settleWorkerReplies()
     expect(container.querySelector('img')?.getAttribute('src')).toContain(data)
     expect(container.querySelector('img')?.getAttribute('alt')).toBe('A red square')
     expect(container.textContent).toContain('A red square')
@@ -435,7 +444,7 @@ describe('cursor native tool rendering', () => {
     expect(container.textContent).toContain('7')
   })
 
-  it('uses the complete saved file change instead of the protocol fragment', () => {
+  it('uses the complete saved file change instead of the protocol fragment', async () => {
     const { container } = renderTool({
       kind: 'edit',
       rawInput: { path: '/project/sample.py', old_string: '41', new_string: '42' },
@@ -468,6 +477,7 @@ describe('cursor native tool rendering', () => {
         },
       },
     })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('answer = 41')
     expect(container.textContent).toContain('answer = 42')
   })

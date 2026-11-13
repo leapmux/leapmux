@@ -1,23 +1,39 @@
-import type { ComputedDiff, DiffInput } from './diffCompute'
-import type { StructuredPatchHunk } from './diffTypes'
-import type { DiffRequest, DiffResponse } from './diffWorker'
-import { createSignal } from 'solid-js'
+import type { ComputedDiff } from './diffCompute'
+import type { DiffInput } from './diffTypes'
+import type { DiffRequest, DiffResponse, PostedDiff } from './diffWorker'
+import type { WorkerDemand } from '~/lib/workerDemand'
 import { lruGet, lruSet } from '~/lib/mapLru'
+import { memoizeByObject } from '~/lib/memoizeByObject'
+import { fnv1a32Hex } from '~/lib/stringDigest'
 import { createWorkerClient } from '~/lib/workerClient'
+import { createCoalescedVersion, createWorkerDemand } from '~/lib/workerDemand'
 import { createWorkerPriorityGate } from '~/lib/workerPriorityGate'
-import { computeDiff, fallbackDiff } from './diffCompute'
+import { sameHunks } from './diffBuilder'
+import { diffWithoutSearch, drawnLineLimitOf, fallbackDiff, maxLineEditsOf } from './diffCompute'
 
 // ---------------------------------------------------------------------------
 // Diff worker client
 //
-// `requestComputedDiff` answers from a cache keyed by content, or starts the
-// worker and answers undefined until it replies. A consumer reads it inside a
-// memo: the version signal re-runs the memo when any diff arrives. A chat row
-// stays behind its loading skeleton while its diff is pending, as it does for a
-// pending Markdown body.
+// `requestComputedDiff` answers the diff of an input, or starts the worker and
+// answers undefined until it replies. A consumer reads it inside a memo. While
+// the diff is pending, the memo depends on a version signal, which re-runs it
+// when a diff arrives. A diff never changes once it is ready, so a ready memo
+// depends on nothing here, and a reply for another input does not re-run it. A
+// chat row over two texts stays behind its loading skeleton while its diff is
+// pending, as it does for a pending Markdown body. A chat row over a patch draws
+// the patch's hunks meanwhile, and only its word highlights wait (see
+// FileEditDiffBody). A diff that needs no search, such as that of a created file,
+// never waits for the worker (see diffWithoutSearch).
+//
+// Two caches answer a ready diff:
+// - Each input object keeps its diff for as long as the object lives. A consumer
+//   that holds the object therefore never loses its diff to the eviction below,
+//   however many diffs are mounted.
+// - A cache keyed by content serves an equal input in another object, such as
+//   the source of a row revision whose content did not change.
 // ---------------------------------------------------------------------------
 
-const client = createWorkerClient<DiffRequest, ComputedDiff | null>({
+const client = createWorkerClient<DiffRequest, PostedDiff | null>({
   spawn: () => new Worker(new URL('./diffWorker.ts', import.meta.url), { type: 'module' }),
   extract: (data: DiffResponse) => ({ id: data.id, value: data.diff }),
   failureValue: null,
@@ -26,33 +42,29 @@ const client = createWorkerClient<DiffRequest, ComputedDiff | null>({
 // Viewport rows' diffs go ahead of overscan rows' (see createWorkerPriorityGate).
 const gate = createWorkerPriorityGate()
 
-/** Diffs kept: well above a viewport of edit rows, so a scroll stops recomputing. */
-const CACHE_MAX_SIZE = 256
-const diffCache = new Map<string, ComputedDiff>()
+/** The diff of each input object that received one, for as long as the object lives. */
+const diffByInput = new WeakMap<DiffInput, ComputedDiff>()
 
-/** One diff that the worker computes now, and the demand on it. */
-interface InFlightDiff {
-  /** True once a consumer with no priority thunk asked for it. Never resets. */
-  urgent: boolean
-  /** The priority thunk of the latest consumer: its row's offscreen test. */
-  isLowPriority: (() => boolean) | undefined
+/**
+ * The most diffs that the content cache keeps: well above a viewport of edit rows,
+ * so a row that mounts again with new source objects does not compute again.
+ */
+export const DIFF_CACHE_MAX_ENTRIES = 256
+
+/** One diff of the content cache, with the input that it answers. */
+interface CachedDiff {
+  /** Kept to check a hit: two contents can share a key (see diffInputKey). */
+  input: DiffInput
+  diff: ComputedDiff
 }
 
-const inFlight = new Map<string, InFlightDiff>()
+const diffCache = new Map<string, CachedDiff>()
 
-const [diffVersion, setDiffVersion] = createSignal(0)
-let bumpScheduled = false
+/** The diffs that the worker computes now, keyed like the cache, with the demand on each. */
+const inFlight = new Map<string, WorkerDemand>()
 
-/** Re-run every waiting consumer once for a burst of replies. */
-function scheduleVersionBump(): void {
-  if (bumpScheduled)
-    return
-  bumpScheduled = true
-  queueMicrotask(() => {
-    bumpScheduled = false
-    setDiffVersion(v => v + 1)
-  })
-}
+/** Bumped when replies land, once for a burst, to re-run every waiting consumer. */
+const diffVersion = createCoalescedVersion()
 
 /**
  * The time a request may spend in the worker: 10 s, plus 40 ms per KiB of input.
@@ -76,83 +88,123 @@ export function diffTimeBudgetMs(input: DiffInput): number {
   return DIFF_BUDGET_BASE_MS + Math.ceil(inputSize(input) / 1024) * DIFF_BUDGET_MS_PER_KIB
 }
 
-// The key of a patch is its JSON. A patch's hunks array is stable for a row
-// revision, so the JSON is built once per array.
-const patchKeys = new WeakMap<StructuredPatchHunk[], string>()
-
-/** The cache key of `input`: its content, so a re-render with equal content hits. */
-export function diffInputKey(input: DiffInput): string {
-  if (input.kind === 'texts')
-    return `t\u0000${input.oldText.length}\u0000${input.oldText}\u0000${input.newText}`
-  let key = patchKeys.get(input.hunks)
-  if (key === undefined) {
-    key = `h\u0000${JSON.stringify(input.hunks)}`
-    patchKeys.set(input.hunks, key)
+function contentKey(input: DiffInput): string {
+  const limit = drawnLineLimitOf(input)
+  if (input.kind === 'texts') {
+    const { oldText, newText } = input
+    return `t:${limit}:${maxLineEditsOf(input)}:${oldText.length}:${fnv1a32Hex(oldText)}:${newText.length}:${fnv1a32Hex(newText)}`
   }
-  return key
+  const json = JSON.stringify(input.hunks)
+  return `h:${limit}:${json.length}:${fnv1a32Hex(json)}`
 }
 
-function dispatch(key: string, input: DiffInput, demand: InFlightDiff): void {
-  const isLowPriority = () => !demand.urgent && (demand.isLowPriority?.() ?? true)
+/**
+ * The cache key of `input`: its limits, and the length and the digest of its
+ * content, so that an equal input in another object finds the same entry. Each
+ * limit changes the diff (see DiffInput): the line limit decides which lines have
+ * word diffs, and the line edit limit decides whether two texts draw their
+ * minimal diff. Two inputs that differ only in a limit therefore have different
+ * diffs, and an absent limit keys as its default. The key holds no copy of the
+ * content. Two contents can share a digest, so a cache entry keeps its input, and
+ * a read compares the two (see sameDiffInput).
+ *
+ * A key reads the whole input, so each input object builds its key once.
+ */
+export const diffInputKey = memoizeByObject(contentKey)
+
+/** Whether two inputs hold the same content and the same limits, so that they have one diff. */
+function sameDiffInput(a: DiffInput, b: DiffInput): boolean {
+  if (a === b)
+    return true
+  if (drawnLineLimitOf(a) !== drawnLineLimitOf(b))
+    return false
+  if (a.kind === 'texts') {
+    return b.kind === 'texts'
+      && maxLineEditsOf(a) === maxLineEditsOf(b)
+      && a.oldText === b.oldText
+      && a.newText === b.newText
+  }
+  return b.kind === 'hunks' && sameHunks(a.hunks, b.hunks)
+}
+
+/**
+ * The diff that a worker reply states for `input`. A worker that could not
+ * start, failed or ran past its budget leaves the view a diff that needs no
+ * search, and the request is not retried. A `hunks` input keeps its own hunks
+ * (see PostedDiff).
+ */
+function receivedDiff(input: DiffInput, posted: PostedDiff | null): ComputedDiff {
+  if (posted === null)
+    return fallbackDiff(input)
+  if (input.kind === 'hunks')
+    return { ...posted, hunks: input.hunks }
+  // The worker posts the hunks of every `texts` input; a reply without them is broken.
+  return posted.hunks === null
+    ? fallbackDiff(input)
+    : { ...posted, hunks: posted.hunks }
+}
+
+function dispatch(key: string, input: DiffInput, demand: WorkerDemand): void {
   void gate
     .enqueue(() => client.request(id => ({ type: 'diff', id, input }), {
       timeBudgetMs: diffTimeBudgetMs(input),
-    }), isLowPriority)
-    .then((diff) => {
-      // A worker that failed or ran past its budget leaves the view a diff that
-      // needs no search; the request is not retried.
-      lruSet(diffCache, key, diff ?? fallbackDiff(input), CACHE_MAX_SIZE)
+    }), demand.isLow)
+    .then((posted) => {
+      const diff = receivedDiff(input, posted)
+      diffByInput.set(input, diff)
+      lruSet(diffCache, key, { input, diff }, DIFF_CACHE_MAX_ENTRIES)
       inFlight.delete(key)
-      scheduleVersionBump()
+      diffVersion.bump()
     })
 }
 
 /**
  * The diff a view draws for `input`, or undefined while the worker computes it.
+ * A diff that needs no search (see diffWithoutSearch) is ready at once.
  *
- * Reactive: read it in a memo, which re-runs when a diff arrives. Where no Worker
- * exists (the jsdom unit tests) it computes the diff on the calling thread.
+ * Reactive: read it in a memo. While the diff is pending, the memo re-runs when
+ * a diff arrives; once the diff is ready, the memo depends on nothing here. Pass
+ * the same input object on each run, so that the object keeps its diff.
  *
  * `isLowPriority` lets the gate hold this diff behind others while it is true. A
  * consumer that passes none makes the diff urgent.
  */
 export function requestComputedDiff(input: DiffInput, isLowPriority?: () => boolean): ComputedDiff | undefined {
-  diffVersion()
-  const key = diffInputKey(input)
-  const ready = readyDiff(key, input)
+  const ready = readyDiff(input)
   if (ready !== undefined)
     return ready
+  const key = diffInputKey(input)
   let demand = inFlight.get(key)
   if (demand === undefined) {
-    demand = { urgent: false, isLowPriority: undefined }
+    // A diff that needs no search, such as a created or a deleted file, costs
+    // less than a worker round trip, so the calling thread answers it. The check
+    // compares the two texts, so it runs only where the client would dispatch: a
+    // consumer that waits for the worker does not compare them again at each re-run.
+    const known = diffWithoutSearch(input)
+    if (known !== undefined) {
+      diffByInput.set(input, known)
+      return known
+    }
+    demand = createWorkerDemand()
     inFlight.set(key, demand)
     dispatch(key, input, demand)
   }
-  if (isLowPriority === undefined)
-    demand.urgent = true
-  else
-    demand.isLowPriority = isLowPriority
+  diffVersion.read()
+  demand.note(isLowPriority)
   return undefined
 }
 
 /**
- * The diff of `input` when it is ready without the worker: the cache holds it, or
- * no Worker exists and the calling thread computes it.
+ * The diff of `input` when it is ready without the worker: the input object or
+ * the content cache holds it.
  */
-function readyDiff(key: string, input: DiffInput): ComputedDiff | undefined {
-  const cached = lruGet(diffCache, key)
-  if (cached !== undefined || typeof Worker !== 'undefined')
-    return cached
-  const diff = computeDiff(input)
-  lruSet(diffCache, key, diff, CACHE_MAX_SIZE)
-  return diff
-}
-
-/**
- * The diff of `input` when it is ready, as requestComputedDiff answers it, or
- * undefined. Unlike requestComputedDiff, it starts no worker request and subscribes
- * to nothing.
- */
-export function computedDiffIfReady(input: DiffInput): ComputedDiff | undefined {
-  return readyDiff(diffInputKey(input), input)
+function readyDiff(input: DiffInput): ComputedDiff | undefined {
+  const held = diffByInput.get(input)
+  if (held !== undefined)
+    return held
+  const cached = lruGet(diffCache, diffInputKey(input))
+  if (cached === undefined || !sameDiffInput(cached.input, input))
+    return undefined
+  diffByInput.set(input, cached.diff)
+  return cached.diff
 }

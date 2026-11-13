@@ -5,6 +5,7 @@ import { createControlAnswerState } from '~/components/chat/controls/types'
 import { KIMI_DISPLAY, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ControlRequestActions, ControlRequestContent } from '~/test-support/controlRequestBanner'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { kimiApprovalRequest, kimiQuestionRequest } from '~/test-support/kimiFixtures'
 import '../index'
 
@@ -64,11 +65,12 @@ describe('kimi control channel', () => {
     expect(sentBody(onRespond)).toMatchObject({ behavior: 'deny', choice: 'Reject and Exit' })
   })
 
-  it('draws the plan a plan review carries', () => {
+  it('draws the plan a plan review carries', async () => {
     const payload = kimiApprovalRequest(KIMI_TOOL.ExitPlanMode, { kind: KIMI_DISPLAY.PlanReview, plan: '# Refactor the parser' })
     render(() => (
       <ControlRequestContent request={request(payload)} answerState={createControlAnswerState()} agentProvider={AgentProvider.KIMI_CODE} />
     ))
+    await settleWorkerReplies()
     expect(screen.getByTestId('control-banner')).toHaveTextContent('Refactor the parser')
   })
 
@@ -88,11 +90,12 @@ describe('kimi control channel', () => {
     expect(sentBody(onRespond)).toMatchObject({ behavior: 'deny', choice: 'Revise' })
   })
 
-  it('draws the plan a subagent plan review carries', () => {
+  it('draws the plan a subagent plan review carries', async () => {
     const payload = kimiApprovalRequest(KIMI_TOOL.ExitPlanMode, { kind: KIMI_DISPLAY.PlanReview, plan: '# Split the parser' }, { agent_id: 'agent-0', agentId: 'agent-0' })
     render(() => (
       <ControlRequestContent request={request(payload)} answerState={createControlAnswerState()} agentProvider={AgentProvider.KIMI_CODE} />
     ))
+    await settleWorkerReplies()
     expect(screen.getByTestId('control-banner')).toHaveTextContent('Permission Required')
     expect(screen.getByTestId('control-banner')).toHaveTextContent('Split the parser')
   })

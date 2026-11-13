@@ -7,7 +7,8 @@ import { pluralize } from '~/lib/plural'
 import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
 import { extractDomain } from '~/lib/url'
 import { clippedText } from '~/styles/shared.css'
-import { getToolResultExpanded, MarkdownPrefetch, MarkdownText } from '../messageRenderers'
+import { MarkdownPrefetch, MarkdownText } from '../MarkdownText'
+import { getToolResultExpanded } from '../messageRenderers'
 import {
   toolInputSummary,
   toolMessage,
@@ -86,16 +87,12 @@ export function WebSearchResultsBody(props: {
       </Show>
       <Show
         when={expanded() && props.source.summary}
-        fallback={props.source.summary
-          ? <MarkdownPrefetch text={props.source.summary} />
-          : null}
+        fallback={<MarkdownPrefetch text={props.source.summary} context={props.context} />}
       >
         <MarkdownText
           text={props.source.summary}
           class={toolResultContent}
-          {...(props.context !== undefined
-            ? { context: props.context }
-            : {})}
+          context={props.context}
         />
       </Show>
     </div>

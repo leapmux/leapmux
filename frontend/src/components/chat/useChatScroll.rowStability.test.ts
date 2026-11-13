@@ -281,16 +281,16 @@ describe('useChatScroll toggle row stability', () => {
           // A scrollbar-thumb drag fires only `scroll` events -- no wheel/key/touch/pointer to
           // release the toggle hold. If the hold lingered past the resize, a later geometry
           // change would yank the view back to the toggled row. So the hold releases on RESIZE
-          // COMPLETION: once the toggled row's real height commits again (hasMeasuredHeight
-          // true after the estimate phase), normal midpoint anchoring resumes.
+          // COMPLETION: once the toggled row's real height commits again under its new key
+          // (hasConfirmedHeight true), normal midpoint anchoring resumes.
           const div = makeFakeScrollDiv()
           const base = makeRowVirtualizer(Array.from<number>({ length: 20 }).fill(100))
-          // All rows start measured; a toggle takes the row unmeasured (estimate phase) then
-          // measured again. hasMeasuredHeight drives the completion-based release.
+          // All rows start confirmed; a toggle takes the row unconfirmed until its new
+          // height commits. hasConfirmedHeight drives the completion-based release.
           const measured = new Set(Array.from({ length: 20 }, (_, i) => `g0_${i}`))
           const virt = {
             ...base.virt,
-            hasMeasuredHeight: (id: string) => measured.has(id),
+            hasConfirmedHeight: (id: string) => measured.has(id),
           }
           const { setRowHeight, total } = base
           div.setClientHeight(500)
@@ -311,9 +311,9 @@ describe('useChatScroll toggle row stability', () => {
           hook.handlers.onScroll()
           hook.anchorRowForResize('g0_8') // pin row 8's top (ratio 0), arm the hold
 
-          // Estimate phase: the toggle takes row 8 unmeasured. The geometry change fires the
-          // re-pin, but the hold must STAY armed (hasMeasuredHeight false) -- releasing here
-          // would drop the pin mid-resize.
+          // Before the new height commits: the toggle takes row 8 unconfirmed. The geometry
+          // change fires the re-pin, but the hold must STAY armed (hasConfirmedHeight false) --
+          // releasing here would drop the pin mid-resize.
           measured.delete('g0_8')
           setRowHeight(8, 100) // geomVersion bump; still the estimate slot (height unchanged)
           await Promise.resolve()
@@ -339,6 +339,70 @@ describe('useChatScroll toggle row stability', () => {
           await Promise.resolve()
           await Promise.resolve()
           expect(div.getScrollTop()).toBe(1300)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
+        }
+      })
+    }))
+
+  it('keeps the hold while the toggled row keeps its earlier height, and holds the row through a scroll in that time', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          // A mounted row keeps the height that it measured under its earlier key until its
+          // own resize commits the new one: hasMeasuredHeight stays true the whole time, and
+          // only hasConfirmedHeight tells that the resize has not landed. A diff view that
+          // mounts its new layout in slices keeps the row in that state for many frames.
+          const div = makeFakeScrollDiv()
+          const base = makeRowVirtualizer(Array.from<number>({ length: 20 }).fill(100))
+          const confirmed = new Set(Array.from({ length: 20 }, (_, i) => `g0_${i}`))
+          const virt = {
+            ...base.virt,
+            hasMeasuredHeight: () => true,
+            hasConfirmedHeight: (id: string) => confirmed.has(id),
+          }
+          const { setRowHeight, total } = base
+          div.setClientHeight(500)
+          div.setScrollTop(800)
+          createRenderEffect(() => div.setScrollHeight(total()))
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            hasNewerMessages: () => false,
+            hasOlderMessages: () => false,
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          div.setScrollTop(800)
+          hook.handlers.onScroll()
+          hook.anchorRowForResize('g0_8') // pin row 8's top (ratio 0), arm the hold
+
+          // The toggle re-keys row 8, which keeps its height. The geometry change fires the
+          // re-pin, and the hold must stay armed.
+          confirmed.delete('g0_8')
+          setRowHeight(8, 100)
+          await Promise.resolve()
+          await Promise.resolve()
+          // A scroll event while the new layout mounts. A released hold would re-capture the
+          // viewport midpoint (row 10) here.
+          hook.handlers.onScroll()
+
+          // The swap: row 8's new height commits under its new key. The re-pin keeps row 8's
+          // top at offset 800; a midpoint anchor would have scrolled to 1200.
+          confirmed.add('g0_8')
+          setRowHeight(8, 500)
+          await Promise.resolve()
+          await Promise.resolve()
+          expect(div.getScrollTop()).toBe(800)
           dispose()
           resolve()
         }

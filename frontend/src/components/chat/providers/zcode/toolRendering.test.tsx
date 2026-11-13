@@ -5,6 +5,7 @@ import { TRUNCATION_NOTICE } from '~/components/chat/truncationNotice'
 import { MESSAGE_METADATA_FIELD, TOOL_OUTCOME } from '~/generated/contracts/worker-vocab'
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { providerToolMeta } from '~/test-support/toolCallFixture'
 import { diffAdded } from '../../diff/diffStyles.css'
@@ -15,7 +16,7 @@ import { toolInputPath, toolResultCollapsed } from '../../toolStyles.css'
 import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
 import './plugin'
-import '../testMocks'
+import '~/components/chat/providers'
 
 const provider = () => providerFor(AgentProvider.ZCODE)!
 function event(kind: string, fields: Record<string, unknown>) {
@@ -30,14 +31,15 @@ function renderRequest(toolName: string, args: Record<string, unknown>) {
   return render(() => renderMessageContent(request, { workingDir: '/project', premeasureMode: true }, provider().transcript.classify(input(request)), AgentProvider.ZCODE))
 }
 
-it('renders the ZCode plan in the transcript through the shared plan layout', () => {
+it('renders the ZCode plan in the transcript through the shared plan layout', async () => {
   const { container, getByRole } = renderRequest('ExitPlanMode', { plan: '# Welcome plan\n\n- Keep **original bytes**.' })
+  await settleWorkerReplies()
   expect(getByRole('heading', { name: 'Welcome plan' })).toBeInTheDocument()
   expect(container.querySelector('li strong')?.textContent).toBe('original bytes')
   expect(container.querySelector('.lucide-plane-takeoff')).not.toBeNull()
 })
 
-it('renders a plan preserved from a native control request', () => {
+it('renders a plan preserved from a native control request', async () => {
   const request = {
     id: 'server-1',
     method: 'interaction/requestUserInput',
@@ -49,6 +51,7 @@ it('renders a plan preserved from a native control request', () => {
     },
   }
   const { getByRole, container } = render(() => renderMessageContent(request, { premeasureMode: true }, provider().transcript.classify(input(request)), AgentProvider.ZCODE))
+  await settleWorkerReplies()
   expect(getByRole('heading', { name: 'Stored plan' })).toBeInTheDocument()
   expect(container.querySelector('li strong')?.textContent).toBe('original bytes')
   expect(container.querySelector('.lucide-plane-takeoff')).not.toBeNull()
@@ -79,7 +82,7 @@ function renderResult(toolName: string, args: Record<string, unknown>, result: R
 describe('zcode tool rendering', () => {
   // A `result` frame with no request beside it and no span type to borrow a name from.
   // It shows what the tool returned and invents no name.
-  it('shows an unmatched completion by its content alone', () => {
+  it('shows an unmatched completion by its content alone', async () => {
     const end = event('result', {
       result: { success: true, content: 'recovered output' },
     })
@@ -91,6 +94,7 @@ describe('zcode tool rendering', () => {
         request: () => undefined,
       }),
     }, category, AgentProvider.ZCODE))
+    await settleWorkerReplies()
     expect(container.textContent).toContain('recovered output')
     for (const invented of ['Run command', 'Read file', 'Search'])
       expect(container.textContent).not.toContain(invented)
@@ -101,10 +105,11 @@ describe('zcode tool rendering', () => {
     expect(container.textContent).toContain('Inspect project structure (explore)')
   })
 
-  it('renders the subagent report and separates its native usage footer', () => {
+  it('renders the subagent report and separates its native usage footer', async () => {
     const report = '**Findings**\n\nThe entry points are present.'
     const content = `${report}\nagentId: agent_child (use SendMessage with to: 'agent_child' to continue this agent)\n<usage>subagent_tokens: 123\ntool_uses: 2\nduration_ms: 1500</usage>`
     const { container, meta } = renderResult('Agent', { description: 'Inspect project structure' }, { success: true, content })
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Agent "Inspect project structure" completed')
     expect(container.textContent).toContain('Agent ID:agent_child')
     expect(container.querySelector('strong')?.textContent).toBe('Findings')
@@ -167,11 +172,13 @@ describe('zcode tool rendering', () => {
     expect(container.textContent).toContain('(Line 10–14)')
   })
 
-  it('uses the shared write line count and edit statistics', () => {
+  it('uses the shared write line count and edit statistics', async () => {
     const write = renderRequest('Write', { file_path: '/project/file.ts', content: 'first\nsecond\n' })
+    await settleWorkerReplies()
     expect(write.container.querySelector(`.${toolInputPath}`)?.textContent).toBe('file.ts')
     expect(write.container.textContent).toContain('(2 lines)')
     const edit = renderRequest('Edit', { file_path: '/project/file.ts', old_string: 'before', new_string: 'after' })
+    await settleWorkerReplies()
     expect(edit.container.querySelector(`.${toolInputPath}`)?.textContent).toBe('file.ts')
     expect(edit.container.textContent).toContain('+1')
     expect(edit.container.textContent).toContain('-1')
@@ -252,20 +259,23 @@ describe('zcode tool rendering', () => {
     expect(container.textContent).toContain('limit: 250')
   })
 
-  it('renders fetched Markdown without inventing an HTTP status', () => {
+  it('renders fetched Markdown without inventing an HTTP status', async () => {
     const { container } = renderResult('WebFetch', { url: 'https://example.com' }, { content: '## Page title\n\n**Page body**' })
+    await settleWorkerReplies()
     expect(container.querySelector('h2')?.textContent).toBe('Page title')
     expect(container.querySelector('strong')?.textContent).toBe('Page body')
     expect(container.textContent).not.toContain('200')
   })
 
-  it('offers the expand control for unknown tool output and fades it collapsed', () => {
+  it('offers the expand control for unknown tool output and fades it collapsed', async () => {
     // An unknown tool now draws through the shared generic body, whose text blocks
     // render as markdown: the words always render and the collapsed state fades
     // them rather than slicing lines. The toolbar's offer and the fade agree.
     const output = Array.from({ length: COLLAPSED_RESULT_ROWS + 3 }, (_, index) => `result line ${index}`).join('\n')
     const collapsed = renderResult('FutureTool', {}, { content: output })
+    await settleWorkerReplies()
     const expanded = renderResult('FutureTool', {}, { content: output }, true)
+    await settleWorkerReplies()
     expect(collapsed.meta?.collapsible).toBe(true)
     expect(collapsed.container.querySelector(`.${toolResultCollapsed}`)).not.toBeNull()
     expect(expanded.container.querySelector(`.${toolResultCollapsed}`)).toBeNull()

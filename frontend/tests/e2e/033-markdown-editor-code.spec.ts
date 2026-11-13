@@ -249,7 +249,7 @@ test.describe('code language label', () => {
     void authenticatedWorkspace
     const editor = await focusComposer(page)
 
-    // The ``` input rule opens a block. Its text names no language, and the block guesses TypeScript from `const`.
+    // The ``` input rule opens a block. Its text specifies no language, and the block guesses TypeScript from `const`.
     await page.keyboard.type('```')
     await page.keyboard.type('const value = 1')
 

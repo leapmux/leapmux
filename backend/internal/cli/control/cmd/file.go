@@ -2,12 +2,19 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"github.com/leapmux/leapmux/internal/cli/control/resolve"
 )
+
+// readLimitUsage is the help text of the --limit flag of `file read` and
+// `git read`. scripts/generate-contracts.mjs keeps the default a whole number
+// of KiB, so the division drops nothing.
+var readLimitUsage = fmt.Sprintf("max bytes (0 = default %d KiB)", contracts.FileReadLimitBytes/1024)
 
 // resolveWorker is shared by file / git handlers: bind the universal
 // entity flag set and run the resolver to derive the worker id from
@@ -111,7 +118,7 @@ func RunFileRead(rawCtx any, args []string) error {
 	f := bindPathCmd(cmd, false, "path to read (required)")
 	var offset, limit int64
 	f.FS.Int64Var(&offset, "offset", 0, "byte offset")
-	f.FS.Int64Var(&limit, "limit", 0, "max bytes (0 = default 60KB)")
+	f.FS.Int64Var(&limit, "limit", 0, readLimitUsage)
 	if err := parseFlags(f.FS, args, cmd.Description()); err != nil {
 		return err
 	}
