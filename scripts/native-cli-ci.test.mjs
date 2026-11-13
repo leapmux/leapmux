@@ -109,7 +109,7 @@ describe('native CLI per-commit verification', () => {
     expect(workflow.jobs.linux.strategy.matrix.include.map(entry => entry.arch)).toEqual(['amd64', 'arm64'])
     for (const name of ['linux', 'macos', 'windows']) {
       const job = workflow.jobs[name]
-      const checks = job.steps.filter(step => step.run === 'node scripts/native-cli-ci.mjs')
+      const checks = job.steps.filter(step => step.run === 'node scripts/run-test-suite.mjs native-cli node scripts/native-cli-ci.mjs')
       expect(checks).toHaveLength(1)
       expect(checks[0].if).toBeUndefined()
       const position = job.steps.indexOf(checks[0])

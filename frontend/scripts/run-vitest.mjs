@@ -3,6 +3,7 @@ import { createRequire } from 'node:module'
 import { dirname, join, resolve } from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
+import { testReportPath } from '../../scripts/test-results-path.mjs'
 
 const require = createRequire(import.meta.url)
 const cli = join(dirname(require.resolve('vitest/package.json')), 'vitest.mjs')
@@ -10,6 +11,15 @@ const cli = join(dirname(require.resolve('vitest/package.json')), 'vitest.mjs')
 /** Start the installed CLI with literal arguments on every platform. */
 export function launchVitest(args) {
   const env = { ...process.env }
+  const report = args.includes('run')
+    ? testReportPath('frontend', env)
+    : undefined
+  const reporters = []
+  if (report) {
+    if (!args.some(arg => arg === '--reporter' || arg.startsWith('--reporter=')))
+      reporters.push('--reporter=default')
+    reporters.push('--reporter=junit', `--outputFile.junit=${report}`)
+  }
   // Node 25 introduced a web storage stub that conflicts with jsdom. Older Node versions reject this flag.
   if (Number.parseInt(process.versions.node, 10) >= 25) {
     const flag = '--no-experimental-webstorage'
@@ -17,7 +27,11 @@ export function launchVitest(args) {
       ? `${env.NODE_OPTIONS} ${flag}`
       : flag
   }
-  return spawn(process.execPath, [cli, ...args], { stdio: 'inherit', env })
+  return spawn(process.execPath, [
+    cli,
+    ...args,
+    ...reporters,
+  ], { stdio: 'inherit', env })
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

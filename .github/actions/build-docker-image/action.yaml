@@ -137,7 +137,11 @@ runs:
       shell: bash
       env:
         IMAGE: ${{ steps.image.outputs.imageid }}
-      run: task test-docker IMAGE="$IMAGE"
+      run: node scripts/run-test-suite.mjs docker-image task test-docker IMAGE="$IMAGE"
+
+    - name: Upload test results
+      if: always()
+      uses: ./.github/actions/upload-test-results
 
     - name: Export the Go build cache
       # Only a writer that missed its exact key exports a replacement

@@ -1,5 +1,5 @@
 import type { SpawnOptions } from 'node:child_process'
-import { execFile, spawn } from 'node:child_process'
+import { ChildProcess, execFile, spawn } from 'node:child_process'
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import process from 'node:process'
@@ -70,10 +70,10 @@ afterEach(async () => {
   vi.useRealTimers()
 })
 
-function startedJob(options: SpawnOptions = { cwd: 'C:\\private', stdio: 'inherit' }) {
+function startedJob(options: SpawnOptions = { cwd: 'C:\\private', stdio: 'inherit' }, delay = 50) {
   const stub = createProcessStub()
   vi.mocked(spawn).mockReturnValue(stub.proc)
-  const resource = spawnWindowsCommandJob('task', ['build-backend'], options, 50)
+  const resource = spawnWindowsCommandJob('task', ['build-backend'], options, delay)
   const args = vi.mocked(spawn).mock.calls.at(-1)?.[1]
   if (!args)
     throw new Error('The controlled job has no launcher arguments.')
@@ -293,6 +293,63 @@ describe('spawnWindowsCommandJob', () => {
     await job.resource.stop()
     expect(execFile).toHaveBeenCalledExactlyOnceWith(expect.any(String), windowsJobArguments('Verify', job.payloadPath), expect.any(Object), expect.any(Function))
     expect(job.emitter.kill).not.toHaveBeenCalled()
+  })
+
+  it.each(['Stop', 'Verify'])('allows %s helper startup before the native shutdown deadline', async (helperMode) => {
+    const job = startedJob()
+    writeState(job)
+    if (helperMode === 'Verify')
+      job.emitter.exitCode = 0
+    const nativeDelay = Number(job.payload.shutdownDelayMs)
+    // Model execFile's timeout while the helper starts PowerShell and compiles its C# source.
+    // Its native operation succeeds after startup, without consuming the native shutdown delay.
+    vi.mocked(execFile).mockImplementationOnce((...args: unknown[]) => {
+      const callback = args.at(-1)
+      const options = args[2]
+      if (typeof callback !== 'function' || !isObject(options) || typeof options.timeout !== 'number')
+        throw new Error('The controlled helper has no timeout or completion handler.')
+      let timeout: ReturnType<typeof setTimeout>
+      const completed = setTimeout(() => {
+        clearTimeout(timeout)
+        if (helperMode === 'Stop') {
+          job.emitter.exitCode = 0
+          job.emitter.emit('exit', 0, null)
+        }
+        callback(null, '', '')
+      }, nativeDelay + 1)
+      timeout = setTimeout(() => {
+        clearTimeout(completed)
+        callback(new Error('The helper timed out during startup.'))
+      }, options.timeout)
+      return new ChildProcess()
+    })
+    // A timeout must still let failure cleanup release the owner.
+    job.emitter.kill.mockImplementation(() => {
+      queueMicrotask(() => {
+        job.emitter.signalCode = 'SIGTERM'
+        job.emitter.emit('exit', null, 'SIGTERM')
+      })
+      return true
+    })
+    const stopped = job.resource.stop().then(() => null, error => error)
+    await vi.advanceTimersByTimeAsync(nativeDelay + 1)
+    expect(await stopped).toBeNull()
+    expect(job.emitter.kill).not.toHaveBeenCalled()
+    expect(existsSync(job.directory)).toBe(false)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it.each([
+    { delay: 0.5, nativeDelay: 1, timeout: 30_001 },
+    { delay: 5000, nativeDelay: 5000, timeout: 35_000 },
+    { delay: 2_147_483_647, nativeDelay: 2_147_483_647, timeout: 2_147_483_647 },
+  ])('keeps the native delay and a valid helper timeout for $delay milliseconds', async ({ delay, nativeDelay, timeout }) => {
+    const job = startedJob(undefined, delay)
+    writeState(job)
+    job.emitter.exitCode = 0
+    await job.resource.stop()
+    expect(job.payload.shutdownDelayMs).toBe(nativeDelay)
+    expect(vi.mocked(execFile).mock.calls[0]?.[2]).toMatchObject({ timeout })
   })
 
   it('stops an owner that does not finish after its event receives a signal', async () => {

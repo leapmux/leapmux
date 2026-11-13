@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { launchVitest } from './run-vitest.mjs'
@@ -25,14 +27,37 @@ vi.mock('node:process', async (importOriginal) => {
 })
 
 const nodeVersion = process.versions.node
+const directories = []
 
 beforeEach(() => {
   process.versions.node = nodeVersion
+  vi.stubEnv('LEAPMUX_TEST_RESULTS_DIR', undefined)
   vi.mocked(spawn).mockReset().mockReturnValue(new EventEmitter())
 })
-afterEach(() => vi.unstubAllEnvs())
+afterEach(() => {
+  vi.unstubAllEnvs()
+  for (const directory of directories.splice(0))
+    rmSync(directory, { recursive: true, force: true })
+})
 
 describe('vitest launcher arguments', () => {
+  it.each([
+    { reporters: [] },
+    {
+      reporters: ['--reporter=verbose'],
+    },
+  ])('adds a JUnit report beside the console reporter: $reporters', ({ reporters }) => {
+    const parent = resolve(import.meta.dirname, '../../.tmp')
+    mkdirSync(parent, { recursive: true })
+    const directory = mkdtempSync(join(parent, 'vitest-reports-'))
+    directories.push(directory)
+    vi.stubEnv('LEAPMUX_TEST_RESULTS_DIR', directory)
+    launchVitest(['run', ...reporters])
+    const args = vi.mocked(spawn).mock.calls[0][1]
+    expect(args).toContain('--reporter=junit')
+    expect(args).toContain(`--outputFile.junit=${join(directory, 'frontend.xml')}`)
+    expect(args).toContain(reporters[0] ?? '--reporter=default')
+  })
   it.each([
     { version: '24.0.0', inherited: undefined, expected: undefined },
     { version: '24.99.0', inherited: '--trace-warnings', expected: '--trace-warnings' },

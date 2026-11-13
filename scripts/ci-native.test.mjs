@@ -9,8 +9,9 @@ const root = resolve(import.meta.dirname, '..')
 const readYaml = path => Bun.YAML.parse(readFileSync(resolve(root, path), 'utf8'))
 const expression = body => `\${{ ${body} }}`
 // Each native runner tests the resource monitor's probes for its own OS.
-const MONITOR_TEST = 'bun test --timeout 30000 scripts/ci-resource-monitor.test.mjs scripts/ci-resource-monitor/'
-const CACHE_NATIVE_TEST = 'bun test --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs ./scripts/test-support.test.mjs ./scripts/run-go-tool.test.mjs ./scripts/download-go-modules.test.mjs ./scripts/download-cli-tools.test.mjs'
+const MONITOR_TEST = 'node scripts/run-bun-tests.mjs ci-monitor --timeout 30000 scripts/ci-resource-monitor.test.mjs scripts/ci-resource-monitor/'
+const CI_RESULTS_TEST = 'node scripts/run-bun-tests.mjs ci-results --timeout 30000 ./scripts/run-test-suite.test.mjs ./scripts/archive-test-results.test.mjs ./scripts/run-bun-tests.test.mjs ./scripts/test-results-path.test.mjs ./scripts/test-results-tar.test.mjs ./scripts/test-support/tar-reader.test.mjs'
+const CACHE_NATIVE_TEST = 'node scripts/run-bun-tests.mjs cache-native --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs ./scripts/test-support.test.mjs ./scripts/run-go-tool.test.mjs ./scripts/download-go-modules.test.mjs ./scripts/download-cli-tools.test.mjs'
 const fixtures = []
 
 afterEach(() => {
@@ -78,7 +79,7 @@ describe('native CI validation', () => {
     const linux = readYaml('.github/workflows/ci.yaml').jobs.linux
     for (const arch of ['amd64', 'arm64'])
       expect(linux.strategy.matrix.include.map(entry => entry.arch)).toContain(arch)
-    expect(linux.steps.find(step => step.run === 'task test-native-linux')?.if).toBe('matrix.arch == \'arm64\'')
+    expect(linux.steps.find(step => step.run === 'node scripts/run-test-suite.mjs native-linux task test-native-linux')?.if).toBe('matrix.arch == \'arm64\'')
     const armTests = commands(tasks, 'test-native-linux')
     for (const module of ['backend', 'desktop/go']) {
       const lint = commands(tasks, module === 'backend'
@@ -108,17 +109,20 @@ describe('native CI validation', () => {
     expect(linux.filter(command => command.includes('cargo clippy'))).toHaveLength(1)
     expect(linux.filter(command => command.includes('bun run test'))).toEqual(['cd frontend && bun run test scripts/ tests/e2e/helpers/'])
     expect(linux).toContain(MONITOR_TEST)
+    expect(linux).toContain(CI_RESULTS_TEST)
     expect(linux).toContain(CACHE_NATIVE_TEST)
-    expect(linux.filter(command => command !== MONITOR_TEST && command !== CACHE_NATIVE_TEST).join('\n')).not.toMatch(/bun test|bun run (?:lint|typecheck)|validate-json|renovate/)
+    expect(linux.filter(command => command !== MONITOR_TEST && command !== CI_RESULTS_TEST && command !== CACHE_NATIVE_TEST).join('\n')).not.toMatch(/bun test|run-bun-tests|bun run (?:lint|typecheck)|validate-json|renovate/)
   })
 
   it.each([
     '',
     'frontend-native',
     'ci-monitor',
+    'ci-results',
     'backend',
     'desktop-go',
     'rust-test',
+    'cache-native',
     'rust-lint',
   ])('propagates failures and stops subsequent native commands: %s', (failure) => {
     const tasks = readYaml('Taskfile.yaml').tasks
@@ -128,6 +132,7 @@ describe('native CI validation', () => {
     const stages = [
       'frontend-native',
       'ci-monitor',
+      'ci-results',
       'backend',
       'desktop-go',
       'rust-test',
@@ -137,6 +142,7 @@ describe('native CI validation', () => {
       'test-native',
       'test-frontend-native',
       'test-ci-monitor',
+      'test-ci-results',
       'test-backend-no-docker-run',
       'test-desktop-run',
     ].map(name => [
@@ -154,6 +160,7 @@ describe('native CI validation', () => {
     for (const name of [
       'test-frontend-native',
       'test-ci-monitor',
+      'test-ci-results',
       'test-backend-no-docker-run',
       'test-desktop-run',
       'test-native',
@@ -176,9 +183,9 @@ describe('native CI validation', () => {
     // the recorded order of the whole run is the stage list with the
     // cache-native stage inserted after it.
     const recorded = [
-      ...stages.slice(0, 5),
+      ...stages.slice(0, -1),
       'cache-native',
-      ...stages.slice(5),
+      ...stages.slice(-1),
     ]
     const executedActual = readFileSync(join(dir, 'executed'), 'utf8').trim().split('\n')
     expect(executedActual).toEqual(failure
@@ -212,8 +219,9 @@ describe('native CI validation', () => {
     expect(native).toContain('cd desktop/rust && cargo clippy --locked --all-targets -- -D warnings')
     expect(native).toContain('cd frontend && bun run test scripts/ tests/e2e/helpers/')
     expect(native).toContain(MONITOR_TEST)
+    expect(native).toContain(CI_RESULTS_TEST)
     expect(native).toContain(CACHE_NATIVE_TEST)
-    expect(native.filter(cmd => cmd !== MONITOR_TEST && cmd !== CACHE_NATIVE_TEST).join('\n')).not.toMatch(/golangci-lint|GOOS=|bun run (?:lint|typecheck)|bun test|renovate/)
+    expect(native.filter(cmd => cmd !== MONITOR_TEST && cmd !== CI_RESULTS_TEST && cmd !== CACHE_NATIVE_TEST).join('\n')).not.toMatch(/golangci-lint|GOOS=|run-bun-tests|bun run (?:lint|typecheck)|bun test|renovate/)
     expect(native.filter(cmd => cmd.includes('bun run test'))).toEqual(['cd frontend && bun run test scripts/ tests/e2e/helpers/'])
     // The no-Docker run tests every package. The container tests skip themselves.
     const backend = native.find(cmd => cmd.includes('cd backend && node ../scripts/run-go-tool.mjs gotestsum'))
@@ -248,19 +256,58 @@ describe('native CI validation', () => {
 
   it('runs complete validation on Linux and native validation plus packaging on macOS and Windows', () => {
     const { jobs } = readYaml('.github/workflows/ci.yaml')
-    expect(jobs.linux.steps.find(step => step.run === 'task test')?.if).toBe('matrix.arch == \'amd64\'')
+    expect(jobs.linux.steps.find(step => step.run === 'node scripts/run-test-suite.mjs full task test')?.if).toBe('matrix.arch == \'amd64\'')
     expect(jobs.linux.steps.find(step => step.run === 'task lint')?.if).toBe('matrix.arch == \'amd64\'')
     for (const os of ['macos', 'windows']) {
       const steps = jobs[os].steps
-      expect(steps.filter(step => step.run === 'task test-native')).toHaveLength(1)
+      expect(steps.filter(step => step.run === 'node scripts/run-test-suite.mjs native task test-native')).toHaveLength(1)
       expect(steps.some(step => step.run === 'task test-no-docker')).toBe(false)
       expect(steps.some(step => step.run === 'task build')).toBe(true)
       expect(steps.some(step => step.run === 'task check-build-cache')).toBe(true)
       if (os === 'windows') {
-        for (const step of steps.filter(step => step.run?.startsWith('task ')))
+        for (const step of steps.filter(step => /^(?:task |node scripts\/run-test-suite\.mjs )/.test(step.run ?? '')))
           expect(step.shell).toBe('pwsh')
       }
     }
+  })
+
+  it.each(['linux', 'macos', 'windows'])('uploads passing and failed test results after the %s tests', (name) => {
+    const { steps } = readYaml('.github/workflows/ci.yaml').jobs[name]
+    const uploads = steps.filter(step => step.uses === './.github/actions/upload-test-results')
+    expect(uploads).toHaveLength(1)
+    expect(uploads[0].if).toBe('always()')
+    const lastTest = steps.findLastIndex(step => /\btask test(?:-native(?:-linux)?)?$/.test(step.run ?? ''))
+    expect(lastTest).toBeGreaterThan(-1)
+    expect(steps.indexOf(uploads[0])).toBeGreaterThan(lastTest)
+  })
+
+  it('uploads one compressed archive with a distinct filename per runner, matrix cell and run attempt', () => {
+    const action = readYaml('.github/actions/upload-test-results/action.yaml')
+    expect(action.runs.using).toBe('composite')
+    const uploads = action.runs.steps.filter(step => step.uses?.startsWith('actions/upload-artifact@'))
+    expect(uploads).toHaveLength(1)
+    const upload = uploads[0]
+    expect(upload.if).toContain('always()')
+    expect(upload.if).toContain('steps.archive.outputs.archive != \'\'')
+    expect(upload.uses).toMatch(/^actions\/upload-artifact@[a-f0-9]{40}$/)
+    expect(upload.with['if-no-files-found']).toBe('error')
+    expect(upload.with.archive).toBe(false)
+    expect(upload.with.path).toBe(expression('steps.archive.outputs.archive'))
+    expect(upload.with['include-hidden-files']).toBe(true)
+    expect(upload.with['retention-days']).toBeGreaterThan(0)
+    expect(upload.with['retention-days']).toBeLessThanOrEqual(14)
+    const archive = action.runs.steps.find(step => step.id === 'archive')
+    expect(archive.if).toBe('always()')
+    expect(archive.run).toBe('node scripts/archive-test-results.mjs')
+    expect(archive.env.TEST_RESULTS_ARCHIVE_NAME).toContain(expression('strategy.job-index || \'0\''))
+    expect(archive.env.TEST_RESULTS_ARCHIVE_NAME).toEndWith('.tar.gz')
+    for (const context of [
+      'github.job',
+      'runner.os',
+      'runner.arch',
+      'github.run_attempt',
+    ])
+      expect(archive.env.TEST_RESULTS_ARCHIVE_NAME).toContain(expression(context))
   })
 
   it.each(['linux', 'macos', 'windows'])('monitors the %s runner on request, from before the cache restorations to the end of the job', (name) => {
@@ -270,7 +317,7 @@ describe('native CI validation', () => {
     const stop = steps.findIndex(step => step.uses === './.github/actions/ci-resource-monitor' && step.with.mode === 'stop')
     const setupIndex = steps.findIndex(step => step.uses === './.github/actions/setup-build')
     const setup = steps[setupIndex]
-    const tests = steps.findIndex(step => /^task test(?:-native(?:-linux)?)?$/.test(step.run ?? ''))
+    const tests = steps.findIndex(step => /\btask test(?:-native(?:-linux)?)?$/.test(step.run ?? ''))
     // The job keeps only the stop step; the start moved into the setup.
     expect(steps.filter(step => step.uses === './.github/actions/ci-resource-monitor')).toHaveLength(1)
     expect(stop).toBe(steps.length - 1)

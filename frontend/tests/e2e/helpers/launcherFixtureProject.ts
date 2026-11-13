@@ -261,12 +261,21 @@ export function cleanupLauncherFixtureProject(root: string, outerTestPassed: boo
   rmSync(root, { recursive: true, force: true })
 }
 
-/** State the exact failures of the fixture cases and the retained paths in the output of an outer assertion. */
+/** Keep the launcher exit code and console beside the fixture failures and retained paths in an outer assertion. */
 export function launcherFixtureDiagnostics(run: FixtureRun): string {
+  let consoleOutput: string
+  try {
+    consoleOutput = readFileSync(run.consolePath, 'utf8')
+  }
+  catch (error) {
+    consoleOutput = `The launcher console could not be read: ${String(error)}`
+  }
   return JSON.stringify({
     root: run.root,
     reportPath: run.reportPath,
     consolePath: run.consolePath,
+    code: run.code,
+    console: consoleOutput,
     errors: run.report.errors,
     cases: run.cases,
   }, null, 2)

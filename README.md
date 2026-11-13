@@ -496,6 +496,15 @@ The explicit file value takes precedence.
 Failed runs retain reports and attachments after the launcher stops the test processes.
 Later serial or parallel runs preserve these artifacts.
 
+CI retains test results from passing and failed runs in one compressed `test-results-*.tar.gz` archive per job.
+The filename identifies the job, operating system, architecture, matrix index, and run attempt.
+Download the archive directly from the workflow run's **Artifacts** section within seven days.
+Each test command records its complete console output and exit status under `.tmp/test-results/`.
+Bun, Vitest, and Go tests also write JUnit reports there; Rust tests retain their console results.
+The archive includes available Playwright reports, attachments, and traces, together with launcher console logs and fixture records.
+Launcher integration tests retain fixtures only when their outer test fails, including a cleanup failure after both Playwright cases pass.
+Native CI jobs, Docker image checks, and Renovate tests use the same capture script and upload action.
+
 Use `--last-failed` to run the failed cases from the combined result:
 
 ```bash

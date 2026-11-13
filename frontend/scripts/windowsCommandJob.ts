@@ -152,13 +152,18 @@ interface JobControl {
   environment: NodeJS.ProcessEnv
 }
 
+const CONTROL_STARTUP_ALLOWANCE_MS = 30_000
+const MAX_TIMER_DELAY_MS = 2_147_483_647
+
 function runControl(mode: 'Stop' | 'Verify', payloadPath: string, control: JobControl, delay: number): Promise<void> {
   return new Promise((accept, reject) => {
     execFile(control.executable, windowsJobArguments(mode, payloadPath), {
       cwd: control.cwd,
       env: control.environment,
       windowsHide: true,
-      timeout: delay,
+      // PowerShell starts and Add-Type compiles the native helper before its shutdown timer starts.
+      // Include startup in this watchdog's budget as well as the native shutdown delay.
+      timeout: Math.min(MAX_TIMER_DELAY_MS, CONTROL_STARTUP_ALLOWANCE_MS + Math.ceil(delay)),
     }, (error) => {
       if (error)
         reject(error)

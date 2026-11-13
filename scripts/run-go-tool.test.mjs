@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process'
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { delimiter, join, resolve } from 'node:path'
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { basename, delimiter, join, resolve } from 'node:path'
 import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { GO_TOOL_MODULES } from './go-tools.mjs'
@@ -28,6 +28,40 @@ const host = {
 const built = { status: 0, stdout: '/cache with spaces/tool\n' }
 
 describe('runGoTool', () => {
+  it.each([0, 1])('writes a Go JUnit report for exit code %i', (exitCode) => {
+    const fails = exitCode !== 0
+    const cwd = scratch.create('go junit report')
+    const reports = join(cwd, 'reports')
+    mkdirSync(reports)
+    writeFileSync(join(cwd, 'go.mod'), 'module example.com/reports\ngo 1.27.0\n')
+    writeFileSync(join(cwd, 'fixture_test.go'), `package reports\nimport "testing"\nfunc TestFixture(t *testing.T) { ${fails ? 't.Fatal("fixture failure")' : ''} }\n`)
+    expect(runGoTool('gotestsum', ['--', '-vet=off', './...'], {
+      cwd,
+      env: { ...process.env, GOWORK: 'off', LEAPMUX_TEST_RESULTS_DIR: reports },
+      run: (command, args, options) => spawnSync(command, args, { ...options, stdio: 'pipe' }),
+    })).toBe(fails ? 1 : 0)
+    const files = readdirSync(reports)
+    expect(files).toHaveLength(1)
+    const report = readFileSync(join(reports, files[0]), 'utf8')
+    expect(report).toContain('TestFixture')
+    expect(report).toContain(`failures="${fails ? 1 : 0}"`)
+  })
+
+  it('keeps the report filename short for a long module directory', () => {
+    const reports = scratch.create('long-module-report')
+    const context = fixture([
+      host,
+      built,
+      { status: 0 },
+    ])
+    expect(runGoTool('gotestsum', ['--', './...'], {
+      cwd: join(reports, 'x'.repeat(240)),
+      env: { LEAPMUX_TEST_RESULTS_DIR: reports },
+      run: context.run,
+    })).toBe(0)
+    const args = context.calls[2].args
+    expect(basename(args[args.indexOf('--junitfile') + 1]).length).toBeLessThanOrEqual(80)
+  })
   it('builds a real tool outside an unusable application workspace and runs it in the caller directory', () => {
     const checkout = scratch.create('isolated tool with spaces')
     const toolDirectory = resolve(checkout, 'tools/gotestsum')
@@ -48,6 +82,7 @@ func main() {
 `)
     const env = {
       ...process.env,
+      LEAPMUX_TEST_RESULTS_DIR: undefined,
       GOENV: goEnv,
       GOWORK: resolve(checkout, 'go.work'),
       GOFLAGS: '-modfile=missing.mod',
