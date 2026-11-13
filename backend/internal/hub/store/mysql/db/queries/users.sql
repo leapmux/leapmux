@@ -5,6 +5,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{}');
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = ? AND deleted_at IS NULL;
 
+-- Current live-user projection for locked mutations.
+-- name: GetLiveUserForUpdate :one
+SELECT * FROM users WHERE id = ? AND deleted_at IS NULL FOR UPDATE;
+
+-- name: LockOtherAdministrator :one
+SELECT id FROM users WHERE is_admin = TRUE AND deleted_at IS NULL AND id <> ? LIMIT 1 FOR UPDATE;
+
 -- name: LockUserAuthState :one
 SELECT id FROM users WHERE id = ? AND deleted_at IS NULL
 FOR UPDATE;
@@ -233,7 +240,7 @@ WHERE pending_email != ''
 -- RunInUserAuthTransaction, whose LockUserAuthState filters
 -- deleted_at IS NULL; fenceUserTokensLocked (the auth-gate reduction
 -- fence) runs only in RunUserInfoMutation's existedBefore && existedAfter
--- branch, and both existence reads use GetUserByID, which also filters
+-- branch, and both existence reads use GetLiveUserForUpdate, which also filters
 -- deleted_at IS NULL. CompleteRecovery also takes the lock, and its UPDATE
 -- re-checks the recovery token. Every revoke path revokes before
 -- soft-deleting, so that ordering is not exercised today. Only a missing id

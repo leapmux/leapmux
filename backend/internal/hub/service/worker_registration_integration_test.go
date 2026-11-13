@@ -490,6 +490,7 @@ func TestRecoveryRechecksWorkerAndOwner(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newRegKeyEnv(t, testConfig(), nil, regKeyEnvOptions{})
+			createRetainedAdministrator(t, env.store)
 			ctx := context.Background()
 			admin := userid.MustNew(env.adminID(t))
 			key := id.Generate()

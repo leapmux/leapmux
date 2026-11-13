@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect/v2"
@@ -90,6 +91,10 @@ type AuthService struct {
 	captcha       CaptchaService
 	listen        ListenReporter
 	soloGate      *auth.SoloGate
+	// Presence stays true after setup because account mutations retain a live
+	// administrator. The separate claim does not publish uncommitted presence.
+	hasUsers   atomic.Bool
+	setupClaim atomic.Bool
 
 	// The clock GetCurrentUser reports the elevation deadline against. It
 	// must be the same seam UserService grants on, or a test that advances
@@ -191,10 +196,18 @@ func (s *AuthService) listenAddr() string {
 	return s.listen.PrimaryListenAddr()
 }
 
-// checkHasAnyUser reports whether the store currently holds a live user.
-// User deletion can reopen setup, so every decision reads the store.
+// checkHasAnyUser caches committed presence. Empty state is refreshed so a
+// bootstrap performed by another store writer becomes visible. Once populated,
+// last-administrator protection makes the in-memory positive result permanent.
 func (s *AuthService) checkHasAnyUser(ctx context.Context) (bool, error) {
-	return s.store.Users().HasAny(ctx)
+	if s.hasUsers.Load() {
+		return true, nil
+	}
+	present, err := s.store.Users().HasAny(ctx)
+	if err == nil && present {
+		s.hasUsers.Store(true)
+	}
+	return present, err
 }
 
 // sessionCookieHeaderValues replaces the session family while preserving other
@@ -469,8 +482,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 	}
 
 	if s.emailVerificationRequired(ctx) {
-		createdUser, storedCode, err := createUserInTx(ctx, s.store, createUserTxParams{
-			admission:             userCreationRequireExisting,
+		createdUser, storedCode, err := s.createSignupUser(ctx, signupOrdinary, createUserTxParams{
 			username:              username,
 			displayName:           displayName,
 			pendingEmail:          email,
@@ -506,8 +518,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 	}
 
 	// No verification required — email goes directly to email column.
-	user, _, err := createUserInTx(ctx, s.store, createUserTxParams{
-		admission:             userCreationRequireExisting,
+	user, _, err := s.createSignupUser(ctx, signupOrdinary, createUserTxParams{
 		username:              username,
 		passwordHash:          hash,
 		displayName:           displayName,
@@ -546,8 +557,7 @@ func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName
 		}
 	}
 
-	user, _, err := createUserInTx(ctx, s.store, createUserTxParams{
-		admission:             userCreationRequireEmpty,
+	user, _, err := s.createSignupUser(ctx, signupInitialAdministrator, createUserTxParams{
 		username:              username,
 		passwordHash:          passwordHash,
 		displayName:           displayName,
@@ -824,8 +834,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 	var storedCode string
 
 	var nextResend *time.Time
-	user, storedCode, err = createUserInTx(ctx, s.store, createUserTxParams{
-		admission:     userCreationRequireExisting,
+	user, storedCode, err = s.createSignupUser(ctx, signupOrdinary, createUserTxParams{
 		userID:        linkUserID,
 		username:      username,
 		displayName:   displayName,
@@ -923,7 +932,7 @@ func reencryptPendingTokens(ctx context.Context, ks *keystore.Keystore, st store
 // misleads both the client and the operator. A changed admission state is
 // FailedPrecondition. Every other failure is Internal.
 func mapSignupCommitError(err error) error {
-	if errors.Is(err, errSetupAlreadyComplete) || errors.Is(err, errSignupRequiresExistingUser) {
+	if errors.Is(err, errSetupAlreadyComplete) || errors.Is(err, errSetupInProgress) || errors.Is(err, errSignupRequiresExistingUser) {
 		return wrappedConnectError(connect.CodeFailedPrecondition, err)
 	}
 	if errors.Is(err, store.ErrConflict) {

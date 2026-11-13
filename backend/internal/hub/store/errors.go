@@ -7,6 +7,9 @@ import (
 
 // Sentinel errors returned by Store implementations.
 var (
+	// ErrLastAdministrator refuses deletion or demotion of the final live admin.
+	ErrLastAdministrator = errors.New("cannot delete or demote the last administrator")
+
 	// ErrNotFound is returned when a requested record does not exist.
 	ErrNotFound = errors.New("not found")
 

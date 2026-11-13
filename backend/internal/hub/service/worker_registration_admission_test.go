@@ -19,6 +19,7 @@ import (
 func TestRegisterRefusesADeletedRegistrationKeyCreator(t *testing.T) {
 	t.Parallel()
 	env := setupRegKeyEnv(t)
+	createRetainedAdministrator(t, env.store)
 	ctx := context.Background()
 	owner := userid.MustNew(env.adminID(t))
 	key := id.Generate()

@@ -5,6 +5,13 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL;
 
+-- Current live-user projection for locked mutations.
+-- name: GetLiveUserForUpdate :one
+SELECT * FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE;
+
+-- name: LockOtherAdministrator :one
+SELECT id FROM users WHERE is_admin = TRUE AND deleted_at IS NULL AND id <> $1 LIMIT 1 FOR UPDATE;
+
 -- name: LockUserAuthState :one
 SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL
 FOR UPDATE;
@@ -230,7 +237,7 @@ WHERE pending_email != ''
 -- LockUserAuthState filters deleted_at IS NULL; fenceUserTokensLocked (the
 -- auth-gate reduction fence) runs only in RunUserInfoMutation's
 -- existedBefore && existedAfter branch, and both existence reads use
--- GetUserByID, which also filters deleted_at IS NULL. Every revoke path
+-- GetLiveUserForUpdate, which also filters deleted_at IS NULL. Every revoke path
 -- revokes before soft-deleting, so that ordering is not exercised today.
 -- Only a missing id is a no-op.
 UPDATE users

@@ -399,14 +399,13 @@ func TestAdminUserService_DeleteUser_ForceAndCredentialRevocation(t *testing.T) 
 	require.NoError(t, err)
 	assert.NotNil(t, deletedWorker.DeletedAt)
 
-	// Deleting the last remaining admin currently succeeds: there is no
-	// last-admin guard on this RPC. Pin that so a later guard is a
-	// deliberate change, not a silent one.
+	// Force confirms the operation but cannot remove the last administrator.
 	_, err = env.client.DeleteUser(authedReq(ctx, &leapmuxv1.DeleteUserRequest{
 		User:  service.SelectUserByUsername("admin"),
 		Force: true,
 	}, env.token))
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
 
 func TestAdminUserService_IssueAndRevokeAPIToken(t *testing.T) {
@@ -1060,11 +1059,12 @@ func TestAdminUserService_LoweringEmailVerifiedAlwaysFences(t *testing.T) {
 // TestAdminUserService_SetUserAdminRefusesSelfDemotion pins the
 // self-demotion guard. UpdateAdmin runs the fenced verb, so removing your
 // own administrator access logs you out at once and the auth interceptor
-// then denies every Admin* procedure to the account -- recovery needs the
-// offline verb, which itself refuses while any administrator remains.
+// then denies every Admin* procedure to the account. Another live administrator
+// must remain, even when the request confirms self-demotion with force.
 func TestAdminUserService_SetUserAdminRefusesSelfDemotion(t *testing.T) {
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
+	createRetainedAdministrator(t, env.st)
 
 	_, err := env.client.SetUserAdmin(authedReq(ctx, &leapmuxv1.SetUserAdminRequest{
 		User: service.SelectUserByID(env.adminID), IsAdmin: false,
@@ -1546,6 +1546,7 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 
 		t.Run(name+" admits an elevated session", func(t *testing.T) {
 			env := setupAdminUserTest(t)
+			createRetainedAdministrator(t, env.st)
 			assert.NoError(t, call(ctx, env, cookieAuth(env.token)))
 		})
 
@@ -1555,6 +1556,7 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 			// creates a new way INTO an account, so the strict session rule
 			// would cost the CLI for no gain.
 			env := setupAdminUserTest(t)
+			createRetainedAdministrator(t, env.st)
 			issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 				User: service.SelectUserByID(env.adminID), InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 			}, env.token))
@@ -1589,11 +1591,13 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 
 	t.Run("UpdateUser email admits an elevated session", func(t *testing.T) {
 		env := setupAdminUserTest(t)
+		createRetainedAdministrator(t, env.st)
 		assert.NoError(t, updateEmail(ctx, env, cookieAuth(env.token)))
 	})
 
 	t.Run("UpdateUser email refuses a bearer", func(t *testing.T) {
 		env := setupAdminUserTest(t)
+		createRetainedAdministrator(t, env.st)
 		issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 			User: service.SelectUserByID(env.adminID), InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 		}, env.token))

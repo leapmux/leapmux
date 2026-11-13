@@ -183,7 +183,7 @@ func (s *userStore) Search(ctx context.Context, p store.SearchUsersParams) (stor
 // RunUserInfoMutation calls it before and after a mutation to derive whether a
 // user_info event fires; a missing row reports exists=false.
 func loadUserInfoCacheFields(ctx context.Context, conn *pgConn, id string) (store.UserInfoCacheFields, bool, error) {
-	u, err := conn.q.GetUserByID(ctx, id)
+	u, err := conn.q.GetLiveUserForUpdate(ctx, id)
 	if err != nil {
 		mapped := mapErr(err)
 		if errors.Is(mapped, store.ErrNotFound) {
@@ -334,12 +334,20 @@ func (s *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUserE
 // and logs them out; a grant (false→true) stays on the soft user_info cache
 // signal. A missing id is a no-op with no event.
 func (s *userStore) UpdateAdmin(ctx context.Context, p store.UpdateUserAdminParams) error {
-	return s.runAuthGateMutation(ctx, p.ID, func(ctx context.Context, conn *pgConn) (string, bool, error) {
-		id, err := conn.q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
-			IsAdmin: p.IsAdmin,
-			ID:      p.ID,
+	apply := func(target *userStore) error {
+		return target.runAuthGateMutation(ctx, p.ID, func(ctx context.Context, conn *pgConn) (string, bool, error) {
+			id, err := conn.q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
+				IsAdmin: p.IsAdmin,
+				ID:      p.ID,
+			})
+			return updatedUserResult(id, err)
 		})
-		return updatedUserResult(id, err)
+	}
+	if p.IsAdmin {
+		return apply(s)
+	}
+	return s.adminMembershipGuard().Remove(ctx, p.ID, func(_ context.Context, conn *pgConn) error {
+		return apply(&userStore{conn: conn})
 	})
 }
 
@@ -402,7 +410,10 @@ func (s *userStore) ClearCompetingPendingEmails(ctx context.Context, p store.Cle
 }
 
 func (s *userStore) Delete(ctx context.Context, id string) error {
-	return mapErr(s.conn.q.DeleteUser(ctx, id))
+	return s.adminMembershipGuard().Remove(ctx, id, func(ctx context.Context, conn *pgConn) error {
+		err := conn.q.DeleteUser(ctx, id)
+		return mapErr(err)
+	})
 }
 
 func (s *userStore) SetPendingRecovery(ctx context.Context, p store.SetPendingRecoveryParams) (bool, error) {
@@ -491,7 +502,7 @@ func (s *userStore) RevokeUserTokens(ctx context.Context, userID userid.UserID) 
 	}, emitCredentialEvent)
 }
 
-// LockAccountLifecycle orders creation against transitions to zero live users.
+// LockAccountLifecycle serializes bootstrap and removal of administrator access.
 func (s *userStore) LockAccountLifecycle(ctx context.Context) (bool, error) {
 	if !s.conn.inTx() {
 		return false, store.ErrLockingReadOutsideTransaction
@@ -506,4 +517,24 @@ func (s *userStore) LockAccountLifecycle(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	return err == nil, err
+}
+
+// adminMembershipGuard keeps the membership lock ahead of every target-user lock.
+func (s *userStore) adminMembershipGuard() store.AdminMembershipGuard[*pgConn] {
+	return store.AdminMembershipGuard[*pgConn]{
+		InTransaction: s.conn.withTransaction,
+		Lock: func(ctx context.Context, conn *pgConn) error {
+			_, err := (&userStore{conn: conn}).LockAccountLifecycle(ctx)
+			return err
+		},
+		ReadTarget: loadUserInfoCacheFields,
+		HasOtherAdmin: func(ctx context.Context, conn *pgConn, userID string) (bool, error) {
+			_, err := conn.q.LockOtherAdministrator(ctx, userID)
+			err = mapErr(err)
+			if errors.Is(err, store.ErrNotFound) {
+				return false, nil
+			}
+			return err == nil, err
+		},
+	}
 }

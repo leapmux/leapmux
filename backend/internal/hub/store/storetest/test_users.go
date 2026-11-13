@@ -16,6 +16,7 @@ import (
 )
 
 func (s *Suite) testUsers(t *testing.T) {
+	t.Run("administrator membership", s.testAdministratorMembership)
 	t.Run("account lifecycle", s.testAccountLifecycle)
 	// users.id is the parent key every owner-keyed child row hangs off, so a
 	// blank one is what would make a blank-OWNER row storable at all -- and no
@@ -154,9 +155,10 @@ func (s *Suite) testUsers(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, newer.ID, found.ID)
 
-		require.NoError(t, st.Users().Delete(ctx, newer.ID))
-		_, err = st.Users().GetFirstAdmin(ctx)
-		assert.ErrorIs(t, err, store.ErrNotFound)
+		require.ErrorIs(t, st.Users().Delete(ctx, newer.ID), store.ErrLastAdministrator)
+		found, err = st.Users().GetFirstAdmin(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, newer.ID, found.ID)
 	})
 
 	t.Run("has any", func(t *testing.T) {
@@ -417,6 +419,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("update admin", func(t *testing.T) {
 		st := s.NewStore(t)
+		seedMembershipAdministrator(t, st, "retained-admin")
 		user := SeedUser(t, st, "admin-user")
 
 		before, err := st.Users().GetByID(ctx, user.ID)

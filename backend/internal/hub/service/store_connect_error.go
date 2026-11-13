@@ -17,6 +17,8 @@ import (
 // answer's message carries it.
 func storeConnectError(err error, op string) error {
 	switch {
+	case errors.Is(err, store.ErrLastAdministrator):
+		return wrappedConnectError(connect.CodeFailedPrecondition, fmt.Errorf("%s: %w", op, err))
 	case errors.Is(err, store.ErrNotFound):
 		return connect.Errorf(connect.CodeNotFound, "%s: not found", op)
 	case errors.Is(err, store.ErrConflict):

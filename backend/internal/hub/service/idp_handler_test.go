@@ -423,6 +423,17 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 
 	hubtestutil.CreateTestAdmin(t, st)
 
+	return setupOAuthSignupServer(t, st)
+}
+
+func setupOAuthSignupServer(t *testing.T, st store.Store) (
+	*httptest.Server,
+	leapmuxv1connect.AuthServiceClient,
+	store.Store,
+	*keystore.Keystore,
+	*settings.Manager,
+) {
+	t.Helper()
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)
 	ks, err := keystore.New(map[uint32][32]byte{1: key})
@@ -447,7 +458,7 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	authDeps.Keystore = ks
 	authSvc := service.NewAuthService(authDeps)
 	connectServer := connect.NewServer(interceptor)
-	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	mountAuthAndSystem(connectServer, authSvc, set)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)
@@ -1896,34 +1907,66 @@ func TestOAuthReauth_SeparatesCredentialRefusalFromStoreFailure(t *testing.T) {
 }
 
 func TestCompleteOAuthSignupRequiresALiveExistingUser(t *testing.T) {
-	server, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
-	const email, subject = "pending-after-final-deletion@example.com", "pending-after-final-deletion"
-	providerID := createCallbackTestProvider(t, st, ks, email, subject, true)
-	response := performLoginCallback(t, server, st, providerID, "/after-signup")
-	require.Equal(t, http.StatusFound, response.StatusCode)
-	location, err := response.Location()
-	require.NoError(t, err)
-	token := location.Query().Get("token")
-	require.NotEmpty(t, token)
-	nonce := signupNonceCookie(t, response, token)
-	require.NotNil(t, nonce)
-	admin, err := st.Users().GetByUsername(t.Context(), "admin")
-	require.NoError(t, err)
-	require.NoError(t, st.Users().Delete(t.Context(), admin.ID))
-	hasUsers, err := st.Users().HasAny(t.Context())
-	require.NoError(t, err)
-	require.False(t, hasUsers)
-	ctx, info := connect.NewClientContext(t.Context())
-	info.RequestHeader().Set("Cookie", nonce.Name+"="+nonce.Value)
-	completed, err := client.CompleteOAuthSignup(ctx, &leapmuxv1.CompleteOAuthSignupRequest{SignupToken: token, Username: "ordinaryoauth"})
-	require.Error(t, err, "ordinary OAuth signup must require an existing live account")
-	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-	assert.Nil(t, completed)
-	assert.Empty(t, info.ResponseHeader().Values("Set-Cookie"))
-	_, err = st.Users().GetByUsername(t.Context(), "ordinaryoauth")
-	require.ErrorIs(t, err, store.ErrNotFound)
-	_, err = st.OAuthUserLinks().Get(t.Context(), store.GetOAuthUserLinkParams{ProviderID: providerID, ProviderSubject: subject})
-	require.ErrorIs(t, err, store.ErrNotFound)
-	_, err = st.PendingOAuthSignups().Get(t.Context(), token)
-	require.NoError(t, err, "refused admission must retain the bound pending signup")
+	for _, populated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("populated=%t", populated), func(t *testing.T) {
+			base := hubtestutil.OpenTestStore(t)
+			if populated {
+				createRetainedAdministrator(t, base)
+			}
+			observed := &observedAdmissionStore{Store: base}
+			server, client, st, ks, _ := setupOAuthSignupServer(t, observed)
+			infoClient := newAuthTestClient(server.Client(), server.URL)
+			infoResponse, err := infoClient.GetSystemInfo(t.Context(), &leapmuxv1.GetSystemInfoRequest{})
+			require.NoError(t, err)
+			require.Equal(t, !populated, infoResponse.GetSetupRequired())
+			const email, subject = "pending-before-setup@example.com", "pending-before-setup"
+			providerID := createCallbackTestProvider(t, st, ks, email, subject, true)
+			response := performLoginCallback(t, server, st, providerID, "/after-signup")
+			require.Equal(t, http.StatusFound, response.StatusCode)
+			location, err := response.Location()
+			require.NoError(t, err)
+			token := location.Query().Get("token")
+			require.NotEmpty(t, token)
+			nonce := signupNonceCookie(t, response, token)
+			require.NotNil(t, nonce)
+			hasUsers, err := st.Users().HasAny(t.Context())
+			require.NoError(t, err)
+			require.Equal(t, populated, hasUsers)
+			if populated {
+				admin, err := st.Users().GetFirstAdmin(t.Context())
+				require.NoError(t, err)
+				require.ErrorIs(t, st.Users().Delete(t.Context(), admin.ID), store.ErrLastAdministrator)
+			}
+			observed.reads.Store(0)
+			observed.locks.Store(0)
+			ctx, info := connect.NewClientContext(t.Context())
+			info.RequestHeader().Set("Cookie", nonce.Name+"="+nonce.Value)
+			completed, err := client.CompleteOAuthSignup(ctx, &leapmuxv1.CompleteOAuthSignupRequest{SignupToken: token, Username: "ordinaryoauth"})
+			if populated {
+				require.NoError(t, err)
+				assert.False(t, completed.GetSessionReport().GetUser().GetIsAdmin())
+				user, err := base.Users().GetByUsername(t.Context(), "ordinaryoauth")
+				require.NoError(t, err)
+				assert.False(t, user.IsAdmin)
+				link, err := base.OAuthUserLinks().Get(t.Context(), store.GetOAuthUserLinkParams{ProviderID: providerID, ProviderSubject: subject})
+				require.NoError(t, err)
+				assert.Equal(t, user.ID, link.UserID)
+				_, err = base.PendingOAuthSignups().Get(t.Context(), token)
+				require.ErrorIs(t, err, store.ErrNotFound)
+				assert.Zero(t, observed.locks.Load())
+				assert.Zero(t, observed.reads.Load())
+				return
+			}
+			require.Error(t, err, "ordinary OAuth signup must require an existing live account")
+			assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+			assert.Nil(t, completed)
+			assert.Empty(t, info.ResponseHeader().Values("Set-Cookie"))
+			_, err = st.Users().GetByUsername(t.Context(), "ordinaryoauth")
+			require.ErrorIs(t, err, store.ErrNotFound)
+			_, err = st.OAuthUserLinks().Get(t.Context(), store.GetOAuthUserLinkParams{ProviderID: providerID, ProviderSubject: subject})
+			require.ErrorIs(t, err, store.ErrNotFound)
+			_, err = st.PendingOAuthSignups().Get(t.Context(), token)
+			require.NoError(t, err, "refused admission must retain the bound pending signup")
+		})
+	}
 }

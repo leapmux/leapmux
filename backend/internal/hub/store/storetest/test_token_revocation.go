@@ -26,6 +26,7 @@ const expiringLeaseDuration = 25 * time.Millisecond
 func (s *Suite) testTokenRevocation(t *testing.T) {
 	t.Run("direct revocation and privilege reduction share one generation sequence", func(t *testing.T) {
 		st := s.NewStore(t)
+		seedMembershipAdministrator(t, st, "retained-admin")
 		user := SeedUser(t, st, "generation-sequence-user")
 		owner := userid.MustNew(user.ID)
 		require.NoError(t, st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{ID: user.ID, IsAdmin: true}))
@@ -419,6 +420,7 @@ func (s *Suite) testTokenRevocation(t *testing.T) {
 
 	t.Run("admin demotion (is_admin true->false) emits a generation-bearing user_tokens revocation", func(t *testing.T) {
 		st := s.NewStore(t)
+		seedMembershipAdministrator(t, st, "retained-admin")
 		user := SeedUser(t, st, "user")
 
 		require.NoError(t, st.Users().UpdateAdmin(ctx, store.UpdateUserAdminParams{

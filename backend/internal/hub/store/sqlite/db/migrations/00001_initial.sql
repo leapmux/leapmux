@@ -1,6 +1,8 @@
 -- +goose Up
 
--- Account creation and deletion take this lock before any user-auth lock.
+-- Initial setup and account removal take this lock.
+-- Administrator demotion also takes it before locking the target user.
+-- Acquire it before user-auth locks. Ordinary signup does not use it.
 CREATE TABLE account_lifecycle_lock (
     singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1)
 );

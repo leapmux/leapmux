@@ -184,12 +184,10 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *leapmuxv1.Fi
 	// Re-check the controls at finish so an admin disable or a race on
 	// username/email between Begin and Finish cannot create an account past
 	// policy. This handler re-checks setup mode rather than carries it over
-	// from Begin, because the state can flip either way inside the ceremony
-	// window: a second operator can win the race to become the first
-	// administrator, and every user can vanish. This commit creates the hub's
-	// first account whenever it is still the first, and that account must be
-	// an admin, exactly like password sign-up -- otherwise the hub withdraws
-	// /setup and has no administrator.
+	// from Begin, because another operator can complete setup during the
+	// ceremony. Last-administrator protection keeps setup complete afterward.
+	// If setup is still required, this commit creates an administrator,
+	// exactly like password sign-up.
 	hasUser, err := s.checkHasAnyUser(ctx)
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
@@ -211,12 +209,11 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *leapmuxv1.Fi
 		email = ""
 		pendingEmail = draft.Email
 	}
-	admission := userCreationRequireExisting
+	admission := signupOrdinary
 	if isFirstUser {
-		admission = userCreationRequireEmpty
+		admission = signupInitialAdministrator
 	}
-	createdUser, storedCode, err := createUserInTx(ctx, s.store, createUserTxParams{
-		admission:    admission,
+	createdUser, storedCode, err := s.createSignupUser(ctx, admission, createUserTxParams{
 		now:          s.now,
 		userID:       draft.UserID,
 		username:     draft.Username,

@@ -16,8 +16,7 @@ import (
 // lives on AuthService because the facts it reports -- the signup gate, the
 // current setup state, passkey availability for an origin, solo access and the
 // captcha state -- belong to the sign-in flows, which use them too. This
-// response and sign-up read the same store query to decide whether the Hub
-// currently holds any live users.
+// response and sign-up share the runtime account-presence state.
 func (s *AuthService) systemInfo(ctx context.Context) (*leapmuxv1.GetSystemInfoResponse, error) {
 	// A failed read degrades to "no provider enabled", so the rest of the
 	// system information stays usable, and the sign-in page hides the

@@ -251,10 +251,8 @@ type Server struct {
 	// comment where it is created.
 	cancelServing context.CancelFunc
 	shutdownCh    chan struct{}
-	// leaseHeld closes once AcquireLease succeeded. It is the one readiness
-	// signal solo.Start waits on: a socket bound before the lease was held
-	// would accept a Worker whose dial then raced the shutdown of the
-	// predecessor this launch is waiting out.
+	// leaseHeld closes after lease acquisition and account-state initialization.
+	// A bound socket alone cannot prove that this Hub holds the runtime lease.
 	leaseHeld chan struct{}
 	// webSockets counts the hijacked handlers of every WebSocket route.
 	// The shutdown closes admission directly after shutdownCh, cancels the
@@ -275,6 +273,7 @@ type Server struct {
 	authContexts      *auth.AuthContextRegistry
 	workerMgr         *workermgr.Manager
 	workerConnector   *service.WorkerConnectorService
+	authService       *service.AuthService
 	crdtRegistry      *crdt.Registry
 	revocationWatcher runtimeLeaseWatcher
 	// workerEffects runs the out-of-database half of a worker's removal, for
@@ -1155,6 +1154,7 @@ func NewServer(cfg *config.Config, directory *lifecycle.DirectoryLease, opts ...
 		authContexts:      authContexts,
 		workerMgr:         wMgr,
 		workerConnector:   connectorSvc,
+		authService:       authSvc,
 		crdtRegistry:      crdtRegistry,
 		revocationWatcher: revWatcher,
 		workerEffects:     workerEffects,
@@ -1402,9 +1402,9 @@ func (s *Server) GetAdminUser(ctx context.Context) (userID string, err error) {
 	return user.ID, nil
 }
 
-// LeaseHeld reports the moment the Hub runtime lease was acquired: the channel
-// closes directly after a successful acquire, before Serve accepts on its
-// listeners. NewServer binds before Serve runs, so a bound socket alone does
+// LeaseHeld closes after the Hub acquires its runtime lease and initializes
+// account admission, before Serve accepts on its listeners.
+// NewServer binds before Serve runs, so a bound socket alone does
 // not prove that this Hub acquired its runtime lease. Solo waits for Ready,
 // which also includes listener startup.
 func (s *Server) LeaseHeld() <-chan struct{} {
@@ -1420,9 +1420,13 @@ func (s *Server) Serve(ctx context.Context) error {
 	// Register the watcher before starting listeners or other background work.
 	// Without the singleton runtime lease, serving authenticated traffic would let
 	// cleanup compact revocations this process did not observe.
-	if err := s.revocationWatcher.AcquireLease(serveCtx, s.cfg.RuntimeLeaseWait); err != nil {
-		// A refused lease never reaches the teardown below, so this path ends
-		// the hub's lifetime itself, before its store close. It is a shutdown
+	initializationErr := s.revocationWatcher.AcquireLease(serveCtx, s.cfg.RuntimeLeaseWait)
+	if initializationErr == nil {
+		initializationErr = s.authService.InitializeAccountState(serveCtx)
+	}
+	if err := initializationErr; err != nil {
+		// Failed initialization never reaches the teardown below, so this path
+		// ends the Hub's lifetime before its store closes. It is a shutdown
 		// as well, so the shutdown deadline limits its waits too.
 		s.shutdownDeadline.Start()
 		s.cancelServing()
@@ -1435,7 +1439,7 @@ func (s *Server) Serve(ctx context.Context) error {
 		// report a typed SQLITE_INTERRUPT instead of wrapping context.Canceled.
 		// Suppress only cancellation causes; retain independent storage and
 		// teardown failures even when a stop request arrives concurrently.
-		primary := fmt.Errorf("seed revocation watcher: %w", err)
+		primary := fmt.Errorf("initialize hub runtime: %w", err)
 		if errors.Is(serveCtx.Err(), context.Canceled) && errwrap.IsCancellationWith(err, sqlitedb.IsInterruption) {
 			primary = nil
 		}

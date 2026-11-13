@@ -47,7 +47,7 @@ leapmux control admin settings reset smtp
 
 You do not run a separate command. A refused command prints an address and a short code, waits while you approve it in a browser, and then runs. The credential stays verified for {{< duration elevation-window >}}, and every write slides that window forward. Reads (`list`, `get`) need no verification at all. See [Verifying a command-line credential](/docs/admin/security/#verifying-a-command-line-credential).
 
-**When a write takes effect** depends on the key's propagation class. A `hot` key reaches the hub instance that serves the write at once, because that instance replaces its cached settings snapshot right after the commit. Another hub instance on the same database picks the same change up within ~30 seconds, the lifetime of its own settings cache. A `restart` key applies only after a hub restart.
+**When a write takes effect** depends on the key's propagation class. A `hot` key reaches the serving Hub at once, because it replaces its cached settings snapshot after the commit. The runtime lease permits one serving Hub per database. A new Hub loads stored settings when it starts. A `restart` key applies only after a Hub restart.
 
 `list`, `get`, `set`, `set-secret`, and `reset` each state the class in a `propagation` field of `hot` or `restart`, and the Preferences dialog's administration panels show a "Requires Restart" badge.
 
@@ -121,6 +121,12 @@ leapmux control admin rate-limit reset   --operation elevation
 | `--window` | `set` | Window length in seconds (60–86400). |
 
 `list` takes no flags and reports every `rate_limit.*` key. `set` needs `--max-attempts`, `--window`, or both; it merges the field you pass and keeps the other. `set` never writes the switch — `enable` and `disable` own it — so adjusting a window cannot re-arm a limiter that you deliberately turned off.
+
+## Administrator membership
+
+The Hub retains at least one live administrator after setup. It refuses to delete or demote the last administrator, including when requests run concurrently. Deleted accounts do not count as remaining administrators.
+
+`--force` confirms deletion of an administrator or removal of your own administrator access. It cannot override the last-administrator rule. Create or promote another administrator before deleting or demoting the current one.
 
 ## User passwords
 

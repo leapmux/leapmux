@@ -19,8 +19,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Both handlers finish their preliminary policy reads before either creation
-// transaction begins. The real database still serializes every transaction.
+// Hold selected account transactions before BEGIN. A setup loser must refuse
+// while the winner holds its runtime claim, without entering another transaction.
 type accountCreationBarrier struct {
 	store.Store
 	armed     atomic.Bool
@@ -46,7 +46,7 @@ func TestSetupCreationSerializesPasswordAndPasskeyAdmission(t *testing.T) {
 	for _, factors := range [][2]string{{"password", "password"}, {"passkey", "passkey"}, {"password", "passkey"}} {
 		t.Run(factors[0]+" and "+factors[1], func(t *testing.T) {
 			base := hubtestutil.OpenTestStore(t)
-			barrier := &accountCreationBarrier{Store: base, holdCount: 2, arrived: make(chan struct{}, 2), release: make(chan struct{})}
+			barrier := &accountCreationBarrier{Store: base, holdCount: 1, arrived: make(chan struct{}, 2), release: make(chan struct{})}
 			env := setupEmptyPasskeyAuthTestServerWithStore(t, barrier, func(t *testing.T, set *settings.Manager) {
 				require.NoError(t, settings.KeySignupEnabled.Set(t.Context(), set, false))
 			}, nil)
@@ -86,34 +86,33 @@ func TestSetupCreationSerializesPasswordAndPasskeyAdmission(t *testing.T) {
 			for _, call := range calls {
 				go func() { results <- call() }()
 			}
-			for range 2 {
-				select {
-				case <-barrier.arrived:
-				case <-ctx.Done():
-					t.Fatal(ctx.Err())
-				}
+			select {
+			case <-barrier.arrived:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			info, err := env.client.GetSystemInfo(passkeyCtx(ctx), &leapmuxv1.GetSystemInfoRequest{})
+			require.NoError(t, err)
+			assert.True(t, info.GetSetupRequired(), "a claimed setup must not publish uncommitted presence")
+			var loser outcome
+			select {
+			case loser = <-results:
+				require.Error(t, loser.err, "the losing setup must finish while the winner is still blocked")
+				assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(loser.err))
+				assert.Empty(t, loser.userID)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
 			}
 			close(barrier.release)
 			released = true
-			successes, refusals := 0, 0
-			for range 2 {
-				select {
-				case result := <-results:
-					if result.err == nil {
-						successes++
-						assert.True(t, result.admin)
-						assert.NotEmpty(t, result.userID)
-					} else {
-						refusals++
-						assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(result.err))
-						assert.Empty(t, result.userID)
-					}
-				case <-ctx.Done():
-					t.Fatal(ctx.Err())
-				}
+			select {
+			case winner := <-results:
+				require.NoError(t, winner.err)
+				assert.True(t, winner.admin)
+				assert.NotEmpty(t, winner.userID)
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
 			}
-			assert.Equal(t, 1, successes, "only one setup request may create an administrator")
-			assert.Equal(t, 1, refusals, "a stale setup request must not become ordinary signup while signup is disabled")
 			count, err := base.Users().Count(ctx)
 			require.NoError(t, err)
 			assert.EqualValues(t, 1, count)
@@ -130,7 +129,7 @@ func TestSetupCreationSerializesPasswordAndPasskeyAdmission(t *testing.T) {
 	}
 }
 
-func TestFinalUserDeletionOrdersOrdinarySignupAdmission(t *testing.T) {
+func TestLastAdministratorDeletionCannotInterruptOrdinarySignup(t *testing.T) {
 	admin := setupAdminUserTest(t)
 	barrier := &accountCreationBarrier{Store: admin.st, holdCount: 1, arrived: make(chan struct{}, 2), release: make(chan struct{})}
 	env := setupEmptyPasskeyAuthTestServerWithStore(t, barrier, enableSignup, nil)
@@ -153,23 +152,23 @@ func TestFinalUserDeletionOrdersOrdinarySignupAdmission(t *testing.T) {
 		t.Fatal(ctx.Err())
 	}
 	_, err := admin.client.DeleteUser(authedReq(ctx, &leapmuxv1.DeleteUserRequest{User: service.SelectUserByID(admin.adminID), Force: true}, admin.token))
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	close(barrier.release)
 	released = true
 	select {
 	case err := <-result:
-		require.Error(t, err)
-		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+		require.NoError(t, err)
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
 	count, err := admin.st.Users().Count(ctx)
 	require.NoError(t, err)
-	assert.Zero(t, count)
+	assert.EqualValues(t, 2, count)
 	barrier.armed.Store(false)
-	created, err := env.client.SignUp(ctx, &leapmuxv1.SignUpRequest{Username: "setupafterdeletion", Password: "correct-horse-battery-staple"})
+	created, err := env.client.SignUp(ctx, &leapmuxv1.SignUpRequest{Username: "ordinaryafterrefusal", Password: "correct-horse-battery-staple"})
 	require.NoError(t, err)
-	assert.True(t, created.GetSessionReport().GetUser().GetIsAdmin())
+	assert.False(t, created.GetSessionReport().GetUser().GetIsAdmin())
 }
 
 type firstSignupDeliveryFailure struct {
@@ -217,8 +216,6 @@ func TestVerificationRollbackOrdersOrdinaryCreationInBothDirections(t *testing.T
 			case <-ctx.Done():
 				t.Fatal(ctx.Err())
 			}
-			_, err := admin.client.DeleteUser(authedReq(ctx, &leapmuxv1.DeleteUserRequest{User: service.SelectUserByID(admin.adminID), Force: true}, admin.token))
-			require.NoError(t, err)
 			secondResult := make(chan error, 1)
 			if !creationWins {
 				barrier.armed.Store(true)
@@ -255,23 +252,79 @@ func TestVerificationRollbackOrdersOrdinaryCreationInBothDirections(t *testing.T
 				creationReleased = true
 				select {
 				case err := <-secondResult:
-					require.Error(t, err)
-					assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+					require.NoError(t, err)
 				case <-ctx.Done():
 					t.Fatal(ctx.Err())
 				}
 			}
-			_, err = admin.st.Users().GetByUsername(ctx, "deliveryrollback")
+			_, err := admin.st.Users().GetByUsername(ctx, "deliveryrollback")
 			require.ErrorIs(t, err, store.ErrNotFound)
 			hasUser, err := admin.st.Users().HasAny(ctx)
 			require.NoError(t, err)
-			assert.Equal(t, creationWins, hasUser)
+			assert.True(t, hasUser)
 			if !creationWins {
 				barrier.armed.Store(false)
-				setup, err := env.client.SignUp(ctx, &leapmuxv1.SignUpRequest{Username: "setupafterrollback", Email: "setupafterrollback@example.com", Password: "correct-horse-battery-staple"})
+				setup, err := env.client.SignUp(ctx, &leapmuxv1.SignUpRequest{Username: "ordinaryafterrollback", Email: "setupafterrollback@example.com", Password: "correct-horse-battery-staple"})
 				require.NoError(t, err)
-				assert.True(t, setup.GetSessionReport().GetUser().GetIsAdmin())
+				assert.False(t, setup.GetSessionReport().GetUser().GetIsAdmin())
 			}
 		})
 	}
+}
+
+func TestVerificationRollbackPreservesAPromotedLastAdministratorAndPasskey(t *testing.T) {
+	admin := setupAdminUserTest(t)
+	sender := &firstSignupDeliveryFailure{entered: make(chan struct{}), release: make(chan struct{})}
+	env := setupEmptyPasskeyAuthTestServerWithStore(t, admin.st, func(t *testing.T, set *settings.Manager) {
+		enableSignup(t, set)
+		enableEmailVerification(t, set)
+	}, sender)
+	begin := beginPasskeySignUp(t, env.client, "promoted-during-delivery", "promoted@example.com")
+	ceremony := newPasskeyCeremony()
+	credential, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
+	require.NoError(t, err)
+	ctx := testutil.DeadlineContext(t)
+	result := make(chan error, 1)
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(sender.release)
+		}
+	})
+	go func() {
+		_, err := env.client.FinishPasskeySignUp(passkeyCtx(ctx), &leapmuxv1.FinishPasskeySignUpRequest{
+			Credential: &leapmuxv1.WebAuthnCredential{SessionId: begin.GetChallenge().GetSessionId(), CredentialJson: credential},
+		})
+		result <- err
+	}()
+	select {
+	case <-sender.entered:
+	case <-ctx.Done():
+		t.Fatal("verification delivery did not begin:", ctx.Err())
+	}
+	user, err := admin.st.Users().GetByUsername(ctx, "promoted-during-delivery")
+	require.NoError(t, err)
+	_, err = admin.client.SetUserAdmin(authedReq(ctx, &leapmuxv1.SetUserAdminRequest{
+		User: service.SelectUserByID(user.ID), IsAdmin: true,
+	}, admin.token))
+	require.NoError(t, err)
+	require.NoError(t, removeAdministrator(t, admin, admin.adminID, "delete"))
+	close(sender.release)
+	released = true
+	select {
+	case err := <-result:
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
+	case <-ctx.Done():
+		t.Fatal("failed signup did not finish:", ctx.Err())
+	}
+	remaining, err := admin.st.Users().GetFirstAdmin(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, user.ID, remaining.ID)
+	credentials, err := admin.st.PasskeyCredentials().ListByUser(ctx, user.ID)
+	require.NoError(t, err)
+	assert.Len(t, credentials, 1, "refused compensation must roll back passkey deletion also")
+	info, err := env.client.GetSystemInfo(passkeyCtx(ctx), &leapmuxv1.GetSystemInfoRequest{})
+	require.NoError(t, err)
+	assert.False(t, info.GetSetupRequired())
 }
