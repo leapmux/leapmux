@@ -137,7 +137,7 @@ jobs:
         run: task check-build-cache
 
       - name: Verify native CLI service lifecycle
-        run: node scripts/native-cli-ci.mjs
+        run: node scripts/run-test-suite.mjs native-cli node scripts/native-cli-ci.mjs
 
       - name: Save the Tauri tool snapshot
         # The packaging build completed; the trimmed tool cache is ready to
@@ -177,14 +177,14 @@ jobs:
         # `task test` tests every module. amd64 is the canonical
         # runner, so it runs the full suite, which includes the Docker-backed
         # storage backends (postgres/mysql/cockroachdb/tidb/yugabytedb).
-        run: task test
+        run: node scripts/run-test-suite.mjs full task test
 
       - name: Test native modules and cross-platform Go analysis
         if: matrix.arch == 'arm64'
         # Keep architecture-dependent tests and Go lint/vet on arm64.
         # Linux amd64 owns application frontend tests and portable validation,
         # including Docker-backed storage tests.
-        run: task test-native-linux
+        run: node scripts/run-test-suite.mjs native-linux task test-native-linux
 
       - name: Save the Go build outputs snapshot
         # The job completed all required validation, so the trimmed build
@@ -215,9 +215,9 @@ jobs:
           key: ${{ steps.setup.outputs.cache-key }}
           prefix: ${{ steps.setup.outputs.cache-prefix }}
 
-      - name: Upload end-to-end failure reports
-        if: failure()
-        uses: ./.github/actions/upload-e2e-failure-reports
+      - name: Upload test results
+        if: always()
+        uses: ./.github/actions/upload-test-results
 
       - name: Stop the resource monitor
         if: always() && vars.CI_RESOURCE_MONITOR == 'true'
@@ -251,7 +251,7 @@ jobs:
       - name: Test native modules
         # Linux amd64 owns portable validation. Keep Go and Rust tests here
         # because filesystem, process, IPC and desktop behavior depend on the OS.
-        run: task test-native
+        run: node scripts/run-test-suite.mjs native task test-native
 
       - name: Build
         # MACOS_CODESIGN_IDENTITY is intentionally unset here.
@@ -266,7 +266,7 @@ jobs:
         run: task check-build-cache
 
       - name: Verify native CLI service lifecycle
-        run: node scripts/native-cli-ci.mjs
+        run: node scripts/run-test-suite.mjs native-cli node scripts/native-cli-ci.mjs
 
       - name: Save the Tauri tool snapshot
         # The packaging build completed; the trimmed tool cache is ready to
@@ -315,9 +315,9 @@ jobs:
           key: ${{ steps.setup.outputs.cache-key }}
           prefix: ${{ steps.setup.outputs.cache-prefix }}
 
-      - name: Upload end-to-end failure reports
-        if: failure()
-        uses: ./.github/actions/upload-e2e-failure-reports
+      - name: Upload test results
+        if: always()
+        uses: ./.github/actions/upload-test-results
 
       - name: Stop the resource monitor
         if: always() && vars.CI_RESOURCE_MONITOR == 'true'
@@ -361,7 +361,7 @@ jobs:
         # shadows the MSVC linker. That prevents task test-native from running Cargo tests
         # correctly.
         shell: pwsh
-        run: task test-native
+        run: node scripts/run-test-suite.mjs native task test-native
 
       - name: Build all modules
         # Run under pwsh rather than bash. Git Bash prepends /usr/bin to
@@ -377,7 +377,7 @@ jobs:
 
       - name: Verify native CLI service lifecycle
         shell: pwsh
-        run: node scripts/native-cli-ci.mjs
+        run: node scripts/run-test-suite.mjs native-cli node scripts/native-cli-ci.mjs
 
       - name: Save the Tauri tool snapshot
         # The packaging build completed; the trimmed tool cache is ready to
@@ -426,9 +426,9 @@ jobs:
           key: ${{ steps.setup.outputs.cache-key }}
           prefix: ${{ steps.setup.outputs.cache-prefix }}
 
-      - name: Upload end-to-end failure reports
-        if: failure()
-        uses: ./.github/actions/upload-e2e-failure-reports
+      - name: Upload test results
+        if: always()
+        uses: ./.github/actions/upload-test-results
 
       - name: Stop the resource monitor
         if: always() && vars.CI_RESOURCE_MONITOR == 'true'

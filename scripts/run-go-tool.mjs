@@ -1,9 +1,11 @@
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { constants } from 'node:os'
-import { delimiter, isAbsolute, join, resolve } from 'node:path'
+import { basename, delimiter, isAbsolute, join, resolve } from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import { GO_TOOL_NAMES } from './go-tools.mjs'
+import { testReportPath } from './test-results-path.mjs'
 
 const root = resolve(import.meta.dirname, '..')
 
@@ -19,6 +21,12 @@ function exitStatus(result) {
 export function runGoTool(name, args, { checkout = root, cwd = process.cwd(), env = process.env, run = spawnSync } = {}) {
   if (!GO_TOOL_NAMES.includes(name))
     throw new Error(`Unknown Go tool: ${name ?? '(missing)'}.`)
+  if (name === 'gotestsum' && env.LEAPMUX_TEST_RESULTS_DIR && !args.some(arg => arg === '--junitfile' || arg.startsWith('--junitfile='))) {
+    const identity = createHash('sha256').update(resolve(cwd)).digest('hex').slice(0, 12)
+    const report = testReportPath(`go-${basename(cwd).replace(/[^a-z0-9-]/gi, '-').slice(0, 48)}-${identity}`, env)
+    if (report)
+      args = ['--junitfile', report, ...args]
+  }
   // Application build flags can select another module file or cross-compile a binary
   // that cannot run here. They apply to the tool's work, never to its compilation.
   // An empty GOFLAGS falls back to the user's persisted Go settings.

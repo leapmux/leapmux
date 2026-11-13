@@ -77,7 +77,11 @@ jobs:
         run: task build-dependency-imports
 
       - name: Validate Renovate renderers
-        run: task test-scripts -- ./scripts/renovate-pr-details.test.mjs ./scripts/renovate-dashboard.test.mjs
+        run: node scripts/run-test-suite.mjs renovate-renderers task test-scripts -- ./scripts/renovate-pr-details.test.mjs ./scripts/renovate-dashboard.test.mjs
+
+      - name: Upload test results
+        if: always()
+        uses: ./.github/actions/upload-test-results
 
       - name: Create read-only installation token
         id: read

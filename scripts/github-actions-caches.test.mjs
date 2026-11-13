@@ -1226,7 +1226,10 @@ describe('renovate workflow and protection', () => {
     expect(comments.env.GH_TOKEN).toBe(expression('steps.write.outputs.token'))
     expect(comments.run).toBe('task publish-renovate-details')
     const renderer = steps.find(step => step.name === 'Validate Renovate renderers')
-    expect(renderer.run).toBe('task test-scripts -- ./scripts/renovate-pr-details.test.mjs ./scripts/renovate-dashboard.test.mjs')
+    expect(renderer.run).toBe('node scripts/run-test-suite.mjs renovate-renderers task test-scripts -- ./scripts/renovate-pr-details.test.mjs ./scripts/renovate-dashboard.test.mjs')
+    const reports = steps.find(step => step.uses === './.github/actions/upload-test-results')
+    expect(reports.if).toBe('always()')
+    expect(steps.indexOf(reports)).toBeGreaterThan(steps.indexOf(renderer))
     expect(renderer.env?.GH_TOKEN).toBeUndefined()
     expect(steps.some(step => step.name === 'Validate PR detail comments')).toBe(false)
     const diagnostics = steps.find(step => step.name === 'Upload timing and diagnostic records')
@@ -1531,7 +1534,7 @@ describe('cache native setup', () => {
       expect(prune.if).toBe('github.ref == \'refs/heads/main\' && steps.go-cache-save.outputs.result == \'ready\'')
       expect(job.steps.indexOf(prune)).toBeGreaterThan(job.steps.indexOf(goSave))
       // The saves run at the end of the job, after every validation step.
-      const lastValidation = Math.max(...job.steps.map((step, index) => (/^task (?:test|test-native(?:-linux)?|build|check-build-cache|lint)$/.test(step.run ?? '') || step.run === 'node scripts/native-cli-ci.mjs')
+      const lastValidation = Math.max(...job.steps.map((step, index) => (/\btask (?:test|test-native(?:-linux)?|build|check-build-cache|lint)$/.test(step.run ?? '') || step.run?.endsWith('node scripts/native-cli-ci.mjs'))
         ? index
         : -1))
       expect(job.steps.indexOf(goSave)).toBeGreaterThan(lastValidation)

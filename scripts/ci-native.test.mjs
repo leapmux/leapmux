@@ -9,8 +9,8 @@ const root = resolve(import.meta.dirname, '..')
 const readYaml = path => Bun.YAML.parse(readFileSync(resolve(root, path), 'utf8'))
 const expression = body => `\${{ ${body} }}`
 // Each native runner tests the resource monitor's probes for its own OS.
-const MONITOR_TEST = 'bun test --timeout 30000 scripts/ci-resource-monitor.test.mjs scripts/ci-resource-monitor/'
-const CACHE_NATIVE_TEST = 'bun test --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs ./scripts/test-support.test.mjs ./scripts/run-go-tool.test.mjs ./scripts/download-go-modules.test.mjs ./scripts/download-cli-tools.test.mjs'
+const MONITOR_TEST = 'node scripts/run-bun-tests.mjs ci-monitor --timeout 30000 scripts/ci-resource-monitor.test.mjs scripts/ci-resource-monitor/'
+const CACHE_NATIVE_TEST = 'node scripts/run-bun-tests.mjs cache-native --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs ./scripts/test-support.test.mjs ./scripts/run-go-tool.test.mjs ./scripts/download-go-modules.test.mjs ./scripts/download-cli-tools.test.mjs'
 const fixtures = []
 
 afterEach(() => {
@@ -78,7 +78,7 @@ describe('native CI validation', () => {
     const linux = readYaml('.github/workflows/ci.yaml').jobs.linux
     for (const arch of ['amd64', 'arm64'])
       expect(linux.strategy.matrix.include.map(entry => entry.arch)).toContain(arch)
-    expect(linux.steps.find(step => step.run === 'task test-native-linux')?.if).toBe('matrix.arch == \'arm64\'')
+    expect(linux.steps.find(step => step.run === 'node scripts/run-test-suite.mjs native-linux task test-native-linux')?.if).toBe('matrix.arch == \'arm64\'')
     const armTests = commands(tasks, 'test-native-linux')
     for (const module of ['backend', 'desktop/go']) {
       const lint = commands(tasks, module === 'backend'
@@ -248,107 +248,58 @@ describe('native CI validation', () => {
 
   it('runs complete validation on Linux and native validation plus packaging on macOS and Windows', () => {
     const { jobs } = readYaml('.github/workflows/ci.yaml')
-    expect(jobs.linux.steps.find(step => step.run === 'task test')?.if).toBe('matrix.arch == \'amd64\'')
+    expect(jobs.linux.steps.find(step => step.run === 'node scripts/run-test-suite.mjs full task test')?.if).toBe('matrix.arch == \'amd64\'')
     expect(jobs.linux.steps.find(step => step.run === 'task lint')?.if).toBe('matrix.arch == \'amd64\'')
     for (const os of ['macos', 'windows']) {
       const steps = jobs[os].steps
-      expect(steps.filter(step => step.run === 'task test-native')).toHaveLength(1)
+      expect(steps.filter(step => step.run === 'node scripts/run-test-suite.mjs native task test-native')).toHaveLength(1)
       expect(steps.some(step => step.run === 'task test-no-docker')).toBe(false)
       expect(steps.some(step => step.run === 'task build')).toBe(true)
       expect(steps.some(step => step.run === 'task check-build-cache')).toBe(true)
       if (os === 'windows') {
-        for (const step of steps.filter(step => step.run?.startsWith('task ')))
+        for (const step of steps.filter(step => /^(?:task |node scripts\/run-test-suite\.mjs )/.test(step.run ?? '')))
           expect(step.shell).toBe('pwsh')
       }
     }
   })
 
-  it.each(['linux', 'macos', 'windows'])('uploads E2E failure evidence after the %s tests', (name) => {
+  it.each(['linux', 'macos', 'windows'])('uploads passing and failed test results after the %s tests', (name) => {
     const { steps } = readYaml('.github/workflows/ci.yaml').jobs[name]
-    const uploads = steps.filter(step => step.uses === './.github/actions/upload-e2e-failure-reports')
+    const uploads = steps.filter(step => step.uses === './.github/actions/upload-test-results')
     expect(uploads).toHaveLength(1)
-    expect(uploads[0].if).toBe('failure()')
-    const lastTest = steps.findLastIndex(step => /^task test(?:-native(?:-linux)?)?$/.test(step.run ?? ''))
+    expect(uploads[0].if).toBe('always()')
+    const lastTest = steps.findLastIndex(step => /\btask test(?:-native(?:-linux)?)?$/.test(step.run ?? ''))
     expect(lastTest).toBeGreaterThan(-1)
     expect(steps.indexOf(uploads[0])).toBeGreaterThan(lastTest)
   })
 
-  it('keeps E2E artifacts separate for every runner and run attempt without requiring files after an early failure', () => {
-    const action = readYaml('.github/actions/upload-e2e-failure-reports/action.yaml')
+  it('uploads one compressed archive with a distinct filename per runner, matrix cell and run attempt', () => {
+    const action = readYaml('.github/actions/upload-test-results/action.yaml')
     expect(action.runs.using).toBe('composite')
     const uploads = action.runs.steps.filter(step => step.uses?.startsWith('actions/upload-artifact@'))
     expect(uploads).toHaveLength(1)
     const upload = uploads[0]
-    expect(upload.if).toBe('always()')
+    expect(upload.if).toContain('always()')
+    expect(upload.if).toContain('steps.archive.outputs.archive != \'\'')
     expect(upload.uses).toMatch(/^actions\/upload-artifact@[a-f0-9]{40}$/)
-    expect(upload.with['if-no-files-found']).toBe('ignore')
-    // The retained fixtures live under .tmp, and Playwright also writes hidden last-run state.
+    expect(upload.with['if-no-files-found']).toBe('error')
+    expect(upload.with.archive).toBe(false)
+    expect(upload.with.path).toBe(expression('steps.archive.outputs.archive'))
     expect(upload.with['include-hidden-files']).toBe(true)
     expect(upload.with['retention-days']).toBeGreaterThan(0)
     expect(upload.with['retention-days']).toBeLessThanOrEqual(14)
+    const archive = action.runs.steps.find(step => step.id === 'archive')
+    expect(archive.if).toBe('always()')
+    expect(archive.run).toBe('node scripts/archive-test-results.mjs')
+    expect(archive.env.TEST_RESULTS_ARCHIVE_NAME).toContain(expression('strategy.job-index || \'0\''))
+    expect(archive.env.TEST_RESULTS_ARCHIVE_NAME).toEndWith('.tar.gz')
     for (const context of [
       'github.job',
       'runner.os',
       'runner.arch',
       'github.run_attempt',
     ])
-      expect(upload.with.name).toContain(expression(context))
-  })
-
-  it('selects retained E2E reports, attachments and logs without fixture dependencies or command environments', () => {
-    const action = readYaml('.github/actions/upload-e2e-failure-reports/action.yaml')
-    const upload = action.runs.steps.find(step => step.uses?.startsWith('actions/upload-artifact@'))
-    const patterns = upload.with.path.trim().split('\n').map(path => path.trim())
-    mkdirSync(join(root, '.tmp'), { recursive: true })
-    const dir = mkdtempSync(join(root, '.tmp', 'ci-e2e-artifacts-'))
-    fixtures.push(dir)
-    const selectFiles = () => {
-      const selected = new Set()
-      for (const pattern of patterns) {
-        const glob = new Bun.Glob(pattern.endsWith('/')
-          ? `${pattern}**/*`
-          : pattern)
-        for (const path of glob.scanSync({ cwd: dir, onlyFiles: true, dot: true }))
-          selected.add(path)
-      }
-      return [...selected].sort()
-    }
-    expect(selectFiles()).toEqual([])
-    const retained = '.tmp/e2e-launcher-fixture-failed'
-    const included = [
-      `${retained}/retained-artifacts/combined.json`,
-      `${retained}/retained-artifacts/.last-run.json`,
-      `${retained}/retained-artifacts/runs/e2e-private/shard-1/console.log`,
-      `${retained}/retained-artifacts/runs/e2e-private/shard-1/blob-report/report.zip`,
-      `${retained}/retained-artifacts/runs/e2e-private/shard-1/test-results/failed-spec/trace.zip`,
-      `${retained}/retained-artifacts/runs/e2e-private/shard-1/test-results/failed-spec/attachments/receipt.txt`,
-      `${retained}/launcher-artifacts/report.json`,
-      `${retained}/launcher-console-private.log`,
-      `${retained}/first-report.json`,
-      `${retained}/records/entry-alpha.json`,
-      `${retained}/records/exit-alpha.json`,
-      'frontend/test-results/runs/e2e-private/report.json',
-      'frontend/test-results/runs/e2e-private/shard-1/test-results/failed-spec/trace.zip',
-      'frontend/test-results/.last-run-report.json',
-      'frontend/playwright-report/index.html',
-      'frontend/playwright-report/data/trace.zip',
-      'frontend/blob-report/report.zip',
-    ]
-    const excluded = [
-      `${retained}/frontend/node_modules/private-package/index.js`,
-      `${retained}/frontend/.env`,
-      `${retained}/.tmp/leapmux-e2e-private/nonce`,
-      '.tmp/windows-command-job-private/payload.json',
-      '.tmp/unrelated/report.json',
-    ]
-    for (const path of [
-      ...included,
-      ...excluded,
-    ]) {
-      mkdirSync(resolve(dir, path, '..'), { recursive: true })
-      writeFileSync(join(dir, path), 'fixture evidence')
-    }
-    expect(selectFiles()).toEqual([...included].sort())
+      expect(archive.env.TEST_RESULTS_ARCHIVE_NAME).toContain(expression(context))
   })
 
   it.each(['linux', 'macos', 'windows'])('monitors the %s runner on request, from before the cache restorations to the end of the job', (name) => {
@@ -358,7 +309,7 @@ describe('native CI validation', () => {
     const stop = steps.findIndex(step => step.uses === './.github/actions/ci-resource-monitor' && step.with.mode === 'stop')
     const setupIndex = steps.findIndex(step => step.uses === './.github/actions/setup-build')
     const setup = steps[setupIndex]
-    const tests = steps.findIndex(step => /^task test(?:-native(?:-linux)?)?$/.test(step.run ?? ''))
+    const tests = steps.findIndex(step => /\btask test(?:-native(?:-linux)?)?$/.test(step.run ?? ''))
     // The job keeps only the stop step; the start moved into the setup.
     expect(steps.filter(step => step.uses === './.github/actions/ci-resource-monitor')).toHaveLength(1)
     expect(stop).toBe(steps.length - 1)
