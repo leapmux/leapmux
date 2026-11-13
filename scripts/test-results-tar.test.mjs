@@ -6,6 +6,7 @@ import process from 'node:process'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { encodeTar, writeTestResultsArchive } from './test-results-tar.mjs'
 import { scratchDirectories, writeFiles } from './test-support.mjs'
+import { extractTarForTests } from './test-support/tar-reader.mjs'
 
 const scratch = scratchDirectories()
 afterEach(scratch.cleanup)
@@ -157,12 +158,7 @@ describe('writeTestResultsArchive', () => {
     const archive = join(root, 'reports.tar.gz')
     await writeTestResultsArchive(root, Object.keys(files), archive)
     const destination = scratch.create('streamed-tar-extracted')
-    const result = spawnSync('tar', ['-xzf', '-'], {
-      cwd: destination,
-      input: readFileSync(archive),
-      encoding: 'utf8',
-    })
-    expect(result.status, result.stderr).toBe(0)
+    expect(extractTarForTests(archive, destination)).toBe(Object.keys(files).length)
     for (const [path, contents] of Object.entries(files))
       expect(readFileSync(join(destination, path))).toEqual(contents)
   })

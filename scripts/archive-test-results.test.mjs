@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { archiveTestResults, collectTestResultFiles } from './archive-test-results.mjs'
 import { scratchDirectories, writeFiles } from './test-support.mjs'
+import { extractTarForTests } from './test-support/tar-reader.mjs'
 
 const scratch = scratchDirectories()
 afterEach(scratch.cleanup)
@@ -39,12 +40,7 @@ describe('archiveTestResults', () => {
     writeFiles(root, { [file]: 'Unicode report contents\n' })
     const archive = await archiveTestResults({ root })
     const destination = scratch.create('extracted-unicode-reports')
-    const extracted = spawnSync('tar', ['-xzf', '-'], {
-      cwd: destination,
-      input: readFileSync(archive),
-      encoding: 'utf8',
-    })
-    expect(extracted.status, extracted.stderr).toBe(0)
+    expect(extractTarForTests(archive, destination)).toBe(1)
     expect(readFileSync(join(destination, file), 'utf8')).toBe('Unicode report contents\n')
   })
 
@@ -101,8 +97,7 @@ describe('archiveTestResults', () => {
     const archive = await archiveTestResults({ root, name: 'test-results-fixture.tar.gz' })
     expect(readFileSync(archive).subarray(0, 2)).toEqual(Buffer.from([0x1F, 0x8B]))
     const destination = scratch.create('extracted-test-results')
-    const extracted = spawnSync('tar', ['-xzf', archive, '-C', destination], { encoding: 'utf8' })
-    expect(extracted.status, extracted.stderr).toBe(0)
+    expect(extractTarForTests(archive, destination)).toBe(Object.keys(files).length)
     for (const [path, contents] of Object.entries(files))
       expect(readFileSync(join(destination, path))).toEqual(Buffer.from(contents))
     expect(existsSync(join(destination, '.tmp/windows-command-job-private'))).toBe(false)
