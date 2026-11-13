@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import process from 'node:process'
+import { pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'bun:test'
 import { archiveTestResults, collectTestResultFiles } from './archive-test-results.mjs'
 import { scratchDirectories, writeFiles } from './test-support.mjs'
@@ -11,6 +12,30 @@ const scratch = scratchDirectories()
 afterEach(scratch.cleanup)
 
 describe('archiveTestResults', () => {
+  for (const scenario of [
+    { label: 'ASCII paths', prefix: 'node-archive', file: 'report.log' },
+    { label: 'spaces in the working directory', prefix: 'node archive spaces', file: 'report.log' },
+    { label: 'a Unicode report filename', prefix: 'node-archive', file: '日本語.log' },
+    { label: 'a Unicode working directory', prefix: 'node archive 日本語', file: 'report.log' },
+  ]) {
+    it(`creates an archive through Node with ${scenario.label}`, () => {
+      const root = scratch.create(scenario.prefix)
+      writeFiles(root, { [`.tmp/test-results/${scenario.file}`]: 'report contents' })
+      const module = pathToFileURL(resolve(import.meta.dirname, 'archive-test-results.mjs')).href
+      const program = `import { archiveTestResults } from ${JSON.stringify(module)}; console.log(archiveTestResults({ root: process.argv[1] }));`
+      const result = spawnSync('node', [
+        '--input-type=module',
+        '-e',
+        program,
+        root,
+      ], { encoding: 'utf8' })
+      const version = result.status === 0
+        ? ''
+        : spawnSync('tar', ['--version'], { encoding: 'utf8' }).stdout
+      expect(result.status, `${result.stderr}\n${version}`).toBe(0)
+    })
+  }
+
   it('preserves Unicode paths without passing filenames through tar arguments or input lists', () => {
     const root = scratch.create('archive 日本語 paths')
     const file = '.tmp/test-results/space 日本語.log'
