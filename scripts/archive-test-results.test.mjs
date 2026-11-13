@@ -22,36 +22,22 @@ describe('archiveTestResults', () => {
       const root = scratch.create(scenario.prefix)
       writeFiles(root, { [`.tmp/test-results/${scenario.file}`]: 'report contents' })
       const module = pathToFileURL(resolve(import.meta.dirname, 'archive-test-results.mjs')).href
-      const program = `import { archiveTestResults } from ${JSON.stringify(module)}; console.log(archiveTestResults({ root: process.argv[1] }));`
+      const program = `import { archiveTestResults } from ${JSON.stringify(module)}; console.log(await archiveTestResults({ root: process.argv[1] }));`
       const result = spawnSync('node', [
         '--input-type=module',
         '-e',
         program,
         root,
       ], { encoding: 'utf8' })
-      const version = result.status === 0
-        ? ''
-        : spawnSync('tar', ['--version'], { encoding: 'utf8' }).stdout
-      expect(result.status, `${result.stderr}\n${version}`).toBe(0)
+      expect(result.status, result.stderr).toBe(0)
     })
   }
 
-  it('preserves Unicode paths without passing filenames through tar arguments or input lists', () => {
+  it('preserves Unicode paths in a streamed archive', async () => {
     const root = scratch.create('archive 日本語 paths')
     const file = '.tmp/test-results/space 日本語.log'
     writeFiles(root, { [file]: 'Unicode report contents\n' })
-    let invoked = false
-    const archive = archiveTestResults({
-      root,
-      run: (command, args, options) => {
-        invoked = true
-        expect(options.input).toBeUndefined()
-        expect(args).not.toContain('-T')
-        expect(args.every(arg => /^[\x20-\x7E]+$/.test(arg))).toBe(true)
-        return spawnSync(command, args, options)
-      },
-    })
-    expect(invoked).toBe(true)
+    const archive = await archiveTestResults({ root })
     const destination = scratch.create('extracted-unicode-reports')
     const extracted = spawnSync('tar', ['-xzf', '-'], {
       cwd: destination,
@@ -80,7 +66,7 @@ describe('archiveTestResults', () => {
       ? join(root, '.tmp/test-results-archives/fixture-results.tar.gz')
       : '')
   })
-  it('compresses all report sources into one archive with relative paths and complete bytes', () => {
+  it('compresses all report sources into one archive with relative paths and complete bytes', async () => {
     const root = scratch.create('all test reports')
     const files = {
       '.tmp/test-results/backend-private/console.log': 'Go test output\n',
@@ -112,7 +98,7 @@ describe('archiveTestResults', () => {
       '.tmp/unrelated/report.json': 'unrelated',
     })
     expect(collectTestResultFiles(root)).toEqual(Object.keys(files).sort())
-    const archive = archiveTestResults({ root, name: 'test-results-fixture.tar.gz' })
+    const archive = await archiveTestResults({ root, name: 'test-results-fixture.tar.gz' })
     expect(readFileSync(archive).subarray(0, 2)).toEqual(Buffer.from([0x1F, 0x8B]))
     const destination = scratch.create('extracted-test-results')
     const extracted = spawnSync('tar', ['-xzf', archive, '-C', destination], { encoding: 'utf8' })
@@ -123,9 +109,9 @@ describe('archiveTestResults', () => {
     expect(readdirSync(dirname(archive))).toEqual(['test-results-fixture.tar.gz'])
   })
 
-  it('skips empty runs and rejects unsafe archive names', () => {
+  it('skips empty runs and rejects unsafe archive names', async () => {
     const root = scratch.create('empty-test-results')
-    expect(archiveTestResults({ root })).toBeUndefined()
+    expect(await archiveTestResults({ root })).toBeUndefined()
     writeFiles(root, { '.tmp/test-results/console.log': 'test output' })
     for (const name of [
       '../escape.tar.gz',
@@ -133,7 +119,7 @@ describe('archiveTestResults', () => {
       'two\nlines.tar.gz',
       'file.zip',
     ])
-      expect(() => archiveTestResults({ root, name })).toThrow('archive name')
+      await expect(archiveTestResults({ root, name })).rejects.toThrow('archive name')
   })
 
   it('excludes symlinked report directories and files', () => {
@@ -155,16 +141,31 @@ describe('archiveTestResults', () => {
     expect(collectTestResultFiles(root)).toEqual([])
   })
 
-  it('keeps an earlier archive when compression fails', () => {
+  it('keeps an earlier archive when compression fails', async () => {
     const root = scratch.create('test-results-archive-failure')
     writeFiles(root, { '.tmp/test-results/console.log': 'test output' })
-    const previous = archiveTestResults({ root })
+    const previous = await archiveTestResults({ root })
     const contents = readFileSync(previous)
-    expect(() => archiveTestResults({
+    await expect(archiveTestResults({
       root,
-      run: () => ({ status: 3 }),
-    })).toThrow('tar')
+      write: async () => { throw new Error('fixture compression failure') },
+    })).rejects.toThrow('fixture compression failure')
     expect(readFileSync(previous)).toEqual(contents)
     expect(readdirSync(dirname(previous))).toEqual(['test-results.tar.gz'])
+  })
+
+  it('creates archives through Node without platform executables', () => {
+    const root = scratch.create('no-archive-executable')
+    writeFiles(root, { '.tmp/test-results/日本語.log': 'report' })
+    const module = pathToFileURL(resolve(import.meta.dirname, 'archive-test-results.mjs')).href
+    const program = `import { archiveTestResults } from ${JSON.stringify(module)}; process.env.PATH=''; console.log(await archiveTestResults({ root: process.argv[1] }));`
+    const result = spawnSync('node', [
+      '--input-type=module',
+      '-e',
+      program,
+      root,
+    ], { encoding: 'utf8' })
+    expect(result.status, result.stderr).toBe(0)
+    expect(existsSync(result.stdout.trim())).toBe(true)
   })
 })

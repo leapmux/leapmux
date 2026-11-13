@@ -1,9 +1,9 @@
-import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
+import { writeTestResultsArchive } from './test-results-tar.mjs'
 
 const checkout = resolve(import.meta.dirname, '..')
 
@@ -82,7 +82,7 @@ export function collectTestResultFiles(root) {
 }
 
 /** Create one gzip archive without replacing a previous archive until compression succeeds. */
-export function archiveTestResults({ root = checkout, name = 'test-results.tar.gz', run = spawnSync } = {}) {
+export async function archiveTestResults({ root = checkout, name = 'test-results.tar.gz', write = writeTestResultsArchive } = {}) {
   if (typeof name !== 'string' || !/^[a-z0-9][\w.-]{0,200}\.tar\.gz$/i.test(name))
     throw new Error('The test-results archive name must be a filename ending in .tar.gz.')
   root = resolve(root)
@@ -92,28 +92,13 @@ export function archiveTestResults({ root = checkout, name = 'test-results.tar.g
   const parent = join(root, '.tmp/test-results-archives')
   mkdirSync(parent, { recursive: true })
   const staging = mkdtempSync(join(parent, 'packing-'))
-  const contents = join(staging, 'files')
   const draft = join(staging, name)
   const destination = join(parent, name)
   const failures = []
   try {
-    // Windows tar interprets file-list bytes through its active code page, which can change UTF-8 filenames.
-    // Node copies the selected files through Unicode filesystem APIs. Tar discovers their names through directory traversal.
-    for (const file of files) {
-      const target = join(contents, file)
-      mkdirSync(dirname(target), { recursive: true })
-      copyFileSync(join(root, file), target)
-    }
-    const result = run('tar', [
-      '-czf',
-      `../${name}`,
-      '.',
-    ], {
-      cwd: contents,
-      stdio: ['ignore', 'inherit', 'inherit'],
-    })
-    if (result.error || result.status !== 0)
-      throw new Error(`tar failed to compress test results: ${result.error?.message ?? result.signal ?? result.status}`)
+    // Windows bsdtar 3.8.9 crashes when creating an archive with a Unicode filename, even through Node.
+    // The streaming writer encodes UTF-8 paths directly and needs no platform executable or temporary report copies.
+    await write(root, files, draft)
     renameSync(draft, destination)
   }
   catch (error) {
@@ -139,7 +124,7 @@ export function archiveTestResults({ root = checkout, name = 'test-results.tar.g
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
-    const archive = archiveTestResults({
+    const archive = await archiveTestResults({
       root: process.cwd(),
       name: process.env.TEST_RESULTS_ARCHIVE_NAME || 'test-results.tar.gz',
     })

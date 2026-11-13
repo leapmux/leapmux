@@ -10,7 +10,7 @@ const readYaml = path => Bun.YAML.parse(readFileSync(resolve(root, path), 'utf8'
 const expression = body => `\${{ ${body} }}`
 // Each native runner tests the resource monitor's probes for its own OS.
 const MONITOR_TEST = 'node scripts/run-bun-tests.mjs ci-monitor --timeout 30000 scripts/ci-resource-monitor.test.mjs scripts/ci-resource-monitor/'
-const CI_RESULTS_TEST = 'node scripts/run-bun-tests.mjs ci-results --timeout 30000 ./scripts/run-test-suite.test.mjs ./scripts/archive-test-results.test.mjs ./scripts/run-bun-tests.test.mjs ./scripts/test-results-path.test.mjs'
+const CI_RESULTS_TEST = 'node scripts/run-bun-tests.mjs ci-results --timeout 30000 ./scripts/run-test-suite.test.mjs ./scripts/archive-test-results.test.mjs ./scripts/run-bun-tests.test.mjs ./scripts/test-results-path.test.mjs ./scripts/test-results-tar.test.mjs'
 const CACHE_NATIVE_TEST = 'node scripts/run-bun-tests.mjs cache-native --timeout 120000 ./scripts/cache-policy.test.mjs ./scripts/cache-snapshot.test.mjs ./scripts/cache-snapshot.native.test.mjs ./scripts/test-support.test.mjs ./scripts/run-go-tool.test.mjs ./scripts/download-go-modules.test.mjs ./scripts/download-cli-tools.test.mjs'
 const fixtures = []
 
