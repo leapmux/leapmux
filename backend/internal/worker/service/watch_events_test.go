@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -947,11 +948,35 @@ func TestWatchEvents_BindStreamRefusalReleasesOwnership(t *testing.T) {
 	waitAgentWatchCount(t, svc, "agent-1", 0)
 }
 
+// cancelOnAckWriter cancels its bound stream when the session sends the ack of
+// the revision updateID. apply sends that ack after it registers the revision
+// and before its last ownership check, so the cancel lands between the two
+// whatever the scheduler does.
+type cancelOnAckWriter struct {
+	*testResponseWriter
+	updateID  uint64
+	cancelled atomic.Bool
+}
+
+func (w *cancelOnAckWriter) SendStream(m *leapmuxv1.InnerStreamMessage) error {
+	err := w.testResponseWriter.SendStream(m)
+	var resp leapmuxv1.WatchEventsResponse
+	if proto.Unmarshal(m.GetPayload(), &resp) == nil && resp.GetUpdateAck().GetUpdateId() == w.updateID && w.cancelled.CompareAndSwap(false, true) {
+		w.deliverStreamRequest(nil, true)
+	}
+	return err
+}
+
 // TestWatchEvents_PromoteAfterCancelSkipsReplay pins the ownership re-check
-// before the catch-up burst: a promote revision racing a cancel must NOT ship a
-// catch-up replay to a retired session. Without the re-check the replay loop
-// only gated sends on transport-death, not ownership, so a superseded session
-// could emit a full catch-up burst the client no longer reads.
+// before the catch-up burst: a cancel that retires the session while it applies
+// a promote revision must keep the catch-up replay from going out. The replay
+// loop stops its sends on a transport failure only, not on ownership, so without
+// the re-check a cancelled session would send a full catch-up burst that the
+// client no longer reads.
+//
+// The cancel must arrive inside apply. A promote that the session applies whole
+// before the cancel arrives replays correctly, so a test that sends the cancel
+// after the promote and waits would depend on the scheduler.
 func TestWatchEvents_PromoteAfterCancelSkipsReplay(t *testing.T) {
 	t.Parallel()
 
@@ -961,27 +986,32 @@ func TestWatchEvents_PromoteAfterCancelSkipsReplay(t *testing.T) {
 		ID: "agent-1", WorkingDir: "/tmp",
 	}))
 
-	dispatch(d, leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, &leapmuxv1.WatchEventsRequest{
+	cancelling := &cancelOnAckWriter{testResponseWriter: w, updateID: 1}
+	subscribe, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{
 		Agents: []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_NOTIFY}},
-	}, w)
+	})
+	require.NoError(t, err)
+	dispatchTestRequest(d, ctx, channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{
+		Method: leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, Payload: subscribe,
+	}, cancelling)
 	waitAgentWatchCount(t, svc, "agent-1", 1)
 	require.Equal(t, 0, countCatchUpCompletes(w))
 
-	// Promote to FULL, then cancel the stream before the replay can land. The
-	// ownership re-check in apply must suppress the catch-up burst.
+	// Promote to FULL. The writer cancels the stream when the ack of the
+	// promote goes out.
 	promote, err := proto.Marshal(&leapmuxv1.WatchEventsRequest{
 		UpdateId: 1,
 		Agents:   []*leapmuxv1.WatchAgentEntry{{AgentId: "agent-1", Mode: leapmuxv1.WatchMode_WATCH_MODE_FULL, ReplayId: 1}},
 	})
 	require.NoError(t, err)
 	w.deliverStreamRequest(promote, false)
-	w.deliverStreamRequest(nil, true) // cancel retires ownership via OnCancel
 
-	// Give the apply goroutine a moment to observe the cancel; the replay must
-	// be suppressed (no CatchUpComplete for the retired session).
-	time.Sleep(100 * time.Millisecond)
+	// The session sends its End frame after apply returns, so every send of the
+	// promote comes before it.
+	waitStreamEnded(t, w)
+	require.True(t, cancelling.cancelled.Load(), "the session must send the ack of the promote")
 	assert.Equal(t, 0, countCatchUpCompletes(w),
-		"a promote racing a cancel must not ship a catch-up replay")
+		"a cancel that retires the session before its catch-up burst must keep the burst from going out")
 }
 
 // TestReplayIncludesBackgroundTasksSnapshot pins the background-task step of
