@@ -50,11 +50,11 @@ func setupCaptchaAuthService(t *testing.T, solo bool) (authTestClient, *keystore
 	cfg.SoloMode = solo
 	authDeps := servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	authDeps.Captcha = captchaMgr
-	authSvc := service.NewAuthService(authDeps)
+	authSvc := newInitializedAuthService(t, authDeps)
 
 	mux := http.NewServeMux()
 	connectServer := connect.NewServer()
-	mountAuthAndSystem(connectServer, authSvc, set)
+	mountAuthAndSystem(t, connectServer, authSvc, set)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
@@ -102,7 +102,7 @@ func TestGetAltchaChallenge_SoloReturnsEmpty(t *testing.T) {
 func TestGetAltchaChallenge_NilCaptchaReportsDisabled(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	set := servicetest.NewSettingsManager(t, st, nil)
-	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil)))
+	authSvc := newInitializedAuthService(t, servicetest.AuthServiceDeps(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 
 	// A nil captcha dependency means "subsystem absent": challenges stand
 	// down with an empty payload (the widget's stand-down signal), and
@@ -165,7 +165,7 @@ func TestGetAltchaChallenge_FailsClosedWhenCaptchaUnreachable(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	authDeps := servicetest.AuthServiceDeps(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	authDeps.Captcha = failingCaptchaStub{Config: captcha.DisabledConfig(), err: errors.New("settings snapshot unavailable")}
-	authSvc := service.NewAuthService(authDeps)
+	authSvc := newInitializedAuthService(t, authDeps)
 
 	var resp *leapmuxv1.GetSystemInfoResponse
 	_, err := callUnderServerInfo(context.Background(), func(callCtx context.Context) error {

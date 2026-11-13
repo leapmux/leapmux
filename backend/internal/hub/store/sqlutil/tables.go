@@ -25,7 +25,7 @@ var SQLTruncateTableOrder = []string{
 	"oauth_clients",
 	"workspaces", "worker_registration_keys", "workers",
 	"passkey_credentials", "webauthn_sessions",
-	"user_sessions", "users", "account_lifecycle_lock",
+	"user_sessions", "users",
 }
 
 // TruncateStatement is the DELETE one table needs to be emptied between tests.

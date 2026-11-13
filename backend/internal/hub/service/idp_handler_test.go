@@ -456,9 +456,9 @@ func setupOAuthSignupServer(t *testing.T, st store.Store) (
 	t.Cleanup(registry.Stop)
 	authDeps := servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	authDeps.Keystore = ks
-	authSvc := service.NewAuthService(authDeps)
+	authSvc := newInitializedAuthService(t, authDeps)
 	connectServer := connect.NewServer(interceptor)
-	mountAuthAndSystem(connectServer, authSvc, set)
+	mountAuthAndSystem(t, connectServer, authSvc, set)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)
@@ -906,7 +906,7 @@ func TestCompleteOAuthSignup_UntrustedFailClosedWhenVerificationEmailFails(t *te
 	authDeps := servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	authDeps.Keystore = ks
 	authDeps.Mail = &mailSenderDouble{err: errors.New("smtp down")}
-	authSvc := service.NewAuthService(authDeps)
+	authSvc := newInitializedAuthService(t, authDeps)
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
@@ -1938,7 +1938,6 @@ func TestCompleteOAuthSignupRequiresALiveExistingUser(t *testing.T) {
 				require.ErrorIs(t, st.Users().Delete(t.Context(), admin.ID), store.ErrLastAdministrator)
 			}
 			observed.reads.Store(0)
-			observed.locks.Store(0)
 			ctx, info := connect.NewClientContext(t.Context())
 			info.RequestHeader().Set("Cookie", nonce.Name+"="+nonce.Value)
 			completed, err := client.CompleteOAuthSignup(ctx, &leapmuxv1.CompleteOAuthSignupRequest{SignupToken: token, Username: "ordinaryoauth"})
@@ -1953,7 +1952,6 @@ func TestCompleteOAuthSignupRequiresALiveExistingUser(t *testing.T) {
 				assert.Equal(t, user.ID, link.UserID)
 				_, err = base.PendingOAuthSignups().Get(t.Context(), token)
 				require.ErrorIs(t, err, store.ErrNotFound)
-				assert.Zero(t, observed.locks.Load())
 				assert.Zero(t, observed.reads.Load())
 				return
 			}

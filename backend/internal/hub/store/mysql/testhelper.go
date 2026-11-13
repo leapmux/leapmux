@@ -76,9 +76,6 @@ func (h *mysqlTestHelper) TruncateAll(ctx context.Context) error {
 	if _, err := h.db.ExecContext(ctx, "INSERT INTO revocation_event_sequence (id, last_seq) VALUES (1, 0)"); err != nil {
 		return fmt.Errorf("reset revocation_event_sequence: %w", err)
 	}
-	if _, err := h.db.ExecContext(ctx, "INSERT INTO account_lifecycle_lock (singleton_id) VALUES (1)"); err != nil {
-		return fmt.Errorf("reset account lifecycle lock: %w", err)
-	}
 	return nil
 }
 

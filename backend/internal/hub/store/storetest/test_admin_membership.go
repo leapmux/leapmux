@@ -28,6 +28,11 @@ func mutateMembership(ctx context.Context, st store.Store, userID, operation str
 }
 
 func (s *Suite) testAdministratorMembership(t *testing.T) {
+	t.Run("locking removal requires a transaction", func(t *testing.T) {
+		st := s.NewStore(t)
+		_, err := st.Users().LockForRemoval(t.Context(), "absent")
+		require.ErrorIs(t, err, store.ErrLockingReadOutsideTransaction)
+	})
 	for _, operation := range []string{"delete", "demote"} {
 		t.Run(operation+" refuses the last live administrator", func(t *testing.T) {
 			st := s.NewStore(t)

@@ -6,6 +6,7 @@ package postgres
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
@@ -15,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store"
 	gendb "github.com/leapmux/leapmux/internal/hub/store/postgres/generated/db"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/util/ctxutil"
 )
 
 // pgStore implements store.Store backed by PostgreSQL.
@@ -28,15 +30,17 @@ type pgStore struct {
 var _ store.Store = (*pgStore)(nil)
 
 type pgShared struct {
-	pool        *pgxpool.Pool
-	migrationDB *sql.DB // database/sql wrapper for goose migrations
-	migrator    store.Migrator
+	adminMembership ctxutil.Mutex
+	pool            *pgxpool.Pool
+	migrationDB     *sql.DB // database/sql wrapper for goose migrations
+	migrator        store.Migrator
 }
 
 type pgConn struct {
-	shared *pgShared
-	exec   gendb.DBTX // pool outside tx, pgx.Tx inside tx
-	q      *gendb.Queries
+	adminMembershipLocked bool
+	shared                *pgShared
+	exec                  gendb.DBTX // pool outside tx, pgx.Tx inside tx
+	q                     *gendb.Queries
 }
 
 // Open connects to a PostgreSQL database, runs migrations, and returns a Store.
@@ -269,12 +273,14 @@ func (c *pgConn) withTransaction(ctx context.Context, fn func(tx *pgConn) error)
 	if c.inTx() {
 		return fn(c)
 	}
-	return store.RetryOnConflict(ctx, isRetryableConflict, func() error { return c.runTransaction(ctx, fn) })
+	return store.RunAdminMembershipTransaction(ctx, &c.shared.adminMembership, func(held bool) error {
+		return store.RetryOnConflict(ctx, isRetryableConflict, func() error { return c.runTransaction(ctx, held, fn) })
+	})
 }
 
 // runTransaction is one attempt: begin, run, commit, and roll back whatever
 // the attempt left behind.
-func (c *pgConn) runTransaction(ctx context.Context, fn func(tx *pgConn) error) error {
+func (c *pgConn) runTransaction(ctx context.Context, adminMembershipLocked bool, fn func(tx *pgConn) error) error {
 	pgxTx, err := c.shared.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -282,8 +288,9 @@ func (c *pgConn) runTransaction(ctx context.Context, fn func(tx *pgConn) error) 
 	defer func() { _ = pgxTx.Rollback(ctx) }()
 
 	txConn := &pgConn{
-		shared: c.shared,
-		exec:   pgxTx,
+		adminMembershipLocked: adminMembershipLocked,
+		shared:                c.shared,
+		exec:                  pgxTx,
 		// WithTx rebuilds Queries over the transaction, which deliberately
 		// drops the statement-level retry: inside a transaction the whole
 		// attempt is what repeats, and this function is what repeats it.
@@ -292,7 +299,11 @@ func (c *pgConn) runTransaction(ctx context.Context, fn func(tx *pgConn) error) 
 	if err := fn(txConn); err != nil {
 		return err
 	}
-	return pgxTx.Commit(ctx)
+	commitErr := pgxTx.Commit(ctx)
+	if errors.Is(commitErr, pgx.ErrTxCommitRollback) || isRetryableConflict(commitErr) {
+		return commitErr
+	}
+	return store.TransactionCommitResult(commitErr)
 }
 
 func (s *pgStore) Close() error {

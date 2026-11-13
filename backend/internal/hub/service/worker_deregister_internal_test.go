@@ -423,8 +423,8 @@ type retryWorkerDeletionStore struct {
 	replayed     bool
 }
 
-// Replay the outer transaction, which owns the lifecycle lock and rollback.
-// A nested user-auth transaction must not retry part of that unit of work.
+// Replay the complete deletion transaction. The user-auth callback must not
+// retry only part of its writes.
 func (s *retryWorkerDeletionStore) RunInTransaction(ctx context.Context, fn func(store.Store) error) error {
 	if s.replayed {
 		return s.Store.RunInTransaction(ctx, fn)
@@ -463,6 +463,12 @@ func (s *retryWorkerDeletionStore) RunInTransaction(ctx context.Context, fn func
 	})
 }
 
+func (s *retryWorkerDeletionStore) RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(store.Store) error) error {
+	return s.RunInTransaction(ctx, func(tx store.Store) error {
+		return tx.RunInUserAuthTransaction(ctx, userID, fn)
+	})
+}
+
 type workerBeforeOwnerLockStore struct {
 	store.Store
 	owner    string
@@ -470,7 +476,7 @@ type workerBeforeOwnerLockStore struct {
 	inserted bool
 }
 
-// The worker commits before the outer lifecycle transaction begins. SQLite
+// The worker commits before the deletion transaction begins. SQLite
 // cannot admit a separate registration after that transaction takes its writer lock.
 func (s *workerBeforeOwnerLockStore) RunInTransaction(ctx context.Context, fn func(store.Store) error) error {
 	if !s.inserted {
@@ -483,6 +489,12 @@ func (s *workerBeforeOwnerLockStore) RunInTransaction(ctx context.Context, fn fu
 		s.inserted = true
 	}
 	return s.Store.RunInTransaction(ctx, fn)
+}
+
+func (s *workerBeforeOwnerLockStore) RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(store.Store) error) error {
+	return s.RunInTransaction(ctx, func(tx store.Store) error {
+		return tx.RunInUserAuthTransaction(ctx, userID, fn)
+	})
 }
 
 // otherWorkerID returns the id in ids that is not self. The cross-worker

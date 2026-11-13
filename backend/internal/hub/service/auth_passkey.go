@@ -115,7 +115,7 @@ func (s *AuthService) BeginPasskeySignUp(ctx context.Context, req *leapmuxv1.Beg
 	if err := rejectSolo(s.cfg.SoloMode, "sign-up"); err != nil {
 		return nil, err
 	}
-	hasUser, err := s.checkHasAnyUser(ctx)
+	hasUser, err := s.checkHasAnyUser()
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
@@ -188,7 +188,7 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *leapmuxv1.Fi
 	// ceremony. Last-administrator protection keeps setup complete afterward.
 	// If setup is still required, this commit creates an administrator,
 	// exactly like password sign-up.
-	hasUser, err := s.checkHasAnyUser(ctx)
+	hasUser, err := s.checkHasAnyUser()
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
 	}
@@ -367,8 +367,8 @@ func RevokeCredentialsAfterRotation(
 // passkey-less account that still holds the username.
 func rollbackUnusableSignup(ctx context.Context, st store.Store, userID string) error {
 	return st.RunInTransaction(ctx, func(tx store.Store) error {
-		if _, err := tx.Users().LockAccountLifecycle(ctx); err != nil {
-			return fmt.Errorf("lock account lifecycle for signup rollback: %w", err)
+		if _, err := tx.Users().LockForRemoval(ctx, userID); err != nil {
+			return fmt.Errorf("lock user for signup rollback: %w", err)
 		}
 		if err := RevokePasskeyAuthState(ctx, tx, userID); err != nil {
 			return err

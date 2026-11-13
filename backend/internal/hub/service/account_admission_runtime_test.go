@@ -20,7 +20,6 @@ import (
 
 type observedAdmissionStore struct {
 	store.Store
-	locks atomic.Int64
 	reads atomic.Int64
 }
 
@@ -99,7 +98,6 @@ func TestOrdinaryAccountAdmissionAllowsConcurrentTransactions(t *testing.T) {
 	_, err := env.client.GetSystemInfo(passkeyCtx(t.Context()), &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
 	observed.reads.Store(0)
-	observed.locks.Store(0)
 	barrier.armed.Store(true)
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
@@ -138,7 +136,6 @@ func TestOrdinaryAccountAdmissionAllowsConcurrentTransactions(t *testing.T) {
 		require.NoError(t, err)
 		assert.False(t, user.IsAdmin)
 	}
-	assert.Zero(t, observed.locks.Load())
 	assert.Zero(t, observed.reads.Load())
 }
 
@@ -171,12 +168,7 @@ func (s observedAdmissionUsers) HasAny(ctx context.Context) (bool, error) {
 	return s.UserStore.HasAny(ctx)
 }
 
-func (s observedAdmissionUsers) LockAccountLifecycle(ctx context.Context) (bool, error) {
-	s.owner.locks.Add(1)
-	return s.UserStore.LockAccountLifecycle(ctx)
-}
-
-func TestRuntimeAccountAdmissionDoesNotLockOrdinarySignup(t *testing.T) {
+func TestRuntimeAccountAdmissionDoesNotReadPresenceForOrdinarySignup(t *testing.T) {
 	base, err := sqlite.Open(":memory:", sqlitedb.Config{})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = base.Close() })
@@ -192,7 +184,6 @@ func TestRuntimeAccountAdmissionDoesNotLockOrdinarySignup(t *testing.T) {
 	require.False(t, info.GetSetupRequired())
 	require.Positive(t, observed.reads.Load(), "the runtime initially reads authoritative presence")
 	observed.reads.Store(0)
-	observed.locks.Store(0)
 	_, err = env.client.SignUp(t.Context(), &leapmuxv1.SignUpRequest{
 		Username: "ordinary-runtime-user", Password: "ordinary-password",
 	})
@@ -203,11 +194,10 @@ func TestRuntimeAccountAdmissionDoesNotLockOrdinarySignup(t *testing.T) {
 	info, err = env.client.GetSystemInfo(passkeyCtx(t.Context()), &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
 	assert.False(t, info.GetSetupRequired())
-	assert.Zero(t, observed.locks.Load(), "ordinary signup must not acquire the global lifecycle lock")
 	assert.Zero(t, observed.reads.Load(), "populated runtime presence must not query the database again")
 }
 
-func TestRuntimeAccountAdmissionDoesNotLockPasskeySignup(t *testing.T) {
+func TestRuntimeAccountAdmissionDoesNotReadPresenceForPasskeySignup(t *testing.T) {
 	base := hubtestutil.OpenTestStore(t)
 	createRetainedAdministrator(t, base)
 	observed := &observedAdmissionStore{Store: base}
@@ -216,7 +206,6 @@ func TestRuntimeAccountAdmissionDoesNotLockPasskeySignup(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, info.GetSetupRequired())
 	observed.reads.Store(0)
-	observed.locks.Store(0)
 	begin := beginPasskeySignUp(t, env.client, "ordinary-passkey", "")
 	ceremony := newPasskeyCeremony()
 	credential, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
@@ -225,6 +214,77 @@ func TestRuntimeAccountAdmissionDoesNotLockPasskeySignup(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, response.GetSessionReport().GetUser().GetIsAdmin())
 	assert.EqualValues(t, 1, response.GetSessionReport().GetUser().GetPasskeyCount())
-	assert.Zero(t, observed.locks.Load())
 	assert.Zero(t, observed.reads.Load())
+}
+
+func TestEmptyRuntimeAccountPresenceIsInitializedOnce(t *testing.T) {
+	base := hubtestutil.OpenTestStore(t)
+	observed := &observedAdmissionStore{Store: base}
+	env := setupEmptyPasskeyAuthTestServerWithStore(t, observed, nil, nil)
+	info, err := env.client.GetSystemInfo(passkeyCtx(t.Context()), &leapmuxv1.GetSystemInfoRequest{})
+	require.NoError(t, err)
+	require.True(t, info.GetSetupRequired())
+	observed.reads.Store(0)
+	for range 2 {
+		info, err = env.client.GetSystemInfo(passkeyCtx(t.Context()), &leapmuxv1.GetSystemInfoRequest{})
+		require.NoError(t, err)
+		assert.True(t, info.GetSetupRequired())
+	}
+	created, err := env.client.SignUp(t.Context(), &leapmuxv1.SignUpRequest{
+		Username: "initial-admin", Password: "initial-admin-password",
+	})
+	require.NoError(t, err)
+	assert.True(t, created.GetSessionReport().GetUser().GetIsAdmin())
+	info, err = env.client.GetSystemInfo(passkeyCtx(t.Context()), &leapmuxv1.GetSystemInfoRequest{})
+	require.NoError(t, err)
+	assert.False(t, info.GetSetupRequired())
+	assert.Zero(t, observed.reads.Load(), "empty presence must also remain in memory after initialization")
+}
+
+type uncertainSetupCommit struct{}
+
+func (uncertainSetupCommit) Error() string              { return "lost setup commit acknowledgement" }
+func (uncertainSetupCommit) CommitOutcomeUnknown() bool { return true }
+
+type uncertainSetupStore struct {
+	store.Store
+	armed    atomic.Bool
+	username string
+}
+
+func (s *uncertainSetupStore) RunInTransaction(ctx context.Context, fn func(store.Store) error) error {
+	if err := s.Store.RunInTransaction(ctx, fn); err != nil {
+		return err
+	}
+	if s.armed.Load() {
+		if _, err := s.Store.Users().GetByUsername(ctx, s.username); err == nil && s.armed.CompareAndSwap(true, false) {
+			return uncertainSetupCommit{}
+		}
+	}
+	return nil
+}
+
+func TestUncertainSetupCommitCannotAdmitAnotherAdministrator(t *testing.T) {
+	base := hubtestutil.OpenTestStore(t)
+	uncertain := &uncertainSetupStore{Store: base, username: "uncertain-first"}
+	env := setupEmptyPasskeyAuthTestServerWithStore(t, uncertain, nil, nil)
+	uncertain.armed.Store(true)
+	_, err := env.client.SignUp(t.Context(), &leapmuxv1.SignUpRequest{
+		Username: "uncertain-first", Password: "first-admin-password",
+	})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+	user, err := base.Users().GetByUsername(t.Context(), "uncertain-first")
+	require.NoError(t, err, "the database committed even though its acknowledgement was lost")
+	assert.True(t, user.IsAdmin)
+	_, err = env.client.SignUp(t.Context(), &leapmuxv1.SignUpRequest{
+		Username: "uncertain-second", Password: "second-admin-password",
+	})
+	assert.Error(t, err, "an uncertain commit must not leave initial setup open")
+	if err != nil {
+		assert.Contains(t, err.Error(), "restart")
+	}
+	count, err := base.Users().Count(t.Context())
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, count)
 }

@@ -319,10 +319,3 @@ SET password_hash = sqlc.arg(password_hash),
     updated_at = NOW()
 WHERE id = sqlc.arg(id) AND pending_recovery_token = sqlc.arg(pending_recovery_token)
 RETURNING id, auth_generation;
-
-
--- name: LockAccountLifecycle :one
-SELECT singleton_id FROM account_lifecycle_lock WHERE singleton_id = 1 FOR UPDATE;
-
--- name: LockAnyLiveUser :one
-SELECT id FROM users WHERE deleted_at IS NULL LIMIT 1 FOR UPDATE;

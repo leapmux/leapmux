@@ -66,8 +66,12 @@ type Store interface {
 	//     it. Do that work AFTER the transaction returns, from the values
 	//     the callback assigned -- which is what every caller here does.
 	//
+	// Administrator removal can also restart the transaction to acquire the
+	// administrator mutex before target-user locks. This applies to SQLite too.
 	// A re-run repeats every read the callback performs, so a callback must
-	// not assume it observes the database only once.
+	// not assume it observes the database only once. Commit failures with an
+	// uncertain outcome retain the CommitOutcomeUnknown marker so account
+	// admission cannot treat them as confirmed rollbacks.
 	RunInTransaction(ctx context.Context, fn func(tx Store) error) error
 
 	// RunInUserAuthTransaction executes fn in a transaction after locking the
@@ -122,10 +126,13 @@ type UserStore interface {
 	// keys would otherwise both read the same base blob and the second
 	// commit would erase the first's key. Callers must hold a transaction.
 	GetPrefsForUpdate(ctx context.Context, id string) (string, error)
-	// LockAccountLifecycle protects initial setup and administrator membership.
-	// It requires a transaction and precedes user-auth locks. Its result reports
-	// current live-user existence. Ordinary signup uses runtime presence instead.
-	LockAccountLifecycle(ctx context.Context) (bool, error)
+	// LockForRemoval requires a transaction. It locks the current user and
+	// reports whether the user is a live administrator. Missing and deleted
+	// users report false. The lock remains held through account cleanup.
+	// Administrator removal requests a complete transaction restart when the
+	// administrator mutex was not acquired first. Ordinary users never require it.
+	LockForRemoval(ctx context.Context, id string) (isAdmin bool, err error)
+
 	HasAny(ctx context.Context) (bool, error)
 	Count(ctx context.Context) (int64, error)
 	ListAll(ctx context.Context, p ListAllUsersParams) (Page[User], error)

@@ -1,13 +1,5 @@
 -- +goose Up
 
--- Initial setup and account removal take this lock.
--- Administrator demotion also takes it before locking the target user.
--- Acquire it before user-auth locks. Ordinary signup does not use it.
-CREATE TABLE account_lifecycle_lock (
-    singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1)
-);
-INSERT INTO account_lifecycle_lock (singleton_id) VALUES (1);
-
 -- Users
 -- users.id carries CHECK (id <> '') because it is the parent key every
 -- owner-keyed row hangs off. store.CreateUserParams.Validate refuses a blank id
@@ -811,4 +803,3 @@ DROP TABLE IF EXISTS worker_registration_keys;
 DROP TABLE IF EXISTS workers;
 DROP TABLE IF EXISTS user_sessions;
 DROP TABLE IF EXISTS users;
-DROP TABLE IF EXISTS account_lifecycle_lock;

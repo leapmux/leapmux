@@ -54,7 +54,7 @@ func TestSessionCookieFamilyPolicyTransition(t *testing.T) {
 					t.Cleanup(registry.Stop)
 					svc := service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), set, auth.NewCredentialLifecycleEffects(registry, nil, nil)))
 					server := connect.NewServer(interceptor)
-					mountAuthAndSystem(server, svc, set)
+					mountAuthAndSystem(t, server, svc, set)
 					mux := http.NewServeMux()
 					connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 					upstream := httptest.NewServer(requestsource.Middleware(requestsource.RangesFromSettings(set), mux))

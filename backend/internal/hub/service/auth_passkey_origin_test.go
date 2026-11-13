@@ -81,7 +81,7 @@ func TestGetSystemInfo_PasskeyDisabledWithoutAKeystore(t *testing.T) {
 
 	// No keystore: the hub runs no ceremony from any origin, so the allowed
 	// origin must not report otherwise.
-	client, _, _ := setupAuthTestServerBase(t, testConfig(), nil)
+	client, _, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 	ctx, info := connect.NewClientContext(context.Background())
 	info.RequestHeader().Set("Origin", passkeyTestOrigin)
 	resp, err := client.GetSystemInfo(ctx, &leapmuxv1.GetSystemInfoRequest{})

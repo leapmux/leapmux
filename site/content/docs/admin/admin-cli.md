@@ -126,6 +126,8 @@ leapmux control admin rate-limit reset   --operation elevation
 
 The Hub retains at least one live administrator after setup. It refuses to delete or demote the last administrator, including when requests run concurrently. Deleted accounts do not count as remaining administrators.
 
+The Hub serializes administrator removal with a shared in-memory mutex. Deletion and signup rollback for ordinary users do not acquire that mutex. The Hub checks the current role while holding the user lock.
+
 `--force` confirms deletion of an administrator or removal of your own administrator access. It cannot override the last-administrator rule. Create or promote another administrator before deleting or demoting the current one.
 
 ## User passwords

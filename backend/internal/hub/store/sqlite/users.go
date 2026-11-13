@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -500,26 +499,12 @@ func (s *userStore) RevokeUserTokens(ctx context.Context, userID userid.UserID) 
 	}, emitCredentialEvent)
 }
 
-// LockAccountLifecycle serializes bootstrap and removal of administrator access.
-func (s *userStore) LockAccountLifecycle(ctx context.Context) (bool, error) {
-	if !s.conn.inTx() {
-		return false, store.ErrLockingReadOutsideTransaction
-	}
-	if _, err := s.conn.q.LockAccountLifecycle(ctx); err != nil {
-		return false, fmt.Errorf("lock account lifecycle singleton: %w", s.conn.queryError(err))
-	}
-	return s.HasAny(ctx)
-}
-
-// adminMembershipGuard keeps the membership lock ahead of every target-user lock.
+// adminMembershipGuard requires ordered membership locking only for administrators.
 func (s *userStore) adminMembershipGuard() store.AdminMembershipGuard[*sqliteConn] {
 	return store.AdminMembershipGuard[*sqliteConn]{
 		InTransaction: s.conn.withTransaction,
-		Lock: func(ctx context.Context, conn *sqliteConn) error {
-			_, err := (&userStore{conn: conn}).LockAccountLifecycle(ctx)
-			return err
-		},
-		ReadTarget: loadUserInfoCacheFields,
+		RequireLock:   func(conn *sqliteConn) error { return store.RequireAdminMembershipLock(conn.adminMembershipLocked) },
+		ReadTarget:    loadUserInfoCacheFields,
 		HasOtherAdmin: func(ctx context.Context, conn *sqliteConn, userID string) (bool, error) {
 			_, err := conn.q.LockOtherAdministrator(ctx, userID)
 			err = conn.queryError(err)
@@ -529,4 +514,12 @@ func (s *userStore) adminMembershipGuard() store.AdminMembershipGuard[*sqliteCon
 			return err == nil, err
 		},
 	}
+}
+
+// LockForRemoval holds the current role stable through account cleanup.
+func (s *userStore) LockForRemoval(ctx context.Context, id string) (bool, error) {
+	if !s.conn.inTx() {
+		return false, store.ErrLockingReadOutsideTransaction
+	}
+	return s.adminMembershipGuard().LockForRemoval(ctx, s.conn, id)
 }

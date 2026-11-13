@@ -17,6 +17,7 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/store/mysql/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/util/ctxutil"
 )
 
 // mysqlStore implements store.Store backed by MySQL.
@@ -30,15 +31,17 @@ type mysqlStore struct {
 var _ store.Store = (*mysqlStore)(nil)
 
 type mysqlShared struct {
-	db       *sql.DB
-	migrator store.Migrator
+	adminMembership ctxutil.Mutex
+	db              *sql.DB
+	migrator        store.Migrator
 }
 
 type mysqlConn struct {
-	transactionContext context.Context
-	shared             *mysqlShared
-	exec               gendb.DBTX // *sql.DB outside tx, *sql.Tx inside tx
-	q                  *gendb.Queries
+	adminMembershipLocked bool
+	transactionContext    context.Context
+	shared                *mysqlShared
+	exec                  gendb.DBTX // *sql.DB outside tx, *sql.Tx inside tx
+	q                     *gendb.Queries
 }
 
 // Open opens a MySQL database, runs migrations, and returns a Store.
@@ -380,12 +383,14 @@ func (c *mysqlConn) withTransaction(ctx context.Context, fn func(tx *mysqlConn) 
 	if c.inTx() {
 		return fn(c)
 	}
-	return store.RetryOnConflict(ctx, isRetryableConflict, func() error { return c.runTransaction(ctx, fn) })
+	return store.RunAdminMembershipTransaction(ctx, &c.shared.adminMembership, func(held bool) error {
+		return store.RetryOnConflict(ctx, isRetryableConflict, func() error { return c.runTransaction(ctx, held, fn) })
+	})
 }
 
 // runTransaction is one attempt: begin, run, commit, and roll back whatever
 // the attempt left behind.
-func (c *mysqlConn) runTransaction(ctx context.Context, fn func(tx *mysqlConn) error) error {
+func (c *mysqlConn) runTransaction(ctx context.Context, adminMembershipLocked bool, fn func(tx *mysqlConn) error) error {
 	tx, err := c.shared.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -393,9 +398,10 @@ func (c *mysqlConn) runTransaction(ctx context.Context, fn func(tx *mysqlConn) e
 	defer func() { _ = tx.Rollback() }()
 
 	txConn := &mysqlConn{
-		transactionContext: ctx,
-		shared:             c.shared,
-		exec:               tx,
+		adminMembershipLocked: adminMembershipLocked,
+		transactionContext:    ctx,
+		shared:                c.shared,
+		exec:                  tx,
 		// WithTx rebuilds Queries over the transaction, which deliberately
 		// drops the statement-level retry: inside a transaction the whole
 		// attempt is what repeats, and this function is what repeats it.
@@ -404,7 +410,15 @@ func (c *mysqlConn) runTransaction(ctx context.Context, fn func(tx *mysqlConn) e
 	if err := fn(txConn); err != nil {
 		return err
 	}
-	return sqlutil.WithTransactionCancellation(ctx, tx.Commit())
+	commitErr := tx.Commit()
+	if commitErr == nil {
+		return nil
+	}
+	result := sqlutil.WithTransactionCancellation(ctx, commitErr)
+	if (commitErr == sql.ErrTxDone && ctx.Err() != nil) || isRetryableConflict(commitErr) {
+		return result
+	}
+	return store.TransactionCommitResult(result)
 }
 
 func (s *mysqlStore) Close() error {

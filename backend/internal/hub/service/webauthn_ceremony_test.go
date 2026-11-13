@@ -72,15 +72,14 @@ type passkeyAuthTestEnv struct {
 func setupPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender mail.Sender) passkeyAuthTestEnv {
 	t.Helper()
 
-	env := setupEmptyPasskeyAuthTestServer(t, seed, mailSender)
-	hubtestutil.CreateTestAdmin(t, env.store)
-	return env
+	st := hubtestutil.OpenTestStore(t)
+	hubtestutil.CreateTestAdmin(t, st)
+	return setupEmptyPasskeyAuthTestServerWithStore(t, st, seed, mailSender)
 }
 
 // setupEmptyPasskeyAuthTestServer is the same server with an EMPTY database,
-// which is the state the first-administrator flow runs in. The wrapper above
-// creates the admin fixture afterwards rather than here, so setup mode is
-// reachable without a second copy of this construction.
+// which is the state the first-administrator flow runs in. Both fixtures
+// initialize presence after seeding and before serving requests.
 func setupEmptyPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender mail.Sender) passkeyAuthTestEnv {
 	t.Helper()
 	return setupEmptyPasskeyAuthTestServerWithStore(t, hubtestutil.OpenTestStore(t), seed, mailSender)
@@ -118,7 +117,7 @@ func setupEmptyPasskeyAuthTestServerWithStore(t *testing.T, st store.Store, seed
 		Keystore:  ks,
 	})
 	connectServer := connect.NewServer(interceptor)
-	mountAuthAndSystem(connectServer, authSvc, set)
+	mountAuthAndSystem(t, connectServer, authSvc, set)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)

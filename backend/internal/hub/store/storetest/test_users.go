@@ -17,7 +17,6 @@ import (
 
 func (s *Suite) testUsers(t *testing.T) {
 	t.Run("administrator membership", s.testAdministratorMembership)
-	t.Run("account lifecycle", s.testAccountLifecycle)
 	// users.id is the parent key every owner-keyed child row hangs off, so a
 	// blank one is what would make a blank-OWNER row storable at all -- and no
 	// predicate could then name that row, because binding "" matches every

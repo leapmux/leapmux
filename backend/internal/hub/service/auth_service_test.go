@@ -45,10 +45,9 @@ import (
 // its first request; nil leaves every setting at its default.
 type authTestSeed func(t *testing.T, set *settings.Manager)
 
-func setupAuthTestServerBase(t *testing.T, cfg *config.Config, seed authTestSeed, closers ...auth.CredentialChannelCloser) (authTestClient, store.Store, *settings.Manager) {
+func setupAuthTestServerBase(t *testing.T, cfg *config.Config, st store.Store, seed authTestSeed, closers ...auth.CredentialChannelCloser) (authTestClient, store.Store, *settings.Manager) {
 	t.Helper()
 
-	st := hubtestutil.OpenTestStore(t)
 	set := servicetest.NewSettingsManager(t, st, nil)
 	if seed != nil {
 		seed(t, set)
@@ -63,7 +62,7 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config, seed authTestSeed
 	}
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(sc, closer, nil)))
 	connectServer := connect.NewServer(interceptor)
-	mountAuthAndSystem(connectServer, authSvc, set)
+	mountAuthAndSystem(t, connectServer, authSvc, set)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)
@@ -89,13 +88,13 @@ func TestLifecycleAwareServicesRequireEffects(t *testing.T) {
 // setupEmptyAuthTestServer creates a test auth server with an empty database
 // (no users). Used for testing the initial setup flow.
 func setupEmptyAuthTestServer(t *testing.T, cfg *config.Config, seed authTestSeed) (authTestClient, store.Store, *settings.Manager) {
-	return setupAuthTestServerBase(t, cfg, seed)
+	return setupAuthTestServerBase(t, cfg, hubtestutil.OpenTestStore(t), seed)
 }
 
 func setupAuthTestServer(t *testing.T, cfg *config.Config, seed authTestSeed) (authTestClient, store.Store, *settings.Manager) {
-	client, st, set := setupAuthTestServerBase(t, cfg, seed)
+	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
-	return client, st, set
+	return setupAuthTestServerBase(t, cfg, st, seed)
 }
 
 type sessionCloseRecorder struct {
@@ -147,8 +146,9 @@ func TestAuthService_LoginInvalidPassword(t *testing.T) {
 }
 
 func TestAuthService_SetInitialSoloPasswordCreatesElevatedSession(t *testing.T) {
-	client, st, _ := setupAuthTestServerBase(t, &config.Config{SoloMode: true}, nil)
+	st := hubtestutil.OpenTestStore(t)
 	require.NoError(t, bootstrap.Run(context.Background(), st, true))
+	client, _, _ := setupAuthTestServerBase(t, &config.Config{SoloMode: true}, st, nil)
 
 	callCtx, callInfo := connect.NewClientContext(context.Background())
 	callInfo.RequestHeader().Set("User-Agent", "setup-test")
@@ -198,8 +198,9 @@ func TestAuthService_SetInitialSoloPasswordRefusesOtherModes(t *testing.T) {
 }
 
 func TestAuthService_SetInitialSoloPasswordRejectsAnEmptyPasswordWithoutClaimingTheAccount(t *testing.T) {
-	client, st, _ := setupAuthTestServerBase(t, &config.Config{SoloMode: true}, nil)
+	st := hubtestutil.OpenTestStore(t)
 	require.NoError(t, bootstrap.Run(context.Background(), st, true))
+	client, _, _ := setupAuthTestServerBase(t, &config.Config{SoloMode: true}, st, nil)
 
 	_, err := client.SetInitialSoloPassword(context.Background(), &leapmuxv1.SetInitialSoloPasswordRequest{})
 	require.Error(t, err)
@@ -212,8 +213,9 @@ func TestAuthService_SetInitialSoloPasswordRejectsAnEmptyPasswordWithoutClaiming
 }
 
 func TestAuthService_ConcurrentInitialSoloPasswordHasOneWinner(t *testing.T) {
-	client, st, _ := setupAuthTestServerBase(t, &config.Config{SoloMode: true}, nil)
+	st := hubtestutil.OpenTestStore(t)
 	require.NoError(t, bootstrap.Run(context.Background(), st, true))
+	client, _, _ := setupAuthTestServerBase(t, &config.Config{SoloMode: true}, st, nil)
 
 	const callers = 6
 	type result struct {
@@ -1108,6 +1110,7 @@ func TestSignUp_FailClosedWhenVerificationEmailFails(t *testing.T) {
 	t.Parallel()
 
 	st := hubtestutil.OpenTestStore(t)
+	hubtestutil.CreateTestAdmin(t, st)
 	set := servicetest.NewSettingsManager(t, st, nil)
 	enableSignup(t, set)
 	enableEmailVerification(t, set)
@@ -1115,7 +1118,7 @@ func TestSignUp_FailClosedWhenVerificationEmailFails(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
-	authSvc := service.NewAuthService(service.AuthServiceDeps{SessionHasher: hubtestutil.TestSecretHasher(),
+	authSvc := newInitializedAuthService(t, service.AuthServiceDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store:     st,
 		Config:    testConfig(),
 		Settings:  set,
@@ -1129,7 +1132,6 @@ func TestSignUp_FailClosedWhenVerificationEmailFails(t *testing.T) {
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
-	hubtestutil.CreateTestAdmin(t, st)
 
 	_, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "failclosed",
@@ -1216,8 +1218,9 @@ func TestAuthService_Logout(t *testing.T) {
 	t.Parallel()
 
 	closer := &sessionCloseRecorder{}
-	client, st, _ := setupAuthTestServerBase(t, testConfig(), nil, closer)
+	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
+	client, _, _ := setupAuthTestServerBase(t, testConfig(), st, nil, closer)
 
 	// Login.
 	loginCtx, loginInfo := connect.NewClientContext(context.Background())
@@ -1982,7 +1985,7 @@ func TestBeginPasskeySignUp_RequiresEmailWhenSMTPConfigured(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
-	authSvc := service.NewAuthService(service.AuthServiceDeps{SessionHasher: hubtestutil.TestSecretHasher(),
+	authSvc := newInitializedAuthService(t, service.AuthServiceDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store:     st,
 		Config:    testConfig(),
 		Settings:  set,
@@ -2115,7 +2118,8 @@ func TestFinishPasskeySignUp_SetupModeEndingMidCeremonyReservesAdmin(t *testing.
 
 	// The race: somebody else finishes setup first, under a different name so
 	// the refusal below is the reserved rule rather than a name collision.
-	hubtestutil.CreateTestUser(t, env.store, "winner", "password123")
+	_, winnerErr := env.client.SignUp(t.Context(), &leapmuxv1.SignUpRequest{Username: "winner", Password: "password123"})
+	require.NoError(t, winnerErr)
 
 	_, err = finishPasskeySignUp(t, env.client, begin.GetChallenge().GetSessionId(), credentialJSON)
 	require.Error(t, err)
@@ -2139,7 +2143,8 @@ func TestFinishPasskeySignUp_SetupModeEndingMidCeremonyHonorsSignupDisabled(t *t
 	credentialJSON, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
 	require.NoError(t, err)
 
-	hubtestutil.CreateTestUser(t, env.store, "winner", "password123")
+	_, winnerErr := env.client.SignUp(t.Context(), &leapmuxv1.SignUpRequest{Username: "winner", Password: "password123"})
+	require.NoError(t, winnerErr)
 
 	_, err = finishPasskeySignUp(t, env.client, begin.GetChallenge().GetSessionId(), credentialJSON)
 	require.Error(t, err)
@@ -2171,12 +2176,13 @@ func TestBeginPasskeySignUp_SetupModeStillRejectsSoloUsername(t *testing.T) {
 func TestBeginPasskeySignUp_PublicModeRejectsAdminUsername(t *testing.T) {
 	t.Parallel()
 
-	// A non-admin fixture, so the refusal below is the reserved-name rule
-	// rather than the availability check on the seeded admin row.
+	// Another administrator username leaves "admin" available, so the
+	// reserved-name rule causes the refusal rather than an existing row.
 	env := setupEmptyPasskeyAuthTestServer(t, enableSignup, nil)
-	hubtestutil.CreateTestUser(t, env.store, "someone", "password123")
+	_, err := env.client.SignUp(t.Context(), &leapmuxv1.SignUpRequest{Username: "someone", Password: "password123"})
+	require.NoError(t, err)
 
-	_, err := env.client.BeginPasskeySignUp(context.Background(), beginPasskeySignUpRequest(usernames.Admin, ""))
+	_, err = env.client.BeginPasskeySignUp(context.Background(), beginPasskeySignUpRequest(usernames.Admin, ""))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "reserved username")
@@ -2423,6 +2429,13 @@ func newSetupStateAuthEnv(t *testing.T, st store.Store, signupEnabled bool) *set
 
 func (e *setupStateAuthEnv) newClient(t *testing.T) authTestClient {
 	t.Helper()
+	client, err := e.newClientWithInitialization(t)
+	require.NoError(t, err)
+	return client
+}
+
+func (e *setupStateAuthEnv) newClientWithInitialization(t *testing.T) (authTestClient, error) {
+	t.Helper()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{
 		SessionHasher: hubtestutil.TestSecretHasher(), Store: e.store,
 	})
@@ -2431,13 +2444,14 @@ func (e *setupStateAuthEnv) newClient(t *testing.T) authTestClient {
 		auth.NewCredentialLifecycleEffects(contexts, nil, nil))
 	deps.Keystore = e.keystore
 	authSvc := service.NewAuthService(deps)
+	initializationErr := authSvc.InitializeAccountState(t.Context())
 	server := connect.NewServer(interceptor)
-	mountAuthAndSystem(server, authSvc, e.settings)
+	registerAuthAndSystem(server, authSvc, e.settings)
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	httpServer := httptest.NewServer(mux)
 	t.Cleanup(httpServer.Close)
-	return newAuthTestClient(httpServer.Client(), httpServer.URL)
+	return newAuthTestClient(httpServer.Client(), httpServer.URL), initializationErr
 }
 
 func requireSetupState(t *testing.T, client authTestClient, setupRequired, signupEnabled bool) {
@@ -2659,7 +2673,9 @@ func testSetupStatePresenceReadFault(t *testing.T, populatedRuntime bool) {
 		t.Run(scenario.name, func(t *testing.T) {
 			client := env.client
 			if !populatedRuntime {
-				client = env.newClient(t)
+				var initializationErr error
+				client, initializationErr = env.newClientWithInitialization(t)
+				require.ErrorContains(t, initializationErr, "forced live-user lookup failure")
 			}
 			err := scenario.call(client)
 			if populatedRuntime && scenario.name == "system info" {

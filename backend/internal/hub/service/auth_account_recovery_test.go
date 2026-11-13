@@ -56,7 +56,7 @@ func setupAccountRecoveryAuthServiceWithClock(t *testing.T, sender mail.Sender, 
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
-	authSvc := service.NewAuthService(service.AuthServiceDeps{SessionHasher: hubtestutil.TestSecretHasher(),
+	authSvc := newInitializedAuthService(t, service.AuthServiceDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store:     st,
 		Config:    testConfig(),
 		Settings:  set,
@@ -656,22 +656,16 @@ func TestRequestAccountRecovery_BurnedBudgetKeepsCooldown(t *testing.T) {
 // the server log, never in the client response.
 func TestSignUp_MailFailureDoesNotLeakTransportDetails(t *testing.T) {
 	sender := &mailSenderDouble{err: errors.New("dial tcp smtp.secret-relay.example:587: connection refused")}
-	client, st := setupAccountRecoveryAuthServiceConfigured(t, sender, seedSMTP)
+	client, _ := setupAccountRecoveryAuthServiceConfigured(t, sender, seedSMTP)
 
 	// A user must exist so the sign-up takes the public path, not the
 	// first-admin setup path (which verifies nothing and sends no mail).
-	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:                    id.Generate(),
-		Username:              "existing-admin",
-		PasswordHash:          password.PlaceholderHash,
-		DisplayName:           "Existing Admin",
-		Email:                 "admin@example.com",
-		EmailVerified:         true,
-		FirstCredentialExempt: true,
-		IsAdmin:               true,
-	}))
+	_, err := client.SignUp(t.Context(), &leapmuxv1.SignUpRequest{
+		Username: "existing-admin", Password: "existing-admin-password", Email: "admin@example.com",
+	})
+	require.NoError(t, err)
 
-	_, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
+	_, err = client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "leakcheck-user",
 		Password:    "hunter2abc",
 		DisplayName: "Leak Check",
@@ -810,7 +804,7 @@ func TestSoloRefusesEveryPathThatCanClearAPassword(t *testing.T) {
 	// held whatever the three verbs did.
 	setSoloPasswordForTest(t, st)
 
-	svc := service.NewAuthService(servicetest.AuthServiceDeps(
+	svc := newInitializedAuthService(t, servicetest.AuthServiceDeps(
 		st,
 		&config.Config{SoloMode: true},
 		servicetest.NewSettingsManager(t, st, nil),

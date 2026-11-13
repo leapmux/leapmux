@@ -126,12 +126,11 @@ func TestTruncateAll_PreservesSessionForeignKeyEnforcement(t *testing.T) {
 			require.NoError(t, db.QueryRowContext(t.Context(), "SELECT @@FOREIGN_KEY_CHECKS").Scan(&checks))
 			assert.Equal(t, 1, checks, "the same pooled session must still enforce foreign keys")
 			if mode == "success" {
-				want := make([]string, 0, len(sqlutil.SQLTruncateTableOrder)+2)
+				want := make([]string, 0, len(sqlutil.SQLTruncateTableOrder)+1)
 				for _, table := range sqlutil.SQLTruncateTableOrder {
 					want = append(want, sqlutil.TruncateStatement(table))
 				}
 				want = append(want, "INSERT INTO revocation_event_sequence (id, last_seq) VALUES (1, 0)")
-				want = append(want, "INSERT INTO account_lifecycle_lock (singleton_id) VALUES (1)")
 				assert.Equal(t, want, session.statements)
 			}
 		})

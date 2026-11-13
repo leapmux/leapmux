@@ -124,13 +124,6 @@ func createUserInTx(ctx context.Context, st store.Store, opt createUserTxParams)
 	var user *store.User
 	var code string
 	err := st.RunInTransaction(ctx, func(tx store.Store) error {
-		// Administrator creation coordinates with bootstrap and role reductions.
-		// Ordinary signup was admitted by AuthService before this transaction.
-		if opt.isAdmin {
-			if _, err := tx.Users().LockAccountLifecycle(ctx); err != nil {
-				return fmt.Errorf("lock administrator creation: %w", err)
-			}
-		}
 		userID := opt.userID
 		if userID == "" {
 			userID = id.Generate()

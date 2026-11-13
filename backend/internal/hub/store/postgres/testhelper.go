@@ -3,7 +3,6 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -107,9 +106,6 @@ func (h *pgTestHelper) TruncateAll(ctx context.Context) error {
 	}
 	if _, err := h.pool.Exec(ctx, "INSERT INTO revocation_event_sequence (id, last_seq) VALUES (1, 0)"); err != nil {
 		return err
-	}
-	if _, err := h.pool.Exec(ctx, "INSERT INTO account_lifecycle_lock (singleton_id) VALUES (1)"); err != nil {
-		return fmt.Errorf("reset account lifecycle lock: %w", err)
 	}
 	return nil
 }

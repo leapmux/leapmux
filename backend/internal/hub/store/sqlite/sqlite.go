@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/store/sqlutil"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/util/ctxutil"
 )
 
 // sqliteStore implements store.Store backed by SQLite.
@@ -31,15 +32,17 @@ type sqliteStore struct {
 var _ store.Store = (*sqliteStore)(nil)
 
 type sqliteShared struct {
-	db       *sql.DB
-	migrator store.Migrator
+	adminMembership ctxutil.Mutex
+	db              *sql.DB
+	migrator        store.Migrator
 }
 
 type sqliteConn struct {
-	transactionContext context.Context
-	shared             *sqliteShared
-	exec               gendb.DBTX // *sql.DB outside tx, *sql.Tx inside tx
-	q                  *gendb.Queries
+	adminMembershipLocked bool
+	transactionContext    context.Context
+	shared                *sqliteShared
+	exec                  gendb.DBTX // *sql.DB outside tx, *sql.Tx inside tx
+	q                     *gendb.Queries
 }
 
 // Open opens a SQLite database, runs migrations, and returns a Store.
@@ -182,8 +185,9 @@ func (c *sqliteConn) inTx() bool {
 	return ok
 }
 
-// withTransaction runs `fn` in one transaction, or inside the transaction that
-// `c` already holds.
+// withTransaction runs fn inside the current transaction or starts a complete
+// transaction. Administrator removal can restart it with the administrator mutex
+// acquired first. Nested calls leave that restart to the outer owner.
 //
 // The transaction takes the write lock at its BEGIN (`sqlitedb.Open` sets
 // `_txlock=immediate`), and BEGIN waits for another writer's lock without a
@@ -196,6 +200,12 @@ func (c *sqliteConn) withTransaction(ctx context.Context, fn func(tx *sqliteConn
 	if c.inTx() {
 		return fn(c)
 	}
+	return store.RunAdminMembershipTransaction(ctx, &c.shared.adminMembership, func(held bool) error {
+		return c.runTransaction(ctx, held, fn)
+	})
+}
+
+func (c *sqliteConn) runTransaction(ctx context.Context, adminMembershipLocked bool, fn func(*sqliteConn) error) error {
 	tx, err := c.shared.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
@@ -203,15 +213,24 @@ func (c *sqliteConn) withTransaction(ctx context.Context, fn func(tx *sqliteConn
 	defer func() { _ = tx.Rollback() }()
 
 	txConn := &sqliteConn{
-		transactionContext: ctx,
-		shared:             c.shared,
-		exec:               tx,
-		q:                  c.q.WithTx(tx),
+		adminMembershipLocked: adminMembershipLocked,
+		transactionContext:    ctx,
+		shared:                c.shared,
+		exec:                  tx,
+		q:                     c.q.WithTx(tx),
 	}
 	if err := fn(txConn); err != nil {
 		return err
 	}
-	return sqlutil.WithTransactionCancellation(ctx, tx.Commit())
+	commitErr := tx.Commit()
+	if commitErr == nil {
+		return nil
+	}
+	result := sqlutil.WithTransactionCancellation(ctx, commitErr)
+	if commitErr == sql.ErrTxDone && ctx.Err() != nil {
+		return result
+	}
+	return store.TransactionCommitResult(result)
 }
 
 // closeCheckpointTimeout limits the WAL checkpoint that Close runs before it

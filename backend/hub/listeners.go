@@ -58,6 +58,19 @@ type bindFailure struct {
 func (e *bindFailure) Error() string { return fmt.Sprintf("listen %s: %v", e.addr, e.err) }
 func (e *bindFailure) Unwrap() error { return e.err }
 
+// ownedListener shares one Close result between the set and http.Server.
+// The HTTP server's internal wrapper cannot coordinate a direct set close.
+type ownedListener struct {
+	net.Listener
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (l *ownedListener) Close() error {
+	l.closeOnce.Do(func() { l.closeErr = l.Listener.Close() })
+	return l.closeErr
+}
+
 // boundListener is one live socket and how it was opened.
 type boundListener struct {
 	ln     net.Listener
@@ -156,7 +169,7 @@ func newListenerSet(bound []baseBinding, serveErr chan<- error) *listenerSet {
 	for _, b := range bound {
 		resolved := resolvePort(b.addr, b.ln)
 		s.bases = append(s.bases, resolved)
-		s.active[resolved.String()] = &boundListener{ln: b.ln, addr: resolved, source: SourceListen}
+		s.active[resolved.String()] = &boundListener{ln: &ownedListener{Listener: b.ln}, addr: resolved, source: SourceListen}
 	}
 	return s
 }
@@ -216,7 +229,7 @@ func (s *listenerSet) bindLocked(addr listenset.Addr, source AddressSource) (*bo
 	if err != nil {
 		return nil, err
 	}
-	bl := &boundListener{ln: ln, addr: resolvePort(addr, ln), source: source}
+	bl := &boundListener{ln: &ownedListener{Listener: ln}, addr: resolvePort(addr, ln), source: source}
 	s.active[bl.addr.String()] = bl
 	s.serveLocked(bl)
 	return bl, nil

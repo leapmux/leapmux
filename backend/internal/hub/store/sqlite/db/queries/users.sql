@@ -345,7 +345,3 @@ SET password_hash = sqlc.arg(password_hash),
     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = sqlc.arg(id) AND pending_recovery_token = sqlc.arg(pending_recovery_token)
 RETURNING id, auth_generation;
-
-
--- name: LockAccountLifecycle :one
-UPDATE account_lifecycle_lock SET singleton_id = singleton_id WHERE singleton_id = 1 RETURNING singleton_id;

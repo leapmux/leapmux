@@ -28,7 +28,7 @@ func (s *AuthService) systemInfo(ctx context.Context) (*leapmuxv1.GetSystemInfoR
 
 	var setupRequired bool
 	if !s.soloGate.SoloMode() {
-		hasUser, err := s.checkHasAnyUser(ctx)
+		hasUser, err := s.checkHasAnyUser()
 		if err != nil {
 			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
 		}

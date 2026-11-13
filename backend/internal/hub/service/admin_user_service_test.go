@@ -164,7 +164,11 @@ func setupAdminUserTestUnelevated(t *testing.T) *adminUserEnv {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
+	return setupAdminUserTestUnelevatedWithStore(t, st)
+}
 
+func setupAdminUserTestUnelevatedWithStore(t *testing.T, st store.Store) *adminUserEnv {
+	t.Helper()
 	hash, err := password.Hash("adminpass123")
 	require.NoError(t, err)
 	admin, err := service.CreateUser(context.Background(), st, service.CreateUserParams{

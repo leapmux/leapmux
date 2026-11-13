@@ -91,10 +91,10 @@ type AuthService struct {
 	captcha       CaptchaService
 	listen        ListenReporter
 	soloGate      *auth.SoloGate
-	// Presence stays true after setup because account mutations retain a live
-	// administrator. The separate claim does not publish uncommitted presence.
-	hasUsers   atomic.Bool
-	setupClaim atomic.Bool
+	// The lease owner initializes presence before serving. Last-administrator
+	// protection keeps populated state permanent. A claim publishes no presence.
+	accountState atomic.Uint32
+	setupClaim   atomic.Bool
 
 	// The clock GetCurrentUser reports the elevation deadline against. It
 	// must be the same seam UserService grants on, or a test that advances
@@ -196,18 +196,19 @@ func (s *AuthService) listenAddr() string {
 	return s.listen.PrimaryListenAddr()
 }
 
-// checkHasAnyUser caches committed presence. Empty state is refreshed so a
-// bootstrap performed by another store writer becomes visible. Once populated,
-// last-administrator protection makes the in-memory positive result permanent.
-func (s *AuthService) checkHasAnyUser(ctx context.Context) (bool, error) {
-	if s.hasUsers.Load() {
+// checkHasAnyUser reads initialized runtime state. Empty and populated states
+// both stay in memory; only successful setup moves empty to populated.
+func (s *AuthService) checkHasAnyUser() (bool, error) {
+	switch s.accountState.Load() {
+	case accountStateEmpty:
+		return false, nil
+	case accountStatePopulated:
 		return true, nil
+	case accountStateSetupUncertain:
+		return false, errSetupCommitUncertain
+	default:
+		return false, errAccountStateUninitialized
 	}
-	present, err := s.store.Users().HasAny(ctx)
-	if err == nil && present {
-		s.hasUsers.Store(true)
-	}
-	return present, err
 }
 
 // sessionCookieHeaderValues replaces the session family while preserving other
@@ -437,7 +438,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 
 	// The hub always creates the first user as an admin, regardless of whether
 	// signup is enabled globally.
-	hasUser, err := s.checkHasAnyUser(ctx)
+	hasUser, err := s.checkHasAnyUser()
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
 	}
@@ -541,16 +542,6 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 // -- but account recovery stays closed for that address until they verify it
 // from Preferences › Account.
 func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName, email, passwordHash string) (*leapmuxv1.SignUpResponse, error) {
-	// Refuse early if setup ended. The creation transaction checks admission
-	// again while it holds the account lifecycle lock.
-	hasUser, err := s.store.Users().HasAny(ctx)
-	if err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
-	}
-	if hasUser {
-		return nil, connect.Errorf(connect.CodeFailedPrecondition, "sign-up is disabled")
-	}
-
 	if email != "" {
 		if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
 			return nil, AvailabilityConnectError(err)

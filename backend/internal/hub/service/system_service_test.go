@@ -27,7 +27,7 @@ func TestNewSystemServiceRequiresBothDependencies(t *testing.T) {
 
 	st := hubtestutil.OpenTestStore(t)
 	set := servicetest.NewSettingsManager(t, st, nil)
-	authSvc := service.NewAuthService(
+	authSvc := newInitializedAuthService(t,
 		servicetest.AuthServiceDeps(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 
 	assert.PanicsWithValue(t, "service: NewSystemService requires an AuthService", func() {
@@ -47,7 +47,7 @@ func TestSystemService_GetTimeouts(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	set := servicetest.NewSettingsManager(t, st, nil)
 	require.NoError(t, set.Update(context.Background(), settings.KeyTimeouts, json.RawMessage(`{"api_seconds":11}`)))
-	svc := service.NewSystemService(service.NewAuthService(
+	svc := service.NewSystemService(newInitializedAuthService(t,
 		servicetest.AuthServiceDeps(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil))), set)
 
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("u-timeouts")})
@@ -66,12 +66,14 @@ func TestSystemService_GetTimeouts(t *testing.T) {
 func TestSystemService_GetSystemInfoReadsTheAuthServicesSetupState(t *testing.T) {
 	t.Parallel()
 
-	client, st, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
+	client, _, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 	info, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
 	assert.True(t, info.GetSetupRequired())
 
-	hubtestutil.CreateTestAdmin(t, st)
+	created, err := client.SignUp(t.Context(), &leapmuxv1.SignUpRequest{Username: "initial-admin", Password: "initial-admin-password"})
+	require.NoError(t, err)
+	require.True(t, created.GetSessionReport().GetUser().GetIsAdmin())
 	info, err = client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
 	assert.False(t, info.GetSetupRequired())
@@ -102,7 +104,7 @@ func TestSystemService_GetTimeoutsReportsTheDefaultWhenUnset(t *testing.T) {
 
 	st := hubtestutil.OpenTestStore(t)
 	set := servicetest.NewSettingsManager(t, st, nil)
-	svc := service.NewSystemService(service.NewAuthService(servicetest.AuthServiceDeps(
+	svc := service.NewSystemService(newInitializedAuthService(t, servicetest.AuthServiceDeps(
 		st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil))), set)
 
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("u-default-timeouts")})
@@ -133,7 +135,7 @@ func TestSystemService_GetSystemInfoLogsAFailedProviderRead(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
 	set := servicetest.NewSettingsManager(t, st, nil)
-	svc := service.NewSystemService(service.NewAuthService(servicetest.AuthServiceDeps(
+	svc := service.NewSystemService(newInitializedAuthService(t, servicetest.AuthServiceDeps(
 		failingProviderListStore{st}, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil))), set)
 
 	info, err := svc.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
