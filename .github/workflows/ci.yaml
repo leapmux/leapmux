@@ -215,6 +215,10 @@ jobs:
           key: ${{ steps.setup.outputs.cache-key }}
           prefix: ${{ steps.setup.outputs.cache-prefix }}
 
+      - name: Upload end-to-end failure reports
+        if: failure()
+        uses: ./.github/actions/upload-e2e-failure-reports
+
       - name: Stop the resource monitor
         if: always() && vars.CI_RESOURCE_MONITOR == 'true'
         uses: ./.github/actions/ci-resource-monitor
@@ -310,6 +314,10 @@ jobs:
         with:
           key: ${{ steps.setup.outputs.cache-key }}
           prefix: ${{ steps.setup.outputs.cache-prefix }}
+
+      - name: Upload end-to-end failure reports
+        if: failure()
+        uses: ./.github/actions/upload-e2e-failure-reports
 
       - name: Stop the resource monitor
         if: always() && vars.CI_RESOURCE_MONITOR == 'true'
@@ -417,6 +425,10 @@ jobs:
         with:
           key: ${{ steps.setup.outputs.cache-key }}
           prefix: ${{ steps.setup.outputs.cache-prefix }}
+
+      - name: Upload end-to-end failure reports
+        if: failure()
+        uses: ./.github/actions/upload-e2e-failure-reports
 
       - name: Stop the resource monitor
         if: always() && vars.CI_RESOURCE_MONITOR == 'true'

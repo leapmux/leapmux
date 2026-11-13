@@ -263,6 +263,94 @@ describe('native CI validation', () => {
     }
   })
 
+  it.each(['linux', 'macos', 'windows'])('uploads E2E failure evidence after the %s tests', (name) => {
+    const { steps } = readYaml('.github/workflows/ci.yaml').jobs[name]
+    const uploads = steps.filter(step => step.uses === './.github/actions/upload-e2e-failure-reports')
+    expect(uploads).toHaveLength(1)
+    expect(uploads[0].if).toBe('failure()')
+    const lastTest = steps.findLastIndex(step => /^task test(?:-native(?:-linux)?)?$/.test(step.run ?? ''))
+    expect(lastTest).toBeGreaterThan(-1)
+    expect(steps.indexOf(uploads[0])).toBeGreaterThan(lastTest)
+  })
+
+  it('keeps E2E artifacts separate for every runner and run attempt without requiring files after an early failure', () => {
+    const action = readYaml('.github/actions/upload-e2e-failure-reports/action.yaml')
+    expect(action.runs.using).toBe('composite')
+    const uploads = action.runs.steps.filter(step => step.uses?.startsWith('actions/upload-artifact@'))
+    expect(uploads).toHaveLength(1)
+    const upload = uploads[0]
+    expect(upload.if).toBe('always()')
+    expect(upload.uses).toMatch(/^actions\/upload-artifact@[a-f0-9]{40}$/)
+    expect(upload.with['if-no-files-found']).toBe('ignore')
+    // The retained fixtures live under .tmp, and Playwright also writes hidden last-run state.
+    expect(upload.with['include-hidden-files']).toBe(true)
+    expect(upload.with['retention-days']).toBeGreaterThan(0)
+    expect(upload.with['retention-days']).toBeLessThanOrEqual(14)
+    for (const context of [
+      'github.job',
+      'runner.os',
+      'runner.arch',
+      'github.run_attempt',
+    ])
+      expect(upload.with.name).toContain(expression(context))
+  })
+
+  it('selects retained E2E reports, attachments and logs without fixture dependencies or command environments', () => {
+    const action = readYaml('.github/actions/upload-e2e-failure-reports/action.yaml')
+    const upload = action.runs.steps.find(step => step.uses?.startsWith('actions/upload-artifact@'))
+    const patterns = upload.with.path.trim().split('\n').map(path => path.trim())
+    mkdirSync(join(root, '.tmp'), { recursive: true })
+    const dir = mkdtempSync(join(root, '.tmp', 'ci-e2e-artifacts-'))
+    fixtures.push(dir)
+    const selectFiles = () => {
+      const selected = new Set()
+      for (const pattern of patterns) {
+        const glob = new Bun.Glob(pattern.endsWith('/')
+          ? `${pattern}**/*`
+          : pattern)
+        for (const path of glob.scanSync({ cwd: dir, onlyFiles: true, dot: true }))
+          selected.add(path)
+      }
+      return [...selected].sort()
+    }
+    expect(selectFiles()).toEqual([])
+    const retained = '.tmp/e2e-launcher-fixture-failed'
+    const included = [
+      `${retained}/retained-artifacts/combined.json`,
+      `${retained}/retained-artifacts/.last-run.json`,
+      `${retained}/retained-artifacts/runs/e2e-private/shard-1/console.log`,
+      `${retained}/retained-artifacts/runs/e2e-private/shard-1/blob-report/report.zip`,
+      `${retained}/retained-artifacts/runs/e2e-private/shard-1/test-results/failed-spec/trace.zip`,
+      `${retained}/retained-artifacts/runs/e2e-private/shard-1/test-results/failed-spec/attachments/receipt.txt`,
+      `${retained}/launcher-artifacts/report.json`,
+      `${retained}/launcher-console-private.log`,
+      `${retained}/first-report.json`,
+      `${retained}/records/entry-alpha.json`,
+      `${retained}/records/exit-alpha.json`,
+      'frontend/test-results/runs/e2e-private/report.json',
+      'frontend/test-results/runs/e2e-private/shard-1/test-results/failed-spec/trace.zip',
+      'frontend/test-results/.last-run-report.json',
+      'frontend/playwright-report/index.html',
+      'frontend/playwright-report/data/trace.zip',
+      'frontend/blob-report/report.zip',
+    ]
+    const excluded = [
+      `${retained}/frontend/node_modules/private-package/index.js`,
+      `${retained}/frontend/.env`,
+      `${retained}/.tmp/leapmux-e2e-private/nonce`,
+      '.tmp/windows-command-job-private/payload.json',
+      '.tmp/unrelated/report.json',
+    ]
+    for (const path of [
+      ...included,
+      ...excluded,
+    ]) {
+      mkdirSync(resolve(dir, path, '..'), { recursive: true })
+      writeFileSync(join(dir, path), 'fixture evidence')
+    }
+    expect(selectFiles()).toEqual([...included].sort())
+  })
+
   it.each(['linux', 'macos', 'windows'])('monitors the %s runner on request, from before the cache restorations to the end of the job', (name) => {
     const job = readYaml('.github/workflows/ci.yaml').jobs[name]
     const steps = job.steps

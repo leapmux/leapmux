@@ -496,6 +496,12 @@ The explicit file value takes precedence.
 Failed runs retain reports and attachments after the launcher stops the test processes.
 Later serial or parallel runs preserve these artifacts.
 
+If reports exist, failed Linux, macOS, and Windows CI jobs upload an artifact whose name starts with `e2e-failure-reports-`.
+The name identifies the job, operating system, architecture, and run attempt.
+Download it from the workflow run's **Artifacts** section within seven days.
+It contains the available Playwright reports, attachments, and traces, together with launcher console logs and fixture records.
+Launcher integration tests retain fixtures only when their outer test fails, including a cleanup failure after both Playwright cases pass.
+
 Use `--last-failed` to run the failed cases from the combined result:
 
 ```bash
