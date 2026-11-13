@@ -56,16 +56,16 @@ func newHTTPAuthFixture(t *testing.T) httpAuthFixture {
 
 	real, err := st.Users().GetByUsername(ctx, hubtestutil.TestAdminUsername)
 	require.NoError(t, err)
-	realToken, _, err := auth.CreateSession(ctx, st, userid.MustNew(real.ID), auth.DefaultSessionDuration)
+	realSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(real.ID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	plantedID := hubtestutil.CreateTestUser(t, st, "attacker", "attackerpass123")
-	plantedToken, _, err := auth.CreateSession(ctx, st, userid.MustNew(plantedID), auth.DefaultSessionDuration)
+	plantedSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(plantedID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	return httpAuthFixture{
-		st: st, realToken: realToken, realID: real.ID,
-		plantedToken: plantedToken, plantedID: plantedID,
+		st: st, realToken: realSession.Token, realID: real.ID,
+		plantedToken: plantedSession.Token, plantedID: plantedID,
 	}
 }
 
@@ -81,7 +81,7 @@ func (f httpAuthFixture) request(cookies map[string]string) *http.Request {
 }
 
 func (f httpAuthFixture) authenticate(r *http.Request, secureCookies bool) (*auth.UserInfo, error) {
-	return auth.AuthenticateHTTP(context.Background(), r, auth.HTTPAuthOpts{
+	return auth.AuthenticateHTTP(context.Background(), r, auth.HTTPAuthOpts{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store:         f.st,
 		ReadCookie:    true,
 		SecureCookies: secureCookies,
@@ -142,9 +142,12 @@ func TestAuthenticateHTTPKeepsTheFallbackOnAPlainHub(t *testing.T) {
 
 	// The prefixed spelling still resolves there too: a session issued while
 	// the setting was on must survive the operator turning it off.
-	user, err = f.authenticate(f.request(map[string]string{auth.SecureCookieName: f.realToken}), true)
-	require.NoError(t, err)
-	assert.Equal(t, f.realID, user.ID.String())
+	r := f.request(map[string]string{auth.SecureCookieName: f.realToken})
+	for _, secure := range []bool{true, false} {
+		user, err = f.authenticate(r, secure)
+		require.NoError(t, err)
+		assert.Equal(t, f.realID, user.ID.String())
+	}
 }
 
 // TestAuthenticateHTTPReportsAnInvalidPrefixedCookieRatherThanFallingBack
@@ -168,7 +171,7 @@ func TestAuthenticateHTTPReportsAnInvalidPrefixedCookieRatherThanFallingBack(t *
 	assert.Nil(t, user, "a dead prefixed cookie must not fall back to a plantable one")
 }
 
-// workerTokenStore replaces Workers().GetByAuthTokenIncludeDeleted with a fixed
+// workerTokenStore replaces Workers().GetByAuthTokenHashIncludeDeleted with a fixed
 // answer and leaves the rest of the store real.
 type workerTokenStore struct {
 	store.Store
@@ -184,7 +187,7 @@ type workerTokenLookup struct {
 	err error
 }
 
-func (l workerTokenLookup) GetByAuthTokenIncludeDeleted(context.Context, string) (*store.Worker, error) {
+func (l workerTokenLookup) GetByAuthTokenHashIncludeDeleted(context.Context, []byte) (*store.Worker, error) {
 	return nil, l.err
 }
 
@@ -197,10 +200,10 @@ func TestAuthenticateWorkerBearer(t *testing.T) {
 	ctx := context.Background()
 	st := hubtestutil.OpenTestStore(t)
 	owner := storetest.SeedUser(t, st, "worker-bearer-owner")
-	worker := storetest.SeedWorker(t, st, owner.ID)
+	worker, workerToken := hubtestutil.CreateTestWorker(t, st, owner.ID)
 
 	t.Run("resolves a live worker", func(t *testing.T) {
-		got, err := auth.AuthenticateWorkerBearer(ctx, st, "Bearer "+worker.AuthToken)
+		got, err := auth.AuthenticateWorkerBearer(ctx, st, hubtestutil.TestSecretHasher(), "Bearer "+workerToken)
 		require.NoError(t, err)
 		assert.Equal(t, worker.ID, got.ID)
 		assert.Equal(t, owner.ID, got.RegisteredBy)
@@ -211,13 +214,13 @@ func TestAuthenticateWorkerBearer(t *testing.T) {
 		header string
 	}{
 		{"no header", ""},
-		{"a token with no scheme", worker.AuthToken},
+		{"a token with no scheme", workerToken},
 		{"the scheme alone", "Bearer"},
 		{"the scheme and blanks", "Bearer   "},
-		{"another scheme", "Basic " + worker.AuthToken},
+		{"another scheme", "Basic " + workerToken},
 	} {
 		t.Run("refuses "+tc.name, func(t *testing.T) {
-			got, err := auth.AuthenticateWorkerBearer(ctx, st, tc.header)
+			got, err := auth.AuthenticateWorkerBearer(ctx, st, hubtestutil.TestSecretHasher(), tc.header)
 			assert.ErrorIs(t, err, auth.ErrMissingBearer)
 			assert.Nil(t, got)
 			assert.True(t, auth.IsWorkerCredentialError(err))
@@ -225,7 +228,7 @@ func TestAuthenticateWorkerBearer(t *testing.T) {
 	}
 
 	t.Run("refuses an unknown token", func(t *testing.T) {
-		got, err := auth.AuthenticateWorkerBearer(ctx, st, "Bearer no-such-token")
+		got, err := auth.AuthenticateWorkerBearer(ctx, st, hubtestutil.TestSecretHasher(), "Bearer no-such-token")
 		assert.ErrorIs(t, err, auth.ErrInvalidWorkerToken)
 		assert.Nil(t, got)
 		assert.True(t, auth.IsWorkerCredentialError(err))
@@ -233,7 +236,7 @@ func TestAuthenticateWorkerBearer(t *testing.T) {
 
 	t.Run("reports a store failure as no verdict on the credential", func(t *testing.T) {
 		boom := errors.New("database is locked")
-		got, err := auth.AuthenticateWorkerBearer(ctx, workerTokenStore{Store: st, err: boom}, "Bearer "+worker.AuthToken)
+		got, err := auth.AuthenticateWorkerBearer(ctx, workerTokenStore{Store: st, err: boom}, hubtestutil.TestSecretHasher(), "Bearer "+workerToken)
 		require.Error(t, err)
 		assert.Nil(t, got)
 		assert.ErrorIs(t, err, boom, "the store's error stays reachable for the log")
@@ -242,21 +245,21 @@ func TestAuthenticateWorkerBearer(t *testing.T) {
 	})
 
 	t.Run("still resolves a deregistering worker", func(t *testing.T) {
-		leaving := storetest.SeedWorker(t, st, owner.ID)
+		leaving, leavingToken := hubtestutil.CreateTestWorker(t, st, owner.ID)
 		n, err := st.Workers().Deregister(ctx, store.DeregisterWorkerParams{ID: leaving.ID, RegisteredBy: userid.MustNew(owner.ID)})
 		require.NoError(t, err)
 		require.Equal(t, int64(1), n)
 
-		got, err := auth.AuthenticateWorkerBearer(ctx, st, "Bearer "+leaving.AuthToken)
+		got, err := auth.AuthenticateWorkerBearer(ctx, st, hubtestutil.TestSecretHasher(), "Bearer "+leavingToken)
 		require.NoError(t, err, "a deregistering worker keeps its calls until it is told to stop")
 		assert.Equal(t, leaving.ID, got.ID)
 	})
 
 	t.Run("refuses a deleted worker", func(t *testing.T) {
-		gone := storetest.SeedWorker(t, st, owner.ID)
+		gone, goneToken := hubtestutil.CreateTestWorker(t, st, owner.ID)
 		require.NoError(t, st.Workers().MarkDeleted(ctx, gone.ID))
 
-		got, err := auth.AuthenticateWorkerBearer(ctx, st, "Bearer "+gone.AuthToken)
+		got, err := auth.AuthenticateWorkerBearer(ctx, st, hubtestutil.TestSecretHasher(), "Bearer "+goneToken)
 		assert.ErrorIs(t, err, auth.ErrWorkerDeleted)
 		assert.Nil(t, got)
 		assert.True(t, auth.IsWorkerCredentialError(err))
@@ -274,4 +277,51 @@ func TestIsWorkerCredentialError(t *testing.T) {
 		"an unrelated error with the same words is not the sentinel")
 	assert.False(t, auth.IsWorkerCredentialError(auth.ErrHTTPUnauthenticated),
 		"the HTTP sentinels belong to another helper")
+}
+
+func TestAuthenticateHTTPRefusesAnUnprovenSessionSecret(t *testing.T) {
+	t.Parallel()
+	fixture := newHTTPAuthFixture(t)
+	sessionID, secret, ok := auth.ParseSessionToken(fixture.realToken)
+	require.True(t, ok)
+	replacement := "A"
+	if secret[0] == 'A' {
+		replacement = "B"
+	}
+	for _, value := range []string{sessionID, auth.FormatSessionToken(sessionID, replacement+secret[1:])} {
+		request := fixture.request(map[string]string{auth.CookieName: value})
+		user, err := auth.AuthenticateHTTP(t.Context(), request, auth.HTTPAuthOpts{Store: fixture.st, SessionHasher: hubtestutil.TestSecretHasher(), ReadCookie: true})
+		assert.Nil(t, user)
+		assert.ErrorIs(t, err, auth.ErrHTTPUnauthenticated)
+	}
+	user, err := auth.AuthenticateHTTP(t.Context(), fixture.request(map[string]string{auth.CookieName: fixture.realToken}), auth.HTTPAuthOpts{Store: fixture.st, SessionHasher: hubtestutil.TestSecretHasher(), ReadCookie: true})
+	require.NoError(t, err)
+	assert.Equal(t, fixture.realID, user.ID.String())
+}
+
+func TestAuthenticateHTTPRequiresACookieHasher(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	_, err := auth.AuthenticateHTTP(t.Context(), request, auth.HTTPAuthOpts{ReadCookie: true})
+	require.ErrorContains(t, err, "SessionHasher")
+	assert.NotErrorIs(t, err, auth.ErrHTTPUnauthenticated)
+}
+
+func TestAuthenticateHTTPRejectsAnUnprovenPrefixedSecretWithoutPlainFallback(t *testing.T) {
+	t.Parallel()
+	f := newHTTPAuthFixture(t)
+	sessionID, secret, ok := auth.ParseSessionToken(f.realToken)
+	require.True(t, ok)
+	replacement := "A"
+	if secret[0] == 'A' {
+		replacement = "B"
+	}
+	wrong := auth.FormatSessionToken(sessionID, replacement+secret[1:])
+	for _, secure := range []bool{true, false} {
+		user, err := f.authenticate(f.request(map[string]string{
+			auth.SecureCookieName: wrong,
+			auth.CookieName:       f.plantedToken,
+		}), secure)
+		require.ErrorIs(t, err, auth.ErrHTTPUnauthenticated)
+		assert.Nil(t, user)
+	}
 }

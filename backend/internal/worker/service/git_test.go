@@ -13,7 +13,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -21,6 +23,7 @@ import (
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/testutil"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/gitutil"
 	"github.com/leapmux/leapmux/util/pathutil"
@@ -61,12 +64,13 @@ func initBareRepo(t *testing.T, dir string) {
 }
 
 // run executes a command in the given directory.
-func run(t *testing.T, dir string, name string, args ...string) {
+func run(t *testing.T, dir string, name string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, "command failed: %s %v\n%s", name, args, output)
+	return string(output)
 }
 
 func swapGitStatusForFileStatusHook(t *testing.T, fn func(context.Context, string) *leapmuxv1.GitRepoStatus) {
@@ -582,27 +586,18 @@ func TestDetachedHEAD_ShowsShortSHA(t *testing.T) {
 	t.Parallel()
 
 	dir := initRepo(t)
-	ctx := context.Background()
 
-	// Get short SHA before detaching.
-	expectedSHA, err := gitutil.Output(ctx, dir, "rev-parse", "--short", "HEAD")
-	require.NoError(t, err)
-	expectedSHA = strings.TrimSpace(expectedSHA)
-
-	// Detach HEAD.
+	fullSHA := strings.TrimSpace(run(t, dir, "git", "rev-parse", "HEAD"))
 	run(t, dir, "git", "checkout", "--detach", "HEAD")
-
-	// Simulate what the handler does.
-	branch, err := gitutil.Output(ctx, dir, "rev-parse", "--abbrev-ref", "HEAD")
-	require.NoError(t, err)
-	branch = strings.TrimSpace(branch)
-	if branch == "HEAD" {
-		sha, err := gitutil.Output(ctx, dir, "rev-parse", "--short", "HEAD")
-		require.NoError(t, err)
-		branch = strings.TrimSpace(sha)
-	}
-
-	assert.Equal(t, expectedSHA, branch)
+	_, d, w := setupTestService(t)
+	dispatch(d, leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure, &leapmuxv1.GetGitInfoRequest{Path: dir}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.GetGitInfoResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	assert.True(t, resp.GetIsGitRepo())
+	assert.Equal(t, fullSHA[:7], resp.GetCurrentBranch())
+	assert.NotEqual(t, "HEAD", resp.GetCurrentBranch())
 }
 
 func TestQueryGitPathInfo_RegularRepo(t *testing.T) {
@@ -620,7 +615,7 @@ func TestQueryGitPathInfo_RegularRepo(t *testing.T) {
 	assert.NotEmpty(t, info.BranchName, "regular repo must populate BranchName from the same rev-parse call")
 
 	// The combined rev-parse emits the full HEAD SHA — guard against a
-	// regression where the format flags are reordered (`--abbrev-ref`
+	// regression where the format flags are reordered (`--symbolic-full-name`
 	// is sticky and silently swallows the SHA output if it precedes
 	// the positional HEAD).
 	expectedSHA, err := gitutil.Output(ctx, dir, "rev-parse", "HEAD")
@@ -647,7 +642,7 @@ func TestQueryGitPathInfo_DetachedHEAD(t *testing.T) {
 
 	info, err := queryGitPathInfo(ctx, dir)
 	require.NoError(t, err)
-	assert.Empty(t, info.BranchName, "detached HEAD must have empty BranchName so the abbrev-ref 'HEAD' literal is filtered out")
+	assert.Empty(t, info.BranchName, "detached HEAD must have no attached branch identity")
 	assert.Equal(t, headSHA, info.HeadSHA)
 }
 
@@ -661,7 +656,7 @@ func TestQueryGitPathInfo_NonGitDir(t *testing.T) {
 
 // TestQueryGitPathInfo_UnbornHEAD pins the unborn-HEAD fallback. A fresh
 // `git init` with no commits IS a real repo, but the combined-form
-// `rev-parse ... HEAD --abbrev-ref HEAD` exits non-zero because the
+// `rev-parse ... HEAD --symbolic-full-name HEAD` exits non-zero because the
 // positional `HEAD` revision can't resolve. The earlier code surfaced
 // the failure as errNotGitRepo, which locked every dialog whose open
 // path runs through queryGitPathInfo (GetGitInfo, ChangeBranchDialog,
@@ -681,18 +676,15 @@ func TestQueryGitPathInfo_UnbornHEAD(t *testing.T) {
 	assert.Equal(t, resolved, info.TopLevel)
 	assert.Equal(t, resolved, info.RepoRoot, "main-repo unborn HEAD resolves the same TopLevel and RepoRoot")
 	assert.Equal(t, "main", info.BranchName,
-		"unborn HEAD still resolves the symref via --abbrev-ref HEAD; the branch name is the planned target")
+		"symbolic-ref resolves the unborn branch name without a commit")
 	assert.Empty(t, info.HeadSHA,
-		"unborn HEAD has no SHA to resolve — the retry path leaves HeadSHA empty so branchOrShortSHA returns empty")
+		"unborn HEAD has no commit SHA; branchOrShortSHA uses BranchName")
 	assert.False(t, info.IsWorktree)
 }
 
-// TestBranchOrShortSHA_UnbornHEAD locks in the branch-name fallback the
-// unborn-HEAD path returns. queryGitPathInfo now successfully resolves
-// such repos with BranchName populated from `--abbrev-ref HEAD` (which
-// emits the symref target even before any commit exists), so
-// branchOrShortSHA's primary branch returns that name without falling
-// through to the empty short-SHA case.
+// TestBranchOrShortSHA_UnbornHEAD verifies that the display uses the unborn
+// branch name. queryGitPathInfo reads it with symbolic-ref HEAD,
+// and branchOrShortSHA returns it before checking HeadSHA.
 func TestBranchOrShortSHA_UnbornHEAD(t *testing.T) {
 	t.Parallel()
 
@@ -711,7 +703,7 @@ func TestQueryGitPathInfo_RepoPathWithNewline(t *testing.T) {
 	// (POSIX paths containing newlines, vanishingly rare but legal)
 	// silently zeroed every field after the partial toplevel. Mirrors
 	// gitutil.TestGetToplevelInfo's newline-in-path case — the same fix
-	// (parse from the end) must apply to both.
+	// (independent raw path responses) must apply to both.
 	//
 	// Skip on filesystems that refuse newline-in-path.
 	base := t.TempDir()
@@ -743,7 +735,7 @@ func TestQueryGitPathInfo_RepoPathWithNewline(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, resolved, gotResolved, "TopLevel must include the newline-containing segment")
 	assert.Equal(t, "main", info.BranchName, "BranchName must still parse correctly when TopLevel spans multiple lines")
-	assert.Len(t, info.HeadSHA, 40, "HeadSHA must be the full 40-char SHA after end-counting parse")
+	assert.Len(t, info.HeadSHA, 40, "HeadSHA must retain the full object ID")
 	assert.False(t, info.IsWorktree, "main repo must not be flagged as a worktree")
 }
 
@@ -1322,7 +1314,7 @@ func TestInspectLastTabClose_WorktreeMultiTabFastPath(t *testing.T) {
 	assert.False(t, resp.GetShouldPrompt(), "multi-tab worktree must not prompt")
 	// Fast-path-specific: git_state submessage must be absent.
 	assert.Nil(t, resp.GetGitState(), "fast path skips diff/push snapshot")
-	// Worktree identity fields must come from the DB row, though.
+	// The response still carries the tracked ID and the live worktree path.
 	assert.Equal(t, wtID, resp.GetWorktreeId())
 	expectedWtPath, err := filepath.EvalSymlinks(wtDir)
 	require.NoError(t, err)
@@ -1437,23 +1429,16 @@ func TestInspectLastTabClose_WorktreeDirDeletedClosesWithoutPrompt(t *testing.T)
 	assert.NotEmpty(t, resp.GetErrorHint(), "a degraded close must surface an error_hint so the user is warned")
 }
 
-// Regression guard for the safety-net branch of the fix: when the worktree
-// directory still exists on disk but git is broken inside it (here: the
-// linked-worktree .git pointer file was removed), inspectLastTabClose must
-// still let the tab close. The os.Stat fast path does NOT fire (dir exists),
-// so gatherBranchSnapshot runs and fails — the fix downgrades that failure
-// from a hard error to a no-prompt response so the close can proceed.
-func TestInspectLastTabClose_WorktreeSnapshotFailureDoesNotBlockClose(t *testing.T) {
+// A linked worktree whose .git pointer was removed must still close without
+// a prompt. The initial path probe fails before gathering a snapshot.
+func TestInspectLastTabClose_WorktreeWithoutGitMetadataClosesWithoutPrompt(t *testing.T) {
 	t.Parallel()
 
 	svc, _, _ := setupTestService(t)
 	_, wtDir, agentID := setupLastTabOnWorktree(t, svc, "corrupt")
 
-	// Corrupt git inside the worktree without removing the directory: a
-	// linked worktree's `.git` is a file pointing at the main repo's
-	// worktree admin dir. Removing it makes `git -C wtDir status/diff`
-	// exit 128 ("not a git repository") while os.Stat(wtDir) still
-	// succeeds — exercising the gatherBranchSnapshot failure path.
+	// Removing the .git pointer prevents the initial path probe from recognizing
+	// the existing working directory as a Git repository.
 	require.NoError(t, os.Remove(filepath.Join(wtDir, ".git")))
 
 	resp, err := svc.inspectLastTabClose(context.Background(), leapmuxv1.TabType_TAB_TYPE_AGENT, agentID, "")
@@ -1461,6 +1446,7 @@ func TestInspectLastTabClose_WorktreeSnapshotFailureDoesNotBlockClose(t *testing
 	assert.Equal(t, leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE, resp.GetTarget(),
 		"broken git must not block the close")
 	assert.False(t, resp.GetShouldPrompt())
+	assert.Nil(t, resp.GetGitState(), "path-probe failure must skip the snapshot")
 	assert.NotEmpty(t, resp.GetErrorHint(), "a degraded close must surface an error_hint so the user is warned")
 }
 
@@ -1485,8 +1471,7 @@ func TestInspectLastTabClose_NonWorktreeSnapshotFailureDegradesWithHint(t *testi
 
 	svc, _, _ := setupTestService(t)
 	repoDir := initRepo(t)
-	// A non-worktree agent tab: no worktree DB row, so GetWorktreeForTab
-	// misses and the close path runs through loadTabGitContext.
+	// The agent's recorded working directory supplies the initial path probe.
 	createAgentForPath(t, svc, "agent-broken-head", repoDir)
 
 	// Corrupt HEAD: point the branch ref at a SHA that has no object.
@@ -1561,8 +1546,8 @@ func TestInspectLastTabClose_SiblingCountFailureDoesNotBlockClose(t *testing.T) 
 // git repository must close without a prompt AND surface an error_hint, so
 // the user is warned the uncommitted-work check was skipped. Before the fix
 // this branch returned a bare {Target: NONE} response with no hint — the
-// close proceeded silently, asymmetric with the os.Stat and snapshot-failure
-// degraded branches (which do hint). loadTabGitContext collapses both
+// close proceeded silently. Both the initial Git probe and a later snapshot
+// must warn when their check fails. loadTabGitContext collapses both
 // errNotGitRepo and transient probe failures to one error, so this covers
 // the "agent whose dir was deleted out-of-band" case for a non-worktree tab.
 func TestInspectLastTabClose_NonWorktreeNonRepoDegradesWithHint(t *testing.T) {
@@ -1571,8 +1556,7 @@ func TestInspectLastTabClose_NonWorktreeNonRepoDegradesWithHint(t *testing.T) {
 	svc, _, _ := setupTestService(t)
 	// A plain temp dir with NO `git init` — queryGitPathInfo returns
 	// errNotGitRepo, so loadTabGitContext fails and the inspect hits the
-	// degraded branch. (No worktree DB row, so GetWorktreeForTab misses
-	// and the close path runs through loadTabGitContext.)
+	// degraded branch.
 	nonRepoDir := t.TempDir()
 	createAgentForPath(t, svc, "agent-non-repo", nonRepoDir)
 
@@ -1956,7 +1940,7 @@ func TestInspectLastTabClose_ManyTabsParallelScans(t *testing.T) {
 
 // TestIsDirty pins the boolean-only contract of the shared dirty-tree
 // probe: false on a clean tree, true on a tracked-but-modified file,
-// true on a stray untracked file. The probe is shared by GetGitInfo
+// true on a stray untracked file. The probe is shared by GetGitWorkingTreeState
 // and dirtyTreeForPush; both paths depend on this exact predicate.
 func TestIsDirty(t *testing.T) {
 	t.Parallel()
@@ -2023,8 +2007,7 @@ func TestPushBranch_CreatesWIPCommitAndPushes(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "WIP", strings.TrimSpace(msg))
 
-	remoteHead, err := gitutil.Output(context.Background(), bareDir, "rev-parse", "refs/heads/push-dirty")
-	require.NoError(t, err)
+	remoteHead := run(t, bareDir, "git", "rev-parse", "refs/heads/push-dirty")
 	localHead, err := gitutil.Output(context.Background(), repoDir, "rev-parse", "HEAD")
 	require.NoError(t, err)
 	assert.Equal(t, strings.TrimSpace(localHead), strings.TrimSpace(remoteHead))
@@ -2109,7 +2092,7 @@ func TestPushBranch_StaleDirtyHintOnCleanTreeDoesNotCreateEmptyCommit(t *testing
 // local branch with no upstream adds `-u origin <branch>` to the push
 // args. The live pushStatusForPath probe discovers UpstreamExists=false
 // from `git config branch.<X>.{remote,merge}`; without this branch in
-// pushBranch the second push fails with "no upstream branch".
+// pushBranch the new branch has no upstream configuration.
 func TestPushBranch_NoUpstreamSetsUpstreamArg(t *testing.T) {
 	t.Parallel()
 
@@ -2128,15 +2111,21 @@ func TestPushBranch_NoUpstreamSetsUpstreamArg(t *testing.T) {
 	run(t, repoDir, "git", "checkout", "-b", "push-noup")
 	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "feature init")
 	createAgentForPath(t, svc, "agent-push-noup", repoDir)
+	for _, key := range []string{"branch.push-noup.remote", "branch.push-noup.merge"} {
+		_, err := gitutil.Output(t.Context(), repoDir, "config", "--get", key)
+		var exitErr *exec.ExitError
+		require.ErrorAs(t, err, &exitErr)
+		require.Equal(t, 1, exitErr.ExitCode())
+	}
 
 	err := svc.pushBranch(context.Background(), repoDir)
 	require.NoError(t, err)
 
-	// The branch must now exist on the bare remote, which only happens
-	// if `git push -u origin push-noup` ran (a plain `git push` without
-	// an upstream would have errored).
-	remoteHead, err := gitutil.Output(context.Background(), bareDir, "rev-parse", "refs/heads/push-noup")
-	require.NoError(t, err)
+	assert.Equal(t, "origin", strings.TrimSpace(run(t, repoDir, "git", "config", "branch.push-noup.remote")))
+	assert.Equal(t, "refs/heads/push-noup", strings.TrimSpace(run(t, repoDir, "git", "config", "branch.push-noup.merge")))
+	assert.Equal(t, "origin/push-noup", strings.TrimSpace(run(t, repoDir, "git", "rev-parse", "--symbolic-full-name", "--abbrev-ref", "push-noup@{upstream}")))
+	// The remote branch must contain the pushed commit too.
+	remoteHead := run(t, bareDir, "git", "rev-parse", "refs/heads/push-noup")
 	localHead, err := gitutil.Output(context.Background(), repoDir, "rev-parse", "HEAD")
 	require.NoError(t, err)
 	assert.Equal(t, strings.TrimSpace(localHead), strings.TrimSpace(remoteHead))
@@ -2170,8 +2159,7 @@ func TestPushBranch_FromFileTab(t *testing.T) {
 	msg, err := gitutil.Output(context.Background(), repoDir, "log", "-1", "--pretty=%s")
 	require.NoError(t, err)
 	assert.Equal(t, wipCommitMessage, strings.TrimSpace(msg))
-	remoteHead, err := gitutil.Output(context.Background(), bareDir, "rev-parse", "refs/heads/push-from-file")
-	require.NoError(t, err)
+	remoteHead := run(t, bareDir, "git", "rev-parse", "refs/heads/push-from-file")
 	localHead, err := gitutil.Output(context.Background(), repoDir, "rev-parse", "HEAD")
 	require.NoError(t, err)
 	assert.Equal(t, strings.TrimSpace(localHead), strings.TrimSpace(remoteHead))
@@ -2575,8 +2563,7 @@ func TestInspectWorktreeRemoval_WorktreeOfABareRepoIsRemovable(t *testing.T) {
 	resp, err := svc.inspectWorktreeRemoval(context.Background(), wtDir)
 	require.NoError(t, err)
 	assert.Empty(t, resp.GetBlockedReason(), "a linked worktree of a bare repository is removable")
-	assert.NoError(t, gitutil.Run(context.Background(), bareDir, "worktree", "remove", "--force", wtDir),
-		"git accepts the removal, so the preflight must not refuse it")
+	run(t, bareDir, "git", "worktree", "remove", "--force", wtDir)
 }
 
 // The `<repo>/.bare` + `<repo>/<branch>` layout. Its admin path holds no
@@ -2600,7 +2587,7 @@ func TestInspectWorktreeRemoval_DotBareLayoutWorktreeIsRemovable(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, resp.GetBlockedReason(),
 		"a linked worktree must not be reported as the repository's main working tree")
-	assert.NoError(t, gitutil.Run(context.Background(), bareDir, "worktree", "remove", "--force", wtDir))
+	run(t, bareDir, "git", "worktree", "remove", "--force", wtDir)
 }
 
 // A worktree the user moved with `mv` instead of `git worktree move`. git
@@ -2661,39 +2648,6 @@ func TestWorktreeRemovalBlockedReason_UsesTheSuppliedPathInfo(t *testing.T) {
 	reason, err = svc.worktreeRemovalBlockedReason(context.Background(), plain, nil)
 	require.NoError(t, err)
 	assert.Empty(t, reason)
-}
-
-// unquoteGitValue decodes git's own quoting on a lock reason. Real git output
-// never produces the fallback cases, so the parser tests above cannot reach
-// them -- and the fallback is what keeps a value the decoder cannot read
-// visible to the user rather than blank.
-func TestUnquoteGitValue(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name  string
-		value string
-		want  string
-	}{
-		{"an unquoted value passes through", "held for review", "held for review"},
-		{"an empty value stays empty", "", ""},
-		{"a quoted value is decoded", `"held for review"`, "held for review"},
-		{"an octal escape becomes its byte", `"caf\303\251"`, "café"},
-		{"an escaped quote is unescaped", `"has \"quotes\""`, `has "quotes"`},
-		{"a backslash is unescaped", `"C:\\build\\agent"`, `C:\build\agent`},
-		{"a newline escape is decoded", `"two\nlines"`, "two\nlines"},
-		// The fallbacks. A value the decoder cannot read is display text, and
-		// the raw form beats an empty string.
-		{"an unterminated quote falls back to the raw text", `"unterminated`, `"unterminated`},
-		{"an invalid escape falls back to the raw text", `"bad \q escape"`, `"bad \q escape"`},
-		{"a lone quote is too short to be quoted", `"`, `"`},
-		{"a value that merely CONTAINS a quote is not decoded", `held "loosely"`, `held "loosely"`},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			assert.Equal(t, c.want, unquoteGitValue(c.value))
-		})
-	}
 }
 
 // The RPC wiring, which the direct calls above do not exercise: the handler
@@ -2983,29 +2937,23 @@ func TestInspectBranchDeletion_WorktreeReturnsTrackedID(t *testing.T) {
 func TestInspectBranchDeletion_WorktreeStripsBranches(t *testing.T) {
 	t.Parallel()
 
-	// Branches are stripped from the response whenever the probe reports
-	// a worktree row (the dialog renders no switch picker), regardless
-	// of the caller's hint. Both `hint=true` and `hint=false` produce
-	// the same response shape on a genuine worktree row.
+	// Both a matching branch-name hint and an absent hint omit the picker.
 	svc, _, _ := setupTestService(t)
 	repoDir := initRepo(t)
 	wtDir := filepath.Join(t.TempDir(), "delete-wt")
 	run(t, repoDir, "git", "worktree", "add", "-b", "delete-wt-branch", wtDir)
-
-	resp, err := svc.inspectBranchDeletion(context.Background(), wtDir, "")
-	require.NoError(t, err)
-	assert.True(t, resp.GetIsWorktree())
-	assert.Equal(t, "delete-wt-branch", resp.GetBranchName())
-	assert.Empty(t, resp.GetBranches(), "worktree response must not populate Branches")
-
-	// Parity probe: every field must match the hint=false path on the
-	// same worktree, so the hint is a true no-op.
 	noHint, err := svc.inspectBranchDeletion(context.Background(), wtDir, "")
 	require.NoError(t, err)
-	assert.Equal(t, noHint.GetIsWorktree(), resp.GetIsWorktree())
-	assert.Equal(t, noHint.GetWorktreePath(), resp.GetWorktreePath())
-	assert.Equal(t, noHint.GetBranchName(), resp.GetBranchName())
-	assert.Empty(t, noHint.GetBranches())
+	require.True(t, noHint.GetIsWorktree())
+	require.Equal(t, "delete-wt-branch", noHint.GetBranchName())
+	require.Empty(t, noHint.GetBranches())
+	for _, hint := range []string{"delete-wt-branch", "stale-branch"} {
+		t.Run(hint, func(t *testing.T) {
+			resp, err := svc.inspectBranchDeletion(context.Background(), wtDir, hint)
+			require.NoError(t, err)
+			assert.True(t, proto.Equal(noHint, resp), "hint must preserve every response field")
+		})
+	}
 }
 
 func TestInspectBranchDeletion_NonWorktreeAlwaysReturnsBranches(t *testing.T) {
@@ -3079,16 +3027,14 @@ func TestInspectBranchChange_NonWorktreeClean(t *testing.T) {
 	t.Parallel()
 
 	// Happy path: a clean repo on its default branch. The response bundles
-	// the path-info (RepoRoot, CurrentBranch, IsWorktree=false), the dirty
-	// probe (IsDirty=false), and the branches list (at least one entry)
-	// in a single RPC.
+	// path info and the branches list in one RPC.
 	svc, _, _ := setupTestService(t)
 	repoDir := initRepo(t)
 
 	resp, err := svc.inspectBranchChange(context.Background(), repoDir)
 	require.NoError(t, err)
 	assert.False(t, resp.GetIsWorktree())
-	assert.False(t, resp.GetIsDirty())
+
 	assert.NotEmpty(t, resp.GetCurrentBranch())
 	// initRepo's default branch is included in the list — the dialog
 	// uses the picker to drive Switch / CreateBase, so the worker MUST
@@ -3103,16 +3049,14 @@ func TestInspectBranchChange_NonWorktreeClean(t *testing.T) {
 func TestInspectBranchChange_DirtyTree(t *testing.T) {
 	t.Parallel()
 
-	// IsDirty surfaces uncommitted changes so ChangeBranchDialog can
-	// paint the "Switching branches may discard changes" warning before
-	// the user clicks Apply.
+	// A dirty working tree does not prevent reading refs and branches.
 	svc, _, _ := setupTestService(t)
 	repoDir := initRepo(t)
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "dirty.txt"), []byte("d\n"), 0o644))
 
 	resp, err := svc.inspectBranchChange(context.Background(), repoDir)
 	require.NoError(t, err)
-	assert.True(t, resp.GetIsDirty(), "untracked file must flip IsDirty true")
+	assert.NotEmpty(t, resp.GetBranches())
 }
 
 func TestInspectBranchChange_Worktree(t *testing.T) {
@@ -3157,17 +3101,7 @@ func TestInspectBranchChange_NotAGitRepo(t *testing.T) {
 func TestInspectBranchChange_FiresOneRevParse(t *testing.T) {
 	t.Parallel()
 
-	// Regression guard for the bundle-RPC contract: the dialog's whole
-	// reason to call inspectBranchChange instead of GetGitInfo +
-	// ListGitBranches is that path-info, branches, and dirty all share a
-	// single queryGitPathInfo. If a future refactor splits them, the
-	// dialog-open cost goes from O(1) to O(N) rev-parses again.
-	//
-	// We can't easily count subprocesses without instrumenting NewGitCmd,
-	// but we can pin the response carries fields that prove the three
-	// goroutines ran (BranchName from path-info, IsDirty from the status
-	// probe, Branches from for-each-ref) — without all three, the bundle
-	// shape would be incomplete.
+	// Path info and the branch list remain in the same response.
 	svc, _, _ := setupTestService(t)
 	repoDir := initRepo(t)
 	run(t, repoDir, "git", "checkout", "-b", "feature")
@@ -3175,7 +3109,7 @@ func TestInspectBranchChange_FiresOneRevParse(t *testing.T) {
 	resp, err := svc.inspectBranchChange(context.Background(), repoDir)
 	require.NoError(t, err)
 	assert.Equal(t, "feature", resp.GetCurrentBranch(), "path-info goroutine must populate CurrentBranch")
-	assert.False(t, resp.GetIsDirty(), "isDirty goroutine must run (no untracked files in this repo)")
+
 	assert.NotEmpty(t, resp.GetBranches(), "for-each-ref goroutine must populate Branches")
 }
 
@@ -3207,9 +3141,8 @@ func TestInspectBranchDeletion_LiveProbeOverridesStaleHint(t *testing.T) {
 func TestInspectBranchDeletion_HintInWorktreeStillReportsWorktreeFields(t *testing.T) {
 	t.Parallel()
 
-	// Hint controls the branch label but not the worktree disposition —
-	// a hinted call against a linked-worktree path must still surface
-	// IsWorktree=true + WorktreePath populated.
+	// A branch-name hint starts the snapshot without replacing the live path
+	// probe. A linked worktree must return its live branch name and path.
 	svc, _, _ := setupTestService(t)
 	repoDir := initRepo(t)
 	wtDir := filepath.Join(t.TempDir(), "delete-wt")
@@ -3761,15 +3694,15 @@ func TestCheckoutBranch_RejectsFlagShapedStrippedLocalName(t *testing.T) {
 	// would reach argv as `git checkout -b --help --track origin/--help`
 	// and git would interpret `--help` as a flag.
 	//
-	// We can't easily create the malicious remote ref, but the
-	// validator runs BEFORE the remote-existence probe, so the
-	// rejection is independent of HasRefs: pass `origin/--help` and
-	// observe the second-pass ValidateBranchName rejects it.
 	repoDir := initRepo(t)
+	run(t, repoDir, "git", "update-ref", "refs/remotes/origin/--help", "HEAD")
 	err := checkoutBranchInDir(context.Background(), repoDir, "origin/--help")
 	require.Error(t, err)
 	assert.True(t, gitutil.IsBranchNameError(err),
 		"want BranchNameError on flag-shaped stripped name, got %v", err)
+	assert.Equal(t, "refs/heads/main", strings.TrimSpace(run(t, repoDir, "git", "symbolic-ref", "HEAD")))
+	_, refErr := gitutil.Output(t.Context(), repoDir, "show-ref", "--verify", "refs/heads/--help")
+	assert.Error(t, refErr)
 }
 
 func TestCreateBranch_EmptyBaseDefaultsToHead(t *testing.T) {
@@ -4223,6 +4156,7 @@ func TestRestampWorktreeBranch_NoOpOnDetachedHEAD(t *testing.T) {
 		ID:           "wt-detached-1",
 		WorktreePath: canonical,
 		RepoRoot:     repoDir,
+		RepoGitDir:   regularRepositoryGitDirForTest(t, repoDir),
 		BranchName:   "wt-detached-restamp",
 	})
 	require.NoError(t, cwErr)
@@ -4239,16 +4173,11 @@ func TestRestampWorktreeBranch_NoOpOnDetachedHEAD(t *testing.T) {
 		"detached HEAD must NOT overwrite branch_name with empty; the row's last branch identity is the best we have for fallback delete")
 }
 
-func TestExecuteUseCurrent_EnsureTrackedWorktreeErrorBubbles(t *testing.T) {
+func TestExecuteUseCurrent_ReusesTrackedWorktree(t *testing.T) {
 	t.Parallel()
 
-	// Regression: ensureTrackedWorktree failures used to be swallowed
-	// with a slog.Warn, leaving the tab with WorktreeID="" and silently
-	// degrading REMOVE-on-close to KEEP. Stage a uniqueness collision by
-	// pre-inserting a worktree row at a *different* path that targets the
-	// same canonical worktreePath via direct CreateWorktree — the second
-	// CreateWorktree call inside ensureTrackedWorktree must fail at the
-	// DB layer, and the caller (executeUseCurrent) must bubble it.
+	// executeUseCurrent must return the existing tracked ID when its worktree
+	// already has a database row.
 	svc, _, _ := setupTestService(t)
 	defer drainAllInFlight(svc)
 
@@ -4256,21 +4185,17 @@ func TestExecuteUseCurrent_EnsureTrackedWorktreeErrorBubbles(t *testing.T) {
 	wtDir := filepath.Join(t.TempDir(), "wt-track-fail")
 	run(t, repoDir, "git", "worktree", "add", "-b", "wt-track-fail", wtDir)
 
-	// Pre-claim the canonical worktree-path row so ensureTrackedWorktree
-	// hits a uniqueness collision on the new ID it tries to insert.
+	// Store the canonical path before executeUseCurrent probes the worktree.
 	canonicalPath := pathutil.Canonicalize(wtDir)
 	_, cwErr := svc.Queries.CreateWorktree(context.Background(), db.CreateWorktreeParams{
 		ID:           "pre-claimed",
 		WorktreePath: canonicalPath,
 		RepoRoot:     repoDir,
+		RepoGitDir:   regularRepositoryGitDirForTest(t, repoDir),
 		BranchName:   "wt-track-fail",
 	})
 	require.NoError(t, cwErr)
-	// ensureTrackedWorktree finds the pre-claimed row via GetWorktreeByPath
-	// and reuses its ID — that's actually the happy path, NOT a failure.
-	// The real test is: when GetWorktreeByPath returns the existing row,
-	// executeUseCurrent should set result.WorktreeID to that ID rather
-	// than leaving it empty.
+	// The existing row supplies the result's WorktreeID.
 	result, err := svc.executeUseCurrent(context.Background(), gitModePlan{
 		Mode:       gitModeUseCurrent,
 		WorkingDir: wtDir,
@@ -4281,7 +4206,8 @@ func TestExecuteUseCurrent_EnsureTrackedWorktreeErrorBubbles(t *testing.T) {
 }
 
 // Local branch with the same name as a remote-tracking ref must be preferred.
-// Covers the early-return branch in checkoutBranchInDir.
+// The helper resolves origin/shared to the existing local shared branch
+// and checks it out through the common checkout path.
 func TestCheckoutBranch_PrefersLocalOverRemote(t *testing.T) {
 	t.Parallel()
 
@@ -4343,8 +4269,8 @@ func TestDeleteBranch_NonWorktreeFlow(t *testing.T) {
 	assert.Empty(t, strings.TrimSpace(out))
 }
 
-// Subdirectory of a non-worktree repo: deleteBranchInDir resolves the
-// repo root via queryGitPathInfo, so the operation still works.
+// Git accepts a working directory below the repository root, so the delete
+// helper must also work when its caller supplies a subdirectory.
 func TestDeleteBranch_FromSubdirectory(t *testing.T) {
 	t.Parallel()
 
@@ -4403,20 +4329,24 @@ func TestCreateBranch_InsideWorktree(t *testing.T) {
 	assert.Equal(t, "wt-feature", strings.TrimSpace(branch))
 }
 
-// InspectBranchDeletion in a freshly initialized repo with no commits yet
-// (initRepo always commits, so simulate by hard-resetting). queryGitPathInfo
-// should still report a path; branch name may be HEAD's short SHA.
-func TestInspectBranchDeletion_EmptyBranchAfterReset(t *testing.T) {
+// InspectBranchDeletion returns the planned branch of an unborn repository.
+func TestInspectBranchDeletion_UnbornHEAD(t *testing.T) {
 	t.Parallel()
-
 	svc, _, _ := setupTestService(t)
-	repoDir := initRepo(t)
-
-	resp, err := svc.inspectBranchDeletion(context.Background(), repoDir, "")
+	repoDir := testutil.NewEmptyGitRepo(t)
+	_, err := gitutil.Output(t.Context(), repoDir, "rev-parse", "--verify", "HEAD")
+	require.Error(t, err)
+	require.Equal(t, "refs/heads/main", strings.TrimSpace(run(t, repoDir, "git", "symbolic-ref", "HEAD")))
+	resp, err := svc.inspectBranchDeletion(t.Context(), repoDir, "")
 	require.NoError(t, err)
-	// HEAD should have either a branch name (main/master from init) or a
-	// short SHA fallback — never empty.
-	assert.NotEmpty(t, resp.GetBranchName())
+	assert.Equal(t, "main", resp.GetBranchName())
+	assert.False(t, resp.GetIsWorktree())
+	assert.Empty(t, resp.GetBranches())
+	require.NotNil(t, resp.GetGitState())
+	assert.False(t, resp.GetGitState().GetHasUncommittedChanges())
+	assert.Zero(t, resp.GetGitState().GetDiffAdded())
+	assert.Zero(t, resp.GetGitState().GetDiffDeleted())
+	assert.Zero(t, resp.GetGitState().GetDiffUntracked())
 }
 
 // Stress: run inspectBranchDeletion concurrently on the same path; ensure
@@ -4499,8 +4429,7 @@ func TestPushBranch_CleanTreeSkipsWIPCommit(t *testing.T) {
 	}
 
 	// And the remote received the new commit.
-	remoteHead, err := gitutil.Output(context.Background(), bareDir, "rev-parse", "refs/heads/push-clean")
-	require.NoError(t, err)
+	remoteHead := run(t, bareDir, "git", "rev-parse", "refs/heads/push-clean")
 	localHead, err := gitutil.Output(context.Background(), repoDir, "rev-parse", "HEAD")
 	require.NoError(t, err)
 	assert.Equal(t, strings.TrimSpace(localHead), strings.TrimSpace(remoteHead))
@@ -4585,8 +4514,9 @@ func TestPushStatusForPath_UnpushedScopedToOrigin(t *testing.T) {
 	run(t, repoDir, "git", "commit", "--allow-empty", "-m", "secondary-only")
 	run(t, repoDir, "git", "push", "secondary", branchName)
 	// Confirm there is no branch.*.remote / branch.*.merge config.
-	cfg := readGitConfigRegexp(context.Background(), repoDir,
+	cfg, err := readGitConfigRegexp(context.Background(), repoDir,
 		fmt.Sprintf(`^branch\.%s\.(remote|merge)$`, branchName))
+	require.NoError(t, err)
 	require.Empty(t, cfg, "test setup: branch must have no upstream config")
 
 	status, err := pushStatusForPath(context.Background(), repoDir, branchName)
@@ -4656,7 +4586,8 @@ func TestReadGitConfigRegexp_ReturnsNilWhenNoMatches(t *testing.T) {
 	t.Parallel()
 
 	dir := initRepo(t)
-	cfg := readGitConfigRegexp(context.Background(), dir, `^branch\.never-exists\.remote$`)
+	cfg, err := readGitConfigRegexp(context.Background(), dir, `^branch\.never-exists\.remote$`)
+	require.NoError(t, err)
 	assert.Nil(t, cfg)
 }
 
@@ -4666,7 +4597,8 @@ func TestReadGitConfigRegexp_ParsesSingleEntry(t *testing.T) {
 	dir := initRepo(t)
 	run(t, dir, "git", "config", "remote.origin.url", "git@example.com:org/repo.git")
 
-	cfg := readGitConfigRegexp(context.Background(), dir, `^remote\.origin\.url$`)
+	cfg, err := readGitConfigRegexp(context.Background(), dir, `^remote\.origin\.url$`)
+	require.NoError(t, err)
 	require.NotNil(t, cfg)
 	assert.Equal(t, "git@example.com:org/repo.git", cfg["remote.origin.url"])
 	assert.Len(t, cfg, 1)
@@ -4680,7 +4612,8 @@ func TestReadGitConfigRegexp_ParsesMultipleEntries(t *testing.T) {
 	run(t, dir, "git", "config", "branch.main.remote", "origin")
 	run(t, dir, "git", "config", "branch.main.merge", "refs/heads/main")
 
-	cfg := readGitConfigRegexp(context.Background(), dir, `^(remote\.origin\.url|branch\.main\.(remote|merge))$`)
+	cfg, err := readGitConfigRegexp(context.Background(), dir, `^(remote\.origin\.url|branch\.main\.(remote|merge))$`)
+	require.NoError(t, err)
 	require.NotNil(t, cfg)
 	assert.Equal(t, "git@example.com:o/r.git", cfg["remote.origin.url"])
 	assert.Equal(t, "origin", cfg["branch.main.remote"])
@@ -4699,7 +4632,8 @@ func TestReadGitConfigRegexp_PreservesValuesWithNewline(t *testing.T) {
 	dir := initRepo(t)
 	run(t, dir, "git", "config", "leapmux.test.multiline", "line-a\nline-b")
 
-	cfg := readGitConfigRegexp(context.Background(), dir, `^leapmux\.test\.multiline$`)
+	cfg, err := readGitConfigRegexp(context.Background(), dir, `^leapmux\.test\.multiline$`)
+	require.NoError(t, err)
 	require.NotNil(t, cfg)
 	assert.Equal(t, "line-a\nline-b", cfg["leapmux.test.multiline"])
 }
@@ -4936,15 +4870,7 @@ func TestDiffStatsForPath_OnlyUntracked(t *testing.T) {
 func TestListGitBranches_EmptyRepo(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	for _, args := range [][]string{
-		{"init"},
-		{"config", "user.email", "test@test.com"},
-		{"config", "user.name", "Test"},
-	} {
-		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-		require.NoError(t, cmd.Run(), "git %v", args)
-	}
+	dir := testutil.NewEmptyGitRepo(t)
 
 	branches, err := listGitBranches(context.Background(), dir)
 	require.NoError(t, err)
@@ -5348,7 +5274,7 @@ func TestReadGitFile_StagedReturnsIndexContent(t *testing.T) {
 
 // A path that isn't present at the requested ref must respond with a
 // successful response carrying Exists=false rather than surfacing the
-// git failure as an RPC error — the frontend distinguishes
+// blob-read failure as an RPC error — the frontend distinguishes
 // "file not in this ref" (collapse the diff view) from "transport
 // failed" (show an error banner).
 func TestReadGitFile_MissingFileAtRefReturnsExistsFalse(t *testing.T) {
@@ -5771,7 +5697,7 @@ func TestEnsureTrackedWorktreeWith_SkipsProbeWhenHintsSupplied(t *testing.T) {
 	const syntheticRoot = "/synthetic/repo/root"
 	const syntheticBranch = "hint-only"
 
-	wtID, err := svc.ensureTrackedWorktreeWith(context.Background(), wtDir, syntheticRoot, syntheticBranch)
+	wtID, err := svc.ensureTrackedWorktreeWith(context.Background(), wtDir, syntheticRoot, filepath.Join(syntheticRoot, ".git"), syntheticBranch)
 	require.NoError(t, err)
 
 	row, err := svc.Queries.GetWorktreeByID(context.Background(), wtID)
@@ -5791,7 +5717,7 @@ func TestEnsureTrackedWorktreeWith_ProbesWhenBothHintsEmpty(t *testing.T) {
 	wtDir := filepath.Join(t.TempDir(), "track-no-hint-wt")
 	run(t, repoDir, "git", "worktree", "add", "-b", "probed-branch", wtDir)
 
-	wtID, err := svc.ensureTrackedWorktreeWith(context.Background(), wtDir, "", "")
+	wtID, err := svc.ensureTrackedWorktreeWith(context.Background(), wtDir, "", "", "")
 	require.NoError(t, err)
 
 	row, err := svc.Queries.GetWorktreeByID(context.Background(), wtID)
@@ -5816,7 +5742,7 @@ func TestEnsureTrackedWorktreeWith_ProbesToFillSingleMissingHint(t *testing.T) {
 	run(t, repoDir, "git", "worktree", "add", "-b", "partial-branch", wtDir)
 
 	const syntheticRoot = "/synthetic/repo/root"
-	wtID, err := svc.ensureTrackedWorktreeWith(context.Background(), wtDir, syntheticRoot, "")
+	wtID, err := svc.ensureTrackedWorktreeWith(context.Background(), wtDir, syntheticRoot, "", "")
 	require.NoError(t, err)
 
 	row, err := svc.Queries.GetWorktreeByID(context.Background(), wtID)
@@ -5836,12 +5762,12 @@ func TestEnsureTrackedWorktreeWith_ReturnsExistingRowBeforeProbingOrHinting(t *t
 	run(t, repoDir, "git", "worktree", "add", "-b", "warm-branch", wtDir)
 
 	// First call seeds the row with probe-derived values.
-	firstID, err := svc.ensureTrackedWorktreeWith(context.Background(), wtDir, "", "")
+	firstID, err := svc.ensureTrackedWorktreeWith(context.Background(), wtDir, "", "", "")
 	require.NoError(t, err)
 
 	// Second call with bogus hints must return the same id and leave
 	// the row's fields unchanged.
-	secondID, err := svc.ensureTrackedWorktreeWith(context.Background(), wtDir, "/bogus", "bogus-branch")
+	secondID, err := svc.ensureTrackedWorktreeWith(context.Background(), wtDir, "/bogus", "/bogus/.git", "bogus-branch")
 	require.NoError(t, err)
 	assert.Equal(t, firstID, secondID, "warm path must reuse the existing row")
 
@@ -6090,73 +6016,77 @@ func TestBranchInfoProbe_DifferentKeysIndependent(t *testing.T) {
 	assert.NotEqual(t, a.RepoRoot, b.RepoRoot, "different repos must report different repoRoots")
 }
 
-// TestBranchInfoProbe_WaiterSurvivesLeaderCancellation pins the
-// per-waiter ctx-aware retry inside lookup(). Without it, the
-// singleflight leader's ctx cancellation propagates to every joined
-// waiter — the leader's cancellation becomes the waiter's
-// context.Canceled even though the waiter's own ctx is still alive.
-// matches() coerces err to false today, but any future caller that
-// surfaces the error verbatim would see spurious cancellations on
-// dirs that were innocently shared with the cancelled scan. The
-// retry path detects "my ctx is alive but I got a ctx error" and
-// re-runs the lookup with my own ctx as the new leader.
+// A live follower retries a canceled leader's result after joining the actual
+// singleflight call. A later cache read cannot satisfy the retry assertions.
 func TestBranchInfoProbe_WaiterSurvivesLeaderCancellation(t *testing.T) {
 	t.Parallel()
-
-	probe := newBranchInfoProbe(branchProbeConcurrency)
-	dir := initRepo(t)
-
-	const n = 8
-	// Leader's ctx is cancellable; waiters use a live ctx. Stagger so
-	// the leader is guaranteed to be the cancellable goroutine.
-	leaderCtx, cancelLeader := context.WithCancel(context.Background())
-	defer cancelLeader()
-
-	// Block the leader's queryGitPathInfo by holding a coarse lock on
-	// the singleflight key — we can't intercept queryGitPathInfo
-	// itself without re-plumbing, so we cancel leaderCtx ASAP after
-	// kicking off the leader. The waiters' retry path takes over with
-	// their own (alive) ctx.
-	leaderStarted := make(chan struct{})
-	leaderDone := make(chan struct{})
-	var leaderErr error
-	go func() {
-		close(leaderStarted)
-		_, leaderErr = probe.lookup(leaderCtx, dir)
-		close(leaderDone)
-	}()
-	<-leaderStarted
-	cancelLeader()
-	<-leaderDone
-
-	// The leader either completed (its queryGitPathInfo finished
-	// before the cancel reached the syscall) or failed with ctx.Canceled.
-	// Either is fine — what matters is that subsequent waiters with
-	// LIVE ctxs succeed. Without the retry path, a leader that errored
-	// would also error out every joined waiter, and subsequent calls
-	// (no longer joined since the sf key cleared) would re-enter as
-	// new leaders. The retry path makes this safe even in the joined-
-	// waiter window.
-	results := make([]*gitPathInfo, n)
-	errs := make([]error, n)
-	var wg sync.WaitGroup
-	wg.Add(n)
-	for i := 0; i < n; i++ {
-		go func(i int) {
-			defer wg.Done()
-			results[i], errs[i] = probe.lookup(context.Background(), dir)
-		}(i)
-	}
-	wg.Wait()
-
-	for i, err := range errs {
-		require.NoErrorf(t, err, "waiter %d with live ctx must NOT inherit leader's cancellation; leaderErr=%v", i, leaderErr)
-		require.NotNil(t, results[i])
-	}
-	// Sanity: every successful lookup observed the same cached row.
-	for i := 1; i < n; i++ {
-		assert.Same(t, results[0], results[i])
-	}
+	synctest.Test(t, func(t *testing.T) {
+		const followers = 8
+		probe := newBranchInfoProbe(branchProbeConcurrency)
+		leaderEntered := make(chan struct{})
+		releaseLeader := make(chan struct{})
+		releaseRetry := make(chan struct{})
+		finishLeader := sync.OnceFunc(func() { close(releaseLeader) })
+		finishRetry := sync.OnceFunc(func() { close(releaseRetry) })
+		defer finishLeader()
+		defer finishRetry()
+		want := &gitPathInfo{RepoRoot: "/repo", BranchName: "main"}
+		var queryCalls atomic.Int32
+		probe.query = func(ctx context.Context, _ string) (*gitPathInfo, error) {
+			if queryCalls.Add(1) == 1 {
+				close(leaderEntered)
+				<-releaseLeader
+				return nil, ctx.Err()
+			}
+			<-releaseRetry
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return want, nil
+		}
+		leaderCtx, cancelLeader := context.WithCancel(context.Background())
+		defer cancelLeader()
+		leaderDone := make(chan error, 1)
+		go func() {
+			_, err := probe.lookup(leaderCtx, "/repo")
+			leaderDone <- err
+		}()
+		<-leaderEntered
+		type result struct {
+			info *gitPathInfo
+			err  error
+		}
+		results := make(chan result, followers)
+		for range followers {
+			go func() {
+				info, err := probe.lookup(context.Background(), "/repo")
+				results <- result{info: info, err: err}
+			}()
+		}
+		// The first query holds its flight open. Every follower must finish
+		// runnable work and join that flight before this Wait returns.
+		synctest.Wait()
+		assert.Equal(t, int32(1), queryCalls.Load())
+		assert.Empty(t, results)
+		cancelLeader()
+		finishLeader()
+		// Hold the retry too, proving live followers do not return the
+		// canceled result or consume a result that was already cached.
+		synctest.Wait()
+		assert.Equal(t, int32(2), queryCalls.Load())
+		assert.Empty(t, results)
+		finishRetry()
+		assert.ErrorIs(t, <-leaderDone, context.Canceled)
+		for range followers {
+			got := <-results
+			require.NoError(t, got.err)
+			assert.Same(t, want, got.info)
+		}
+		cached, err := probe.lookup(context.Background(), "/repo")
+		require.NoError(t, err)
+		assert.Same(t, want, cached)
+		assert.Equal(t, int32(2), queryCalls.Load())
+	})
 }
 
 // TestBranchInfoProbe_AllCallersCancelledPropagates pins the negative
@@ -6203,11 +6133,11 @@ func TestBranchInfoProbe_Matches(t *testing.T) {
 	branch := branchOrShortSHA(info)
 	require.NotEmpty(t, branch)
 
-	got, err := probe.matches(ctx, dir, info.RepoRoot, branch)
+	got, err := probe.matches(ctx, dir, info.CommonDir, branch)
 	require.NoError(t, err)
 	assert.True(t, got, "same repo + same branch must match")
 
-	got, err = probe.matches(ctx, dir, info.RepoRoot, "definitely-not-the-branch")
+	got, err = probe.matches(ctx, dir, info.CommonDir, "definitely-not-the-branch")
 	require.NoError(t, err)
 	assert.False(t, got, "branch mismatch must not match")
 
@@ -6540,6 +6470,7 @@ func TestRemoveWorktreeFromDisk_DeletesCurrentHEADNotStampedBranch(t *testing.T)
 		ID:           "wt-stale-1",
 		WorktreePath: pathutil.Canonicalize(wtCanon),
 		RepoRoot:     pathutil.Canonicalize(repoCanon),
+		RepoGitDir:   regularRepositoryGitDirForTest(t, pathutil.Canonicalize(repoCanon)),
 		BranchName:   mainBranch, // stale: the worktree's actual HEAD is wt-real-branch
 	})
 	require.NoError(t, cwErr)
@@ -6639,7 +6570,7 @@ func TestUnconfirmedRemovalPreservesEveryGitState(t *testing.T) {
 		wtDir := filepath.Join(t.TempDir(), "no-upstream-wt")
 		run(t, repoDir, "git", "worktree", "add", "-b", "feature/no-upstream", wtDir)
 		assertUnconfirmedWorktreePreserved(t, svc, ctx, db.Worktree{
-			WorktreePath: wtDir, RepoRoot: repoDir, BranchName: "feature/no-upstream",
+			WorktreePath: wtDir, RepoRoot: repoDir, RepoGitDir: regularRepositoryGitDirForTest(t, repoDir), BranchName: "feature/no-upstream",
 		})
 	})
 
@@ -6649,7 +6580,7 @@ func TestUnconfirmedRemovalPreservesEveryGitState(t *testing.T) {
 		run(t, repoDir, "git", "worktree", "add", "-b", "feature/dirty", wtDir)
 		require.NoError(t, os.WriteFile(filepath.Join(wtDir, "x.txt"), []byte("wip\n"), 0o644))
 		assertUnconfirmedWorktreePreserved(t, svc, ctx, db.Worktree{
-			WorktreePath: wtDir, RepoRoot: repoDir, BranchName: "feature/dirty",
+			WorktreePath: wtDir, RepoRoot: repoDir, RepoGitDir: regularRepositoryGitDirForTest(t, repoDir), BranchName: "feature/dirty",
 		})
 	})
 
@@ -6659,7 +6590,7 @@ func TestUnconfirmedRemovalPreservesEveryGitState(t *testing.T) {
 		run(t, repoDir, "git", "worktree", "add", "-b", "feature/unpushed", wtDir)
 		run(t, wtDir, "git", "commit", "--allow-empty", "-m", "local only")
 		assertUnconfirmedWorktreePreserved(t, svc, ctx, db.Worktree{
-			WorktreePath: wtDir, RepoRoot: repoDir, BranchName: "feature/unpushed",
+			WorktreePath: wtDir, RepoRoot: repoDir, RepoGitDir: regularRepositoryGitDirForTest(t, repoDir), BranchName: "feature/unpushed",
 		})
 	})
 
@@ -6671,7 +6602,7 @@ func TestUnconfirmedRemovalPreservesEveryGitState(t *testing.T) {
 		run(t, wtDir, "git", "push", "-u", "origin", "feature/pruned")
 		run(t, wtDir, "git", "update-ref", "-d", "refs/remotes/origin/feature/pruned")
 		assertUnconfirmedWorktreePreserved(t, svc, ctx, db.Worktree{
-			WorktreePath: wtDir, RepoRoot: repoDir, BranchName: "feature/pruned",
+			WorktreePath: wtDir, RepoRoot: repoDir, RepoGitDir: regularRepositoryGitDirForTest(t, repoDir), BranchName: "feature/pruned",
 		})
 	})
 
@@ -6681,7 +6612,7 @@ func TestUnconfirmedRemovalPreservesEveryGitState(t *testing.T) {
 		run(t, repoDir, "git", "worktree", "add", "--detach", wtDir)
 		run(t, wtDir, "git", "commit", "--allow-empty", "-m", "detached local commit")
 		assertUnconfirmedWorktreePreserved(t, svc, ctx, db.Worktree{
-			WorktreePath: wtDir, RepoRoot: repoDir, BranchName: "",
+			WorktreePath: wtDir, RepoRoot: repoDir, RepoGitDir: regularRepositoryGitDirForTest(t, repoDir), BranchName: "",
 		})
 	})
 
@@ -6690,7 +6621,7 @@ func TestUnconfirmedRemovalPreservesEveryGitState(t *testing.T) {
 		wtDir := filepath.Join(t.TempDir(), "detached-clean-wt")
 		run(t, repoDir, "git", "worktree", "add", "--detach", wtDir)
 		assertUnconfirmedWorktreePreserved(t, svc, ctx, db.Worktree{
-			WorktreePath: wtDir, RepoRoot: repoDir, BranchName: "",
+			WorktreePath: wtDir, RepoRoot: repoDir, RepoGitDir: regularRepositoryGitDirForTest(t, repoDir), BranchName: "",
 		})
 	})
 
@@ -6704,7 +6635,7 @@ func TestUnconfirmedRemovalPreservesEveryGitState(t *testing.T) {
 		run(t, wtDir, "git", "checkout", "-b", "feature/actual")
 		run(t, wtDir, "git", "push", "-u", "origin", "feature/actual")
 		assertUnconfirmedWorktreePreserved(t, svc, ctx, db.Worktree{
-			WorktreePath: wtDir, RepoRoot: repoDir, BranchName: "feature/recorded",
+			WorktreePath: wtDir, RepoRoot: repoDir, RepoGitDir: regularRepositoryGitDirForTest(t, repoDir), BranchName: "feature/recorded",
 		})
 	})
 
@@ -6714,12 +6645,12 @@ func TestUnconfirmedRemovalPreservesEveryGitState(t *testing.T) {
 		run(t, repoDir, "git", "worktree", "add", "-b", "feature/local", wtDir)
 		run(t, wtDir, "git", "commit", "--allow-empty", "-m", "local")
 		assertUnconfirmedWorktreePreserved(t, svc, ctx, db.Worktree{
-			WorktreePath: wtDir, RepoRoot: repoDir, BranchName: "feature/local",
+			WorktreePath: wtDir, RepoRoot: repoDir, RepoGitDir: regularRepositoryGitDirForTest(t, repoDir), BranchName: "feature/local",
 		})
 
 		require.NoError(t, os.WriteFile(filepath.Join(wtDir, "x.txt"), []byte("wip\n"), 0o644))
 		assertUnconfirmedWorktreePreserved(t, svc, ctx, db.Worktree{
-			WorktreePath: wtDir, RepoRoot: repoDir, BranchName: "feature/local",
+			WorktreePath: wtDir, RepoRoot: repoDir, RepoGitDir: regularRepositoryGitDirForTest(t, repoDir), BranchName: "feature/local",
 		})
 	})
 
@@ -6727,7 +6658,8 @@ func TestUnconfirmedRemovalPreservesEveryGitState(t *testing.T) {
 		repoDir, _ := newRepoWithOrigin(t)
 		assertUnconfirmedWorktreePreserved(t, svc, ctx, db.Worktree{
 			WorktreePath: filepath.Join(t.TempDir(), "never-existed"),
-			RepoRoot:     repoDir, BranchName: "feature/gone",
+			RepoRoot:     repoDir,
+			RepoGitDir:   regularRepositoryGitDirForTest(t, repoDir), BranchName: "feature/gone",
 		})
 	})
 }
@@ -6737,7 +6669,7 @@ func assertUnconfirmedWorktreePreserved(t *testing.T, svc *Service, ctx context.
 	t.Helper()
 	wt.WorktreePath = pathutil.Canonicalize(wt.WorktreePath)
 	stored, err := svc.Queries.CreateWorktree(ctx, db.CreateWorktreeParams{
-		ID: id.Generate(), WorktreePath: wt.WorktreePath, RepoRoot: wt.RepoRoot, BranchName: wt.BranchName,
+		ID: id.Generate(), WorktreePath: wt.WorktreePath, RepoRoot: wt.RepoRoot, RepoGitDir: regularRepositoryGitDirForTest(t, wt.RepoRoot), BranchName: wt.BranchName,
 	})
 	require.NoError(t, err)
 	tabID := "closed-" + stored.ID
@@ -6902,8 +6834,7 @@ func TestGitFileStatusModTimeIsFixedWidthWithSubsecondPrecision(t *testing.T) {
 	_, d, w := setupTestService(t)
 	repoDir := canonicalRepoDir(t)
 
-	// Two files written back to back land in the same wall-clock second on
-	// any normal machine, which is exactly the case whole seconds lose.
+	// The handler must attach a formatted modification time to both files.
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "first.txt"), []byte("1\n"), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "second.txt"), []byte("2\n"), 0o644))
 	run(t, repoDir, "git", "add", "-N", "first.txt", "second.txt")
@@ -6936,8 +6867,6 @@ func TestGitFileStatusModTimeIsFixedWidthWithSubsecondPrecision(t *testing.T) {
 	// Sub-second digits are present, so two writes in the same second can be
 	// told apart rather than tying.
 	assert.Regexp(t, `\.\d{9}Z$`, first, "mod_time must carry nine fractional digits")
-	assert.NotEqual(t, first[:len("2006-01-02T15:04:05")], "",
-		"sanity: the layout must include a time-of-day")
 }
 
 // TestGetGitFileStatus_LeavesStatsUnsetWhenNotStatable pins the distinction
@@ -7182,5 +7111,259 @@ func TestSubdirectorySymlinkUsesCanonicalGitTopLevel(t *testing.T) {
 		}
 		closed := svc.closeAgentTabCommon("user-1", tc.id, leapmuxv1.WorktreeAction_WORKTREE_ACTION_KEEP, dropWorktreeLink)
 		assert.Empty(t, closed.FailureMessage)
+	}
+}
+
+func gitProgramMarker(t *testing.T, name string, tail string) (script, marker string) {
+	t.Helper()
+	dir := t.TempDir()
+	script, marker = filepath.Join(dir, name), filepath.Join(dir, "ran")
+	testutil.WriteExecutable(t, script, fmt.Sprintf("#!/bin/sh\nprintf ran > %q\n%s\n", marker, tail))
+	return script, marker
+}
+
+func TestReadGitFile_RunsNoRepositoryProgramForAGitlink(t *testing.T) {
+	t.Parallel()
+	_, d, w := setupTestService(t)
+	repo := canonicalRepoDir(t)
+	parent, err := gitutil.Output(t.Context(), repo, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "x.txt"), []byte("content\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, ".gitattributes"), []byte("x.txt diff=evil\n"), 0o600))
+	run(t, repo, "git", "add", "x.txt", ".gitattributes")
+	tree, err := gitutil.Output(t.Context(), repo, "write-tree")
+	require.NoError(t, err)
+	commit := fmt.Sprintf("tree %s\nparent %s\nauthor Test <test@example.com> 1 +0000\ncommitter Test <test@example.com> 1 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n stub\n -----END PGP SIGNATURE-----\n\nadd x\n", strings.TrimSpace(tree), strings.TrimSpace(parent))
+	cmd := exec.Command("git", "hash-object", "-t", "commit", "-w", "--stdin")
+	cmd.Dir, cmd.Stdin = repo, strings.NewReader(commit)
+	object, err := cmd.CombinedOutput()
+	require.NoError(t, err, "%s", object)
+	run(t, repo, "git", "update-index", "--add", "--cacheinfo", "160000,"+strings.TrimSpace(string(object))+",sub")
+	run(t, repo, "git", "commit", "-m", "add gitlink")
+	textconv, textMarker := gitProgramMarker(t, "textconv", "cat \"$1\"")
+	gpg, gpgMarker := gitProgramMarker(t, "gpg", "exit 1")
+	run(t, repo, "git", "config", "diff.evil.textconv", textconv)
+	run(t, repo, "git", "config", "log.showSignature", "true")
+	run(t, repo, "git", "config", "gpg.program", gpg)
+	dispatch(d, leapmuxv1connect.WorkerGitServiceReadGitFileProcedure, &leapmuxv1.ReadGitFileRequest{Path: filepath.Join(repo, "sub"), Ref: leapmuxv1.GitFileRef_GIT_FILE_REF_HEAD}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.ReadGitFileResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	assert.False(t, resp.GetExists())
+	assert.Empty(t, resp.GetContent())
+	for _, marker := range []string{textMarker, gpgMarker} {
+		_, err := os.Stat(marker)
+		assert.ErrorIs(t, err, os.ErrNotExist, marker)
+	}
+}
+
+func TestGetGitInfo_RunsNoWorkingTreeProgram(t *testing.T) {
+	t.Parallel()
+	_, d, w := setupTestService(t)
+	repo := canonicalRepoDir(t)
+	file := filepath.Join(repo, "a.txt")
+	require.NoError(t, os.WriteFile(file, []byte("content\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, ".gitattributes"), []byte("* filter=evil\n"), 0o600))
+	run(t, repo, "git", "add", "a.txt", ".gitattributes")
+	run(t, repo, "git", "commit", "-m", "add filter attributes")
+	script, marker := gitProgramMarker(t, "filter", "cat")
+	run(t, repo, "git", "config", "filter.evil.clean", script)
+	require.NoError(t, os.Chtimes(file, time.Unix(1, 0), time.Unix(1, 0)))
+	dispatch(d, leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure, &leapmuxv1.GetGitInfoRequest{Path: repo}, w)
+	require.Empty(t, w.errors)
+	require.Len(t, w.responses, 1)
+	var resp leapmuxv1.GetGitInfoResponse
+	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+	assert.True(t, resp.GetIsGitRepo())
+	assert.Equal(t, "main", resp.GetCurrentBranch())
+	_, err := os.Stat(marker)
+	assert.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestGetGitWorkingTreeState(t *testing.T) {
+	for _, tc := range []struct {
+		name                      string
+		repo, dirty, corruptIndex bool
+	}{
+		{name: "clean", repo: true},
+		{name: "dirty", repo: true, dirty: true},
+		{name: "not a repository"},
+		{name: "corrupt index after valid metadata", repo: true, corruptIndex: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			logs := testutil.CaptureDefaultLogger(t)
+			_, d, w := setupTestService(t)
+			dir := t.TempDir()
+			if tc.repo {
+				dir = initRepo(t)
+			}
+			if tc.dirty {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, "untracked"), []byte("dirty"), 0o600))
+			}
+			if tc.corruptIndex {
+				info, err := queryGitPathInfo(t.Context(), dir)
+				require.NoError(t, err)
+				require.NotNil(t, info)
+				require.NoError(t, os.WriteFile(filepath.Join(dir, ".git", "index"), []byte("invalid index"), 0o600))
+			}
+			dispatch(d, leapmuxv1connect.WorkerGitServiceGetGitWorkingTreeStateProcedure, &leapmuxv1.GetGitWorkingTreeStateRequest{Path: dir}, w)
+			if !tc.repo || tc.corruptIndex {
+				require.Empty(t, w.responses, "failed status must not report a clean working tree")
+				require.Len(t, w.errors, 1)
+				assert.Equal(t, int32(codes.Internal), w.errors[0].code)
+				assert.Contains(t, logs.String(), "WARN")
+				assert.Contains(t, logs.String(), "failed to read git working tree state")
+				assert.Contains(t, logs.String(), dir)
+				return
+			}
+			require.Empty(t, w.errors)
+			require.Len(t, w.responses, 1)
+			var resp leapmuxv1.GetGitWorkingTreeStateResponse
+			require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &resp))
+			assert.Equal(t, tc.dirty, resp.GetIsDirty())
+		})
+	}
+}
+
+func TestGetGitWorkingTreeState_RejectsAnEmptyPath(t *testing.T) {
+	t.Parallel()
+	_, d, w := setupTestService(t)
+	dispatch(d, leapmuxv1connect.WorkerGitServiceGetGitWorkingTreeStateProcedure, &leapmuxv1.GetGitWorkingTreeStateRequest{}, w)
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, codePermissionDenied, w.errors[0].code)
+	assert.Empty(t, w.responses)
+}
+
+func TestGetGitWorkingTreeState_ReportsCancellation(t *testing.T) {
+	t.Parallel()
+	_, d, w := setupTestService(t)
+	payload, err := proto.Marshal(&leapmuxv1.GetGitWorkingTreeStateRequest{Path: initRepo(t)})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	dispatchTestRequest(d, ctx, channel.LocalAgentCaller(userid.MustNew("user-1")), &leapmuxv1.InnerRpcRequest{Method: leapmuxv1connect.WorkerGitServiceGetGitWorkingTreeStateProcedure, Payload: payload}, w)
+	require.Len(t, w.errors, 1)
+	assert.Equal(t, int32(codes.Internal), w.errors[0].code)
+	assert.Empty(t, w.responses)
+}
+
+func TestCreatedBranchRollbackPreservesAnotherActorsCommittedProgress(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	repo := initRepo(t)
+	plan, err := svc.validateCreateBranch(t.Context(), repo, "progressed-create", "")
+	require.NoError(t, err)
+	intent, err := svc.prepareCreationStartup(t.Context(), plan)
+	require.NoError(t, err)
+	result, err := svc.executeCreateBranch(t.Context(), intent.Plan)
+	require.NoError(t, err)
+	require.NotNil(t, result.Rollback.CreatedBranch)
+	initial := strings.TrimSpace(run(t, repo, "git", "rev-parse", "HEAD"))
+	require.NoError(t, os.WriteFile(filepath.Join(repo, "other-actor.txt"), []byte("preserve this work\n"), 0o600))
+	err = svc.pushBranch(t.Context(), repo)
+	require.ErrorContains(t, err, "remote origin does not exist")
+	progressed := strings.TrimSpace(run(t, repo, "git", "rev-parse", "HEAD"))
+	require.NotEqual(t, initial, progressed)
+	require.Equal(t, "preserve this work\n", run(t, repo, "git", "show", progressed+":other-actor.txt"))
+	refs := strings.Fields(run(t, repo, "git", "for-each-ref", "--contains", progressed, "--format=%(refname)"))
+	require.Equal(t, []string{"refs/heads/progressed-create"}, refs)
+	// An ordinary startup failure reaches this same rollback after phase 0.
+	svc.rollbackGitMode(result)
+	current, err := gitutil.Output(t.Context(), repo, "rev-parse", "--verify", "refs/heads/progressed-create")
+	assert.NoError(t, err)
+	assert.Equal(t, progressed, strings.TrimSpace(current), "rollback cannot remove the only ordinary ref to another actor's commit")
+	assert.Equal(t, "refs/heads/progressed-create", strings.TrimSpace(run(t, repo, "git", "symbolic-ref", "HEAD")))
+	data, err := os.ReadFile(filepath.Join(repo, "other-actor.txt"))
+	assert.NoError(t, err)
+	assert.Equal(t, "preserve this work\n", string(data))
+}
+
+func TestTrackedWorktreeRequiresACommonAdministrativeDirectory(t *testing.T) {
+	svc, _, _ := setupTestService(t)
+	_, err := svc.Queries.CreateWorktree(t.Context(), db.CreateWorktreeParams{
+		ID: "missing-common-context", WorktreePath: filepath.Join(t.TempDir(), "checkout"), RepoRoot: t.TempDir(), BranchName: "main",
+	})
+	require.Error(t, err, "a missing Go field must not store an unusable repository authority")
+	_, err = svc.Queries.GetWorktreeByID(t.Context(), "missing-common-context")
+	require.ErrorIs(t, err, sql.ErrNoRows)
+}
+
+func TestCreatedBranchRollbackUsesItsOwnBaseAndKeepsConfigurationPolicy(t *testing.T) {
+	for _, detached := range []bool{false, true} {
+		for _, progressed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("detached=%t/progressed=%t", detached, progressed), func(t *testing.T) {
+				svc, _, _ := setupTestService(t)
+				repo := initRepo(t)
+				original := strings.TrimSpace(run(t, repo, "git", "rev-parse", "HEAD"))
+				run(t, repo, "git", "checkout", "-b", "selected-base")
+				run(t, repo, "git", "commit", "--allow-empty", "-m", "different selected base")
+				base := strings.TrimSpace(run(t, repo, "git", "rev-parse", "HEAD"))
+				require.NotEqual(t, original, base)
+				if detached {
+					run(t, repo, "git", "checkout", "--detach", original)
+				} else {
+					run(t, repo, "git", "checkout", "main")
+				}
+				plan, err := svc.validateCreateBranch(t.Context(), repo, "owned-base", "selected-base")
+				require.NoError(t, err)
+				intent, err := svc.prepareCreationStartup(t.Context(), plan)
+				require.NoError(t, err)
+				result, err := svc.executeCreateBranch(t.Context(), intent.Plan)
+				require.NoError(t, err)
+				require.Equal(t, base, result.Rollback.CreatedBranch.initialBranchCommit)
+				run(t, repo, "git", "config", "branch.owned-base.remote", "origin")
+				run(t, repo, "git", "config", "branch.owned-base.merge", "refs/heads/owned-base")
+				if progressed {
+					run(t, repo, "git", "commit", "--allow-empty", "-m", "another actor's progress")
+				}
+				before := strings.TrimSpace(run(t, repo, "git", "rev-parse", "HEAD"))
+				svc.rollbackGitMode(result)
+				if progressed {
+					assert.Equal(t, before, strings.TrimSpace(run(t, repo, "git", "rev-parse", "refs/heads/owned-base")))
+					assert.Equal(t, "refs/heads/owned-base", strings.TrimSpace(run(t, repo, "git", "symbolic-ref", "HEAD")))
+					assert.Equal(t, "origin", strings.TrimSpace(run(t, repo, "git", "config", "branch.owned-base.remote")))
+				} else {
+					refs, err := gitutil.HasRefs(t.Context(), repo, "refs/heads/owned-base")
+					require.NoError(t, err)
+					assert.False(t, refs["refs/heads/owned-base"])
+					assert.Equal(t, original, strings.TrimSpace(run(t, repo, "git", "rev-parse", "HEAD")))
+					config, err := readGitConfigRegexp(t.Context(), repo, `^branch\.owned-base\.`)
+					require.NoError(t, err)
+					assert.Empty(t, config)
+				}
+			})
+		}
+	}
+}
+
+func TestCreatedBranchRollbackPreservesAnInUseOrUnprovedRef(t *testing.T) {
+	for _, condition := range []string{"another worktree", "missing initial evidence", "unreadable ref"} {
+		t.Run(condition, func(t *testing.T) {
+			svc, _, _ := setupTestService(t)
+			repo := initRepo(t)
+			plan, err := svc.validateCreateBranch(t.Context(), repo, "owned-keep", "")
+			require.NoError(t, err)
+			intent, err := svc.prepareCreationStartup(t.Context(), plan)
+			require.NoError(t, err)
+			result, err := svc.executeCreateBranch(t.Context(), intent.Plan)
+			require.NoError(t, err)
+			initial := strings.TrimSpace(run(t, repo, "git", "rev-parse", "HEAD"))
+			switch condition {
+			case "another worktree":
+				run(t, repo, "git", "checkout", "main")
+				other := filepath.Join(t.TempDir(), "other-checkout")
+				run(t, repo, "git", "worktree", "add", other, "owned-keep")
+			case "missing initial evidence":
+				result.Rollback.CreatedBranch.initialBranchCommit = ""
+			case "unreadable ref":
+				run(t, repo, "git", "update-ref", "-d", "refs/heads/owned-keep")
+			}
+			before := run(t, repo, "git", "symbolic-ref", "HEAD")
+			svc.rollbackGitMode(result)
+			assert.Equal(t, before, run(t, repo, "git", "symbolic-ref", "HEAD"))
+			if condition != "unreadable ref" {
+				assert.Equal(t, initial, strings.TrimSpace(run(t, repo, "git", "rev-parse", "refs/heads/owned-keep")))
+			}
+		})
 	}
 }

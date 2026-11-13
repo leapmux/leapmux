@@ -141,7 +141,7 @@ func TestWorkspaceArchive_StopsProcessesAndPreservesTabData(t *testing.T) {
 
 	worktreePath := t.TempDir()
 	_, err = svc.Queries.CreateWorktree(ctx, db.CreateWorktreeParams{
-		ID: "worktree-1", WorktreePath: worktreePath, RepoRoot: t.TempDir(), BranchName: "archive-test",
+		ID: "worktree-1", WorktreePath: worktreePath, RepoRoot: t.TempDir(), RepoGitDir: regularRepositoryGitDirForTest(t, t.TempDir()), BranchName: "archive-test",
 	})
 	require.NoError(t, err)
 	for _, tab := range []*leapmuxv1.TabIdent{

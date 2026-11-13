@@ -164,7 +164,11 @@ func setupAdminUserTestUnelevated(t *testing.T) *adminUserEnv {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	require.NoError(t, st.Migrator().Migrate(context.Background()))
+	return setupAdminUserTestUnelevatedWithStore(t, st)
+}
 
+func setupAdminUserTestUnelevatedWithStore(t *testing.T, st store.Store) *adminUserEnv {
+	t.Helper()
 	hash, err := password.Hash("adminpass123")
 	require.NoError(t, err)
 	admin, err := service.CreateUser(context.Background(), st, service.CreateUserParams{
@@ -180,14 +184,15 @@ func setupAdminUserTestUnelevated(t *testing.T) *adminUserEnv {
 		EmailVerified: true,
 	})
 	require.NoError(t, err)
-	session, _, _, err := auth.Login(context.Background(), st, "admin", "adminpass123", auth.DefaultSessionDuration)
+	session, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
+	t.Cleanup(contexts.Stop)
 	// The REAL lifecycle effects, not nil: every revoking verb on this
 	// service owes an in-process teardown after its commit, and a nil
 	// collaborator makes that obligation untestable (each effect method is
@@ -250,7 +255,7 @@ func setupAdminUserTestWithSettings(t *testing.T) *adminUserEnv {
 // is the one that asserts the refusal.
 func (e *adminUserEnv) elevateAdminSession(t *testing.T) {
 	t.Helper()
-	hubtestutil.ElevateSession(t, e.st, e.token, e.adminID)
+	hubtestutil.ElevateSession(t, e.st, hubtestutil.SessionIDFromCookie(t, e.token), e.adminID)
 }
 
 func TestNewAdminUserServiceRequiresCredentialNotices(t *testing.T) {
@@ -363,7 +368,7 @@ func TestAdminUserService_DeleteUser_ForceAndCredentialRevocation(t *testing.T) 
 		GrantedScopes:    authscope.NonAdminGrant().String(),
 		SecretHash:       []byte("hash"),
 	}))
-	_, _, _, err = auth.Login(ctx, env.st, "carol", "password1", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), "carol", "password1", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	_, err = env.client.DeleteUser(authedReq(ctx, &leapmuxv1.DeleteUserRequest{
@@ -398,14 +403,13 @@ func TestAdminUserService_DeleteUser_ForceAndCredentialRevocation(t *testing.T) 
 	require.NoError(t, err)
 	assert.NotNil(t, deletedWorker.DeletedAt)
 
-	// Deleting the last remaining admin currently succeeds: there is no
-	// last-admin guard on this RPC. Pin that so a later guard is a
-	// deliberate change, not a silent one.
+	// Force confirms the operation but cannot remove the last administrator.
 	_, err = env.client.DeleteUser(authedReq(ctx, &leapmuxv1.DeleteUserRequest{
 		User:  service.SelectUserByUsername("admin"),
 		Force: true,
 	}, env.token))
-	require.NoError(t, err)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
 
 func TestAdminUserService_IssueAndRevokeAPIToken(t *testing.T) {
@@ -545,7 +549,7 @@ func setupAdminUserTestWithSettingsUnelevated(t *testing.T) *adminUserEnv {
 		Username: "admin", PasswordHash: hash, DisplayName: "Admin", FirstCredentialExempt: true, IsAdmin: true,
 	})
 	require.NoError(t, err)
-	session, _, _, err := auth.Login(context.Background(), st, "admin", "adminpass123", auth.DefaultSessionDuration)
+	session, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
@@ -554,7 +558,7 @@ func setupAdminUserTestWithSettingsUnelevated(t *testing.T) *adminUserEnv {
 	seedSMTP(t, set)
 
 	mux := http.NewServeMux()
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	t.Cleanup(contexts.Stop)
 	adminSvc := newAdminUserService(service.AdminUserServiceDeps{Store: st, Settings: set, Validator: tv, Lifecycle: auth.NewCredentialLifecycleEffects(contexts, nil, nil)})
 	connectServer := connect.NewServer(interceptor)
@@ -946,12 +950,12 @@ func TestAdminUserService_ListUserSessions_SelectsOneUserAndPages(t *testing.T) 
 
 	// The admin holds the fixture's session; a second one makes two pages.
 	second := id.Generate()
-	require.NoError(t, env.st.Sessions().Create(ctx, store.CreateSessionParams{
+	require.NoError(t, env.st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: hubtestutil.TestSecretHasher().Hash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 		ID: second, UserID: userid.MustNew(env.adminID), ExpiresAt: time.Now().UTC().Add(time.Hour),
 	}))
 	// Another account's session must never appear in the admin's listing.
 	other := storetest.SeedUser(t, env.st, "sessionsother")
-	require.NoError(t, env.st.Sessions().Create(ctx, store.CreateSessionParams{
+	require.NoError(t, env.st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: hubtestutil.TestSecretHasher().Hash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 		ID: id.Generate(), UserID: userid.MustNew(other.ID), ExpiresAt: time.Now().UTC().Add(time.Hour),
 	}))
 
@@ -970,7 +974,7 @@ func TestAdminUserService_ListUserSessions_SelectsOneUserAndPages(t *testing.T) 
 	assert.Empty(t, last.GetPage().GetNextCursor(), "the final page states that no rows remain")
 
 	listed := []string{first.GetSessions()[0].GetId(), last.GetSessions()[0].GetId()}
-	assert.ElementsMatch(t, []string{env.token, second}, listed, "the two pages hold the admin's sessions once each")
+	assert.ElementsMatch(t, []string{hubtestutil.SessionIDFromCookie(t, env.token), second}, listed, "the two pages hold the admin's sessions once each")
 	for _, sess := range append(first.GetSessions(), last.GetSessions()...) {
 		assert.Equal(t, env.adminID, sess.GetUserId())
 		assert.Equal(t, "admin", sess.GetUsername())
@@ -988,6 +992,30 @@ func TestAdminUserService_ListUserSessions_SelectsOneUserAndPages(t *testing.T) 
 	_, err = list(service.SelectUserByUsername("nobody"), nil)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+}
+
+func TestAdminUserService_SessionListsCarryNoSessionSecret(t *testing.T) {
+	env := setupAdminUserTest(t)
+	second, _, _, err := auth.Login(t.Context(), env.st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
+	require.NoError(t, err)
+	all, err := env.client.ListSessions(authedReq(t.Context(), &leapmuxv1.ListSessionsRequest{Page: &leapmuxv1.PageRequest{Limit: 1}}, env.token))
+	require.NoError(t, err)
+	oneUser, err := env.client.ListUserSessions(authedReq(t.Context(), &leapmuxv1.ListUserSessionsRequest{
+		User: service.SelectUserByID(env.adminID), Page: &leapmuxv1.PageRequest{Limit: 1},
+	}, env.token))
+	require.NoError(t, err)
+	for _, page := range []struct {
+		sessions []*leapmuxv1.AdminSession
+		cursor   string
+	}{{all.GetSessions(), all.GetPage().GetNextCursor()}, {oneUser.GetSessions(), oneUser.GetPage().GetNextCursor()}} {
+		require.Len(t, page.sessions, 1)
+		assert.Equal(t, env.adminID, page.sessions[0].GetUserId())
+		require.NotEmpty(t, page.cursor)
+		for _, token := range []string{env.token, second} {
+			assert.NotContains(t, page.sessions[0].GetId(), sessionCookieSecret(token))
+			assert.NotContains(t, page.cursor, sessionCookieSecret(token))
+		}
+	}
 }
 
 // TestAdminUserService_LoweringEmailVerifiedAlwaysFences pins the fenced
@@ -1035,11 +1063,12 @@ func TestAdminUserService_LoweringEmailVerifiedAlwaysFences(t *testing.T) {
 // TestAdminUserService_SetUserAdminRefusesSelfDemotion pins the
 // self-demotion guard. UpdateAdmin runs the fenced verb, so removing your
 // own administrator access logs you out at once and the auth interceptor
-// then denies every Admin* procedure to the account -- recovery needs the
-// offline verb, which itself refuses while any administrator remains.
+// then denies every Admin* procedure to the account. Another live administrator
+// must remain, even when the request confirms self-demotion with force.
 func TestAdminUserService_SetUserAdminRefusesSelfDemotion(t *testing.T) {
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
+	createRetainedAdministrator(t, env.st)
 
 	_, err := env.client.SetUserAdmin(authedReq(ctx, &leapmuxv1.SetUserAdminRequest{
 		User: service.SelectUserByID(env.adminID), IsAdmin: false,
@@ -1341,7 +1370,7 @@ func TestAdminUserService_IssueAPITokenRefusesWithdrawnAuthority(t *testing.T) {
 		_, err := env.client.GetUser(authedReq(ctx, &leapmuxv1.GetUserRequest{User: service.SelectUserByID(env.adminID)}, env.token))
 		require.NoError(t, err)
 
-		revoked, err := env.st.Sessions().Revoke(ctx, env.token)
+		revoked, err := env.st.Sessions().Revoke(ctx, hubtestutil.SessionIDFromCookie(t, env.token))
 		require.NoError(t, err)
 		require.EqualValues(t, 1, revoked)
 
@@ -1370,7 +1399,7 @@ func TestAdminUserService_IssueAPITokenRefusesWithdrawnAuthority(t *testing.T) {
 		_, err := env.client.GetUser(authedReq(ctx, &leapmuxv1.GetUserRequest{User: service.SelectUserByID(env.adminID)}, env.token))
 		require.NoError(t, err)
 
-		deleted, err := env.st.Sessions().Delete(ctx, env.token)
+		deleted, err := env.st.Sessions().Delete(ctx, hubtestutil.SessionIDFromCookie(t, env.token))
 		require.NoError(t, err)
 		require.EqualValues(t, 1, deleted)
 
@@ -1439,11 +1468,10 @@ func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.
 		})
 	}
 
-	// The THREE that need no headless path refuse a bearer outright, and the
-	// refusal carries NO marker: a bearer has no row to stamp and nobody at a
-	// keyboard, so a prompt would ask for a factor and refuse the retry for
-	// the same reason. IssueAPIToken is the documented exception; the mint's
-	// own clamp is what contains it.
+	// These three operations require a browser session and refuse a bearer
+	// without an elevation marker. Browser-approved API elevation cannot
+	// satisfy that session requirement. IssueAPIToken is the documented
+	// exception; the mint's lifetime clamp restricts the issued credential.
 	for name, call := range map[string]func(context.Context, *adminUserEnv, string) error{
 		"CreateUser": func(ctx context.Context, env *adminUserEnv, bearer string) error {
 			_, err := env.client.CreateUser(adminBearerReq(ctx, &leapmuxv1.CreateUserRequest{
@@ -1475,7 +1503,7 @@ func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.
 			err = call(callCtx, env, issued.GetAccessToken())
 			require.Error(t, err, "a bearer must not create durable new authority")
 			assert.Empty(t, info.ResponseHeader().Get(service.ElevationRequiredHeader),
-				"a bearer can never elevate, so the refusal must not offer a prompt")
+				"API elevation cannot satisfy the browser-session requirement, so the refusal must not offer a prompt")
 		})
 	}
 }
@@ -1522,6 +1550,7 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 
 		t.Run(name+" admits an elevated session", func(t *testing.T) {
 			env := setupAdminUserTest(t)
+			createRetainedAdministrator(t, env.st)
 			assert.NoError(t, call(ctx, env, cookieAuth(env.token)))
 		})
 
@@ -1531,6 +1560,7 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 			// creates a new way INTO an account, so the strict session rule
 			// would cost the CLI for no gain.
 			env := setupAdminUserTest(t)
+			createRetainedAdministrator(t, env.st)
 			issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 				User: service.SelectUserByID(env.adminID), InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 			}, env.token))
@@ -1541,10 +1571,9 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 		})
 	}
 
-	// The EMAIL fields take the strict session rule instead, because the
-	// address is a recovery identity. A bearer is refused with no marker: it
-	// has no row to stamp and nobody at a keyboard, so a prompt would collect a
-	// factor and refuse the retry for the same reason.
+	// The email fields require a browser session because the address is a
+	// recovery identity. An elevated API credential still lacks that session,
+	// so its refusal must not offer an elevation prompt.
 	updateEmail := func(ctx context.Context, env *adminUserEnv, authorize requestAuth) error {
 		_, err := env.client.UpdateUser(authorized(ctx, &leapmuxv1.UpdateUserRequest{
 			User: service.SelectUserByID(env.adminID), Email: proto.String("moved@example.test"), EmailVerified: proto.Bool(true),
@@ -1566,11 +1595,13 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 
 	t.Run("UpdateUser email admits an elevated session", func(t *testing.T) {
 		env := setupAdminUserTest(t)
+		createRetainedAdministrator(t, env.st)
 		assert.NoError(t, updateEmail(ctx, env, cookieAuth(env.token)))
 	})
 
 	t.Run("UpdateUser email refuses a bearer", func(t *testing.T) {
 		env := setupAdminUserTest(t)
+		createRetainedAdministrator(t, env.st)
 		issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 			User: service.SelectUserByID(env.adminID), InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 		}, env.token))
@@ -1581,7 +1612,7 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 		err = updateEmail(callCtx, env, bearerAuth(issued.GetAccessToken()))
 		require.Error(t, err, "a bearer must not move a recovery identity")
 		assert.Empty(t, info.ResponseHeader().Get(service.ElevationRequiredHeader),
-			"a bearer can never elevate, so the refusal must not offer a prompt")
+			"API elevation cannot satisfy the browser-session requirement, so the refusal must not offer a prompt")
 	})
 }
 
@@ -1707,7 +1738,7 @@ func setupResetPasswordTest(t *testing.T) *resetPasswordEnv {
 	require.NoError(t, err)
 	userID := created.GetUser().GetId()
 
-	session, _, _, err := auth.Login(ctx, env.st, username, oldPassword, auth.DefaultSessionDuration)
+	session, _, _, err := auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), username, oldPassword, auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	apiTokenID := id.Generate()
@@ -1774,7 +1805,7 @@ func TestAdminUserService_ResetPassword_Selector(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 
-	_, _, _, err = auth.Login(ctx, env.st, env.username, env.oldPassword, auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, env.oldPassword, auth.DefaultSessionDuration)
 	assert.NoError(t, err, "a refused reset must not have touched the password")
 }
 
@@ -1794,9 +1825,9 @@ func TestAdminUserService_ResetPassword_ByIDAndByUsername(t *testing.T) {
 	assert.Equal(t, env.userID, byID.GetUserId())
 	assert.Equal(t, env.username, byID.GetUsername())
 
-	_, _, _, err = auth.Login(ctx, env.st, env.username, env.oldPassword, auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, env.oldPassword, auth.DefaultSessionDuration)
 	assert.Error(t, err, "the old password must stop working")
-	_, _, _, err = auth.Login(ctx, env.st, env.username, "by-id-password", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, "by-id-password", auth.DefaultSessionDuration)
 	require.NoError(t, err, "the new password must work")
 
 	byUsername, err := env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{
@@ -1805,9 +1836,9 @@ func TestAdminUserService_ResetPassword_ByIDAndByUsername(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, env.userID, byUsername.GetUserId())
 
-	_, _, _, err = auth.Login(ctx, env.st, env.username, "by-id-password", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, "by-id-password", auth.DefaultSessionDuration)
 	assert.Error(t, err, "the previous password must stop working too")
-	_, _, _, err = auth.Login(ctx, env.st, env.username, "by-username-password", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, "by-username-password", auth.DefaultSessionDuration)
 	assert.NoError(t, err)
 }
 
@@ -1834,7 +1865,7 @@ func TestAdminUserService_ResetPassword_RefusesAPasswordThePolicyRefuses(t *test
 		})
 	}
 
-	_, _, _, err := auth.Login(ctx, env.st, env.username, env.oldPassword, auth.DefaultSessionDuration)
+	_, _, _, err := auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), env.username, env.oldPassword, auth.DefaultSessionDuration)
 	assert.NoError(t, err, "a refused password must not have replaced the stored one")
 	assert.Empty(t, env.revocations.recorded(),
 		"a refused reset must not tear a credential down either")
@@ -1866,7 +1897,7 @@ func TestAdminUserService_ResetPassword_TearsDownEveryCredential(t *testing.T) {
 	}, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Empty(t, sessions.Rows, "every session of the user must be deleted")
-	_, err = auth.ValidateToken(ctx, env.st, env.session)
+	_, err = auth.ValidateToken(ctx, env.st, hubtestutil.TestSecretHasher(), env.session)
 	assert.Error(t, err, "the user's session token must stop validating")
 
 	apiTokens, err := env.st.APITokens().ListAll(ctx, store.ListAllAPITokensParams{
@@ -1923,7 +1954,7 @@ func TestAdminUserService_ResetPassword_SetsAPasswordForAnOAuthOnlyUser(t *testi
 	updated, err := env.st.Users().GetByID(ctx, oauthUser.ID)
 	require.NoError(t, err)
 	assert.True(t, updated.FirstCredentialExempt, "the reset must mark the account as having a password")
-	_, _, _, err = auth.Login(ctx, env.st, "dave", "first-password", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), "dave", "first-password", auth.DefaultSessionDuration)
 	assert.NoError(t, err)
 }
 
@@ -1983,7 +2014,7 @@ func TestAdminUserService_ResetPassword_SelfResetEndsTheActingSession(t *testing
 
 	// Not irreversible: the caller chose the new password and logs in again
 	// with it. This is what makes the missing force flag correct.
-	_, _, _, err = auth.Login(ctx, env.st, "admin", "brand-new-adminpass", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), "admin", "brand-new-adminpass", auth.DefaultSessionDuration)
 	assert.NoError(t, err)
 }
 
@@ -2281,9 +2312,8 @@ func TestAdminUserService_RewritingTheSameAddressKeepsVerified(t *testing.T) {
 // TestAdminUserService_SettingAFirstEmailIsUnverified covers the branch
 // where the account had no address at all.
 //
-// The account starts VERIFIED with no address, which is the state
-// SetUserAdmin's demotion repair exists for and which CreateUser accepts
-// directly. Starting it unverified would assert nothing: the flag would be
+// The account starts verified with no address, which CreateUser explicitly
+// accepts. Starting it unverified would assert nothing: the flag would be
 // false before and after, so the test passed with the whole rule reverted.
 // An address arriving for the first time is unconfirmed,
 // exactly like one that replaces another, so it must not land verified --

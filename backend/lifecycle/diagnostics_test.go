@@ -164,7 +164,7 @@ func TestStartupDiagnosticsAreAttemptSpecific(t *testing.T) {
 		root := filepath.Join(t.TempDir(), "rot-root")
 		paths := pathsFor(mustCanonical(t, root))
 		current := "cccccccccccccccccccccccccccccccc"
-		require.NoError(t, preparePrivateDir(paths.Logs))
+		require.NoError(t, atomicfile.MkdirAllPrivate(paths.Logs))
 		for i := range maxRetainedAttempts + 4 {
 			id := fmt.Sprintf("%032x", i)
 			// Distinct modification times, so the retirement order is

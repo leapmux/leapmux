@@ -174,7 +174,9 @@ func TestWorkerInventorySegments_ReconcilesOnlyOnCompletion(t *testing.T) {
 	seedInventoryTab(t, reg, "alice", "present")
 	seedInventoryTab(t, reg, "alice", "stale")
 	seedInventoryTab(t, reg, "bob", "stale")
-	svc := &WorkerConnectorService{crdtRegistry: reg}
+	svc := &WorkerConnectorService{
+		hasher:       hubtestutil.TestSecretHasher(),
+		crdtRegistry: reg}
 	inventory, err := svc.beginWorkerInventory(t.Context(), "w1", "alice")
 	require.NoError(t, err)
 	var sent atomic.Int32
@@ -201,7 +203,9 @@ func TestWorkerInventorySegments_RejectsMalformedReports(t *testing.T) {
 		{Tabs: []*leapmuxv1.TabIdent{{TabType: leapmuxv1.TabType(999), TabId: "tab"}}, Complete: true},
 	} {
 		t.Run(fmt.Sprint(report), func(t *testing.T) {
-			svc := &WorkerConnectorService{}
+			svc := &WorkerConnectorService{
+				hasher: hubtestutil.TestSecretHasher(),
+			}
 			conn := workermgrtest.NewConnWithWrite(t, "w1", func(*leapmuxv1.ConnectResponse) error { t.Error("malformed inventory was acknowledged"); return nil })
 			require.Error(t, svc.handleWorkspaceTabsSync(t.Context(), conn, "", report, &workerInventory{}))
 		})
@@ -212,7 +216,9 @@ func TestWorkerInventoryAdmission_RefusesMissingOwnerOrManager(t *testing.T) {
 	journal := newTabSyncJournal()
 	reg := newRecordingRegistry(t, journal)
 	reg.failFor = "alice"
-	svc := &WorkerConnectorService{crdtRegistry: reg}
+	svc := &WorkerConnectorService{
+		hasher:       hubtestutil.TestSecretHasher(),
+		crdtRegistry: reg}
 	_, err := svc.beginWorkerInventory(t.Context(), "w1", "")
 	require.ErrorContains(t, err, "blank registrant")
 	_, err = svc.beginWorkerInventory(t.Context(), "w1", "alice")
@@ -225,7 +231,9 @@ func TestWorkerInventorySegments_ForeignIdentityCollisionIsInvisible(t *testing.
 	reg := newRecordingRegistry(t, journal)
 	seedInventoryTab(t, reg, "alice", "same")
 	seedInventoryTab(t, reg, "bob", "same")
-	svc := &WorkerConnectorService{crdtRegistry: reg}
+	svc := &WorkerConnectorService{
+		hasher:       hubtestutil.TestSecretHasher(),
+		crdtRegistry: reg}
 	inventory, err := svc.beginWorkerInventory(t.Context(), "w1", "alice")
 	require.NoError(t, err)
 	conn := workermgrtest.NewConnWithWrite(t, "w1", func(*leapmuxv1.ConnectResponse) error { return nil })
@@ -240,7 +248,7 @@ func TestWorkerInventorySegments_ForeignIdentityCollisionIsInvisible(t *testing.
 // the channels go, whatever else is happening to the process.
 func TestCloseWorkerChannels_ClosesTheWorkersChannels(t *testing.T) {
 	cMgr := channelmgr.New(0)
-	svc := NewWorkerConnectorService(WorkerConnectorServiceDeps{
+	svc := NewWorkerConnectorService(WorkerConnectorServiceDeps{Hasher: hubtestutil.TestSecretHasher(),
 		Store:             nil,
 		WorkerManager:     nil,
 		ChannelManager:    cMgr,
@@ -267,7 +275,7 @@ func TestCloseWorkerChannels_ClosesTheWorkersChannels(t *testing.T) {
 // shutdown, and they must leave no trace: nothing to close means nothing to say.
 func TestCloseWorkerChannels_IsSilentWhenThereIsNothingToClose(t *testing.T) {
 	cMgr := channelmgr.New(0)
-	svc := NewWorkerConnectorService(WorkerConnectorServiceDeps{
+	svc := NewWorkerConnectorService(WorkerConnectorServiceDeps{Hasher: hubtestutil.TestSecretHasher(),
 		Store:             nil,
 		WorkerManager:     nil,
 		ChannelManager:    cMgr,
@@ -406,7 +414,7 @@ func TestNewWorkerConnectorServiceRequiresAQueuePoolAndAClock(t *testing.T) {
 	t.Parallel()
 
 	assert.PanicsWithValue(t, "service: NewWorkerConnectorService requires a queue pool", func() {
-		NewWorkerConnectorService(WorkerConnectorServiceDeps{
+		NewWorkerConnectorService(WorkerConnectorServiceDeps{Hasher: hubtestutil.TestSecretHasher(),
 			Store:             nil,
 			WorkerManager:     nil,
 			ChannelManager:    nil,
@@ -419,7 +427,7 @@ func TestNewWorkerConnectorServiceRequiresAQueuePoolAndAClock(t *testing.T) {
 		})
 	})
 	assert.PanicsWithValue(t, "service: NewWorkerConnectorService requires a clock", func() {
-		NewWorkerConnectorService(WorkerConnectorServiceDeps{
+		NewWorkerConnectorService(WorkerConnectorServiceDeps{Hasher: hubtestutil.TestSecretHasher(),
 			Store:             nil,
 			WorkerManager:     nil,
 			ChannelManager:    nil,
@@ -525,7 +533,9 @@ func TestStartWorkerReceivePump_StopsWhenTheStreamEndsAfterTheContext(t *testing
 func TestReceiveHello_TakesItsResultFromThePump(t *testing.T) {
 	t.Parallel()
 
-	svc := &WorkerConnectorService{clock: quartz.NewReal()}
+	svc := &WorkerConnectorService{
+		hasher: hubtestutil.TestSecretHasher(),
+		clock:  quartz.NewReal()}
 
 	t.Run("reports a worker that closed the stream", func(t *testing.T) {
 		received := make(chan workerReceiveResult, 1)
@@ -572,7 +582,9 @@ func TestReceiveHello_TakesItsResultFromThePump(t *testing.T) {
 		ctx := testutil.DeadlineContext(t)
 		result := make(chan error, 1)
 		go func() {
-			_, err := (&WorkerConnectorService{clock: clock}).receiveHello(ctx, make(chan workerReceiveResult))
+			_, err := (&WorkerConnectorService{
+				hasher: hubtestutil.TestSecretHasher(),
+				clock:  clock}).receiveHello(ctx, make(chan workerReceiveResult))
 			result <- err
 		}()
 		delay := testutil.WaitForTimer(t, ctx, newTimer)
@@ -595,7 +607,7 @@ func TestReceiveHello_TakesItsResultFromThePump(t *testing.T) {
 func TestOwnerUsername_LogsWhyTheReadEnded(t *testing.T) {
 	logs := testutil.CaptureDefaultLogger(t)
 	st := hubtestutil.OpenTestStore(t)
-	svc := NewWorkerConnectorService(WorkerConnectorServiceDeps{
+	svc := NewWorkerConnectorService(WorkerConnectorServiceDeps{Hasher: hubtestutil.TestSecretHasher(),
 		Store:             st,
 		WorkerManager:     nil,
 		ChannelManager:    nil,
@@ -618,7 +630,7 @@ func TestOwnerUsername_LogsWhyTheReadEnded(t *testing.T) {
 
 func TestNewWorkerConnectorServiceRequiresDeregisterEffects(t *testing.T) {
 	assert.PanicsWithValue(t, "service: NewWorkerConnectorService requires deregistration effects", func() {
-		NewWorkerConnectorService(WorkerConnectorServiceDeps{
+		NewWorkerConnectorService(WorkerConnectorServiceDeps{Hasher: hubtestutil.TestSecretHasher(),
 			Store:             nil,
 			WorkerManager:     nil,
 			ChannelManager:    nil,
@@ -687,7 +699,9 @@ func TestWorkerInventory_FailedCommitIsNotAcknowledged(t *testing.T) {
 	journal := newTabSyncJournal()
 	reg := newRecordingRegistry(t, journal)
 	seedInventoryTab(t, reg, "alice", "stale")
-	svc := &WorkerConnectorService{crdtRegistry: reg}
+	svc := &WorkerConnectorService{
+		hasher:       hubtestutil.TestSecretHasher(),
+		crdtRegistry: reg}
 	inventory, err := svc.beginWorkerInventory(t.Context(), "w1", "alice")
 	require.NoError(t, err)
 	journal.mu.Lock()

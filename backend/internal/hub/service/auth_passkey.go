@@ -102,12 +102,12 @@ func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *leapmuxv1.Fin
 	if mintErr != nil {
 		return nil, mintErr
 	}
-	sessionID, expiresAt, err := auth.CreateSession(ctx, s.store, loginUID, s.sessionDuration(ctx))
+	session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, loginUID, s.sessionDuration(ctx))
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
 	resp := &leapmuxv1.FinishPasskeyLoginResponse{SessionReport: s.loginSessionReport(ctx, user)}
-	s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, expiresAt)
+	s.setSessionCookie(ctx, info.ResponseHeader(), session.Token, session.ExpiresAt)
 	return resp, nil
 }
 
@@ -115,7 +115,7 @@ func (s *AuthService) BeginPasskeySignUp(ctx context.Context, req *leapmuxv1.Beg
 	if err := rejectSolo(s.cfg.SoloMode, "sign-up"); err != nil {
 		return nil, err
 	}
-	hasUser, err := s.checkHasAnyUser(ctx)
+	hasUser, err := s.checkHasAnyUser()
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
@@ -184,13 +184,11 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *leapmuxv1.Fi
 	// Re-check the controls at finish so an admin disable or a race on
 	// username/email between Begin and Finish cannot create an account past
 	// policy. This handler re-checks setup mode rather than carries it over
-	// from Begin, because the state can flip either way inside the ceremony
-	// window: a second operator can win the race to become the first
-	// administrator, and every user can vanish. This commit creates the hub's
-	// first account whenever it is still the first, and that account must be
-	// an admin, exactly like password sign-up -- otherwise the hub withdraws
-	// /setup and has no administrator.
-	hasUser, err := s.checkHasAnyUser(ctx)
+	// from Begin, because another operator can complete setup during the
+	// ceremony. Last-administrator protection keeps setup complete afterward.
+	// If setup is still required, this commit creates an administrator,
+	// exactly like password sign-up.
+	hasUser, err := s.checkHasAnyUser()
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
 	}
@@ -211,7 +209,11 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *leapmuxv1.Fi
 		email = ""
 		pendingEmail = draft.Email
 	}
-	createdUser, storedCode, err := createUserInTx(ctx, s.store, createUserTxParams{
+	admission := signupOrdinary
+	if isFirstUser {
+		admission = signupInitialAdministrator
+	}
+	createdUser, storedCode, err := s.createSignupUser(ctx, admission, createUserTxParams{
 		now:          s.now,
 		userID:       draft.UserID,
 		username:     draft.Username,
@@ -248,12 +250,11 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *leapmuxv1.Fi
 		nextResend = &next
 	}
 
-	s.hasAnyUser.Store(true)
 	loginUID, mintErr := mintRowUserID(createdUser.ID)
 	if mintErr != nil {
 		return nil, mintErr
 	}
-	sessionID, sessionExpires, err := auth.CreateSession(ctx, s.store, loginUID, s.sessionDuration(ctx))
+	session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, loginUID, s.sessionDuration(ctx))
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
@@ -264,7 +265,7 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *leapmuxv1.Fi
 			NextResendAvailableAt: nextResend,
 		}), nil),
 	}
-	s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, sessionExpires)
+	s.setSessionCookie(ctx, info.ResponseHeader(), session.Token, session.ExpiresAt)
 	return resp, nil
 }
 
@@ -366,6 +367,9 @@ func RevokeCredentialsAfterRotation(
 // passkey-less account that still holds the username.
 func rollbackUnusableSignup(ctx context.Context, st store.Store, userID string) error {
 	return st.RunInTransaction(ctx, func(tx store.Store) error {
+		if _, err := tx.Users().LockForRemoval(ctx, userID); err != nil {
+			return fmt.Errorf("lock user for signup rollback: %w", err)
+		}
 		if err := RevokePasskeyAuthState(ctx, tx, userID); err != nil {
 			return err
 		}

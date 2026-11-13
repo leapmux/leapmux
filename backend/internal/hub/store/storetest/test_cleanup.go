@@ -21,7 +21,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 		// Create an expired session.
 		sessID := id.Generate()
-		err := st.Sessions().Create(ctx, store.CreateSessionParams{
+		err := st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 			ID:        sessID,
 			UserID:    userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(-1 * time.Hour),
@@ -87,7 +87,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 		// the soft-deleted state our service layer leaves rows in after
 		// either explicit Delete or successful Consume.
 		regID := id.Generate()
-		err := st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+		err := st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: FixtureSecretHash(regID),
 			ID:        regID,
 			CreatedBy: userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(-48 * time.Hour),
@@ -110,7 +110,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 		// created_at it must NOT be deleted: only expires_at controls
 		// retention now.
 		regID := id.Generate()
-		err := st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+		err := st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: FixtureSecretHash(regID),
 			ID:        regID,
 			CreatedBy: userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(1 * time.Hour),
@@ -393,7 +393,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 
 		// Create an expired session.
 		expiredID := id.Generate()
-		err := st.Sessions().Create(ctx, store.CreateSessionParams{
+		err := st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 			ID: expiredID, UserID: userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(-1 * time.Hour),
 			UserAgent: "test", IPAddress: "127.0.0.1",
@@ -544,7 +544,7 @@ func (s *Suite) testCleanup(t *testing.T) {
 			for range seeded {
 				workerID := id.Generate()
 				require.NoError(t, tx.Workers().Create(ctx, store.CreateWorkerParams{
-					ID: workerID, AuthToken: id.Generate(), RegisteredBy: userid.MustNew(user.ID),
+					ID: workerID, AuthTokenHash: FixtureSecretHash(id.Generate()), RegisteredBy: userid.MustNew(user.ID),
 					PublicKeys: WorkerKeys(workerkeystest.SeededWorkerFill),
 				}))
 				_, err := tx.Workers().ForceDeregister(ctx, workerID)

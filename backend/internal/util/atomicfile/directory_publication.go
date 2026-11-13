@@ -14,13 +14,13 @@ import (
 	"github.com/leapmux/leapmux/util/useronly"
 )
 
-// publicationRecordName is the fixed file name of a directory
+// DirectoryPublicationRecordName is the fixed file name of a directory
 // publication record. The record sits at the root of the first directory
 // a MkdirAllDurable call created, and its presence tells a later command
 // whether LeapMux confirmed the publication of that subtree. A
 // pre-existing directory with no record is an externally provisioned
 // publication boundary: this helper neither opens nor flushes it.
-const publicationRecordName = ".leapmux-directory-publication.yaml"
+const DirectoryPublicationRecordName = ".leapmux-directory-publication.yaml"
 
 // ErrDirectoryPublicationUncertain reports a directory whose publication
 // a previous invocation started but could not confirm. On Windows a
@@ -124,6 +124,15 @@ func MkdirAllDurable(target string) error {
 	return publishStaged(firstMissing, target)
 }
 
+// MkdirAllPrivate durably creates a directory and verifies that only this account
+// can access it. It refuses a symlink or an existing directory with wider access.
+func MkdirAllPrivate(path string) error {
+	if err := MkdirAllDurable(path); err != nil {
+		return err
+	}
+	return useronly.VerifyDirectory(path)
+}
+
 // walkExistingPrefixes inspects target's prefixes from the root down.
 // It validates every publication record before any repair or creation and returns
 // those records in ancestor order. Looking up a fixed record does not list a directory.
@@ -142,7 +151,7 @@ func walkExistingPrefixes(target string) (firstMissing string, records []string,
 			if !info.IsDir() {
 				return "", nil, fmt.Errorf("atomicfile: %s exists and is not a directory", p)
 			}
-			rec := filepath.Join(p, publicationRecordName)
+			rec := filepath.Join(p, DirectoryPublicationRecordName)
 			if _, lerr := os.Lstat(rec); lerr == nil {
 				if _, recordErr := loadRecordAt(rec); recordErr != nil && !errors.Is(recordErr, errRecordMoved) {
 					return "", nil, recordErr
@@ -263,7 +272,7 @@ func yamlMarshalRecord(rec *publicationRecord) ([]byte, error) {
 }
 
 // recordPathAt returns the record path inside dir.
-func recordPathAt(dir string) string { return filepath.Join(dir, publicationRecordName) }
+func recordPathAt(dir string) string { return filepath.Join(dir, DirectoryPublicationRecordName) }
 
 // writeRecordCommitted replaces a record with its committed form
 // durably.

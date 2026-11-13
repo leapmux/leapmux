@@ -43,7 +43,8 @@ func (s *WorkerConnectorService) DeregisterSelf(
 	if !ok {
 		return nil, connect.NewError(connect.CodeUnauthenticated, auth.ErrMissingBearer.Error())
 	}
-	worker, err := s.store.Workers().GetByAuthTokenIncludeDeleted(ctx, token)
+	digest := s.hasher.Hash(token)
+	worker, err := s.store.Workers().GetByAuthTokenHashIncludeDeleted(ctx, digest)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeUnauthenticated,
@@ -72,7 +73,7 @@ func (s *WorkerConnectorService) DeregisterSelf(
 	if err := s.store.RunInUserAuthTransaction(ctx, owner, func(tx store.Store) error {
 		// Re-read under the owner's lock: a concurrent deregistration or
 		// deletion must not be double-counted or outrun.
-		fresh, freshErr := tx.Workers().GetByAuthTokenIncludeDeleted(ctx, token)
+		fresh, freshErr := tx.Workers().GetByAuthTokenHashIncludeDeleted(ctx, digest)
 		if freshErr != nil {
 			return freshErr
 		}

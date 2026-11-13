@@ -9,11 +9,12 @@ import (
 
 func TestGenerate_Length(t *testing.T) {
 	id := Generate()
-	assert.Len(t, id, 48)
+	assert.Equal(t, 48, GeneratedLength)
+	assert.Len(t, id, GeneratedLength)
 }
 
 func TestGenerate_ValidCharacters(t *testing.T) {
-	valid := regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	valid := regexp.MustCompile(`^[A-Za-z0-9]+$`)
 	id := Generate()
 	assert.True(t, valid.MatchString(id), "id contains invalid characters: %q", id)
 }

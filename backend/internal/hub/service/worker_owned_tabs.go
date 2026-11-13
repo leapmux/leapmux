@@ -13,7 +13,7 @@ import (
 )
 
 // ListOwnedTabsForWorker resolves the calling worker via its bearer token (the
-// same auth_token Connect uses) and returns every owned-tab row for that
+// same token the Worker's WebSocket stream uses) and returns every owned-tab row for that
 // worker. It gives the periodic worker-side orphan reconciler a snapshot of
 // `workspace_tab_owned` filtered to the calling worker.
 func (s *WorkerConnectorService) ListOwnedTabsForWorker(
@@ -21,7 +21,7 @@ func (s *WorkerConnectorService) ListOwnedTabsForWorker(
 	req *leapmuxv1.ListOwnedTabsForWorkerRequest,
 ) (*leapmuxv1.ListOwnedTabsForWorkerResponse, error) {
 	info := serverCallInfo(ctx)
-	w, err := auth.AuthenticateWorkerBearer(ctx, s.store, info.RequestHeader().Get("Authorization"))
+	w, err := auth.AuthenticateWorkerBearer(ctx, s.store, s.hasher, info.RequestHeader().Get("Authorization"))
 	if err != nil {
 		if auth.IsWorkerCredentialError(err) {
 			return nil, wrappedConnectError(connect.CodeUnauthenticated, err)

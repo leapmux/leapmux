@@ -72,19 +72,23 @@ type passkeyAuthTestEnv struct {
 func setupPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender mail.Sender) passkeyAuthTestEnv {
 	t.Helper()
 
-	env := setupEmptyPasskeyAuthTestServer(t, seed, mailSender)
-	hubtestutil.CreateTestAdmin(t, env.store)
-	return env
+	st := hubtestutil.OpenTestStore(t)
+	hubtestutil.CreateTestAdmin(t, st)
+	return setupEmptyPasskeyAuthTestServerWithStore(t, st, seed, mailSender)
 }
 
 // setupEmptyPasskeyAuthTestServer is the same server with an EMPTY database,
-// which is the state the first-administrator flow runs in. The wrapper above
-// creates the admin fixture afterwards rather than here, so setup mode is
-// reachable without a second copy of this construction.
+// which is the state the first-administrator flow runs in. Both fixtures
+// initialize presence after seeding and before serving requests.
 func setupEmptyPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender mail.Sender) passkeyAuthTestEnv {
 	t.Helper()
+	return setupEmptyPasskeyAuthTestServerWithStore(t, hubtestutil.OpenTestStore(t), seed, mailSender)
+}
 
-	st := hubtestutil.OpenTestStore(t)
+// setupEmptyPasskeyAuthTestServerWithStore allows a test to synchronize the
+// real store at an account-creation boundary without replacing its SQL writes.
+func setupEmptyPasskeyAuthTestServerWithStore(t *testing.T, st store.Store, seed authTestSeed, mailSender mail.Sender) passkeyAuthTestEnv {
+	t.Helper()
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)
 	ks, err := keystore.New(map[uint32][32]byte{1: key})
@@ -97,13 +101,13 @@ func setupEmptyPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender
 	}
 
 	mux := http.NewServeMux()
-	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
 
 	if mailSender == nil {
 		mailSender = mail.NewStubSender()
 	}
-	authSvc := service.NewAuthService(service.AuthServiceDeps{
+	authSvc := service.NewAuthService(service.AuthServiceDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store:     st,
 		Config:    testConfig(),
 		Settings:  set,
@@ -113,7 +117,7 @@ func setupEmptyPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender
 		Keystore:  ks,
 	})
 	connectServer := connect.NewServer(interceptor)
-	mountAuthAndSystem(connectServer, authSvc, set)
+	mountAuthAndSystem(t, connectServer, authSvc, set)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)

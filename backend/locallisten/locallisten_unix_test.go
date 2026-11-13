@@ -1,10 +1,11 @@
-//go:build unix
+//go:build linux || darwin
 
 package locallisten
 
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -12,7 +13,25 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestListen_UnixRefusesAnOverlongPath(t *testing.T) {
+	path := uniqueUnixPathShort(t)
+	limit := MaxUnixSocketPathBytes()
+	path += strings.Repeat("x", limit+1-len(path))
+	listener, err := Listen("unix:" + path)
+	if listener != nil {
+		_ = listener.Close()
+	}
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrSocketPathTooLong)
+	assert.ErrorContains(t, err, fmt.Sprint(limit))
+	_, statErr := os.Lstat(path)
+	assert.ErrorIs(t, statErr, os.ErrNotExist)
+}
 
 // uniqueUnixPathShort returns a per-test socket path whose full length stays
 // well under the AF_UNIX sun_path limit (104 bytes on macOS).
@@ -99,19 +118,59 @@ func TestListen_UnixClosesUnlinks(t *testing.T) {
 	}
 }
 
+func TestListen_UnixRepeatedClosePreservesReplacement(t *testing.T) {
+	path := uniqueUnixPathShort(t)
+	old, err := Listen("unix:" + path)
+	require.NoError(t, err)
+	require.NoError(t, old.Close())
+	require.NoFileExists(t, path)
+	replacement, err := Listen("unix:" + path)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = replacement.Close() })
+	assert.ErrorIs(t, old.Close(), net.ErrClosed)
+	info, err := os.Lstat(path)
+	require.NoError(t, err, "closing the old listener must preserve the replacement")
+	assert.Equal(t, os.ModeSocket, info.Mode().Type())
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	var dialer net.Dialer
+	client, err := dialer.DialContext(ctx, "unix", path)
+	require.NoError(t, err)
+	defer func() { _ = client.Close() }()
+	server, err := replacement.Accept()
+	require.NoError(t, err)
+	defer func() { _ = server.Close() }()
+	deadline, ok := ctx.Deadline()
+	require.True(t, ok)
+	require.NoError(t, client.SetDeadline(deadline))
+	require.NoError(t, server.SetDeadline(deadline))
+	_, err = client.Write([]byte("new"))
+	require.NoError(t, err)
+	var payload [3]byte
+	_, err = io.ReadFull(server, payload[:])
+	require.NoError(t, err)
+	assert.Equal(t, "new", string(payload[:]))
+	require.NoError(t, replacement.Close())
+	require.NoFileExists(t, path)
+}
+
 func TestListen_UnixRemovesStaleSocket(t *testing.T) {
 	path := uniqueUnixPathShort(t)
 
-	// Create a stale socket: bind and close, leaving the file on disk
-	// (net.Listener.Close on unix does not unlink).
-	pre, err := net.Listen("unix", path)
+	// Disable automatic unlink so closing the fixture leaves a stale socket.
+	pre, err := net.ListenUnix("unix", &net.UnixAddr{Name: path, Net: "unix"})
 	if err != nil {
 		t.Fatalf("pre-listen: %v", err)
 	}
+	pre.SetUnlinkOnClose(false)
 	if err := pre.Close(); err != nil {
 		t.Fatalf("pre-close: %v", err)
 	}
 
+	info, err := os.Lstat(path)
+	require.NoError(t, err)
+	require.Equal(t, os.ModeSocket, info.Mode().Type())
 	ln, err := Listen("unix:" + path)
 	if err != nil {
 		t.Fatalf("Listen over stale socket: %v", err)
@@ -271,4 +330,15 @@ func TestDialer_NpipeFailsWithSchemeError(t *testing.T) {
 	if !strings.Contains(err.Error(), "npipe") {
 		t.Errorf("error %v does not mention npipe", err)
 	}
+}
+
+func TestListen_UnixAcceptsAPathAtTheLimit(t *testing.T) {
+	path := uniqueUnixPathShort(t)
+	path += strings.Repeat("x", MaxUnixSocketPathBytes()-len(path))
+	listener, err := Listen("unix:" + path)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, listener.Close()) })
+	info, err := os.Lstat(path)
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode()&os.ModeSocket)
 }

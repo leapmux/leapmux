@@ -128,9 +128,9 @@ func (f *agentIPCRecorder) spawnOwners() []userid.UserID {
 // per tab. A mint issued while the previous cleanup did not run yet answers an
 // error, the way `unix listen: ... is already in use` does.
 //
-// It binds by TAB, not globally, because DefaultSocketPath is a pure function of
-// (worker, kind, tab): two different tabs never collide, and two spawns of one
-// tab always do. Agents and terminals share the rule, so both kinds route
+// It binds by tab because SocketURL keeps the same tab's URL stable in the
+// Worker's socket directory. Different tab prefixes use different paths, and
+// two spawns of one tab collide. Agents and terminals share the rule, so both kinds route
 // through the same bind.
 type exclusiveSocketIPC struct {
 	mu    sync.Mutex
@@ -212,7 +212,7 @@ func TestEnsureAgentRunning_MintsForTheWorkerOwner(t *testing.T) {
 // TestEnsureAgentRunning_RetiresTheOldTokenBeforeMinting pins the swap ORDER,
 // which is the whole reason this helper exists.
 //
-// controlipc.DefaultSocketPath is a pure function of (worker, kind, tab), so a
+// controlipc.SocketURL keeps the same tab's URL stable in the Worker's socket directory, so a
 // relaunch's socket path is the one the previous spawn is still listening on,
 // and locallisten refuses a path whose socket answers a dial. Minting first
 // therefore failed every in-process relaunch DEGRADABLY: the tab came up with
@@ -598,8 +598,8 @@ func TestRemintControlIPC_DoesNotClaimOwnershipOfARetiredSocket(t *testing.T) {
 // TERMINAL path, which the agent tests above pin only for agents.
 //
 // Both paths share remintControlIPC, and both bind the same per-tab socket path
-// on a relaunch: controlipc.DefaultSocketPath is a pure function of (worker,
-// kind, tab), and locallisten refuses a path whose socket answers a dial. A mint
+// on a relaunch: controlipc.SocketURL keeps the same tab's URL stable, and
+// locallisten refuses a path whose socket answers a dial. A mint
 // that ran first would therefore fail every in-process terminal restart
 // DEGRADABLY -- the shell comes up with no LEAPMUX_CONTROL_* and `leapmux
 // control` inside it reports "socket not configured".

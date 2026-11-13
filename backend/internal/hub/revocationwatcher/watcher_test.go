@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"connectrpc.com/connect/v2"
@@ -39,7 +40,7 @@ func newBearerAuthHub(
 ) (leapmuxv1connect.AuthServiceClient, *auth.AuthContextRegistry) {
 	t.Helper()
 	mux := http.NewServeMux()
-	interceptor, cache := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: validator})
+	interceptor, cache := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: validator})
 	t.Cleanup(cache.Stop)
 	authService := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(cache, nil, nil)))
 	connectServer := connect.NewServer(interceptor)
@@ -161,7 +162,7 @@ func setupUnseededWithOptions(t *testing.T, opts ...revocationwatcher.Option) *e
 	t.Helper()
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
-	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
 
 	closer := &fakeCloser{}
@@ -173,10 +174,10 @@ func setupUnseededWithOptions(t *testing.T, opts ...revocationwatcher.Option) *e
 
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    id.Generate(),
-		RegisteredBy: userid.MustNew(u.ID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		RegisteredBy:  userid.MustNew(u.ID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	return &envT{
@@ -367,8 +368,9 @@ func TestWatcher_PublishesGaplessSeqAndAppliesEvents(t *testing.T) {
 	env := setup(t)
 	apiToken := env.seedAPIToken(t)
 	delegationToken := env.seedDelegationToken(t)
-	sessionID, _, _, err := auth.Login(context.Background(), env.st, "admin", hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
+	sessionToken, _, _, err := auth.Login(context.Background(), env.st, hubtestutil.TestSecretHasher(), "admin", hubtestutil.TestAdminPassword, auth.DefaultSessionDuration)
 	require.NoError(t, err)
+	sessionID := hubtestutil.SessionIDFromCookie(t, sessionToken)
 
 	_, err = env.st.APITokens().Revoke(context.Background(), apiToken)
 	require.NoError(t, err)
@@ -664,67 +666,34 @@ func TestWatcher_AdvancesDurableCursorAfterApplyingPage(t *testing.T) {
 	require.Equal(t, int64(1), deleted)
 }
 
-// leaseLostRevocationEvents simulates another Hub having stolen (or expired) the
-// runtime lease: RenewHubRuntimeLease matches no row, so renewal reports the
-// lease was not advanced.
-type leaseLostRevocationEvents struct {
-	store.RevocationEventStore
-}
-
-func (leaseLostRevocationEvents) RenewHubRuntimeLease(context.Context, store.RenewHubRuntimeLeaseParams) (bool, error) {
-	return false, nil
-}
-
-func (leaseLostRevocationEvents) ReacquireHubRuntimeLease(context.Context, store.ReacquireHubRuntimeLeaseParams) error {
-	return store.ErrHubAlreadyRunning
-}
-
-// leaseLossTestDuration is the lease this test grants itself.
-//
-// It must clear a store round trip by an order of magnitude, NOT merely be
-// short enough to make the test quick. SeedCursor checks whether acquiring the
-// lease outlasted the whole lease budget and fails with ErrLeaseLost if it did
-// -- a correct diagnosis, and one that a 20 ms lease provokes for real whenever
-// a loaded machine makes the acquiring SQLite write take longer than that. The
-// test then fails at the seed, before it has exercised anything it is about.
-//
-// The renewal heartbeat ticks at a quarter of this and renews past the
-// half-life, so the self-fence still lands in a few hundred milliseconds. That
-// is the trade: promptness is derived from the lease duration, so the duration
-// cannot be shrunk for speed without re-coupling the test to how fast the disk
-// happens to be.
-const leaseLossTestDuration = 500 * time.Millisecond
-
 // A renewal that advances no row must self-fence the Hub when the lease cannot
 // be taken back. ReacquireHubRuntimeLease reports ErrHubAlreadyRunning -- a
 // rival holder, not this watcher's own still-live row. The lease-renewal
 // heartbeat runs independently of event processing, so the self-fence fires even
 // when the processing interval is far longer than the lease.
 func TestWatcher_LeaseLossIsFatal(t *testing.T) {
-	env := setupUnseeded(t)
-	injected := injectedRevocationStore{
-		Store:  env.st,
-		events: leaseLostRevocationEvents{RevocationEventStore: env.st.RevocationEvents()},
-	}
-	w := revocationwatcher.New(injected, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil),
-		revocationwatcher.WithLeaseDuration(leaseLossTestDuration),
-		revocationwatcher.WithInterval(time.Hour),
-	)
-	require.NoError(t, w.SeedCursor(context.Background()),
-		"seeding must not blow its own lease budget -- see leaseLossTestDuration")
-	t.Cleanup(func() { _ = w.Close(context.Background()) })
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.StartLoop(ctx)
-
-	// Ample: the renewal is due at the half-life, so this waits ten renewal
-	// cycles before calling it a failure rather than racing the first one.
-	select {
-	case err := <-w.Errors():
-		require.ErrorIs(t, err, revocationwatcher.ErrLeaseLost)
-	case <-time.After(10 * leaseLossTestDuration):
-		t.Fatal("watcher did not self-fence after losing its lease")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		events := &virtualLeaseEvents{refuseRenewal: true}
+		w := revocationwatcher.New(injectedRevocationStore{events: events}, auth.NewCredentialLifecycleEffects(nil, nil, nil),
+			revocationwatcher.WithLeaseDuration(time.Hour), revocationwatcher.WithInterval(24*time.Hour))
+		require.NoError(t, w.SeedCursor(context.Background()))
+		defer func() { require.NoError(t, w.Close(context.Background())) }()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		w.StartLoop(ctx)
+		synctest.Wait()
+		time.Sleep(time.Hour / 2)
+		synctest.Wait()
+		select {
+		case err := <-w.Errors():
+			require.ErrorIs(t, err, revocationwatcher.ErrLeaseLost)
+		default:
+			t.Fatal("watcher did not refuse the rival lease holder")
+		}
+		state := events.snapshot()
+		assert.Positive(t, state.renewalAttempts)
+		assert.Equal(t, 1, state.reacquisitions)
+	})
 }
 
 // suspendedLeaseRevocationEvents shortens ONLY the durable lease the seed
@@ -939,60 +908,46 @@ func (c *blockingCloser) CloseChannelsByBearer(ref auth.BearerRef) int {
 // decoupling, runOnce held w.lease.mu across teardown so the lease could not be
 // renewed and the Hub self-fenced.
 func TestWatcher_SlowTeardownDoesNotSelfFence(t *testing.T) {
-	// renewalLoop renews at the lease half-life, so the slack between a renewal
-	// falling due and the lease actually lapsing is leaseDuration/2 -- the window
-	// in which the heartbeat goroutine must get scheduled. At 40ms that slack was
-	// 20ms, which a loaded CI runner exceeds outright, and the watcher then
-	// self-fenced for real. 200ms buys a 100ms margin while keeping the test fast.
-	const leaseDuration = 200 * time.Millisecond
-	env := setupUnseeded(t)
-	blocking := newBlockingCloser()
-	w := revocationwatcher.New(env.st, auth.NewCredentialLifecycleEffects(env.cache, blocking, nil),
-		revocationwatcher.WithLeaseDuration(leaseDuration),
-		revocationwatcher.WithInterval(20*time.Millisecond),
-	)
-	require.NoError(t, w.SeedCursor(context.Background()))
-	t.Cleanup(func() { blocking.release(); _ = w.Close(context.Background()) })
-
-	tokenID := env.seedAPIToken(t)
-	_, err := env.st.APITokens().Revoke(context.Background(), tokenID)
-	require.NoError(t, err)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	w.StartLoop(ctx)
-
-	select {
-	case <-blocking.entered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("teardown never started")
-	}
-
-	// Hold the teardown for three lease durations: long enough that only a live
-	// heartbeat can still hold the lease, so the test would catch a regression
-	// that let teardown block renewal. A self-fence surfaces on Errors.
-	select {
-	case err := <-w.Errors():
-		t.Fatalf("watcher self-fenced during a slow teardown: %v", err)
-	case <-time.After(3 * leaseDuration):
-	}
-
-	// A quiet Errors channel only proves the watcher never *noticed* a lost
-	// lease. Assert the durable row too: three lease durations into the
-	// teardown, a rival can only be fenced out if the heartbeat kept renewing.
-	// (A failing acquire rolls its transaction back, so this probe is inert.)
-	_, err = env.st.RevocationEvents().AcquireHubRuntimeLease(
-		context.Background(),
-		store.AcquireHubRuntimeLeaseParams{HolderID: "rival", PublishLimit: 10, LeaseDuration: time.Hour},
-	)
-	require.ErrorIs(t, err, store.ErrHubAlreadyRunning,
-		"the heartbeat must keep the durable lease alive across a slow teardown")
-
-	blocking.release()
-	require.Eventually(t, func() bool {
-		s := blocking.bearerSnapshot()
-		return len(s) == 1 && s[0] == tokenID
-	}, 2*time.Second, 10*time.Millisecond, "the revocation must complete once teardown unblocks")
+	synctest.Test(t, func(t *testing.T) {
+		const leaseDuration = time.Hour
+		events := &virtualLeaseEvents{}
+		blocking := newBlockingCloser()
+		w := revocationwatcher.New(injectedRevocationStore{events: events}, auth.NewCredentialLifecycleEffects(nil, blocking, nil),
+			revocationwatcher.WithLeaseDuration(leaseDuration), revocationwatcher.WithInterval(24*time.Hour))
+		require.NoError(t, w.SeedCursor(context.Background()))
+		defer func() { blocking.release(); require.NoError(t, w.Close(context.Background())) }()
+		const tokenID = "slow-teardown-token"
+		events.publish(store.PublishedRevocationEvent{Seq: 1, Event: store.RevocationEvent{
+			ID: "event-1", Kind: store.RevocationEventKindAPIToken, SubjectID: tokenID,
+		}})
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		w.StartLoop(ctx)
+		synctest.Wait()
+		select {
+		case <-blocking.entered:
+		default:
+			t.Fatal("teardown never started")
+		}
+		time.Sleep(3 * leaseDuration)
+		synctest.Wait()
+		state := events.snapshot()
+		assert.Positive(t, state.successfulRenewals, "heartbeat must renew while teardown is blocked")
+		assert.Zero(t, state.reacquisitions, "a live heartbeat must not need lapse recovery")
+		select {
+		case err := <-w.Errors():
+			t.Fatalf("watcher lost its lease: %v", err)
+		default:
+		}
+		_, err := events.AcquireHubRuntimeLease(context.Background(), store.AcquireHubRuntimeLeaseParams{
+			HolderID: "rival", PublishLimit: 10, LeaseDuration: time.Hour,
+		})
+		require.ErrorIs(t, err, store.ErrHubAlreadyRunning)
+		blocking.release()
+		synctest.Wait()
+		assert.Equal(t, []string{tokenID}, blocking.bearerSnapshot())
+		assert.EqualValues(t, 1, events.snapshot().cursor)
+	})
 }
 
 func TestWatcher_CloseDuringSlowTeardownPreventsPostCloseRenewal(t *testing.T) {
@@ -1327,4 +1282,108 @@ func newSuspendedLeaseWatcher(t *testing.T, env *envT, opts ...revocationwatcher
 	w := revocationwatcher.New(injected, auth.NewCredentialLifecycleEffects(env.cache, env.closer, nil), opts...)
 	require.NoError(t, w.SeedCursor(t.Context()))
 	return w
+}
+
+// virtualLeaseEvents models only the stream and lease operations these
+// scheduling tests exercise. Every timestamp uses the bubble's Go clock.
+type virtualLeaseEvents struct {
+	store.RevocationEventStore
+	mu                 sync.Mutex
+	holder             string
+	expiresAt          time.Time
+	cursor             int64
+	event              *store.PublishedRevocationEvent
+	refuseRenewal      bool
+	renewalAttempts    int
+	successfulRenewals int
+	reacquisitions     int
+}
+type virtualLeaseSnapshot struct {
+	cursor                                              int64
+	renewalAttempts, successfulRenewals, reacquisitions int
+}
+
+func (s *virtualLeaseEvents) snapshot() virtualLeaseSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return virtualLeaseSnapshot{s.cursor, s.renewalAttempts, s.successfulRenewals, s.reacquisitions}
+}
+func (s *virtualLeaseEvents) publish(event store.PublishedRevocationEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.event = &event
+}
+func (s *virtualLeaseEvents) maxSeqLocked() int64 {
+	if s.event == nil {
+		return 0
+	}
+	return s.event.Seq
+}
+func (*virtualLeaseEvents) PublishPending(context.Context, int32) (int64, error) { return 0, nil }
+func (s *virtualLeaseEvents) AcquireHubRuntimeLease(ctx context.Context, p store.AcquireHubRuntimeLeaseParams) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if s.holder != "" && time.Now().Before(s.expiresAt) {
+		return 0, store.ErrHubAlreadyRunning
+	}
+	s.holder, s.expiresAt, s.cursor = p.HolderID, time.Now().Add(p.LeaseDuration), s.maxSeqLocked()
+	return s.cursor, nil
+}
+func (s *virtualLeaseEvents) RenewHubRuntimeLease(ctx context.Context, p store.RenewHubRuntimeLeaseParams) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.renewalAttempts++
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if s.refuseRenewal || s.holder != p.HolderID || !time.Now().Before(s.expiresAt) || p.CursorSeq < s.cursor || p.CursorSeq > s.maxSeqLocked() {
+		return false, nil
+	}
+	s.cursor, s.expiresAt = p.CursorSeq, time.Now().Add(p.LeaseDuration)
+	s.successfulRenewals++
+	return true, nil
+}
+func (s *virtualLeaseEvents) ReacquireHubRuntimeLease(ctx context.Context, p store.ReacquireHubRuntimeLeaseParams) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reacquisitions++
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.refuseRenewal || (s.holder != "" && s.holder != p.HolderID) {
+		return store.ErrHubAlreadyRunning
+	}
+	if p.CursorSeq < 0 || p.CursorSeq > s.maxSeqLocked() {
+		return store.ErrNotFound
+	}
+	s.holder, s.cursor, s.expiresAt = p.HolderID, p.CursorSeq, time.Now().Add(p.LeaseDuration)
+	return nil
+}
+func (s *virtualLeaseEvents) ReleaseHubRuntimeLease(_ context.Context, holderID string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.holder != holderID {
+		return 0, nil
+	}
+	s.holder = ""
+	return 1, nil
+}
+func (s *virtualLeaseEvents) ListPublishedAfter(ctx context.Context, after int64, limit int32) ([]store.PublishedRevocationEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if s.event == nil || s.event.Seq <= after || limit <= 0 {
+		return nil, nil
+	}
+	return []store.PublishedRevocationEvent{*s.event}, nil
+}
+func (s *virtualLeaseEvents) MaxPublishedSeq(context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.maxSeqLocked(), nil
 }

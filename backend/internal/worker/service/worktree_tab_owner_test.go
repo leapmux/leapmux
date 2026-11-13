@@ -197,13 +197,13 @@ func TestCreateWorktree_ConflictReturnsTheWinningRow(t *testing.T) {
 	ctx := context.Background()
 
 	winner, err := q.CreateWorktree(ctx, db.CreateWorktreeParams{
-		ID: "wt-winner", WorktreePath: "/r/shared", RepoRoot: "/r", BranchName: "b",
+		ID: "wt-winner", WorktreePath: "/r/shared", RepoRoot: "/r", RepoGitDir: regularRepositoryGitDirForTest(t, "/r"), BranchName: "b",
 	})
 	require.NoError(t, err)
 	require.Equal(t, "wt-winner", winner.ID)
 
 	loser, err := q.CreateWorktree(ctx, db.CreateWorktreeParams{
-		ID: "wt-loser", WorktreePath: "/r/shared", RepoRoot: "/r", BranchName: "b",
+		ID: "wt-loser", WorktreePath: "/r/shared", RepoRoot: "/r", RepoGitDir: regularRepositoryGitDirForTest(t, "/r"), BranchName: "b",
 	})
 	require.NoError(t, err, "a concurrent insert on the same path must not surface a constraint error")
 	assert.Equal(t, "wt-winner", loser.ID, "the loser must be handed the id that is actually stored")
@@ -212,7 +212,7 @@ func TestCreateWorktree_ConflictReturnsTheWinningRow(t *testing.T) {
 	// The conflict target is idx_worktrees_path, so a PRIMARY KEY collision is
 	// still raised rather than swallowed by an untargeted DO NOTHING.
 	_, err = q.CreateWorktree(ctx, db.CreateWorktreeParams{
-		ID: "wt-winner", WorktreePath: "/r/other", RepoRoot: "/r", BranchName: "b",
+		ID: "wt-winner", WorktreePath: "/r/other", RepoRoot: "/r", RepoGitDir: regularRepositoryGitDirForTest(t, "/r"), BranchName: "b",
 	})
 	assert.Error(t, err, "an id collision is a real bug and must not be swallowed")
 }

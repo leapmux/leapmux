@@ -39,10 +39,11 @@ func NewTestableFromPool(pool *pgxpool.Pool, migrationDB *sql.DB) (store.Testabl
 }
 
 func (s *testablePGStore) TestHelper() store.TestHelper {
-	return &pgTestHelper{pool: s.conn.shared.pool}
+	return &pgTestHelper{pool: s.conn.shared.pool, db: s.conn.shared.migrationDB}
 }
 
 type pgTestHelper struct {
+	db   *sql.DB
 	pool *pgxpool.Pool
 }
 
@@ -107,4 +108,8 @@ func (h *pgTestHelper) TruncateAll(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func (h *pgTestHelper) TableHoldsText(ctx context.Context, table, text string) (bool, error) {
+	return sqlutil.TableHoldsText(ctx, h.db, table, text)
 }

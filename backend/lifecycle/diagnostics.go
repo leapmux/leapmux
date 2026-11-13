@@ -46,7 +46,7 @@ func AttemptLog(paths Paths, attemptID string) (*AttemptWriter, error) {
 	if !validLogAttempt(attemptID) {
 		return nil, errors.New("an attempt log requires a 32-character hexadecimal identity")
 	}
-	if err := preparePrivateDir(paths.Logs); err != nil {
+	if err := atomicfile.MkdirAllPrivate(paths.Logs); err != nil {
 		return nil, err
 	}
 	path := paths.AttemptLogPath(attemptID)

@@ -9,19 +9,16 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
+	storetest "github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
-// TestElevationColumnsAreWritableOnlyAsAPair pins the CHECK constraint that
-// replaced a guard in Go.
-//
-// auth.NewElevation used to take elevation_proven_at as a second argument,
-// read it for a both-or-neither check, and discard it -- a parameter that
-// existed only to be checked, at every read, forever. The invariant belongs
-// where it is ESTABLISHED, so it is now
-// CHECK ((elevation_proven_at IS NULL) = (elevation_expires_at IS NULL)) on
-// user_sessions, in all three dialects.
+// TestElevationColumnsAreWritableOnlyAsAPair verifies the schema constraint
+// for the elevation columns. All three schemas require elevation_proven_at
+// and elevation_expires_at to be both NULL or both present. auth.NewElevation
+// also refuses a partial pair when it reads stored state, because TiDB can
+// leave CHECK enforcement disabled.
 //
 // It has to be tested through RAW SQL. The store API cannot produce a half
 // pair -- ElevateUserSession writes both, the slide guards on the anchor's
@@ -37,7 +34,7 @@ func TestElevationColumnsAreWritableOnlyAsAPair(t *testing.T) {
 		DisplayName: "Elevation Pair", FirstCredentialExempt: true,
 	}))
 	sessionID := id.Generate()
-	require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{
+	require.NoError(t, st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: storetest.FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 		ID: sessionID, UserID: userid.MustNew(userID),
 		ExpiresAt: time.Now().UTC().Add(time.Hour),
 	}))

@@ -12,7 +12,7 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { WorktreeSelect } from '~/components/shell/WorktreeSelect'
 import { BranchSelect } from '~/components/workspace/BranchSelect'
 import { createGuardedFetch } from '~/hooks/createGuardedFetch'
-import { GIT_MODE_LABELS, GitMode } from '~/hooks/useGitModeState'
+import { dirtyWarningCopy, GIT_MODE_LABELS, GitMode } from '~/hooks/useGitModeState'
 import { createLogger } from '~/lib/logger'
 import { detectFlavor, join, parentDirectory, tildify } from '~/lib/paths'
 import { stripRemotePrefix, validateBranchName } from '~/lib/validate'
@@ -26,7 +26,7 @@ interface GitOptionsProps {
   homeDir?: string
   /**
    * Resolved repo identity (loading, isGitRepo, repoRoot, etc.) sourced
-   * from `useGitPathInfo`. GitOptions is a pure renderer — it does NOT
+   * from `useGitPathInfo`. GitOptions does not
    * issue the getGitInfo probe itself; the caller owns the probe and
    * decides when to mount this component (typically only when
    * `gitInfo.showGitOptions()` is true). Fields are read via
@@ -144,31 +144,13 @@ export function indexBranches(branches: readonly GitBranchEntry[]): BranchIndex 
   }
 }
 
-/**
- * A `Record`, not a `switch` with a `default`: a sixth mode added to `GitMode`
- * is then a compile error here rather than a mode that silently falls through
- * to "no warning". `null` states that a mode deliberately shows none.
- */
-const DIRTY_WARNINGS: Record<GitMode, string | null> = {
-  [GitMode.Current]: null,
-  [GitMode.SwitchBranch]: 'The working copy has uncommitted changes. Switching branches may fail or discard changes.',
-  [GitMode.CreateBranch]: 'The working copy has uncommitted changes. Creating a new branch will include them.',
-  [GitMode.CreateWorktree]: 'The selected working copy has uncommitted changes that will not be transferred to the new worktree.',
-  [GitMode.UseWorktree]: null,
-}
-
-/**
- * Per-mode dirty-worktree warning copy. Exported so tests can pin the exact
- * strings shown for each mode without rendering the full GitOptions component
- * (which depends on auth context, RPC mocks, etc.). Returns null for a mode
- * that surfaces no dirty-tree warning.
- */
-export function dirtyWarningCopy(mode: GitMode): string | null {
-  return DIRTY_WARNINGS[mode]
-}
-
 /** The branch-name error node's id, so its input can point at it. */
 const BRANCH_NAME_ERROR_ID = 'git-options-branch-name-error'
+
+type WorkingTreeState
+  = { kind: 'unrequested' }
+    | { kind: 'known', isDirty: boolean }
+    | { kind: 'unavailable' }
 
 export const GitOptions: Component<GitOptionsProps> = (props) => {
   // `?? DEFAULT_GIT_MODES` only triggers on null/undefined, not on an
@@ -220,6 +202,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
       : defaultMode()
   const [rawMode, setRawMode] = createSignal<GitMode>(untrack(() => props.gitMode()))
   const activeMode = createMemo(() => clampMode(rawMode()))
+  const [resetGeneration, setResetGeneration] = createSignal(0)
 
   // Branch-name UX. CreateBranch and CreateWorktree are mutually
   // exclusive radios that both render the same "Branch name" input +
@@ -242,11 +225,14 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // Base branch picker. Shared between CreateBranch and CreateWorktree
   // for the same reason as branchName above.
   const [selectedBaseBranch, setSelectedBaseBranch] = createSignal('')
+  const [baseSelectionExplicit, setBaseSelectionExplicit] = createSignal(false)
+  const [listedAttachedBranch, setListedAttachedBranch] = createSignal<string | null>(null)
 
   // Worktree list for use-worktree mode. The main working tree is
   // filtered out below, so every stored entry is a linked worktree.
   const [worktrees, setWorktrees] = createSignal<{ path: string, branch: string }[]>([])
   const [selectedWorktreePath, setSelectedWorktreePath] = createSignal('')
+  const [workingTreeState, setWorkingTreeState] = createSignal<WorkingTreeState>({ kind: 'unrequested' })
 
   // Single pass over branches() that yields the local/remote partition
   // AND the existing-name / local-name sets every downstream check
@@ -291,7 +277,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
     const selected = selectedCheckoutBranch()
     if (!selected)
       return null
-    const cur = props.gitInfo.info().currentBranch
+    const cur = props.gitInfo.info().attachedBranch
     if (!cur)
       return null
     if (selected === cur)
@@ -316,7 +302,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
     const localName = stripRemotePrefix(selected)
     if (!localBranchNames().has(localName))
       return null
-    if (localName === props.gitInfo.info().currentBranch)
+    if (localName === props.gitInfo.info().attachedBranch)
       return null
     return `Local branch "${localName}" already exists and will be checked out instead.`
   })
@@ -334,10 +320,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
     fetch: ({ wid, path }) => workerGit.listGitBranches(wid, { path }),
     applySuccess: (resp) => {
       setInternalBranches(resp.branches)
-      const cur = resp.currentBranch || props.gitInfo.info().currentBranch
-      if (!selectedBaseBranch() && cur) {
-        setSelectedBaseBranch(cur)
-      }
+      setListedAttachedBranch(resp.attachedBranch)
     },
     onError: err => log.warn('Failed to list git branches', err),
   })
@@ -355,16 +338,15 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
     await branchFetcher.run({ wid: props.workerId, path: props.selectedPath })
   }
 
-  // Seed selectedBaseBranch from the current branch once branches land,
-  // regardless of which source supplied them. Mirrors the seeding logic
-  // that previously lived inside `branchFetcher.applySuccess`, so the
-  // preloaded-branches path also picks the right default.
+  // Only authoritative attachment seeds an automatic base. An explicit choice
+  // survives refresh; a detached response clears an automatic previous base.
   createEffect(() => {
-    if (branches().length > 0 && !selectedBaseBranch()) {
-      const cur = props.gitInfo.info().currentBranch
-      if (cur)
-        setSelectedBaseBranch(cur)
-    }
+    if (baseSelectionExplicit())
+      return
+    const attached = props.preloadedBranches
+      ? props.gitInfo.info().attachedBranch
+      : listedAttachedBranch() ?? props.gitInfo.info().attachedBranch
+    setSelectedBaseBranch(attached)
   })
 
   const worktreeFetcher = createGuardedFetch<{ wid: string, path: string }, Awaited<ReturnType<typeof workerGit.listGitWorktrees>>>({
@@ -381,6 +363,21 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
     if (!props.workerId || !props.selectedPath)
       return
     await worktreeFetcher.run({ wid: props.workerId, path: props.selectedPath })
+  }
+
+  const workingTreeFetcher = createGuardedFetch<{ wid: string, path: string }, Awaited<ReturnType<typeof workerGit.getGitWorkingTreeState>>>({
+    fetch: ({ wid, path }, signal) => workerGit.getGitWorkingTreeState(wid, { path }, { signal }),
+    applySuccess: resp => setWorkingTreeState({ kind: 'known', isDirty: resp.isDirty }),
+    onError: (err) => {
+      log.warn('Failed to read git working tree state', err)
+      setWorkingTreeState({ kind: 'unavailable' })
+    },
+  })
+
+  const fetchWorkingTree = async () => {
+    if (!props.workerId || !props.selectedPath)
+      return
+    await workingTreeFetcher.run({ wid: props.workerId, path: props.selectedPath })
   }
 
   // Build the intent for a given mode using whatever typed values are
@@ -419,10 +416,9 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
     }
   }
 
-  // Reset secondary lists + selections when worker / path changes. The
-  // activeMode signal is reset to the dialog's default mode here; the
-  // currentIntent memo + emit effect below picks up the change and
-  // notifies the parent in the same flush.
+  // Reset the lists and selections when the worker or path changes.
+  // Reset rawMode to the dialog's default mode; activeMode derives from it,
+  // and the emit effect notifies the parent.
   //
   // `props.modes` is deliberately NOT a dependency: `activeMode` is derived
   // through `clampMode`, so a set that narrows re-derives on its own and needs
@@ -430,12 +426,19 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   // the worktrees and all three selections along with a still-valid pick.
   createEffect(on(() => [props.workerId, props.selectedPath] as const, () => {
     batch(() => {
+      branchFetcher.run(null)
+      worktreeFetcher.run(null)
+      workingTreeFetcher.run(null)
+      setWorkingTreeState({ kind: 'unrequested' })
       setInternalBranches([])
       setWorktrees([])
       setSelectedCheckoutBranch('')
+      setBaseSelectionExplicit(false)
+      setListedAttachedBranch(null)
       setSelectedBaseBranch('')
       setSelectedWorktreePath('')
       setRawMode(defaultMode())
+      setResetGeneration(generation => generation + 1)
     })
   }, { defer: true }))
 
@@ -447,24 +450,32 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   const modeNeedsWorktrees = (mode: GitMode) => mode === GitMode.UseWorktree
 
   const refetchForMode = (mode: GitMode) => {
+    if (dirtyWarningCopy(mode) !== null)
+      fetchWorkingTree()
     if (modeNeedsBranches(mode))
       fetchBranches()
     if (modeNeedsWorktrees(mode))
       fetchWorktrees()
   }
 
+  // The folder reset selects the default mode before this effect runs.
+  // A path dependency could request status with the previous mode while browsing.
   // Fetch branches/worktrees when the path resolves to a known repo and
   // the active mode needs them. The combined effect re-runs whenever
-  // either readiness or the mode changes; the `length === 0` guards make
+  // readiness or the mode changes, or after a target reset. The empty-list guards make
   // mode toggles a no-op once a list is cached. When the parent supplies
   // `preloadedBranches`, the branches list is parent-owned — skip the
   // auto-fetch (the parent's bundle RPC is the single source).
+  // Observe completed resets even when the default mode stays equal.
   createEffect(on(() => [
     props.gitInfo.showGitOptions(),
     activeMode(),
+    resetGeneration(),
   ] as const, ([ready, mode]) => {
     if (!ready)
       return
+    if (dirtyWarningCopy(mode) !== null && workingTreeState().kind !== 'known' && !workingTreeFetcher.loading())
+      fetchWorkingTree()
     if (modeNeedsBranches(mode) && !props.preloadedBranches && branches().length === 0)
       fetchBranches()
     if (modeNeedsWorktrees(mode) && worktrees().length === 0)
@@ -477,7 +488,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   }, { defer: true }))
 
   // Single uni-directional emit point: radio clicks and typed input
-  // changes flow through `setActiveMode` / `setBranchName` / etc.
+  // changes flow through `setRawMode` / `setBranchName` / etc.
   // → `intentFor` recomputes → this effect fires → parent's `setIntent`
   // lands. Dedup lives at the parent's signal (its `equals: shallowEqual`
   // skips notification for identity-equal intents) so no-op recomputes
@@ -489,9 +500,22 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
   }
 
   const renderDirtyWarning = (mode: GitMode) => (
-    <Show when={props.gitInfo.info().isDirty}>
-      <div class={warningText}>{dirtyWarningCopy(mode)}</div>
-    </Show>
+    <>
+      <Show when={(() => {
+        const state = workingTreeState()
+        return state.kind === 'known' && state.isDirty
+      })()}
+      >
+        <div class={warningText}>{dirtyWarningCopy(mode)}</div>
+      </Show>
+      <Show when={workingTreeState().kind === 'unavailable'}>
+        <div class={warningText} role="status">
+          Working-tree status is unavailable.
+          {' '}
+          <button type="button" onClick={fetchWorkingTree} disabled={workingTreeFetcher.loading()}>Retry</button>
+        </div>
+      </Show>
+    </>
   )
 
   const renderBranchSelect = (selectProps: {
@@ -505,7 +529,7 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
       local={branchIndex().local}
       remote={branchIndex().remote}
       loading={branchesLoading()}
-      currentBranch={props.gitInfo.info().currentBranch}
+      currentBranch={props.gitInfo.info().attachedBranch}
       {...(selectProps.showCurrent !== undefined
         ? { showCurrent: selectProps.showCurrent }
         : {})}
@@ -542,7 +566,10 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
       <LabeledField label="Base Branch">
         {renderBranchSelect({
           value: selectedBaseBranch(),
-          onChange: setSelectedBaseBranch,
+          onChange: (value) => {
+            setBaseSelectionExplicit(true)
+            setSelectedBaseBranch(value)
+          },
           showCurrent: true,
         })}
       </LabeledField>
@@ -583,7 +610,9 @@ export const GitOptions: Component<GitOptionsProps> = (props) => {
           <Show when={props.gitInfo.info().currentBranch}>
             <div class={radioSubContent}>
               <div class={pathPreview}>
-                {'Currently on branch: '}
+                {props.gitInfo.info().attachedBranch
+                  ? 'Currently on branch: '
+                  : 'Detached HEAD: '}
                 {props.gitInfo.info().currentBranch}
               </div>
             </div>

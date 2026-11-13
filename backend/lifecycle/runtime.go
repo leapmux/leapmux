@@ -189,7 +189,7 @@ func startRuntimeOwned(cfg RuntimeConfig, lease *DirectoryLease) (*Runtime, erro
 		diagnostics:  []Diagnostic{},
 	}
 
-	if err := preparePrivateDir(r.paths.Logs); err != nil {
+	if err := atomicfile.MkdirAllPrivate(r.paths.Logs); err != nil {
 		return nil, err
 	}
 	if err := WriteControlToken(r.paths.ControlToken, token); err != nil {
@@ -462,7 +462,7 @@ func OperationLock(dataDirectory string) (release func(), err error) {
 	if err := atomicfile.MkdirAllDurable(canonical); err != nil {
 		return nil, err
 	}
-	if err := preparePrivateDir(paths.Dir); err != nil {
+	if err := atomicfile.MkdirAllPrivate(paths.Dir); err != nil {
 		return nil, err
 	}
 	lock, err := filelock.Open(paths.OperationLock, false)

@@ -16,17 +16,47 @@ import (
 )
 
 func (s *Suite) testCLIAuthorizations(t *testing.T) {
+	t.Run("device code digest length is enforced", func(t *testing.T) {
+		st := s.NewStore(t)
+		checkSecretDigestLengths(t, func(digest []byte) error {
+			return st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{DeviceCodeHash: digest, UserCode: id.Generate(), ClientID: oauthapp.ControlCLIClientID, ExpiresAt: time.Now().Add(time.Hour)})
+		})
+	})
+	t.Run("device code digest controls lookup polling and consumption", func(t *testing.T) {
+		st := s.NewStore(t)
+		owner := SeedUser(t, st, "device-digest-owner")
+		now := time.Now().UTC().Truncate(time.Millisecond)
+		digest := FixtureSecretHash("private device code")
+		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{DeviceCodeHash: digest, UserCode: "ABCDEF", ClientID: oauthapp.ControlCLIClientID, ExpiresAt: now.Add(time.Hour)}))
+		_, err := st.DeviceAuthorizations().Get(ctx, FixtureSecretHash("another device code"))
+		assert.ErrorIs(t, err, store.ErrNotFound)
+		require.NoError(t, st.DeviceAuthorizations().TouchPoll(ctx, digest, now))
+		found, err := st.DeviceAuthorizations().Get(ctx, digest)
+		require.NoError(t, err)
+		assert.Equal(t, digest, found.DeviceCodeHash)
+		require.NotNil(t, found.LastPolledAt)
+		assert.True(t, found.LastPolledAt.Equal(now))
+		rows, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{DeviceCodeHash: digest, UserID: userid.MustNew(owner.ID)}, now)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), rows)
+		rows, err = st.DeviceAuthorizations().Consume(ctx, digest, now)
+		require.NoError(t, err)
+		assert.Equal(t, int64(1), rows)
+		rows, err = st.DeviceAuthorizations().Consume(ctx, digest, now)
+		require.NoError(t, err)
+		assert.Zero(t, rows)
+	})
 	// The create binds PENDING itself, because the column has no DEFAULT: a
 	// caller cannot state another starting point.
 	t.Run("a new device grant is pending", func(t *testing.T) {
 		st := s.NewStore(t)
 		deviceCode := id.Generate()
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-			ClientID:   oauthapp.ControlCLIClientID,
-			DeviceCode: deviceCode, UserCode: verifycode.Generate(), ExpiresAt: time.Now().Add(time.Hour),
+			ClientID:       oauthapp.ControlCLIClientID,
+			DeviceCodeHash: FixtureSecretHash(deviceCode), UserCode: verifycode.Generate(), ExpiresAt: time.Now().Add(time.Hour),
 		}))
 
-		row, err := st.DeviceAuthorizations().Get(ctx, deviceCode)
+		row, err := st.DeviceAuthorizations().Get(ctx, FixtureSecretHash(deviceCode))
 		require.NoError(t, err)
 		assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING, row.State)
 		assert.Empty(t, row.UserID, "nobody approved the grant yet")
@@ -42,8 +72,8 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		create := func() (deviceCode, userCode string) {
 			deviceCode, userCode = id.Generate(), verifycode.Generate()
 			require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-				ClientID:   oauthapp.ControlCLIClientID,
-				DeviceCode: deviceCode, UserCode: userCode, ExpiresAt: now.Add(time.Hour),
+				ClientID:       oauthapp.ControlCLIClientID,
+				DeviceCodeHash: FixtureSecretHash(deviceCode), UserCode: userCode, ExpiresAt: now.Add(time.Hour),
 			}))
 			return deviceCode, userCode
 		}
@@ -64,13 +94,13 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		disconnected, disconnectedUserCode := create()
 		approve(disconnectedUserCode)
 
-		rows, err = st.DeviceAuthorizations().Consume(ctx, pending, now)
+		rows, err = st.DeviceAuthorizations().Consume(ctx, FixtureSecretHash(pending), now)
 		require.NoError(t, err)
 		assert.Zero(t, rows, "a pending grant must not be consumed")
-		rows, err = st.DeviceAuthorizations().Consume(ctx, denied, now)
+		rows, err = st.DeviceAuthorizations().Consume(ctx, FixtureSecretHash(denied), now)
 		require.NoError(t, err)
 		assert.Zero(t, rows, "a denied grant must not be consumed")
-		rows, err = st.DeviceAuthorizations().Consume(ctx, approved, now)
+		rows, err = st.DeviceAuthorizations().Consume(ctx, FixtureSecretHash(approved), now)
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), rows, "an approved grant is consumed")
 
@@ -79,7 +109,7 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), rows)
 		for code, wantConsumed := range map[string]bool{pending: false, denied: false, approved: true, disconnected: true} {
-			row, err := st.DeviceAuthorizations().Get(ctx, code)
+			row, err := st.DeviceAuthorizations().Get(ctx, FixtureSecretHash(code))
 			require.NoError(t, err)
 			assert.Equal(t, wantConsumed, row.ConsumedAt != nil, "consumed_at of %s", code)
 		}
@@ -92,10 +122,10 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		now := time.Date(2040, 1, 2, 3, 4, 5, 500_000_000, time.UTC)
 		expiresAt := now.Truncate(time.Second).Add(950 * time.Millisecond)
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-			ClientID:   oauthapp.ControlCLIClientID,
-			DeviceCode: deviceCode, UserCode: verifycode.Generate(), ExpiresAt: expiresAt,
+			ClientID:       oauthapp.ControlCLIClientID,
+			DeviceCodeHash: FixtureSecretHash(deviceCode), UserCode: verifycode.Generate(), ExpiresAt: expiresAt,
 		}))
-		rows, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{DeviceCode: deviceCode, UserID: userid.MustNew(user.ID)}, now)
+		rows, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{DeviceCodeHash: FixtureSecretHash(deviceCode), UserID: userid.MustNew(user.ID)}, now)
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), rows)
 	})
@@ -109,13 +139,13 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		deviceCode := id.Generate()
 		userCode := verifycode.Generate()
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-			ClientID:   oauthapp.ControlCLIClientID,
-			DeviceCode: deviceCode, UserCode: userCode, ExpiresAt: time.Now().Add(time.Hour),
+			ClientID:       oauthapp.ControlCLIClientID,
+			DeviceCodeHash: FixtureSecretHash(deviceCode), UserCode: userCode, ExpiresAt: time.Now().Add(time.Hour),
 		}))
 		afterExpiry := time.Now().UTC().Add(48 * time.Hour)
 
 		rows, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
-			DeviceCode: deviceCode, UserID: userid.MustNew(user.ID),
+			DeviceCodeHash: FixtureSecretHash(deviceCode), UserID: userid.MustNew(user.ID),
 		}, afterExpiry)
 		require.NoError(t, err)
 		assert.Zero(t, rows, "Approve must refuse a grant that is dead at the caller's clock")
@@ -141,25 +171,25 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		now := time.Date(2040, 1, 2, 3, 4, 5, 0, time.UTC)
 		expiresAt := now.Add(1500 * time.Millisecond)
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-			ClientID:   oauthapp.ControlCLIClientID,
-			DeviceCode: deviceCode, UserCode: verifycode.Generate(), ExpiresAt: expiresAt,
+			ClientID:       oauthapp.ControlCLIClientID,
+			DeviceCodeHash: FixtureSecretHash(deviceCode), UserCode: verifycode.Generate(), ExpiresAt: expiresAt,
 		}))
 		rows, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
-			DeviceCode: deviceCode, UserID: userid.MustNew(user.ID),
+			DeviceCodeHash: FixtureSecretHash(deviceCode), UserID: userid.MustNew(user.ID),
 		}, now)
 		require.NoError(t, err)
 		require.Equal(t, int64(1), rows)
 
-		rows, err = st.DeviceAuthorizations().Consume(ctx, deviceCode, expiresAt)
+		rows, err = st.DeviceAuthorizations().Consume(ctx, FixtureSecretHash(deviceCode), expiresAt)
 		require.NoError(t, err)
 		assert.Zero(t, rows, "the grant expires at its deadline")
 
-		rows, err = st.DeviceAuthorizations().Consume(ctx, deviceCode, expiresAt.Add(time.Millisecond))
+		rows, err = st.DeviceAuthorizations().Consume(ctx, FixtureSecretHash(deviceCode), expiresAt.Add(time.Millisecond))
 		require.NoError(t, err)
 		assert.Zero(t, rows, "the grant stays expired after its deadline")
 
 		// A refused consume must preserve the row. The same grant remains usable before expiry.
-		rows, err = st.DeviceAuthorizations().Consume(ctx, deviceCode, expiresAt.Add(-time.Millisecond))
+		rows, err = st.DeviceAuthorizations().Consume(ctx, FixtureSecretHash(deviceCode), expiresAt.Add(-time.Millisecond))
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), rows)
 	})
@@ -173,12 +203,12 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		deviceCode := id.Generate()
 		userCode := verifycode.Generate()
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-			ClientID:   oauthapp.ControlCLIClientID,
-			DeviceCode: deviceCode, UserCode: userCode, ExpiresAt: time.Now().Add(time.Hour),
+			ClientID:       oauthapp.ControlCLIClientID,
+			DeviceCodeHash: FixtureSecretHash(deviceCode), UserCode: userCode, ExpiresAt: time.Now().Add(time.Hour),
 		}))
 
 		_, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
-			DeviceCode: deviceCode, UserID: userid.UserID{},
+			DeviceCodeHash: FixtureSecretHash(deviceCode), UserID: userid.UserID{},
 		}, time.Now().UTC())
 		require.ErrorIs(t, err, store.ErrInvalidArgument)
 		_, err = st.DeviceAuthorizations().ApproveByUserCode(ctx, store.ApproveDeviceAuthorizationByUserCodeParams{
@@ -210,8 +240,8 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		deviceCode := id.Generate()
 		userCode := verifycode.Generate()
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-			ClientID:   oauthapp.ControlCLIClientID,
-			DeviceCode: deviceCode, UserCode: userCode, ExpiresAt: time.Now().Add(time.Hour),
+			ClientID:       oauthapp.ControlCLIClientID,
+			DeviceCodeHash: FixtureSecretHash(deviceCode), UserCode: userCode, ExpiresAt: time.Now().Add(time.Hour),
 		}))
 		rows, err := st.DeviceAuthorizations().ApproveByUserCode(ctx, store.ApproveDeviceAuthorizationByUserCodeParams{
 			UserCode: userCode, UserID: userid.MustNew(first.ID),
@@ -226,12 +256,12 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		assert.Zero(t, rows, "ApproveByUserCode must refuse a grant that is already approved")
 
 		rows, err = st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
-			DeviceCode: deviceCode, UserID: userid.MustNew(second.ID), GrantedScopes: "admin:read",
+			DeviceCodeHash: FixtureSecretHash(deviceCode), UserID: userid.MustNew(second.ID), GrantedScopes: "admin:read",
 		}, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Zero(t, rows, "Approve must refuse a grant that is already approved")
 
-		row, err := st.DeviceAuthorizations().Get(ctx, deviceCode)
+		row, err := st.DeviceAuthorizations().Get(ctx, FixtureSecretHash(deviceCode))
 		require.NoError(t, err)
 		assert.Equal(t, first.ID, row.UserID, "the first approver keeps the grant")
 		assert.Empty(t, row.GrantedScopes, "a refused approval must not widen the grant")
@@ -246,13 +276,13 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		deviceCode := id.Generate()
 		userCode := verifycode.Generate()
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-			ClientID:   oauthapp.ControlCLIClientID,
-			DeviceCode: deviceCode, UserCode: userCode, ExpiresAt: time.Now().Add(time.Hour),
+			ClientID:       oauthapp.ControlCLIClientID,
+			DeviceCodeHash: FixtureSecretHash(deviceCode), UserCode: userCode, ExpiresAt: time.Now().Add(time.Hour),
 		}))
 		denied, err := st.DeviceAuthorizations().DenyByUserCode(ctx, userCode)
 		require.NoError(t, err)
 		require.Equal(t, int64(1), denied)
-		row, err := st.DeviceAuthorizations().Get(ctx, deviceCode)
+		row, err := st.DeviceAuthorizations().Get(ctx, FixtureSecretHash(deviceCode))
 		require.NoError(t, err)
 		require.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_DENIED, row.State, "the deny moves the grant to DENIED")
 
@@ -267,12 +297,12 @@ func (s *Suite) testCLIAuthorizations(t *testing.T) {
 		assert.Zero(t, rows, "ApproveByUserCode must refuse a denied grant")
 
 		rows, err = st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
-			DeviceCode: deviceCode, UserID: userid.MustNew(user.ID),
+			DeviceCodeHash: FixtureSecretHash(deviceCode), UserID: userid.MustNew(user.ID),
 		}, time.Now().UTC())
 		require.NoError(t, err)
 		assert.Zero(t, rows, "Approve must refuse a denied grant")
 
-		row, err = st.DeviceAuthorizations().Get(ctx, deviceCode)
+		row, err = st.DeviceAuthorizations().Get(ctx, FixtureSecretHash(deviceCode))
 		require.NoError(t, err)
 		assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_DENIED, row.State, "the grant stays denied")
 		assert.Empty(t, row.UserID, "a refused approval records no user")

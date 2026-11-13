@@ -35,7 +35,9 @@ func TestResolveApp_ZeroCallerReachesNoPrivateApp(t *testing.T) {
 	owner, err := st.Users().GetByUsername(ctx, "admin")
 	require.NoError(t, err)
 
-	h := &OAuthServerHandler{store: st}
+	h := &OAuthServerHandler{
+		sessionHasher: hubtestutil.TestSecretHasher(),
+		store:         st}
 
 	privateID := id.Generate()
 	_, createErr := st.OAuthClients().Create(ctx, store.CreateOAuthClientParams{

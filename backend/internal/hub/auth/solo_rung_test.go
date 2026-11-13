@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,12 +17,15 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/bootstrap"
 	"github.com/leapmux/leapmux/internal/hub/config"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/password"
+	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/servicetest"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/usernames"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -32,18 +36,23 @@ import (
 // correct and unwired hands an unauthenticated network caller the
 // administrator, and every test of the gate itself still passes.
 //
-// Every request here arrives over TCP -- httptest.NewServer binds one, and a
-// direct AuthenticateHTTP call carries no local-IPC mark -- so this is the
-// exposed case of the rule table. The IPC case is the gate's own test.
+// The default fixture models TCP. The bearer-precedence fixture marks its
+// server contexts explicitly to simulate an admitted local IPC connection.
 type soloRungFixture struct {
-	store  store.Store
-	gate   *auth.SoloGate
-	user   *auth.UserInfo
-	server *httptest.Server
-	client leapmuxv1connect.AdminSettingsServiceClient
+	store     store.Store
+	gate      *auth.SoloGate
+	user      *auth.UserInfo
+	server    *httptest.Server
+	client    leapmuxv1connect.AdminSettingsServiceClient
+	validator *auth.TokenValidator
 }
 
 func newSoloRungFixture(t *testing.T) soloRungFixture {
+	t.Helper()
+	return newSoloRungFixtureForTransport(t, false)
+}
+
+func newSoloRungFixtureForTransport(t *testing.T, localIPC bool) soloRungFixture {
 	t.Helper()
 	st := hubtestutil.OpenTestStore(t)
 	require.NoError(t, bootstrap.Run(context.Background(), st, true))
@@ -53,9 +62,11 @@ func newSoloRungFixture(t *testing.T) soloRungFixture {
 	// ONE gate for both ladders, which is how the hub wires it. Sharing it
 	// here is what makes "the two cannot disagree" a tested property rather
 	// than a comment.
+	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
+	require.NoError(t, err)
 	gate := auth.NewSoloGate(true, st)
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{
-		Store: st, SoloUser: soloUser, SoloGate: gate,
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(),
+		Store: st, SoloUser: soloUser, SoloGate: gate, TokenValidator: tv,
 	})
 	svc := service.NewAdminSettingsService(
 		servicetest.NewSettingsManager(t, st, nil), &config.Config{SoloMode: true}, st)
@@ -63,15 +74,20 @@ func newSoloRungFixture(t *testing.T) soloRungFixture {
 	leapmuxv1connect.RegisterAdminSettingsServiceHandler(connectServer, svc)
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, connectServer)
-	server := httptest.NewServer(mux)
+	server := httptest.NewUnstartedServer(mux)
+	if localIPC {
+		server.Config.BaseContext = func(net.Listener) context.Context { return peer.WithLocalIPC(context.Background()) }
+	}
+	server.Start()
 	t.Cleanup(server.Close)
 
 	return soloRungFixture{
-		store:  st,
-		gate:   gate,
-		user:   soloUser,
-		server: server,
-		client: leapmuxv1connect.NewAdminSettingsServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
+		store:     st,
+		validator: tv,
+		gate:      gate,
+		user:      soloUser,
+		server:    server,
+		client:    leapmuxv1connect.NewAdminSettingsServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
 	}
 }
 
@@ -92,7 +108,7 @@ func (f soloRungFixture) httpCall(cookie *http.Cookie) (*auth.UserInfo, error) {
 	if cookie != nil {
 		r.AddCookie(cookie)
 	}
-	return auth.AuthenticateHTTP(context.Background(), r, auth.HTTPAuthOpts{
+	return auth.AuthenticateHTTP(context.Background(), r, auth.HTTPAuthOpts{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store: f.store, SoloUser: f.user, SoloGate: f.gate, ReadCookie: true,
 	})
 }
@@ -142,12 +158,12 @@ func TestSoloRung_ASessionCookieAuthenticatesOverTCP(t *testing.T) {
 	f := newSoloRungFixture(t)
 	f.setSoloPassword(t)
 
-	sessionID, expiresAt, err := auth.CreateSession(
-		context.Background(), f.store, userid.MustNew(f.user.ID.String()), auth.DefaultSessionDuration)
+	createdSession, err := auth.CreateSession(
+		context.Background(), f.store, hubtestutil.TestSecretHasher(), userid.MustNew(f.user.ID.String()), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	// secure=false, matching the zero Policy this fixture's interceptor holds:
 	// the plain cookie name is the one both ladders look for here.
-	cookie := auth.BuildSessionCookie(sessionID, expiresAt, false)
+	cookie := auth.BuildSessionCookie(createdSession.Token, createdSession.ExpiresAt, false)
 
 	// Name=value alone. cookie.String() renders the SET-Cookie form, whose
 	// attributes do not belong in a request header.
@@ -165,14 +181,60 @@ func TestSoloRung_ASessionCookieAuthenticatesOverTCP(t *testing.T) {
 // A broken bearer must be refused, never answered "you are the solo user, you
 // may do anything" -- which would make a revoked credential stronger than a
 // working one, and would leave the scope model inert on a solo hub. This holds
-// while the account has NO password, which is the state the solo rung would
-// otherwise admit outright.
+// for admitted IPC even while the account has no password. The default
+// TCP fixture remains credential-required in either password state.
 func TestSoloRung_YieldsToAPresentedBearerEvenWithNoPassword(t *testing.T) {
-	f := newSoloRungFixture(t)
-
-	err := f.connectCall(map[string]string{
-		"Authorization": "Bearer " + auth.FormatBearer(auth.BearerKindDelegation, "not-a-token", "not-a-secret"),
-	})
-	require.Error(t, err, "a presented bearer must be judged on its own, not fall back to the solo rung")
-	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	f := newSoloRungFixtureForTransport(t, true)
+	require.NoError(t, f.connectCall(nil))
+	mint := func(grant string) (string, string) {
+		tokenID, secret := id.Generate(), auth.MintAccessSecret()
+		require.NoError(t, f.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+			ID: tokenID, UserID: f.user.ID, ClientID: oauthapp.ControlCLIClientID,
+			InstallationName: "IPC precedence", GrantedScopes: grant, SecretHash: f.validator.HashSecret(secret),
+		}))
+		return tokenID, auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
+	}
+	_, admitted := mint("admin:read")
+	_, narrow := mint("file:read")
+	revokedID, revoked := mint("admin:read")
+	_, err := f.store.APITokens().Revoke(context.Background(), revokedID)
+	require.NoError(t, err)
+	require.NoError(t, f.connectCall(map[string]string{"Authorization": "Bearer " + admitted}))
+	for _, tc := range []struct {
+		name, bearer string
+		code         connect.Code
+	}{
+		{"narrow", narrow, connect.CodePermissionDenied},
+		{"malformed", "lmx_only-one-piece", connect.CodeUnauthenticated},
+		{"revoked", revoked, connect.CodeUnauthenticated},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := f.connectCall(map[string]string{"Authorization": "Bearer " + tc.bearer})
+			require.Error(t, err)
+			assert.Equal(t, tc.code, connect.CodeOf(err))
+		})
+	}
+	httpCall := func(bearer string) (*auth.UserInfo, error) {
+		ctx := peer.WithLocalIPC(context.Background())
+		r := httptest.NewRequest(http.MethodGet, "/ws/userevents", nil).WithContext(ctx)
+		if bearer != "" {
+			r.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		return auth.AuthenticateHTTP(ctx, r, auth.HTTPAuthOpts{SessionHasher: hubtestutil.TestSecretHasher(),
+			Store: f.store, SoloUser: f.user, SoloGate: f.gate, Validator: f.validator, ReadCookie: true})
+	}
+	user, err := httpCall("")
+	require.NoError(t, err)
+	require.True(t, user.SoloAuthenticated())
+	user, err = httpCall(narrow)
+	require.NoError(t, err)
+	require.False(t, user.SoloAuthenticated())
+	assert.Equal(t, f.user.ID, user.ID)
+	assert.True(t, user.Scopes.Allows(leapmuxv1.Scope_SCOPE_FILE_READ))
+	assert.False(t, user.Scopes.Allows(leapmuxv1.Scope_SCOPE_ADMIN_READ))
+	for _, bearer := range []string{"lmx_only-one-piece", revoked} {
+		user, err := httpCall(bearer)
+		require.ErrorIs(t, err, auth.ErrHTTPUnauthenticated)
+		assert.Nil(t, user)
+	}
 }

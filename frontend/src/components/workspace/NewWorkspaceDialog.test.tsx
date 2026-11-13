@@ -59,8 +59,10 @@ vi.mock('~/api/workerRpc', () => ({
     openAgent: vi.fn(),
   },
   workerGit: {
+    getGitWorkingTreeState: vi.fn(async () => ({ $typeName: 'leapmux.v1.GetGitWorkingTreeStateResponse', isDirty: false })),
     getGitInfo: vi.fn(),
-    // GitOptions requests both lists on mount. A supplied path snapshot makes it mount immediately.
+    // A supplied path snapshot mounts GitOptions immediately.
+    // It loads each list when the active mode needs it.
     listGitBranches: vi.fn(async () => ({ branches: [] })),
     listGitWorktrees: vi.fn(async () => ({ worktrees: [] })),
   },
@@ -96,7 +98,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(workerGit.listGitBranches).mockResolvedValue(create(ListGitBranchesResponseSchema, { branches: [], currentBranch: 'main' }))
+  vi.mocked(workerGit.listGitBranches).mockResolvedValue(create(ListGitBranchesResponseSchema, { branches: [], currentBranch: 'main', attachedBranch: 'main' }))
   vi.mocked(workerGit.listGitWorktrees).mockResolvedValue(create(ListGitWorktreesResponseSchema, { worktrees: [] }))
   mockCreate.mockReset()
   mockCreate.mockImplementation(async (input) => {
@@ -402,6 +404,7 @@ describe('NewWorkspaceDialog', () => {
           { name: 'claimed-branch' },
         ],
         currentBranch: 'main',
+        attachedBranch: 'main',
       }))
       renderDialog({ startPoint: REPO_START })
       fireEvent.click(await screen.findByLabelText(mode))

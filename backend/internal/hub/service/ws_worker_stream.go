@@ -27,7 +27,7 @@ func NewWorkerStreamHandler(connector *WorkerConnectorService) *WorkerStreamHand
 }
 
 func (h *WorkerStreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	worker, err := auth.AuthenticateWorkerBearer(r.Context(), h.connector.store, r.Header.Get("Authorization"))
+	worker, err := auth.AuthenticateWorkerBearer(r.Context(), h.connector.store, h.connector.hasher, r.Header.Get("Authorization"))
 	deleted := errors.Is(err, auth.ErrWorkerDeleted)
 	if err != nil && !deleted {
 		if auth.IsWorkerCredentialError(err) {

@@ -66,8 +66,12 @@ type Store interface {
 	//     it. Do that work AFTER the transaction returns, from the values
 	//     the callback assigned -- which is what every caller here does.
 	//
+	// Administrator removal can also restart the transaction to acquire the
+	// administrator mutex before target-user locks. This applies to SQLite too.
 	// A re-run repeats every read the callback performs, so a callback must
-	// not assume it observes the database only once.
+	// not assume it observes the database only once. Commit failures with an
+	// uncertain outcome retain the CommitOutcomeUnknown marker so account
+	// admission cannot treat them as confirmed rollbacks.
 	RunInTransaction(ctx context.Context, fn func(tx Store) error) error
 
 	// RunInUserAuthTransaction executes fn in a transaction after locking the
@@ -122,6 +126,13 @@ type UserStore interface {
 	// keys would otherwise both read the same base blob and the second
 	// commit would erase the first's key. Callers must hold a transaction.
 	GetPrefsForUpdate(ctx context.Context, id string) (string, error)
+	// LockForRemoval requires a transaction. It locks the current user and
+	// reports whether the user is a live administrator. Missing and deleted
+	// users report false. The lock remains held through account cleanup.
+	// Administrator removal requests a complete transaction restart when the
+	// administrator mutex was not acquired first. Ordinary users never require it.
+	LockForRemoval(ctx context.Context, id string) (isAdmin bool, err error)
+
 	HasAny(ctx context.Context) (bool, error)
 	Count(ctx context.Context) (int64, error)
 	ListAll(ctx context.Context, p ListAllUsersParams) (Page[User], error)
@@ -243,11 +254,14 @@ type WorkerStore interface {
 	// GetByIDIncludeDeleted returns the worker whatever its state; the caller
 	// decides what a deleted row means.
 	GetByIDIncludeDeleted(ctx context.Context, id string) (*Worker, error)
-	// GetByAuthTokenIncludeDeleted returns the worker with this token whatever
+	// GetByAuthTokenHashIncludeDeleted returns the worker with this token digest whatever
 	// its state. Ordinary authentication refuses a row with DeletedAt set;
 	// self-deregistration confirms deletion of the retained row. A deregistering
 	// worker remains admitted until Connect tells it to stop.
-	GetByAuthTokenIncludeDeleted(ctx context.Context, token string) (*Worker, error)
+	GetByAuthTokenHashIncludeDeleted(ctx context.Context, hash []byte) (*Worker, error)
+	// RotateAuthToken replaces only an active Worker's token digest. Deleted,
+	// deregistering and missing rows return zero without changing the digest.
+	RotateAuthToken(ctx context.Context, p RotateWorkerAuthTokenParams) (int64, error)
 	// GetByRegistrationAttemptID returns the worker a durable registration
 	// attempt created, deleted rows included: recovery must tell a
 	// completed-then-deleted attempt from an unknown one.
@@ -293,8 +307,11 @@ type RegistrationKeyStore interface {
 	// liveness must check ExpiresAt themselves. Returns ErrNotFound when
 	// no row exists with the given id.
 	GetByID(ctx context.Context, id string) (*WorkerRegistrationKey, error)
+	// GetByKeyHash returns the row for a key digest, regardless of expiry.
+	GetByKeyHash(ctx context.Context, hash []byte) (*WorkerRegistrationKey, error)
+
 	// GetOwned returns the row only if it exists AND was created by
-	// p.CreatedBy. Returns ErrNotFound for both "no such id" and "id is
+	// p.CreatedBy. Returns ErrNotFound for both "no such key" and "key is
 	// someone else's" — collapsing them avoids leaking an oracle on
 	// other users' keys. A zero CreatedBy is ErrNotFound too: it is an
 	// ownership gate, so it must never bind a blank owner (see OwnerFilter).
@@ -714,7 +731,7 @@ type RevocationEventStore interface {
 // DeviceAuthorizationStore manages RFC 8628 device-code grants.
 type DeviceAuthorizationStore interface {
 	Create(ctx context.Context, p CreateDeviceAuthorizationParams) error
-	Get(ctx context.Context, deviceCode string) (*DeviceAuthorization, error)
+	Get(ctx context.Context, deviceCodeHash []byte) (*DeviceAuthorization, error)
 	GetByUserCode(ctx context.Context, userCode string) (*DeviceAuthorization, error)
 	Approve(ctx context.Context, p ApproveDeviceAuthorizationParams, now time.Time) (int64, error)
 	ApproveByUserCode(ctx context.Context, p ApproveDeviceAuthorizationByUserCodeParams, now time.Time) (int64, error)
@@ -722,7 +739,7 @@ type DeviceAuthorizationStore interface {
 	// the user code and never the device code. It matches a pending row only,
 	// so an answered grant keeps its answer.
 	DenyByUserCode(ctx context.Context, userCode string) (int64, error)
-	Consume(ctx context.Context, deviceCode string, now time.Time) (int64, error)
+	Consume(ctx context.Context, deviceCodeHash []byte, now time.Time) (int64, error)
 	// ConsumeApprovedForUserClient spends the approved-but-unpolled grants of
 	// one account's authorization of an app -- the DISCONNECT path, which ends
 	// the authorization and must not leave a redeemable grant behind.
@@ -730,7 +747,7 @@ type DeviceAuthorizationStore interface {
 	// TouchPoll records a poll with the HUB's clock: the slow_down throttle
 	// compares the value it writes against the same clock, and a database
 	// clock that drifts ahead of the hub's would stall the flow.
-	TouchPoll(ctx context.Context, deviceCode string, now time.Time) error
+	TouchPoll(ctx context.Context, deviceCodeHash []byte, now time.Time) error
 }
 
 // OAuthAuthorizationCodeStore manages RFC 6749 section 4.1 one-shot codes.
@@ -1105,6 +1122,9 @@ func ValidateEntity(entity TestEntity) error {
 // part of the production Store interface but is used by the conformance
 // test suite to perform operations like backdating deleted_at timestamps.
 type TestHelper interface {
+	// TableHoldsText searches stored text and binary cells in a known application table.
+	TableHoldsText(ctx context.Context, table, text string) (bool, error)
+
 	// SetDeletedAt backdates the deleted_at timestamp for a record.
 	SetDeletedAt(ctx context.Context, entity TestEntity, id string, deletedAt time.Time) error
 

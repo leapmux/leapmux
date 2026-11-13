@@ -23,6 +23,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/util/testutil"
+
+	"github.com/leapmux/leapmux/locallisten"
 )
 
 // testSpec is the spec of the tests that need no socket and no hook.
@@ -530,17 +532,17 @@ func TestNewSkipsABaseTooLongForTheSocket(t *testing.T) {
 	t.Parallel()
 	spec := Spec{Prefix: "sock", SocketName: "bridge.sock"}
 	short := newShortBase(t)
-	long := filepath.Join(newBase(t), strings.Repeat("d", MaxSocketPathBytes()))
+	long := filepath.Join(newBase(t), strings.Repeat("d", locallisten.MaxUnixSocketPathBytes()))
 	require.NoError(t, os.Mkdir(long, 0o700))
 	dirs := startDirs(t, Config{Specs: []Spec{spec}, Bases: []string{long, short}})
 	dir := newDir(t, dirs, spec)
 	assert.Equal(t, parentOf(short), filepath.Dir(dir.Path()))
-	assert.LessOrEqual(t, len(filepath.Join(dir.Path(), spec.SocketName)), MaxSocketPathBytes())
+	assert.LessOrEqual(t, len(filepath.Join(dir.Path(), spec.SocketName)), locallisten.MaxUnixSocketPathBytes())
 	assert.NoDirExists(t, parentOf(long), "nothing is created under a base that does not fit")
 
 	only := startDirs(t, Config{Specs: []Spec{spec}, Bases: []string{long}})
 	_, err := only.New(context.Background(), spec)
-	require.ErrorContains(t, err, "the limit is "+strconv.Itoa(MaxSocketPathBytes()))
+	require.ErrorContains(t, err, "the limit is "+strconv.Itoa(locallisten.MaxUnixSocketPathBytes()))
 }
 
 // newShortBase creates a base short enough for a socket path on every
@@ -673,9 +675,9 @@ func TestMaxSocketPathBytes(t *testing.T) {
 	t.Parallel()
 	switch runtime.GOOS {
 	case "darwin", "freebsd", "netbsd", "openbsd", "dragonfly", "ios":
-		assert.Equal(t, 103, MaxSocketPathBytes())
+		assert.Equal(t, 103, locallisten.MaxUnixSocketPathBytes())
 	default:
-		assert.Equal(t, 107, MaxSocketPathBytes())
+		assert.Equal(t, 107, locallisten.MaxUnixSocketPathBytes())
 	}
 }
 
@@ -689,22 +691,22 @@ func TestNewAcceptsASocketPathThatTakesTheWholeLimit(t *testing.T) {
 	// tail is the part of the longest socket path that follows the base: the
 	// separator, the parent, the longest directory name and the socket.
 	tail := 1 + len(filepath.Join(parentName(), namePattern(spec)+maxRandomSuffix, spec.SocketName))
-	fill := MaxSocketPathBytes() - tail - len(short) - 1
+	fill := locallisten.MaxUnixSocketPathBytes() - tail - len(short) - 1
 	require.Positive(t, fill, "the short base leaves room to fill")
 	exact := filepath.Join(short, strings.Repeat("d", fill))
 	over := filepath.Join(short, strings.Repeat("e", fill+1))
 	require.NoError(t, os.Mkdir(exact, 0o700))
 	require.NoError(t, os.Mkdir(over, 0o700))
-	require.Equal(t, MaxSocketPathBytes(), len(exact)+tail)
+	require.Equal(t, locallisten.MaxUnixSocketPathBytes(), len(exact)+tail)
 
 	dirs := startDirs(t, Config{Specs: []Spec{spec}, Bases: []string{exact}})
 	dir := newDir(t, dirs, spec)
 	assert.Equal(t, parentOf(exact), filepath.Dir(dir.Path()))
-	assert.LessOrEqual(t, len(filepath.Join(dir.Path(), spec.SocketName)), MaxSocketPathBytes())
+	assert.LessOrEqual(t, len(filepath.Join(dir.Path(), spec.SocketName)), locallisten.MaxUnixSocketPathBytes())
 
 	refused := startDirs(t, Config{Specs: []Spec{spec}, Bases: []string{over}})
 	_, err := refused.New(context.Background(), spec)
-	require.ErrorContains(t, err, "is "+strconv.Itoa(MaxSocketPathBytes()+1)+" bytes")
+	require.ErrorContains(t, err, "is "+strconv.Itoa(locallisten.MaxUnixSocketPathBytes()+1)+" bytes")
 	assert.NoDirExists(t, parentOf(over), "nothing is created under a base one byte too long")
 }
 

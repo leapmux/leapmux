@@ -71,7 +71,7 @@ export interface ChangeBranchInspect {
  *
  * The dialog seeds the GitInfoFields with what the calling row already
  * knows (repoRoot, currentBranch) so the first paint is correct
- * pre-RPC; the response then refines `isDirty`, `isWorktree`, and the
+ * pre-RPC; the response then refines `isWorktree` and the
  * branch list in one update.
  */
 export function useChangeBranchInspect(args: UseChangeBranchInspectArgs): ChangeBranchInspect {
@@ -140,10 +140,10 @@ export function useChangeBranchInspect(args: UseChangeBranchInspectArgs): Change
         isGitRepo: true,
         isRepoRoot: !resp.isWorktree,
         isWorktreeRoot: resp.isWorktree,
-        isDirty: resp.isDirty,
         repoRoot: resp.repoRoot,
         repoDirName: basename(resp.repoRoot),
         currentBranch: resp.currentBranch,
+        attachedBranch: resp.attachedBranch,
       }))
       setBranches(resp.branches)
       setBranchesLoading(false)

@@ -48,8 +48,8 @@ type CreateUserParams struct {
 	IsAdmin               bool
 }
 
-// createUserTxParams describes one account creation. Extra runs inside the
-// same transaction after the user row exists, so a flavor-specific artifact
+// createUserTxParams describes one account creation. The extra hook runs in
+// the same transaction after the user row exists, so a flavor-specific artifact
 // (a passkey credential, an OAuth link) commits with the account.
 type createUserTxParams struct {
 	userID                string // empty: generated here
@@ -71,9 +71,8 @@ type createUserTxParams struct {
 	//
 	// Nil reads the wall clock, exactly as clockSeam does. CreateUser passes
 	// none and needs none: that flavor writes no pending row, so it mints no
-	// deadline at all. The passkey sign-up leg (auth_passkey.go) does write
-	// one and still passes none, so it reads the wall clock here; it holds
-	// s.now already, and `now: s.now` is the whole of that edit.
+	// deadline at all. Passkey signup supplies s.now when it writes a pending
+	// verification row, so its expiry and resend checks use the same clock.
 	now func() time.Time
 }
 
@@ -95,7 +94,7 @@ func (p createUserTxParams) clock() time.Time {
 // the create-user write shape and the user-always-has-sections invariant
 // cannot drift between them.
 //
-// Every account-creation invariant belongs HERE, not in one caller. A rule
+// Every atomic account-row invariant belongs HERE, not in one caller. A rule
 // that a caller applies is a rule the next flavor omits: the admin
 // pending-email promotion and the competing-pending-email clear both lived
 // in CreateUser, and the OAuth and passkey sign-ups that call this routine

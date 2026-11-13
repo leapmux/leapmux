@@ -33,7 +33,7 @@ func TestListWorkers_RejectsMalformedCursor(t *testing.T) {
 	t.Parallel()
 
 	st := testutil.OpenTestStore(t)
-	svc := service.NewWorkerManagementService(st, workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
+	svc := service.NewWorkerManagementService(st, testutil.TestSecretHasher(), workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew("u1")})
 
 	// Missing "_" delimiter -> store.ErrInvalidCursor -> InvalidArgument.
@@ -70,7 +70,7 @@ func TestGetWorker_ReportsTimestampsAsInstants(t *testing.T) {
 	row, err := st.Workers().GetOwned(context.Background(), store.GetOwnedWorkerParams{UserID: ownerID, WorkerID: workerID})
 	require.NoError(t, err)
 
-	svc := service.NewWorkerManagementService(st, workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
+	svc := service.NewWorkerManagementService(st, testutil.TestSecretHasher(), workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: ownerID})
 	get := func() *leapmuxv1.Worker {
 		t.Helper()
@@ -111,7 +111,7 @@ func TestGetWorker_HidesADeregisteringWorker(t *testing.T) {
 	workerIDs := seedWorkersForOwner(t, st, ownerID, 2)
 	active, deregistered := workerIDs[0], workerIDs[1]
 
-	svc := service.NewWorkerManagementService(st, workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
+	svc := service.NewWorkerManagementService(st, testutil.TestSecretHasher(), workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: ownerID})
 
 	_, err := svc.DeregisterWorker(ctx, &leapmuxv1.DeregisterWorkerRequest{WorkerId: deregistered})
@@ -142,10 +142,10 @@ func seedWorkersForOwner(t *testing.T, st store.Store, owner userid.UserID, n in
 	for range n {
 		workerID := id.Generate()
 		require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-			ID:           workerID,
-			AuthToken:    id.Generate(),
-			RegisteredBy: owner,
-			PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+			ID:            workerID,
+			AuthTokenHash: testutil.TestSecretHasher().Hash(id.Generate()),
+			RegisteredBy:  owner,
+			PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 		}))
 		ids = append(ids, workerID)
 	}
@@ -172,7 +172,7 @@ func TestListWorkers_CapsAnOversizedPageLimit(t *testing.T) {
 	ownerID := userid.MustNew(owner.ID)
 	seeded := seedWorkersForOwner(t, st, ownerID, contracts.MaxPageLimit+1)
 
-	svc := service.NewWorkerManagementService(st, workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
+	svc := service.NewWorkerManagementService(st, testutil.TestSecretHasher(), workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: ownerID})
 
 	resp, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{
@@ -216,7 +216,7 @@ func TestListWorkers_OmittedLimitReturnsRows(t *testing.T) {
 	ownerID := userid.MustNew(owner.ID)
 	seedWorkersForOwner(t, st, ownerID, 3)
 
-	svc := service.NewWorkerManagementService(st, workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
+	svc := service.NewWorkerManagementService(st, testutil.TestSecretHasher(), workermgr.New(service.NewWorkerReachAuthorizer(st)), nil, mail.NewStubSender(), mail.Renderer{}, servicetest.NewSettingsManager(t, st, nil))
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: ownerID})
 
 	resp, err := svc.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{})
@@ -252,16 +252,16 @@ func TestNewWorkerManagementServiceRefusesAMissingCollaborator(t *testing.T) {
 		want  string
 	}{
 		"no store": {func() {
-			service.NewWorkerManagementService(nil, mgr, nil, sender, mail.Renderer{}, set)
+			service.NewWorkerManagementService(nil, testutil.TestSecretHasher(), mgr, nil, sender, mail.Renderer{}, set)
 		}, "service: NewWorkerManagementService requires a store"},
 		"no worker registry": {func() {
-			service.NewWorkerManagementService(st, nil, nil, sender, mail.Renderer{}, set)
+			service.NewWorkerManagementService(st, testutil.TestSecretHasher(), nil, nil, sender, mail.Renderer{}, set)
 		}, "service: NewWorkerManagementService requires a worker registry"},
 		"no settings manager": {func() {
-			service.NewWorkerManagementService(st, mgr, nil, sender, mail.Renderer{}, nil)
+			service.NewWorkerManagementService(st, testutil.TestSecretHasher(), mgr, nil, sender, mail.Renderer{}, nil)
 		}, "service: NewWorkerManagementService requires a settings manager"},
 		"no mail sender": {func() {
-			service.NewWorkerManagementService(st, mgr, nil, nil, mail.Renderer{}, set)
+			service.NewWorkerManagementService(st, testutil.TestSecretHasher(), mgr, nil, nil, mail.Renderer{}, set)
 		}, "service: NewWorkerManagementService requires a mail sender (use mail.NewDisabledSender)"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -274,6 +274,6 @@ func TestNewWorkerManagementServiceRefusesAMissingCollaborator(t *testing.T) {
 	// store half passes nil, the same rule auth.CredentialLifecycleEffects
 	// holds.
 	assert.NotPanics(t, func() {
-		service.NewWorkerManagementService(st, mgr, nil, sender, mail.Renderer{}, set)
+		service.NewWorkerManagementService(st, testutil.TestSecretHasher(), mgr, nil, sender, mail.Renderer{}, set)
 	}, "the constructor supports nil deregister effects")
 }

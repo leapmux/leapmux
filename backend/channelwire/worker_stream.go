@@ -9,13 +9,14 @@ const (
 	WorkerStreamMaxMessageBytes = 4 << 20
 	WorkerStreamReadLimit       = WorkerStreamMaxMessageBytes + contracts.LengthPrefixBytes
 
-	WorkerCloseReasonDeleted          = "worker_deleted"
-	WorkerCloseReasonKeysDiffer       = "worker_keys_differ"
-	WorkerCloseReasonInvalidMessage   = "invalid_worker_message"
-	WorkerCloseReasonHelloTimeout     = "worker_hello_timeout"
-	WorkerCloseReasonTooManyWorkers   = "max_workers_per_user"
-	WorkerCloseReasonHubShuttingDown  = "hub_shutting_down"
-	WorkerCloseReasonHubInternalError = "hub_internal_error"
+	WorkerCloseReasonDeleted            = "worker_deleted"
+	WorkerCloseReasonCredentialReplaced = "worker_credential_replaced"
+	WorkerCloseReasonKeysDiffer         = "worker_keys_differ"
+	WorkerCloseReasonInvalidMessage     = "invalid_worker_message"
+	WorkerCloseReasonHelloTimeout       = "worker_hello_timeout"
+	WorkerCloseReasonTooManyWorkers     = "max_workers_per_user"
+	WorkerCloseReasonHubShuttingDown    = "hub_shutting_down"
+	WorkerCloseReasonHubInternalError   = "hub_internal_error"
 )
 
 // WorkerStreamURL returns the worker stream's WebSocket URL.

@@ -23,6 +23,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/util/verifycode"
@@ -276,7 +277,7 @@ func decodeJSONBody(t *testing.T, resp *http.Response) map[string]any {
 func stepUpHandlerOn(t *testing.T, env *apiAuthEnv, st store.Store) *http.ServeMux {
 	t.Helper()
 	mux := http.NewServeMux()
-	h := newOAuthServerHandler(service.OAuthServerDeps{
+	h := newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store:     st,
 		Validator: env.validator,
 		Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
@@ -342,7 +343,7 @@ func TestCLIStepUp_AFailedElevationRollsBackTheApproval(t *testing.T) {
 	require.Equal(t, http.StatusInternalServerError, rec.Code)
 	assert.NotContains(t, rec.Body.String(), forcedErr.Error(), "the refusal must not leak the store error")
 
-	row, err := env.store.DeviceAuthorizations().Get(ctx, grant.DeviceCode)
+	row, err := env.store.DeviceAuthorizations().Get(ctx, hubtestutil.TestSecretHasher().Hash(grant.DeviceCode))
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING, row.State, "a failed elevation must roll the approval back")
 	assert.Empty(t, row.UserID, "a rolled-back approval identifies nobody")
@@ -381,7 +382,7 @@ func TestCLIStepUp_ThePollReadsTheCredentialNotTheApprovalFlag(t *testing.T) {
 	assert.Equal(t, "invalid_grant", body["error"])
 	assert.NotContains(t, body, "elevated")
 
-	after, err := env.store.DeviceAuthorizations().Get(ctx, grant.DeviceCode)
+	after, err := env.store.DeviceAuthorizations().Get(ctx, hubtestutil.TestSecretHasher().Hash(grant.DeviceCode))
 	require.NoError(t, err)
 	assert.Nil(t, after.ConsumedAt, "a refusal must not spend the grant")
 
@@ -448,7 +449,7 @@ func TestCLIStepUp_TheIssuancePageNamesTheAppAndNotTheRequestersLabel(t *testing
 	// The label survives where it belongs, normalized. Without this half, the
 	// endpoint could stop recording it and the assertions above would still
 	// pass.
-	row, err := env.store.DeviceAuthorizations().Get(ctx, grant["device_code"].(string))
+	row, err := env.store.DeviceAuthorizations().Get(ctx, hubtestutil.TestSecretHasher().Hash(grant["device_code"].(string)))
 	require.NoError(t, err)
 	assert.Equal(t, "Owner\u0027s MacBook Pro", row.DeviceName,
 		"normalizeInstallationName still cleans the stored label")
@@ -492,11 +493,36 @@ func TestCLIStepUp_BothGrantLegsAnswerTheSameShape(t *testing.T) {
 	// The ask itself still differs, where it is now recorded. Without this the
 	// assertions above would pass with the scope dropped entirely.
 	ctx := context.Background()
-	loginRow, err := env.store.DeviceAuthorizations().Get(ctx, login["device_code"].(string))
+	loginRow, err := env.store.DeviceAuthorizations().Get(ctx, hubtestutil.TestSecretHasher().Hash(login["device_code"].(string)))
 	require.NoError(t, err)
 	assert.Equal(t, "admin:read", loginRow.RequestedScopes)
 
-	stepUpRow, err := env.store.DeviceAuthorizations().Get(ctx, stepUp["device_code"].(string))
+	stepUpRow, err := env.store.DeviceAuthorizations().Get(ctx, hubtestutil.TestSecretHasher().Hash(stepUp["device_code"].(string)))
 	require.NoError(t, err)
 	assert.Empty(t, stepUpRow.RequestedScopes, "a step-up widens nothing, so it asks for nothing")
+}
+
+func TestCLIStepUp_AnElevatedBearerCannotApproveBrowserConsent(t *testing.T) {
+	env := setupAPIAuth(t)
+	tokenID, bearer := cliCredential(t, env, "already-elevated-app")
+	now := env.now()
+	rows, err := env.store.APITokens().Elevate(t.Context(), store.ElevateAPITokenParams{
+		TokenID: tokenID, UserID: userid.MustNew(env.userID), ElevationProvenAt: now, ElevationExpiresAt: now.Add(auth.ElevationWindow),
+	}, now)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), rows)
+	actor, err := env.validator.ValidateBearer(t.Context(), bearer)
+	require.NoError(t, err)
+	require.True(t, actor.Elevated(env.now()), "the rejected app credential must have a live elevation")
+	for _, path := range []string{"/oauth/device", "/oauth/consent"} {
+		request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, env.server.URL+path,
+			strings.NewReader(url.Values{"user_code": {"ABCDEF"}, "decision": {"allow"}}.Encode()))
+		require.NoError(t, err)
+		request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		request.Header.Set("Authorization", "Bearer "+bearer)
+		response, err := env.server.Client().Do(request)
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+		assert.Equal(t, http.StatusUnauthorized, response.StatusCode, path)
+	}
 }

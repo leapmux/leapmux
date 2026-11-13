@@ -770,7 +770,7 @@ func TestOrphanReconciler_FileTab_OutOfScopeOwnerIsNotReaped(t *testing.T) {
 	// Link user-b's tab to a worktree: the reap drops that link FIRST, so an
 	// unscoped reap is observable here even before the file-tab row goes.
 	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{
-		ID: "wt-b", WorktreePath: testutil.NativeAbsPath("/r/b"), RepoRoot: testutil.NativeAbsPath("/r"), BranchName: "b",
+		ID: "wt-b", WorktreePath: testutil.NativeAbsPath("/r/b"), RepoRoot: testutil.NativeAbsPath("/r"), RepoGitDir: testutil.NativeAbsPath("/r/.git"), BranchName: "b",
 	})
 	require.NoError(t, cwErr)
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{

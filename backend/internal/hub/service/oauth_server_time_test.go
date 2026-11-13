@@ -8,13 +8,16 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
 func TestPreTouchPollOAuthError_ExpiresAtBoundary(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, time.July, 10, 12, 0, 0, 0, time.UTC)
-	h := &OAuthServerHandler{}
+	h := &OAuthServerHandler{
+		sessionHasher: hubtestutil.TestSecretHasher(),
+	}
 
 	body, rejected := h.preTouchPollOAuthError(&store.DeviceAuthorization{ExpiresAt: now}, now)
 
@@ -27,7 +30,9 @@ func TestPreTouchPollOAuthError_ThrottleUsesSuppliedNow(t *testing.T) {
 
 	now := time.Date(2026, time.July, 10, 12, 0, 0, 0, time.UTC)
 	lastPoll := now.Add(-time.Second)
-	h := &OAuthServerHandler{}
+	h := &OAuthServerHandler{
+		sessionHasher: hubtestutil.TestSecretHasher(),
+	}
 	row := &store.DeviceAuthorization{
 		ExpiresAt:    now.Add(time.Hour),
 		LastPolledAt: &lastPoll,
@@ -47,7 +52,9 @@ func TestPreTouchPollOAuthError_ThrottleUsesSuppliedNow(t *testing.T) {
 // default is broken is worse than no seam: the tests keep passing on their own
 // injected clock while the shipped handler stamps garbage.
 func TestOAuthServerHandlerNow_DefaultsToTheWallClock(t *testing.T) {
-	h := &OAuthServerHandler{}
+	h := &OAuthServerHandler{
+		sessionHasher: hubtestutil.TestSecretHasher(),
+	}
 
 	before := time.Now()
 	got := h.now()
@@ -62,7 +69,9 @@ func TestOAuthServerHandlerNow_DefaultsToTheWallClock(t *testing.T) {
 // move with it disagree about the same request.
 func TestOAuthServerHandlerNow_UsesTheInjectedClock(t *testing.T) {
 	fixed := time.Date(2026, time.July, 10, 12, 0, 0, 0, time.UTC)
-	h := &OAuthServerHandler{clockSeam: clockSeam{Now: func() time.Time { return fixed }}}
+	h := &OAuthServerHandler{
+		sessionHasher: hubtestutil.TestSecretHasher(),
+		clockSeam:     clockSeam{Now: func() time.Time { return fixed }}}
 
 	assert.Equal(t, fixed, h.now())
 

@@ -589,10 +589,17 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *leapmuxv1.Delete
 	var committedGeneration int64
 	err = commitUnderElevation(ctx, s.store, actor, s.now, func() error {
 		return s.store.RunInUserAuthTransaction(ctx, delUID, func(tx store.Store) error {
+			isAdmin, err := tx.Users().LockForRemoval(ctx, user.ID)
+			if err != nil {
+				return err
+			}
+			if isAdmin && !req.GetForce() {
+				return connect.Errorf(connect.CodeInvalidArgument,
+					"user %q is an admin; pass force to confirm deletion", user.Username)
+			}
 			// Registration holds this same owner lock. Collect before deleting,
 			// through this transaction, so every worker deleted here is told to
 			// stop. Replace the snapshot on each transaction attempt.
-			var err error
 			workerIDs, err = liveWorkerIDs(ctx, tx, delUID)
 			if err != nil {
 				return err
@@ -618,7 +625,7 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *leapmuxv1.Delete
 				return err
 			}
 			if err := tx.Users().Delete(ctx, user.ID); err != nil {
-				return fmt.Errorf("delete user: %w", err)
+				return err
 			}
 			return nil
 		})
@@ -628,7 +635,7 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *leapmuxv1.Delete
 		if errors.As(err, &connectErr) {
 			return nil, connectErr
 		}
-		return nil, wrappedConnectError(connect.CodeInternal, err)
+		return nil, storeConnectError(err, "delete user")
 	}
 	// AFTER the commit, never inside it. SendDeregister tells a connected
 	// worker to stop and moves worker-manager state, so a rollback after it
@@ -706,12 +713,8 @@ func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *leapmuxv1.SetU
 	if err != nil {
 		return nil, err
 	}
-	// Removing your OWN administrator access is irreversible from this
-	// surface: UpdateAdmin runs the fenced verb, so it logs the caller out
-	// at once, and the auth interceptor then denies every Admin* procedure
-	// to the account. Recovery needs the offline
-	// `leapmux recover bootstrap create-admin`, which itself refuses while
-	// any administrator remains. So the caller must state the intent.
+	// Removing your own administrator access revokes the acting credentials.
+	// Force confirms that intent; the store still requires another live admin.
 	if user.IsAdmin && !req.GetIsAdmin() {
 		if actor.ID.String() == user.ID && !req.GetForce() {
 			return nil, connect.NewError(connect.CodeInvalidArgument,

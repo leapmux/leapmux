@@ -95,7 +95,8 @@ createInterface({ input: process.stdin }).on('line', raw => {
   it('rejects a real process exit before its reply and closes after that exit', async () => {
     const host = await MuseNativeHost.start({
       executable: process.execPath,
-      args: ['--eval', 'process.exit(7)'],
+      args: ['--eval', `const { createInterface } = require('node:readline');
+createInterface({ input: process.stdin }).once('line', () => process.exit(7));`],
       cwd: directory,
       env: {},
       runDirectory: directory,

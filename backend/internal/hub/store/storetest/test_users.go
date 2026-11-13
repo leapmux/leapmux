@@ -16,6 +16,7 @@ import (
 )
 
 func (s *Suite) testUsers(t *testing.T) {
+	t.Run("administrator membership", s.testAdministratorMembership)
 	// users.id is the parent key every owner-keyed child row hangs off, so a
 	// blank one is what would make a blank-OWNER row storable at all -- and no
 	// predicate could then name that row, because binding "" matches every
@@ -39,24 +40,20 @@ func (s *Suite) testUsers(t *testing.T) {
 		require.ErrorIs(t, err, store.ErrNotFound,
 			"and nothing was written: the refusal happens before the query")
 
-		// The closure is only as good as the FKs that carry it, so check the
-		// consequence rather than assuming it. These three stand for the three
-		// families of owner-keyed table -- a session (credential), a workspace
-		// (resource), a worker (machine) -- and each must fail for want of a
-		// parent row. If a migration ever drops one of these references, the
-		// blank-owner shape comes back on that table alone, and silently: no
-		// ownership predicate can name the row it would admit.
-		require.Error(t, st.Sessions().Create(ctx, store.CreateSessionParams{
+		// The session API refuses a missing user before its INSERT, through
+		// the user-auth transaction lock. Workspace and Worker creation reach
+		// their INSERTs and exercise the foreign keys directly.
+		require.ErrorIs(t, st.Sessions().Create(ctx, store.CreateSessionParams{SecretHash: FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 			ID: "sess-blank-owner", UserID: userid.UserID{},
 			ExpiresAt: time.Now().Add(time.Hour).UTC(),
-		}), "a session has no blank-id user to join to")
+		}), store.ErrNotFound, "the session API must refuse a missing owner")
 
 		require.Error(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 			ID: "ws-blank-owner", OwnerUserID: userid.UserID{}, Title: "blank-owner",
 		}), "a workspace has no blank-id owner to reference")
 
 		keysErr := st.Workers().Create(ctx, store.CreateWorkerParams{
-			ID: "worker-blank-registrant", AuthToken: "token-blank-registrant",
+			ID: "worker-blank-registrant", AuthTokenHash: FixtureSecretHash("token-blank-registrant"),
 			RegisteredBy: userid.UserID{},
 			PublicKeys:   WorkerKeys(workerkeystest.SeededWorkerFill),
 		})
@@ -157,9 +154,10 @@ func (s *Suite) testUsers(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, newer.ID, found.ID)
 
-		require.NoError(t, st.Users().Delete(ctx, newer.ID))
-		_, err = st.Users().GetFirstAdmin(ctx)
-		assert.ErrorIs(t, err, store.ErrNotFound)
+		require.ErrorIs(t, st.Users().Delete(ctx, newer.ID), store.ErrLastAdministrator)
+		found, err = st.Users().GetFirstAdmin(ctx)
+		require.NoError(t, err)
+		assert.Equal(t, newer.ID, found.ID)
 	})
 
 	t.Run("has any", func(t *testing.T) {
@@ -420,6 +418,7 @@ func (s *Suite) testUsers(t *testing.T) {
 
 	t.Run("update admin", func(t *testing.T) {
 		st := s.NewStore(t)
+		seedMembershipAdministrator(t, st, "retained-admin")
 		user := SeedUser(t, st, "admin-user")
 
 		before, err := st.Users().GetByID(ctx, user.ID)

@@ -15,8 +15,8 @@ import (
 	"github.com/leapmux/leapmux/util/validate"
 )
 
-// runBootstrapCreateAdmin creates the FIRST administrator on an empty
-// hub — the one identity operation that cannot require an authenticated
+// runBootstrapCreateAdmin creates an administrator when no live administrator
+// exists — the one identity operation that cannot require an authenticated
 // admin to already exist. It refuses once any admin exists; every later
 // user (admin included) is created online through
 // `leapmux control admin user create`.

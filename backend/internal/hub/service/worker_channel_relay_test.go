@@ -11,6 +11,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/hub/workermgr/workermgrtest"
 )
 
@@ -27,7 +28,9 @@ func TestProcessWorkerMessage_RoutingFailureClosesChannelAndChunkState(t *testin
 		mu.Unlock()
 		return nil
 	})
-	svc := &WorkerConnectorService{channelMgr: channels}
+	svc := &WorkerConnectorService{
+		hasher:     hubtestutil.TestSecretHasher(),
+		channelMgr: channels}
 
 	err := svc.processWorkerMessage(context.Background(), conn, "worker", &leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{
@@ -63,7 +66,9 @@ func TestProcessWorkerMessage_RejectsChannelOwnedByAnotherWorker(t *testing.T) {
 		t.Fatal("attacking worker must not receive a close for another worker's channel")
 		return nil
 	})
-	svc := &WorkerConnectorService{channelMgr: channels}
+	svc := &WorkerConnectorService{
+		hasher:     hubtestutil.TestSecretHasher(),
+		channelMgr: channels}
 
 	err := svc.processWorkerMessage(context.Background(), conn, "attacker", &leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_ChannelMessageResp{

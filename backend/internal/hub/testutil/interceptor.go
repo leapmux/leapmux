@@ -23,6 +23,9 @@ import (
 // has no Hub to end it, so an absent one becomes context.Background.
 func NewAuthInterceptor(t *testing.T, opts auth.InterceptorOptions) (connect.ServerInterceptor, *auth.AuthContextRegistry) {
 	t.Helper()
+	if opts.SessionHasher.IsZero() {
+		opts.SessionHasher = TestSecretHasher()
+	}
 	if opts.ServingCtx == nil {
 		opts.ServingCtx = context.Background()
 	}

@@ -234,16 +234,15 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		defer cancel()
 		resp := &leapmuxv1.GetGitInfoResponse{}
 
-		// Path-info, origin URL, and dirty status all race in parallel.
-		// `git -C <dir>` resolves to the repo root internally, so none of
-		// these probes depends on the rev-parse result to start. Origin
-		// and dirty are best-effort: failure leaves the field at its
-		// proto zero value, matching the prior single-probe semantics.
+		// These probes read refs and config only. Browsing must not run status,
+		// which can execute a repository's clean filters.
+		// Path info and origin URL run in parallel. GetOriginURL uses `git -C`
+		// to resolve the root itself, so it does not need the path-info result.
+		// The origin URL is best-effort; only a path-info failure fails the probe.
 		var (
 			info      *gitPathInfo
 			infoErr   error
 			originURL string
-			dirty     bool
 		)
 		g, gctx := errgroup.WithContext(ctx)
 		g.Go(func() error {
@@ -254,29 +253,12 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			originURL = gitutil.GetOriginURL(gctx, dirPath)
 			return nil
 		})
-		g.Go(func() error {
-			if d, err := isDirty(gctx, dirPath); err == nil {
-				dirty = d
-			}
-			return nil
-		})
+
 		_ = g.Wait()
 
 		if infoErr != nil {
-			// errNotGitRepo (with or without an underlying-stderr
-			// wrap) is "git can't classify this as a work tree" —
-			// surface as IsGitRepo=false. Two sub-cases:
-			//   * Bare errNotGitRepo: the path genuinely isn't a repo.
-			//     error_hint stays empty; the dialog renders the
-			//     non-git options without a banner.
-			//   * notGitRepoErr wrapping a real diagnostic (dubious-
-			//     ownership, EACCES, corrupted config): error_hint
-			//     carries git's stderr so the dialog renders an
-			//     inline warning the user can act on.
-			// Ctx-cancel / DeadlineExceeded are real probe failures,
-			// not "this isn't a repo" — those still propagate as
-			// Internal so a hung dialog surfaces instead of silently
-			// degrading to a non-git UX.
+			// Only verified native absence produces a non-repository response.
+			// Operational and context failures preserve their error classification.
 			if errors.Is(infoErr, errNotGitRepo) {
 				if hint := unwrappedDiagnostic(infoErr); hint != "" {
 					resp.ErrorHint = hint
@@ -291,16 +273,38 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		resp.IsGitRepo = true
 		resp.RepoRoot = info.RepoRoot
 		resp.RepoDirName = filepath.Base(info.RepoRoot)
-		resp.IsRepoRoot = pathutil.SamePath(canonDirPath, info.RepoRoot)
+		resp.IsRepoRoot = !info.IsWorktree && pathutil.SamePath(canonDirPath, info.TopLevel)
 		resp.IsWorktree = info.IsWorktree
 		if info.IsWorktree {
 			resp.IsWorktreeRoot = pathutil.SamePath(canonDirPath, info.TopLevel)
 		}
 		resp.CurrentBranch = branchOrShortSHA(info)
+		resp.AttachedBranch = info.BranchName
+		resp.MainWorktreeRoot = info.MainWorktreeRoot
 		resp.OriginUrl = originURL
-		resp.IsDirty = dirty
 
 		sendProtoResponse(sender, resp)
+	})
+
+	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceGetGitWorkingTreeStateProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetGitWorkingTreeStateRequest, sender channel.ResponseWriter) {
+		dirPath, err := validate.SanitizePath(r.GetPath(), svc.HomeDir)
+		if err != nil {
+			sendPermissionDenied(sender, "access denied")
+			return
+		}
+		ctx, cancel := context.WithTimeout(ctx, gitReadTimeout)
+		defer cancel()
+		dirty, err := isDirty(ctx, dirPath)
+		if ctx.Err() != nil {
+			sendInternalError(sender, ctx.Err().Error())
+			return
+		}
+		if err != nil {
+			slog.Warn("failed to read git working tree state", "path", dirPath, "error", err)
+			sendInternalError(sender, "working-tree status is unavailable")
+			return
+		}
+		sendProtoResponse(sender, &leapmuxv1.GetGitWorkingTreeStateResponse{IsDirty: dirty})
 	})
 
 	registerOwnerGuarded(d, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, dispatchPlain, func(ctx context.Context, caller channel.Caller, r *leapmuxv1.GetGitFileStatusRequest, sender channel.ResponseWriter) {
@@ -368,9 +372,8 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		// root the status paths are relative to, and the unsaved-work caller
 		// of that function never reads these fields.
 		annotateFileStats(info.TopLevel, files)
-		// queryGitPathInfo canonicalises with pathutil.Canonicalize, which
-		// uses forward-slash separators. The frontend matches this path
-		// against agent.workingDir (native separators), so normalize.
+		// queryGitPathInfo canonicalizes its paths. Normalize the response path
+		// to native separators for comparison with agent.workingDir.
 		// `repo_root` is intentionally the main repo root (not TopLevel)
 		// — the sidebar groups worktree tabs with their parent repo so
 		// `is_worktree` describes the QUERIED dirPath (not repo_root). The
@@ -420,16 +423,20 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 		defer cancel()
 
 		// Resolve repo root from the file's directory.
-		fileDir := filepath.Dir(absPath)
-		repoRoot, err := gitutil.Output(ctx, fileDir, "rev-parse", "--show-toplevel")
+		fileDir, err := filepath.EvalSymlinks(filepath.Dir(absPath))
+		if err != nil {
+			sendInternalError(sender, "failed to resolve file directory")
+			return
+		}
+		repoRoot, err := gitutil.QueryToplevel(ctx, fileDir)
 		if err != nil {
 			sendInternalError(sender, "not a git repository")
 			return
 		}
-		repoRoot = strings.TrimSpace(repoRoot)
 
-		// Compute relative path from repo root.
-		relPath, err := filepath.Rel(repoRoot, absPath)
+		// Resolve directory aliases, retaining a final symlink as the Git blob.
+		lookupPath := filepath.Join(fileDir, filepath.Base(absPath))
+		relPath, err := filepath.Rel(repoRoot, lookupPath)
 		if err != nil {
 			sendInternalError(sender, "failed to compute relative path")
 			return
@@ -488,15 +495,16 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			return
 		}
 
-		branches, err := listGitBranches(ctx, info.RepoRoot)
+		branches, err := listRepositoryBranches(ctx, gitutil.Repository{GitDir: info.CommonDir})
 		if err != nil {
 			sendInternalError(sender, "failed to list branches")
 			return
 		}
 
 		sendProtoResponse(sender, &leapmuxv1.ListGitBranchesResponse{
-			Branches:      branches,
-			CurrentBranch: branchOrShortSHA(info),
+			Branches:       branches,
+			CurrentBranch:  branchOrShortSHA(info),
+			AttachedBranch: info.BranchName,
 		})
 	})
 
@@ -686,7 +694,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			// Under the repo's index lock: a checkout and a concurrent
 			// `worktree add` from a starting agent in the same repository would
 			// otherwise make one of the two fail on index.lock.
-			return svc.withRepoIndexLockForDir(ctx, dirPath, func() error {
+			return svc.withRepoIndexLockForDir(ctx, dirPath, func(_ *gitPathInfo) error {
 				return checkoutBranchInDir(ctx, dirPath, r.GetBranch())
 			})
 		})
@@ -715,7 +723,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			// branch while a sibling agent's startup ran `worktree add` (or a push
 			// ran `add -A`/`commit`) surfaced a raw "Unable to create
 			// '.git/index.lock': File exists." as "Failed to create branch".
-			return svc.withRepoIndexLockForDir(ctx, dirPath, func() error {
+			return svc.withRepoIndexLockForDir(ctx, dirPath, func(_ *gitPathInfo) error {
 				return createBranchInDir(ctx, dirPath, r.GetNewBranch(), r.GetBaseBranch())
 			})
 		})
@@ -744,7 +752,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 			// One index-lock hold spans the whole switch-then-delete: releasing
 			// between them would let another command interleave into the window
 			// where HEAD has moved off the doomed branch but it is not yet gone.
-			return svc.withRepoIndexLockForDir(ctx, dirPath, func() error {
+			return svc.withRepoIndexLockForDir(ctx, dirPath, func(_ *gitPathInfo) error {
 				return deleteBranchInDir(ctx, dirPath, r.GetBranchToDelete(), r.GetSwitchToBranch())
 			})
 		})
@@ -754,6 +762,7 @@ func registerGitHandlers(d ownerOnlyRegistrar, svc *Service) {
 type tabGitContext struct {
 	workingDir   string
 	repoRoot     string
+	repoGitDir   string
 	branchName   string
 	worktreeRoot string
 	worktreeID   string
@@ -765,10 +774,10 @@ type tabGitContext struct {
 }
 
 func (t *tabGitContext) commitDir() string {
-	if t.isWorktree && t.worktreeRoot != "" {
-		return t.worktreeRoot
+	if t.pathInfo != nil && t.pathInfo.TopLevel != "" {
+		return t.pathInfo.TopLevel
 	}
-	return t.repoRoot
+	return t.workingDir
 }
 
 func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.TabType, tabID, userID string) (*leapmuxv1.InspectLastTabCloseResponse, error) {
@@ -793,7 +802,7 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 	if !isGitTopLevel(tabCtx.workingDir, tabCtx.pathInfo) {
 		return &leapmuxv1.InspectLastTabCloseResponse{
 			Target:   leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE,
-			RepoRoot: tabCtx.repoRoot, BranchName: tabCtx.branchName, WorkingDir: tabCtx.workingDir,
+			RepoRoot: tabCtx.repoRoot, BranchName: branchOrShortSHA(tabCtx.pathInfo), WorkingDir: tabCtx.workingDir,
 		}, nil
 	}
 	if tabCtx.isWorktree {
@@ -801,7 +810,7 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 		if other || err != nil {
 			resp := &leapmuxv1.InspectLastTabCloseResponse{
 				Target:   leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_WORKTREE,
-				RepoRoot: tabCtx.repoRoot, BranchName: tabCtx.branchName,
+				RepoRoot: tabCtx.repoRoot, BranchName: branchOrShortSHA(tabCtx.pathInfo),
 				WorkingDir: tabCtx.workingDir, WorktreePath: tabCtx.worktreeRoot, WorktreeId: tabCtx.worktreeID,
 			}
 			if err != nil {
@@ -814,7 +823,7 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 	resp := &leapmuxv1.InspectLastTabCloseResponse{
 		Target:     leapmuxv1.LastTabCloseTarget_LAST_TAB_CLOSE_TARGET_NONE,
 		RepoRoot:   tabCtx.repoRoot,
-		BranchName: tabCtx.branchName,
+		BranchName: branchOrShortSHA(tabCtx.pathInfo),
 		// Echoed so a client that answers the prompt with "push" hands this
 		// exact dir back to PushBranch instead of re-deriving one that might
 		// not match a tab's recorded working dir.
@@ -825,7 +834,7 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 	// branch, we'll never prompt regardless of git state — skip diff
 	// and push.
 	if !tabCtx.isWorktree {
-		hasOther, err := svc.hasOtherNonWorktreeTabOnBranch(ctx, tabType, tabID, userID, tabCtx.repoRoot, tabCtx.branchName)
+		hasOther, err := svc.hasOtherNonWorktreeTabOnBranch(ctx, tabType, tabID, userID, tabCtx.repoGitDir, tabCtx.branchName)
 		trace("branch_count_done")
 		if err != nil {
 			// This sibling-count scan used to hard-block the close
@@ -868,8 +877,8 @@ func (svc *Service) inspectLastTabClose(ctx context.Context, tabType leapmuxv1.T
 		// — corrupt repo, a transient .git/index.lock race, a
 		// dubious-ownership rejection that rev-parse tolerated but
 		// `git status` rejected, a gitReadTimeout deadline on a large
-		// diff, or a vanished working tree that slipped past the os.Stat
-		// check above — we skip the prompt rather than block the close:
+		// diff, or a working tree that vanished after the initial path probe — we
+		// skip the prompt rather than block the close:
 		// the user's ability to close takes priority. But because
 		// skipping can hide real uncommitted work, surface an error_hint
 		// so the frontend warns the user (toast) that the check was
@@ -1064,7 +1073,7 @@ func (svc *Service) inspectBranchDeletion(ctx context.Context, dirPath, branchNa
 				// from errNotGitRepo at g.Wait().
 				return infoErr
 			}
-			name := branchOrShortSHA(info)
+			name := info.BranchName
 			s, err := gatherBranchSnapshot(gctx, snapshotStatsPath(info, dirPath), name)
 			if err != nil {
 				return err
@@ -1095,14 +1104,10 @@ func (svc *Service) inspectBranchDeletion(ctx context.Context, dirPath, branchNa
 	// Either disagreement means the hint-derived snapshot reflects a
 	// different shape than the dialog will render.
 	//
-	// Canonicalize dirPath before comparing against statsPath:
-	// snapshotStatsPath returns info.TopLevel for a worktree, and
-	// queryGitPathInfo runs pathutil.Canonicalize on its rev-parse
-	// output (forward slashes on Windows, symlink-resolved on POSIX).
-	// Without the canonicalize step the gate spuriously fires on every
-	// Windows worktree open because `C:/Users/me/wt` is never == raw
-	// `C:\Users\me\wt`, defeating the parallel hint snapshot.
-	branchName := branchOrShortSHA(info)
+	// Apply the same canonicalization to both paths before comparing them.
+	// Otherwise a symlinked ancestor or a redundant path component can
+	// discard a usable hint snapshot and trigger another probe.
+	branchName := info.BranchName
 	statsPath := snapshotStatsPath(info, dirPath)
 	hintPath := pathutil.Canonicalize(dirPath)
 	if branchNameHint != "" && (branchNameHint != branchName || statsPath != hintPath) {
@@ -1133,7 +1138,7 @@ func (svc *Service) inspectBranchDeletion(ctx context.Context, dirPath, branchNa
 
 	resp := &leapmuxv1.InspectBranchDeletionResponse{
 		IsWorktree: info.IsWorktree,
-		BranchName: branchName,
+		BranchName: branchOrShortSHA(info),
 		GitState:   snap.toProto(branchName),
 	}
 	if info.IsWorktree {
@@ -1236,11 +1241,11 @@ func (svc *Service) inspectWorktreeRemoval(ctx context.Context, dirPath string) 
 // info is the rev-parse result for dirPath when the caller already holds one,
 // and nil when it does not.
 func (svc *Service) worktreeRemovalBlockedReason(ctx context.Context, dirPath string, info *gitPathInfo) (string, error) {
-	listDir, target, err := svc.worktreeListingFor(ctx, dirPath, info)
+	repository, target, err := svc.worktreeListingFor(ctx, dirPath, info)
 	if err != nil {
 		return "", err
 	}
-	entries, err := listGitWorktrees(ctx, listDir)
+	entries, err := listRepositoryWorktrees(ctx, repository)
 	if err != nil {
 		return "", err
 	}
@@ -1263,43 +1268,23 @@ func (svc *Service) worktreeRemovalBlockedReason(ctx context.Context, dirPath st
 	return "", nil
 }
 
-// worktreeListingFor answers the two questions the removal policy needs: the
-// directory to run `git worktree list` in, and the recorded path to match
-// against its output.
-//
-// The live rev-parse answers both when the directory is reachable. It supplies
-// TopLevel and not RepoRoot, because RepoRoot is the PARENT of
-// --git-common-dir: that is the repository only while the main working tree
-// holds it, and for a worktree of a BARE repository it is an ordinary directory
-// where `git -C` fails with "not a git repository".
-//
-// When the probe fails -- the user deleted the directory by hand, or a mode
-// change made it unreadable -- the tracked worktree row still names the
-// repository, and its recorded path is what git matches. That fallback is what
-// keeps the lock check alive for a directory that is gone: `git worktree list`
-// reads the admin directory rather than the working tree, so git still reports
-// the lock, and `git worktree remove` still refuses it. Without it, a locked
-// worktree the user deleted by hand read as removable, the removal then failed,
-// and the close reported "Worktree removed" over a worktree git still held.
-//
-// It returns the probe error when neither source answers, so the caller fails
-// open rather than states a block it cannot confirm.
-func (svc *Service) worktreeListingFor(ctx context.Context, dirPath string, info *gitPathInfo) (listDir, target string, err error) {
+// worktreeListingFor retains repository access after a tracked checkout disappears.
+func (svc *Service) worktreeListingFor(ctx context.Context, dirPath string, info *gitPathInfo) (repository gitutil.Repository, target string, err error) {
 	if info == nil {
 		probed, probeErr := queryGitPathInfo(ctx, dirPath)
 		if probeErr != nil {
-			// CanonicalizeAbsent, not Canonicalize: the row was stored while the
-			// directory existed, so it carries the resolved spelling, and a
-			// deleted leaf is exactly the case Canonicalize cannot resolve.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return gitutil.Repository{}, "", errors.Join(ctxErr, probeErr)
+			}
 			wt, dbErr := svc.Queries.GetWorktreeByPath(ctx, pathutil.CanonicalizeAbsent(dirPath))
 			if dbErr != nil {
-				return "", "", probeErr
+				return gitutil.Repository{}, "", probeErr
 			}
-			return wt.RepoRoot, wt.WorktreePath, nil
+			return gitutil.Repository{GitDir: wt.RepoGitDir}, wt.WorktreePath, nil
 		}
 		info = probed
 	}
-	return info.TopLevel, info.TopLevel, nil
+	return gitutil.Repository{GitDir: info.CommonDir}, info.TopLevel, nil
 }
 
 // worktreeEntryFor finds the `git worktree list` entry for one working-tree
@@ -1323,12 +1308,11 @@ func worktreeEntryFor(entries []*leapmuxv1.GitWorktreeEntry, path string) *leapm
 	return nil
 }
 
-// inspectBranchChange races the path-info probe, the dirty-tree probe,
-// and the branches list in one errgroup. ChangeBranchDialog opens against
-// a fixed (workerId, gitToplevel) and immediately needs all three —
-// returning them in a single RPC drops the dialog-open round trip from
-// two (GetGitInfo then ListGitBranches, each forking queryGitPathInfo
-// server-side) to one shared rev-parse.
+// inspectBranchChange reads path info and branches in one errgroup.
+// ChangeBranchDialog opens against a fixed (workerId, gitToplevel) and needs both;
+// returning them in a single RPC shares one queryGitPathInfo call instead of
+// repeating it in GetGitInfo and ListGitBranches. The dialog requests working-tree
+// state separately when the active mode needs a dirty-tree warning.
 //
 // Failure model mirrors inspectBranchDeletion: errNotGitRepo from the
 // path probe surfaces as "not a git repository"; any other goroutine's
@@ -1338,7 +1322,6 @@ func (svc *Service) inspectBranchChange(ctx context.Context, dirPath string) (*l
 		info     *gitPathInfo
 		infoErr  error
 		branches []*leapmuxv1.GitBranchEntry
-		dirty    bool
 	)
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -1361,15 +1344,7 @@ func (svc *Service) inspectBranchChange(ctx context.Context, dirPath string) (*l
 		branches = b
 		return nil
 	})
-	g.Go(func() error {
-		// `git status --porcelain` works from any subdir too. Best-
-		// effort: a probe failure leaves dirty=false, matching the
-		// GetGitInfo handler's existing "swallow on error" semantics.
-		if d, err := isDirty(gctx, dirPath); err == nil {
-			dirty = d
-		}
-		return nil
-	})
+
 	if err := g.Wait(); err != nil {
 		// Only the canonical "git says this isn't a work tree" signal
 		// (errNotGitRepo) maps to the user-facing "not a git
@@ -1386,27 +1361,21 @@ func (svc *Service) inspectBranchChange(ctx context.Context, dirPath string) (*l
 	}
 
 	return &leapmuxv1.InspectBranchChangeResponse{
-		RepoRoot:      info.RepoRoot,
-		Toplevel:      info.TopLevel,
-		IsWorktree:    info.IsWorktree,
-		CurrentBranch: branchOrShortSHA(info),
-		IsDirty:       dirty,
-		Branches:      branches,
+		RepoRoot:       info.RepoRoot,
+		Toplevel:       info.TopLevel,
+		IsWorktree:     info.IsWorktree,
+		CurrentBranch:  branchOrShortSHA(info),
+		AttachedBranch: info.BranchName,
+		Branches:       branches,
 	}, nil
 }
 
-// snapshotStatsPath returns the directory `gatherBranchSnapshot` should
-// probe diff/push stats from. For a linked worktree the snapshot must
-// run from the worktree's own root (info.TopLevel) so the diff stats
-// reflect that worktree's working copy rather than whatever subdir the
-// dialog was opened against. The non-worktree case falls through to
-// the caller's path verbatim.
-// snapshotStatsPath returns the canonical path the snapshot goroutine
-// should pass to `git -C ...`. Always canonical (forward slashes on
-// Windows, symlink-resolved on POSIX) so the inspectBranchDeletion gate
-// can compare it against `pathutil.Canonicalize(dirPath)` without
-// spuriously firing on a symlinked ancestor (`/tmp` -> `/private/tmp`
-// on macOS would otherwise re-probe every non-worktree dialog open).
+// snapshotStatsPath returns the directory for gatherBranchSnapshot's diff
+// and push probes. A linked worktree uses its already canonical info.TopLevel;
+// other paths use pathutil.Canonicalize(dirPath). The hint comparison uses the
+// same canonicalization, so equivalent path spellings do not trigger another
+// snapshot. Canonicalize resolves symlinks when possible and otherwise cleans
+// the path, using the host's native separators.
 func snapshotStatsPath(info *gitPathInfo, dirPath string) string {
 	if info != nil && info.IsWorktree {
 		// info.TopLevel was already canonicalized by queryGitPathInfo.
@@ -1547,8 +1516,8 @@ func gatherCloseSnapshot(ctx context.Context, statsPath, branchName string) (sna
 // to gitutil.ErrInvalidArgument so runBranchMutation surfaces it as
 // InvalidArgument.
 //
-// Both the input and any stripped local name are validated before they
-// reach git argv: a malicious remote could push a ref like
+// Validate the input before probing Git. Validate a stripped local name only
+// when a remote ref requires substitution or creation. A remote could push
 // `refs/heads/--help` that fetch mirrors into `refs/remotes/origin/--help`,
 // so StripRemotePrefix output is not safe to forward as a positional arg
 // without a second ValidateBranchName pass.
@@ -1565,9 +1534,6 @@ func checkoutBranchInDir(ctx context.Context, workingDir, branch string) error {
 	// single fork instead of two sequential `git rev-parse --verify`s.
 	if strings.Contains(target, "/") {
 		localName := gitutil.StripRemotePrefix(target)
-		if err := gitutil.ValidateBranchName(localName); err != nil {
-			return err
-		}
 		// `refs/heads/<target>` exists iff the user picked a LOCAL
 		// branch whose name happens to contain a slash (e.g. literal
 		// "feature/auth"). In that case the prefix-strip heuristic
@@ -1591,6 +1557,9 @@ func checkoutBranchInDir(ctx context.Context, workingDir, branch string) error {
 			return fmt.Errorf("failed to resolve %q: %w", branch, err)
 		}
 		if !found[originalLocalRef] && found[remoteRef] {
+			if err := gitutil.ValidateBranchName(localName); err != nil {
+				return err
+			}
 			if found[localRef] {
 				// Verify the local branch isn't already tracking a
 				// DIFFERENT remote before substituting. Without this
@@ -1624,8 +1593,11 @@ func checkoutBranchInDir(ctx context.Context, workingDir, branch string) error {
 					return fmt.Errorf("internal: cannot compute remote prefix for %q", branch)
 				}
 				remotePrefix := branch[:slash]
-				cfg := readGitConfigRegexp(ctx, workingDir,
+				cfg, configErr := readGitConfigRegexp(ctx, workingDir,
 					fmt.Sprintf(`^branch\.%s\.remote$`, regexp.QuoteMeta(localName)))
+				if configErr != nil {
+					return fmt.Errorf("read local branch tracking configuration: %w", configErr)
+				}
 				localRemote := strings.TrimSpace(cfg["branch."+localName+".remote"])
 				if localRemote != "" && localRemote != remotePrefix {
 					return fmt.Errorf(
@@ -1658,8 +1630,16 @@ func wrapGitErr(action, stderr string, err error) error {
 	if msg == "" {
 		msg = err.Error()
 	}
-	return fmt.Errorf("failed to %s: %s", action, msg)
+	return &gitOperationError{message: fmt.Sprintf("failed to %s: %s", action, msg), cause: err}
 }
+
+type gitOperationError struct {
+	message string
+	cause   error
+}
+
+func (failure *gitOperationError) Error() string { return failure.message }
+func (failure *gitOperationError) Unwrap() error { return failure.cause }
 
 // switchToResolvesTo reports whether checkoutBranchInDir(switchTo) would
 // collapse onto `target` via the remote-prefix-strip rule. The rule
@@ -1703,11 +1683,11 @@ func switchToResolvesTo(parent context.Context, workingDir, switchTo, target str
 }
 
 // deleteBranchInDir checks out switchTo in workingDir and then force-deletes
-// branchToDelete. On delete failure, attempts to restore the original branch
-// so the working dir doesn't end up on a surprise branch. Rejects invalid
-// arg combinations (empty/equal branches) before touching git. The two
-// invalid-arg returns wrap gitutil.ErrInvalidArgument so runBranchMutation
-// surfaces them as InvalidArgument.
+// branchToDelete. If checkout succeeds but deletion fails, it keeps the
+// requested checkout and returns the deletion error. It rejects invalid
+// argument combinations before touching git. Invalid-argument returns wrap
+// gitutil.ErrInvalidArgument so runBranchMutation surfaces them as
+// InvalidArgument.
 //
 // `parent` is expected to be a generous outer ctx (e.g. 2*branchMutationTimeout)
 // rather than a single branchMutationTimeout-limited ctx: each phase
@@ -1779,17 +1759,27 @@ func deleteBranchInDir(parent context.Context, workingDir, branchToDelete, switc
 // baseBranch validation an authenticated caller can inject git flags
 // (`-f`, `--orphan`, `-c<k>=<v>`) through the base-branch field, since
 // it lands in argv as a positional after `-b <newBranch>`.
-func createBranchInDir(ctx context.Context, workingDir, newBranch, baseBranch string) error {
+func validateBranchCreationArgs(newBranch, baseBranch string) (string, string, error) {
 	newBranch = strings.TrimSpace(newBranch)
 	if err := gitutil.ValidateBranchName(newBranch); err != nil {
-		return err
+		return "", "", err
 	}
-	args := []string{"checkout", "-b", newBranch}
 	baseBranch = strings.TrimSpace(baseBranch)
 	if baseBranch != "" {
 		if err := gitutil.ValidateBranchName(baseBranch); err != nil {
-			return err
+			return "", "", err
 		}
+	}
+	return newBranch, baseBranch, nil
+}
+
+func createBranchInDir(ctx context.Context, workingDir, newBranch, baseBranch string) error {
+	newBranch, baseBranch, err := validateBranchCreationArgs(newBranch, baseBranch)
+	if err != nil {
+		return err
+	}
+	args := []string{"checkout", "-b", newBranch}
+	if baseBranch != "" {
 		args = append(args, baseBranch)
 	}
 	stderr, err := gitutil.OutputStderr(ctx, workingDir, args...)
@@ -1799,30 +1789,17 @@ func createBranchInDir(ctx context.Context, workingDir, newBranch, baseBranch st
 	return nil
 }
 
-// userID scopes the FILE-tab working-dir lookup; see getTabWorkingDir. It is
-// what lets the last-tab dialog's Push button work from a file tab, which is
-// the only tab left on a worktree often enough to matter.
+// pushBranch commits uncommitted changes and pushes the current branch from
+// workingDir. The RPC handler requires a live tab in this directory before
+// calling pushBranch.
 func (svc *Service) pushBranch(ctx context.Context, workingDir string) error {
 	tabCtx, err := svc.loadGitContextForDir(ctx, workingDir)
 	if err != nil {
 		return err
 	}
 
-	// Defense-in-depth: ValidateBranchName the value before it lands in
-	// argv as a positional `git push -u origin <branchName>`. Every
-	// other branch-name argv path in this file (checkoutBranchInDir,
-	// createBranchInDir, deleteBranchInDir) runs this check; pushBranch
-	// is the lone exception even though tabCtx.branchName is derived
-	// from a raw `git rev-parse --abbrev-ref HEAD` parse rather than
-	// validated user input. Today the value comes from git itself so
-	// no flag injection is reachable; the check exists so a future
-	// call site that pulls the branch name from a less trusted source
-	// (DB row, hint hand-off) can't silently bypass the validator.
-	if err := gitutil.ValidateBranchName(tabCtx.branchName); err != nil {
-		return err
-	}
-
-	commitDir := tabCtx.commitDir()
+	lockedRepoGitDir := tabCtx.repoGitDir
+	var commitDir string
 
 	// The LOCAL half holds the repo's index lock: `add -A` and `commit` take git's
 	// index.lock, and a concurrent `worktree add` or `checkout` in the same
@@ -1832,16 +1809,33 @@ func (svc *Service) pushBranch(ctx context.Context, workingDir string) error {
 	// commit would reintroduce the read-then-act race the probe's own doc warns
 	// about, and the status read is what picks the refspec below.
 	//
-	// The NETWORK push is deliberately OUTSIDE it. Once the commit has landed the
-	// refs are fixed, and no index mutation in any worktree of this repo can
-	// change what we are about to send -- provided the refspec is pinned rather
-	// than resolved from HEAD at push time, which is why pushArgs always names the
-	// branch explicitly below. Holding across the push made every unrelated
+	// Run the network push after releasing the index lock. The explicit branch
+	// refspec keeps a later checkout from choosing a different branch to push.
+	// Git resolves that branch's current commit when the push runs.
+	// Holding across the push made every unrelated
 	// `worktree add` (a second agent starting in this repo) or `checkout` wait for
 	// up to pushBranchTimeout, and sync.Mutex is not ctx-aware, so it kept waiting
 	// even after its own startup context was cancelled.
 	var push pushStatus
-	if err := svc.withGitIndexLock(tabCtx.repoRoot, func() error {
+	if err := svc.withGitIndexLock(lockedRepoGitDir, func() error {
+		// Checkout uses this mutex too. Reload HEAD after taking it so the
+		// commit and the explicit push target describe the same branch.
+		current, err := svc.loadGitContextForDir(ctx, workingDir)
+		if err != nil {
+			return err
+		}
+		if !pathutil.SamePath(current.repoGitDir, lockedRepoGitDir) {
+			return errors.New("git repository changed before push")
+		}
+		if current.branchName == "" {
+			return errors.New("cannot push a detached HEAD")
+		}
+		// Validate the resolved branch before using it as a positional argument.
+		if err := gitutil.ValidateBranchName(current.branchName); err != nil {
+			return err
+		}
+		tabCtx = current
+		commitDir = current.commitDir()
 		hasChanges, err := dirtyTreeForPush(ctx, commitDir)
 		if err != nil {
 			return err
@@ -1944,10 +1938,13 @@ func (svc *Service) loadTabGitContext(ctx context.Context, tabType leapmuxv1.Tab
 func (svc *Service) loadGitContextForDir(ctx context.Context, workingDir string) (*tabGitContext, error) {
 	info, err := queryGitPathInfo(ctx, workingDir)
 	if err != nil {
-		return nil, errors.New("tab is not in a git repository")
+		if errors.Is(err, errNotGitRepo) {
+			return nil, errors.New("tab is not in a git repository")
+		}
+		return nil, fmt.Errorf("read tab git context: %w", err)
 	}
 
-	branchName := branchOrShortSHA(info)
+	branchName := info.BranchName
 	var worktreeRoot string
 	if info.IsWorktree {
 		worktreeRoot = info.TopLevel
@@ -1955,6 +1952,7 @@ func (svc *Service) loadGitContextForDir(ctx context.Context, workingDir string)
 	tabCtx := &tabGitContext{
 		workingDir:   workingDir,
 		repoRoot:     info.RepoRoot,
+		repoGitDir:   info.CommonDir,
 		branchName:   branchName,
 		worktreeRoot: worktreeRoot,
 		isWorktree:   info.IsWorktree,
@@ -2051,21 +2049,14 @@ func (svc *Service) readTabWorkingDir(ctx context.Context, tabType leapmuxv1.Tab
 // it independent of how the callers are fanned out.
 const branchProbeConcurrency = 6
 
-// hasOtherNonWorktreeTabOnBranch reports whether any OTHER open tab sits on the
-// same (repoRoot, branchName) as the one being closed. All three tab types
-// count: each carries a working dir the probe can resolve a branch from, and a
-// ref-count that reads only two of the three is wrong in both directions --
-// closing an agent would announce "last tab on this branch" with the user's
-// file tab still open on it, and closing that file tab would announce the same
-// with the agent still running.
+// hasOtherNonWorktreeTabOnBranch reports whether another open agent,
+// terminal or payload-backed tab shares the given common directory and branchName.
+// Payload-backed tabs count even when no agent or terminal remains open.
 //
 // userID scopes the payload-backed scan only; see getTabWorkingDir.
-func (svc *Service) hasOtherNonWorktreeTabOnBranch(ctx context.Context, tabType leapmuxv1.TabType, tabID, userID, repoRoot, branchName string) (bool, error) {
-	// Validate the owner BEFORE anything is launched. The payload-backed scan
-	// needs it (see its launch below), and refusing after the other two scans are
-	// already running would abandon their goroutines: nothing would reach the
-	// single g.Wait(), so their errors would be dropped and their rev-parse
-	// forks left to be torn down by the deferred cancel().
+func (svc *Service) hasOtherNonWorktreeTabOnBranch(ctx context.Context, tabType leapmuxv1.TabType, tabID, userID, repoGitDir, branchName string) (bool, error) {
+	// Require an owner before querying tab_locations. Payload-backed rows
+	// require this owner filter; an empty owner would omit those siblings.
 	owner, ok := userid.New(userID)
 	if !ok {
 		return false, errors.New("branch sibling scan: owner required to scope the payload-backed scan")
@@ -2129,7 +2120,7 @@ func (svc *Service) hasOtherNonWorktreeTabOnBranch(ctx context.Context, tabType 
 			if hit.Load() {
 				return nil
 			}
-			matches, err := probe.matches(probeCtx, dir, repoRoot, branchName)
+			matches, err := probe.matches(probeCtx, dir, repoGitDir, branchName)
 			if err == nil && matches {
 				hit.Store(true)
 				cancel()
@@ -2142,11 +2133,9 @@ func (svc *Service) hasOtherNonWorktreeTabOnBranch(ctx context.Context, tabType 
 }
 
 // collectTabDirs reads (tab_type, tab_id, working_dir) rows into a slice of
-// working dirs, dropping the caller's OWN tab. Reading rows synchronously up
-// front means the DB iterator doesn't have to be safe against the concurrent
-// probe goroutines below. The row loop checks `ctx` between scans so a probe
-// that found a hit and cancelled aborts the drain instead of paying full SQL
-// load latency on a workspace with many tabs.
+// working directories, excluding the caller's tab. It finishes reading and
+// closes the row iterator before the caller starts Git probes. The row loop
+// checks ctx between scans so caller cancellation can stop the drain.
 //
 // The self-skip matches on (tab_type, tab_id), not on tab_id alone. Across the
 // unified relation an id is not unique by itself: agent and terminal ids are
@@ -2253,17 +2242,17 @@ func newBranchInfoProbe(maxForks int) *branchInfoProbe {
 	}
 }
 
-// matches reports whether a tab's workingDir resolves to repoRoot and is
+// matches reports whether a tab's workingDir resolves to repoGitDir and is
 // on branchName.
-func (p *branchInfoProbe) matches(ctx context.Context, workingDir, repoRoot, branchName string) (bool, error) {
+func (p *branchInfoProbe) matches(ctx context.Context, workingDir, repoGitDir, branchName string) (bool, error) {
 	info, err := p.lookup(ctx, workingDir)
 	if err != nil {
 		return false, err
 	}
-	if !pathutil.SamePath(info.RepoRoot, repoRoot) || info.IsWorktree {
+	if !pathutil.SamePath(info.CommonDir, repoGitDir) || info.IsWorktree {
 		return false, nil
 	}
-	return branchOrShortSHA(info) == branchName, nil
+	return info.BranchName == branchName, nil
 }
 
 // branchInfoProbeMaxRetries caps how many times lookup retries when it
@@ -2361,7 +2350,8 @@ func diffStatsForPath(ctx context.Context, dir string) (added, deleted, untracke
 		// corrupt index, dubious-ownership) are propagated so the
 		// close-prompt does not silently report 0 added / 0 deleted on a
 		// broken repo.
-		shortstat, shortstatErr = gitutil.Output(gctx, dir, "diff", "--shortstat", "HEAD")
+		raw, err := gitutil.DiffBytes(gctx, dir, "--shortstat", "HEAD")
+		shortstat, shortstatErr = string(raw), err
 		return nil
 	})
 	g.Go(func() error {
@@ -2500,7 +2490,10 @@ func pushStatusForPath(ctx context.Context, dir, branchName string) (pushStatus,
 	if hasBranch {
 		pattern = fmt.Sprintf(`^(remote\.origin\.url|branch\.%s\.(remote|merge))$`, regexp.QuoteMeta(branchName))
 	}
-	cfg := readGitConfigRegexp(ctx, dir, pattern)
+	cfg, configErr := readGitConfigRegexp(ctx, dir, pattern)
+	if configErr != nil {
+		return s, fmt.Errorf("read push configuration: %w", configErr)
+	}
 
 	if _, ok := cfg["remote.origin.url"]; ok {
 		s.OriginExists = true
@@ -2626,11 +2619,11 @@ func getGitFileStatusEntries(ctx context.Context, repoRoot string) ([]*leapmuxv1
 		defer wg.Done()
 		// Failure is treated as "no annotation" — applyNumstat handles
 		// nil/empty input — so the local err is intentionally discarded.
-		unstagedOut, _ = gitutil.Bytes(ctx, repoRoot, "diff", "--numstat", "-z")
+		unstagedOut, _ = gitutil.DiffBytes(ctx, repoRoot, "--numstat", "-z")
 	}()
 	go func() {
 		defer wg.Done()
-		stagedOut, _ = gitutil.Bytes(ctx, repoRoot, "diff", "--numstat", "--staged", "-z")
+		stagedOut, _ = gitutil.DiffBytes(ctx, repoRoot, "--numstat", "--staged", "-z")
 	}()
 	wg.Wait()
 
@@ -2758,30 +2751,53 @@ func annotateFileStatsWithTimeout(
 	}
 }
 
-// readGitConfigRegexp runs `git config -z --get-regexp <pattern>` and
-// returns the matched entries as a key→value map. A non-zero git exit
-// (no matches) yields a nil map; callers should treat absence as
-// equivalent to a missing key. The `-z` output framing is `key\nvalue\0`
-// per entry, which lets values contain `\n` (config values can have
-// embedded newlines, even if the ones we read here don't).
-func readGitConfigRegexp(ctx context.Context, dir, pattern string) map[string]string {
-	out, err := gitutil.Bytes(ctx, dir, "config", "-z", "--get-regexp", pattern)
-	if err != nil || len(out) == 0 {
-		return nil
+// readGitConfigRegexp distinguishes a missing key from a failed config read.
+// Each NUL-delimited entry has the form key LF value, preserving value newlines.
+func readGitConfigRegexp(ctx context.Context, dir, pattern string) (map[string]string, error) {
+	output, diagnostic, err := gitutil.Capture(ctx, dir, "config", "-z", "--get-regexp", pattern)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, errors.Join(ctxErr, err)
+		}
+		if native := nativeGitExit(err); native != nil && native.ExitCode() == 1 && len(output) == 0 && len(diagnostic) == 0 {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if len(output) == 0 {
+		return nil, nil
 	}
 	result := make(map[string]string)
-	for _, entry := range gitutil.SplitNUL(out) {
+	for _, entry := range gitutil.SplitNUL(output) {
 		if entry == "" {
 			continue
 		}
-		if nl := strings.IndexByte(entry, '\n'); nl >= 0 {
-			result[entry[:nl]] = entry[nl+1:]
-		} else {
-			// `-z` emits `key\0` for a bool-style key with no value.
-			result[entry] = ""
-		}
+		key, value, _ := strings.Cut(entry, "\n")
+		result[key] = value
 	}
-	return result
+	return result, nil
+}
+
+func nativeGitExit(err error) *exec.ExitError {
+	var commandError *gitutil.CommandError
+	if !errors.As(err, &commandError) || commandError.CleanupError != nil {
+		return nil
+	}
+	native, _ := commandError.RunError.(*exec.ExitError)
+	return native
+}
+
+var gitFilesystemBoundaryAbsence = regexp.MustCompile(`\Afatal: not a git repository \(or any parent up to mount point [^\n]+\)\nStopping at filesystem boundary \(GIT_DISCOVERY_ACROSS_FILESYSTEM not set\)\.\n\z`)
+
+func isGitWorktreeAbsent(err error) bool {
+	native := nativeGitExit(err)
+	if native == nil || native.ExitCode() != 128 {
+		return false
+	}
+	diagnostic := string(native.Stderr)
+	return diagnostic == "fatal: not a git repository (or any of the parent directories): .git\n" ||
+		diagnostic == "fatal: this operation must be run in a work tree\n" ||
+		gitFilesystemBoundaryAbsence.MatchString(diagnostic)
 }
 
 // parseGitStatusCode converts a single character from git status --porcelain
@@ -2972,156 +2988,128 @@ func applyNumstat(data []byte, fileMap map[string]*leapmuxv1.GitFileStatusEntry,
 }
 
 type gitPathInfo struct {
-	RepoRoot   string // canonical main repo root
-	TopLevel   string // canonical --show-toplevel (worktree root when IsWorktree)
-	BranchName string // abbrev-ref of HEAD; empty when detached or unborn
-	HeadSHA    string // full 40-char HEAD SHA; empty on unborn HEAD
-	IsWorktree bool
+	RepoRoot         string // placement anchor for new worktrees
+	TopLevel         string // selected checkout root
+	GitDir           string // selected checkout's administrative directory
+	CommonDir        string // repository-wide administrative directory
+	MainWorktreeRoot string // verified main checkout; empty when none is verified
+	BranchName       string // actual attached local branch; empty when detached
+	HeadSHA          string // full HEAD object ID; empty on unborn HEAD
+	IsWorktree       bool
 }
 
-// shortSHALen is the prefix length used for "short" SHA display when HEAD is
-// detached, matching git's default core.abbrev (7). A static prefix can be
-// ambiguous in very large repos, but the value is for UI display only;
-// disambiguation would require a separate `git rev-parse --short HEAD`
-// subprocess, which is the fork we're saving here.
 const shortSHALen = 7
 
-// queryGitPathInfo runs `git rev-parse` and returns the resolved metadata
-// for dirPath. Fails with errNotGitRepo if dirPath is not in a work tree.
-//
-// The combined-form call below packs five outputs into one fork in the
-// common case (HEAD points at a real commit):
-//
-//	lines[len-4] = .git dir         (`--git-dir`, never contains a newline by convention)
-//	lines[len-3] = .git common dir  (`--git-common-dir`)
-//	lines[len-2] = HEAD SHA         (positional `HEAD`)
-//	lines[len-1] = abbrev-ref       (`--abbrev-ref HEAD`)
-//
-// Everything before that is the (possibly multi-line) `--show-toplevel`
-// output, joined with newlines. Parse from the END so a toplevel path
-// containing embedded newlines (legal POSIX, vanishingly rare) doesn't
-// silently zero the result. gitutil.GetToplevelInfo uses the same
-// end-counting strategy.
-//
-// Output order matters: positional `HEAD` comes before `--abbrev-ref HEAD`
-// so the first emits the full SHA and the second emits the abbreviated
-// branch name. Reversing them would make `--abbrev-ref` apply to both
-// (option flags in `git rev-parse` are sticky across subsequent revs)
-// and the SHA would be lost.
-//
-// Unborn HEAD fallback: a freshly-initialized repo or a
-// `git worktree add --no-checkout` before its first commit IS a real
-// git repo, but BOTH the positional `HEAD` revision AND `--abbrev-ref HEAD`
-// fail to resolve, making the combined call exit non-zero. Retry with
-// the commit-independent subset (`--show-toplevel`, `--git-dir`,
-// `--git-common-dir`) and then probe the symref separately —
-// `symbolic-ref --short HEAD` resolves the unborn branch name (the
-// symref target git stamps on `init`) without needing a commit. The
-// alternative (returning errNotGitRepo) misreported every empty repo
-// as not-a-git-repo and locked the user out of every dialog whose
-// open path runs through this helper.
+// queryGitPathInfo keeps checkout paths, repository context and branch identity separate.
 func queryGitPathInfo(ctx context.Context, dirPath string) (*gitPathInfo, error) {
-	output, err := gitutil.Output(ctx, dirPath,
-		"rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir", "HEAD", "--abbrev-ref", "HEAD")
-	if err == nil {
-		return parseGitPathInfoOutput(output, true)
-	}
-	// Distinguish ctx cancellation/timeout from "git says this isn't a
-	// repo" or "HEAD is unborn". Callers like attachWorktreeIfPresent
-	// treat errNotGitRepo as a no-op (no worktree to register) but
-	// must surface ctx errors so a cancelled OpenAgent doesn't ship a
-	// tab without worktree linkage. errors.Is so a wrapped/joined ctx
-	// error still routes correctly.
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return nil, ctxErr
-	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return nil, err
-	}
-	// Retry with the commit-independent rev-parse options only. A true
-	// non-git path will fail this second call too and fall through to
-	// errNotGitRepo; only the unborn-HEAD case reaches the successful
-	// return below with the branch name supplied by symbolic-ref.
-	output, err = gitutil.Output(ctx, dirPath,
-		"rev-parse", "--show-toplevel", "--git-dir", "--git-common-dir")
+	paths, err := gitutil.QueryWorktreePaths(ctx, dirPath)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, ctxErr
+			return nil, errors.Join(ctxErr, err)
 		}
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return nil, err
+		if isGitWorktreeAbsent(err) {
+			return nil, wrapNotGitRepo(err)
 		}
-		// Wrap rather than collapse to bare errNotGitRepo so callers
-		// that want the underlying git diagnostic (dubious-ownership,
-		// EACCES, corrupted config) can log it. errors.Is against
-		// errNotGitRepo still routes the way every existing call site
-		// expects, and gitutil.Output already folds stderr into the
-		// error message via wrapWithStderr so the wrapped chain
-		// carries git's real "fatal: …" text.
-		return nil, wrapNotGitRepo(err)
+		return nil, err
 	}
-	info, err := parseGitPathInfoOutput(output, false)
+	entries, err := (gitutil.Repository{GitDir: paths.CommonDir}).Worktrees(ctx)
 	if err != nil {
 		return nil, err
 	}
-	// Fill in the branch name from symbolic-ref. Works on unborn HEAD;
-	// fails on detached HEAD — but detached HEAD always resolves the
-	// 5-arg form successfully (the positional HEAD finds a SHA) so we
-	// never reach this fallback in that case. Tolerate the error so a
-	// future call site that ever does reach here on detached HEAD just
-	// returns the path info with empty BranchName.
-	if branch, branchErr := gitutil.Output(ctx, dirPath, "symbolic-ref", "--short", "HEAD"); branchErr == nil {
-		info.BranchName = strings.TrimSpace(branch)
+	info := &gitPathInfo{TopLevel: paths.TopLevel, GitDir: paths.GitDir, CommonDir: paths.CommonDir,
+		IsWorktree: !pathutil.SamePath(paths.GitDir, paths.CommonDir)}
+	info.MainWorktreeRoot, err = verifiedMainWorktreeRoot(ctx, paths, entries)
+	if err != nil {
+		return nil, err
+	}
+	info.RepoRoot = paths.CommonDir
+	if info.MainWorktreeRoot != "" {
+		info.RepoRoot = info.MainWorktreeRoot
+	}
+	revision, diagnostic, err := gitutil.Capture(ctx, dirPath, "rev-parse", "HEAD", "--symbolic-full-name", "HEAD")
+	if err == nil {
+		framed, ok := strings.CutSuffix(string(revision), "\n")
+		fields := strings.Split(framed, "\n")
+		if !ok || len(fields) != 2 || fields[0] == "" {
+			return nil, errors.New("git returned invalid HEAD metadata")
+		}
+		info.HeadSHA = fields[0]
+		if branch, attached := strings.CutPrefix(fields[1], "refs/heads/"); attached {
+			info.BranchName = branch
+		}
+		return info, nil
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, errors.Join(ctxErr, err)
+	}
+	// Only the native unresolved-HEAD diagnostic permits unborn fallback.
+	// Config, policy, I/O and ownership cleanup failures remain errors.
+	const missingHEAD = "fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree.\nUse '--' to separate paths from revisions, like this:\n'git <command> [<revision>...] -- [<file>...]'\n"
+	native := nativeGitExit(err)
+	if native == nil || native.ExitCode() != 128 || string(diagnostic) != missingHEAD {
+		return nil, err
+	}
+	branch, branchDiagnostic, branchErr := gitutil.Capture(ctx, dirPath, "symbolic-ref", "--quiet", "HEAD")
+	if branchErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, errors.Join(ctxErr, branchErr)
+		}
+		native := nativeGitExit(branchErr)
+		if native != nil && native.ExitCode() == 1 && len(branch) == 0 && len(branchDiagnostic) == 0 {
+			return info, nil
+		}
+		return nil, branchErr
+	}
+	symbolicRef, ok := strings.CutSuffix(string(branch), "\n")
+	if !ok || symbolicRef == "" || strings.Contains(symbolicRef, "\n") {
+		return nil, errors.New("git returned invalid symbolic HEAD metadata")
+	}
+	if attached, ok := strings.CutPrefix(symbolicRef, "refs/heads/"); ok {
+		info.BranchName = attached
 	}
 	return info, nil
 }
 
-// parseGitPathInfoOutput parses the stdout of the rev-parse pipeline
-// queryGitPathInfo runs. `hasHeadFields` selects the 5-line layout
-// (with the positional `HEAD` SHA + `--abbrev-ref` lines) vs. the
-// 3-line unborn-HEAD layout (toplevel + the two .git paths only;
-// HeadSHA and BranchName left empty for the caller to fill in via a
-// separate symbolic-ref probe). End-counting handles a multi-line
-// `--show-toplevel`; see queryGitPathInfo's doc comment for the line
-// layout.
-func parseGitPathInfoOutput(output string, hasHeadFields bool) (*gitPathInfo, error) {
-	lines := strings.Split(strings.TrimSpace(output), "\n")
-	fixedTail := 2 // gitDir + commonDir
-	if hasHeadFields {
-		fixedTail = 4 // + positional HEAD SHA + abbrevRef
+// verifiedMainWorktreeRoot verifies the catalog's candidate before publishing it.
+// A separate administrative directory can occupy Git's non-bare first entry.
+func verifiedMainWorktreeRoot(ctx context.Context, selected gitutil.WorktreePaths, entries []gitutil.WorktreeEntry) (string, error) {
+	if len(entries) == 0 {
+		return "", errors.New("git returned no main worktree candidate")
 	}
-	if len(lines) < fixedTail+1 {
-		return nil, errNotGitRepo
+	if entries[0].Bare {
+		return "", nil
 	}
-	n := len(lines)
-	topLevel := pathutil.Canonicalize(strings.TrimSpace(strings.Join(lines[:n-fixedTail], "\n")))
-	var gitDir, commonDir string
-	if hasHeadFields {
-		gitDir = strings.TrimSpace(lines[n-4])
-		commonDir = strings.TrimSpace(lines[n-3])
-	} else {
-		gitDir = strings.TrimSpace(lines[n-2])
-		commonDir = strings.TrimSpace(lines[n-1])
+	candidate := pathutil.Canonicalize(entries[0].Path)
+	if pathutil.SamePath(candidate, selected.CommonDir) {
+		return "", nil
 	}
-	info := &gitPathInfo{
-		TopLevel: topLevel,
-		RepoRoot: topLevel,
+	stat, err := os.Stat(candidate)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
 	}
-	if hasHeadFields {
-		info.HeadSHA = strings.TrimSpace(lines[n-2])
-		if abbrevRef := strings.TrimSpace(lines[n-1]); abbrevRef != "HEAD" {
-			info.BranchName = abbrevRef
+	if err != nil {
+		return "", fmt.Errorf("inspect the main worktree candidate: %w", err)
+	}
+	if !stat.IsDir() {
+		return "", nil
+	}
+	paths := selected
+	if !pathutil.SamePath(selected.TopLevel, candidate) {
+		paths, err = gitutil.QueryWorktreePaths(ctx, candidate)
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return "", errors.Join(ctxErr, err)
+			}
+			if isGitWorktreeAbsent(err) {
+				return "", nil
+			}
+			return "", fmt.Errorf("verify the main worktree candidate: %w", err)
 		}
 	}
-	if gitutil.IsLinkedWorktreeGitDir(gitDir) {
-		info.IsWorktree = true
-		if !filepath.IsAbs(commonDir) {
-			commonDir = filepath.Join(topLevel, commonDir)
-		}
-		// commonDir is <main-repo>/.git, so its parent is the main repo root.
-		info.RepoRoot = pathutil.Canonicalize(filepath.Dir(filepath.Clean(commonDir)))
+	if !pathutil.SamePath(paths.TopLevel, candidate) || !pathutil.SamePath(paths.CommonDir, selected.CommonDir) || !pathutil.SamePath(paths.GitDir, paths.CommonDir) {
+		return "", nil
 	}
-	return info, nil
+	return candidate, nil
 }
 
 // mergeGitFileStatusFromPathInfo backfills identity fields from path-info when
@@ -3170,8 +3158,16 @@ func branchOrShortSHA(info *gitPathInfo) string {
 // lock the user out of explicitly picking it. Remote HEAD pseudo-refs
 // ("origin/HEAD") and bare remote names (refs/remotes/origin) are
 // filtered out too.
-func listGitBranches(ctx context.Context, repoRoot string) ([]*leapmuxv1.GitBranchEntry, error) {
-	out, err := gitutil.Output(ctx, repoRoot, "for-each-ref",
+func listGitBranches(ctx context.Context, dir string) ([]*leapmuxv1.GitBranchEntry, error) {
+	paths, err := gitutil.QueryWorktreePaths(ctx, dir)
+	if err != nil {
+		return nil, err
+	}
+	return listRepositoryBranches(ctx, gitutil.Repository{GitDir: paths.CommonDir})
+}
+
+func listRepositoryBranches(ctx context.Context, repository gitutil.Repository) ([]*leapmuxv1.GitBranchEntry, error) {
+	out, err := repository.Output(ctx, "for-each-ref",
 		"--format=%(refname)", "refs/heads", "refs/remotes")
 	if err != nil {
 		return nil, err
@@ -3226,78 +3222,24 @@ func listGitBranches(ctx context.Context, repoRoot string) ([]*leapmuxv1.GitBran
 	return branches, nil
 }
 
-// unquoteGitValue decodes one value that git wrote through its own quoting.
-// git wraps a value in double quotes, and escapes it, when it holds a quote, a
-// backslash, a control character, or a byte outside ASCII -- so a lock reason
-// with an accented word arrives as `"caf\303\251"`, and one that names a
-// Windows path as `"C:\\build"`. Rendered raw, the user reads the escapes
-// rather than the reason they typed.
-//
-// git's escape set (\a \b \f \n \r \t \v \\ \" and three-digit octal) is a
-// subset of Go's interpreted string literal, so strconv.Unquote decodes it
-// exactly. A value git did not quote, or one strconv cannot read, is returned
-// unchanged: this is display text, and the raw form beats an empty string.
-func unquoteGitValue(value string) string {
-	if len(value) < 2 || value[0] != '"' {
-		return value
-	}
-	unquoted, err := strconv.Unquote(value)
+// listGitWorktrees resolves a checkout before using explicit repository context.
+func listGitWorktrees(ctx context.Context, dirPath string) ([]*leapmuxv1.GitWorktreeEntry, error) {
+	paths, err := gitutil.QueryWorktreePaths(ctx, dirPath)
 	if err != nil {
-		return value
+		return nil, err
 	}
-	return unquoted
+	return listRepositoryWorktrees(ctx, gitutil.Repository{GitDir: paths.CommonDir})
 }
 
-// listGitWorktrees parses `git worktree list --porcelain` output into proto
-// entries, including the lock state that worktreeRemovalBlockedReason decides
-// from. One parser for both readers: a second one written for the preflight
-// would be free to disagree with this one about what git printed.
-func listGitWorktrees(ctx context.Context, dirPath string) ([]*leapmuxv1.GitWorktreeEntry, error) {
-	output, err := gitutil.Output(ctx, dirPath, "worktree", "list", "--porcelain")
+func listRepositoryWorktrees(ctx context.Context, repository gitutil.Repository) ([]*leapmuxv1.GitWorktreeEntry, error) {
+	entries, err := repository.Worktrees(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("git worktree list: %w", err)
+		return nil, err
 	}
-
-	var worktrees []*leapmuxv1.GitWorktreeEntry
-	isFirst := true
-
-	// Porcelain output: entries separated by blank lines.
-	blocks := strings.Split(strings.TrimSpace(output), "\n\n")
-	for _, block := range blocks {
-		if strings.TrimSpace(block) == "" {
-			continue
-		}
-
-		entry := &leapmuxv1.GitWorktreeEntry{IsMain: isFirst}
-		for _, line := range strings.Split(block, "\n") {
-			// Trim the carriage return of a CRLF line and nothing else. A
-			// worktree directory may legally end in a space, and git prints the
-			// porcelain path unquoted -- so a TrimSpace here drops a character
-			// that belongs to the path and yields a directory that does not
-			// exist, which every later stat and every path compare then misses.
-			line = strings.TrimSuffix(line, "\r")
-			switch {
-			case strings.HasPrefix(line, "worktree "):
-				entry.Path = strings.TrimPrefix(line, "worktree ")
-			case strings.HasPrefix(line, "branch refs/heads/"):
-				entry.Branch = strings.TrimPrefix(line, "branch refs/heads/")
-			// git writes the bare word for a lock with no reason, and
-			// "locked <reason>" for one with a reason. Both must set Locked,
-			// so match the prefix and the bare word separately -- a single
-			// `HasPrefix(line, "locked ")` test misses the bare form, which is
-			// what `git worktree lock` writes when the user gives no --reason.
-			case line == "locked":
-				entry.Locked = true
-			case strings.HasPrefix(line, "locked "):
-				entry.Locked = true
-				entry.LockReason = unquoteGitValue(strings.TrimPrefix(line, "locked "))
-			}
-		}
-		if entry.Path != "" {
-			worktrees = append(worktrees, entry)
-		}
-		isFirst = false
+	worktrees := make([]*leapmuxv1.GitWorktreeEntry, 0, len(entries))
+	for _, entry := range entries {
+		worktrees = append(worktrees, &leapmuxv1.GitWorktreeEntry{Path: entry.Path, Branch: entry.Branch,
+			IsMain: entry.IsMain, Locked: entry.Locked, LockReason: entry.LockReason})
 	}
-
 	return worktrees, nil
 }

@@ -462,6 +462,7 @@ CREATE TABLE worktrees (
     id              TEXT PRIMARY KEY,
     worktree_path   TEXT NOT NULL,
     repo_root       TEXT NOT NULL,
+    repo_git_dir    TEXT NOT NULL CHECK (repo_git_dir <> ''),
     branch_name     TEXT NOT NULL,
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     deleted_at      DATETIME

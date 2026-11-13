@@ -448,7 +448,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		require.Error(t, err)
 		_, err = st.OAuthClients().Get(ctx, clientID)
 		require.NoError(t, err)
-		_, err = st.DeviceAuthorizations().Get(ctx, deviceCode)
+		_, err = st.DeviceAuthorizations().Get(ctx, FixtureSecretHash(deviceCode))
 		require.NoError(t, err, "a failed deletion must restore the device grant")
 		_, err = st.OAuthAuthorizationCodes().Get(ctx, authorizationCode)
 		require.NoError(t, err, "a failed deletion must restore the authorization code")
@@ -467,8 +467,8 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 		// neither is history: a device grant lives ten minutes and a code one.
 		deviceCode, authorizationCode := id.Generate(), id.Generate()
 		require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-			ClientID:   clientID,
-			DeviceCode: deviceCode, UserCode: "ABC-DEF",
+			ClientID:       clientID,
+			DeviceCodeHash: FixtureSecretHash(deviceCode), UserCode: "ABC-DEF",
 			ExpiresAt: time.Now().Add(10 * time.Minute),
 		}))
 		require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{
@@ -486,7 +486,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 
 		_, err = st.OAuthClients().Get(ctx, clientID)
 		RequireNotFound(t, err)
-		_, err = st.DeviceAuthorizations().Get(ctx, deviceCode)
+		_, err = st.DeviceAuthorizations().Get(ctx, FixtureSecretHash(deviceCode))
 		RequireNotFound(t, err)
 		_, err = st.OAuthAuthorizationCodes().Get(ctx, authorizationCode)
 		RequireNotFound(t, err)
@@ -528,7 +528,7 @@ func (s *Suite) testOAuthClients(t *testing.T) {
 				require.NoError(t, err)
 				_, err = st.OAuthClients().Get(ctx, clientID)
 				require.NoError(t, err)
-				_, err = st.DeviceAuthorizations().Get(ctx, deviceCode)
+				_, err = st.DeviceAuthorizations().Get(ctx, FixtureSecretHash(deviceCode))
 				assert.NoError(t, err, "a refused app deletion must preserve the device grant")
 				_, err = st.OAuthAuthorizationCodes().Get(ctx, authorizationCode)
 				assert.NoError(t, err, "a refused app deletion must preserve the authorization code")
@@ -634,7 +634,7 @@ func seedOAuthFlow(t *testing.T, st store.Store, clientID string, owner userid.U
 	deviceCode, authorizationCode = id.Generate(), id.Generate()
 	ctx := context.Background()
 	require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-		ClientID: clientID, DeviceCode: deviceCode, UserCode: "FLOW-CODE",
+		ClientID: clientID, DeviceCodeHash: FixtureSecretHash(deviceCode), UserCode: "FLOW-CODE",
 		ExpiresAt: time.Now().Add(10 * time.Minute),
 	}))
 	require.NoError(t, st.OAuthAuthorizationCodes().Create(ctx, store.CreateOAuthAuthorizationCodeParams{

@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -54,8 +55,9 @@ func TestAdminUserService_RevokeSessionClosesThatSessionsChannels(t *testing.T) 
 	ctx := context.Background()
 
 	userID := seedRevocableUser(t, env, "carol")
-	sessionID, _, _, err := auth.Login(ctx, env.st, "carol", "password1", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), "carol", "password1", auth.DefaultSessionDuration)
 	require.NoError(t, err)
+	sessionID := hubtestutil.SessionIDFromCookie(t, token)
 
 	_, err = env.client.RevokeSession(authedReq(ctx, &leapmuxv1.RevokeSessionRequest{
 		Id: sessionID,
@@ -194,7 +196,7 @@ func TestAdminUserService_RevokeUserSessionsReportsTheCommittedGeneration(t *tes
 	ctx := context.Background()
 
 	userID := seedRevocableUser(t, env, "carol")
-	_, _, _, err := auth.Login(ctx, env.st, "carol", "password1", auth.DefaultSessionDuration)
+	_, _, _, err := auth.Login(ctx, env.st, hubtestutil.TestSecretHasher(), "carol", "password1", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	apiTokenID := id.Generate()

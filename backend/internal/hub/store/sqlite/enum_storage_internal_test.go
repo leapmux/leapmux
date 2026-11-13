@@ -55,9 +55,9 @@ func TestEnumColumnsRefuseValuesOutsideTheirOrdinals(t *testing.T) {
 			last:   int32(leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_DENIED),
 			insert: func(value any) error {
 				_, err := db.ExecContext(ctx,
-					`INSERT INTO device_authorizations (device_code, user_code, client_id, state, expires_at)
+					`INSERT INTO device_authorizations (device_code_hash, user_code, client_id, state, expires_at)
 					 VALUES (?, ?, ?, ?, ?)`,
-					id.Generate(), id.Generate(), oauthapp.ControlCLIClientID, value,
+					storetest.FixtureSecretHash(id.Generate()), id.Generate(), oauthapp.ControlCLIClientID, value,
 					time.Now().Add(time.Hour).UTC().Format("2006-01-02T15:04:05.000Z"))
 				return err
 			},

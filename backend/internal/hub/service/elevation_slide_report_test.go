@@ -51,9 +51,9 @@ func writeOneSetting(t *testing.T, env *adminSettingsEnv, authorize requestAuth)
 // storedSessionDeadline reads the elevation deadline the session row holds
 // now. The tests compare the reported value against THIS rather than against
 // their own arithmetic, because the store is what the hub enforces.
-func storedSessionDeadline(t *testing.T, st store.Store, sessionID string) time.Time {
+func storedSessionDeadline(t *testing.T, st store.Store, token string) time.Time {
 	t.Helper()
-	row, err := st.Sessions().GetByID(context.Background(), sessionID, time.Now())
+	row, err := st.Sessions().GetByID(context.Background(), hubtestutil.SessionIDFromCookie(t, token), time.Now())
 	require.NoError(t, err)
 	require.NotNil(t, row.ElevationExpiresAt, "the session must still carry a window")
 	return *row.ElevationExpiresAt
@@ -138,7 +138,7 @@ func TestElevationSlideReportIsClampedToTheCap(t *testing.T) {
 	require.True(t, ok)
 	// Seven hours into an eight-hour elevation, with half an hour left to run.
 	n, err := env.st.Sessions().Elevate(context.Background(), store.ElevateSessionParams{
-		SessionID:          env.token,
+		SessionID:          hubtestutil.SessionIDFromCookie(t, env.token),
 		UserID:             owner,
 		ElevationProvenAt:  base.Add(-7 * time.Hour),
 		ElevationExpiresAt: base.Add(30 * time.Minute),

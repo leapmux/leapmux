@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync/atomic"
 	"time"
 
@@ -55,14 +56,15 @@ func (disabledCaptcha) AltchaChallengeJSON(context.Context) (string, error) {
 // the constructor readable as dependencies accumulate, and Captcha is an
 // interface with a disabled default so callers omit it without nil checks.
 type AuthServiceDeps struct {
-	Store     store.Store
-	Config    *config.Config
-	Settings  *settings.Manager
-	Lifecycle *auth.CredentialLifecycleEffects
-	Keystore  *keystore.Keystore
-	Mail      mail.Sender
-	Renderer  mail.Renderer
-	Captcha   CaptchaService // nil reports captcha as disabled
+	SessionHasher auth.SecretHasher
+	Store         store.Store
+	Config        *config.Config
+	Settings      *settings.Manager
+	Lifecycle     *auth.CredentialLifecycleEffects
+	Keystore      *keystore.Keystore
+	Mail          mail.Sender
+	Renderer      mail.Renderer
+	Captcha       CaptchaService // nil reports captcha as disabled
 	// Listen reports the hub's live listeners: the address a browser reaches
 	// it at, and whether any of them is reachable from another machine.
 	//
@@ -78,17 +80,21 @@ type AuthServiceDeps struct {
 
 // AuthService implements the leapmux.v1.AuthService ConnectRPC handler.
 type AuthService struct {
-	store      store.Store
-	cfg        *config.Config
-	set        *settings.Manager
-	lifecycle  *auth.CredentialLifecycleEffects
-	keystore   *keystore.Keystore
-	mail       mail.Sender
-	renderer   mail.Renderer
-	captcha    CaptchaService
-	listen     ListenReporter
-	soloGate   *auth.SoloGate
-	hasAnyUser atomic.Bool // one-way latch: once true, never re-queried
+	sessionHasher auth.SecretHasher
+	store         store.Store
+	cfg           *config.Config
+	set           *settings.Manager
+	lifecycle     *auth.CredentialLifecycleEffects
+	keystore      *keystore.Keystore
+	mail          mail.Sender
+	renderer      mail.Renderer
+	captcha       CaptchaService
+	listen        ListenReporter
+	soloGate      *auth.SoloGate
+	// The lease owner initializes presence before serving. Last-administrator
+	// protection keeps populated state permanent. A claim publishes no presence.
+	accountState atomic.Uint32
+	setupClaim   atomic.Bool
 
 	// The clock GetCurrentUser reports the elevation deadline against. It
 	// must be the same seam UserService grants on, or a test that advances
@@ -101,6 +107,9 @@ type AuthService struct {
 func NewAuthService(deps AuthServiceDeps) *AuthService {
 	if deps.Lifecycle == nil {
 		panic("auth service requires credential lifecycle effects")
+	}
+	if deps.Store != nil && deps.SessionHasher.IsZero() {
+		panic("auth service requires a session secret hasher when a store is configured")
 	}
 	captchaSvc := deps.Captcha
 	if captchaSvc == nil {
@@ -117,7 +126,7 @@ func NewAuthService(deps AuthServiceDeps) *AuthService {
 		}
 		listen = ConfiguredListen{Listen: configured}
 	}
-	return &AuthService{store: deps.Store, cfg: deps.Config, set: deps.Settings, lifecycle: deps.Lifecycle, keystore: deps.Keystore, mail: deps.Mail, renderer: deps.Renderer, captcha: captchaSvc, listen: listen, soloGate: deps.SoloGate}
+	return &AuthService{sessionHasher: deps.SessionHasher, store: deps.Store, cfg: deps.Config, set: deps.Settings, lifecycle: deps.Lifecycle, keystore: deps.Keystore, mail: deps.Mail, renderer: deps.Renderer, captcha: captchaSvc, listen: listen, soloGate: deps.SoloGate}
 }
 
 // snap resolves the current settings snapshot for the settings-backed
@@ -187,40 +196,49 @@ func (s *AuthService) listenAddr() string {
 	return s.listen.PrimaryListenAddr()
 }
 
-// checkHasAnyUser returns true if at least one user exists. A one-way latch
-// caches the result: once true, nothing queries the DB again (users cannot
-// be un-created).
-func (s *AuthService) checkHasAnyUser(ctx context.Context) (bool, error) {
-	if s.hasAnyUser.Load() {
+// checkHasAnyUser reads initialized runtime state. Empty and populated states
+// both stay in memory; only successful setup moves empty to populated.
+func (s *AuthService) checkHasAnyUser() (bool, error) {
+	switch s.accountState.Load() {
+	case accountStateEmpty:
+		return false, nil
+	case accountStatePopulated:
 		return true, nil
+	case accountStateSetupUncertain:
+		return false, errSetupCommitUncertain
+	default:
+		return false, errAccountStateUninitialized
 	}
-	v, err := s.store.Users().HasAny(ctx)
-	if err != nil {
-		return false, err
-	}
-	if v {
-		s.hasAnyUser.Store(true)
-		return true, nil
-	}
-	return false, nil
 }
 
-// setSessionCookie writes the cookie for a session that this response
-// established. One helper for the four mint paths -- login, both sign-up
-// branches, and the OAuth signup completion -- so the secure-name choice and
-// the header write cannot drift apart between them.
-//
-// Set, not Add: this cookie is the response's answer about the session, and it
-// replaces anything already written for that name. The interceptor's slide
-// refresh does not touch a response that already carries a session cookie,
-// which is what keeps these two writers from overwriting each other.
-func (s *AuthService) setSessionCookie(ctx context.Context, h *connect.Header, sessionID string, expiresAt time.Time) {
-	h.Set("Set-Cookie", auth.BuildSessionCookie(sessionID, expiresAt, s.secureCookies(ctx)).String())
+// sessionCookieHeaderValues replaces the session family while preserving other
+// cookies, including OAuth browser bindings and unparseable header values.
+func sessionCookieHeaderValues(existing []string, cookies ...*http.Cookie) []string {
+	values := make([]string, 0, len(existing)+len(cookies))
+	for _, line := range existing {
+		cookie, err := http.ParseSetCookie(line)
+		if err == nil && (cookie.Name == auth.CookieName || cookie.Name == auth.SecureCookieName) {
+			continue
+		}
+		values = append(values, line)
+	}
+	for _, cookie := range cookies {
+		values = append(values, cookie.String())
+	}
+	return values
+}
+
+// setSessionCookie writes the active session first and clears its alternate
+// spelling. A handler's result replaces any refresh of either spelling.
+func (s *AuthService) setSessionCookie(ctx context.Context, h *connect.Header, token string, expiresAt time.Time) {
+	secure := s.secureCookies(ctx)
+	h.SetValues("Set-Cookie", sessionCookieHeaderValues(h.Values("Set-Cookie"),
+		auth.BuildSessionCookie(token, expiresAt, secure), auth.ClearSessionCookie(!secure)))
 }
 
 func (s *AuthService) Login(ctx context.Context, req *leapmuxv1.LoginRequest) (*leapmuxv1.LoginResponse, error) {
 	info := serverCallInfo(ctx)
-	token, user, expiresAt, err := auth.Login(ctx, s.store, req.GetUsername(), req.GetPassword(), s.sessionDuration(ctx))
+	token, user, expiresAt, err := auth.Login(ctx, s.store, s.sessionHasher, req.GetUsername(), req.GetPassword(), s.sessionDuration(ctx))
 	if err != nil {
 		return nil, err
 	}
@@ -272,8 +290,7 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *leapmuxv1
 
 	snap := s.snap(ctx)
 	now := s.now().UTC()
-	var sessionID string
-	var expiresAt time.Time
+	var session auth.CreatedSession
 	var elevationExpiresAt time.Time
 	var storedUser *store.User
 	err = s.store.RunInUserAuthTransaction(ctx, uid, func(tx store.Store) error {
@@ -307,7 +324,7 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *leapmuxv1
 			return fmt.Errorf("store the initial solo password: %w", err)
 		}
 		reqInfo := serverCallInfo(ctx)
-		sessionID, expiresAt, err = auth.CreateSession(ctx, tx, uid, settings.SessionDuration(snap), auth.SessionMeta{
+		session, err = auth.CreateSession(ctx, tx, s.sessionHasher, uid, settings.SessionDuration(snap), auth.SessionMeta{
 			UserAgent: reqInfo.RequestHeader().Get("User-Agent"),
 		})
 		if err != nil {
@@ -322,7 +339,7 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *leapmuxv1
 		// The session was created two statements above, inside this
 		// transaction, so a zero row count is an internal inconsistency rather
 		// than the ordinary "your session ended" the factor paths report.
-		elevatedUntil, live, err := elevateSessionRow(ctx, tx, sessionID, uid, now)
+		elevatedUntil, live, err := elevateSessionRow(ctx, tx, session.ID, uid, now)
 		if err != nil {
 			return fmt.Errorf("elevate the initial solo session: %w", err)
 		}
@@ -350,26 +367,34 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *leapmuxv1
 		// verification to report.
 		SessionReport: signInReport(ctx, s.store, storedUser, nil, timestamppb.New(elevationExpiresAt)),
 	}
-	info.ResponseHeader().Set("Set-Cookie", auth.BuildSessionCookie(
-		sessionID, expiresAt, settings.SecureCookiesFor(ctx, snap)).String())
+	secure := settings.SecureCookiesFor(ctx, snap)
+	info.ResponseHeader().SetValues("Set-Cookie", sessionCookieHeaderValues(info.ResponseHeader().Values("Set-Cookie"),
+		auth.BuildSessionCookie(session.Token, session.ExpiresAt, secure), auth.ClearSessionCookie(!secure)))
 	return resp, nil
 }
 
 func (s *AuthService) Logout(ctx context.Context, req *leapmuxv1.LogoutRequest) (*leapmuxv1.LogoutResponse, error) {
 	info := serverCallInfo(ctx)
-	token := auth.SessionIDFromCookieHeader(info.RequestHeader().Get("Cookie"), s.secureCookies(ctx))
-	if token != "" {
-		if _, err := s.store.Sessions().Delete(ctx, token); err != nil {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	secure := s.secureCookies(ctx)
+	sessionID := user.Credential.SessionID()
+	if sessionID != "" {
+		if _, err := s.store.Sessions().Delete(ctx, sessionID); err != nil {
 			// The clearing cookie rides the response header, which the
 			// transport writes alongside the error status: a logged-out
 			// client must drop its cookie even when the store delete failed.
-			info.ResponseHeader().Set("Set-Cookie", auth.ClearSessionCookie(s.secureCookies(ctx)).String())
+			info.ResponseHeader().SetValues("Set-Cookie", sessionCookieHeaderValues(info.ResponseHeader().Values("Set-Cookie"),
+				auth.ClearSessionCookie(secure), auth.ClearSessionCookie(!secure)))
 			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("delete session: %w", err))
 		}
-		s.lifecycle.SessionRevoked(token)
+		s.lifecycle.SessionRevoked(sessionID)
 	}
 	resp := &leapmuxv1.LogoutResponse{}
-	info.ResponseHeader().Set("Set-Cookie", auth.ClearSessionCookie(s.secureCookies(ctx)).String())
+	info.ResponseHeader().SetValues("Set-Cookie", sessionCookieHeaderValues(info.ResponseHeader().Values("Set-Cookie"),
+		auth.ClearSessionCookie(secure), auth.ClearSessionCookie(!secure)))
 	return resp, nil
 }
 
@@ -413,7 +438,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 
 	// The hub always creates the first user as an admin, regardless of whether
 	// signup is enabled globally.
-	hasUser, err := s.checkHasAnyUser(ctx)
+	hasUser, err := s.checkHasAnyUser()
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
 	}
@@ -458,7 +483,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 	}
 
 	if s.emailVerificationRequired(ctx) {
-		createdUser, storedCode, err := createUserInTx(ctx, s.store, createUserTxParams{
+		createdUser, storedCode, err := s.createSignupUser(ctx, signupOrdinary, createUserTxParams{
 			username:              username,
 			displayName:           displayName,
 			pendingEmail:          email,
@@ -478,7 +503,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 		if mintErr != nil {
 			return nil, mintErr
 		}
-		sessionID, sessionExpires, err := auth.CreateSession(ctx, s.store, uid, s.sessionDuration(ctx))
+		session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, uid, s.sessionDuration(ctx))
 		if err != nil {
 			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 		}
@@ -489,22 +514,21 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 				NextResendAvailableAt: &nextResend,
 			}), nil),
 		}
-		s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, sessionExpires)
-		s.hasAnyUser.Store(true)
+		s.setSessionCookie(ctx, info.ResponseHeader(), session.Token, session.ExpiresAt)
 		return resp, nil
 	}
 
 	// No verification required — email goes directly to email column.
-	user, err := CreateUser(ctx, s.store, CreateUserParams{
-		Username:              username,
-		PasswordHash:          hash,
-		DisplayName:           displayName,
-		Email:                 email,
-		FirstCredentialExempt: true,
-		IsAdmin:               false,
+	user, _, err := s.createSignupUser(ctx, signupOrdinary, createUserTxParams{
+		username:              username,
+		passwordHash:          hash,
+		displayName:           displayName,
+		email:                 email,
+		firstCredentialExempt: true,
+		isAdmin:               false,
 	})
 	if err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, err)
+		return nil, mapSignupCommitError(err)
 	}
 
 	return s.signUpResponse(ctx, user)
@@ -518,35 +542,24 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 // -- but account recovery stays closed for that address until they verify it
 // from Preferences › Account.
 func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName, email, passwordHash string) (*leapmuxv1.SignUpResponse, error) {
-	// Re-check to handle the race condition where another request created a
-	// user between the initial check and now.
-	hasUser, err := s.store.Users().HasAny(ctx)
-	if err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
-	}
-	if hasUser {
-		return nil, connect.Errorf(connect.CodeFailedPrecondition, "sign-up is disabled")
-	}
-
 	if email != "" {
 		if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
 			return nil, AvailabilityConnectError(err)
 		}
 	}
 
-	user, err := CreateUser(ctx, s.store, CreateUserParams{
-		Username:              username,
-		PasswordHash:          passwordHash,
-		DisplayName:           displayName,
-		Email:                 email,
-		FirstCredentialExempt: true,
-		IsAdmin:               true,
+	user, _, err := s.createSignupUser(ctx, signupInitialAdministrator, createUserTxParams{
+		username:              username,
+		passwordHash:          passwordHash,
+		displayName:           displayName,
+		email:                 email,
+		firstCredentialExempt: true,
+		isAdmin:               true,
 	})
 	if err != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, err)
+		return nil, mapSignupCommitError(err)
 	}
 
-	s.hasAnyUser.Store(true)
 	return s.signUpResponse(ctx, user)
 }
 
@@ -556,7 +569,7 @@ func (s *AuthService) signUpResponse(ctx context.Context, user *store.User) (*le
 	if err != nil {
 		return nil, err
 	}
-	sessionID, expiresAt, err := auth.CreateSession(ctx, s.store, loginUID, s.sessionDuration(ctx))
+	session, err := auth.CreateSession(ctx, s.store, s.sessionHasher, loginUID, s.sessionDuration(ctx))
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", err))
 	}
@@ -566,7 +579,7 @@ func (s *AuthService) signUpResponse(ctx context.Context, user *store.User) (*le
 		SessionReport: signInReport(ctx, s.store, user, nil, nil),
 	}
 	info := serverCallInfo(ctx)
-	s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, expiresAt)
+	s.setSessionCookie(ctx, info.ResponseHeader(), session.Token, session.ExpiresAt)
 	return resp, nil
 }
 
@@ -595,11 +608,9 @@ func (s *AuthService) GetOAuthProviders(ctx context.Context, req *leapmuxv1.GetO
 		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
-	// Sourced from cfg directly, not s.renderer.HubURL — the renderer is
-	// the email-templating seam; OAuth login URLs are an unrelated kind
-	// of absolute URL the OAuth flow needs the frontend to redirect to.
-	// They happen to resolve to the same value today, but they're
-	// conceptually different and should not be conflated.
+	// Resolve login URLs from current settings and the listener reporter.
+	// Keep this separate from s.renderer.BaseURL: login URLs also use the
+	// current request's trusted-proxy HTTPS policy.
 	baseURL := s.baseURL(ctx)
 
 	var pbProviders []*leapmuxv1.OAuthProviderInfo
@@ -703,13 +714,25 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 		return nil, err
 	}
 
+	if !s.signupEnabled(ctx) {
+		return nil, connect.Errorf(connect.CodeFailedPrecondition, "sign-up is disabled")
+	}
+	oauthProvider, provErr := s.store.OAuthProviders().GetByID(ctx, pending.ProviderID)
+	if provErr != nil {
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("lookup provider: %w", provErr))
+	}
+	if !oauthProvider.Enabled {
+		return nil, connect.Errorf(connect.CodeFailedPrecondition, "OAuth provider is disabled")
+	}
+
 	username, err := validate.SanitizeSlug("username", req.GetUsername())
 	if err != nil {
 		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
-	// OAuth completion is never setup mode: only an administrator can
-	// configure a provider, so an account already exists whenever a pending
-	// OAuth signup does. Both reserved rules therefore apply.
+	// OAuth completion creates ordinary accounts and requires a live existing
+	// user under the creation lock. Pending flows can survive final-user
+	// deletion, so the earlier provider setup cannot supply that guarantee.
+	// Both reserved-username rules apply.
 	if err := s.validateSignupUsername(ctx, username, false); err != nil {
 		return nil, err
 	}
@@ -741,11 +764,6 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 		return nil, wrappedConnectError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
 	}
 
-	// Look up the provider's trust_email setting.
-	oauthProvider, provErr := s.store.OAuthProviders().GetByID(ctx, pending.ProviderID)
-	if provErr != nil {
-		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("lookup provider: %w", provErr))
-	}
 	trustEmail := oauthProvider.TrustEmail
 
 	var userEmail string
@@ -807,7 +825,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 	var storedCode string
 
 	var nextResend *time.Time
-	user, storedCode, err = createUserInTx(ctx, s.store, createUserTxParams{
+	user, storedCode, err = s.createSignupUser(ctx, signupOrdinary, createUserTxParams{
 		userID:        linkUserID,
 		username:      username,
 		displayName:   displayName,
@@ -844,7 +862,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 	if mintErr != nil {
 		return nil, mintErr
 	}
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, s.store, finalUID, s.sessionDuration(ctx))
+	session, sessionErr := auth.CreateSession(ctx, s.store, s.sessionHasher, finalUID, s.sessionDuration(ctx))
 	if sessionErr != nil {
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create session: %w", sessionErr))
 	}
@@ -856,10 +874,10 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 			NextResendAvailableAt: nextResend,
 		}), nil),
 	}
-	s.setSessionCookie(ctx, info.ResponseHeader(), sessionID, expiresAt)
+	s.setSessionCookie(ctx, info.ResponseHeader(), session.Token, session.ExpiresAt)
 	// The pending row is consumed, so its browser binding has nothing left
-	// to bind. Add, never Set: setSessionCookie above owns the one
-	// Set-Cookie line for the session, and a Set here would delete it.
+	// to bind. Add, never Set: setSessionCookie above owns the session
+	// family, and a Set here would delete its cookie headers.
 	for _, c := range auth.ClearOAuthSignupNonceCookie(signupToken) {
 		info.ResponseHeader().Add("Set-Cookie", c.String())
 	}
@@ -902,8 +920,12 @@ func reencryptPendingTokens(ctx context.Context, ks *keystore.Keystore, st store
 // code. A uniqueness conflict is AlreadyExists with a stable message: the
 // unique index, not the pre-checks, is the real guard against a race, and
 // a permanent conflict reported as a retryable fault with raw driver text
-// misleads both the client and the operator. Everything else is Internal.
+// misleads both the client and the operator. A changed admission state is
+// FailedPrecondition. Every other failure is Internal.
 func mapSignupCommitError(err error) error {
+	if errors.Is(err, errSetupAlreadyComplete) || errors.Is(err, errSetupInProgress) || errors.Is(err, errSignupRequiresExistingUser) {
+		return wrappedConnectError(connect.CodeFailedPrecondition, err)
+	}
 	if errors.Is(err, store.ErrConflict) {
 		return connect.Errorf(connect.CodeAlreadyExists, "username or email already taken")
 	}

@@ -44,7 +44,7 @@ layout: hextra-home
   {{< hextra/feature-card
     title="End-to-end encrypted"
     icon="lock-closed"
-    subtitle="Traffic between your app and your agents uses a hybrid post-quantum handshake. The relay in between only forwards bytes it cannot read."
+    subtitle="Traffic between your app and your agents uses a hybrid post-quantum handshake. While the Hub only relays that traffic, it cannot read the content."
     link="/docs/admin/security/"
   >}}
   {{< hextra/feature-card

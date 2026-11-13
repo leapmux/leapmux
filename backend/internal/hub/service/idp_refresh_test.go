@@ -37,7 +37,7 @@ func newIdPRefreshHandlerForTest(t *testing.T) *IdPHandler {
 	require.NoError(t, set.Load(context.Background()))
 	ks, err := keystore.New(map[uint32][32]byte{1: {}})
 	require.NoError(t, err)
-	return NewIdPHandler(st, &config.Config{}, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
+	return NewIdPHandler(st, hubtestutil.TestSecretHasher(), &config.Config{}, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
 }
 
 // The refresh loop's stopped channel is what the shutdown joins, so it must
@@ -205,7 +205,7 @@ func refreshFixture(t *testing.T, refresh func(ctx context.Context, refreshToken
 	ks, err := keystore.New(map[uint32][32]byte{1: {}})
 	require.NoError(t, err)
 	spy := &tokenSpyStore{Store: st}
-	h := NewIdPHandler(spy, &config.Config{}, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
+	h := NewIdPHandler(spy, hubtestutil.TestSecretHasher(), &config.Config{}, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
 
 	// The token row refers to its user, so the user exists first.
 	hash, err := password.Hash("TestPassword1!")

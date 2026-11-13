@@ -155,7 +155,7 @@ func TestCLIConsent_UnelevatedPostIsRefusedNotRedirected(t *testing.T) {
 // regression for the one surface the sliding rule missed.
 //
 // "Each sensitive action slides that window forward" is the rule the design
-// and operating/security.md both state, and the consent legs enforced the
+// and site/content/docs/admin/security.md both state, and the consent legs enforced the
 // window without extending it: slideElevation was a *UserService method, so
 // only UserService procedures could reach it. Authorizing a command-line
 // credential -- the most consequential thing a session can do -- was the one
@@ -168,7 +168,7 @@ func TestCLIConsent_SlidesTheWindowLikeEveryOtherRestrictedAction(t *testing.T) 
 	cookie := env.elevatedAdminCookie(t)
 	ctx := context.Background()
 
-	before, err := env.store.Sessions().GetByID(ctx, cookie.Value, time.Now().UTC())
+	before, err := env.store.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, cookie.Value), time.Now().UTC())
 	require.NoError(t, err)
 	require.NotNil(t, before.ElevationExpiresAt, "precondition: the session is elevated")
 
@@ -183,10 +183,11 @@ func TestCLIConsent_SlidesTheWindowLikeEveryOtherRestrictedAction(t *testing.T) 
 	// The control CLI is a BUILT-IN registration, so the consent page states the
 	// verified heading: an unverified warning on the hub's own app trained every
 	// user to click through the one signal the page exists to raise.
-	assert.Contains(t, bodyOf(t, resp), "Authorize LeapMux control CLI?")
-	assert.NotContains(t, bodyOf(t, resp), "unverified")
+	body := bodyOf(t, resp)
+	assert.Contains(t, body, "Authorize LeapMux control CLI?")
+	assert.NotContains(t, body, "unverified")
 
-	after, err := env.store.Sessions().GetByID(ctx, cookie.Value, time.Now().UTC())
+	after, err := env.store.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, cookie.Value), time.Now().UTC())
 	require.NoError(t, err)
 	require.NotNil(t, after.ElevationExpiresAt)
 	assert.True(t, after.ElevationExpiresAt.After(*before.ElevationExpiresAt),
@@ -215,8 +216,9 @@ func TestCLIConsent_ExpiredElevationClosesTheGate(t *testing.T) {
 	// The control CLI is a BUILT-IN registration, so the consent page states the
 	// verified heading: an unverified warning on the hub's own app trained every
 	// user to click through the one signal the page exists to raise.
-	assert.Contains(t, bodyOf(t, resp), "Authorize LeapMux control CLI?")
-	assert.NotContains(t, bodyOf(t, resp), "unverified")
+	body := bodyOf(t, resp)
+	assert.Contains(t, body, "Authorize LeapMux control CLI?")
+	assert.NotContains(t, body, "unverified")
 
 	// Past it: the same request bounces.
 	env.advance(auth.ElevationWindow + time.Minute)
@@ -331,12 +333,12 @@ func TestCLIConsent_AdminScopeRefusedForANonAdministrator(t *testing.T) {
 	ctx := context.Background()
 
 	plainID := hubtestutil.CreateTestUser(t, env.store, "plainuser", "plainpass123")
-	token, _, _, err := auth.Login(ctx, env.store, "plainuser", "plainpass123", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "plainuser", "plainpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	cookie := &http.Cookie{Name: auth.CookieName, Value: token}
 	now := env.now()
 	n, err := env.store.Sessions().Elevate(ctx, store.ElevateSessionParams{
-		SessionID:          token,
+		SessionID:          hubtestutil.SessionIDFromCookie(t, token),
 		UserID:             userid.MustNew(plainID),
 		ElevationProvenAt:  now,
 		ElevationExpiresAt: now.Add(auth.ElevationWindow),
@@ -377,11 +379,11 @@ func TestCLIConsent_AdminScopeRefusedAtEveryLegThatBindsIt(t *testing.T) {
 	elevatedPlainUser := func(t *testing.T, env *apiAuthEnv) *http.Cookie {
 		t.Helper()
 		plainID := hubtestutil.CreateTestUser(t, env.store, "plainuser", "plainpass123")
-		token, _, _, err := auth.Login(ctx, env.store, "plainuser", "plainpass123", auth.DefaultSessionDuration)
+		token, _, _, err := auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "plainuser", "plainpass123", auth.DefaultSessionDuration)
 		require.NoError(t, err)
 		now := env.now()
 		n, err := env.store.Sessions().Elevate(ctx, store.ElevateSessionParams{
-			SessionID:          token,
+			SessionID:          hubtestutil.SessionIDFromCookie(t, token),
 			UserID:             userid.MustNew(plainID),
 			ElevationProvenAt:  now,
 			ElevationExpiresAt: now.Add(auth.ElevationWindow),
@@ -437,7 +439,7 @@ func TestCLIConsent_AdminScopeRefusedAtEveryLegThatBindsIt(t *testing.T) {
 		require.NoError(t, env.store.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
 			ClientID:        oauthapp.ControlCLIClientID,
 			RequestedScopes: "admin:read admin:users admin:settings admin:workers",
-			DeviceCode:      id.Generate(), UserCode: userCode, DeviceName: "headless-box",
+			DeviceCodeHash:  hubtestutil.TestSecretHasher().Hash(id.Generate()), UserCode: userCode, DeviceName: "headless-box",
 			ExpiresAt: now.Add(service.DeviceCodeTTL),
 		}))
 
@@ -472,7 +474,7 @@ func TestDeviceActivation_RequiresElevationAndBindsTheScope(t *testing.T) {
 		require.NoError(t, env.store.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
 			ClientID:        oauthapp.ControlCLIClientID,
 			RequestedScopes: ask,
-			DeviceCode:      id.Generate(), UserCode: userCode, DeviceName: "headless",
+			DeviceCodeHash:  hubtestutil.TestSecretHasher().Hash(id.Generate()), UserCode: userCode, DeviceName: "headless",
 			ExpiresAt: env.now().Add(10 * time.Minute),
 		}))
 		return userCode
@@ -593,8 +595,8 @@ func TestDeviceActivation_IdentifiesTheAppForACLISuppliedCode(t *testing.T) {
 
 	userCode := verifycode.Generate()
 	require.NoError(t, env.store.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-		ClientID:   oauthapp.ControlCLIClientID,
-		DeviceCode: id.Generate(), UserCode: userCode, DeviceName: "ci-runner-7",
+		ClientID:       oauthapp.ControlCLIClientID,
+		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(id.Generate()), UserCode: userCode, DeviceName: "ci-runner-7",
 		ExpiresAt: env.now().Add(10 * time.Minute),
 	}))
 
@@ -690,7 +692,7 @@ func TestIssuedToken_EmailsTheOwner(t *testing.T) {
 			mux := http.NewServeMux()
 			srv := httptest.NewServer(mux)
 			t.Cleanup(srv.Close)
-			h := newOAuthServerHandler(service.OAuthServerDeps{
+			h := newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 				Store:     env.store,
 				Validator: env.validator,
 				Lifecycle: auth.NewCredentialLifecycleEffects(env.cache, noopBearerCloser{}, nil),
@@ -840,12 +842,9 @@ func TestRefresh_ClipsToTheAbsoluteLifetime(t *testing.T) {
 		"the rotation must not push the window past the credential's ceiling (got %s, ceiling %s)",
 		row.RefreshExpiresAt, ceiling)
 
-	// The ACCESS expiry is clipped to the same ceiling, and it is the one
-	// that decides whether the credential still authenticates: validateRow
-	// reads expires_at alone. Minted with a full AccessTokenTTL, the last
-	// rotation before the ceiling wrote an hour past it, so the bearer kept
-	// working after the hub already answered the next refresh with
-	// "this credential reached its maximum lifetime".
+	// The stored access expiry is clipped to the same ceiling. Bearer
+	// validation independently enforces the absolute lifetime, but the stored
+	// deadline must also reflect the lifetime that the rotation grants.
 	require.NotNil(t, row.ExpiresAt)
 	assert.False(t, row.ExpiresAt.After(ceiling.Add(time.Minute)),
 		"the access token must not outlive the credential's ceiling (got %s, ceiling %s)",
@@ -873,12 +872,10 @@ func TestRefresh_ClipsToTheAbsoluteLifetime(t *testing.T) {
 	assert.Contains(t, body, "reached its maximum lifetime")
 	assert.NotContains(t, body, "leapmux", "the hub serves every app, so it names no client's command")
 
-	// And the ROW is revoked, not only the cache. This leg is the one that
-	// decides a credential is dead by itself, so it has to record it: the
-	// access token that was minted alongside the refresh token is still
-	// inside its own hour, so a row left with revoked_at NULL keeps
-	// authenticating after the hub told the CLI the credential was
-	// finished -- and keeps listing as live under Preferences.
+	// The refresh refusal must record revocation and apply lifecycle effects.
+	// Bearer validation independently enforces the absolute lifetime.
+	// Recording revocation also removes the credential from the live-row
+	// listing in Preferences.
 	after, err := env.store.APITokens().ListByUser(ctx, store.ListAPITokensByUserParams{
 		UserID: userid.MustNew(env.userID), PageParams: store.PageParams{Limit: 50},
 	})
@@ -889,7 +886,7 @@ func TestRefresh_ClipsToTheAbsoluteLifetime(t *testing.T) {
 	revoked, err := env.store.APITokens().GetByID(ctx, row.ID)
 	require.NoError(t, err)
 	assert.NotNil(t, revoked.RevokedAt,
-		"a credential the hub refuses for ever must carry revoked_at, or its access token keeps working")
+		"a credential refused at its absolute lifetime must record revocation")
 }
 
 // TestRefresh_ReportsTheRefreshDeadlineAndTheScope pins the rotation

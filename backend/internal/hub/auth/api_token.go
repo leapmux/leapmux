@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -89,13 +90,9 @@ func RefreshWindowFor(createdAt, now time.Time) time.Duration {
 // created at createdAt, at now: the ordinary hour, clipped to the same
 // absolute lifetime the refresh window respects.
 //
-// The clip is not decoration. validateRow reads expires_at ALONE, so the
-// access token is the only thing that decides whether a bearer still
-// authenticates -- and the last rotation before the ceiling wrote a full
-// AccessTokenTTL past it, so the credential kept working for up to an hour
-// after the hub answered its next refresh with "this credential reached its
-// maximum lifetime". Clipping here makes the ceiling a property of the
-// credential rather than of the refresh stage that happens to notice it.
+// Clipping keeps the minted access expiry within the credential's absolute
+// lifetime. loadBearer independently enforces that lifetime during bearer
+// validation, even when the stored expires_at extends past it.
 func AccessWindowFor(createdAt, now time.Time) time.Duration {
 	return min(AccessTokenTTL, RefreshWindowFor(createdAt, now))
 }
@@ -109,8 +106,9 @@ const DelegationTokenTTL = 1 * time.Hour
 // triggers compromise revocation.
 const RefreshReuseGrace = 60 * time.Second
 
-// The validator returns ErrInvalidToken for malformed bearer strings, and
-// ErrTokenExpired for syntactically valid but expired or revoked tokens.
+// The validator returns ErrInvalidToken for malformed bearer strings or a
+// secret mismatch. After a secret matches, revoked credentials return
+// ErrTokenRevoked and expired credentials return ErrTokenExpired.
 var (
 	ErrInvalidToken  = errors.New("invalid token")
 	ErrTokenExpired  = errors.New("token expired")
@@ -119,12 +117,12 @@ var (
 )
 
 // TokenValidator verifies api_token / delegation_token bearers against
-// the hub store, applying caching + HMAC-pepper hashing. The same
-// validator serves the request interceptor and the WebSocket relay
-// upgrade path.
+// the hub store using peppered HMAC-SHA256 hashes. Request interceptors
+// cache successful validations. The same validator serves the request
+// interceptor and the WebSocket relay upgrade path.
 type TokenValidator struct {
 	store  store.Store
-	pepper []byte
+	hasher SecretHasher
 	// Now is the clock seam. Every deadline this validator compares reads it,
 	// so a test that expires a credential moves one field instead of waiting.
 	//
@@ -144,27 +142,49 @@ func (v *TokenValidator) now() time.Time {
 	return time.Now()
 }
 
-// NewTokenValidator returns a validator. Pepper must be at least 32 bytes;
-// callers usually source it from the hub's encryption key material.
-func NewTokenValidator(st store.Store, pepper []byte) (*TokenValidator, error) {
+// SecretHasher computes the peppered HMAC-SHA256 digest of a bearer secret.
+// Its zero value cannot hash a secret; construct it with NewSecretHasher.
+type SecretHasher struct{ pepper []byte }
+
+// NewSecretHasher copies a pepper of at least 16 bytes.
+func NewSecretHasher(pepper []byte) (SecretHasher, error) {
 	if len(pepper) < 16 {
-		return nil, fmt.Errorf("server pepper must be at least 16 bytes")
+		return SecretHasher{}, fmt.Errorf("server pepper must be at least 16 bytes")
 	}
-	return &TokenValidator{
-		store:  st,
-		pepper: pepper,
-	}, nil
+	return SecretHasher{pepper: slices.Clone(pepper)}, nil
 }
+
+// IsZero reports whether the hasher lacks its required pepper.
+func (h SecretHasher) IsZero() bool { return len(h.pepper) == 0 }
+
+// Hash returns the secret's digest. A zero hasher is a programming error.
+func (h SecretHasher) Hash(secret string) []byte {
+	if h.IsZero() {
+		panic("auth: zero SecretHasher; construct it with NewSecretHasher")
+	}
+	mac := hmac.New(sha256.New, h.pepper)
+	mac.Write([]byte(secret))
+	return mac.Sum(nil)
+}
+
+// NewTokenValidator returns a validator. Pepper must be at least 16 bytes;
+// callers usually source it from the Hub's encryption key material.
+func NewTokenValidator(st store.Store, pepper []byte) (*TokenValidator, error) {
+	hasher, err := NewSecretHasher(pepper)
+	if err != nil {
+		return nil, err
+	}
+	return &TokenValidator{store: st, hasher: hasher}, nil
+}
+
+// Hasher returns the hasher shared by the Hub's credential handlers.
+func (v *TokenValidator) Hasher() SecretHasher { return v.hasher }
 
 // HashSecret returns the canonical secret_hash for a given raw secret
 // (HMAC-SHA256 keyed by the server pepper). Exported so issuance code
 // (handlers, admin CLI) can compute hashes the same way the validator
 // does.
-func (v *TokenValidator) HashSecret(secret string) []byte {
-	mac := hmac.New(sha256.New, v.pepper)
-	mac.Write([]byte(secret))
-	return mac.Sum(nil)
-}
+func (v *TokenValidator) HashSecret(secret string) []byte { return v.hasher.Hash(secret) }
 
 // FormatBearer returns "lmx_<kind><id>_<secret>". The kind char is
 // transport-only — the stored row id is just <id>.
@@ -218,7 +238,7 @@ func (k BearerKind) IsValid() bool {
 
 // MintAccessSecret returns a fresh secret suitable for api_token /
 // delegation_token issuance. The exposed bearer the user sees is
-// FormatBearer(tokenID, secret).
+// FormatBearer(kind, tokenID, secret).
 func MintAccessSecret() string { return id.Generate() }
 
 // MintedBearerPair carries the (access, refresh) outputs of one mint
@@ -274,7 +294,7 @@ func (v *TokenValidator) DeriveRefreshBearerPair(
 }
 
 func (v *TokenValidator) deriveRefreshSecret(purpose string, kind BearerKind, tokenID string, refreshHash []byte) string {
-	mac := hmac.New(sha256.New, v.pepper)
+	mac := hmac.New(sha256.New, v.hasher.pepper)
 	mac.Write([]byte("leapmux-refresh-pair-v1"))
 	mac.Write([]byte{0, byte(kind), 0})
 	mac.Write([]byte(tokenID))
@@ -386,10 +406,23 @@ type loadedBearer struct {
 // treating the row as "created at the epoch, therefore expired" -- failing closed on a mapping
 // slip would refuse every live credential at once.
 func apiTokenExpired(expiresAt *time.Time, createdAt, now time.Time) bool {
-	if expiresAt != nil && IsExpired(now, *expiresAt) {
-		return true
+	deadline, finite := apiTokenDeadline(expiresAt, createdAt)
+	return finite && IsExpired(now, deadline)
+}
+
+// apiTokenDeadline returns the earliest applicable expiry and whether a deadline
+// exists. An explicitly stored zero expiry remains an expired credential.
+func apiTokenDeadline(expiresAt *time.Time, createdAt time.Time) (time.Time, bool) {
+	deadline := ptrconv.DerefTime(expiresAt)
+	finite := expiresAt != nil
+	if !createdAt.IsZero() {
+		absolute := createdAt.Add(AbsoluteTokenLifetime)
+		if !finite || absolute.Before(deadline) {
+			deadline = absolute
+			finite = true
+		}
 	}
-	return !createdAt.IsZero() && IsExpired(now, createdAt.Add(AbsoluteTokenLifetime))
+	return deadline, finite
 }
 
 // loadBearer projects each persisted bearer type into explicit shared
@@ -463,6 +496,7 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 		if !api.ClientElevationAllowed {
 			elevation = Elevation{}
 		}
+		deadline, finite := apiTokenDeadline(api.ExpiresAt, api.CreatedAt)
 		return loadedBearer{
 			fields: validateRowFields{
 				Revoked: api.RevokedAt != nil,
@@ -492,12 +526,12 @@ func (v *TokenValidator) loadBearer(ctx context.Context, kind BearerKind, tokenI
 				// This is the API-token branch alone. AbsoluteTokenLifetime is
 				// a rule about a CLI credential's consent, and a worker mints a
 				// delegation token for one spawn.
-				Expired:        apiTokenExpired(api.ExpiresAt, api.CreatedAt, v.now()),
+				Expired:        finite && IsExpired(v.now(), deadline),
 				SecretHash:     api.SecretHash,
 				UserID:         api.UserID,
 				RowID:          api.ID,
 				CreatedAt:      api.CreatedAt,
-				ExpiresAt:      ptrconv.DerefTime(api.ExpiresAt),
+				ExpiresAt:      deadline,
 				AuthGeneration: api.AuthGeneration,
 				Scopes:         scopes,
 				// Through NewElevation, which refuses half a stored pair --
@@ -668,16 +702,16 @@ func (v *TokenValidator) loadUser(ctx context.Context, userID string) (*UserInfo
 	}, nil
 }
 
-// ValidateRefresh validates a presented refresh token against an api_tokens
-// row, distinguishing benign retries (within the grace window) from reuse-
-// after-rotation (compromise). On a detected reuse it revokes the row and
+// ValidateAPIRefresh validates a presented refresh token against an
+// api_tokens row. It distinguishes retries within the grace window from
+// reuse after that window. On detected reuse, it revokes the row and
 // returns ErrRefreshReused.
 //
-// Returns the matched row on success along with whether the refresh matched the
-// previous hash inside the grace window. A grace-window retry re-emits the
-// cached access pair; a current-refresh match rotates the row. Refreshes are
-// only valid against api_tokens (delegation tokens have a separate mint flow),
-// so this function rejects a bearer with the wrong kind upfront.
+// It returns the matched row and whether the previous refresh hash matched
+// within the grace window. The caller derives and re-emits the rotated
+// bearer pair for a grace-window retry. A current-refresh match lets the
+// caller rotate the row. This function rejects delegation bearers because
+// delegation tokens use a separate mint flow.
 func (v *TokenValidator) ValidateAPIRefresh(ctx context.Context, refresh string) (row *store.APIToken, retry bool, err error) {
 	kind, tokenID, secret, perr := ParseBearer(refresh)
 	if perr != nil {

@@ -11,6 +11,9 @@ service WorkerGitService {
   rpc GetGitInfo(GetGitInfoRequest) returns (GetGitInfoResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
   }
+  rpc GetGitWorkingTreeState(GetGitWorkingTreeStateRequest) returns (GetGitWorkingTreeStateResponse) {
+    option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
+  }
   rpc GetGitFileStatus(GetGitFileStatusRequest) returns (GetGitFileStatusResponse) {
     option (leapmux.v1.access) = { scope: SCOPE_GIT_READ };
   }
@@ -81,22 +84,29 @@ message GetGitInfoRequest {
 message GetGitInfoResponse {
   bool is_git_repo = 1;       // True if path is inside a git repo or worktree
   bool is_worktree = 2;       // True if path is a linked worktree (not the main repo)
-  string repo_root = 3;       // Root of the main git repo (resolved through worktree if applicable)
-  string repo_dir_name = 4;   // Base directory name of the main repo
-  bool is_repo_root = 5;      // True if the queried path IS the repo root (after symlink resolution)
+  string repo_root = 3;       // Placement anchor: verified main checkout or common administrative directory.
+  string repo_dir_name = 4;   // Base directory name of the placement anchor
+  bool is_repo_root = 5;      // True if the queried path is the primary checkout top level.
   bool is_worktree_root = 6;  // True if the queried path IS a linked worktree root
-  bool is_dirty = 7;          // True if the working directory has uncommitted changes
-  string current_branch = 8;  // Current branch name of the working directory
-  string origin_url = 9;      // Remote origin URL
-  // Non-empty when the worker could not classify the path as a git
-  // repo but the failure was NOT "git says this isn't a repo" — e.g.
-  // dubious-ownership rejection, permission denied, transient I/O.
-  // The dialog uses this to render an inline diagnostic alongside the
-  // non-git fallback UX. Empty when is_git_repo=true or when the
-  // path is genuinely not a repo. Carries git's stderr verbatim so
-  // the user can run `git config --add safe.directory ...` or fix
-  // permissions without context-switching to a terminal.
-  string error_hint = 10;
+  string current_branch = 7;  // Attached branch or detached short SHA for display.
+  string origin_url = 8;      // Remote origin URL
+  // A diagnostic attached to verified native worktree absence. Operational,
+  // configuration, I/O and context failures fail the RPC instead.
+  string error_hint = 9;
+  string attached_branch = 10; // Actual attached local branch; empty when detached.
+  string main_worktree_root = 11; // Empty when no main checkout is verified.
+}
+
+// GetGitWorkingTreeState reads the working tree of path with git status
+// --porcelain. That command reads the index and hashes changed files, so a
+// repository's clean filter can run. Call it only for a path the user chose
+// to act on, never for a folder the user only browses.
+message GetGitWorkingTreeStateRequest {
+  string path = 1;
+}
+
+message GetGitWorkingTreeStateResponse {
+  bool is_dirty = 1; // True if the working directory has uncommitted changes
 }
 
 enum LastTabCloseTarget {
@@ -191,11 +201,10 @@ message PushBranchRequest {
   // could be gone while the tab was still on screen and the push failed with
   // "tab payload not found" even though a healthy sibling sat next to it.
   //
-  // Clients send a dir they already hold locally (the tab's `workingDir`, which
-  // is client-side metadata), so the push no longer depends on any worker row
-  // existing. The worker still refuses a dir that is not the working dir of a
-  // live tab this caller owns -- the same guarantee naming a tab id gave, minus
-  // the single-anchor fragility.
+  // Clients send the directory they already hold in the tab's workingDir.
+  // The worker requires at least one live tab this caller owns in that exact
+  // directory. The original tab's row may disappear if another live tab still
+  // supplies that authorization.
   string working_dir = 1;
 }
 
@@ -259,6 +268,7 @@ message GitBranchEntry {
 message ListGitBranchesResponse {
   repeated GitBranchEntry branches = 1;
   string current_branch = 2;
+  string attached_branch = 3;
 }
 
 message GitWorktreeEntry {
@@ -371,12 +381,9 @@ message InspectWorktreeRemovalResponse {
   string blocked_reason = 1;
 }
 
-// InspectBranchChange bundles every probe ChangeBranchDialog runs at
-// open time into one RPC. Replaces the previous "GetGitInfo then
-// ListGitBranches" sequence, each of which forked `git rev-parse` on
-// the worker; here the path-info probe fans out alongside the branches
-// fetch so the dialog pays one round trip and one shared queryGitPathInfo
-// for everything.
+// InspectBranchChange bundles path info and branches for ChangeBranchDialog.
+// These reads share one queryGitPathInfo. The dialog checks working-tree state
+// separately with GetGitWorkingTreeState when its active mode needs a warning.
 message InspectBranchChangeRequest {
   string path = 1;             // working directory of the branch group
 }
@@ -394,14 +401,11 @@ message InspectBranchChangeResponse {
   // Branch name the working directory is currently on, or a short SHA
   // for detached HEAD.
   string current_branch = 4;
-  // True iff the working directory has uncommitted changes (the
-  // `git status --porcelain` probe). Drives the dirty-tree warning on
-  // Switch / CreateBranch / CreateWorktree modes.
-  bool is_dirty = 5;
   // Local + remote branches the dialog's Switch / CreateBase selectors
   // need. Returned in the same shape as ListGitBranches; the dialog
-  // partitions them client-side via `partitionBranches`.
-  repeated GitBranchEntry branches = 6;
+  // partitions them client-side via `indexBranches`.
+  repeated GitBranchEntry branches = 5;
+  string attached_branch = 6;
 }
 
 // CheckoutBranch switches a working directory to an existing branch.
@@ -427,8 +431,8 @@ message CreateBranchResponse {}
 
 // DeleteBranch deletes a non-worktree branch. It first checks out
 // switch_to_branch in the working directory and then runs
-// `git branch -D <branch_to_delete>`. If the delete fails, the worker
-// attempts to restore the original branch before returning the error.
+// `git branch -D <branch_to_delete>`. If checkout succeeds but deletion fails,
+// the worker keeps the requested checkout and returns the deletion error.
 message DeleteBranchRequest {
   string path = 1;
   string branch_to_delete = 2;

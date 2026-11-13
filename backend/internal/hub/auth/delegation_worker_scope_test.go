@@ -34,10 +34,10 @@ func seedScopeUser(t *testing.T, st store.Store) scopeFixture {
 	}))
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    id.Generate(),
-		RegisteredBy: userid.MustNew(userID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		RegisteredBy:  userid.MustNew(userID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 	return scopeFixture{st: st, userID: userID, workerID: workerID}
 }
@@ -145,11 +145,11 @@ func TestResolveDelegationWorkerScope_DeletedMinterIsPermanentNotAFault(t *testi
 		"a deleted minter lends no cross-worker reach")
 }
 
-// A delegation bearer whose minting worker cannot be loaded (a transient store
-// fault) must fail CLOSED. The zero scope is UNBOUNDED (it is what a non-delegation
-// credential legitimately gets), so returning it alongside the error would hand a
-// caller that drops the error every worker its user owns. The deny-all scope makes
-// that misuse mechanically safe: even without checking err, the scope admits nothing.
+// A delegation bearer must fail closed when a transient store fault prevents
+// loading its minting worker. ResolveDelegationWorkerScope returns DenyAllScope
+// with the error. This scope equals the zero value and denies every target,
+// even if a caller drops the error. Non-delegation credentials receive an
+// explicitly constructed UnboundedScope instead.
 func TestResolveDelegationWorkerScope_StoreFaultFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	f := seedScopeUser(t, hubtestutil.OpenTestStore(t))
@@ -224,13 +224,11 @@ func TestCheckDelegationWorkerScope_AgreesWithResolvedScope(t *testing.T) {
 	assert.NoError(t, auth.CheckDelegationWorkerScope(ctx, st, user, attacker.workerID))
 }
 
-// DenyAllScope is the named fail-closed value every delegation-resolve error
-// path returns. The zero value is the UNBOUNDED scope (empty minterID reads as
-// "not a delegation bearer" and allows everything), so a future error path that
-// drops the error and forgets the literal would hand a delegation bearer every
-// worker -- the named constructor exists to make that mechanically harder. Pin
-// it directly: it denies every target, including the empty/non-delegation shape
-// the zero value would otherwise allow.
+// DenyAllScope is the explicit fail-closed value that every delegation-resolve
+// error path returns. It equals the zero value, so a forgotten constructor also
+// denies every target. Verify that the explicit constructor denies worker IDs
+// and the empty target. UnboundedScope is the explicit constructor that grants
+// access to every target.
 func TestDenyAllScope_DeniesEverything(t *testing.T) {
 	scope := auth.DenyAllScope()
 	for _, target := range []string{"worker-a", "worker-b", ""} {

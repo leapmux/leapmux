@@ -85,6 +85,9 @@ CREATE INDEX idx_users_is_admin ON users(created_at) WHERE is_admin AND deleted_
 -- Auth sessions
 CREATE TABLE user_sessions (
     id              TEXT COLLATE "C" PRIMARY KEY,
+    -- HMAC-SHA256 of the session secret, keyed by the token pepper. The cookie
+    -- is "<id>_<secret>"; the id is public and the Hub never stores the secret.
+    secret_hash BYTEA NOT NULL CHECK (octet_length(secret_hash) = 32),
     user_id         TEXT COLLATE "C" NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     expires_at      TIMESTAMPTZ NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -103,7 +106,7 @@ CREATE TABLE user_sessions (
     elevation_expires_at  TIMESTAMPTZ,
     user_agent      TEXT NOT NULL DEFAULT '',
     ip_address      TEXT NOT NULL DEFAULT '',
-    -- Both or neither, enforced HERE rather than re-checked at every read.
+    -- Both or neither: the schema requires the pair, and Go also validates it.
     -- Half a pair is not a state the rest of the hub should have to consider:
     -- a deadline with no anchor is one the slide statement cannot clamp,
     -- because it has nothing to measure the absolute cap from. Same shape as
@@ -125,7 +128,8 @@ CREATE INDEX idx_user_sessions_last_active ON user_sessions(last_active_at DESC,
 -- Registered workers
 CREATE TABLE workers (
     id            TEXT COLLATE "C" PRIMARY KEY,
-    auth_token    TEXT COLLATE "C" NOT NULL UNIQUE,
+    -- HMAC-SHA256 of the worker's bearer token, keyed by the token pepper.
+    auth_token_hash BYTEA NOT NULL UNIQUE CHECK (octet_length(auth_token_hash) = 32),
     registered_by TEXT COLLATE "C" NOT NULL REFERENCES users(id),
     -- The public keys the worker registered with. Connect refuses a hello
     -- whose keys differ, so a stolen auth token cannot attach other keys to
@@ -198,15 +202,18 @@ CREATE INDEX idx_workers_registered_by_deregistering_created ON workers(register
 -- Active worker registration keys.
 --
 -- Created by an authenticated user via the frontend. The worker presents
--- the row's `id` as a bearer credential (Authorization: Bearer <key>) on
--- the WorkerConnectorService.Register RPC; the hub atomically consumes
--- the row and creates a workers row in one transaction.
+-- the registration key as a bearer credential (Authorization: Bearer <key>)
+-- on the WorkerConnectorService.Register RPC. The public row id is generated
+-- independently. key_hash stores HMAC-SHA256 of the key, keyed by the token
+-- pepper. The hub finds the row by key_hash, then atomically consumes the row
+-- and creates a workers row in one transaction.
 --
 -- The store implements soft-delete by setting expires_at to a past instant.
 -- The cleanup loop hard-deletes rows whose expires_at is older than the
 -- retention cutoff.
 CREATE TABLE worker_registration_keys (
-    id          TEXT COLLATE "C" PRIMARY KEY,
+    id          TEXT COLLATE "C" PRIMARY KEY, -- public id; the key itself is never stored
+    key_hash BYTEA NOT NULL UNIQUE CHECK (octet_length(key_hash) = 32),
     created_by  TEXT COLLATE "C" NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     expires_at  TIMESTAMPTZ NOT NULL
@@ -544,7 +551,7 @@ CREATE INDEX idx_delegation_tokens_user_created ON delegation_tokens(user_id, cr
 CREATE INDEX idx_delegation_tokens_expires_at ON delegation_tokens(expires_at) WHERE revoked_at IS NULL;
 
 CREATE TABLE device_authorizations (
-    device_code           TEXT COLLATE "C" PRIMARY KEY,
+    device_code_hash BYTEA PRIMARY KEY CHECK (octet_length(device_code_hash) = 32),
     user_code             TEXT COLLATE "C" NOT NULL UNIQUE,
     device_name           TEXT NOT NULL DEFAULT '',
     -- Which app started the flow; see the sqlite migration.

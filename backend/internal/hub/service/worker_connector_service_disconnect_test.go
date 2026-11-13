@@ -46,7 +46,7 @@ func TestConnect_DisconnectLogCarriesReasonWhenWorkerClosesStream(t *testing.T) 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	stream := dialWorker(t, ctx, env.server, worker.AuthToken)
+	stream := dialWorker(t, ctx, env.server, regResp.GetAuthToken())
 	// The worker sends its hello before the Hub greets it.
 	require.NoError(t, stream.Send(helloRequest(classicHello(0x31))))
 	_, err = stream.Receive() // the WorkerIdentity greeting
@@ -158,7 +158,7 @@ func TestConnectWaitsForDeregisterCompletionBeforeDisconnect(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
-			stream := dialWorker(t, ctx, env.server, worker.AuthToken)
+			stream := dialWorker(t, ctx, env.server, regResp.GetAuthToken())
 			require.NoError(t, stream.Send(helloRequest(classicHello(0x31))))
 			_, err = stream.Receive() // the WorkerIdentity greeting
 			require.NoError(t, err)

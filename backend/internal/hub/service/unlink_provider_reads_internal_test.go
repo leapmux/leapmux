@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/config"
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -90,7 +91,7 @@ func TestUnlinkOAuthProvider_ReadsTheProviderListOutsideTheLock(t *testing.T) {
 		}))
 	}
 
-	sessionID, _, err := auth.CreateSession(ctx, st, userid.MustNew(user.ID), auth.DefaultSessionDuration)
+	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(user.ID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	now := time.Now().UTC()
 
@@ -102,7 +103,7 @@ func TestUnlinkOAuthProvider_ReadsTheProviderListOutsideTheLock(t *testing.T) {
 	}
 	acting := auth.WithUser(ctx, &auth.UserInfo{
 		ID:                 userid.MustNew(user.ID),
-		Credential:         auth.SessionCredential(sessionID),
+		Credential:         auth.SessionCredential(createdSession.ID),
 		AuthenticatedAt:    now,
 		Elevation:          auth.NewElevation(&now, ptrTime(now.Add(auth.ElevationWindow))),
 		UserAuthGeneration: user.AuthGeneration,

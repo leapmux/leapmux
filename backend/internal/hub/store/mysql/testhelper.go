@@ -68,10 +68,6 @@ func (h *mysqlTestHelper) ListAllOwnedTabs(ctx context.Context) ([]store.Workspa
 }
 
 func (h *mysqlTestHelper) TruncateAll(ctx context.Context) error {
-	if _, err := h.db.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS = 0"); err != nil {
-		return err
-	}
-	defer func() { _, _ = h.db.ExecContext(ctx, "SET FOREIGN_KEY_CHECKS = 1") }()
 	for _, t := range sqlutil.SQLTruncateTableOrder {
 		if _, err := h.db.ExecContext(ctx, sqlutil.TruncateStatement(t)); err != nil {
 			return fmt.Errorf("truncate %s: %w", t, err)
@@ -81,4 +77,8 @@ func (h *mysqlTestHelper) TruncateAll(ctx context.Context) error {
 		return fmt.Errorf("reset revocation_event_sequence: %w", err)
 	}
 	return nil
+}
+
+func (h *mysqlTestHelper) TableHoldsText(ctx context.Context, table, text string) (bool, error) {
+	return sqlutil.TableHoldsText(ctx, h.db, table, text)
 }

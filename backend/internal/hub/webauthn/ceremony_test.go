@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/descope/virtualwebauthn"
 	gowebauthn "github.com/go-webauthn/webauthn/webauthn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -60,9 +61,9 @@ func seedUser(t *testing.T, st store.Store) string {
 // writer lock. The split must not weaken either guard the one-shot form
 // enforced before the attestation.
 //
-// A real attestation needs a virtual authenticator, which this package has
-// no harness for; the Playwright spec covers the full ceremony end to end.
-// This test asserts what the split could have broken.
+// These guard cases stop before attestation verification. The identity-return
+// test below completes virtual registrations and an actual signed assertion.
+// The Playwright spec covers the browser ceremony end to end.
 func TestVerifyRegistration_KeepsTheCeremonyGuards(t *testing.T) {
 	svc, st := newMigratedWebAuthnService(t)
 	owner := seedUser(t, st)
@@ -419,4 +420,44 @@ func TestVerifyRecoveryRegistration_TokenMismatchDoesNotConsume(t *testing.T) {
 	require.Error(t, err)
 	_, err = st.WebAuthnSessions().Get(context.Background(), sessionID)
 	assert.ErrorIs(t, err, store.ErrNotFound, "the matching hash consumes the session even when attestation then fails")
+}
+
+func TestFinishElevationReturnsTheExactVerifiedRegistrationIdentity(t *testing.T) {
+	svc, st := newMigratedWebAuthnService(t)
+	userID := seedUser(t, st)
+	rp := virtualwebauthn.RelyingParty{Name: "LeapMux", ID: "localhost", Origin: "http://localhost"}
+	var selectedAuthenticator virtualwebauthn.Authenticator
+	var selectedCredential virtualwebauthn.Credential
+	var selectedRow *store.PasskeyCredential
+	for range 2 {
+		authenticator := virtualwebauthn.NewAuthenticator()
+		credential := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+		ceremonyID, options, err := svc.BeginRegistration(t.Context(), userID, rp.Origin)
+		require.NoError(t, err)
+		parsed, err := virtualwebauthn.ParseAttestationOptions(options)
+		require.NoError(t, err)
+		attestation := virtualwebauthn.CreateAttestationResponse(rp, authenticator, credential, *parsed)
+		finished, err := svc.VerifyRegistration(t.Context(), userID, ceremonyID, attestation)
+		require.NoError(t, err)
+		row, err := svc.StoreCredential(t.Context(), st, id.Generate(), userID, finished, "Registered key")
+		require.NoError(t, err)
+		authenticator.AddCredential(credential)
+		selectedAuthenticator, selectedCredential, selectedRow = authenticator, credential, row
+	}
+	ceremonyID, options, err := svc.BeginElevation(t.Context(), userID, rp.Origin)
+	require.NoError(t, err)
+	assertionOptions, err := virtualwebauthn.ParseAssertionOptions(options)
+	require.NoError(t, err)
+	assertion := virtualwebauthn.CreateAssertionResponse(rp, selectedAuthenticator, selectedCredential, *assertionOptions)
+	identity, err := svc.FinishElevation(t.Context(), userID, ceremonyID, assertion)
+	require.NoError(t, err)
+	assert.Equal(t, selectedRow.ID, identity.RowID)
+	assert.Equal(t, selectedRow.CredentialID, identity.CredentialID)
+	row, err := st.PasskeyCredentials().GetByID(t.Context(), identity.RowID)
+	require.NoError(t, err)
+	assert.NotNil(t, row.LastUsedAt)
+	replay, err := svc.FinishElevation(t.Context(), userID, ceremonyID, assertion)
+	require.ErrorIs(t, err, webauthn.ErrCeremonyInvalid)
+	assert.Empty(t, replay.RowID)
+	assert.Empty(t, replay.CredentialID)
 }

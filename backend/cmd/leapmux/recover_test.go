@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -27,6 +28,7 @@ import (
 	gendb "github.com/leapmux/leapmux/internal/hub/store/sqlite/generated/db"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
 	"github.com/leapmux/leapmux/internal/hub/storeopen"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
@@ -138,11 +140,12 @@ func createTestSession(t *testing.T, q *gendb.Queries, userID string, expiresAt 
 
 	sessionID := id.Generate()
 	err := q.CreateUserSession(context.Background(), gendb.CreateUserSessionParams{
-		ID:        sessionID,
-		UserID:    userID,
-		ExpiresAt: sqltime.NewSQLiteTime(expiresAt),
-		UserAgent: "test",
-		IpAddress: "127.0.0.1",
+		SecretHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		ID:         sessionID,
+		UserID:     userID,
+		ExpiresAt:  sqltime.NewSQLiteTime(expiresAt),
+		UserAgent:  "test",
+		IpAddress:  "127.0.0.1",
 	})
 	require.NoError(t, err)
 	return sessionID
@@ -208,6 +211,43 @@ func TestCLI_RemoveEncryptionKey_OldVersion(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, ks.Versions(), 1)
 	assert.Equal(t, uint32(2), ks.ActiveVersion())
+}
+
+func TestCLI_RemoveEncryptionKey_RefusesInvalidVersion(t *testing.T) {
+	for _, version := range []string{"0", "-1", "4294967296", "4294967297", "18446744073709551615"} {
+		t.Run(version, func(t *testing.T) {
+			dir := setupTestDataDir(t)
+			require.NoError(t, runRotateEncryptionKey(testCmdCtx, []string{"--data-dir", dir}))
+			keyPath := filepath.Join(dir, "encryption.key")
+			before, err := os.ReadFile(keyPath)
+			require.NoError(t, err)
+
+			err = runRemoveEncryptionKey(testCmdCtx, []string{"--version", version, "--data-dir", dir})
+			assert.Error(t, err)
+
+			after, err := os.ReadFile(keyPath)
+			require.NoError(t, err)
+			assert.True(t, bytes.Equal(before, after), "an invalid version must not change the key ring")
+			ks, err := keystore.LoadFromFile(keyPath)
+			require.NoError(t, err)
+			assert.Equal(t, []uint32{1, 2}, ks.Versions())
+			assert.Equal(t, uint32(2), ks.ActiveVersion())
+		})
+	}
+}
+
+func TestCLI_RemoveEncryptionKey_ReportsAbsentMaximumVersion(t *testing.T) {
+	dir := setupTestDataDir(t)
+	keyPath := filepath.Join(dir, "encryption.key")
+	before, err := os.ReadFile(keyPath)
+	require.NoError(t, err)
+
+	err = runRemoveEncryptionKey(testCmdCtx, []string{"--version", "4294967295", "--data-dir", dir})
+	assert.ErrorContains(t, err, "key version 4294967295 not in ring")
+
+	after, err := os.ReadFile(keyPath)
+	require.NoError(t, err)
+	assert.True(t, bytes.Equal(before, after), "an absent version must not change the key ring")
 }
 
 func TestCLI_ReencryptSecrets(t *testing.T) {
@@ -430,6 +470,9 @@ func TestCLI_RotatePepper_RequiresYes(t *testing.T) {
 	err := runRotatePepper(testCmdCtx, []string{"--data-dir", dir})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "--yes")
+	for _, effect := range []string{"every session", "Worker auth token", "API and delegation tokens", "app secrets", "registration keys", "device codes"} {
+		assert.Contains(t, err.Error(), effect)
+	}
 
 	// Without --yes the pepper is left untouched.
 	ks, err := keystore.LoadFromFile(filepath.Join(dir, "encryption.key"))

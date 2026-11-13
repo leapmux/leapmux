@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/password"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -65,7 +66,7 @@ func TestFinishAccountRecoveryPasskey_ReplacesEverythingWithTheNewPasskey(t *tes
 		FirstCredentialExempt: true,
 	}))
 	uid := userid.MustNew(userID)
-	oldSession, _, err := auth.CreateSession(context.Background(), env.store, uid, auth.DefaultSessionDuration)
+	oldSession, err := auth.CreateSession(context.Background(), env.store, hubtestutil.TestSecretHasher(), uid, auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// seedPasskeyCredential plants a row whose public key no keystore could
@@ -94,9 +95,9 @@ func TestFinishAccountRecoveryPasskey_ReplacesEverythingWithTheNewPasskey(t *tes
 	require.NoError(t, err)
 	assert.False(t, row.FirstCredentialExempt)
 	assert.Equal(t, password.PlaceholderHash, row.PasswordHash)
-	_, _, _, err = auth.Login(context.Background(), env.store, "pkrecover", "oldpass123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(context.Background(), env.store, hubtestutil.TestSecretHasher(), "pkrecover", "oldpass123", auth.DefaultSessionDuration)
 	assert.Error(t, err, "the old password must not sign in after a passkey recovery")
-	_, err = env.store.Sessions().GetByID(context.Background(), oldSession, time.Now().UTC())
+	_, err = env.store.Sessions().GetByID(context.Background(), oldSession.ID, time.Now().UTC())
 	assert.ErrorIs(t, err, store.ErrNotFound)
 
 	// The enrolled credential signs in: same ceremony, assertion half.
@@ -194,7 +195,7 @@ func TestFinishAccountRecoveryPasskey_TokenSpentByPassword(t *testing.T) {
 	count, err := env.store.PasskeyCredentials().CountByUser(context.Background(), userID)
 	require.NoError(t, err)
 	assert.EqualValues(t, 0, count)
-	_, _, _, err = auth.Login(context.Background(), env.store, "racespend", "newpass123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(context.Background(), env.store, hubtestutil.TestSecretHasher(), "racespend", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 }
 
@@ -308,7 +309,7 @@ func TestAccountRecovery_InterleavedPasskeyBeginThenPasswordComplete(t *testing.
 		NewPassword: "newpass123",
 	})
 	require.NoError(t, err)
-	_, _, _, err = auth.Login(context.Background(), env.store, "interleave", "newpass123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(context.Background(), env.store, hubtestutil.TestSecretHasher(), "interleave", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	req := &leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: token}

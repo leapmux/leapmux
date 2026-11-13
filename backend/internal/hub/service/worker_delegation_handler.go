@@ -16,8 +16,9 @@ import (
 
 // WorkerDelegationHandler exposes /worker/delegation-tokens/{mint,revoke}.
 // Workers authenticate with their existing auth_token (Bearer) and ask
-// the hub to mint a short-lived delegation token bound to user_id alone. The
-// minted bearer is what spawned agents present when
+// the hub to mint a short-lived delegation token for the user. The token
+// records its minting Worker, which controls revocation authority and
+// delegation Worker scope. Spawned agents present the bearer when
 // calling into the hub or another worker through the cross-worker path.
 //
 // Revocation is routed through the required credential lifecycle effects so
@@ -101,11 +102,9 @@ func (h *WorkerDelegationHandler) handleMint(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "user_id, issued_for_tab_id are required", http.StatusBadRequest)
 		return
 	}
-	// Mint the id HERE, before the first store read that needs an owner.
-	// waitForTabOwnership below reads workspace_tab_owned, which is keyed by
-	// (user_id, tab_id) -- tab ids are unique only within a user, so that
-	// lookup needs the caller's owner and nothing has authorized it yet at this
-	// point (the registrant check runs after it).
+	// Validate the user ID before the registrant check and the ownership lookup.
+	// workspace_tab_owned keys each tab by its user, so the lookup requires
+	// the validated owner as well as the tab ID.
 	//
 	// Unreachable behind the empty-field validation above, which already 400s a
 	// blank user_id. Kept as the mint boundary's own fail-close so a future
@@ -221,7 +220,12 @@ func (h *WorkerDelegationHandler) handleRevoke(w http.ResponseWriter, r *http.Re
 	}
 	row, err := h.store.DelegationTokens().GetByID(r.Context(), req.TokenID)
 	if err != nil {
-		http.Error(w, "token not found", http.StatusNotFound)
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "token not found", http.StatusNotFound)
+		} else {
+			slog.Error("worker delegation: token lookup failed", "token_id", req.TokenID, "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
 		return
 	}
 	if row.WorkerID != worker.ID {
@@ -310,7 +314,7 @@ func (h *WorkerDelegationHandler) waitForTabOwnership(ctx context.Context, userI
 // 401 for a rejected credential, 500 for a store failure, which says nothing
 // about the credential.
 func (h *WorkerDelegationHandler) authenticateWorker(w http.ResponseWriter, r *http.Request) (*store.Worker, bool) {
-	worker, err := auth.AuthenticateWorkerBearer(r.Context(), h.store, r.Header.Get("Authorization"))
+	worker, err := auth.AuthenticateWorkerBearer(r.Context(), h.store, h.validator.Hasher(), r.Header.Get("Authorization"))
 	if err == nil {
 		return worker, true
 	}

@@ -22,7 +22,7 @@ func fromDBDeviceAuthorization(d gendb.DeviceAuthorization) store.DeviceAuthoriz
 		uid = d.UserID.String
 	}
 	return store.DeviceAuthorization{
-		DeviceCode:      d.DeviceCode,
+		DeviceCodeHash:  d.DeviceCodeHash,
 		UserCode:        d.UserCode,
 		DeviceName:      d.DeviceName,
 		UserID:          uid,
@@ -51,7 +51,7 @@ func userIDText(u userid.UserID) pgtype.Text {
 
 func (s *deviceAuthorizationStore) Create(ctx context.Context, p store.CreateDeviceAuthorizationParams) error {
 	return mapErr(s.conn.q.CreateDeviceAuthorization(ctx, gendb.CreateDeviceAuthorizationParams{
-		DeviceCode:      p.DeviceCode,
+		DeviceCodeHash:  p.DeviceCodeHash,
 		UserCode:        p.UserCode,
 		DeviceName:      p.DeviceName,
 		ClientID:        p.ClientID,
@@ -62,8 +62,8 @@ func (s *deviceAuthorizationStore) Create(ctx context.Context, p store.CreateDev
 	}))
 }
 
-func (s *deviceAuthorizationStore) Get(ctx context.Context, deviceCode string) (*store.DeviceAuthorization, error) {
-	d, err := s.conn.q.GetDeviceAuthorization(ctx, deviceCode)
+func (s *deviceAuthorizationStore) Get(ctx context.Context, deviceCodeHash []byte) (*store.DeviceAuthorization, error) {
+	d, err := s.conn.q.GetDeviceAuthorization(ctx, deviceCodeHash)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -91,12 +91,12 @@ func (s *deviceAuthorizationStore) Approve(ctx context.Context, p store.ApproveD
 		return 0, store.ErrInvalidArgument
 	}
 	return s.conn.q.ApproveDeviceAuthorization(ctx, gendb.ApproveDeviceAuthorizationParams{
-		UserID:        userIDText(p.UserID),
-		DeviceCode:    p.DeviceCode,
-		GrantedScopes: p.GrantedScopes,
-		ApprovedState: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED,
-		PendingState:  leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING,
-		Now:           pgtime.New(now),
+		UserID:         userIDText(p.UserID),
+		DeviceCodeHash: p.DeviceCodeHash,
+		GrantedScopes:  p.GrantedScopes,
+		ApprovedState:  leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED,
+		PendingState:   leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_PENDING,
+		Now:            pgtime.New(now),
 	})
 }
 
@@ -128,18 +128,18 @@ func (s *deviceAuthorizationStore) DenyByUserCode(ctx context.Context, userCode 
 	})
 }
 
-func (s *deviceAuthorizationStore) Consume(ctx context.Context, deviceCode string, now time.Time) (int64, error) {
+func (s *deviceAuthorizationStore) Consume(ctx context.Context, deviceCodeHash []byte, now time.Time) (int64, error) {
 	return s.conn.q.ConsumeDeviceAuthorization(ctx, gendb.ConsumeDeviceAuthorizationParams{
-		DeviceCode:    deviceCode,
-		ApprovedState: leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED,
-		Now:           pgtime.New(now),
+		DeviceCodeHash: deviceCodeHash,
+		ApprovedState:  leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_APPROVED,
+		Now:            pgtime.New(now),
 	})
 }
 
-func (s *deviceAuthorizationStore) TouchPoll(ctx context.Context, deviceCode string, now time.Time) error {
+func (s *deviceAuthorizationStore) TouchPoll(ctx context.Context, deviceCodeHash []byte, now time.Time) error {
 	return mapErr(s.conn.q.TouchDeviceAuthorizationPoll(ctx, gendb.TouchDeviceAuthorizationPollParams{
-		DeviceCode: deviceCode,
-		Now:        pgtime.NewNull(&now),
+		DeviceCodeHash: deviceCodeHash,
+		Now:            pgtime.NewNull(&now),
 	}))
 }
 

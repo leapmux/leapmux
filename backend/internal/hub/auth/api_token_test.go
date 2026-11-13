@@ -1,13 +1,16 @@
 package auth_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/leapmux/leapmux/internal/authscope"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"connectrpc.com/connect/v2"
@@ -23,6 +26,27 @@ import (
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
 	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
+
+func TestSecretHasher(t *testing.T) {
+	_, err := auth.NewSecretHasher(bytes.Repeat([]byte{1}, 15))
+	require.Error(t, err)
+	pepper := bytes.Repeat([]byte{1}, 16)
+	hasher, err := auth.NewSecretHasher(pepper)
+	require.NoError(t, err)
+	assert.False(t, hasher.IsZero())
+	digest := hasher.Hash("secret")
+	require.Len(t, digest, 32)
+	assert.Equal(t, digest, hasher.Hash("secret"))
+	assert.NotEqual(t, digest, hasher.Hash(""))
+	pepper[0] = 2
+	assert.Equal(t, digest, hasher.Hash("secret"), "the hasher owns a copy of its pepper")
+	other, err := auth.NewSecretHasher(pepper)
+	require.NoError(t, err)
+	assert.NotEqual(t, digest, other.Hash("secret"))
+	var zero auth.SecretHasher
+	assert.True(t, zero.IsZero())
+	assert.PanicsWithValue(t, "auth: zero SecretHasher; construct it with NewSecretHasher", func() { zero.Hash("secret") })
+}
 
 func newTestStore(t *testing.T) store.Store {
 	t.Helper()
@@ -51,11 +75,12 @@ func seedWorkerAndWorkspace(t *testing.T, st store.Store, userID string) (worker
 	t.Helper()
 	ctx := context.Background()
 	workerID = id.Generate()
+	workspaceID = id.Generate()
 	require.NoError(t, st.Workers().Create(ctx, store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    id.Generate(),
-		RegisteredBy: userid.MustNew(userID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		RegisteredBy:  userid.MustNew(userID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 	require.NoError(t, st.Workspaces().Create(ctx, store.CreateWorkspaceParams{
 		ID:          workspaceID,
@@ -124,43 +149,71 @@ func TestTokenValidator_RejectsMalformedBearer(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestTokenValidator_RejectsUnknownKindWithoutDBLookup pins one of the
-// plan's correctness invariants: a bearer with an unrecognised kind
-// char (anything other than 'a' / 'd') never reaches a DB query,
-// because parseBearer rejects it first. The plan's bearer-format optimization
-// hinges on this: "Unknown kinds are rejected without a DB round-trip
-// at all" (plan line 851).
-//
-// This test checks that with a no-op store wrapper that fails any call
-// — so a single hit while validating an unknown-kind bearer fails the
-// test loudly.
+// Malformed bearers must fail before either credential table is read.
 func TestTokenValidator_RejectsUnknownKindWithoutDBLookup(t *testing.T) {
-	st := newTestStore(t) // a real store, but no call may reach it
-	v, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
+	st := newTestStore(t)
+	var apiReads, delegationReads atomic.Int64
+	wrapped := bearerLookupStore{Store: st, apiReads: &apiReads, delegationReads: &delegationReads}
+	v, err := auth.NewTokenValidator(wrapped, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-
-	cases := []string{
-		// Unknown kind chars.
+	for _, bearer := range []string{
 		"lmx_x" + id.Generate() + "_" + auth.MintAccessSecret(),
 		"lmx_z" + id.Generate() + "_" + auth.MintAccessSecret(),
-		// Empty kind area: "lmx_" alone, "lmx__secret", "lmx_a" (no body).
-		"lmx_",
-		"lmx_a",
-		// Missing secret separator.
-		"lmx_a" + id.Generate(),
-		// Empty id (kind char followed immediately by separator).
-		"lmx_a_" + auth.MintAccessSecret(),
-		// Empty secret.
-		"lmx_a" + id.Generate() + "_",
-		// Wrong prefix entirely.
+		"lmx_", "lmx__secret", "lmx_a", "lmx_a" + id.Generate(),
+		"lmx_a_" + auth.MintAccessSecret(), "lmx_a" + id.Generate() + "_",
 		"foo_a" + id.Generate() + "_" + auth.MintAccessSecret(),
-		// Only the prefix.
-		"lmx_",
+	} {
+		t.Run(bearer, func(t *testing.T) {
+			_, err := v.ValidateBearer(context.Background(), bearer)
+			require.ErrorIs(t, err, auth.ErrInvalidToken)
+			assert.Zero(t, apiReads.Load())
+			assert.Zero(t, delegationReads.Load())
+		})
 	}
-	for _, bearer := range cases {
-		_, err := v.ValidateBearer(context.Background(), bearer)
-		require.Error(t, err, "bearer %q must be rejected", bearer)
+	for _, kind := range []auth.BearerKind{auth.BearerKindAPI, auth.BearerKindDelegation} {
+		apiBefore, delegationBefore := apiReads.Load(), delegationReads.Load()
+		_, err := v.ValidateBearer(context.Background(), auth.FormatBearer(kind, id.Generate(), auth.MintAccessSecret()))
+		require.ErrorIs(t, err, auth.ErrInvalidToken)
+		if kind == auth.BearerKindAPI {
+			assert.Equal(t, apiBefore+1, apiReads.Load())
+			assert.Equal(t, delegationBefore, delegationReads.Load())
+		} else {
+			assert.Equal(t, apiBefore, apiReads.Load())
+			assert.Equal(t, delegationBefore+1, delegationReads.Load())
+		}
 	}
+}
+
+type bearerLookupStore struct {
+	store.Store
+	apiReads, delegationReads *atomic.Int64
+}
+
+func (s bearerLookupStore) APITokens() store.APITokenStore {
+	return bearerLookupAPITokens{APITokenStore: s.Store.APITokens(), reads: s.apiReads}
+}
+func (s bearerLookupStore) DelegationTokens() store.DelegationTokenStore {
+	return bearerLookupDelegationTokens{DelegationTokenStore: s.Store.DelegationTokens(), reads: s.delegationReads}
+}
+
+type bearerLookupAPITokens struct {
+	store.APITokenStore
+	reads *atomic.Int64
+}
+
+func (s bearerLookupAPITokens) GetByID(ctx context.Context, id string) (*store.APIToken, error) {
+	s.reads.Add(1)
+	return s.APITokenStore.GetByID(ctx, id)
+}
+
+type bearerLookupDelegationTokens struct {
+	store.DelegationTokenStore
+	reads *atomic.Int64
+}
+
+func (s bearerLookupDelegationTokens) GetByID(ctx context.Context, id string) (*store.DelegationToken, error) {
+	s.reads.Add(1)
+	return s.DelegationTokenStore.GetByID(ctx, id)
 }
 
 func TestTokenValidator_AcceptsValidAPIBearer(t *testing.T) {
@@ -189,6 +242,53 @@ func TestTokenValidator_AcceptsValidAPIBearer(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, info.AuthenticatedAt.Equal(token.CreatedAt.UTC()),
 		"API bearer auth basis should use the DB token creation timestamp")
+}
+
+func TestTokenValidator_PropagatesEffectiveAPIDeadline(t *testing.T) {
+	for _, expiry := range []string{"absent", "later", "earlier", "zero"} {
+		t.Run(expiry, func(t *testing.T) {
+			st := newTestStore(t)
+			userID := seedUser(t, st)
+			v, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
+			require.NoError(t, err)
+			var explicit *time.Time
+			switch expiry {
+			case "later":
+				value := time.Now().Add(2 * auth.AbsoluteTokenLifetime)
+				explicit = &value
+			case "earlier":
+				value := time.Now().Add(time.Hour)
+				explicit = &value
+			case "zero":
+				value := time.Time{}
+				explicit = &value
+			}
+			tokenID, secret := id.Generate(), auth.MintAccessSecret()
+			require.NoError(t, st.APITokens().Create(t.Context(), store.CreateAPITokenParams{
+				ID: tokenID, UserID: userid.MustNew(userID), ClientID: oauthapp.ControlCLIClientID,
+				InstallationName: "deadline", GrantedScopes: "account:read", SecretHash: v.HashSecret(secret), ExpiresAt: explicit,
+			}))
+			row, err := st.APITokens().GetByID(t.Context(), tokenID)
+			require.NoError(t, err)
+			want := row.CreatedAt.Add(auth.AbsoluteTokenLifetime)
+			if row.ExpiresAt != nil && row.ExpiresAt.Before(want) {
+				want = *row.ExpiresAt
+			}
+			now := want.Add(-time.Second)
+			v.Now = func() time.Time { return now }
+			bearer := auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
+			if expiry != "zero" {
+				info, err := v.ValidateBearer(t.Context(), bearer)
+				require.NoError(t, err)
+				got, finite := info.CredentialExpiresAt.At()
+				require.True(t, finite)
+				assert.True(t, want.Equal(got), "the validator propagates the effective stored deadline")
+			}
+			now = want
+			_, err = v.ValidateBearer(t.Context(), bearer)
+			assert.ErrorIs(t, err, auth.ErrTokenExpired)
+		})
+	}
 }
 
 // TestTokenValidator_ReadsItsClockSeam pins the deadline every bearer
@@ -994,4 +1094,19 @@ func TestVerifyBearerSecret_DelegationToken(t *testing.T) {
 
 	_, _, err = v.VerifyBearerSecret(context.Background(), auth.FormatBearer(auth.BearerKindDelegation, tokenID, "wrong"))
 	assert.ErrorIs(t, err, auth.ErrInvalidToken)
+}
+
+func TestSeedWorkerAndWorkspacePersistsGeneratedIdentities(t *testing.T) {
+	st := newTestStore(t)
+	userID := seedUser(t, st)
+	workerID, workspaceID := seedWorkerAndWorkspace(t, st, userID)
+	require.NotEmpty(t, workerID)
+	require.NotEmpty(t, workspaceID)
+	worker, err := st.Workers().GetByID(context.Background(), workerID)
+	require.NoError(t, err)
+	workspace, err := st.Workspaces().GetByID(context.Background(), workspaceID)
+	require.NoError(t, err)
+	assert.Equal(t, workerID, worker.ID)
+	assert.Equal(t, workspaceID, workspace.ID)
+	assert.Equal(t, userID, workspace.OwnerUserID)
 }

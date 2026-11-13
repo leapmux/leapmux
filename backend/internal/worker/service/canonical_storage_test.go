@@ -106,6 +106,7 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 		ID:           "wt-1",
 		WorktreePath: "/tmp/wt1",
 		RepoRoot:     "/repo",
+		RepoGitDir:   regularRepositoryGitDirForTest(t, "/repo"),
 		BranchName:   "main",
 	})
 	require.NoError(t, cwErr)

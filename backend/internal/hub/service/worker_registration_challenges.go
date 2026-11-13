@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
@@ -29,10 +30,11 @@ var errChallengeCapacity = errors.New("the registration challenge store is at ca
 
 // registrationChallenge is one outstanding, one-use challenge.
 type registrationChallenge struct {
-	attemptID string
-	id        string
-	nonce     []byte
-	expiresAt time.Time
+	attemptID             string
+	id                    string
+	nonce                 []byte
+	expiresAt             time.Time
+	expectedAuthTokenHash []byte
 }
 
 // registrationChallengeStore holds the outstanding challenges. One
@@ -60,7 +62,7 @@ func newRegistrationChallengeStore(clock quartz.Clock) *registrationChallengeSto
 
 // Issue mints one challenge for attemptID, replacing the attempt's
 // previous outstanding challenge.
-func (s *registrationChallengeStore) Issue(attemptID string) (id string, nonce []byte, expiresAt time.Time, err error) {
+func (s *registrationChallengeStore) Issue(attemptID string, expectedAuthTokenHash []byte) (id string, nonce []byte, expiresAt time.Time, err error) {
 	var idBuf [16]byte
 	if _, err = rand.Read(idBuf[:]); err != nil {
 		return "", nil, time.Time{}, err
@@ -82,7 +84,7 @@ func (s *registrationChallengeStore) Issue(attemptID string) (id string, nonce [
 			return "", nil, time.Time{}, errChallengeCapacity
 		}
 	}
-	challenge := &registrationChallenge{attemptID: attemptID, id: id, nonce: nonce, expiresAt: expiresAt}
+	challenge := &registrationChallenge{attemptID: attemptID, id: id, nonce: nonce, expiresAt: expiresAt, expectedAuthTokenHash: bytes.Clone(expectedAuthTokenHash)}
 	if previous != nil {
 		delete(s.byID, previous.id)
 	}
@@ -91,24 +93,29 @@ func (s *registrationChallengeStore) Issue(attemptID string) (id string, nonce [
 	return id, nonce, expiresAt, nil
 }
 
+type consumedRegistrationChallenge struct {
+	nonce                 []byte
+	expectedAuthTokenHash []byte
+}
+
 // Consume takes the challenge for one recovery attempt. It fails when
 // the identity is unknown, belongs to another attempt, already served,
 // or expired; a consumed challenge is gone for good.
-func (s *registrationChallengeStore) Consume(id, attemptID string) ([]byte, bool) {
+func (s *registrationChallengeStore) Consume(id, attemptID string) (consumedRegistrationChallenge, bool) {
 	now := s.clock.Now()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	challenge, ok := s.byID[id]
 	if !ok || challenge.attemptID != attemptID {
-		return nil, false
+		return consumedRegistrationChallenge{}, false
 	}
 	delete(s.byID, challenge.id)
 	delete(s.byAttempt, challenge.attemptID)
 	if !now.Before(challenge.expiresAt) {
-		return nil, false
+		return consumedRegistrationChallenge{}, false
 	}
-	return challenge.nonce, true
+	return consumedRegistrationChallenge{nonce: challenge.nonce, expectedAuthTokenHash: challenge.expectedAuthTokenHash}, true
 }
 
 // evictExpiredLocked drops expired challenges; the caller holds mu.

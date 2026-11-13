@@ -28,3 +28,17 @@ func WriteFileDurable(path string, data []byte, mode os.FileMode) error {
 	}
 	return publishFileEntry(path)
 }
+
+// CreateFileDurable publishes complete data without replacing an existing path.
+// A publication failure leaves either no destination or the complete new file.
+func CreateFileDurable(path string, data []byte, mode os.FileMode) error {
+	return createFileDurable(path, data, mode, renameNoReplace)
+}
+
+// The publication function supplies a narrow seam for native collision/failure tests.
+func createFileDurable(path string, data []byte, mode os.FileMode, publish func(string, string) error) error {
+	if err := writeFileSequenced(path, data, mode, publish); err != nil {
+		return err
+	}
+	return publishFileEntry(path)
+}

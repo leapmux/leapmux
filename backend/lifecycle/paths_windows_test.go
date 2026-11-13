@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/windows"
@@ -37,7 +38,7 @@ func TestPrivateResourcesRejectBroadAccessEntries(t *testing.T) {
 	for _, isDirectory := range []bool{true, false} {
 		path := filepath.Join(t.TempDir(), "resource")
 		if isDirectory {
-			require.NoError(t, preparePrivateDir(path))
+			require.NoError(t, atomicfile.MkdirAllPrivate(path))
 		} else {
 			require.NoError(t, os.WriteFile(path, []byte("control-token"), 0o600))
 		}
@@ -50,7 +51,7 @@ func TestPrivateResourcesRejectBroadAccessEntries(t *testing.T) {
 		require.NoError(t, windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT,
 			windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, acl, nil))
 		if isDirectory {
-			require.Error(t, verifyPrivateDir(path))
+			require.Error(t, useronly.VerifyDirectory(path))
 		} else {
 			require.Error(t, verifyPrivateFile(path))
 		}
@@ -64,7 +65,7 @@ func TestPrivateResourcesRejectBroadAccessEntries(t *testing.T) {
 func TestPrivateResourcesUseProtectedACLs(t *testing.T) {
 	t.Run("a created lifecycle directory admits only this account", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "private")
-		require.NoError(t, preparePrivateDir(dir))
+		require.NoError(t, atomicfile.MkdirAllPrivate(dir))
 
 		owned, err := useronly.OwnedByCurrentUser(dir)
 		require.NoError(t, err)
@@ -77,16 +78,16 @@ func TestPrivateResourcesUseProtectedACLs(t *testing.T) {
 		owned, err := useronly.OwnedByCurrentUser(foreign)
 		require.NoError(t, err)
 		require.False(t, owned, "the Windows directory must provide a foreign-owner fixture")
-		err = verifyPrivateDir(foreign)
+		err = useronly.VerifyDirectory(foreign)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "another account")
 	})
 
 	t.Run("a lifecycle directory is verified on reuse", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "reused")
-		require.NoError(t, preparePrivateDir(dir))
+		require.NoError(t, atomicfile.MkdirAllPrivate(dir))
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "marker"), nil, 0o600))
-		require.NoError(t, preparePrivateDir(dir))
+		require.NoError(t, atomicfile.MkdirAllPrivate(dir))
 		assert.FileExists(t, filepath.Join(dir, "marker"), "reuse modifies nothing")
 	})
 }

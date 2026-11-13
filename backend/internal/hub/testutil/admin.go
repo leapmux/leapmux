@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/usernames"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/workerkeys/workerkeystest"
 )
 
 // OpenTestStore opens an in-memory SQLite store and applies migrations.
@@ -93,7 +94,7 @@ func CreateTestUser(t *testing.T, st store.Store, username, plainPassword string
 	return userID
 }
 
-// SessionFromCookie extracts the session ID from a Set-Cookie header value.
+// SessionFromCookie extracts the complete session token from a Set-Cookie header value.
 func SessionFromCookie(t *testing.T, setCookie string) string {
 	t.Helper()
 	require.NotEmpty(t, setCookie, "Set-Cookie header must be present")
@@ -105,4 +106,35 @@ func SessionFromCookie(t *testing.T, setCookie string) string {
 	}
 	t.Fatalf("session cookie %q not found in Set-Cookie: %s", auth.CookieName, setCookie)
 	return ""
+}
+
+// SessionIDFromCookie extracts the public identity from a cookie token.
+func SessionIDFromCookie(t *testing.T, token string) string {
+	t.Helper()
+	sessionID, _, ok := auth.ParseSessionToken(token)
+	require.True(t, ok, "the cookie must hold a valid session token")
+	return sessionID
+}
+
+// CreateTestWorker returns a fixture row and the token issued once at creation.
+// The row stores only the digest, so callers keep the token when they need it.
+func CreateTestWorker(t *testing.T, st store.Store, registeredBy string) (*store.Worker, string) {
+	t.Helper()
+	owner, ok := userid.New(registeredBy)
+	require.True(t, ok, "the fixture Worker needs an owner")
+	workerID, token := id.Generate(), id.Generate()
+	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
+		ID: workerID, AuthTokenHash: TestSecretHasher().Hash(token), RegisteredBy: owner, PublicKeys: storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+	}))
+	worker, err := st.Workers().GetByID(context.Background(), workerID)
+	require.NoError(t, err)
+	return worker, token
+}
+
+// RequireWorkerToken verifies that a token authenticates as the expected Worker.
+func RequireWorkerToken(t *testing.T, st store.Store, workerID, token string) {
+	t.Helper()
+	worker, err := auth.AuthenticateWorkerBearer(t.Context(), st, TestSecretHasher(), "Bearer "+token)
+	require.NoError(t, err)
+	require.Equal(t, workerID, worker.ID)
 }

@@ -33,8 +33,8 @@ func (svc *Service) cleanupsFor(kind tabKind) *cleanupRegistry {
 // returns the env vars the new process must carry and whether a cleanup is now
 // registered under tabID.
 //
-// **The old token is retired FIRST.** controlipc.DefaultSocketPath is a pure
-// function of (worker id, kind, tab id), so the relaunch's socket path is the
+// **The old token is retired FIRST.** controlipc.SocketURL keeps the URL stable
+// for the same tab in a Worker's socket directory, so the relaunch's path is the
 // one the previous spawn is still listening on -- and locallisten refuses a
 // path whose socket answers a dial ("... is already in use"). Minting first
 // therefore fails EVERY relaunch inside one worker process, degradably: the

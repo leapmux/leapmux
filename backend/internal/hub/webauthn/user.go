@@ -14,7 +14,10 @@ type user struct {
 	name        string
 	displayName string
 	credentials []gowebauthn.Credential
-	source      *store.User
+	// credentialRowIDs relates authenticator IDs to the loaded registrations.
+	// The mapping lives only for this verification and is never cached.
+	credentialRowIDs map[string]string
+	source           *store.User
 }
 
 func (u *user) WebAuthnID() []byte                           { return u.id }

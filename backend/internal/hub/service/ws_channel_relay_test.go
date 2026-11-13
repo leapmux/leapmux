@@ -36,7 +36,7 @@ import (
 
 func newTestAuthContexts(t *testing.T) *auth.AuthContextRegistry {
 	t.Helper()
-	_, registry := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{})
+	_, registry := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher()})
 	t.Cleanup(registry.Stop)
 	return registry
 }
@@ -50,9 +50,11 @@ func TestWebSocketHandlersRequireAuthContextRegistry(t *testing.T) {
 	t.Parallel()
 
 	assert.Panics(t, func() {
-		NewChannelRelayHandler(nil, newTestRegistry(), nil, nil, nil, insecureCookies, sendq.NewMaxBytesPoolForTest())
+		NewChannelRelayHandler(nil, hubtestutil.TestSecretHasher(), newTestRegistry(), nil, nil, nil, insecureCookies, sendq.NewMaxBytesPoolForTest())
 	})
-	assert.Panics(t, func() { NewUserEventsHandler(nil, nil, nil, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()) })
+	assert.Panics(t, func() {
+		NewUserEventsHandler(nil, hubtestutil.TestSecretHasher(), nil, nil, nil, insecureCookies, sendq.NewMaxBytesPoolForTest())
+	})
 }
 
 // TestUserEventsHandlerRequiresQueuePool pins the same gate on the OTHER
@@ -63,7 +65,9 @@ func TestWebSocketHandlersRequireAuthContextRegistry(t *testing.T) {
 func TestUserEventsHandlerRequiresQueuePool(t *testing.T) {
 	t.Parallel()
 
-	assert.Panics(t, func() { NewUserEventsHandler(nil, nil, newTestAuthContexts(t), nil, insecureCookies, nil) })
+	assert.Panics(t, func() {
+		NewUserEventsHandler(nil, hubtestutil.TestSecretHasher(), nil, newTestAuthContexts(t), nil, insecureCookies, nil)
+	})
 }
 
 // TestChannelRelayHandlerRequiresWorkerRegistry pins the OTHER dependency the
@@ -76,7 +80,7 @@ func TestChannelRelayHandlerRequiresWorkerRegistry(t *testing.T) {
 	t.Parallel()
 
 	assert.Panics(t, func() {
-		NewChannelRelayHandler(nil, nil, nil, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest())
+		NewChannelRelayHandler(nil, hubtestutil.TestSecretHasher(), nil, nil, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest())
 	})
 }
 
@@ -160,7 +164,7 @@ func TestWSReadLimit_AcceptsLargeChunk(t *testing.T) {
 func TestChannelRelay_NoCookie_Returns401(t *testing.T) {
 	t.Parallel()
 
-	handler := NewChannelRelayHandler(nil, newTestRegistry(), nil, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest())
+	handler := NewChannelRelayHandler(nil, hubtestutil.TestSecretHasher(), newTestRegistry(), nil, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest())
 
 	req := httptest.NewRequest(http.MethodGet, "/ws/channel", nil)
 	rec := httptest.NewRecorder()
@@ -186,13 +190,13 @@ func TestWebSocketHandlers_InternalAuthFailureReturnsGeneric500(t *testing.T) {
 	t.Parallel()
 
 	handlers := map[string]http.Handler{
-		"channel relay": NewChannelRelayHandler(httpAuthFailureStore{}, newTestRegistry(), nil, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest()),
-		"user events":   NewUserEventsHandler(httpAuthFailureStore{}, nil, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest()),
+		"channel relay": NewChannelRelayHandler(httpAuthFailureStore{}, hubtestutil.TestSecretHasher(), newTestRegistry(), nil, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest()),
+		"user events":   NewUserEventsHandler(httpAuthFailureStore{}, hubtestutil.TestSecretHasher(), nil, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest()),
 	}
 	for name, handler := range handlers {
 		t.Run(name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/ws", nil)
-			req.AddCookie(auth.BuildSessionCookie("session", time.Now().Add(time.Hour), false))
+			req.AddCookie(auth.BuildSessionCookie(auth.FormatSessionToken(strings.Repeat("i", 48), strings.Repeat("s", 48)), time.Now().Add(time.Hour), false))
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 
@@ -205,7 +209,7 @@ func TestWebSocketHandlers_InternalAuthFailureReturnsGeneric500(t *testing.T) {
 func TestChannelRelay_SubprotocolToken_NotAccepted(t *testing.T) {
 	t.Parallel()
 
-	handler := NewChannelRelayHandler(nil, newTestRegistry(), nil, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest())
+	handler := NewChannelRelayHandler(nil, hubtestutil.TestSecretHasher(), newTestRegistry(), nil, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest())
 
 	req := httptest.NewRequest(http.MethodGet, "/ws/channel", nil)
 	req.Header.Set("Sec-WebSocket-Protocol", "channel-relay, auth.token.some-token")
@@ -286,7 +290,7 @@ func newBearerRelay(t *testing.T) (*ChannelRelayHandler, store.Store, *auth.Toke
 	hubtestutil.CreateTestAdmin(t, st)
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	h := NewChannelRelayHandler(st, newTestRegistry(), nil, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).WithTokenValidator(tv)
+	h := NewChannelRelayHandler(st, hubtestutil.TestSecretHasher(), newTestRegistry(), nil, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).WithTokenValidator(tv)
 	return h, st, tv
 }
 
@@ -381,7 +385,7 @@ func TestChannelRelay_Bearer_RejectsWhenValidatorNotWired(t *testing.T) {
 	// opt-in for the multi-user-hub.
 	st := hubtestutil.OpenTestStore(t)
 	hubtestutil.CreateTestAdmin(t, st)
-	h := NewChannelRelayHandler(st, newTestRegistry(), nil, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest())
+	h := NewChannelRelayHandler(st, hubtestutil.TestSecretHasher(), newTestRegistry(), nil, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest())
 
 	req := httptest.NewRequest(http.MethodGet, "/ws/channel", nil)
 	req.Header.Set("Authorization", "Bearer lmx_anything_anything")
@@ -404,7 +408,7 @@ func TestChannelRelay_Bearer_AcceptsValidToken(t *testing.T) {
 
 	cm := channelmgr.New(0)
 	wm := workermgr.New(workermgr.DenyAllReach())
-	h := NewChannelRelayHandler(st, wm, cm, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).WithTokenValidator(tv)
+	h := NewChannelRelayHandler(st, hubtestutil.TestSecretHasher(), wm, cm, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).WithTokenValidator(tv)
 
 	bearer := mintAdminAPIToken(t, st, tv)
 
@@ -429,12 +433,12 @@ func TestChannelRelay_BearerRevocationClosesLiveConnection(t *testing.T) {
 	hubtestutil.CreateTestAdmin(t, st)
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	_, cache := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	_, cache := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	t.Cleanup(cache.Stop)
 
 	cm := channelmgr.New(0)
 	wm := workermgr.New(workermgr.DenyAllReach())
-	handler := NewChannelRelayHandler(st, wm, cm, cache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
+	handler := NewChannelRelayHandler(st, hubtestutil.TestSecretHasher(), wm, cm, cache, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(tv)
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
@@ -476,10 +480,10 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 	}))
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    id.Generate(),
-		RegisteredBy: userid.MustNew(userID),
-		PublicKeys:   store.WorkerPublicKeysFromProto(workerkeystest.Keys(workerkeystest.SeededWorkerFill)),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		RegisteredBy:  userid.MustNew(userID),
+		PublicKeys:    store.WorkerPublicKeysFromProto(workerkeystest.Keys(workerkeystest.SeededWorkerFill)),
 	}))
 
 	tokenID := id.Generate()
@@ -510,7 +514,7 @@ func TestChannelRelay_DelegationCannotAttachUnscopedChannel(t *testing.T) {
 	})
 	_, _ = wm.Register(wconn)
 
-	srv := httptest.NewServer(NewChannelRelayHandler(st, wm, cm, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).WithTokenValidator(tv))
+	srv := httptest.NewServer(NewChannelRelayHandler(st, hubtestutil.TestSecretHasher(), wm, cm, newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).WithTokenValidator(tv))
 	t.Cleanup(srv.Close)
 
 	url := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws/channel"
@@ -563,7 +567,7 @@ func TestChannelRelay_AnswersAFrameForAnUnknownChannelWithItsClose(t *testing.T)
 	hubtestutil.CreateTestAdmin(t, st)
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
-	h := NewChannelRelayHandler(st, workermgr.New(workermgr.DenyAllReach()), channelmgr.New(0), newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
+	h := NewChannelRelayHandler(st, hubtestutil.TestSecretHasher(), workermgr.New(workermgr.DenyAllReach()), channelmgr.New(0), newTestAuthContexts(t), nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).
 		WithTokenValidator(tv)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
@@ -670,7 +674,7 @@ func TestChannelRelay_RefusesBeyondThePerUserConnectionCap(t *testing.T) {
 	contexts := newTestAuthContexts(t)
 	contexts.SetMaxConnectionsPerUser(1)
 
-	h := NewChannelRelayHandler(st, workermgr.New(workermgr.DenyAllReach()), channelmgr.New(0),
+	h := NewChannelRelayHandler(st, hubtestutil.TestSecretHasher(), workermgr.New(workermgr.DenyAllReach()), channelmgr.New(0),
 		contexts, nil, insecureCookies, sendq.NewMaxBytesPoolForTest()).WithTokenValidator(tv)
 	bearer := mintAdminAPIToken(t, st, tv)
 

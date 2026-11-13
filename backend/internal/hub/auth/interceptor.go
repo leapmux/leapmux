@@ -2,6 +2,8 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -20,24 +22,20 @@ import (
 	"github.com/leapmux/leapmux/internal/util/periodic"
 )
 
-// publicProcedures lists RPC procedures that do not require a session
-// cookie. Worker registration (Register) is public from the
-// session-cookie perspective because the worker process has no hub
-// session — the handler validates an Authorization: Bearer <key> header
-// itself. Connect is similarly authenticated by the long-lived
-// auth_token in its own header.
+// publicProcedures lists RPC procedures exempt from the interceptor's
+// authentication checks. Some bootstrap authentication or expose public system
+// information. Worker-facing procedures instead authenticate their own
+// credentials because a Worker has no Hub session cookie.
 //
-// "Public" here means "the handler authenticates itself", NOT "anyone may
-// call it". Each worker-facing entry refuses without a credential of its
-// own; the exemption only keeps the interceptor from rejecting that credential
-// as neither a session cookie nor an `lmx_` API token. Adding a procedure that
-// does NOT authenticate itself is an auth bypass.
+// Each Worker-facing entry must reject a caller without its required credential.
+// The exemption prevents the interceptor from rejecting that credential as
+// neither a session cookie nor an lmx_ API token. A Worker-facing procedure that
+// skips both authentication checks permits unauthorized access.
 //
-// The credential differs by entry, so do not assume one mechanism: Register
-// consumes a registration KEY, while Connect and ListOwnedTabsForWorker both
-// resolve a worker auth_token through AuthenticateWorkerBearer. The rationale
-// map in the package's test specifies the mechanism per entry, which is the
-// check that keeps this list honest.
+// Register consumes a registration key. ListOwnedTabsForWorker resolves the
+// Worker token through AuthenticateWorkerBearer. The rationale map in the
+// package's test specifies each entry's authentication mechanism. The Worker's
+// long-lived stream uses /ws/worker and is outside this RPC procedure list.
 //
 // It is derived at init from procedureScopes: a HUB method whose
 // (leapmux.v1.access) option selects `public` is on it, and nothing else is.
@@ -129,10 +127,12 @@ const sessionCacheTTL = 30 * time.Second
 // revocation sequence observed before validation. Cache reads compare that
 // sequence only with marks for the same session, bearer, or user, so unrelated
 // revocations do not turn otherwise-fresh entries into misses.
+// cachedSession stays comparable because stale-entry removal uses sync.Map.CompareAndDelete.
 type cachedSession struct {
-	user     *UserInfo
-	cachedAt time.Time
-	gen      uint64
+	secretHash [sha256.Size]byte
+	user       *UserInfo
+	cachedAt   time.Time
+	gen        uint64
 }
 
 type credentialCaches struct {
@@ -171,11 +171,9 @@ type authState struct {
 	channelRescheduler atomic.Pointer[ChannelExpiryRescheduler]
 
 	// maxConnectionsPerUser limits the long-lived connections one user may hold
-	// at once; zero is unlimited. Atomic rather than revocationMu-guarded because
-	// it is written once at startup and read on every registration -- taking the
-	// lock to read a constant would put startup configuration on the hot path.
-	// The READ still happens under revocationMu, alongside the count it is
-	// compared against; see RegisterAuthenticatedLease.
+	// at once; zero is unlimited. Startup and live settings updates write it
+	// atomically. RegisterAuthenticatedLease reads it under revocationMu alongside
+	// the connection count, so the admission check and registration stay atomic.
 	maxConnectionsPerUser atomic.Int64
 }
 
@@ -221,6 +219,7 @@ func PolicyFromSettings(ctx context.Context, snap *settings.Snapshot) Policy {
 // RPC, unary and streaming alike. Its wrap method is the Connect v2
 // interceptor entry.
 type authInterceptor struct {
+	sessionHasher  SecretHasher
 	store          store.Store
 	policy         func(context.Context) Policy
 	soloUser       *UserInfo
@@ -245,10 +244,11 @@ type authInterceptor struct {
 }
 
 // InterceptorOptions carries what the auth interceptor needs. Store is what a
-// working interceptor requires; every other field is optional, and the rest of
-// the zero value gives cookie-only multi-user auth with the default session
-// duration.
+// working interceptor requires, together with SessionHasher and ServingCtx.
+// Other fields enable optional authentication rungs or policies.
 type InterceptorOptions struct {
+	// SessionHasher validates cookie secrets independently of the bearer rung.
+	SessionHasher SecretHasher
 	// Store validates a session cookie and a bearer credential. A nil Store
 	// gives an interceptor that can do neither, which is useful only for
 	// the AuthContextRegistry that the constructor returns beside it -- a
@@ -292,6 +292,9 @@ func NewInterceptor(opts InterceptorOptions) (connect.ServerInterceptor, *AuthCo
 		panic("auth interceptor requires the Hub's serving context")
 	}
 	st := opts.Store
+	if st != nil && opts.SessionHasher.IsZero() {
+		panic("auth interceptor requires SessionHasher when Store is set")
+	}
 	state := &authState{}
 	soloGate := opts.SoloGate
 	if soloGate == nil {
@@ -300,6 +303,7 @@ func NewInterceptor(opts InterceptorOptions) (connect.ServerInterceptor, *AuthCo
 		soloGate = NewSoloGate(opts.SoloUser != nil, st)
 	}
 	a := &authInterceptor{
+		sessionHasher:  opts.SessionHasher,
 		store:          st,
 		policy:         opts.Policy,
 		soloUser:       opts.SoloUser,
@@ -736,13 +740,12 @@ func (c *AuthContextRegistry) IsAuthContextCurrent(user *UserInfo) bool {
 	return c.isAuthContextCurrentLocked(user)
 }
 
-// CurrentCredentialExpiry returns the most recent expiry this process knows for
-// the credential that authenticated user. For a cookie session it reads the
-// shared session-cache entry -- which a concurrent slide advances by storing a
-// fresh cached row -- so it reads a slide that landed after the caller
-// captured user.CredentialExpiresAt. It falls back to the caller's captured
-// deadline when the session is not cached, and for non-session credentials
-// (bearers), whose cache entry is evicted rather than updated on rotation.
+// CurrentCredentialExpiry returns the most permissive known deadline for the
+// credential that authenticated user. A cookie session uses its cached deadline
+// or, on a cache miss, its authoritative database expiry. A missing reader,
+// missing or expired session, or lookup failure leaves the captured deadline
+// unchanged. A bearer uses any recorded rotation extension. Each successful
+// lookup merges its deadline with the caller's captured deadline.
 //
 // OpenChannel calls this immediately before arming a channel's expiry so a slide
 // that raced the channel's registration -- landing before the channel was
@@ -979,7 +982,7 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 	// spelling signed the same browser out of every Connect procedure the
 	// moment an operator turned secure_cookies off, while the WebSockets --
 	// which AuthenticateHTTP serves -- kept the session alive.
-	token := SessionIDFromCookieHeader(cookieHeader, p.SecureCookies)
+	token := SessionTokenFromCookieHeader(cookieHeader, p.SecureCookies)
 	if token == "" {
 		return ctx, noRefresh, connect.NewError(connect.CodeUnauthenticated, "")
 	}
@@ -989,8 +992,8 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 		return ctx, noRefresh, err
 	}
 	refresh := noRefresh
-	if slidTo := a.touchSession(ctx, token, userInfo, p); !slidTo.IsZero() {
-		refresh = sessionRefresh{sessionID: token, expiresAt: slidTo}
+	if slidTo := a.touchSession(ctx, userInfo.Credential.SessionID(), userInfo, p); !slidTo.IsZero() {
+		refresh = sessionRefresh{token: token, expiresAt: slidTo}
 	}
 
 	ctx = WithUser(ctx, userInfo)
@@ -1250,25 +1253,33 @@ func (a *authInterceptor) bearerCacheFresh(key bearerCacheKeyParts, cs cachedSes
 // within sessionCacheTTL AND no revocation occurred since; otherwise
 // queries the DB and caches the result.
 func (a *authInterceptor) validateTokenCached(ctx context.Context, token string) (*UserInfo, error) {
-	if v, ok := a.state.sessions.Load(token); ok {
+	sessionID, secret, ok := ParseSessionToken(token)
+	if !ok {
+		return nil, connect.Errorf(connect.CodeUnauthenticated, "invalid or expired token")
+	}
+	digest := a.sessionHasher.Hash(secret)
+	if v, ok := a.state.sessions.Load(sessionID); ok {
 		cached := v.(cachedSession)
-		if a.sessionCacheFresh(token, cached) {
+		if a.sessionCacheFresh(sessionID, cached) {
+			if !hmac.Equal(digest, cached.secretHash[:]) {
+				return nil, connect.Errorf(connect.CodeUnauthenticated, "invalid or expired token")
+			}
 			return cloneUserInfoWithGeneration(cached.user, cached.gen), nil
 		}
 		a.state.revocationMu.Lock()
-		a.state.deleteStaleSession(token, cached)
+		a.state.deleteStaleSession(sessionID, cached)
 		a.state.revocationMu.Unlock()
 	}
 
 	for {
 		validationGen := a.state.revocationGen.Load()
-		userInfo, err := ValidateToken(ctx, a.store, token)
+		userInfo, err := ValidateToken(ctx, a.store, a.sessionHasher, token)
 		if err != nil {
 			return nil, err
 		}
 
 		a.state.revocationMu.Lock()
-		if a.sessionRevoked(token, userInfo, validationGen) {
+		if a.sessionRevoked(sessionID, userInfo, validationGen) {
 			a.state.revocationMu.Unlock()
 			return nil, connect.Errorf(connect.CodeUnauthenticated, "session revoked")
 		}
@@ -1276,8 +1287,8 @@ func (a *authInterceptor) validateTokenCached(ctx context.Context, token string)
 			a.state.revocationMu.Unlock()
 			continue
 		}
-		a.state.sessions.Store(token, cachedSession{user: userInfo, cachedAt: time.Now(), gen: validationGen})
-		indexSyncMap(&a.state.userSessions, userInfo.ID.String(), token)
+		a.state.sessions.Store(sessionID, cachedSession{secretHash: [sha256.Size]byte(digest), user: userInfo, cachedAt: time.Now(), gen: validationGen})
+		indexSyncMap(&a.state.userSessions, userInfo.ID.String(), sessionID)
 		a.state.revocationMu.Unlock()
 
 		return cloneUserInfoWithGeneration(userInfo, validationGen), nil
@@ -1314,23 +1325,16 @@ func (a *authInterceptor) bearerRevoked(key bearerCacheKeyParts, user *UserInfo,
 // so this constant is the ceiling and not the interval itself.
 const sessionTouchThreshold = 5 * time.Minute
 
-// touchThreshold is this interceptor's slide interval. It is also the longest
-// that a session row can outlive its last touch, which is the span the mark
-// sweep cutoff measures.
+// touchThreshold is this interceptor's slide interval. The lastTouch sweep
+// uses this interval; sessionRetentionCutoff supplies the revocation-mark cutoff.
 func (a *authInterceptor) touchThreshold(p Policy) time.Duration {
 	return touchThreshold(p.SessionDuration)
 }
 
-// slideDuration is how far past now a touch writes the expiry. See
-// sessionExpiry, which the login path uses for the same span.
-func (a *authInterceptor) slideDuration(p Policy) time.Duration {
-	return sessionLifetime(p.SessionDuration) + a.touchThreshold(p)
-}
-
-// touchSession slides the session expiry to now + slideDuration if the last
+// touchSession writes sessionExpiry when the last
 // touch was more than touchThreshold ago. An in-memory map throttles the
 // check so that most requests skip the DB call entirely — only the first
-// request after the threshold elapses hits SQLite.
+// request after the threshold elapses queries the store.
 //
 // Returns the new expiry, or the zero time when nothing slid. The caller
 // re-issues the session cookie with that expiry. The cookie carries its own
@@ -1355,7 +1359,7 @@ func (a *authInterceptor) touchSession(ctx context.Context, sessionID string, us
 	// into one UPDATE for every authenticated request.
 	a.state.lastTouch.Store(sessionID, now)
 
-	newExpiry := now.Add(a.slideDuration(p)).UTC()
+	newExpiry := sessionExpiry(now, p.SessionDuration)
 	// The trailing instant is the hub clock that judges the previous
 	// expiry, so an expired session cannot match and revive.
 	rows, err := a.store.Sessions().Touch(ctx, store.TouchSessionParams{
@@ -1418,7 +1422,7 @@ const touchSweepInterval = 10 * time.Minute
 // life retains one map entry per session that the process ever authenticated.
 // It removes session and bearer cache entries older than sessionCacheTTL to
 // avoid unlimited growth, and it sweeps revocation/invalidation marks older
-// than slideDuration under revocationMu -- those must outlive the request
+// than the session lifetime plus its refresh allowance under revocationMu -- those must outlive the request
 // snapshots that they invalidate, which is the session's life and not the
 // throttle window.
 //
@@ -1430,7 +1434,7 @@ const touchSweepInterval = 10 * time.Minute
 func (a *authInterceptor) sweepCachesOnce() {
 	now := time.Now()
 	// A BACKGROUND context, because this sweep serves no request. It reads the
-	// two session-duration fields only; the per-request half of the policy (the
+	// session duration only; the per-request half of the policy (the
 	// cookie name, which a trusted proxy's verified protocol can turn secure)
 	// has no meaning without a request and is not consulted here.
 	policy := a.currentPolicy(context.Background())
@@ -1445,9 +1449,9 @@ func (a *authInterceptor) sweepCachesOnce() {
 	// (never-expires) entry is retained until the bearer is evicted; it cannot be
 	// aged out by time. bearerExpiries is not guarded by revocationMu, so this
 	// sweeps outside the lock -- and must CompareAndDelete (not Delete) the exact
-	// value it observed: a concurrent BearerRotatedExtending can RecordBearerExpiry
-	// a fresh future deadline for the same ref between this Range callback reading
-	// `value` and the delete, and an unconditional Delete would drop that new
+	// value it observed: a concurrent BearerRotated call with narrowed=false can
+	// record a fresh future deadline for the same ref between this Range callback
+	// reading `value` and the delete, and an unconditional Delete would drop that new
 	// extension, leaving a channel opening in the validate->index window to arm at
 	// the stale connect-time deadline and be torn down early. This mirrors the
 	// CompareAndDelete guard the sibling session/bearer stale-eviction paths use.
@@ -1497,7 +1501,7 @@ func (a *authInterceptor) sweepCachesOnce() {
 	// uses an unconditional Delete (no CAS), so a lock-free scan could drop a fresh
 	// re-revocation mark stored for the same key in the scan->delete gap -- a
 	// security regression. These maps are also far smaller than the caches.
-	revocationCutoff := now.Add(-a.slideDuration(policy))
+	revocationCutoff := sessionRetentionCutoff(now, policy.SessionDuration)
 	sweepRevocationMarks(&a.state.sessionRevocations, revocationCutoff)
 	sweepRevocationMarks(&a.state.userRevocations, revocationCutoff)
 	sweepRevocationMarks(&a.state.userInvalidations, revocationCutoff)

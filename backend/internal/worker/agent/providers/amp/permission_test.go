@@ -641,6 +641,9 @@ func TestPermissionBridgeClosesAConnectionThatSendsGarbage(t *testing.T) {
 func TestPermissionHelperRefusesUnusableInput(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
+	t.Cleanup(func() {
+		assert.Zero(t, h.sink.PublishedControlCount(), "no unusable request reaches the user")
+	})
 	config := h.helperConfig()
 	cases := []struct {
 		name   string
@@ -700,8 +703,6 @@ func TestPermissionHelperRefusesUnusableInput(t *testing.T) {
 			assert.Contains(t, run.stderr.String(), tc.want)
 		})
 	}
-	// Parallel subtests run after this parent returns.
-	t.Cleanup(func() { assert.Zero(t, h.sink.PublishedControlCount(), "no unusable request reaches the user") })
 }
 
 // An empty stdin is a call with no input, which the banner shows as `{}`.
@@ -893,19 +894,20 @@ func TestPermissionBridgeReadsLittleBeforeTheSecret(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t)
 	bridge := h.agent.bridge
+	bridge.secretTimeout = longSecretTimeout
 	server, client := net.Pipe()
 	t.Cleanup(func() { _ = server.Close(); _ = client.Close() })
 	require.Equal(t, connTracked, bridge.track(server))
 	bridge.wg.Add(1)
 	go bridge.handleConn(server)
 
-	// net.Pipe has no socket buffer, so the accepted byte count equals what
-	// the bridge consumed. A socket can accept the whole write before the
-	// bridge closes it on any operating system.
+	// net.Pipe has no socket buffer, so the write count measures what the
+	// bridge consumed. A socket may buffer the whole write before the peer closes.
 	require.NoError(t, client.SetWriteDeadline(time.Now().Add(30*time.Second)))
 	written, err := client.Write(bytes.Repeat([]byte("x"), 1<<20))
 	require.ErrorIs(t, err, io.ErrClosedPipe)
-	assert.Equal(t, maxSecretLineBytes+1, written, "the bridge reads only the secret limit and the byte that exceeds it")
+	assert.Equal(t, maxSecretLineBytes+1, written,
+		"the bridge reads the secret limit and only the byte that exceeds it")
 	assert.Zero(t, h.sink.PublishedControlCount())
 }
 

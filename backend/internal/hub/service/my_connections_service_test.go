@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -493,14 +494,14 @@ func TestDisconnectApp_SpendsOutstandingOneShotGrants(t *testing.T) {
 
 	deviceCode := id.Generate()
 	require.NoError(t, env.store.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-		DeviceCode: deviceCode,
-		UserCode:   id.Generate(),
-		ClientID:   oauthapp.ControlCLIClientID,
-		ExpiresAt:  time.Now().Add(10 * time.Minute),
+		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode),
+		UserCode:       id.Generate(),
+		ClientID:       oauthapp.ControlCLIClientID,
+		ExpiresAt:      time.Now().Add(10 * time.Minute),
 	}))
 	_, err := env.store.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
-		DeviceCode: deviceCode,
-		UserID:     uid,
+		DeviceCodeHash: hubtestutil.TestSecretHasher().Hash(deviceCode),
+		UserID:         uid,
 	}, time.Now().UTC())
 	require.NoError(t, err)
 
@@ -512,7 +513,7 @@ func TestDisconnectApp_SpendsOutstandingOneShotGrants(t *testing.T) {
 	_, err = env.store.OAuthAuthorizationCodes().GetActive(ctx, code, time.Now().UTC())
 	assert.Error(t, err, "the outstanding authorization code must die with the disconnect")
 
-	row, err := env.store.DeviceAuthorizations().Get(ctx, deviceCode)
+	row, err := env.store.DeviceAuthorizations().Get(ctx, hubtestutil.TestSecretHasher().Hash(deviceCode))
 	require.NoError(t, err)
 	assert.NotNil(t, row.ConsumedAt, "the approved-but-unpolled device grant must die with the disconnect")
 }

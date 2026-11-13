@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/authscope"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"connectrpc.com/connect/v2"
@@ -53,10 +54,9 @@ type userTestEnv struct {
 	// lifecycle.UserInfoInvalidated). Without that, the next call reads a
 	// cache entry minted before the elevation existed.
 	contexts *auth.AuthContextRegistry
-	// tv backs the interceptor's bearer rung, so a test can present a REAL
-	// API credential and not just a session cookie. The two rungs answer
-	// the elevation gate differently -- a bearer has no row to stamp -- and
-	// only a live bearer exercises that.
+	// tv backs the interceptor's bearer rung. A live API credential exercises
+	// bearer authentication, scope restrictions, and browser-approved elevation
+	// separately from browser-session authentication.
 	tv *auth.TokenValidator
 }
 
@@ -112,7 +112,7 @@ func (e *userTestEnv) lapseElevation(t *testing.T) {
 // needs: an OLD anchor with a deadline that is still live.
 func (e *userTestEnv) setElevationRow(t *testing.T, provenAt, expiresAt time.Time) {
 	t.Helper()
-	elevateSessionRow(t, e.store, e.token, e.userID, provenAt, expiresAt)
+	elevateSessionRow(t, e.store, hubtestutil.SessionIDFromCookie(t, e.token), e.userID, provenAt, expiresAt)
 	e.contexts.EvictByUserID(e.userID)
 }
 
@@ -136,10 +136,10 @@ func elevateSessionRow(t *testing.T, st store.Store, sessionID, userID string, p
 // hand, for the harnesses that return a bare token rather than a
 // userTestEnv. Call it BEFORE the first RPC on that token: there is no
 // UserInfo cache entry to evict yet, which is why no registry is needed.
-func elevateSession(t *testing.T, st store.Store, sessionID, userID string) {
+func elevateSession(t *testing.T, st store.Store, token, userID string) {
 	t.Helper()
 	now := time.Now().UTC()
-	elevateSessionRow(t, st, sessionID, userID, now, now.Add(auth.ElevationWindow))
+	elevateSessionRow(t, st, hubtestutil.SessionIDFromCookie(t, token), userID, now, now.Add(auth.ElevationWindow))
 }
 
 // elevated is the env with a proven factor, which is what every sensitive
@@ -183,7 +183,7 @@ func setupUserTestOver(t *testing.T, wrap func(store.Store) store.Store) *userTe
 	// Unauthenticated at the interceptor and never reaches the gate.
 	tv, tvErr := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, tvErr)
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	t.Cleanup(contexts.Stop)
 	ksKey, kErr := keystore.GenerateKey()
 	require.NoError(t, kErr)
@@ -222,7 +222,7 @@ func setupUserTestOver(t *testing.T, wrap func(store.Store) store.Store) *userTe
 		IsAdmin:               true,
 	})
 
-	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "testuser", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	return &userTestEnv{
@@ -259,7 +259,7 @@ func setupOAuthUserTestOver(t *testing.T, wrap func(store.Store) store.Store) *u
 	// Same bearer rung as setupUserTest, so bearerFor works on either env.
 	tv, tvErr := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, tvErr)
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	t.Cleanup(contexts.Stop)
 	connectServer := connect.NewServer(interceptor, service.NewElevationResponseInterceptor())
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
@@ -291,13 +291,13 @@ func setupOAuthUserTestOver(t *testing.T, wrap func(store.Store) store.Store) *u
 	})
 
 	// PasswordSet is false, so password Login refuses. Mint a session directly.
-	token, _, err := auth.CreateSession(context.Background(), st, userid.MustNew(userID), auth.DefaultSessionDuration)
+	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	return &userTestEnv{
 		client:   client,
 		store:    st,
-		token:    token,
+		token:    createdSession.Token,
 		userID:   userID,
 		tv:       tv,
 		contexts: contexts,
@@ -419,11 +419,11 @@ func TestUserService_ChangePassword(t *testing.T) {
 	require.NoError(t, err)
 
 	// Verify login works with new password.
-	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "newpass123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(context.Background(), env.store, hubtestutil.TestSecretHasher(), "testuser", "newpass123", auth.DefaultSessionDuration)
 	assert.NoError(t, err)
 
 	// Verify login with old password fails.
-	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "testpass", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(context.Background(), env.store, hubtestutil.TestSecretHasher(), "testuser", "testpass", auth.DefaultSessionDuration)
 	require.Error(t, err)
 }
 
@@ -443,7 +443,7 @@ func TestUserService_ChangePassword_LapsedElevationIsRefused(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 
-	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "testpass", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(context.Background(), env.store, hubtestutil.TestSecretHasher(), "testuser", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err, "a refused change must leave the password alone")
 }
 
@@ -552,7 +552,7 @@ func TestUserService_ElevationSlideIsCappedInSQL(t *testing.T) {
 // elevationDeadline reads the stored elevation_expires_at for the env's session.
 func elevationDeadline(t *testing.T, env *userTestEnv) time.Time {
 	t.Helper()
-	row, err := env.store.Sessions().GetByID(context.Background(), env.token, time.Now().UTC())
+	row, err := env.store.Sessions().GetByID(context.Background(), hubtestutil.SessionIDFromCookie(t, env.token), time.Now().UTC())
 	require.NoError(t, err)
 	require.NotNil(t, row.ElevationExpiresAt, "the session must carry an elevation")
 	return row.ElevationExpiresAt.UTC()
@@ -935,10 +935,9 @@ func TestRequestEmailChange_Admin_ImmediateChangeLandsUnverified(t *testing.T) {
 // --- RequestEmailChange: non-admin, verification off, immediate unverified change ---
 
 // TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified
-// covers the non-admin case of the collapsed immediate-change branch: with
-// verification off, the change applies immediately but the new address must
-// land UNVERIFIED (verified == userInfo.IsAdmin == false), unlike the admin
-// case which trusts it.
+// covers the non-admin case of the immediate-change branch. With verification
+// off, the change applies immediately and leaves the new address unverified,
+// as it does for administrators.
 func TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified(t *testing.T) {
 	t.Parallel()
 
@@ -961,7 +960,7 @@ func TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified(t *
 		ID:            userID,
 	}))
 
-	userToken, _, _, err := auth.Login(context.Background(), st, "plainuser", "userpass", auth.DefaultSessionDuration)
+	userToken, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "plainuser", "userpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	elevateSession(t, st, userToken, userID)
 
@@ -974,7 +973,7 @@ func TestRequestEmailChange_NonAdmin_VerificationNotRequired_LandsUnverified(t *
 	user, err := st.Users().GetByID(context.Background(), userID)
 	require.NoError(t, err)
 	assert.Equal(t, "new@example.com", user.Email, "the change applies immediately when verification is off")
-	assert.False(t, user.EmailVerified, "a non-admin immediate change must land unverified (verified == IsAdmin)")
+	assert.False(t, user.EmailVerified, "a new address nobody confirmed must remain unverified")
 }
 
 // --- RequestEmailChange: duplicate email rejected ---
@@ -1002,7 +1001,7 @@ func TestRequestEmailChange_CooldownRefusesASecondAddress(t *testing.T) {
 	require.NoError(t, st.Users().UpdateEmail(context.Background(), store.UpdateUserEmailParams{
 		Email: "old@example.com", EmailVerified: true, ID: userID,
 	}))
-	userToken, _, _, err := auth.Login(context.Background(), st, "flooduser", "userpass", auth.DefaultSessionDuration)
+	userToken, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "flooduser", "userpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	elevateSession(t, st, userToken, userID)
 
@@ -1083,7 +1082,7 @@ func setupVerificationUserTestServer(t *testing.T, emailVerificationRequired boo
 	}
 
 	mux := http.NewServeMux()
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, Policy: servicetest.AuthPolicy(set)})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, Policy: servicetest.AuthPolicy(set)})
 	t.Cleanup(contexts.Stop)
 
 	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil)
@@ -1097,7 +1096,7 @@ func setupVerificationUserTestServer(t *testing.T, emailVerificationRequired boo
 	client := leapmuxv1connect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 
 	// Log in as admin (bootstrap user).
-	token, _, _, err := auth.Login(context.Background(), st, "admin", "admin123", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "admin", "admin123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	return client, st, token
@@ -1119,7 +1118,7 @@ func TestRequestEmailChange_UnverifiedAccountStaysRequired(t *testing.T) {
 		Email:                 "old@example.com",
 		FirstCredentialExempt: true,
 	}))
-	userToken, _, _, err := auth.Login(context.Background(), st, "unverifieduser", "userpass", auth.DefaultSessionDuration)
+	userToken, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "unverifieduser", "userpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	elevateSession(t, st, userToken, userID)
 
@@ -1159,7 +1158,7 @@ func TestRequestEmailChange_ConfigOn_PendingEmail(t *testing.T) {
 	require.NoError(t, err)
 
 	// Log in as the non-admin user.
-	userToken, _, _, err := auth.Login(context.Background(), st, "verifyuser", "userpass", auth.DefaultSessionDuration)
+	userToken, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "verifyuser", "userpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	elevateSession(t, st, userToken, userID)
 
@@ -1428,7 +1427,7 @@ func setupResendUserTestWith(t *testing.T, seed regKeySeed) (*userTestEnv, *mail
 	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), rec, mail.Renderer{}, nil)
 
 	mux := http.NewServeMux()
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(contexts.Stop)
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
@@ -1447,7 +1446,7 @@ func setupResendUserTestWith(t *testing.T, seed regKeySeed) (*userTestEnv, *mail
 		ID: userID, Username: "resender", PasswordHash: hash,
 		DisplayName: "Resender", FirstCredentialExempt: true,
 	})
-	token, _, _, err := auth.Login(context.Background(), st, "resender", "testpass", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "resender", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	return &userTestEnv{client: client, store: st, token: token, userID: userID}, rec
@@ -1676,7 +1675,7 @@ func TestVerifyEmail_CrossUser_NoOracle(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.True(t, minted)
-	attackerToken, _, _, err := auth.Login(context.Background(), env.store, "attacker", "testpass2", auth.DefaultSessionDuration)
+	attackerToken, _, _, err := auth.Login(context.Background(), env.store, hubtestutil.TestSecretHasher(), "attacker", "testpass2", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	_, err = env.client.VerifyEmail(authedReq(context.Background(), &leapmuxv1.VerifyEmailRequest{
@@ -1693,13 +1692,13 @@ func TestChangePassword_InvalidatesOtherSessions(t *testing.T) {
 	env := setupUserTest(t)
 
 	// Create a second session for the same user (simulates another device).
-	otherSession, _, err := auth.CreateSession(context.Background(), env.store, userid.MustNew(env.userID), auth.DefaultSessionDuration)
+	otherSession, err := auth.CreateSession(context.Background(), env.store, hubtestutil.TestSecretHasher(), userid.MustNew(env.userID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	// Verify both sessions are valid.
-	_, err = auth.ValidateToken(context.Background(), env.store, env.token)
+	_, err = auth.ValidateToken(context.Background(), env.store, hubtestutil.TestSecretHasher(), env.token)
 	require.NoError(t, err)
-	_, err = auth.ValidateToken(context.Background(), env.store, otherSession)
+	_, err = auth.ValidateToken(context.Background(), env.store, hubtestutil.TestSecretHasher(), otherSession.Token)
 	require.NoError(t, err)
 
 	// Change password using the original session.
@@ -1710,11 +1709,11 @@ func TestChangePassword_InvalidatesOtherSessions(t *testing.T) {
 	require.NoError(t, err)
 
 	// Original session should still be valid (it is the current session).
-	_, err = auth.ValidateToken(context.Background(), env.store, env.token)
+	_, err = auth.ValidateToken(context.Background(), env.store, hubtestutil.TestSecretHasher(), env.token)
 	assert.NoError(t, err)
 
 	// The handler should invalidate the other session.
-	_, err = auth.ValidateToken(context.Background(), env.store, otherSession)
+	_, err = auth.ValidateToken(context.Background(), env.store, hubtestutil.TestSecretHasher(), otherSession.Token)
 	assert.Error(t, err, "other sessions should be invalidated after password change")
 }
 
@@ -1767,9 +1766,9 @@ func newConcurrentSessionRemovalEnv(t *testing.T, remove func(ctx context.Contex
 		DisplayName: "Test User", FirstCredentialExempt: true,
 	}))
 
-	token, _, _, err := auth.Login(ctx, st, "testuser", "testpass", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "testuser", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
-	userInfo, err := auth.ValidateToken(ctx, st, token)
+	userInfo, err := auth.ValidateToken(ctx, st, hubtestutil.TestSecretHasher(), token)
 	require.NoError(t, err)
 	sessionID := userInfo.Credential.SessionID()
 	require.NotEmpty(t, sessionID)
@@ -1796,7 +1795,7 @@ func newConcurrentSessionRemovalEnv(t *testing.T, remove func(ctx context.Contex
 	}}
 
 	mux := http.NewServeMux()
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(contexts.Stop)
 	userSvc := service.NewUserService(hooked, testConfig(), servicetest.NewSettingsManager(t, hooked, nil), auth.NewCredentialLifecycleEffects(contexts, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil)
 	connectServer := connect.NewServer(interceptor)
@@ -1886,9 +1885,9 @@ func TestChangePassword_ToleratesConcurrentActingSessionDeletion(t *testing.T) {
 
 	// The password actually changed: the old one no longer authenticates and the
 	// new one does.
-	_, _, _, err = auth.Login(ctx, env.store, "testuser", "testpass", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "testuser", "testpass", auth.DefaultSessionDuration)
 	require.Error(t, err, "old password must be rejected after the change")
-	_, _, _, err = auth.Login(ctx, env.store, "testuser", "newpass123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "testuser", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err, "new password must authenticate after the change")
 }
 
@@ -1920,9 +1919,9 @@ func TestChangePassword_RefusesConcurrentActingSessionRevocation(t *testing.T) {
 
 	// The password did NOT change: the old one still authenticates and the
 	// new one does not.
-	_, _, _, err = auth.Login(ctx, env.store, "testuser", "testpass", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "testuser", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err, "the refused change must leave the old password working")
-	_, _, _, err = auth.Login(ctx, env.store, "testuser", "newpass123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "testuser", "newpass123", auth.DefaultSessionDuration)
 	require.Error(t, err, "the refused change must not have committed the new password")
 }
 
@@ -1950,7 +1949,7 @@ func TestChangePassword_OAuthUser_SetsFirstPasswordWithoutElevation(t *testing.T
 	assert.True(t, user.FirstCredentialExempt)
 
 	// Verify the new password works via login.
-	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "newpass123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(context.Background(), env.store, hubtestutil.TestSecretHasher(), "testuser", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 }
 
@@ -1992,7 +1991,7 @@ func TestChangePassword_PasskeyOnly_RequiresElevation(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, user.FirstCredentialExempt)
 
-	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "newpass123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(context.Background(), env.store, hubtestutil.TestSecretHasher(), "testuser", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 }
 
@@ -2106,8 +2105,19 @@ func TestUnlinkOAuthProvider_LastLink_NoPassword_Blocked(t *testing.T) {
 func TestUnlinkOAuthProvider_ConcurrentRequestsCannotStripEveryLoginMethod(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-	env := setupOAuthUserTest(t).elevated(t)
+	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+	arrivals := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	var calls sync.WaitGroup
+	env := setupOAuthUserTestOver(t, func(st store.Store) store.Store {
+		return unlinkAdmissionStore{Store: st, arrivals: arrivals, release: release}
+	}).elevated(t)
+	t.Cleanup(func() {
+		cancel()
+		releaseOnce.Do(func() { close(release) })
+		calls.Wait()
+	})
 
 	// Two links, no password, no passkey: removing EITHER is allowed, and
 	// removing BOTH is not.
@@ -2121,25 +2131,57 @@ func TestUnlinkOAuthProvider_ConcurrentRequestsCannotStripEveryLoginMethod(t *te
 		}))
 	}
 
-	// The first removal is allowed: one link remains.
-	_, err := env.client.UnlinkOAuthProvider(authedReq(ctx, &leapmuxv1.UnlinkOAuthProviderRequest{
-		ProviderId: "gh-a",
-	}, env.token))
-	require.NoError(t, err)
-
-	// The second is refused: nothing would remain. This is the state a lost
-	// race produced when the rule counted a list read before the lock.
-	_, err = env.client.UnlinkOAuthProvider(authedReq(ctx, &leapmuxv1.UnlinkOAuthProviderRequest{
-		ProviderId: "gh-b",
-	}, env.token))
-	require.Error(t, err)
-	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-	assert.Contains(t, err.Error(), "set a password first")
-
+	type result struct {
+		providerID string
+		err        error
+	}
+	results := make(chan result, 2)
+	for _, providerID := range []string{"gh-a", "gh-b"} {
+		calls.Add(1)
+		go func() {
+			defer calls.Done()
+			_, err := env.client.UnlinkOAuthProvider(authedReq(ctx, &leapmuxv1.UnlinkOAuthProviderRequest{ProviderId: providerID}, env.token))
+			results <- result{providerID: providerID, err: err}
+		}()
+	}
+	for range 2 {
+		select {
+		case <-arrivals:
+		case <-ctx.Done():
+			t.Fatal("both requests must pass the early rule: ", ctx.Err())
+		}
+	}
+	releaseOnce.Do(func() { close(release) })
+	var succeeded, refused []string
+	for range 2 {
+		select {
+		case result := <-results:
+			if result.err == nil {
+				succeeded = append(succeeded, result.providerID)
+			} else {
+				assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(result.err))
+				assert.Contains(t, result.err.Error(), "set a password first")
+				refused = append(refused, result.providerID)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+	require.Len(t, succeeded, 1)
+	require.Len(t, refused, 1)
 	links, err := env.store.OAuthUserLinks().ListByUser(ctx, userid.MustNew(env.userID))
 	require.NoError(t, err)
-	require.Len(t, links, 1, "the account keeps the login method it has left")
-	assert.Equal(t, "gh-b", links[0].ProviderID)
+	require.Len(t, links, 1)
+	assert.Equal(t, refused[0], links[0].ProviderID)
+	provider, err := env.store.OAuthProviders().GetByID(ctx, links[0].ProviderID)
+	require.NoError(t, err)
+	assert.True(t, provider.Enabled)
+	user, err := env.store.Users().GetByID(ctx, env.userID)
+	require.NoError(t, err)
+	assert.False(t, user.HasUsablePassword())
+	passkeys, err := env.store.PasskeyCredentials().CountByUser(ctx, env.userID)
+	require.NoError(t, err)
+	assert.Zero(t, passkeys)
 }
 
 // A link whose provider an administrator DISABLED is not a login method, so
@@ -2209,11 +2251,10 @@ func TestUnlinkOAuthProvider_NotFound(t *testing.T) {
 
 // --- The plain elevation gate: RequestEmailChange and UnlinkOAuthProvider ---
 //
-// Both move a durable identity. The account email receives the
-// recovery link, and on an admin edit it lands VERIFIED with no round
-// trip; an OAuth link is the login method -- and for an OAuth-only account,
-// the very factor that account elevates with. A session alone must not move
-// either.
+// Both move a durable identity. The account email receives the recovery link,
+// and an immediate administrator change leaves the new address unverified.
+// An OAuth link is the login method and, for an OAuth-only account, the factor
+// that account elevates with. A session alone must not move either.
 
 // assertElevationRequired pins the refusal SHAPE, not just the code.
 //
@@ -2341,7 +2382,7 @@ func TestGuardedRPCs_AnswerACommandLineCredentialByItsRemedy(t *testing.T) {
 	user, err := env.store.Users().GetByID(context.Background(), env.userID)
 	require.NoError(t, err)
 	assert.Equal(t, "old@example.com", user.Email)
-	_, _, _, loginErr := auth.Login(context.Background(), env.store, "testuser", "testpass", auth.DefaultSessionDuration)
+	_, _, _, loginErr := auth.Login(context.Background(), env.store, hubtestutil.TestSecretHasher(), "testuser", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, loginErr, "a refused change must leave the password alone")
 }
 
@@ -2549,7 +2590,7 @@ func TestRequestEmailChange_SlidesTheWindow(t *testing.T) {
 	}, env.token))
 	require.NoError(t, err)
 
-	row, err := env.store.Sessions().GetByID(context.Background(), env.token, time.Now().UTC())
+	row, err := env.store.Sessions().GetByID(context.Background(), hubtestutil.SessionIDFromCookie(t, env.token), time.Now().UTC())
 	require.NoError(t, err)
 	require.NotNil(t, row.ElevationExpiresAt)
 	assert.True(t, row.ElevationExpiresAt.After(anchor.Add(time.Hour)),
@@ -2647,7 +2688,7 @@ func TestUnlinkOAuthProvider_SlidesTheWindow(t *testing.T) {
 	}, env.token))
 	require.NoError(t, err)
 
-	row, err := env.store.Sessions().GetByID(context.Background(), env.token, time.Now().UTC())
+	row, err := env.store.Sessions().GetByID(context.Background(), hubtestutil.SessionIDFromCookie(t, env.token), time.Now().UTC())
 	require.NoError(t, err)
 	require.NotNil(t, row.ElevationExpiresAt)
 	assert.True(t, row.ElevationExpiresAt.After(anchor.Add(time.Hour)),
@@ -2819,7 +2860,7 @@ func TestUserService_DeletePasskey_LastPasskeyWithNewPassword_Deactivates(t *tes
 	pkID := seedPasskeyCredential(t, env.store, env.userID, "Only One")
 	env.elevate(t)
 
-	otherSession, _, err := auth.CreateSession(context.Background(), env.store, userid.MustNew(env.userID), auth.DefaultSessionDuration)
+	otherSession, err := auth.CreateSession(context.Background(), env.store, hubtestutil.TestSecretHasher(), userid.MustNew(env.userID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	_, err = env.client.DeletePasskey(authedReq(context.Background(), &leapmuxv1.DeletePasskeyRequest{
@@ -2836,12 +2877,12 @@ func TestUserService_DeletePasskey_LastPasskeyWithNewPassword_Deactivates(t *tes
 	require.NoError(t, err)
 	assert.Empty(t, rows)
 
-	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "newpass123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(context.Background(), env.store, hubtestutil.TestSecretHasher(), "testuser", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
-	_, err = auth.ValidateToken(context.Background(), env.store, env.token)
+	_, err = auth.ValidateToken(context.Background(), env.store, hubtestutil.TestSecretHasher(), env.token)
 	assert.NoError(t, err, "acting session must survive")
-	_, err = auth.ValidateToken(context.Background(), env.store, otherSession)
+	_, err = auth.ValidateToken(context.Background(), env.store, hubtestutil.TestSecretHasher(), otherSession.Token)
 	assert.Error(t, err, "other sessions must be revoked after passkey-only deactivation")
 }
 
@@ -2880,7 +2921,7 @@ func TestUserService_DeactivatePasskeyAuth_ElevatedWithNewPassword(t *testing.T)
 	require.NoError(t, err)
 	assert.Empty(t, rows)
 
-	_, _, _, err = auth.Login(context.Background(), env.store, "testuser", "newpass123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(context.Background(), env.store, hubtestutil.TestSecretHasher(), "testuser", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 }
 
@@ -2927,7 +2968,7 @@ func TestUserService_DeactivatePasskeyAuth_InvalidatesOtherSessions(t *testing.T
 	seedPasskeyCredential(t, env.store, env.userID, "Only")
 	env.elevate(t)
 
-	otherSession, _, err := auth.CreateSession(context.Background(), env.store, userid.MustNew(env.userID), auth.DefaultSessionDuration)
+	otherSession, err := auth.CreateSession(context.Background(), env.store, hubtestutil.TestSecretHasher(), userid.MustNew(env.userID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	_, err = env.client.DeactivatePasskeyAuth(authedReq(context.Background(), &leapmuxv1.DeactivatePasskeyAuthRequest{
@@ -2935,9 +2976,9 @@ func TestUserService_DeactivatePasskeyAuth_InvalidatesOtherSessions(t *testing.T
 	}, env.token))
 	require.NoError(t, err)
 
-	_, err = auth.ValidateToken(context.Background(), env.store, env.token)
+	_, err = auth.ValidateToken(context.Background(), env.store, hubtestutil.TestSecretHasher(), env.token)
 	assert.NoError(t, err, "acting session must survive")
-	_, err = auth.ValidateToken(context.Background(), env.store, otherSession)
+	_, err = auth.ValidateToken(context.Background(), env.store, hubtestutil.TestSecretHasher(), otherSession.Token)
 	assert.Error(t, err, "other sessions must be revoked")
 }
 
@@ -2982,7 +3023,7 @@ func TestResendVerificationEmail_SMTPEnableTransition(t *testing.T) {
 	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), rec, mail.Renderer{}, nil)
 
 	mux := http.NewServeMux()
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(contexts.Stop)
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
@@ -3005,7 +3046,7 @@ func TestResendVerificationEmail_SMTPEnableTransition(t *testing.T) {
 		Email: "unverified@example.com", EmailVerified: false, ID: userID,
 	}))
 
-	token, _, _, err := auth.Login(context.Background(), st, "smtpuser", "testpass", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "smtpuser", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	resp, err := client.ResendVerificationEmail(authedReq(context.Background(), &leapmuxv1.ResendVerificationEmailRequest{}, token))
@@ -3143,19 +3184,52 @@ func TestResendVerificationEmail_FailedSendReportsFailureWindow(t *testing.T) {
 		"the retry lands inside the failure window the response just reported")
 }
 
-func TestBeginPasskeyRegistration_OAuthOnly_NoReauthRequired(t *testing.T) {
+func TestBeginPasskeyRegistration_FreshVerifiedSessionStartsFirstPasskeyWithoutElevation(t *testing.T) {
 	t.Parallel()
-
-	env := setupOAuthUserTest(t)
-
-	reqCtx, req := authedReq(context.Background(), &leapmuxv1.BeginPasskeyRegistrationRequest{}, env.token)
-	_, err := env.client.BeginPasskeyRegistration(reqCtx, req)
-	// Ceremony may fail for missing keystore/RP config; auth must not require reauth proof.
-	if err != nil {
-		assert.NotEqual(t, connect.CodeUnauthenticated, connect.CodeOf(err))
-		assert.NotContains(t, err.Error(), "reauth proof required")
-		assert.NotContains(t, err.Error(), "verify your email")
+	env := setupUserTest(t)
+	ctx := context.Background()
+	userID := id.Generate()
+	require.NoError(t, env.store.Users().Create(ctx, store.CreateUserParams{
+		ID: userID, Username: "first-passkey", PasswordHash: password.PlaceholderHash,
+		Email: "first-passkey@example.com", EmailVerified: true, FirstCredentialExempt: false,
+	}))
+	created, err := auth.CreateSession(ctx, env.store, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration)
+	require.NoError(t, err)
+	row, err := env.store.Sessions().GetByID(ctx, created.ID, time.Now().UTC())
+	require.NoError(t, err)
+	assert.Nil(t, row.ElevationExpiresAt)
+	user, err := env.store.Users().GetByID(ctx, userID)
+	require.NoError(t, err)
+	assert.False(t, user.HasUsablePassword())
+	count, err := env.store.PasskeyCredentials().CountByUser(ctx, userID)
+	require.NoError(t, err)
+	require.Zero(t, count)
+	callCtx := func() context.Context {
+		ctx, info := connect.NewClientContext(context.Background())
+		info.RequestHeader().Set("Cookie", auth.CookieName+"="+created.Token)
+		info.RequestHeader().Set("Origin", passkeyRegistrationOrigin)
+		return ctx
 	}
+	begin, err := env.client.BeginPasskeyRegistration(callCtx(), &leapmuxv1.BeginPasskeyRegistrationRequest{})
+	require.NoError(t, err)
+	require.NotEmpty(t, begin.GetChallenge().GetSessionId())
+	require.NotEmpty(t, begin.GetChallenge().GetOptionsJson())
+	challenge, err := env.store.WebAuthnSessions().Get(ctx, begin.GetChallenge().GetSessionId())
+	require.NoError(t, err)
+	assert.Equal(t, userID, challenge.UserID)
+	assert.Equal(t, leapmuxv1.WebAuthnSessionKind_WEB_AUTHN_SESSION_KIND_REGISTER, challenge.Kind)
+	ceremony := newPasskeyCeremony()
+	ceremony.rp.Origin = passkeyRegistrationOrigin
+	credentialJSON, err := ceremony.registrationResponse(begin.GetChallenge().GetOptionsJson())
+	require.NoError(t, err)
+	_, err = env.client.FinishPasskeyRegistration(callCtx(), &leapmuxv1.FinishPasskeyRegistrationRequest{
+		Credential:   &leapmuxv1.WebAuthnCredential{SessionId: begin.GetChallenge().GetSessionId(), CredentialJson: credentialJSON},
+		FriendlyName: "First passkey",
+	})
+	require.NoError(t, err)
+	count, err = env.store.PasskeyCredentials().CountByUser(ctx, userID)
+	require.NoError(t, err)
+	assert.EqualValues(t, 1, count)
 }
 
 func TestBeginPasskeyRegistration_UnverifiedShell_Rejected(t *testing.T) {
@@ -3173,7 +3247,7 @@ func TestBeginPasskeyRegistration_UnverifiedShell_Rejected(t *testing.T) {
 
 	userSvc := service.NewUserService(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, ks)
 	mux := http.NewServeMux()
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(contexts.Stop)
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
@@ -3189,10 +3263,10 @@ func TestBeginPasskeyRegistration_UnverifiedShell_Rejected(t *testing.T) {
 		ID: userID, Username: "shell", PasswordHash: password.PlaceholderHash,
 		DisplayName: "Shell", EmailVerified: false, FirstCredentialExempt: false, IsAdmin: true,
 	}))
-	token, _, err := auth.CreateSession(context.Background(), st, userid.MustNew(userID), auth.DefaultSessionDuration)
+	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
-	_, err = client.BeginPasskeyRegistration(authedReq(context.Background(), &leapmuxv1.BeginPasskeyRegistrationRequest{}, token))
+	_, err = client.BeginPasskeyRegistration(authedReq(context.Background(), &leapmuxv1.BeginPasskeyRegistrationRequest{}, createdSession.Token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "verify your email")
@@ -3226,7 +3300,7 @@ func TestFinishPasskeyElevation_MalformedCredentialIsUnauthenticated(t *testing.
 	require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, "http://localhost:4327"))
 	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, ks)
 	mux := http.NewServeMux()
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(contexts.Stop)
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
@@ -3254,19 +3328,19 @@ func TestFinishPasskeyElevation_MalformedCredentialIsUnauthenticated(t *testing.
 	// encrypted session row), so the failure lands on the parse branch.
 	sessionID, _, err := wa.BeginElevation(context.Background(), userID, "")
 	require.NoError(t, err)
-	token, _, err := auth.CreateSession(context.Background(), st, userid.MustNew(userID), auth.DefaultSessionDuration)
+	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	_, err = client.FinishPasskeyElevation(authedReq(context.Background(), &leapmuxv1.FinishPasskeyElevationRequest{
 		Credential: &leapmuxv1.WebAuthnCredential{SessionId: sessionID, CredentialJson: "not-a-credential"},
-	}, token))
+	}, createdSession.Token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
 		"a rejected ceremony is the caller's credential failure, not a server error")
 
 	// A rejected ceremony must leave the session UN-elevated: a failed
 	// assertion that granted a window would be worse than no step-up at all.
-	row, err := st.Sessions().GetByID(context.Background(), token, time.Now().UTC())
+	row, err := st.Sessions().GetByID(context.Background(), createdSession.ID, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Nil(t, row.ElevationExpiresAt, "a failed assertion must not elevate")
 }
@@ -3278,7 +3352,7 @@ func TestFinishPasskeyElevation_MalformedCredentialIsUnauthenticated(t *testing.
 func TestUserFinishHandlersRefuseAnEmptyCredential(t *testing.T) {
 	t.Parallel()
 	env := setupUserTest(t)
-	hubtestutil.ElevateSession(t, env.store, env.token, env.userID)
+	hubtestutil.ElevateSession(t, env.store, hubtestutil.SessionIDFromCookie(t, env.token), env.userID)
 	ctx := context.Background()
 
 	for name, cred := range map[string]*leapmuxv1.WebAuthnCredential{
@@ -3325,7 +3399,7 @@ func TestBeginPasskeyRegistration_RefusesBeforeTheBrowserPrompt(t *testing.T) {
 	require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, "http://localhost:4327"))
 	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, ks)
 	mux := http.NewServeMux()
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(contexts.Stop)
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
@@ -3351,13 +3425,13 @@ func TestBeginPasskeyRegistration_RefusesBeforeTheBrowserPrompt(t *testing.T) {
 		Transports: "[]", FriendlyName: "Phone", KeyVersion: keyVersion, CreatedAt: time.Now().UTC(),
 	}))
 
-	token, _, err := auth.CreateSession(context.Background(), st, userid.MustNew(userID), auth.DefaultSessionDuration)
+	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	begin := func() (*leapmuxv1.BeginPasskeyRegistrationResponse, error) {
 		ctx, info := connect.NewClientContext(context.Background())
 		info.RequestHeader().Set("Origin", "http://localhost:4327")
-		return client.BeginPasskeyRegistration(authedReq(ctx, &leapmuxv1.BeginPasskeyRegistrationRequest{}, token))
+		return client.BeginPasskeyRegistration(authedReq(ctx, &leapmuxv1.BeginPasskeyRegistrationRequest{}, createdSession.Token))
 	}
 
 	_, err = begin()
@@ -3370,7 +3444,7 @@ func TestBeginPasskeyRegistration_RefusesBeforeTheBrowserPrompt(t *testing.T) {
 	// in production.
 	now := time.Now().UTC()
 	n, err := st.Sessions().Elevate(context.Background(), store.ElevateSessionParams{
-		SessionID: token, UserID: userid.MustNew(userID),
+		SessionID: createdSession.ID, UserID: userid.MustNew(userID),
 		ElevationProvenAt: now, ElevationExpiresAt: now.Add(auth.ElevationWindow),
 	}, now)
 	require.NoError(t, err)
@@ -3436,7 +3510,7 @@ func TestUserService_ListAndRenamePasskeys_SoloRejected(t *testing.T) {
 	cfg.SoloMode = true
 	userSvc := service.NewUserService(st, cfg, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil)
 	mux := http.NewServeMux()
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(contexts.Stop)
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
@@ -3453,18 +3527,18 @@ func TestUserService_ListAndRenamePasskeys_SoloRejected(t *testing.T) {
 	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
 		ID: userID, Username: "solouser", PasswordHash: hash, DisplayName: "Solo", FirstCredentialExempt: true, IsAdmin: true,
 	}))
-	token, _, err := auth.CreateSession(context.Background(), st, userid.MustNew(userID), auth.DefaultSessionDuration)
+	createdSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	pkID := seedPasskeyCredential(t, st, userID, "Laptop")
 
-	_, err = client.ListPasskeys(authedReq(context.Background(), &leapmuxv1.ListPasskeysRequest{}, token))
+	_, err = client.ListPasskeys(authedReq(context.Background(), &leapmuxv1.ListPasskeysRequest{}, createdSession.Token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "solo mode")
 
 	_, err = client.RenamePasskey(authedReq(context.Background(), &leapmuxv1.RenamePasskeyRequest{
 		Id: pkID, FriendlyName: "Phone",
-	}, token))
+	}, createdSession.Token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "solo mode")
@@ -3477,7 +3551,7 @@ func TestUserService_ListAndRenamePasskeys_SoloRejected(t *testing.T) {
 	// browser they set it in.
 	elevated, err := client.ElevateSession(authedReq(context.Background(), &leapmuxv1.ElevateSessionRequest{
 		CurrentPassword: "testpass",
-	}, token))
+	}, createdSession.Token))
 	require.NoError(t, err)
 	assert.NotNil(t, elevated.GetElevationExpiresAt(), "a real session on a solo hub elevates")
 
@@ -3490,4 +3564,24 @@ func TestUserService_ListAndRenamePasskeys_SoloRejected(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "solo mode")
+}
+
+type unlinkAdmissionStore struct {
+	store.Store
+	arrivals chan<- struct{}
+	release  <-chan struct{}
+}
+
+func (s unlinkAdmissionStore) RunInUserAuthTransaction(ctx context.Context, userID userid.UserID, fn func(store.Store) error) error {
+	select {
+	case s.arrivals <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-s.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return s.Store.RunInUserAuthTransaction(ctx, userID, fn)
 }

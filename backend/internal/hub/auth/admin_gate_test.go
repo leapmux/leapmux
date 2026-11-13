@@ -55,7 +55,7 @@ func setupAdminGateServer(t *testing.T) *adminGateFixture {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	connectServer := connect.NewServer(interceptor)
 
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
@@ -222,16 +222,16 @@ func TestAdminGate_DelegationBearerOfAdminRefused(t *testing.T) {
 	// The delegation row's worker reference is foreign-keyed; seed a real one.
 	workerID := id.Generate()
 	require.NoError(t, f.st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    id.Generate(),
-		RegisteredBy: owner,
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		RegisteredBy:  owner,
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	tokenID := id.Generate()
 	secret := auth.MintAccessSecret()
 	require.NoError(t, f.st.DelegationTokens().Create(context.Background(), store.CreateDelegationTokenParams{
-		GrantedScopes: "workspace:read workspace:write worker:read",
+		GrantedScopes: "admin:read worker:read workspace:read workspace:write",
 		ID:            tokenID,
 		UserID:        owner,
 		WorkerID:      workerID,
@@ -239,10 +239,16 @@ func TestAdminGate_DelegationBearerOfAdminRefused(t *testing.T) {
 		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 
-	_, callErr := f.adminClient.ListSettings(bearerReq(context.Background(), &leapmuxv1.ListSettingsRequest{},
-		"Bearer "+auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret)))
-	require.Error(t, callErr)
-	err := callErr
+	bearer := auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret)
+	info, err := f.tv.ValidateBearer(context.Background(), bearer)
+	require.NoError(t, err)
+	require.NotNil(t, info)
+	assert.True(t, info.IsAdmin)
+	assert.True(t, info.Scopes.Allows(leapmuxv1.Scope_SCOPE_WORKSPACE_READ))
+	assert.False(t, info.Scopes.Allows(leapmuxv1.Scope_SCOPE_ADMIN_READ))
+
+	_, err = f.adminClient.ListSettings(bearerReq(context.Background(), &leapmuxv1.ListSettingsRequest{}, "Bearer "+bearer))
+	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "admin:read",
 		"the SCOPE rung must refuse first, so the caller never learns whether its user is an administrator")
@@ -255,7 +261,7 @@ func TestAdminGate_SoloModeAutoAdmin(t *testing.T) {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, SoloUser: soloUser})
 	connectServer := connect.NewServer(interceptor)
 	adminSvc := service.NewAdminSettingsService(servicetest.NewSettingsManager(t, st, nil), &config.Config{SoloMode: true}, st)
 	leapmuxv1connect.RegisterAdminSettingsServiceHandler(connectServer, adminSvc)

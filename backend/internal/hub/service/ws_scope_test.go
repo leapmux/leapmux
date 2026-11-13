@@ -28,16 +28,9 @@ import (
 // scope rung never sees them. Each states its own required scope at
 // construction instead; these tests drive both poles of that rung.
 //
-// The refusal is asserted EXACTLY (403) and the admission is asserted only as
-// "not the refusal", because what an admitted request does next is the
-// endpoint's business: /ws/channel fails the upgrade, /ws/userevents reaches
-// its registry. Pinning either of those here would make this test fail for a
-// reason that has nothing to do with the grant.
-//
-// A test whose caller carries NO credential gives 401 as well, because there
-// "not 403" is what an unauthenticated answer gives: the request would never
-// reach the scope rung, and the test would report a pass for a door it never
-// opened.
+// Refusal returns 403. Admission reaches the next concrete fixture step:
+// channel upgrade returns 426, and the failing user-events registry returns 500.
+// An authentication failure returns 401 and must fail either positive case.
 
 // mintScopedAPIToken mints an app credential with an arbitrary grant and
 // returns the bearer.
@@ -71,9 +64,9 @@ func newWSScopeEnv(t *testing.T, soloUser *auth.UserInfo) wsScopeEnv {
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
 	require.NoError(t, err)
 	return wsScopeEnv{
-		channel: NewChannelRelayHandler(st, newTestRegistry(), nil, wsScopeAuthContexts(t, st, soloUser), soloUser,
+		channel: NewChannelRelayHandler(st, hubtestutil.TestSecretHasher(), newTestRegistry(), nil, wsScopeAuthContexts(t, st, soloUser), soloUser,
 			insecureCookies, sendq.NewMaxBytesPoolForTest()).WithTokenValidator(tv),
-		userEvents: NewUserEventsHandler(st, unreachableCRDTRegistry(), wsScopeAuthContexts(t, st, soloUser), soloUser,
+		userEvents: NewUserEventsHandler(st, hubtestutil.TestSecretHasher(), unreachableCRDTRegistry(), wsScopeAuthContexts(t, st, soloUser), soloUser,
 			insecureCookies, sendq.NewMaxBytesPoolForTest()).WithTokenValidator(tv),
 		store:     st,
 		validator: tv,
@@ -93,7 +86,7 @@ func wsScopeAuthContexts(t *testing.T, st store.Store, soloUser *auth.UserInfo) 
 	if soloUser == nil {
 		return newTestAuthContexts(t)
 	}
-	_, registry := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser})
+	_, registry := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, SoloUser: soloUser})
 	t.Cleanup(registry.Stop)
 	return registry
 }
@@ -102,8 +95,8 @@ func wsScopeAuthContexts(t *testing.T, st store.Store, soloUser *auth.UserInfo) 
 //
 // /ws/userevents reaches it one step PAST the scope rung, so a nil one turns
 // an admitted request into a nil dereference rather than a status. Its answer
-// is never asserted here -- only that it is not the refusal -- so failing is
-// the cheapest way to reach that step without building a document.
+// is asserted as 500, which proves the request passed authentication and
+// scope enforcement before the registry refused to build a document.
 func unreachableCRDTRegistry() *crdt.Registry {
 	return crdt.NewRegistry(func(context.Context, userid.UserID) (*crdt.Manager, error) {
 		return nil, errors.New("this test never builds a document")
@@ -151,6 +144,12 @@ func TestWebSocketEndpointsRefuseACredentialWithoutTheirScope(t *testing.T) {
 	env := newWSScopeEnv(t, nil)
 	workspaceOnly := mintScopedAPIToken(t, env.store, env.validator, "workspace:read")
 	workerOnly := mintScopedAPIToken(t, env.store, env.validator, "worker:read")
+	var registryOwners []userid.UserID
+	env.userEvents.registry = crdt.NewRegistry(func(_ context.Context, owner userid.UserID) (*crdt.Manager, error) {
+		registryOwners = append(registryOwners, owner)
+		return nil, errors.New("this test never builds a document")
+	}, nil)
+	defer env.userEvents.registry.Shutdown(0)
 
 	t.Run("channel refuses a grant without worker:read", func(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden,
@@ -158,17 +157,22 @@ func TestWebSocketEndpointsRefuseACredentialWithoutTheirScope(t *testing.T) {
 			"opening a channel is reaching a MACHINE; workspace:read is not that permission")
 	})
 	t.Run("channel admits worker:read", func(t *testing.T) {
-		assert.NotEqual(t, http.StatusForbidden,
+		assert.Equal(t, http.StatusUpgradeRequired,
 			serveWithBearer(t, env.channel, "/ws/channel", workerOnly))
 	})
 	t.Run("user events refuses a grant without workspace:read", func(t *testing.T) {
 		assert.Equal(t, http.StatusForbidden,
 			serveWithBearer(t, env.userEvents, "/ws/userevents", workerOnly),
 			"the stream IS the account's layout document; worker:read is not that permission")
+		assert.Empty(t, registryOwners)
 	})
 	t.Run("user events admits workspace:read", func(t *testing.T) {
-		assert.NotEqual(t, http.StatusForbidden,
+		user, err := env.validator.ValidateBearer(t.Context(), workspaceOnly)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusInternalServerError,
 			serveWithBearer(t, env.userEvents, "/ws/userevents", workspaceOnly))
+		assert.Equal(t, []userid.UserID{user.ID}, registryOwners,
+			"admission must reach this user's registry rather than fail during authentication")
 	})
 }
 
@@ -296,7 +300,7 @@ func TestNewWSAuthenticatorPanicsOnANonGrantableScope(t *testing.T) {
 	} {
 		t.Run(scope.String(), func(t *testing.T) {
 			assert.Panics(t, func() {
-				newWSAuthenticator(nil, newTestAuthContexts(t), nil, insecureCookies, scope)
+				newWSAuthenticator(nil, hubtestutil.TestSecretHasher(), newTestAuthContexts(t), nil, insecureCookies, scope)
 			})
 		})
 	}

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -95,8 +96,9 @@ func HTTPDialContext(dial func(ctx context.Context) (net.Conn, error)) func(ctx 
 	}
 }
 
-// Listen opens a listener for the URL. Unsupported schemes return
-// ErrUnsupportedScheme wrapped with a descriptive message.
+// Listen opens a listener for the URL. Unix listeners admit only the current
+// operating-system account through native peer credentials. Unsupported schemes
+// or Unix platforms without verification return ErrUnsupportedScheme.
 func Listen(url string) (net.Listener, error) {
 	scheme, target, err := Parse(url)
 	if err != nil {
@@ -165,5 +167,23 @@ func WaitReady(ctx context.Context, url string) error {
 		case <-timer.C:
 			timer.Reset(backoff)
 		}
+	}
+}
+
+// ErrSocketPathTooLong reports a Unix socket path that exceeds the platform limit.
+var ErrSocketPathTooLong = errors.New("socket path is too long")
+
+// MaxUnixSocketPathBytes is the longest path that a Unix domain socket can take on
+// this platform: the size of sun_path, less one byte for the NUL that ends the
+// path. The BSD family, macOS included, holds 104 bytes, and Linux and Windows
+// hold 108.
+//
+// Callers use the same limit when choosing a socket directory.
+func MaxUnixSocketPathBytes() int {
+	switch runtime.GOOS {
+	case "darwin", "ios", "freebsd", "netbsd", "openbsd", "dragonfly":
+		return 103
+	default:
+		return 107
 	}
 }

@@ -319,10 +319,16 @@ func wireForTestWithKeypair(
 		WorkerID:       "worker-1",
 		Name:           "test",
 		HomeDir:        t.TempDir(),
-		DataDir:        t.TempDir(),
+		DataDir:        shortWorkerDataDir(t),
 	}
 	adjust(&params)
 	w := Wire(params)
+	if runtime.GOOS != "windows" {
+		factory := w.Service.ControlIPC.(*controlipc.Factory)
+		if factory.SocketDir != "" && factory.SocketDir != controlipc.SocketDir(params.DataDir) {
+			t.Cleanup(func() { require.NoError(t, os.RemoveAll(factory.SocketDir)) })
+		}
+	}
 	t.Cleanup(w.Shutdown)
 	return w, client, key
 }
@@ -1048,4 +1054,31 @@ func TestWire_ShutdownJoinsInventoryBeforeFlush(t *testing.T) {
 	}
 	cancel()
 	require.ErrorIs(t, <-result, context.Canceled)
+}
+
+func TestNewControlIPCFactory_PlacesSocketsInTheDataDir(t *testing.T) {
+	var dataDir string
+	w, _, _ := wireForTestWithKeypair(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, func(p *Params) { dataDir = p.DataDir })
+	factory, ok := w.Service.ControlIPC.(*controlipc.Factory)
+	require.True(t, ok)
+	assert.Equal(t, filepath.Join(dataDir, "run", "control"), factory.SocketDir)
+}
+
+// shortWorkerDataDir keeps tests of the preferred socket location below native
+// socket limits. A test of fallback selection explicitly supplies a deep path.
+func shortWorkerDataDir(t *testing.T) string {
+	t.Helper()
+	var dir string
+	if runtime.GOOS == "windows" {
+		dir = t.TempDir()
+	} else {
+		var err error
+		dir, err = os.MkdirTemp("/tmp", "lw-")
+		require.NoError(t, err)
+		t.Cleanup(func() { require.NoError(t, os.RemoveAll(dir)) })
+	}
+	// Match preparation's canonical spelling, including /private/tmp on macOS.
+	canonical, err := filepath.EvalSymlinks(dir)
+	require.NoError(t, err)
+	return canonical
 }

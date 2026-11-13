@@ -120,11 +120,10 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
   // (Current is intentionally excluded). Seed the parent intent so
   // GitOptions paints the caller's mode selected on first render.
   const gitMode = useGitModeState(changeBranchInitialIntent(props.initialMode))
-  // One bundle RPC at dialog open returns path-info + branches + dirty
-  // in a single round trip. The resulting pathInfo plugs into GitOptions
-  // exactly like useGitPathInfo would; the branches list rides through
-  // GitOptions's `preloadedBranches` prop so GitOptions skips its own
-  // ListGitBranches fetcher.
+  // One inspection RPC returns path information and branches. GitOptions
+  // requests working-tree state separately when the active mode needs a
+  // dirty-tree warning. The pathInfo accessor supplies GitOptions, and
+  // preloadedBranches prevents a separate ListGitBranches request.
   const inspect = useChangeBranchInspect({
     workerId: props.workerId,
     gitToplevel: props.gitToplevel,
@@ -181,7 +180,7 @@ export const ChangeBranchDialog: Component<ChangeBranchDialogProps> = (props) =>
         : {}),
       // SwitchBranch intent now carries `checkoutBranchError` set by
       // GitOptions when the destination resolves to the current branch
-      // (the path-info probe's currentBranch is the source of truth, and
+      // (the path-info probe's attachedBranch is the source of truth, and
       // it lives in GitOptions where the branches-list lookup also lives).
       // No extra plumbing needed here.
       git: gitMode.currentIntent(),

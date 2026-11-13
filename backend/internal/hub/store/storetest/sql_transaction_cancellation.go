@@ -74,6 +74,9 @@ func SQLTransactionCancellation(t *testing.T, build func(*sql.DB) store.Store) {
 					return queryErr
 				}
 			})
+			if outcome == "commit" {
+				assert.False(t, store.CommitOutcomeUnknown(err), "automatic rollback has a known outcome")
+			}
 			switch outcome {
 			case "foreign callback", "nested foreign callback":
 				require.ErrorIs(t, err, sql.ErrTxDone)

@@ -327,8 +327,8 @@ message UpdateUserResponse {
 
 message DeleteUserRequest {
   UserSelector user = 1;
-  // Required when the target is an admin (preventing accidental removal of
-  // the last administrator is the caller's job).
+  // Required when the target is an administrator. The last live
+  // administrator cannot be deleted, even with force.
   bool force = 2;
 }
 
@@ -337,9 +337,8 @@ message DeleteUserResponse {}
 message SetUserAdminRequest {
   UserSelector user = 1;
   bool is_admin = 2;
-  // Required when the caller removes its OWN administrator access
-  // (preventing accidental removal of the last administrator is the
-  // caller's job).
+  // Required when the caller removes its own administrator access. The last
+  // live administrator cannot be demoted, even with force.
   bool force = 3;
 }
 

@@ -48,7 +48,7 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 	sectionSvc := service.NewSectionService(st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterSectionServiceHandler(connectServer, sectionSvc)
 	leapmuxv1connect.RegisterWorkspaceServiceHandler(connectServer,
@@ -86,7 +86,7 @@ func setupSectionTest(t *testing.T) *sectionTestEnv {
 	require.NoError(t, err)
 	userID := user.ID
 
-	token, _, _, err := auth.Login(context.Background(), st, "testuser", "testpass", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "testuser", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	return &sectionTestEnv{
@@ -214,7 +214,7 @@ func TestSectionService_ListSections_NeverWrites(t *testing.T) {
 		DisplayName:           "Unseeded",
 		FirstCredentialExempt: true,
 	}))
-	bareToken, _, _, err := auth.Login(ctx, env.store, "unseeded", "testpass", auth.DefaultSessionDuration)
+	bareToken, _, _, err := auth.Login(ctx, env.store, hubtestutil.TestSecretHasher(), "unseeded", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	userID := userid.MustNew(bareID)
 

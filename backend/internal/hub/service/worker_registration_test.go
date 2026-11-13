@@ -144,7 +144,7 @@ func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed r
 	pendingReqs := workermgr.NewPendingRequests(func() time.Duration { return settings.DefaultTimeouts.APITimeout() })
 
 	mux := http.NewServeMux()
-	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
 	connectServer := connect.NewServer(interceptor)
 
@@ -173,7 +173,7 @@ func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed r
 	if options.deregisterEffects != nil {
 		effects = options.deregisterEffects(notif, registry)
 	}
-	connectorSvc := service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{
+	connectorSvc := service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{Hasher: hubtestutil.TestSecretHasher(),
 		Store:             connectorSt,
 		WorkerManager:     wMgr,
 		ChannelManager:    cMgr,
@@ -196,7 +196,7 @@ func regKeyEnvFromStore(t *testing.T, st store.Store, cfg *config.Config, seed r
 	probes := make(chan time.Time)
 	mux.Handle(channelwire.WSRouteWorker, service.NewWorkerStreamHandler(connectorSvc).WithForcedKeepaliveProbesForTest(probes, probeTimeout))
 
-	mgmtSvc := service.NewWorkerManagementService(st, wMgr, service.NewWorkerDeregisterEffects(nil, notif, registry.BroadcastWorkersChanged), mailer, mail.Renderer{}, set)
+	mgmtSvc := service.NewWorkerManagementService(st, hubtestutil.TestSecretHasher(), wMgr, service.NewWorkerDeregisterEffects(nil, notif, registry.BroadcastWorkersChanged), mailer, mail.Renderer{}, set)
 	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, mgmtSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
@@ -515,7 +515,7 @@ func TestExtendRegistrationKey_RejectsExpired(t *testing.T) {
 
 	// Force-expire by soft-deleting the row directly via the store.
 	_, err = env.store.RegistrationKeys().SoftDelete(context.Background(), store.SoftDeleteRegistrationKeyParams{
-		ID:        key,
+		ID:        registrationKeyID(t, env, key),
 		CreatedBy: userid.MustNew(env.adminID(t)),
 	})
 	require.NoError(t, err)
@@ -559,7 +559,7 @@ func TestExtendRegistrationKey_AcceptsInsideBuffer(t *testing.T) {
 
 	// Push the key inside the extend window: 90s remaining < 2min buffer.
 	rows, err := env.store.RegistrationKeys().Extend(context.Background(), store.ExtendRegistrationKeyParams{
-		ID:        key,
+		ID:        registrationKeyID(t, env, key),
 		CreatedBy: userid.MustNew(env.adminID(t)),
 		ExpiresAt: time.Now().Add(90 * time.Second),
 	})
@@ -621,7 +621,7 @@ func TestExtendRegistrationKey_DoesNotResurrectConsumedKey(t *testing.T) {
 	// Push the key inside the extend window so the service-level
 	// buffer check passes.
 	rows, err := env.store.RegistrationKeys().Extend(context.Background(), store.ExtendRegistrationKeyParams{
-		ID:        key,
+		ID:        registrationKeyID(t, env, key),
 		CreatedBy: userid.MustNew(env.adminID(t)),
 		ExpiresAt: time.Now().Add(90 * time.Second),
 	})
@@ -631,9 +631,9 @@ func TestExtendRegistrationKey_DoesNotResurrectConsumedKey(t *testing.T) {
 	// Simulate a concurrent Consume that lands between the service's
 	// SELECT and UPDATE. Calling Consume directly is functionally
 	// equivalent to a worker presenting the key.
-	consumed, err := env.store.RegistrationKeys().Consume(context.Background(), key)
+	consumed, err := env.store.RegistrationKeys().Consume(context.Background(), registrationKeyID(t, env, key))
 	require.NoError(t, err)
-	require.Equal(t, key, consumed.ID)
+	require.Equal(t, registrationKeyID(t, env, key), consumed.ID)
 
 	// Extend now races a dead row. The handler's SELECT would have
 	// observed the live state pre-Consume; the UPDATE must refuse to
@@ -646,7 +646,7 @@ func TestExtendRegistrationKey_DoesNotResurrectConsumedKey(t *testing.T) {
 		"a Consumed key must never be resurrectable via Extend")
 
 	// And a fresh Consume must still fail — the row is dead.
-	_, err = env.store.RegistrationKeys().Consume(context.Background(), key)
+	_, err = env.store.RegistrationKeys().Consume(context.Background(), registrationKeyID(t, env, key))
 	assert.ErrorIs(t, err, store.ErrNotFound)
 }
 
@@ -824,7 +824,7 @@ func createBundledWorker(t *testing.T, env *regKeyEnv) string {
 	workerID := id.Generate()
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
 		ID:             workerID,
-		AuthToken:      id.Generate(),
+		AuthTokenHash:  hubtestutil.TestSecretHasher().Hash(id.Generate()),
 		RegisteredBy:   userid.MustNew(env.adminID(t)),
 		AutoRegistered: true,
 		PublicKeys:     storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
@@ -984,7 +984,7 @@ func TestConnect_SendsWorkerIdentityFirst(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	stream := dialWorkerOverUnixSocket(t, ctx, env.mux, worker.AuthToken)
+	stream := dialWorkerOverUnixSocket(t, ctx, env.mux, regResp.GetAuthToken())
 	// The worker sends its hello before the Hub greets it.
 	require.NoError(t, stream.Send(helloRequest(classicHello(0x31))))
 
@@ -1029,7 +1029,7 @@ func openAdminWorkerStream(t *testing.T, env *regKeyEnv) (*workerTestPeer, *stor
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	t.Cleanup(cancel)
-	stream := dialWorker(t, ctx, env.server, worker.AuthToken)
+	stream := dialWorker(t, ctx, env.server, regResp.GetAuthToken())
 	t.Cleanup(func() { _ = stream.Close() })
 	require.NoError(t, stream.Send(helloRequest(classicHello(0x31))))
 	return stream, worker
@@ -1607,8 +1607,8 @@ func TestFailedStopDeliveryEndsTheActiveStreamAndRecoversDurableState(t *testing
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			key := id.Generate()
-			require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
-				ID: key, CreatedBy: userid.MustNew(env.adminID(t)), ExpiresAt: time.Now().Add(time.Hour),
+			require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: hubtestutil.TestSecretHasher().Hash(key),
+				ID: id.Generate(), CreatedBy: userid.MustNew(env.adminID(t)), ExpiresAt: time.Now().Add(time.Hour),
 			}))
 			registered, err := env.registerWithKey(t, key)
 			require.NoError(t, err)
@@ -1672,7 +1672,7 @@ func (failedStopSender) SendAndWait(context.Context, *workermgr.Conn, *leapmuxv1
 }
 
 // authReadHookStore runs afterAuthRead after each successful
-// GetByAuthTokenIncludeDeleted call. This is the window between the stream
+// GetByAuthTokenHashIncludeDeleted call. This is the window between the stream
 // handler's authentication read and connection registration.
 type authReadHookStore struct {
 	store.Store
@@ -1688,8 +1688,8 @@ type authReadHookWorkers struct {
 	afterAuthRead func(*store.Worker)
 }
 
-func (w authReadHookWorkers) GetByAuthTokenIncludeDeleted(ctx context.Context, token string) (*store.Worker, error) {
-	worker, err := w.WorkerStore.GetByAuthTokenIncludeDeleted(ctx, token)
+func (w authReadHookWorkers) GetByAuthTokenHashIncludeDeleted(ctx context.Context, token []byte) (*store.Worker, error) {
+	worker, err := w.WorkerStore.GetByAuthTokenHashIncludeDeleted(ctx, token)
 	if err == nil {
 		w.afterAuthRead(worker)
 	}
@@ -1862,7 +1862,7 @@ func TestConnect_FencedRegistryRefusesWithServiceRestart(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	stream := dialWorker(t, ctx, env.server, worker.AuthToken)
+	stream := dialWorker(t, ctx, env.server, regResp.GetAuthToken())
 	// The registry is fenced before this stream opens, and the Hub reads the
 	// hello before Register refuses the connection, so this Send normally
 	// succeeds. The close frame carries the refusal.
@@ -2277,4 +2277,11 @@ func TestConnectRefusesKeysThatDifferFromTheRegisteredKeys(t *testing.T) {
 	identity, err := real.Receive()
 	require.NoError(t, err)
 	require.NotNil(t, identity.GetWorkerIdentity(), "the registered keys still connect")
+}
+
+func registrationKeyID(t *testing.T, env *regKeyEnv, key string) string {
+	t.Helper()
+	row, err := env.store.RegistrationKeys().GetByKeyHash(t.Context(), hubtestutil.TestSecretHasher().Hash(key))
+	require.NoError(t, err)
+	return row.ID
 }

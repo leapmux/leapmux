@@ -33,8 +33,7 @@ service WorkerConnectorService {
   }
   // Recover the credentials of a committed registration attempt by
   // proving possession of the private keypair whose public halves the
-  // Hub pinned. Returns the original credentials; it never mints a
-  // second worker or token.
+  // Hub pinned. Replaces the token while keeping the same Worker.
   rpc RecoverRegistration(RecoverRegistrationRequest)
       returns (RegisterResponse) {
     option (leapmux.v1.access) = { public: {} };
@@ -148,9 +147,9 @@ message WorkerTabState {
   WorkspaceArchiveState archive_state = 2;
 }
 
-// WorkerManagementService is called BY Frontend on Hub via ConnectRPC.
-// Manages worker registration keys and listings. All RPCs require an
-// authenticated user session.
+// WorkerManagementService manages worker registration keys and listings on Hub
+// via ConnectRPC. It accepts authenticated user credentials, including scoped
+// API credentials with the scope required by each method below.
 service WorkerManagementService {
   option (leapmux.v1.host) = SERVICE_HOST_HUB;
   // Mint a new registration key. The key expires in 5 minutes and is

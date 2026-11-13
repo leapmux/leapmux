@@ -2,7 +2,9 @@ package auth
 
 import (
 	"context"
+	"math"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,10 +18,10 @@ func TestSessionRefreshApplyTo_WritesSlidExpiry(t *testing.T) {
 	expires := time.Now().Add(DefaultSessionDuration).UTC().Truncate(time.Second)
 	h := &connect.Header{}
 
-	sessionRefresh{sessionID: "sess-123", expiresAt: expires}.applyTo(h, false)
+	sessionRefresh{token: "sess-123", expiresAt: expires}.applyTo(h, false)
 
 	values := h.Values("Set-Cookie")
-	require.Len(t, values, 1)
+	require.Len(t, values, 2)
 	parsed, err := http.ParseSetCookie(values[0])
 	require.NoError(t, err)
 	assert.Equal(t, CookieName, parsed.Name)
@@ -32,7 +34,7 @@ func TestSessionRefreshApplyTo_WritesSlidExpiry(t *testing.T) {
 func TestSessionRefreshApplyTo_UsesSecureCookieName(t *testing.T) {
 	h := &connect.Header{}
 
-	sessionRefresh{sessionID: "sess-123", expiresAt: time.Now().Add(time.Hour)}.applyTo(h, true)
+	sessionRefresh{token: "sess-123", expiresAt: time.Now().Add(time.Hour)}.applyTo(h, true)
 
 	parsed, err := http.ParseSetCookie(h.Get("Set-Cookie"))
 	require.NoError(t, err)
@@ -56,7 +58,7 @@ func TestSessionRefreshApplyTo_KeepsHandlerCookie(t *testing.T) {
 	h := &connect.Header{}
 	h.Set("Set-Cookie", ClearSessionCookie(false).String())
 
-	sessionRefresh{sessionID: "sess-123", expiresAt: time.Now().Add(time.Hour)}.applyTo(h, false)
+	sessionRefresh{token: "sess-123", expiresAt: time.Now().Add(time.Hour)}.applyTo(h, false)
 
 	values := h.Values("Set-Cookie")
 	require.Len(t, values, 1, "the refresh must not append a second cookie for the same name")
@@ -66,18 +68,18 @@ func TestSessionRefreshApplyTo_KeepsHandlerCookie(t *testing.T) {
 	assert.Negative(t, parsed.MaxAge, "the clearing cookie must survive the refresh")
 }
 
-// Only a cookie of the SAME name can overwrite the session cookie in a browser,
-// so an unrelated cookie must not stop the refresh. A guard that stood back from
+// Either session spelling can carry a handler decision, but an unrelated cookie
+// must not stop the refresh. A guard that stood back from
 // every Set-Cookie would silently stop refreshing the session on each response
 // that also carried, say, an OAuth state cookie.
 func TestSessionRefreshApplyTo_WritesAlongsideAnUnrelatedCookie(t *testing.T) {
 	h := &connect.Header{}
 	h.Add("Set-Cookie", "oauth-state=abc; Path=/")
 
-	sessionRefresh{sessionID: "sess-123", expiresAt: time.Now().Add(time.Hour)}.applyTo(h, false)
+	sessionRefresh{token: "sess-123", expiresAt: time.Now().Add(time.Hour)}.applyTo(h, false)
 
 	values := h.Values("Set-Cookie")
-	require.Len(t, values, 2, "the unrelated cookie must not suppress the refresh")
+	require.Len(t, values, 3, "the unrelated cookie must not suppress the refresh")
 	parsed, err := http.ParseSetCookie(values[1])
 	require.NoError(t, err)
 	assert.Equal(t, CookieName, parsed.Name)
@@ -91,24 +93,21 @@ func TestSessionRefreshApplyTo_StandsBackFromAnUnreadableCookie(t *testing.T) {
 	h := &connect.Header{}
 	h.Add("Set-Cookie", "this is not a cookie")
 
-	sessionRefresh{sessionID: "sess-123", expiresAt: time.Now().Add(time.Hour)}.applyTo(h, false)
+	sessionRefresh{token: "sess-123", expiresAt: time.Now().Add(time.Hour)}.applyTo(h, false)
 
 	assert.Len(t, h.Values("Set-Cookie"), 1, "an unparseable cookie must fail closed")
 }
 
-// The secure name is a different name, so a handler's plain-name cookie must not
-// stop a secure refresh, and the reverse.
-func TestSessionRefreshApplyTo_MatchesTheNameInUse(t *testing.T) {
+// A handler's result is authoritative for both session spellings.
+func TestSessionRefreshApplyTo_MatchesEitherSessionName(t *testing.T) {
 	h := &connect.Header{}
 	h.Add("Set-Cookie", ClearSessionCookie(false).String())
-
-	sessionRefresh{sessionID: "sess-123", expiresAt: time.Now().Add(time.Hour)}.applyTo(h, true)
-
-	values := h.Values("Set-Cookie")
-	require.Len(t, values, 2, "the __Host- cookie is a separate name and must still be written")
-	parsed, err := http.ParseSetCookie(values[1])
+	sessionRefresh{token: "sess-123", expiresAt: time.Now().Add(time.Hour)}.applyTo(h, true)
+	require.Len(t, h.Values("Set-Cookie"), 1)
+	parsed, err := http.ParseSetCookie(h.Get("Set-Cookie"))
 	require.NoError(t, err)
-	assert.Equal(t, SecureCookieName, parsed.Name)
+	assert.Equal(t, CookieName, parsed.Name)
+	assert.Negative(t, parsed.MaxAge)
 }
 
 // A session must be able to slide BEFORE it expires. This is the property a
@@ -140,12 +139,12 @@ func TestTouchThresholdAlwaysLeavesRoomToSlide(t *testing.T) {
 // The slide must exceed the configured session duration by exactly the throttle
 // window. A request inside that window writes no row, so a shorter expiry would
 // end the session before the configured duration passed since the last request.
-func TestSlideDurationCoversTouchThrottle(t *testing.T) {
+func TestSlideExpiryCoversTouchThrottle(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
 	for _, configured := range []time.Duration{0, -time.Hour, MinSessionDuration, time.Hour, 30 * 24 * time.Hour} {
-		a := &authInterceptor{policy: func(context.Context) Policy { return Policy{SessionDuration: configured} }}
-		assert.Equal(t, sessionLifetime(configured)+touchThreshold(configured), a.slideDuration(a.currentPolicy(context.Background())),
-			"configured=%s", configured)
-		assert.Greater(t, a.slideDuration(a.currentPolicy(context.Background())), sessionLifetime(configured), "configured=%s", configured)
+		want := now.Add(sessionLifetime(configured)).Add(touchThreshold(configured))
+		assert.Equal(t, want, sessionExpiry(now, configured), "configured=%s", configured)
+		assert.True(t, sessionExpiry(now, configured).After(now.Add(sessionLifetime(configured))))
 	}
 }
 
@@ -154,24 +153,61 @@ func TestSlideDurationCoversTouchThrottle(t *testing.T) {
 // window -- at the floor, the entire session.
 func TestSessionExpiryMatchesTheSlide(t *testing.T) {
 	for _, configured := range []time.Duration{0, MinSessionDuration, DefaultSessionDuration} {
-		now := time.Now()
-		a := &authInterceptor{policy: func(context.Context) Policy { return Policy{SessionDuration: configured} }}
-		assert.Equal(t, now.Add(a.slideDuration(a.currentPolicy(context.Background()))).UTC(), sessionExpiry(now, configured),
-			"configured=%s", configured)
+		a := slidingInterceptor(t, configured)
+		before := time.Now()
+		written := a.touchSession(t.Context(), "session", nil, a.currentPolicy(t.Context()))
+		after := time.Now()
+		assert.False(t, written.Before(sessionExpiry(before, configured)))
+		assert.False(t, written.After(sessionExpiry(after, configured)))
 	}
 }
 
-// The floor exists to keep what the two overshoot sources cost together a small
-// share of the session. The throttle scales with the session; the validation
-// cache TTL does not, so it is the term that decides the floor.
-func TestMinSessionDurationBoundsTheOvershoot(t *testing.T) {
-	overshoot := touchThreshold(MinSessionDuration) + sessionCacheTTL
-	assert.LessOrEqual(t, overshoot, MinSessionDuration/5,
-		"at the floor a session must not outlive its configured duration by more than a fifth")
+func TestSessionExpiryPreservesMaximumDuration(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	for _, duration := range []time.Duration{math.MaxInt64 - sessionTouchThreshold, math.MaxInt64 - sessionTouchThreshold + 1, math.MaxInt64 - sessionTouchThreshold + 2, math.MaxInt64} {
+		assert.Equal(t, now.Add(duration).Add(sessionTouchThreshold), sessionExpiry(now, duration))
+		a := slidingInterceptor(t, duration)
+		before := time.Now()
+		info := cookieCallInfo()
+		require.NoError(t, callWrap(t, a.wrap, "/private", info, func(context.Context, connect.Spec, connect.ServerStream) error { return nil }))
+		after := time.Now()
+		written := a.store.Sessions().(*touchRecordingSessionStore).touched.ExpiresAt
+		assert.False(t, written.Before(before.Add(duration).Add(sessionTouchThreshold)))
+		assert.False(t, written.After(after.Add(duration).Add(sessionTouchThreshold)))
+		cookie, err := http.ParseSetCookie(info.ResponseHeader().Get("Set-Cookie"))
+		require.NoError(t, err)
+		assert.True(t, cookie.Expires.After(after))
+		assert.Positive(t, cookie.MaxAge)
+	}
+}
 
-	// And the floor must sit above the window a request can be served from the
-	// cache after the row expired, or "expired" describes nothing.
-	assert.Greater(t, MinSessionDuration, sessionCacheTTL)
+func TestSweepMaximumSessionDurationPreservesFreshRevocations(t *testing.T) {
+	for _, duration := range []time.Duration{math.MaxInt64 - sessionTouchThreshold, math.MaxInt64 - sessionTouchThreshold + 1, math.MaxInt64 - sessionTouchThreshold + 2, math.MaxInt64} {
+		a := &authInterceptor{sessionHasher: testSecretHasher(), state: &authState{}, policy: func(context.Context) Policy { return Policy{SessionDuration: duration} }}
+		now := time.Now()
+		old := now.Add(-duration).Add(-sessionTouchThreshold).Add(-time.Hour)
+		maps := []*sync.Map{&a.state.sessionRevocations, &a.state.userRevocations, &a.state.userInvalidations, &a.state.bearerRevocations, &a.state.bearerInvalidations}
+		for _, marks := range maps {
+			marks.Store("fresh", revocationMark{generation: 1, recordedAt: now})
+			marks.Store("old", revocationMark{generation: 1, recordedAt: old})
+		}
+		a.sweepCachesOnce()
+		for _, marks := range maps {
+			_, fresh := marks.Load("fresh")
+			assert.True(t, fresh, "fresh security marks survive the configured lifetime")
+			_, stale := marks.Load("old")
+			assert.False(t, stale)
+		}
+	}
+}
+
+// A fresh cache entry must still stop authenticating at the credential deadline.
+func TestSessionCacheChecksCredentialDeadline(t *testing.T) {
+	now := time.Now()
+	cached := cachedSession{cachedAt: now, user: &UserInfo{CredentialExpiresAt: DeadlineAt(now)}}
+	assert.True(t, cacheEntryFresh(cached, now.Add(-time.Nanosecond)))
+	assert.False(t, cacheEntryFresh(cached, now))
+	assert.False(t, cacheEntryFresh(cached, now.Add(time.Nanosecond)))
 }
 
 // The lastTouch map is the DB rate-limiter and nothing else reads it, so an
@@ -180,7 +216,7 @@ func TestMinSessionDurationBoundsTheOvershoot(t *testing.T) {
 // authenticated -- seven days of them by default, and however long an operator
 // configured otherwise.
 func TestSweepDropsLastTouchOnceTheThrottleWindowPassed(t *testing.T) {
-	a := &authInterceptor{
+	a := &authInterceptor{sessionHasher: testSecretHasher(),
 		policy: func(context.Context) Policy { return Policy{SessionDuration: DefaultSessionDuration} },
 		state:  &authState{},
 	}
@@ -202,7 +238,7 @@ func TestValidateSessionDuration(t *testing.T) {
 	assert.NoError(t, ValidateSessionDuration(DefaultSessionDuration))
 	assert.NoError(t, ValidateSessionDuration(365*24*time.Hour), "a long session is a policy an operator may hold")
 
-	require.Error(t, ValidateSessionDuration(MinSessionDuration-time.Second))
+	require.EqualError(t, ValidateSessionDuration(MinSessionDuration-time.Second), "must be at least 5m0s, got 4m59s")
 	require.Error(t, ValidateSessionDuration(time.Second))
 	require.Error(t, ValidateSessionDuration(-time.Second))
 }
@@ -210,9 +246,11 @@ func TestValidateSessionDuration(t *testing.T) {
 // A non-positive configured duration must resolve to the default everywhere,
 // including on a hand-built interceptor: a five-minute slide (the throttle
 // alone) would sign every user out through the day.
-func TestSlideDurationFallsBackToDefault(t *testing.T) {
-	a := &authInterceptor{}
-	assert.Equal(t, DefaultSessionDuration+sessionTouchThreshold, a.slideDuration(a.currentPolicy(context.Background())))
+func TestSessionExpiryFallsBackToDefault(t *testing.T) {
+	now := time.Now()
+	for _, configured := range []time.Duration{0, -time.Second} {
+		assert.Equal(t, now.Add(DefaultSessionDuration).Add(sessionTouchThreshold).UTC(), sessionExpiry(now, configured))
+	}
 }
 
 // The configured duration, not the default, is what a slide writes. NewInterceptor
@@ -221,7 +259,7 @@ func TestSlideDurationFallsBackToDefault(t *testing.T) {
 func TestSlideDurationHonoursConfiguredValue(t *testing.T) {
 	configured := 36 * time.Hour
 	sessions := &touchRecordingSessionStore{row: validSessionRow("user", "user")}
-	interceptor, registry := NewInterceptor(InterceptorOptions{
+	interceptor, registry := NewInterceptor(InterceptorOptions{SessionHasher: testSecretHasher(),
 		ServingCtx: context.Background(),
 		Store:      sessionValidationOverrideStore{sessions: sessions},
 		Policy:     func(context.Context) Policy { return Policy{SessionDuration: configured} },
@@ -249,7 +287,7 @@ func TestSlideDurationHonoursConfiguredValue(t *testing.T) {
 // lock acquisitions per request.
 func TestPolicyResolvedOncePerRequest(t *testing.T) {
 	var calls int
-	inc := &authInterceptor{
+	inc := &authInterceptor{sessionHasher: testSecretHasher(),
 		policy: func(context.Context) Policy {
 			calls++
 			return Policy{}
@@ -263,4 +301,23 @@ func TestPolicyResolvedOncePerRequest(t *testing.T) {
 		return nil
 	})
 	assert.EqualValues(t, 1, calls, "one request resolves the policy exactly once")
+}
+
+func TestSessionRetentionCutoffPreservesMaximumDuration(t *testing.T) {
+	now := time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+	for _, duration := range []time.Duration{math.MaxInt64 - sessionTouchThreshold, math.MaxInt64 - sessionTouchThreshold + 1, math.MaxInt64 - sessionTouchThreshold + 2, math.MaxInt64} {
+		cutoff := now.Add(-duration).Add(-sessionTouchThreshold)
+		assert.Equal(t, cutoff, sessionRetentionCutoff(now, duration))
+		var marks sync.Map
+		marks.Store("before", revocationMark{recordedAt: cutoff.Add(-time.Nanosecond)})
+		marks.Store("equal", revocationMark{recordedAt: cutoff})
+		marks.Store("after", revocationMark{recordedAt: cutoff.Add(time.Nanosecond)})
+		sweepRevocationMarks(&marks, cutoff)
+		_, before := marks.Load("before")
+		_, equal := marks.Load("equal")
+		_, after := marks.Load("after")
+		assert.False(t, before)
+		assert.True(t, equal)
+		assert.True(t, after)
+	}
 }

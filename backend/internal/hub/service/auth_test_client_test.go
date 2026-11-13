@@ -2,9 +2,11 @@ package service_test
 
 import (
 	"net/http"
+	"testing"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/service"
@@ -22,7 +24,13 @@ type authTestClient struct {
 
 // mountAuthAndSystem registers the AuthService and the SystemService built
 // over it, as backend/hub/server.go does.
-func mountAuthAndSystem(server *connect.Server, authSvc *service.AuthService, set *settings.Manager) {
+func mountAuthAndSystem(t *testing.T, server *connect.Server, authSvc *service.AuthService, set *settings.Manager) {
+	t.Helper()
+	require.NoError(t, authSvc.InitializeAccountState(t.Context()))
+	registerAuthAndSystem(server, authSvc, set)
+}
+
+func registerAuthAndSystem(server *connect.Server, authSvc *service.AuthService, set *settings.Manager) {
 	leapmuxv1connect.RegisterAuthServiceHandler(server, authSvc)
 	leapmuxv1connect.RegisterSystemServiceHandler(server, service.NewSystemService(authSvc, set))
 }
@@ -34,4 +42,12 @@ func newAuthTestClient(httpClient *http.Client, baseURL string) authTestClient {
 		AuthServiceClient:   leapmuxv1connect.NewAuthServiceClient(c),
 		SystemServiceClient: leapmuxv1connect.NewSystemServiceClient(c),
 	}
+}
+
+// newInitializedAuthService mirrors initialization before serving a test request.
+func newInitializedAuthService(t *testing.T, deps service.AuthServiceDeps) *service.AuthService {
+	t.Helper()
+	svc := service.NewAuthService(deps)
+	require.NoError(t, svc.InitializeAccountState(t.Context()))
+	return svc
 }

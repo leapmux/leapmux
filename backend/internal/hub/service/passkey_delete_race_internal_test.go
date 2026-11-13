@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -73,11 +74,11 @@ func TestDeletePasskey_RefusesWhenTheLockedCountNoLongerNeedsAPassword(t *testin
 	require.False(t, user.FirstCredentialExempt, "precondition: the account holds no password")
 
 	doomed := seedRacePasskey(t, st, user.ID, "Only One")
-	sessionID, _, err := auth.CreateSession(ctx, st, userid.MustNew(user.ID), auth.DefaultSessionDuration)
+	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(user.ID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	now := time.Now().UTC()
 	n, err := st.Sessions().Elevate(ctx, store.ElevateSessionParams{
-		SessionID:          sessionID,
+		SessionID:          createdSession.ID,
 		UserID:             userid.MustNew(user.ID),
 		ElevationProvenAt:  now,
 		ElevationExpiresAt: now.Add(auth.ElevationWindow),
@@ -95,7 +96,7 @@ func TestDeletePasskey_RefusesWhenTheLockedCountNoLongerNeedsAPassword(t *testin
 	}
 	acting := auth.WithUser(ctx, &auth.UserInfo{
 		ID:                 userid.MustNew(user.ID),
-		Credential:         auth.SessionCredential(sessionID),
+		Credential:         auth.SessionCredential(createdSession.ID),
 		AuthenticatedAt:    now,
 		Elevation:          auth.NewElevation(&now, ptrTime(now.Add(auth.ElevationWindow))),
 		UserAuthGeneration: user.AuthGeneration,

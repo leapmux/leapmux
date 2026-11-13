@@ -33,7 +33,7 @@ The Hub's record of one **app**: its name, its redirect addresses, the permissio
 
 ### Channel (E2EE)
 
-The end-to-end-encrypted connection between your browser (or CLI) and a single Worker, multiplexed over one WebSocket and relayed — but never decrypted — by the Hub. One channel is opened per Worker and reused: all of that Worker's agent transcripts, terminal streams, and file requests share the same channel, kept separate by correlation IDs. The channel is periodically re-handshaked to refresh keys. See [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
+The end-to-end-encrypted connection between your browser (or CLI) and a single Worker, multiplexed over one WebSocket and relayed — but never decrypted — by the Hub. One channel is opened per Worker and reused: all of that Worker's agent transcripts, terminal streams, and file requests share the same channel, kept separate by correlation IDs. The initiator normally requests an encrypted in-band rekey after one hour or when nonce usage requires it. A successful rekey refreshes the transport keys without closing the channel or repeating the Hub's channel authorization. If the current key epoch reaches the 70-minute hard limit, the client closes the channel and must complete a new handshake before reuse. A change in the expected user also requires a new channel. See [Encryption & Data](/docs/admin/encryption-and-data/) and [Security & Threat Model](/docs/admin/security/).
 
 ### Connection (app authorization)
 
@@ -51,7 +51,7 @@ A short-lived credential a Worker mints for the agent or terminal running in one
 
 ### Distributed mode
 
-Running LeapMux with the Hub and one or more Workers as separate processes — the Hub on a shared server and Workers on your dev machines — instead of the single all-in-one `solo` process. In this mode the Hub is treated as an authenticated relay that cannot read content, which is what makes it safe for a teammate or platform team to operate. Contrast with **solo mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Threat Model](/docs/admin/security/).
+Running LeapMux with the Hub and one or more Workers as separate processes — the Hub on a shared server and Workers on your dev machines — instead of the single all-in-one `solo` process. In this mode content is end-to-end encrypted while the Hub only relays it. The Hub is still trusted for identity and code. Contrast with **solo mode**. See [Running LeapMux](/docs/admin/running-leapmux/) and [Security & Threat Model](/docs/admin/security/).
 
 ## E
 
@@ -67,7 +67,7 @@ A tab popped out of the tiled layout into a movable, resizable, opacity-adjustab
 
 ### Frontend
 
-The SolidJS web app — running in your browser or embedded in the native desktop app — that renders the tiling UI: the layout, agent chats, terminals, and the file browser. It is where you click, type, and read, and it holds no agent state of its own; everything you care about lives on the **Worker**. One of the three core components alongside the **Hub** and the **Worker**. See [Concepts & Architecture](/docs/getting-started/concepts/).
+The SolidJS web app — running in your browser or embedded in the native desktop app — that renders the tiling UI: the layout, agent chats, terminals, and the file browser. It is where you click, type, and read. The **Worker** holds agent state, and the browser caches rendered message text and code in IndexedDB. After startup, it attempts to remove entries whose recorded last-use time is at least seven days old. Cleanup is best-effort and runs at most once per page load, so entries can remain longer. There is no guaranteed deletion deadline. The cache is not keyed to the account, and signing out does not clear it. One of the three core components alongside the **Hub** and the **Worker**. See [Concepts & Architecture](/docs/getting-started/concepts/).
 
 ## G
 
@@ -79,7 +79,7 @@ A tile turned into a fixed `rows × cols` matrix of panes (up to 20 × 20), with
 
 ### Hub
 
-The central service (`leapmux hub`) that authenticates users, stores accounts, workspaces, and layout geometry, mints Worker registration keys, and relays encrypted traffic between Frontends and Workers. The Hub is an **authenticated relay, not a trusted peer**: it routes opaque ciphertext and sees metadata (who talks to whom, message sizes, timing) but never the plaintext of agent transcripts, terminal I/O, or file contents. Its default listen address is `:4327`. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/admin/running-leapmux/).
+The central service (`leapmux hub`) that authenticates users, stores accounts, workspaces, and layout geometry, mints Worker registration keys, and relays encrypted traffic between Frontends and Workers. The Hub is **trusted for identity and code**. It cannot read content while it only relays ciphertext. A Hub that acts can open its own channel as you or serve modified Frontend code. Its default listen address is `:4327`. See [Concepts & Architecture](/docs/getting-started/concepts/) and [Running LeapMux](/docs/admin/running-leapmux/).
 
 ## I
 
@@ -167,7 +167,14 @@ The ceremony that proves a factor for a credential rather than for a browser ses
 
 ### Tab
 
-A single piece of content inside a tile. There are three kinds: **Agent** (a coding-agent chat), **Terminal** (a shell/PTY), and **File** (a file viewer or diff). You open tabs from the tab bar, rename non-file tabs by double-clicking, close them with the X or a middle-click, and drag them between tiles and workspaces. See [Tabs & Layout](/docs/using/tabs-and-layout/).
+A single piece of content inside a tile. There are four kinds:
+
+- **Agent** — a coding-agent chat.
+- **Terminal** — a shell or pseudo-terminal (PTY).
+- **File** — a file viewer or diff.
+- **Image** — one image an agent returned, opened from its chat row so you can zoom it.
+
+Open Agent, Terminal, and File tabs from the tab bar. Open Image tabs from agent chats. Rename non-file tabs by double-clicking. Close tabs with the X or a middle-click. Drag tabs between tiles and workspaces. See [Tabs & Layout](/docs/using/tabs-and-layout/).
 
 ### Tile (leaf / split / grid)
 
@@ -175,7 +182,7 @@ A rectangular pane in the workspace's recursive tiling layout. A **leaf** tile i
 
 ### TOFU (trust on first use)
 
-The pinning scheme that protects Worker identity. On the first connection to a Worker the Frontend records the Worker's composite static public key, and rejects any later handshake whose key differs — so a compromised Hub cannot silently swap a Worker underneath you. A mismatch raises the **"Worker public key changed"** dialog showing 4-word fingerprints, where you must explicitly Accept or Reject. CLI and cross-Worker connections pin the same way. See [Managing Workers](/docs/admin/managing-workers/) and [Security & Threat Model](/docs/admin/security/).
+The pinning scheme that protects Worker identity. On the first connection to a Worker the Frontend records the Worker's composite static public key, and rejects any later handshake whose key differs — so a Hub that substitutes a Worker key in a channel your browser opens causes a mismatch. This does not stop a Hub opening its own channel or serving modified Frontend code. A mismatch raises the **"Worker public key changed"** dialog showing 4-word fingerprints, where you must explicitly Accept or Reject. CLI and cross-Worker connections pin the same way. The desktop app's tunnels keep no pin. See [Managing Workers](/docs/admin/managing-workers/) and [Security & Threat Model](/docs/admin/security/).
 
 ## W
 

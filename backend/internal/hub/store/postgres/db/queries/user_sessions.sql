@@ -5,9 +5,10 @@
 
 -- name: CreateUserSession :exec
 INSERT INTO user_sessions (
-    id, user_id, expires_at, user_agent, ip_address, auth_generation
+    id, secret_hash, user_id, expires_at, user_agent, ip_address, auth_generation
 ) VALUES (
     sqlc.arg(id),
+    sqlc.arg(secret_hash),
     sqlc.arg(user_id),
     sqlc.arg(expires_at),
     sqlc.arg(user_agent),
@@ -32,7 +33,7 @@ WHERE id = $2 AND last_active_at < $3 AND expires_at > sqlc.arg(now);
 DELETE FROM user_sessions WHERE id = $1 RETURNING id, user_id;
 
 -- name: ValidateSessionWithUser :one
-SELECT u.id, u.username, u.is_admin, u.email_verified, u.email, s.created_at, s.expires_at, s.auth_generation, s.elevation_proven_at, s.elevation_expires_at
+SELECT u.id, u.username, u.is_admin, u.email_verified, u.email, s.secret_hash, s.created_at, s.expires_at, s.auth_generation, s.elevation_proven_at, s.elevation_expires_at
 FROM user_sessions s
 JOIN users u ON s.user_id = u.id
 WHERE s.id = $1

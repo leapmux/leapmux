@@ -15,6 +15,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/util/id"
 )
 
 // recoveryContextPrefix is the domain separator of the recovery
@@ -147,7 +148,7 @@ func (s *WorkerConnectorService) GetRegistrationChallenge(
 		return nil, err
 	}
 
-	id, nonce, expiresAt, err := s.challenges.Issue(attemptID)
+	id, nonce, expiresAt, err := s.challenges.Issue(attemptID, worker.AuthTokenHash)
 	if err != nil {
 		if errors.Is(err, errChallengeCapacity) {
 			return nil, connect.NewError(connect.CodeResourceExhausted,
@@ -162,11 +163,10 @@ func (s *WorkerConnectorService) GetRegistrationChallenge(
 	}, nil
 }
 
-// RecoverRegistration returns the original credentials of a committed
-// attempt to a caller that proves possession of the private keypair
-// whose public halves the Hub pinned. It never mints a second worker
-// or token, and it rechecks that the worker and its owner remain live
-// before any credential leaves.
+// RecoverRegistration replaces the token of a committed attempt after the caller
+// proves possession of the pinned private keys. The Worker keeps its identity.
+// It rechecks that the Worker and its owner remain live before issuing a token.
+// The final write refuses a deleted or deregistering Worker.
 func (s *WorkerConnectorService) RecoverRegistration(
 	ctx context.Context,
 	req *leapmuxv1.RecoverRegistrationRequest,
@@ -191,12 +191,12 @@ func (s *WorkerConnectorService) RecoverRegistration(
 
 	// Consume the challenge first: an unknown, foreign, reused, or
 	// expired identity refuses without touching the pinned keys.
-	nonce, usable := s.challenges.Consume(challengeID, attemptID)
+	challenge, usable := s.challenges.Consume(challengeID, attemptID)
 	if !usable {
 		return nil, connect.NewError(connect.CodeAborted,
 			"the challenge is unknown, expired, or already used; request a fresh one")
 	}
-	message := recoverySignedMessage(attemptID, challengeID, nonce, registrationKeyDigest(regKey))
+	message := recoverySignedMessage(attemptID, challengeID, challenge.nonce, registrationKeyDigest(regKey))
 	// The ID must be set before the unmarshal: circl's Unmarshal reads
 	// the parameter set from it, and a zero value panics. Every worker
 	// key LeapMux pins is SHAKE-256f (workerkeys.Validate enforces it).
@@ -219,8 +219,29 @@ func (s *WorkerConnectorService) RecoverRegistration(
 		return nil, err
 	}
 
+	token := id.Generate()
+	rows, err := s.RotateWorkerAuthToken(ctx, store.RotateWorkerAuthTokenParams{ID: fresh.ID, AuthTokenHash: s.hasher.Hash(token), ExpectedAuthTokenHash: challenge.expectedAuthTokenHash})
+	if err != nil {
+		return nil, wrappedConnectError(connect.CodeInternal, err)
+	}
+	if rows == 0 {
+		current, readErr := s.store.Workers().GetByIDIncludeDeleted(ctx, fresh.ID)
+		if errors.Is(readErr, store.ErrNotFound) {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, "this worker can no longer be recovered")
+		}
+		if readErr != nil {
+			return nil, wrappedConnectError(connect.CodeInternal, readErr)
+		}
+		if current.DeletedAt != nil || current.DeregisteringAt != nil {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, "this worker can no longer be recovered")
+		}
+		if err := s.refuseUnrecoverableWorker(ctx, current); err != nil {
+			return nil, err
+		}
+		return nil, connect.NewError(connect.CodeAborted, "the worker token changed; request a fresh recovery challenge")
+	}
 	return &leapmuxv1.RegisterResponse{
 		WorkerId:  fresh.ID,
-		AuthToken: fresh.AuthToken,
+		AuthToken: token,
 	}, nil
 }

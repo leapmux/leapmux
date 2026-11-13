@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -109,4 +110,9 @@ func TestNewGitCmd_ShortstatEmitsEnglishWording(t *testing.T) {
 	// Match the regex parseDiffShortstat uses.
 	assert.Contains(t, out, "insertion",
 		"NewGitCmd output must hit the English 'insertion' wording the parser matches")
+}
+
+func TestNewGitCmdLimitsInheritedPipeWait(t *testing.T) {
+	cmd := NewGitCmd(t.Context(), "status", "--porcelain")
+	require.Equal(t, 5*time.Second, cmd.WaitDelay)
 }

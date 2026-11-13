@@ -20,6 +20,7 @@ var _ store.SessionStore = (*sessionStore)(nil)
 
 func fromDBSession(s gendb.UserSession) store.UserSession {
 	return store.UserSession{
+		SecretHash:         s.SecretHash,
 		ID:                 s.ID,
 		UserID:             s.UserID,
 		ExpiresAt:          s.ExpiresAt.Time,
@@ -51,11 +52,12 @@ func (s *sessionStore) Create(ctx context.Context, p store.CreateSessionParams) 
 	return (&sqliteStore{conn: s.conn}).RunInUserAuthTransaction(ctx, p.UserID, func(tx store.Store) error {
 		conn := tx.(*sqliteStore).conn
 		return conn.queryError(conn.q.CreateUserSession(ctx, gendb.CreateUserSessionParams{
-			ID:        p.ID,
-			UserID:    p.UserID.String(),
-			ExpiresAt: sqltime.NewSQLiteTime(p.ExpiresAt),
-			UserAgent: p.UserAgent,
-			IpAddress: p.IPAddress,
+			SecretHash: p.SecretHash,
+			ID:         p.ID,
+			UserID:     p.UserID.String(),
+			ExpiresAt:  sqltime.NewSQLiteTime(p.ExpiresAt),
+			UserAgent:  p.UserAgent,
+			IpAddress:  p.IPAddress,
 		}))
 	})
 }
@@ -80,8 +82,9 @@ func (s *sessionStore) Touch(ctx context.Context, p store.TouchSessionParams, no
 	// the read-side liveness/cursor filters in user_sessions.sql compare as raw
 	// strings. See the ListAllActiveSessions comment there for the full storage
 	// invariant and the modernc driver-layout hazard that makes binding a raw
-	// time.Time unsafe -- the SQLiteTime type mechanizes the canonical layout so
-	// a raw bind is a compile error.
+	// time.Time unsafe. The explicit SQLiteTime conversions below enforce the
+	// canonical layout. ExecContext accepts raw time.Time arguments too;
+	// TestTouchStoresExpiresAtCanonical checks the stored layout and liveness.
 	res, err := s.conn.exec.ExecContext(ctx,
 		`UPDATE user_sessions
 		 SET last_active_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
@@ -192,6 +195,7 @@ func (s *sessionStore) ValidateWithUser(ctx context.Context, id string, now time
 		return nil, s.conn.queryError(err)
 	}
 	return &store.SessionWithUser{
+		SecretHash:         row.SecretHash,
 		UserID:             row.ID,
 		Username:           row.Username,
 		IsAdmin:            ptrconv.Int64ToBool(row.IsAdmin),

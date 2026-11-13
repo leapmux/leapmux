@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -18,11 +19,12 @@ import (
 func TestRegisterRefusesADeletedRegistrationKeyCreator(t *testing.T) {
 	t.Parallel()
 	env := setupRegKeyEnv(t)
+	createRetainedAdministrator(t, env.store)
 	ctx := context.Background()
 	owner := userid.MustNew(env.adminID(t))
 	key := id.Generate()
-	require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
-		ID: key, CreatedBy: owner, ExpiresAt: time.Now().Add(time.Hour),
+	require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: hubtestutil.TestSecretHasher().Hash(key),
+		ID: id.Generate(), CreatedBy: owner, ExpiresAt: time.Now().Add(time.Hour),
 	}))
 	require.NoError(t, env.store.Users().Delete(ctx, owner.String()))
 
@@ -35,7 +37,7 @@ func TestRegisterRefusesADeletedRegistrationKeyCreator(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Empty(t, page.Rows)
-	remaining, err := env.store.RegistrationKeys().GetByID(ctx, key)
+	remaining, err := env.store.RegistrationKeys().GetByKeyHash(ctx, hubtestutil.TestSecretHasher().Hash(key))
 	require.NoError(t, err)
 	assert.True(t, remaining.ExpiresAt.After(time.Now()), "a refused registration must not consume its key")
 }
@@ -49,8 +51,8 @@ func TestRegisterLocksTheOwnerBeforeItConsumesCountsAndCreates(t *testing.T) {
 	ctx := context.Background()
 	owner := userid.MustNew(env.adminID(t))
 	key := id.Generate()
-	require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
-		ID: key, CreatedBy: owner, ExpiresAt: time.Now().Add(time.Hour),
+	require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: hubtestutil.TestSecretHasher().Hash(key),
+		ID: id.Generate(), CreatedBy: owner, ExpiresAt: time.Now().Add(time.Hour),
 	}))
 
 	response, err := env.registerWithKey(t, key)
@@ -71,8 +73,8 @@ func TestRegisterRefusesAConsumedKeyWithAnotherCreator(t *testing.T) {
 			ctx := context.Background()
 			owner := userid.MustNew(env.adminID(t))
 			key := id.Generate()
-			require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
-				ID: key, CreatedBy: owner, ExpiresAt: time.Now().Add(time.Hour),
+			require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: hubtestutil.TestSecretHasher().Hash(key),
+				ID: id.Generate(), CreatedBy: owner, ExpiresAt: time.Now().Add(time.Hour),
 			}))
 			_, err := env.registerWithKey(t, key)
 			require.Error(t, err)
@@ -82,7 +84,7 @@ func TestRegisterRefusesAConsumedKeyWithAnotherCreator(t *testing.T) {
 			})
 			require.NoError(t, err)
 			assert.Empty(t, page.Rows)
-			remaining, err := env.store.RegistrationKeys().GetByID(ctx, key)
+			remaining, err := env.store.RegistrationKeys().GetByKeyHash(ctx, hubtestutil.TestSecretHasher().Hash(key))
 			require.NoError(t, err)
 			assert.True(t, remaining.ExpiresAt.After(time.Now()), "the refused transaction must restore its key")
 		})

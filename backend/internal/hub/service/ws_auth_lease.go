@@ -21,6 +21,7 @@ import (
 // bind, and the keepalive pace. UserEventsHandler and ChannelRelayHandler
 // embed it so those options cannot drift between the browser endpoints.
 type wsAuthenticator struct {
+	sessionHasher  auth.SecretHasher
 	store          store.Store
 	soloUser       *auth.UserInfo
 	secureCookie   func(context.Context) bool
@@ -54,6 +55,7 @@ type wsAuthenticator struct {
 // entry is a boot failure rather than a refusal in production nobody notices.
 func newWSAuthenticator(
 	st store.Store,
+	sessionHasher auth.SecretHasher,
 	authContexts *auth.AuthContextRegistry,
 	soloUser *auth.UserInfo,
 	secureCookie func(context.Context) bool,
@@ -62,9 +64,14 @@ func newWSAuthenticator(
 	if !authscope.IsGrantable(requiredScope) {
 		panic("service: WebSocket endpoint states no grantable scope: " + requiredScope.String())
 	}
+	lease := newWebSocketAuthLease(authContexts)
+	if sessionHasher.IsZero() {
+		panic("service: WebSocket handler requires a session secret hasher")
+	}
 	return wsAuthenticator{
+		sessionHasher: sessionHasher,
 		store:         st,
-		authLease:     newWebSocketAuthLease(authContexts),
+		authLease:     lease,
 		soloUser:      soloUser,
 		secureCookie:  secureCookie,
 		keepalive:     wskeepalive.Production(),
@@ -77,10 +84,10 @@ func newWSAuthenticator(
 // is optional (nil accepts cookie auth only), and the caller wires it after
 // construction, so this reads it at call time.
 //
-// It also runs the SCOPE rung, which is the whole reason this endpoint takes a
-// required scope. An unscoped credential -- a browser session, solo mode, the
-// control CLI's own grant -- passes unconditionally, because a scope subtracts
-// from the account's authority and never adds to it.
+// It also checks the endpoint's required scope. Browser sessions and Solo's
+// synthetic user carry an unscoped grant and pass this check. API credentials,
+// including the control CLI's credentials, must hold the endpoint's required
+// scope.
 func (a wsAuthenticator) authenticate(r *http.Request) (*auth.UserInfo, error) {
 	// PER REQUEST, because the answer is: a trusted proxy that verified HTTPS
 	// for this connection turns the secure cookie name on whatever the setting
@@ -91,6 +98,7 @@ func (a wsAuthenticator) authenticate(r *http.Request) (*auth.UserInfo, error) {
 		secureCookie = a.secureCookie(r.Context())
 	}
 	user, err := auth.AuthenticateHTTP(r.Context(), r, auth.HTTPAuthOpts{
+		SessionHasher: a.sessionHasher,
 		Store:         a.store,
 		Validator:     a.tokenValidator,
 		SoloUser:      a.soloUser,

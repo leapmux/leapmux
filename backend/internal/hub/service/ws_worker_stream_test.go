@@ -30,12 +30,17 @@ import (
 	workerhub "github.com/leapmux/leapmux/internal/worker/hub"
 )
 
-func registerStreamWorker(t *testing.T, env *regKeyEnv) *store.Worker {
+type streamWorkerFixture struct {
+	*store.Worker
+	token string
+}
+
+func registerStreamWorker(t *testing.T, env *regKeyEnv) streamWorkerFixture {
 	t.Helper()
 	_, token := registerSelfDeregisterableWorker(t, env, t.Context())
-	worker, err := env.store.Workers().GetByAuthTokenIncludeDeleted(t.Context(), token)
+	worker, err := env.store.Workers().GetByAuthTokenHashIncludeDeleted(t.Context(), hubtestutil.TestSecretHasher().Hash(token))
 	require.NoError(t, err)
-	return worker
+	return streamWorkerFixture{Worker: worker, token: token}
 }
 
 func TestWorkerStream_RefusesTheUpgradeForABadCredential(t *testing.T) {
@@ -74,7 +79,7 @@ func TestWorkerStream_ClosesADeletedWorkerWithItsReason(t *testing.T) {
 	worker := registerStreamWorker(t, env)
 	require.NoError(t, env.store.Workers().MarkDeleted(t.Context(), worker.ID))
 	for _, hello := range []bool{true, false} {
-		peer := dialWorker(t, testutil.DeadlineContext(t), env.server, worker.AuthToken)
+		peer := dialWorker(t, testutil.DeadlineContext(t), env.server, worker.token)
 		if hello {
 			_ = peer.Send(helloRequest(postQuantumHello(0x31)))
 		}
@@ -99,7 +104,7 @@ func TestWorkerStream_AdmitsADeregisteringWorker(t *testing.T) {
 	worker := registerStreamWorker(t, env)
 	_, err := env.store.Workers().ForceDeregister(t.Context(), worker.ID)
 	require.NoError(t, err)
-	peer := dialWorker(t, testutil.DeadlineContext(t), env.server, worker.AuthToken)
+	peer := dialWorker(t, testutil.DeadlineContext(t), env.server, worker.token)
 	require.NoError(t, peer.Send(helloRequest(postQuantumHello(0x31))))
 	first, err := peer.Receive()
 	require.NoError(t, err)
@@ -114,7 +119,7 @@ func TestWorkerStream_RefusesAMalformedFrame(t *testing.T) {
 			worker := registerStreamWorker(t, env)
 			ctx := testutil.DeadlineContext(t)
 			conn, _, err := websocket.Dial(ctx, channelwire.WorkerStreamURL(env.server.URL), &websocket.DialOptions{
-				HTTPHeader: http.Header{"Authorization": []string{"Bearer " + worker.AuthToken}}, Subprotocols: []string{channelwire.WSSubprotocolWorkerStream},
+				HTTPHeader: http.Header{"Authorization": []string{"Bearer " + worker.token}}, Subprotocols: []string{channelwire.WSSubprotocolWorkerStream},
 			})
 			require.NoError(t, err)
 			defer func() { _ = conn.CloseNow() }()
@@ -213,7 +218,7 @@ func TestWorkerStream_UpdatesLastSeenOnEachAnsweredPing(t *testing.T) {
 	env := newRegKeyEnv(t, testConfig(), seedSMTP, regKeyEnvOptions{connectorStore: func(st store.Store) store.Store { return lastSeenCountingStore{Store: st, writes: &writes, seen: seen} }})
 	worker := registerStreamWorker(t, env)
 	ctx := testutil.DeadlineContext(t)
-	peer := dialWorker(t, ctx, env.server, worker.AuthToken)
+	peer := dialWorker(t, ctx, env.server, worker.token)
 	require.NoError(t, peer.Send(helloRequest(postQuantumHello(0x31))))
 	select {
 	case <-seen:
@@ -305,7 +310,7 @@ func TestWorkerStream_AnswersProbesWhileLastSeenWriteWaits(t *testing.T) {
 	t.Cleanup(server.Close)
 	pings := make(chan struct{}, 1)
 	conn, _, err := websocket.Dial(ctx, channelwire.WorkerStreamURL(server.URL), &websocket.DialOptions{
-		HTTPHeader:   http.Header{"Authorization": []string{"Bearer " + worker.AuthToken}},
+		HTTPHeader:   http.Header{"Authorization": []string{"Bearer " + worker.token}},
 		Subprotocols: []string{channelwire.WSSubprotocolWorkerStream},
 		OnPingReceived: func(context.Context, []byte) bool {
 			select {
@@ -388,7 +393,7 @@ func TestWorkerStream_HonoursTheReadLimit(t *testing.T) {
 		t.Run(map[int]string{0: "at the limit", 1: "over the limit"}[extra], func(t *testing.T) {
 			env := setupRegKeyEnv(t)
 			worker := registerStreamWorker(t, env)
-			peer := dialWorker(t, testutil.DeadlineContext(t), env.server, worker.AuthToken)
+			peer := dialWorker(t, testutil.DeadlineContext(t), env.server, worker.token)
 			require.NoError(t, peer.Send(helloRequest(postQuantumHello(0x31))))
 			_, err := peer.Receive()
 			require.NoError(t, err)
@@ -425,7 +430,7 @@ func TestWorkerStream_InterruptedInventoryDoesNotDeleteTabs(t *testing.T) {
 		}
 	})
 	open := func() *workerTestPeer {
-		peer := dialWorker(t, testutil.DeadlineContext(t), env.server, worker.AuthToken)
+		peer := dialWorker(t, testutil.DeadlineContext(t), env.server, worker.token)
 		require.NoError(t, peer.Send(helloRequest(postQuantumHello(0x31))))
 		greeting, err := peer.Receive()
 		require.NoError(t, err)

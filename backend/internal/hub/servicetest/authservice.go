@@ -14,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/hub/settingsregistry"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
 // Package servicetest holds shared test helpers for the hub's service
@@ -64,13 +65,14 @@ func AuthPolicy(set *settings.Manager) func(context.Context) auth.Policy {
 // exercises them. set must share st (see NewSettingsManager).
 func AuthServiceDeps(st store.Store, cfg *config.Config, set *settings.Manager, lifecycle *auth.CredentialLifecycleEffects) service.AuthServiceDeps {
 	return service.AuthServiceDeps{
-		Store:     st,
-		Config:    cfg,
-		Settings:  set,
-		Lifecycle: lifecycle,
-		Keystore:  nil,
-		Mail:      mail.NewStubSender(),
-		Renderer:  mail.Renderer{},
-		Captcha:   nil,
+		SessionHasher: testutil.TestSecretHasher(),
+		Store:         st,
+		Config:        cfg,
+		Settings:      set,
+		Lifecycle:     lifecycle,
+		Keystore:      nil,
+		Mail:          mail.NewStubSender(),
+		Renderer:      mail.Renderer{},
+		Captcha:       nil,
 	}
 }

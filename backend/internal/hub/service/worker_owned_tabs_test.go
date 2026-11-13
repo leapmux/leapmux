@@ -27,7 +27,7 @@ import (
 // newOwnedTabsService builds the connector service ListOwnedTabsForWorker
 // lives on, with only the store it reads.
 func newOwnedTabsService(st store.Store) *service.WorkerConnectorService {
-	return service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{
+	return service.NewWorkerConnectorService(service.WorkerConnectorServiceDeps{Hasher: hubtestutil.TestSecretHasher(),
 		Store:             st,
 		WorkerManager:     nil,
 		ChannelManager:    nil,
@@ -57,7 +57,7 @@ func TestListOwnedTabsForWorker_ScopedToRegistrant(t *testing.T) {
 	ctx := context.Background()
 	userA := storetest.SeedUser(t, st, "reconcile-alice")
 	userB := storetest.SeedUser(t, st, "reconcile-bob")
-	worker := storetest.SeedWorker(t, st, userA.ID)
+	worker, workerToken := hubtestutil.CreateTestWorker(t, st, userA.ID)
 	wsA := storetest.SeedWorkspace(t, st, userA.ID, "alice ws")
 	wsB := storetest.SeedWorkspace(t, st, userB.ID, "bob ws")
 
@@ -83,7 +83,7 @@ func TestListOwnedTabsForWorker_ScopedToRegistrant(t *testing.T) {
 	var resp *leapmuxv1.ListOwnedTabsForWorkerResponse
 	_, callErr := callUnderServerInfo(ctx, func(callCtx context.Context) error {
 		info, _ := connect.CallInfoForServerContext(callCtx)
-		info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+		info.RequestHeader().Set("Authorization", "Bearer "+workerToken)
 		var err error
 		resp, err = newOwnedTabsService(st).ListOwnedTabsForWorker(callCtx, req)
 		return err
@@ -111,7 +111,7 @@ func TestListOwnedTabsForWorker_ReportsADeletedWorkspaceArchived(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	ctx := context.Background()
 	owner := storetest.SeedUser(t, st, "reconcile-deleted-owner")
-	worker := storetest.SeedWorker(t, st, owner.ID)
+	worker, workerToken := hubtestutil.CreateTestWorker(t, st, owner.ID)
 	workspaceID := storetest.SeedWorkspace(t, st, owner.ID, "deleted")
 	ownerID := userid.MustNew(owner.ID)
 	require.NoError(t, st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
@@ -143,7 +143,7 @@ func TestListOwnedTabsForWorker_ReportsADeletedWorkspaceArchived(t *testing.T) {
 	var resp *leapmuxv1.ListOwnedTabsForWorkerResponse
 	_, callErr := callUnderServerInfo(ctx, func(callCtx context.Context) error {
 		info, _ := connect.CallInfoForServerContext(callCtx)
-		info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+		info.RequestHeader().Set("Authorization", "Bearer "+workerToken)
 		var err error
 		resp, err = newOwnedTabsService(st).ListOwnedTabsForWorker(callCtx, req)
 		return err
@@ -160,7 +160,7 @@ func TestListOwnedTabsForWorker_ReturnsArchivedState(t *testing.T) {
 	st := hubtestutil.OpenTestStore(t)
 	ctx := context.Background()
 	owner := storetest.SeedUser(t, st, "reconcile-archived-owner")
-	worker := storetest.SeedWorker(t, st, owner.ID)
+	worker, workerToken := hubtestutil.CreateTestWorker(t, st, owner.ID)
 	workspaceID := storetest.SeedWorkspace(t, st, owner.ID, "archived")
 	ownerID := userid.MustNew(owner.ID)
 	require.NoError(t, st.WorkspaceSections().Create(ctx, store.CreateWorkspaceSectionParams{
@@ -181,7 +181,7 @@ func TestListOwnedTabsForWorker_ReturnsArchivedState(t *testing.T) {
 	var resp *leapmuxv1.ListOwnedTabsForWorkerResponse
 	_, callErr := callUnderServerInfo(ctx, func(callCtx context.Context) error {
 		info, _ := connect.CallInfoForServerContext(callCtx)
-		info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+		info.RequestHeader().Set("Authorization", "Bearer "+workerToken)
 		var err error
 		resp, err = newOwnedTabsService(st).ListOwnedTabsForWorker(callCtx, req)
 		return err
@@ -232,7 +232,7 @@ func TestListOwnedTabsForWorker_ReachableThroughTheAuthInterceptor(t *testing.T)
 	st := hubtestutil.OpenTestStore(t)
 	ctx := context.Background()
 	owner := storetest.SeedUser(t, st, "interceptor-owner")
-	worker := storetest.SeedWorker(t, st, owner.ID)
+	worker, workerToken := hubtestutil.CreateTestWorker(t, st, owner.ID)
 	ws := storetest.SeedWorkspace(t, st, owner.ID, "owned")
 	require.NoError(t, st.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertTabParams{
 		UserID: userid.MustNew(owner.ID), WorkspaceID: ws, WorkerID: worker.ID,
@@ -240,7 +240,7 @@ func TestListOwnedTabsForWorker_ReachableThroughTheAuthInterceptor(t *testing.T)
 		Rendered: false,
 	}))
 
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	mux := http.NewServeMux()
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer,
@@ -252,7 +252,7 @@ func TestListOwnedTabsForWorker_ReachableThroughTheAuthInterceptor(t *testing.T)
 	client := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 	req := &leapmuxv1.ListOwnedTabsForWorkerRequest{}
 	ctx, info := connect.NewClientContext(ctx)
-	info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+	info.RequestHeader().Set("Authorization", "Bearer "+workerToken)
 
 	resp, err := client.ListOwnedTabsForWorker(ctx, req)
 	require.NoError(t, err, "a worker's own auth_token must reach the reconciler RPC")
@@ -271,7 +271,7 @@ func TestListOwnedTabsForWorker_InterceptorStillRejectsAStranger(t *testing.T) {
 
 	st := hubtestutil.OpenTestStore(t)
 
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	mux := http.NewServeMux()
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer,
@@ -291,7 +291,7 @@ func TestListOwnedTabsForWorker_InterceptorStillRejectsAStranger(t *testing.T) {
 // unreachable or locked database would. It is not a missing row.
 type faultingWorkerStore struct{ store.WorkerStore }
 
-func (faultingWorkerStore) GetByAuthTokenIncludeDeleted(context.Context, string) (*store.Worker, error) {
+func (faultingWorkerStore) GetByAuthTokenHashIncludeDeleted(context.Context, []byte) (*store.Worker, error) {
 	return nil, errors.New("database is locked")
 }
 

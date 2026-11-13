@@ -59,8 +59,8 @@ func TestOpenAgent_RollsBackCreatedWorktreeOnStartFailure(t *testing.T) {
 
 	require.Empty(t, w.errors)
 	// waitForStartupFailure syncs on AgentStartup.fail(), which the runAgentStartup
-	// goroutine calls AFTER rollbackGitMode completes (worktree remove + branch -D).
-	// Assert on git/DB state only once that's done — otherwise `git branch -D` may
+	// goroutine calls AFTER rollbackGitMode completes its worktree and conditional branch deletion.
+	// Assert on git/DB state only once that's done — otherwise branch cleanup may
 	// still be running when the earlier `directoryExists == false` poll fires.
 	for _, id := range collectAgentIDs(w) {
 		waitForStartupFailure(t, svc, id)
@@ -98,7 +98,7 @@ func TestOpenAgent_RollsBackCreatedBranchOnStartFailure(t *testing.T) {
 	require.Empty(t, w.errors)
 	// Same ordering as the worktree rollback tests: wait until failStartup has
 	// finished rollbackGitMode, then assert. Polling git while rollback's
-	// checkout / branch -D still holds the repo races Windows mandatory locks
+	// checkout and branch cleanup still hold the repo races Windows mandatory locks
 	// on .git/config ("Permission denied").
 	for _, id := range collectAgentIDs(w) {
 		waitForStartupFailure(t, svc, id)

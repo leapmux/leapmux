@@ -54,9 +54,9 @@ func setupAccountRecoveryAuthServiceWithClock(t *testing.T, sender mail.Sender, 
 	}
 
 	mux := http.NewServeMux()
-	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(sc.Stop)
-	authSvc := service.NewAuthService(service.AuthServiceDeps{
+	authSvc := newInitializedAuthService(t, service.AuthServiceDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store:     st,
 		Config:    testConfig(),
 		Settings:  set,
@@ -293,7 +293,7 @@ func TestCompleteAccountRecoveryPassword_Success_WipesPasskeysAndSessions(t *tes
 	}))
 	seedPasskeyCredential(t, st, userID, "Laptop")
 	uid := userid.MustNew(userID)
-	oldSession, _, err := auth.CreateSession(context.Background(), st, uid, auth.DefaultSessionDuration)
+	oldSession, err := auth.CreateSession(context.Background(), st, hubtestutil.TestSecretHasher(), uid, auth.DefaultSessionDuration)
 	require.NoError(t, err)
 	ceremonyID := id.Generate()
 	now := time.Now().UTC()
@@ -326,13 +326,13 @@ func TestCompleteAccountRecoveryPassword_Success_WipesPasskeysAndSessions(t *tes
 	require.NoError(t, err)
 	assert.EqualValues(t, 0, count)
 
-	_, err = st.Sessions().GetByID(context.Background(), oldSession, time.Now().UTC())
+	_, err = st.Sessions().GetByID(context.Background(), oldSession.ID, time.Now().UTC())
 	assert.ErrorIs(t, err, store.ErrNotFound)
 
 	_, err = st.WebAuthnSessions().Get(context.Background(), ceremonyID)
 	assert.ErrorIs(t, err, store.ErrNotFound)
 
-	_, _, _, err = auth.Login(context.Background(), st, "wipeme", "newpass123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "wipeme", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 }
 
@@ -419,7 +419,7 @@ func TestCompleteAccountRecoveryPassword_SetsFirstPassword(t *testing.T) {
 	require.NoError(t, err)
 	assert.EqualValues(t, 0, count, "the lost passkey must be wiped by the break-glass posture")
 
-	_, _, _, err = auth.Login(context.Background(), st, "recoverless", "firstpass123", auth.DefaultSessionDuration)
+	_, _, _, err = auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "recoverless", "firstpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 }
 
@@ -656,22 +656,16 @@ func TestRequestAccountRecovery_BurnedBudgetKeepsCooldown(t *testing.T) {
 // the server log, never in the client response.
 func TestSignUp_MailFailureDoesNotLeakTransportDetails(t *testing.T) {
 	sender := &mailSenderDouble{err: errors.New("dial tcp smtp.secret-relay.example:587: connection refused")}
-	client, st := setupAccountRecoveryAuthServiceConfigured(t, sender, seedSMTP)
+	client, _ := setupAccountRecoveryAuthServiceConfigured(t, sender, seedSMTP)
 
 	// A user must exist so the sign-up takes the public path, not the
 	// first-admin setup path (which verifies nothing and sends no mail).
-	require.NoError(t, st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:                    id.Generate(),
-		Username:              "existing-admin",
-		PasswordHash:          password.PlaceholderHash,
-		DisplayName:           "Existing Admin",
-		Email:                 "admin@example.com",
-		EmailVerified:         true,
-		FirstCredentialExempt: true,
-		IsAdmin:               true,
-	}))
+	_, err := client.SignUp(t.Context(), &leapmuxv1.SignUpRequest{
+		Username: "existing-admin", Password: "existing-admin-password", Email: "admin@example.com",
+	})
+	require.NoError(t, err)
 
-	_, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
+	_, err = client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "leakcheck-user",
 		Password:    "hunter2abc",
 		DisplayName: "Leak Check",
@@ -810,7 +804,7 @@ func TestSoloRefusesEveryPathThatCanClearAPassword(t *testing.T) {
 	// held whatever the three verbs did.
 	setSoloPasswordForTest(t, st)
 
-	svc := service.NewAuthService(servicetest.AuthServiceDeps(
+	svc := newInitializedAuthService(t, servicetest.AuthServiceDeps(
 		st,
 		&config.Config{SoloMode: true},
 		servicetest.NewSettingsManager(t, st, nil),

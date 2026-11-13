@@ -27,7 +27,9 @@ For real multi-user setups see [Accounts & Authentication](/docs/using/accounts/
 
 ## Where is my data stored?
 
-Agent transcripts, terminal output, and file/git state live only in the **Worker's** local SQLite database — never on the Hub. The Hub stores accounts and workspace metadata (titles, tab positions, tiling geometry). It also stores the public keys each Worker registered with: they are public material, and the Hub pins them so a later connection cannot present other keys.
+The Worker stores agent transcripts, terminal output, and file/git state in its local SQLite database. The Hub stores accounts and workspace metadata (titles, tab positions, tiling geometry). It also stores each tab's type and hosting Worker, plus a file tab's display mode, view mode, and diff base. The public keys each Worker registered with are stored on the Hub too. They are public material, and the Hub pins them so a later connection cannot present other keys.
+
+The browser caches rendered message text and code in IndexedDB. After startup, it attempts to remove entries whose recorded last-use time is at least seven days old. Cleanup is best-effort and runs at most once per page load, so entries can remain longer. There is no guaranteed deletion deadline. That cache is not keyed to the account, and signing out does not clear it.
 
 Default locations:
 
@@ -43,18 +45,20 @@ See [Configuration](/docs/admin/configuration/) and [Encryption & Data](/docs/ad
 
 ## Can the Hub read my code, chats, or terminal output?
 
-No — all Frontend-to-Worker traffic is end-to-end encrypted, and the Hub is an **authenticated relay, not a trusted peer**: it forwards opaque ciphertext and never holds the session keys.
+A Hub that only observes cannot read that content: Frontend-to-Worker traffic is end-to-end encrypted. The Hub is trusted for identity and code. A Hub that acts can open its own channel as you or serve modified Frontend code.
 
 The Hub **can** see connection metadata — channel IDs, ciphertext sizes, and timing (traffic analysis is in scope) — plus account and workspace records and Worker public keys. Even the Worker's hostname and filesystem paths travel inside the encrypted application stream, so they are not exposed to the relay.
 
 | The Hub can see | The Hub cannot see |
 |---|---|
-| Connection metadata (channel IDs, ciphertext sizes, timing), account and workspace records, Worker public keys | Agent transcripts, tool-call arguments and outputs, terminal I/O, file contents, diffs, git status |
+| Connection metadata (channel IDs, ciphertext sizes, timing), account and workspace records, Worker public keys | Agent transcripts, tool-call arguments and outputs, terminal I/O, file contents, diffs |
+
+A file tab's diff base tells the Hub that the file had staged or unstaged changes.
 
 See [Security & Threat Model](/docs/admin/security/) for the authoritative scope of what the Hub does and does not see.
 
 {{< callout type="info" >}}
-In solo mode the Hub and Worker run in the same process, so the E2EE protocol is still in effect but provides no protection against a local attacker who can reach the loopback port. The threat model there reduces to local-host trust.
+In solo mode the Hub and Worker run in the same process. Once `solo` has a password, a loopback TCP caller must sign in. Before that, the first successful caller can claim the account by setting its password. The desktop app's local socket admits only your operating-system account.
 {{< /callout >}}
 
 ## Which coding agents are supported?
@@ -119,7 +123,7 @@ They are the same SolidJS Frontend. The difference is packaging:
 - **Browser** — open `http://<host>:4327` against a running Hub, dev, or solo instance.
 - **Desktop app** — a native Tauri app with the Frontend in an embedded WebView. It can run solo mode entirely on your machine (listening only on a local socket, no TCP port) or connect to a remote Hub.
 
-The same end-to-end encryption applies either way. Pick the desktop app for a self-contained local setup; use the browser when connecting to a shared Hub.
+The same end-to-end encryption applies either way. In remote-Hub mode, the desktop app loads its Frontend from the Hub. As in a browser, you trust the Hub for that code. Pick the desktop app for a self-contained local setup; use the browser when connecting to a shared Hub.
 
 See [Installation](/docs/getting-started/installation/) and [Running LeapMux](/docs/admin/running-leapmux/).
 

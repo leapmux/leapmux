@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	huboauth "github.com/leapmux/leapmux/internal/hub/oauth"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -41,9 +42,9 @@ func reauthSession(t *testing.T, st store.Store, providerID, subject string) (co
 	require.NoError(t, st.OAuthUserLinks().Create(ctx, store.CreateOAuthUserLinkParams{
 		UserID: userid.MustNew(userID), ProviderID: providerID, ProviderSubject: subject,
 	}))
-	sessionID, _, err := auth.CreateSession(ctx, st, userid.MustNew(userID), auth.DefaultSessionDuration)
+	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
-	return &http.Cookie{Name: auth.CookieName, Value: sessionID}, userID, sessionID
+	return &http.Cookie{Name: auth.CookieName, Value: createdSession.Token}, userID, createdSession.ID
 }
 
 // completeCallback drives the callback leg with the browser's nonce cookie,
@@ -295,9 +296,9 @@ func TestOAuthReauth_RefusesAnUnlinkedIdentity(t *testing.T) {
 		ID: userID, Username: "nolinks", PasswordHash: "hash", DisplayName: "No Links",
 		Email: "nolinks@example.com", EmailVerified: true,
 	}))
-	sessionID, _, err := auth.CreateSession(ctx, st, userid.MustNew(userID), auth.DefaultSessionDuration)
+	createdSession, err := auth.CreateSession(ctx, st, hubtestutil.TestSecretHasher(), userid.MustNew(userID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
-	cookie := &http.Cookie{Name: auth.CookieName, Value: sessionID}
+	cookie := &http.Cookie{Name: auth.CookieName, Value: createdSession.Token}
 
 	state, nonce, _ := beginReauth(t, server, providerID, cookie, "")
 	require.NotNil(t, nonce)
@@ -305,7 +306,7 @@ func TestOAuthReauth_RefusesAnUnlinkedIdentity(t *testing.T) {
 	resp := completeCallback(t, server, providerID, state, nonce)
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
 
-	row, err := st.Sessions().GetByID(ctx, sessionID, time.Now().UTC())
+	row, err := st.Sessions().GetByID(ctx, createdSession.ID, time.Now().UTC())
 	require.NoError(t, err)
 	assert.Nil(t, row.ElevationExpiresAt)
 
@@ -538,7 +539,7 @@ func countOAuthStates(t *testing.T, st store.Store) int {
 // registration must ask for. A sole-credential account on either got a 403
 // on the only option its step-up screen offered, every time.
 //
-// operating/security.md states the resulting exposure plainly: the path
+// site/content/docs/admin/security.md states the resulting exposure plainly: the path
 // proves "this browser still holds a live provider session for the linked
 // account", not "the provider re-authenticated this person just now". For an
 // account whose only credential IS that provider, somebody holding both

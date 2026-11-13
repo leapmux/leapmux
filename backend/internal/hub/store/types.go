@@ -109,6 +109,7 @@ func (u User) HasUsablePassword() bool { return password.IsUsable(u.PasswordHash
 // deadline. Both nil means the session was never elevated. See
 // auth.Elevation, which is the one place the pair is interpreted.
 type UserSession struct {
+	SecretHash         []byte
 	ID                 string
 	UserID             string
 	ExpiresAt          time.Time
@@ -132,6 +133,7 @@ func (s UserSession) PageCursor() (time.Time, string) { return s.LastActiveAt, s
 // step-up admission without a second query. See UserSession for the pair's
 // meaning.
 type SessionWithUser struct {
+	SecretHash         []byte
 	UserID             string
 	Username           string
 	IsAdmin            bool
@@ -193,12 +195,14 @@ func (k WorkerPublicKeys) Proto() *leapmuxv1.WorkerPublicKeys {
 
 // Worker represents a registered worker node.
 type Worker struct {
-	ID           string
-	AuthToken    string
-	RegisteredBy string
-	Status       leapmuxv1.WorkerStatus
-	CreatedAt    time.Time
-	LastSeenAt   *time.Time
+	ID string
+	// AuthTokenHash stays internal. Recovery and stream publication use this
+	// digest to check that the authenticated credential is still current.
+	AuthTokenHash []byte
+	RegisteredBy  string
+	Status        leapmuxv1.WorkerStatus
+	CreatedAt     time.Time
+	LastSeenAt    *time.Time
 	// PublicKeys is the pinned key set. Nothing updates it; new keys need a
 	// new registration, which creates a new row.
 	PublicKeys WorkerPublicKeys
@@ -256,8 +260,8 @@ type WorkerWithOwner struct {
 
 // WorkerRegistrationKey is a short-lived bearer credential the user mints
 // from the frontend to authorize a single worker registration. The worker
-// presents the row's ID on WorkerConnectorService.Register and the hub
-// atomically consumes the row to create the workers entry.
+// presents the key on WorkerConnectorService.Register. The Hub finds its digest
+// and atomically consumes the row to create the workers entry. ID is public.
 //
 // SoftDelete encodes the deletion by setting ExpiresAt to a past time; the
 // cleanup loop hard-deletes rows whose ExpiresAt is older than the
@@ -842,11 +846,12 @@ type DropAPITokenElevationParams struct {
 }
 
 type CreateSessionParams struct {
-	ID        string
-	UserID    userid.UserID
-	ExpiresAt time.Time
-	UserAgent string
-	IPAddress string
+	SecretHash []byte
+	ID         string
+	UserID     userid.UserID
+	ExpiresAt  time.Time
+	UserAgent  string
+	IPAddress  string
 }
 
 type TouchSessionParams struct {
@@ -877,9 +882,9 @@ type ListUserSessionsParams struct {
 }
 
 type CreateWorkerParams struct {
-	ID           string
-	AuthToken    string
-	RegisteredBy userid.UserID
+	ID            string
+	AuthTokenHash []byte
+	RegisteredBy  userid.UserID
 	// AutoRegistered must be true only on the solo launcher's
 	// in-process bypass path (Server.RegisterWorker). All
 	// registration-key driven Register RPCs leave it false.
@@ -893,6 +898,21 @@ type CreateWorkerParams struct {
 	// cannot carry an attempt.
 	RegistrationAttemptID string
 	RegistrationKeyHash   []byte
+}
+
+// RotateWorkerAuthTokenParams replaces the digest of a live Worker's token.
+type RotateWorkerAuthTokenParams struct {
+	ID                    string
+	AuthTokenHash         []byte
+	ExpectedAuthTokenHash []byte
+}
+
+// Validate requires both digests, so a caller cannot request an unconditional update.
+func (p RotateWorkerAuthTokenParams) Validate() error {
+	if len(p.AuthTokenHash) != 32 || len(p.ExpectedAuthTokenHash) != 32 {
+		return fmt.Errorf("%w: worker token rotation requires two 32-byte digests", ErrInvalidArgument)
+	}
+	return nil
 }
 
 // RegistrationKeyHashOrNil represents every absent digest as SQL NULL.
@@ -975,6 +995,7 @@ func WorkerAdminListStatusOf(status *leapmuxv1.WorkerStatus) (leapmuxv1.WorkerSt
 }
 
 type CreateRegistrationKeyParams struct {
+	KeyHash   []byte
 	ID        string
 	CreatedBy userid.UserID
 	ExpiresAt time.Time
@@ -984,7 +1005,7 @@ type CreateRegistrationKeyParams struct {
 // gate, so the caller id cannot be an untyped positional string, mirroring
 // GetOwnedWorkerParams.
 type GetOwnedRegistrationKeyParams struct {
-	ID        string
+	KeyHash   []byte
 	CreatedBy userid.UserID
 }
 
@@ -1026,8 +1047,9 @@ type SoftDeleteWorkspaceParams struct {
 }
 
 // UpsertTabParams writes one row of the derived tab index the CRDT manager
-// maintains. Rendered is stated on every row: the column has no DEFAULT, so
-// a writer that forgot it fails instead of storing "not rendered".
+// maintains. Rendered reports whether the row is rendered. The adapters always
+// bind this field, so omitting it from a Go literal stores false. The column
+// requires a non-NULL value and has no SQL default.
 //
 // UserID is userid.UserID like every other owner field on a *Params struct in
 // this file: the value is minted once at the store call (hub/service's
@@ -1517,12 +1539,12 @@ func (t DelegationTokenWithOwner) PageCursor() (time.Time, string) { return t.Cr
 
 // DeviceAuthorization is an in-flight RFC 8628 device-code grant.
 type DeviceAuthorization struct {
-	DeviceCode   string
-	UserCode     string
-	DeviceName   string
-	UserID       string
-	State        leapmuxv1.DeviceAuthorizationState
-	LastPolledAt *time.Time
+	DeviceCodeHash []byte
+	UserCode       string
+	DeviceName     string
+	UserID         string
+	State          leapmuxv1.DeviceAuthorizationState
+	LastPolledAt   *time.Time
 	// ClientID is the app that started the flow.
 	ClientID string
 	// RequestedScopes is what the APP asked for, written at creation.
@@ -1864,10 +1886,11 @@ type CreateAPITokenParams struct {
 	// oauthapp.ServiceAccountClientID is that answer.
 	ClientID         string
 	InstallationName string
-	// GrantedScopes is the canonical scope string. The column has no default,
-	// so a caller that omits it fails the INSERT rather than storing a silent
-	// empty grant. Build it with authscope.ScopeSet.Storable, which refuses
-	// the unscoped grant -- no stored credential carries one.
+	// GrantedScopes is the canonical scope string. Build it with
+	// authscope.ScopeSet.Storable, which accepts an empty grant and refuses the
+	// unscoped grant. The adapters always bind this field, so omitting it from
+	// a Go literal stores the empty grant. The column requires a non-NULL value
+	// and has no SQL default; that does not detect an omitted Go field.
 	GrantedScopes    string
 	SecretHash       []byte
 	RefreshHash      []byte
@@ -1955,8 +1978,10 @@ type CreateDelegationTokenParams struct {
 	ID       string
 	UserID   userid.UserID
 	WorkerID string
-	// GrantedScopes is the canonical scope string; see DelegationToken. The
-	// column has no default, so an unstated grant fails the INSERT.
+	// GrantedScopes is the canonical scope string; see DelegationToken. Build it
+	// with authscope.ScopeSet.Storable, which accepts an empty grant and refuses
+	// the unscoped grant. The adapters bind an omitted Go field as the empty
+	// grant. The non-NULL column has no SQL default and cannot detect that omission.
 	GrantedScopes    string
 	SecretHash       []byte
 	RefreshHash      []byte
@@ -1965,7 +1990,7 @@ type CreateDelegationTokenParams struct {
 }
 
 type CreateDeviceAuthorizationParams struct {
-	DeviceCode      string
+	DeviceCodeHash  []byte
 	UserCode        string
 	DeviceName      string
 	ClientID        string
@@ -1977,8 +2002,8 @@ type CreateDeviceAuthorizationParams struct {
 }
 
 type ApproveDeviceAuthorizationParams struct {
-	DeviceCode string
-	UserID     userid.UserID
+	DeviceCodeHash []byte
+	UserID         userid.UserID
 	// GrantedScopes is what the browser consented to, canonical form.
 	GrantedScopes string
 }

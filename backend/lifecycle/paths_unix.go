@@ -30,7 +30,3 @@ func controlURLFor(id InstanceID) string {
 	}
 	return "unix:" + filepath.Join(dir, string(id)+".sock")
 }
-
-// maxUnixSocketPath is the conservative sockaddr_un limit across the
-// supported Unix kernels.
-const maxUnixSocketPath = 100

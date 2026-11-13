@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"crypto/hmac"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -29,27 +30,14 @@ import (
 // request, not one lifetime after the login.
 const DefaultSessionDuration = 7 * 24 * time.Hour
 
-// MinSessionDuration is the shortest session the Hub can honestly enforce.
-//
-// Two mechanisms keep a session alive past its written expiry, and the floor
-// caps what they cost together:
-//
-//   - The Hub serves a validated session from an in-memory cache for
-//     sessionCacheTTL, so a request succeeds up to that long after the row
-//     expired. That window is a constant, so it is the term that decides the
-//     floor.
-//   - A slide is throttled, so the row can carry up to one throttle window more
-//     than the configured duration. touchThreshold keeps that window at a
-//     tenth of the session, so it scales instead of dominating.
-//
-// At touchSlideDivisor times the cache TTL, the two together are at most a
-// fifth of the configured duration. Below that, "expired" stops describing when
-// the user is signed out. ValidateSessionDuration rejects a shorter
-// configuration rather than accept a policy the Hub cannot keep.
+// MinSessionDuration is the minimum configured session duration accepted by the Hub.
+// Session expiry includes one touchThreshold window to cover throttled refreshes.
+// The authentication cache checks credential expiry on every request and does not
+// extend that deadline.
 const MinSessionDuration = touchSlideDivisor * sessionCacheTTL
 
-// ValidateSessionDuration reports whether an operator's session lifetime is one
-// the Hub can enforce. The rule lives here, next to the two constants that set
+// ValidateSessionDuration reports whether a configured session lifetime meets
+// the accepted minimum. The rule lives here, next to the two constants that set
 // the floor, so a change to either cannot leave the check behind. The caller
 // adds the name of the setting.
 //
@@ -60,11 +48,7 @@ func ValidateSessionDuration(d time.Duration) error {
 	case d < 0:
 		return fmt.Errorf("must not be negative, got %s", d)
 	case d < MinSessionDuration:
-		return fmt.Errorf(
-			"must be at least %s, got %s: the Hub serves a validated session from "+
-				"an in-memory cache for %s, so a shorter session stays usable for a "+
-				"large share of its own life",
-			MinSessionDuration, d, sessionCacheTTL)
+		return fmt.Errorf("must be at least %s, got %s", MinSessionDuration, d)
 	}
 	return nil
 }
@@ -107,7 +91,13 @@ func touchThreshold(lifetime time.Duration) time.Duration {
 // end the session up to one throttle window before the lifetime passed since
 // the last request.
 func sessionExpiry(now time.Time, lifetime time.Duration) time.Time {
-	return now.Add(sessionLifetime(lifetime) + touchThreshold(lifetime)).UTC()
+	return now.Add(sessionLifetime(lifetime)).Add(touchThreshold(lifetime)).UTC()
+}
+
+// sessionRetentionCutoff keeps revocation marks for the full session lifetime
+// and refresh allowance without adding durations that could overflow.
+func sessionRetentionCutoff(now time.Time, lifetime time.Duration) time.Time {
+	return now.Add(-sessionLifetime(lifetime)).Add(-touchThreshold(lifetime)).UTC()
 }
 
 type contextKey int
@@ -352,11 +342,10 @@ func LoadSoloUser(ctx context.Context, st store.Store) (*UserInfo, error) {
 		ID:       id,
 		Username: user.Username,
 		IsAdmin:  user.IsAdmin,
-		// Solo mode's synthetic user is UNSCOPED, spelled out for the same
-		// reason a session is: whoever reaches the port already has full
-		// authority, so there is nothing here for a scope to subtract. A solo
-		// hub still honours a PRESENTED bearer's grant -- the solo rung yields
-		// to one; see authenticate.
+		// The synthetic solo user has no credential-specific scope restriction.
+		// SoloGate admits this identity only through local IPC. TCP callers use
+		// public setup procedures or ordinary credentials. Both authentication
+		// paths yield to a presented lmx_ bearer and enforce that bearer's grant.
 		Scopes:             authscope.UnscopedGrant(),
 		AuthenticatedAt:    time.Now().UTC(),
 		UserAuthGeneration: user.AuthGeneration,
@@ -366,8 +355,8 @@ func LoadSoloUser(ctx context.Context, st store.Store) (*UserInfo, error) {
 
 // Login validates credentials and creates a new session token. lifetime is the
 // session's minimum life past the user's last request; see CreateSession.
-// Returns the session ID, user, session expiry time, and any error.
-func Login(ctx context.Context, st store.Store, username, password string, lifetime time.Duration) (string, *store.User, time.Time, error) {
+// Returns the cookie token, user, session expiry time, and any error.
+func Login(ctx context.Context, st store.Store, hasher SecretHasher, username, password string, lifetime time.Duration) (string, *store.User, time.Time, error) {
 	var zero time.Time
 	user, err := st.Users().GetByUsername(ctx, username)
 	if err != nil {
@@ -409,8 +398,7 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 	matchPrelock, verifyErrPrelock := pwdhash.Verify(user.PasswordHash, password)
 	prelockHash := user.PasswordHash
 
-	var sessionID string
-	var expiresAt time.Time
+	var session CreatedSession
 	err = st.RunInUserAuthTransaction(ctx, loginUID, func(tx store.Store) error {
 		lockedUser, err := tx.Users().GetByID(ctx, user.ID)
 		if errors.Is(err, store.ErrNotFound) {
@@ -454,7 +442,7 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 		if !sessMintOK {
 			return connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 		}
-		sessionID, expiresAt, err = CreateSession(ctx, tx, sessUID, lifetime)
+		session, err = CreateSession(ctx, tx, hasher, sessUID, lifetime)
 		if err != nil {
 			return err
 		}
@@ -471,7 +459,7 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 		}
 		return "", nil, zero, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	return sessionID, user, expiresAt, nil
+	return session.Token, user, session.ExpiresAt, nil
 }
 
 // SessionMeta holds optional metadata for session creation.
@@ -479,42 +467,53 @@ type SessionMeta struct {
 	UserAgent string
 }
 
-// CreateSession creates a new user session and returns the session ID and
-// expiry time.
+// CreatedSession separates the public identity from the secret cookie token.
+type CreatedSession struct {
+	ID        string
+	Token     string
+	ExpiresAt time.Time
+}
+
+// CreateSession creates a public identity and an independent cookie secret.
 //
 // lifetime is the session's minimum life past the user's last request. Zero or
 // less falls back to DefaultSessionDuration: a caller that has no configured
 // value must still issue a usable session, not one that expired before the
 // response left the Hub.
-func CreateSession(ctx context.Context, st store.Store, userID userid.UserID, lifetime time.Duration, meta ...SessionMeta) (string, time.Time, error) {
+func CreateSession(ctx context.Context, st store.Store, hasher SecretHasher, userID userid.UserID, lifetime time.Duration, meta ...SessionMeta) (CreatedSession, error) {
 	// A session for nobody is worse than no session: it would authenticate as a
 	// blank id, which every predicate then has to refuse individually. Refuse to
 	// write the row at all.
 	if userID.IsZero() {
-		return "", time.Time{}, fmt.Errorf("create session: user id is required")
+		return CreatedSession{}, fmt.Errorf("create session: user id is required")
 	}
-	sessionID := id.Generate()
+	sessionID, secret := id.Generate(), id.Generate()
 	expiresAt := sessionExpiry(time.Now(), lifetime)
 	params := store.CreateSessionParams{
-		ID:        sessionID,
-		UserID:    userID,
-		ExpiresAt: expiresAt,
-		IPAddress: peer.ClientIP(ctx),
+		ID:         sessionID,
+		SecretHash: hasher.Hash(secret),
+		UserID:     userID,
+		ExpiresAt:  expiresAt,
+		IPAddress:  peer.ClientIP(ctx),
 	}
 	if len(meta) > 0 {
 		params.UserAgent = meta[0].UserAgent
 	}
 	if err := st.Sessions().Create(ctx, params); err != nil {
-		return "", time.Time{}, fmt.Errorf("create session: %w", err)
+		return CreatedSession{}, fmt.Errorf("create session: %w", err)
 	}
-	return sessionID, expiresAt, nil
+	return CreatedSession{ID: sessionID, Token: FormatSessionToken(sessionID, secret), ExpiresAt: expiresAt}, nil
 }
 
 // ValidateToken resolves a session token to a UserInfo. Returns an error if
 // the token is invalid or expired. Uses a single joined query to avoid two
 // sequential DB round-trips.
-func ValidateToken(ctx context.Context, st store.Store, token string) (*UserInfo, error) {
-	row, err := st.Sessions().ValidateWithUser(ctx, token, time.Now().UTC())
+func ValidateToken(ctx context.Context, st store.Store, hasher SecretHasher, token string) (*UserInfo, error) {
+	sessionID, secret, ok := ParseSessionToken(token)
+	if !ok {
+		return nil, connect.Errorf(connect.CodeUnauthenticated, "invalid or expired token")
+	}
+	row, err := st.Sessions().ValidateWithUser(ctx, sessionID, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.Errorf(connect.CodeUnauthenticated, "invalid or expired token")
@@ -531,9 +530,12 @@ func ValidateToken(ctx context.Context, st store.Store, token string) (*UserInfo
 	if !ok {
 		return nil, connect.Errorf(connect.CodeUnauthenticated, "invalid or expired token")
 	}
+	if !hmac.Equal(hasher.Hash(secret), row.SecretHash) {
+		return nil, connect.Errorf(connect.CodeUnauthenticated, "invalid or expired token")
+	}
 	return &UserInfo{
 		ID:         id,
-		Credential: SessionCredential(token),
+		Credential: SessionCredential(sessionID),
 		// A browser session is UNSCOPED, and it says so explicitly. A session
 		// is the account itself signed in, not an app the account authorized,
 		// so no scope subtracts from it -- and stating that here rather than

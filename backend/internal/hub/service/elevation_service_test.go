@@ -74,6 +74,7 @@ func (r *teardownRecorder) snapshot() (sessions, users, bearers []string) {
 }
 
 type elevationEnv struct {
+	service  *service.UserService
 	client   leapmuxv1connect.UserServiceClient
 	store    store.Store
 	token    string
@@ -97,11 +98,11 @@ func setupElevationTest(t *testing.T) *elevationEnv {
 		ID: userID, Username: "elevated", PasswordHash: hash,
 		DisplayName: "Elevated", FirstCredentialExempt: true, IsAdmin: true,
 	}))
-	token, _, _, err := auth.Login(ctx, st, "elevated", "testpass", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(ctx, st, hubtestutil.TestSecretHasher(), "elevated", "testpass", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	recorder := &teardownRecorder{}
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	t.Cleanup(contexts.Stop)
 	userSvc := service.NewUserService(st, testConfig(), servicetest.NewSettingsManager(t, st, nil),
 		auth.NewCredentialLifecycleEffects(contexts, recorder, nil), mail.NewStubSender(), mail.Renderer{}, nil)
@@ -116,6 +117,7 @@ func setupElevationTest(t *testing.T) *elevationEnv {
 	t.Cleanup(server.Close)
 
 	return &elevationEnv{
+		service:  userSvc,
 		client:   leapmuxv1connect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
 		store:    st,
 		token:    token,
@@ -170,7 +172,7 @@ func TestElevateSession_InvalidatesTheCacheWithoutSigningTheUserOut(t *testing.T
 	// TestElevateSession_GrantTearsNothingDown isolates the teardown half,
 	// away from the credential revocation ChangePassword performs on the
 	// user's OTHER sessions and tokens.
-	info, err := auth.ValidateToken(ctx, env.store, env.token)
+	info, err := auth.ValidateToken(ctx, env.store, hubtestutil.TestSecretHasher(), env.token)
 	require.NoError(t, err, "the session must survive its own elevation")
 	assert.Equal(t, env.userID, info.ID.String())
 }
@@ -235,7 +237,7 @@ func TestDropElevation_InvalidatesTheCacheImmediately(t *testing.T) {
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 
 	// The user is still signed in: dropping an elevation is not a logout.
-	_, err = auth.ValidateToken(ctx, env.store, env.token)
+	_, err = auth.ValidateToken(ctx, env.store, hubtestutil.TestSecretHasher(), env.token)
 	assert.NoError(t, err)
 }
 
@@ -262,7 +264,7 @@ func TestElevateSession_WrongFactorDoesNotReadAsADeadSession(t *testing.T) {
 		"without the marker a browser signs the user out of the session it is verifying")
 
 	// The session really is still alive.
-	_, err = auth.ValidateToken(ctx, env.store, env.token)
+	_, err = auth.ValidateToken(ctx, env.store, hubtestutil.TestSecretHasher(), env.token)
 	assert.NoError(t, err)
 
 	// An EMPTY password takes the same path: a client must not be signed out
@@ -272,14 +274,13 @@ func TestElevateSession_WrongFactorDoesNotReadAsADeadSession(t *testing.T) {
 	assert.Equal(t, "1", info.ResponseHeader().Get(service.CredentialRejectedHeader))
 
 	// And the refusal granted nothing.
-	row, err := env.store.Sessions().GetByID(ctx, env.token, time.Now().UTC())
+	row, err := env.store.Sessions().GetByID(ctx, hubtestutil.SessionIDFromCookie(t, env.token), time.Now().UTC())
 	require.NoError(t, err)
 	assert.Nil(t, row.ElevationExpiresAt)
 }
 
-// TestElevateSession_RefusesABearer pins the structural rule end to end: a
-// CLI credential cannot elevate itself, so it can never reach a
-// passkey-management RPC however long it lives.
+// Session-elevation handlers accept browser sessions only. API credentials
+// obtain their own elevation through browser approval at /oauth/step-up.
 func TestElevateSession_RefusesABearer(t *testing.T) {
 	t.Parallel()
 
@@ -297,14 +298,36 @@ func TestElevateSession_RefusesABearer(t *testing.T) {
 		SecretHash: tv.HashSecret(secret), ExpiresAt: &expires,
 	}))
 
-	// The bearer path is not wired into this env's interceptor, so drive the
-	// refusal through the handler's own guard instead: a session-less
-	// credential has nothing to stamp.
-	req := &leapmuxv1.ElevateSessionRequest{CurrentPassword: "testpass"}
-	ctx, info := connect.NewClientContext(ctx)
-	info.RequestHeader().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
-	_, err = env.client.ElevateSession(ctx, req)
-	require.Error(t, err)
-	assert.Contains(t, []connect.Code{connect.CodeUnauthenticated, connect.CodeFailedPrecondition},
-		connect.CodeOf(err), "a bearer must never obtain an elevation")
+	base := auth.WithUser(ctx, &auth.UserInfo{ID: userid.MustNew(env.userID), Credential: auth.APICredential(tokenID)})
+	var response *leapmuxv1.ElevateSessionResponse
+	info, err := callUnderServerInfo(base, func(ctx context.Context) error {
+		var callErr error
+		response, callErr = env.service.ElevateSession(ctx, &leapmuxv1.ElevateSessionRequest{CurrentPassword: "testpass"})
+		return callErr
+	})
+	assertCannotVerify(t, info, err)
+	assert.Nil(t, response)
+	assert.Contains(t, err.Error(), "this credential cannot verify your identity")
+	assert.Empty(t, info.ResponseHeader().Get(service.CredentialRejectedHeader))
+	row, err := env.store.APITokens().GetByID(ctx, tokenID)
+	require.NoError(t, err)
+	assert.Nil(t, row.ElevationExpiresAt)
+}
+
+func TestElevateSession_BearerTransportRefusesScopeNeverEvenAfterElevation(t *testing.T) {
+	t.Parallel()
+	env := setupUserTest(t)
+	bearer := env.bearerFor(t)
+	_, err := env.client.ListUserSettings(bearerReq(context.Background(), &leapmuxv1.ListUserSettingsRequest{}, bearer))
+	require.NoError(t, err, "the bearer must authenticate on a permitted read")
+	for _, elevated := range []bool{false, true} {
+		if elevated {
+			elevateAPITokenRow(t, env.store, tokenIDOf(t, bearer), env.userID)
+			env.contexts.EvictByUserID(env.userID)
+		}
+		ctx, info := connect.NewClientContext(context.Background())
+		info.RequestHeader().Set("Authorization", "Bearer "+bearer)
+		_, err := env.client.ElevateSession(ctx, &leapmuxv1.ElevateSessionRequest{CurrentPassword: "testpass"})
+		assertOutOfScope(t, info, err)
+	}
 }

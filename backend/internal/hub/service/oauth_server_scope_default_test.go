@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/authscope"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
@@ -99,7 +100,7 @@ func TestOmittedScopeDefaultsBelowTheAdminFamily(t *testing.T) {
 		defer func() { _ = approve.Body.Close() }()
 		require.Equal(t, http.StatusOK, approve.StatusCode)
 
-		row, err := env.store.DeviceAuthorizations().Get(context.Background(), deviceCode)
+		row, err := env.store.DeviceAuthorizations().Get(context.Background(), hubtestutil.TestSecretHasher().Hash(deviceCode))
 		require.NoError(t, err)
 		assertNoAdminScope(t, row.GrantedScopes)
 	})
@@ -126,7 +127,7 @@ func TestOmittedScopeDefaultsBelowTheAdminFamily(t *testing.T) {
 		defer func() { _ = approve.Body.Close() }()
 		require.Equal(t, http.StatusOK, approve.StatusCode)
 
-		row, err := env.store.DeviceAuthorizations().Get(context.Background(), deviceCode)
+		row, err := env.store.DeviceAuthorizations().Get(context.Background(), hubtestutil.TestSecretHasher().Hash(deviceCode))
 		require.NoError(t, err)
 		assert.Equal(t, "admin:read", row.GrantedScopes)
 

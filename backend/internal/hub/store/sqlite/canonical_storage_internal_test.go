@@ -186,19 +186,19 @@ func TestAllDatetimeColumnsStoreCanonicalLayout(t *testing.T) {
 	// device_authorizations: expires_at on Create, last_polled_at on
 	// TouchPoll, consumed_at on Consume.
 	require.NoError(t, st.DeviceAuthorizations().Create(ctx, store.CreateDeviceAuthorizationParams{
-		ClientID:   oauthapp.ControlCLIClientID,
-		DeviceCode: "canon-device-code",
-		UserCode:   "CANON-USER-CODE",
-		ExpiresAt:  future,
+		ClientID:       oauthapp.ControlCLIClientID,
+		DeviceCodeHash: storetest.FixtureSecretHash("canon-device-code"),
+		UserCode:       "CANON-USER-CODE",
+		ExpiresAt:      future,
 	}))
-	require.NoError(t, st.DeviceAuthorizations().TouchPoll(ctx, "canon-device-code", time.Now().UTC()))
+	require.NoError(t, st.DeviceAuthorizations().TouchPoll(ctx, storetest.FixtureSecretHash("canon-device-code"), time.Now().UTC()))
 	approved, err := st.DeviceAuthorizations().Approve(ctx, store.ApproveDeviceAuthorizationParams{
-		DeviceCode: "canon-device-code",
-		UserID:     userid.MustNew(user.ID),
+		DeviceCodeHash: storetest.FixtureSecretHash("canon-device-code"),
+		UserID:         userid.MustNew(user.ID),
 	}, time.Now().UTC())
 	require.NoError(t, err)
 	require.EqualValues(t, 1, approved)
-	consumed, err := st.DeviceAuthorizations().Consume(ctx, "canon-device-code", time.Now().UTC())
+	consumed, err := st.DeviceAuthorizations().Consume(ctx, storetest.FixtureSecretHash("canon-device-code"), time.Now().UTC())
 	require.NoError(t, err)
 	require.EqualValues(t, 1, consumed)
 

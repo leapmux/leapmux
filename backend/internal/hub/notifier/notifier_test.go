@@ -322,7 +322,7 @@ func TestDeliverOnConnect_AfterARestart(t *testing.T) {
 	e := newEnv(t)
 	reg := newFakeRegistry(t, e.worker, true) // a new notifier and registry: nothing flagged
 	sender := ackSender()
-	worker, err := e.st.Workers().GetByAuthTokenIncludeDeleted(context.Background(), mustAuthToken(t, e.st, e.worker))
+	worker, err := e.st.Workers().GetByIDIncludeDeleted(context.Background(), e.worker)
 	require.NoError(t, err)
 	require.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DEREGISTERING, worker.Status)
 
@@ -332,11 +332,4 @@ func TestDeliverOnConnect_AfterARestart(t *testing.T) {
 	assert.Equal(t, 1, sender.callCount())
 	assert.Equal(t, leapmuxv1.WorkerStatus_WORKER_STATUS_DELETED, e.status(t))
 	assert.True(t, reg.flagged(e.worker))
-}
-
-func mustAuthToken(t *testing.T, st store.Store, workerID string) string {
-	t.Helper()
-	w, err := st.Workers().GetByID(context.Background(), workerID)
-	require.NoError(t, err)
-	return w.AuthToken
 }

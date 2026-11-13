@@ -182,39 +182,24 @@ func TestExecuteCreateBranch_BranchNameErrorSkipsRollback(t *testing.T) {
 		"BranchNameError aborted before git ran — no rollback should be requested")
 }
 
-// TestRollbackCreatedBranch_DeletesBranchEvenIfCheckoutRestoreFails
-// pins the regression where rollbackCreatedBranch early-returned on a
-// HEAD-restore failure (working tree dirty, stale index.lock, sibling
-// git race) and left the half-created branch ref behind. The leftover
-// ref then blocked a retry with the same name and the user saw the
-// "Rolling back branch X" label even though the cleanup never ran.
-//
-// The simplest reproduction: a rollback whose OriginalBranch does NOT
-// exist makes the restore-checkout fail, but the just-created
-// CreatedBranch is still on disk. The fix attempts the branch delete
-// regardless of the restore outcome.
-func TestRollbackCreatedBranch_DeletesBranchEvenIfCheckoutRestoreFails(t *testing.T) {
+// An unused, unchanged owned branch can be removed without restoring an
+// unavailable original checkout. The later successful checkout stays selected.
+func TestRollbackCreatedBranch_RemovesAnUnusedUnchangedBranch(t *testing.T) {
 	t.Parallel()
-
 	repoDir := initRepo(t)
 	svc, _, _ := setupTestService(t)
-
-	// Set the stage: create 'leftover' as a real branch on disk.
 	run(t, repoDir, "git", "checkout", "-b", "leftover")
-	require.True(t, localBranchExists(t, repoDir, "leftover"))
-	// Move HEAD off it so `git branch -D leftover` can succeed (git
-	// refuses to delete the current branch).
+	initial := strings.TrimSpace(run(t, repoDir, "git", "rev-parse", "HEAD"))
 	run(t, repoDir, "git", "checkout", "-")
-
-	// Craft a rollback where OriginalBranch does not exist so the
-	// HEAD-restore checkout fails; the branch delete must still run.
+	info, err := queryGitPathInfo(t.Context(), repoDir)
+	require.NoError(t, err)
 	svc.rollbackCreatedBranch(rollbackBranch{
-		WorkingDir:     repoDir,
-		OriginalBranch: "ghost-original-that-does-not-exist",
-		CreatedBranch:  "leftover",
+		RepoRoot: info.RepoRoot, RepoGitDir: info.CommonDir, WorkingDir: repoDir,
+		OriginalBranch: "ghost-original-that-does-not-exist", CreatedBranch: "leftover",
+		initialBranchCommit: initial,
 	})
-	assert.False(t, localBranchExists(t, repoDir, "leftover"),
-		"branch delete must run even when the prior HEAD-restore checkout failed")
+	assert.False(t, localBranchExists(t, repoDir, "leftover"))
+	assert.Equal(t, "refs/heads/main", strings.TrimSpace(run(t, repoDir, "git", "symbolic-ref", "HEAD")))
 }
 
 // ---------- labels ----------

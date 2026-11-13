@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 )
 
 // Deny is EVERY value that is not "allow", including an ABSENT one, and the
@@ -36,7 +37,7 @@ func TestDeviceApproval_AnAbsentDecisionDeniesFinally(t *testing.T) {
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	assert.Contains(t, bodyOf(t, resp), "Refused")
 
-	row, err := env.store.DeviceAuthorizations().Get(ctx, deviceCode)
+	row, err := env.store.DeviceAuthorizations().Get(ctx, hubtestutil.TestSecretHasher().Hash(deviceCode))
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_DENIED, row.State, "an absent decision must record a denial")
 	assert.Empty(t, row.GrantedScopes, "a denial grants nothing")
@@ -48,7 +49,7 @@ func TestDeviceApproval_AnAbsentDecisionDeniesFinally(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { _ = retry.Body.Close() }()
 
-	after, err := env.store.DeviceAuthorizations().Get(ctx, deviceCode)
+	after, err := env.store.DeviceAuthorizations().Get(ctx, hubtestutil.TestSecretHasher().Hash(deviceCode))
 	require.NoError(t, err)
 	assert.Equal(t, leapmuxv1.DeviceAuthorizationState_DEVICE_AUTHORIZATION_STATE_DENIED, after.State, "a denial is final")
 	assert.Empty(t, after.UserID, "a denied grant must never bind an account")

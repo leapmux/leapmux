@@ -5,10 +5,10 @@
 
 -- name: CreateDeviceAuthorization :exec
 INSERT INTO device_authorizations (
-    device_code, user_code, device_name, client_id, requested_scopes,
+    device_code_hash, user_code, device_name, client_id, requested_scopes,
     granted_scopes, state, expires_at, elevate_token_id
 ) VALUES (
-    sqlc.arg(device_code),
+    sqlc.arg(device_code_hash),
     sqlc.arg(user_code),
     sqlc.arg(device_name),
     sqlc.arg(client_id),
@@ -24,7 +24,7 @@ INSERT INTO device_authorizations (
 );
 
 -- name: GetDeviceAuthorization :one
-SELECT * FROM device_authorizations WHERE device_code = ?;
+SELECT * FROM device_authorizations WHERE device_code_hash = ?;
 
 -- name: GetDeviceAuthorizationByUserCode :one
 SELECT * FROM device_authorizations WHERE user_code = ?;
@@ -45,7 +45,7 @@ SELECT * FROM device_authorizations WHERE user_code = ?;
 -- The same guard makes a DENIAL final: a DENIED row can never become APPROVED.
 UPDATE device_authorizations
 SET state = sqlc.arg(approved_state), user_id = sqlc.arg(user_id), granted_scopes = sqlc.arg(granted_scopes)
-WHERE device_code = sqlc.arg(device_code) AND state = sqlc.arg(pending_state) AND consumed_at IS NULL
+WHERE device_code_hash = sqlc.arg(device_code_hash) AND state = sqlc.arg(pending_state) AND consumed_at IS NULL
   AND expires_at > sqlc.arg(now);
 
 -- name: ApproveDeviceAuthorizationByUserCode :execresult
@@ -68,7 +68,7 @@ WHERE user_code = sqlc.arg(user_code) AND state = sqlc.arg(pending_state) AND co
 -- name: ConsumeDeviceAuthorization :execresult
 UPDATE device_authorizations
 SET consumed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-WHERE device_code = sqlc.arg(device_code) AND state = sqlc.arg(approved_state) AND consumed_at IS NULL
+WHERE device_code_hash = sqlc.arg(device_code_hash) AND state = sqlc.arg(approved_state) AND consumed_at IS NULL
   AND expires_at > sqlc.arg(now);
 
 -- name: TouchDeviceAuthorizationPoll :exec
@@ -78,7 +78,7 @@ WHERE device_code = sqlc.arg(device_code) AND state = sqlc.arg(approved_state) A
 -- answered every on-time poll with slow_down, stalling the flow for the skew.
 UPDATE device_authorizations
 SET last_polled_at = sqlc.arg(now)
-WHERE device_code = sqlc.arg(device_code);
+WHERE device_code_hash = sqlc.arg(device_code_hash);
 
 -- name: ConsumeApprovedDeviceAuthorizationsForUserClient :execresult
 -- A DISCONNECT ends the authorization this account gave the app, so the

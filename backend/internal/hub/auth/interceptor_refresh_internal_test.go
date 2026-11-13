@@ -19,11 +19,11 @@ import (
 // observable without waiting out the throttle.
 func slidingInterceptor(t *testing.T, sessionDuration time.Duration) *authInterceptor {
 	t.Helper()
-	sessions := &touchRecordingSessionStore{row: &store.SessionWithUser{
+	sessions := &touchRecordingSessionStore{row: &store.SessionWithUser{SecretHash: testSecretHasher().Hash(testSessionSecret),
 		UserID: "user", Username: "user",
 		CreatedAt: time.Now().Add(-time.Hour), ExpiresAt: time.Now().Add(time.Minute),
 	}}
-	return &authInterceptor{
+	return &authInterceptor{sessionHasher: testSecretHasher(),
 		store:  sessionValidationOverrideStore{sessions: sessions},
 		state:  &authState{},
 		policy: func(context.Context) Policy { return Policy{SessionDuration: sessionDuration} },
@@ -38,13 +38,13 @@ func slidingInterceptor(t *testing.T, sessionDuration time.Duration) *authInterc
 // unwell.
 func TestTouchSession_StoreErrorIsThrottledLikeAnySlide(t *testing.T) {
 	sessions := &touchRecordingSessionStore{
-		row: &store.SessionWithUser{
+		row: &store.SessionWithUser{SecretHash: testSecretHasher().Hash(testSessionSecret),
 			UserID: "user", Username: "user",
 			CreatedAt: time.Now().Add(-time.Hour), ExpiresAt: time.Now().Add(time.Minute),
 		},
 		touchErr: errors.New("database is down"),
 	}
-	a := &authInterceptor{
+	a := &authInterceptor{sessionHasher: testSecretHasher(),
 		store:  sessionValidationOverrideStore{sessions: sessions},
 		state:  &authState{},
 		policy: func(context.Context) Policy { return Policy{SessionDuration: 36 * time.Hour} },
@@ -75,7 +75,7 @@ func callWrap(t *testing.T, interceptor connect.ServerInterceptor, procedure str
 // fakes validate.
 func cookieCallInfo() *connect.CallInfo {
 	info := &connect.CallInfo{}
-	info.RequestHeader().Set("Cookie", CookieName+"=session")
+	info.RequestHeader().Set("Cookie", CookieName+"="+testSessionToken("session"))
 	return info
 }
 
@@ -107,7 +107,7 @@ func TestWrap_SlideRefreshesCookieBeforeTheHandlerRuns(t *testing.T) {
 
 	parsed, parseErr := http.ParseSetCookie(cookieAtHandler)
 	require.NoError(t, parseErr, "the response header must carry the refreshed cookie")
-	assert.Equal(t, "session", parsed.Value)
+	assert.Equal(t, testSessionToken("session"), parsed.Value)
 	assert.True(t, parsed.Expires.After(before.Add(36*time.Hour)),
 		"the refreshed cookie must outlive the configured duration from this request")
 }
@@ -153,7 +153,7 @@ func TestWrap_HandlerErrorStillCarriesRefresh(t *testing.T) {
 	assert.Equal(t, connect.CodeInternal, connectErr.Code())
 	parsed, parseErr := http.ParseSetCookie(info.ResponseHeader().Get("Set-Cookie"))
 	require.NoError(t, parseErr, "a failed call must still carry the refreshed cookie")
-	assert.Equal(t, "session", parsed.Value)
+	assert.Equal(t, testSessionToken("session"), parsed.Value)
 	assert.True(t, parsed.Expires.After(before.Add(36*time.Hour)))
 }
 
@@ -177,7 +177,7 @@ func TestWrap_EmailVerificationDenialCarriesRefresh(t *testing.T) {
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	parsed, parseErr := http.ParseSetCookie(info.ResponseHeader().Get("Set-Cookie"))
 	require.NoError(t, parseErr, "the denial must carry the cookie for the slide it already made")
-	assert.Equal(t, "session", parsed.Value)
+	assert.Equal(t, testSessionToken("session"), parsed.Value)
 }
 
 // A handler that returns no error and sends no message must complete cleanly.

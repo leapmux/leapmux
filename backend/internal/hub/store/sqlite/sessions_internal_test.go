@@ -3,7 +3,6 @@ package sqlite
 import (
 	"context"
 	"database/sql"
-	"math"
 	"strings"
 	"testing"
 	"time"
@@ -28,25 +27,11 @@ func newSessionTestStore(t *testing.T) (*sqliteStore, *sql.DB) {
 	return st, st.conn.shared.db
 }
 
-func waitForSQLiteFraction(t *testing.T, db *sql.DB, match func(float64) bool) {
-	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		var seconds float64
-		require.NoError(t, db.QueryRow(`SELECT CAST(strftime('%f', 'now') AS REAL)`).Scan(&seconds))
-		if match(math.Mod(seconds, 1)) {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	t.Fatal("timed out waiting for SQLite clock fraction")
-}
-
 func seedFractionalSession(t *testing.T, st store.Store, expiresAt time.Time) (string, string) {
 	t.Helper()
 	user := storetest.SeedUser(t, st, "fractional-session-user")
 	sessionID := id.Generate()
-	require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{
+	require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{SecretHash: storetest.FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 		ID:        sessionID,
 		UserID:    userid.MustNew(user.ID),
 		ExpiresAt: expiresAt,
@@ -55,37 +40,50 @@ func seedFractionalSession(t *testing.T, st store.Store, expiresAt time.Time) (s
 }
 
 func TestSessionExpiryPredicatesPreserveFractionalPrecision(t *testing.T) {
-	t.Run("future session remains active within its expiry second", func(t *testing.T) {
-		st, db := newSessionTestStore(t)
-		sessionID, userID := seedFractionalSession(t, st, time.Now().Add(time.Hour))
-		waitForSQLiteFraction(t, db, func(fraction float64) bool { return fraction < 0.3 })
-		_, err := db.Exec(`UPDATE user_sessions SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+0.500 seconds') WHERE id = ?`, sessionID)
+	ctx := context.Background()
+	expiry := time.Date(2025, 1, 2, 3, 4, 5, 700_000_000, time.UTC)
+	st, db := newSessionTestStore(t)
+	sessionID, userID := seedFractionalSession(t, st, expiry)
+	_, err := db.ExecContext(ctx, `UPDATE user_sessions SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', ?) WHERE id = ?`, timefmt.Format(expiry), sessionID)
+	require.NoError(t, err)
+	for _, offset := range []time.Duration{-time.Millisecond, 0, time.Millisecond} {
+		t.Run(offset.String(), func(t *testing.T) {
+			now := expiry.Add(offset)
+			row, err := st.Sessions().GetByID(ctx, sessionID, now)
+			joined, joinedErr := st.Sessions().ValidateWithUser(ctx, sessionID, now)
+			byUser, listErr := st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{UserID: userid.MustNew(userID), PageParams: store.PageParams{Limit: 10}}, now)
+			require.NoError(t, listErr)
+			all, allErr := st.Sessions().ListAllActive(ctx, store.ListAllActiveSessionsParams{PageParams: store.PageParams{Limit: 10}}, now)
+			require.NoError(t, allErr)
+			if offset < 0 {
+				require.NoError(t, err)
+				require.NoError(t, joinedErr)
+				assert.Equal(t, sessionID, row.ID)
+				assert.Equal(t, userID, joined.UserID)
+				require.Len(t, byUser.Rows, 1)
+				require.Len(t, all.Rows, 1)
+				assert.Equal(t, sessionID, byUser.Rows[0].ID)
+				assert.Equal(t, sessionID, all.Rows[0].ID)
+			} else {
+				require.ErrorIs(t, err, store.ErrNotFound)
+				require.ErrorIs(t, joinedErr, store.ErrNotFound)
+				assert.Empty(t, byUser.Rows)
+				assert.Empty(t, all.Rows)
+			}
+		})
+	}
+	cleanupStore, _ := newSessionTestStore(t)
+	seedFractionalSession(t, cleanupStore, expiry)
+	for _, tc := range []struct {
+		offset  time.Duration
+		deleted int64
+	}{
+		{-time.Millisecond, 0}, {0, 0}, {time.Millisecond, 1},
+	} {
+		deleted, err := cleanupStore.Cleanup().HardDeleteExpiredSessions(ctx, expiry.Add(tc.offset))
 		require.NoError(t, err)
-
-		_, err = st.Sessions().GetByID(context.Background(), sessionID, time.Now().UTC())
-		require.NoError(t, err)
-		_, err = st.Sessions().ValidateWithUser(context.Background(), sessionID, time.Now().UTC())
-		require.NoError(t, err)
-		byUserPage, err := st.Sessions().ListByUserID(context.Background(), store.ListUserSessionsParams{UserID: userid.MustNew(userID), PageParams: store.PageParams{Limit: 1000}}, time.Now().UTC())
-		require.NoError(t, err)
-		byUser := byUserPage.Rows
-		assert.Len(t, byUser, 1)
-		page, err := st.Sessions().ListAllActive(context.Background(), store.ListAllActiveSessionsParams{PageParams: store.PageParams{Limit: 10}}, time.Now().UTC())
-		require.NoError(t, err)
-		assert.Len(t, page.Rows, 1)
-	})
-
-	t.Run("expired session is deleted within its expiry second", func(t *testing.T) {
-		st, db := newSessionTestStore(t)
-		sessionID, _ := seedFractionalSession(t, st, time.Now().Add(time.Hour))
-		waitForSQLiteFraction(t, db, func(fraction float64) bool { return fraction > 0.7 })
-		_, err := db.Exec(`UPDATE user_sessions SET expires_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-0.500 seconds') WHERE id = ?`, sessionID)
-		require.NoError(t, err)
-
-		deleted, err := st.Cleanup().HardDeleteExpiredSessions(context.Background(), time.Now().UTC())
-		require.NoError(t, err)
-		assert.Equal(t, int64(1), deleted)
-	})
+		assert.Equal(t, tc.deleted, deleted, "cleanup at %s", tc.offset)
+	}
 }
 
 // TestListAllActiveSessionsPreservesFractionalCursorPrecision pins the
@@ -104,7 +102,7 @@ func TestListAllActiveSessionsPreservesFractionalCursorPrecision(t *testing.T) {
 	// instant, with hand-picked ids on both sides of the cursor id.
 	const tieBelowID, tieCursorID = "tie-a", "tie-b"
 	for _, sessID := range []string{tieBelowID, tieCursorID} {
-		require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{
+		require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{SecretHash: storetest.FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 			ID:        sessID,
 			UserID:    userid.MustNew(userID),
 			ExpiresAt: time.Now().Add(time.Hour),
@@ -136,20 +134,21 @@ func TestListAllActiveSessionsPreservesFractionalCursorPrecision(t *testing.T) {
 	assert.Equal(t, beforeID, page.Rows[1].ID)
 }
 
-// TestCreateUserSessionStoresExpiresAtCanonical pins the storage contract the
-// raw-string expiry/cursor filters rely on: CreateUserSession wraps the bound
-// ExpiresAt in strftime('%Y-%m-%dT%H:%M:%fZ'), so the column holds the canonical
-// layout. A revert to binding time.Time directly (the driver's layout) would
-// make expires_at > strftime(...,'now') silently mis-compare while the
-// result-level tests still passed (they write expires_at via db.Exec), so the
-// contract needs a direct storage assertion. The sub-millisecond digits also
-// prove the wrap quantizes to the canonical millisecond layout.
+// TestCreateUserSessionStoresExpiresAtCanonical checks the storage format
+// required by the raw-string expiry filters. Create binds ExpiresAt through
+// sqltime.SQLiteTime, which floors it to milliseconds and formats it in Go.
+// The expiry filters compare the stored value against a bound SQLiteTime
+// in the same format. Binding a raw time.Time would use the driver's format
+// and could misclassify a session that expires on the same UTC day.
+// The direct storage assertion checks the format independently of the
+// result-level expiry tests. The sub-millisecond input also checks that
+// the stored value discards precision below one millisecond.
 func TestCreateUserSessionStoresExpiresAtCanonical(t *testing.T) {
 	st, db := newSessionTestStore(t)
 	user := storetest.SeedUser(t, st, "canonical-expiry-user")
 	expiresAt := time.Date(2026, 7, 20, 12, 34, 56, 789_456_789, time.UTC)
 	sessionID := id.Generate()
-	require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{
+	require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{SecretHash: storetest.FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 		ID:        sessionID,
 		UserID:    userid.MustNew(user.ID),
 		ExpiresAt: expiresAt,
@@ -165,15 +164,13 @@ func TestCreateUserSessionStoresExpiresAtCanonical(t *testing.T) {
 		`SELECT CAST(expires_at AS TEXT), created_at, last_active_at FROM user_sessions WHERE id = ?`,
 		sessionID,
 	).Scan(&expiresAtStored, &createdAtStored, &lastActiveAtStored))
-	// expires_at is the caller-supplied instant, wrapped canonical by CreateUserSession.
+	// SQLiteTime stores the caller-supplied instant in the canonical format.
 	assert.Equal(t, timefmt.Format(expiresAt), expiresAtStored,
 		"expires_at must be stored in the canonical strftime layout the raw-string filters assume; got %q", expiresAtStored)
-	// created_at + last_active_at are written by the column DEFAULT
-	// (strftime('%Y-%m-%dT%H:%M:%fZ','now')), NOT by an explicit Go-bound wrap,
-	// so a migration change to the DEFAULT is the one path the explicit-wrap
-	// tests cannot catch. Pin their layout: a canonical value parses cleanly
-	// under sqliteTimeFormat; a non-canonical one (e.g. modernc's driver layout
-	// with a space at byte 10) does not.
+	// The column defaults write created_at and last_active_at with SQL
+	// strftime. These writes bypass SQLiteTime, so the expires_at assertion
+	// cannot detect a change to their defaults. Check the separator and UTC
+	// suffix that the raw-string cursor comparisons require.
 	for _, col := range []struct{ name, val string }{
 		{"created_at", createdAtStored},
 		{"last_active_at", lastActiveAtStored},
@@ -204,8 +201,8 @@ func TestCreateUserSessionStoresExpiresAtCanonical(t *testing.T) {
 // ListByUserID) then deemed the touched session expired -- logging the user
 // out on the request following each Touch. The result-level touch tests used a
 // 48h expiry whose different UTC day masked the byte-10 mismatch, so the
-// regression shipped green. This test touches with a same-day sub-millisecond
-// expiry and asserts both the on-disk layout AND that GetByID still finds the
+// regression shipped green. This test touches with an expiry one hour ahead at
+// millisecond precision and asserts both the on-disk layout and that GetByID still finds the
 // row, so neither the storage drift nor its user-visible consequence can
 // silently return.
 func TestTouchStoresExpiresAtCanonical(t *testing.T) {
@@ -219,8 +216,7 @@ func TestTouchStoresExpiresAtCanonical(t *testing.T) {
 	_, err := db.Exec(`UPDATE user_sessions SET last_active_at = ? WHERE id = ?`, timefmt.Format(old), sessionID)
 	require.NoError(t, err)
 
-	// Same UTC day as "now", with sub-millisecond precision -- the exact shape
-	// that exposed the raw-bind bug.
+	// Set the expiry one hour ahead at millisecond precision.
 	newExpiry := time.Now().UTC().Add(time.Hour).Truncate(time.Millisecond)
 	n, err := st.Sessions().Touch(context.Background(), store.TouchSessionParams{
 		ID:           sessionID,
@@ -230,11 +226,11 @@ func TestTouchStoresExpiresAtCanonical(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(1), n, "Touch must fire against the backdated row")
 
-	// Direct contract: the raw-string liveness filter GetUserSessionByID uses
-	// must see the touched row as live. Reading the column back through Scan
-	// is not a reliable witness here -- modernc reformats a DATETIME value on
-	// scan, so it hides a non-canonical on-disk layout. The filter result and
-	// GetByID below exercise the exact SQL path that broke.
+	// Probe the stored expiry with a canonical timestamp from SQLite's clock.
+	// This checks raw-string comparison independently of the Go bind.
+	// GetByID below checks the production predicate, which binds the caller's
+	// clock as a SQLiteTime. A bare DATETIME scan can hide the stored format
+	// because the driver reformats it.
 	var live bool
 	require.NoError(t, db.QueryRow(
 		`SELECT expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM user_sessions WHERE id = ?`,
@@ -257,17 +253,16 @@ func TestTouchStoresExpiresAtCanonical(t *testing.T) {
 	assert.Equal(t, timefmt.Format(newExpiry), expiresAtStored,
 		"Touch must store expires_at in the canonical strftime layout; got %q", expiresAtStored)
 
-	// The user-visible consequence: GetByID uses that same raw-string filter,
-	// so a non-canonical stored value returns ErrNotFound on the request after
-	// each Touch.
+	// GetByID must also find the touched session when its expiry predicate
+	// compares against the caller's bound clock.
 	_, err = st.Sessions().GetByID(context.Background(), sessionID, time.Now().UTC())
 	require.NoError(t, err, "touched session must remain visible to GetByID")
 }
 
 // TestKeysetCursorTrailingZeroMillisecondTie pins that the SQL-side strftime
 // write paths store canonical fixed 3-digit fractional seconds ON DISK, so the
-// keyset predicate's "=" tiebreak branch byte-matches a timefmt.Format-decoded
-// cursor even when the boundary millisecond ends in a trailing zero. (modernc
+// keyset predicate's "=" tiebreak branch byte-matches a cursor bound through
+// SQLiteNullTime even when the boundary millisecond ends in a trailing zero. (modernc
 // trims trailing zeros only when a DATETIME column is scanned into a Go string
 // -- a driver presentation artifact; production reads scan time.Time and the
 // comparisons run SQL-side on the stored bytes.) A prior review round misread
@@ -280,7 +275,7 @@ func TestKeysetCursorTrailingZeroMillisecondTie(t *testing.T) {
 
 	mk := func() string {
 		sessionID := id.Generate()
-		require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{
+		require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{SecretHash: storetest.FixtureSecretHash("ssssssssssssssssssssssssssssssssssssssssssssssss"),
 			ID:        sessionID,
 			UserID:    userid.MustNew(user.ID),
 			ExpiresAt: time.Now().Add(time.Hour),
@@ -326,4 +321,24 @@ func TestKeysetCursorTrailingZeroMillisecondTie(t *testing.T) {
 	assert.Equal(t, expectTied, page.Rows[0].ID)
 	assert.Equal(t, below, page.Rows[1].ID)
 	assert.False(t, page.HasMore())
+}
+
+func TestSessionUserForeignKeyRejectsMissingOwners(t *testing.T) {
+	ctx := context.Background()
+	st, db := newSessionTestStore(t)
+	sessionID, ownerID := seedFractionalSession(t, st, time.Now().Add(time.Hour))
+	for _, missing := range []string{"", id.Generate()} {
+		_, err := db.ExecContext(ctx, `UPDATE user_sessions SET user_id = ? WHERE id = ?`, missing, sessionID)
+		require.Error(t, err)
+		require.Contains(t, strings.ToLower(err.Error()), "foreign key")
+		var retained string
+		require.NoError(t, db.QueryRowContext(ctx, `SELECT user_id FROM user_sessions WHERE id = ?`, sessionID).Scan(&retained))
+		assert.Equal(t, ownerID, retained)
+	}
+	other := storetest.SeedUser(t, st, "other-session-owner")
+	_, err := db.ExecContext(ctx, `UPDATE user_sessions SET user_id = ? WHERE id = ?`, other.ID, sessionID)
+	require.NoError(t, err)
+	var updated string
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT user_id FROM user_sessions WHERE id = ?`, sessionID).Scan(&updated))
+	assert.Equal(t, other.ID, updated)
 }

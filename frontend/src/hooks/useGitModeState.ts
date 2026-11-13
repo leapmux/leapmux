@@ -148,6 +148,29 @@ export function gitModeMenuLabel(mode: GitMode): string {
 }
 
 /**
+ * A `Record`, not a `switch` with a `default`: a sixth mode added to `GitMode`
+ * is then a compile error here rather than a mode that silently falls through
+ * to "no warning". `null` states that a mode deliberately shows none.
+ */
+const DIRTY_WARNINGS: Record<GitMode, string | null> = {
+  [GitMode.Current]: null,
+  [GitMode.SwitchBranch]: 'The working copy has uncommitted changes. Switching branches may fail or discard changes.',
+  [GitMode.CreateBranch]: 'The working copy has uncommitted changes. Creating a new branch will include them.',
+  [GitMode.CreateWorktree]: 'The selected working copy has uncommitted changes that will not be transferred to the new worktree.',
+  [GitMode.UseWorktree]: null,
+}
+
+/**
+ * Per-mode dirty-worktree warning copy. Exported so tests can pin the exact
+ * strings shown for each mode without rendering the full GitOptions component
+ * (which depends on auth context, RPC mocks, etc.). Returns null for a mode
+ * that surfaces no dirty-tree warning.
+ */
+export function dirtyWarningCopy(mode: GitMode): string | null {
+  return DIRTY_WARNINGS[mode]
+}
+
+/**
  * Tagged-union payload emitted by GitOptions when the user's selection
  * changes. Each variant only carries fields that mode actually consumes
  * so callers don't have to pass undefined sentinels for unrelated modes.
@@ -260,10 +283,8 @@ export function setupForUseWorktree(
  * would briefly show `Current` before the first emit replaces it.
  */
 export function useGitModeState(initial: GitModeIntent = { mode: GitMode.Current }) {
-  // Structural dedup at the signal so direct `handleGitModeChange`
-  // callers (tests, future imperative call sites) don't notify
-  // downstream effects on no-op writes — GitOptions's own outgoing
-  // memo only protects the effect path.
+  // Compare intents structurally at the signal so equal writes from
+  // GitOptions and direct callers do not notify downstream effects.
   const [currentIntent, setIntent] = createSignal<GitModeIntent>(
     initial,
     { equals: shallowEqual },

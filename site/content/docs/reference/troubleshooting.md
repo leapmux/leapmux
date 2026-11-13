@@ -269,7 +269,7 @@ Open an agent or terminal on the Worker — that's what opens the channel; it op
 
 ## "Worker public key changed" / handshake rejected (TOFU pin mismatch)
 
-LeapMux remembers each Worker's public key on first connection (trust-on-first-use) and warns if it later changes. A later handshake whose key doesn't match is rejected, so a compromised Hub cannot silently swap a Worker underneath you. See [Security & Threat Model](/docs/admin/security/).
+LeapMux remembers each Worker's public key on first connection (trust-on-first-use) and warns if it later changes. A mismatch detects a Hub substituting a Worker key in a channel your browser opens. It does not stop a Hub opening its own channel or serving modified Frontend code. See [Security & Threat Model](/docs/admin/security/).
 
 ### The browser shows the "Worker public key changed" dialog
 
@@ -447,7 +447,9 @@ For security, the Hub returns the identical error for both an unknown username a
 **Fix**
 Double-check the exact username (lowercase, hyphens, no spaces). If you've lost the password, have an admin reset it with `leapmux control admin user reset-password` (see [User passwords](/docs/admin/admin-cli/#user-passwords)), which runs over RPC against the live Hub. When the Hub is stopped, `leapmux recover password reset` does the same work offline (see [Recovery](/docs/admin/recover/)); that command opens the Hub's database directly, so run it on the Hub host with the Hub stopped.
 
-Either way, every session, token, **and passkey** the account holds is revoked. Solo mode has one account, `solo`, and it asks for a password only once you set one; set and change it in **Preferences → Account → Password**.
+Both reset commands end every session and revoke the account's API tokens and existing delegation tokens. They also delete every passkey. Registered Workers keep their credentials and can mint new delegation tokens. After a suspected compromise, review the Worker list and explicitly deregister each unknown Worker. See [Managing Workers](/docs/admin/managing-workers/).
+
+Solo mode has one account, `solo`, and it asks for a password only once you set one; set and change it in **Preferences → Account → Password**.
 
 ### Passkey sign-in fails or the authenticator never appears
 
@@ -721,19 +723,26 @@ The Hub's state lives in its data dir (SQLite DB at `<data_dir>/hub.db`, encrypt
 - **Upgrades:** pull a newer image/binary and recreate against the **same** data dir/volume. Migrations run automatically on startup; no manual migration command is needed.
 
 {{< callout type="warning" >}}
-Back up the Hub's `encryption.key` together with its database. The key ring encrypts stored secrets (OAuth tokens, etc.) at rest — losing it makes those secrets unrecoverable. See [Encryption & Data](/docs/admin/encryption-and-data/).
+Back up the Hub's `encryption.key` together with its database. Losing the file makes encrypted secrets unrecoverable. Its token pepper also becomes unavailable, signing out every session and invalidating every Worker auth token. See [Encryption & Data](/docs/admin/encryption-and-data/).
 {{< /callout >}}
 
 ### Encryption-key errors after restoring a backup
 
 **Symptom**
-After restoring the database, OAuth or token-backed features fail to decrypt.
+After restoring the database, OAuth or token-backed features fail to decrypt. Users may also be signed out, and the Hub may refuse Worker tokens.
 
 **Cause**
 You restored `hub.db` but not the matching `encryption.key`, or restored a key from a different point in time. The two must be in sync.
 
 **Fix**
-Restore the `encryption.key` from the same backup as the database. For planned key rotation, use `leapmux recover encryption-key rotate` then `reencrypt` — and follow the on-screen instruction to restart the Hub between the two. See [Encryption & Data](/docs/admin/encryption-and-data/).
+Restore the `encryption.key` from the same backup as the database. If the matching file is lost, the new pepper invalidates every session and Worker token. Solo mode and the desktop app reissue their own Worker's token. For each standalone Worker:
+
+1. Remove it in the Hub's Worker list.
+2. Stop it.
+3. Delete its `state.json`.
+4. Register it with a new key. It receives a new Worker ID.
+
+For planned key rotation, use `leapmux recover encryption-key rotate` then `reencrypt` — and follow the on-screen instruction to restart the Hub between the two. See [Encryption & Data](/docs/admin/encryption-and-data/).
 
 ## Terminals and `leapmux control`
 
@@ -745,10 +754,10 @@ For terminal behavior, see [Terminals](/docs/using/terminals/); for the CLI, see
 Running `leapmux control ...` from inside a LeapMux terminal or agent fails. The error says that it found no `--hub` flag and no `LEAPMUX_HUB` or `LEAPMUX_CONTROL_SOCK` environment variable.
 
 **Cause**
-`leapmux control` resolves its target from `LEAPMUX_CONTROL_SOCK` (+ `LEAPMUX_CONTROL_TOKEN`) when spawned inside a LeapMux terminal/agent, or from `--hub`/`LEAPMUX_HUB` plus saved login credentials otherwise. Those `LEAPMUX_CONTROL_*` env vars are injected automatically for every terminal and agent spawn — but if they're missing, the command can't locate the Hub.
+`leapmux control` resolves its target from `LEAPMUX_CONTROL_SOCK` (+ `LEAPMUX_CONTROL_TOKEN`) when spawned inside a LeapMux terminal/agent, or from `--hub`/`LEAPMUX_HUB` plus saved login credentials otherwise. Those `LEAPMUX_CONTROL_*` env vars are injected automatically for every terminal and agent spawn — but if they're missing, the command can't locate the Hub. The Worker may have failed to start the control endpoint. On Unix, the socket lives in `<data-dir>/run/control` when its full path fits the platform limit. A deeper data directory uses a private namespace under the canonical system `/tmp` directory. The namespace derives from the account and the canonical Worker data directory. The Worker refuses an insecure directory, a conflicting namespace identity, a namespace held by another process, or a fallback path that still exceeds the platform limit. It never changes an insecure directory's permissions or switches locations to hide an ownership refusal. On Windows, the endpoint is a named pipe whose name does not depend on the Worker data directory. The Worker log states the actual error.
 
 **Fix**
-- **Inside a LeapMux terminal/agent:** the `LEAPMUX_CONTROL_*` vars should already be present. Confirm with `env | grep LEAPMUX_CONTROL`. If they're absent, you likely spawned a sub-shell that stripped the environment, or the remote-IPC server wasn't available at spawn — open a fresh terminal tab. (There is **no** "remote-enabled" checkbox to toggle; it's wired up automatically.)
+- **Inside a LeapMux terminal/agent:** read the Worker log for a control-endpoint error. On Unix, correct the directory ownership and permissions, or choose a shorter Worker data directory. On Windows, inspect the named-pipe startup error in the Worker log. The `LEAPMUX_CONTROL_*` vars should already be present. Confirm with `env | grep LEAPMUX_CONTROL`. If they're absent, you likely spawned a sub-shell that stripped the environment, or the remote-IPC server wasn't available at spawn — open a fresh terminal tab. (There is **no** "remote-enabled" checkbox to toggle; it's wired up automatically.)
 - **From your own shell (not inside LeapMux):** authenticate first:
 
   ```bash

@@ -3,10 +3,13 @@ package service_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -34,6 +37,7 @@ import (
 	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/sqlitedb"
+	utiltest "github.com/leapmux/leapmux/internal/util/testutil"
 )
 
 func setupOAuthTestServer(t *testing.T) (*httptest.Server, store.Store, *keystore.Keystore) {
@@ -106,7 +110,7 @@ func setupOAuthTestServerOver(
 	if wrap != nil {
 		handlerStore = wrap(st)
 	}
-	idpHandler := service.NewIdPHandler(handlerStore, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
+	idpHandler := service.NewIdPHandler(handlerStore, hubtestutil.TestSecretHasher(), cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
 
 	mux := http.NewServeMux()
 	idpHandler.RegisterRoutes(mux)
@@ -419,6 +423,17 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 
 	hubtestutil.CreateTestAdmin(t, st)
 
+	return setupOAuthSignupServer(t, st)
+}
+
+func setupOAuthSignupServer(t *testing.T, st store.Store) (
+	*httptest.Server,
+	leapmuxv1connect.AuthServiceClient,
+	store.Store,
+	*keystore.Keystore,
+	*settings.Manager,
+) {
+	t.Helper()
 	key, err := keystore.GenerateKey()
 	require.NoError(t, err)
 	ks, err := keystore.New(map[uint32][32]byte{1: key})
@@ -433,16 +448,17 @@ func setupOAuthTestServerWithAuthService(t *testing.T) (
 	mux := http.NewServeMux()
 
 	// Register OAuth HTTP routes.
-	idpHandler := service.NewIdPHandler(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
+	idpHandler := service.NewIdPHandler(st, hubtestutil.TestSecretHasher(), cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
 	idpHandler.RegisterRoutes(mux)
 
 	// Register AuthService ConnectRPC routes.
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, registry := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
+	t.Cleanup(registry.Stop)
 	authDeps := servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	authDeps.Keystore = ks
-	authSvc := service.NewAuthService(authDeps)
+	authSvc := newInitializedAuthService(t, authDeps)
 	connectServer := connect.NewServer(interceptor)
-	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	mountAuthAndSystem(t, connectServer, authSvc, set)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)
@@ -641,6 +657,30 @@ func TestCompleteOAuthSignup_Success(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestCompleteOAuthSignup_RechecksAdmission(t *testing.T) {
+	for _, policy := range []string{"signup", "provider"} {
+		t.Run(policy, func(t *testing.T) {
+			_, client, st, ks, set := setupOAuthTestServerWithAuthService(t)
+			providerID, token := createTestProvider(t, st, ks), id.Generate()
+			insertPendingSignup(t, st, ks, providerID, token, "closed@example.com", "Closed", "closed-subject", time.Now().Add(5*time.Minute).UTC())
+			if policy == "signup" {
+				require.NoError(t, settings.KeySignupEnabled.Set(t.Context(), set, false))
+			} else {
+				require.NoError(t, st.OAuthProviders().UpdateEnabled(t.Context(), store.UpdateOAuthProviderEnabledParams{ID: providerID, Enabled: false}))
+			}
+			ctx, info := connect.NewClientContext(t.Context())
+			_, err := client.CompleteOAuthSignup(signupReq(ctx, &leapmuxv1.CompleteOAuthSignupRequest{SignupToken: token, Username: "closed-user"}))
+			require.Error(t, err)
+			assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+			_, err = st.Users().GetByUsername(t.Context(), "closed-user")
+			assert.ErrorIs(t, err, store.ErrNotFound)
+			_, err = st.OAuthUserLinks().Get(t.Context(), store.GetOAuthUserLinkParams{ProviderID: providerID, ProviderSubject: "closed-subject"})
+			assert.ErrorIs(t, err, store.ErrNotFound)
+			assert.NotContains(t, info.ResponseHeader().Get("Set-Cookie"), auth.CookieName+"=")
+		})
+	}
+}
+
 // The OAuth sign-up mints its own session, so it must stamp the configured
 // duration like every other mint path. Its own CreateSession call is the one
 // that would otherwise leave OAuth users on the built-in default while password
@@ -665,8 +705,8 @@ func TestCompleteOAuthSignup_UsesConfiguredSessionDuration(t *testing.T) {
 	}))
 	require.NoError(t, err)
 
-	sessionID := sessionFromCookie(t, info.ResponseHeader().Get("Set-Cookie"))
-	sess, err := st.Sessions().GetByID(context.Background(), sessionID, time.Now().UTC())
+	sessionToken := sessionFromCookie(t, info.ResponseHeader().Get("Set-Cookie"))
+	sess, err := st.Sessions().GetByID(context.Background(), hubtestutil.SessionIDFromCookie(t, sessionToken), time.Now().UTC())
 	require.NoError(t, err)
 	hubtestutil.AssertSessionLifetime(t, before, configured, sess.ExpiresAt)
 }
@@ -859,14 +899,14 @@ func TestCompleteOAuthSignup_UntrustedFailClosedWhenVerificationEmailFails(t *te
 	enableEmailVerification(t, set)
 
 	mux := http.NewServeMux()
-	idpHandler := service.NewIdPHandler(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
+	idpHandler := service.NewIdPHandler(st, hubtestutil.TestSecretHasher(), cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
 	idpHandler.RegisterRoutes(mux)
 
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	authDeps := servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))
 	authDeps.Keystore = ks
 	authDeps.Mail = &mailSenderDouble{err: errors.New("smtp down")}
-	authSvc := service.NewAuthService(authDeps)
+	authSvc := newInitializedAuthService(t, authDeps)
 	connectServer := connect.NewServer(interceptor)
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
@@ -1050,213 +1090,279 @@ func TestCompleteOAuthSignup_ReencryptsTokensWithActiveKeyVersion(t *testing.T) 
 	assert.Equal(t, "mock-refresh-token", string(plainRefresh))
 }
 
-// --- Callback behavior tests (signup disabled) ---
+// --- Signed callback behavior tests ---
 
 func TestOAuthCallback_NewUser_SignupDisabled(t *testing.T) {
 	t.Parallel()
 
-	// Use a custom setup with signup left disabled (its default).
-	st, err := sqlite.Open(":memory:", sqlitedb.Config{})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = st.Close() })
-
-	err = st.Migrator().Migrate(context.Background())
-	require.NoError(t, err)
-
-	hubtestutil.CreateTestAdmin(t, st)
-
-	key, err := keystore.GenerateKey()
-	require.NoError(t, err)
-	ks, err := keystore.New(map[uint32][32]byte{1: key})
-	require.NoError(t, err)
-
-	cfg := &config.Config{
-		Listen: []string{":4327"},
+	server, _, st, ks, set := setupOAuthTestServerWithAuthService(t)
+	require.NoError(t, settings.KeySignupEnabled.Set(t.Context(), set, false))
+	const email, subject = "new-identity@example.com", "new-subject"
+	providerID := createCallbackTestProvider(t, st, ks, email, subject, true)
+	response := performLoginCallback(t, server, st, providerID, "/after-login")
+	require.Equal(t, http.StatusForbidden, response.StatusCode)
+	assert.Contains(t, readBody(t, response), "sign-up is disabled")
+	assert.Empty(t, response.Header.Get("Location"))
+	assertNoCallbackSession(t, response)
+	for _, cookie := range response.Cookies() {
+		assert.False(t, strings.HasPrefix(cookie.Name, auth.OAuthSignupNonceCookieName+"-"))
+		assert.False(t, strings.HasPrefix(cookie.Name, auth.SecureOAuthSignupNonceCookieName+"-"))
 	}
-
-	idpHandler := service.NewIdPHandler(st, cfg, servicetest.NewSettingsManager(t, st, ks), auth.NewCredentialLifecycleEffects(nil, nil, nil), ks)
-	mux := http.NewServeMux()
-	idpHandler.RegisterRoutes(mux)
-	server := httptest.NewServer(mux)
-	t.Cleanup(server.Close)
-
-	providerID := createTestProvider(t, st, ks)
-
-	// Create a valid OAuth state for the callback. The nonce hash and the
-	// cookie below carry the browser binding, without which the callback
-	// refuses before it resolves the provider at all.
-	const nonce = "signup-disabled-flow-nonce"
-	stateValue := id.Generate()
-	err = st.OAuthStates().Create(context.Background(), store.CreateOAuthStateParams{
-		State:        stateValue,
-		ProviderID:   providerID,
-		PkceVerifier: "test-verifier",
-		NonceHash:    hashNonceForTest(nonce),
-		Purpose:      store.OAuthStatePurposeLogin,
-		ExpiresAt:    time.Now().Add(5 * time.Minute).UTC(),
-	})
-	require.NoError(t, err)
-
-	// The callback attempts to exchange the code with GitHub, which fails
-	// because there is no mock token server. The exchange fails with a
-	// network error before the signup-disabled check, so this test covers
-	// the full state validation path: the binding, the expiry, the
-	// provider match, and the state consumption. The signup-disabled check
-	// runs on the RPC path instead (GetPendingOAuthSignup /
-	// CompleteOAuthSignup).
-
-	req, err := http.NewRequest(http.MethodGet,
-		server.URL+"/auth/idp/"+providerID+"/callback?code=test-code&state="+stateValue, nil)
-	require.NoError(t, err)
-	req.AddCookie(auth.BuildOAuthNonceCookie(stateValue, nonce, time.Minute, false))
-
-	resp, err := noRedirectClient().Do(req)
-	require.NoError(t, err)
-	defer func() { _ = resp.Body.Close() }()
-
-	// The exchange fails (no mock token server), which answers 400.
-	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
-	body := readBody(t, resp)
-	assert.NotContains(t, body, "different browser",
-		"the browser holds the flow's nonce, so the binding check must pass")
-	assert.Contains(t, body, "OAuth exchange failed",
-		"the request must reach the exchange, which is what proves the state and provider resolved")
-
-	// The handler consumes the state row either way, so a refused pair cannot
-	// be retried.
-	_, err = st.OAuthStates().Get(context.Background(), stateValue)
-	assert.ErrorIs(t, err, store.ErrNotFound)
+	_, err := st.OAuthUserLinks().Get(t.Context(), store.GetOAuthUserLinkParams{ProviderID: providerID, ProviderSubject: subject})
+	require.ErrorIs(t, err, store.ErrNotFound)
+	_, err = st.Users().GetByEmail(t.Context(), email)
+	require.ErrorIs(t, err, store.ErrNotFound)
 }
 
-// TestAutoLinkByVerifiedEmail validates that the auto-link-by-email path
-// (in handleCallback) correctly links a new OAuth identity to an existing
-// user when the emails match and the existing email is verified.
-// Since handleCallback requires a real OAuth token exchange, this test
-// exercises the DB-level operations that the auto-link path performs.
+// The callback creates the incoming link and a session for the existing account,
+// even when public signup is disabled. This test creates neither outcome.
 func TestAutoLinkByVerifiedEmail(t *testing.T) {
 	t.Parallel()
 
-	_, st, ks := setupOAuthTestServer(t)
+	for _, signupEnabled := range []bool{true, false} {
+		t.Run(strconv.FormatBool(signupEnabled), func(t *testing.T) {
+			server, _, st, ks, set := setupOAuthTestServerWithAuthService(t)
+			require.NoError(t, settings.KeySignupEnabled.Set(t.Context(), set, signupEnabled))
+			const email, subject = "verified-autolink@example.com", "incoming-trusted-subject"
+			userID := id.Generate()
+			require.NoError(t, st.Users().Create(t.Context(), store.CreateUserParams{
+				ID: userID, Username: "verified-autolink", PasswordHash: password.PlaceholderHash,
+				Email: email, EmailVerified: true,
+			}))
+			providerID := createCallbackTestProvider(t, st, ks, email, subject, true)
+			require.Zero(t, countSessions(t, st, userID))
+			_, err := st.OAuthUserLinks().Get(t.Context(), store.GetOAuthUserLinkParams{ProviderID: providerID, ProviderSubject: subject})
+			require.ErrorIs(t, err, store.ErrNotFound)
 
-	// Create a user with a verified email.
-	hash, err := password.Hash("testpass")
-	require.NoError(t, err)
-	userID := id.Generate()
-	err = st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:            userID,
-		Username:      "alice",
-		PasswordHash:  hash,
-		DisplayName:   "Alice",
-		Email:         "alice@example.com",
-		EmailVerified: true,
-		IsAdmin:       false,
-	})
-	require.NoError(t, err)
-
-	// Link Alice to GitHub provider.
-	githubProviderID := createTestProvider(t, st, ks)
-	err = st.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
-		UserID:          userid.MustNew(userID),
-		ProviderID:      githubProviderID,
-		ProviderSubject: "github-alice-123",
-	})
-	require.NoError(t, err)
-
-	// Create a second provider (simulating Google OIDC).
-	googleProviderID := id.Generate()
-	aad := keystore.ProviderAAD(googleProviderID)
-	encSecret, err := ks.Encrypt([]byte("google-secret"), aad)
-	require.NoError(t, err)
-	err = st.OAuthProviders().Create(context.Background(), store.CreateOAuthProviderParams{
-		ID:           googleProviderID,
-		ProviderType: leapmuxv1.IdentityProviderType_IDENTITY_PROVIDER_TYPE_OIDC,
-		Name:         "Test Google",
-		ClientID:     "google-client-id",
-		ClientSecret: encSecret,
-		Scopes:       "openid profile email",
-		Enabled:      true,
-	})
-	require.NoError(t, err)
-
-	// Simulate what handleCallback does for auto-link:
-	// 1. GetOAuthUserLink for Google identity → not found (new identity).
-	_, err = st.OAuthUserLinks().Get(context.Background(), store.GetOAuthUserLinkParams{
-		ProviderID:      googleProviderID,
-		ProviderSubject: "google-alice-456",
-	})
-	require.Error(t, err, "should not find Google link yet")
-
-	// 2. Look up user by verified email.
-	existingUser, err := st.Users().GetByEmail(context.Background(), "alice@example.com")
-	require.NoError(t, err)
-	assert.Equal(t, userID, existingUser.ID)
-	assert.True(t, existingUser.EmailVerified)
-
-	// 3. Create the OAuth link for the new provider identity.
-	err = st.OAuthUserLinks().Create(context.Background(), store.CreateOAuthUserLinkParams{
-		UserID:          userid.MustNew(existingUser.ID),
-		ProviderID:      googleProviderID,
-		ProviderSubject: "google-alice-456",
-	})
-	require.NoError(t, err)
-
-	// Verify: user now has links to both providers.
-	links, err := st.OAuthUserLinks().ListByUser(context.Background(), userid.MustNew(userID))
-	require.NoError(t, err)
-	assert.Len(t, links, 2)
-
-	providerIDs := map[string]bool{}
-	for _, l := range links {
-		providerIDs[l.ProviderID] = true
+			response := performLoginCallback(t, server, st, providerID, "/after-login")
+			require.Equal(t, http.StatusFound, response.StatusCode, readBody(t, response))
+			assert.Equal(t, "/after-login", response.Header.Get("Location"))
+			link, err := st.OAuthUserLinks().Get(t.Context(), store.GetOAuthUserLinkParams{ProviderID: providerID, ProviderSubject: subject})
+			require.NoError(t, err)
+			assert.Equal(t, userID, link.UserID)
+			var sessionCookie *http.Cookie
+			for _, cookie := range response.Cookies() {
+				if (cookie.Name == auth.CookieName || cookie.Name == auth.SecureCookieName) && cookie.Value != "" && cookie.MaxAge >= 0 {
+					sessionCookie = cookie
+				}
+			}
+			require.NotNil(t, sessionCookie)
+			assertCallbackSession(t, st, sessionCookie.Value, userID)
+		})
 	}
-	assert.True(t, providerIDs[githubProviderID], "should have GitHub link")
-	assert.True(t, providerIDs[googleProviderID], "should have Google link")
-
-	// Verify: looking up either provider identity resolves to the same user.
-	githubLink, err := st.OAuthUserLinks().Get(context.Background(), store.GetOAuthUserLinkParams{
-		ProviderID:      githubProviderID,
-		ProviderSubject: "github-alice-123",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, userID, githubLink.UserID)
-
-	googleLink, err := st.OAuthUserLinks().Get(context.Background(), store.GetOAuthUserLinkParams{
-		ProviderID:      googleProviderID,
-		ProviderSubject: "google-alice-456",
-	})
-	require.NoError(t, err)
-	assert.Equal(t, userID, googleLink.UserID)
 }
 
-// TestAutoLinkByEmail_SkippedWhenUnverified validates that auto-link does NOT
-// happen when the existing user's email is unverified.
-func TestAutoLinkByEmail_SkippedWhenUnverified(t *testing.T) {
+// Either missing provider trust or an unverified existing address prevents
+// automatic linking. Signup policy controls the resulting new-account path.
+func TestAutoLinkByEmail_RequiresTrustedProviderAndVerifiedAccount(t *testing.T) {
 	t.Parallel()
 
-	_, st, _ := setupOAuthTestServer(t)
+	for _, tc := range []struct {
+		name                         string
+		trustEmail, verified, signup bool
+	}{
+		{"unverified with signup", true, false, true},
+		{"untrusted with signup", false, true, true},
+		{"unverified without signup", true, false, false},
+		{"untrusted without signup", false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _, st, ks, set := setupOAuthTestServerWithAuthService(t)
+			require.NoError(t, settings.KeySignupEnabled.Set(t.Context(), set, tc.signup))
+			const email, subject = "not-autolinked@example.com", "incoming-subject"
+			userID := id.Generate()
+			require.NoError(t, st.Users().Create(t.Context(), store.CreateUserParams{
+				ID: userID, Username: "not-autolinked", PasswordHash: password.PlaceholderHash,
+				Email: email, EmailVerified: tc.verified,
+			}))
+			providerID := createCallbackTestProvider(t, st, ks, email, subject, tc.trustEmail)
+			response := performLoginCallback(t, server, st, providerID, "/after-login")
+			_, err := st.OAuthUserLinks().Get(t.Context(), store.GetOAuthUserLinkParams{ProviderID: providerID, ProviderSubject: subject})
+			require.ErrorIs(t, err, store.ErrNotFound)
+			assert.Zero(t, countSessions(t, st, userID))
+			assertNoCallbackSession(t, response)
+			if !tc.signup {
+				require.Equal(t, http.StatusForbidden, response.StatusCode)
+				assert.Contains(t, readBody(t, response), "sign-up is disabled")
+				assert.Empty(t, response.Header.Get("Location"))
+				return
+			}
+			require.Equal(t, http.StatusFound, response.StatusCode, readBody(t, response))
+			location, err := response.Location()
+			require.NoError(t, err)
+			require.Equal(t, "/auth/idp/complete-signup", location.Path)
+			token := location.Query().Get("token")
+			require.NotEmpty(t, token)
+			nonce := signupNonceCookie(t, response, token)
+			require.NotNil(t, nonce)
+			pending, err := st.PendingOAuthSignups().Get(t.Context(), token)
+			require.NoError(t, err)
+			assert.Equal(t, providerID, pending.ProviderID)
+			assert.Equal(t, subject, pending.ProviderSubject)
+			assert.Equal(t, email, pending.Email)
+			assert.Equal(t, "/after-login", pending.RedirectURI)
+			assert.NotEmpty(t, nonce.Value)
+			assert.NotEqual(t, nonce.Value, pending.NonceHash)
+			assert.Equal(t, hashNonceForTest(nonce.Value), pending.NonceHash)
+		})
+	}
+}
 
-	// Create a user with an unverified email.
-	hash, err := password.Hash("testpass")
-	require.NoError(t, err)
-	err = st.Users().Create(context.Background(), store.CreateUserParams{
-		ID:            id.Generate(),
-		Username:      "bob",
-		PasswordHash:  hash,
-		DisplayName:   "Bob",
-		Email:         "bob@example.com",
-		EmailVerified: false, // unverified
-		IsAdmin:       false,
-	})
-	require.NoError(t, err)
+func TestOAuthCallback_NewUser_CompletesBoundSignedSignup(t *testing.T) {
+	t.Parallel()
 
-	// Look up the user by email — found but not verified.
-	existingUser, err := st.Users().GetByEmail(context.Background(), "bob@example.com")
+	server, client, st, ks, _ := setupOAuthTestServerWithAuthService(t)
+	const email, subject = "signed-signup@example.com", "signed-signup-subject"
+	providerID := createCallbackTestProvider(t, st, ks, email, subject, true)
+	response := performLoginCallback(t, server, st, providerID, "/after-signup")
+	require.Equal(t, http.StatusFound, response.StatusCode, readBody(t, response))
+	assertNoCallbackSession(t, response)
+	location, err := response.Location()
 	require.NoError(t, err)
-	assert.False(t, existingUser.EmailVerified)
+	require.Equal(t, "/auth/idp/complete-signup", location.Path)
+	token := location.Query().Get("token")
+	require.NotEmpty(t, token)
+	nonce := signupNonceCookie(t, response, token)
+	require.NotNil(t, nonce)
+	require.NotEmpty(t, nonce.Value)
+	pending, err := st.PendingOAuthSignups().Get(t.Context(), token)
+	require.NoError(t, err)
+	assert.Equal(t, providerID, pending.ProviderID)
+	assert.Equal(t, subject, pending.ProviderSubject)
+	assert.Equal(t, email, pending.Email)
+	assert.Equal(t, hashNonceForTest(nonce.Value), pending.NonceHash)
+	assert.NotEqual(t, nonce.Value, pending.NonceHash)
+	assert.Equal(t, "/after-signup", pending.RedirectURI)
 
-	// The auto-link path checks EmailVerified == 1 and skips when unverified.
-	// This means the flow would create a new pending signup instead (tested
-	// elsewhere).
+	// A browser without this flow's cookie cannot read or complete its signup.
+	// Refusal must leave the actual browser's pending row available.
+	for _, cookieValue := range []string{"", "another-browser"} {
+		ctx, info := connect.NewClientContext(t.Context())
+		if cookieValue != "" {
+			cookie := *nonce
+			cookie.Value = cookieValue
+			info.RequestHeader().Set("Cookie", cookie.Name+"="+cookie.Value)
+		}
+		_, err = client.GetPendingOAuthSignup(ctx, &leapmuxv1.GetPendingOAuthSignupRequest{SignupToken: token})
+		require.Error(t, err)
+		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+		_, err = client.CompleteOAuthSignup(ctx, &leapmuxv1.CompleteOAuthSignupRequest{SignupToken: token, Username: "signedsignupuser"})
+		require.Error(t, err)
+		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+		_, err = st.Users().GetByEmail(t.Context(), email)
+		assert.ErrorIs(t, err, store.ErrNotFound)
+		_, err = st.OAuthUserLinks().Get(t.Context(), store.GetOAuthUserLinkParams{ProviderID: providerID, ProviderSubject: subject})
+		assert.ErrorIs(t, err, store.ErrNotFound)
+		_, err = st.PendingOAuthSignups().Get(t.Context(), token)
+		require.NoError(t, err)
+		assert.Empty(t, info.ResponseHeader().Get("Set-Cookie"))
+	}
+
+	ctx, info := connect.NewClientContext(t.Context())
+	info.RequestHeader().Set("Cookie", nonce.Name+"="+nonce.Value)
+	preview, err := client.GetPendingOAuthSignup(ctx, &leapmuxv1.GetPendingOAuthSignupRequest{SignupToken: token})
+	require.NoError(t, err)
+	assert.Equal(t, email, preview.GetEmail())
+	assert.Equal(t, "Test OIDC", preview.GetProviderName())
+	assert.Equal(t, "/after-signup", preview.GetRedirect())
+	completed, err := client.CompleteOAuthSignup(ctx, &leapmuxv1.CompleteOAuthSignupRequest{SignupToken: token, Username: "signedsignupuser"})
+	require.NoError(t, err)
+	userID := completed.GetSessionReport().GetUser().GetId()
+	require.NotEmpty(t, userID)
+	user, err := st.Users().GetByID(t.Context(), userID)
+	require.NoError(t, err)
+	assert.Equal(t, email, user.Email)
+	assert.True(t, user.EmailVerified)
+	link, err := st.OAuthUserLinks().Get(t.Context(), store.GetOAuthUserLinkParams{ProviderID: providerID, ProviderSubject: subject})
+	require.NoError(t, err)
+	assert.Equal(t, userID, link.UserID)
+	assertCallbackSession(t, st, sessionFromCookie(t, info.ResponseHeader().Get("Set-Cookie")), userID)
+	_, err = st.PendingOAuthSignups().Get(t.Context(), token)
+	assert.ErrorIs(t, err, store.ErrNotFound)
+
+	// The signed provider's token pair must survive the pending-to-user change
+	// of additional authenticated data without a second token exchange.
+	tokens, err := st.OAuthTokens().Get(t.Context(), store.GetOAuthTokensParams{UserID: userid.MustNew(userID), ProviderID: providerID})
+	require.NoError(t, err)
+	accessToken, err := ks.Decrypt(tokens.AccessToken, keystore.AccessTokenAAD(userID, providerID))
+	require.NoError(t, err)
+	assert.Equal(t, "a", string(accessToken))
+	refreshToken, err := ks.Decrypt(tokens.RefreshToken, keystore.RefreshTokenAAD(userID, providerID))
+	require.NoError(t, err)
+	assert.Equal(t, "r", string(refreshToken))
+
+	_, err = client.CompleteOAuthSignup(ctx, &leapmuxv1.CompleteOAuthSignupRequest{SignupToken: token, Username: "signedsignupagain"})
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
+	assert.Equal(t, 1, countSessions(t, st, userID))
+}
+
+// createCallbackTestProvider selects trust before any flow or dependent row
+// exists. The shared signed fixture registers an untrusted provider, and the
+// store offers no trust update, so trusted setup recreates that configuration.
+func createCallbackTestProvider(t *testing.T, st store.Store, ks *keystore.Keystore, email, subject string, trustEmail bool) string {
+	t.Helper()
+	providerID := createTestOIDCProviderWithStubClaims(t, st, ks, email, subject)
+	if !trustEmail {
+		return providerID
+	}
+	provider, err := st.OAuthProviders().GetByID(t.Context(), providerID)
+	require.NoError(t, err)
+	require.NoError(t, st.OAuthProviders().Delete(t.Context(), providerID))
+	require.NoError(t, st.OAuthProviders().Create(t.Context(), store.CreateOAuthProviderParams{
+		ID:           provider.ID,
+		ProviderType: provider.ProviderType,
+		Name:         provider.Name,
+		IssuerURL:    provider.IssuerURL,
+		ClientID:     provider.ClientID,
+		ClientSecret: provider.ClientSecret,
+		Scopes:       provider.Scopes,
+		TrustEmail:   true,
+		Enabled:      provider.Enabled,
+	}))
+	return providerID
+}
+
+func performLoginCallback(t *testing.T, server *httptest.Server, st store.Store, providerID, redirect string) *http.Response {
+	t.Helper()
+	login, err := noRedirectClient().Get(server.URL + "/auth/idp/" + providerID + "/login?redirect=" + url.QueryEscape(redirect))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = login.Body.Close() })
+	require.Equal(t, http.StatusFound, login.StatusCode)
+	state := stateFromLoginResponse(t, login)
+	nonce := oauthNonceCookie(t, login, state)
+	require.NotNil(t, nonce)
+	require.NotEmpty(t, nonce.Value)
+	storedState, err := st.OAuthStates().Get(t.Context(), state)
+	require.NoError(t, err)
+	assert.Equal(t, providerID, storedState.ProviderID)
+	assert.Equal(t, redirect, storedState.RedirectURI)
+	assert.NotEqual(t, nonce.Value, storedState.NonceHash)
+	assert.Equal(t, hashNonceForTest(nonce.Value), storedState.NonceHash)
+	response := completeCallback(t, server, providerID, state, nonce)
+	_, err = st.OAuthStates().Get(t.Context(), state)
+	assert.ErrorIs(t, err, store.ErrNotFound)
+	return response
+}
+
+func assertCallbackSession(t *testing.T, st store.Store, sessionToken, userID string) {
+	t.Helper()
+	require.NotEmpty(t, sessionToken)
+	session, err := st.Sessions().GetByID(t.Context(), hubtestutil.SessionIDFromCookie(t, sessionToken), time.Now().UTC())
+	require.NoError(t, err)
+	assert.Equal(t, userID, session.UserID)
+	authenticated, err := auth.ValidateToken(t.Context(), st, hubtestutil.TestSecretHasher(), sessionToken)
+	require.NoError(t, err)
+	assert.Equal(t, userID, authenticated.ID.String())
+	assert.Equal(t, 1, countSessions(t, st, userID))
+}
+
+func assertNoCallbackSession(t *testing.T, response *http.Response) {
+	t.Helper()
+	for _, cookie := range response.Cookies() {
+		assert.NotEqual(t, auth.CookieName, cookie.Name)
+		assert.NotEqual(t, auth.SecureCookieName, cookie.Name)
+	}
 }
 
 func TestDeleteOAuthTokens_ScopedToProvider(t *testing.T) {
@@ -1562,4 +1668,303 @@ func TestOAuthCallback_ConcurrentCallbacksSpendTheStateOnce(t *testing.T) {
 
 	assert.ElementsMatch(t, []int{http.StatusFound, http.StatusBadRequest}, statuses,
 		"exactly one of two racing callbacks may spend the state")
+}
+
+// idpAuthReadProbe injects errors only at the reads the HTTP handlers own.
+// Fixture writes and assertions use the undecorated store.
+type idpAuthReadProbe struct {
+	providerError error
+	sessionError  error
+	providerCalls atomic.Int64
+	sessionCalls  atomic.Int64
+}
+
+type idpAuthReadStore struct {
+	store.Store
+	probe *idpAuthReadProbe
+}
+
+func (s idpAuthReadStore) OAuthProviders() store.OAuthProviderStore {
+	return idpAuthProviderReads{OAuthProviderStore: s.Store.OAuthProviders(), probe: s.probe}
+}
+
+func (s idpAuthReadStore) Sessions() store.SessionStore {
+	return idpAuthSessionReads{SessionStore: s.Store.Sessions(), probe: s.probe}
+}
+
+type idpAuthProviderReads struct {
+	store.OAuthProviderStore
+	probe *idpAuthReadProbe
+}
+
+func (s idpAuthProviderReads) GetByID(ctx context.Context, providerID string) (*store.OAuthProvider, error) {
+	s.probe.providerCalls.Add(1)
+	if s.probe.providerError != nil {
+		return nil, s.probe.providerError
+	}
+	return s.OAuthProviderStore.GetByID(ctx, providerID)
+}
+
+type idpAuthSessionReads struct {
+	store.SessionStore
+	probe *idpAuthReadProbe
+}
+
+func (s idpAuthSessionReads) ValidateWithUser(ctx context.Context, sessionID string, now time.Time) (*store.SessionWithUser, error) {
+	s.probe.sessionCalls.Add(1)
+	if s.probe.sessionError != nil {
+		return nil, s.probe.sessionError
+	}
+	return s.SessionStore.ValidateWithUser(ctx, sessionID, now)
+}
+
+func TestIdPProviderLookup_DistinguishesAbsenceFromStoreFailure(t *testing.T) {
+	// CaptureDefaultLogger changes process state, so this test cannot run in parallel.
+	logs := utiltest.CaptureDefaultLogger(t)
+	const marker = "private-provider-store-failure"
+	for _, action := range []string{"login", "reauth", "callback"} {
+		for _, outcome := range []struct {
+			name     string
+			lookup   error
+			disabled bool
+			status   int
+			body     string
+		}{
+			{name: "absent", lookup: fmt.Errorf("provider lookup: %w", store.ErrNotFound), status: http.StatusNotFound, body: "unknown provider\n"},
+			{name: "store failure", lookup: errors.New(marker), status: http.StatusInternalServerError, body: "internal server error\n"},
+			{name: "disabled", disabled: true, status: http.StatusForbidden, body: "provider disabled\n"},
+			{name: "enabled", status: http.StatusFound},
+		} {
+			t.Run(action+"/"+outcome.name, func(t *testing.T) {
+				probe := &idpAuthReadProbe{providerError: outcome.lookup}
+				server, st, ks, _ := setupOAuthTestServerOver(t, ":4327", func(st store.Store) store.Store {
+					return idpAuthReadStore{Store: st, probe: probe}
+				})
+				providerID := ""
+				if action == "callback" && outcome.status == http.StatusFound {
+					// A local signed-token provider completes the positive callback.
+					providerID = createTestOIDCProviderWithStubClaims(t, st, ks, "lookup-control@example.test", "lookup-control")
+				} else {
+					providerID = createTestProvider(t, st, ks)
+				}
+				if outcome.disabled {
+					require.NoError(t, st.OAuthProviders().UpdateEnabled(context.Background(), store.UpdateOAuthProviderEnabledParams{
+						ID: providerID, Enabled: false,
+					}))
+				}
+				target := server.URL + "/auth/idp/" + providerID + "/" + action
+				var cookie *http.Cookie
+				var state string
+				if action == "reauth" {
+					cookie, _, _ = reauthSession(t, st, providerID, "lookup-control")
+				}
+				if action == "callback" {
+					if outcome.status == http.StatusFound {
+						login, err := noRedirectClient().Get(server.URL + "/auth/idp/" + providerID + "/login")
+						require.NoError(t, err)
+						require.Equal(t, http.StatusFound, login.StatusCode)
+						state = stateFromLoginResponse(t, login)
+						cookie = oauthNonceCookie(t, login, state)
+						require.NoError(t, login.Body.Close())
+					} else {
+						const nonce = "provider-lookup-browser-binding"
+						state = seedOAuthState(t, st, providerID, hashNonceForTest(nonce))
+						cookie = auth.BuildOAuthNonceCookie(state, nonce, time.Minute, false)
+					}
+					require.NotNil(t, cookie)
+					target += "?code=test&state=" + state
+				}
+				req, err := http.NewRequest(http.MethodGet, target, nil)
+				require.NoError(t, err)
+				if cookie != nil {
+					req.AddCookie(cookie)
+				}
+				probe.providerCalls.Store(0)
+				logs.Reset()
+				resp, err := noRedirectClient().Do(req)
+				require.NoError(t, err)
+				defer func() { _ = resp.Body.Close() }()
+				body := readBody(t, resp)
+				assert.Equal(t, outcome.status, resp.StatusCode, body)
+				assert.Equal(t, int64(1), probe.providerCalls.Load(), "the intended provider lookup must run")
+				assert.NotContains(t, body, marker)
+				assert.NotContains(t, resp.Header.Get("Location"), marker)
+				if outcome.status == http.StatusFound {
+					assert.NotEmpty(t, resp.Header.Get("Location"))
+				} else {
+					assert.Equal(t, outcome.body, body)
+					assert.Empty(t, resp.Header.Get("Location"))
+				}
+				if outcome.status == http.StatusInternalServerError {
+					assert.Contains(t, logs.String(), "identity provider lookup failed")
+					assert.Equal(t, 1, strings.Count(logs.String(), marker), "log the cause exactly once")
+				} else {
+					assert.NotContains(t, logs.String(), "identity provider lookup failed")
+				}
+				if action == "callback" {
+					_, err := st.OAuthStates().Get(context.Background(), state)
+					assert.ErrorIs(t, err, store.ErrNotFound, "browser-bound state is consumed before provider loading")
+					assert.NotEmpty(t, resp.Cookies(), "the callback must clear its nonce even when provider loading fails")
+				}
+				expectedStates := 0
+				if action != "callback" && outcome.status == http.StatusFound {
+					expectedStates = 1
+				} else if action != "callback" {
+					assert.Empty(t, resp.Cookies(), "a provider refusal must not issue flow state")
+				}
+				assert.Equal(t, expectedStates, countOAuthStates(t, st))
+			})
+		}
+	}
+}
+
+func TestOAuthReauth_SeparatesCredentialRefusalFromStoreFailure(t *testing.T) {
+	// CaptureDefaultLogger changes process state, so this test cannot run in parallel.
+	logs := utiltest.CaptureDefaultLogger(t)
+	const marker = "private-session-store-failure"
+	for _, tc := range []struct {
+		name         string
+		lookup       error
+		cookie       string
+		crossSite    bool
+		status       int
+		sessionReads int64
+	}{
+		{name: "missing cookie", lookup: errors.New(marker), cookie: "missing", status: http.StatusUnauthorized},
+		{name: "malformed cookie", lookup: errors.New(marker), cookie: "malformed", status: http.StatusUnauthorized},
+		{name: "unknown session", cookie: "unknown", status: http.StatusUnauthorized, sessionReads: 1},
+		{name: "wrong secret", cookie: "wrong", status: http.StatusUnauthorized, sessionReads: 1},
+		{name: "expired session", cookie: "expired", status: http.StatusUnauthorized, sessionReads: 1},
+		{name: "wrapped absence", lookup: fmt.Errorf("session lookup: %w", store.ErrNotFound), status: http.StatusUnauthorized, sessionReads: 1},
+		{name: "store failure", lookup: errors.New(marker), status: http.StatusInternalServerError, sessionReads: 1},
+		{name: "cross-site navigation", lookup: errors.New(marker), crossSite: true, status: http.StatusForbidden},
+		{name: "valid session", status: http.StatusFound, sessionReads: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			probe := &idpAuthReadProbe{sessionError: tc.lookup}
+			server, st, ks, _ := setupOAuthTestServerOver(t, ":4327", func(st store.Store) store.Store {
+				return idpAuthReadStore{Store: st, probe: probe}
+			})
+			providerID := createTestProvider(t, st, ks)
+			cookie, userID, sessionID := reauthSession(t, st, providerID, "reauth-control")
+			switch tc.cookie {
+			case "missing":
+				cookie = nil
+			case "malformed":
+				cookie.Value = "not-a-session-token"
+			case "unknown":
+				cookie.Value = auth.FormatSessionToken(id.Generate(), id.Generate())
+			case "wrong":
+				cookie.Value = auth.FormatSessionToken(sessionID, id.Generate())
+			case "expired":
+				expiredID, secret := id.Generate(), id.Generate()
+				require.NoError(t, st.Sessions().Create(context.Background(), store.CreateSessionParams{
+					ID: expiredID, UserID: userid.MustNew(userID), SecretHash: hubtestutil.TestSecretHasher().Hash(secret),
+					ExpiresAt: time.Now().Add(-time.Hour),
+				}))
+				cookie.Value = auth.FormatSessionToken(expiredID, secret)
+			}
+			req, err := http.NewRequest(http.MethodGet, server.URL+"/auth/idp/"+providerID+"/reauth", nil)
+			require.NoError(t, err)
+			if cookie != nil {
+				req.AddCookie(cookie)
+			}
+			if tc.crossSite {
+				req.Header.Set("Sec-Fetch-Site", "cross-site")
+			}
+			logs.Reset()
+			resp, err := noRedirectClient().Do(req)
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+			body := readBody(t, resp)
+			assert.Equal(t, tc.status, resp.StatusCode, body)
+			assert.Equal(t, tc.sessionReads, probe.sessionCalls.Load())
+			assert.NotContains(t, body, marker)
+			assert.NotContains(t, resp.Header.Get("Location"), marker)
+			if tc.status == http.StatusFound {
+				assert.Equal(t, int64(1), probe.providerCalls.Load())
+				assert.NotEmpty(t, stateFromLoginResponse(t, resp))
+				assert.Equal(t, 1, countOAuthStates(t, st))
+			} else {
+				assert.Zero(t, probe.providerCalls.Load(), "authentication must finish before provider loading")
+				assert.Empty(t, resp.Header.Get("Location"))
+				assert.Empty(t, resp.Cookies())
+				assert.Zero(t, countOAuthStates(t, st), "a refusal must not issue flow state")
+			}
+			switch tc.status {
+			case http.StatusInternalServerError:
+				assert.Equal(t, "internal server error\n", body)
+				assert.Contains(t, logs.String(), "identity provider reauthentication failed")
+				assert.Equal(t, 1, strings.Count(logs.String(), marker), "log the cause exactly once")
+			case http.StatusUnauthorized:
+				assert.Equal(t, "sign in first: there is no session to verify\n", body)
+			}
+			if tc.status != http.StatusInternalServerError {
+				assert.NotContains(t, logs.String(), "identity provider reauthentication failed")
+			}
+		})
+	}
+}
+
+func TestCompleteOAuthSignupRequiresALiveExistingUser(t *testing.T) {
+	for _, populated := range []bool{false, true} {
+		t.Run(fmt.Sprintf("populated=%t", populated), func(t *testing.T) {
+			base := hubtestutil.OpenTestStore(t)
+			if populated {
+				createRetainedAdministrator(t, base)
+			}
+			observed := &observedAdmissionStore{Store: base}
+			server, client, st, ks, _ := setupOAuthSignupServer(t, observed)
+			infoClient := newAuthTestClient(server.Client(), server.URL)
+			infoResponse, err := infoClient.GetSystemInfo(t.Context(), &leapmuxv1.GetSystemInfoRequest{})
+			require.NoError(t, err)
+			require.Equal(t, !populated, infoResponse.GetSetupRequired())
+			const email, subject = "pending-before-setup@example.com", "pending-before-setup"
+			providerID := createCallbackTestProvider(t, st, ks, email, subject, true)
+			response := performLoginCallback(t, server, st, providerID, "/after-signup")
+			require.Equal(t, http.StatusFound, response.StatusCode)
+			location, err := response.Location()
+			require.NoError(t, err)
+			token := location.Query().Get("token")
+			require.NotEmpty(t, token)
+			nonce := signupNonceCookie(t, response, token)
+			require.NotNil(t, nonce)
+			hasUsers, err := st.Users().HasAny(t.Context())
+			require.NoError(t, err)
+			require.Equal(t, populated, hasUsers)
+			if populated {
+				admin, err := st.Users().GetFirstAdmin(t.Context())
+				require.NoError(t, err)
+				require.ErrorIs(t, st.Users().Delete(t.Context(), admin.ID), store.ErrLastAdministrator)
+			}
+			observed.reads.Store(0)
+			ctx, info := connect.NewClientContext(t.Context())
+			info.RequestHeader().Set("Cookie", nonce.Name+"="+nonce.Value)
+			completed, err := client.CompleteOAuthSignup(ctx, &leapmuxv1.CompleteOAuthSignupRequest{SignupToken: token, Username: "ordinaryoauth"})
+			if populated {
+				require.NoError(t, err)
+				assert.False(t, completed.GetSessionReport().GetUser().GetIsAdmin())
+				user, err := base.Users().GetByUsername(t.Context(), "ordinaryoauth")
+				require.NoError(t, err)
+				assert.False(t, user.IsAdmin)
+				link, err := base.OAuthUserLinks().Get(t.Context(), store.GetOAuthUserLinkParams{ProviderID: providerID, ProviderSubject: subject})
+				require.NoError(t, err)
+				assert.Equal(t, user.ID, link.UserID)
+				_, err = base.PendingOAuthSignups().Get(t.Context(), token)
+				require.ErrorIs(t, err, store.ErrNotFound)
+				assert.Zero(t, observed.reads.Load())
+				return
+			}
+			require.Error(t, err, "ordinary OAuth signup must require an existing live account")
+			assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+			assert.Nil(t, completed)
+			assert.Empty(t, info.ResponseHeader().Values("Set-Cookie"))
+			_, err = st.Users().GetByUsername(t.Context(), "ordinaryoauth")
+			require.ErrorIs(t, err, store.ErrNotFound)
+			_, err = st.OAuthUserLinks().Get(t.Context(), store.GetOAuthUserLinkParams{ProviderID: providerID, ProviderSubject: subject})
+			require.ErrorIs(t, err, store.ErrNotFound)
+			_, err = st.PendingOAuthSignups().Get(t.Context(), token)
+			require.NoError(t, err, "refused admission must retain the bound pending signup")
+		})
+	}
 }

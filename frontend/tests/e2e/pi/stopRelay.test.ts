@@ -70,7 +70,9 @@ async function runFixture(source: string, input: string, options: Partial<PiStop
       stderr: Buffer.concat(stderr),
     }))
   })
-  child.stdin.end(input)
+  child.stdin.end(input === ''
+    ? undefined
+    : input)
   afterSpawn?.(child)
   return result
 }

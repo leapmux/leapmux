@@ -5,6 +5,13 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 -- name: GetUserByID :one
 SELECT * FROM users WHERE id = ? AND deleted_at IS NULL;
 
+-- Current live-user projection for locked mutations.
+-- name: GetLiveUserForUpdate :one
+SELECT * FROM users WHERE id = ? AND deleted_at IS NULL;
+
+-- name: LockOtherAdministrator :one
+SELECT id FROM users WHERE is_admin = 1 AND deleted_at IS NULL AND id <> ? LIMIT 1;
+
 -- SQLite has no row-level SELECT FOR UPDATE. This no-op write acquires the
 -- database writer lock before any credential table is touched.
 -- name: LockUserAuthState :one
@@ -255,7 +262,7 @@ WHERE pending_email != ''
 -- runs inside RunInUserAuthTransaction, whose LockUserAuthState filters
 -- deleted_at IS NULL; fenceUserTokensLocked (the auth-gate reduction fence)
 -- runs only in RunUserInfoMutation's existedBefore && existedAfter branch,
--- and both existence reads use GetUserByID, which also filters
+-- and both existence reads use GetLiveUserForUpdate, which also filters
 -- deleted_at IS NULL. Every revoke path revokes before soft-deleting, so
 -- that ordering is not exercised today. Only a truly missing row (no id
 -- match) is a no-op.
@@ -338,4 +345,3 @@ SET password_hash = sqlc.arg(password_hash),
     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
 WHERE id = sqlc.arg(id) AND pending_recovery_token = sqlc.arg(pending_recovery_token)
 RETURNING id, auth_generation;
-

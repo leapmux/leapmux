@@ -41,12 +41,12 @@ var (
 // which says nothing about the credential: a caller must answer it as an
 // internal error, because Unauthenticated tells the caller that its credential
 // is bad, which a store fault does not show.
-func AuthenticateWorkerBearer(ctx context.Context, st store.Store, headerValue string) (*store.Worker, error) {
+func AuthenticateWorkerBearer(ctx context.Context, st store.Store, hasher SecretHasher, headerValue string) (*store.Worker, error) {
 	bearer, ok := BearerToken(headerValue)
 	if !ok {
 		return nil, ErrMissingBearer
 	}
-	w, err := st.Workers().GetByAuthTokenIncludeDeleted(ctx, bearer)
+	w, err := st.Workers().GetByAuthTokenHashIncludeDeleted(ctx, hasher.Hash(bearer))
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, ErrInvalidWorkerToken
 	}
@@ -77,10 +77,12 @@ func IsWorkerCredentialError(err error) bool {
 //
 // Store is required only when ReadCookie is set.
 type HTTPAuthOpts struct {
-	Store     store.Store
-	Validator *TokenValidator
-	SoloUser  *UserInfo
-	Contexts  *AuthContextRegistry
+	// SessionHasher is required whenever ReadCookie enables session authentication.
+	SessionHasher SecretHasher
+	Store         store.Store
+	Validator     *TokenValidator
+	SoloUser      *UserInfo
+	Contexts      *AuthContextRegistry
 	// SoloGate decides which solo callers may skip credentials. Nil builds a
 	// throwaway one over Store, so the RULE holds whether or not a caller
 	// passes it; only the latch is lost, which costs a store read per request
@@ -135,6 +137,9 @@ func (o HTTPAuthOpts) soloGate() *SoloGate {
 // safe and stays, so a session issued under TLS still validates after the
 // operator turns the setting off.
 func AuthenticateHTTP(ctx context.Context, r *http.Request, opts HTTPAuthOpts) (*UserInfo, error) {
+	if opts.ReadCookie && opts.SessionHasher.IsZero() {
+		return nil, fmt.Errorf("HTTPAuthOpts.SessionHasher is required when ReadCookie is set")
+	}
 	// The solo rung admits local IPC and yields to a presented bearer.
 	//
 	// A caller that presents an lmx_ bearer is ASKING to be its app: it
@@ -163,9 +168,9 @@ func AuthenticateHTTP(ctx context.Context, r *http.Request, opts HTTPAuthOpts) (
 		}
 	}
 	if opts.ReadCookie {
-		token := SessionIDFromCookieHeader(r.Header.Get("Cookie"), opts.SecureCookies)
+		token := SessionTokenFromCookieHeader(r.Header.Get("Cookie"), opts.SecureCookies)
 		if token != "" {
-			user, err := ValidateToken(ctx, opts.Store, token)
+			user, err := ValidateToken(ctx, opts.Store, opts.SessionHasher, token)
 			if err != nil {
 				if connect.CodeOf(err) == connect.CodeUnauthenticated {
 					return nil, fmt.Errorf("%w: invalid session", ErrHTTPUnauthenticated)

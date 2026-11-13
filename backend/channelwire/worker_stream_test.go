@@ -101,7 +101,7 @@ func TestWorkerStreamConstants(t *testing.T) {
 	assert.Equal(t, "/ws/worker", WSRouteWorker)
 	assert.Equal(t, "worker-stream", WSSubprotocolWorkerStream)
 	assert.EqualValues(t, (4<<20)+4, WorkerStreamReadLimit)
-	reasons := []string{WorkerCloseReasonDeleted, WorkerCloseReasonKeysDiffer, WorkerCloseReasonInvalidMessage, WorkerCloseReasonHelloTimeout, WorkerCloseReasonTooManyWorkers, WorkerCloseReasonHubShuttingDown, WorkerCloseReasonHubInternalError}
+	reasons := []string{WorkerCloseReasonCredentialReplaced, WorkerCloseReasonDeleted, WorkerCloseReasonKeysDiffer, WorkerCloseReasonInvalidMessage, WorkerCloseReasonHelloTimeout, WorkerCloseReasonTooManyWorkers, WorkerCloseReasonHubShuttingDown, WorkerCloseReasonHubInternalError}
 	seen := map[string]bool{}
 	for _, reason := range []string{contracts.CloseReasonControlFlood, contracts.CloseReasonTooManyConnections, contracts.CloseReasonSnapshotTooLarge, contracts.CloseReasonForbidden} {
 		seen[reason] = true

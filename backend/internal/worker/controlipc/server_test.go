@@ -2,11 +2,10 @@ package controlipc_test
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,38 +21,10 @@ import (
 	"github.com/leapmux/leapmux/hubtransport"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/userid"
+	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/controlipc"
+	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
-
-// shortSocketPath builds a path under os.TempDir() short enough to fit
-// the platform's sun_path limit (~104 chars on macOS). t.TempDir()
-// produces directories under /var/folders/.../T/<long-test-name>/...
-// which routinely exceed the limit.
-func shortSocketPath(t *testing.T) string {
-	t.Helper()
-	dir, err := os.MkdirTemp(os.TempDir(), "leapmux-")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return filepath.Join(dir, "ipc.sock")
-}
-
-// pipeNameCounter disambiguates concurrent npipe-using tests in the
-// same process; pid+nano alone races inside a tight test loop.
-var pipeNameCounter atomic.Uint64
-
-// testSocketURL returns a per-platform local-IPC URL the tests can hand
-// to controlipc.Listen / locallisten.Dialer. Unix socket on POSIX, named
-// pipe on Windows — both schemes are supported by the production
-// controlipc.Server, so picking per-platform here lets the same test
-// body cover both.
-func testSocketURL(t *testing.T) string {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		n := pipeNameCounter.Add(1)
-		return fmt.Sprintf("npipe:leapmux-controlipc-test-%d-%d-%d", os.Getpid(), time.Now().UnixNano(), n)
-	}
-	return "unix:" + shortSocketPath(t)
-}
 
 // startTestServer spins up a per-agent IPC server on a local-IPC
 // transport (unix socket on POSIX, named pipe on Windows) and returns
@@ -77,7 +48,7 @@ func startTestServerWithOwnerUsername(t *testing.T, info controlipc.TokenInfo, r
 // returns the token and a client that sends it.
 func listenTestServer(t *testing.T, opts controlipc.Options) (string, leapmuxv1connect.ControlIPCServiceClient) {
 	t.Helper()
-	sockURL := testSocketURL(t)
+	sockURL := locallistentest.UniqueListenURL(t, "leapmux-controlipc-test")
 	rawToken := controlipc.MintToken()
 	opts.SocketURL = sockURL
 	opts.Token = rawToken
@@ -108,7 +79,7 @@ func (i *injectAuthHeader) RoundTrip(req *http.Request) (*http.Response, error) 
 // anonymous callers.
 func startTestServerNoAuth(t *testing.T, info controlipc.TokenInfo, router *controlipc.Router) leapmuxv1connect.ControlIPCServiceClient {
 	t.Helper()
-	sockURL := testSocketURL(t)
+	sockURL := locallistentest.UniqueListenURL(t, "leapmux-controlipc-test")
 	rawToken := controlipc.MintToken()
 	srv, err := controlipc.Listen(controlipc.Options{
 		SocketURL: sockURL,
@@ -209,7 +180,7 @@ func TestServer_Whoami_RejectsWrongToken(t *testing.T) {
 	router := &controlipc.Router{
 		WorkerID: "worker-A", UserID: userid.MustNew("u-1"),
 	}
-	sockURL := testSocketURL(t)
+	sockURL := locallistentest.UniqueListenURL(t, "leapmux-controlipc-test")
 	srv, err := controlipc.Listen(controlipc.Options{
 		SocketURL: sockURL,
 		Token:     controlipc.MintToken(),
@@ -313,6 +284,76 @@ func TestServer_StreamInner_DeliversFramesAndCancels(t *testing.T) {
 	_ = stream.Close()
 }
 
+type closeTestDispatcher func(context.Context, channel.ResponseWriter)
+
+func (f closeTestDispatcher) DispatchWith(ctx context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, w channel.ResponseWriter) {
+	f(ctx, w)
+}
+
+func TestServer_CloseCancelsActiveStream(t *testing.T) {
+	captured := make(chan context.Context, 1)
+	exited := make(chan struct{})
+	router := &controlipc.Router{WorkerID: "worker-A", UserID: userid.MustNew("u-1")}
+	router.LocalDispatcher = closeTestDispatcher(func(ctx context.Context, w channel.ResponseWriter) {
+		captured <- ctx
+		_ = w.SendStream(&leapmuxv1.InnerStreamMessage{Payload: []byte("ready")})
+		<-ctx.Done()
+		close(exited)
+	})
+	socketURL, token := locallistentest.UniqueListenURL(t, "leapmux-controlipc-test"), controlipc.MintToken()
+	srv, err := controlipc.Listen(controlipc.Options{SocketURL: socketURL, Token: token, TokenInfo: controlipc.TokenInfo{UserID: router.UserID, WorkerID: router.WorkerID}, Router: router})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Close() })
+	httpClient, baseURL := ipcClient(t, socketURL)
+	httpClient.Transport = &injectAuthHeader{token: token, base: httpClient.Transport}
+	client := leapmuxv1connect.NewControlIPCServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, baseURL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	ctx, cancel := context.WithCancel(testutil.DeadlineContext(t))
+	t.Cleanup(cancel)
+	stream, err := client.StreamInner(ctx, &leapmuxv1.StreamInnerRequest{Method: "worker." + leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, ClientRequestId: "closing"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stream.Close() })
+	frame, err := stream.Receive()
+	require.NoError(t, err)
+	require.Equal(t, "ready", string(frame.GetPayload()))
+	handlerCtx := <-captured
+	require.NoError(t, srv.Close())
+	assert.ErrorIs(t, handlerCtx.Err(), context.Canceled)
+	// Cancel the client after checking server cancellation so a failed regression
+	// cannot strand the handler or the test's transport.
+	cancel()
+	select {
+	case <-exited:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the cancelled dispatcher did not exit")
+	}
+	_, err = stream.Receive()
+	assert.Error(t, err)
+	require.NoError(t, srv.Close())
+}
+
+func TestServer_HandlerCanCloseItsOwnServer(t *testing.T) {
+	server := make(chan *controlipc.Server, 1)
+	closed := make(chan error, 1)
+	router := &controlipc.Router{WorkerID: "worker-A", UserID: userid.MustNew("u-1")}
+	router.LocalDispatcher = closeTestDispatcher(func(_ context.Context, _ channel.ResponseWriter) { closed <- (<-server).Close() })
+	socketURL, token := locallistentest.UniqueListenURL(t, "leapmux-controlipc-test"), controlipc.MintToken()
+	srv, err := controlipc.Listen(controlipc.Options{SocketURL: socketURL, Token: token, TokenInfo: controlipc.TokenInfo{UserID: router.UserID, WorkerID: router.WorkerID}, Router: router})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Close() })
+	server <- srv
+	httpClient, baseURL := ipcClient(t, socketURL)
+	httpClient.Transport = &injectAuthHeader{token: token, base: httpClient.Transport}
+	client := leapmuxv1connect.NewControlIPCServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, baseURL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
+	ctx := testutil.DeadlineContext(t)
+	_, _ = client.CallInner(ctx, &leapmuxv1.CallInnerRequest{Method: "worker." + leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure})
+	select {
+	case err := <-closed:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("closing the server waited for its own handler")
+	}
+}
+
 // A client retires its stream with an UpdateStream that selects cancel,
 // through the same service method that carries its revisions.
 func TestServer_UpdateStreamCancelRetiresTheStream(t *testing.T) {
@@ -359,7 +400,7 @@ func TestServer_TokenRevokedAfterClose(t *testing.T) {
 	}
 	info := controlipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkerID: "worker-A"}
 
-	sockURL := testSocketURL(t)
+	sockURL := locallistentest.UniqueListenURL(t, "leapmux-controlipc-test")
 	rawToken := controlipc.MintToken()
 	srv, err := controlipc.Listen(controlipc.Options{
 		SocketURL: sockURL,
@@ -403,9 +444,10 @@ func TestServer_SocketIsMode0600(t *testing.T) {
 		WorkerID: "worker-A", UserID: userid.MustNew("u-1"),
 	}
 	info := controlipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkerID: "worker-A"}
-	sockPath := shortSocketPath(t)
+	sockURL := locallistentest.UniqueListenURL(t, "leapmux-controlipc-test")
+	sockPath := strings.TrimPrefix(sockURL, "unix:")
 	srv, err := controlipc.Listen(controlipc.Options{
-		SocketURL: "unix:" + sockPath,
+		SocketURL: sockURL,
 		Token:     controlipc.MintToken(),
 		TokenInfo: info,
 		Router:    router,
@@ -420,113 +462,94 @@ func TestServer_SocketIsMode0600(t *testing.T) {
 		"socket file must be readable+writable by owner only; got %o", mode)
 }
 
-func TestServer_StreamInner_AuthorizerLifecycle(t *testing.T) {
-	disp := &fakeLocalDispatcher{
-		emitStream: [][]byte{[]byte("frame-1")},
-	}
-	authorizers := &serverAuthorizerSpy{}
+func TestServer_StreamInner_ReleasesLocalStreamAfterCancellation(t *testing.T) {
+	dispatched := make(chan string, 1)
+	releases := &serverLocalStreamReleaseSpy{done: make(chan struct{}, 1)}
 	router := &controlipc.Router{
-		WorkerID:        "worker-A",
-		UserID:          userid.MustNew("u-1"),
-		LocalDispatcher: disp,
-		Streams:         authorizers,
+		WorkerID: "worker-A", UserID: userid.MustNew("u-1"),
+		LocalDispatcher: serverStreamIdentityDispatcher{dispatched: dispatched}, Streams: releases,
 	}
 	info := controlipc.TokenInfo{UserID: userid.MustNew("u-1"), WorkerID: "worker-A"}
 	_, client := startTestServer(t, info, router)
-
-	ctx, cancel := context.WithCancel(context.Background())
+	deadline := testutil.DeadlineContext(t)
+	ctx, cancel := context.WithCancel(deadline)
+	t.Cleanup(cancel)
 	stream, err := client.StreamInner(ctx, &leapmuxv1.StreamInnerRequest{
-		Method:          "worker." + leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure,
-		Payload:         []byte(`{}`),
-		TargetWorkerId:  "worker-A",
-		ClientRequestId: "req-stream-life",
+		Method: "worker." + leapmuxv1connect.WorkerWatchServiceWatchEventsProcedure, Payload: []byte(`{}`),
+		TargetWorkerId: "worker-A", ClientRequestId: "req-stream-life",
 	})
 	require.NoError(t, err)
-
-	// Drain at least one frame so we know the dispatcher has been
-	// invoked and the registration must have happened.
-	_, err = stream.Receive()
-	require.NoError(t, err, "expected at least one frame")
+	t.Cleanup(func() { _ = stream.Close() })
+	frame, err := stream.Receive()
+	require.NoError(t, err)
+	assert.Equal(t, []byte("frame-1"), frame.GetPayload())
+	var streamID string
+	select {
+	case streamID = <-dispatched:
+	case <-deadline.Done():
+		t.Fatal(deadline.Err())
+	}
+	require.NotEmpty(t, strings.TrimPrefix(streamID, "localipc:"))
+	require.True(t, strings.HasPrefix(streamID, "localipc:"))
+	assert.Empty(t, releases.snapshot())
+	_, registered := router.StreamCancellers.Load("req-stream-life")
+	require.True(t, registered)
 	cancel()
-	_ = stream.Close()
-
-	// The cleanup runs asynchronously (ctx cancellation) so poll for a
-	// short window before declaring the test failed.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		regs := authorizers.snapshotRegistered()
-		unregs := authorizers.snapshotUnregistered()
-		if len(regs) > 0 && len(unregs) > 0 && regs[0] == unregs[0] {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-releases.done:
+	case <-deadline.Done():
+		t.Fatal("local stream was not released: ", deadline.Err())
 	}
-	regs := authorizers.snapshotRegistered()
-	unregs := authorizers.snapshotUnregistered()
-	require.Len(t, regs, 1, "expected exactly one register call")
-	require.Len(t, unregs, 1, "expected matching unregister on cancel")
-	assert.Equal(t, regs[0], unregs[0], "register/unregister must use the same synthetic stream id")
-	// The synthetic id must follow the documented "localipc:..." shape
-	// so cleanup downstream can recognise it as a local stream.
-	assert.True(t, len(regs[0]) > len("localipc:") && regs[0][:len("localipc:")] == "localipc:",
-		"synthetic stream id should start with 'localipc:'; got %q", regs[0])
+	require.Eventually(t, func() bool {
+		_, present := router.StreamCancellers.Load("req-stream-life")
+		return !present
+	}, 30*time.Second, time.Millisecond)
+	assert.Equal(t, []string{streamID}, releases.snapshot())
 }
 
-// serverAuthorizerSpy is a goroutine-safe implementation of the
-// LocalStreams release interface. The router_test.go fake is
-// package-private; this duplicate keeps server_test.go independent.
-type serverAuthorizerSpy struct {
-	mu           sync.Mutex
-	registered   []string
-	unregistered []string
+// serverLocalStreamReleaseSpy observes only the release operation the router owns.
+type serverLocalStreamReleaseSpy struct {
+	mu       sync.Mutex
+	released []string
+	done     chan struct{}
 }
 
-func (s *serverAuthorizerSpy) ReleaseLocalStream(streamID string) {
+func (s *serverLocalStreamReleaseSpy) ReleaseLocalStream(streamID string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.registered = append(s.registered, streamID)
-	s.unregistered = append(s.unregistered, streamID)
+	s.released = append(s.released, streamID)
+	s.mu.Unlock()
+	select {
+	case s.done <- struct{}{}:
+	default:
+	}
 }
-func (s *serverAuthorizerSpy) snapshotRegistered() []string {
+func (s *serverLocalStreamReleaseSpy) snapshot() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]string(nil), s.registered...)
-}
-func (s *serverAuthorizerSpy) snapshotUnregistered() []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]string(nil), s.unregistered...)
+	return append([]string(nil), s.released...)
 }
 
-// TestDefaultSocketPath_FitsSunPathLimit pins the production path
-// shape's fit against the most restrictive unix sun_path limit (104
-// bytes on macOS / *BSD). Worker and agent IDs in production are
-// 48-char nanoids (`internal/util/id`), and macOS's default $TMPDIR
-// is `/var/folders/<2 chars>/<32 chars>/T/` (~49 chars). Together
-// these blow past 104 unless DefaultSocketPath truncates the IDs.
-func TestDefaultSocketPath_FitsSunPathLimit(t *testing.T) {
+type serverStreamIdentityDispatcher struct{ dispatched chan<- string }
+
+func (d serverStreamIdentityDispatcher) DispatchWith(_ context.Context, _ channel.Caller, _ *leapmuxv1.InnerRpcRequest, writer channel.ResponseWriter) {
+	d.dispatched <- writer.ChannelID()
+	_ = writer.SendStream(&leapmuxv1.InnerStreamMessage{Payload: []byte("frame-1")})
+}
+
+func TestSocketURL_PlacesTheSocketInTheGivenDirectory(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("npipe path is unaffected by sun_path")
+		t.Skip("Windows uses named pipes")
 	}
-	// Mimic macOS's default $TMPDIR ($XDG_RUNTIME_DIR is unset there).
-	const macTempDir = "/var/folders/ph/0qx1sm5d2w3dmmgckzz91wqr0000gn/T/"
-	t.Setenv("TMPDIR", macTempDir)
-	t.Setenv("XDG_RUNTIME_DIR", "")
+	dir := "/private/control"
+	url := controlipc.SocketURL(dir, strings.Repeat("w", 48), controlipc.SocketKindAgent, strings.Repeat("a", 48))
+	assert.Equal(t, "unix:"+dir+"/a-aaaaaaaa.sock", url)
+}
 
-	// Two distinct 48-char IDs in the production alphanumeric alphabet.
-	workerID := "Q1RxdwkFExperhgYzjwosFq3PKOTUjVznHtStbfBp3MFxTAn"
-	agentID := "hfMyi1Y4kjH2ZNfNd5j3H8z1OMQpxcbENB1IkzUF2aOk1XLk"
-	require.Len(t, workerID, 48)
-	require.Len(t, agentID, 48)
-
-	socketURL := controlipc.DefaultSocketPath(workerID, controlipc.SocketKindAgent, agentID)
-	require.True(t, len(socketURL) > len("unix:"))
-	path := socketURL[len("unix:"):]
-
-	// macOS / *BSD sun_path is 104 bytes including the NUL terminator,
-	// so the path itself must be <= 103 chars.
-	const sunPathLimit = 104
-	assert.LessOrEqualf(t, len(path), sunPathLimit-1,
-		"DefaultSocketPath produced %d-byte path %q, exceeds sun_path budget of %d",
-		len(path), path, sunPathLimit-1)
+func TestSocketURL_DefaultMacOSLayoutFitsTheLimit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows uses named pipes")
+	}
+	dir := "/Users/" + strings.Repeat("u", 32) + "/.config/leapmux/solo/worker/run/control"
+	url := controlipc.SocketURL(dir, strings.Repeat("w", 48), controlipc.SocketKindAgent, strings.Repeat("a", 48))
+	assert.LessOrEqual(t, len(strings.TrimPrefix(url, "unix:")), 103)
 }

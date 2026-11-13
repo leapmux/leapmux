@@ -134,7 +134,7 @@ func setupAdminSettingsTestWithQueueBudget(t *testing.T, cfg *config.Config, que
 func setupAdminSettingsEnv(t *testing.T, cfg *config.Config, opts ...settings.Option) *adminSettingsEnv {
 	t.Helper()
 	env := setupAdminSettingsEnvRaw(t, cfg, opts...)
-	hubtestutil.ElevateSession(t, env.st, env.token, env.adminID)
+	hubtestutil.ElevateSession(t, env.st, hubtestutil.SessionIDFromCookie(t, env.token), env.adminID)
 	return env
 }
 
@@ -158,7 +158,7 @@ func setupAdminSettingsEnvRaw(t *testing.T, cfg *config.Config, opts ...settings
 		IsAdmin:               true,
 	})
 	require.NoError(t, err)
-	token, _, _, err := auth.Login(context.Background(), st, "admin", "adminpass123", auth.DefaultSessionDuration)
+	token, _, _, err := auth.Login(context.Background(), st, hubtestutil.TestSecretHasher(), "admin", "adminpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
 	tv, err := auth.NewTokenValidator(st, []byte("0123456789abcdef0123456789abcdef"))
@@ -170,7 +170,7 @@ func setupAdminSettingsEnvRaw(t *testing.T, cfg *config.Config, opts ...settings
 	require.NoError(t, setMgr.Load(context.Background()))
 
 	mux := http.NewServeMux()
-	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	// The slide reporter rides beside the auth interceptor, exactly as the hub
 	// mounts it. Every write verb here slides the elevation window, and the
 	// deadline it produced reaches a client only through this rung -- so a
@@ -496,12 +496,11 @@ func TestAdminSettingsService_SoloOmitsHiddenInSolo(t *testing.T) {
 // a solo hub serves once its account holds a password -- the session's
 // lifetime, and whether its cookie carries the __Host- prefix.
 //
-// `rate-limits` is the case that proves hiding is per KEY, and it arrived when
-// the answer stopped being uniform. Elevation is keyed by USER and solo has
-// one, so that key hides; the two anonymous limits are keyed by client ADDRESS
-// on surfaces solo also serves, so they stay. A blanket rule for the section
-// would take them out of the preferences dialog AND out of `leapmux control
-// admin settings`, which is the whole reach an operator has.
+// `rate-limits` proves that hiding applies per key. Elevation counts users,
+// so it hides in solo. The login, OAuth, and first-password setup limits
+// count client addresses on surfaces solo also serves, so they stay.
+// Hiding the whole section would remove them from both the preferences
+// dialog and `leapmux control admin settings`.
 func TestAdminSettingsService_SoloSectionsGeneralSurvivesWithPublicURL(t *testing.T) {
 	solo := listedKeysByCategory(t, &config.Config{SoloMode: true})
 
@@ -633,8 +632,8 @@ func TestAdminSettingsService_ValueJsonIsTheStoredHalfOnly(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(virgin.GetMergedJson()), &mergedDoc))
 	assert.Contains(t, mergedDoc, "api_seconds", "the merged document always carries every field")
 
-	// One field written: the stored document carries THAT FIELD ONLY, while
-	// the merged one still carries every field.
+	// A partial write stores the whole merged document, including the default
+	// for the field that the write omits.
 	_, err := env.client.UpdateSettings(authedReq(ctx, oneWrite(settings.KeyTimeouts.Name(), `{"api_seconds":11}`), env.token))
 	require.NoError(t, err)
 

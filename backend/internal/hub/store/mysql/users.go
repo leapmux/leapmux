@@ -207,7 +207,7 @@ func (s *userStore) Search(ctx context.Context, p store.SearchUsersParams) (stor
 // RunUserInfoMutation calls it before and after a mutation to derive whether a
 // user_info event fires; a missing row reports exists=false.
 func loadUserInfoCacheFields(ctx context.Context, conn *mysqlConn, id string) (store.UserInfoCacheFields, bool, error) {
-	u, err := conn.q.GetUserByID(ctx, id)
+	u, err := conn.q.GetLiveUserForUpdate(ctx, id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return store.UserInfoCacheFields{}, false, nil
 	}
@@ -403,13 +403,21 @@ func (s *userStore) UpdateEmailVerified(ctx context.Context, p store.UpdateUserE
 // and logs them out; a grant (false→true) stays on the soft user_info cache
 // signal. A missing id is a no-op with no event.
 func (s *userStore) UpdateAdmin(ctx context.Context, p store.UpdateUserAdminParams) error {
-	return s.runAuthGateMutation(ctx, p.ID, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
-		n, err := conn.rowsAffected(conn.q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
-			IsAdmin:   p.IsAdmin,
-			UpdatedAt: sqltime.NewMySQLTime(updatedAt),
-			ID:        p.ID,
-		}))
-		return requireSingleRowUpdate(n, err, "update user admin", p.ID)
+	apply := func(target *userStore) error {
+		return target.runAuthGateMutation(ctx, p.ID, func(ctx context.Context, conn *mysqlConn, updatedAt time.Time) (bool, error) {
+			n, err := conn.rowsAffected(conn.q.UpdateUserAdmin(ctx, gendb.UpdateUserAdminParams{
+				IsAdmin:   p.IsAdmin,
+				UpdatedAt: sqltime.NewMySQLTime(updatedAt),
+				ID:        p.ID,
+			}))
+			return requireSingleRowUpdate(n, err, "update user admin", p.ID)
+		})
+	}
+	if p.IsAdmin {
+		return apply(s)
+	}
+	return s.adminMembershipGuard().Remove(ctx, p.ID, func(_ context.Context, conn *mysqlConn) error {
+		return apply(&userStore{conn: conn})
 	})
 }
 
@@ -484,7 +492,10 @@ func (s *userStore) ClearCompetingPendingEmails(ctx context.Context, p store.Cle
 }
 
 func (s *userStore) Delete(ctx context.Context, id string) error {
-	return s.conn.queryError(s.conn.q.DeleteUser(ctx, id))
+	return s.adminMembershipGuard().Remove(ctx, id, func(ctx context.Context, conn *mysqlConn) error {
+		err := conn.q.DeleteUser(ctx, id)
+		return conn.queryError(err)
+	})
 }
 
 func (s *userStore) SetPendingRecovery(ctx context.Context, p store.SetPendingRecoveryParams) (bool, error) {
@@ -606,4 +617,29 @@ func (s *userStore) RevokeUserTokens(ctx context.Context, userID userid.UserID) 
 	return store.RunCredentialMutation(ctx, s.conn.withTransaction, func(ctx context.Context, conn *mysqlConn) (*store.CredentialEvent, error) {
 		return bumpUserAuthGenerationLocked(ctx, conn, owner)
 	}, emitCredentialEvent)
+}
+
+// adminMembershipGuard requires ordered membership locking only for administrators.
+func (s *userStore) adminMembershipGuard() store.AdminMembershipGuard[*mysqlConn] {
+	return store.AdminMembershipGuard[*mysqlConn]{
+		InTransaction: s.conn.withTransaction,
+		RequireLock:   func(conn *mysqlConn) error { return store.RequireAdminMembershipLock(conn.adminMembershipLocked) },
+		ReadTarget:    loadUserInfoCacheFields,
+		HasOtherAdmin: func(ctx context.Context, conn *mysqlConn, userID string) (bool, error) {
+			_, err := conn.q.LockOtherAdministrator(ctx, userID)
+			err = conn.queryError(err)
+			if errors.Is(err, store.ErrNotFound) {
+				return false, nil
+			}
+			return err == nil, err
+		},
+	}
+}
+
+// LockForRemoval holds the current role stable through account cleanup.
+func (s *userStore) LockForRemoval(ctx context.Context, id string) (bool, error) {
+	if !s.conn.inTx() {
+		return false, store.ErrLockingReadOutsideTransaction
+	}
+	return s.adminMembershipGuard().LockForRemoval(ctx, s.conn, id)
 }

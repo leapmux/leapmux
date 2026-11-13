@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
+	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"github.com/stretchr/testify/assert"
@@ -40,12 +42,17 @@ import (
 // routing a wrapper through the thing it wraps is how these re-enter or recurse.
 type ownedTabPollSpy struct {
 	store.WorkspaceTabIndexStore
-	calls atomic.Int64
+	calls       atomic.Int64
+	afterLookup func(context.Context, store.GetOwnedTabParams, int64, *store.WorkspaceTabRow, error)
 }
 
 func (s *ownedTabPollSpy) GetOwned(ctx context.Context, p store.GetOwnedTabParams) (*store.WorkspaceTabRow, error) {
-	s.calls.Add(1)
-	return s.WorkspaceTabIndexStore.GetOwned(ctx, p)
+	call := s.calls.Add(1)
+	row, err := s.WorkspaceTabIndexStore.GetOwned(ctx, p)
+	if s.afterLookup != nil {
+		s.afterLookup(ctx, p, call, row, err)
+	}
+	return row, err
 }
 
 // tabIndexSpyStore swaps one accessor and passes everything else straight
@@ -60,7 +67,9 @@ func (s tabIndexSpyStore) WorkspaceTabIndex() store.WorkspaceTabIndexStore {
 }
 
 type delegationEnv struct {
-	store store.Store
+	probe  *cachedBearerProbe
+	closer *recordingBearerCloser
+	store  store.Store
 	// ownershipPolls counts GetOwned lookups made through the handler's store.
 	ownershipPolls  *ownedTabPollSpy
 	validator       *auth.TokenValidator
@@ -85,17 +94,19 @@ func setupDelegation(t *testing.T) *delegationEnv {
 	pepper := []byte("0123456789abcdef0123456789abcdef")
 	tv, err := auth.NewTokenValidator(st, pepper)
 	require.NoError(t, err)
-	_, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	t.Cleanup(sc.Stop)
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
+	probe := mountCachedBearerProbe(mux, srv, interceptor)
+	closer := &recordingBearerCloser{}
 
 	// The handler sees the spy; the test body keeps using `st` directly for
 	// seeding, so setup writes are not counted as polls.
 	polls := &ownedTabPollSpy{WorkspaceTabIndexStore: st.WorkspaceTabIndex()}
-	h := service.NewWorkerDelegationHandler(tabIndexSpyStore{Store: st, tabIndex: polls}, tv, auth.NewCredentialLifecycleEffects(sc, nil, nil))
+	h := service.NewWorkerDelegationHandler(tabIndexSpyStore{Store: st, tabIndex: polls}, tv, auth.NewCredentialLifecycleEffects(sc, closer, nil))
 	// Tests don't want production-grade backoff; shrink the
 	// tab-creation propagation window so "tab missing" cases fail fast
 	// while still exercising the polling loop.
@@ -109,10 +120,10 @@ func setupDelegation(t *testing.T) *delegationEnv {
 	workerID := id.Generate()
 	workerAuthToken := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    workerAuthToken,
-		RegisteredBy: userid.MustNew(u.ID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(workerAuthToken),
+		RegisteredBy:  userid.MustNew(u.ID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	workspaceID := id.Generate()
@@ -135,6 +146,7 @@ func setupDelegation(t *testing.T) *delegationEnv {
 	}))
 
 	return &delegationEnv{
+		probe: probe, closer: closer,
 		store:           st,
 		ownershipPolls:  polls,
 		validator:       tv,
@@ -266,10 +278,10 @@ func TestWorkerDelegation_Mint_RejectsTabOwnedByDifferentWorker(t *testing.T) {
 	otherWorkerID := id.Generate()
 	otherAuthToken := id.Generate()
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:           otherWorkerID,
-		AuthToken:    otherAuthToken,
-		RegisteredBy: userid.MustNew(env.userID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            otherWorkerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(otherAuthToken),
+		RegisteredBy:  userid.MustNew(env.userID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	resp := mintRequest(t, env, otherAuthToken, map[string]any{
@@ -305,37 +317,35 @@ func TestWorkerDelegation_Mint_RejectsBeforeTabPropagation(t *testing.T) {
 // chicken-and-egg" guarantee the plan requires.
 func TestWorkerDelegation_Mint_RetriesUntilTabPropagates(t *testing.T) {
 	t.Parallel()
-
 	env := setupDelegation(t)
-	// Give the polling loop room to observe at least a few retries
-	// before the tab is inserted.
-	env.handler.MintTabPropagationTimeout = 500 * time.Millisecond
-	env.handler.MintTabPropagationStep = 10 * time.Millisecond
-
-	// Use a tab id that does NOT exist yet — it's inserted by a
-	// goroutine after a short delay, simulating the tab's ops landing later.
+	env.handler.MintTabPropagationTimeout = 30 * time.Second
+	env.handler.MintTabPropagationStep = time.Millisecond
 	lateTabID := id.Generate()
-
-	go func() {
-		time.Sleep(75 * time.Millisecond)
-		_ = env.store.WorkspaceTabIndex().UpsertOwned(context.Background(), store.UpsertTabParams{
-			UserID:      userid.MustNew(env.userID),
-			WorkspaceID: env.workspaceID,
-			WorkerID:    env.workerID,
-			TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
-			TabID:       lateTabID,
-			Position:    "b",
-			TileID:      "tile-2",
-			Rendered:    false,
+	type lookupObservation struct {
+		row                  *store.WorkspaceTabRow
+		lookupErr, insertErr error
+	}
+	observed := make(chan lookupObservation, 1)
+	env.ownershipPolls.afterLookup = func(ctx context.Context, _ store.GetOwnedTabParams, call int64, row *store.WorkspaceTabRow, lookupErr error) {
+		if call != 1 {
+			return
+		}
+		insertErr := env.store.WorkspaceTabIndex().UpsertOwned(ctx, store.UpsertTabParams{
+			UserID: userid.MustNew(env.userID), WorkspaceID: env.workspaceID, WorkerID: env.workerID,
+			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: lateTabID, Position: "b", TileID: "tile-2",
 		})
-	}()
-
+		observed <- lookupObservation{row, lookupErr, insertErr}
+	}
 	resp := mintRequest(t, env, env.workerAuthToken, map[string]any{
-		"user_id":           env.userID,
-		"issued_for_tab_id": lateTabID,
+		"user_id": env.userID, "issued_for_tab_id": lateTabID,
 	})
 	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, http.StatusOK, resp.StatusCode, "mint must succeed after tab propagates")
+	first := <-observed
+	require.Nil(t, first.row)
+	require.ErrorIs(t, first.lookupErr, store.ErrNotFound)
+	require.NoError(t, first.insertErr)
+	require.GreaterOrEqual(t, env.ownershipPolls.calls.Load(), int64(2))
+	require.Equal(t, http.StatusOK, resp.StatusCode)
 }
 
 func TestWorkerDelegation_Mint_RejectsCrossUserMint(t *testing.T) {
@@ -400,12 +410,9 @@ func TestWorkerDelegation_Mint_RejectsUserWhoIsNotTheWorkersRegistrant(t *testin
 // the two 403 checks, not merely that a foreign user_id is refused (which
 // TestWorkerDelegation_Mint_RejectsCrossUserMint already covers).
 //
-// The ownership poll binds the caller-supplied user_id, so a foreign id can
-// never match and the poll always runs to its full timeout before the O(1)
-// registrant comparison refuses the request. That let anything holding a worker
-// auth_token pin a hub goroutine plus a stream of point lookups per call. The
-// assertion is therefore a duration: the refusal must be immediate, not
-// timeout-bound.
+// Polling before the registrant check would consume the propagation timeout
+// for a foreign user. The test requires zero ownership lookups, so the
+// refusal cannot depend on that timeout.
 //
 // The message distinguishes the two paths -- "user is not the worker's
 // registrant" can only come from the check that now runs first.
@@ -475,9 +482,14 @@ func TestWorkerDelegation_Revoke_HappyPath(t *testing.T) {
 	tokenID := mintBody["token_id"].(string)
 	access := mintBody["access_token"].(string)
 
-	// Warm the validator cache so we can verify EvictBearer is called.
-	_, err := env.validator.ValidateBearer(context.Background(), access)
-	require.NoError(t, err)
+	user, lease := warmCachedBearerLease(t, env.probe, env.cache, access)
+	keeperID, keeperSecret := id.Generate(), auth.MintAccessSecret()
+	require.NoError(t, env.store.APITokens().Create(context.Background(), store.CreateAPITokenParams{
+		ID: keeperID, UserID: userid.MustNew(env.userID), ClientID: oauthapp.ControlCLIClientID,
+		InstallationName: "unrelated", GrantedScopes: "workspace:read", SecretHash: env.validator.HashSecret(keeperSecret),
+	}))
+	keeper := auth.FormatBearer(auth.BearerKindAPI, keeperID, keeperSecret)
+	keeperUser, keeperLease := warmCachedBearerLease(t, env.probe, env.cache, keeper)
 
 	revokeResp := revokeRequest(t, env, env.workerAuthToken, map[string]any{"token_id": tokenID})
 	defer func() { _ = revokeResp.Body.Close() }()
@@ -488,10 +500,15 @@ func TestWorkerDelegation_Revoke_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, row.RevokedAt)
 
-	// Validation now fails — confirms the underlying row reflects the
-	// revocation regardless of cache state.
-	_, err = env.validator.ValidateBearer(context.Background(), access)
-	assert.Error(t, err)
+	_, err = env.probe.authenticate(access)
+	require.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
+	assert.ErrorIs(t, lease.Err(), context.Canceled)
+	assert.False(t, env.cache.IsAuthContextCurrent(user))
+	assert.Equal(t, []auth.BearerRef{auth.NewBearerRef(auth.BearerKindDelegation, tokenID)}, env.closer.snapshotRefs())
+	_, err = env.probe.authenticate(keeper)
+	require.NoError(t, err)
+	assert.NoError(t, keeperLease.Err())
+	assert.True(t, env.cache.IsAuthContextCurrent(keeperUser))
 }
 
 func TestWorkerDelegation_Revoke_RejectsUnauthenticatedCall(t *testing.T) {
@@ -523,10 +540,10 @@ func TestWorkerDelegation_Revoke_RejectsCrossWorkerRevocation(t *testing.T) {
 	otherWorkerID := id.Generate()
 	otherAuthToken := id.Generate()
 	require.NoError(t, env.store.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:           otherWorkerID,
-		AuthToken:    otherAuthToken,
-		RegisteredBy: userid.MustNew(env.userID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            otherWorkerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(otherAuthToken),
+		RegisteredBy:  userid.MustNew(env.userID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 
 	resp := revokeRequest(t, env, otherAuthToken, map[string]any{"token_id": tokenID})

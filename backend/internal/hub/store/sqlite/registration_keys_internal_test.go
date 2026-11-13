@@ -15,21 +15,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCreateRegistrationKeyStoresExpiresAtCanonical pins the canonical-strftime
-// storage contract for the registration-key write path, mirroring
-// TestCreateUserSessionStoresExpiresAtCanonical. ListRegistrationKeysAdmin
-// compares expires_at raw against strftime('%Y-%m-%dT%H:%M:%fZ', now), so a
-// revert of the Create wrap to a direct time.Time bind would silently
-// mis-compare the active/expired filter (and the liveness guards in
-// Extend/Consume). The result-level storetest writes expires_at through the
-// store but does not assert the on-disk layout, so the contract needs a direct
-// storage read.
+// TestCreateRegistrationKeyStoresExpiresAtCanonical checks the canonical
+// storage format for registration keys, as the session test does.
+// Create binds the expiry through SQLiteTime, which floors it to
+// milliseconds and formats it in Go. The active-list filter compares the
+// stored value against a bound SQLiteNullTime; an invalid value disables
+// that filter. Extend and Consume also bind their current time through
+// SQLiteTime. A raw time.Time bind would use the driver's format and could
+// break those raw-string comparisons. Read the stored bytes directly to
+// check the format independently of the result-level tests.
 func TestCreateRegistrationKeyStoresExpiresAtCanonical(t *testing.T) {
 	st, db := newSessionTestStore(t)
 	user := storetest.SeedUser(t, st, "canonical-regkey-user")
 	expiresAt := time.Date(2026, 7, 20, 12, 34, 56, 789_456_789, time.UTC)
 	keyID := id.Generate()
-	require.NoError(t, st.RegistrationKeys().Create(context.Background(), store.CreateRegistrationKeyParams{
+	require.NoError(t, st.RegistrationKeys().Create(context.Background(), store.CreateRegistrationKeyParams{KeyHash: storetest.FixtureSecretHash(id.Generate()),
 		ID:        keyID,
 		CreatedBy: userid.MustNew(user.ID),
 		ExpiresAt: expiresAt,

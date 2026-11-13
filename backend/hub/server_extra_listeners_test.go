@@ -13,6 +13,7 @@ import (
 
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/settings"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/lifecycle"
 	"github.com/leapmux/leapmux/locallisten/locallistentest"
 )
@@ -45,6 +46,11 @@ func startTestServerIn(t *testing.T, cfg *config.Config, dataDir, localListen st
 		})
 	}
 	t.Cleanup(stop)
+	select {
+	case <-srv.Ready():
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the Hub did not finish initialization")
+	}
 	return srv, stop
 }
 

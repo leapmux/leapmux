@@ -19,7 +19,7 @@ func TestReconcileWorktreeLinksCleansImmediately(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	ctx := context.Background()
-	_, err := svc.Queries.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "dead", WorktreePath: "/dead", RepoRoot: "/repo", BranchName: "branch"})
+	_, err := svc.Queries.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "dead", WorktreePath: "/dead", RepoRoot: "/repo", RepoGitDir: regularRepositoryGitDirForTest(t, "/repo"), BranchName: "branch"})
 	require.NoError(t, err)
 	svc.registerTabForWorktree("dead", leapmuxv1.TabType_TAB_TYPE_AGENT, "absent")
 	rec := NewOrphanReconciler(svc.Queries, nil, OrphanReconcilerOptions{
@@ -54,21 +54,21 @@ func TestReconcileWorktrees_CleansDeadLinksOnEachPass(t *testing.T) {
 
 	// Strand: the worktree's only link points at a CLOSED agent (no live
 	// reference) — the exact residue the startup guards can leave behind.
-	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-strand", WorktreePath: "/r/strand", RepoRoot: "/r", BranchName: "b"})
+	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-strand", WorktreePath: "/r/strand", RepoRoot: "/r", RepoGitDir: regularRepositoryGitDirForTest(t, "/r"), BranchName: "b"})
 	require.NoError(t, cwErr)
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "a-closed", WorkingDir: "/r/strand"}))
 	require.NoError(t, closeErr(q.CloseAgent(ctx, "a-closed")))
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-strand", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a-closed"}))
 
 	// Live: linked to an OPEN agent — never a candidate.
-	_, cwErr = q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-live", WorktreePath: "/r/live", RepoRoot: "/r", BranchName: "b"})
+	_, cwErr = q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-live", WorktreePath: "/r/live", RepoRoot: "/r", RepoGitDir: regularRepositoryGitDirForTest(t, "/r"), BranchName: "b"})
 	require.NoError(t, cwErr)
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "a-open", WorkingDir: "/r/live"}))
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-live", TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "a-open"}))
 
 	// Zero-link: freshly created, its tab hasn't linked yet (mid-creation)
 	// — must never be cleaned.
-	_, cwErr = q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-fresh", WorktreePath: "/r/fresh", RepoRoot: "/r", BranchName: "b"})
+	_, cwErr = q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-fresh", WorktreePath: "/r/fresh", RepoRoot: "/r", RepoGitDir: regularRepositoryGitDirForTest(t, "/r"), BranchName: "b"})
 	require.NoError(t, cwErr)
 
 	rec.reconcileOnce(ctx)
@@ -113,7 +113,7 @@ func TestReconcileWorktrees_SparesWorktreeReLinkedBetweenPasses(t *testing.T) {
 		BeginTabReconciliation: svc.BeginTabReconciliation,
 	})
 
-	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-reuse", WorktreePath: "/r/reuse", RepoRoot: "/r", BranchName: "b"})
+	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-reuse", WorktreePath: "/r/reuse", RepoRoot: "/r", RepoGitDir: regularRepositoryGitDirForTest(t, "/r"), BranchName: "b"})
 	require.NoError(t, cwErr)
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE, ID: "a1-closed", WorkingDir: "/r/reuse"}))
 	require.NoError(t, closeErr(q.CloseAgent(ctx, "a1-closed")))
@@ -157,7 +157,7 @@ func TestWorktreeLiveness_CountAndCandidates_AcrossTabTypes(t *testing.T) {
 		require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: wtID, TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: tabID, UserID: "user-1"}))
 	}
 	mkWorktree := func(id string) {
-		_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: id, WorktreePath: "/r/" + id, RepoRoot: "/r", BranchName: "b"})
+		_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: id, WorktreePath: "/r/" + id, RepoRoot: "/r", RepoGitDir: regularRepositoryGitDirForTest(t, "/r"), BranchName: "b"})
 		require.NoError(t, cwErr)
 	}
 
@@ -251,7 +251,7 @@ func TestReconcileFileTabs_RoutesThroughSharedTeardownHonouringKeep(t *testing.T
 	ctx := context.Background()
 
 	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{
-		ID: "wt-fileonly", WorktreePath: "/r/fileonly", RepoRoot: "/r", BranchName: "b",
+		ID: "wt-fileonly", WorktreePath: "/r/fileonly", RepoRoot: "/r", RepoGitDir: regularRepositoryGitDirForTest(t, "/r"), BranchName: "b",
 	})
 	require.NoError(t, cwErr)
 	// The worktree's ONLY link is this FILE tab.
@@ -317,7 +317,7 @@ func TestWorktreeLiveness_FileLinksAreUserScoped(t *testing.T) {
 
 	// User A: worktree whose only link is a FILE strand -- no backing
 	// worker_tab_payloads row.
-	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-userA", WorktreePath: "/r/userA", RepoRoot: "/r", BranchName: "b"})
+	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-userA", WorktreePath: "/r/userA", RepoRoot: "/r", RepoGitDir: regularRepositoryGitDirForTest(t, "/r"), BranchName: "b"})
 	require.NoError(t, cwErr)
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-userA", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-dup", UserID: "user-A"}))
 
@@ -340,7 +340,7 @@ func TestWorktreeLiveness_FileLinksAreUserScoped(t *testing.T) {
 
 	// Sanity: a worktree linked to its OWN user's live file tab still counts,
 	// so the user-scoped branch is matching, not just failing closed.
-	_, cwErr = q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-userB", WorktreePath: "/r/userB", RepoRoot: "/r", BranchName: "b"})
+	_, cwErr = q.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "wt-userB", WorktreePath: "/r/userB", RepoRoot: "/r", RepoGitDir: regularRepositoryGitDirForTest(t, "/r"), BranchName: "b"})
 	require.NoError(t, cwErr)
 	require.NoError(t, q.AddWorktreeTab(ctx, db.AddWorktreeTabParams{WorktreeID: "wt-userB", TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: "file-dup", UserID: "user-B"}))
 	gotB, err := q.CountLiveWorktreeRefs(ctx, "wt-userB")
@@ -502,7 +502,7 @@ func TestReconcileTabs_RemoveCloseKeepsItsWorktreeLinkAcrossARacingPass(t *testi
 	ctx := context.Background()
 
 	_, cwErr := q.CreateWorktree(ctx, db.CreateWorktreeParams{
-		ID: "wt-racing", WorktreePath: "/r/racing", RepoRoot: "/r", BranchName: "doomed",
+		ID: "wt-racing", WorktreePath: "/r/racing", RepoRoot: "/r", RepoGitDir: regularRepositoryGitDirForTest(t, "/r"), BranchName: "doomed",
 	})
 	require.NoError(t, cwErr)
 	require.NoError(t, q.CreateAgent(ctx, db.CreateAgentParams{
@@ -565,7 +565,7 @@ func TestCleanupWorktreeLinksFailurePreventsConvergence(t *testing.T) {
 	t.Parallel()
 	svc, _, _ := setupTestService(t)
 	ctx := context.Background()
-	_, err := svc.Queries.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "cleanup-failure", WorktreePath: "/cleanup-failure", RepoRoot: "/repo", BranchName: "branch"})
+	_, err := svc.Queries.CreateWorktree(ctx, db.CreateWorktreeParams{ID: "cleanup-failure", WorktreePath: "/cleanup-failure", RepoRoot: "/repo", RepoGitDir: regularRepositoryGitDirForTest(t, "/repo"), BranchName: "branch"})
 	require.NoError(t, err)
 	svc.registerTabForWorktree("cleanup-failure", leapmuxv1.TabType_TAB_TYPE_AGENT, "dead")
 	clock := time.Now()

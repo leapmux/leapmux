@@ -388,6 +388,9 @@ var ownerGuardedProbes = func() []ownerGuardedProbe {
 		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure, leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure, func() proto.Message {
 			return &leapmuxv1.GetGitInfoRequest{Path: "/tmp"}
 		}},
+		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceGetGitWorkingTreeStateProcedure, leapmuxv1connect.WorkerGitServiceGetGitWorkingTreeStateProcedure, func() proto.Message {
+			return &leapmuxv1.GetGitWorkingTreeStateRequest{Path: "/tmp"}
+		}},
 		ownerGuardedProbe{leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, leapmuxv1connect.WorkerGitServiceGetGitFileStatusProcedure, func() proto.Message {
 			return &leapmuxv1.GetGitFileStatusRequest{Path: "/tmp"}
 		}},
@@ -1040,11 +1043,11 @@ func TestRegisteredByConcurrentSetAndGate(t *testing.T) {
 
 // An empty caller id must NOT match an empty RegisteredBy.
 //
-// MatchesUser fails closed when either side is zero -- so a worker whose
-// RegisteredBy never got populated (the standalone path reads it from a state
-// file with `omitempty` and, unlike solo mode, backfills nothing) refuses a
-// caller the Hub named with an empty user id. A gate that exists to fail closed
-// must not fail open on the one input it cannot judge.
+// MatchesUser fails closed when either identity is zero. The standalone worker
+// receives its owner from the Hub's WorkerIdentity greeting. Solo can seed the
+// owner from its launcher cache before the greeting arrives. The service keeps
+// the owner in memory, but an unset owner must never admit any caller, and an
+// empty caller id must never satisfy the owner check.
 func TestOwnerGateRefusesEmptyIdentities(t *testing.T) {
 	t.Parallel()
 

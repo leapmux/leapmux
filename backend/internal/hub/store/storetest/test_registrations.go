@@ -8,11 +8,37 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func (s *Suite) testRegistrations(t *testing.T) {
+	t.Run("key digest length is enforced", func(t *testing.T) {
+		st := s.NewStore(t)
+		user := SeedUser(t, st, "key-digest-owner")
+		checkSecretDigestLengths(t, func(digest []byte) error {
+			return st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{ID: id.Generate(), KeyHash: digest, CreatedBy: userid.MustNew(user.ID), ExpiresAt: time.Now().Add(time.Hour)})
+		})
+	})
+	t.Run("key digest lookup keeps the public id and owner", func(t *testing.T) {
+		st := s.NewStore(t)
+		owner := SeedUser(t, st, "digest-owner")
+		other := SeedUser(t, st, "other-digest-owner")
+		publicID, key := id.Generate(), id.Generate()
+		digest := FixtureSecretHash(key)
+		require.NoError(t, st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{ID: publicID, KeyHash: digest, CreatedBy: userid.MustNew(owner.ID), ExpiresAt: time.Now().Add(time.Hour)}))
+		found, err := st.RegistrationKeys().GetByKeyHash(ctx, digest)
+		require.NoError(t, err)
+		assert.Equal(t, publicID, found.ID)
+		_, err = st.RegistrationKeys().GetByID(ctx, key)
+		assert.ErrorIs(t, err, store.ErrNotFound)
+		found, err = st.RegistrationKeys().GetOwned(ctx, store.GetOwnedRegistrationKeyParams{KeyHash: digest, CreatedBy: userid.MustNew(owner.ID)})
+		require.NoError(t, err)
+		assert.Equal(t, publicID, found.ID)
+		_, err = st.RegistrationKeys().GetOwned(ctx, store.GetOwnedRegistrationKeyParams{KeyHash: digest, CreatedBy: userid.MustNew(other.ID)})
+		assert.ErrorIs(t, err, store.ErrNotFound)
+	})
 	// Share the store + a default user across the whole group. Each
 	// subtest creates its key (and any extra users it needs) with fresh
 	// IDs, so cross-subtest interference is bounded to data the test
@@ -53,7 +79,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 			"a blank users.id is the parent key every blank-created_by row needs")
 
 		expires := time.Now().Add(5 * time.Minute).UTC()
-		require.Error(t, st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+		require.Error(t, st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: FixtureSecretHash("regkey-blank-owner"),
 			ID: "regkey-blank-owner", CreatedBy: userid.UserID{}, ExpiresAt: expires,
 		}), "a blank-created_by key has no parent user row to reference")
 
@@ -61,10 +87,10 @@ func (s *Suite) testRegistrations(t *testing.T) {
 		// blank-created_by one. That is what keeps them non-vacuous now that no
 		// blank-created_by row can exist: were a gate to stop binding created_by,
 		// the zero caller would reach this key and each assertion would fail.
-		realID := SeedRegistrationKey(t, st, user.ID, expires)
+		realID, realHash := seedRegistrationKeyWithHash(t, st, user.ID, expires)
 
 		_, err := st.RegistrationKeys().GetOwned(ctx, store.GetOwnedRegistrationKeyParams{
-			ID: realID, CreatedBy: userid.UserID{},
+			KeyHash: realHash, CreatedBy: userid.UserID{},
 		})
 		assert.ErrorIs(t, err, store.ErrNotFound,
 			"a zero caller must not read someone else's key")
@@ -90,7 +116,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 		// And the gate still WORKS for a real owner, so the refusals above are
 		// not the gate simply denying everything.
 		owned, err := st.RegistrationKeys().GetOwned(ctx, store.GetOwnedRegistrationKeyParams{
-			ID: realID, CreatedBy: userid.MustNew(user.ID),
+			KeyHash: realHash, CreatedBy: userid.MustNew(user.ID),
 		})
 		require.NoError(t, err)
 		assert.Equal(t, realID, owned.ID, "control: the real creator still reads their own key")
@@ -294,7 +320,7 @@ func (s *Suite) testRegistrations(t *testing.T) {
 		expires := time.Now().Add(5 * time.Minute).UTC()
 		regID := SeedRegistrationKey(t, st, user.ID, expires)
 
-		err := st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
+		err := st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: FixtureSecretHash(regID),
 			ID:        regID,
 			CreatedBy: userid.MustNew(user.ID),
 			ExpiresAt: expires,

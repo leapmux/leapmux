@@ -1,6 +1,7 @@
 package service_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -21,6 +22,7 @@ import (
 	mysqlstore "github.com/leapmux/leapmux/internal/hub/store/mysql"
 	"github.com/leapmux/leapmux/internal/hub/store/postgres"
 	"github.com/leapmux/leapmux/internal/hub/store/storetest"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/noise"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
@@ -43,8 +45,8 @@ func TestRegisterConcurrentKeysRespectTheOwnerMaximum(t *testing.T) {
 			owner := userid.MustNew(env.adminID(t))
 			keys := []string{id.Generate(), id.Generate()}
 			for _, key := range keys {
-				require.NoError(t, st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
-					ID: key, CreatedBy: owner, ExpiresAt: time.Now().Add(time.Hour),
+				require.NoError(t, st.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: hubtestutil.TestSecretHasher().Hash(key),
+					ID: id.Generate(), CreatedBy: owner, ExpiresAt: time.Now().Add(time.Hour),
 				}))
 			}
 			type result struct {
@@ -86,7 +88,7 @@ func TestRegisterConcurrentKeysRespectTheOwnerMaximum(t *testing.T) {
 			require.NoError(t, err)
 			require.Len(t, page.Rows, 1)
 			assert.Equal(t, first.response.GetWorkerId(), page.Rows[0].ID)
-			remaining, err := st.RegistrationKeys().GetByID(ctx, keys[1])
+			remaining, err := st.RegistrationKeys().GetByKeyHash(ctx, hubtestutil.TestSecretHasher().Hash(keys[1]))
 			require.NoError(t, err)
 			assert.True(t, remaining.ExpiresAt.After(time.Now()))
 			require.NoError(t, st.Workers().MarkDeleted(ctx, first.response.GetWorkerId()))
@@ -111,10 +113,10 @@ func TestConcurrentRegistrationOfOneAttemptReturnsRecoverableConflict(t *testing
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			owner := userid.MustNew(env.adminID(t))
-			require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
-				ID: key, CreatedBy: owner, ExpiresAt: time.Now().Add(time.Hour),
+			require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: hubtestutil.TestSecretHasher().Hash(key),
+				ID: id.Generate(), CreatedBy: owner, ExpiresAt: time.Now().Add(time.Hour),
 			}))
-			attempt := newRegisterAttempt(t, 0x51)
+			attempt := newRegisterAttempt(t)
 			type result struct {
 				response *leapmuxv1.RegisterResponse
 				err      error
@@ -158,7 +160,7 @@ func TestConcurrentRegistrationOfOneAttemptReturnsRecoverableConflict(t *testing
 			require.NoError(t, err)
 			require.Len(t, page.Rows, 1)
 			assert.Equal(t, registered.GetWorkerId(), page.Rows[0].ID)
-			assert.Equal(t, registered.GetAuthToken(), page.Rows[0].AuthToken)
+			hubtestutil.RequireWorkerToken(t, env.store, page.Rows[0].ID, registered.GetAuthToken())
 		})
 	}
 }
@@ -183,9 +185,9 @@ type registrationKeyReads struct {
 	barrier *registrationKeyReadBarrier
 }
 
-func (s registrationKeyReads) GetByID(ctx context.Context, key string) (*store.WorkerRegistrationKey, error) {
-	row, err := s.RegistrationKeyStore.GetByID(ctx, key)
-	if err != nil || key != s.barrier.key {
+func (s registrationKeyReads) GetByKeyHash(ctx context.Context, hash []byte) (*store.WorkerRegistrationKey, error) {
+	row, err := s.RegistrationKeyStore.GetByKeyHash(ctx, hash)
+	if err != nil || !bytes.Equal(hash, hubtestutil.TestSecretHasher().Hash(s.barrier.key)) {
 		return row, err
 	}
 	select {
@@ -313,7 +315,7 @@ type registerAttempt struct {
 	composite *noise.CompositeKeypair
 }
 
-func newRegisterAttempt(t *testing.T, fill byte) registerAttempt {
+func newRegisterAttempt(t *testing.T) registerAttempt {
 	t.Helper()
 	var attempt [16]byte
 	_, err := rand.Read(attempt[:])
@@ -352,18 +354,18 @@ func (env *regKeyEnv) registerCall(t *testing.T, ctx context.Context, key string
 
 // TestRegisterRecoversAfterLostCommittedResponse runs the REAL
 // registration service, loses the first response only after the
-// transaction commits, and recovers the same worker and token through
+// transaction commits, and recovers the Worker with a new token through
 // the challenge protocol with exactly one row.
 func TestRegisterRecoversAfterLostCommittedResponse(t *testing.T) {
 	env := newRegKeyEnv(t, testConfig(), nil, regKeyEnvOptions{})
 	ctx := context.Background()
 	admin := userid.MustNew(env.adminID(t))
 	key := id.Generate()
-	require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
-		ID: key, CreatedBy: admin, ExpiresAt: time.Now().Add(time.Hour),
+	require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: hubtestutil.TestSecretHasher().Hash(key),
+		ID: id.Generate(), CreatedBy: admin, ExpiresAt: time.Now().Add(time.Hour),
 	}))
 
-	attempt := newRegisterAttempt(t, 0x41)
+	attempt := newRegisterAttempt(t)
 
 	_, err := env.registerCall(t, ctx, key, attempt, true)
 	require.Error(t, err, "the first response was lost after commit")
@@ -375,7 +377,7 @@ func TestRegisterRecoversAfterLostCommittedResponse(t *testing.T) {
 	// Consuming the key expired it, so everything below recovers with a key
 	// that no longer registers anything. The documentation promises that a
 	// rerun recovers after the key's lifetime ends, and this is that case.
-	consumedKey, keyErr := env.store.RegistrationKeys().GetByID(ctx, key)
+	consumedKey, keyErr := env.store.RegistrationKeys().GetByKeyHash(ctx, hubtestutil.TestSecretHasher().Hash(key))
 	require.NoError(t, keyErr)
 	require.True(t, consumedKey.ExpiresAt.Before(time.Now()), "the consumed key must be expired, got %s", consumedKey.ExpiresAt)
 
@@ -388,7 +390,7 @@ func TestRegisterRecoversAfterLostCommittedResponse(t *testing.T) {
 	// credentials back.
 	recovered := recoverThroughChallenge(t, ctx, env, key, attempt)
 	assert.Equal(t, worker.ID, recovered.GetWorkerId(), "the same worker comes back")
-	assert.Equal(t, worker.AuthToken, recovered.GetAuthToken(), "the original token comes back, not a new one")
+	hubtestutil.RequireWorkerToken(t, env.store, worker.ID, recovered.GetAuthToken())
 
 	page, listErr := env.store.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 		RegisteredBy: admin, PageParams: store.PageParams{Limit: 10},
@@ -444,10 +446,10 @@ func TestRegistrationRecoveryAcrossClientAndHubRestart(t *testing.T) {
 	ctx := context.Background()
 	admin := userid.MustNew(env.adminID(t))
 	key := id.Generate()
-	require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
-		ID: key, CreatedBy: admin, ExpiresAt: time.Now().Add(time.Hour),
+	require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: hubtestutil.TestSecretHasher().Hash(key),
+		ID: id.Generate(), CreatedBy: admin, ExpiresAt: time.Now().Add(time.Hour),
 	}))
-	attempt := newRegisterAttempt(t, 0x42)
+	attempt := newRegisterAttempt(t)
 
 	_, err := env.registerCall(t, ctx, key, attempt, true)
 	require.Error(t, err)
@@ -462,7 +464,7 @@ func TestRegistrationRecoveryAcrossClientAndHubRestart(t *testing.T) {
 	worker, rowErr := env.store.Workers().GetByRegistrationAttemptID(ctx, attempt.attemptID)
 	require.NoError(t, rowErr)
 	assert.Equal(t, worker.ID, recovered.GetWorkerId())
-	assert.Equal(t, worker.AuthToken, recovered.GetAuthToken())
+	hubtestutil.RequireWorkerToken(t, env.store, worker.ID, recovered.GetAuthToken())
 }
 
 // TestRecoveryRechecksWorkerAndOwner deletes the owner or the worker
@@ -488,13 +490,14 @@ func TestRecoveryRechecksWorkerAndOwner(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newRegKeyEnv(t, testConfig(), nil, regKeyEnvOptions{})
+			createRetainedAdministrator(t, env.store)
 			ctx := context.Background()
 			admin := userid.MustNew(env.adminID(t))
 			key := id.Generate()
-			require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{
-				ID: key, CreatedBy: admin, ExpiresAt: time.Now().Add(time.Hour),
+			require.NoError(t, env.store.RegistrationKeys().Create(ctx, store.CreateRegistrationKeyParams{KeyHash: hubtestutil.TestSecretHasher().Hash(key),
+				ID: id.Generate(), CreatedBy: admin, ExpiresAt: time.Now().Add(time.Hour),
 			}))
-			attempt := newRegisterAttempt(t, 0x43)
+			attempt := newRegisterAttempt(t)
 			_, err := env.registerCall(t, ctx, key, attempt, true)
 			require.Error(t, err)
 			worker, rowErr := env.store.Workers().GetByRegistrationAttemptID(ctx, attempt.attemptID)

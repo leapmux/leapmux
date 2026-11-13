@@ -1,11 +1,14 @@
 -- name: CreateRegistrationKey :exec
-INSERT INTO worker_registration_keys (id, created_by, expires_at) VALUES ($1, $2, $3);
+INSERT INTO worker_registration_keys (id, key_hash, created_by, expires_at) VALUES ($1, $2, $3, $4);
 
 -- name: GetRegistrationKeyByID :one
 SELECT * FROM worker_registration_keys WHERE id = $1;
 
+-- name: GetRegistrationKeyByHash :one
+SELECT * FROM worker_registration_keys WHERE key_hash = $1;
+
 -- name: GetOwnedRegistrationKey :one
-SELECT * FROM worker_registration_keys WHERE id = $1 AND created_by = $2;
+SELECT * FROM worker_registration_keys WHERE key_hash = $1 AND created_by = $2;
 
 -- ExtendRegistrationKey atomically rewrites expires_at iff the row is
 -- owned by created_by AND still live (current expires_at > now). The

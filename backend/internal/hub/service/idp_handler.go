@@ -42,9 +42,10 @@ const (
 // /oauth/. The two prefixes state the direction, so neither name has to be read
 // twice.
 type IdPHandler struct {
-	store store.Store
-	cfg   *config.Config
-	set   *settings.Manager
+	sessionHasher auth.SecretHasher
+	store         store.Store
+	cfg           *config.Config
+	set           *settings.Manager
 	// lifecycle drops the cached UserInfo after the re-authentication leg
 	// elevates a session, so this process re-reads the new deadline instead
 	// of serving the old one for the rest of the auth cache's life.
@@ -115,18 +116,22 @@ type providerCacheKey struct {
 }
 
 // NewIdPHandler creates a new OAuth HTTP handler.
-func NewIdPHandler(st store.Store, cfg *config.Config, set *settings.Manager, lifecycle *auth.CredentialLifecycleEffects, ks *keystore.Keystore) *IdPHandler {
+func NewIdPHandler(st store.Store, sessionHasher auth.SecretHasher, cfg *config.Config, set *settings.Manager, lifecycle *auth.CredentialLifecycleEffects, ks *keystore.Keystore) *IdPHandler {
 	if lifecycle == nil {
 		panic("oauth handler requires credential lifecycle effects")
 	}
+	if st != nil && sessionHasher.IsZero() {
+		panic("oauth handler requires a session secret hasher when a store is configured")
+	}
 	return &IdPHandler{
-		store:       st,
-		cfg:         cfg,
-		set:         set,
-		lifecycle:   lifecycle,
-		keystore:    ks,
-		providers:   make(map[providerCacheKey]huboauth.Provider),
-		providerGen: make(map[string]uint64),
+		sessionHasher: sessionHasher,
+		store:         st,
+		cfg:           cfg,
+		set:           set,
+		lifecycle:     lifecycle,
+		keystore:      ks,
+		providers:     make(map[providerCacheKey]huboauth.Provider),
+		providerGen:   make(map[string]uint64),
 	}
 }
 
@@ -190,7 +195,11 @@ func (h *IdPHandler) loadEnabledProvider(w http.ResponseWriter, ctx context.Cont
 	gen := h.providerGeneration(providerID)
 	dbProvider, err := h.store.OAuthProviders().GetByID(ctx, providerID)
 	if err != nil {
-		http.Error(w, "unknown provider", http.StatusNotFound)
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "unknown provider", http.StatusNotFound)
+		} else {
+			writeInternalError(w, "identity provider lookup failed", err)
+		}
 		return nil, false, false
 	}
 	if !dbProvider.Enabled {
@@ -256,10 +265,15 @@ func (h *IdPHandler) handleReauth(w http.ResponseWriter, r *http.Request, provid
 		return
 	}
 	user, err := auth.AuthenticateHTTP(ctx, r, auth.HTTPAuthOpts{
+		SessionHasher: h.sessionHasher,
 		Store:         h.store,
 		ReadCookie:    true,
 		SecureCookies: h.secureCookies(ctx),
 	})
+	if err != nil && !errors.Is(err, auth.ErrHTTPUnauthenticated) {
+		writeInternalError(w, "identity provider reauthentication failed", err)
+		return
+	}
 	if err != nil || user == nil || user.Credential.SessionID() == "" {
 		http.Error(w, "sign in first: there is no session to verify", http.StatusUnauthorized)
 		return
@@ -296,7 +310,7 @@ func (h *IdPHandler) handleReauth(w http.ResponseWriter, r *http.Request, provid
 // ONE rule: an account with NO password and NO passkey is signed in BY the
 // provider, so the elevation is exactly as strong as the sign-in it stands
 // on. Any linked provider qualifies, GitHub included --
-// operating/security.md states that limit plainly. This refuses anything
+// site/content/docs/admin/security.md states that limit plainly. This refuses anything
 // else, because the account holds a factor it can present directly and "the
 // browser can still reach the provider session" is a weaker claim than the
 // one that factor makes.
@@ -744,9 +758,14 @@ func (h *IdPHandler) completeOAuthReauth(
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	// Through the shared grant, so the window, the zero-row refusal and the
-	// cache invalidation are the same ones the password and passkey paths use.
-	if _, err := grantSessionElevation(ctx, h.store, h.lifecycle, oauthState.SessionID, uid, now); err != nil {
+	// The shared grant rechecks this exact provider link and account shape
+	// under the user-auth lock before it stamps the window. Password and
+	// passkey grants share the session check and post-commit cache invalidation.
+	if _, err := grantSessionElevation(ctx, h.store, h.lifecycle, oauthState.SessionID, uid, now, providerElevationProof{providerID: link.ProviderID, subject: link.ProviderSubject}); err != nil {
+		if errors.Is(err, errElevationProofChanged) {
+			http.Error(w, errElevationProofChanged.Error(), http.StatusForbidden)
+			return
+		}
 		if errors.Is(err, errElevationSessionEnded) {
 			http.Error(w, "your session ended during the verification; sign in again", http.StatusUnauthorized)
 			return
@@ -789,7 +808,7 @@ func (h *IdPHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, user
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	sessionID, expiresAt, sessionErr := auth.CreateSession(ctx, h.store, loginUID, settings.SessionDuration(h.set.Snapshot(r.Context())), auth.SessionMeta{
+	session, sessionErr := auth.CreateSession(ctx, h.store, h.sessionHasher, loginUID, settings.SessionDuration(h.set.Snapshot(r.Context())), auth.SessionMeta{
 		UserAgent: r.UserAgent(),
 	})
 	if sessionErr != nil {
@@ -798,7 +817,9 @@ func (h *IdPHandler) loginOAuthUser(w http.ResponseWriter, r *http.Request, user
 		return
 	}
 
-	http.SetCookie(w, auth.BuildSessionCookie(sessionID, expiresAt, h.secureCookies(ctx)))
+	secure := h.secureCookies(ctx)
+	w.Header()["Set-Cookie"] = sessionCookieHeaderValues(w.Header().Values("Set-Cookie"),
+		auth.BuildSessionCookie(session.Token, session.ExpiresAt, secure), auth.ClearSessionCookie(!secure))
 
 	h.redirectBack(w, r, redirectURI)
 }
@@ -1068,14 +1089,12 @@ func (h *IdPHandler) newProvider(
 // while the build ran, so this refuses the insert and drops the built
 // client.
 //
-// The refusal exists because remove and disable are NOT the same case.
-// After a DISABLE, a later request re-reads the row and cacheProvider
-// evicts the resurrected entry, so a lost eviction repairs itself. After a
-// REMOVE there is no later call at all: loadEnabledProvider answers 404 on
-// the missing row before buildProvider runs, re-adding the provider mints a
-// fresh id, and nothing calls dropProviderLocked for the old id again --
-// so an entry inserted after InvalidateProvider swept the map holds the
-// keystore-decrypted client secret for the life of the process.
+// The refusal is required after both removal and disablement.
+// loadEnabledProvider returns 404 for a missing row and 403 for a
+// disabled row before buildProvider runs. Neither path can reach
+// cacheProvider to evict an entry inserted after InvalidateProvider
+// swept the map. Without the generation check, that entry can retain
+// the keystore-decrypted client secret for the life of the process.
 func (h *IdPHandler) cacheProvider(key providerCacheKey, provider huboauth.Provider, builtAtGen uint64) {
 	if h.providerGen[key.providerID] != builtAtGen {
 		return

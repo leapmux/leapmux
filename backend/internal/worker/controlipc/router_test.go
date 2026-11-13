@@ -14,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -28,8 +29,8 @@ import (
 // fakeLocalDispatcher records the last call. respPayload is what the
 // dispatcher writes back on a unary call; emitStream frames are pushed
 // to the ResponseWriter on streaming calls before the dispatcher
-// returns. The router's streaming path only terminates on context
-// cancellation, so streaming tests pair this with a manual cancel.
+// returns. Streaming tests cancel the context when this fake emits no
+// completion response or frame.
 type fakeLocalDispatcher struct {
 	mu          sync.Mutex
 	gotMethod   string
@@ -256,9 +257,9 @@ func TestRouter_CallInner_CrossWorker(t *testing.T) {
 	assert.Equal(t, []byte("from-B"), resp.GetPayload())
 	assert.Equal(t, "worker-B", cross.callTarget)
 	assert.Equal(t, leapmuxv1connect.WorkerAgentInputServiceEnqueueAgentInputProcedure, cross.callMethod)
-	// The request's workspace_id must flow through the channel pool
-	// key so different workspaces don't share a delegation-scoped
-	// Noise session against the same (target, user) pair.
+	// The router forwards the payload unchanged. The channel pool separates
+	// the target worker and user.
+	assert.Equal(t, []byte("hi"), cross.callPayload)
 }
 
 // TestRouter_CallInner_FilesystemMethodCrossWorkerDispatchesUnconditionally
@@ -282,6 +283,7 @@ func TestRouter_CallInner_FilesystemMethodCrossWorkerDispatchesUnconditionally(t
 		leapmuxv1connect.WorkerFileServiceReadFileProcedure,
 		leapmuxv1connect.WorkerFileServiceStatFileProcedure,
 		leapmuxv1connect.WorkerGitServiceGetGitInfoProcedure,
+		leapmuxv1connect.WorkerGitServiceGetGitWorkingTreeStateProcedure,
 	} {
 		cross.callTarget = ""
 		cross.callMethod = ""
@@ -310,21 +312,28 @@ func TestRouter_CallInner_HubNamespace(t *testing.T) {
 	assert.Equal(t, leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure, hub.lastProcedure,
 		"the hub receives the procedure without the namespace")
 	assert.Equal(t, "user-1", hub.lastUserID.String())
-	// Empty request workspace falls back to the spawning agent's
-	// workspace so methods without a workspace_id field (e.g.
-	// ListWorkspaces) still get a delegation scope.
+	// The router adds no workspace scope to the original request.
+	assert.Equal(t, []byte("{}"), hub.lastPayload)
 }
 
-func TestRouter_CallInner_HubNamespace_ForwardsRequestWorkspace(t *testing.T) {
+func TestRouter_CallInner_HubNamespace_ForwardsPayloadUnchanged(t *testing.T) {
 	hub := &fakeHubClient{resp: []byte("ok")}
 	r := &controlipc.Router{
 		UserID: userid.MustNew("user-1"),
 		Hub:    hub,
 	}
-	_, err := r.CallInner(context.Background(),
-		controlipc.TokenInfo{UserID: userid.MustNew("user-1")},
-		"hub."+leapmuxv1connect.WorkspaceServiceLocateTabProcedure, []byte("{}"), "")
+	payload, err := proto.Marshal(&leapmuxv1.LocateTabRequest{
+		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
+		TabId:   "agent-1",
+	})
 	require.NoError(t, err)
+	_, err = r.CallInner(context.Background(),
+		controlipc.TokenInfo{UserID: userid.MustNew("user-1")},
+		"hub."+leapmuxv1connect.WorkspaceServiceLocateTabProcedure, payload, "")
+	require.NoError(t, err)
+	assert.Equal(t, payload, hub.lastPayload)
+	assert.Equal(t, leapmuxv1connect.WorkspaceServiceLocateTabProcedure, hub.lastProcedure)
+	assert.Equal(t, "user-1", hub.lastUserID.String())
 }
 
 func TestRouter_CallInner_HubNamespace_PropagatesError(t *testing.T) {
@@ -970,7 +979,7 @@ func (d *ctrlStreamDispatcher) DispatchWith(ctx context.Context, _ channel.Calle
 func TestEnvVars_AgentSetsAllExpected(t *testing.T) {
 	envs := controlipc.EnvVars("unix:/tmp/sock", "raw-token", controlipc.TokenInfo{
 		UserID: userid.MustNew("u-1"),
-		// present on TokenInfo for delegation scoping; intentionally NOT emitted as env
+		// WorkerID identifies the spawning worker in the environment.
 		WorkerID:      "worker-A",
 		TabID:         "agent-1",
 		TabType:       leapmuxv1.TabType_TAB_TYPE_AGENT,

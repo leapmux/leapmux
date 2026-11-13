@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/authscope"
+	"github.com/leapmux/leapmux/internal/hub/peer"
 	"github.com/leapmux/leapmux/internal/util/userid"
 
 	"connectrpc.com/connect/v2"
@@ -43,7 +45,7 @@ func setupInterceptorTestServer(t *testing.T) leapmuxv1connect.AuthServiceClient
 	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st})
 	connectServer := connect.NewServer(interceptor)
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
@@ -109,7 +111,7 @@ func TestInterceptor_PrivateProcedure_ValidCookie(t *testing.T) {
 
 	token := loginAdmin(t, client)
 
-	// Use the valid session ID in a cookie to call a private endpoint.
+	// Use the valid session token in a cookie to call a private endpoint.
 	resp, err := client.GetCurrentUser(authedReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, token))
 	require.NoError(t, err)
 
@@ -130,7 +132,7 @@ func TestInterceptor_SoloModeRejectsPasswordlessTCP(t *testing.T) {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser})
+	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, SoloUser: soloUser})
 	connectServer := connect.NewServer(interceptor)
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
@@ -147,11 +149,11 @@ func TestInterceptor_SoloModeRejectsPasswordlessTCP(t *testing.T) {
 }
 
 // TestInterceptor_SoloMode_YieldsToAPresentedBearer pins the solo decision on
-// the Connect surface: reaching the port authenticates the synthetic user, but
+// the Connect surface: admitted local IPC authenticates the synthetic user, but
 // a caller that PRESENTS an lmx_ bearer is asking to be its app, so the solo
 // rung steps aside and the credential's grant binds.
 //
-// Without the yield, the narrow subtest below would pass -- the solo user is
+// Without the yield, the narrow credential would receive success. The solo user is
 // unscoped, so answering "you are the solo user" would hand a file:read
 // credential every permission the account has, silently discarding the
 // narrowing its owner accepted on a consent screen.
@@ -169,16 +171,22 @@ func TestInterceptor_SoloMode_YieldsToAPresentedBearer(t *testing.T) {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser, TokenValidator: tv})
+	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, SoloUser: soloUser, TokenValidator: tv})
 	connectServer := connect.NewServer(interceptor)
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{SoloMode: true}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
 	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 	connecthttp.Mount(mux, connectServer)
 
-	server := httptest.NewServer(mux)
+	// The server-side mark simulates a connection admitted by the IPC listener.
+	server := httptest.NewUnstartedServer(mux)
+	server.Config.BaseContext = func(net.Listener) context.Context { return peer.WithLocalIPC(context.Background()) }
+	server.Start()
 	t.Cleanup(server.Close)
 
 	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
+
+	_, err = client.GetCurrentUser(context.Background(), &leapmuxv1.GetCurrentUserRequest{})
+	require.NoError(t, err, "the fixture must admit a credentialless IPC caller")
 
 	soloRow, err := st.Users().GetByUsername(context.Background(), "solo")
 	require.NoError(t, err)
@@ -211,12 +219,18 @@ func TestInterceptor_SoloMode_YieldsToAPresentedBearer(t *testing.T) {
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
 		"a malformed bearer must be refused, not answered as the solo user")
+	_, err = st.APITokens().Revoke(context.Background(), tokenID)
+	require.NoError(t, err)
+	contexts.EvictBearer(auth.NewBearerRef(auth.BearerKindAPI, tokenID))
+	_, err = client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{},
+		"Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)))
+	require.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
 
 func TestInterceptor_PrivateProcedure_InvalidCookie(t *testing.T) {
 	client := setupInterceptorTestServer(t)
 
-	// Use a garbage session ID in a cookie on a private endpoint.
+	// Use an invalid session token in a cookie on a private endpoint.
 	_, err := client.GetCurrentUser(authedReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, "totally-invalid-token"))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
@@ -239,7 +253,7 @@ func TestInterceptor_BearerTokenNotAccepted(t *testing.T) {
 // API tokens for the test.
 func setupInterceptorTestServerWithBearerSupport(t *testing.T) (leapmuxv1connect.AuthServiceClient, store.Store, *auth.TokenValidator) {
 	t.Helper()
-	return setupBearerTestServer(t, auth.InterceptorOptions{})
+	return setupBearerTestServer(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher()})
 }
 
 // setupBearerTestServer is setupInterceptorTestServerWithBearerSupport with
@@ -291,7 +305,7 @@ func TestInterceptor_LeapMuxBearer_AcceptsValidToken(t *testing.T) {
 
 func TestNewInterceptorRequiresTheServingContext(t *testing.T) {
 	assert.PanicsWithValue(t, "auth interceptor requires the Hub's serving context", func() {
-		auth.NewInterceptor(auth.InterceptorOptions{})
+		auth.NewInterceptor(auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher()})
 	})
 }
 
@@ -309,7 +323,7 @@ func TestInterceptor_LeapMuxBearer_FlightFollowsTheHubsLifetime(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			servingCtx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)
-			client, st, tv := setupBearerTestServer(t, auth.InterceptorOptions{ServingCtx: servingCtx})
+			client, st, tv := setupBearerTestServer(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), ServingCtx: servingCtx})
 			tokenID, secret := seedInterceptorAPIToken(t, st, tv, adminUserID(t, st))
 			if tc.hubEnded {
 				cancel()
@@ -391,7 +405,7 @@ func TestInterceptor_LeapMuxBearer_CacheEvictedOnRevoke(t *testing.T) {
 	require.NoError(t, err)
 
 	mux := http.NewServeMux()
-	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(), Store: st, TokenValidator: tv})
 	t.Cleanup(sc.Stop)
 	connectServer := connect.NewServer(interceptor)
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(sc, nil, nil)))
@@ -496,10 +510,10 @@ func TestInterceptor_DelegationBearer_RejectsAccountProcedure(t *testing.T) {
 	// Seed a worker so the delegation row's worker_id FK is satisfied.
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    id.Generate(),
-		RegisteredBy: userid.MustNew(userID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		RegisteredBy:  userid.MustNew(userID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 	// Seed a workspace owned by the user so the delegation's
 	// workspace_id is meaningful for downstream scope checks.
@@ -538,10 +552,10 @@ func TestInterceptor_DelegationBearer_RejectsRevoked(t *testing.T) {
 
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    id.Generate(),
-		RegisteredBy: userid.MustNew(userID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		RegisteredBy:  userid.MustNew(userID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 	workspaceID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
@@ -578,10 +592,10 @@ func TestInterceptor_DelegationBearer_RejectsExpired(t *testing.T) {
 
 	workerID := id.Generate()
 	require.NoError(t, st.Workers().Create(context.Background(), store.CreateWorkerParams{
-		ID:           workerID,
-		AuthToken:    id.Generate(),
-		RegisteredBy: userid.MustNew(userID),
-		PublicKeys:   storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
+		ID:            workerID,
+		AuthTokenHash: hubtestutil.TestSecretHasher().Hash(id.Generate()),
+		RegisteredBy:  userid.MustNew(userID),
+		PublicKeys:    storetest.WorkerKeys(workerkeystest.SeededWorkerFill),
 	}))
 	workspaceID := id.Generate()
 	require.NoError(t, st.Workspaces().Create(context.Background(), store.CreateWorkspaceParams{
@@ -662,7 +676,7 @@ func setupSessionDurationTestServer(t *testing.T, sessionDuration time.Duration,
 			settings.KeySessionDurationSeconds, int64(sessionDuration/time.Second)))
 	}
 	mux := http.NewServeMux()
-	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{
+	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store:  st,
 		Policy: servicetest.AuthPolicy(set),
 	})
@@ -702,7 +716,7 @@ func TestTouchSession_ThrottledWithinThreshold(t *testing.T) {
 	_, err := client.GetCurrentUser(authedReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, token))
 	require.NoError(t, err)
 
-	sess1, err := st.Sessions().GetByID(context.Background(), token, time.Now().UTC())
+	sess1, err := st.Sessions().GetByID(context.Background(), hubtestutil.SessionIDFromCookie(t, token), time.Now().UTC())
 	require.NoError(t, err)
 	t1 := sess1.LastActiveAt
 
@@ -710,7 +724,7 @@ func TestTouchSession_ThrottledWithinThreshold(t *testing.T) {
 	_, err = client.GetCurrentUser(authedReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, token))
 	require.NoError(t, err)
 
-	sess2, err := st.Sessions().GetByID(context.Background(), token, time.Now().UTC())
+	sess2, err := st.Sessions().GetByID(context.Background(), hubtestutil.SessionIDFromCookie(t, token), time.Now().UTC())
 	require.NoError(t, err)
 	t2 := sess2.LastActiveAt
 
@@ -739,7 +753,7 @@ func TestTouchSession_SlideRefreshesCookie(t *testing.T) {
 	client, st := setupSessionDurationTestServer(t, configured)
 
 	token := loginAdmin(t, client)
-	backdateLastActive(t, st, token)
+	backdateLastActive(t, st, hubtestutil.SessionIDFromCookie(t, token))
 
 	ctx, info := connect.NewClientContext(context.Background())
 	info.RequestHeader().Set("Cookie", auth.CookieName+"="+token)
@@ -759,7 +773,7 @@ func TestTouchSession_SlideRefreshesCookie(t *testing.T) {
 	assert.WithinDuration(t, before.Add(configured), parsed.Expires, 15*time.Minute,
 		"the slide must follow the configured duration, not the default")
 
-	sess, err := st.Sessions().GetByID(context.Background(), token, time.Now().UTC())
+	sess, err := st.Sessions().GetByID(context.Background(), hubtestutil.SessionIDFromCookie(t, token), time.Now().UTC())
 	require.NoError(t, err)
 	assert.WithinDuration(t, sess.ExpiresAt, parsed.Expires, time.Second,
 		"the cookie and the row must expire together, or one outlives the other silently")
@@ -779,7 +793,7 @@ func TestTouchSession_FailedCallStillCarriesRefresh(t *testing.T) {
 		})
 
 	token := loginAdmin(t, client)
-	backdateLastActive(t, st, token)
+	backdateLastActive(t, st, hubtestutil.SessionIDFromCookie(t, token))
 
 	ctx, info := connect.NewClientContext(context.Background())
 	info.RequestHeader().Set("Cookie", auth.CookieName+"="+token)
@@ -811,7 +825,7 @@ func TestLogin_UsesConfiguredSessionDuration(t *testing.T) {
 	before := time.Now()
 	token := loginAdmin(t, client)
 
-	sess, err := st.Sessions().GetByID(context.Background(), token, time.Now().UTC())
+	sess, err := st.Sessions().GetByID(context.Background(), hubtestutil.SessionIDFromCookie(t, token), time.Now().UTC())
 	require.NoError(t, err)
 	hubtestutil.AssertSessionLifetime(t, before, configured, sess.ExpiresAt)
 }
@@ -824,7 +838,7 @@ func TestLogin_UnconfiguredUsesDefaultSessionDuration(t *testing.T) {
 	before := time.Now()
 	token := loginAdmin(t, client)
 
-	sess, err := st.Sessions().GetByID(context.Background(), token, time.Now().UTC())
+	sess, err := st.Sessions().GetByID(context.Background(), hubtestutil.SessionIDFromCookie(t, token), time.Now().UTC())
 	require.NoError(t, err)
 	hubtestutil.AssertSessionLifetime(t, before, auth.DefaultSessionDuration, sess.ExpiresAt)
 }
@@ -853,7 +867,7 @@ func TestLogout_SlideDoesNotResurrectCookie(t *testing.T) {
 	client, st := setupInterceptorTestServerWithCache(t)
 
 	token := loginAdmin(t, client)
-	backdateLastActive(t, st, token)
+	backdateLastActive(t, st, hubtestutil.SessionIDFromCookie(t, token))
 
 	ctx, info := connect.NewClientContext(context.Background())
 	info.RequestHeader().Set("Cookie", auth.CookieName+"="+token)
@@ -861,7 +875,7 @@ func TestLogout_SlideDoesNotResurrectCookie(t *testing.T) {
 	require.NoError(t, err)
 
 	values := info.ResponseHeader().Values("Set-Cookie")
-	require.Len(t, values, 1, "logout must answer with exactly one session cookie")
+	require.Len(t, values, 2, "logout must clear both session spellings")
 	parsed, err := http.ParseSetCookie(values[0])
 	require.NoError(t, err)
 	assert.Empty(t, parsed.Value)

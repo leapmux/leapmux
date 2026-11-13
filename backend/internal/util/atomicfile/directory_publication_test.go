@@ -194,7 +194,7 @@ func TestMkdirAllDurableIsIdempotent(t *testing.T) {
 	for _, e := range entries {
 		names = append(names, e.Name())
 	}
-	assert.ElementsMatch(t, []string{publicationRecordName, "b"}, names,
+	assert.ElementsMatch(t, []string{DirectoryPublicationRecordName, "b"}, names,
 		"no staging tree survives the repeat")
 }
 

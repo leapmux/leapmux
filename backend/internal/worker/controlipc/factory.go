@@ -3,10 +3,16 @@ package controlipc
 import (
 	"context"
 	"errors"
+	"fmt"
+	"path/filepath"
+	"runtime"
+	"sync"
+
 	"log/slog"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/atomicfile"
 	"github.com/leapmux/leapmux/internal/util/userid"
 	"github.com/leapmux/leapmux/internal/worker/channel"
 	"github.com/leapmux/leapmux/internal/worker/crossworker"
@@ -21,17 +27,14 @@ import (
 // in tests / minimal configurations without forcing
 // crossworker.DelegationStore in.
 //
-// Acquire carries the spawn's tab identity (tabID, tabType) because
-// the hub's mint endpoint validates that the calling worker owns the tab
-// -- it is the provenance recorded on the token, not a scope. The first
-// spawn for a given user supplies it; concurrent spawns share the same
-// cached bearer.
+// Acquire holds one reference for the user. The mint reads the tab identity
+// from the Worker's live inventory; concurrent spawns share the cached bearer.
 type DelegationLifecycle interface {
 	Acquire(userID userid.UserID)
 	Release(ctx context.Context, userID userid.UserID) error
 }
 
-// revokeRevokeTimeout caps the hub call we make from the cleanup
+// releaseRevokeTimeout caps the hub call we make from the cleanup
 // goroutine. Spawn cleanups need to return promptly; the delegation
 // row will expire on its own if the revoke RPC doesn't land in time.
 const releaseRevokeTimeout = 5 * time.Second
@@ -41,6 +44,10 @@ const releaseRevokeTimeout = 5 * time.Second
 // how to talk to the local dispatcher, sibling workers via
 // crossworker.Client, and the hub via a hub-bound HTTP client.
 type Factory struct {
+	// SocketDir is the absolute private directory for Unix control sockets.
+	// PrepareSocketDirectory sets it for production. Configure the factory before
+	// its first spawn; configuration must remain unchanged while it serves.
+	SocketDir   string
 	WorkerID    string
 	Dispatcher  *channel.Dispatcher
 	CrossWorker *crossworker.Client
@@ -62,6 +69,16 @@ type Factory struct {
 	// It is the worker service's OwnerUsername, read at every Whoami so a
 	// spawned process sees a rename. nil is allowed (tests) and reports "".
 	OwnerUsername func(userid.UserID) string
+
+	mu             sync.Mutex
+	directory      *SocketDirectory
+	preparationErr error
+	started        bool
+	prepared       bool
+	closed         bool
+	servers        map[*Server]func()
+	closeOnce      sync.Once
+	closeErr       error
 }
 
 // HubBridge is the subset of hub-side calls the IPC router needs.
@@ -101,12 +118,8 @@ type HubBridge interface {
 type spawnCommon struct {
 	UserID   userid.UserID
 	WorkerID string
-	// SocketID identifies the SOCKET, and it is always the spawned entity's own id.
-	// Kept apart from TabID because a quake terminal advertises ANOTHER tab:
-	// keyed on that tab the socket path would collide with the tab's own spawn
-	// -- with the agent's socket in the best case (different SocketKind, so
-	// merely confusing) and with a terminal tab's socket in the worst, where
-	// two live shells would fight over one listener.
+	// SocketID identifies the spawned entity's socket. A quake terminal has
+	// no TabID, so its own identity must determine the socket path.
 	SocketID string
 	// TabID is the tab the spawn ADVERTISES as ambient, which every
 	// `leapmux control` command resolves through the hub's LocateTab. Empty
@@ -125,7 +138,27 @@ func (f *Factory) spawn(socketKind SocketKind, sc spawnCommon) ([]string, func()
 	if sc.UserID.IsZero() {
 		return nil, nil, service.ErrMissingIdentity
 	}
-	socketURL := DefaultSocketPath(sc.WorkerID, socketKind, sc.SocketID)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed {
+		return nil, nil, errors.New("control IPC factory is closed")
+	}
+	if f.preparationErr != nil {
+		return nil, nil, f.preparationErr
+	}
+	if f.directory != nil && f.SocketDir != f.directory.Path() {
+		return nil, nil, errors.New("control IPC socket directory differs from its prepared namespace")
+	}
+	f.started = true
+	if runtime.GOOS != "windows" {
+		if !filepath.IsAbs(f.SocketDir) {
+			return nil, nil, fmt.Errorf("controlipc: socket directory must be absolute, got %q", f.SocketDir)
+		}
+		if err := atomicfile.MkdirAllPrivate(f.SocketDir); err != nil {
+			return nil, nil, fmt.Errorf("controlipc: prepare socket directory %s: %w", f.SocketDir, err)
+		}
+	}
+	socketURL := SocketURL(f.SocketDir, sc.WorkerID, socketKind, sc.SocketID)
 	token := MintToken()
 	tokenInfo := TokenInfo{
 		UserID:        sc.UserID,
@@ -157,6 +190,10 @@ func (f *Factory) spawn(socketKind SocketKind, sc spawnCommon) ([]string, func()
 		f.Delegation.Acquire(sc.UserID)
 	}
 	cleanup := f.makeCleanup(socketKind, sc, srv)
+	if f.servers == nil {
+		f.servers = make(map[*Server]func())
+	}
+	f.servers[srv] = cleanup
 	return EnvVars(socketURL, token, tokenInfo), cleanup, nil
 }
 
@@ -216,21 +253,26 @@ func (f *Factory) TerminalSpawning(info service.TerminalSpawnInfo) ([]string, fu
 // invites a caller to pass one spawn's user with another's tab.
 // The attribute NAME comes from the socket kind (see SocketKind.logKey), so an
 // agent spawn cannot be logged under "terminal_id". Its VALUE is SocketID, the
-// spawn's own entity: a quake terminal's advertised TabID identifies a
-// different tab, and logging that under "terminal_id" would attribute the
-// teardown to a tab that is still running.
+// spawn's own entity: a quake terminal has no advertised TabID, so logging
+// TabID would omit the identity of the terminal being stopped.
 func (f *Factory) makeCleanup(socketKind SocketKind, sc spawnCommon, srv *Server) func() {
+	var once sync.Once
 	return func() {
-		if err := srv.Close(); err != nil {
-			slog.Warn("remote IPC close failed", socketKind.logKey(), sc.SocketID, "error", err)
-		}
-		if f.Delegation != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), releaseRevokeTimeout)
-			defer cancel()
-			if err := f.Delegation.Release(ctx, sc.UserID); err != nil {
-				slog.Warn("delegation release failed", socketKind.logKey(), sc.SocketID, "user_id", sc.UserID, "error", err)
+		once.Do(func() {
+			if err := srv.Close(); err != nil {
+				slog.Warn("remote IPC close failed", socketKind.logKey(), sc.SocketID, "error", err)
 			}
-		}
+			f.mu.Lock()
+			delete(f.servers, srv)
+			f.mu.Unlock()
+			if f.Delegation != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), releaseRevokeTimeout)
+				defer cancel()
+				if err := f.Delegation.Release(ctx, sc.UserID); err != nil {
+					slog.Warn("delegation release failed", socketKind.logKey(), sc.SocketID, "user_id", sc.UserID, "error", err)
+				}
+			}
+		})
 	}
 }
 
@@ -306,4 +348,54 @@ func (a hubBridgeAdapter) CallInner(ctx context.Context, userID userid.UserID, p
 		return nil, errors.New("hub bridge not configured")
 	}
 	return a.b.CallHub(ctx, userID, procedure, payload)
+}
+
+// PrepareSocketDirectory acquires and sweeps the selected namespace before the
+// factory serves a spawn. A refusal remains attached to every later spawn.
+func (f *Factory) PrepareSocketDirectory(dataDir string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closed || f.started || f.prepared {
+		return errors.New("control IPC directory must be prepared once before spawning")
+	}
+	f.prepared = true
+	directory, err := PrepareSocketDirectory(dataDir)
+	if err == nil {
+		err = directory.Sweep()
+	}
+	if err != nil {
+		f.preparationErr = errors.Join(err, directory.Close())
+		return f.preparationErr
+	}
+	f.directory = directory
+	f.SocketDir = directory.Path()
+	f.preparationErr = nil
+	return nil
+}
+
+// Close stops admission and closes every retained listener before releasing the
+// directory lock. Delegation cleanup completes outside the factory mutex.
+func (f *Factory) Close() error {
+	if f == nil {
+		return nil
+	}
+	f.closeOnce.Do(func() {
+		f.mu.Lock()
+		f.closed = true
+		cleanups := make([]func(), 0, len(f.servers))
+		var failures []error
+		for server, cleanup := range f.servers {
+			failures = append(failures, server.Close())
+			cleanups = append(cleanups, cleanup)
+		}
+		failures = append(failures, f.directory.Close())
+		f.mu.Unlock()
+		var pending sync.WaitGroup
+		for _, cleanup := range cleanups {
+			pending.Go(cleanup)
+		}
+		pending.Wait()
+		f.closeErr = errors.Join(failures...)
+	})
+	return f.closeErr
 }

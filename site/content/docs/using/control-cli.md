@@ -465,7 +465,9 @@ LeapMux pins each Worker's key on first connection (trust-on-first-use). The `wo
 | --- | --- | --- |
 | `worker pins list` | `--hub` | Every pinned Worker (sorted by id) |
 | `worker pins show` | `--worker-id` (defaults to `$LEAPMUX_CONTROL_WORKER_ID`) | One recorded pin; `not_found` if none |
-| `worker pins remove` | `--worker-id` | Drops the pin so the next connect re-prompts; emits `{removed_worker_id}` |
+| `worker pins remove` | `--worker-id` | Removes the pin. The next channel attempt automatically records a replacement without confirmation. Emits `{removed_worker_id}` |
+
+A key mismatch aborts the CLI connection. Before removing a pin, compare the error's presented fingerprint with the Worker's `key_fingerprint` in its `worker initialized` startup log through a trusted, independent channel. Remove the pin only after they match. The CLI does not ask for confirmation before it records the replacement key. See [Managing Workers](/docs/admin/managing-workers/) for fingerprint verification.
 
 Pins are stored at `<ConfigDir>/<hub-host>/pins.json` with mode `0644` (they are not secrets). For the Worker registration and approval lifecycle, see [Managing Workers](/docs/admin/managing-workers/).
 
@@ -705,7 +707,7 @@ leapmux control admin settings list --hub unix:$HOME/.config/leapmux/hub/hub.soc
 The two transports carry different credentials and trust boundaries:
 
 - **External CLI.** Each Hub credential is a single bearer token (an `api_tokens` row, stored only as a peppered HMAC-SHA256 hash). End-to-end channels to Workers use the same Noise_NK handshake the browser uses, with each Worker's static key pinned per-hub on first use (see [Worker TOFU pins](#worker-tofu-pins)).
-- **Spawned agent or terminal.** The Worker hands the process a private local-IPC socket (mode `0600`) and a per-process token scoped to the spawning user and tab. When the agent or terminal closes, the socket is torn down and the token is invalidated.
+- **Spawned agent or terminal.** The Worker hands the process a private local interprocess communication (IPC) endpoint and a per-process token scoped to the spawning user and tab. On Unix, the endpoint is a socket with mode `0600`. It lives in `<data-dir>/run/control` when the full socket path fits the platform limit. Otherwise, the Worker uses a private namespace under the canonical system `/tmp` directory. That namespace derives from the operating-system account and the canonical Worker data directory, independently of the Worker ID or session environment. Only that account can access the directory. The Worker holds its namespace lock until every control listener closes. On Windows, the endpoint is a named pipe with an explicit access-control list that grants access only to that account's security identifier (SID). When the agent or terminal closes, the endpoint closes and the token is invalidated.
 - **Cross-worker calls from a spawned agent.** Reaching a *sibling* Worker (an `agent`/`terminal`/`file`/`git` command with a different `--worker-id`) uses a Worker-minted delegation token: it carries your identity and is pinned to the machines it may reach. It is minted lazily on the first cross-worker call and revoked when the agent closes — so an agent that never reaches across Workers never holds one.
 
 For the full trust model, what the Hub can and cannot see, and the encryption primitives, see [Security & Threat Model](/docs/admin/security/).

@@ -20,6 +20,7 @@ import (
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 	"github.com/leapmux/leapmux/internal/hub/service"
 	"github.com/leapmux/leapmux/internal/hub/store"
+	hubtestutil "github.com/leapmux/leapmux/internal/hub/testutil"
 	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
@@ -699,7 +700,7 @@ func TestAuthorizationServer_RevocationTreatsAVanishedRowAsAlreadyEnded(t *testi
 	// The VALIDATOR keeps the real store, so the secret verifies; only the
 	// handler's own read-back loses the row. That is the interleaving a
 	// concurrent hard-delete produces, compressed into one request.
-	newOAuthServerHandler(service.OAuthServerDeps{
+	newOAuthServerHandler(service.OAuthServerDeps{SessionHasher: hubtestutil.TestSecretHasher(),
 		Store: apiTokenOverrideStore{
 			Store: env.store,
 			api:   apiLookupFailTokens{APITokenStore: env.store.APITokens(), err: store.ErrNotFound},

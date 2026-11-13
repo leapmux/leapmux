@@ -14,10 +14,9 @@ import (
 
 // systemInfo builds what SystemService.GetSystemInfo reports before sign-in. It
 // lives on AuthService because the facts it reports -- the signup gate, the
-// one-way setup latch, passkey availability for an origin, solo access and the
-// captcha state -- belong to the sign-in flows, which use them too. A second
-// copy of the setup latch elsewhere would be a second source of truth for
-// whether the hub has its first account.
+// current setup state, passkey availability for an origin, solo access and the
+// captcha state -- belong to the sign-in flows, which use them too. This
+// response and sign-up share the runtime account-presence state.
 func (s *AuthService) systemInfo(ctx context.Context) (*leapmuxv1.GetSystemInfoResponse, error) {
 	// A failed read degrades to "no provider enabled", so the rest of the
 	// system information stays usable, and the sign-in page hides the
@@ -29,7 +28,7 @@ func (s *AuthService) systemInfo(ctx context.Context) (*leapmuxv1.GetSystemInfoR
 
 	var setupRequired bool
 	if !s.soloGate.SoloMode() {
-		hasUser, err := s.checkHasAnyUser(ctx)
+		hasUser, err := s.checkHasAnyUser()
 		if err != nil {
 			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("check users: %w", err))
 		}
