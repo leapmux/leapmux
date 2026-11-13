@@ -89,7 +89,12 @@ export function nativeCommandTimeout(deadline: number | undefined, limitMs: numb
 /**
  * The Playwright timeout of a wait that must end {@link WAIT_REPORT_MARGIN_MS} before the test's deadline.
  * Return 0, which Playwright reads as "no limit", when the test has no deadline.
- * Return at least 1 when the deadline is near or past, so that the wait fails at once with its own message.
+ * Return at least 1 when the deadline is near or past, so that the wait fails at once.
+ *
+ * A `toPass` wait states its own message then only when the outer `expect` holds it, as in
+ * `expect(attempt, message).toPass(...)`. `toPass` reports the error of the last attempt that ended, and an attempt may
+ * not end within one millisecond, for example on a busy machine. With no attempt that ended, `toPass` reports only
+ * "Timeout 1ms exceeded while waiting on the predicate", and a message inside the attempt is lost.
  */
 export function waitTimeoutBeforeTestDeadline(now: number = Date.now()): number {
   const deadline = currentTestDeadline()

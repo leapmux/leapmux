@@ -453,6 +453,12 @@ describe('waitForWorkerTabTitle', () => {
     await expect(waitForWorkerTabTitle(list, 'renamed', 'the rename reaches the Worker')).rejects.toThrow(/the rename reaches the Worker[\s\S]*Terminal Orca/)
   })
 
+  it('states its message when no read ends before the limit', async () => {
+    expectTimeout()
+    const list = vi.fn((): Promise<Array<{ title: string }>> => new Promise(() => {}))
+    await expect(waitForWorkerTabTitle(list, 'renamed', 'the rename reaches the Worker')).rejects.toThrow('the rename reaches the Worker')
+  })
+
   it('reports the last failed read when every read fails', async () => {
     expectTimeout()
     const list = vi.fn(async (): Promise<Array<{ title: string }>> => {
