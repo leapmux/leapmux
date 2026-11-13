@@ -87,7 +87,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/opencontainers/image-spec v1.1.1](#githubcomopencontainersimage-spec-v111)
 - [github.com/pandatix/go-abnf v0.5.5](#githubcompandatixgo-abnf-v055)
 - [github.com/philhofer/fwd v1.2.1](#githubcomphilhoferfwd-v121)
-- [github.com/pressly/goose/v3 v3.29.0](#githubcompresslygoosev3-v3290)
+- [github.com/pressly/goose/v3 v3.30.0](#githubcompresslygoosev3-v3300)
 - [github.com/prometheus/client_golang v1.25.0](#githubcomprometheusclient_golang-v1250)
 - [github.com/prometheus/client_model v0.6.3](#githubcomprometheusclient_model-v063)
 - [github.com/prometheus/common v0.73.1](#githubcomprometheuscommon-v0731)
@@ -113,7 +113,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [go.opentelemetry.io/otel/metric v1.47.0](#goopentelemetryiootelmetric-v1470)
 - [go.opentelemetry.io/otel/trace v1.47.0](#goopentelemetryiooteltrace-v1470)
 - [go.uber.org/multierr v1.11.0](#gouberorgmultierr-v1110)
-- [go.yaml.in/yaml/v3 v3.0.5](#goyamlinyamlv3-v305)
+- [go.yaml.in/yaml/v3 v3.0.6](#goyamlinyamlv3-v306)
 - [go.yaml.in/yaml/v4 v4.0.0](#goyamlinyamlv4-v400)
 - [go4.org/netipx v0.0.0-20260823151212-3075585bcbeb](#go4orgnetipx-v000-20260823151212-3075585bcbeb)
 - [golang.org/x/crypto v0.58.0](#golangorgxcrypto-v0580)
@@ -127,7 +127,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [golang.org/x/tools v0.52.0](#golangorgxtools-v0520)
 - [google.golang.org/grpc v1.85.0](#googlegolangorggrpc-v1850)
 - [google.golang.org/protobuf v1.36.12](#googlegolangorgprotobuf-v13612)
-- [modernc.org/libc v1.80.1](#moderncorglibc-v1801)
+- [modernc.org/libc v1.80.2](#moderncorglibc-v1802)
 - [modernc.org/mathutil v1.7.1](#moderncorgmathutil-v171)
 - [modernc.org/memory v1.12.1](#moderncorgmemory-v1121)
 - [modernc.org/sqlite v1.62.0](#moderncorgsqlite-v1620)
@@ -8071,7 +8071,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### github.com/pressly/goose/v3 v3.29.0
+### github.com/pressly/goose/v3 v3.30.0
 
 ```
 MIT License
@@ -11094,7 +11094,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-### go.yaml.in/yaml/v3 v3.0.5
+### go.yaml.in/yaml/v3 v3.0.6
 
 ```
 This project is covered by two different licenses: MIT and Apache.
@@ -11912,7 +11912,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### modernc.org/libc v1.80.1
+### modernc.org/libc v1.80.2
 
 ```
 Copyright (c) 2017 The Libc Authors. All rights reserved.
