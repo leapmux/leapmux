@@ -2,10 +2,25 @@
 
 package procutil
 
-import "syscall"
+import (
+	"os"
+	"syscall"
+
+	"golang.org/x/sys/windows"
+)
 
 type processOwnerPlatform struct {
 	job *JobObject
+}
+
+// The command's handle retains the exact identity even when a short command
+// exits before Start reads it. A PID lookup that requires a live process loses it.
+func identifyStartedProcess(process *os.Process) (identity ProcessIdentity, identified bool) {
+	var identityErr error
+	handleErr := process.WithHandle(func(handle uintptr) {
+		identity, _, identityErr = (windowsJobProcess{handle: windows.Handle(handle)}).Identity()
+	})
+	return identity, handleErr == nil && identityErr == nil && !identity.IsZero() && identity.StartTime > 0
 }
 
 func (p *processOwnerPlatform) attach(root ProcessIdentity) error {

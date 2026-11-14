@@ -14,6 +14,7 @@ type recordedJobProcess struct {
 	runs        bool
 	identityErr error
 	assignErr   error
+	onAssign    func(*recordedJobProcess)
 	closeErr    error
 	steps       *[]string
 }
@@ -24,6 +25,9 @@ func (p *recordedJobProcess) Identity() (ProcessIdentity, bool, error) {
 }
 func (p *recordedJobProcess) Assign(uintptr) error {
 	*p.steps = append(*p.steps, "assign")
+	if p.onAssign != nil {
+		p.onAssign(p)
+	}
 	return p.assignErr
 }
 func (p *recordedJobProcess) Close() error {
@@ -85,7 +89,7 @@ func TestAssignOwnedJobRequiresTheHeldHandleIdentityBeforeAssignment(t *testing.
 	assert.Equal(t, []string{"create-job", "configure-job", "open-process", "identity", "assign", "close-process"}, driver.steps)
 }
 
-func TestAssignOwnedJobRefusesAReplacedEndedOrUnreadableHandle(t *testing.T) {
+func TestAssignOwnedJobRefusesAReplacedOrUnreadableHandle(t *testing.T) {
 	root := ProcessIdentity{PID: 200, StartTime: 1_790_000_000_123}
 	denied := errors.New("the handle identity is unreadable")
 	for _, testCase := range []struct {
@@ -96,7 +100,6 @@ func TestAssignOwnedJobRefusesAReplacedEndedOrUnreadableHandle(t *testing.T) {
 	}{
 		{"replaced creation time", ProcessIdentity{PID: root.PID, StartTime: root.StartTime + 1}, true, nil},
 		{"different pid", ProcessIdentity{PID: root.PID + 1, StartTime: root.StartTime}, true, nil},
-		{"ended process", root, false, nil},
 		{"unreadable identity", root, true, denied},
 		{"absent identity", ProcessIdentity{}, true, nil},
 	} {
@@ -145,7 +148,7 @@ func TestAssignOwnedJobPreservesOperationAndCleanupErrors(t *testing.T) {
 				assert.Equal(t, []string{"create-job", "configure-job", "open-process", "close-job"}, driver.steps)
 			}
 			if stage == "assign" {
-				assert.Equal(t, []string{"create-job", "configure-job", "open-process", "identity", "assign", "close-job", "close-process"}, driver.steps)
+				assert.Equal(t, []string{"create-job", "configure-job", "open-process", "identity", "assign", "identity", "close-job", "close-process"}, driver.steps)
 			}
 		})
 	}
@@ -280,5 +283,78 @@ func TestAssignOwnedJobPreservesTheOperationAndBothHandleCloseErrors(t *testing.
 			require.Equal(t, 1, processCloses)
 			require.Equal(t, 1, jobCloses)
 		})
+	}
+}
+
+func TestAssignOwnedJobAcceptsExitBeforeOrDuringAssignment(t *testing.T) {
+	root := ProcessIdentity{PID: 200, StartTime: 1_790_000_000_123}
+	for _, testCase := range []struct {
+		label  string
+		during bool
+	}{{"before assignment", false}, {"during assignment", true}} {
+		t.Run(testCase.label, func(t *testing.T) {
+			during := testCase.during
+			driver := newRecordedJobDriver(root)
+			driver.process.runs = during
+			if during {
+				driver.process.onAssign = func(p *recordedJobProcess) { p.runs = false }
+				driver.process.assignErr = errors.New("the process exited during assignment")
+			}
+			job, err := assignOwnedJob(root, driver)
+			require.NoError(t, err)
+			assert.Zero(t, job, "an exited process needs no job")
+			assert.Contains(t, driver.steps, "close-job")
+			assert.Contains(t, driver.steps, "close-process")
+			if !during {
+				assert.NotContains(t, driver.steps, "assign")
+			}
+		})
+	}
+}
+
+func TestAssignOwnedJobPreservesFailureWithoutVerifiedExit(t *testing.T) {
+	root := ProcessIdentity{PID: 200, StartTime: 1_790_000_000_123}
+	assignErr := errors.New("the assignment failed")
+	identityErr := errors.New("the identity query failed")
+	for _, testCase := range []struct {
+		label           string
+		afterAssign     func(*recordedJobProcess)
+		wantIdentityErr bool
+	}{
+		{label: "still running"},
+		{label: "changed identity", afterAssign: func(p *recordedJobProcess) { p.identity.StartTime++; p.runs = false }},
+		{label: "unreadable identity", afterAssign: func(p *recordedJobProcess) { p.identityErr = identityErr; p.runs = false }, wantIdentityErr: true},
+	} {
+		t.Run(testCase.label, func(t *testing.T) {
+			driver := newRecordedJobDriver(root)
+			driver.process.assignErr = assignErr
+			driver.process.onAssign = testCase.afterAssign
+			job, err := assignOwnedJob(root, driver)
+			require.ErrorIs(t, err, assignErr)
+			assert.Zero(t, job)
+			assert.Equal(t, []string{"create-job", "configure-job", "open-process", "identity", "assign", "identity", "close-job", "close-process"}, driver.steps)
+			if testCase.wantIdentityErr {
+				assert.ErrorIs(t, err, identityErr)
+			}
+		})
+	}
+}
+
+func TestAssignOwnedJobPreservesCleanupFailuresAfterVerifiedExit(t *testing.T) {
+	root := ProcessIdentity{PID: 200, StartTime: 1_790_000_000_123}
+	for _, during := range []bool{false, true} {
+		driver := newRecordedJobDriver(root)
+		driver.process.runs = during
+		if during {
+			driver.process.assignErr = errors.New("the process exited during assignment")
+			driver.process.onAssign = func(p *recordedJobProcess) { p.runs = false }
+		}
+		jobCloseErr := errors.New("the job close failed")
+		processCloseErr := errors.New("the process close failed")
+		driver.closeErr, driver.process.closeErr = jobCloseErr, processCloseErr
+		job, err := assignOwnedJob(root, driver)
+		assert.Zero(t, job)
+		assert.ErrorIs(t, err, jobCloseErr)
+		assert.ErrorIs(t, err, processCloseErr)
 	}
 }

@@ -101,7 +101,7 @@ func (o *ProcessOwner) Start() error {
 	}
 	o.started = true
 	process := o.cmd.process()
-	identity, identified := IdentifyProcess(process.Pid)
+	identity, identified := identifyStartedProcess(process)
 	if !identified {
 		err := errors.New("the started process supplied no creation identity")
 		if killErr := process.Kill(); killErr != nil {

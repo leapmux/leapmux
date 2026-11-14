@@ -4,10 +4,15 @@ package procutil
 
 import (
 	"errors"
+	"os"
 	"syscall"
 )
 
 type processOwnerPlatform struct{}
+
+func identifyStartedProcess(process *os.Process) (ProcessIdentity, bool) {
+	return IdentifyProcess(process.Pid)
+}
 
 func (*processOwnerPlatform) attach(ProcessIdentity) error { return nil }
 

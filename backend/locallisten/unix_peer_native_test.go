@@ -102,10 +102,11 @@ func TestUnixPeerAcceptRefusesForeignThenAcceptsCurrentAccount(t *testing.T) {
 		return uid, nil
 	}
 	results := make(chan peerAcceptResult, 1)
-	go func() { connection, err := listener.Accept(); results <- peerAcceptResult{connection, err} }()
+	// Queue the foreign bytes before Accept can reject and close the connection.
 	foreign := dialPeerClient(t, path)
 	_, err := foreign.Write([]byte("F"))
 	require.NoError(t, err)
+	go func() { connection, err := listener.Accept(); results <- peerAcceptResult{connection, err} }()
 	current := dialPeerClient(t, path)
 	_, err = current.Write([]byte("C"))
 	require.NoError(t, err)

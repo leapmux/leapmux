@@ -23,6 +23,7 @@ type processJobDriver interface {
 }
 
 // assignOwnedJob assigns the opened process handle to its native job.
+// It returns no job when the verified process already ended.
 func assignOwnedJob(root ProcessIdentity, driver processJobDriver) (assigned uintptr, result error) {
 	if root.PID <= 0 || root.PID > math.MaxInt32 || root.StartTime <= 0 {
 		return 0, errors.New("the owned process requires a valid creation identity")
@@ -56,10 +57,22 @@ func assignOwnedJob(root ProcessIdentity, driver processJobDriver) (assigned uin
 	if err != nil {
 		return closeUninstalledJob(fmt.Errorf("read the held process identity: %w", err))
 	}
-	if identity != root || !runs {
-		return closeUninstalledJob(errors.New("the held process no longer matches the live creation identity"))
+	if identity != root {
+		return closeUninstalledJob(errors.New("the held process no longer matches the expected creation identity"))
+	}
+	if !runs {
+		return closeUninstalledJob(nil)
 	}
 	if err := process.Assign(job); err != nil {
+		// A short command can exit between the state check and assignment.
+		// Only the same held handle can prove that the command already ended.
+		identity, runs, identityErr := process.Identity()
+		if identityErr == nil && identity == root && !runs {
+			return closeUninstalledJob(nil)
+		}
+		if identityErr != nil {
+			err = errors.Join(err, fmt.Errorf("read the held process identity after assignment failed: %w", identityErr))
+		}
 		return closeUninstalledJob(fmt.Errorf("assign the owned process job: %w", err))
 	}
 	return job, nil
