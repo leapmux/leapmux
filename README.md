@@ -147,7 +147,7 @@ Read the user documentation at [leapmux.dev](https://leapmux.dev).
 
 Before you begin, ensure you have the following installed:
 
-- **Go** 1.27.3 or later
+- **Go** 1.27.4 or later
 - **Node.js** 26 or later
 - **Bun** 1.4.4 or later - JavaScript runtime and package manager
 - **Task** - Task runner (replaces Make)

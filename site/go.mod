@@ -1,6 +1,6 @@
 module github.com/leapmux/leapmux/site
 
-go 1.27.3
+go 1.27.4
 
 tool github.com/gohugoio/hugo
 
