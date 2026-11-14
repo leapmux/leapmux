@@ -1,4 +1,4 @@
-import type { VirtualItem } from './useChatVirtualizer'
+import type { UseChatVirtualizerOptions, VirtualItem } from './useChatVirtualizer'
 import { createSignal, onCleanup } from 'solid-js'
 import { useChatVirtualizer } from './useChatVirtualizer'
 
@@ -35,8 +35,11 @@ export function fakeRow(h: number): HTMLElement {
   return el
 }
 
-/** Build a virtualizer with deterministic geometry for math assertions. */
-export function setup(items: VirtualItem[]) {
+/**
+ * Build a virtualizer with deterministic geometry for math assertions. `opts` passes a
+ * scroll element and a bottom pin on, for the layout-shift tests.
+ */
+export function setup(items: VirtualItem[], opts: Pick<UseChatVirtualizerOptions, 'scrollElement' | 'pinBottom'> = {}) {
   const [list, setList] = createSignal(items)
   const virt = useChatVirtualizer({
     items: list,
@@ -44,6 +47,7 @@ export function setup(items: VirtualItem[]) {
     estimateHeight: 100,
     gapSmallPx: 10,
     gapLargePx: 20,
+    ...opts,
   })
   return { virt, setList }
 }

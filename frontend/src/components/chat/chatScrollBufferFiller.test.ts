@@ -28,6 +28,8 @@ function harness(opts: {
   bufferTargetPx?: number
   scrollTop?: number
   distBottom?: number
+  /** The content above the viewport top. Default: `scrollTop`, as with no layout shift. */
+  viewportContentTop?: number
 } = {}) {
   const olderGrowsBy = opts.olderGrowsBy ?? 0
   const newerGrowsBy = opts.newerGrowsBy ?? 0
@@ -64,6 +66,7 @@ function harness(opts: {
     Object.assign(
       createScrollBufferFiller({
         getEl,
+        viewportContentTop: () => opts.viewportContentTop ?? scrollTop,
         messages: () => [] as AgentChatMessage[],
         bufferTargetPx: () => bufferTargetPx,
         hasOlder: () => hasOlder,
@@ -326,8 +329,8 @@ describe('chatScrollBufferFiller', () => {
     expect(h.counts().olderLoads).toBe(0)
   })
 
-  it('a post-restore SUPPRESSED older side at the ceiling does not fetch', () => {
-    // suppressOlder (armed by a near-top restore) gates the older PRE-FETCH.
+  it('a suppressed older side at the ceiling does not fetch', () => {
+    // suppressOlder (armed at the live tail) gates the older PRE-FETCH.
     const h = harness({ olderGrowsBy: 0, newerGrowsBy: 0 })
     h.enable()
     h.setHas(true, false)
@@ -374,5 +377,32 @@ describe('chatScrollBufferFiller', () => {
       newer.filler.fill()
     expect(newer.counts().olderLoads).toBe(0)
     expect(newer.counts().newerLoads).toBe(20)
+  })
+
+  it('reads the older deficit from the content above the viewport', () => {
+    // A layout shift can put scrollTop at 0 while 5000px of content sits above the view.
+    const h = harness({
+      bufferTargetPx: 1500,
+      scrollTop: 0,
+      viewportContentTop: 5000,
+      distBottom: 5000,
+    })
+    h.enable()
+    h.setHas(true, false)
+    h.filler.fill()
+    expect(h.counts().olderLoads).toBe(0)
+  })
+
+  it('fetches older when the content above is short', () => {
+    const h = harness({
+      bufferTargetPx: 1500,
+      scrollTop: 5000,
+      viewportContentTop: 100,
+      distBottom: 5000,
+    })
+    h.enable()
+    h.setHas(true, false)
+    h.filler.fill()
+    expect(h.counts().olderLoads).toBe(1)
   })
 })

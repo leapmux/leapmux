@@ -61,7 +61,7 @@ export function anchorAtOffset(geo: AnchorOffsetGeometry, scrollTop: number): Sc
   // Floor at 0 for a transient NEGATIVE scrollTop -- some browsers report one
   // during elastic/rubber-band overscroll at the top, which indexAtOffset floors
   // to row 0, yielding a negative `within` that would store a negative offset and
-  // re-pin above the top.
+  // restore above the top.
   const within = Math.max(0, scrollTop - geo.offsetOfIndex(idx))
   // Clamp `within` to the row's height (measured or estimated) and record that
   // height as the basis. Clamping restricts the stored fraction (within / basisHeight)

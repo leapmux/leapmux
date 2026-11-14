@@ -148,8 +148,8 @@ describe('useChatScroll keyboard navigation', () => {
           div.setClientHeight(500)
           div.setScrollTop(1000)
           // Mirror ChatView's spacer: div.scrollHeight tracks virt.totalHeight() in a
-          // RENDER effect, so it flushes before the geometry re-pin createEffect reads
-          // it (exactly the ordering useChatScroll relies on -- see repinToAnchor).
+          // RENDER effect, so it flushes before the geometry createEffect reads it
+          // (exactly the ordering useChatScroll relies on).
           createRenderEffect(() => div.setScrollHeight(total()))
           const [messages] = createSignal<AgentChatMessage[]>([])
           const hook = useChatScroll({
@@ -165,9 +165,8 @@ describe('useChatScroll keyboard navigation', () => {
           // Home pins to the very top.
           press(hook, 'Home')
           expect(div.getScrollTop()).toBe(0)
-          // The programmatic scrollTop=0 write echoes a native scroll event, which
-          // re-captures the viewport anchor. It must NOT re-anchor to the viewport
-          // MIDPOINT here -- at the top edge the top row must stay pinned to the top.
+          // The scrollTop=0 placement echoes a native scroll event. It is an own write,
+          // so it moves nothing -- at the top edge the top row must stay at the top.
           hook.handlers.onScroll()
 
           // The collapsed-until-measured top rows now measure taller: rows 0 and 1
@@ -264,8 +263,8 @@ describe('useChatScroll keyboard navigation', () => {
           expect(div.getScrollTop()).toBe(0)
 
           // The window is replaced under a new generation (jumpToOldest's re-fetch, or a
-          // trim), so the anchored top row no longer resolves. The geometry re-pin must
-          // recover by re-anchoring to the NEW top row -- NOT the viewport midpoint.
+          // trim), so the anchored top row no longer resolves. Nothing may move the view
+          // off the NEW top row.
           replaceWindow(Array.from<number>({ length: 20 }).fill(100))
           await Promise.resolve()
           await Promise.resolve()
@@ -468,7 +467,7 @@ describe('useChatScroll down-jump on a small scroll-down', () => {
     return { virt, prepend }
   }
 
-  it('re-engages follow when a small down-scroll lands within the 32px band of the live tail (S7)', () =>
+  it('stays anchored 20px above the tail', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
         try {
@@ -484,25 +483,24 @@ describe('useChatScroll down-jump on a small scroll-down', () => {
           await Promise.resolve()
           await Promise.resolve()
 
-          // Anchor by scrolling to the top.
+          // Leave follow mode by scrolling to the top.
           div.setScrollTop(0)
           hook.handlers.onScroll()
-          // Scroll DOWN a bit: distFromBottom = 600 - 80 - 500 = 20 -- inside the 32px
-          // sticky band (not the 1px clamped bottom at scrollTop 100). With the unified
-          // band, `atBottom` implies following, so this re-engages tail-follow (the
-          // reader sitting slightly above the bottom is treated as following). Gated on
-          // the LIVE tail (no hasNewerMessages), which holds for this empty list.
+          // Scroll DOWN a bit: distFromBottom = 600 - 80 - 500 = 20 -- more than the 2px
+          // follow tolerance, so the reader stays where they are and does not follow.
           div.setScrollTop(80)
           hook.handlers.onScroll()
+          expect(hook.isFollowing()).toBe(false)
 
-          // 200px of older content lands above. Because the small down-scroll re-engaged
-          // FOLLOW, the grow sticks to the new live bottom (clamped maxScrollTop 300),
-          // NOT the anchored row's +200 track (280).
+          // 200px of older content lands above. The reader does not follow, so no stick
+          // moves the view to the new bottom (300). This stub has no layout shift, so the
+          // view stays at the same scroll position.
           div.setScrollHeight(800)
           ctrl.prepend(200)
           await Promise.resolve()
           await Promise.resolve()
-          expect(div.getScrollTop()).toBe(300)
+          expect(div.getScrollTop()).toBe(80)
+          expect(hook.isFollowing()).toBe(false)
           dispose()
           resolve()
         }
@@ -528,8 +526,8 @@ describe('useChatScroll down-jump on a small scroll-down', () => {
           // following). At the loaded-window bottom with newer content windowed away,
           // captureViewportAnchor pins the BOTTOM row (ratio 1), so the anchor sits at the
           // viewport-bottom line scrollTop + clientHeight (600 + 500 = 1100); returning that
-          // as scrollTopForAnchor makes the re-pin a no-op when newer appends BELOW the anchor
-          // -- isolating the follow path.
+          // as scrollTopForAnchor keeps any placement a no-op when newer appends BELOW the
+          // anchor -- isolating the follow path.
           const [total, setTotal] = createSignal(1000)
           const virt: ChatScrollVirtualizer = {
             ...virtualizerNoOps(),
@@ -553,13 +551,13 @@ describe('useChatScroll down-jump on a small scroll-down', () => {
           await Promise.resolve()
           await Promise.resolve()
 
-          // Establish a sticky record at the LIVE tail: a tracked-input change plus a
-          // grown scrollHeight makes the auto-scroll effect stick to the new bottom.
+          // Stick to the bottom at the LIVE tail: a tracked-input change plus a grown
+          // scrollHeight makes the auto-scroll effect stick to the new bottom.
           div.setScrollHeight(1100)
           setAgentStatus(AgentStatus.STARTING)
           await Promise.resolve()
           await Promise.resolve()
-          expect(div.getScrollTop()).toBe(600) // stuck; the sticky record is now 600 / 1100
+          expect(div.getScrollTop()).toBe(600) // stuck at the new bottom of 1100
 
           // Window AWAY from the live tail, then scroll to the loaded clamped bottom.
           // With more newer to load, follow-tail must NOT re-engage -- stay anchored.
@@ -666,11 +664,36 @@ describe('useChatScroll momentum reporting', () => {
       expect(reports()).toBe(0)
 
       // A reader-driven move away from that landing IS reported, so the silence
-      // above was the echo guard and not a harness that reports nothing at all.
+      // above was the own-write rule and not a harness that reports nothing at all.
       div.setScrollTop(div.getScrollTop() - 400)
       hook.handlers.onScroll()
 
       expect(reports()).toBe(1)
+      dispose()
+    }))
+
+  it('does not count the position at the mount as a move', () =>
+    createRoot((dispose) => {
+      const div = makeFakeScrollDiv()
+      div.setScrollHeight(2000)
+      div.setClientHeight(500)
+      // A window paged away from the tail, so no mount placement moves the view.
+      div.setScrollTop(1000)
+      const [messages] = createSignal<AgentChatMessage[]>([])
+      let momentumReports = 0
+      const hook = useChatScroll({
+        virtualizer: makeStubVirtualizer(),
+        messages,
+        hasNewerMessages: () => true,
+        onMomentumScroll: () => { momentumReports++ },
+      })
+      hook.attachListRef(div.el)
+
+      // The first event at the position of the mount: with a baseline of 0 it would
+      // count as a move of 1000px.
+      hook.handlers.onScroll()
+
+      expect(momentumReports).toBe(0)
       dispose()
     }))
 })

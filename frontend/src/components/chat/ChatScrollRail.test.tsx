@@ -116,6 +116,8 @@ function baseProps(overrides: BasePropsOverrides = {}): ChatScrollRailProps {
     offsetOfIndex: i => i * 100, // totalHeight 500, 5 rows of 100px
     totalHeight: 500,
     geometryVersion: 0,
+    contentTopOf: scrollTop => scrollTop,
+    layoutShift: 0,
     railRowSeqs: rowStartSeqs(items), // ChatView computes this once and passes it down (see F2)
     rail,
     hidden: hidden ?? resolvedHidden,
@@ -407,6 +409,34 @@ describe('ChatScrollRail', () => {
     // The seq-space visible span affects top projection, but rendered thumb height is fixed.
     expect(thumb.style.height).toBe('24px')
     expect(thumb.style.top).toBe('0px')
+  })
+
+  it('places the thumb from the content position when the layout is shifted', () => {
+    // Five rows of 400px. A shift of -300 puts content 800 at scroll coordinate 500, and the
+    // spacer is 300px shorter, so both views show the same content with the same distance
+    // from the bottom.
+    const tallRows = {
+      offsetOfIndex: (i: number) => i * 400,
+      totalHeight: 2000,
+    }
+    const thumbTop = (props: ChatScrollRailProps) => {
+      const { container, unmount } = render(() => <ChatScrollRail {...props} />)
+      const top = (container.querySelector('[data-testid="chat-scroll-rail-thumb"]') as HTMLElement).style.top
+      unmount()
+      return top
+    }
+    const shifted = thumbTop(baseProps({
+      ...tallRows,
+      scrollEl: makeScrollEl(500, 1700),
+      contentTopOf: scrollTop => scrollTop + 300,
+      layoutShift: -300,
+    }))
+    const unshifted = thumbTop(baseProps({
+      ...tallRows,
+      scrollEl: makeScrollEl(800, 2000),
+    }))
+    expect(shifted).toBe(unshifted)
+    expect(shifted).not.toBe('0px')
   })
 
   it('consumes the railRowSeqs prop rather than recomputing it (no thumb when it is null)', () => {

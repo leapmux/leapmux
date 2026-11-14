@@ -66,7 +66,6 @@ describe('chatPremeasureQueue', () => {
     const queue = createPremeasureQueue({
       virt: {
         hasMeasuredHeight: id => measured.has(id),
-        hasPendingPremeasuredHeight: () => false,
         primeHeight: (id) => {
           measured.add(id)
           return true
@@ -221,7 +220,6 @@ describe('chatPremeasureQueue', () => {
       const queue = createPremeasureQueue({
         virt: {
           hasMeasuredHeight: () => false,
-          hasPendingPremeasuredHeight: () => false,
           primeHeight: () => true,
         },
         visibleEntryById: entries,
@@ -295,7 +293,6 @@ describe('chatPremeasureQueue', () => {
             currentHeightKey: 'k-a',
             accepted: false,
             hasMeasured: false,
-            pending: false,
             settled: true,
             candidatePending: true,
             collapsed: true,
@@ -310,7 +307,6 @@ describe('chatPremeasureQueue', () => {
             currentHeightKey: 'k-a',
             accepted: true,
             hasMeasured: true,
-            pending: false,
             settled: true,
             candidatePending: false,
             collapsed: false,

@@ -28,8 +28,8 @@ import { cancelIdle, requestIdle } from '~/lib/idleCallback'
  * Emptying the band unmounts nothing. The premeasure queue keeps each row that
  * a band added pending until the row measures or leaves the window, so a row
  * that waits for its content (a Markdown body or an edit diff in a worker)
- * stays mounted, and its measure can commit during a wheel or drag gesture.
- * Only a momentum fling defers that commit (`setVisibleMeasurementDeferral`).
+ * stays mounted, and its measure commits at once, during a gesture too: the
+ * layout shift keeps the view in place.
  */
 
 /** The most rows one tick mounts: one shared premeasure frame's worth. */

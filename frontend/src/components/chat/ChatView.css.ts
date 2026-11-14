@@ -217,8 +217,8 @@ hideNativeScrollbar(messageListRailActive)
  * Shared look of the "Loading older/newer messages..." indicators. Each is an absolute
  * OVERLAY pill (a sibling of the scroll container, inside the relative wrapper), NOT in
  * the scroll flow. An in-flow indicator would shift the virtualized content by its
- * height when fetching toggles -- and that shift is invisible to the anchor re-pin
- * (whose offset map covers only the virtual rows), so the view bounces by the
+ * height when fetching toggles -- and that shift is invisible to the layout shift
+ * (which follows only the virtual rows), so the view bounces by the
  * indicator's height each load cycle and a scrolled reader gets stuck re-triggering the
  * load. As an overlay it never moves the content. pointer-events: none so it can't
  * swallow a scroll/click landing on it. The top/bottom edge is set by each variant.
@@ -490,8 +490,19 @@ export const virtualSpacer = style({
   width: '100%',
   flexShrink: 0,
   // We anchor the viewport ourselves (useChatScroll); browser scroll anchoring
-  // on the absolutely-positioned children would fight our re-pin math.
+  // on the absolutely-positioned children would fight our layout shift.
   overflowAnchor: 'none',
+})
+
+// The layer that holds the rows, the gap bridges, and the row skeletons inside the
+// spacer. Its transform is the layout shift of the virtualizer (an inline style), so a
+// geometry change moves the rows around the content under the reader with no scrollTop
+// write. The rows keep their own translateY in content coordinates.
+export const virtualLayer = style({
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  right: 0,
 })
 
 // A single virtualized message row, positioned by translateY. Rows own no

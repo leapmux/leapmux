@@ -59,6 +59,10 @@ export interface ChatScrollRailProps {
   totalHeight: number
   /** Bumped by the virtualizer whenever the offset map changes (measurement/prepend/trim). */
   geometryVersion: number
+  /** Convert a scroll coordinate of `scrollEl` to the content coordinate of `offsetOfIndex`. */
+  contentTopOf: (scrollTop: number) => number
+  /** The layout shift of the virtualizer (see chatLayoutShift): a change re-samples the metrics. */
+  layoutShift: number
   /**
    * The rows' precomputed rowStartSeqs (null when the window holds no server row). Computed ONCE
    * by ChatView (which needs it for the scroll-owner resolution) and passed down so the O(n)
@@ -142,6 +146,8 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
     scrollEl: () => props.scrollEl,
     totalHeight: () => props.totalHeight,
     geometryVersion: () => props.geometryVersion,
+    contentTopOf: scrollTop => props.contentTopOf(scrollTop),
+    layoutShift: () => props.layoutShift,
   })
 
   // The drag-release "hold": the preview thumb fraction (null when idle) plus the state machine

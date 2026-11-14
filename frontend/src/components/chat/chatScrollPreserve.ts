@@ -20,86 +20,80 @@
 /** Selector for the chat scroll containers `ChatView` marks. */
 const CHAT_SCROLL_CONTAINER_SELECTOR = '[data-chat-scroll-container="true"]'
 
-/** How a chat controller writes a scroll position it made itself. */
-export type ProgrammaticScrollWriter = (top: number, source?: string) => void
+/**
+ * The owner of one chat scroll container, as this module needs it. The module never
+ * reads a snapshot: it hands each one back to the controller that made it.
+ *
+ * A raw `scrollTop` is no position to restore: the chat list moves its rows by a layout
+ * shift, so the same `scrollTop` shows other rows after a shift changes. And a bare
+ * `el.scrollTop = ...` reads to the controller as a move of the reader. Only the
+ * controller knows what the reader saw, and whether the view moved since.
+ */
+export interface ChatScrollController<T> {
+  /** What the reader sees now, or `undefined` when nothing can be restored (a hidden pane). */
+  snapshot: () => T | undefined
+  /** Put the view back at `snapshot`, when it moved since. */
+  restore: (snapshot: T) => void
+}
 
 /**
  * The controller that owns each chat element, keyed by that element.
- *
- * A restore is NOT a user gesture, and `useChatScroll` can only know that if
- * the write goes through its own programmatic path: that path records the
- * landing pixel so the resulting `scroll` event is recognized as the app's own,
- * syncs the velocity tracker, and advances the direction baseline. A bare
- * `el.scrollTop = ...` skips all three, so the return jump was measured as a
- * user fling -- which can defer a re-pin and can start an edge-pagination
- * fetch nobody asked for.
  *
  * A WeakMap because the key IS the element: an entry disappears with the node,
  * so there is nothing to unregister and a detached container cannot keep a
  * controller alive.
  */
-const programmaticWriters = new WeakMap<HTMLElement, ProgrammaticScrollWriter>()
+const controllers = new WeakMap<HTMLElement, ChatScrollController<unknown>>()
 
 /**
- * Tell this module how to write `el`'s scroll position programmatically.
+ * Tell this module which controller owns `el`.
  *
  * `useChatScroll.attachListRef` is the one caller, because it is the one place
  * that knows which controller owns which element. Pass `undefined` to forget
  * the element, which matters only for a controller that detaches while the
  * node stays.
  */
-export function registerProgrammaticScrollWriter(
+export function registerChatScrollController<T>(
   el: HTMLElement | undefined,
-  write: ProgrammaticScrollWriter | undefined,
+  controller: ChatScrollController<T> | undefined,
 ): void {
   if (!el)
     return
-  if (write)
-    programmaticWriters.set(el, write)
+  if (controller)
+    controllers.set(el, controller as ChatScrollController<unknown>)
   else
-    programmaticWriters.delete(el)
+    controllers.delete(el)
 }
 
-// Skip the restore if the chat's scrollHeight changed by more than this many
-// pixels — that signals a real content reload, not the spurious clamp we are
-// trying to undo.
-const CHAT_SCROLL_RESTORE_HEIGHT_TOLERANCE_PX = 200
-
-interface ScrollSnapshot {
-  el: HTMLDivElement
-  scrollTop: number
-  scrollHeight: number
+interface ControllerSnapshot {
+  el: HTMLElement
+  controller: ChatScrollController<unknown>
+  snapshot: unknown
 }
 
-function snapshotChatScroll(): ScrollSnapshot[] {
+function snapshotChatScroll(): ControllerSnapshot[] {
   // EVERY chat container, the visible tab plus any hidden one, so each
   // preserves its own state. `querySelector` alone would catch only the first
-  // DOM match, which is often the hidden tab.
-  return Array.from(
-    document.querySelectorAll<HTMLDivElement>(CHAT_SCROLL_CONTAINER_SELECTOR),
-  ).map(el => ({ el, scrollTop: el.scrollTop, scrollHeight: el.scrollHeight }))
+  // DOM match, which is often the hidden tab. A container that no controller
+  // owns has nothing that can restore it.
+  const snapshots: ControllerSnapshot[] = []
+  for (const el of document.querySelectorAll<HTMLElement>(CHAT_SCROLL_CONTAINER_SELECTOR)) {
+    const controller = controllers.get(el)
+    if (controller === undefined)
+      continue
+    const snapshot = controller.snapshot()
+    if (snapshot !== undefined)
+      snapshots.push({ el, controller, snapshot })
+  }
+  return snapshots
 }
 
-function restoreChatScroll(snapshots: readonly ScrollSnapshot[]): void {
+function restoreChatScroll(snapshots: readonly ControllerSnapshot[]): void {
   // Run after Solid's flush and the browser's layout pass settle.
   requestAnimationFrame(() => requestAnimationFrame(() => {
-    for (const s of snapshots) {
-      if (!s.el.isConnected)
-        continue
-      if (s.el.scrollTop === s.scrollTop)
-        continue
-      const heightDelta = Math.abs(s.el.scrollHeight - s.scrollHeight)
-      if (heightDelta >= CHAT_SCROLL_RESTORE_HEIGHT_TOLERANCE_PX)
-        continue
-      // Through the controller when one owns this element, so the write is
-      // marked as the app's own. The direct assignment is the fallback for an
-      // element no controller registered, where an unmarked write still beats
-      // leaving the position clamped to 0.
-      const write = programmaticWriters.get(s.el)
-      if (write)
-        write(s.scrollTop, 'external-app-refresh')
-      else
-        s.el.scrollTop = s.scrollTop
+    for (const { el, controller, snapshot } of snapshots) {
+      if (el.isConnected)
+        controller.restore(snapshot)
     }
   }))
 }

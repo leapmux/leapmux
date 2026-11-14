@@ -95,7 +95,7 @@ export function createViewportSizeObserver(opts: {
  * the message-list viewport so a tall, never-measured row (e.g. a
  * syntax-highlighted diff) is mounted and measured BEFORE it scrolls into view --
  * shrinking the window where the generic fallback alone sizes the spacer, and
- * with it the first-encounter re-pin. Keyed off the LIST viewport height, NOT
+ * with it the first-encounter correction of the layout shift. Keyed off the LIST viewport height, NOT
  * window.innerHeight: ChatView renders inside tiles/splits, where the pane is
  * often a fraction of the window and a window-relative band would over-mount
  * badly. Floored for short panes and capped so a maximized pane can't mount an

@@ -38,6 +38,8 @@ describe('createRailMetrics', () => {
         scrollEl,
         totalHeight: () => 1000,
         geometryVersion: () => 0,
+        contentTopOf: scrollTop => scrollTop,
+        layoutShift: () => 0,
       })
       await tick()
       expect(metrics()).toEqual({ scrollTop: 0, dist: 600, clientHeight: 400 }) // 1000 - 0 - 400
@@ -59,6 +61,8 @@ describe('createRailMetrics', () => {
         scrollEl,
         totalHeight: () => 1000,
         geometryVersion: geo,
+        contentTopOf: scrollTop => scrollTop,
+        layoutShift: () => 0,
       })
       await tick()
 
@@ -82,6 +86,8 @@ describe('createRailMetrics', () => {
         scrollEl,
         totalHeight: () => 1000,
         geometryVersion: geo,
+        contentTopOf: scrollTop => scrollTop,
+        layoutShift: () => 0,
       })
       await tick()
 
@@ -105,6 +111,8 @@ describe('createRailMetrics', () => {
         scrollEl: () => undefined,
         totalHeight: () => 1000,
         geometryVersion: () => 0,
+        contentTopOf: scrollTop => scrollTop,
+        layoutShift: () => 0,
       })
       await tick()
       expect(metrics()).toEqual({ scrollTop: 0, dist: 0, clientHeight: 0 })
@@ -122,6 +130,8 @@ describe('createRailMetrics', () => {
         scrollEl,
         totalHeight: () => 1000,
         geometryVersion: geo,
+        contentTopOf: scrollTop => scrollTop,
+        layoutShift: () => 0,
       })
       let notifications = 0
       createEffect(on(metrics, () => {
@@ -135,5 +145,66 @@ describe('createRailMetrics', () => {
       setGeo(1)
       await tick()
       expect(notifications).toBe(baseline)
+    }))
+
+  it('converts the sampled position to content coordinates', () =>
+    inRoot(async () => {
+      const div = makeFakeScrollDiv()
+      div.setScrollHeight(2000)
+      div.setClientHeight(400)
+      div.setScrollTop(500)
+      const [scrollEl] = createSignal<HTMLDivElement | undefined>(div.el)
+      const metrics = createRailMetrics({
+        scrollEl,
+        totalHeight: () => 2300,
+        geometryVersion: () => 0,
+        contentTopOf: scrollTop => scrollTop + 300,
+        layoutShift: () => -300,
+      })
+      await tick()
+      // The distance from the bottom stays a scroll-coordinate distance.
+      expect(metrics()).toEqual({ scrollTop: 800, dist: 1100, clientHeight: 400 })
+    }))
+
+  it('floors a position above the first row at 0', () =>
+    inRoot(async () => {
+      const div = makeFakeScrollDiv()
+      div.setScrollHeight(2000)
+      div.setClientHeight(400)
+      div.setScrollTop(100)
+      const [scrollEl] = createSignal<HTMLDivElement | undefined>(div.el)
+      const metrics = createRailMetrics({
+        scrollEl,
+        totalHeight: () => 1800,
+        geometryVersion: () => 0,
+        contentTopOf: scrollTop => scrollTop - 200,
+        layoutShift: () => 200,
+      })
+      await tick()
+      expect(metrics().scrollTop).toBe(0)
+    }))
+
+  it('samples again when the shift changes without a scroll', () =>
+    inRoot(async () => {
+      const div = makeFakeScrollDiv()
+      div.setScrollHeight(2000)
+      div.setClientHeight(400)
+      div.setScrollTop(500)
+      const [scrollEl] = createSignal<HTMLDivElement | undefined>(div.el)
+      const [shift, setShift] = createSignal(0)
+      const metrics = createRailMetrics({
+        scrollEl,
+        totalHeight: () => 2000,
+        geometryVersion: () => 0,
+        contentTopOf: scrollTop => scrollTop - shift(),
+        layoutShift: shift,
+      })
+      await tick()
+      expect(metrics().scrollTop).toBe(500)
+
+      // A row above measured: the layer moved by -300 and no scroll event fired.
+      setShift(-300)
+      await tick()
+      expect(metrics().scrollTop).toBe(800)
     }))
 })

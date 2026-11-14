@@ -3,7 +3,6 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { SavedViewportScroll, ScrollAnchor } from '~/stores/chatTypes'
 import { firstMessageSeq, lastMessageSeq } from '~/stores/chatMessageOrder'
 import { nearestServerRowIndexBySeq } from './chatScrollAnchor'
-import { clampScrollTop } from './chatScrollGeometry'
 
 // ---------------------------------------------------------------------------
 // Scroll-rail seek (jumpToSeq / previewScrollTo)
@@ -26,8 +25,8 @@ export interface ChatSeek {
    */
   jumpToSeq: (seq: bigint) => Promise<boolean>
   /**
-   * A guard-marked programmatic scroll write for in-window rail thumb-drag live-scroll.
-   * Marked like the landing writes so the drag's scroll events don't trip velocity
+   * A placement for in-window rail thumb-drag live-scroll, at the content coordinate
+   * `top`. An own write, like the landing, so the drag's scroll events don't trip velocity
    * sampling, edge pagination, or the buffer filler.
    */
   previewScrollTo: (top: number) => void
@@ -58,19 +57,11 @@ export interface ChatSeek {
 export interface ChatSeekExtras {
   /** Live loaded transcript messages. */
   messages: () => AgentChatMessage[]
-  /** Clamped logical scrollTop read (Safari rubber-band safe). */
-  readScrollTop: (el: HTMLDivElement) => number
   /** Stop any running scroll animation before a landing / preview write. */
   cancelScrollAnimation: () => void
-  /** Cancel AND drop the deferred fling-settle so a landing isn't fought by leftover drift. */
-  cancelFlingSettle: () => void
-  /** Capture the current viewport anchor (leaving follow mode before an out-of-window swap). */
-  captureAnchor: () => void
-  /** Pin a row's top across the post-landing measurement storm; false if it isn't in the offset map. */
-  captureRowTopAnchor: (id: string) => boolean
   /** Bump the geometry tick so DOM-reading memos (stall indicators) re-evaluate after a landing. */
   bumpGeomTick: () => void
-  /** Re-take manual scroll control (clear the per-window filler pause / settle / suppress flags). */
+  /** Re-take manual scroll control (clear the per-window filler pause and settle flags). */
   retakeScrollControl: () => void
   /** Drop the old window's per-side filler state when a jump replaces the message window. */
   rearmScrollBufferFiller: () => void
@@ -124,9 +115,9 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
   }
 
   /**
-   * Land the viewport on the loaded row nearest `seq`, pinning it through the
-   * post-landing measurement storm. Instant, not animated: an animation over
-   * mostly-estimated heights would fight the re-pin every frame.
+   * Land the viewport on the loaded row nearest `seq`, its top a few pixels below the
+   * viewport top. Instant, not animated. The layout shift then holds the row's top edge at
+   * the viewport top while the fresh rows around it measure.
    *
    * Returns whether the landing actually MOVED the scroll position (i.e. a scroll event,
    * and hence a settling metrics change, will follow). It returns false -- no scroll -- when
@@ -141,32 +132,20 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
     const id = nearestRowIdBySeq(seq)
     if (!id)
       return false
-    // Resolve the row's top scrollTop via the anchor resolver (offsetWithinRow 0 pins the
-    // row top to the viewport top). Falls back to the nearest-survivor resolver if the id
-    // isn't in the current offset map. Both are already on the narrowed virtualizer type.
-    const anchor: ScrollAnchor = { id, offsetWithinRow: 0, seq }
-    const resolved = ctx.virt.scrollTopForAnchor(anchor) ?? ctx.virt.scrollTopNearAnchor(anchor)
-    if (resolved == null)
-      return false
     extras.cancelScrollAnimation()
-    extras.cancelFlingSettle()
-    const target = clampScrollTop(el, resolved - SEEK_ALIGN_OFFSET_PX)
-    // Whether this write will actually move the view (and so emit a scroll event): an equal
-    // target is a no-op write that fires no event, so no metrics settle will come.
-    const scrolled = target !== extras.readScrollTop(el)
-    // Marked programmatic so the echo isn't misread as a user gesture (no velocity
-    // sample, no edge pagination, no buffer fill on the still-echo).
-    ctx.writeScrollTop(target, 'seek-jump')
-    // Pin the TARGET row's top across the measurement commits that follow (the fresh
-    // rows are mostly unmeasured). The hold survives the landing write's own echo and
-    // auto-releases once the row measures; any genuine user gesture releases it too.
-    // Fall back to a viewport anchor if the row isn't in the offset map yet.
-    if (!extras.captureRowTopAnchor(id))
-      ctx.setAnchor(ctx.virt.anchorAt(extras.readScrollTop(el)))
-    ctx.setAtBottom(ctx.isAtBottom())
-    ctx.refreshViewport()
+    // Resolve the row's top via the anchor resolver (offsetWithinRow 0 is the row top),
+    // after the rebase of the placement, so the resolved position holds under the shift
+    // that the write lands in. Falls back to the nearest-survivor resolver if the id isn't
+    // in the current offset map.
+    const anchor: ScrollAnchor = { id, offsetWithinRow: 0, seq }
+    const moved = ctx.placeAt(() => {
+      const resolved = ctx.virt.scrollTopForAnchor(anchor) ?? ctx.virt.scrollTopNearAnchor(anchor)
+      return resolved == null
+        ? null
+        : resolved - SEEK_ALIGN_OFFSET_PX
+    })
     extras.bumpGeomTick()
-    return scrolled
+    return moved === true
   }
 
   /**
@@ -189,7 +168,7 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
     const firstS = firstMessageSeq(msgs)
     const lastS = lastMessageSeq(msgs)
     // In-window: the seq sits within the loaded server span. Re-take control (clear the
-    // per-window filler pause/settle/suppress flags, same as forceScrollToBottom) and land.
+    // filler pause and settle flags, same as forceScrollToBottom) and land.
     if (firstS !== undefined && lastS !== undefined && seq >= firstS && seq <= lastS) {
       // This jump needs no fetch, but it still supersedes one already running: without the
       // abort, that page would land afterwards and swap the window out from under this landing.
@@ -202,11 +181,9 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
     // paths stay inert; the centered fetch handles the tail case too (BEFORE seq+1
     // returns the latest page when seq >= maxSeq).
     extras.cancelScrollAnimation()
-    extras.cancelFlingSettle()
     extras.retakeScrollControl()
     extras.rearmScrollBufferFiller()
-    if (ctx.isFollowing())
-      extras.captureAnchor()
+    ctx.leaveFollow()
     ctx.setAtBottom(false)
     // Supersede any seek already in flight -- abort its fetch, not just its landing.
     abandonPendingSeek()
@@ -246,11 +223,10 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
   }
 
   const previewScrollTo = (top: number) => {
-    const el = ctx.getEl()
-    if (!el)
+    if (!ctx.getEl())
       return
     extras.cancelScrollAnimation()
-    ctx.writeScrollTop(clampScrollTop(el, top), 'seek-drag')
+    ctx.placeAt(() => top)
   }
 
   const cancelPendingSeek = () => {

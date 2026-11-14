@@ -1,42 +1,13 @@
-import type { ChatScrollState, ChatScrollVirtualizer, ScrollContext } from './useChatScroll'
+import type { ChatScrollState, ChatScrollVirtualizer } from './useChatScroll'
+import type { ScrollAnchor } from '~/stores/chatTypes'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createViewportRestore } from './chatScrollViewportRestore'
-
-/**
- * A fully-stubbed ScrollContext (the shared scroll primitives the helpers reach back
- * into useChatScroll for). Pass overrides for the fields a test wires to its element
- * or asserts on; every other primitive defaults to a no-op vi.fn().
- */
-function makeScrollContext(overrides: Partial<ScrollContext> = {}): ScrollContext {
-  const virt = {
-    totalHeight: () => 0,
-    updateViewport: vi.fn(),
-    anchorAt: vi.fn(() => null),
-    scrollTopForAnchor: vi.fn(() => null),
-    scrollTopNearAnchor: vi.fn(() => null),
-    geometryVersion: () => 0,
-  } as unknown as ChatScrollVirtualizer
-  return {
-    getEl: () => undefined,
-    virt,
-    atBottom: () => false,
-    setAtBottom: vi.fn(),
-    isAtBottom: () => false,
-    isFollowing: () => false,
-    isAnimating: () => false,
-    followTail: vi.fn(),
-    refreshViewport: vi.fn(),
-    writeScrollTop: vi.fn(),
-    syncVelocityToProgrammatic: vi.fn(),
-    setAnchor: vi.fn(),
-    ...overrides,
-  }
-}
+import { makeScrollContext, virtualizerNoOps } from './useChatScroll.testkit'
 
 // Manual requestAnimationFrame queue so a test can step frames deterministically.
 // handleResize schedules its flush on a rAF and re-schedules it while an animation
-// runs; flushRaf() runs exactly the callbacks queued so far (a re-scheduled one
-// lands in the NEXT flush, modelling a real frame boundary).
+// runs; flush() runs exactly the callbacks queued so far (a re-scheduled one lands in
+// the NEXT flush, modelling a real frame boundary).
 function installRaf() {
   const queue = new Map<number, FrameRequestCallback>()
   let id = 0
@@ -68,77 +39,108 @@ function installRaf() {
 
 afterEach(() => vi.restoreAllMocks())
 
-/** A viewport-restore over fully stubbed deps; `state.animating` is mutable mid-test. */
-function harness() {
-  const el = { scrollTop: 0, scrollHeight: 5000, clientHeight: 500 } as HTMLDivElement
-  const saved: ChatScrollState = {
-    anchor: { id: 'r1', offsetWithinRow: 10 },
-    atBottom: false,
-    hasMoreNewer: false,
-  }
-  const state = { animating: false }
-  const writeScrollTop = vi.fn()
-  const virt = {
-    totalHeight: () => 5000,
+/** A virtualizer stub whose anchors resolve to the given scroll coordinates. */
+function stubVirt(opts: { totalHeight: number, forAnchor: number | null, nearAnchor: number | null }): ChatScrollVirtualizer {
+  return {
+    ...virtualizerNoOps(),
+    totalHeight: () => opts.totalHeight,
+    geometryVersion: () => 0,
     updateViewport: vi.fn(),
     anchorAt: vi.fn(() => null),
-    scrollTopForAnchor: vi.fn(() => 1200), // a resolvable anchor -> restore writes
-    scrollTopNearAnchor: vi.fn(() => 1200),
-    geometryVersion: () => 0,
-  } as unknown as ChatScrollVirtualizer
+    scrollTopForAnchor: vi.fn(() => opts.forAnchor),
+    scrollTopNearAnchor: vi.fn(() => opts.nearAnchor),
+  }
+}
 
-  const setSuppressOlder = vi.fn()
-  const onGeometrySettled = vi.fn()
+/**
+ * A viewport restore over stubbed deps. `placed` records what each `placeAt` resolver
+ * returned, in order: a `null` is a strategy whose anchor did not resolve.
+ */
+function harness(opts: {
+  saved?: ChatScrollState | undefined
+  totalHeight?: number
+  forAnchor?: number | null
+  nearAnchor?: number | null
+  followRequested?: boolean
+  lastAnchor?: () => ScrollAnchor | null
+} = {}) {
+  const el = { scrollTop: 0, scrollHeight: 5000, clientHeight: 500 } as HTMLDivElement
+  const state = { animating: false }
+  const placed: Array<number | null> = []
+  const placeAt = vi.fn((resolve: () => number | null): boolean | null => {
+    const top = resolve()
+    placed.push(top)
+    return top === null
+      ? null
+      : true
+  })
+  const syncAfterWrite = vi.fn()
+  const extras = {
+    stickToBottom: vi.fn(() => true),
+    forceScrollToBottom: vi.fn(),
+    clearSavedViewportScroll: vi.fn(),
+    savedViewportScroll: () => opts.saved,
+    restoreAnchor: vi.fn(),
+    lastAnchor: vi.fn(opts.lastAnchor ?? (() => null)),
+    followRequested: () => opts.followRequested ?? false,
+    onGeometrySettled: vi.fn(),
+  }
   const restore = createViewportRestore(
     makeScrollContext({
       getEl: () => el,
-      virt,
-      writeScrollTop,
+      virt: stubVirt({
+        totalHeight: opts.totalHeight ?? 5000,
+        forAnchor: opts.forAnchor === undefined
+          ? 1200
+          : opts.forAnchor,
+        nearAnchor: opts.nearAnchor === undefined
+          ? 1200
+          : opts.nearAnchor,
+      }),
       isAnimating: () => state.animating,
+      placeAt,
+      syncAfterWrite,
     }),
-    {
-      checkAtBottom: vi.fn(),
-      repinToAnchor: vi.fn(),
-      stickToBottom: vi.fn(() => false),
-      forceScrollToBottom: vi.fn(),
-      clearSavedViewportScroll: vi.fn(),
-      savedViewportScroll: () => saved,
-      setSuppressOlder,
-      setLastScrollTopForDir: vi.fn(),
-      onGeometrySettled,
-    },
+    extras,
   )
   // prevClientHeight defaults to 0 (hidden); el.clientHeight is 500 -> wasHidden.
   return {
     restore,
     state,
-    writeScrollTop,
-    setSuppressOlder,
-    onGeometrySettled,
+    placed,
+    placeAt,
+    syncAfterWrite,
+    extras,
     el,
   }
+}
+
+const SAVED_ANCHOR: ChatScrollState = {
+  anchor: { id: 'r1', offsetWithinRow: 10 },
+  atBottom: false,
+  hasMoreNewer: false,
 }
 
 describe('chatScrollViewportRestore handleResize', () => {
   it('defers a hidden->visible restore while an animation runs, then restores once it ends', () => {
     const raf = installRaf()
     try {
-      const { restore, state, writeScrollTop } = harness()
+      const { restore, state, placed } = harness({ saved: SAVED_ANCHOR })
       state.animating = true
 
       // A hidden->visible resize fires while a scroll animation is in flight.
       restore.handleResize()
       raf.flush() // the flush sees isAnimating() -> re-schedules instead of restoring
-      expect(writeScrollTop).not.toHaveBeenCalled()
+      expect(placed).toEqual([])
 
       // The animation is still running across another frame: still deferred, NOT dropped.
       raf.flush()
-      expect(writeScrollTop).not.toHaveBeenCalled()
+      expect(placed).toEqual([])
 
       // Animation ends; the re-scheduled flush now performs the restore.
       state.animating = false
       raf.flush()
-      expect(writeScrollTop).toHaveBeenCalledWith(1200, 'viewport-restore-anchor')
+      expect(placed).toEqual([1200])
     }
     finally {
       raf.restore()
@@ -148,10 +150,67 @@ describe('chatScrollViewportRestore handleResize', () => {
   it('restores immediately when no animation is running', () => {
     const raf = installRaf()
     try {
-      const { restore, writeScrollTop } = harness() // state.animating stays false
+      const { restore, placed, extras } = harness({ saved: SAVED_ANCHOR })
       restore.handleResize()
       raf.flush()
-      expect(writeScrollTop).toHaveBeenCalledWith(1200, 'viewport-restore-anchor')
+      expect(placed).toEqual([1200])
+      expect(extras.clearSavedViewportScroll).toHaveBeenCalledOnce()
+    }
+    finally {
+      raf.restore()
+    }
+  })
+
+  it('passes the anchor of the ResizeObserver callback to the restore', () => {
+    const raf = installRaf()
+    try {
+      const anchorA: ScrollAnchor = { id: 'a', offsetWithinRow: 1 }
+      const anchorB: ScrollAnchor = { id: 'b', offsetWithinRow: 2 }
+      let current = anchorA
+      // No saved state and no request: the show takes the recheck path. The test does
+      // not call initClientHeight, so the pane counts as hidden before the resize.
+      const { restore, extras, syncAfterWrite } = harness({
+        saved: undefined,
+        lastAnchor: () => current,
+      })
+      restore.handleResize()
+      // A scroll event of the browser replaces the anchor of the hook before the flush.
+      current = anchorB
+      raf.flush()
+      expect(extras.restoreAnchor).toHaveBeenCalledWith(anchorA)
+      expect(syncAfterWrite).toHaveBeenCalledOnce()
+    }
+    finally {
+      raf.restore()
+    }
+  })
+
+  it('sticks on a resize while the reader requests the tail', () => {
+    const raf = installRaf()
+    try {
+      const { restore, extras } = harness({ saved: undefined, followRequested: true })
+      restore.initClientHeight()
+      restore.handleResize()
+      raf.flush()
+      expect(extras.stickToBottom).toHaveBeenCalledOnce()
+      expect(extras.restoreAnchor).not.toHaveBeenCalled()
+    }
+    finally {
+      raf.restore()
+    }
+  })
+
+  it('records the position on a resize of a visible reader with no request', () => {
+    const raf = installRaf()
+    try {
+      const { restore, extras, syncAfterWrite } = harness({ saved: undefined })
+      restore.initClientHeight()
+      restore.handleResize()
+      raf.flush()
+      expect(extras.stickToBottom).not.toHaveBeenCalled()
+      // Only a show restores the anchor: the pane was visible before this resize.
+      expect(extras.restoreAnchor).not.toHaveBeenCalled()
+      expect(syncAfterWrite).toHaveBeenCalledOnce()
     }
     finally {
       raf.restore()
@@ -161,10 +220,10 @@ describe('chatScrollViewportRestore handleResize', () => {
 
 /**
  * A hidden->visible restore of a NON-bottom save whose anchor doesn't resolve. The
- * priority is: anchor -> raw-top (while still all-hidden) -> hasMoreNewer tail-snap
- * -> clamp-to-top. The key invariant: an all-hidden reader who scrolled UP while
- * windowed away (hasMoreNewer) must be RESTORED to their raw offset, not yanked to
- * the live tail by the tail-snap.
+ * priority is: anchor -> raw-top (while still all-hidden) -> nearest survivor ->
+ * hasMoreNewer tail-snap -> top. The key invariant: an all-hidden reader who scrolled
+ * UP while windowed away (hasMoreNewer) must be RESTORED to their raw offset, not
+ * yanked to the live tail by the tail-snap.
  */
 describe('chatScrollViewportRestore restore priority', () => {
   function priorityHarness(opts: {
@@ -176,9 +235,6 @@ describe('chatScrollViewportRestore restore priority', () => {
     anchor?: ChatScrollState['anchor']
     nearAnchorTop?: number | null
   }) {
-    const el = { scrollTop: 0, scrollHeight: 5000, clientHeight: 500 } as HTMLDivElement
-    // The exact anchor never resolves (scrollTopForAnchor returns null); a provided
-    // `anchor` exercises the nearest-survivor recovery via scrollTopNearAnchor.
     const saved: ChatScrollState = {
       ...(opts.anchor !== undefined
         ? { anchor: opts.anchor }
@@ -189,51 +245,28 @@ describe('chatScrollViewportRestore restore priority', () => {
         ? { rawScrollTop: opts.rawScrollTop }
         : {}),
     }
-    const writeScrollTop = vi.fn()
-    const forceScrollToBottom = vi.fn()
-    const virt = {
-      totalHeight: () => opts.totalHeight,
-      updateViewport: vi.fn(),
-      anchorAt: vi.fn(() => null),
-      scrollTopForAnchor: vi.fn(() => null),
-      scrollTopNearAnchor: vi.fn(() => opts.nearAnchorTop ?? null),
-      geometryVersion: () => 0,
-    } as unknown as ChatScrollVirtualizer
-    const restore = createViewportRestore(
-      makeScrollContext({
-        getEl: () => el,
-        virt,
-        writeScrollTop,
-      }),
-      {
-        checkAtBottom: vi.fn(),
-        repinToAnchor: vi.fn(),
-        stickToBottom: vi.fn(() => false),
-        forceScrollToBottom,
-        clearSavedViewportScroll: vi.fn(),
-        savedViewportScroll: () => saved,
-        setSuppressOlder: vi.fn(),
-        setLastScrollTopForDir: vi.fn(),
-        onGeometrySettled: vi.fn(),
-      },
-    )
-    return { restore, writeScrollTop, forceScrollToBottom }
+    return harness({
+      saved,
+      totalHeight: opts.totalHeight,
+      forAnchor: null,
+      nearAnchor: opts.nearAnchorTop ?? null,
+    })
   }
 
   it('restores the raw offset of an all-hidden scrolled-up reader instead of snapping to the live tail', () => {
     const raf = installRaf()
     try {
       // All-hidden window (totalHeight 0), a saved raw offset, and hasMoreNewer set.
-      const { restore, writeScrollTop, forceScrollToBottom } = priorityHarness({
+      const { restore, placed, extras } = priorityHarness({
         totalHeight: 0,
         rawScrollTop: 800,
         hasMoreNewer: true,
       })
       restore.handleResize()
       raf.flush()
-      // raw-top restore wins over the hasMoreNewer tail-snap (800 is within [0, 4500]).
-      expect(writeScrollTop).toHaveBeenCalledWith(800, 'viewport-restore-raw-top')
-      expect(forceScrollToBottom).not.toHaveBeenCalled()
+      // raw-top restore wins over the hasMoreNewer tail-snap.
+      expect(placed).toEqual([800])
+      expect(extras.forceScrollToBottom).not.toHaveBeenCalled()
     }
     finally {
       raf.restore()
@@ -245,15 +278,15 @@ describe('chatScrollViewportRestore restore priority', () => {
     try {
       // Virtual rows appeared (totalHeight > 0) and no saved anchor to recover, so the
       // raw offset is stale (restoreFromRawTop declines) and the tail-snap stands.
-      const { restore, writeScrollTop, forceScrollToBottom } = priorityHarness({
+      const { restore, placed, extras } = priorityHarness({
         totalHeight: 3000,
         rawScrollTop: 800,
         hasMoreNewer: true,
       })
       restore.handleResize()
       raf.flush()
-      expect(forceScrollToBottom).toHaveBeenCalled()
-      expect(writeScrollTop).not.toHaveBeenCalled()
+      expect(extras.forceScrollToBottom).toHaveBeenCalled()
+      expect(placed).toEqual([])
     }
     finally {
       raf.restore()
@@ -266,7 +299,7 @@ describe('chatScrollViewportRestore restore priority', () => {
       // A scrolled-up reader whose anchor row was trimmed as the window advanced: the
       // exact anchor no longer resolves, the window isn't all-hidden, and newer messages
       // exist -- but instead of the live-tail snap, restore lands on the nearest survivor.
-      const { restore, writeScrollTop, forceScrollToBottom } = priorityHarness({
+      const { restore, placed, extras } = priorityHarness({
         totalHeight: 3000,
         hasMoreNewer: true,
         anchor: { id: 'gone', offsetWithinRow: 10, seq: 42n },
@@ -274,8 +307,8 @@ describe('chatScrollViewportRestore restore priority', () => {
       })
       restore.handleResize()
       raf.flush()
-      expect(writeScrollTop).toHaveBeenCalledWith(250, 'viewport-restore-near-anchor')
-      expect(forceScrollToBottom).not.toHaveBeenCalled()
+      expect(placed).toEqual([null, 250])
+      expect(extras.forceScrollToBottom).not.toHaveBeenCalled()
     }
     finally {
       raf.restore()
@@ -285,7 +318,7 @@ describe('chatScrollViewportRestore restore priority', () => {
   it('falls back to the live-tail snap when no surviving row resolves for the trimmed anchor', () => {
     const raf = installRaf()
     try {
-      const { restore, writeScrollTop, forceScrollToBottom } = priorityHarness({
+      const { restore, placed, extras } = priorityHarness({
         totalHeight: 3000,
         hasMoreNewer: true,
         anchor: { id: 'gone', offsetWithinRow: 10, seq: 42n },
@@ -293,8 +326,22 @@ describe('chatScrollViewportRestore restore priority', () => {
       })
       restore.handleResize()
       raf.flush()
-      expect(forceScrollToBottom).toHaveBeenCalled()
-      expect(writeScrollTop).not.toHaveBeenCalled()
+      expect(extras.forceScrollToBottom).toHaveBeenCalled()
+      expect(placed).toEqual([null, null])
+    }
+    finally {
+      raf.restore()
+    }
+  })
+
+  it('places the view at the top when nothing resolves and no newer page exists', () => {
+    const raf = installRaf()
+    try {
+      const { restore, placed, extras } = priorityHarness({ totalHeight: 3000, hasMoreNewer: false })
+      restore.handleResize()
+      raf.flush()
+      expect(placed).toEqual([0])
+      expect(extras.forceScrollToBottom).not.toHaveBeenCalled()
     }
     finally {
       raf.restore()
@@ -302,78 +349,17 @@ describe('chatScrollViewportRestore restore priority', () => {
   })
 })
 
-describe('chatScrollViewportRestore geometry-settle + suppression', () => {
-  // A viewport-restore over a single element with no saved scroll, so handleResize
-  // routes through recheckOnResize (the already-visible-resize path) once
-  // initClientHeight has seeded prevClientHeight (making wasHidden false).
-  function settleHarness(el: HTMLDivElement) {
-    const setSuppressOlder = vi.fn()
-    const onGeometrySettled = vi.fn()
-    const restore = createViewportRestore(
-      makeScrollContext({
-        getEl: () => el,
-        isAnimating: () => false,
-      }),
-      {
-        checkAtBottom: vi.fn(),
-        repinToAnchor: vi.fn(),
-        stickToBottom: vi.fn(() => false),
-        forceScrollToBottom: vi.fn(),
-        clearSavedViewportScroll: vi.fn(),
-        savedViewportScroll: () => undefined,
-        setSuppressOlder,
-        setLastScrollTopForDir: vi.fn(),
-        onGeometrySettled,
-      },
-    )
-    return { restore, setSuppressOlder, onGeometrySettled }
-  }
-
+describe('chatScrollViewportRestore geometry settle', () => {
   it('re-arms the geometry-derived memos after a resize settles (no scroll event fires)', () => {
     const raf = installRaf()
     try {
-      const el = { scrollTop: 0, scrollHeight: 5000, clientHeight: 500 } as HTMLDivElement
-      const { restore, onGeometrySettled } = settleHarness(el)
+      const { restore, extras } = harness({ saved: undefined })
       restore.initClientHeight() // prevClientHeight = 500 -> the next resize is non-hidden
       restore.handleResize()
       raf.flush()
       // Geometry-derived memos read only when this ticks; a resize that clamped
       // scrollTop to an edge fired no scroll event, so the resize must tick it.
-      expect(onGeometrySettled).toHaveBeenCalled()
-    }
-    finally {
-      raf.restore()
-    }
-  })
-
-  it('clears the older-load suppression when a resize leaves the viewport non-scrollable', () => {
-    const raf = installRaf()
-    try {
-      // Content (400) now fits the viewport (500): maxScrollTopOf is 0, so no scroll
-      // event can ever reach the top band to clear the suppression -- the resize must.
-      const el = { scrollTop: 0, scrollHeight: 400, clientHeight: 500 } as HTMLDivElement
-      const { restore, setSuppressOlder } = settleHarness(el)
-      restore.initClientHeight()
-      restore.handleResize()
-      raf.flush()
-      expect(setSuppressOlder).toHaveBeenLastCalledWith(false)
-    }
-    finally {
-      raf.restore()
-    }
-  })
-
-  it('leaves the older-load suppression untouched on a still-scrollable resize', () => {
-    const raf = installRaf()
-    try {
-      const el = { scrollTop: 1000, scrollHeight: 5000, clientHeight: 500 } as HTMLDivElement
-      const { restore, setSuppressOlder } = settleHarness(el)
-      restore.initClientHeight()
-      restore.handleResize()
-      raf.flush()
-      // recheckOnResize never touches the flag, and a scrollable viewport can still
-      // clear it via a scroll-to-top, so the non-scrollable clear must NOT fire.
-      expect(setSuppressOlder).not.toHaveBeenCalled()
+      expect(extras.onGeometrySettled).toHaveBeenCalled()
     }
     finally {
       raf.restore()

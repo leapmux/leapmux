@@ -348,7 +348,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   const showTodos = () => todoCount().total > 0 || props.goal?.current !== undefined
 
   // Drive `onExpandTick` for ~700ms so the parent's scroll-sticky
-  // binding can re-pin to the bottom on every frame while the
+  // binding can re-stick to the bottom on every frame while the
   // indicator's height settles. Used both for the false→true expand
   // animation (where the row grows over --transition) and for the
   // initiallyVisible mount case (where there's no animation, but the
@@ -414,7 +414,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   // Initiallly-visible mount path: skip the height-expand animation
   // (it would look like a disappear/reappear when ChatView re-mounts
   // during a turn via a tile split), but still tick onExpandTick so the
-  // parent re-pins to bottom as the indicator's content lays out.
+  // parent re-sticks to the bottom as the indicator's content lays out.
   onMount(() => {
     if (initiallyVisible)
       runExpandTickLoop()

@@ -1,79 +1,61 @@
 import type { ChatScrollVirtualizer } from './useChatScroll'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { batch, createRoot, createSignal } from 'solid-js'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import { maxScrollTopOf } from './chatScrollGeometry'
+import { FOLLOW_TOLERANCE_PX, maxScrollTopOf } from './chatScrollGeometry'
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeRowVirtualizer, makeStubVirtualizer, virtualizerNoOps } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeRowVirtualizer, makeStubVirtualizer, mountScrollHarness, virtualizerNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
-describe('useChatScroll programmatic-write pagination guard', () => {
-  it('does not swallow a user scroll that lands mid programmatic-write burst', () =>
-    createRoot((dispose) => {
-      const div = makeFakeScrollDiv()
-      div.setScrollHeight(5000)
-      div.setClientHeight(500)
-      div.setScrollTop(4500)
-      const [messages] = createSignal<AgentChatMessage[]>([])
-      let olderLoads = 0
-      const hook = useChatScroll({
-        virtualizer: makeStubVirtualizer(),
-        messages,
-        hasOlderMessages: () => true,
-        onLoadOlderMessages: () => { olderLoads++ },
-      })
-      hook.attachListRef(div.el)
+describe('useChatScroll own writes', () => {
+  it('does not treat the scroll event of an own write as a move', async () => {
+    const h = mountScrollHarness()
+    await h.anchoredAt(2000)
+    h.onMomentumScroll.mockClear()
+    h.setFastScrollActive.mockClear()
 
-      // Programmatic write to the bottom records a pending programmatic position.
-      hook.jumpToBottom() // -> scrollTop = scrollHeight (clamped to 4500)
+    h.hook.forceScrollToBottom()
+    h.hook.handlers.onScroll()
 
-      // The user scrolls to the very top BEFORE the programmatic marker clears
-      // (no await -> the frame-delayed clear hasn't run). A position-matched
-      // guard recognizes this as a real gesture (0 != 4500) and lets pagination
-      // fire; the old frame-delayed boolean would have swallowed it.
-      div.setScrollTop(0)
-      hook.handlers.onScroll()
-      expect(olderLoads).toBeGreaterThanOrEqual(1)
+    expect(h.onMomentumScroll).not.toHaveBeenCalled()
+    expect(h.setFastScrollActive).not.toHaveBeenCalledWith(true)
+    h.dispose()
+  })
 
-      dispose()
-    }))
+  it('treats a later scroll to another position as a move', async () => {
+    const h = mountScrollHarness()
+    await h.anchoredAt(2000)
+    h.hook.forceScrollToBottom()
+    h.hook.handlers.onScroll()
+    h.onMomentumScroll.mockClear()
 
-  it('consumes the echo so a later user scroll to the same pixel is not swallowed', () =>
-    createRoot((dispose) => {
-      const div = makeFakeScrollDiv()
-      div.setScrollHeight(5000)
-      div.setClientHeight(500)
-      div.setScrollTop(2000)
-      const [messages] = createSignal<AgentChatMessage[]>([])
-      let newerLoads = 0
-      const hook = useChatScroll({
-        virtualizer: makeStubVirtualizer(),
-        messages,
-        hasNewerMessages: () => true,
-        onLoadNewerMessages: () => { newerLoads++ },
-      })
-      hook.attachListRef(div.el)
+    h.scrollTo(4000)
 
-      // Programmatic jump to the bottom records scrollTop 4500 as our own write.
-      hook.jumpToBottom() // scrollTop -> 4500 (clamped)
+    expect(h.onMomentumScroll).toHaveBeenCalledOnce()
+    h.dispose()
+  })
 
-      // The echo scroll event at 4500 is recognized as ours: pagination is
-      // suppressed, and the marker is CONSUMED (one write -> one echo).
-      hook.handlers.onScroll()
-      expect(newerLoads).toBe(0)
+  it('handles the same event twice with no second effect', async () => {
+    const h = mountScrollHarness()
+    await h.anchoredAt(2000)
+    h.hook.forceScrollToBottom()
+    h.hook.handlers.onScroll()
+    h.scrollTo(4000)
+    h.onMomentumScroll.mockClear()
+    h.updateViewport.mockClear()
+    h.setFastScrollActive.mockClear()
 
-      // A SECOND scroll event at the exact same pixel (a coincidental user gesture
-      // pressed against the bottom edge, no frame elapsed) is NOT a second echo:
-      // the consumed marker no longer matches, so pagination fires. The old
-      // position-only guard, whose marker persists until the next frame, would
-      // have swallowed this gesture too.
-      hook.handlers.onScroll()
-      expect(newerLoads).toBe(1)
+    h.hook.handlers.onScroll()
 
-      dispose()
-    }))
+    expect(h.onMomentumScroll).not.toHaveBeenCalled()
+    expect(h.setFastScrollActive).not.toHaveBeenCalledWith(true)
+    // The same position and viewport. The event carries no lead: it did not move.
+    expect(h.updateViewport).toHaveBeenCalledOnce()
+    expect(h.updateViewport).toHaveBeenCalledWith(4000, 500, undefined)
+    h.dispose()
+  })
 })
 
 describe('useChatScroll auto-load through hidden-only window pages', () => {
@@ -328,7 +310,7 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           // the bottom; see suppressOlderPrefetchAtLiveTail).
           let scrollHeight = 900
           div.setScrollHeight(scrollHeight)
-          div.setScrollTop(200) // visible buffer ABOVE = 200, well under 1500; BELOW = 200
+          div.setScrollTop(400) // the bottom, where the mount follows the tail
           const [total, setTotal] = createSignal(900)
           const virt: ChatScrollVirtualizer = {
             ...virtualizerNoOps(),
@@ -351,7 +333,7 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
               olderLoads++
               setFetchingOlder(true)
               queueMicrotask(() => {
-                // A VISIBLE older page lands: total + scrollHeight grow, and the re-pin
+                // A VISIBLE older page lands: total + scrollHeight grow, and the layout shift
                 // keeps the reader's row put, so the buffer ABOVE (scrollTop) grows too.
                 const grow = 400
                 scrollHeight += grow
@@ -364,14 +346,13 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
             },
           })
           hook.attachListRef(div.el)
-          // Establish the reader's scrolled-up position with a GENUINE scroll event, as
-          // production always does -- without it, the mount placement (the auto-scroll
-          // effect's creation run over a populated window) would read the pre-set
-          // scrollTop as an unplaced fresh container and stick it to the live tail.
+          // The reader scrolls up from the tail: visible buffer ABOVE = 200, well under
+          // 1500; BELOW = 200. An upward move ends follow mode, so the older pre-fetch runs.
+          div.setScrollTop(200)
           hook.handlers.onScroll()
           // Drain the microtask-paced fill until the buffer above reaches the refill
           // watermark. Hysteresis intentionally stops short of the ideal 3-screen target
-          // so a tiny post-trim deficit does not fetch a full page and re-pin again.
+          // so a tiny post-trim deficit does not fetch a full page again.
           for (let i = 0; i < 50 && div.getScrollTop() < 1250; i++)
             await Promise.resolve()
 
@@ -522,22 +503,22 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
       })
     }))
 
-  it('still fills a BARELY-scrollable newest page (maxScrollTop inside the sticky band)', () =>
-    // The 1-31px wedge: with 0 < maxScrollTop < the 32px sticky band, isAtBottom() is
-    // true at EVERY scroll position, so the "first scroll-up leaves the tail and resumes
-    // the fill" escape is mathematically unreachable -- a suppression gated on
-    // maxScrollTop > 0 wedged older history off for good (a scrollbar-drag user fires
-    // no wheel/key edge-intent loads either). Such a pane must keep filling, exactly
-    // like the non-scrollable case, until it can genuinely leave the band.
+  it('still fills a BARELY-scrollable newest page (a range of 2px)', () =>
+    // With 0 < maxScrollTop <= FOLLOW_TOLERANCE_PX, isAtBottom() is true at EVERY scroll
+    // position, so the "first scroll-up leaves the tail and resumes the fill" escape is
+    // unreachable -- a suppression gated on maxScrollTop > 0 would wedge older history
+    // off for good (a scrollbar-drag user fires no wheel/key edge-intent loads either).
+    // Such a pane must keep filling, exactly like the non-scrollable case, until it can
+    // genuinely scroll.
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
           div.setClientHeight(500)
-          let scrollHeight = 520 // maxScrollTop 20: scrollable, but only inside the band
+          let scrollHeight = 502 // maxScrollTop 2: within the follow tolerance
           div.setScrollHeight(scrollHeight)
-          div.setScrollTop(20)
-          const [total, setTotal] = createSignal(520)
+          div.setScrollTop(2)
+          const [total, setTotal] = createSignal(502)
           const virt: ChatScrollVirtualizer = {
             ...virtualizerNoOps(),
             totalHeight: () => total(),
@@ -574,10 +555,10 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
             await Promise.resolve()
 
           // At least one older page loaded (the wedge would have loaded ZERO), and the
-          // fill stopped once the pane could leave the sticky band (bounded, not runaway).
+          // fill stopped once the pane could scroll (bounded, not runaway).
           expect(olderLoads).toBeGreaterThanOrEqual(1)
           expect(olderLoads).toBeLessThanOrEqual(5)
-          expect(maxScrollTopOf(div.el)).toBeGreaterThan(32)
+          expect(maxScrollTopOf(div.el)).toBeGreaterThan(FOLLOW_TOLERANCE_PX)
           dispose()
           resolve()
         }
@@ -766,7 +747,7 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           const div = makeFakeScrollDiv()
           div.setClientHeight(500)
           div.setScrollHeight(900) // SOME visible content (mostly-hidden, not all-hidden)
-          div.setScrollTop(200) // buffer above 200 < 1500 -> deficient
+          div.setScrollTop(400) // the bottom, where the mount follows the tail
           // totalHeight never grows: every older page is hidden (no visible height).
           const [total] = createSignal(900)
           const virt: ChatScrollVirtualizer = {
@@ -799,9 +780,8 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
             },
           })
           hook.attachListRef(div.el)
-          // A genuine scroll event pins the reader's scrolled-up position (see the
-          // pre-fetch-ahead test above -- the mount placement would otherwise stick
-          // this pre-positioned viewport to the live tail).
+          // The reader scrolls up from the tail: buffer above 200 < 1500 -> deficient.
+          div.setScrollTop(200)
           hook.handlers.onScroll()
           for (let i = 0; i < 100; i++)
             await Promise.resolve()
@@ -951,8 +931,8 @@ describe('useChatScroll fresh-mount placement vs older prefetch', () => {
   // geometry. The old order ran the filler's creation pass first: it read the
   // unplaced scrollTop 0 as "no older buffer above the viewport" and fired an older
   // fetch, whose preserveBrowsingPosition side effect then cancelled the initial
-  // stick -- stranding the view at the top ('following' mode never re-pins a
-  // prepend), where every landed page re-armed the deficit and paged history to
+  // stick -- stranding the view at the top (the old 'following' mode did not hold the
+  // view across a prepend), where every landed page re-armed the deficit and paged history to
   // exhaustion ("climbs to the top, loading older messages the whole way").
   it('places a populated fresh mount at the live tail without firing an older prefetch', () =>
     new Promise<void>((resolve, reject) => {
@@ -1055,13 +1035,14 @@ describe('useChatScroll fresh-mount placement vs older prefetch', () => {
       })
     }))
 
-  it('does not seed an older prefetch on a fresh mount of a window paged AWAY from the live tail', () =>
+  it('pre-fetches one older page on a fresh mount of a window paged AWAY from the live tail', () =>
     // The placement stick skips a windowed-away mount (sticking to a non-tail loaded
-    // bottom would be wrong), so the container stays at its pre-placement scrollTop 0
-    // in follow mode. The filler must read that as machinery-owned -- follow mode over
-    // an anchorABLE row is never a reader position -- not as an older-buffer deficit:
-    // the seed fetch would prepend in-view at the top and re-arm itself exactly like
-    // the reload runaway.
+    // bottom would be wrong), so the container stays at its pre-placement scrollTop 0.
+    // Such a mount holds no request for the tail, so follow mode does not suppress the
+    // older pre-fetch: the reader sits at the top of the window as one who scrolled
+    // there. The layout shift keeps the view in place when the page prepends, and the
+    // content it adds above the viewport fills the buffer, so the fill cannot run away
+    // as it did when a prepend moved a view in follow mode.
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
         try {
@@ -1087,8 +1068,9 @@ describe('useChatScroll fresh-mount placement vs older prefetch', () => {
           for (let i = 0; i < 10; i++)
             await Promise.resolve()
 
-          expect(olderLoads).toBe(0)
+          expect(olderLoads).toBe(1)
           expect(newerLoads).toBe(0)
+          expect(div.getScrollTop()).toBe(0)
           dispose()
           resolve()
         }
@@ -1252,5 +1234,70 @@ describe('useChatScroll scroll pagination dispatch', () => {
       expect(newerLoads).toBe(1)
       dispose()
     })
+  })
+})
+
+describe('useChatScroll buffer fill under a layout shift', () => {
+  it('counts an older page as progress while the layout is shifted', () => {
+    const [fetchingOlder, setFetchingOlder] = createSignal(false)
+    const onLoadOlderMessages = vi.fn(() => setFetchingOlder(true))
+    const onLoadNewerMessages = vi.fn()
+    const h = mountScrollHarness({
+      heights: Array.from<number>({ length: 25 }).fill(100),
+      hasNewer: true,
+      scrollTopBeforeMount: 1000,
+      messages: [{} as AgentChatMessage],
+      hookOptions: {
+        hasOlderMessages: () => true,
+        fetchingOlder,
+        onLoadOlderMessages,
+        onLoadNewerMessages,
+      },
+    })
+    // Both sides are short at the mount (the trigger is 1250px), and the direction starts
+    // as 'older', so the fill fetches older once.
+    expect(onLoadOlderMessages).toHaveBeenCalledOnce()
+    h.scrollTo(990)
+
+    // The page arrives: its rows above the reader shift the layout, then the fetch ends.
+    h.changeAbove(100)
+    h.setMessages([{} as AgentChatMessage, {} as AgentChatMessage])
+    setFetchingOlder(false)
+
+    // A content measure in scroll coordinates stays 1000: the older side would read as
+    // stuck, and the second fetch would go to the newer side.
+    expect(onLoadOlderMessages).toHaveBeenCalledTimes(2)
+    expect(onLoadNewerMessages).not.toHaveBeenCalled()
+    h.dispose()
+  })
+
+  it('resumes the fill after a page key', async () => {
+    const onLoadOlderMessages = vi.fn()
+    const h = mountScrollHarness({
+      hookOptions: {
+        hasOlderMessages: () => true,
+        onLoadOlderMessages,
+      },
+    })
+    await h.anchoredAt(2000)
+    onLoadOlderMessages.mockClear()
+    // A press pauses the fill. The pages below write through the controller, so their
+    // scroll events are own writes, and only the page itself can end the pause.
+    h.hook.handlers.onPointerDown(new PointerEvent('pointerdown', { pointerId: 1, isPrimary: true }))
+    h.hook.handlers.onPointerUp(new PointerEvent('pointerup', { pointerId: 1, isPrimary: true }))
+
+    h.hook.pageScroll(-1)
+    h.hook.handlers.onScroll()
+    expect(h.div.getScrollTop()).toBe(1548)
+    expect(onLoadOlderMessages).not.toHaveBeenCalled()
+
+    h.hook.pageScroll(-1)
+    h.hook.handlers.onScroll()
+    expect(h.div.getScrollTop()).toBe(1096)
+    expect(onLoadOlderMessages).toHaveBeenCalled()
+
+    h.hook.pageScroll(-1)
+    h.hook.handlers.onScroll()
+    h.dispose()
   })
 })

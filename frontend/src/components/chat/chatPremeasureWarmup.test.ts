@@ -129,7 +129,6 @@ describe('chatPremeasureWarmup', () => {
       queue = createPremeasureQueue({
         virt: {
           hasMeasuredHeight: id => measured.has(id),
-          hasPendingPremeasuredHeight: () => false,
           primeHeight: (id) => {
             measured.add(id)
             return true
