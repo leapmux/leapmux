@@ -338,30 +338,6 @@ describe('createRowMeasurer', () => {
     measurer.dispose()
   })
 
-  it('commits the latest zero after visible measurement deferral ends', () => {
-    let deferred = true
-    let height = 40
-    const measure = vi.fn(() => true)
-    const element = {
-      ...fakeRowEvents(),
-      isConnected: true,
-      getBoundingClientRect: () => new DOMRect(0, 0, 400, height),
-      querySelectorAll: () => [],
-    } as unknown as HTMLElement
-    const measurer = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      shouldDeferMeasurement: () => deferred,
-      createObserver: () => undefined,
-    })
-    measurer.attachRow('empty', element)
-    height = 0
-    deferred = false
-    expect(measurer.flushDeferredMeasurements()).toBe(true)
-    expect(measure).toHaveBeenCalledWith('empty', 0)
-    measurer.dispose()
-  })
-
   it('reads no height from a row copy that waits for content, on attach or on resize', () => {
     const measure = vi.fn(() => true)
     const obs = fakeObserver()
@@ -581,39 +557,6 @@ describe('createRowMeasurer', () => {
     expect(obs.observed.has(el)).toBe(true)
   })
 
-  it('defers visible measurements while the gate is closed and flushes the latest live height', () => {
-    let defer = true
-    let height = 120
-    const measure = vi.fn(() => true)
-    const obs = fakeObserver()
-    const sched = manualScheduler()
-    const el = {
-      ...fakeRowEvents(),
-      isConnected: true,
-      getBoundingClientRect: () => ({ height }),
-    } as unknown as HTMLElement
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: obs.createObserver,
-      scheduleMicrotask: sched.scheduleMicrotask,
-      shouldDeferMeasurement: () => defer,
-    })
-
-    m.attachRow('r1', el)
-    expect(measure).not.toHaveBeenCalled()
-    expect(obs.observed.has(el)).toBe(true)
-    height = 140
-    obs.fire([el])
-    sched.run()
-    expect(measure).not.toHaveBeenCalled()
-
-    defer = false
-    expect(m.flushDeferredMeasurements()).toBe(true)
-    expect(measure).toHaveBeenCalledTimes(1)
-    expect(measure).toHaveBeenCalledWith('r1', 140)
-  })
-
   it('coalesces resize ticks into ONE scheduled flush that commits each measurement', () => {
     const measure = vi.fn(() => true)
     const obs = fakeObserver()
@@ -685,7 +628,6 @@ describe('createRowMeasurer', () => {
   })
 
   it('measures a reused element when it is reattached under a different row id', () => {
-    let defer = false
     const measure = vi.fn(() => true)
     const obs = fakeObserver()
     const m = createRowMeasurer({
@@ -693,18 +635,36 @@ describe('createRowMeasurer', () => {
       mountedIds: new Set(),
       createObserver: obs.createObserver,
       currentMeasurementKey: () => 'same-key',
-      shouldDeferMeasurement: () => defer,
     })
     const el = fakeEl(100)
 
     m.attachRow('old-row', el)
     measure.mockClear()
-    defer = true
     m.attachRow('new-row', el)
 
-    defer = false
-    expect(m.flushDeferredMeasurements()).toBe(true)
+    // The same height under the same key, but another row: the attach reads it again.
+    expect(measure).toHaveBeenCalledOnce()
     expect(measure).toHaveBeenCalledWith('new-row', 100)
+  })
+
+  it('commits a zero height at once', () => {
+    const measure = vi.fn(() => true)
+    const element = {
+      ...fakeRowEvents(),
+      isConnected: true,
+      getBoundingClientRect: () => new DOMRect(0, 0, 400, 0),
+      querySelectorAll: () => [],
+    } as unknown as HTMLElement
+    const m = createRowMeasurer({
+      measure,
+      mountedIds: new Set(),
+      createObserver: () => undefined,
+    })
+
+    m.attachRow('empty', element)
+
+    expect(measure).toHaveBeenCalledOnce()
+    expect(measure).toHaveBeenCalledWith('empty', 0)
   })
 
   it('re-commits unchanged DOM heights when the row measurement key changed', () => {
@@ -1024,6 +984,94 @@ describe('createRowMeasurer', () => {
     m.dispose() // must clear flushScheduled, else scheduleFlush can never re-arm
     obs.fire([a])
     expect(sched.calls).toBe(2)
+  })
+
+  describe('elementOf and hasUncommittedHeight', () => {
+    /** A measurer with one row `a` attached, whose rectangle the test resizes. */
+    function attachedRow() {
+      const measure = vi.fn(() => true)
+      const obs = fakeObserver()
+      const sched = manualScheduler()
+      const m = createRowMeasurer({
+        measure,
+        mountedIds: new Set(),
+        createObserver: obs.createObserver,
+        scheduleMicrotask: sched.scheduleMicrotask,
+      })
+      const row = { height: 100, connected: true }
+      const el = {
+        ...fakeRowEvents(),
+        get isConnected() {
+          return row.connected
+        },
+        getBoundingClientRect: () => ({ height: row.height }),
+      } as unknown as HTMLElement
+      m.attachRow('a', el)
+      return { m, el, row, measure, obs, sched }
+    }
+
+    it('returns the attached element of a row', () => {
+      const { m, el } = attachedRow()
+      expect(m.elementOf('a')).toBe(el)
+    })
+
+    it('returns undefined after the detach and for an unknown id', () => {
+      const { m, el } = attachedRow()
+      m.detachRow(el)
+      expect(m.elementOf('a')).toBeUndefined()
+      expect(m.elementOf('never-attached')).toBeUndefined()
+    })
+
+    it('reports no uncommitted height after a commit', () => {
+      const { m, measure } = attachedRow()
+      expect(m.hasUncommittedHeight('a')).toBe(false)
+      expect(measure).toHaveBeenCalledOnce()
+      expect(measure).toHaveBeenCalledWith('a', 100)
+    })
+
+    it('reports an uncommitted height when the element changed', () => {
+      const { m, row, measure } = attachedRow()
+      row.height = 130
+      expect(m.hasUncommittedHeight('a')).toBe(true)
+      // The read commits nothing and records nothing: it reports the same answer again.
+      expect(m.hasUncommittedHeight('a')).toBe(true)
+      expect(measure).toHaveBeenCalledOnce()
+    })
+
+    it('reports none for a change below the jitter threshold', () => {
+      const { m, row } = attachedRow()
+      row.height = 100.3
+      expect(m.hasUncommittedHeight('a')).toBe(false)
+    })
+
+    it('reports none after the flush committed the change', () => {
+      const { m, el, row, measure, obs, sched } = attachedRow()
+      row.height = 130
+      obs.fire([el])
+      sched.run()
+      expect(measure).toHaveBeenLastCalledWith('a', 130)
+      expect(m.hasUncommittedHeight('a')).toBe(false)
+    })
+
+    it('reports none for an unknown id and for a detached element', () => {
+      const { m, row } = attachedRow()
+      expect(m.hasUncommittedHeight('never-attached')).toBe(false)
+      row.height = 130
+      row.connected = false
+      expect(m.hasUncommittedHeight('a')).toBe(false)
+    })
+
+    it('reports none for a row copy that waits for content', () => {
+      const measure = vi.fn(() => true)
+      const m = createRowMeasurer({
+        measure,
+        mountedIds: new Set(),
+        createObserver: fakeObserver().createObserver,
+      })
+      const { dispose } = attachWithReadiness(m, 'a', fakeEl(100), true)
+      expect(m.hasUncommittedHeight('a')).toBe(false)
+      dispose()
+    })
   })
 
   it('still measures immediately when no observer is available (non-DOM env)', () => {

@@ -1,21 +1,28 @@
 import type { ChatScrollState, ScrollContext } from './useChatScroll'
-import { cannotLeaveStickyBand, clampScrollTop, isNearTopBand } from './chatScrollGeometry'
+import type { ScrollAnchor } from '~/stores/chatTypes'
 
 /**
  * The hidden->visible context captured once at the top of handleResize (before
- * browser scroll-restoration can corrupt atBottom) and handed whole to the three
+ * browser scroll-restoration can move the view) and handed whole to the three
  * resize-outcome helpers, so a savedScroll / savedAtBottom can't disagree with the
  * wasHidden they were derived from.
  */
 interface ResizeContext {
   wasHidden: boolean
   savedScroll: ChatScrollState | undefined
+  /** The reader's request for the live tail at the ResizeObserver callback. */
   savedAtBottom: boolean
+  /**
+   * The anchor of the reader at the ResizeObserver callback. A scroll event of the browser
+   * can arrive between the callback and the flush, and the scroll handler then replaces
+   * the anchor of the hook with the position of that event.
+   */
+  anchor: ScrollAnchor | null
 }
 
 /**
  * Saved-viewport restore + resize handling for useChatScroll, extracted as a
- * factory (mirroring createStickyBottom / createFlingSettle / createScrollBufferFiller)
+ * factory (mirroring createStickyBottom / createScrollBufferFiller)
  * so the three-strategy restore priority (anchor / raw-top / clamp-to-top) and the
  * resize-outcome routing (restore / stick / recheck) form one named unit with an
  * explicit dependency surface. It owns only the resize bookkeeping (prevClientHeight,
@@ -24,18 +31,18 @@ interface ResizeContext {
  */
 export function createViewportRestore(ctx: ScrollContext, extras: {
   // High-level scroll actions declared later in the hook than the shared context.
-  checkAtBottom: () => void
-  repinToAnchor: () => void
   stickToBottom: () => boolean
   forceScrollToBottom: () => void
   /** Clear the persisted saved-viewport scroll once a restore has consumed it. */
   clearSavedViewportScroll: () => void
   /** The persisted saved-viewport scroll for a hidden->visible restore. */
   savedViewportScroll: () => ChatScrollState | undefined
-  /** Set the one-shot "don't auto-load older after a restore" flag -- the hook owns it (the buffer filler reads it). */
-  setSuppressOlder: (v: boolean) => void
-  /** Re-seat the scroll-direction baseline after a resize clamps scrollTop. */
-  setLastScrollTopForDir: (v: number) => void
+  /** Place the view back at `anchor` for a reader who does not follow the tail. */
+  restoreAnchor: (anchor: ScrollAnchor | null) => void
+  /** The anchor of the reader's last position. */
+  lastAnchor: () => ScrollAnchor | null
+  /** The reader's request for the live tail: the `following` flag of the hook. */
+  followRequested: () => boolean
   /**
    * Re-arm the geometry-derived memos after a resize settles the viewport. A resize can
    * change edge proximity (a keyboard/editor open clamps scrollTop flush to an edge)
@@ -49,44 +56,16 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
   // The pending resize-handling rAF, cancelled on the next resize and on dispose.
   let resizeRafId = 0
 
-  // Arm the one-shot older-load suppression iff a restore LANDED in the top half of
-  // the viewport, so older history loads only on an explicit scroll-to-top -- not as
-  // a side effect of the restore's own refresh or the next passive scroll. Takes the
-  // landed scroll position (read back AFTER the programmatic write + clamp), NOT the
-  // pre-clamp anchor estimate: an over-estimated `top` that lands near the top after
-  // browser clamping / a post-restore measurement shrink would otherwise skip arming
-  // and paginate.
-  const armSuppressIfNearTop = (pos: number) => {
-    const el = ctx.getEl()
-    if (el && el.clientHeight > 0 && isNearTopBand(el, pos))
-      extras.setSuppressOlder(true)
-  }
-
   // Strategy 1: restore by resolving the saved ROW ANCHOR against the offset map.
   // Returns false (try the next strategy) when no anchor was saved or it no longer
-  // resolves to a scroll position.
-  const restoreFromAnchor = (el: HTMLDivElement, savedScroll: ChatScrollState): boolean => {
+  // resolves to a scroll position. The placement rebases first, so the anchor resolves
+  // under the layout shift that the write lands in.
+  const restoreFromAnchor = (savedScroll: ChatScrollState): boolean => {
     const savedAnchor = savedScroll.anchor ?? null
-    const top = savedAnchor
-      ? ctx.virt.scrollTopForAnchor(savedAnchor)
-      : null
-    if (top == null)
+    if (savedAnchor === null)
       return false
-    ctx.writeScrollTop(top, 'viewport-restore-anchor')
-    // Capture from the LANDED scrollTop (post browser-clamp), not the pre-clamp
-    // `top`, so repinToAnchor's stale-anchor check measures movement from where
-    // the viewport actually is, not an unreachable target in a shrunk window.
-    ctx.setAnchor(savedAnchor, el.scrollTop)
-    ctx.refreshViewport()
-    ctx.setAtBottom(false)
-    // A restore that lands NEAR THE TOP would otherwise let the next passive scroll
-    // event (or this restore's own refresh) fire loadOlderMessages as a side
-    // effect. Arm the one-shot suppression from the LANDED scrollTop (post write +
-    // refresh + browser clamp), not the pre-clamp `top` estimate, so a near-top
-    // landing always arms even when `top` over-estimated above half a viewport.
-    // Only near-top restores need it; a mid/bottom restore keeps paginating
-    // normally (the flag gates BOTH edges).
-    armSuppressIfNearTop(el.scrollTop)
+    if (ctx.placeAt(() => ctx.virt.scrollTopForAnchor(savedAnchor)) === null)
+      return false
     extras.clearSavedViewportScroll()
     return true
   }
@@ -97,16 +76,12 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
   // STILL all-hidden: if virtual rows appeared between save and restore
   // (totalHeight > 0), the spacer now sits where the raw offset pointed, so that
   // pixel no longer maps to the saved content -- return false to fall through to
-  // the clamp-to-top best-effort rather than landing on the wrong rows. Clamped to
-  // the scrollable range; arms auto-load-older suppression near top.
-  const restoreFromRawTop = (el: HTMLDivElement, savedScroll: ChatScrollState): boolean => {
-    if (savedScroll.rawScrollTop == null || ctx.virt.totalHeight() > 0)
+  // the clamp-to-top best-effort rather than landing on the wrong rows.
+  const restoreFromRawTop = (savedScroll: ChatScrollState): boolean => {
+    const rawScrollTop = savedScroll.rawScrollTop
+    if (rawScrollTop == null || ctx.virt.totalHeight() > 0)
       return false
-    const clamped = clampScrollTop(el, savedScroll.rawScrollTop)
-    ctx.writeScrollTop(clamped, 'viewport-restore-raw-top')
-    armSuppressIfNearTop(el.scrollTop)
-    ctx.refreshViewport()
-    ctx.setAtBottom(false)
+    ctx.placeAt(() => rawScrollTop)
     return true
   }
 
@@ -116,56 +91,27 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
   // snap below. A reader scrolled UP into older history whose rows were trimmed as the
   // window advanced lands on the oldest loaded row (the nearest survivor), not at the
   // unrelated live bottom. Returns false (fall through) when the anchor has no seq or
-  // no surviving server row resolves. Re-captures a fresh anchor at the landed row so
-  // a later re-pin tracks real content; arms the near-top older-load suppression.
-  const restoreNearAnchor = (el: HTMLDivElement, savedScroll: ChatScrollState): boolean => {
+  // no surviving server row resolves.
+  const restoreNearAnchor = (savedScroll: ChatScrollState): boolean => {
     const savedAnchor = savedScroll.anchor ?? null
-    const top = savedAnchor
-      ? ctx.virt.scrollTopNearAnchor(savedAnchor)
-      : null
-    if (top == null)
+    if (savedAnchor === null)
       return false
-    ctx.writeScrollTop(top, 'viewport-restore-near-anchor')
-    ctx.setAnchor(ctx.virt.anchorAt(el.scrollTop), el.scrollTop)
-    ctx.refreshViewport()
-    ctx.setAtBottom(false)
-    armSuppressIfNearTop(el.scrollTop)
-    return true
+    return ctx.placeAt(() => ctx.virt.scrollTopNearAnchor(savedAnchor)) !== null
   }
 
-  // Strategy 3: nothing to anchor to and no usable saved offset -- clamp to the top
-  // as a best-effort fallback (and suppress auto-load-older, as a top landing does).
+  // Strategy 3: nothing to anchor to and no usable saved offset -- place at the top as a
+  // best-effort fallback.
   const restoreToTop = () => {
-    // Write through the programmatic guard (not a raw el.scrollTop = 0) so the
-    // echoing scroll event is recognized as our own. A raw write from a non-zero
-    // position emits a genuine scroll event that handleScroll treats as a user
-    // scroll -- poisoning the velocity tracker with a phantom fling, capturing a
-    // spurious anchor/lastScrollDir, and deferring the next re-pin into flingSettle.
-    // Mirrors the sibling restoreFromAnchor/restoreFromRawTop strategies.
-    ctx.writeScrollTop(0, 'viewport-restore-top')
-    extras.setSuppressOlder(true)
-    ctx.refreshViewport()
-    ctx.setAtBottom(false)
+    ctx.placeAt(() => 0)
   }
 
   const restoreSavedViewport = (savedScroll: ChatScrollState) => {
-    const el = ctx.getEl()
-    if (!el)
+    if (!ctx.getEl())
       return
-    // Recompute the one-shot older-load suppression from THIS restore's landing
-    // position alone: clear any prior arming up front so each restore branch only
-    // has to set it true where its landing is near the top. A near-top restore
-    // arms the flag and it survives (cleared otherwise only by an explicit
-    // scroll-to-top) -- and this path early-returns before handleResize's own
-    // `= false`, so without this reset a mid/bottom restore would keep whatever
-    // the flag last held instead of "keep paginating normally" as its branches
-    // below intend. Self-contained here rather than relying on a prior
-    // hidden->visible transition having cleared it.
-    extras.setSuppressOlder(false)
-    // Restore strategies in priority order, each owning its write-then-settle
-    // epilogue; restoreFromAnchor clears the saved viewport itself, the others clear
-    // it here before falling through.
-    if (restoreFromAnchor(el, savedScroll))
+    // Restore strategies in priority order, each owning its placement;
+    // restoreFromAnchor clears the saved viewport itself, the others clear it here
+    // before falling through.
+    if (restoreFromAnchor(savedScroll))
       return
     extras.clearSavedViewportScroll()
     // An all-hidden non-bottom save carries a raw scroll offset but no resolvable
@@ -177,13 +123,13 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
     // while the window is still all-hidden (totalHeight 0), exactly where the raw
     // offset still maps to the saved content; otherwise it declines and the
     // tail-snap below stands as the anchor-less fallback.
-    if (restoreFromRawTop(el, savedScroll))
+    if (restoreFromRawTop(savedScroll))
       return
     // The anchor row was trimmed away (restoreFromAnchor declined) and virtual rows are
     // present (restoreFromRawTop declined): recover to the NEAREST surviving row rather
     // than snapping to the live tail, which would yank a scrolled-up reader to the
     // bottom. Falls through only when the anchor can't be ordered (no seq / empty).
-    if (restoreNearAnchor(el, savedScroll))
+    if (restoreNearAnchor(savedScroll))
       return
     if (savedScroll.hasMoreNewer) {
       extras.forceScrollToBottom()
@@ -202,9 +148,10 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
   }
 
   // Stick to the bottom on any of: hidden->visible with a saved at-bottom scroll
-  // (clear the save), hidden->visible without a saved scroll but atBottom captured
-  // pre-RO, or an already-visible viewport resize (editor/keyboard) while atBottom.
-  // (Content-height growth is handled by the totalHeight effect, not here.) A
+  // (clear the save), hidden->visible without a saved scroll but a request for the tail
+  // captured pre-RO, or an already-visible viewport resize (editor/keyboard) while the
+  // reader requests the tail. (Content-height growth is handled by the geometry effect,
+  // not here.) A
   // restored at-bottom view windowed away from the live tail (hasMoreNewer) is NOT
   // really at the bottom -- the in-memory tail isn't the live tail -- so re-fetch
   // the latest page and snap to the true tail (forceScrollToBottom jumps when
@@ -226,70 +173,43 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
   }
 
   // Neither restore nor stick (an already-visible resize, or a hidden->visible show
-  // that wasn't at the bottom and had no saved non-bottom scroll): re-check atBottom
-  // and re-seat geometry for the resized viewport. A prepend (older-history fetch /
-  // hidden-page advancer) that landed while HIDDEN bumped totalHeight but
-  // repinToAnchor bailed then (clientHeight 0), so re-resolve the anchor against the
-  // grown offset map on show (no-op while following the tail -- the stick branch
-  // owns that -- and when no meaningful move is needed, per repinToAnchor's delta
-  // guard). refreshViewport recomputes the rendered slice (a taller pane reveals
-  // rows below the old slice; safe to mount synchronously -- we're in a rAF, outside
-  // RO delivery). Finally re-seat BOTH scroll baselines to the post-resize
-  // scrollTop: a viewport shrink clamps scrollTop down without a write here (unlike
-  // the restore/stick branches, whose programmatic writes refresh the baselines via
-  // their echo). A stale DIRECTION baseline would make the next user scroll infer
-  // the wrong direction and page the wrong way; a stale VELOCITY baseline would make
-  // it measure the whole clamp delta (e.g. 5000 -> 3000 on a keyboard open) as one
-  // huge sample and FALSE-fling, deferring re-pin corrections into flingSettle where
-  // they land as a late jump. syncToProgrammatic advances lastPos without scoring a
-  // velocity, exactly as a programmatic write would.
+  // that wasn't at the bottom and had no saved non-bottom scroll). A geometry change that
+  // landed while the pane was HIDDEN moved nothing (the layout shift is 0 while hidden),
+  // and the browser can move `scrollTop` while the pane is hidden, so a show puts the
+  // reader back at the anchor captured in the ResizeObserver callback. Then record the
+  // position as an own write: it re-seats the direction and velocity baselines (a viewport
+  // shrink clamps scrollTop with no write, and a stale baseline would read that clamp as
+  // the reader's move), runs the position check after the restore, and recomputes the
+  // rendered slice (a taller pane reveals rows below the old slice; safe to mount
+  // synchronously -- we're in a rAF, outside RO delivery).
   const recheckOnResize = (rc: ResizeContext) => {
-    extras.checkAtBottom()
     if (rc.wasHidden)
-      extras.repinToAnchor()
-    ctx.refreshViewport()
-    const el = ctx.getEl()
-    if (el) {
-      extras.setLastScrollTopForDir(el.scrollTop)
-      ctx.syncVelocityToProgrammatic(el.scrollTop)
-    }
+      extras.restoreAnchor(rc.anchor)
+    ctx.syncAfterWrite()
   }
 
-  // Shared tail for both restore entry points (the resize flush and restoreOnMount):
-  // once a restore/stick has PLACED the viewport, (1) drop the near-top older-load
-  // suppression if the content now FITS -- or shrank to a barely-scrollable page the
-  // reader can't scroll out of -- since such a viewport emits no scroll events the
-  // suppression's deliberate-scroll-to-top clear could ever fire, so an armed suppression
-  // would otherwise wedge older-history pre-fetch off forever (the flag is cleared
-  // elsewhere only by a deliberate scroll into the top band, and with everything visible a
-  // prepend re-pins around a stable anchor rather than yanking the reader); and (2) re-arm
-  // the geometry-derived memos, since a programmatic placement / edge clamp fires no scroll
-  // event they could react to. The bound is the STICKY BAND, not 0: with 0 < maxScrollTop
-  // <= the band, every scroll position is inside the tail's sticky band, so the fill can
-  // never be reached -- the same wedge suppressOlderPrefetchAtLiveTail avoids with this
-  // bound. Reads the element fresh so a flush that detached it between placement and here
-  // is a no-op.
+  // Shared tail for both restore entry points (the resize flush and restoreOnMount): once
+  // a restore/stick has PLACED the viewport, re-arm the geometry-derived memos, since a
+  // programmatic placement / edge clamp fires no scroll event they could react to.
   const settleGeometryAfterPlacement = () => {
-    const el = ctx.getEl()
-    if (el && cannotLeaveStickyBand(el))
-      extras.setSuppressOlder(false)
     extras.onGeometrySettled()
   }
 
   const handleResize = () => {
     cancelAnimationFrame(resizeRafId)
-    // Capture hidden→visible state and atBottom NOW (in the ResizeObserver
-    // callback), before browser scroll-restoration events can fire and corrupt
-    // the atBottom signal.
+    // Capture hidden→visible state, the request for the tail, and the reader's anchor
+    // NOW (in the ResizeObserver callback), before browser scroll-restoration events can
+    // fire and replace the anchor.
     const el = ctx.getEl()
     const ch = el?.clientHeight ?? 0
     const wasHidden = prevClientHeight === 0 && ch > 0
     const rc: ResizeContext = {
       wasHidden,
-      savedAtBottom: ctx.atBottom(),
+      savedAtBottom: extras.followRequested(),
       savedScroll: wasHidden
         ? extras.savedViewportScroll()
         : undefined,
+      anchor: extras.lastAnchor(),
     }
     const flush = () => {
       if (!ctx.getEl())
@@ -307,15 +227,7 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
         return
       }
       prevClientHeight = ch
-      // Three mutually-exclusive outcomes in priority order. NOTE: the post-restore
-      // older-load suppression (suppressAutoLoadOlderAfterRestore) is deliberately NOT
-      // reset on a SCROLLABLE resize here. It is a one-shot meant to survive incidental
-      // resizes (editor grow, keyboard) and passive scroll events, lasting until the
-      // user takes DELIBERATE control by scrolling to the very top
-      // (tryLoadOlderOnExplicitTopIntent clears it there, with its own loadOlder).
-      // Clearing it on every non-restore resize wiped a near-top restore's arming
-      // before the user had scrolled, re-opening the auto-older-load it was set to
-      // prevent.
+      // Three mutually-exclusive outcomes in priority order.
       if (!tryRestoreHidden(rc) && !tryStickOnShow(rc))
         recheckOnResize(rc)
       settleGeometryAfterPlacement()
@@ -345,14 +257,20 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
     const savedScroll = extras.savedViewportScroll()
     if (!savedScroll)
       return
-    // savedAtBottom is FALSE, not ctx.atBottom(): the resize path captures the live
-    // pre-RO atBottom because a resize with no saved scroll must still re-stick an
-    // at-bottom pane, but a mount always HAS a saved scroll (early return above), so
-    // the outcome must derive solely from savedScroll.atBottom. Feeding the fresh
-    // signal (which seeds true at mount) would make tryStickOnShow's `savedAtBottom ||
-    // ...` first clause always true -- harmless only because tryRestoreHidden already
-    // claims every non-bottom save, but a latent trap if that routing ever changes.
-    const rc: ResizeContext = { wasHidden: true, savedScroll, savedAtBottom: false }
+    // savedAtBottom is FALSE, not the request of the hook: the resize path captures the
+    // live request because a resize with no saved scroll must still re-stick a pane that
+    // follows the tail, but a mount always HAS a saved scroll (early return above), so
+    // the outcome must derive solely from savedScroll.atBottom. Feeding the fresh request
+    // (which starts true at a mount on the live tail) would make tryStickOnShow's
+    // `savedAtBottom || ...` first clause always true -- harmless only because
+    // tryRestoreHidden already claims every non-bottom save, but a latent trap if that
+    // routing ever changes.
+    const rc: ResizeContext = {
+      wasHidden: true,
+      savedScroll,
+      savedAtBottom: false,
+      anchor: null,
+    }
     // tryRestoreHidden owns every non-bottom save; an at-bottom save always takes
     // tryStickOnShow's wasHidden branch (stick, or jump-to-latest when the saved
     // window was paged away from the live tail).

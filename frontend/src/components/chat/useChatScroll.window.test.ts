@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 
 import { FLING_OVERSCAN_HARD_CAP_PX, flingOverscanCapPx, useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, virtualizerNoOps } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, mountScrollHarness, virtualizerNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -213,7 +213,7 @@ describe('useChatScroll windowing trim', () => {
       seq: BigInt(i + 1),
     } as AgentChatMessage))
 
-  it('trims the oldest end while following the tail even after the geometry re-pin advanced the sticky record', () =>
+  it('trims the oldest end while following the tail even after the geometry effect followed the growth', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
         try {
@@ -239,15 +239,14 @@ describe('useChatScroll windowing trim', () => {
           await Promise.resolve()
           await Promise.resolve()
 
-          // Establish the sticky record at the current bottom while following.
+          // Follow the tail at the current bottom.
           hook.forceScrollToBottom()
           expect(hook.atBottom()).toBe(true)
 
           // A new tail message arrives (length crosses the cap) AND the spacer
-          // grows. The geometry re-pin effect is created before the auto-scroll
-          // effect, so it runs first: it re-sticks to the new bottom and advances
-          // stickyScrollHeight to the grown value. The auto-scroll effect then
-          // sees scrollHeight === stickyScrollHeight. The trim must STILL fire --
+          // grows. The geometry effect is created before the auto-scroll effect, so
+          // it runs first: it re-sticks to the new bottom. The auto-scroll effect then
+          // sees the view at the bottom already. The trim must STILL fire --
           // it's the only window cap while following the tail (pagination trims
           // don't run then), so gating it on the height delta would let the
           // in-memory set grow unbounded during streaming.
@@ -625,4 +624,120 @@ describe('useChatScroll windowing trim', () => {
         }
       })
     }))
+})
+
+describe('useChatScroll layout coordinates', () => {
+  it('uses the clamped position during rubber-band overscroll', () => {
+    const h = mountScrollHarness()
+    h.updateViewport.mockClear()
+    h.div.setRawScrollTop(-40)
+    h.hook.handlers.onScroll()
+    expect(h.updateViewport).toHaveBeenCalled()
+    expect(h.updateViewport.mock.calls.at(-1)?.[0]).toBe(0)
+    h.dispose()
+  })
+
+  it('passes the content above the viewport to the trim when the layout is shifted', () => {
+    // 50 messages, one per row, with ids of the rows, so the trim resolves its anchor.
+    const rows = (count: number) => Array.from({ length: count }, (_, i) => ({
+      id: `r${i}`,
+      seq: BigInt(i + 1),
+    } as AgentChatMessage))
+    const trimCount = (opts: { shifted: boolean }) => {
+      const onTrimOldMessages = vi.fn()
+      // Row 0 is 600px in both: changeAbove(500) grows it, or the heights state it.
+      const h = mountScrollHarness({
+        heights: opts.shifted
+          ? Array.from<number>({ length: 50 }).fill(100)
+          : [
+              600,
+              ...Array.from<number>({ length: 49 }).fill(100),
+            ],
+        messages: rows(50),
+        hookOptions: { onTrimOldMessages },
+      })
+      if (opts.shifted) {
+        h.scrollTo(2000)
+        h.scrollTo(1990)
+        h.changeAbove(500)
+        expect(h.virt.layoutShift()).toBe(-500)
+      }
+      else {
+        h.scrollTo(2490)
+      }
+      h.setMessages(rows(51))
+      const count = onTrimOldMessages.mock.calls.at(-1)?.[0] as number
+      h.dispose()
+      return count
+    }
+    const unshifted = trimCount({ shifted: false })
+    expect(unshifted).toBeGreaterThan(0)
+    expect(trimCount({ shifted: true })).toBe(unshifted)
+  })
+})
+
+describe('useChatScroll fast scroll', () => {
+  /** Three scroll events 16ms apart, each `stepPx` up from the bottom. */
+  const scrollSteps = (h: ReturnType<typeof mountScrollHarness>, stepPx: number) => {
+    let top = 4500
+    for (let i = 0; i < 3; i++) {
+      vi.advanceTimersByTime(16)
+      top -= stepPx
+      h.div.setScrollTop(top)
+      h.hook.handlers.onScroll()
+    }
+  }
+
+  it('flags a fast scroll at 1 px/ms', () => {
+    const h = mountScrollHarness()
+    h.setFastScrollActive.mockClear()
+    scrollSteps(h, 32)
+    expect(h.setFastScrollActive).toHaveBeenCalledWith(true)
+    h.dispose()
+  })
+
+  it('does not flag a slow scroll', () => {
+    const h = mountScrollHarness()
+    h.setFastScrollActive.mockClear()
+    scrollSteps(h, 4)
+    expect(h.setFastScrollActive).not.toHaveBeenCalledWith(true)
+    h.dispose()
+  })
+
+  it('does not flag the event of an own write', async () => {
+    const h = mountScrollHarness()
+    await h.anchoredAt(500)
+    h.setFastScrollActive.mockClear()
+    h.hook.forceScrollToBottom()
+    h.hook.handlers.onScroll()
+    expect(h.setFastScrollActive).not.toHaveBeenCalledWith(true)
+    h.dispose()
+  })
+
+  it('clears the flag when a move slows below the fast speed', () => {
+    const h = mountScrollHarness()
+    h.setFastScrollActive.mockClear()
+    scrollSteps(h, 32)
+    expect(h.setFastScrollActive).toHaveBeenLastCalledWith(true)
+
+    // The tail of a fling: 4px in 16ms, before the idle time ends.
+    vi.advanceTimersByTime(16)
+    h.div.setScrollTop(h.div.getScrollTop() - 4)
+    h.hook.handlers.onScroll()
+
+    expect(h.setFastScrollActive).toHaveBeenLastCalledWith(false)
+    h.dispose()
+  })
+
+  it('clears the flag after the idle time', () => {
+    const h = mountScrollHarness()
+    h.setFastScrollActive.mockClear()
+    scrollSteps(h, 32)
+    // The scroll stops while still fast: only the idle time ends the flag.
+    vi.advanceTimersByTime(149)
+    expect(h.setFastScrollActive).toHaveBeenLastCalledWith(true)
+    vi.advanceTimersByTime(1)
+    expect(h.setFastScrollActive).toHaveBeenLastCalledWith(false)
+    h.dispose()
+  })
 })

@@ -11,10 +11,8 @@ function scrollElement(args: { scrollTop?: number, scrollHeight?: number, client
 }
 
 describe('createChatPaginationPolicy', () => {
-  it('loads older history only for explicit top intent and preserves the viewport', () => {
+  it('loads older history only for explicit top intent', () => {
     createRoot((dispose) => {
-      const preserve = vi.fn()
-      const clearRestoreSuppression = vi.fn()
       const loadOlder = vi.fn()
       const policy = createChatPaginationPolicy({
         getEl: () => scrollElement({ scrollTop: 0 }),
@@ -25,8 +23,6 @@ describe('createChatPaginationPolicy', () => {
         geomVersion: () => 0,
         isAtTopEdge: () => true,
         isAtBottomEdge: () => false,
-        preserveBrowsingPosition: preserve,
-        clearRestoreSuppression,
         onLoadOlder: loadOlder,
         onLoadNewer: vi.fn(),
         isAtBottom: () => false,
@@ -36,8 +32,6 @@ describe('createChatPaginationPolicy', () => {
       })
 
       expect(policy.tryLoadOlderOnExplicitTopIntent()).toBe(true)
-      expect(preserve).toHaveBeenCalledOnce()
-      expect(clearRestoreSuppression).toHaveBeenCalledOnce()
       expect(loadOlder).toHaveBeenCalledOnce()
       dispose()
     })
@@ -56,8 +50,6 @@ describe('createChatPaginationPolicy', () => {
         geomVersion: () => 0,
         isAtTopEdge: () => true,
         isAtBottomEdge: () => true,
-        preserveBrowsingPosition: vi.fn(),
-        clearRestoreSuppression: vi.fn(),
         onLoadOlder: loadOlder,
         onLoadNewer: loadNewer,
         isAtBottom: () => false,
@@ -86,8 +78,6 @@ describe('createChatPaginationPolicy', () => {
         geomVersion: () => 0,
         isAtTopEdge: () => false,
         isAtBottomEdge: () => true,
-        preserveBrowsingPosition: vi.fn(),
-        clearRestoreSuppression: vi.fn(),
         onLoadOlder: vi.fn(),
         onLoadNewer: loadNewer,
         isAtBottom: () => false,
@@ -117,8 +107,6 @@ describe('createChatPaginationPolicy', () => {
         geomVersion: geometry,
         isAtTopEdge: () => atTop,
         isAtBottomEdge: () => false,
-        preserveBrowsingPosition: vi.fn(),
-        clearRestoreSuppression: vi.fn(),
         onLoadOlder: vi.fn(),
         onLoadNewer: vi.fn(),
         isAtBottom: () => false,
@@ -149,8 +137,6 @@ describe('createChatPaginationPolicy', () => {
         geomVersion: () => 0,
         isAtTopEdge: () => false,
         isAtBottomEdge: () => true,
-        preserveBrowsingPosition: vi.fn(),
-        clearRestoreSuppression: vi.fn(),
         onLoadOlder: vi.fn(),
         onLoadNewer: vi.fn(),
         isAtBottom: () => true,
@@ -160,7 +146,8 @@ describe('createChatPaginationPolicy', () => {
       })
 
       expect(policy.suppressOlderPrefetchAtLiveTail()).toBe(true)
-      element = scrollElement({ scrollHeight: 220, clientHeight: 200 })
+      // A range of 2px cannot be scrolled: the page still needs older rows to become scrollable.
+      element = scrollElement({ scrollHeight: 202, clientHeight: 200 })
       expect(policy.suppressOlderPrefetchAtLiveTail()).toBe(false)
       dispose()
     })
@@ -177,8 +164,6 @@ describe('createChatPaginationPolicy', () => {
         geomVersion: () => 0,
         isAtTopEdge: () => false,
         isAtBottomEdge: () => false,
-        preserveBrowsingPosition: vi.fn(),
-        clearRestoreSuppression: vi.fn(),
         onLoadOlder: vi.fn(),
         onLoadNewer: vi.fn(),
         isAtBottom: () => false,

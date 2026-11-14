@@ -5,7 +5,7 @@ import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, virtualizerNoOps } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, mountScrollHarness, virtualizerNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -334,6 +334,33 @@ describe('useChatScroll jump to seq', () => {
         dispose()
       }))
 
+    it('cancels a pending landing on a touch move', async () => {
+      let dispose!: () => void
+      const { hook, signals, div } = createRoot((d) => {
+        dispose = d
+        return seekWithHeldFetch()
+      })
+      void hook.jumpToSeq(5n)
+      expect(signals[0]?.aborted).toBe(false)
+      const before = div.getScrollTop()
+
+      hook.handlers.onTouchStart({
+        touches: [
+          { clientY: 10 },
+        ],
+      } as unknown as TouchEvent)
+      hook.handlers.onTouchMove({
+        touches: [
+          { clientY: 40 },
+        ],
+      } as unknown as TouchEvent)
+
+      expect(signals[0]?.aborted).toBe(true)
+      await Promise.resolve()
+      expect(div.getScrollTop()).toBe(before)
+      dispose()
+    })
+
     it('aborts a pending fetch when an IN-WINDOW jump supersedes it', () =>
       createRoot((dispose) => {
         const { hook, signals } = seekWithHeldFetch()
@@ -366,4 +393,26 @@ describe('useChatScroll jump to seq', () => {
       expect(div.getScrollTop()).toBe(4500)
       dispose()
     }))
+
+  it('resolves the landing row after the rebase', async () => {
+    // One message per row of the harness, with the ids of the rows: row 20 has seq 21.
+    const messages = Array.from({ length: 50 }, (_, i) => ({
+      id: `r${i}`,
+      seq: BigInt(i + 1),
+      source: MessageSource.USER,
+    } as AgentChatMessage))
+    const h = mountScrollHarness({ messages })
+    h.scrollTo(2000)
+    h.scrollTo(1990)
+    h.changeAbove(300)
+    expect(h.rebaseCount()).toBe(0)
+
+    expect(await h.hook.jumpToSeq(21n)).toBe(true)
+
+    expect(h.rebaseCount()).toBe(1)
+    expect(h.virt.layoutShift()).toBe(0)
+    // The top of row 20 is 2300 after the change, and the landing keeps 8px above it.
+    expect(h.div.getScrollTop()).toBe(2292)
+    h.dispose()
+  })
 })

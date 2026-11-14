@@ -18,6 +18,7 @@ import { createEffect, createMemo, createSignal, createUniqueId, For, Match, on,
 import { Icon } from '~/components/common/Icon'
 import { SelectionQuotePopover } from '~/components/common/SelectionQuotePopover'
 import { Spinner } from '~/components/common/Spinner'
+import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { formatChatQuote } from '~/lib/quoteUtils'
@@ -260,17 +261,15 @@ export const ChatView: Component<ChatViewProps> = (props) => {
 
   // The virtualizer's live mounted-row set, assigned once `virt` is created below.
   // The UI-state cap reads it lazily (at toggle time, always after first render) to
-  // protect on-screen rows from eviction -- mirrors how `flingSettle` is wired in
-  // useChatScroll, so no forward reference to a not-yet-declared const.
+  // protect on-screen rows from eviction -- a lazy-wired `let`, so no forward reference
+  // to a not-yet-declared const.
   let mountedRowIds: ReadonlySet<string> = new Set()
 
-  // Pin a row's top before a user toggle changes its height, so the toggled row stays
-  // visually stationary instead of being scrolled by the viewport-midpoint re-pin.
-  // Assigned once the scroll hook (which owns the anchor engine) is created below; a
-  // no-op until then, and only invoked on user clicks (well after first render), so the
-  // forward reference is never read before assignment -- same lazy-wire pattern as
-  // mountedRowIds. See useChatScroll.anchorRowForResize.
-  let anchorRowForResize: (messageId: string) => void = () => {}
+  // Whether the reader follows the live tail: the virtualizer keeps the bottom of the
+  // content in place across a geometry change then. Assigned once the scroll hook (which
+  // owns follow mode) is created below -- the virtualizer must exist before the hook --
+  // with the same lazy-wire pattern as mountedRowIds. Until then a fresh list follows.
+  let isFollowingTail: () => boolean = () => true
 
   // Lifted per-message UI state (diff-view override + boolean flag map), keyed by
   // message id so a toggle survives <For> re-renders and a window trim. Owned by
@@ -309,6 +308,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // The scroll container (also handed to scroll.attachListRef below). Read
   // non-reactively by isRowNearViewport at worker-dispatch time.
   let listEl: HTMLElement | undefined
+  // The virtual spacer and the layer of rows inside it, for virt.attachLayout.
+  let layoutSpacerEl: HTMLElement | undefined
+  let layoutLayerEl: HTMLElement | undefined
   // Reactive handle on the same element for the scroll rail (which attaches its own
   // passive listener + ResizeObserver in a createEffect keyed on it).
   const [scrollEl, setScrollEl] = createSignal<HTMLDivElement | undefined>()
@@ -427,7 +429,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         )}`,
       })),
     [],
-    // Suppress the geom rebuild + scroll re-pin when a recompute leaves the offset
+    // Suppress the geom rebuild + layout-shift pass when a recompute leaves the offset
     // map identical (same id/hasSpanLines/heightKey sequence) -- see sameVirtualItems.
     { equals: sameVirtualItems },
   )
@@ -447,6 +449,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     gapSmallPx,
     gapLargePx,
     overscanPx,
+    scrollElement: () => listEl,
+    pinBottom: () => isFollowingTail(),
   })
   // Point the UI-state cap's protect set at the virtualizer's live mounted rows
   // (a stable Set reference) now that `virt` exists.
@@ -513,6 +517,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
    * rows outside it dispatch their markdown/highlight jobs at low priority.
    * Deliberately non-reactive: the worker gate re-reads it at each dispatch
    * opportunity, so it needs the CURRENT scroll position, not a subscription.
+   * The row offsets are content coordinates, so the viewport top converts to them.
    */
   const isRowNearViewport = (id: string): boolean => {
     const el = listEl
@@ -524,7 +529,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     const rowTop = virt.offsetOfIndex(index)
     const rowBottom = rowTop + virt.heightOfIndex(index)
     const slack = el.clientHeight / 2
-    return rowBottom >= el.scrollTop - slack && rowTop <= el.scrollTop + el.clientHeight + slack
+    const viewportTop = untrack(() => virt.contentTopOf(el.scrollTop))
+    return rowBottom >= viewportTop - slack && rowTop <= viewportTop + el.clientHeight + slack
   }
 
   createEffect(() => {
@@ -580,29 +586,16 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     // on each of those rebuilds. Every closure below was allocated on all nineteen
     // reads. As a getter, the one field a reader asks for allocates the one closure.
     //
-    // Pin this row's top BEFORE the toggle changes its height, so it stays put instead of
-    // being scrolled away by the geometry re-pin (which otherwise holds the viewport-
-    // midpoint row). Both a diff-view switch and an expand/collapse resize the row.
-    // Armed ONLY when the write will actually CHANGE state (mirroring the store's own
-    // setIfChanged dedupe): a same-value write causes no resize, so arming would leave a
-    // stale hold with nothing to release it until the next geometry commit yanks the
-    // viewport back to the toggle-time line.
+    // A toggle (a diff-view switch, an expand/collapse) only writes the state. The row
+    // resizes, and the layout shift keeps the content at the viewport top in place.
     get onSetLocalDiffView() {
-      return (view: 'unified' | 'split') => {
-        if (getLocalDiffView(entry.message.id) !== view)
-          anchorRowForResize(entry.message.id)
-        setLocalDiffView(entry.message.id, view)
-      }
+      return (view: 'unified' | 'split') => setLocalDiffView(entry.message.id, view)
     },
     get getMessageUiState() {
       return (key: MessageUiKey) => getMessageUiBool(entry.message.id, key)
     },
     get setMessageUiState() {
-      return (key: MessageUiKey, value: boolean) => {
-        if (getMessageUiBool(entry.message.id, key) !== value)
-          anchorRowForResize(entry.message.id)
-        setMessageUiBool(entry.message.id, key, value)
-      }
+      return (key: MessageUiKey, value: boolean) => setMessageUiBool(entry.message.id, key, value)
     },
     get getHeightDebug() {
       return () => virt.heightDebugOfId(entry.message.id)
@@ -839,9 +832,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     // still cannot relight it past `RAIL_COAST_MAX_MS` from a real input.
     onMomentumScroll: () => noteRailCoast(),
   })
-  // Now that the scroll hook (and its anchor engine) exists, point the toggle-time row
-  // pin at it (see the `let` declaration above and buildMessageHost).
-  anchorRowForResize = scroll.anchorRowForResize
+  // Now that the scroll hook (which owns follow mode) exists, point the virtualizer's
+  // bottom pin at it (see the `let` declaration above).
+  isFollowingTail = scroll.isFollowing
 
   // The rail's seq-space bounds (window-aware min/max) and loaded-window seqs are resolved
   // once in the store's getRailData (see resolveRailRange), so ChatView passes props.rail
@@ -1066,21 +1059,47 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                   useChatScroll): the browser clamps scrollTop to this height, so a
                   fast fling cannot scroll past the loaded edge into unloaded history
                   -- it stalls there until the buffer filler loads more, never skips.
+
+                  The layer inside the spacer moves every row by the layout shift
+                  (see chatLayoutShift), and the spacer height follows it, so a
+                  geometry change keeps the content under the reader in place with
+                  no scrollTop write. The virtualizer writes both elements itself
+                  when it removes the shift (virt.rebase), so it holds them.
                 */}
-                  <div class={styles.virtualSpacer} style={{ height: `${virt.totalHeight()}px` }}>
-                    {/* Inter-row rail segments, outside the paint-contained rows
+                  <div
+                    class={styles.virtualSpacer}
+                    style={{ height: `${virt.spacerHeight()}px` }}
+                    ref={(el) => {
+                      layoutSpacerEl = el
+                      virt.attachLayout(el, layoutLayerEl)
+                    }}
+                  >
+                    <div
+                      class={styles.virtualLayer}
+                      style={{ transform: `translateY(${virt.layoutShift()}px)` }}
+                      ref={(el) => {
+                        layoutLayerEl = el
+                        virt.attachLayout(layoutSpacerEl, el)
+                        onCleanup(() => {
+                          layoutSpacerEl = undefined
+                          layoutLayerEl = undefined
+                          virt.attachLayout(undefined, undefined)
+                        })
+                      }}
+                    >
+                      {/* Inter-row rail segments, outside the paint-contained rows
                       (before the <For>, so rows paint over any overlap). Keyed
                       on the same stable entry references as the row <For>, so
                       geometry changes move anchors in place instead of
                       recreating the overlay DOM. */}
-                    <SpanLineGapBridges
-                      entries={visibleSlice()}
-                      precedingEntry={visibleEntries()[virt.range().start - 1]}
-                      topOf={id => virt.offsetOfId(id) ?? 0}
-                      hiddenOf={rowSpanColumnHidden}
-                      gapAboveOf={virt.gapAboveOf}
-                    />
-                    {/*
+                      <SpanLineGapBridges
+                        entries={visibleSlice()}
+                        precedingEntry={visibleEntries()[virt.range().start - 1]}
+                        topOf={id => virt.offsetOfId(id) ?? 0}
+                        hiddenOf={rowSpanColumnHidden}
+                        gapAboveOf={virt.gapAboveOf}
+                      />
+                      {/*
                     Loading skeletons: a premeasure-hidden row whose wait has
                     exceeded SKELETON_SHOW_DELAY_MS paints its reserved slot as
                     shimmer lines instead of blank space (a fast re-measure never
@@ -1089,101 +1108,101 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     by the same offsets, so they vanish seamlessly the moment the
                     real row's measurement commits and it fades in.
                   */}
-                    <For each={skeletonSlice()}>
-                      {entry => positionedRowSkeleton(entry)}
-                    </For>
-                    {/*
+                      <For each={skeletonSlice()}>
+                        {entry => positionedRowSkeleton(entry)}
+                      </For>
+                      {/*
                     Crossfade tail: skeletons whose row just measured fade OUT
                     here while the real row's opacity fades in — the two
                     overlap for one beat, so the swap never pops.
                   */}
-                    <For each={lingeringSkeletonSlice()}>
-                      {entry => positionedRowSkeleton(entry, true)}
-                    </For>
-                    <For each={visibleSlice()}>
-                      {(entry) => {
-                        const { message, parsedSpanLines } = entry
-                        // Offset is resolved by the row's own id, not by
-                        // range().start + localIndex(): the id is the stable,
-                        // unique key into the offset map, so it cannot disagree with
-                        // the slice bounds during a scroll/measure flush.
-                        const top = () => virt.offsetOfId(message.id) ?? 0
-                        // Fling skeleton: a MEASURED row entering the window
-                        // during a FAST user scroll mounts as line placeholders at
-                        // its known height instead of paying full bubble
-                        // construction on the scroll-critical path, then upgrades
-                        // in place (skeleton -> crossfade -> real) once the scroll
-                        // settles. The per-row phase machine lives in
-                        // createRowUpgradePhase (see rowSkeletonUpgradeOverlay for
-                        // the crossfade copy). trackRow also registers this row's phase
-                        // in flingSkeletons.skeletonIds so the gap-bridge overlay hides
-                        // this row's bridge while the skeleton shows.
-                        const upgradePhase = flingSkeletons.trackRow(message.id)
-                        // This copy's asynchronous bodies (Markdown, an edit diff)
-                        // report here while their worker result is pending. The row
-                        // stays hidden meanwhile (see rowLoading). A diff view that
-                        // switches its layout reports here too, as replacing its
-                        // content, which keeps the row visible. attachRow takes the
-                        // same scope: the measurer reads nothing from the copy while
-                        // it is pending or replacing, and measures it again once it
-                        // is measurable.
-                        const readiness = rowReadiness.trackRow(message.id)
-                        // A fling skeleton stands in for the bubble until the row
-                        // upgrades, and draws the height that the virtualizer holds
-                        // for the row. A read of it would confirm that height under a
-                        // key that the bubble may not fit (the key can change
-                        // mid-fling), so the skeleton counts as content that the
-                        // bubble replaces.
-                        useReplacingReadiness(() => ({ readiness }), () => upgradePhase() === 'skeleton')
+                      <For each={lingeringSkeletonSlice()}>
+                        {entry => positionedRowSkeleton(entry, true)}
+                      </For>
+                      <For each={visibleSlice()}>
+                        {(entry) => {
+                          const { message, parsedSpanLines } = entry
+                          // Offset is resolved by the row's own id, not by
+                          // range().start + localIndex(): the id is the stable,
+                          // unique key into the offset map, so it cannot disagree with
+                          // the slice bounds during a scroll/measure flush.
+                          const top = () => virt.offsetOfId(message.id) ?? 0
+                          // Fling skeleton: a MEASURED row entering the window
+                          // during a FAST user scroll mounts as line placeholders at
+                          // its known height instead of paying full bubble
+                          // construction on the scroll-critical path, then upgrades
+                          // in place (skeleton -> crossfade -> real) once the scroll
+                          // settles. The per-row phase machine lives in
+                          // createRowUpgradePhase (see rowSkeletonUpgradeOverlay for
+                          // the crossfade copy). trackRow also registers this row's phase
+                          // in flingSkeletons.skeletonIds so the gap-bridge overlay hides
+                          // this row's bridge while the skeleton shows.
+                          const upgradePhase = flingSkeletons.trackRow(message.id)
+                          // This copy's asynchronous bodies (Markdown, an edit diff)
+                          // report here while their worker result is pending. The row
+                          // stays hidden meanwhile (see rowLoading). A diff view that
+                          // switches its layout reports here too, as replacing its
+                          // content, which keeps the row visible. attachRow takes the
+                          // same scope: the measurer reads nothing from the copy while
+                          // it is pending or replacing, and measures it again once it
+                          // is measurable.
+                          const readiness = rowReadiness.trackRow(message.id)
+                          // A fling skeleton stands in for the bubble until the row
+                          // upgrades, and draws the height that the virtualizer holds
+                          // for the row. A read of it would confirm that height under a
+                          // key that the bubble may not fit (the key can change
+                          // mid-fling), so the skeleton counts as content that the
+                          // bubble replaces.
+                          useReplacingReadiness(() => ({ readiness }), () => upgradePhase() === 'skeleton')
 
-                        // An assistant message / thought paints a full-bleed band
-                        // BEHIND the row: the band is the row's own background and
-                        // border, so paint containment can't clip it and the span
-                        // rails and toolbar sit on top of the gray. Read once --
-                        // reclassifying a row replaces its entry, which remounts
-                        // this row. data-band is the e2e hook, because every style
-                        // class is a hashed name.
-                        const chrome = messageRowChrome(styles.virtualRow, entry.category.kind, message.source)
+                          // An assistant message / thought paints a full-bleed band
+                          // BEHIND the row: the band is the row's own background and
+                          // border, so paint containment can't clip it and the span
+                          // rails and toolbar sit on top of the gray. Read once --
+                          // reclassifying a row replaces its entry, which remounts
+                          // this row. data-band is the e2e hook, because every style
+                          // class is a hashed name.
+                          const chrome = messageRowChrome(styles.virtualRow, entry.category.kind, message.source)
 
-                        return (
-                          <div
-                            class={chrome.class}
-                            data-band={chrome.band}
-                            style={{
-                              transform: `translateY(${top()}px)`,
-                              // Absolute rows do not reserve flow height for
-                              // siblings — see rowHiddenPendingReveal for why an
-                              // unmeasured premeasuring row stays invisible.
-                              visibility: rowHiddenPendingReveal(message.id)
-                                ? 'hidden'
-                                : undefined,
-                              opacity: rowHiddenPendingReveal(message.id)
-                                ? '0'
-                                : '1',
-                            }}
-                            data-seq={message.seq.toString()}
-                            ref={(el) => {
-                              virt.attachRow(message.id, el, readiness)
-                              onCleanup(() => virt.detachRow(el))
-                            }}
-                          >
-                            <Show
-                              when={upgradePhase() !== 'skeleton'}
-                              fallback={(
-                                <ChatRowSkeleton
-                                  height={virt.heightOfId(message.id)}
-                                  seed={message.id}
-                                />
-                              )}
+                          return (
+                            <div
+                              class={chrome.class}
+                              data-band={chrome.band}
+                              style={{
+                                transform: `translateY(${top()}px)`,
+                                // Absolute rows do not reserve flow height for
+                                // siblings — see rowHiddenPendingReveal for why an
+                                // unmeasured premeasuring row stays invisible.
+                                visibility: rowHiddenPendingReveal(message.id)
+                                  ? 'hidden'
+                                  : undefined,
+                                opacity: rowHiddenPendingReveal(message.id)
+                                  ? '0'
+                                  : '1',
+                              }}
+                              data-seq={message.seq.toString()}
+                              ref={(el) => {
+                                virt.attachRow(message.id, el, readiness)
+                                onCleanup(() => virt.detachRow(el))
+                              }}
                             >
-                              {(() => {
-                              // Constructed lazily: while the skeleton shows,
-                              // the bubble (markdown, tokens, toolbars) is
-                              // never built for this row.
-                                const bubble = renderMessageBubble(entry, readiness)
-                                return (
-                                  <>
-                                    {/*
+                              <Show
+                                when={upgradePhase() !== 'skeleton'}
+                                fallback={(
+                                  <ChatRowSkeleton
+                                    height={virt.heightOfId(message.id)}
+                                    seed={message.id}
+                                  />
+                                )}
+                              >
+                                {(() => {
+                                  // Constructed lazily: while the skeleton shows,
+                                  // the bubble (markdown, tokens, toolbars) is
+                                  // never built for this row.
+                                  const bubble = renderMessageBubble(entry, readiness)
+                                  return (
+                                    <>
+                                      {/*
                                     data-span-columns carries how many rails
                                     this row draws (0 when it draws none, e.g. a
                                     subagent spawn with nothing else open). Every
@@ -1191,7 +1210,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                                     name, so an e2e spec has no other stable way
                                     to read the rail count of one row.
                                   */}
-                                    {/*
+                                      {/*
                                     Both arms publish ROW_BLEED_LEFT_VAR: how far
                                     the panel's left edge is from where this row's
                                     content starts. The rails push that start
@@ -1199,40 +1218,41 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                                     bleeding child reads it instead of assuming
                                     the bare gutter.
                                   */}
-                                    <Show
-                                      when={parsedSpanLines.length > 0}
-                                      fallback={(
-                                        <div
-                                          data-span-columns={parsedSpanLines.length}
-                                          style={reservedRowContentColumnStyle(0)}
-                                        >
-                                          {bubble}
+                                      <Show
+                                        when={parsedSpanLines.length > 0}
+                                        fallback={(
+                                          <div
+                                            data-span-columns={parsedSpanLines.length}
+                                            style={reservedRowContentColumnStyle(0)}
+                                          >
+                                            {bubble}
+                                          </div>
+                                        )}
+                                      >
+                                        <div class={styles.railedRow} data-span-columns={parsedSpanLines.length}>
+                                          <SpanLines lines={parsedSpanLines} />
+                                          <div class={styles.railedRowContent} style={rowBleedLeftStyle(parsedSpanLines.length)}>
+                                            {bubble}
+                                          </div>
                                         </div>
-                                      )}
-                                    >
-                                      <div class={styles.railedRow} data-span-columns={parsedSpanLines.length}>
-                                        <SpanLines lines={parsedSpanLines} />
-                                        <div class={styles.railedRowContent} style={rowBleedLeftStyle(parsedSpanLines.length)}>
-                                          {bubble}
+                                      </Show>
+                                      <Show when={upgradePhase() === 'crossfade'}>
+                                        <div class={`${styles.rowSkeletonUpgradeOverlay} ${styles.rowSkeletonClosing}`}>
+                                          <ChatRowSkeleton
+                                            height={virt.heightOfId(message.id)}
+                                            seed={message.id}
+                                          />
                                         </div>
-                                      </div>
-                                    </Show>
-                                    <Show when={upgradePhase() === 'crossfade'}>
-                                      <div class={`${styles.rowSkeletonUpgradeOverlay} ${styles.rowSkeletonClosing}`}>
-                                        <ChatRowSkeleton
-                                          height={virt.heightOfId(message.id)}
-                                          seed={message.id}
-                                        />
-                                      </div>
-                                    </Show>
-                                  </>
-                                )
-                              })()}
-                            </Show>
-                          </div>
-                        )
-                      }}
-                    </For>
+                                      </Show>
+                                    </>
+                                  )
+                                })()}
+                              </Show>
+                            </div>
+                          )
+                        }}
+                      </For>
+                    </div>
                   </div>
                   {/*
                   The thinking indicator belongs at the live tail. While
@@ -1270,10 +1290,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                       {...(props.agentLifecycle?.goal !== undefined
                         ? { goal: props.agentLifecycle.goal }
                         : {})}
-                      onExpandTick={() => {
-                        if (scroll.isAtBottomFresh())
-                          scroll.jumpToBottom()
-                      }}
+                      onExpandTick={() => scroll.restickIfAtBottom()}
                     />
                     {/*
                     The startup banner is tail-anchored like the progress
@@ -1296,7 +1313,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           {/*
           History loading indicators: absolute OVERLAYS pinned to the top / bottom of
           the viewport, NOT in the scroll flow. In-flow they would shift the virtualized
-          content by their height as fetching toggles -- a shift the anchor re-pin can't
+          content by their height as fetching toggles -- a shift the layout shift can't
           see -- bouncing a scrolled reader and wedging the load. See loadingOlderIndicator.
 
           Gated on scroll.stalledOlder() / stalledNewer(), not the raw fetching flags, so
@@ -1321,13 +1338,15 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           the button reappears once the page lands (or the fetch times out).
         */}
           <Show when={!scroll.stalledNewer() && (!scroll.atBottom() || props.pagination?.hasNewerMessages)}>
-            <button
-              type="button"
-              class={`outline icon ${styles.scrollToBottomButton}`}
-              onClick={() => scroll.scrollToBottom()}
-            >
-              <Icon icon={ArrowDown} size="lg" />
-            </button>
+            <Tooltip text="Scroll to bottom" ariaLabel>
+              <button
+                type="button"
+                class={`outline icon ${styles.scrollToBottomButton}`}
+                onClick={() => scroll.scrollToBottom()}
+              >
+                <Icon icon={ArrowDown} size="lg" />
+              </button>
+            </Tooltip>
           </Show>
           <Show when={props.rail?.loaded}>
             <ChatScrollRail
@@ -1336,6 +1355,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
               offsetOfIndex={virt.offsetOfIndex}
               totalHeight={virt.totalHeight()}
               geometryVersion={virt.geometryVersion()}
+              contentTopOf={virt.contentTopOf}
+              layoutShift={virt.layoutShift()}
               // The row-seq map the owner resolution above already computes (railRowSeqs), reused by
               // the rail's geometry so the O(n) scan runs once per item-list change, not twice.
               railRowSeqs={railRowSeqs()}

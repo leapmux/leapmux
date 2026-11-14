@@ -14,9 +14,12 @@ import { clampScrollTop, distFromBottom } from './chatScrollGeometry'
 // ---------------------------------------------------------------------------
 
 export interface RailScrollMetrics {
-  /** Logical (clamped) scrollTop of the scroll container. */
+  /**
+   * The content height above the viewport top: the logical (clamped) scrollTop of the
+   * scroll container, converted to content coordinates, where the rail's row offsets live.
+   */
   scrollTop: number
-  /** distFromBottom(el): scrollHeight - scrollTop - clientHeight, for the bottom-edge snap. */
+  /** distFromBottom(el): scrollHeight - scrollTop - clientHeight, for the bottom-edge snap. A scroll-coordinate distance. */
   dist: number
   /** The scroll container's viewport height. */
   clientHeight: number
@@ -29,6 +32,13 @@ export interface RailMetricsInputs {
   totalHeight: Accessor<number>
   /** Bumped by the virtualizer whenever the offset map changes (measurement/prepend/trim). */
   geometryVersion: Accessor<number>
+  /** Convert a scroll coordinate to a content coordinate (the virtualizer's `contentTopOf`). */
+  contentTopOf: (scrollTop: number) => number
+  /**
+   * The layout shift. A change moves the content in scroll coordinates without a scroll
+   * event, so it is a trigger to sample again.
+   */
+  layoutShift: Accessor<number>
 }
 
 /**
@@ -52,7 +62,7 @@ export function createRailMetrics(inp: RailMetricsInputs): Accessor<RailScrollMe
     if (!el)
       return
     setMetrics({
-      scrollTop: clampScrollTop(el, el.scrollTop),
+      scrollTop: Math.max(0, inp.contentTopOf(clampScrollTop(el, el.scrollTop))),
       dist: distFromBottom(el),
       clientHeight: el.clientHeight,
     })
@@ -77,8 +87,9 @@ export function createRailMetrics(inp: RailMetricsInputs): Accessor<RailScrollMe
     })
   }))
 
-  // A geometry commit (measurement/prepend/trim) can move the offset map without a scroll
-  // event; re-sample so the thumb recomputes against the new mapping. rAF-coalesced (like the
+  // A geometry commit (measurement/prepend/trim) or a change of the layout shift can move
+  // the content without a scroll event; re-sample so the thumb recomputes against the new
+  // mapping. rAF-coalesced (like the
   // scroll path above) so a streaming turn's burst of commits forces at most ONE layout read
   // per frame rather than one synchronous read per commit -- the value-equals signal drops the
   // redundant re-samples, and the thumb lagging a commit by a single frame is imperceptible.
@@ -95,6 +106,7 @@ export function createRailMetrics(inp: RailMetricsInputs): Accessor<RailScrollMe
   createEffect(on(() => [
     inp.totalHeight(),
     inp.geometryVersion(),
+    inp.layoutShift(),
   ], () => sampleAfterGeometryCommit()))
   onCleanup(() => geoCoalescer.abort())
 

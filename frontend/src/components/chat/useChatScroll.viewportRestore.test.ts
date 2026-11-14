@@ -2,12 +2,12 @@ import type { ChatScrollState, ChatScrollVirtualizer } from './useChatScroll'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createRoot, createSignal, onCleanup } from 'solid-js'
 import { insert } from 'solid-js/web'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   triggerResizeObserversSync,
 } from '~/test-support/resizeObserverStub'
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer, virtualizerNoOps } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer, mountScrollHarness, virtualizerNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -120,426 +120,6 @@ describe('useChatScroll viewport restore', () => {
       })
     }))
 
-  it('does not auto-load older from a passive scroll after a NEAR-TOP anchor restore', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setScrollHeight(5000)
-          div.setClientHeight(0) // hidden tab
-          const [messages] = createSignal<AgentChatMessage[]>([])
-          // The saved anchor RESOLVES to a near-top scrollTop (100 < clientHeight/2).
-          const [saved] = createSignal<ChatScrollState | undefined>({
-            anchor: { id: 'm10', offsetWithinRow: 0 },
-            atBottom: false,
-            hasMoreNewer: false,
-          })
-          const virt: ChatScrollVirtualizer = {
-            ...virtualizerNoOps(),
-            totalHeight: () => 5000,
-            geometryVersion: () => 0,
-            updateViewport: () => {},
-            anchorAt: () => ({ id: 'm10', offsetWithinRow: 0 }),
-            scrollTopNearAnchor: () => null,
-            scrollTopForAnchor: () => 100, // resolves near the top
-          }
-          let olderLoads = 0
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            hasOlderMessages: () => true,
-            onLoadOlderMessages: () => { olderLoads++ },
-            savedViewportScroll: saved,
-            onClearSavedViewportScroll: () => {},
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-
-          // Tab becomes visible: restore resolves the anchor to scrollTop 100.
-          div.setClientHeight(500)
-          triggerResizeObserversSync()
-          await Promise.resolve()
-          await Promise.resolve()
-          expect(div.getScrollTop()).toBe(100) // restored near the top
-
-          // A passive scroll event near the top must NOT auto-page older history --
-          // the restore landed us here, the user didn't scroll to the top. Without
-          // arming the one-shot suppression on the anchor-resolve branch, this would
-          // fire loadOlderMessages immediately after restore.
-          div.setScrollTop(50)
-          hook.handlers.onScroll()
-          expect(olderLoads).toBe(0)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
-      })
-    }))
-
-  it('still fills the NEWER side from a passive scroll after a near-top restore (suppression gates only older)', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          // Small window: both edges sit inside the buffer target (3 * clientHeight),
-          // so a fill would page BOTH sides -- letting us prove the older side stays
-          // suppressed while the newer side keeps loading (the stall fix).
-          const div = makeFakeScrollDiv()
-          div.setScrollHeight(1000)
-          div.setClientHeight(0) // hidden tab
-          const [messages] = createSignal<AgentChatMessage[]>([])
-          // Saved anchor resolves NEAR THE TOP (100 < clientHeight/2), arming the
-          // one-shot older-load suppression on restore.
-          const [saved] = createSignal<ChatScrollState | undefined>({
-            anchor: { id: 'm10', offsetWithinRow: 0 },
-            atBottom: false,
-            hasMoreNewer: true,
-          })
-          const virt: ChatScrollVirtualizer = {
-            ...virtualizerNoOps(),
-            totalHeight: () => 1000,
-            geometryVersion: () => 0,
-            updateViewport: () => {},
-            anchorAt: () => ({ id: 'm10', offsetWithinRow: 0 }),
-            scrollTopNearAnchor: () => null,
-            scrollTopForAnchor: () => 100, // resolves near the top
-          }
-          let olderLoads = 0
-          let newerLoads = 0
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            hasOlderMessages: () => true,
-            hasNewerMessages: () => true,
-            onLoadOlderMessages: () => { olderLoads++ },
-            onLoadNewerMessages: () => { newerLoads++ },
-            savedViewportScroll: saved,
-            onClearSavedViewportScroll: () => {},
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-
-          // Tab becomes visible: restore resolves the anchor to scrollTop 100 and
-          // arms the older-load suppression. No fill has run yet.
-          div.setClientHeight(500)
-          triggerResizeObserversSync()
-          await Promise.resolve()
-          await Promise.resolve()
-          expect(div.getScrollTop()).toBe(100)
-          expect(newerLoads).toBe(0)
-
-          // A passive scroll (to a pixel != the restored 100, so it's not an echo):
-          // the older side stays suppressed, but the newer buffer must still top up.
-          // Before the fix the whole fill was skipped here and the list stalled short
-          // of the live tail until the user scrolled all the way back to the top.
-          div.setScrollTop(150)
-          hook.handlers.onScroll()
-          expect(olderLoads).toBe(0) // older still suppressed
-          expect(newerLoads).toBeGreaterThan(0) // newer side keeps loading
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
-      })
-    }))
-
-  it('keeps the post-restore older-suppression through an unrelated (non-restore) resize', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setScrollHeight(5000)
-          div.setClientHeight(0) // hidden tab
-          const [messages] = createSignal<AgentChatMessage[]>([])
-          const [saved] = createSignal<ChatScrollState | undefined>({
-            anchor: { id: 'm10', offsetWithinRow: 0 },
-            atBottom: false,
-            hasMoreNewer: false,
-          })
-          const virt: ChatScrollVirtualizer = {
-            ...virtualizerNoOps(),
-            totalHeight: () => 5000,
-            geometryVersion: () => 0,
-            updateViewport: () => {},
-            anchorAt: () => ({ id: 'm10', offsetWithinRow: 0 }),
-            scrollTopNearAnchor: () => null,
-            scrollTopForAnchor: () => 100, // resolves near the top
-          }
-          let olderLoads = 0
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            hasOlderMessages: () => true,
-            onLoadOlderMessages: () => { olderLoads++ },
-            savedViewportScroll: saved,
-            onClearSavedViewportScroll: () => {},
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-
-          // Restore on show: lands near the top (100 < clientHeight/2), arms the
-          // one-shot older-load suppression.
-          div.setClientHeight(500)
-          triggerResizeObserversSync()
-          await Promise.resolve()
-          await Promise.resolve()
-          expect(div.getScrollTop()).toBe(100)
-
-          // An UNRELATED, non-restore resize (editor grow / keyboard) must NOT clear the
-          // one-shot suppression -- the regression the resize-time clear removal fixes.
-          div.setClientHeight(600)
-          triggerResizeObserversSync()
-          await Promise.resolve()
-          await Promise.resolve()
-
-          // A passive scroll still WITHIN the near-top band (50 < 600/2) stays suppressed.
-          div.setScrollTop(50)
-          hook.handlers.onScroll()
-          expect(olderLoads).toBe(0)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
-      })
-    }))
-
-  it('resumes older pre-fetch once the user scrolls OUT of the near-top band after a restore', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setScrollHeight(5000)
-          div.setClientHeight(0) // hidden tab
-          const [messages] = createSignal<AgentChatMessage[]>([])
-          const [saved] = createSignal<ChatScrollState | undefined>({
-            anchor: { id: 'm10', offsetWithinRow: 0 },
-            atBottom: false,
-            hasMoreNewer: false,
-          })
-          const virt: ChatScrollVirtualizer = {
-            ...virtualizerNoOps(),
-            totalHeight: () => 5000,
-            geometryVersion: () => 0,
-            updateViewport: () => {},
-            anchorAt: () => ({ id: 'm10', offsetWithinRow: 0 }),
-            scrollTopNearAnchor: () => null,
-            scrollTopForAnchor: () => 100,
-          }
-          let olderLoads = 0
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            hasOlderMessages: () => true,
-            onLoadOlderMessages: () => { olderLoads++ },
-            savedViewportScroll: saved,
-            onClearSavedViewportScroll: () => {},
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-
-          // Restore near the top (100), arming the suppression.
-          div.setClientHeight(500)
-          triggerResizeObserversSync()
-          await Promise.resolve()
-          await Promise.resolve()
-          expect(div.getScrollTop()).toBe(100)
-
-          // Scroll DOWN out of the near-top band (300 >= clientHeight/2 = 250): the
-          // restored landing is abandoned, so older pre-fetch resumes (no fling-up stall).
-          div.setScrollTop(300)
-          hook.handlers.onScroll()
-          await Promise.resolve()
-          expect(olderLoads).toBeGreaterThan(0)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
-      })
-    }))
-
-  it('clears the older-suppression when a trim/measure-shrink makes content fit (no resize, no scroll)', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          // The wedge this guards: a near-top restore arms the one-shot older-load
-          // suppression, then a window trim / row re-measure shrinks the content until
-          // it fits the viewport -- changing virt.totalHeight()/geometryVersion() but NOT
-          // the container box (no resize) and emitting no scroll event. Neither
-          // handleResize nor handleScroll runs, so without the geometry-effect clear the
-          // suppression sticks forever and older history never background-loads.
-          const div = makeFakeScrollDiv()
-          div.setScrollHeight(5000)
-          div.setClientHeight(0) // hidden tab
-          const [messages, setMessages] = createSignal<AgentChatMessage[]>([])
-          const [saved] = createSignal<ChatScrollState | undefined>({
-            anchor: { id: 'm10', offsetWithinRow: 0 },
-            atBottom: false,
-            hasMoreNewer: false,
-          })
-          const [total, setTotal] = createSignal(5000)
-          const [geom, setGeom] = createSignal(0)
-          const virt: ChatScrollVirtualizer = {
-            ...virtualizerNoOps(),
-            totalHeight: () => total(),
-            geometryVersion: () => geom(),
-            updateViewport: () => {},
-            anchorAt: () => ({ id: 'm10', offsetWithinRow: 0 }),
-            scrollTopNearAnchor: () => null,
-            scrollTopForAnchor: () => 100, // resolves near the top
-          }
-          let olderLoads = 0
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            hasOlderMessages: () => true,
-            onLoadOlderMessages: () => { olderLoads++ },
-            savedViewportScroll: saved,
-            onClearSavedViewportScroll: () => {},
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-
-          // Restore on show: lands near the top (100 < clientHeight/2), arming the
-          // one-shot suppression. Content is still scrollable (5000 > 500).
-          div.setClientHeight(500)
-          triggerResizeObserversSync()
-          await Promise.resolve()
-          await Promise.resolve()
-          expect(div.getScrollTop()).toBe(100)
-
-          // CONTROL: a window change re-runs the buffer filler. The older side is still
-          // suppressed, so it does NOT load older despite a near-top deficit. (We never
-          // call onScroll, so the scroll-path clear can't be the thing under test.)
-          setMessages(m => [
-            ...m,
-            { id: 'a', seq: 1n } as AgentChatMessage,
-          ])
-          await Promise.resolve()
-          await Promise.resolve()
-          expect(olderLoads).toBe(0)
-
-          // A trim / measurement shrink makes the content fit (scrollHeight <=
-          // clientHeight, so maxScrollTop 0) and bumps geometry -- the geometry effect
-          // must clear the now-pointless suppression.
-          div.setScrollHeight(400)
-          setTotal(400)
-          setGeom(v => v + 1)
-          await Promise.resolve()
-          await Promise.resolve()
-
-          // TEST: the next window change runs the filler with the suppression cleared, so
-          // older history finally loads. Before the fix it stayed wedged off forever.
-          setMessages(m => [
-            ...m,
-            { id: 'b', seq: 2n } as AgentChatMessage,
-          ])
-          await Promise.resolve()
-          await Promise.resolve()
-          expect(olderLoads).toBeGreaterThan(0)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
-      })
-    }))
-
-  it('resumes older pre-fetch when a scrollbar drag reaches the very TOP after a restore (no wheel/key)', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setScrollHeight(5000)
-          div.setClientHeight(0) // hidden tab
-          const [messages] = createSignal<AgentChatMessage[]>([])
-          const [saved] = createSignal<ChatScrollState | undefined>({
-            anchor: { id: 'm10', offsetWithinRow: 0 },
-            atBottom: false,
-            hasMoreNewer: false,
-          })
-          const virt: ChatScrollVirtualizer = {
-            ...virtualizerNoOps(),
-            totalHeight: () => 5000,
-            geometryVersion: () => 0,
-            updateViewport: () => {},
-            anchorAt: () => ({ id: 'm10', offsetWithinRow: 0 }),
-            scrollTopNearAnchor: () => null,
-            scrollTopForAnchor: () => 100,
-          }
-          let olderLoads = 0
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            hasOlderMessages: () => true,
-            onLoadOlderMessages: () => { olderLoads++ },
-            savedViewportScroll: saved,
-            onClearSavedViewportScroll: () => {},
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-
-          // Restore near the top (100), arming the suppression.
-          div.setClientHeight(500)
-          triggerResizeObserversSync()
-          await Promise.resolve()
-          await Promise.resolve()
-          expect(div.getScrollTop()).toBe(100)
-
-          // A scrollbar-thumb DRAG up to the very top -- plain `scroll` events, NOT
-          // wheel/key/touch, so it never reaches tryLoadOlderOnExplicitTopIntent. The
-          // drag fires a sequence: the first event seeds the upward direction baseline at
-          // the restored position; the drag then continues to the very top (0), still
-          // WITHIN the near-top band (0 < 250) so the band-exit clear does not apply.
-          // Reaching the top WHILE SCROLLING UP must still clear the older-suppression so
-          // the filler can page up; without it the reader wedges unable to load older.
-          div.setScrollTop(100)
-          hook.handlers.onScroll()
-          expect(olderLoads).toBe(0) // the in-band seed event must NOT clear yet
-          div.setScrollTop(0)
-          hook.handlers.onScroll()
-          await Promise.resolve()
-          expect(olderLoads).toBeGreaterThan(0)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
-      })
-    }))
-
   it('restores a saved raw scrollTop fallback when no row anchor resolves', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
@@ -633,8 +213,8 @@ describe('useChatScroll viewport restore', () => {
           await Promise.resolve()
           expect(div.getScrollTop()).toBe(0)
           expect(hook.atBottom()).toBe(false)
-          // The clamp-to-top fallback arms the one-shot auto-load-older suppression,
-          // so the restore itself doesn't page older history.
+          // The restore itself pages no older history: the buffer fill runs on a
+          // scroll event or a message change, and neither follows the restore here.
           expect(olderLoads).toBe(0)
           dispose()
           resolve()
@@ -647,93 +227,120 @@ describe('useChatScroll viewport restore', () => {
         }
       })
     }))
+})
 
-  it('clears the restore suppression for a BARELY-scrollable page so older history still fills', () =>
-    // A clamp-to-top restore arms the one-shot older-load suppression. If the restored
-    // window is only barely scrollable (0 < maxScrollTop <= the 32px sticky band), the
-    // reader can NEVER scroll up to trigger the older fill, so the suppression MUST clear
-    // once placed -- exactly like suppressOlderPrefetchAtLiveTail's own band handling. A
-    // strict `<= 0` clear wedged older history off for good for this restore path.
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setClientHeight(0) // hidden tab
-          let scrollHeight = 520 // maxScrollTop 20 once visible: inside the sticky band
-          div.setScrollHeight(scrollHeight)
-          const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-          const [total, setTotal] = createSignal(520)
-          const [fetchingOlder, setFetchingOlder] = createSignal(false)
-          // Saved all-hidden (raw fallback, no anchor); by restore time totalHeight > 0
-          // discards the stale raw offset -> the clamp-to-top strategy arms suppression.
-          const [saved] = createSignal<ChatScrollState | undefined>({
-            rawScrollTop: 1200,
-            atBottom: false,
-            hasMoreNewer: false,
-          })
-          let olderLoads = 0
-          const virt: ChatScrollVirtualizer = {
-            ...virtualizerNoOps(),
-            totalHeight: () => total(),
-            geometryVersion: () => 0,
-            updateViewport: () => {},
-            anchorAt: () => null,
-            scrollTopNearAnchor: () => null,
-            scrollTopForAnchor: () => null,
-          }
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            savedViewportScroll: saved,
-            onClearSavedViewportScroll: () => {},
-            hasOlderMessages: () => true,
-            hasNewerMessages: () => false,
-            fetchingOlder,
-            onLoadOlderMessages: () => {
-              olderLoads++
-              setFetchingOlder(true)
-              queueMicrotask(() => {
-                scrollHeight += 300
-                div.setScrollHeight(scrollHeight)
-                div.setScrollTop(scrollHeight - 500) // restick keeps the view at the tail
-                setTotal(t => t + 300)
-                setMessages(prev => [...prev, {} as AgentChatMessage])
-                setFetchingOlder(false)
-              })
-            },
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
+describe('useChatScroll restore under a layout shift', () => {
+  it('loads older history after a restore near the top', async () => {
+    const onLoadOlderMessages = vi.fn()
+    const [saved, setSaved] = createSignal<ChatScrollState | undefined>({
+      anchor: { id: 'r1', offsetWithinRow: 0 },
+      atBottom: false,
+      hasMoreNewer: false,
+    })
+    const h = mountScrollHarness({
+      clientHeight: 0,
+      hookOptions: {
+        hasOlderMessages: () => true,
+        onLoadOlderMessages,
+        savedViewportScroll: saved,
+        onClearSavedViewportScroll: () => setSaved(undefined),
+      },
+    })
+    h.div.setClientHeight(500)
+    await h.resizeFlush()
+    expect(h.div.getScrollTop()).toBe(100)
+    // The scroll event of the restore write.
+    h.hook.handlers.onScroll()
 
-          // Tab becomes visible: clamp-to-top restore arms suppression, but the
-          // barely-scrollable page clears it on placement so the fill can proceed.
-          div.setClientHeight(500)
-          triggerResizeObserversSync()
-          await Promise.resolve()
-          await Promise.resolve()
-          // A new message arrives -- re-runs the buffer filler (its effect tracks
-          // messages()). The reader can't scroll up out of the 20px band to trigger the
-          // fill by hand, so this is the only path that reaches it. With the wedge the
-          // still-armed suppression blocks the older prefetch here; the fix lets it run.
-          setMessages(prev => [...prev, {} as AgentChatMessage])
-          setTotal(t => t + 4)
-          for (let i = 0; i < 40; i++)
-            await Promise.resolve()
+    expect(onLoadOlderMessages).toHaveBeenCalledOnce()
+    h.dispose()
+  })
 
-          // The wedge would have loaded ZERO older pages; the fix fills at least one.
-          expect(olderLoads).toBeGreaterThanOrEqual(1)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
-      })
-    }))
+  it('restores a hidden reader under a shift', async () => {
+    const h = mountScrollHarness()
+    await h.anchoredAt(2000)
+    h.scrollTo(1990)
+    h.changeAbove(300)
+    expect(h.virt.layoutShift()).toBe(-300)
+
+    await h.hideThenShow()
+
+    expect(h.virt.layoutShift()).toBe(0)
+    expect(h.div.getScrollTop()).toBe(2290)
+    h.dispose()
+  })
+
+  it('restores the row when the position changed while the pane was hidden', async () => {
+    const h = mountScrollHarness()
+    await h.anchoredAt(2000)
+    h.scrollTo(1990)
+    h.changeAbove(300)
+    h.div.setClientHeight(0)
+    await h.resizeFlush()
+    h.div.setScrollTop(0)
+    h.div.setClientHeight(500)
+    await h.resizeFlush()
+
+    expect(h.virt.layoutShift()).toBe(0)
+    expect(h.div.getScrollTop()).toBe(2290)
+    h.dispose()
+  })
+
+  it('restores the row when a scroll event of the browser arrives before the flush', async () => {
+    const h = mountScrollHarness()
+    await h.anchoredAt(2000)
+    h.scrollTo(1990)
+    h.div.setClientHeight(0)
+    await h.resizeFlush()
+    h.div.setClientHeight(500)
+    triggerResizeObserversSync()
+    h.div.setScrollTop(0)
+    h.hook.handlers.onScroll()
+    await h.frame()
+
+    // A restore that reads the anchor at the flush leaves 0.
+    expect(h.div.getScrollTop()).toBe(1990)
+    h.dispose()
+  })
+
+  it('restores the anchor of a reader who left at the loaded bottom of a paged-away window', async () => {
+    const onJumpToLatest = vi.fn()
+    const [saved, setSaved] = createSignal<ChatScrollState | undefined>()
+    const h = mountScrollHarness({
+      hasNewer: true,
+      hookOptions: {
+        onJumpToLatest,
+        savedViewportScroll: saved,
+        onClearSavedViewportScroll: () => setSaved(undefined),
+      },
+    })
+    await h.anchoredAt(4000)
+    h.scrollTo(4500)
+    setSaved(h.hook.getScrollState())
+
+    await h.hideThenShow()
+
+    // A save that records the position as at-bottom makes the show jump to the latest page.
+    expect(onJumpToLatest).not.toHaveBeenCalled()
+    expect(h.div.getScrollTop()).toBe(4500)
+    h.dispose()
+  })
+
+  it('keeps the anchor when rows change between the show and its flush', async () => {
+    const h = mountScrollHarness()
+    await h.anchoredAt(2000)
+    h.scrollTo(1990)
+    h.div.setClientHeight(0)
+    h.div.setScrollTop(0)
+    await h.resizeFlush()
+    h.div.setClientHeight(500)
+    // The geometry effect runs its position check at the position that the hook did not see.
+    h.changeBelow(100)
+    await h.resizeFlush()
+
+    expect(h.div.getScrollTop()).toBe(1990)
+    h.dispose()
+  })
 })
 
 describe('useChatScroll unmount save + visible-mount restore', () => {
@@ -878,7 +485,8 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
     disposalStarted = true
     expect(() => disposeRoot()).not.toThrow()
     expect(reentered).toBe(false)
-    expect(savedState).toEqual({ atBottom: true, hasMoreNewer: true })
+    // A mount on a window that is paged away and never scrolled holds no request for the tail.
+    expect(savedState).toMatchObject({ atBottom: false, hasMoreNewer: true })
   })
 
   it('consumes an at-bottom save on a visible mount (stick + clear)', () =>

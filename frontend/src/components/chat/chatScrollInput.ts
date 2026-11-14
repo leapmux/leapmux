@@ -1,5 +1,5 @@
 import type { ScrollContext } from './useChatScroll'
-import { EDGE_INTENT_TOLERANCE_PX } from './chatScrollGeometry'
+import { EDGE_INTENT_TOLERANCE_PX, hasScrollRoom } from './chatScrollGeometry'
 
 /**
  * Vertical overlap kept when paging (PageUp/PageDown): a page jump advances by
@@ -11,53 +11,47 @@ const PAGE_SCROLL_OVERLAP_PX = 48
 /**
  * The keyboard / wheel input layer: Home/End/PageUp/PageDown/Arrow keys and wheel
  * direction, plus the discrete-page scroll those drive. Extracted from the scroll hook
- * so the input handling has a named home and a test seam (the hook body had no boundary
- * around edge-pagination). It owns no scroll state of its own -- `lastScrollDir` and
- * `discretePageTarget` live in the hook because handleScroll reads them, threaded in as
- * setters -- so this is a thin policy layer over the hook's scroll primitives, mirroring
- * the other extracted units (createViewportRestore / createStickyBottom). `forceScroll-
- * ToBottom` stays in the hook (createViewportRestore and the public API also call it) and
- * is passed in.
+ * so the input handling has a named home and a test seam. It owns no scroll state of its
+ * own -- `lastScrollDir` lives in the hook because the scroll handler reads it, threaded
+ * in as a setter -- so this is a thin policy layer over the hook's scroll primitives.
+ * `forceScrollToBottom` stays in the hook (the viewport restore and the public API also
+ * call it) and is passed in.
  */
 export function createScrollInput(ctx: ScrollContext, extras: {
   // High-level scroll actions declared later in the hook than the shared context.
-  captureAnchor: () => void
-  captureTopAnchor: () => void
   checkAtBottom: () => void
   forceScrollToBottom: () => void
   cancelScrollAnimation: () => void
   cancelPendingScroll: () => void
+  /** Abandon an in-flight out-of-window seek: the reader took control. */
+  cancelPendingSeek: () => void
+  /**
+   * Resume the buffer fill that a press paused. A page writes through the controller, so
+   * its `scroll` event is an own write, and only a move of the reader ends that pause.
+   */
+  retakeScrollControl: () => void
   tryLoadOlderOnExplicitTopIntent: () => void
   tryLoadNewerOnExplicitBottomIntent: () => void
   setLastScrollDir: (dir: 'older' | 'newer') => void
-  setDiscretePageTarget: (target: number | null) => void
   hasOlderMessages: () => boolean
   onJumpToOldest: (() => void | Promise<void>) | undefined
 }) {
-  /** Pin scrollTop to the very top WITHOUT recomputing the slice (RO-safe). */
+  /** Place the view at the very top of the loaded rows. */
   const scrollToTopPosition = () => {
-    if (!ctx.getEl())
-      return
-    ctx.writeScrollTop(0, 'input-scroll-top')
-    // Anchor to the first row so a later geometry change keeps us pinned at top.
-    extras.captureTopAnchor()
-    ctx.setAtBottom(false)
+    ctx.placeAt(() => 0)
   }
 
   /**
    * Jump to the very first message in history (Home). When older history exists
    * beyond the window, re-fetch the earliest page first (jumpToOldest replaces
-   * the window), then pin to the top; otherwise just scroll to the top of the
+   * the window), then place at the top; otherwise just place at the top of the
    * already-loaded window.
    */
   const jumpToTop = () => {
     extras.cancelScrollAnimation()
     if (extras.hasOlderMessages()) {
       void Promise.resolve(extras.onJumpToOldest?.())
-        .then(() => {
-          scrollToTopPosition()
-          ctx.refreshViewport()
-        })
+        .then(() => scrollToTopPosition())
         .catch(() => extras.checkAtBottom())
       return
     }
@@ -66,75 +60,58 @@ export function createScrollInput(ctx: ScrollContext, extras: {
 
   const pageScroll = (direction: -1 | 1) => {
     // A 0-height container (hidden/collapsed pane, or the cold-start frame before
-    // measurement) can't scroll: clientHeight is 0, so the delta below is 0,
-    // scrollBy is a no-op, and scrollTop === before would then fire a spurious
-    // edge pagination on every key press. Bail like every other scroll method
-    // (stickToBottomPosition / repinToAnchor / getScrollState all guard this).
+    // measurement) can't scroll: clientHeight is 0, so the delta below is 0, and a
+    // no-move would then fire a spurious edge pagination on every key press.
     const el = ctx.getEl()
     if (!el || el.clientHeight === 0)
       return
+    // A page is a placement: it moves the view relative to the current content, so the
+    // layout shift goes first, and the scroll coordinate of the page is a content one.
+    ctx.rebase()
     // Advance by a viewport height minus a few lines of overlap, but never less
     // than half a page (guards against a degenerately short viewport).
     const delta = Math.max(el.clientHeight - PAGE_SCROLL_OVERLAP_PX, el.clientHeight / 2)
-    // scrollBy moves the position; the browser emits a single native `scroll`
-    // event that runs handleScroll (anchor capture, slice refresh, edge
-    // pagination). We do NOT synthesize an extra `scroll` event -- alongside
-    // scrollBy's native one that double-processed each page jump (the synthetic
-    // pass ran handleScroll a second time, re-dispatching pagination that the
-    // in-flight-fetch guards then no-op'd).
     const before = el.scrollTop
-    // Record this page's DESIRED (un-clamped) target so handleScroll recognizes the
-    // resulting native scroll event as this page (re-pin immediately, not deferred
-    // as fling drift) by position. Clamped to the scroll range at COMPARE time, not
-    // here: a ResizeObserver flush can change scrollHeight between this scrollBy and
-    // its native scroll event, re-clamping the browser's scrollTop -- a target
-    // clamped against the now-stale scrollHeight would miss the <=1px match and the
-    // page would be mishandled as a fling (deferred ~150ms). Re-clamping against the
-    // CURRENT range in handleScroll tracks the browser's own clamp.
-    extras.setDiscretePageTarget(before + direction * delta)
     el.scrollBy({ top: direction * delta, behavior: 'auto' })
-    // Already clamped at the edge: scrollBy can't move (scrollTop is unchanged),
-    // so the browser emits NO scroll event and the buffer fill would never run.
-    // Top up the buffer directly instead, so PageUp at the top / PageDown at the
-    // bottom still loads older / newer when more exists beyond the window.
-    // handleKeyDown set lastScrollDir, so the fill pages the right way. When
-    // scrollBy DID move, the native scroll event owns the fill -- no double-fill.
-    //
     // Compare with the SAME sub-pixel slack the edge-intent tests use, not exact
-    // equality: at a fractional-DPI / browser-zoom edge the clamp can leave
-    // scrollTop a fraction off `before` even when visually unmoved, so `=== before`
-    // would miss the at-edge case and the page-into-unloaded-history fill would
-    // never run. A genuine page moves by `delta` (>= half a viewport), never within
-    // this slack, so a real move is never misread as no-move; and even if it were,
-    // the in-flight-fetch guards make the resulting direct + native fill idempotent.
-    if (Math.abs(el.scrollTop - before) <= EDGE_INTENT_TOLERANCE_PX) {
-      // No (meaningful) scroll event will fire, so the target would leak onto the
-      // next genuine scroll; clear it here.
-      extras.setDiscretePageTarget(null)
-      // Route the page's direction through the explicit-edge-intent loader rather than
-      // the buffer filler. The loader is NOT gated by the buffer-fill pause, so a
-      // PageDown at the loaded bottom (or PageUp at the top) still pages newer/older
-      // right after a programmatic stop -- exactly where fillScrollBuffer would decline
-      // (bufferFillPaused). It loads ONE directional page; when not paused, the buffer
-      // filler's own messages() effect tops up the render-ahead once that page lands,
-      // so a single load here can't double-fetch the same direction.
-      if (direction === 1)
-        extras.tryLoadNewerOnExplicitBottomIntent()
-      else
-        extras.tryLoadOlderOnExplicitTopIntent()
+    // equality: at a fractional-DPI / browser-zoom edge the clamp can leave scrollTop a
+    // fraction off `before` even when visually unmoved. A genuine page moves by `delta`
+    // (>= half a viewport), never within this slack.
+    if (Math.abs(el.scrollTop - before) > EDGE_INTENT_TOLERANCE_PX) {
+      extras.retakeScrollControl()
+      if (direction === -1)
+        ctx.leaveFollow()
+      ctx.syncAfterWrite()
+      return
     }
+    // Already clamped at the edge: the page could not move. Route its direction
+    // through the explicit-edge-intent loader rather than the buffer filler. The loader
+    // is NOT gated by the buffer-fill pause, so a PageDown at the loaded bottom (or
+    // PageUp at the top) still pages newer/older right after a programmatic stop. It
+    // loads ONE directional page; the buffer filler's own messages() effect tops up the
+    // render-ahead once that page lands.
+    if (direction === 1)
+      extras.tryLoadNewerOnExplicitBottomIntent()
+    else
+      extras.tryLoadOlderOnExplicitTopIntent()
   }
 
   const handleWheel = (event: WheelEvent) => {
     if (event.ctrlKey)
       return
+    const el = ctx.getEl()
     // Only treat a wheel event as a VERTICAL scroll intent when the vertical
     // component dominates. A horizontal/diagonal trackpad swipe leaks a small
     // vertical deltaY; without this guard that leak fires a spurious edge-load and
     // mis-sets lastScrollDir (which then steers the buffer filler the wrong way).
     if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+      extras.cancelPendingSeek()
       if (event.deltaY < 0) {
         extras.setLastScrollDir('older')
+        // An upward step that can move the view ends follow mode at once, before its
+        // `scroll` event, so no growth in between pulls the reader back down.
+        if (el && hasScrollRoom(el, -1))
+          ctx.leaveFollow()
         extras.tryLoadOlderOnExplicitTopIntent()
       }
       else {
@@ -145,7 +122,7 @@ export function createScrollInput(ctx: ScrollContext, extras: {
     else if (event.deltaX === 0 && event.deltaY === 0) {
       // A no-movement wheel event (deltaX and deltaY both 0): the trackpad
       // momentum-cancel the browser fires when the user rests fingers to stop an
-      // inertial scroll. Halt the deferred settle so the view stops immediately.
+      // inertial scroll. Halt the programmatic scroll and the buffer fill now.
       extras.cancelPendingScroll()
     }
   }
@@ -162,33 +139,46 @@ export function createScrollInput(ctx: ScrollContext, extras: {
       // viewport can't actually scroll (a hidden-only window page).
       case 'Home':
         event.preventDefault()
+        extras.cancelPendingSeek()
         extras.setLastScrollDir('older')
         jumpToTop()
         break
       case 'End':
         event.preventDefault()
+        extras.cancelPendingSeek()
         extras.setLastScrollDir('newer')
         extras.forceScrollToBottom()
         break
       case 'PageUp':
         event.preventDefault()
+        extras.cancelPendingSeek()
         extras.setLastScrollDir('older')
         pageScroll(-1)
         break
       case 'PageDown':
         event.preventDefault()
+        extras.cancelPendingSeek()
         extras.setLastScrollDir('newer')
         pageScroll(1)
         break
-      // Arrow keys keep the browser's native line scroll; we only nudge
+      // Arrow keys and Space keep the browser's native scroll; we only nudge
       // pagination when the user is explicitly pressed against an edge.
-      case 'ArrowUp':
+      case 'ArrowUp': {
+        extras.cancelPendingSeek()
         extras.setLastScrollDir('older')
+        const el = ctx.getEl()
+        if (el && hasScrollRoom(el, -1))
+          ctx.leaveFollow()
         extras.tryLoadOlderOnExplicitTopIntent()
         break
+      }
       case 'ArrowDown':
+        extras.cancelPendingSeek()
         extras.setLastScrollDir('newer')
         extras.tryLoadNewerOnExplicitBottomIntent()
+        break
+      case ' ':
+        extras.cancelPendingSeek()
         break
     }
   }

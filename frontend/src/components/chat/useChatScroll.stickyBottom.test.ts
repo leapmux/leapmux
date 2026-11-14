@@ -1,10 +1,10 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createRoot, createSignal } from 'solid-js'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeStubVirtualizer } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeStubVirtualizer, mountScrollHarness } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -185,4 +185,69 @@ describe('useChatScroll scroll-to-bottom animation', () => {
         }
       })
     }))
+})
+
+describe('useChatScroll tail growth', () => {
+  it('stays 20px above the tail when the tail grows', () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setClientHeight(500)
+          div.setScrollHeight(2000)
+          const { virt, setTotal } = makeGrowableVirtualizer()
+          setTotal(2000)
+          const [messages] = createSignal<AgentChatMessage[]>([])
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+          })
+          hook.attachListRef(div.el)
+          await Promise.resolve()
+          await Promise.resolve()
+          expect(div.getScrollTop()).toBe(1500)
+
+          div.setScrollTop(1480)
+          hook.handlers.onScroll()
+          div.setScrollHeight(2100)
+          setTotal(2100)
+          await Promise.resolve()
+          await Promise.resolve()
+
+          expect(div.getScrollTop()).toBe(1480)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
+        }
+      })
+    }))
+})
+
+describe('useChatScroll buffer-fill pause', () => {
+  it('pauses the buffer fill on a zero wheel', async () => {
+    const onLoadOlderMessages = vi.fn()
+    const h = mountScrollHarness({
+      messages: [],
+      hookOptions: {
+        hasOlderMessages: () => true,
+        onLoadOlderMessages,
+      },
+    })
+    await h.anchoredAt(600)
+    onLoadOlderMessages.mockClear()
+
+    // The trackpad momentum-cancel: the reader rests the fingers to stop a scroll.
+    h.hook.handlers.onWheel(new WheelEvent('wheel', { deltaX: 0, deltaY: 0 }))
+    h.setMessages([{} as AgentChatMessage])
+    expect(onLoadOlderMessages).not.toHaveBeenCalled()
+
+    h.scrollTo(590)
+    expect(onLoadOlderMessages).toHaveBeenCalled()
+    h.dispose()
+  })
 })

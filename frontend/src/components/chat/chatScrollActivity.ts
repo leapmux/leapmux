@@ -52,7 +52,7 @@ export interface ScrollActivity {
   /**
    * A bare `scroll` event. Opens the window ONLY within `momentumGraceMs` of the last
    * `noteInput`, so a post-flick coast keeps it open while our own programmatic writes
-   * (stick-to-bottom, anchor re-pin, seek) never do.
+   * (stick-to-bottom, rebase, seek) never do.
    */
   noteScroll: () => void
   /**

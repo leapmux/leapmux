@@ -102,7 +102,7 @@ describe('useChatVirtualizer geometry', () => {
       const { virt } = setup(plainItems(3))
       // Some browsers report a transient NEGATIVE scrollTop during elastic
       // overscroll at the top. indexAtOffset floors it to row 0, so `within`
-      // would go negative and store a negative offset that re-pins above the top.
+      // would go negative and store a negative offset that restores above the top.
       const anchor = virt.anchorAt(-40)
       expect(anchor).toEqual({
         id: 'm1',
@@ -211,107 +211,6 @@ describe('useChatVirtualizer geometry', () => {
       finally {
         dispose()
       }
-    })
-  })
-
-  it('defers visible-row attach measurements until the deferral is released', () => {
-    createRoot((dispose) => {
-      try {
-        const { virt } = setup(plainItems(1))
-        const row = fakeRow(333)
-        document.body.append(row)
-
-        virt.setVisibleMeasurementDeferral(true)
-        virt.attachRow('m1', row)
-
-        expect(virt.hasDeferredMeasurements()).toBe(true)
-        expect(virt.heightOfIndex(0)).toBe(100)
-        expect(virt.totalHeight()).toBe(100)
-
-        virt.setVisibleMeasurementDeferral(false)
-        expect(virt.flushDeferredMeasurements()).toBe(true)
-        expect(virt.hasDeferredMeasurements()).toBe(false)
-        expect(virt.heightOfIndex(0)).toBe(333)
-        expect(virt.totalHeight()).toBe(333)
-        row.remove()
-      }
-      finally {
-        dispose()
-      }
-    })
-  })
-
-  it('retains a deferred zero and keeps the positive estimate after its commit', () => {
-    createRoot((dispose) => {
-      try {
-        const { virt } = setup(plainItems(2))
-        virt.measure('m2', 100)
-        virt.setVisibleMeasurementDeferral(true)
-        expect(virt.primeHeight('m1', 0)).toBe(false)
-        expect(virt.hasPendingPremeasuredHeight('m1')).toBe(true)
-        expect(virt.hasMeasuredHeight('m1')).toBe(false)
-        expect(virt.heightOfIndex(0)).toBe(100)
-        virt.setVisibleMeasurementDeferral(false)
-        expect(virt.flushDeferredMeasurements()).toBe(true)
-        expect(virt.hasPendingPremeasuredHeight('m1')).toBe(false)
-        expect(virt.hasMeasuredHeight('m1')).toBe(true)
-        expect(virt.heightOfIndex(0)).toBe(0)
-        expect(virt.offsetOfIndex(1)).toBe(20)
-        expect(virt.totalHeight()).toBe(120)
-        expect(virt.estimateHeight()).toBe(100)
-      }
-      finally {
-        dispose()
-      }
-    })
-  })
-
-  it('defers hidden premeasure commits until the measurement deferral is released', () => {
-    createRoot((dispose) => {
-      const { virt } = setup(plainItems(3))
-
-      virt.setVisibleMeasurementDeferral(true)
-      expect(virt.primeHeight('m1', 700)).toBe(false)
-      expect(virt.primeHeight('m1', 852)).toBe(false)
-      expect(virt.primeHeight('m1', -1)).toBe(false)
-
-      expect(virt.hasDeferredMeasurements()).toBe(true)
-      expect(virt.hasPendingPremeasuredHeight('m1')).toBe(true)
-      expect(virt.heightOfIndex(0)).toBe(100)
-      expect(virt.totalHeight()).toBe(340)
-
-      virt.setVisibleMeasurementDeferral(false)
-      expect(virt.flushDeferredMeasurements()).toBe(true)
-
-      expect(virt.hasDeferredMeasurements()).toBe(false)
-      expect(virt.hasPendingPremeasuredHeight('m1')).toBe(false)
-      expect(virt.heightOfIndex(0)).toBe(852)
-      expect(virt.totalHeight()).toBe(2596)
-      dispose()
-    })
-  })
-
-  it('queues a hidden premeasure while measurement is deferred and applies it on flush', () => {
-    createRoot((dispose) => {
-      const { virt } = setup(plainItems(2))
-      virt.measure('m2', 100)
-      // m1 is unmeasured -> it reserves the estimate (100) throughout the deferral.
-      virt.setVisibleMeasurementDeferral(true)
-      expect(virt.primeHeight('m1', 300)).toBe(false) // queued behind the deferral, not applied
-
-      expect(virt.hasPendingPremeasuredHeight('m1')).toBe(true)
-      expect(virt.heightOfIndex(0)).toBe(100) // still the estimate -- the queued 300 hasn't applied
-      expect(virt.offsetOfIndex(1)).toBe(120) // m1 estimate(100) + gap(20)
-      expect(virt.totalHeight()).toBe(220) // 100 + 20 + 100
-
-      virt.setVisibleMeasurementDeferral(false)
-      expect(virt.flushDeferredMeasurements()).toBe(true)
-
-      expect(virt.hasPendingPremeasuredHeight('m1')).toBe(false)
-      expect(virt.heightOfIndex(0)).toBe(300)
-      expect(virt.offsetOfIndex(1)).toBe(320)
-      expect(virt.totalHeight()).toBe(420)
-      dispose()
     })
   })
 
