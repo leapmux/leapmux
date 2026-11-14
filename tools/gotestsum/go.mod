@@ -1,6 +1,6 @@
 module github.com/leapmux/leapmux/tools/gotestsum
 
-go 1.27.3
+go 1.27.4
 
 require (
 	github.com/bitfield/gotestdox v0.2.2 // indirect
