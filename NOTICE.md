@@ -116,7 +116,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [go.yaml.in/yaml/v3 v3.0.6](#goyamlinyamlv3-v306)
 - [go.yaml.in/yaml/v4 v4.0.0](#goyamlinyamlv4-v400)
 - [go4.org/netipx v0.0.0-20260823151212-3075585bcbeb](#go4orgnetipx-v000-20260823151212-3075585bcbeb)
-- [golang.org/x/crypto v0.58.0](#golangorgxcrypto-v0580)
+- [golang.org/x/crypto v0.59.0](#golangorgxcrypto-v0590)
 - [golang.org/x/mod v0.43.0](#golangorgxmod-v0430)
 - [golang.org/x/net v0.62.0](#golangorgxnet-v0620)
 - [golang.org/x/oauth2 v0.38.0](#golangorgxoauth2-v0380)
@@ -11386,7 +11386,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
-### golang.org/x/crypto v0.58.0
+### golang.org/x/crypto v0.59.0
 
 ```
 Copyright 2009 The Go Authors.
