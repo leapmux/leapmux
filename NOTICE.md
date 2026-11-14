@@ -516,8 +516,8 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [tauri-plugin-clipboard-manager 2.5.0 (Apache-2.0 OR MIT)](#tauri-plugin-clipboard-manager-250-apache-20-or-mit)
 - [tauri-plugin-dialog 2.8.4 (Apache-2.0 OR MIT)](#tauri-plugin-dialog-284-apache-20-or-mit)
 - [tauri-plugin-fs 2.7.1 (Apache-2.0 OR MIT)](#tauri-plugin-fs-271-apache-20-or-mit)
-- [tauri-plugin-notification 2.8.0 (Apache-2.0 OR MIT)](#tauri-plugin-notification-280-apache-20-or-mit)
-- [tauri-plugin-opener 2.7.2 (Apache-2.0 OR MIT)](#tauri-plugin-opener-272-apache-20-or-mit)
+- [tauri-plugin-notification 2.8.1 (Apache-2.0 OR MIT)](#tauri-plugin-notification-281-apache-20-or-mit)
+- [tauri-plugin-opener 2.7.3 (Apache-2.0 OR MIT)](#tauri-plugin-opener-273-apache-20-or-mit)
 - [tauri-plugin-single-instance 2.5.5 (Apache-2.0 OR MIT)](#tauri-plugin-single-instance-255-apache-20-or-mit)
 - [tauri-runtime 2.12.2 (Apache-2.0 OR MIT)](#tauri-runtime-2122-apache-20-or-mit)
 - [tauri-runtime-wry 2.12.3 (Apache-2.0 OR MIT)](#tauri-runtime-wry-2123-apache-20-or-mit)
@@ -686,8 +686,8 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [@solidjs/start 2.2.2 (MIT)](#solidjsstart-222-mit)
 - [@tauri-apps/api 2.12.4 (Apache-2.0 OR MIT)](#tauri-appsapi-2124-apache-20-or-mit)
 - [@tauri-apps/plugin-clipboard-manager 2.5.0 (MIT OR Apache-2.0)](#tauri-appsplugin-clipboard-manager-250-mit-or-apache-20)
-- [@tauri-apps/plugin-notification 2.8.0 (MIT OR Apache-2.0)](#tauri-appsplugin-notification-280-mit-or-apache-20)
-- [@tauri-apps/plugin-opener 2.7.2 (MIT OR Apache-2.0)](#tauri-appsplugin-opener-272-mit-or-apache-20)
+- [@tauri-apps/plugin-notification 2.8.1 (MIT OR Apache-2.0)](#tauri-appsplugin-notification-281-mit-or-apache-20)
+- [@tauri-apps/plugin-opener 2.7.3 (MIT OR Apache-2.0)](#tauri-appsplugin-opener-273-mit-or-apache-20)
 - [@thisbeyond/solid-dnd 0.7.5 (MIT)](#thisbeyondsolid-dnd-075-mit)
 - [@vanilla-extract/css 1.21.3 (MIT)](#vanilla-extractcss-1213-mit)
 - [@xterm/addon-fit 0.12.0-beta.333 (MIT)](#xtermaddon-fit-0120-beta333-mit)
@@ -76555,7 +76555,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### tauri-plugin-notification 2.8.0 (Apache-2.0 OR MIT)
+### tauri-plugin-notification 2.8.1 (Apache-2.0 OR MIT)
 
 ```
 SPDXVersion: SPDX-2.1
@@ -76783,7 +76783,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### tauri-plugin-opener 2.7.2 (Apache-2.0 OR MIT)
+### tauri-plugin-opener 2.7.3 (Apache-2.0 OR MIT)
 
 ```
 SPDXVersion: SPDX-2.1
@@ -99653,7 +99653,7 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tauri.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### @tauri-apps/plugin-notification 2.8.0 (MIT OR Apache-2.0)
+### @tauri-apps/plugin-notification 2.8.1 (MIT OR Apache-2.0)
 
 ```
 SPDXVersion: SPDX-2.1
@@ -99678,7 +99678,7 @@ PackageDownloadLocation: git+ssh://github.com/tauri-apps/tauri.git
 Creator: Person: Daniel Thompson-Yvetot
 ```
 
-### @tauri-apps/plugin-opener 2.7.2 (MIT OR Apache-2.0)
+### @tauri-apps/plugin-opener 2.7.3 (MIT OR Apache-2.0)
 
 ```
 SPDXVersion: SPDX-2.1
