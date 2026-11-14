@@ -173,14 +173,14 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
   }
 
   // Neither restore nor stick (an already-visible resize, or a hidden->visible show
-  // that wasn't at the bottom and had no saved non-bottom scroll). A geometry change that
-  // landed while the pane was HIDDEN moved nothing (the layout shift is 0 while hidden),
-  // and the browser can move `scrollTop` while the pane is hidden, so a show puts the
-  // reader back at the anchor captured in the ResizeObserver callback. Then record the
-  // position as an own write: it re-seats the direction and velocity baselines (a viewport
-  // shrink clamps scrollTop with no write, and a stale baseline would read that clamp as
-  // the reader's move), runs the position check after the restore, and recomputes the
-  // rendered slice (a taller pane reveals rows below the old slice; safe to mount
+  // that wasn't at the bottom and had no saved non-bottom scroll). While the pane is
+  // HIDDEN, a geometry change sets the layout shift to 0 and compensates nothing, so it
+  // moves the content under the reader, and the browser can also move `scrollTop`. So a
+  // show puts the reader back at the anchor captured in the ResizeObserver callback. Then
+  // record the position as an own write: it re-seats the direction and velocity baselines
+  // (a viewport shrink clamps scrollTop with no write, and a stale baseline would read that
+  // clamp as the reader's move), runs the position check after the restore, and recomputes
+  // the rendered slice (a taller pane reveals rows below the old slice; safe to mount
   // synchronously -- we're in a rAF, outside RO delivery).
   const recheckOnResize = (rc: ResizeContext) => {
     if (rc.wasHidden)

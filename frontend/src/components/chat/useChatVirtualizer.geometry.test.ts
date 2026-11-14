@@ -1560,21 +1560,39 @@ describe('useChatVirtualizer layoutShift', () => {
     dispose()
   })
 
+  /**
+   * The shift after `measuredId` measures 160px, on a scroll element whose `scrollTop`
+   * reads `scrollTop` with no clamp. A rubber-band overscroll in Safari or WebKit can
+   * report a `scrollTop` outside the scroll range, above the maximum at the bottom edge.
+   * The virtualizer therefore passes `clampScrollTop` of the value to the shift rule.
+   * The scroll range is 2380 - 500, so the maximum `scrollTop` is 1880.
+   */
+  function shiftAtUnclampedScrollTop(scrollTop: number, measuredId: string): number {
+    const { scroller } = fakeLayout({ scrollHeight: 2380 })
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+    })
+    const { virt, dispose } = mount({ scroller })
+    virt.measure(measuredId, 160)
+    const shift = virt.layoutShift()
+    dispose()
+    return shift
+  }
+
   it('clamps a scrollTop above the maximum', () => {
-    const shiftAt = (scrollTop: number) => {
-      const { scroller } = fakeLayout({ scrollHeight: 2380 })
-      Object.defineProperty(scroller, 'scrollTop', {
-        configurable: true,
-        get: () => scrollTop,
-      })
-      const { virt, dispose } = mount({ scroller })
-      virt.measure('m4', 160)
-      const shift = virt.layoutShift()
-      dispose()
-      return shift
-    }
+    const shiftAt = (scrollTop: number) => shiftAtUnclampedScrollTop(scrollTop, 'm4')
     expect(shiftAt(99_999)).toBe(shiftAt(1880))
     expect(shiftAt(1880)).toBe(-60)
+  })
+
+  it('holds the row under the clamped viewport top for a scrollTop above the maximum', () => {
+    // Row 15 (`m16`) spans 1800 to 1900, so it holds the clamped viewport top at 1880. It
+    // grows below that point, so the shift is 0. An unclamped 99999 lies below the last
+    // row instead, which holds its bottom edge and moves the rows up by the 60px growth.
+    const shiftAt = (scrollTop: number) => shiftAtUnclampedScrollTop(scrollTop, 'm16')
+    expect(shiftAt(1880)).toBe(0)
+    expect(shiftAt(99_999)).toBe(shiftAt(1880))
   })
 
   it('keeps the content bottom while pinBottom is true', () => {
@@ -1607,18 +1625,20 @@ describe('useChatVirtualizer layoutShift', () => {
     dispose()
   })
 
-  it('records the pivot element again when a fast scroll ends', () => {
+  it('records the pivot element once a fast scroll stops, before the fast scroll ends', () => {
     const frames = manualFrames()
-    const { scroller } = fakeLayout({ scrollTop: 1250 })
+    const { scroller } = fakeLayout({ scrollTop: 1200 })
     const { virt, dispose } = mount({ scroller })
     const row = mountRow10(virt, 1250)
-    // A fast scroll suspends the record: each frame drops it.
+    // A fast scroll moves the view to 1250. Its frame sees a new position, so it drops the
+    // record and asks for one more frame.
     virt.setFastScrollActive(true)
+    scroller.scrollTop = 1250
     virt.updateViewport(1250, 500)
     frames.run()
 
-    // The scroll stopped at 1250. No later scroll or geometry change schedules a frame.
-    virt.setFastScrollActive(false)
+    // The scroll stopped at 1250, and the fast scroll has not ended: the next frame sees
+    // the same position and records.
     frames.run()
     row.childTop = 50
     virt.measure(ROW_10, 130)

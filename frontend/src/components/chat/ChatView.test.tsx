@@ -1899,7 +1899,7 @@ describe('ChatView', () => {
       get: () => clientHeight,
     })
 
-    // Pin to the bottom and let the sticky-bottom record seed.
+    // Pin to the bottom, and let the scroll handler see that position.
     scrollTop = scrollHeight - clientHeight // 500
     fireEvent.scroll(messageList)
     await flushAnimationFrame()
@@ -3862,10 +3862,6 @@ describe('chat view virtualized with stubbed deps', () => {
     })
   })
 
-  // The scroll-idle window that holds syntax highlighting (and the premeasure warm-up)
-  // off while the reader scrolls. It runs on a createScrollActivity instance shared with
-  // the scroll rail's own window, so these pin the behaviour that must NOT change when
-  // the rail's window is fed differently -- see ChatView's highlightActivity.
   describe('chat view scroll bindings', () => {
     beforeEach(() => {
       virtualizerState.attachedIds = []
@@ -3903,6 +3899,38 @@ describe('chat view virtualized with stubbed deps', () => {
         expect(spy).not.toHaveBeenCalled()
     })
 
+    it('re-sticks on each expand tick of the thinking indicator', async () => {
+      // The indicator's tick loop asks for a frame on each tick, so the synchronous frame of
+      // the test setup would recurse. A queue that the test runs by hand replaces it.
+      const frames: FrameRequestCallback[] = []
+      vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => frames.push(cb))
+      vi.stubGlobal('cancelAnimationFrame', () => {})
+      try {
+        virtualizerState.setRange?.({ start: 0, end: 1 })
+        render(() => (
+          <ChatView
+            messages={[
+              message('m0', 1),
+            ]}
+            agentLifecycle={{ agentWorking: true }}
+          />
+        ))
+        const restick = mockState.scrollStub!.restickIfAtBottom as ReturnType<typeof vi.fn>
+        restick.mockClear()
+
+        for (let run = 0; run < 3 && frames.length > 0; run++) {
+          const pending = frames.splice(0)
+          for (const cb of pending)
+            cb(performance.now())
+        }
+
+        expect(restick).toHaveBeenCalled()
+      }
+      finally {
+        vi.unstubAllGlobals()
+      }
+    })
+
     it('reads the near-viewport band in content coordinates', async () => {
       // The layer is shifted by -1000: scroll coordinate 100 is content 1100.
       virtualizerState.contentTopOffset = 1000
@@ -3929,6 +3957,10 @@ describe('chat view virtualized with stubbed deps', () => {
     })
   })
 
+  // The scroll-idle window that holds syntax highlighting (and the premeasure warm-up)
+  // off while the reader scrolls. It runs on a createScrollActivity instance shared with
+  // the scroll rail's own window, so these pin the behaviour that must NOT change when
+  // the rail's window is fed differently -- see ChatView's highlightActivity.
   describe('chat view syntax-highlight scroll pause', () => {
     const renderChat = () => render(() => (
       <ChatView
@@ -4180,10 +4212,10 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(rail(container).className).toContain(railIdle)
     })
 
-    // The cap on that relight. Echo detection can miss when the browser delivers a
-    // programmatic write's echo after the guard's marker expires, and an uncapped
-    // relight would then hold the rail lit commit after commit through a streaming
-    // turn. The bound is measured from the last INPUT and never re-based by a scroll.
+    // The cap on that relight. The hook also reports a scroll that the browser makes
+    // by itself, such as the clamp after the content shrinks, and an uncapped relight
+    // would then light the rail again for each such scroll through a streaming turn.
+    // The bound is measured from the last INPUT and never re-based by a scroll.
     it('stops relighting the rail once a coast outruns its bound', () => {
       vi.useFakeTimers({
         toFake: ['performance', 'setTimeout', 'clearTimeout'],

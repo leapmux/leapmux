@@ -38,10 +38,16 @@ export interface ScrollRest {
   /**
    * The last pointer or touch went up. When no quiet time or confirm frame is pending,
    * the scroller enters rest now: a geometry change during a press with no scroll waits
-   * for this call.
+   * for this call. When the press moved the scroller and the `scroll` event of that move
+   * has not arrived (`hasUnseenMove`), the quiet time starts instead.
    */
   noteInputEnded: () => void
-  /** Whether the scroller rests now. True at creation. */
+  /**
+   * Whether the scroller rests now. True at creation. False while a move is on its way
+   * (`hasUnseenMove`): the raw position changed, although its `scroll` event, which ends
+   * the rest, did not arrive yet. A write at that time would record the moved position as
+   * seen, and the event would then read as no move.
+   */
   isResting: () => boolean
   /** Clear the timer and cancel the frame. */
   dispose: () => void
@@ -122,10 +128,18 @@ export function createScrollRest(deps: ScrollRestDeps): ScrollRest {
       startQuietTime()
     },
     noteInputEnded: () => {
-      if (quietTimer === undefined && confirmFrame === undefined)
-        enterRest()
+      if (quietTimer !== undefined || confirmFrame !== undefined)
+        return
+      // The press moved the scroller, and the `scroll` event of that move has not arrived:
+      // the scroller is not at rest yet, so the quiet time and the confirm frame decide.
+      if (deps.hasUnseenMove()) {
+        resting = false
+        startQuietTime()
+        return
+      }
+      enterRest()
     },
-    isResting: () => resting && !deps.isInputActive(),
+    isResting: () => resting && !deps.isInputActive() && !deps.hasUnseenMove(),
     dispose: () => {
       clearQuietTimer()
       cancelConfirmFrame()

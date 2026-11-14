@@ -340,6 +340,23 @@ describe('chatScrollBufferFiller', () => {
     expect(h.counts().olderLoads).toBe(0)
   })
 
+  it('does not fetch for a suppressed older side below the ceiling', () => {
+    // At the ceiling on the live tail, the ceiling gate alone blocks the older side (see
+    // "at the ceiling on the live tail, an older deficit does not fetch"), so that input
+    // cannot show the suppression. Below the ceiling, only the suppression blocks it.
+    const h = harness({ olderGrowsBy: 0, newerGrowsBy: 0 })
+    h.enable()
+    h.setHas(true, false)
+    h.setSuppressOlder(true)
+    h.filler.fill()
+    expect(h.counts().olderLoads).toBe(0)
+
+    // The same input pages once the suppression ends.
+    h.setSuppressOlder(false)
+    h.filler.fill()
+    expect(h.counts().olderLoads).toBe(1)
+  })
+
   it('at the ceiling, a deficit on the side scrolled AWAY from does not fetch', () => {
     // At the ceiling, scrolled away (hasNewer) and parked at the very oldest (hasOlder
     // false), near the in-memory bottom (newer buffer thin). The newer deficit is real but

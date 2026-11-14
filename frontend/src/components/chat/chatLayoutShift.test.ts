@@ -137,6 +137,20 @@ describe('nextLayoutShift', () => {
       .toMatchObject({ shift: -40, calls: 0 })
   })
 
+  it('holds the top edge of a held row that grows', () => {
+    // Row 1 grows by 40, and row 3, the held row, grows by 60. Row 3 spans 300 to 400, so
+    // the top-edge case gives c' = top'(3) + (300 - 300) = 340 and a shift of
+    // 300 - 340 = -40. The bottom-edge formula gives c' = bottom'(3) + (300 - 400) =
+    // 500 - 100 = 400 and a shift of -100.
+    expect(shiftFor({
+      previous: rows(),
+      next: withHeight(withHeight(rows(), 'r1', 140), 'r3', 160),
+      c: 300,
+      p: 0,
+    }))
+      .toMatchObject({ shift: -40, calls: 0 })
+  })
+
   it('holds the top edge within the slack of one pixel', () => {
     expect(shiftFor({
       previous: rows(),
@@ -259,6 +273,18 @@ describe('nextLayoutShift', () => {
       next: rows().slice(0, 8),
       c: 850,
     })).toMatchObject({ shift: -40, calls: 0 })
+  })
+
+  it('holds the bottom edge of the nearest upper row that grows', () => {
+    // Rows 8 and 9 are removed, and row 7 grows by 60. Row 7 spans 700 to 800 before and
+    // 700 to 860 after, so c' = bottom'(7) + (850 - 800) = 860 + 50 = 910. The scroll
+    // position is 850 - 40 = 810, so the shift is 810 - 910 = -100: `p` minus the growth.
+    // The top-edge formula gives c' = top'(7) + (850 - 700) = 850 and a shift of -40.
+    expect(shiftFor({
+      previous: rows(),
+      next: withHeight(rows(), 'r7', 160).slice(0, 8),
+      c: 850,
+    })).toMatchObject({ shift: -100, calls: 0 })
   })
 
   it('returns 0 when no row exists in both snapshots', () => {

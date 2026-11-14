@@ -407,9 +407,9 @@ describe('chatRowHeightPersistence', () => {
   // ONE LOAD PER INSTANCE is the whole contract, and it is what makes a
   // post-await identity recheck unreachable: the latch means a second id issues
   // no read at all, so no read can land under a chat the effect moved off. The
-  // latch alone would NOT be enough to support a moving id -- `pending` and
-  // `attemptedAdoptions` still hold the previous chat's rows -- which is why
-  // `ChatView` gives each agent tab its own instance instead.
+  // latch alone would NOT be enough to support a moving id -- `pending` still
+  // holds the previous chat's rows -- which is why `ChatView` gives each agent tab
+  // its own instance instead.
   it('loads once per instance, ignoring a storage id that moves afterwards', async () => {
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,

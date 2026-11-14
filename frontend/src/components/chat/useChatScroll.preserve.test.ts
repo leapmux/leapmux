@@ -126,6 +126,7 @@ describe('useChatScroll scroll controller', () => {
 
     expect(h.div.getScrollTop()).toBe(4500)
     expect(h.hook.isFollowing()).toBe(false)
+    expect(h.hook.getScrollState()).toMatchObject({ atBottom: false })
     h.dispose()
   })
 
@@ -171,6 +172,7 @@ describe('useChatScroll scroll controller', () => {
 
     expect(h.div.getScrollTop()).toBe(2060)
     expect(h.hook.isFollowing()).toBe(false)
+    expect(h.hook.getScrollState()).toMatchObject({ atBottom: false })
     h.dispose()
   })
 

@@ -67,6 +67,11 @@ async function waitForScrollRest(page: Page): Promise<void> {
   })), { message: 'the chat stops scrolling' }).toBe(true)
 }
 
+/** The `scrollTop` of the chat. */
+async function readScrollTop(page: Page): Promise<number> {
+  return chatScrollContainer(page).evaluate(container => container.scrollTop)
+}
+
 /** The distance from the bottom of the view to the bottom of the content. */
 async function distanceFromBottom(page: Page): Promise<number> {
   return chatScrollContainer(page).evaluate(container => container.scrollHeight - container.scrollTop - container.clientHeight)
@@ -77,6 +82,20 @@ async function pointAtChat(page: Page): Promise<void> {
   const box = await chatScrollContainer(page).boundingBox()
   expect(box, 'the chat has a box on screen').not.toBeNull()
   await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2)
+}
+
+/**
+ * Wheel the chat up by `pixels`, then wait until the view moves above its position before the wheel and stops there.
+ * `page.mouse.wheel` only sends the input event and does not wait for the scroll. A rest check right after it can see
+ * the view before the scroll starts, so this helper first waits until `scrollTop` decreases. It waits for a decrease,
+ * not for any change, because new content below a view at the bottom increases `scrollTop` without the wheel.
+ */
+async function wheelChatUp(page: Page, pixels: number): Promise<void> {
+  await pointAtChat(page)
+  const before = await readScrollTop(page)
+  await page.mouse.wheel(0, -pixels)
+  await expect.poll(() => readScrollTop(page), { message: 'the wheel scrolls the chat up' }).toBeLessThan(before)
+  await waitForScrollRest(page)
 }
 
 test.describe('chat scroll stability', () => {
@@ -94,9 +113,7 @@ test.describe('chat scroll stability', () => {
     // The turn ends at the bottom of the answer. Half of its height up is the middle of the answer.
     const atBottom = await readTopParagraph(page)
     expect(atBottom, 'a paragraph of the answer is on screen').not.toBeNull()
-    await pointAtChat(page)
-    await page.mouse.wheel(0, -Math.round(atBottom!.rowHeight / 2))
-    await waitForScrollRest(page)
+    await wheelChatUp(page, Math.round(atBottom!.rowHeight / 2))
 
     const before = await readTopParagraph(page)
     expect(before, 'a paragraph of the answer is at the top').not.toBeNull()
@@ -127,11 +144,9 @@ test.describe('chat scroll stability', () => {
     await modelScript.waitForGate(gate)
     await waitForScrollRest(page)
 
-    await pointAtChat(page)
-    await page.mouse.wheel(0, -30)
-    await waitForScrollRest(page)
-    expect(await distanceFromBottom(page), 'the wheel moved the view above the bottom').toBeGreaterThan(2)
-    const scrollTop = await chatScrollContainer(page).evaluate(container => container.scrollTop)
+    await wheelChatUp(page, 30)
+    await expect.poll(() => distanceFromBottom(page), { message: 'the wheel moved the view above the bottom' }).toBeGreaterThan(2)
+    const scrollTop = await readScrollTop(page)
 
     await modelScript.releaseGate(gate)
     await modelScript.waitForSteps(step + 1)
@@ -139,7 +154,7 @@ test.describe('chat scroll stability', () => {
     await waitForAgentIdle(page)
     await waitForScrollRest(page)
 
-    expect(Math.abs(await chatScrollContainer(page).evaluate(container => container.scrollTop) - scrollTop)).toBeLessThanOrEqual(1)
+    expect(Math.abs(await readScrollTop(page) - scrollTop)).toBeLessThanOrEqual(1)
     await expect(page.getByRole('button', { name: 'Scroll to bottom' })).toBeVisible()
   })
 })

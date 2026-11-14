@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { test } from './fixtures'
 import { PREVIEW, RAIL, RAIL_DOT, RAIL_FILLER_PREVIEW, seedOverflowingConversation, THUMB } from './helpers/chatScrollRail'
@@ -38,6 +38,25 @@ function userRow(page: Page, nth: number) {
       has: page.locator(USER_BUBBLE_SELECTOR),
     })
     .nth(nth)
+}
+
+/**
+ * The box of `locator` once two reads, one frame apart, agree. The preview card clamps its Y
+ * against its own height, and it reports that height in a frame after its text lands, so the
+ * card moves once after it opens. A box read before that move sends a later pointer action
+ * past the card.
+ */
+async function settledBox(page: Page, locator: Locator) {
+  let box = await locator.boundingBox()
+  await expect.poll(async () => {
+    const previous = box
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(resolve)))
+    box = await locator.boundingBox()
+    return previous !== null && box !== null
+      && previous.x === box.x && previous.y === box.y
+      && previous.width === box.width && previous.height === box.height
+  }, { message: 'the element stops moving' }).toBe(true)
+  return box!
 }
 
 test.describe('chat scroll rail', () => {
@@ -91,9 +110,8 @@ test.describe('chat scroll rail', () => {
     // lands on the card, which then stays for as long as the pointer rests on it. Only a real
     // browser covers this -- it needs the card's pointer-events (a media query jsdom never
     // evaluates) and a hit-test that reaches it. See POINTER_CLOSE_DELAY_MS.
-    const previewBox = await preview.boundingBox()
-    expect(previewBox).not.toBeNull()
-    await page.mouse.move(previewBox!.x + previewBox!.width / 2, previewBox!.y + previewBox!.height / 2)
+    const previewBox = await settledBox(page, preview)
+    await page.mouse.move(previewBox.x + previewBox.width / 2, previewBox.y + previewBox.height / 2)
     await page.clock.runFor(POPOVER_LINGER_MS)
     await expect(preview).toBeVisible()
     // And its text is selectable, although the rail around it sets user-select: none so a thumb
@@ -106,9 +124,9 @@ test.describe('chat scroll rail', () => {
     // selection engine, so nothing but this run covers it. The drag starts inside the first line
     // of text (past the card's own inset) and ends just past the right edge, which is still on
     // screen -- a release beyond the viewport would extend no selection at all.
-    await page.mouse.move(previewBox!.x + 12, previewBox!.y + 14)
+    await page.mouse.move(previewBox.x + 12, previewBox.y + 14)
     await page.mouse.down()
-    await page.mouse.move(previewBox!.x + previewBox!.width + 4, previewBox!.y + 14, { steps: 10 })
+    await page.mouse.move(previewBox.x + previewBox.width + 4, previewBox.y + 14, { steps: 10 })
     await page.mouse.up()
     const selected = await selectedText(page)
     expect(selected.length, 'the drag must leave a selection the reader can copy').toBeGreaterThan(0)
@@ -116,13 +134,13 @@ test.describe('chat scroll rail', () => {
     await expect(preview).toBeVisible()
 
     // The reader's next click collapses that selection, and the card lets go with it.
-    await page.mouse.click(previewBox!.x - 200, previewBox!.y)
+    await page.mouse.click(previewBox.x - 200, previewBox.y)
     await expect(preview).toHaveCount(0)
 
     // Moving away closes it (after the same delay), so it is a card the reader visits, not a panel.
     await dot(firstUserSeq).hover()
     await expect(preview).toBeVisible()
-    await page.mouse.move(previewBox!.x - 200, previewBox!.y)
+    await page.mouse.move(previewBox.x - 200, previewBox.y)
     await expect(preview).toHaveCount(0)
 
     // The thumb is sized to the viewport's share of the conversation, not the whole rail.

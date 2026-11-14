@@ -116,6 +116,32 @@ describe('useChatScroll rebase', () => {
     h.dispose()
   })
 
+  it('keeps the touch active while a second finger remains', async () => {
+    const h = mountScrollHarness()
+    h.hook.handlers.onTouchStart({
+      touches: [
+        { clientY: 10 },
+        { clientY: 40 },
+      ],
+    } as unknown as TouchEvent)
+    h.scrollTo(1990)
+    h.changeAbove(60)
+    await h.rest()
+    await h.rest()
+
+    // `touches` lists the fingers that are still down after this one lifted.
+    h.hook.handlers.onTouchEnd({
+      touches: [
+        { clientY: 40 },
+      ],
+    } as unknown as TouchEvent)
+    expect(h.rebaseCount()).toBe(0)
+
+    h.hook.handlers.onTouchEnd({ touches: [] } as unknown as TouchEvent)
+    expect(h.rebaseCount()).toBe(1)
+    h.dispose()
+  })
+
   it('rests after a pointer that is released outside the list', async () => {
     const h = mountScrollHarness()
     await h.anchoredAt(2000)

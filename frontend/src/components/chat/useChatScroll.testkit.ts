@@ -69,6 +69,7 @@ export function makeScrollContext(overrides: Partial<ScrollContext> = {}): Scrol
     setAtBottom: () => {},
     isAtBottom: () => false,
     isFollowing: () => false,
+    hasUnseenUpwardMove: () => false,
     isAnimating: () => false,
     refreshViewport: () => {},
     followTail: () => {},
@@ -100,6 +101,69 @@ export function makeGrowableVirtualizer() {
   return { virt, setTotal }
 }
 
+/** The total height of rows with `heights`, with no gaps between the rows. */
+function totalRowHeight(heights: readonly number[]): number {
+  return heights.reduce((sum, h) => sum + h, 0)
+}
+
+/**
+ * The anchor geometry of rows with `heights`, with no gaps between the rows: the one row
+ * geometry of makeRowVirtualizer and makeShiftVirtualizer. Row `i` has the id
+ * `${idPrefix}${i}` and the seq `i + 1`, because persisted message sequences start at one.
+ * `indexOfId` accepts exactly these ids, so the ids that a stub issues and the ids that it
+ * resolves cannot disagree.
+ *
+ * The stubs delegate the anchor math to the REAL pure functions over this geometry. Their
+ * tests therefore exercise the production capture and resolve, and not a second
+ * implementation that can drift from it. A zero-height row shares the offset of its
+ * successor, so these tests also exercise the shared-offset tie-break of the anchor math.
+ * The production virtualizer reserves a positive estimate for every row, but a caller can
+ * still produce a run of zero-height rows.
+ */
+function rowAnchorGeometry(heights: readonly number[], idPrefix: string): AnchorOffsetGeometry {
+  // Length n + 1: offsets[i] is the top of row i, and offsets[n] is the total height.
+  const offsets = [0]
+  for (const h of heights)
+    offsets.push((offsets[offsets.length - 1] ?? 0) + h)
+  return {
+    list: heights.map((_, i) => ({
+      id: `${idPrefix}${i}`,
+      seq: BigInt(i + 1),
+    })),
+    // The largest index whose top offset is at most y (the row that contains y), clamped
+    // to [0, n - 1].
+    indexAtOffset: (y) => {
+      let idx = 0
+      for (let i = 0; i < heights.length; i++) {
+        // The loop condition keeps `i` inside `offsets` (offsets[0] is 0); `?? 0` only
+        // satisfies the type checker.
+        if ((offsets[i] ?? 0) <= y)
+          idx = i
+        else
+          break
+      }
+      return idx
+    },
+    // Compare the prefix as plain text, then require the decimal form that the ids above
+    // use: digits with no leading zero, so `r07` does not resolve to row 7. A RegExp built
+    // from `idPrefix` would read a metacharacter in the prefix as regex syntax.
+    indexOfId: (id) => {
+      if (!id.startsWith(idPrefix))
+        return -1
+      const digits = id.slice(idPrefix.length)
+      if (!/^(?:0|[1-9]\d*)$/.test(digits))
+        return -1
+      const idx = Number(digits)
+      return idx < heights.length
+        ? idx
+        : -1
+    },
+    offsetOfIndex: i => offsets[Math.max(0, Math.min(i, heights.length))] ?? 0,
+    heightOfIndex: i => heights[i] ?? 0,
+    gapAfter: () => 0,
+  }
+}
+
 /**
  * Virtualizer stub backed by a mutable per-row height map, so a measurement that
  * grows or shrinks a row drives the geometry effect through a REAL offset map --
@@ -117,62 +181,10 @@ export function makeRowVirtualizer(initialHeights: number[]) {
   const [heights, setHeights] = createSignal<number[]>(initialHeights)
   const [gen, setGen] = createSignal(0)
   const [geometryVersion, setGeometryVersion] = createSignal(0)
-  // Cumulative offsets, length n+1: cumOffsets[i] is the top of row i; cumOffsets[n] the
-  // total. Zero-height rows share the offset of their successor, so these tests exercise the
-  // pure anchor math's shared-offset tie-break (a caller can produce zero-height runs even
-  // though the production virtualizer now reserves a positive estimate for every row).
-  const cumOffsets = () => {
-    const out = [0]
-    for (const h of heights())
-      out.push((out[out.length - 1] ?? 0) + h)
-    return out
-  }
-  const total = () => {
-    const o = cumOffsets()
-    // cumOffsets always holds at least its leading 0; `?? 0` is the type-level guard alone.
-    return o[o.length - 1] ?? 0
-  }
+  const total = () => totalRowHeight(heights())
   // Row id encodes the window GENERATION so a replaced window's ids stop resolving (the
   // real virtualizer keys the offset map by row id; a re-fetched window has fresh rows).
-  const indexOfId = (id: string): number => {
-    const m = new RegExp(`^g${gen()}_(\\d+)$`).exec(id)
-    if (!m)
-      return -1
-    const idx = Number(m[1])
-    return idx >= 0 && idx < heights().length
-      ? idx
-      : -1
-  }
-  // Delegate the anchor math to the REAL pure functions over this geometry, so these
-  // tests exercise the production capture/resolve (including the zero-height-run
-  // tie-break) rather than a re-implementation that could drift from it.
-  const geometry = (): AnchorOffsetGeometry => {
-    const hs = heights()
-    const offs = cumOffsets()
-    return {
-      // Persisted message sequences start at one.
-      list: hs.map((_, i) => ({
-        id: `g${gen()}_${i}`,
-        seq: BigInt(i + 1),
-      })),
-      // Largest index whose top offset <= y (the row containing y), clamped to [0, n-1].
-      indexAtOffset: (y) => {
-        let idx = 0
-        for (let i = 0; i < hs.length; i++) {
-          // The bound keeps `i` inside offs (offs[0] is 0); `?? 0` is the type-level guard alone.
-          if ((offs[i] ?? 0) <= y)
-            idx = i
-          else
-            break
-        }
-        return idx
-      },
-      indexOfId,
-      offsetOfIndex: i => offs[Math.max(0, Math.min(i, hs.length))] ?? 0,
-      heightOfIndex: i => hs[i] ?? 0,
-      gapAfter: () => 0,
-    }
-  }
+  const geometry = () => rowAnchorGeometry(heights(), `g${gen()}_`)
   const virt: ChatScrollVirtualizer = {
     totalHeight: total,
     geometryVersion: () => geometryVersion(),
@@ -217,6 +229,9 @@ export function makeRowVirtualizer(initialHeights: number[]) {
  *   changes by `px`.
  * - `growTailPinned(px)`: the last row grows by `px`, and the shift falls by `px`, as the
  *   real rule keeps the bottom in place in follow mode. The `scrollHeight` does not change.
+ * - `changeAboveKeepingTotal(px)`: row 0 grows by `px` and the last row shrinks by `px`, so
+ *   the total height holds and only `geometryVersion` reports the change. The shift falls by
+ *   `px`, as for `changeAbove`. The `scrollHeight` does not change.
  *
  * `rebase()` returns 0 and changes nothing for a shift of 0 or a hidden `div`. Otherwise it
  * returns the previous shift, sets the shift to 0, counts itself, and changes `div` as the
@@ -228,49 +243,10 @@ export function makeShiftVirtualizer(heights: number[], div: FakeScrollDiv) {
   const [shift, setShift] = createSignal(0)
   const [geometryVersion, setGeometryVersion] = createSignal(0)
   let rebases = 0
-  const offsets = (hs: readonly number[]) => {
-    const out = [0]
-    for (const h of hs)
-      out.push((out[out.length - 1] ?? 0) + h)
-    return out
-  }
-  const total = () => {
-    const o = offsets(rows())
-    return o[o.length - 1] ?? 0
-  }
-  // Delegate the anchor math to the REAL pure functions, in content coordinates.
-  const geometry = (): AnchorOffsetGeometry => {
-    const hs = rows()
-    const offs = offsets(hs)
-    return {
-      list: hs.map((_, i) => ({
-        id: `r${i}`,
-        seq: BigInt(i + 1),
-      })),
-      indexAtOffset: (y) => {
-        let idx = 0
-        for (let i = 0; i < hs.length; i++) {
-          if ((offs[i] ?? 0) <= y)
-            idx = i
-          else
-            break
-        }
-        return idx
-      },
-      indexOfId: (id) => {
-        const m = /^r(\d+)$/.exec(id)
-        const idx = m
-          ? Number(m[1])
-          : -1
-        return idx >= 0 && idx < hs.length
-          ? idx
-          : -1
-      },
-      offsetOfIndex: i => offs[Math.max(0, Math.min(i, hs.length))] ?? 0,
-      heightOfIndex: i => hs[i] ?? 0,
-      gapAfter: () => 0,
-    }
-  }
+  const total = () => totalRowHeight(rows())
+  // The geometry is in content coordinates. The members of `virt` below convert from and
+  // to scroll coordinates with the shift.
+  const geometry = () => rowAnchorGeometry(rows(), 'r')
   const toScroll = (contentTop: number | null) => contentTop === null
     ? null
     : contentTop + shift()
@@ -303,12 +279,15 @@ export function makeShiftVirtualizer(heights: number[], div: FakeScrollDiv) {
       return previous
     },
   }
-  const changeRow = (index: (hs: readonly number[]) => number, px: number, shiftBy: number) => {
+  type RowChange = [index: (hs: readonly number[]) => number, px: number]
+  const changeRows = (changes: readonly RowChange[], shiftBy: number) => {
     batch(() => {
       setRows((prev) => {
         const next = [...prev]
-        const i = index(next)
-        next[i] = (next[i] ?? 0) + px
+        for (const [index, px] of changes) {
+          const i = index(next)
+          next[i] = (next[i] ?? 0) + px
+        }
         return next
       })
       if (shiftBy !== 0)
@@ -316,14 +295,26 @@ export function makeShiftVirtualizer(heights: number[], div: FakeScrollDiv) {
       setGeometryVersion(v => v + 1)
     })
   }
+  const first = () => 0
+  const last = (hs: readonly number[]) => hs.length - 1
   return {
     virt,
-    changeAbove: (px: number) => changeRow(() => 0, px, -px),
+    changeAbove: (px: number) => changeRows([
+      [first, px],
+    ], -px),
     changeBelow: (px: number) => {
       div.setScrollHeight(div.el.scrollHeight + px)
-      changeRow(hs => hs.length - 1, px, 0)
+      changeRows([
+        [last, px],
+      ], 0)
     },
-    growTailPinned: (px: number) => changeRow(hs => hs.length - 1, px, -px),
+    growTailPinned: (px: number) => changeRows([
+      [last, px],
+    ], -px),
+    changeAboveKeepingTotal: (px: number) => changeRows([
+      [first, px],
+      [last, -px],
+    ], -px),
     rebaseCount: () => rebases,
   }
 }
@@ -336,7 +327,10 @@ export interface FakeScrollDiv {
   setScrollTop: (n: number) => void
   setRawScrollTop: (n: number) => void
   getScrollTop: () => number
-  /** The number of assignments to `el.scrollTop`: the writes of the code under test. */
+  /**
+   * The number of writes of the code under test to the scroll position: each assignment to
+   * `el.scrollTop` and each `el.scrollBy` call. The setters of this fake do not count.
+   */
   scrollTopWrites: () => number
 }
 
@@ -386,6 +380,7 @@ export function makeFakeScrollDiv(): FakeScrollDiv {
     const top = typeof opts === 'number'
       ? (y ?? 0)
       : (opts?.top ?? 0)
+    writes++
     scrollTop = clamp(scrollTop + top)
   }) as typeof el.scrollBy
   return {
@@ -462,7 +457,7 @@ export function mountScrollHarness(opts: ScrollHarnessOptions = {}) {
   const heights: number[] = opts.heights ?? Array.from<number>({ length: 50 }).fill(100)
   const div = makeFakeScrollDiv()
   div.setClientHeight(opts.clientHeight ?? 500)
-  div.setScrollHeight(opts.scrollHeight ?? heights.reduce((sum, h) => sum + h, 0))
+  div.setScrollHeight(opts.scrollHeight ?? totalRowHeight(heights))
   if (opts.scrollTopBeforeMount !== undefined)
     div.setScrollTop(opts.scrollTopBeforeMount)
   const shift = makeShiftVirtualizer(heights, div)

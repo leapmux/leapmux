@@ -120,6 +120,16 @@ describe('createScrollRest', () => {
     expect(rest.isResting()).toBe(false)
   })
 
+  it('reports no rest while a move is on its way', () => {
+    const { state, rest, onRest } = restHarness()
+    state.unseenMove = true
+    expect(rest.isResting()).toBe(false)
+
+    state.unseenMove = false
+    expect(rest.isResting()).toBe(true)
+    expect(onRest).not.toHaveBeenCalled()
+  })
+
   it('does not rest while input is down', () => {
     const { state, rest, onRest, requestFrame, runFrames, pendingFrames } = restHarness()
     rest.noteScroll()
@@ -180,6 +190,26 @@ describe('createScrollRest', () => {
     expect(onRest).not.toHaveBeenCalled()
     runFrames()
     expect(onRest).toHaveBeenCalledOnce()
+  })
+
+  it('does not rest when the input ends while a move is on its way', () => {
+    const { state, rest, onRest, runFrames } = restHarness()
+    // A press moved the scroller, and the `scroll` event of that move has not arrived yet.
+    state.inputActive = true
+    state.unseenMove = true
+    state.inputActive = false
+
+    rest.noteInputEnded()
+    expect(onRest).not.toHaveBeenCalled()
+    expect(rest.isResting()).toBe(false)
+
+    // The event arrives: the quiet time and the confirm frame then end in rest.
+    state.unseenMove = false
+    vi.advanceTimersByTime(SCROLL_REST_QUIET_MS)
+    expect(onRest).not.toHaveBeenCalled()
+    runFrames()
+    expect(onRest).toHaveBeenCalledOnce()
+    expect(rest.isResting()).toBe(true)
   })
 
   it('calls onRest again when the input ends twice', () => {

@@ -696,6 +696,24 @@ describe('useChatScroll fast scroll', () => {
     h.dispose()
   })
 
+  it('flags a scroll at exactly the fast speed', () => {
+    const h = mountScrollHarness()
+    h.setFastScrollActive.mockClear()
+    // 16px every 16ms: exactly 1 px/ms.
+    scrollSteps(h, 16)
+    expect(h.setFastScrollActive).toHaveBeenCalledWith(true)
+    h.dispose()
+  })
+
+  it('does not flag a scroll just below the fast speed', () => {
+    const h = mountScrollHarness()
+    h.setFastScrollActive.mockClear()
+    // 15px every 16ms: 0.9375 px/ms.
+    scrollSteps(h, 15)
+    expect(h.setFastScrollActive).not.toHaveBeenCalledWith(true)
+    h.dispose()
+  })
+
   it('does not flag a slow scroll', () => {
     const h = mountScrollHarness()
     h.setFastScrollActive.mockClear()
@@ -714,17 +732,28 @@ describe('useChatScroll fast scroll', () => {
     h.dispose()
   })
 
-  it('clears the flag when a move slows below the fast speed', () => {
+  it.each([
+    { speed: '0.75 px/ms', stepPx: 12 },
+    { speed: '0.25 px/ms', stepPx: 4 },
+  ])('keeps the flag and its idle timer through a slower move at $speed', ({ stepPx }) => {
     const h = mountScrollHarness()
     h.setFastScrollActive.mockClear()
     scrollSteps(h, 32)
     expect(h.setFastScrollActive).toHaveBeenLastCalledWith(true)
+    h.setFastScrollActive.mockClear()
 
-    // The tail of a fling: 4px in 16ms, before the idle time ends.
+    // The decelerating tail of a fling: a slower move changes neither the flag nor its
+    // idle timer, so the flag cannot change on each event while the speed jitters.
     vi.advanceTimersByTime(16)
-    h.div.setScrollTop(h.div.getScrollTop() - 4)
+    h.div.setScrollTop(h.div.getScrollTop() - stepPx)
     h.hook.handlers.onScroll()
+    expect(h.setFastScrollActive).not.toHaveBeenCalled()
 
+    // The idle timer of the last fast move still runs: it ends the flag 150ms after
+    // that move, neither earlier nor 150ms after the slower one.
+    vi.advanceTimersByTime(133)
+    expect(h.setFastScrollActive).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
     expect(h.setFastScrollActive).toHaveBeenLastCalledWith(false)
     h.dispose()
   })

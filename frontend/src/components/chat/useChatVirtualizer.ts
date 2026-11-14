@@ -452,7 +452,8 @@ export interface UseChatVirtualizerResult {
    * Reactive "fast user scroll in flight" flag — a momentum fling OR a fast
    * scrollbar/touch drag. Set by the scroll hook; rows entering the window
    * read it to decide skeleton-vs-full mount (ChatView's fling skeletons), and
-   * no pivot element is recorded while it is set.
+   * no pivot element is recorded while it is set and the scroll position still
+   * moves (see createLayoutPivot).
    */
   fastScrollActive: Accessor<boolean>
   setFastScrollActive: (active: boolean) => void
@@ -1355,10 +1356,10 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
         }))
       })
     })
-    // A geometry change or a new shift needs a new record of the pivot element. So does
-    // the end of a fast scroll: each frame during it dropped the record, and a scroll
-    // that stopped schedules no further frame.
-    createEffect(on([geom, layoutShift, fastScrollActive], () => pivot.scheduleRecord()))
+    // A geometry change or a new shift needs a new record of the pivot element. A fast
+    // scroll needs no record when it ends: the pivot records once the scroll position holds
+    // for a frame, also while the scroll still counts as fast (see createLayoutPivot).
+    createEffect(on([geom, layoutShift], () => pivot.scheduleRecord()))
   }
 
   // The two elements that `rebase` writes: the spacer and the layer that holds the rows.

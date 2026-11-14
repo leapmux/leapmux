@@ -354,8 +354,11 @@ describe('createLayoutPivot', () => {
 
   it.each([
     [
-      'suspended',
-      (state: ReturnType<typeof pivotHarness>['state']) => { state.suspended = true },
+      'suspended during a scroll',
+      (state: ReturnType<typeof pivotHarness>['state']) => {
+        state.suspended = true
+        state.scrollTop += 40
+      },
     ],
     [
       'hidden',
@@ -370,6 +373,40 @@ describe('createLayoutPivot', () => {
     record()
     apply(state)
     record()
+    state.inRowTop = 340
+    expect(layoutPivot.takeIntraRowShift('r1')).toBe(0)
+  })
+
+  it('records while suspended once the scroll position holds for a frame', () => {
+    const { state, layoutPivot, record, runFrames, requestFrame } = pivotHarness()
+    state.suspended = true
+    state.scrollTop = 1040
+    // The frame after the last scroll event sees a new position: no record yet, and one
+    // more frame to learn whether the scroller stopped.
+    record()
+    expect(requestFrame).toHaveBeenCalledTimes(2)
+    state.inRowTop = 340
+    expect(layoutPivot.takeIntraRowShift('r1')).toBe(0)
+
+    // That frame sees the same position: the scroller stopped, so the frame records
+    // although the fast scroll has not ended, and it asks for no further frame.
+    state.inRowTop = 300
+    runFrames()
+    expect(requestFrame).toHaveBeenCalledTimes(2)
+    state.inRowTop = 340
+    expect(layoutPivot.takeIntraRowShift('r1')).toBe(40)
+  })
+
+  it('keeps the record absent while a suspended scroll moves', () => {
+    const { state, layoutPivot, record, runFrames, requestFrame } = pivotHarness()
+    state.suspended = true
+    record()
+    state.scrollTop += 40
+    runFrames()
+    state.scrollTop += 40
+    runFrames()
+    // Each frame that sees a new position asks for one more frame and reads no rectangle.
+    expect(requestFrame).toHaveBeenCalledTimes(4)
     state.inRowTop = 340
     expect(layoutPivot.takeIntraRowShift('r1')).toBe(0)
   })
