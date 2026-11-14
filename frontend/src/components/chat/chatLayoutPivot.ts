@@ -146,7 +146,11 @@ export interface LayoutPivotDeps {
   pivotRow: (scrollTop: number) => PivotRow | undefined
   /** Whether the measurer would commit a new height for the row now. */
   hasUncommittedHeight: (rowId: string) => boolean
-  /** True while no record must exist, such as during a fast scroll. */
+  /**
+   * True during a fast scroll. While it is true, a frame that sees a new raw scroll position
+   * drops the record, and a frame that sees the same raw position as the frame before
+   * records anyway (see createLayoutPivot).
+   */
   isSuspended: () => boolean
   requestFrame: (cb: () => void) => number
   cancelFrame: (handle: number) => void
@@ -189,20 +193,41 @@ interface PivotRecord {
  * delivers a ResizeObserver notification, so without this rule a frame during a
  * continuous resize records the new layout first, and the commit that follows reads a
  * displacement of 0.
+ *
+ * While `isSuspended()` is true and the raw scroll position differs from the one that the
+ * frame before saw, the frame drops the record, reads no rectangle, and asks for one more
+ * frame. It still reads `clientHeight` and `scrollTop` of the scroll element, and these
+ * reads force a layout when one is pending. The suspension can outlast the scroll: the
+ * fast-scroll flag ends on a trailing debounce. So a frame that sees the same raw scroll
+ * position as the frame before -- the scroller stopped -- records anyway, and a geometry
+ * change right after a fast scroll still finds a record. The raw position counts, because
+ * a rubber-band overscroll moves it while the clamped position holds.
  */
 export function createLayoutPivot(deps: LayoutPivotDeps): LayoutPivot {
   let record: PivotRecord | undefined
   // The pending frame. An object, so that a frame that runs synchronously inside
   // `requestFrame` cannot leave a handle that marks it as still pending.
   let pendingFrame: { handle: number } | undefined
+  // The raw scroll position that the last frame saw, or undefined after a frame that found
+  // no visible scroll element.
+  let lastFrameTop: number | undefined
 
-  const recordNow = () => {
+  function recordNow(): void {
     const el = deps.scrollElement()
-    if (el === undefined || el.clientHeight === 0 || deps.isSuspended()) {
+    if (el === undefined || el.clientHeight === 0) {
       record = undefined
+      lastFrameTop = undefined
       return
     }
-    const scrollTop = clampScrollTop(el, el.scrollTop)
+    const rawTop = el.scrollTop
+    const previousFrameTop = lastFrameTop
+    lastFrameTop = rawTop
+    if (deps.isSuspended() && rawTop !== previousFrameTop) {
+      record = undefined
+      scheduleRecord()
+      return
+    }
+    const scrollTop = clampScrollTop(el, rawTop)
     const row = deps.pivotRow(scrollTop)
     if (row === undefined) {
       record = undefined
@@ -241,7 +266,7 @@ export function createLayoutPivot(deps: LayoutPivotDeps): LayoutPivot {
     }
   }
 
-  const scheduleRecord = () => {
+  function scheduleRecord(): void {
     if (pendingFrame !== undefined)
       return
     const frame = { handle: 0 }

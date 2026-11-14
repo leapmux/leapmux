@@ -75,12 +75,12 @@ export const RAIL_VISIBLE_IDLE_MS = 1200
  * A flick's glide fires no touch or pointer event -- only `scroll` -- so the
  * rail has to relight from those, and only the hook can say which of them are
  * the reader's own momentum rather than our stick-to-bottom echoing back (see
- * `onMomentumScroll`). This cap is the second safeguard behind that classifier:
- * echo detection can miss when the browser delivers an echo after the guard's
- * marker expires, and without a cap one missed echo during an active turn
- * would relight the rail commit after commit. Measured from the last INPUT and
- * never re-based by a scroll, so a turn with no reader input can never reach
- * it at all.
+ * `onMomentumScroll`). This cap is the second safeguard behind the hook: a
+ * scroll that the browser makes by itself, such as the clamp after the
+ * content shrinks, also moves the position, so the hook reports it too.
+ * Without a cap, each such scroll during an active turn would relight the
+ * rail. Measured from the last INPUT and never re-based by a scroll, so a turn
+ * with no reader input can never reach it at all.
  *
  * Long enough for the hardest flick on a long transcript; the rail then fades
  * `RAIL_VISIBLE_IDLE_MS` after the last coast scroll, not at this bound.
@@ -828,8 +828,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     // The reader's own coast. Relighting on it holds the rail for the whole
     // fling -- no pointer or touch event fires then, only `scroll`, and the
     // hook is the one place that can tell that scroll apart from our own
-    // programmatic writes. Routed through the coast entry, so a missed echo
-    // still cannot relight it past `RAIL_COAST_MAX_MS` from a real input.
+    // programmatic writes. Routed through the coast entry, so a scroll that
+    // the browser makes by itself, such as a clamp, still cannot relight it
+    // past `RAIL_COAST_MAX_MS` from a real input.
     onMomentumScroll: () => noteRailCoast(),
   })
   // Now that the scroll hook (which owns follow mode) exists, point the virtualizer's

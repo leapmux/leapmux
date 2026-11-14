@@ -49,6 +49,29 @@ describe('chatScrollStaleNative translator', () => {
     expect(t.baselines).toEqual([4000]) // baseline advanced to the rebase's landing
   })
 
+  it('translates an old-coordinate event that lands slightly on the newer side', () => {
+    // The rebase moved the view from 1000 to 4000 (delta +3000) while the reader scrolled
+    // toward older rows. Event coalescing or a bounce-back can deliver an old-coordinate
+    // event a little past 1000 on the newer side, against the direction of the scroll. Such
+    // an event still counts as old-coordinate when its distance from 1000 is at most
+    // min(500 * 0.4, 3000 * 0.15) = min(200, 450) = 200.
+    const afterTranslate = (staleTop: number) => {
+      const t = setup()
+      armPrependShift(t)
+      t.div.setScrollTop(staleTop)
+      t.advance(50)
+      const translated = t.translator.translate()
+      return {
+        translated,
+        scrollTop: t.div.getScrollTop(),
+      }
+    }
+    expect(afterTranslate(1150)).toEqual({ translated: true, scrollTop: 4150 })
+    expect(afterTranslate(1200)).toEqual({ translated: true, scrollTop: 4200 })
+    // 250px is past the 200px limit, although it is under the 450px of the delta ratio.
+    expect(afterTranslate(1250)).toEqual({ translated: false, scrollTop: 1250 })
+  })
+
   it('does not translate a direct drag or the event of an own write (already current-coordinate)', () => {
     const dragging = setup({ inputActive: true })
     armPrependShift(dragging)

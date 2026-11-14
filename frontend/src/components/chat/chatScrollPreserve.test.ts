@@ -26,6 +26,7 @@ async function flushFrames() {
 
 afterEach(() => {
   document.body.innerHTML = ''
+  vi.unstubAllGlobals()
 })
 
 describe('withChatScrollPreserved', () => {
@@ -44,6 +45,24 @@ describe('withChatScrollPreserved', () => {
     expect(firstController.restore).toHaveBeenCalledWith({ tile: 'first' })
     expect(secondController.restore).toHaveBeenCalledOnce()
     expect(secondController.restore).toHaveBeenCalledWith({ tile: 'second' })
+  })
+
+  it('restores only in the second frame after the work', async () => {
+    const el = addContainer()
+    const controller = fakeController({ tile: 'one' })
+    registerChatScrollController(el, controller)
+    // A frame queue that the test runs by hand.
+    const frames: FrameRequestCallback[] = []
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => frames.push(cb))
+
+    await withChatScrollPreserved(async () => {})
+    expect(controller.restore).not.toHaveBeenCalled()
+
+    frames.shift()!(0)
+    expect(controller.restore).not.toHaveBeenCalled()
+    frames.shift()!(0)
+    expect(controller.restore).toHaveBeenCalledOnce()
+    expect(frames).toHaveLength(0)
   })
 
   it('takes the snapshot before the work runs', async () => {
@@ -65,9 +84,12 @@ describe('withChatScrollPreserved', () => {
 
   it('skips a container without a controller', async () => {
     const el = addContainer()
-    el.scrollTop = 0
+    el.scrollTop = 400
 
-    await expect(withChatScrollPreserved(async () => {})).resolves.toBeUndefined()
+    // The work moves the position, so a raw write-back of the old one would show.
+    await expect(withChatScrollPreserved(async () => {
+      el.scrollTop = 0
+    })).resolves.toBeUndefined()
     await flushFrames()
 
     expect(el.scrollTop).toBe(0)

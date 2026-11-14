@@ -4,8 +4,8 @@ import { makeFakeScrollDiv, makeScrollContext } from './useChatScroll.testkit'
 
 /**
  * The input layer over a fake element with `clientHeight` 500 and `scrollHeight` 5000, and
- * spies on every context primitive and extra. `calls` records the order of the calls that
- * a page makes.
+ * spies on every context primitive that acts and on every extra. `calls` records the order of
+ * the calls, so `toEqual([])` asserts that an input did nothing.
  */
 function setup(opts: { scrollTop?: number, clientHeight?: number, hasOlder?: boolean, onJumpToOldest?: () => Promise<void> } = {}) {
   const div = makeFakeScrollDiv()
@@ -22,8 +22,12 @@ function setup(opts: { scrollTop?: number, clientHeight?: number, hasOlder?: boo
   })
   const ctx = makeScrollContext({
     getEl: () => div.el,
-    rebase: spy('rebase'),
+    setAtBottom: spy('setAtBottom'),
+    refreshViewport: spy('refreshViewport'),
+    followTail: spy('followTail'),
     leaveFollow: spy('leaveFollow'),
+    rebase: spy('rebase'),
+    notePosition: spy('notePosition'),
     syncAfterWrite: spy('syncAfterWrite'),
     placeAt,
   })

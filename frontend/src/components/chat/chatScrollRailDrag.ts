@@ -65,7 +65,11 @@ export interface ThumbDragDeps {
   thumbHeightPx: () => number
   /** Set/clear the drag-preview thumb fraction (null clears the preview). */
   setDrag: (fraction: number | null) => void
-  /** Guard-marked programmatic scroll write for in-window live-scroll. */
+  /**
+   * Place the view at the content coordinate `top` for in-window live-scroll. The host
+   * records the write as its own, so the `scroll` event of the write reads as no move of
+   * the reader.
+   */
   previewScrollTo: (top: number) => void
   /**
    * Seek to a seq the thumb settled on while that seq is OUTSIDE the loaded window -- the

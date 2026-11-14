@@ -8,7 +8,7 @@ import { monotonicNow } from '~/lib/monotonicNow'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { firstMessageSeq, lastMessageSeq } from '~/stores/chatMessageOrder'
 import { createScrollBufferFiller } from './chatScrollBufferFiller'
-import { clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, FOLLOW_TOLERANCE_PX, inferScrollDirection, warnSlowScrollPhase } from './chatScrollGeometry'
+import { clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, FOLLOW_TOLERANCE_PX, inferScrollDirection, maxScrollTopOf, warnSlowScrollPhase } from './chatScrollGeometry'
 import { createScrollInput } from './chatScrollInput'
 import { createOverscrollDrag } from './chatScrollOverscrollDrag'
 import { createChatPaginationPolicy } from './chatScrollPaginationPolicy'
@@ -54,6 +54,22 @@ export interface ScrollContext {
   isAtBottom: () => boolean
   /** Follow mode: the reader requested the tail, and the tail is loaded. */
   isFollowing: () => boolean
+  /**
+   * The view sits more than FOLLOW_TOLERANCE_PX above the last raw position that the
+   * scroll handler or an own write saw, and the scroll range did not force that move: a
+   * touch or scrollbar drag whose first `scroll` event did not arrive yet. An automatic
+   * stick then skips its write, and the event of the move ends follow mode (leave by
+   * position). An explicit command (End, the scroll-to-bottom button, a send) still sticks.
+   *
+   * A content shrink clamps scrollTop to the new maximum with no move of the reader. So
+   * each call, and each position check, first lowers the recorded position to the current
+   * maximum, and a clamp that one of them saw stays forced after the content grows again.
+   * Call it before a check that returns early at the bottom, where the clamp leaves the
+   * view. A clamp that neither saw before the content grew past it again reads as a move of
+   * the reader. The tolerance also covers a subpixel scrollTop, which a browser can report
+   * below the integer maximum.
+   */
+  hasUnseenUpwardMove: () => boolean
   /** True while a scroll animation is running. */
   isAnimating: () => boolean
   /** Recompute the rendered row slice for the current scroll position. */
@@ -112,10 +128,11 @@ if (import.meta.hot) {
   }
 }
 /**
- * Scroll speed (px/ms) at or above which a move of the reader counts as a fast scroll:
+ * Scroll speed (px/ms) at or above which a move of the reader starts a fast scroll:
  * rows that enter the window then mount as skeletons (see the virtualizer's
- * fastScrollActive), and no pivot element is recorded. A fling fires events tens of px
- * apart every ~16ms (well above 1 px/ms); a deliberate scroll creeps a few px per event.
+ * fastScrollActive), and no pivot element is recorded until the scroll position holds
+ * for a frame (see createLayoutPivot). A fling fires events tens of px apart every ~16ms
+ * (well above 1 px/ms); a deliberate scroll creeps a few px per event.
  */
 const FAST_SCROLL_PX_PER_MS = 1
 /**
@@ -382,7 +399,9 @@ export interface UseChatScrollResult {
    * and the thinking indicator, rendered as siblings of the virtual spacer -- whose growth
    * no ResizeObserver here observes (the virtualizer only measures rows, the scroll
    * container's content-box is fixed). ChatView calls this after that content renders.
-   * Position-only and idempotent, so it is safe to call on every streaming frame.
+   * Position-only and idempotent, so it is safe to call on every streaming frame. It
+   * writes nothing while the browser moved the view up and the scroll handler did not see
+   * that move yet (see ScrollContext.hasUnseenUpwardMove).
    */
   restickIfAtBottom: () => void
   /** Capture the current viewport scroll position for tab-switch restoration. */
@@ -465,9 +484,13 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
 
   // The position that the scroll handler or an own write saw last: the clamped one, which
   // the move test reads, and the raw one, which the rest detector reads. An own write sets
-  // both at once, so the `scroll` event of the write reads as no move.
+  // both at once, so the `scroll` event of the write reads as no move. Set the raw one
+  // through noteSeenRawTop.
   let lastSeenTop = 0
   let lastRawTop = 0
+  // lastRawTop, lowered to the lowest maximum position that hasUnseenUpwardMove saw since
+  // noteSeenRawTop set it. A content shrink that clamps scrollTop lowers it.
+  let lastRawTopInRange = 0
   // The count of the reader's moves. The controller of chatScrollPreserve compares it
   // across a re-render to learn whether the view moved.
   let moveCount = 0
@@ -543,6 +566,29 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
    */
   const isFollowing = () => following && !hasNewerMessages()
 
+  /** Record the raw position that the scroll handler or an own write saw. */
+  function noteSeenRawTop(rawTop: number): void {
+    lastRawTop = rawTop
+    lastRawTopInRange = rawTop
+  }
+
+  /**
+   * Lower the recorded position to the current maximum: a content shrink clamps scrollTop
+   * there with no move of the reader (see ScrollContext.hasUnseenUpwardMove).
+   */
+  function noteScrollRange(el: HTMLElement): void {
+    lastRawTopInRange = Math.min(lastRawTopInRange, maxScrollTopOf(el))
+  }
+
+  /** See ScrollContext.hasUnseenUpwardMove. */
+  function hasUnseenUpwardMove(): boolean {
+    const el = messageListRef
+    if (!el || el.clientHeight === 0)
+      return false
+    noteScrollRange(el)
+    return el.scrollTop < lastRawTopInRange - FOLLOW_TOLERANCE_PX
+  }
+
   /** The content height above the viewport top, in content coordinates. */
   const viewportContentTop = () => messageListRef
     ? virt.contentTopOf(readLogicalScrollTop(messageListRef))
@@ -594,6 +640,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     const el = messageListRef
     if (!el || el.clientHeight === 0)
       return
+    // The check can enter follow mode at a bottom that a shrink clamped. Record that clamp
+    // first, or a later automatic stick reads it as an unseen move of the reader.
+    noteScrollRange(el)
     untrack(() => {
       const atBottomNow = isAtBottom()
       if (!following && !hasNewerMessages() && atBottomNow)
@@ -617,7 +666,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     if (!el || el.clientHeight === 0)
       return
     lastSeenTop = readLogicalScrollTop(el)
-    lastRawTop = el.scrollTop
+    noteSeenRawTop(el.scrollTop)
     velocity.syncToProgrammatic(lastSeenTop)
     runPositionCheck()
     bumpGeomTick(t => t + 1)
@@ -777,11 +826,15 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   }
 
   // Fast-scroll flag for the fling skeletons and the pivot record (virt.setFastScrollActive):
-  // set on any move of the reader at fling speed -- momentum AND direct drags. A slower
-  // move ends it at once: the tail of a fling, which decelerates before it stops. A scroll
-  // that stops while still fast ends it by this trailing debounce. VELOCITY_IDLE_MS
-  // matches the velocity tracker's own idle window, so the flag drops as soon as the
-  // tracker stops reporting a speed.
+  // set on any move of the reader at FAST_SCROLL_PX_PER_MS or faster -- momentum AND
+  // direct drags -- and each such move restarts the trailing debounce below, which ends
+  // the flag VELOCITY_IDLE_MS after the last fast move. A slower move changes neither the
+  // flag nor the debounce. The speed is measured over the last gap between two events, so
+  // a fling that decelerates through 1 px/ms reads above and below it on alternate events;
+  // the debounce holds the flag through that jitter. The velocity tracker reads 0
+  // VELOCITY_IDLE_MS after the last move of any speed, so the flag drops no later than
+  // the tracker stops reporting a speed, and earlier when slower moves follow the last fast
+  // one.
   let fastScrollResetTimer: ReturnType<typeof setTimeout> | undefined
   const clearFastScrollReset = () => {
     if (fastScrollResetTimer !== undefined) {
@@ -797,10 +850,6 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       virt.setFastScrollActive(false)
     }, VELOCITY_IDLE_MS)
   }
-  const endFastScroll = () => {
-    clearFastScrollReset()
-    virt.setFastScrollActive(false)
-  }
 
   // The shared STABLE scroll primitives threaded through the extracted scroll helpers
   // (see ScrollContext).
@@ -810,6 +859,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     setAtBottom,
     isAtBottom,
     isFollowing,
+    hasUnseenUpwardMove,
     isAnimating: () => scrollAnimationId !== null,
     refreshViewport: () => refreshViewport(),
     followTail,
@@ -1045,8 +1095,6 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
         lead = { dir, px }
       if (speed >= FAST_SCROLL_PX_PER_MS)
         markFastScroll()
-      else
-        endFastScroll()
       // A drag with a pointer or a finger (a scrollbar thumb, a touch) is the reader
       // taking control: an out-of-window seek must not land after it. A wheel, a key, and
       // a touch move cancel the seek in their own handlers.
@@ -1057,7 +1105,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     }
     // 6. The position of this event is the last seen one.
     lastSeenTop = st
-    lastRawTop = rawTop
+    noteSeenRawTop(rawTop)
     // 7. After step 6, so that it records the anchor of this position.
     runPositionCheck()
     // 8. Time the synchronous render cascade this scroll triggers: setting the range
@@ -1271,8 +1319,11 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // left the view above the bottom. Skip a hidden pane (an inactive tab with
     // display:none); the ResizeObserver sticks when the tab becomes visible. Stick
     // synchronously (the DOM is already updated by SolidJS) so a deferral to rAF can't
-    // paint one frame scrolled up before snapping to bottom.
-    if (el && el.clientHeight > 0 && untrack(isFollowing) && !isAtBottom())
+    // paint one frame scrolled up before snapping to bottom. Skip the stick while the
+    // browser moved the view up and the handler did not see that move yet: the event of
+    // the move then ends follow mode. hasUnseenUpwardMove comes before isAtBottom, so that
+    // it also records a clamp that left the view at the bottom.
+    if (el && el.clientHeight > 0 && untrack(isFollowing) && !hasUnseenUpwardMove() && !isAtBottom())
       stickToBottom()
   })
 
@@ -1485,7 +1536,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
         // The first event then measures its move and its direction from the real position
         // of the element, not from 0.
         lastSeenTop = readLogicalScrollTop(el)
-        lastRawTop = el.scrollTop
+        noteSeenRawTop(el.scrollTop)
       }
       // The stall memos read messageListRef (a plain ref they can't track) and were
       // eagerly computed at hook-construction time while it was still undefined. Bump

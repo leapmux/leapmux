@@ -122,6 +122,7 @@ describe('useChatScroll follow mode', () => {
     h.scrollTo(4500)
     expect(h.hook.isFollowing()).toBe(false)
     expect(h.hook.atBottom()).toBe(true)
+    expect(h.hook.getScrollState()).toMatchObject({ atBottom: false })
     h.dispose()
   })
 
@@ -131,6 +132,7 @@ describe('useChatScroll follow mode', () => {
     h.hook.restickIfAtBottom()
     expect(h.hook.isFollowing()).toBe(false)
     expect(h.div.getScrollTop()).toBe(1000)
+    expect(h.hook.getScrollState()).toMatchObject({ atBottom: false })
     h.dispose()
   })
 
@@ -322,6 +324,7 @@ describe('useChatScroll forceScrollToBottom', () => {
 
     expect(h.hook.isFollowing()).toBe(false)
     expect(h.div.getScrollTop()).toBe(2000)
+    expect(h.hook.getScrollState()).toMatchObject({ atBottom: false })
     h.dispose()
   })
 

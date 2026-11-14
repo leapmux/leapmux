@@ -111,7 +111,11 @@ export interface ChatScrollRailProps {
    * the drag-release hold awaits that to time its thumb hand-off.
    */
   onJumpToSeq: (seq: bigint) => void | Promise<boolean>
-  /** Guard-marked programmatic scroll write for in-window thumb-drag live-scrolling. */
+  /**
+   * Place the view at the content coordinate `top` for in-window thumb-drag live-scrolling.
+   * The host records the write as its own, so the `scroll` event of the write reads as no
+   * move of the reader.
+   */
   previewScrollTo: (top: number) => void
   /**
    * Abandon the host's in-flight out-of-window seek, so its late fetch can't yank the viewport

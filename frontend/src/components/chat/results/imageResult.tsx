@@ -153,7 +153,7 @@ export function ImageResultView(props: {
   const display = createMemo<FileImageDisplay>((previous) => {
     const path = filePath()
     const paused = !props.actions?.deferLoad() && (props.holdDisplay?.() ?? false)
-    // Keep the current geometry while the virtualizer defers height changes.
+    // Keep the current geometry while a scroll or a text selection holds the display.
     if (path && paused && previous?.path === path)
       return previous
     const resolved = loaded() ?? (path

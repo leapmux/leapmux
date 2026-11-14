@@ -289,7 +289,10 @@ describe('useChatScroll jump to seq', () => {
     // loaded window is centred on a target they abandoned -- so the next scroll-up or edge fill
     // pages around the wrong place. The signal is what actually stops it.
 
-    /** Stand up a hook whose out-of-window fetch never resolves, and capture its abort signal. */
+    /**
+     * Stand up a hook whose out-of-window fetch stays pending until the test calls
+     * `releaseFetch`, and capture its abort signal. An abort ends the seek, not the fetch.
+     */
     function seekWithHeldFetch() {
       const div = makeFakeScrollDiv()
       div.setScrollHeight(5000)
@@ -297,9 +300,12 @@ describe('useChatScroll jump to seq', () => {
       div.setScrollTop(2500)
       const [messages] = createSignal(mkMsgs([100, 101, 102, 103, 104]))
       const signals: (AbortSignal | undefined)[] = []
+      const releases: (() => void)[] = []
       const onJumpToSeq = vi.fn((_seq: bigint, signal?: AbortSignal) => {
         signals.push(signal)
-        return new Promise<void>(() => {}) // held: only an abort ends this seek
+        return new Promise<void>((resolve) => {
+          releases.push(resolve)
+        })
       })
       const hook = useChatScroll({
         virtualizer: seekVirt(),
@@ -309,7 +315,12 @@ describe('useChatScroll jump to seq', () => {
         onJumpToSeq,
       })
       hook.attachListRef(div.el)
-      return { hook, signals, div }
+      /** Complete every held fetch, as a fetch that the abort reaches too late does. */
+      const releaseFetch = () => {
+        for (const release of releases.splice(0))
+          release()
+      }
+      return { hook, signals, div, releaseFetch }
     }
 
     it('aborts the fetch when cancelPendingSeek abandons the seek', () =>
@@ -336,11 +347,11 @@ describe('useChatScroll jump to seq', () => {
 
     it('cancels a pending landing on a touch move', async () => {
       let dispose!: () => void
-      const { hook, signals, div } = createRoot((d) => {
+      const { hook, signals, div, releaseFetch } = createRoot((d) => {
         dispose = d
         return seekWithHeldFetch()
       })
-      void hook.jumpToSeq(5n)
+      const landing = hook.jumpToSeq(5n)
       expect(signals[0]?.aborted).toBe(false)
       const before = div.getScrollTop()
 
@@ -356,8 +367,13 @@ describe('useChatScroll jump to seq', () => {
       } as unknown as TouchEvent)
 
       expect(signals[0]?.aborted).toBe(true)
-      await Promise.resolve()
+      // The fetch completes after the touch move. The landing that follows must not write:
+      // without the cancel, it would land on the row nearest seq 5 at 992.
+      const writes = div.scrollTopWrites()
+      releaseFetch()
+      expect(await landing).toBe(false)
       expect(div.getScrollTop()).toBe(before)
+      expect(div.scrollTopWrites()).toBe(writes)
       dispose()
     })
 
