@@ -238,6 +238,18 @@ describe('createThumbDrag', () => {
     expect(previewScrollTo).toHaveBeenCalledWith(200) // seqF 3 -> row index 2 top = 200px
   })
 
+  it('live-scrolls to content 0 when the thumb reaches the first loaded row', () => {
+    // Content 0 is a real target, the top of the first row, and the host places it at the
+    // top of the scroller. A falsy test of the target would drop it, and the view would stay
+    // where the previous frame put it.
+    const { el, handle, previewScrollTo } = setup()
+    handle.start(1, 100)
+    previewScrollTo.mockClear()
+    move(el, 0) // fraction 0 -> seqF 1, the first loaded row
+    flushRaf()
+    expect(previewScrollTo).toHaveBeenCalledExactlyOnceWith(0)
+  })
+
   it('reports the release fraction on pointerup, stops tracking, and leaves the preview to the owner', () => {
     const { el, handle, setDrag, onRelease } = setup()
     handle.start(1, 100)

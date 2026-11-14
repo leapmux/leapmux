@@ -3,7 +3,7 @@ import { expect } from '@playwright/test'
 import { test } from './fixtures'
 import { RAIL, RAIL_FILLER_MESSAGE, seedOverflowingConversation, THUMB } from './helpers/chatScrollRail'
 import { COARSE_POINTER_METRICS } from './helpers/touch'
-import { CHAT_SCROLL_CONTAINER, chatScrollContainer, readAttached, sendMessage, waitForAgentIdle } from './helpers/ui'
+import { CHAT_SCROLL_CONTAINER, chatScrollContainer, chatScrollTop, readAttached, sendMessage, waitForAgentIdle } from './helpers/ui'
 
 /**
  * The scroll rail's floating auto-hide, which is E2E-only by construction. Everything that
@@ -270,8 +270,7 @@ test.describe('chat scroll rail auto-hide', () => {
     const clickX = railBox!.x + railBox!.width / 2
     const clickY = railBox!.y + railBox!.height - 6
 
-    const scroller = chatScrollContainer(page)
-    await scroller.evaluate((el: HTMLElement) => {
+    await chatScrollContainer(page).evaluate((el: HTMLElement) => {
       el.scrollTop = 0
     })
 
@@ -290,12 +289,12 @@ test.describe('chat scroll rail auto-hide', () => {
       }))
     }, { railSel: RAIL, x: clickX, y: clickY })
     await expect(rail).toHaveCSS('opacity', '1')
-    await expect.poll(async () => await scroller.evaluate((el: HTMLElement) => el.scrollTop)).toBe(0)
+    await expect.poll(() => chatScrollTop(page)).toBe(0)
 
     // SECOND click on the now-LIT rail: the track-click jump goes through. A click near the
     // bottom of the strip seeks toward the end, so scrollTop must move off zero.
     await page.mouse.click(clickX, clickY)
-    await expect.poll(async () => await scroller.evaluate((el: HTMLElement) => el.scrollTop)).toBeGreaterThan(0)
+    await expect.poll(() => chatScrollTop(page)).toBeGreaterThan(0)
   })
 
   // Device-metrics emulation is the only way to get `(pointer: coarse)` -- see

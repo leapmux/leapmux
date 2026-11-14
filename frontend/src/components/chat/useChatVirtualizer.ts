@@ -1,21 +1,19 @@
 import type { Accessor } from 'solid-js'
-import type { LayoutPivot, PivotRow } from './chatLayoutPivot'
 import type { LayoutSnapshot } from './chatLayoutShift'
 import type { AnchorOffsetGeometry } from './chatScrollAnchor'
+import type { LayoutShiftSurface } from './createLayoutShift'
 import type { RowContentReadiness } from './createRowMeasurer'
 import type { ScrollAnchor } from '~/stores/chatTypes'
-import { createComputed, createEffect, createMemo, createSignal, on, onCleanup, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { largestIndexWhere, smallestIndexWhere } from '~/lib/binarySearch'
 import { clamp } from '~/lib/clamp'
 import { capMapInsertionOrder } from '~/lib/mapLru'
 import { monotonicNow } from '~/lib/monotonicNow'
-import { createLayoutPivot } from './chatLayoutPivot'
-import { nextLayoutShift, TOP_EDGE_SLACK_PX } from './chatLayoutShift'
 import { BAND_BORDER_PX, messageBandKind } from './chatRowGeometry'
 import { anchorAtOffset, resolveAnchorScrollTop, resolveNearestAnchorScrollTop } from './chatScrollAnchor'
-import { createContentMovedReporter } from './chatScrollDiagnostics'
-import { clampScrollTop, warnSlowScrollPhase } from './chatScrollGeometry'
-import { createRowMeasurer } from './createRowMeasurer'
+import { warnSlowScrollPhase } from './chatScrollGeometry'
+import { createLayoutShift } from './createLayoutShift'
+import { createRowMeasurer, MEASURE_EPSILON_PX } from './createRowMeasurer'
 
 /**
  * Minimal per-row descriptor the virtualizer needs. `id` keys the height
@@ -141,8 +139,8 @@ interface CommittedRange extends ChatVirtualizerRange {
  * ids keep the same rows selected instead. When one id left the list, the slice
  * keeps its length from the other one. When both left, the stored indices are the
  * best guess. A non-empty commit gives a non-empty list a non-empty slice inside its
- * bounds. An empty commit (none yet, or one over an empty list) gives no row until the
- * next commit: the scroll hook commits the first slice at its mount, and a row that
+ * index range. An empty commit (none yet, or one over an empty list) gives no row until
+ * the next commit: the scroll hook commits the first slice at its mount, and a row that
  * rendered before it would be built only to be removed.
  */
 function followCommittedRange(
@@ -249,6 +247,12 @@ export interface UseChatVirtualizerOptions {
    * chatLayoutShift). Without it, the shift stays 0.
    */
   scrollElement?: () => HTMLElement | undefined
+  /**
+   * The inset (px) of the spacer: the distance from scroll coordinate 0 to the top of the
+   * spacer that holds the rows (see chatLayoutShift). ChatView measures the top padding
+   * and the row gap of the list. Default 0.
+   */
+  spacerInsetPx?: Accessor<number> | number
   /** Keep the bottom of the content in place across a geometry change: the reader follows the tail. */
   pinBottom?: () => boolean
 }
@@ -269,8 +273,6 @@ const DEFAULT_OVERSCAN_PX = 800
 const DEFAULT_ESTIMATE_PX = 96
 const DEFAULT_GAP_SMALL_PX = 8 // --space-2
 const DEFAULT_GAP_LARGE_PX = 20 // --space-5
-/** Ignore sub-pixel measurement jitter below this threshold. */
-const MEASURE_EPSILON_PX = 0.5
 /**
  * A real DOM measurement above this stays authoritative for that row, but is excluded
  * from the global fallback estimate for rows that have not measured yet. The fallback
@@ -293,19 +295,6 @@ const FALLBACK_ESTIMATE_OUTLIER_PX = 1200
  * value instead of hard-coding it (and silently breaking when the cap changes).
  */
 export const HEIGHT_CACHE_MAX = 2400
-/** `requestAnimationFrame`, or a synchronous call where it is absent (SSR, some test environments). */
-function requestFrame(cb: () => void): number {
-  if (typeof requestAnimationFrame !== 'function') {
-    cb()
-    return 0
-  }
-  return requestAnimationFrame(() => cb())
-}
-
-function cancelFrame(handle: number): void {
-  if (typeof cancelAnimationFrame === 'function')
-    cancelAnimationFrame(handle)
-}
 
 function resolve(v: Accessor<number> | number | undefined, fallback: number): number {
   if (v === undefined)
@@ -320,7 +309,12 @@ function isUsableHeight(n: number): boolean {
   return n >= 0 && Number.isFinite(n)
 }
 
-export interface UseChatVirtualizerResult {
+/**
+ * The virtualizer's surface. The layout shift members (`layoutShift`, the coordinate
+ * conversions, the spacer, and `rebase`) come from LayoutShiftSurface (see
+ * createLayoutShift).
+ */
+export interface UseChatVirtualizerResult extends LayoutShiftSurface {
   /** Reactive [start, end) slice of `items` to render. */
   range: Accessor<ChatVirtualizerRange>
   /**
@@ -331,29 +325,6 @@ export interface UseChatVirtualizerResult {
   geometryVersion: Accessor<number>
   /** Total height (px) of the whole in-memory window, in content coordinates. */
   totalHeight: Accessor<number>
-  /**
-   * The layout shift (px): `scroll = content + layoutShift`. The rows move by it, so a
-   * geometry change keeps the content under the reader in place with no `scrollTop`
-   * write (see chatLayoutShift). 0 without the `scrollElement` option.
-   */
-  layoutShift: Accessor<number>
-  /** The height of the scroll spacer: `totalHeight() + layoutShift()`, never below 0. */
-  spacerHeight: Accessor<number>
-  /** Convert a scroll coordinate to a content coordinate: `scrollTop - layoutShift()`. */
-  contentTopOf: (scrollTop: number) => number
-  /** Convert a content coordinate to a scroll coordinate: `contentTop + layoutShift()`. */
-  scrollTopOf: (contentTop: number) => number
-  /** The spacer and the layer of rows that `rebase` writes. Pass `undefined` on unmount. */
-  attachLayout: (spacer: HTMLElement | undefined, layer: HTMLElement | undefined) => void
-  /**
-   * Remove the layout shift with no visible change: the layer returns to 0, the spacer
-   * to `totalHeight()`, and `scrollTop` changes by `-shift`. It writes the DOM itself,
-   * synchronously, in the order that the clamp of `scrollTop` allows, so a caller in an
-   * effect and one in an event handler get the same result. Returns the shift that it
-   * removed: 0, with no write, when the shift is 0 or the scroll element is absent or
-   * hidden.
-   */
-  rebase: () => number
   /** Top offset (px) of a row by index, in content coordinates. */
   offsetOfIndex: (index: number) => number
   /** Top offset (px) of the row with the given id, or undefined if absent, in content coordinates. */
@@ -363,17 +334,24 @@ export interface UseChatVirtualizerResult {
   /** Index of the row whose vertical span contains the content offset `y` (clamped). */
   indexAtOffset: (y: number) => number
   /**
-   * The scroll anchor for a viewport whose top edge is at the scroll coordinate
-   * `scrollTop`: the row at that offset plus the pixels from the row's top to the
-   * viewport top.
+   * The scroll anchor for a viewport whose top edge is at the content coordinate
+   * `contentTop`: the row at that offset plus the pixels from the row's top to the
+   * viewport top. Exact: it converts nothing.
    */
+  anchorAtContent: (contentTop: number) => ScrollAnchor | null
+  /**
+   * Resolve an anchor to a content coordinate, or null if its row id is no longer present.
+   * Exact: it converts nothing.
+   */
+  contentTopForAnchor: (anchor: ScrollAnchor) => number | null
+  /** `anchorAtContent` for the scroll coordinate `scrollTop` (see contentTopOf). */
   anchorAt: (scrollTop: number) => ScrollAnchor | null
-  /** Resolve an anchor back to a scroll coordinate, or null if its row id is no longer present. */
+  /** `contentTopForAnchor` as the scroll coordinate of a placement (see placementScrollTopOf). */
   scrollTopForAnchor: (anchor: ScrollAnchor) => number | null
   /**
-   * Resolve an anchor to a scroll coordinate, recovering a TRIMMED-away row by landing on
-   * the nearest surviving row by seq. Null only when the row is gone and there is no seq /
-   * no surviving server row to fall back to.
+   * Resolve an anchor to the scroll coordinate of a placement (see placementScrollTopOf),
+   * recovering a TRIMMED-away row by landing on the nearest surviving row by seq. Null only
+   * when the row is gone and there is no seq / no surviving server row to fall back to.
    */
   scrollTopNearAnchor: (anchor: ScrollAnchor) => number | null
   /** Measured-or-estimated height (px) of a row by index (excludes the gap). */
@@ -440,14 +418,6 @@ export interface UseChatVirtualizerResult {
    * key until a read of its element under the new key (see pruneStaleKeyedHeights).
    */
   hasMeasuredHeight: (id: string) => boolean
-  /**
-   * Whether a measure under the current key of row `id` produced its height: as
-   * `hasMeasuredHeight`, but false for a height that a mounted row keeps from an
-   * earlier key. A toggled row is confirmed at the first read of its element under
-   * the new key, which waits while the row replaces its content (see
-   * RowMeasurer.attachRow). Reactive: a confirmation bumps `geometryVersion`.
-   */
-  hasConfirmedHeight: (id: string) => boolean
   /**
    * Reactive "fast user scroll in flight" flag — a momentum fling OR a fast
    * scrollbar/touch drag. Set by the scroll hook; rows entering the window
@@ -516,7 +486,9 @@ function isProvisional(entry: CachedMeasuredHeight): boolean {
 /**
  * What a height commit changed: `moved` when it changed the offset map, `confirmed` when
  * it only confirmed a provisional height under its key, and `none` otherwise. Each change
- * owes a geometryVersion bump, because `hasConfirmedHeight` reads through geom().
+ * owes a geometryVersion bump. A confirmation moves no row, but it changes the persisted
+ * snapshot: `snapshotHeights` leaves a provisional height out, and chatRowHeightPersistence
+ * saves the snapshot when geometryVersion changes.
  */
 type HeightCommitResult = 'moved' | 'confirmed' | 'none'
 
@@ -629,9 +601,9 @@ const DEFAULT_ESTIMATE_KIND = ''
 
 /**
  * Geometry engine for the virtualized chat list. Owns the per-row height cache,
- * the cumulative offset map, the visible-row slice, and the layout shift that keeps
- * the content under the reader in place across a geometry change (see
- * chatLayoutShift). It does not decide the scroll position: useChatScroll feeds
+ * the cumulative offset map, the visible-row slice, and, through createLayoutShift, the
+ * layout shift that keeps the content under the reader in place across a geometry change
+ * (see chatLayoutShift). It does not decide the scroll position: useChatScroll feeds
  * positions in via `updateViewport`, and asks for a `rebase` when the shift may go.
  */
 export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirtualizerResult {
@@ -657,7 +629,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // skeleton-vs-full mount (ChatView's fling skeletons).
   const [fastScrollActive, setFastScrollActive] = createSignal(false)
   // Diagnostic-only: the most recent geometry-changing height commit, so the
-  // `content moved without a scroll` WARN can name the row that likely caused a move
+  // `content moved without a scroll` WARN can identify the row that likely caused a move
   // (see MeasurementCommitInfo). Non-reactive -- read at WARN time, never a render input.
   let lastMeasurement: MeasurementCommitInfo | undefined
   let measurementCommitSeq = 0
@@ -851,12 +823,10 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
 
   const heightOfIndex = (index: number): number => {
     const g = geom()
-    if (index < 0 || index >= g.n)
-      return estimateHeight()
-    const item = g.list[index]
-    return item !== undefined
-      ? resolvedHeight(item)
-      : estimateHeight()
+    const height = index >= 0 && index < g.n
+      ? g.heights[index]
+      : undefined
+    return height ?? estimateHeight()
   }
 
   const heightOfId = (id: string): number => heightOfIndex(indexOfId(id))
@@ -868,34 +838,25 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       : 0
   }
 
+  // The height key of row `id` in the current list. It reads `rowIndex`, not `geom`: the
+  // measurer calls it for each read that it commits, and inside the batch of one flush a
+  // read of `geom` after a commit would rebuild the whole offset map once per commit.
   const currentHeightKey = (id: string): string | undefined => {
-    const g = geom()
-    const index = g.indexById.get(id)
+    const { list, indexById } = rowIndex()
+    const index = indexById.get(id)
     const item = index === undefined
       ? undefined
-      : g.list[index]
+      : list[index]
     return item !== undefined
       ? item.heightKey
       : undefined
   }
 
-  // The cache entry of row `id` under its current key, read through geom() so that a
-  // reactive caller re-reads it when a measurement commits.
-  const currentHeightEntry = (id: string): CachedMeasuredHeight | undefined => {
+  // Read through geom(), so that a reactive caller re-reads it when a measurement commits.
+  const hasMeasuredHeight = (id: string): boolean => {
     const g = geom()
     const index = g.indexById.get(id)
-    const item = index === undefined
-      ? undefined
-      : g.list[index]
-    const cached = heightCache.get(id)
-    return item !== undefined && cached !== undefined && cached.key === item.heightKey
-      ? cached
-      : undefined
-  }
-  const hasMeasuredHeight = (id: string): boolean => currentHeightEntry(id) !== undefined
-  const hasConfirmedHeight = (id: string): boolean => {
-    const entry = currentHeightEntry(id)
-    return entry !== undefined && !isProvisional(entry)
+    return index !== undefined && g.measured[index] === 1
   }
 
   // Debug-only: surface the measured height without exposing the generic fallback
@@ -936,33 +897,13 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     heightOfIndex,
     gapAfter: i => gapAfter(geom().list, i),
   })
-
-  // The layout shift: `scroll = content + layoutShift`. A computation over `geom` below
-  // sets it, before the render effects of the same update run.
-  const [layoutShift, setLayoutShift] = createSignal(0)
-  // The pivot element that the shift rule measures (see chatLayoutPivot). It exists only
-  // with a scroll element, and it needs the row measurer, so it is created below.
-  let layoutPivot: LayoutPivot | undefined
-  const contentTopOf = (scrollTop: number): number => scrollTop - layoutShift()
-  const scrollTopOf = (contentTop: number): number => contentTop + layoutShift()
-  const spacerHeight = (): number => Math.max(0, totalHeight() + layoutShift())
-
-  // The anchor math works in content coordinates. These functions take and return
-  // scroll coordinates, so every caller outside the virtualizer stays in one space.
-  const anchorAt = (scrollTop: number): ScrollAnchor | null =>
-    anchorAtOffset(anchorGeometry(), contentTopOf(scrollTop))
-  const scrollTopForAnchor = (anchor: ScrollAnchor): number | null => {
-    const contentTop = resolveAnchorScrollTop(anchorGeometry(), anchor)
-    return contentTop === null
-      ? null
-      : scrollTopOf(contentTop)
-  }
-  const scrollTopNearAnchor = (anchor: ScrollAnchor): number | null => {
-    const contentTop = resolveNearestAnchorScrollTop(anchorGeometry(), anchor)
-    return contentTop === null
-      ? null
-      : scrollTopOf(contentTop)
-  }
+  // The anchor math works in content coordinates, so these two resolvers convert nothing.
+  // A caller that holds a content coordinate uses them, and no round trip through the
+  // scroll coordinates can lose a fraction of a pixel.
+  const anchorAtContent = (contentTop: number): ScrollAnchor | null =>
+    anchorAtOffset(anchorGeometry(), contentTop)
+  const contentTopForAnchor = (anchor: ScrollAnchor): number | null =>
+    resolveAnchorScrollTop(anchorGeometry(), anchor)
 
   // The slice for a viewport whose top edge is at the content coordinate `contentTop`.
   const computeContentRange = (
@@ -993,8 +934,9 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // the spacer drops in the same flush that the DOM still reports the old, larger
     // scrollTop; without this clamp `top` would exceed every offset and the `start`
     // search below would fall back to its last index, collapsing the slice to the last
-    // row alone for one frame. (A negative position -- rubber-band overscroll, or the
-    // blank band above the first row under a positive layout shift -- floors to row 0.)
+    // row alone for one frame. (A negative position -- rubber-band overscroll, the inset of
+    // the spacer, or the blank band above the first row under a positive layout shift --
+    // floors to row 0.)
     const total = g.offsets[n] ?? 0
     const maxContentTop = Math.max(0, total - clientHeight)
     const clampedTop = clamp(contentTop, 0, maxContentTop)
@@ -1019,19 +961,12 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // Normal rows keep the pure pixel window; this adds at most two rows, only for
     // the oversized-row case.
     const guardBandPx = Math.max(overTop, overBottom)
-    const startItem = g.list[start]
-    if (guardBandPx > 0 && end === start + 1 && startItem !== undefined && resolvedHeight(startItem) > guardBandPx) {
+    if (guardBandPx > 0 && end === start + 1 && (g.heights[start] ?? 0) > guardBandPx) {
       start = Math.max(0, start - 1)
       end = Math.min(n, end + 1)
     }
     return { start, end }
   }
-
-  const computeRange = (
-    scrollTop: number,
-    clientHeight: number,
-    lead?: ViewportLead,
-  ): ChatVirtualizerRange => computeContentRange(contentTopOf(scrollTop), clientHeight, lead)
 
   const [committedRange, setCommittedRange] = createSignal<CommittedRange>({
     start: 0,
@@ -1052,25 +987,6 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       equals: (a, b) => a.start === b.start && a.end === b.end,
     },
   )
-
-  const updateViewport = (
-    scrollTop: number,
-    clientHeight: number,
-    lead?: ViewportLead,
-  ) => {
-    const next = computeRange(scrollTop, clientHeight, lead)
-    const cur = range()
-    const { list } = rowIndex()
-    const firstId = list[next.start]?.id
-    const lastId = list[next.end - 1]?.id
-    // Commit new ids also when the indices hold: ids that left the list would
-    // otherwise stay stored, and the next prepend would slice by the stale indices.
-    const stored = committedRange()
-    if (cur.start !== next.start || cur.end !== next.end || stored.firstId !== firstId || stored.lastId !== lastId)
-      setCommittedRange({ ...next, firstId, lastId })
-    // A new position needs a new record of the element at the viewport top.
-    layoutPivot?.scheduleRecord()
-  }
 
   /**
    * The commit core shared by the single-row paths (which bump
@@ -1175,7 +1091,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       })
     }
     // Record the commit that is about to move the offset map, so a WARN about a move of
-    // the content at the viewport top can name its likely cause (see MeasurementCommitInfo).
+    // the content at the viewport top can identify its likely cause (see MeasurementCommitInfo).
     measurementCommitSeq += 1
     lastMeasurement = {
       id,
@@ -1209,20 +1125,14 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   }
   const measure = (id: string, height: number): boolean =>
     commitMeasuredHeight(id, height, currentHeightKey(id), 'visible')
-  const commitPremeasureHeight = (id: string, height: number, heightKey?: string): boolean => {
+  const primeHeight = (id: string, height: number, heightKey?: string): boolean => {
     // Once a visible row has committed a measurement, the live DOM is the
     // authoritative geometry. A hidden premeasure queued before mount can finish
-    // later; don't let that hidden-layout read replace the visible height.
+    // later; don't let that hidden-layout read replace the visible height. A row that
+    // left the list commits nothing (see commitMeasuredHeight).
     if (mountedIds.has(id) && hasMeasuredHeight(id))
       return false
     return commitMeasuredHeight(id, height, heightKey, 'premeasure')
-  }
-  const primeHeight = (id: string, height: number, heightKey?: string): boolean => {
-    if (!rowIndex().indexById.has(id))
-      return false
-    if (mountedIds.has(id) && hasMeasuredHeight(id))
-      return false
-    return commitPremeasureHeight(id, height, heightKey)
   }
   const primeHeights = (entries: readonly PersistableRowHeight[]): number => {
     if (entries.length === 0)
@@ -1274,8 +1184,6 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     mountedIds,
     onRowUnmounted: dropProvisionalHeight,
     currentMeasurementKey: currentHeightKey,
-    // The DOM read and the offset map ignore the same jitter, by one constant.
-    measureEpsilonPx: MEASURE_EPSILON_PX,
   })
   const { attachRow, detachRow } = measurer
   onCleanup(measurer.dispose)
@@ -1288,130 +1196,74 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       measurer.measureAgain(id)
   })
 
-  // ---- Layout shift (see chatLayoutShift) ----
+  // The layout shift on top of the offset map (see createLayoutShift). It needs the row
+  // measurer, which holds the element of each mounted row.
+  const { schedulePivotRecord, ...layoutShiftSurface } = createLayoutShift({
+    geometry: geom,
+    totalHeight,
+    scrollElement: opts.scrollElement,
+    spacerInsetPx: () => resolve(opts.spacerInsetPx, 0),
+    pinBottom: () => opts.pinBottom?.() ?? false,
+    isSuspended: fastScrollActive,
+    rows: measurer,
+    lastMeasurement: () => lastMeasurement,
+  })
+  const { contentTopOf, placementScrollTopOf } = layoutShiftSurface
 
-  // The row whose measured body the viewport top cuts by more than the top-edge slack,
-  // with its mounted element: the row in which the pivot element is recorded.
-  const pivotRow = (scrollTop: number): PivotRow | undefined => {
-    const g = geom()
-    if (g.n === 0)
-      return undefined
-    const shift = layoutShift()
-    const contentTop = scrollTop - shift
-    const index = indexAtOffset(contentTop)
-    const item = g.list[index]
-    if (item === undefined || g.measured[index] !== 1)
-      return undefined
-    const top = g.offsets[index] ?? 0
-    const bottom = top + (g.heights[index] ?? 0)
-    if (contentTop - top <= TOP_EDGE_SLACK_PX || contentTop >= bottom)
-      return undefined
-    const element = measurer.elementOf(item.id)
-    return element === undefined
-      ? undefined
-      : { id: item.id, element, top: top + shift }
+  // These resolvers take and return scroll coordinates, so a caller that holds a scroll
+  // position needs no conversion of its own. A resolved anchor is a placement, so the top
+  // of the first row resolves to the top of the scroller (see placementScrollTop).
+  const anchorAt = (scrollTop: number): ScrollAnchor | null =>
+    anchorAtContent(contentTopOf(scrollTop))
+  const scrollTopForAnchor = (anchor: ScrollAnchor): number | null => {
+    const contentTop = contentTopForAnchor(anchor)
+    return contentTop === null
+      ? null
+      : placementScrollTopOf(contentTop)
+  }
+  const scrollTopNearAnchor = (anchor: ScrollAnchor): number | null => {
+    const contentTop = resolveNearestAnchorScrollTop(anchorGeometry(), anchor)
+    return contentTop === null
+      ? null
+      : placementScrollTopOf(contentTop)
   }
 
-  const scrollElement = opts.scrollElement
-  if (scrollElement !== undefined) {
-    const pivot = createLayoutPivot({
-      scrollElement,
-      pivotRow,
-      hasUncommittedHeight: measurer.hasUncommittedHeight,
-      isSuspended: fastScrollActive,
-      requestFrame,
-      cancelFrame,
-      onContentMoved: createContentMovedReporter({
-        layoutShift: () => untrack(layoutShift),
-        lastMeasurement: () => lastMeasurement,
-      }),
-    })
-    layoutPivot = pivot
-    onCleanup(pivot.dispose)
+  const computeRange = (
+    scrollTop: number,
+    clientHeight: number,
+    lead?: ViewportLead,
+  ): ChatVirtualizerRange => computeContentRange(contentTopOf(scrollTop), clientHeight, lead)
 
-    // The snapshot that the current shift applies to. The computation keeps its own
-    // copy: `geom` can recompute several times inside one batch, and the shift must
-    // compare the last snapshot that it saw with the one that reaches the DOM.
-    let shiftedSnapshot: LayoutSnapshot | undefined
-    // A computation, not an effect: the rows and the layer must reach the DOM in the
-    // same flush, so the shift must be set before the render effects run. It tracks
-    // only `geom`.
-    createComputed(() => {
-      const next = geom()
-      untrack(() => {
-        const previous = shiftedSnapshot
-        shiftedSnapshot = next
-        const el = scrollElement()
-        if (el === undefined || el.clientHeight === 0) {
-          setLayoutShift(0)
-          return
-        }
-        setLayoutShift(nextLayoutShift({
-          previous,
-          next,
-          previousShift: layoutShift(),
-          scrollTop: clampScrollTop(el, el.scrollTop),
-          pinBottom: opts.pinBottom?.() ?? false,
-          intraRowShift: pivot.takeIntraRowShift,
-        }))
-      })
-    })
-    // A geometry change or a new shift needs a new record of the pivot element. A fast
-    // scroll needs no record when it ends: the pivot records once the scroll position holds
-    // for a frame, also while the scroll still counts as fast (see createLayoutPivot).
-    createEffect(on([geom, layoutShift], () => pivot.scheduleRecord()))
-  }
-
-  // The two elements that `rebase` writes: the spacer and the layer that holds the rows.
-  let layoutSpacer: HTMLElement | undefined
-  let layoutLayer: HTMLElement | undefined
-  const attachLayout = (spacer: HTMLElement | undefined, layer: HTMLElement | undefined): void => {
-    layoutSpacer = spacer
-    layoutLayer = layer
-  }
-
-  const rebase = (): number => {
-    const shift = untrack(layoutShift)
-    const el = scrollElement?.()
-    if (shift === 0 || el === undefined || el.clientHeight === 0)
-      return 0
-    const target = el.scrollTop - shift
-    const unshiftLayout = () => {
-      if (layoutSpacer !== undefined)
-        layoutSpacer.style.height = `${Math.max(0, untrack(totalHeight))}px`
-      if (layoutLayer !== undefined)
-        layoutLayer.style.transform = 'translateY(0px)'
-    }
-    // The browser clamps `scrollTop` to the scroll range, so the range must hold the
-    // target when `scrollTop` is written: a positive shift shrinks the spacer, so the
-    // position moves first; a negative shift grows it, so the layout moves first.
-    if (shift > 0) {
-      el.scrollTop = target
-      unshiftLayout()
-    }
-    else {
-      unshiftLayout()
-      el.scrollTop = target
-    }
-    // The style bindings write the same two values again on the next flush.
-    setLayoutShift(0)
-    return shift
+  const updateViewport = (
+    scrollTop: number,
+    clientHeight: number,
+    lead?: ViewportLead,
+  ) => {
+    const next = computeRange(scrollTop, clientHeight, lead)
+    const cur = range()
+    const { list } = rowIndex()
+    const firstId = list[next.start]?.id
+    const lastId = list[next.end - 1]?.id
+    // Commit new ids also when the indices hold: ids that left the list would
+    // otherwise stay stored, and the next prepend would slice by the stale indices.
+    const stored = committedRange()
+    if (cur.start !== next.start || cur.end !== next.end || stored.firstId !== firstId || stored.lastId !== lastId)
+      setCommittedRange({ ...next, firstId, lastId })
+    // A new position needs a new record of the element at the viewport top.
+    schedulePivotRecord()
   }
 
   return {
     range,
     geometryVersion: geomVersion,
     totalHeight,
-    layoutShift,
-    spacerHeight,
-    contentTopOf,
-    scrollTopOf,
-    attachLayout,
-    rebase,
+    ...layoutShiftSurface,
     offsetOfIndex,
     offsetOfId,
     indexOfId,
     indexAtOffset,
+    anchorAtContent,
+    contentTopForAnchor,
     anchorAt,
     scrollTopForAnchor,
     scrollTopNearAnchor,
@@ -1428,7 +1280,6 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     primeHeights,
     snapshotHeights,
     hasMeasuredHeight,
-    hasConfirmedHeight,
     fastScrollActive,
     setFastScrollActive,
     attachRow,

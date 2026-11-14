@@ -37,9 +37,9 @@ export function fakeRow(h: number): HTMLElement {
 
 /**
  * Build a virtualizer with deterministic geometry for math assertions. `opts` passes a
- * scroll element and a bottom pin on, for the layout-shift tests.
+ * scroll element, a bottom pin, and the inset of the spacer on, for the layout-shift tests.
  */
-export function setup(items: VirtualItem[], opts: Pick<UseChatVirtualizerOptions, 'scrollElement' | 'pinBottom'> = {}) {
+export function setup(items: VirtualItem[], opts: Pick<UseChatVirtualizerOptions, 'scrollElement' | 'pinBottom' | 'spacerInsetPx'> = {}) {
   const [list, setList] = createSignal(items)
   const virt = useChatVirtualizer({
     items: list,

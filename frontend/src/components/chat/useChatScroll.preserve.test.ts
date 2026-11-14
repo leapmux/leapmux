@@ -1,29 +1,13 @@
 import type { ScrollHarnessOptions } from './useChatScroll.testkit'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 import { withChatScrollPreserved } from './chatScrollPreserve'
-import { installScrollTestEnv, mountScrollHarness } from './useChatScroll.testkit'
+import { installScrollTestEnv, mountScrollHarness, mountWithPendingJump, settleJump } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
 // The harness: 50 rows of 100px in a 500px view, so the bottom is at 4500. Its element is
 // attached to the document as a chat scroll container, so withChatScrollPreserved finds the
 // controller that the hook registered for it.
-
-/** A latest-page jump that the test settles. */
-function deferredJump() {
-  let resolve!: () => void
-  let reject!: (reason: Error) => void
-  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise
-    reject = rejectPromise
-  })
-  return {
-    promise,
-    resolve,
-    reject,
-    onJumpToLatest: vi.fn(() => promise),
-  }
-}
 
 function mountChat(opts: ScrollHarnessOptions = {}) {
   const h = mountScrollHarness(opts)
@@ -59,13 +43,6 @@ function mountChat(opts: ScrollHarnessOptions = {}) {
     restoreFrames,
     reset,
   }
-}
-
-/** Let the branches of a settled jump run. */
-async function settle(promise: Promise<void>) {
-  await promise.catch(() => undefined)
-  await Promise.resolve()
-  await Promise.resolve()
 }
 
 afterEach(() => {
@@ -131,13 +108,7 @@ describe('useChatScroll scroll controller', () => {
   })
 
   it('keeps a pending request for the tail across a reset', async () => {
-    const jump = deferredJump()
-    const h = mountChat({
-      hasNewer: true,
-      hookOptions: { onJumpToLatest: jump.onJumpToLatest },
-    })
-    await h.anchoredAt(2000)
-    h.hook.forceScrollToBottom()
+    const { h, jump } = await mountWithPendingJump(mountChat)
     h.changeAbove(60)
     await h.preserved(h.reset)
     await h.restoreFrames()
@@ -147,7 +118,7 @@ describe('useChatScroll scroll controller', () => {
     h.changeBelow(300)
     h.setHasNewer(false)
     jump.resolve()
-    await settle(jump.promise)
+    await settleJump(jump.promise)
 
     // A restore that drops the request leaves 2060.
     expect(h.div.getScrollTop()).toBe(4860)
@@ -156,19 +127,13 @@ describe('useChatScroll scroll controller', () => {
   })
 
   it('keeps the position when the jump fails after a restore', async () => {
-    const jump = deferredJump()
-    const h = mountChat({
-      hasNewer: true,
-      hookOptions: { onJumpToLatest: jump.onJumpToLatest },
-    })
-    await h.anchoredAt(2000)
-    h.hook.forceScrollToBottom()
+    const { h, jump } = await mountWithPendingJump(mountChat)
     h.changeAbove(60)
     await h.preserved(h.reset)
     await h.restoreFrames()
 
     jump.reject(new Error('the latest page did not load'))
-    await settle(jump.promise)
+    await settleJump(jump.promise)
 
     expect(h.div.getScrollTop()).toBe(2060)
     expect(h.hook.isFollowing()).toBe(false)
@@ -177,18 +142,12 @@ describe('useChatScroll scroll controller', () => {
   })
 
   it('drops the request when the jump fails during the work', async () => {
-    const jump = deferredJump()
-    const h = mountChat({
-      hasNewer: true,
-      hookOptions: { onJumpToLatest: jump.onJumpToLatest },
-    })
-    await h.anchoredAt(2000)
-    h.hook.forceScrollToBottom()
+    const { h, jump } = await mountWithPendingJump(mountChat)
     h.changeAbove(60)
     await h.preserved(async () => {
       h.reset()
       jump.reject(new Error('the latest page did not load'))
-      await settle(jump.promise)
+      await settleJump(jump.promise)
     })
     await h.restoreFrames()
 
@@ -255,9 +214,25 @@ describe('useChatScroll scroll controller', () => {
     h.dispose()
   })
 
+  it('writes nothing after a clamp of the browser whose event arrived', async () => {
+    const h = mountChat()
+    await h.anchoredAt(4500)
+    const writes = await h.preserved(() => {
+      // The content shrinks by 100px, and the browser clamps scrollTop to the new maximum.
+      h.div.setScrollHeight(4900)
+      h.hook.handlers.onScroll()
+    })
+    await h.restoreFrames()
+
+    // A restore of a clamp that counted as a move would write the anchor again.
+    expect(h.div.scrollTopWrites()).toBe(writes)
+    expect(h.div.getScrollTop()).toBe(4400)
+    h.dispose()
+  })
+
   it('writes nothing for a follower that stayed at the bottom', async () => {
     const h = mountChat()
-    const writes = await h.preserved(() => h.growTailPinned(200))
+    const writes = await h.preserved(() => h.changeBelow(200))
     await h.restoreFrames()
 
     expect(h.div.scrollTopWrites()).toBe(writes)

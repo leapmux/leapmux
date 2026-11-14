@@ -119,6 +119,17 @@ export function clampScrollTop(el: HTMLElement, top: number): number {
 }
 
 /**
+ * The `scrollTop` of `el`, clamped into its valid range. Safari/WebKit rubber-band
+ * overscroll can expose transient negative/over-max scrollTop values on read. Treat those
+ * as native edge physics, not list coordinates: anchor resolution, viewport ranges,
+ * velocity, and saved state must operate in the clamped scroll coordinate space without
+ * writing to the DOM.
+ */
+export function readLogicalScrollTop(el: HTMLElement): number {
+  return clampScrollTop(el, el.scrollTop)
+}
+
+/**
  * Distance (px) from the viewport bottom to the content bottom: the visible
  * buffer of content BELOW the fold. The one definition the buffer filler, the
  * follow-mode test, the bottom edge-intent test, and the scroll-to-bottom

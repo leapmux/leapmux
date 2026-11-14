@@ -2,7 +2,7 @@ import type { ChatScrollState, ChatScrollVirtualizer } from './useChatScroll'
 import type { ScrollAnchor } from '~/stores/chatTypes'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createViewportRestore } from './chatScrollViewportRestore'
-import { makeScrollContext, virtualizerNoOps } from './useChatScroll.testkit'
+import { makeScrollContext, virtualizerNoOps, withContentAnchors } from './useChatScroll.testkit'
 
 // Manual requestAnimationFrame queue so a test can step frames deterministically.
 // handleResize schedules its flush on a rAF and re-schedules it while an animation
@@ -41,7 +41,7 @@ afterEach(() => vi.restoreAllMocks())
 
 /** A virtualizer stub whose anchors resolve to the given scroll coordinates. */
 function stubVirt(opts: { totalHeight: number, forAnchor: number | null, nearAnchor: number | null }): ChatScrollVirtualizer {
-  return {
+  return withContentAnchors({
     ...virtualizerNoOps(),
     totalHeight: () => opts.totalHeight,
     geometryVersion: () => 0,
@@ -49,7 +49,7 @@ function stubVirt(opts: { totalHeight: number, forAnchor: number | null, nearAnc
     anchorAt: vi.fn(() => null),
     scrollTopForAnchor: vi.fn(() => opts.forAnchor),
     scrollTopNearAnchor: vi.fn(() => opts.nearAnchor),
-  }
+  })
 }
 
 /**
@@ -63,9 +63,13 @@ function harness(opts: {
   nearAnchor?: number | null
   followRequested?: boolean
   lastAnchor?: () => ScrollAnchor | null
+  /** Whether the hook's restoreAnchor placed the view. Default: false. */
+  anchorRestored?: boolean
 } = {}) {
   const el = { scrollTop: 0, scrollHeight: 5000, clientHeight: 500 } as HTMLDivElement
-  const state = { animating: false }
+  // `followRequested` is the request for the tail; a test changes it between the
+  // ResizeObserver callback and the flush.
+  const state = { animating: false, followRequested: opts.followRequested ?? false }
   const placed: Array<number | null> = []
   const placeAt = vi.fn((resolve: () => number | null): boolean | null => {
     const top = resolve()
@@ -74,15 +78,14 @@ function harness(opts: {
       ? null
       : true
   })
-  const syncAfterWrite = vi.fn()
+  const recordPosition = vi.fn()
   const extras = {
     stickToBottom: vi.fn(() => true),
     forceScrollToBottom: vi.fn(),
     clearSavedViewportScroll: vi.fn(),
     savedViewportScroll: () => opts.saved,
-    restoreAnchor: vi.fn(),
+    restoreAnchor: vi.fn((_anchor: ScrollAnchor | null) => opts.anchorRestored ?? false),
     lastAnchor: vi.fn(opts.lastAnchor ?? (() => null)),
-    followRequested: () => opts.followRequested ?? false,
     onGeometrySettled: vi.fn(),
   }
   const restore = createViewportRestore(
@@ -98,8 +101,9 @@ function harness(opts: {
           : opts.nearAnchor,
       }),
       isAnimating: () => state.animating,
+      followRequested: () => state.followRequested,
       placeAt,
-      syncAfterWrite,
+      recordPosition,
     }),
     extras,
   )
@@ -109,7 +113,7 @@ function harness(opts: {
     state,
     placed,
     placeAt,
-    syncAfterWrite,
+    recordPosition,
     extras,
     el,
   }
@@ -169,7 +173,7 @@ describe('chatScrollViewportRestore handleResize', () => {
       let current = anchorA
       // No saved state and no request: the show takes the recheck path. The test does
       // not call initClientHeight, so the pane counts as hidden before the resize.
-      const { restore, extras, syncAfterWrite } = harness({
+      const { restore, extras, recordPosition } = harness({
         saved: undefined,
         lastAnchor: () => current,
       })
@@ -178,7 +182,28 @@ describe('chatScrollViewportRestore handleResize', () => {
       current = anchorB
       raf.flush()
       expect(extras.restoreAnchor).toHaveBeenCalledWith(anchorA)
-      expect(syncAfterWrite).toHaveBeenCalledOnce()
+      expect(recordPosition).toHaveBeenCalledOnce()
+    }
+    finally {
+      raf.restore()
+    }
+  })
+
+  it('records no second write after a restore of the anchor that placed the view', () => {
+    const raf = installRaf()
+    try {
+      // A restore that placed the view recorded its own write. A second record would end
+      // the anchor that the hook holds for a row with an estimated height.
+      const anchor: ScrollAnchor = { id: 'a', offsetWithinRow: 1 }
+      const { restore, extras, recordPosition } = harness({
+        saved: undefined,
+        lastAnchor: () => anchor,
+        anchorRestored: true,
+      })
+      restore.handleResize()
+      raf.flush()
+      expect(extras.restoreAnchor).toHaveBeenCalledWith(anchor)
+      expect(recordPosition).not.toHaveBeenCalled()
     }
     finally {
       raf.restore()
@@ -200,17 +225,35 @@ describe('chatScrollViewportRestore handleResize', () => {
     }
   })
 
+  it('keeps the request of the ResizeObserver callback for a show', () => {
+    const raf = installRaf()
+    try {
+      const { restore, extras, recordPosition, state } = harness({ saved: undefined, followRequested: true })
+      restore.handleResize()
+      // The browser moves the pane that it showed, and the scroll event of that move ends the
+      // request before the flush.
+      state.followRequested = false
+      raf.flush()
+      expect(extras.stickToBottom).toHaveBeenCalledOnce()
+      expect(extras.restoreAnchor).not.toHaveBeenCalled()
+      expect(recordPosition).not.toHaveBeenCalled()
+    }
+    finally {
+      raf.restore()
+    }
+  })
+
   it('records the position on a resize of a visible reader with no request', () => {
     const raf = installRaf()
     try {
-      const { restore, extras, syncAfterWrite } = harness({ saved: undefined })
+      const { restore, extras, recordPosition } = harness({ saved: undefined })
       restore.initClientHeight()
       restore.handleResize()
       raf.flush()
       expect(extras.stickToBottom).not.toHaveBeenCalled()
       // Only a show restores the anchor: the pane was visible before this resize.
       expect(extras.restoreAnchor).not.toHaveBeenCalled()
-      expect(syncAfterWrite).toHaveBeenCalledOnce()
+      expect(recordPosition).toHaveBeenCalledOnce()
     }
     finally {
       raf.restore()
@@ -364,5 +407,15 @@ describe('chatScrollViewportRestore geometry settle', () => {
     finally {
       raf.restore()
     }
+  })
+
+  it('re-arms the geometry-derived memos after a restore at the mount', () => {
+    const { restore, extras } = harness({
+      saved: { atBottom: true, hasMoreNewer: true },
+    })
+    restore.restoreOnMount()
+    // The jump to the latest page of an at-bottom save writes nothing that would re-arm them.
+    expect(extras.forceScrollToBottom).toHaveBeenCalledOnce()
+    expect(extras.onGeometrySettled).toHaveBeenCalledOnce()
   })
 })

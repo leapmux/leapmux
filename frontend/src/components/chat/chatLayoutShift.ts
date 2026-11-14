@@ -6,11 +6,22 @@ import { clamp } from '~/lib/clamp'
 //
 // The rows of the chat list sit at content coordinates: `offsets[i]` is the distance
 // from the top of the first loaded row to the top of row `i`. The scroll element has
-// its own coordinates, the `scrollTop` space. The layout shift converts between the
-// two: `scroll = content + shift`. The virtualizer moves the rows by the shift, so a
-// geometry change can keep the content under the reader in place with no `scrollTop`
-// write. A write during a gesture can end the momentum of the browser, and WebKit can
-// then deliver a scroll event in the old coordinates.
+// its own coordinates, the `scrollTop` space. Two terms convert between the two:
+// `scroll = content + shift + inset`.
+//
+// - The inset is the distance from scroll coordinate 0 to the top of the spacer that
+//   holds the rows: the top padding of the list and the gap above the spacer, which
+//   ChatView measures. A list shorter than the view also grows the flex spacer above the
+//   rows, and the inset does not count that height. Such a list cannot scroll, so every
+//   placement lands at 0, and its viewport top lies above the first row with or without
+//   that height.
+// - The virtualizer moves the rows by the layout shift, so a geometry change can keep the
+//   content under the reader in place with no `scrollTop` write. A write during a gesture
+//   can end the momentum of the browser, and WebKit can then deliver a scroll event in the
+//   old coordinates.
+//
+// The viewport top is the top edge of the visible area of the scroll element. Its content
+// coordinate is `scrollTop - shift - inset`.
 //
 // This module holds the rule that selects the next shift. It is pure: no reactive
 // owner and no DOM. The caller measures the one value that needs the DOM, how far an
@@ -38,7 +49,11 @@ export interface LayoutShiftInput {
   previous: LayoutSnapshot | undefined
   next: LayoutSnapshot
   previousShift: number
-  /** The `scrollTop` of the scroll element, clamped to its scroll range. */
+  /**
+   * The `scrollTop` of the scroll element, clamped to its scroll range, minus the inset
+   * (see the module comment). So `scrollTop - previousShift` is the content coordinate of
+   * the viewport top.
+   */
   scrollTop: number
   /** Keep the bottom of the content in place: the reader follows the live tail. */
   pinBottom: boolean
@@ -52,11 +67,80 @@ export interface LayoutShiftInput {
 
 /**
  * The slack (px) within which the viewport top counts as the top edge of its row. A
- * seek or Home aligns a row to the viewport top, and a sub-pixel layout can leave the
- * top a fraction of a pixel inside the row. The virtualizer records a pivot element only
- * below this slack, so the two agree on which case applies.
+ * placement can align the top edge of a row with the viewport top, as the restore of an
+ * anchor at the top of its row does, and a sub-pixel layout can leave the viewport top a
+ * fraction of a pixel inside the row. Home places the view at scroll coordinate 0, which
+ * lies the inset above the first row (see the module comment), so it needs no slack.
+ * `rowCutAt` applies it for the shift rule and for the row in which the virtualizer
+ * records a pivot element, so the two agree on which case applies.
  */
 export const TOP_EDGE_SLACK_PX = 1
+
+/**
+ * How far below the viewport top a seek places the top edge of the row that it lands on
+ * (see chatSeek), so a little of the row above stays in view. The seek converts the row
+ * top with the inset (see the module comment), so the distance holds on screen.
+ * `rowCutAt` gives the top edge of a row whose top lies at most this far, plus
+ * TOP_EDGE_SLACK_PX, below the viewport top. So the rule holds the landed row while the
+ * rows around it measure, also when the viewport top lies inside the row above it, as it
+ * does between two bands.
+ */
+export const ROW_ALIGN_OFFSET_PX = 8
+
+/**
+ * Where the viewport top falls in the row that holds it, by its content coordinate (see
+ * the module comment). The kind is the point of the row that the shift rule holds (see
+ * nextLayoutShift):
+ *
+ * - `top-edge`: at most TOP_EDGE_SLACK_PX below the top edge of the row, above the first
+ *   row, or at most ROW_ALIGN_OFFSET_PX + TOP_EDGE_SLACK_PX above the top edge of the
+ *   next row (where a seek leaves the viewport top). The last case gives the next row.
+ * - `bottom-edge`: in the gap below the row, or anywhere in a row whose height is an
+ *   estimate.
+ * - `body`: inside the measured body of the row. Only this kind reads a pivot element.
+ */
+export interface RowCut {
+  kind: 'top-edge' | 'bottom-edge' | 'body'
+  /**
+   * The index of the row: the last row whose top is at or above the viewport top (0 when
+   * none is), or the row after it when its top lies within the alignment distance below.
+   */
+  index: number
+  /** The content top of the row. */
+  top: number
+  /** The content bottom of the row, without the gap below it. */
+  bottom: number
+}
+
+/**
+ * Classify the content coordinate `contentTop` of the viewport top in `s`, which must hold
+ * a row. The caller subtracts the shift and the inset from `scrollTop` to get it.
+ */
+export function rowCutAt(s: LayoutSnapshot, contentTop: number): RowCut {
+  const holding = largestIndexWhere(s.n, i => rowTop(s, i) <= contentTop)
+  const following = holding + 1
+  const index = following < s.n && rowTop(s, following) - contentTop <= ROW_ALIGN_OFFSET_PX + TOP_EDGE_SLACK_PX
+    ? following
+    : holding
+  const top = rowTop(s, index)
+  const bottom = rowBottom(s, index)
+  const kind = contentTop - top <= TOP_EDGE_SLACK_PX
+    ? 'top-edge'
+    : contentTop >= bottom || s.measured[index] !== 1
+      ? 'bottom-edge'
+      : 'body'
+  return { kind, index, top, bottom }
+}
+
+/** The content top of row `i` of `s`. */
+function rowTop(s: LayoutSnapshot, i: number): number {
+  return s.offsets[i] ?? 0
+}
+
+/** The content bottom of row `i` of `s`, without the gap below it. */
+function rowBottom(s: LayoutSnapshot, i: number): number {
+  return rowTop(s, i) + (s.heights[i] ?? 0)
+}
 
 /**
  * The shift for the `next` snapshot that keeps one point of the content at its scroll
@@ -64,8 +148,10 @@ export const TOP_EDGE_SLACK_PX = 1
  *
  * - No previous snapshot, or no row in the next one: 0.
  * - `pinBottom`: the bottom of the content keeps its scroll coordinate.
- * - Otherwise the rule finds the row `R` that holds the viewport top, and it holds:
- *   - the top edge of `R` when the viewport top is at that edge;
+ * - Otherwise the rule finds the row `R` that holds the viewport top (see rowCutAt), and
+ *   it holds:
+ *   - the top edge of `R` when the viewport top is at that edge, or a seek placed the top
+ *     edge of the next row just below the viewport top (then `R` is that next row);
  *   - the bottom edge of `R` when the viewport top is in the gap below `R`, or `R` had
  *     an estimated height. An estimate that a measure replaces then moves no row below
  *     it, which keeps an upward scroll through unmeasured history stable;
@@ -92,44 +178,45 @@ export function nextLayoutShift(input: LayoutShiftInput): number {
   // The viewport top in the content coordinates of the previous snapshot. Before the
   // first row (a positive shift above the reachable top), the row 0 holds by its top edge.
   const c = scrollTop - previousShift
-  const r = largestIndexWhere(previous.n, i => (previous.offsets[i] ?? 0) <= c)
-  const heldContentTop = heldPoint(input, c, r)
+  const heldContentTop = heldPoint(previous, next, c, input.intraRowShift)
   return heldContentTop === undefined
     ? 0
     : limitSpacer(scrollTop - heldContentTop)
 }
 
-/** The content coordinate in `next` of the point at `c` in `previous`, or `undefined` when no row is in both. */
-function heldPoint(input: LayoutShiftInput, c: number, r: number): number | undefined {
-  const previous = input.previous!
-  const { next } = input
+/**
+ * The content coordinate in `next` of the point at `c` in `previous`, or `undefined` when
+ * no row is in both. `previous` must hold a row.
+ */
+function heldPoint(
+  previous: LayoutSnapshot,
+  next: LayoutSnapshot,
+  c: number,
+  intraRowShift: LayoutShiftInput['intraRowShift'],
+): number | undefined {
+  const cut = rowCutAt(previous, c)
+  const r = cut.index
   const rowId = previous.list[r]?.id
   const nextIndex = rowId === undefined
     ? undefined
     : next.indexById.get(rowId)
   if (rowId !== undefined && nextIndex !== undefined) {
-    const top = previous.offsets[r] ?? 0
-    const bottom = top + (previous.heights[r] ?? 0)
-    const nextTop = next.offsets[nextIndex] ?? 0
-    const nextHeight = next.heights[nextIndex] ?? 0
-    if (c - top <= TOP_EDGE_SLACK_PX)
-      return nextTop + (c - top)
-    if (c >= bottom || previous.measured[r] !== 1)
-      return nextTop + nextHeight + (c - bottom)
-    return nextTop + clamp(c - top + input.intraRowShift(rowId), 0, nextHeight)
+    const nextTop = rowTop(next, nextIndex)
+    if (cut.kind === 'top-edge')
+      return nextTop + (c - cut.top)
+    if (cut.kind === 'bottom-edge')
+      return rowBottom(next, nextIndex) + (c - cut.bottom)
+    return nextTop + clamp(c - cut.top + intraRowShift(rowId), 0, next.heights[nextIndex] ?? 0)
   }
   for (let i = r + 1; i < previous.n; i++) {
     const below = surviving(previous, next, i)
     if (below !== undefined)
-      return (next.offsets[below] ?? 0) + (c - (previous.offsets[i] ?? 0))
+      return rowTop(next, below) + (c - rowTop(previous, i))
   }
   for (let i = r - 1; i >= 0; i--) {
     const above = surviving(previous, next, i)
-    if (above !== undefined) {
-      const bottom = (previous.offsets[i] ?? 0) + (previous.heights[i] ?? 0)
-      const nextBottom = (next.offsets[above] ?? 0) + (next.heights[above] ?? 0)
-      return nextBottom + (c - bottom)
-    }
+    if (above !== undefined)
+      return rowBottom(next, above) + (c - rowBottom(previous, i))
   }
   return undefined
 }

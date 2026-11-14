@@ -10,12 +10,14 @@
  */
 
 /**
- * A scroll anchor: the message (by row id) the viewport top is pinned to, plus
- * the pixel offset from that row's top to the viewport top. The virtualizer
- * produces it (anchorAt) and resolves it back to a scrollTop (scrollTopForAnchor);
- * useChatScroll holds it across geometry changes to keep the row stationary, and
- * SavedViewportScroll persists it for tab-switch restore. The row ID remains stable
- * when a notification receives a new sequence.
+ * A scroll anchor: the message (by row id) at the viewport top, plus the pixel
+ * offset from that row's top to the viewport top. The virtualizer produces it
+ * (anchorAt) and resolves it back to a scrollTop (scrollTopForAnchor). The
+ * virtualizer's layout shift, not an anchor, keeps the row in place across a geometry
+ * change. useChatScroll captures an anchor to restore a pane that was hidden, to save the
+ * viewport (SavedViewportScroll persists it for tab-switch restore), and to restore the
+ * view after a heavy re-render; the buffer filler measures the progress of a page load
+ * against one. The row ID remains stable when a notification receives a new sequence.
  */
 export interface ScrollAnchor {
   id: string

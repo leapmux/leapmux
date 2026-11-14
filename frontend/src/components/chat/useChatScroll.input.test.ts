@@ -1,11 +1,10 @@
-import type { ChatScrollVirtualizer } from './useChatScroll'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createRenderEffect, createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer, virtualizerNoOps } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer, virtualizerNoOps, withContentAnchors } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -447,7 +446,7 @@ describe('useChatScroll down-jump on a small scroll-down', () => {
     let total = total0
     let rowOffset = rowOffset0
     const [version, setVersion] = createSignal(0)
-    const virt: ChatScrollVirtualizer = {
+    const virt = withContentAnchors({
       ...virtualizerNoOps(),
       totalHeight: () => {
         version()
@@ -456,9 +455,9 @@ describe('useChatScroll down-jump on a small scroll-down', () => {
       geometryVersion: version,
       updateViewport: () => {},
       anchorAt: scrollTop => ({ id: 'row', offsetWithinRow: scrollTop - rowOffset }),
-      scrollTopNearAnchor: () => null,
+      scrollTopNearAnchor: a => rowOffset + a.offsetWithinRow,
       scrollTopForAnchor: a => rowOffset + a.offsetWithinRow,
-    }
+    })
     const prepend = (px: number) => {
       rowOffset += px
       total += px
@@ -529,15 +528,15 @@ describe('useChatScroll down-jump on a small scroll-down', () => {
           // as scrollTopForAnchor keeps any placement a no-op when newer appends BELOW the
           // anchor -- isolating the follow path.
           const [total, setTotal] = createSignal(1000)
-          const virt: ChatScrollVirtualizer = {
+          const virt = withContentAnchors({
             ...virtualizerNoOps(),
             totalHeight: () => total(),
             geometryVersion: () => 0,
             updateViewport: () => {},
             anchorAt: () => ({ id: 'row', offsetWithinRow: 0 }),
-            scrollTopNearAnchor: () => null,
+            scrollTopNearAnchor: () => 1100,
             scrollTopForAnchor: () => 1100,
-          }
+          })
           const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
           const [hasNewer, setHasNewer] = createSignal(false)
           const [agentStatus, setAgentStatus] = createSignal<AgentStatus | undefined>(AgentStatus.ACTIVE)

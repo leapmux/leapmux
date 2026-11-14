@@ -34,6 +34,7 @@ import { resolveScrollbarOwner } from './chatRailPolicy'
 import { kindScopedLayoutKey } from './chatRowGeometry'
 import { createRowHeightPersistence } from './chatRowHeightPersistence'
 import { createScrollActivity } from './chatScrollActivity'
+import { isListScrollKey } from './chatScrollInput'
 import { ChatScrollRail } from './ChatScrollRail'
 import { rowStartSeqs } from './chatScrollRailGeometry'
 import { createDelayedSet, createFlingSkeletonRegistry, createLingerSet } from './chatSkeletonCrossfade'
@@ -73,14 +74,17 @@ export const RAIL_VISIBLE_IDLE_MS = 1200
  * real user input.
  *
  * A flick's glide fires no touch or pointer event -- only `scroll` -- so the
- * rail has to relight from those, and only the hook can say which of them are
- * the reader's own momentum rather than our stick-to-bottom echoing back (see
- * `onMomentumScroll`). This cap is the second safeguard behind the hook: a
- * scroll that the browser makes by itself, such as the clamp after the
- * content shrinks, also moves the position, so the hook reports it too.
- * Without a cap, each such scroll during an active turn would relight the
- * rail. Measured from the last INPUT and never re-based by a scroll, so a turn
- * with no reader input can never reach it at all.
+ * rail has to relight from those. The hook calls `onMomentumScroll` for each
+ * scroll event that moved the view while no pointer or touch is down. An own
+ * write of the hook, such as a stick to the bottom, records its position
+ * first, so the event of that write is no move and is not reported.
+ *
+ * This cap is the second safeguard behind the hook: a scroll that the browser
+ * makes by itself, such as one that brings a focused element into view, also
+ * moves the view while nothing is down, so the hook reports it too. Without a
+ * cap, each such scroll would relight the rail. Measured from the last INPUT
+ * and never re-based by a scroll, so a turn with no reader input can never
+ * reach it at all.
  *
  * Long enough for the hardest flick on a long transcript; the rail then fades
  * `RAIL_VISIBLE_IDLE_MS` after the last coast scroll, not at this bound.
@@ -99,6 +103,18 @@ export const SKELETON_CROSSFADE_MS = motion.medium
 // keeps its measured height until the next read of its element commits the new
 // one (see useChatVirtualizer's pruneStaleKeyedHeights).
 export const SKELETON_SHOW_DELAY_MS = 500
+
+/**
+ * The inset (px) of the virtual spacer in the scroll coordinates of the list element: the
+ * top padding of the list and the row gap above the spacer (see `messageList`). The flex
+ * spacer between them has no height while the list overflows the view (see
+ * chatLayoutShift for a shorter list). A value that is not in px reads as 0, as an
+ * unresolved `var()` does in jsdom.
+ */
+function readSpacerInset(listEl: HTMLElement): number {
+  const style = getComputedStyle(listEl)
+  return (Number.parseFloat(style.paddingTop) || 0) + (Number.parseFloat(style.rowGap) || 0)
+}
 
 /** Imperative scroll API published by ChatView via `onScrollApiReady`. */
 export interface ChatScrollApi {
@@ -308,9 +324,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // The scroll container (also handed to scroll.attachListRef below). Read
   // non-reactively by isRowNearViewport at worker-dispatch time.
   let listEl: HTMLElement | undefined
-  // The virtual spacer and the layer of rows inside it, for virt.attachLayout.
-  let layoutSpacerEl: HTMLElement | undefined
-  let layoutLayerEl: HTMLElement | undefined
   // Reactive handle on the same element for the scroll rail (which attaches its own
   // passive listener + ResizeObserver in a createEffect keyed on it).
   const [scrollEl, setScrollEl] = createSignal<HTMLDivElement | undefined>()
@@ -360,9 +373,23 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // Message-list viewport height (the scroll container's content-box height),
   // tracked from the same observer. Drives the viewport-relative overscan below.
   const [viewportHeight, setViewportHeight] = createSignal(0)
+  // The inset of the virtual spacer (see readSpacerInset). It is read again at each size
+  // change of the list, which a new padding causes. A new gap alone causes none, so the
+  // inset then waits for the next size change.
+  const [spacerInsetPx, setSpacerInsetPx] = createSignal(0)
+  const measureSpacerInset = () => {
+    if (listEl)
+      setSpacerInsetPx(readSpacerInset(listEl))
+  }
   const viewportSizeObserver = createViewportSizeObserver({
-    onWidth: setContentWidth,
-    onHeight: setViewportHeight,
+    onWidth: (width) => {
+      setContentWidth(width)
+      measureSpacerInset()
+    },
+    onHeight: (height) => {
+      setViewportHeight(height)
+      measureSpacerInset()
+    },
   })
   onCleanup(() => viewportSizeObserver.disconnect())
   const effectiveContentWidth = createMemo(() => contentWidth() > 0
@@ -450,6 +477,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     gapLargePx,
     overscanPx,
     scrollElement: () => listEl,
+    spacerInsetPx,
     pinBottom: () => isFollowingTail(),
   })
   // Point the UI-state cap's protect set at the virtualizer's live mounted rows
@@ -548,11 +576,14 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   //   - highlightActivity takes EVERY scroll, our own programmatic writes included -- a
   //     frequent stick-to-bottom writes are exactly when the highlighter and premeasure
   //     warm-up must stay out of the way.
-  //   - railActivity takes MOVEMENT only: a scroll input that actually moved, plus the
-  //     scrolls the hook classifies as the reader's own momentum. A rail lit by our own
-  //     scrollTop writes would stay lit for a whole response, defeating its
-  //     auto-hide when it matters most, and one lit by a bare press put a scrollbar on
-  //     screen every time the reader touched the transcript.
+  //   - railActivity takes MOVEMENT only: a scroll input that actually moved, plus each
+  //     scroll event that the hook reports through `onMomentumScroll` -- one that moved
+  //     the view while no pointer or touch is down. Such an event opens the window only
+  //     within `RAIL_COAST_MAX_MS` of the last input, which also limits a scroll that the
+  //     browser makes by itself. A rail lit by our own scrollTop writes would stay lit
+  //     for a whole response, defeating its auto-hide when it matters most, and one lit
+  //     by a bare press put a scrollbar on screen every time the reader touched the
+  //     transcript.
   const highlightActivity = createScrollActivity({ idleMs: SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS })
   const railActivity = createScrollActivity({
     idleMs: RAIL_VISIBLE_IDLE_MS,
@@ -825,12 +856,13 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     ...(saveViewportScrollOnCleanup !== undefined
       ? { onSaveViewportScroll: saveViewportScrollOnCleanup }
       : {}),
-    // The reader's own coast. Relighting on it holds the rail for the whole
-    // fling -- no pointer or touch event fires then, only `scroll`, and the
-    // hook is the one place that can tell that scroll apart from our own
+    // Each scroll event that moved the view while no pointer or touch is down,
+    // such as the reader's own coast. Relighting on it holds the rail for the
+    // whole fling -- no pointer or touch event fires then, only `scroll`, and
+    // the hook is the one place that can tell that scroll apart from our own
     // programmatic writes. Routed through the coast entry, so a scroll that
-    // the browser makes by itself, such as a clamp, still cannot relight it
-    // past `RAIL_COAST_MAX_MS` from a real input.
+    // the browser makes by itself still cannot relight it past
+    // `RAIL_COAST_MAX_MS` from a real input.
     onMomentumScroll: () => noteRailCoast(),
   })
   // Now that the scroll hook (which owns follow mode) exists, point the virtualizer's
@@ -884,21 +916,19 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     // The one asymmetric handler. A `scroll` event alone is NOT user intent -- the
     // stick-to-bottom writes scrollTop for footer and row commits. The highlight pause
     // WANTS those (that churn is exactly when highlighting and the premeasure warm-up must
-    // not run), so it keeps taking noteInput. The RAIL takes none of them here: it
-    // relights from `onMomentumScroll` below, which fires only for the scrolls the
-    // hook classifies as the reader's own coast.
+    // not run), so it keeps taking noteInput. The RAIL takes none of them here. It
+    // relights from `onMomentumScroll` (in the useChatScroll options above), which the
+    // hook calls for each event that moved the view while no pointer or touch is down,
+    // and the `RAIL_COAST_MAX_MS` cap limits a scroll that the browser makes by itself.
     onScroll: () => {
       highlightActivity.noteInput()
       scroll.handlers.onScroll()
     },
     onKeyDown: (event: KeyboardEvent) => {
-      // A modifier-bearing key (Ctrl+End, Cmd+PageDown) is an OS/app shortcut, not a native
-      // scroll -- useChatScroll's own native-scroll attribution ignores them for the same
-      // reason (useChatScroll.ts). Mirror that gate here so the windows do not arm for a
-      // gesture that does not scroll.
-      if (!event.altKey && !event.ctrlKey && !event.metaKey
-        && (event.key === 'ArrowDown' || event.key === 'PageDown' || event.key === 'End' || event.key === ' '
-          || event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home')) {
+      // Only a key that scrolls the list opens the two windows, by the rule that the scroll
+      // hook's key handler also follows (isListScrollKey). A shortcut with a modifier, such
+      // as Ctrl+End or Cmd+PageDown, and a key in a text field open neither.
+      if (isListScrollKey(event)) {
         highlightActivity.noteInput()
         noteRailInput()
       }
@@ -1004,6 +1034,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           <div
             ref={(el) => {
               listEl = el
+              measureSpacerInset()
               setScrollEl(el)
               scroll.attachListRef(el)
               viewportSizeObserver.observe(el)
@@ -1071,21 +1102,16 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     class={styles.virtualSpacer}
                     style={{ height: `${virt.spacerHeight()}px` }}
                     ref={(el) => {
-                      layoutSpacerEl = el
-                      virt.attachLayout(el, layoutLayerEl)
+                      virt.attachSpacer(el)
+                      onCleanup(() => virt.attachSpacer(undefined))
                     }}
                   >
                     <div
                       class={styles.virtualLayer}
                       style={{ transform: `translateY(${virt.layoutShift()}px)` }}
                       ref={(el) => {
-                        layoutLayerEl = el
-                        virt.attachLayout(layoutSpacerEl, el)
-                        onCleanup(() => {
-                          layoutSpacerEl = undefined
-                          layoutLayerEl = undefined
-                          virt.attachLayout(undefined, undefined)
-                        })
+                        virt.attachLayer(el)
+                        onCleanup(() => virt.attachLayer(undefined))
                       }}
                     >
                       {/* Inter-row rail segments, outside the paint-contained rows
@@ -1353,11 +1379,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             <ChatScrollRail
               scrollEl={scrollEl()}
               items={virtualItems()}
-              offsetOfIndex={virt.offsetOfIndex}
-              totalHeight={virt.totalHeight()}
-              geometryVersion={virt.geometryVersion()}
-              contentTopOf={virt.contentTopOf}
-              layoutShift={virt.layoutShift()}
+              geometry={virt}
               // The row-seq map the owner resolution above already computes (railRowSeqs), reused by
               // the rail's geometry so the O(n) scan runs once per item-list change, not twice.
               railRowSeqs={railRowSeqs()}

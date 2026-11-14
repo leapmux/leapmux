@@ -1,12 +1,18 @@
+import type { LayoutSnapshot } from './chatLayoutShift'
 import type { AnchorOffsetGeometry } from './chatScrollAnchor'
 import type { ChatScrollVirtualizer, ScrollContext, UseChatScrollOptions } from './useChatScroll'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ScrollAnchor } from '~/stores/chatTypes'
 import { batch, createRoot, createSignal, untrack } from 'solid-js'
-import { afterEach, beforeAll, vi } from 'vitest'
+import { afterEach, beforeAll, onTestFinished, vi } from 'vitest'
+import { largestIndexWhere } from '~/lib/binarySearch'
+import { deferred, flush } from '~/test-support/async'
 import { installControllableResizeObserver, triggerResizeObserversSync } from '~/test-support/resizeObserverStub'
+import { nextLayoutShift } from './chatLayoutShift'
 import { anchorAtOffset, resolveAnchorScrollTop, resolveNearestAnchorScrollTop } from './chatScrollAnchor'
+import { readLogicalScrollTop } from './chatScrollGeometry'
 import { SCROLL_REST_QUIET_MS } from './chatScrollRest'
+import { applyRebaseWrite, placementScrollTop } from './createLayoutShift'
 import { useChatScroll } from './useChatScroll'
 
 /**
@@ -14,6 +20,12 @@ import { useChatScroll } from './useChatScroll'
  * single 8k-line file into per-behavior spec files; these virtualizer/context/
  * DOM stubs and the environment hooks are the common prelude every split imports.
  */
+
+/**
+ * The members of the virtualizer surface that withContentAnchors derives from the others:
+ * the anchor resolvers in content coordinates.
+ */
+type ContentAnchorResolvers = 'anchorAtContent' | 'contentTopForAnchor'
 
 /**
  * Every member of the virtualizer surface that the geometry builders below do NOT supply,
@@ -29,13 +41,36 @@ import { useChatScroll } from './useChatScroll'
 export function virtualizerNoOps(): Omit<
   ChatScrollVirtualizer,
   'totalHeight' | 'geometryVersion' | 'updateViewport' | 'anchorAt' | 'scrollTopNearAnchor' | 'scrollTopForAnchor'
+  | ContentAnchorResolvers
 > {
   return {
     setFastScrollActive: () => {},
+    // A stub has no estimated height: every row counts as measured.
+    hasMeasuredHeight: () => true,
     layoutShift: () => 0,
     rebase: () => 0,
     contentTopOf: scrollTop => scrollTop,
     scrollTopOf: contentTop => contentTop,
+    placementScrollTopOf: contentTop => placementScrollTop(contentTop, top => top),
+  }
+}
+
+/**
+ * Complete a virtualizer stub with the anchor resolvers in content coordinates, derived
+ * from its scroll resolvers through its own `contentTopOf` and `scrollTopOf`, as the real
+ * virtualizer relates them. A stub that sets `anchorAt` or `scrollTopForAnchor` then
+ * answers the content resolvers consistently without restating them.
+ */
+export function withContentAnchors(stub: Omit<ChatScrollVirtualizer, ContentAnchorResolvers>): ChatScrollVirtualizer {
+  return {
+    ...stub,
+    anchorAtContent: contentTop => stub.anchorAt(stub.scrollTopOf(contentTop)),
+    contentTopForAnchor: (anchor) => {
+      const scrollTop = stub.scrollTopForAnchor(anchor)
+      return scrollTop === null
+        ? null
+        : stub.contentTopOf(scrollTop)
+    },
   }
 }
 
@@ -43,10 +78,11 @@ export function virtualizerNoOps(): Omit<
  * Minimal virtualizer stub. `totalHeight` is a constant so the geometry
  * effect never fires — these tests exercise the sticky-bottom / resize / scroll
  * logic, which is independent of the offset map. Tests that need anchoring
- * behavior drive the math in useChatVirtualizer.test.ts instead.
+ * behavior use makeRowVirtualizer or makeShiftVirtualizer, and the anchor math has its
+ * own tests in chatScrollAnchor.test.ts and useChatVirtualizer.geometry.test.ts.
  */
 export function makeStubVirtualizer(): ChatScrollVirtualizer {
-  return {
+  return withContentAnchors({
     totalHeight: () => 0,
     geometryVersion: () => 0,
     updateViewport: () => {},
@@ -54,32 +90,56 @@ export function makeStubVirtualizer(): ChatScrollVirtualizer {
     scrollTopNearAnchor: () => null,
     scrollTopForAnchor: () => null,
     ...virtualizerNoOps(),
-  }
+  })
 }
 
 /**
- * A fully-stubbed ScrollContext (the shared scroll primitives the helpers reach back
- * into useChatScroll for). Pass overrides for the fields a test wires to its element
- * or asserts on; every other primitive defaults to a no-op.
+ * A fully-stubbed ScrollContext (the scroll primitives of useChatScroll and the hook
+ * actions that its helpers share). Pass overrides for the fields a test wires to its
+ * element or asserts on. Every other member defaults to a no-op, or to false for a
+ * predicate, except three that act as the hook's do: `getVisibleEl`, `placeAtAnchor`, and
+ * `writeOwnScrollTop`.
  */
 export function makeScrollContext(overrides: Partial<ScrollContext> = {}): ScrollContext {
-  return {
+  const ctx: ScrollContext = {
     getEl: () => undefined,
+    // The element of this context's `getEl` while it has a height, as the hook defines it.
+    getVisibleEl: () => {
+      const el = ctx.getEl()
+      return el !== undefined && el.clientHeight > 0
+        ? el
+        : undefined
+    },
     virt: makeStubVirtualizer(),
-    setAtBottom: () => {},
-    isAtBottom: () => false,
     isFollowing: () => false,
-    hasUnseenUpwardMove: () => false,
+    followRequested: () => false,
+    hasNewerMessages: () => false,
+    noteScrollRange: () => {},
     isAnimating: () => false,
-    refreshViewport: () => {},
     followTail: () => {},
     leaveFollow: () => {},
+    checkPosition: () => {},
+    cancelScrollAnimation: () => {},
+    retakeScrollControl: () => {},
+    rearmScrollBufferFiller: () => {},
     rebase: () => {},
     placeAt: () => null,
-    notePosition: () => {},
-    syncAfterWrite: () => {},
+    // Places through the `placeAt` and the virtualizer of this context, as the hook does,
+    // without the hold of an anchor whose row has an estimated height.
+    placeAtAnchor: (anchor, nearest) => ctx.placeAt(() => nearest
+      ? ctx.virt.scrollTopNearAnchor(anchor)
+      : ctx.virt.scrollTopForAnchor(anchor)),
+    // Writes to the element of this context's `getVisibleEl`, as the hook does, with no
+    // record and no refresh.
+    writeOwnScrollTop: (top) => {
+      const el = ctx.getVisibleEl()
+      if (el)
+        el.scrollTop = top
+    },
+    recordPosition: () => {},
     ...overrides,
   }
+  return ctx
 }
 
 /**
@@ -90,13 +150,8 @@ export function makeScrollContext(overrides: Partial<ScrollContext> = {}): Scrol
 export function makeGrowableVirtualizer() {
   const [total, setTotal] = createSignal(0)
   const virt: ChatScrollVirtualizer = {
+    ...makeStubVirtualizer(),
     totalHeight: () => total(),
-    geometryVersion: () => 0,
-    updateViewport: () => {},
-    anchorAt: () => null,
-    scrollTopNearAnchor: () => null,
-    scrollTopForAnchor: () => null,
-    ...virtualizerNoOps(),
   }
   return { virt, setTotal }
 }
@@ -131,19 +186,9 @@ function rowAnchorGeometry(heights: readonly number[], idPrefix: string): Anchor
       seq: BigInt(i + 1),
     })),
     // The largest index whose top offset is at most y (the row that contains y), clamped
-    // to [0, n - 1].
-    indexAtOffset: (y) => {
-      let idx = 0
-      for (let i = 0; i < heights.length; i++) {
-        // The loop condition keeps `i` inside `offsets` (offsets[0] is 0); `?? 0` only
-        // satisfies the type checker.
-        if ((offsets[i] ?? 0) <= y)
-          idx = i
-        else
-          break
-      }
-      return idx
-    },
+    // to [0, n - 1]. The search keeps `i` inside `offsets`; `?? 0` only satisfies the type
+    // checker.
+    indexAtOffset: y => largestIndexWhere(heights.length, i => (offsets[i] ?? 0) <= y),
     // Compare the prefix as plain text, then require the decimal form that the ids above
     // use: digits with no leading zero, so `r07` does not resolve to row 7. A RegExp built
     // from `idPrefix` would read a metacharacter in the prefix as regex syntax.
@@ -168,8 +213,8 @@ function rowAnchorGeometry(heights: readonly number[], idPrefix: string): Anchor
  * Virtualizer stub backed by a mutable per-row height map, so a measurement that
  * grows or shrinks a row drives the geometry effect through a REAL offset map --
  * `anchorAt` / `scrollTopForAnchor` resolve against the current heights, exactly
- * like the production virtualizer. Row ids are `g${gen}_${index}`; `seq` mirrors
- * the index. `setRowHeight` mutates one row and bumps `geometryVersion`,
+ * like the production virtualizer. Row ids are `g${gen}_${index}`; `seq` is the
+ * index plus one. `setRowHeight` mutates one row and bumps `geometryVersion`,
  * reproducing a DOM measurement landing after the row mounted (a freshly-mounted
  * row settling from its estimate to its real height once the pipeline measures it).
  * `replaceWindow` swaps in a fresh row set under a NEW generation
@@ -185,13 +230,19 @@ export function makeRowVirtualizer(initialHeights: number[]) {
   // Row id encodes the window GENERATION so a replaced window's ids stop resolving (the
   // real virtualizer keys the offset map by row id; a re-fetched window has fresh rows).
   const geometry = () => rowAnchorGeometry(heights(), `g${gen()}_`)
+  const anchorAtContent = (y: number): ScrollAnchor | null => anchorAtOffset(geometry(), y)
+  const contentTopForAnchor = (anchor: ScrollAnchor): number | null => resolveAnchorScrollTop(geometry(), anchor)
+  // With no layout shift, a scroll coordinate is a content coordinate, so the scroll
+  // resolvers are the content ones.
   const virt: ChatScrollVirtualizer = {
     totalHeight: total,
     geometryVersion: () => geometryVersion(),
     updateViewport: () => {},
-    anchorAt: (y: number): ScrollAnchor | null => anchorAtOffset(geometry(), y),
+    anchorAtContent,
+    contentTopForAnchor,
+    anchorAt: anchorAtContent,
     scrollTopNearAnchor: (anchor: ScrollAnchor): number | null => resolveNearestAnchorScrollTop(geometry(), anchor),
-    scrollTopForAnchor: (anchor: ScrollAnchor): number | null => resolveAnchorScrollTop(geometry(), anchor),
+    scrollTopForAnchor: contentTopForAnchor,
     ...virtualizerNoOps(),
   }
   const setRowHeight = (idx: number, h: number) => {
@@ -216,82 +267,154 @@ export function makeRowVirtualizer(initialHeights: number[]) {
 }
 
 /**
- * Virtualizer stub with rows of `heights` (ids `r0`, `r1`, ..., seq `i + 1`, no gaps) and a
- * layout shift that the test controls, over the fake element `div`. Its scroll-coordinate
- * functions, `contentTopOf`, and `scrollTopOf` apply the shift as the real virtualizer
- * does. Each change function bumps `geometryVersion` in one batch, after it changed the
- * `scrollHeight` of `div` where the change grows or shrinks the spacer:
- *
- * - `changeAbove(px)`: row 0 changes by `px`, and the shift falls by `px`, as the real rule
- *   keeps the rows below in place. The `scrollHeight` of `div` does not change. Row 0 must
- *   stay above 0, so a test with a large negative `px` gives row 0 a large height.
- * - `changeBelow(px)`: the last row changes by `px`, and the `scrollHeight` of `div`
- *   changes by `px`.
- * - `growTailPinned(px)`: the last row grows by `px`, and the shift falls by `px`, as the
- *   real rule keeps the bottom in place in follow mode. The `scrollHeight` does not change.
- * - `changeAboveKeepingTotal(px)`: row 0 grows by `px` and the last row shrinks by `px`, so
- *   the total height holds and only `geometryVersion` reports the change. The shift falls by
- *   `px`, as for `changeAbove`. The `scrollHeight` does not change.
- *
- * `rebase()` returns 0 and changes nothing for a shift of 0 or a hidden `div`. Otherwise it
- * returns the previous shift, sets the shift to 0, counts itself, and changes `div` as the
- * real rebase does: `scrollHeight` and `scrollTop` both change by `-shift`, the position
- * first for a positive shift and the layout first for a negative one.
+ * The layout snapshot of the anchor geometry `g`, as the shift rule reads it. Every row
+ * counts as measured, except the rows at the indexes in `estimated`.
  */
-export function makeShiftVirtualizer(heights: number[], div: FakeScrollDiv) {
+function layoutSnapshotOf(g: AnchorOffsetGeometry, estimated: ReadonlySet<number>): LayoutSnapshot {
+  const n = g.list.length
+  return {
+    list: g.list,
+    indexById: new Map(g.list.map((row, i) => [row.id, i])),
+    offsets: Float64Array.from({ length: n + 1 }, (_, i) => g.offsetOfIndex(i)),
+    heights: Float64Array.from({ length: n }, (_, i) => g.heightOfIndex(i)),
+    measured: Uint8Array.from({ length: n }, (_, i) => estimated.has(i)
+      ? 0
+      : 1),
+    n,
+  }
+}
+
+export interface ShiftVirtualizerDeps {
+  /**
+   * Whether the shift rule holds the bottom of the content, as the `pinBottom` option of the
+   * virtualizer. mountScrollHarness reads the `isFollowing` of the mounted hook, as ChatView
+   * does.
+   */
+  pinBottom: () => boolean
+  /**
+   * The indexes of the rows whose height is an estimate, as a row that has not measured yet.
+   * `hasMeasuredHeight` reports such a row as not measured, and a change of such a row
+   * measures it. Default: none, every row is measured.
+   */
+  estimatedRows?: readonly number[]
+}
+
+/**
+ * Virtualizer stub with rows of `heights` (ids `r0`, `r1`, ..., seq `i + 1`, no gaps) over the
+ * fake element `div`, whose layout shift follows the REAL rule (nextLayoutShift). Its
+ * scroll-coordinate functions, `contentTopOf`, and `scrollTopOf` apply the shift as the real
+ * virtualizer does, with no inset, and a placement converts through the real rule
+ * (placementScrollTop). Its content-coordinate resolvers convert nothing.
+ *
+ * Each change function computes the next shift as the computation of the real layout shift
+ * does: nextLayoutShift over a snapshot of the rows before and after the change, with every
+ * row measured except `deps.estimatedRows` (a change of such a row measures it), no move
+ * inside a row (`intraRowShift` 0), and `deps.pinBottom()` read before
+ * the change reaches the element. For a hidden `div`, the shift becomes 0. Then the
+ * `scrollHeight` of `div` changes by the change of the spacer height, `max(0, total +
+ * shift)`, as the style binding of ChatView writes it, and the browser clamps `scrollTop`
+ * to the new range. Last, the rows, the shift, and `geometryVersion` change in one batch. A
+ * test that calls `div.setScrollHeight` itself changes the content outside the rows, such as
+ * a tail sibling of the spacer.
+ *
+ * - `changeAbove(px)`: row 0 changes by `px`. Row 0 must stay above 0, so a test with a
+ *   large negative `px` gives row 0 a large height.
+ * - `changeBelow(px)`: the last row changes by `px`.
+ * - `changeAboveKeepingTotal(px)`: row 0 grows by `px` and the last row shrinks by `px`, so
+ *   the total height holds and only `geometryVersion` reports the change.
+ *
+ * `rebase()` writes through applyRebaseWrite, as the real rebase does: `scrollTop` changes by
+ * `-shift`, and the spacer part of the `scrollHeight` of `div` follows the shift. It keeps a
+ * remainder as the shift, and it changes nothing for a shift below SCROLL_ROUNDING_MAX_PX or a
+ * hidden `div`. It returns the part of the shift that it removed, and counts each rebase that
+ * writes.
+ */
+export function makeShiftVirtualizer(heights: number[], div: FakeScrollDiv, deps: ShiftVirtualizerDeps) {
   const [rows, setRows] = createSignal<number[]>([...heights])
   const [shift, setShift] = createSignal(0)
   const [geometryVersion, setGeometryVersion] = createSignal(0)
+  // The rows whose height is still an estimate.
+  const estimated = new Set(deps.estimatedRows ?? [])
+  // The snapshot that the current shift applies to.
+  let shiftedSnapshot = layoutSnapshotOf(rowAnchorGeometry(heights, 'r'), estimated)
   let rebases = 0
   const total = () => totalRowHeight(rows())
+  const spacerHeightFor = (totalHeight: number, layoutShift: number) => Math.max(0, totalHeight + layoutShift)
   // The geometry is in content coordinates. The members of `virt` below convert from and
   // to scroll coordinates with the shift.
   const geometry = () => rowAnchorGeometry(rows(), 'r')
+  const contentTopOf = (scrollTop: number) => scrollTop - shift()
+  const scrollTopOf = (contentTop: number) => contentTop + shift()
+  const placementScrollTopOf = (contentTop: number) => placementScrollTop(contentTop, scrollTopOf)
   const toScroll = (contentTop: number | null) => contentTop === null
     ? null
-    : contentTop + shift()
+    : placementScrollTopOf(contentTop)
+  const anchorAtContent = (contentTop: number): ScrollAnchor | null => anchorAtOffset(geometry(), contentTop)
+  const contentTopForAnchor = (anchor: ScrollAnchor): number | null => resolveAnchorScrollTop(geometry(), anchor)
   const virt: ChatScrollVirtualizer = {
     ...virtualizerNoOps(),
+    // As the real virtualizer: false for a row with an estimated height and for an id that
+    // is not in the list.
+    hasMeasuredHeight: (id: string) => {
+      const index = geometry().indexOfId(id)
+      return index >= 0 && !estimated.has(index)
+    },
     totalHeight: total,
     geometryVersion: () => geometryVersion(),
     updateViewport: () => {},
     layoutShift: () => shift(),
-    contentTopOf: scrollTop => scrollTop - shift(),
-    scrollTopOf: contentTop => contentTop + shift(),
-    anchorAt: (scrollTop: number): ScrollAnchor | null => anchorAtOffset(geometry(), scrollTop - shift()),
-    scrollTopForAnchor: (anchor: ScrollAnchor): number | null => toScroll(resolveAnchorScrollTop(geometry(), anchor)),
+    contentTopOf,
+    scrollTopOf,
+    placementScrollTopOf,
+    anchorAtContent,
+    contentTopForAnchor,
+    anchorAt: (scrollTop: number): ScrollAnchor | null => anchorAtContent(contentTopOf(scrollTop)),
+    scrollTopForAnchor: (anchor: ScrollAnchor): number | null => toScroll(contentTopForAnchor(anchor)),
     scrollTopNearAnchor: (anchor: ScrollAnchor): number | null => toScroll(resolveNearestAnchorScrollTop(geometry(), anchor)),
     rebase: () => {
       const previous = untrack(shift)
-      if (previous === 0 || div.el.clientHeight === 0)
+      if (div.el.clientHeight === 0)
         return 0
-      const target = div.el.scrollTop - previous
-      if (previous > 0) {
-        div.el.scrollTop = target
-        div.setScrollHeight(div.el.scrollHeight - previous)
+      const totalHeight = untrack(total)
+      const outsideRows = div.el.scrollHeight - spacerHeightFor(totalHeight, previous)
+      const kept = applyRebaseWrite(div.el, previous, s => div.setScrollHeight(outsideRows + spacerHeightFor(totalHeight, s)))
+      const removed = previous - kept
+      if (removed !== 0) {
+        setShift(kept)
+        rebases++
       }
-      else {
-        div.setScrollHeight(div.el.scrollHeight - previous)
-        div.el.scrollTop = target
-      }
-      setShift(0)
-      rebases++
-      return previous
+      return removed
     },
   }
   type RowChange = [index: (hs: readonly number[]) => number, px: number]
-  const changeRows = (changes: readonly RowChange[], shiftBy: number) => {
+  const changeRows = (changes: readonly RowChange[]) => {
+    const previousRows = untrack(rows)
+    const nextRows = [...previousRows]
+    for (const [index, px] of changes) {
+      const i = index(nextRows)
+      nextRows[i] = (nextRows[i] ?? 0) + px
+      // The change is the measure of a row with an estimated height.
+      estimated.delete(i)
+    }
+    const next = layoutSnapshotOf(rowAnchorGeometry(nextRows, 'r'), estimated)
+    const previousShift = untrack(shift)
+    const nextShift = div.el.clientHeight === 0
+      ? 0
+      : nextLayoutShift({
+          previous: shiftedSnapshot,
+          next,
+          previousShift,
+          scrollTop: readLogicalScrollTop(div.el),
+          pinBottom: deps.pinBottom(),
+          intraRowShift: () => 0,
+        })
+    shiftedSnapshot = next
+    const spacerChange = spacerHeightFor(totalRowHeight(nextRows), nextShift)
+      - spacerHeightFor(totalRowHeight(previousRows), previousShift)
+    div.setScrollHeight(div.el.scrollHeight + spacerChange)
     batch(() => {
-      setRows((prev) => {
-        const next = [...prev]
-        for (const [index, px] of changes) {
-          const i = index(next)
-          next[i] = (next[i] ?? 0) + px
-        }
-        return next
-      })
-      if (shiftBy !== 0)
-        setShift(s => s + shiftBy)
+      setRows(nextRows)
+      setShift(nextShift)
       setGeometryVersion(v => v + 1)
     })
   }
@@ -301,20 +424,14 @@ export function makeShiftVirtualizer(heights: number[], div: FakeScrollDiv) {
     virt,
     changeAbove: (px: number) => changeRows([
       [first, px],
-    ], -px),
-    changeBelow: (px: number) => {
-      div.setScrollHeight(div.el.scrollHeight + px)
-      changeRows([
-        [last, px],
-      ], 0)
-    },
-    growTailPinned: (px: number) => changeRows([
+    ]),
+    changeBelow: (px: number) => changeRows([
       [last, px],
-    ], -px),
+    ]),
     changeAboveKeepingTotal: (px: number) => changeRows([
       [first, px],
       [last, -px],
-    ], -px),
+    ]),
     rebaseCount: () => rebases,
   }
 }
@@ -410,6 +527,41 @@ export function makeFakeScrollDiv(): FakeScrollDiv {
   }
 }
 
+/**
+ * A scroller with `clientHeight` 300, `scrollHeight` 1000, and the given `scrollTop` and
+ * `overflow-y` (default `auto`), inside `parent`. The document holds `parent`, because a
+ * detached element has no computed style; the caller removes it after the test. Returns a
+ * child of the scroller: the target of an input inside it.
+ */
+export function innerScrollerTarget(parent: HTMLElement, opts: { scrollTop: number, overflowY?: string }): HTMLElement {
+  const inner = makeFakeScrollDiv()
+  inner.el.style.overflowY = opts.overflowY ?? 'auto'
+  inner.setClientHeight(300)
+  inner.setScrollHeight(1000)
+  inner.setScrollTop(opts.scrollTop)
+  const target = document.createElement('span')
+  inner.el.appendChild(target)
+  parent.appendChild(inner.el)
+  if (!parent.isConnected)
+    document.body.appendChild(parent)
+  return target
+}
+
+/** A latest-page jump that the test settles: `onJumpToLatest` returns its promise. */
+export function deferredJump() {
+  const jump = deferred<void>()
+  return {
+    ...jump,
+    onJumpToLatest: vi.fn(() => jump.promise),
+  }
+}
+
+/** Let the branches of a settled jump run: its `then` or its `catch`, and what they start. */
+export async function settleJump(promise: Promise<void>): Promise<void> {
+  await promise.catch(() => undefined)
+  await flush()
+}
+
 /** The time between two scroll events of a harness, as a steady scroll delivers them. */
 export const HARNESS_EVENT_GAP_MS = 10
 
@@ -424,6 +576,8 @@ export interface ScrollHarnessOptions {
   clientHeight?: number
   /** The `scrollHeight` of the element. Default: the sum of `heights`. */
   scrollHeight?: number
+  /** The indexes of the rows whose height is an estimate (see ShiftVirtualizerDeps). */
+  estimatedRows?: readonly number[]
   messages?: AgentChatMessage[]
   /** More options of the hook: callbacks and accessors that a test asserts on. */
   hookOptions?: Partial<UseChatScrollOptions>
@@ -431,9 +585,9 @@ export interface ScrollHarnessOptions {
 
 /**
  * The harness of the hook tests: a fake element with `clientHeight` 500, a
- * makeShiftVirtualizer over it, fake timers, and a mounted hook. The test continues
- * outside the reactive root, so a signal write runs its effects at once, as a browser
- * event does.
+ * makeShiftVirtualizer over it whose rule holds the bottom while the hook follows the tail,
+ * fake timers, and a mounted hook. The test continues outside the reactive root, so a
+ * signal write runs its effects at once, as a browser event does.
  *
  * - `scrollTo(x)`: the reader scrolls to `x`, 10ms after the previous event.
  * - `anchoredAt(x)`: `scrollTo(x)`, then the quiet time and one frame, so that the
@@ -460,7 +614,15 @@ export function mountScrollHarness(opts: ScrollHarnessOptions = {}) {
   div.setScrollHeight(opts.scrollHeight ?? totalRowHeight(heights))
   if (opts.scrollTopBeforeMount !== undefined)
     div.setScrollTop(opts.scrollTopBeforeMount)
-  const shift = makeShiftVirtualizer(heights, div)
+  // Bound to the mounted hook below, as ChatView binds the bottom pin of its virtualizer.
+  // A fresh list follows until then.
+  let isFollowingTail: () => boolean = () => true
+  const shift = makeShiftVirtualizer(heights, div, {
+    pinBottom: () => isFollowingTail(),
+    ...(opts.estimatedRows === undefined
+      ? {}
+      : { estimatedRows: opts.estimatedRows }),
+  })
   const setFastScrollActive = vi.fn()
   const updateViewport = vi.fn()
   const virt: ChatScrollVirtualizer = { ...shift.virt, setFastScrollActive, updateViewport }
@@ -477,9 +639,13 @@ export function mountScrollHarness(opts: ScrollHarnessOptions = {}) {
       onMomentumScroll,
       ...opts.hookOptions,
     })
+    isFollowingTail = mounted.isFollowing
     mounted.attachListRef(div.el)
     return mounted
   })
+  // A test that fails before its own `dispose()` must not leave the hook mounted: its window
+  // listeners and timers would act in the next test. A second dispose does nothing.
+  onTestFinished(() => dispose())
   const frame = () => new Promise<void>((resolve) => {
     requestAnimationFrame(() => resolve())
   })
@@ -524,6 +690,26 @@ export function mountScrollHarness(opts: ScrollHarnessOptions = {}) {
     hideThenShow,
     dispose,
   }
+}
+
+/** The harness of mountScrollHarness. */
+export type ScrollHarness = ReturnType<typeof mountScrollHarness>
+
+/**
+ * A reader at 2000 in a window paged away from the live tail, who then requested the tail
+ * (forceScrollToBottom): the latest-page jump stays pending until the test settles `jump`.
+ * `mount` is the harness of the suite: mountScrollHarness, or a wrapper that returns it
+ * with more members.
+ */
+export async function mountWithPendingJump<H extends ScrollHarness>(mount: (opts: ScrollHarnessOptions) => H) {
+  const jump = deferredJump()
+  const h = mount({
+    hasNewer: true,
+    hookOptions: { onJumpToLatest: jump.onJumpToLatest },
+  })
+  await h.anchoredAt(2000)
+  h.hook.forceScrollToBottom()
+  return { h, jump }
 }
 
 /**

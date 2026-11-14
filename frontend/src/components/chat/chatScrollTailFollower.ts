@@ -1,19 +1,9 @@
-export interface ChatTailFollowerDeps {
-  hasNewerMessages: () => boolean
-  cancelAnimation: () => void
-  retakeControl: () => void
-  rearmBuffer: () => void
-  /** Record the reader's request for the live tail. */
-  followTail: () => void
-  /** End the reader's request for the live tail. */
-  leaveFollow: () => void
-  /**
-   * Whether the request for the live tail still stands: the `following` flag of the
-   * scroll hook, which stays set while newer pages are on their way.
-   */
-  followRequested: () => boolean
+import type { ScrollContext } from './useChatScroll'
+
+/** The deps that only createChatTailFollower reads, beyond the shared ScrollContext. */
+export interface ChatTailFollowerExtras {
+  /** Replace the message window with the latest page. */
   jumpToLatest: () => Promise<void> | void
-  checkAtBottom: () => void
   stickToBottom: () => void
   animateToBottom: () => void
 }
@@ -27,76 +17,74 @@ export interface ChatTailFollowerDeps {
  * sticks only when no newer page appeared during the request. A failed jump ends the
  * request, so no later restore or resize moves the view for it.
  */
-export function createChatTailFollower(deps: ChatTailFollowerDeps) {
+export function createChatTailFollower(ctx: ScrollContext, extras: ChatTailFollowerExtras) {
   let jumpRequestRevision = 0
-  // The revision of the jump whose `then` or `catch` branch did not run yet.
-  let pendingJumpRevision: number | null = null
+  // Whether the jump of the current revision did not run its `then` or `catch` branch yet.
+  // A jump of an older revision is never pending: the request that superseded it ended it.
+  let jumpPending = false
 
   // A request that supersedes the pending jump: the jump's branches then do nothing.
   const supersedeJump = (): number => {
-    pendingJumpRevision = null
+    jumpPending = false
     return ++jumpRequestRevision
   }
 
   const forceScrollToBottom = (): void => {
     const requestRevision = supersedeJump()
-    deps.cancelAnimation()
-    deps.retakeControl()
-    if (!deps.hasNewerMessages()) {
-      deps.stickToBottom()
+    ctx.cancelScrollAnimation()
+    ctx.retakeScrollControl()
+    if (!ctx.hasNewerMessages()) {
+      extras.stickToBottom()
       return
     }
 
-    deps.rearmBuffer()
-    deps.followTail()
-    pendingJumpRevision = requestRevision
+    ctx.rearmScrollBufferFiller()
+    ctx.followTail()
+    jumpPending = true
+    // Whether this jump is still the current request; it then stops being pending.
     const settle = () => {
-      if (pendingJumpRevision === requestRevision)
-        pendingJumpRevision = null
-      return requestRevision === jumpRequestRevision
+      const current = requestRevision === jumpRequestRevision
+      if (current)
+        jumpPending = false
+      return current
     }
-    void Promise.resolve(deps.jumpToLatest())
+    void Promise.resolve(extras.jumpToLatest())
       .then(() => {
         if (!settle())
           return
-        if (!deps.followRequested())
+        if (!ctx.followRequested())
           return
-        if (deps.hasNewerMessages())
-          deps.checkAtBottom()
+        if (ctx.hasNewerMessages())
+          ctx.checkPosition()
         else
-          deps.stickToBottom()
+          extras.stickToBottom()
       })
       .catch(() => {
         if (!settle())
           return
-        if (deps.followRequested())
-          deps.leaveFollow()
-        deps.checkAtBottom()
+        if (ctx.followRequested())
+          ctx.leaveFollow()
+        ctx.checkPosition()
       })
   }
 
-  const jumpToBottom = (): void => {
-    supersedeJump()
-    deps.cancelAnimation()
-    deps.stickToBottom()
-  }
-
   const scrollToBottom = (): void => {
-    if (deps.hasNewerMessages()) {
+    if (ctx.hasNewerMessages()) {
       forceScrollToBottom()
     }
     else {
       supersedeJump()
-      deps.animateToBottom()
+      extras.animateToBottom()
     }
   }
 
   return {
     forceScrollToBottom,
-    jumpToBottom,
     scrollToBottom,
     /** The revision of the latest-page jump that did not settle yet, or `null`. */
-    pendingJump: (): number | null => pendingJumpRevision,
+    pendingJump: (): number | null => jumpPending
+      ? jumpRequestRevision
+      : null,
   }
 }
 

@@ -37,7 +37,7 @@ export function createScrollVelocity(deps: {
         const baseTime = Math.max(lastTime, lastWriteTime)
         const dt = t - baseTime
         // A same-tick coalesced event (dt <= 0) carries no measurable interval, so it
-        // can't bound a speed. DROP it without moving the baseline, rather than dividing
+        // gives no speed. DROP it without moving the baseline, rather than dividing
         // by zero. The next real sample then measures the average over the whole span
         // from the last TIMED baseline, and the idle check keeps deciding from the last
         // MEASURABLE real sample.
@@ -53,12 +53,12 @@ export function createScrollVelocity(deps: {
     },
     /**
      * Advance the position baseline to `pos` for a PROGRAMMATIC scroll write (a stick, a
-     * placement, a rebase) whose displacement is NOT a move of the reader, and record the
-     * write TIME so the next real `sample` measures the reader's delta over the interval
-     * since the write rather than since the stale last real sample. `lastTime` is left
-     * untouched so the idle check keeps measuring from the last REAL sample -- a write is
-     * not reader activity and must not look "recent" to it. No-op until a real sample
-     * has seeded the baseline.
+     * placement, a rebase) or a clamp of the browser to a scroll range that shrank, whose
+     * displacement is NOT a move of the reader, and record the write TIME so the next real
+     * `sample` measures the reader's delta over the interval since the write rather than
+     * since the stale last real sample. `lastTime` is left untouched so the idle check
+     * keeps measuring from the last REAL sample -- a write is not reader activity and must
+     * not look "recent" to it. No-op until a real sample has seeded the baseline.
      */
     syncToProgrammatic(pos: number) {
       if (seeded) {

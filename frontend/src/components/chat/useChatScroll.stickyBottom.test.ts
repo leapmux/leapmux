@@ -2,7 +2,7 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-
+import { distFromBottom, FOLLOW_TOLERANCE_PX } from './chatScrollGeometry'
 import { useChatScroll } from './useChatScroll'
 import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeStubVirtualizer, mountScrollHarness } from './useChatScroll.testkit'
 
@@ -103,7 +103,7 @@ describe('useChatScroll scroll-to-bottom animation', () => {
           await Promise.resolve()
           await Promise.resolve()
 
-          hook.scrollToBottomAnimated()
+          hook.scrollToBottom()
           // Grow the target far faster than the step can close it each frame, so the
           // animation can only terminate via the frame cap -- never by reaching the
           // bottom. stickToBottom jumps scrollTop to the absolute bottom; the chase
@@ -124,7 +124,7 @@ describe('useChatScroll scroll-to-bottom animation', () => {
           // The frame cap is 60; the hand-off fires shortly after. An uncapped loop
           // would chase all the way to the 200-frame safety bound.
           expect(frames).toBeLessThanOrEqual(65)
-          expect(hook.isAtBottomFresh()).toBe(true)
+          expect(distFromBottom(div.el)).toBeLessThanOrEqual(FOLLOW_TOLERANCE_PX)
 
           dispose()
           resolve()
@@ -167,7 +167,7 @@ describe('useChatScroll scroll-to-bottom animation', () => {
           // (The testkit's rAF is cancelable for exactly this: with a no-op
           // cancelAnimationFrame the "cancelled" frame still fired, kept writing
           // scrollTop, and this regression was unobservable.)
-          hook.scrollToBottomAnimated()
+          hook.scrollToBottom()
           hook.handlers.onPointerDown(new PointerEvent('pointerdown', { pointerId: 1, isPrimary: true }))
           await Promise.resolve()
           await Promise.resolve()
@@ -248,6 +248,32 @@ describe('useChatScroll buffer-fill pause', () => {
 
     h.scrollTo(590)
     expect(onLoadOlderMessages).toHaveBeenCalled()
+    h.dispose()
+  })
+})
+
+describe('useChatScroll restickIfAtBottom', () => {
+  it('writes nothing when the view sits less than a pixel above the bottom', () => {
+    const h = mountScrollHarness()
+    // A fractional zoom leaves a sub-pixel range below a follower that a browser cannot
+    // scroll: its scrollTop holds whole device pixels.
+    h.div.setScrollHeight(5000.5)
+    const writes = h.div.scrollTopWrites()
+
+    h.hook.restickIfAtBottom()
+
+    expect(h.div.scrollTopWrites()).toBe(writes)
+    expect(h.hook.isFollowing()).toBe(true)
+    h.dispose()
+  })
+
+  it('follows a growth of a whole pixel', () => {
+    const h = mountScrollHarness()
+    h.div.setScrollHeight(5001)
+
+    h.hook.restickIfAtBottom()
+
+    expect(h.div.getScrollTop()).toBe(4501)
     h.dispose()
   })
 })

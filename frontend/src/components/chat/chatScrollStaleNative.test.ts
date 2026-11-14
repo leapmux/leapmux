@@ -9,12 +9,10 @@ describe('chatScrollStaleNative translator', () => {
     div.setScrollHeight(50000)
     div.setClientHeight(opts.clientHeight ?? 500)
     let now = 1000
-    const baselines: number[] = []
     const translator = createStaleNativeScrollTranslator({
       getEl: () => div.el,
       isScrollInputActive: () => opts.inputActive ?? false,
       isOwnWriteEvent: () => opts.ownWrite ?? false,
-      setLastScrollTopForDir: top => baselines.push(top),
       // The real pane-derived cap, so the old-coordinate window couples to the fling
       // render-ahead exactly as production does.
       flingOverscanCapPx,
@@ -23,13 +21,12 @@ describe('chatScrollStaleNative translator', () => {
     const advance = (ms: number) => {
       now += ms
     }
-    return { div, translator, baselines, advance }
+    return { div, translator, advance }
   }
 
   /** Arm a screen-plus rebase shift: beforeTop 1000 -> afterTop 4000 (delta +3000). */
   function armPrependShift(t: ReturnType<typeof setup>) {
-    t.translator.noteProgrammaticWrite({
-      source: 'rebase',
+    t.translator.noteRebase({
       beforeTop: 1000,
       afterTop: 4000,
       clientHeight: 500,
@@ -44,9 +41,9 @@ describe('chatScrollStaleNative translator', () => {
     // user's upward (older) intent past the pre-rebase position.
     t.div.setScrollTop(900)
     t.advance(50)
-    expect(t.translator.translate()).toBe(true)
+    // The baseline of the move: the position where the rebase landed.
+    expect(t.translator.translate()).toBe(4000)
     expect(t.div.getScrollTop()).toBe(3900) // 900 + 3000, in the current space
-    expect(t.baselines).toEqual([4000]) // baseline advanced to the rebase's landing
   })
 
   it('translates an old-coordinate event that lands slightly on the newer side', () => {
@@ -60,28 +57,28 @@ describe('chatScrollStaleNative translator', () => {
       armPrependShift(t)
       t.div.setScrollTop(staleTop)
       t.advance(50)
-      const translated = t.translator.translate()
+      const baseline = t.translator.translate()
       return {
-        translated,
+        baseline,
         scrollTop: t.div.getScrollTop(),
       }
     }
-    expect(afterTranslate(1150)).toEqual({ translated: true, scrollTop: 4150 })
-    expect(afterTranslate(1200)).toEqual({ translated: true, scrollTop: 4200 })
+    expect(afterTranslate(1150)).toEqual({ baseline: 4000, scrollTop: 4150 })
+    expect(afterTranslate(1200)).toEqual({ baseline: 4000, scrollTop: 4200 })
     // 250px is past the 200px limit, although it is under the 450px of the delta ratio.
-    expect(afterTranslate(1250)).toEqual({ translated: false, scrollTop: 1250 })
+    expect(afterTranslate(1250)).toEqual({ baseline: undefined, scrollTop: 1250 })
   })
 
   it('does not translate a direct drag or the event of an own write (already current-coordinate)', () => {
     const dragging = setup({ inputActive: true })
     armPrependShift(dragging)
     dragging.div.setScrollTop(900)
-    expect(dragging.translator.translate()).toBe(false)
+    expect(dragging.translator.translate()).toBeUndefined()
 
     const ownWrite = setup({ ownWrite: true })
     armPrependShift(ownWrite)
     ownWrite.div.setScrollTop(900)
-    expect(ownWrite.translator.translate()).toBe(false)
+    expect(ownWrite.translator.translate()).toBeUndefined()
   })
 
   it('expires the shift after the translate window', () => {
@@ -89,10 +86,10 @@ describe('chatScrollStaleNative translator', () => {
     armPrependShift(t)
     t.div.setScrollTop(900)
     t.advance(301)
-    expect(t.translator.translate()).toBe(false)
+    expect(t.translator.translate()).toBeUndefined()
     // And the record is gone: an in-window retry no longer translates either.
     t.advance(-300)
-    expect(t.translator.translate()).toBe(false)
+    expect(t.translator.translate()).toBeUndefined()
   })
 
   it('disarms once a genuine current-coordinate scroll arrives (no later mistranslation)', () => {
@@ -102,9 +99,9 @@ describe('chatScrollStaleNative translator', () => {
     // and the shift is dropped so a LATER scroll that merely crosses the old midpoint
     // cannot be yanked by the obsolete delta.
     t.div.setScrollTop(3800)
-    expect(t.translator.translate()).toBe(false)
+    expect(t.translator.translate()).toBeUndefined()
     t.div.setScrollTop(900)
-    expect(t.translator.translate()).toBe(false)
+    expect(t.translator.translate()).toBeUndefined()
   })
 
   it('disarms when a compensating second rebase brings the cumulative shift back under a screen', () => {
@@ -112,15 +109,30 @@ describe('chatScrollStaleNative translator', () => {
     armPrependShift(t)
     // A second rebase (e.g. a far-above trim) moves 4000 -> 1200: cumulative movement
     // from the original 1000 is now 200px -- native momentum is already current-space.
-    t.translator.noteProgrammaticWrite({
-      source: 'rebase',
+    t.translator.noteRebase({
       beforeTop: 4000,
       afterTop: 1200,
       clientHeight: 500,
       dir: 'older',
     })
     t.div.setScrollTop(900)
-    expect(t.translator.translate()).toBe(false)
+    expect(t.translator.translate()).toBeUndefined()
+  })
+
+  it('keeps the shift through a rebase of a hidden pane', () => {
+    const t = setup()
+    armPrependShift(t)
+    // With a shown pane, this rebase would compensate the first one and disarm the shift.
+    t.translator.noteRebase({
+      beforeTop: 4000,
+      afterTop: 1200,
+      clientHeight: 0,
+      dir: 'older',
+    })
+    t.div.setScrollTop(900)
+    t.advance(50)
+    expect(t.translator.translate()).toBe(4000)
+    expect(t.div.getScrollTop()).toBe(3900)
   })
 
   it('covers the full pane-derived fling render-ahead on a tall pane', () => {
@@ -133,8 +145,7 @@ describe('chatScrollStaleNative translator', () => {
     const t = setup({ clientHeight })
     // flingOverscanCapPx(1000) = 2500; the old window would have been max(2000, 1800) = 2000.
     expect(flingOverscanCapPx(clientHeight)).toBe(2500)
-    t.translator.noteProgrammaticWrite({
-      source: 'rebase',
+    t.translator.noteRebase({
       beforeTop: 3000,
       afterTop: 8000, // delta +5000, a full-screen-plus prepend rebase
       clientHeight,
@@ -144,21 +155,15 @@ describe('chatScrollStaleNative translator', () => {
     // 2500px render-ahead but BEYOND the old 2000px (clientHeight*2) window.
     t.div.setScrollTop(800)
     t.advance(50)
-    expect(t.translator.translate()).toBe(true)
+    expect(t.translator.translate()).toBe(8000)
     expect(t.div.getScrollTop()).toBe(5800) // 800 + 5000 delta, into the current space
   })
 
-  it('invalidates the shift on any other programmatic write source', () => {
+  it('forgets the shift when an own write invalidates it', () => {
     const t = setup()
     armPrependShift(t)
-    t.translator.noteProgrammaticWrite({
-      source: 'stick-bottom',
-      beforeTop: 4000,
-      afterTop: 49500,
-      clientHeight: 500,
-      dir: 'newer',
-    })
+    t.translator.invalidate()
     t.div.setScrollTop(900)
-    expect(t.translator.translate()).toBe(false)
+    expect(t.translator.translate()).toBeUndefined()
   })
 })

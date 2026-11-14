@@ -1,44 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { createManualFrames } from '~/test-support/manualFrames'
 import { createScrollRest, SCROLL_REST_QUIET_MS } from './chatScrollRest'
 
 /** A rest detector with a manual frame queue, and the state that its dependencies read. */
 function restHarness(init: { inputActive?: boolean } = {}) {
   const state = { inputActive: init.inputActive ?? false, unseenMove: false }
-  const frames = new Map<number, () => void>()
-  let nextHandle = 1
-  const requestFrame = vi.fn((cb: () => void) => {
-    const handle = nextHandle++
-    frames.set(handle, cb)
-    return handle
-  })
-  const cancelFrame = vi.fn((handle: number) => {
-    frames.delete(handle)
-  })
+  const frames = createManualFrames()
   const onRest = vi.fn()
   const rest = createScrollRest({
     isInputActive: () => state.inputActive,
     hasUnseenMove: () => state.unseenMove,
     onRest,
-    requestFrame,
-    cancelFrame,
+    requestFrame: frames.requestFrame,
+    cancelFrame: frames.cancelFrame,
   })
-  const runFrames = () => {
-    const pending = [
-      ...frames.values(),
-    ]
-    frames.clear()
-    for (const cb of pending)
-      cb()
-  }
-  return {
-    state,
-    rest,
-    onRest,
-    requestFrame,
-    cancelFrame,
-    runFrames,
-    pendingFrames: () => frames.size,
-  }
+  return { state, rest, onRest, ...frames }
 }
 
 describe('createScrollRest', () => {

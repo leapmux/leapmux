@@ -15,6 +15,7 @@ import { MESSAGE_UI_KEY } from '../messageUiKeys'
 import { rowDrawsRequest, rowDrawsResult, rowHasRequestRow, toolRowPosition } from '../model/derivations'
 import { isToolFailureResult, isUnparsedToolResult } from '../model/toolCall'
 import { isFinishedToolCallStatus, toolCallStatusOutcome } from '../model/toolCallStatus'
+import { isDisplayHeld } from '../renderContext'
 import { toolOutcomeLabel } from '../results/toolOutcomeLabel'
 import { toolInputSummary } from '../toolStyles.css'
 import { TRUNCATION_NOTICE } from '../truncationNotice'
@@ -227,12 +228,12 @@ export function ToolMessage(props: { row: ToolCallRow, context?: ToolResultRende
             {...(props.context?.images !== undefined
               ? { actions: props.context?.images }
               : {})}
-            holdDisplay={() => props.context?.syntaxHighlightingPaused?.() === true || props.context?.textSelectionActive?.() === true}
+            holdDisplay={() => isDisplayHeld(props.context)}
             context={bodyContext()}
           />
         </Show>
         <Show when={call().images.length > 0}>
-          <ImageResultList sources={call().images} indexOffset={extraImages(call()).length + resultImages(call()).length} {...imageOptions()} holdDisplay={() => props.context?.syntaxHighlightingPaused?.() === true || props.context?.textSelectionActive?.() === true} />
+          <ImageResultList sources={call().images} indexOffset={extraImages(call()).length + resultImages(call()).length} {...imageOptions()} holdDisplay={() => isDisplayHeld(props.context)} />
         </Show>
         <ToolOutcomeHeader
           when={statusOutcome() !== null && !bodyStatesOutcome()}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cannotScroll, FOLLOW_TOLERANCE_PX, hasScrollRoom, maxScrollTopOf } from './chatScrollGeometry'
+import { cannotScroll, FOLLOW_TOLERANCE_PX, hasScrollRoom, maxScrollTopOf, readLogicalScrollTop } from './chatScrollGeometry'
 import { makeFakeScrollDiv } from './useChatScroll.testkit'
 
 describe('cannotScroll', () => {
@@ -23,6 +23,43 @@ describe('cannotScroll', () => {
 
   it('returns false for a range of 3px', () => {
     expect(cannotScroll(paneOf(503, 500))).toBe(false)
+  })
+})
+
+describe('readLogicalScrollTop', () => {
+  /** A 500px box over 2000px of content that reports a raw `scrollTop`. */
+  const scrollerReading = (rawTop: number) => {
+    const div = makeFakeScrollDiv()
+    div.setClientHeight(500)
+    div.setScrollHeight(2000)
+    div.setRawScrollTop(rawTop)
+    return div.el
+  }
+
+  it('returns a position inside the range unchanged', () => {
+    expect(readLogicalScrollTop(scrollerReading(700.5))).toBe(700.5)
+  })
+
+  it('clamps a rubber-band overscroll to the range', () => {
+    expect(readLogicalScrollTop(scrollerReading(-40))).toBe(0)
+    expect(readLogicalScrollTop(scrollerReading(1560))).toBe(1500)
+  })
+
+  it('does not write the position', () => {
+    const el = scrollerReading(-40)
+    readLogicalScrollTop(el)
+    expect(el.scrollTop).toBe(-40)
+  })
+
+  it('returns 0 for any position when the content fits the box', () => {
+    // 300px of content in a 500px box: the scroll range holds 0 alone.
+    for (const rawTop of [-40, 0, 25]) {
+      const div = makeFakeScrollDiv()
+      div.setClientHeight(500)
+      div.setScrollHeight(300)
+      div.setRawScrollTop(rawTop)
+      expect(readLogicalScrollTop(div.el)).toBe(0)
+    }
   })
 })
 

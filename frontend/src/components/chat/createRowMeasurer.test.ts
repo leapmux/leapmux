@@ -1,7 +1,7 @@
-import type { ResizeObserverLike, RowMeasurer } from './createRowMeasurer'
+import type { ResizeObserverLike, RowMeasurer, RowMeasurerDeps } from './createRowMeasurer'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { createRowMeasurer } from './createRowMeasurer'
+import { createRowMeasurer, MEASURE_EPSILON_PX } from './createRowMeasurer'
 import { createRenderReadinessScope } from './renderReadiness'
 
 function fakeRowEvents() {
@@ -74,6 +74,25 @@ function manualScheduler() {
   }
 }
 
+/**
+ * A measurer over a `vi.fn(() => true)` measure, an empty `mountedIds`, a fake observer,
+ * and a manual scheduler. `deps` overrides any of them, and `createObserver: () => undefined`
+ * gives no observer.
+ */
+function measurerHarness(deps: Partial<RowMeasurerDeps> = {}) {
+  const measure = vi.fn(() => true)
+  const obs = fakeObserver()
+  const sched = manualScheduler()
+  const m = createRowMeasurer({
+    measure,
+    mountedIds: new Set(),
+    createObserver: obs.createObserver,
+    scheduleMicrotask: sched.scheduleMicrotask,
+    ...deps,
+  })
+  return { m, measure, obs, sched }
+}
+
 describe('createRowMeasurer', () => {
   it.each(['load', 'error'])('retries an empty row on image %s without a resize event', (eventName) => {
     const element = document.createElement('div')
@@ -85,12 +104,7 @@ describe('createRowMeasurer', () => {
     element.append(image)
     element.getBoundingClientRect = () => new DOMRect(0, 0, 400, 0)
     document.body.append(element)
-    const measure = vi.fn(() => true)
-    const scheduler = manualScheduler()
-    const measurer = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      scheduleMicrotask: scheduler.scheduleMicrotask,
+    const { m: measurer, measure, sched: scheduler } = measurerHarness({
       createObserver: () => undefined,
     })
     try {
@@ -122,12 +136,7 @@ describe('createRowMeasurer', () => {
     })
     element.getBoundingClientRect = () => new DOMRect(0, 0, 400, 0)
     document.body.append(element)
-    const measure = vi.fn(() => true)
-    const scheduler = manualScheduler()
-    const measurer = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      scheduleMicrotask: scheduler.scheduleMicrotask,
+    const { m: measurer, measure, sched: scheduler } = measurerHarness({
       createObserver: () => undefined,
     })
     try {
@@ -154,12 +163,7 @@ describe('createRowMeasurer', () => {
     let height = 20
     element.getBoundingClientRect = () => new DOMRect(0, 0, 400, height)
     document.body.append(element)
-    const measure = vi.fn(() => true)
-    const scheduler = manualScheduler()
-    const measurer = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      scheduleMicrotask: scheduler.scheduleMicrotask,
+    const { m: measurer, measure, sched: scheduler } = measurerHarness({
       createObserver: () => undefined,
     })
     try {
@@ -181,10 +185,7 @@ describe('createRowMeasurer', () => {
   })
 
   it('remeasures the same element on attach even when its previous height was unchanged', () => {
-    const measure = vi.fn(() => true)
-    const measurer = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
+    const { m: measurer, measure } = measurerHarness({
       createObserver: () => undefined,
     })
     const element = fakeEl(40)
@@ -217,13 +218,9 @@ describe('createRowMeasurer', () => {
     replacement.getBoundingClientRect = () => new DOMRect(0, 0, 400, 0)
     document.body.append(replacement)
     const removeListener = vi.spyOn(element, 'removeEventListener')
-    const measure = vi.fn(() => true)
-    const scheduler = manualScheduler()
     const mountedIds = new Set<string>()
-    const measurer = createRowMeasurer({
-      measure,
+    const { m: measurer, measure, sched: scheduler } = measurerHarness({
       mountedIds,
-      scheduleMicrotask: scheduler.scheduleMicrotask,
       createObserver: () => undefined,
     })
     try {
@@ -263,9 +260,6 @@ describe('createRowMeasurer', () => {
   })
 
   it('forwards zero on attach and preserves growth smaller than the jitter threshold', () => {
-    const measure = vi.fn(() => true)
-    const obs = fakeObserver()
-    const scheduler = manualScheduler()
     let height = 0
     const element = {
       ...fakeRowEvents(),
@@ -273,12 +267,7 @@ describe('createRowMeasurer', () => {
       getBoundingClientRect: () => new DOMRect(0, 0, 400, height),
       querySelectorAll: () => [],
     } as unknown as HTMLElement
-    const measurer = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: obs.createObserver,
-      scheduleMicrotask: scheduler.scheduleMicrotask,
-    })
+    const { m: measurer, measure, obs, sched: scheduler } = measurerHarness()
     measurer.attachRow('empty', element)
     expect(measure).toHaveBeenLastCalledWith('empty', 0)
     measure.mockClear()
@@ -297,9 +286,6 @@ describe('createRowMeasurer', () => {
   })
 
   it('keeps an unready zero out of the cache and retries after layout appears', () => {
-    const measure = vi.fn(() => true)
-    const obs = fakeObserver()
-    const scheduler = manualScheduler()
     let width = 0
     const element = {
       ...fakeRowEvents(),
@@ -307,12 +293,7 @@ describe('createRowMeasurer', () => {
       getBoundingClientRect: () => new DOMRect(0, 0, width, 0),
       querySelectorAll: () => [],
     } as unknown as HTMLElement
-    const measurer = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: obs.createObserver,
-      scheduleMicrotask: scheduler.scheduleMicrotask,
-    })
+    const { m: measurer, measure, obs, sched: scheduler } = measurerHarness()
     measurer.attachRow('empty', element)
     expect(measure).not.toHaveBeenCalled()
     expect(obs.observed.has(element)).toBe(true)
@@ -324,13 +305,7 @@ describe('createRowMeasurer', () => {
   })
 
   it('does not measure a detached row on attach', () => {
-    const measure = vi.fn(() => true)
-    const obs = fakeObserver()
-    const measurer = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: obs.createObserver,
-    })
+    const { m: measurer, measure, obs } = measurerHarness()
     const element = fakeEl(40, false)
     measurer.attachRow('detached', element)
     expect(measure).not.toHaveBeenCalled()
@@ -339,17 +314,8 @@ describe('createRowMeasurer', () => {
   })
 
   it('reads no height from a row copy that waits for content, on attach or on resize', () => {
-    const measure = vi.fn(() => true)
-    const obs = fakeObserver()
-    const scheduler = manualScheduler()
     const onFlush = vi.fn()
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: obs.createObserver,
-      scheduleMicrotask: scheduler.scheduleMicrotask,
-      onFlush,
-    })
+    const { m, measure, obs, sched: scheduler } = measurerHarness({ onFlush })
     const el = fakeEl(40)
 
     const { dispose } = attachWithReadiness(m, 'r1', el, true)
@@ -369,14 +335,7 @@ describe('createRowMeasurer', () => {
   })
 
   it('measures a row copy again once it turns ready, with no resize', () => {
-    const measure = vi.fn(() => true)
-    const scheduler = manualScheduler()
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: fakeObserver().createObserver,
-      scheduleMicrotask: scheduler.scheduleMicrotask,
-    })
+    const { m, measure, sched: scheduler } = measurerHarness()
     const el = fakeEl(120)
     const { setBodyPending, dispose } = attachWithReadiness(m, 'r1', el, true)
     expect(measure).not.toHaveBeenCalled()
@@ -391,14 +350,7 @@ describe('createRowMeasurer', () => {
   })
 
   it('measures a row copy that is ready from the start on attach, and never again without a resize', () => {
-    const measure = vi.fn(() => true)
-    const scheduler = manualScheduler()
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: fakeObserver().createObserver,
-      scheduleMicrotask: scheduler.scheduleMicrotask,
-    })
+    const { m, measure, sched: scheduler } = measurerHarness()
     const el = fakeEl(120)
 
     const { dispose } = attachWithReadiness(m, 'r1', el, false)
@@ -410,14 +362,7 @@ describe('createRowMeasurer', () => {
   })
 
   it('reads nothing from a row copy after detachRow, even when it turns ready', () => {
-    const measure = vi.fn(() => true)
-    const scheduler = manualScheduler()
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: fakeObserver().createObserver,
-      scheduleMicrotask: scheduler.scheduleMicrotask,
-    })
+    const { m, measure, sched: scheduler } = measurerHarness()
     const el = fakeEl(120)
     const { setBodyPending, dispose } = attachWithReadiness(m, 'r1', el, true)
 
@@ -431,14 +376,7 @@ describe('createRowMeasurer', () => {
   })
 
   it('reads nothing from a row copy that left the document when it turns ready', () => {
-    const measure = vi.fn(() => true)
-    const scheduler = manualScheduler()
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: fakeObserver().createObserver,
-      scheduleMicrotask: scheduler.scheduleMicrotask,
-    })
+    const { m, measure, sched: scheduler } = measurerHarness()
     const el = fakeEl(120)
     const { setBodyPending, dispose } = attachWithReadiness(m, 'r1', el, true)
 
@@ -452,14 +390,7 @@ describe('createRowMeasurer', () => {
   })
 
   it('stops following the readiness of a row copy whose owner is disposed', () => {
-    const measure = vi.fn(() => true)
-    const scheduler = manualScheduler()
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: fakeObserver().createObserver,
-      scheduleMicrotask: scheduler.scheduleMicrotask,
-    })
+    const { m, measure, sched: scheduler } = measurerHarness()
     const el = fakeEl(120)
     const { setBodyPending, dispose } = attachWithReadiness(m, 'r1', el, true)
 
@@ -473,13 +404,7 @@ describe('createRowMeasurer', () => {
   // The readiness is keyed by element, and an element can attach again with no detach
   // between. A readiness that the new attach does not pass must not hold it.
   it('reads an element that attaches again without readiness, whatever its earlier readiness said', () => {
-    const measure = vi.fn(() => true)
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: fakeObserver().createObserver,
-      scheduleMicrotask: manualScheduler().scheduleMicrotask,
-    })
+    const { m, measure } = measurerHarness()
     const el = fakeEl(120)
     const { dispose } = attachWithReadiness(m, 'r1', el, true)
     expect(measure).not.toHaveBeenCalled()
@@ -495,14 +420,7 @@ describe('createRowMeasurer', () => {
   // and each waits for its own content.
   describe('two copies of one id', () => {
     it('measures a ready new copy while the old copy still waits', () => {
-      const measure = vi.fn(() => true)
-      const scheduler = manualScheduler()
-      const m = createRowMeasurer({
-        measure,
-        mountedIds: new Set(),
-        createObserver: fakeObserver().createObserver,
-        scheduleMicrotask: scheduler.scheduleMicrotask,
-      })
+      const { m, measure } = measurerHarness()
       const oldCopy = attachWithReadiness(m, 'r1', fakeEl(120), true)
 
       const newCopy = attachWithReadiness(m, 'r1', fakeEl(160), false)
@@ -514,15 +432,7 @@ describe('createRowMeasurer', () => {
     })
 
     it('reads nothing from a waiting new copy, and ignores the old copy turning ready', () => {
-      const measure = vi.fn(() => true)
-      const obs = fakeObserver()
-      const scheduler = manualScheduler()
-      const m = createRowMeasurer({
-        measure,
-        mountedIds: new Set(),
-        createObserver: obs.createObserver,
-        scheduleMicrotask: scheduler.scheduleMicrotask,
-      })
+      const { m, measure, obs, sched: scheduler } = measurerHarness()
       const oldEl = fakeEl(120)
       const newEl = fakeEl(160)
       const oldCopy = attachWithReadiness(m, 'r1', oldEl, true)
@@ -546,10 +456,8 @@ describe('createRowMeasurer', () => {
   })
 
   it('measures and observes a freshly-mounted row, marking it mounted', () => {
-    const measure = vi.fn(() => true)
     const mountedIds = new Set<string>()
-    const obs = fakeObserver()
-    const m = createRowMeasurer({ measure, mountedIds, createObserver: obs.createObserver })
+    const { m, measure, obs } = measurerHarness({ mountedIds })
     const el = fakeEl(120)
     m.attachRow('r1', el)
     expect(measure).toHaveBeenCalledWith('r1', 120)
@@ -558,15 +466,7 @@ describe('createRowMeasurer', () => {
   })
 
   it('coalesces resize ticks into ONE scheduled flush that commits each measurement', () => {
-    const measure = vi.fn(() => true)
-    const obs = fakeObserver()
-    const sched = manualScheduler()
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: obs.createObserver,
-      scheduleMicrotask: sched.scheduleMicrotask,
-    })
+    const { m, measure, obs, sched } = measurerHarness()
     let aHeight = 100
     let bHeight = 200
     const a = {
@@ -598,17 +498,8 @@ describe('createRowMeasurer', () => {
   })
 
   it('skips ResizeObserver measurements that are unchanged within epsilon', () => {
-    const measure = vi.fn(() => true)
     const onFlush = vi.fn()
-    const obs = fakeObserver()
-    const sched = manualScheduler()
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: obs.createObserver,
-      scheduleMicrotask: sched.scheduleMicrotask,
-      onFlush,
-    })
+    const { m, measure, obs, sched } = measurerHarness({ onFlush })
     const a = fakeEl(100)
     m.attachRow('a', a)
     measure.mockClear()
@@ -628,12 +519,7 @@ describe('createRowMeasurer', () => {
   })
 
   it('measures a reused element when it is reattached under a different row id', () => {
-    const measure = vi.fn(() => true)
-    const obs = fakeObserver()
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: obs.createObserver,
+    const { m, measure } = measurerHarness({
       currentMeasurementKey: () => 'same-key',
     })
     const el = fakeEl(100)
@@ -648,16 +534,13 @@ describe('createRowMeasurer', () => {
   })
 
   it('commits a zero height at once', () => {
-    const measure = vi.fn(() => true)
     const element = {
       ...fakeRowEvents(),
       isConnected: true,
       getBoundingClientRect: () => new DOMRect(0, 0, 400, 0),
       querySelectorAll: () => [],
     } as unknown as HTMLElement
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
+    const { m, measure } = measurerHarness({
       createObserver: () => undefined,
     })
 
@@ -668,15 +551,8 @@ describe('createRowMeasurer', () => {
   })
 
   it('re-commits unchanged DOM heights when the row measurement key changed', () => {
-    const measure = vi.fn(() => true)
-    const obs = fakeObserver()
-    const sched = manualScheduler()
     let key = 'old'
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: obs.createObserver,
-      scheduleMicrotask: sched.scheduleMicrotask,
+    const { m, measure, obs, sched } = measurerHarness({
       currentMeasurementKey: () => key,
     })
     const a = fakeEl(100)
@@ -692,14 +568,8 @@ describe('createRowMeasurer', () => {
 
   describe('measureAgain', () => {
     it('reads a mounted row again at the next flush, with no resize, under its new key', () => {
-      const measure = vi.fn(() => true)
-      const sched = manualScheduler()
       let key = 'old'
-      const m = createRowMeasurer({
-        measure,
-        mountedIds: new Set(),
-        createObserver: fakeObserver().createObserver,
-        scheduleMicrotask: sched.scheduleMicrotask,
+      const { m, measure, sched } = measurerHarness({
         currentMeasurementKey: () => key,
       })
       m.attachRow('a', fakeEl(100))
@@ -715,14 +585,7 @@ describe('createRowMeasurer', () => {
     })
 
     it('does nothing for a row that is not mounted', () => {
-      const measure = vi.fn(() => true)
-      const sched = manualScheduler()
-      const m = createRowMeasurer({
-        measure,
-        mountedIds: new Set(),
-        createObserver: fakeObserver().createObserver,
-        scheduleMicrotask: sched.scheduleMicrotask,
-      })
+      const { m, measure, sched } = measurerHarness()
       const a = fakeEl(100)
       m.attachRow('a', a)
       m.detachRow(a)
@@ -736,14 +599,8 @@ describe('createRowMeasurer', () => {
     })
 
     it('reads nothing from a row copy that replaces its content, and reads it once the copy shows the new content', () => {
-      const measure = vi.fn(() => true)
-      const sched = manualScheduler()
       let key = 'old'
-      const m = createRowMeasurer({
-        measure,
-        mountedIds: new Set(),
-        createObserver: fakeObserver().createObserver,
-        scheduleMicrotask: sched.scheduleMicrotask,
+      const { m, measure, sched } = measurerHarness({
         currentMeasurementKey: () => key,
       })
       let height = 100
@@ -779,15 +636,7 @@ describe('createRowMeasurer', () => {
 
   it('commits ResizeObserver measurements that move beyond epsilon', () => {
     let height = 100
-    const measure = vi.fn(() => true)
-    const obs = fakeObserver()
-    const sched = manualScheduler()
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: obs.createObserver,
-      scheduleMicrotask: sched.scheduleMicrotask,
-    })
+    const { m, measure, obs, sched } = measurerHarness()
     const a = {
       ...fakeRowEvents(),
       isConnected: true,
@@ -803,16 +652,33 @@ describe('createRowMeasurer', () => {
     expect(measure).toHaveBeenCalledWith('a', 100.75)
   })
 
+  it('skips a resize below MEASURE_EPSILON_PX and commits one of MEASURE_EPSILON_PX', () => {
+    let height = 100
+    const { m, measure, obs, sched } = measurerHarness()
+    const a = {
+      ...fakeRowEvents(),
+      isConnected: true,
+      getBoundingClientRect: () => ({ height }),
+    } as unknown as HTMLElement
+    m.attachRow('a', a)
+    measure.mockClear()
+
+    height = 100 + MEASURE_EPSILON_PX - 0.01
+    obs.fire([a])
+    sched.run()
+    expect(measure).not.toHaveBeenCalled()
+    expect(m.hasUncommittedHeight('a')).toBe(false)
+
+    // A skipped read leaves the last accepted read at 100, so the distance is the full epsilon.
+    height = 100 + MEASURE_EPSILON_PX
+    expect(m.hasUncommittedHeight('a')).toBe(true)
+    obs.fire([a])
+    sched.run()
+    expect(measure).toHaveBeenCalledExactlyOnceWith('a', 100 + MEASURE_EPSILON_PX)
+  })
+
   it('skips a disconnected element during the flush', () => {
-    const measure = vi.fn(() => true)
-    const obs = fakeObserver()
-    const sched = manualScheduler()
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: obs.createObserver,
-      scheduleMicrotask: sched.scheduleMicrotask,
-    })
+    const { m, measure, obs, sched } = measurerHarness()
     let aHeight = 100
     const a = {
       ...fakeRowEvents(),
@@ -833,16 +699,8 @@ describe('createRowMeasurer', () => {
   })
 
   it('unobserves, unmounts, and drops a pending measurement when detachRow runs', () => {
-    const measure = vi.fn(() => true)
     const mountedIds = new Set<string>()
-    const obs = fakeObserver()
-    const sched = manualScheduler()
-    const m = createRowMeasurer({
-      measure,
-      mountedIds,
-      createObserver: obs.createObserver,
-      scheduleMicrotask: sched.scheduleMicrotask,
-    })
+    const { m, measure, obs, sched } = measurerHarness({ mountedIds })
     const a = fakeEl(100)
     m.attachRow('a', a)
     obs.fire([a]) // a is now pending a measurement
@@ -857,15 +715,7 @@ describe('createRowMeasurer', () => {
   })
 
   it('drops the el->id mapping in detachRow so a late resize for it does not measure', () => {
-    const measure = vi.fn(() => true)
-    const obs = fakeObserver()
-    const sched = manualScheduler()
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: obs.createObserver,
-      scheduleMicrotask: sched.scheduleMicrotask,
-    })
+    const { m, measure, obs, sched } = measurerHarness()
     const a = fakeEl(100)
     m.attachRow('a', a)
     m.detachRow(a)
@@ -881,10 +731,8 @@ describe('createRowMeasurer', () => {
     // Attach-before-detach remount: the row remounts under a new element (attachRow)
     // before the old element's cleanup runs (detachRow). The id must stay mounted --
     // detaching the OLD element must not un-protect the freshly-mounted row.
-    const measure = vi.fn(() => true)
     const mountedIds = new Set<string>()
-    const obs = fakeObserver()
-    const m = createRowMeasurer({ measure, mountedIds, createObserver: obs.createObserver })
+    const { m, obs } = measurerHarness({ mountedIds })
     const oldEl = fakeEl(100)
     const newEl = fakeEl(120)
     m.attachRow('r1', oldEl)
@@ -900,14 +748,12 @@ describe('createRowMeasurer', () => {
   it('reports a row unmounted once its last element detaches, after it leaves the mounted set', () => {
     const mountedIds = new Set<string>()
     const unmounted: Array<{ id: string, mounted: boolean }> = []
-    const m = createRowMeasurer({
-      measure: () => true,
+    const { m } = measurerHarness({
       mountedIds,
       onRowUnmounted: id => unmounted.push({
         id,
         mounted: mountedIds.has(id),
       }),
-      createObserver: fakeObserver().createObserver,
     })
     const oldEl = fakeEl(100)
     const newEl = fakeEl(120)
@@ -927,15 +773,7 @@ describe('createRowMeasurer', () => {
   })
 
   it('skips a pending resize from an old connected element after a new element claims the same id', () => {
-    const measure = vi.fn(() => true)
-    const obs = fakeObserver()
-    const sched = manualScheduler()
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
-      createObserver: obs.createObserver,
-      scheduleMicrotask: sched.scheduleMicrotask,
-    })
+    const { m, measure, obs, sched } = measurerHarness()
     let oldHeight = 100
     const oldEl = {
       ...fakeRowEvents(),
@@ -956,12 +794,7 @@ describe('createRowMeasurer', () => {
   })
 
   it('dispose disconnects the observer', () => {
-    const obs = fakeObserver()
-    const m = createRowMeasurer({
-      measure: () => true,
-      mountedIds: new Set(),
-      createObserver: obs.createObserver,
-    })
+    const { m, obs } = measurerHarness()
     m.attachRow('a', fakeEl(100))
     expect(obs.observed.size).toBe(1)
     m.dispose()
@@ -969,14 +802,7 @@ describe('createRowMeasurer', () => {
   })
 
   it('dispose resets the scheduled flag so a later tick can re-arm a flush', () => {
-    const obs = fakeObserver()
-    const sched = manualScheduler()
-    const m = createRowMeasurer({
-      measure: () => true,
-      mountedIds: new Set(),
-      createObserver: obs.createObserver,
-      scheduleMicrotask: sched.scheduleMicrotask,
-    })
+    const { m, obs, sched } = measurerHarness()
     const a = fakeEl(100)
     m.attachRow('a', a)
     obs.fire([a]) // schedules a flush (flushScheduled = true)
@@ -989,15 +815,7 @@ describe('createRowMeasurer', () => {
   describe('elementOf and hasUncommittedHeight', () => {
     /** A measurer with one row `a` attached, whose rectangle the test resizes. */
     function attachedRow() {
-      const measure = vi.fn(() => true)
-      const obs = fakeObserver()
-      const sched = manualScheduler()
-      const m = createRowMeasurer({
-        measure,
-        mountedIds: new Set(),
-        createObserver: obs.createObserver,
-        scheduleMicrotask: sched.scheduleMicrotask,
-      })
+      const { m, measure, obs, sched } = measurerHarness()
       const row = { height: 100, connected: true }
       const el = {
         ...fakeRowEvents(),
@@ -1062,12 +880,7 @@ describe('createRowMeasurer', () => {
     })
 
     it('reports none for a row copy that waits for content', () => {
-      const measure = vi.fn(() => true)
-      const m = createRowMeasurer({
-        measure,
-        mountedIds: new Set(),
-        createObserver: fakeObserver().createObserver,
-      })
+      const { m } = measurerHarness()
       const { dispose } = attachWithReadiness(m, 'a', fakeEl(100), true)
       expect(m.hasUncommittedHeight('a')).toBe(false)
       dispose()
@@ -1075,10 +888,7 @@ describe('createRowMeasurer', () => {
   })
 
   it('still measures immediately when no observer is available (non-DOM env)', () => {
-    const measure = vi.fn(() => true)
-    const m = createRowMeasurer({
-      measure,
-      mountedIds: new Set(),
+    const { m, measure } = measurerHarness({
       createObserver: () => undefined,
     })
     m.attachRow('a', fakeEl(140))

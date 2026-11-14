@@ -1,6 +1,6 @@
 import type { LayoutSnapshot } from './chatLayoutShift'
 import { describe, expect, it, vi } from 'vitest'
-import { nextLayoutShift } from './chatLayoutShift'
+import { nextLayoutShift, ROW_ALIGN_OFFSET_PX, rowCutAt, TOP_EDGE_SLACK_PX } from './chatLayoutShift'
 
 interface RowSpec {
   id: string
@@ -193,6 +193,19 @@ describe('nextLayoutShift', () => {
       .toMatchObject({ shift: -40 - 50, calls: 0 })
   })
 
+  it('holds the top edge of a row that a seek placed just below the viewport top', () => {
+    // Two bands overlap by their border (a gap of -1): row 1 spans 99 to 199. A seek
+    // places row 1 ROW_ALIGN_OFFSET_PX below the viewport top, inside the body of row 0.
+    // Row 0 then grows by 60px, and row 1 must keep its scroll coordinate.
+    expect(shiftFor({
+      previous: rows(3),
+      next: withHeight(rows(3), 'r0', 160),
+      c: 99 - ROW_ALIGN_OFFSET_PX,
+      gap: -1,
+    }))
+      .toMatchObject({ shift: -40 - 60, calls: 0 })
+  })
+
   it('holds the offset inside a measured row that grows at its bottom', () => {
     const result = shiftFor({
       previous: rows(),
@@ -304,5 +317,92 @@ describe('nextLayoutShift', () => {
       p: -940,
     }))
       .toMatchObject({ shift: -100, calls: 0 })
+  })
+})
+
+describe('rowCutAt', () => {
+  // Rows of 100px with a gap of 20px: row i spans 120 * i to 120 * i + 100.
+  const cutAt = (contentTop: number, list: readonly RowSpec[] = rows(3)) => rowCutAt(snapshot(list, 20), contentTop)
+
+  it('returns the top edge at the top of a row and within the slack below it', () => {
+    expect(cutAt(120)).toEqual({
+      kind: 'top-edge',
+      index: 1,
+      top: 120,
+      bottom: 220,
+    })
+    expect(cutAt(120 + TOP_EDGE_SLACK_PX).kind).toBe('top-edge')
+  })
+
+  it('returns the top edge of the first row for a viewport top above that row', () => {
+    expect(cutAt(-50)).toEqual({
+      kind: 'top-edge',
+      index: 0,
+      top: 0,
+      bottom: 100,
+    })
+  })
+
+  it('returns the body below the slack inside a measured row', () => {
+    expect(cutAt(120 + TOP_EDGE_SLACK_PX + 0.5)).toEqual({
+      kind: 'body',
+      index: 1,
+      top: 120,
+      bottom: 220,
+    })
+    expect(cutAt(219.5).kind).toBe('body')
+  })
+
+  it('returns the bottom edge from the bottom of a row through the gap below it', () => {
+    expect(cutAt(220)).toEqual({
+      kind: 'bottom-edge',
+      index: 1,
+      top: 120,
+      bottom: 220,
+    })
+    // Just above the alignment distance from the top edge of the next row.
+    expect(cutAt(240 - ROW_ALIGN_OFFSET_PX - TOP_EDGE_SLACK_PX - 0.5)).toMatchObject({ kind: 'bottom-edge', index: 1 })
+  })
+
+  it('returns the top edge of the next row within the alignment distance above it', () => {
+    expect(cutAt(240 - ROW_ALIGN_OFFSET_PX)).toEqual({
+      kind: 'top-edge',
+      index: 2,
+      top: 240,
+      bottom: 340,
+    })
+    expect(cutAt(240 - ROW_ALIGN_OFFSET_PX - TOP_EDGE_SLACK_PX)).toMatchObject({ kind: 'top-edge', index: 2 })
+    expect(cutAt(239.5)).toMatchObject({ kind: 'top-edge', index: 2 })
+  })
+
+  it('returns the top edge of the next row inside the body of a band above it', () => {
+    // Two bands overlap by their border: row 1 spans 99 to 199.
+    const cut = rowCutAt(snapshot(rows(3), -1), 99 - ROW_ALIGN_OFFSET_PX)
+    expect(cut).toEqual({
+      kind: 'top-edge',
+      index: 1,
+      top: 99,
+      bottom: 199,
+    })
+  })
+
+  it('returns the bottom edge anywhere below the slack in a row whose height is an estimate', () => {
+    const list = withHeight(rows(3), 'r1', 100, false)
+    expect(cutAt(120, list).kind).toBe('top-edge')
+    expect(cutAt(170, list)).toEqual({
+      kind: 'bottom-edge',
+      index: 1,
+      top: 120,
+      bottom: 220,
+    })
+  })
+
+  it('returns the bottom edge of the last row below the content', () => {
+    expect(cutAt(500)).toEqual({
+      kind: 'bottom-edge',
+      index: 2,
+      top: 240,
+      bottom: 340,
+    })
   })
 })

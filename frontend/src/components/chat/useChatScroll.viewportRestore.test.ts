@@ -1,4 +1,5 @@
-import type { ChatScrollState, ChatScrollVirtualizer } from './useChatScroll'
+import type { ChatScrollState } from './useChatScroll'
+import type { ScrollHarnessOptions } from './useChatScroll.testkit'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createRoot, createSignal, onCleanup } from 'solid-js'
 import { insert } from 'solid-js/web'
@@ -7,7 +8,7 @@ import {
   triggerResizeObserversSync,
 } from '~/test-support/resizeObserverStub'
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer, mountScrollHarness, virtualizerNoOps } from './useChatScroll.testkit'
+import { deferredJump, installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer, mountScrollHarness, settleJump, virtualizerNoOps, withContentAnchors } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -183,7 +184,7 @@ describe('useChatScroll viewport restore', () => {
             hasMoreNewer: false,
           })
           let olderLoads = 0
-          const virt: ChatScrollVirtualizer = {
+          const virt = withContentAnchors({
             ...virtualizerNoOps(),
             totalHeight: () => 3000, // virtual rows exist now
             geometryVersion: () => 0,
@@ -191,7 +192,7 @@ describe('useChatScroll viewport restore', () => {
             anchorAt: () => null, // the all-hidden save carried no anchor
             scrollTopNearAnchor: () => null,
             scrollTopForAnchor: () => null,
-          }
+          })
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
@@ -343,6 +344,196 @@ describe('useChatScroll restore under a layout shift', () => {
   })
 })
 
+describe('useChatScroll restore inside a row', () => {
+  // The rows are 100px high, so 1250 lies 50px into row 12 (seq 13). A resolve by the seq
+  // alone lands on the top of the row, 1200.
+  it('returns a hidden reader to the position inside the row', async () => {
+    const h = mountScrollHarness()
+    await h.anchoredAt(1250)
+    h.div.setClientHeight(0)
+    await h.resizeFlush()
+    h.div.setScrollTop(0)
+    h.div.setClientHeight(500)
+    await h.resizeFlush()
+
+    expect(h.div.getScrollTop()).toBe(1250)
+    h.dispose()
+  })
+})
+
+// Row 0 has only an estimate of 1000px, and the 40 rows below it measure 100px each. A
+// restore places a reader halfway into row 0, at 500. Row 0 then measures 600px, and the rule
+// holds the bottom edge of a row with an estimated height: the view shows row 0 at 100px.
+// The hold places the view on the anchor again, halfway into the measured row: at 300.
+describe('useChatScroll restore onto a row with an estimated height', () => {
+  const heights = [
+    1000,
+    ...Array.from<number>({ length: 40 }).fill(100),
+  ]
+
+  /** A reader halfway into row 0 whose pane was hidden and shown: the restore holds the anchor. */
+  async function restoredHalfwayIntoRow0(opts: ScrollHarnessOptions = {}) {
+    const h = mountScrollHarness({
+      heights,
+      estimatedRows: [0],
+      ...opts,
+    })
+    await h.anchoredAt(500)
+    await h.hideThenShow()
+    expect(h.div.getScrollTop()).toBe(500)
+    return h
+  }
+
+  it('lands again on the anchor when its row measures after a show', async () => {
+    const h = await restoredHalfwayIntoRow0()
+
+    h.changeAbove(-400)
+
+    expect(h.div.getScrollTop()).toBe(300)
+    expect(h.virt.layoutShift()).toBe(0)
+    h.dispose()
+  })
+
+  it('lands again on a saved anchor when its row measures after a mount', () => {
+    const h = mountScrollHarness({
+      heights,
+      estimatedRows: [0],
+      hookOptions: {
+        savedViewportScroll: () => ({
+          anchor: {
+            id: 'r0',
+            offsetWithinRow: 500,
+            basisHeight: 1000,
+            seq: 1n,
+          },
+          atBottom: false,
+          hasMoreNewer: false,
+        }),
+      },
+    })
+    expect(h.div.getScrollTop()).toBe(500)
+
+    h.changeAbove(-400)
+
+    expect(h.div.getScrollTop()).toBe(300)
+    h.dispose()
+  })
+
+  it('keeps the hold while its row has only an estimated height', async () => {
+    const h = await restoredHalfwayIntoRow0()
+    // The last row measures, and row 0 keeps its estimate.
+    h.changeBelow(50)
+    expect(h.div.getScrollTop()).toBe(500)
+
+    h.changeAbove(-400)
+
+    expect(h.div.getScrollTop()).toBe(300)
+    h.dispose()
+  })
+
+  it('ends the hold at a move of the reader', async () => {
+    const h = await restoredHalfwayIntoRow0()
+    h.scrollTo(520)
+
+    h.changeAbove(-400)
+
+    // The shift keeps the content under the reader, and nothing places the view again.
+    expect(h.div.getScrollTop()).toBe(520)
+    expect(h.virt.layoutShift()).toBe(400)
+    h.dispose()
+  })
+
+  it('ends the hold at a move whose scroll event did not arrive yet', async () => {
+    const h = await restoredHalfwayIntoRow0()
+    // A touch or scrollbar drag moves the view, and its event is late.
+    h.div.setScrollTop(520)
+
+    h.changeAbove(-400)
+
+    // A placement would undo the move and record it as seen.
+    expect(h.div.getScrollTop()).toBe(520)
+    expect(h.virt.layoutShift()).toBe(400)
+    h.dispose()
+  })
+
+  it('ends the hold at a page key', async () => {
+    const h = await restoredHalfwayIntoRow0()
+    h.hook.pageScroll(1)
+    expect(h.div.getScrollTop()).toBe(952)
+
+    h.changeAbove(-400)
+
+    // The rebase at rest moves the shift of 400px into the position of the page.
+    expect(h.div.getScrollTop()).toBe(552)
+    expect(h.virt.layoutShift()).toBe(0)
+    h.dispose()
+  })
+
+  it('ends the hold when the reader requests the tail', async () => {
+    const jump = deferredJump()
+    const h = await restoredHalfwayIntoRow0({
+      hasNewer: true,
+      hookOptions: { onJumpToLatest: jump.onJumpToLatest },
+    })
+    // End requests the latest page, and row 0 measures while the page loads.
+    h.hook.forceScrollToBottom()
+    h.changeAbove(-400)
+    h.setHasNewer(false)
+    jump.resolve()
+    await settleJump(jump.promise)
+
+    // A placement on the anchor would end the request, and the view would stay in row 0.
+    expect(h.hook.isFollowing()).toBe(true)
+    expect(h.div.getScrollTop()).toBe(h.div.el.scrollHeight - h.div.el.clientHeight)
+    h.dispose()
+  })
+})
+
+describe('useChatScroll resize', () => {
+  it('does not stick when the reader leaves follow mode between a resize and its flush', async () => {
+    const h = mountScrollHarness()
+    expect(h.hook.isFollowing()).toBe(true)
+    // The pane grows to 600px: the browser clamps scrollTop to 4400, and the
+    // ResizeObserver delivers before the next frame.
+    h.div.setClientHeight(600)
+    triggerResizeObserversSync()
+    // The reader scrolls up before that frame.
+    h.scrollTo(4000)
+    expect(h.hook.isFollowing()).toBe(false)
+
+    await h.frame()
+
+    // A flush that applies the request of the ResizeObserver callback sticks to 4400.
+    expect(h.div.getScrollTop()).toBe(4000)
+    expect(h.hook.isFollowing()).toBe(false)
+    h.dispose()
+  })
+
+  it('renders the rows for the new height after a resize of a reader who does not follow', async () => {
+    const h = mountScrollHarness()
+    await h.anchoredAt(2000)
+    h.updateViewport.mockClear()
+
+    h.div.setClientHeight(600)
+    await h.resizeFlush()
+
+    // The taller pane shows rows below the old slice, and no scroll event follows.
+    expect(h.div.getScrollTop()).toBe(2000)
+    expect(h.updateViewport).toHaveBeenLastCalledWith(2000, 600, undefined)
+    h.dispose()
+  })
+
+  it('sticks a follower after a resize', async () => {
+    const h = mountScrollHarness()
+    h.div.setClientHeight(400)
+    await h.resizeFlush()
+
+    expect(h.div.getScrollTop()).toBe(4600)
+    expect(h.hook.isFollowing()).toBe(true)
+    h.dispose()
+  })
+})
+
 describe('useChatScroll unmount save + visible-mount restore', () => {
   // A tile split/merge or workspace switch REMOUNTS ChatView over a still-populated
   // store: the old instance saves its final viewport state from onCleanup
@@ -368,8 +559,9 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
           // Mount placement sticks the populated fresh mount to the tail...
           await Promise.resolve()
           expect(divA.getScrollTop()).toBe(2500)
-          // ...then the reader scrolls up into history (a genuine scroll event).
-          divA.setScrollTop(1000)
+          // ...then the reader scrolls up into history (a genuine scroll event), to 250px
+          // inside row 2. A resolve by the seq alone loses that offset and lands at 1000.
+          divA.setScrollTop(1250)
           hookA.handlers.onScroll()
           disposeA()
 
@@ -407,7 +599,7 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
             await Promise.resolve()
 
             // Restored to the saved row -- NOT the default tail stick -- and consumed.
-            expect(divB.getScrollTop()).toBe(1000)
+            expect(divB.getScrollTop()).toBe(1250)
             expect(hookB.atBottom()).toBe(false)
             expect(cleared).toBe(true)
             disposeB()

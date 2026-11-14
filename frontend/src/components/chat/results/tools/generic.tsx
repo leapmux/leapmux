@@ -5,6 +5,7 @@ import type { ParsedCall, ResolvedCall, ToolKindMeta, ToolKindRenderer, ToolRowV
 import { Show } from 'solid-js'
 import { isObject } from '~/lib/jsonPick'
 import { genericArgsText } from '../../model/tools/generic'
+import { isDisplayHeld } from '../../renderContext'
 import { humanizeWireWord } from '../../rendererUtils'
 import { toolInputCode, toolInputSummary, toolInputText } from '../../toolStyles.css'
 import { CollapsibleContent } from '../CollapsibleContent'
@@ -109,7 +110,7 @@ export function genericResultBody(call: ResolvedCall<GenericToolKind>, view: Too
       {...(view.context?.images !== undefined
         ? { actions: view.context?.images }
         : {})}
-      holdDisplay={() => view.context?.syntaxHighlightingPaused?.() === true || view.context?.textSelectionActive?.() === true}
+      holdDisplay={() => isDisplayHeld(view.context)}
       {...(view.context !== undefined
         ? { context: view.context }
         : {})}

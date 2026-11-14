@@ -1,11 +1,11 @@
-import type { ChatScrollVirtualizer } from './useChatScroll'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 
+import { VELOCITY_IDLE_MS } from './chatScrollVelocity'
 import { FLING_OVERSCAN_HARD_CAP_PX, flingOverscanCapPx, useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, mountScrollHarness, virtualizerNoOps } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, mountScrollHarness, virtualizerNoOps, withContentAnchors } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -39,7 +39,7 @@ describe('useChatScroll render-ahead overscan', () => {
           // Record the look-ahead args handleScroll passes to updateViewport.
           let lastLeadPx = -1
           let lastLeadDir: 'older' | 'newer' | undefined = 'newer'
-          const virt: ChatScrollVirtualizer = {
+          const virt = withContentAnchors({
             ...virtualizerNoOps(),
             totalHeight: () => 50000,
             geometryVersion: () => 0,
@@ -50,7 +50,7 @@ describe('useChatScroll render-ahead overscan', () => {
             anchorAt: () => null,
             scrollTopNearAnchor: () => null,
             scrollTopForAnchor: () => null,
-          }
+          })
           const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -99,7 +99,7 @@ describe('useChatScroll render-ahead overscan', () => {
           const [messages] = createSignal<AgentChatMessage[]>([])
           let lastLeadPx = -1
           let lastLeadDir: 'older' | 'newer' | undefined = 'older'
-          const virt: ChatScrollVirtualizer = {
+          const virt = withContentAnchors({
             ...virtualizerNoOps(),
             totalHeight: () => 50000,
             geometryVersion: () => 0,
@@ -110,7 +110,7 @@ describe('useChatScroll render-ahead overscan', () => {
             anchorAt: () => null,
             scrollTopNearAnchor: () => null,
             scrollTopForAnchor: () => null,
-          }
+          })
           const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -159,7 +159,7 @@ describe('useChatScroll render-ahead overscan', () => {
           const [messages] = createSignal<AgentChatMessage[]>([])
           let lastLeadPx = -1
           let lastLeadDir: 'older' | 'newer' | undefined
-          const virt: ChatScrollVirtualizer = {
+          const virt = withContentAnchors({
             ...virtualizerNoOps(),
             totalHeight: () => 50000,
             geometryVersion: () => 0,
@@ -170,7 +170,7 @@ describe('useChatScroll render-ahead overscan', () => {
             anchorAt: () => null,
             scrollTopNearAnchor: () => null,
             scrollTopForAnchor: () => null,
-          }
+          })
           const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -393,15 +393,15 @@ describe('useChatScroll windowing trim', () => {
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(MAX_LOADED_CHAT_MESSAGES))
           // A virtualizer that pins the viewport midpoint to row 'm50' (the reader
           // scrolled up to it). totalHeight constant so the geometry effect is quiet.
-          const virt: ChatScrollVirtualizer = {
+          const virt = withContentAnchors({
             ...virtualizerNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
             anchorAt: () => ({ id: 'm50', offsetWithinRow: 0 }),
-            scrollTopNearAnchor: () => null,
+            scrollTopNearAnchor: () => 2000,
             scrollTopForAnchor: () => 2000,
-          }
+          })
           let lastKeep = -1
           const hook = useChatScroll({
             virtualizer: virt,
@@ -454,15 +454,15 @@ describe('useChatScroll windowing trim', () => {
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(MAX_LOADED_CHAT_MESSAGES))
           // The captured anchor row is NOT present in the window (deleted / reseq'd
           // out between capture and the trim), so findIndex returns -1.
-          const virt: ChatScrollVirtualizer = {
+          const virt = withContentAnchors({
             ...virtualizerNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
             anchorAt: () => ({ id: 'gone', offsetWithinRow: 0 }),
-            scrollTopNearAnchor: () => null,
+            scrollTopNearAnchor: () => 2000,
             scrollTopForAnchor: () => 2000,
-          }
+          })
           let lastKeep = -1
           const hook = useChatScroll({
             virtualizer: virt,
@@ -517,15 +517,15 @@ describe('useChatScroll windowing trim', () => {
           // A virtualizer whose anchorAt maps a scroll offset to the row at that offset
           // (rows are rowH tall), so the buffer-top anchor (bufferTargetPx above the
           // viewport top) resolves to a row STRICTLY above the viewport anchor.
-          const virt: ChatScrollVirtualizer = {
+          const virt = withContentAnchors({
             ...virtualizerNoOps(),
             totalHeight: () => 40000,
             geometryVersion: () => 0,
             updateViewport: () => {},
             anchorAt: (y: number) => ({ id: `m${Math.max(0, Math.floor(y / rowH)) + 1}`, offsetWithinRow: 0 }),
-            scrollTopNearAnchor: () => null,
+            scrollTopNearAnchor: (a: { id: string }) => (Number(a.id.slice(1)) - 1) * rowH,
             scrollTopForAnchor: (a: { id: string }) => (Number(a.id.slice(1)) - 1) * rowH,
-          }
+          })
           let lastKeep = -1
           const hook = useChatScroll({
             virtualizer: virt,
@@ -583,7 +583,7 @@ describe('useChatScroll windowing trim', () => {
               seq: BigInt(i + 1),
             } as AgentChatMessage))
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(MAX_LOADED_CHAT_MESSAGES))
-          const virt: ChatScrollVirtualizer = {
+          const virt = withContentAnchors({
             ...virtualizerNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
@@ -591,9 +591,9 @@ describe('useChatScroll windowing trim', () => {
             // Would resolve a buffer-top row (from the stale scrollTop) if consulted --
             // the clientHeight===0 guard must skip the buffer-aware computation entirely.
             anchorAt: (y: number) => ({ id: `m${Math.max(0, Math.floor(y / 100)) + 1}`, offsetWithinRow: 0 }),
-            scrollTopNearAnchor: () => null,
+            scrollTopNearAnchor: () => 2000,
             scrollTopForAnchor: () => 2000,
-          }
+          })
           let lastKeep = -1
           const hook = useChatScroll({
             virtualizer: virt,
@@ -722,16 +722,6 @@ describe('useChatScroll fast scroll', () => {
     h.dispose()
   })
 
-  it('does not flag the event of an own write', async () => {
-    const h = mountScrollHarness()
-    await h.anchoredAt(500)
-    h.setFastScrollActive.mockClear()
-    h.hook.forceScrollToBottom()
-    h.hook.handlers.onScroll()
-    expect(h.setFastScrollActive).not.toHaveBeenCalledWith(true)
-    h.dispose()
-  })
-
   it.each([
     { speed: '0.75 px/ms', stepPx: 12 },
     { speed: '0.25 px/ms', stepPx: 4 },
@@ -768,5 +758,16 @@ describe('useChatScroll fast scroll', () => {
     vi.advanceTimersByTime(1)
     expect(h.setFastScrollActive).toHaveBeenLastCalledWith(false)
     h.dispose()
+  })
+
+  it('cancels the idle timer of the flag at the unmount', () => {
+    const h = mountScrollHarness()
+    scrollSteps(h, 32)
+    h.setFastScrollActive.mockClear()
+
+    h.dispose()
+    vi.advanceTimersByTime(VELOCITY_IDLE_MS)
+
+    expect(h.setFastScrollActive).not.toHaveBeenCalled()
   })
 })

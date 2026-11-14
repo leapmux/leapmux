@@ -581,6 +581,19 @@ export function chatScrollContainer(page: Page) {
   return page.locator(CHAT_SCROLL_CONTAINER + VISIBLE)
 }
 
+/** Return the `scrollTop` (px) of the visible chat (see chatScrollContainer). */
+export function chatScrollTop(page: Page): Promise<number> {
+  return chatScrollContainer(page).evaluate(el => el.scrollTop)
+}
+
+/**
+ * Return the distance (px) from the bottom of the visible chat's view to the bottom of its
+ * content: `scrollHeight - scrollTop - clientHeight`, which is 0 at the bottom.
+ */
+export function chatDistanceFromBottom(page: Page): Promise<number> {
+  return chatScrollContainer(page).evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)
+}
+
 /**
  * Find a visible row that contains `path` and a diff badge.
  * A new-file Write row has no badge. Its `renderWriteTitle` title contains the line count, so this helper cannot match that row.

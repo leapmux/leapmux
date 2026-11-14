@@ -3,7 +3,7 @@ import { expect } from '@playwright/test'
 import { test } from './fixtures'
 import { PREVIEW, RAIL, RAIL_DOT, RAIL_FILLER_PREVIEW, seedOverflowingConversation, THUMB } from './helpers/chatScrollRail'
 import { COARSE_POINTER_METRICS, touchDown, touchSwipe } from './helpers/touch'
-import { chatScrollContainer } from './helpers/ui'
+import { chatScrollContainer, chatScrollTop } from './helpers/ui'
 
 /**
  * Scrubbing the scroll rail: press anywhere on it, the view jumps there, and the SAME press
@@ -17,8 +17,6 @@ import { chatScrollContainer } from './helpers/ui'
  * 047 covers the rail's geometry, dots and dot-click seek; 047b covers its auto-hide. Nothing
  * here re-asserts them.
  */
-
-const scrollTop = (page: Page) => chatScrollContainer(page).evaluate((el: HTMLElement) => el.scrollTop)
 
 /** The thumb's centre in viewport coordinates, for "does the thumb follow the finger" checks. */
 async function thumbCentreY(page: Page): Promise<number> {
@@ -78,25 +76,25 @@ test.describe('chat scroll rail scrubbing', () => {
       // Press near the bottom of the rail: the view jumps there at once, without waiting for
       // the finger to lift. This is the press that used to do nothing at all under a finger.
       const finger = await touchDown(page, x, nearBottom)
-      await expect.poll(() => scrollTop(page)).toBeGreaterThan(0)
+      await expect.poll(() => chatScrollTop(page)).toBeGreaterThan(0)
       // The thumb is under the finger, not wherever it rested before the press.
       expect(Math.abs(await thumbCentreY(page) - nearBottom)).toBeLessThan(4)
-      const afterPress = await scrollTop(page)
+      const afterPress = await chatScrollTop(page)
 
       // Scrub back up WITHOUT lifting: the thumb follows the finger and the view follows the
       // thumb. Both are what a scrubbing gesture means; neither happened before.
       await finger.moveTo(x, nearTop)
       await expect.poll(() => thumbCentreY(page)).toBeLessThan(nearBottom - 40)
-      await expect.poll(() => scrollTop(page)).toBeLessThan(afterPress)
+      await expect.poll(() => chatScrollTop(page)).toBeLessThan(afterPress)
 
       await finger.end()
       // The release lands where the scrub ended, not back at the pressed point.
-      await expect.poll(() => scrollTop(page)).toBeLessThan(afterPress)
+      await expect.poll(() => chatScrollTop(page)).toBeLessThan(afterPress)
 
       // A plain TAP still works as a track click: down and up with no travel in between.
       const tap = await touchDown(page, x, nearBottom)
       await tap.end()
-      await expect.poll(() => scrollTop(page)).toBeGreaterThanOrEqual(afterPress)
+      await expect.poll(() => chatScrollTop(page)).toBeGreaterThanOrEqual(afterPress)
     })
 
     test('previews the message under the finger when a scrub starts on a dot', async ({ page, authenticatedWorkspace, modelScript }) => {
@@ -118,7 +116,7 @@ test.describe('chat scroll rail scrubbing', () => {
       // The same press scrubs on: dragging to the bottom moves the view off the dot's message.
       const railBox = await page.locator(RAIL).boundingBox()
       await finger.moveTo(dotX, railBox!.y + railBox!.height - 8)
-      await expect.poll(() => scrollTop(page)).toBeGreaterThan(0)
+      await expect.poll(() => chatScrollTop(page)).toBeGreaterThan(0)
       await finger.end()
     })
   })
@@ -147,10 +145,10 @@ test.describe('chat scroll rail scrubbing', () => {
     await expect(rail).toHaveCSS('opacity', '1')
 
     await page.mouse.down()
-    await expect.poll(() => scrollTop(page)).toBeGreaterThan(0)
+    await expect.poll(() => chatScrollTop(page)).toBeGreaterThan(0)
     await page.mouse.move(x, nearTop, { steps: 8 })
-    await expect.poll(() => scrollTop(page)).toBe(0)
+    await expect.poll(() => chatScrollTop(page)).toBe(0)
     await page.mouse.up()
-    await expect.poll(() => scrollTop(page)).toBe(0)
+    await expect.poll(() => chatScrollTop(page)).toBe(0)
   })
 })

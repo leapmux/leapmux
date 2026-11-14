@@ -1,5 +1,5 @@
 import type { ScrollContext } from './useChatScroll'
-import { distFromBottom } from './chatScrollGeometry'
+import { hasScrollRoom } from './chatScrollGeometry'
 
 /**
  * The two writes that put the view at the bottom of the content.
@@ -9,47 +9,49 @@ import { distFromBottom } from './chatScrollGeometry'
  */
 export function createStickyBottom(ctx: ScrollContext) {
   /**
-   * Put the view at the bottom, enter follow mode, and refresh the rendered rows. False
-   * for an absent or hidden element. The browser clamps `scrollHeight` to the maximum
-   * position.
+   * Enter follow mode, put the view at the bottom, and refresh the rendered rows. False for
+   * an absent or hidden element. The browser clamps `scrollHeight` to the maximum position.
+   * The position check of the write publishes atBottom.
    */
   const stickToBottom = (): boolean => {
-    const el = ctx.getEl()
-    if (!el || el.clientHeight === 0)
+    const el = ctx.getVisibleEl()
+    if (!el)
       return false
-    el.scrollTop = el.scrollHeight
     ctx.followTail()
-    ctx.syncAfterWrite()
-    ctx.setAtBottom(true)
+    ctx.writeOwnScrollTop(el.scrollHeight, { refresh: true })
     return true
   }
 
   /**
    * Follow content that grew below a reader in follow mode: a tail sibling of the spacer
    * (the thinking indicator, a banner) grows with no row change, so the layout shift does
-   * not keep the bottom for it. Writes only while follow mode applies and the view is
-   * above the bottom.
+   * not keep the bottom for it. Writes only while follow mode applies and the view sits a
+   * whole pixel or more above the bottom.
    *
-   * An automatic stick, unlike stickToBottom: it writes nothing while the browser moved
-   * the view up and the scroll handler did not see that move yet (a touch or scrollbar
-   * drag whose first `scroll` event is late). The event of the move then ends follow mode.
+   * An automatic stick, unlike stickToBottom: follow mode does not apply while the browser
+   * moved the view up and the scroll handler did not see that move yet (a touch or
+   * scrollbar drag whose first `scroll` event is late), so it writes nothing then. The event
+   * of the move then ends the request for the tail (see ScrollContext.isFollowing).
    *
    * It does not refresh the rendered rows: a ResizeObserver delivery can call it, and a
    * row that mounts there re-enters the delivery. The `scroll` event of the write, or the
    * deferred refresh of the geometry effect, refreshes them.
    */
   const restickIfAtBottom = (): void => {
-    const el = ctx.getEl()
-    if (!el || el.clientHeight === 0 || ctx.isAnimating() || !ctx.isFollowing())
+    const el = ctx.getVisibleEl()
+    if (!el || ctx.isAnimating())
       return
-    // Before the check of the distance: the call also records a clamp that left the view
-    // at the bottom (see ScrollContext.hasUnseenUpwardMove).
-    if (ctx.hasUnseenUpwardMove())
+    // A shrink of a tail sibling can clamp the view to the bottom with no write. The record
+    // keeps that clamp no move of the reader when the content grows again.
+    ctx.noteScrollRange()
+    if (!ctx.isFollowing())
       return
-    if (distFromBottom(el) <= 0)
+    // A sub-pixel distance is no room: at a fractional zoom the maximum position can lie a
+    // fraction of a pixel below the position that the browser stores, and a write for it
+    // changes nothing on each streaming frame.
+    if (!hasScrollRoom(el, 1))
       return
-    el.scrollTop = el.scrollHeight
-    ctx.notePosition()
+    ctx.writeOwnScrollTop(el.scrollHeight, { refresh: false })
   }
 
   return { stickToBottom, restickIfAtBottom }

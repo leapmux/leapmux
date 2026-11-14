@@ -109,13 +109,6 @@ export interface RowMeasurerDeps {
    * immediately). Injected for tests with a fake whose callback the test can fire.
    */
   createObserver?: (onResize: (targets: Element[]) => void) => ResizeObserverLike | undefined
-  /**
-   * ResizeObserver callbacks can fire for sub-pixel font/layout jitter while the
-   * user scrolls. Reads within this epsilon of the last accepted DOM read are
-   * dropped before they call into the virtualizer, avoiding no-op reactive commits
-   * and repeated offset-map work. Defaults to half a CSS pixel.
-   */
-  measureEpsilonPx?: number
   /** Optional test/perf hook for ResizeObserver churn accounting. */
   onFlush?: (stats: RowMeasureFlushStats) => void
 }
@@ -136,7 +129,14 @@ export interface RowMeasureFlushStats {
   skippedUnchanged: number
 }
 
-const DEFAULT_MEASURE_EPSILON_PX = 0.5
+/**
+ * The sub-pixel jitter (px) of a row height that changes no geometry. A ResizeObserver
+ * callback can fire for font or layout jitter while the user scrolls. The measurer drops a
+ * read within this distance of the last accepted read of the element, before it calls into
+ * the virtualizer, and the virtualizer keeps a cached height within this distance of a new
+ * measure. So the DOM read and the offset map ignore the same jitter.
+ */
+export const MEASURE_EPSILON_PX = 0.5
 
 interface MeasurementRead {
   id: string
@@ -163,7 +163,6 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
   let flushScheduled = false
   let ro: ResizeObserverLike | undefined
   const schedule = deps.scheduleMicrotask ?? queueMicrotask
-  const measureEpsilonPx = Math.max(0, deps.measureEpsilonPx ?? DEFAULT_MEASURE_EPSILON_PX)
 
   const readMeasurement = (
     el: Element,
@@ -187,7 +186,7 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
       return undefined
     const key = deps.currentMeasurementKey?.(id)
     const last = lastMeasurementByEl.get(el)
-    if (last !== undefined && last.id === id && last.key === key && (height === 0) === (last.height === 0) && Math.abs(height - last.height) < measureEpsilonPx) {
+    if (last !== undefined && last.id === id && last.key === key && (height === 0) === (last.height === 0) && Math.abs(height - last.height) < MEASURE_EPSILON_PX) {
       if (stats)
         stats.skippedUnchanged++
       return undefined

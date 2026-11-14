@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { test } from './fixtures'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
-import { assistantBubbles, chatScrollContainer, sendMessage, waitForAgentIdle, waitForAgentStarted } from './helpers/ui'
+import { assistantBubbles, chatDistanceFromBottom, chatScrollContainer, chatScrollTop, sendMessage, waitForAgentIdle, waitForAgentStarted } from './helpers/ui'
 
 /**
  * The chat view keeps what the reader sees in place while the content changes. The layout rules are unit tested
@@ -59,22 +59,47 @@ async function readTopParagraph(page: Page): Promise<TopParagraph | null> {
   }, PARAGRAPH_MARKER.source)
 }
 
+/** A row of the chat, and the distance from the top edge of the scroll container to the top edge of the row. */
+interface RowDistance {
+  seq: string
+  distance: number
+}
+
+/**
+ * Read the row at the top of the chat: of the rows whose bottom edge is below the top edge of the scroll container,
+ * the one whose top edge is highest. The distance is negative when the row starts above the container.
+ */
+async function readTopRow(page: Page): Promise<RowDistance | null> {
+  return chatScrollContainer(page).evaluate((container) => {
+    const top = container.getBoundingClientRect().top
+    let found: RowDistance | null = null
+    for (const row of container.querySelectorAll<HTMLElement>('[data-seq]')) {
+      const rect = row.getBoundingClientRect()
+      const seq = row.dataset.seq
+      if (seq === undefined || rect.bottom <= top || (found !== null && rect.top - top >= found.distance))
+        continue
+      found = { seq, distance: rect.top - top }
+    }
+    return found
+  })
+}
+
+/** The distance from the top edge of the scroll container to the top edge of the row of `seq`, or null when the row is not mounted. */
+async function readRowDistance(page: Page, seq: string): Promise<number | null> {
+  return chatScrollContainer(page).evaluate((container, rowSeq) => {
+    const row = container.querySelector(`[data-seq="${rowSeq}"]`)
+    return row === null
+      ? null
+      : row.getBoundingClientRect().top - container.getBoundingClientRect().top
+  }, seq)
+}
+
 /** Wait until the chat stops scrolling: two reads of `scrollTop`, one frame apart, are equal. */
 async function waitForScrollRest(page: Page): Promise<void> {
   await expect.poll(() => chatScrollContainer(page).evaluate(container => new Promise<boolean>((resolve) => {
     const before = container.scrollTop
     requestAnimationFrame(() => resolve(container.scrollTop === before))
   })), { message: 'the chat stops scrolling' }).toBe(true)
-}
-
-/** The `scrollTop` of the chat. */
-async function readScrollTop(page: Page): Promise<number> {
-  return chatScrollContainer(page).evaluate(container => container.scrollTop)
-}
-
-/** The distance from the bottom of the view to the bottom of the content. */
-async function distanceFromBottom(page: Page): Promise<number> {
-  return chatScrollContainer(page).evaluate(container => container.scrollHeight - container.scrollTop - container.clientHeight)
 }
 
 /** Put the pointer over the middle of the chat, where a wheel scrolls it. */
@@ -92,9 +117,9 @@ async function pointAtChat(page: Page): Promise<void> {
  */
 async function wheelChatUp(page: Page, pixels: number): Promise<void> {
   await pointAtChat(page)
-  const before = await readScrollTop(page)
+  const before = await chatScrollTop(page)
   await page.mouse.wheel(0, -pixels)
-  await expect.poll(() => readScrollTop(page), { message: 'the wheel scrolls the chat up' }).toBeLessThan(before)
+  await expect.poll(() => chatScrollTop(page), { message: 'the wheel scrolls the chat up' }).toBeLessThan(before)
   await waitForScrollRest(page)
 }
 
@@ -145,8 +170,10 @@ test.describe('chat scroll stability', () => {
     await waitForScrollRest(page)
 
     await wheelChatUp(page, 30)
-    await expect.poll(() => distanceFromBottom(page), { message: 'the wheel moved the view above the bottom' }).toBeGreaterThan(2)
-    const scrollTop = await readScrollTop(page)
+    await expect.poll(() => chatDistanceFromBottom(page), { message: 'the wheel moved the view above the bottom' }).toBeGreaterThan(2)
+    // The on-screen place of a row, not `scrollTop`: a rebase at rest changes `scrollTop` and moves nothing on screen.
+    const before = await readTopRow(page)
+    expect(before, 'a row is at the top of the view').not.toBeNull()
 
     await modelScript.releaseGate(gate)
     await modelScript.waitForSteps(step + 1)
@@ -154,7 +181,9 @@ test.describe('chat scroll stability', () => {
     await waitForAgentIdle(page)
     await waitForScrollRest(page)
 
-    expect(Math.abs(await readScrollTop(page) - scrollTop)).toBeLessThanOrEqual(1)
+    const after = await readRowDistance(page, before!.seq)
+    expect(after, `the row of seq ${before!.seq} stays mounted`).not.toBeNull()
+    expect(Math.abs(after! - before!.distance), `the row of seq ${before!.seq} moves by at most 1px`).toBeLessThanOrEqual(1)
     await expect(page.getByRole('button', { name: 'Scroll to bottom' })).toBeVisible()
   })
 })

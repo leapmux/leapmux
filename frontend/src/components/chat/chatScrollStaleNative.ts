@@ -51,11 +51,6 @@ export interface StaleNativeTranslatorDeps {
   /** True when the current `scroll` event did not move the position: the event of an own write. */
   isOwnWriteEvent: () => boolean
   /**
-   * Advance the hook's direction/last-position baseline after a translation, so the
-   * next user delta measures from the position after the rebase.
-   */
-  setLastScrollTopForDir: (top: number) => void
-  /**
    * The fling render-ahead cap (px) for a given pane height (see
    * useChatScroll.flingOverscanCapPx). A compositor-delayed momentum event can land up
    * to roughly a render-ahead beyond the position before the rebase, so the "near the old
@@ -68,87 +63,89 @@ export interface StaleNativeTranslatorDeps {
   now?: () => number
 }
 
+/** A rebase that moved `scrollTop` while the scroller moved. */
+export interface RebaseWrite {
+  beforeTop: number
+  afterTop: number
+  clientHeight: number
+  /** The direction of the reader's scroll at the rebase. */
+  dir: 'older' | 'newer'
+}
+
 /**
- * Create the translator. `noteProgrammaticWrite` observes every programmatic scrollTop
- * write; `translate` is called at the top of the scroll handler and returns whether it
- * rewrote the event's position into the current coordinate space.
+ * Create the translator. Every own `scrollTop` write reports to it: `noteRebase` for a
+ * rebase while the scroller moves, and `invalidate` for every other write. `translate` is
+ * called at the top of the scroll handler.
  */
 export function createStaleNativeScrollTranslator(deps: StaleNativeTranslatorDeps) {
   const now = deps.now ?? monotonicNow
   let recentRebaseShift: RebaseShift | undefined
 
   /**
-   * Observe a programmatic write. A 'rebase' write larger than a screen ARMS (or
+   * Observe a rebase while the scroller moves. A rebase larger than a screen ARMS (or
    * extends) the shift record; a second rebase that compensates the first back to a small
-   * cumulative movement DISARMS it; any other write source invalidates it outright (the
-   * viewport is somewhere new, so the old coordinate space is no longer meaningful).
+   * cumulative movement DISARMS it. A hidden pane (`clientHeight` 0) changes nothing.
    */
-  const noteProgrammaticWrite = (info: {
-    source?: string
-    beforeTop: number | undefined
-    afterTop: number | undefined
-    clientHeight: number
-    dir: 'older' | 'newer'
-  }) => {
-    const { source, beforeTop, afterTop, clientHeight } = info
-    if (
-      source === 'rebase'
-      && beforeTop !== undefined
-      && afterTop !== undefined
-      && clientHeight > 0
-    ) {
-      const at = now()
-      const previous = recentRebaseShift
-      const extendsRecentShift = previous !== undefined
-        && at - previous.at <= STALE_NATIVE_SCROLL_TRANSLATE_MS
-        && Math.abs(beforeTop - previous.afterTop) <= clientHeight
-      const baseBeforeTop = extendsRecentShift ? previous.beforeTop : beforeTop
-      const delta = afterTop - baseBeforeTop
-      if (Math.abs(delta) > clientHeight) {
-        recentRebaseShift = {
-          beforeTop: baseBeforeTop,
-          afterTop,
-          delta,
-          clientHeight,
-          dir: info.dir,
-          at,
-        }
-      }
-      else if (extendsRecentShift) {
-        // A second rebase can compensate the large coordinate-space jump that created
-        // the stale-native guard (for example, a shift of the opposite sign after an
-        // older-page prepend). Once the cumulative movement is small again, native
-        // momentum events are already in the current coordinate space; translating
-        // them by the obsolete prepend delta causes the exact jump this guard exists to
-        // prevent.
-        recentRebaseShift = undefined
+  const noteRebase = ({ beforeTop, afterTop, clientHeight, dir }: RebaseWrite) => {
+    if (clientHeight <= 0)
+      return
+    const at = now()
+    const previous = recentRebaseShift
+    const extendsRecentShift = previous !== undefined
+      && at - previous.at <= STALE_NATIVE_SCROLL_TRANSLATE_MS
+      && Math.abs(beforeTop - previous.afterTop) <= clientHeight
+    const baseBeforeTop = extendsRecentShift ? previous.beforeTop : beforeTop
+    const delta = afterTop - baseBeforeTop
+    if (Math.abs(delta) > clientHeight) {
+      recentRebaseShift = {
+        beforeTop: baseBeforeTop,
+        afterTop,
+        delta,
+        clientHeight,
+        dir,
+        at,
       }
     }
-    else if (source !== 'rebase') {
+    else if (extendsRecentShift) {
+      // A second rebase can compensate the large coordinate-space jump that created
+      // the stale-native guard (for example, a shift of the opposite sign after an
+      // older-page prepend). Once the cumulative movement is small again, native
+      // momentum events are already in the current coordinate space; translating
+      // them by the obsolete prepend delta causes the exact jump this guard exists to
+      // prevent.
       recentRebaseShift = undefined
     }
   }
 
   /**
-   * Recognize a compositor-delayed OLD-COORDINATE momentum event after a large rebase
-   * and translate it into the current coordinate space. Returns whether a translation
-   * was applied (the caller only branches on that; the shift details stay internal).
+   * Forget the shift record: an own write other than a rebase during a scroll placed the
+   * view somewhere new, so the old coordinate space is no longer meaningful.
    */
-  const translate = (): boolean => {
+  const invalidate = () => {
+    recentRebaseShift = undefined
+  }
+
+  /**
+   * Recognize a compositor-delayed OLD-COORDINATE momentum event after a large rebase
+   * and translate it into the current coordinate space. Returns the position after the
+   * rebase when it translated the event: the caller measures the move of the event from
+   * there. Returns undefined when it did not.
+   */
+  const translate = (): number | undefined => {
     const el = deps.getEl()
     const shift = recentRebaseShift
     if (!el || !shift)
-      return false
+      return undefined
     const ageMs = now() - shift.at
     if (ageMs > STALE_NATIVE_SCROLL_TRANSLATE_MS) {
       recentRebaseShift = undefined
-      return false
+      return undefined
     }
     // A direct drag or the event of an own write is already in the current coordinate
     // space. The stale case is only compositor-delayed momentum that lands near the
     // coordinate before the rebase after the rebase moved the viewport elsewhere.
     if (deps.isScrollInputActive() || deps.isOwnWriteEvent())
-      return false
+      return undefined
 
     const staleTop = el.scrollTop
     // Cover the full fling render-ahead (a stale momentum event lands up to ~one
@@ -177,23 +174,22 @@ export function createStaleNativeScrollTranslator(deps: StaleNativeTranslatorDep
       // compositor has caught up. Do not keep a stale shift armed long enough to
       // translate a later legitimate scroll that merely crosses the old midpoint.
       recentRebaseShift = undefined
-      return false
+      return undefined
     }
 
     const translatedTop = clampScrollTop(el, staleTop + shift.delta)
     if (Math.abs(translatedTop - staleTop) < MIN_TRANSLATION_PX)
-      return false
+      return undefined
 
     // This event is still a USER momentum event and must flow through the normal
     // velocity/range path, so the write is not recorded as an own write here. The scroll
     // handler then records the translated position as the last seen one, so the browser's
     // follow-up scroll event for this assignment reads as no move.
     el.scrollTop = translatedTop
-    deps.setLastScrollTopForDir(shift.afterTop)
-    return true
+    return shift.afterTop
   }
 
-  return { noteProgrammaticWrite, translate }
+  return { noteRebase, invalidate, translate }
 }
 
 export type StaleNativeScrollTranslator = ReturnType<typeof createStaleNativeScrollTranslator>

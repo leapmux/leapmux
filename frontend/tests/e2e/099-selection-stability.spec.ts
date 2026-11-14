@@ -4,7 +4,7 @@ import { test } from './fixtures'
 import { settleFrames } from './helpers/frames'
 import { QUICK_BROWN_FOX, sayExactly, sendScriptedTurn } from './helpers/scriptedTurn'
 import { selectedText } from './helpers/selection'
-import { ASSISTANT_BUBBLE_SELECTOR, chatScrollContainer, firstAssistantMessageRow } from './helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, chatScrollContainer, chatScrollTop, firstAssistantMessageRow } from './helpers/ui'
 
 /**
  * A text selection in the chat transcript must survive the mouse release, and
@@ -75,19 +75,18 @@ test.describe('chat text selection stability', () => {
     for (const n of [1, 2, 3, 4])
       await sendScriptedTurn(page, modelScript, sayExactly(`line ${n} -- ${QUICK_BROWN_FOX.toLowerCase()}`))
 
-    const scroller = chatScrollContainer(page)
-    await scroller.evaluate(el => el.scrollTo({ top: 0 }))
+    await chatScrollContainer(page).evaluate(el => el.scrollTo({ top: 0 }))
     // The first row is on screen, and the frames after the scroll ran the
     // re-anchoring that measuring the rows can do.
     await expect(firstAssistantMessageRow(page)).toBeInViewport()
     await settleFrames(page)
-    const before = await scroller.evaluate(el => el.scrollTop)
+    const before = await chatScrollTop(page)
 
     // A drag that selects nothing cannot move the viewport for the reason this test guards.
     expect(await dragSelectFirstLine(page), 'the drag selects text').toBeGreaterThan(0)
     await expectReleaseSettled(page)
 
-    const after = await scroller.evaluate(el => el.scrollTop)
+    const after = await chatScrollTop(page)
     expect(Math.abs(after - before), `viewport moved ${before} -> ${after} while selecting`).toBeLessThanOrEqual(2)
   })
 })

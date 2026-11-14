@@ -1,5 +1,6 @@
 import type { ScrollContext } from './useChatScroll'
-import { EDGE_INTENT_TOLERANCE_PX, hasScrollRoom } from './chatScrollGeometry'
+import { isMac } from '~/lib/shortcuts/platform'
+import { distFromBottom, EDGE_INTENT_TOLERANCE_PX, FOLLOW_TOLERANCE_PX, hasScrollRoom } from './chatScrollGeometry'
 
 /**
  * Vertical overlap kept when paging (PageUp/PageDown): a page jump advances by
@@ -7,6 +8,62 @@ import { EDGE_INTENT_TOLERANCE_PX, hasScrollRoom } from './chatScrollGeometry'
  * keeps a sliver of context across the jump.
  */
 const PAGE_SCROLL_OVERLAP_PX = 48
+
+/**
+ * True when an element between `target` and `list` (the list itself excluded) scrolls
+ * vertically and can still move in `direction` (-1 up, 1 down). The browser gives a wheel
+ * or a key of that direction to that element, so the list does not move.
+ */
+function innerScrollerTakes(target: EventTarget | null, list: HTMLElement, direction: -1 | 1): boolean {
+  if (!(target instanceof Element) || !list.contains(target))
+    return false
+  for (let node: Element | null = target; node !== null && node !== list; node = node.parentElement) {
+    // The room first: an element without room in the direction is the common case, and
+    // the room costs less than the computed style.
+    if (node instanceof HTMLElement && hasScrollRoom(node, direction) && scrollsVertically(node))
+      return true
+  }
+  return false
+}
+
+/** True when `el` has a vertical scrollbar of its own: a vertical overflow that it scrolls. */
+function scrollsVertically(el: HTMLElement): boolean {
+  const overflowY = getComputedStyle(el).overflowY
+  return (overflowY === 'auto' || overflowY === 'scroll') && el.scrollHeight > el.clientHeight
+}
+
+/** True when `target` takes text input, so its keys edit the text and do not scroll the list. */
+function isEditableTarget(target: EventTarget | null): boolean {
+  return target instanceof HTMLElement
+    && (target.isContentEditable
+      || target instanceof HTMLInputElement
+      || target instanceof HTMLTextAreaElement
+      || target instanceof HTMLSelectElement)
+}
+
+const SCROLL_KEYS: ReadonlySet<string> = new Set([
+  'ArrowUp',
+  'ArrowDown',
+  'PageUp',
+  'PageDown',
+  'Home',
+  'End',
+  ' ',
+])
+
+/**
+ * True when `event` is a key that scrolls the chat list: a scroll key with no modifier or
+ * with Shift, or on macOS Option or Cmd with ArrowUp or ArrowDown, which scroll natively
+ * there. Any other key with Ctrl, Option, or Cmd is a shortcut of the OS or the app, and a
+ * key in a text field edits the text. ChatView opens its activity windows for the same keys.
+ */
+export function isListScrollKey(event: KeyboardEvent): boolean {
+  if (event.ctrlKey || !SCROLL_KEYS.has(event.key) || isEditableTarget(event.target))
+    return false
+  if (event.altKey || event.metaKey)
+    return isMac() && (event.key === 'ArrowUp' || event.key === 'ArrowDown')
+  return true
+}
 
 /**
  * The keyboard / wheel input layer: Home/End/PageUp/PageDown/Arrow keys and wheel
@@ -18,18 +75,11 @@ const PAGE_SCROLL_OVERLAP_PX = 48
  * call it) and is passed in.
  */
 export function createScrollInput(ctx: ScrollContext, extras: {
-  // High-level scroll actions declared later in the hook than the shared context.
-  checkAtBottom: () => void
+  // The hook actions that only this layer calls.
   forceScrollToBottom: () => void
-  cancelScrollAnimation: () => void
   cancelPendingScroll: () => void
   /** Abandon an in-flight out-of-window seek: the reader took control. */
   cancelPendingSeek: () => void
-  /**
-   * Resume the buffer fill that a press paused. A page writes through the controller, so
-   * its `scroll` event is an own write, and only a move of the reader ends that pause.
-   */
-  retakeScrollControl: () => void
   tryLoadOlderOnExplicitTopIntent: () => void
   tryLoadNewerOnExplicitBottomIntent: () => void
   setLastScrollDir: (dir: 'older' | 'newer') => void
@@ -48,11 +98,11 @@ export function createScrollInput(ctx: ScrollContext, extras: {
    * already-loaded window.
    */
   const jumpToTop = () => {
-    extras.cancelScrollAnimation()
+    ctx.cancelScrollAnimation()
     if (extras.hasOlderMessages()) {
       void Promise.resolve(extras.onJumpToOldest?.())
         .then(() => scrollToTopPosition())
-        .catch(() => extras.checkAtBottom())
+        .catch(() => ctx.checkPosition())
       return
     }
     scrollToTopPosition()
@@ -62,31 +112,35 @@ export function createScrollInput(ctx: ScrollContext, extras: {
     // A 0-height container (hidden/collapsed pane, or the cold-start frame before
     // measurement) can't scroll: clientHeight is 0, so the delta below is 0, and a
     // no-move would then fire a spurious edge pagination on every key press.
-    const el = ctx.getEl()
-    if (!el || el.clientHeight === 0)
+    const el = ctx.getVisibleEl()
+    if (!el)
       return
     // A page is a placement: it moves the view relative to the current content, so the
-    // layout shift goes first, and the scroll coordinate of the page is a content one.
+    // layout shift goes first.
     ctx.rebase()
     // Advance by a viewport height minus a few lines of overlap, but never less
     // than half a page (guards against a degenerately short viewport).
     const delta = Math.max(el.clientHeight - PAGE_SCROLL_OVERLAP_PX, el.clientHeight / 2)
     const before = el.scrollTop
-    el.scrollBy({ top: direction * delta, behavior: 'auto' })
+    // The writer records every page, also one that moves a pixel or less, so the `scroll`
+    // event of the page reads as no move of the reader.
+    ctx.writeOwnScrollTop(before + direction * delta, { refresh: true })
     // Compare with the SAME sub-pixel slack the edge-intent tests use, not exact
     // equality: at a fractional-DPI / browser-zoom edge the clamp can leave scrollTop a
-    // fraction off `before` even when visually unmoved. A genuine page moves by `delta`
-    // (>= half a viewport), never within this slack.
+    // fraction off `before` even when visually unmoved. A page away from an edge moves by
+    // `delta` (>= half a viewport), never within this slack.
     if (Math.abs(el.scrollTop - before) > EDGE_INTENT_TOLERANCE_PX) {
-      extras.retakeScrollControl()
-      if (direction === -1)
+      ctx.retakeScrollControl()
+      // The rule of the scroll handler for a move of the reader: a page up ends the request
+      // for the tail, and so does a page down while newer messages exist, when it leaves the
+      // view more than FOLLOW_TOLERANCE_PX above the loaded bottom.
+      if (direction === -1 || (ctx.hasNewerMessages() && distFromBottom(el) > FOLLOW_TOLERANCE_PX))
         ctx.leaveFollow()
-      ctx.syncAfterWrite()
       return
     }
     // Already clamped at the edge: the page could not move. Route its direction
-    // through the explicit-edge-intent loader rather than the buffer filler. The loader
-    // is NOT gated by the buffer-fill pause, so a PageDown at the loaded bottom (or
+    // through the explicit-edge-intent loader rather than the buffer filler. The
+    // buffer-fill pause does not block the loader, so a PageDown at the loaded bottom (or
     // PageUp at the top) still pages newer/older right after a programmatic stop. It
     // loads ONE directional page; the buffer filler's own messages() effect tops up the
     // render-ahead once that page lands.
@@ -96,28 +150,59 @@ export function createScrollInput(ctx: ScrollContext, extras: {
       extras.tryLoadOlderOnExplicitTopIntent()
   }
 
+  /**
+   * An input that states a direction: it abandons the pending seek, because the reader
+   * takes control, and it records the direction for the pagination.
+   */
+  const takeIntent = (dir: 'older' | 'newer') => {
+    extras.cancelPendingSeek()
+    extras.setLastScrollDir(dir)
+  }
+
+  /**
+   * An upward step that the browser scrolls natively: a wheel, ArrowUp, Shift+Space, or
+   * on macOS Option+ArrowUp and Cmd+ArrowUp. A scroller inside the list around `target`
+   * that can move up takes the step, so the step is no input of the list and does
+   * nothing here. Otherwise it states the direction. When the list can move, it ends
+   * follow mode at once, before its `scroll` event, so no growth in between pulls the
+   * reader back down. At the top edge, it loads older messages.
+   */
+  const stepOlder = (target: EventTarget | null) => {
+    const el = ctx.getEl()
+    if (el && innerScrollerTakes(target, el, -1))
+      return
+    takeIntent('older')
+    if (el && hasScrollRoom(el, -1))
+      ctx.leaveFollow()
+    extras.tryLoadOlderOnExplicitTopIntent()
+  }
+
+  /**
+   * A downward step that the browser scrolls natively: a wheel, ArrowDown, Space, or on
+   * macOS Option+ArrowDown and Cmd+ArrowDown. A scroller inside the list around `target`
+   * that can move down takes the step, as for `stepOlder`. At the bottom edge, the step
+   * loads newer messages.
+   */
+  const stepNewer = (target: EventTarget | null) => {
+    const el = ctx.getEl()
+    if (el && innerScrollerTakes(target, el, 1))
+      return
+    takeIntent('newer')
+    extras.tryLoadNewerOnExplicitBottomIntent()
+  }
+
   const handleWheel = (event: WheelEvent) => {
     if (event.ctrlKey)
       return
-    const el = ctx.getEl()
     // Only treat a wheel event as a VERTICAL scroll intent when the vertical
     // component dominates. A horizontal/diagonal trackpad swipe leaks a small
     // vertical deltaY; without this guard that leak fires a spurious edge-load and
     // mis-sets lastScrollDir (which then steers the buffer filler the wrong way).
     if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
-      extras.cancelPendingSeek()
-      if (event.deltaY < 0) {
-        extras.setLastScrollDir('older')
-        // An upward step that can move the view ends follow mode at once, before its
-        // `scroll` event, so no growth in between pulls the reader back down.
-        if (el && hasScrollRoom(el, -1))
-          ctx.leaveFollow()
-        extras.tryLoadOlderOnExplicitTopIntent()
-      }
-      else {
-        extras.setLastScrollDir('newer')
-        extras.tryLoadNewerOnExplicitBottomIntent()
-      }
+      if (event.deltaY < 0)
+        stepOlder(event.target)
+      else
+        stepNewer(event.target)
     }
     else if (event.deltaX === 0 && event.deltaY === 0) {
       // A no-movement wheel event (deltaX and deltaY both 0): the trackpad
@@ -128,8 +213,16 @@ export function createScrollInput(ctx: ScrollContext, extras: {
   }
 
   const handleKeyDown = (event: KeyboardEvent) => {
-    if (event.altKey || event.ctrlKey || event.metaKey)
+    if (!isListScrollKey(event))
       return
+    // On macOS, Option or Cmd with an arrow scrolls natively, as the arrow alone does.
+    if (event.altKey || event.metaKey) {
+      if (event.key === 'ArrowUp')
+        stepOlder(event.target)
+      else
+        stepNewer(event.target)
+      return
+    }
     switch (event.key) {
       // Home/End jump to the very first / live-last message (fetching across the
       // window edge when needed); PageUp/PageDown page with a few lines of
@@ -139,46 +232,38 @@ export function createScrollInput(ctx: ScrollContext, extras: {
       // viewport can't actually scroll (a hidden-only window page).
       case 'Home':
         event.preventDefault()
-        extras.cancelPendingSeek()
-        extras.setLastScrollDir('older')
+        takeIntent('older')
         jumpToTop()
         break
       case 'End':
         event.preventDefault()
-        extras.cancelPendingSeek()
-        extras.setLastScrollDir('newer')
+        takeIntent('newer')
         extras.forceScrollToBottom()
         break
       case 'PageUp':
         event.preventDefault()
-        extras.cancelPendingSeek()
-        extras.setLastScrollDir('older')
+        takeIntent('older')
         pageScroll(-1)
         break
       case 'PageDown':
         event.preventDefault()
-        extras.cancelPendingSeek()
-        extras.setLastScrollDir('newer')
+        takeIntent('newer')
         pageScroll(1)
         break
       // Arrow keys and Space keep the browser's native scroll; we only nudge
       // pagination when the user is explicitly pressed against an edge.
-      case 'ArrowUp': {
-        extras.cancelPendingSeek()
-        extras.setLastScrollDir('older')
-        const el = ctx.getEl()
-        if (el && hasScrollRoom(el, -1))
-          ctx.leaveFollow()
-        extras.tryLoadOlderOnExplicitTopIntent()
+      case 'ArrowUp':
+        stepOlder(event.target)
         break
-      }
       case 'ArrowDown':
-        extras.cancelPendingSeek()
-        extras.setLastScrollDir('newer')
-        extras.tryLoadNewerOnExplicitBottomIntent()
+        stepNewer(event.target)
         break
+      // Space scrolls down a page and Shift+Space up a page, natively.
       case ' ':
-        extras.cancelPendingSeek()
+        if (event.shiftKey)
+          stepOlder(event.target)
+        else
+          stepNewer(event.target)
         break
     }
   }

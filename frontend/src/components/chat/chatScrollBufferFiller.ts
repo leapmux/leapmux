@@ -13,6 +13,14 @@ import { distFromBottom } from './chatScrollGeometry'
 const BUFFER_REFILL_HYSTERESIS_SCREENS = 0.5
 
 /**
+ * The least growth (px) of a side's content that counts as progress of a load. A page
+ * that shows a row adds far more. A smaller change is no new content: a row that measures
+ * again, or a content top that was converted to scroll coordinates and back under a
+ * fractional layout shift.
+ */
+const LOAD_PROGRESS_MIN_PX = 1
+
+/**
  * The scroll-buffer filler: pre-fetches RAW history pages to keep a buffer of
  * VISIBLE content beyond the viewport in each direction, so scrolling stays smooth
  * even in a hidden-heavy stretch (where a raw page adds almost no scroll height and
@@ -34,8 +42,12 @@ const BUFFER_REFILL_HYSTERESIS_SCREENS = 0.5
  * the filler keeps paging the user's scroll direction until history is exhausted or the
  * store's raw window ceiling stops growth.
  *
- * Driven from BOTH a reactive effect (window changes) and handleScroll (the
- * viewport moving toward an edge shrinks that side's buffer). A self-contained unit.
+ * Driven from BOTH a reactive effect and handleScroll (the viewport moving toward an edge
+ * shrinks that side's buffer). The effect runs fill() again when the window content
+ * changes (a page landed) and when a signal that fill() reads changes: the fetch flags,
+ * the history flags, the ceiling, and the suppression of the older side. The caller gives
+ * `viewportContentTop` untracked, so a change of the layout shift alone does not run it.
+ * A self-contained unit.
  *
  * This is mechanism #2 of the NO-SKIP INVARIANT (see FLING_OVERSCAN_LOOKAHEAD_MS):
  * growing the loaded window ahead of the viewport is what lets a fast fling keep
@@ -172,7 +184,7 @@ export function createScrollBufferFiller(deps: {
       return
     const now = sideContent(lastLoadedSide)
     const refTrimmed = lastRefAnchor !== null && now === null
-    if (refTrimmed || (now != null && now > lastLoadedMetric)) {
+    if (refTrimmed || (now != null && now - lastLoadedMetric >= LOAD_PROGRESS_MIN_PX)) {
       stuck[lastLoadedSide] = false
     }
     else {

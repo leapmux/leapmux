@@ -66,9 +66,9 @@ export interface ThumbDragDeps {
   /** Set/clear the drag-preview thumb fraction (null clears the preview). */
   setDrag: (fraction: number | null) => void
   /**
-   * Place the view at the content coordinate `top` for in-window live-scroll. The host
-   * records the write as its own, so the `scroll` event of the write reads as no move of
-   * the reader.
+   * Place the view at the content coordinate `top` for in-window live-scroll; a `top` of 0
+   * places it at the top of the scroller. The host records the write as its own, so the
+   * `scroll` event of the write reads as no move of the reader.
    */
   previewScrollTo: (top: number) => void
   /**

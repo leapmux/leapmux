@@ -25,7 +25,9 @@ import {
   ARITHMETIC_ANSWER_TEXT,
   ARITHMETIC_PROMPT,
   branchGroupRow,
+  chatDistanceFromBottom,
   chatScrollContainer,
+  chatScrollTop,
   chooseSettingsOption,
   collapseWorkspaceRow,
   COMPOSER_EDITOR_SELECTOR,
@@ -961,6 +963,42 @@ describe('chat and tab locators', () => {
     expect(tabById(selectorPage(), 'tab-1')).toBe('[data-testid="tab"][data-tab-id="tab-1"]')
     const tabId = 'tab"1\\\n'
     expect(tabById(selectorPage(), tabId)).toBe(`[data-testid="tab"][data-tab-id="${cssAttributeValue(tabId)}"]`)
+  })
+})
+
+/** The scroll geometry of a chat scroll container. */
+interface ChatScrollGeometry {
+  scrollTop: number
+  scrollHeight: number
+  clientHeight: number
+}
+
+/**
+ * A page whose visible chat scroll container has `geometry`. Its locator runs the callback of
+ * `evaluate` on that geometry, as Playwright runs it on the element in the browser, and it
+ * rejects any other selector.
+ */
+function chatScrollPage(geometry: ChatScrollGeometry): Page {
+  return opaqueHandle<Page>({
+    locator: (selector: string) => {
+      expect(selector).toBe('[data-chat-scroll-container="true"]:visible')
+      return opaqueHandle<PlaywrightLocator>({
+        evaluate: (async (read: (element: ChatScrollGeometry) => number) => read(geometry)) as unknown as PlaywrightLocator['evaluate'],
+      })
+    },
+  })
+}
+
+describe('chatScrollTop', () => {
+  it('reads the scrollTop of the visible chat', async () => {
+    await expect(chatScrollTop(chatScrollPage({ scrollTop: 240, scrollHeight: 1000, clientHeight: 400 }))).resolves.toBe(240)
+  })
+})
+
+describe('chatDistanceFromBottom', () => {
+  it('returns 0 at the bottom of the content, and the distance that remains above it', async () => {
+    await expect(chatDistanceFromBottom(chatScrollPage({ scrollTop: 600, scrollHeight: 1000, clientHeight: 400 }))).resolves.toBe(0)
+    await expect(chatDistanceFromBottom(chatScrollPage({ scrollTop: 100, scrollHeight: 1000, clientHeight: 400 }))).resolves.toBe(500)
   })
 })
 

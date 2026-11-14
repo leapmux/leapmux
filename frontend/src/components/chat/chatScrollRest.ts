@@ -1,10 +1,20 @@
+import { createRafCoalescer } from '~/lib/rafCoalesce'
+
 // ---------------------------------------------------------------------------
 // Scroll rest detection for the chat list
 //
-// The layout shift (chatLayoutShift.ts) may be removed with a `scrollTop` write only
-// while the scroller rests: a write during a gesture can end the momentum of the
-// browser, and WebKit can deliver a scroll event in the old coordinates after it. This
-// unit decides when the scroller rests.
+// The scroll hook removes the layout shift (chatLayoutShift.ts) with a `scrollTop` write,
+// the rebase. Rest is the default time of the rebase: a write during a gesture can end the
+// momentum of the browser, and WebKit can deliver a scroll event in the old coordinates
+// after it. The hook also rebases at two other times (see useChatScroll.ts):
+//
+// - During a scroll, when the shift is larger than the view near the reachable top, or
+//   when the viewport top is above the first row and shows the blank band there
+//   (`needsRebaseDuringScroll`).
+// - Before each placement, such as a seek, a restore of the view, Home, or a page key. The
+//   placement writes `scrollTop` itself.
+//
+// This unit decides when the scroller rests.
 //
 // The scroller rests when no pointer or touch is down and its raw `scrollTop` did not
 // change for SCROLL_REST_QUIET_MS, confirmed by one animation frame. The `scrollend`
@@ -28,7 +38,9 @@ export interface ScrollRestDeps {
    * from a reactive computation. It can run again while the scroller already rests.
    */
   onRest: () => void
+  /** Request the confirm frame. Default: `requestFrame` of `~/lib/animationFrame`. */
   requestFrame?: (cb: () => void) => number
+  /** Cancel the confirm frame. Default: `cancelFrame` of `~/lib/animationFrame`. */
   cancelFrame?: (handle: number) => void
 }
 
@@ -53,39 +65,20 @@ export interface ScrollRest {
   dispose: () => void
 }
 
-function defaultRequestFrame(cb: () => void): number {
-  if (typeof requestAnimationFrame !== 'function') {
-    cb()
-    return 0
-  }
-  return requestAnimationFrame(() => cb())
-}
-
-function defaultCancelFrame(handle: number): void {
-  if (typeof cancelAnimationFrame === 'function')
-    cancelAnimationFrame(handle)
-}
-
 export function createScrollRest(deps: ScrollRestDeps): ScrollRest {
-  const requestFrame = deps.requestFrame ?? defaultRequestFrame
-  const cancelFrame = deps.cancelFrame ?? defaultCancelFrame
   let resting = true
   let quietTimer: ReturnType<typeof setTimeout> | undefined
-  // The pending confirm frame. An object, so that a frame that runs synchronously inside
-  // `requestFrame` cannot leave a handle that marks it as still pending.
-  let confirmFrame: { handle: number } | undefined
+  // A busy main thread can run the quiet timer before a delayed `scroll` event. The confirm
+  // frame confirms that no move is still on its way.
+  const confirmFrame = createRafCoalescer<void>(confirmRest, {
+    requestFrame: deps.requestFrame,
+    cancelFrame: deps.cancelFrame,
+  })
 
   const clearQuietTimer = () => {
     if (quietTimer !== undefined) {
       clearTimeout(quietTimer)
       quietTimer = undefined
-    }
-  }
-
-  const cancelConfirmFrame = () => {
-    if (confirmFrame !== undefined) {
-      cancelFrame(confirmFrame.handle)
-      confirmFrame = undefined
     }
   }
 
@@ -98,37 +91,32 @@ export function createScrollRest(deps: ScrollRestDeps): ScrollRest {
     deps.onRest()
   }
 
-  // The two functions start each other, so they are declarations.
+  // The quiet time and the confirm frame start each other, so these are declarations.
   function startQuietTime(): void {
     clearQuietTimer()
     quietTimer = setTimeout(requestConfirmFrame, SCROLL_REST_QUIET_MS)
   }
 
-  // A busy main thread can run the timer before a delayed `scroll` event. The frame
-  // confirms that no move is still on its way.
   function requestConfirmFrame(): void {
     quietTimer = undefined
-    const frame = { handle: 0 }
-    confirmFrame = frame
-    frame.handle = requestFrame(() => {
-      if (confirmFrame !== frame)
-        return
-      confirmFrame = undefined
-      if (deps.hasUnseenMove())
-        startQuietTime()
-      else
-        enterRest()
-    })
+    confirmFrame.push()
+  }
+
+  function confirmRest(): void {
+    if (deps.hasUnseenMove())
+      startQuietTime()
+    else
+      enterRest()
   }
 
   return {
     noteScroll: () => {
       resting = false
-      cancelConfirmFrame()
+      confirmFrame.abort()
       startQuietTime()
     },
     noteInputEnded: () => {
-      if (quietTimer !== undefined || confirmFrame !== undefined)
+      if (quietTimer !== undefined || confirmFrame.isPending())
         return
       // The press moved the scroller, and the `scroll` event of that move has not arrived:
       // the scroller is not at rest yet, so the quiet time and the confirm frame decide.
@@ -142,7 +130,7 @@ export function createScrollRest(deps: ScrollRestDeps): ScrollRest {
     isResting: () => resting && !deps.isInputActive() && !deps.hasUnseenMove(),
     dispose: () => {
       clearQuietTimer()
-      cancelConfirmFrame()
+      confirmFrame.abort()
     },
   }
 }

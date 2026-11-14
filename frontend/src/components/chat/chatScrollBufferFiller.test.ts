@@ -178,6 +178,31 @@ describe('chatScrollBufferFiller', () => {
     expect(newerLoads).toBeGreaterThan(30)
   })
 
+  it('counts a gain of less than a pixel as no progress', () => {
+    // An all-hidden older page adds no row, but the measure of the content above can still
+    // differ by a fraction of a pixel: a row re-measures, or a content top is converted to
+    // the scroll coordinates and back under a fractional layout shift. That is no new
+    // content, so the older side goes stuck and the newer side carries the fill.
+    const h = harness({ olderGrowsBy: 0.25, newerGrowsBy: 50 })
+    h.enable()
+    for (let i = 0; i < 40; i++)
+      h.filler.fill()
+
+    const { olderLoads, newerLoads } = h.counts()
+    expect(olderLoads).toBeLessThanOrEqual(2)
+    expect(newerLoads).toBeGreaterThan(30)
+  })
+
+  it('counts a gain of one pixel as progress', () => {
+    // The older side never goes stuck, so the last scroll direction keeps it first.
+    const h = harness({ olderGrowsBy: 1, newerGrowsBy: 50 })
+    h.enable()
+    for (let i = 0; i < 40; i++)
+      h.filler.fill()
+
+    expect(h.counts()).toEqual({ olderLoads: 40, newerLoads: 0 })
+  })
+
   it('counts a productive older load as progress even while the user scrolls UP mid-fetch', () => {
     // The older-progress signal is the content prepended above a stable ref row (geometry
     // offset), NOT raw scrollTop. A user actively scrolling UP during the fetch DROPS
@@ -325,17 +350,6 @@ describe('chatScrollBufferFiller', () => {
     h.enable()
     h.setHas(true, false) // older exists, at the live tail
     h.setCeiling(true)
-    h.filler.fill()
-    expect(h.counts().olderLoads).toBe(0)
-  })
-
-  it('a suppressed older side at the ceiling does not fetch', () => {
-    // suppressOlder (armed at the live tail) gates the older PRE-FETCH.
-    const h = harness({ olderGrowsBy: 0, newerGrowsBy: 0 })
-    h.enable()
-    h.setHas(true, false)
-    h.setCeiling(true)
-    h.setSuppressOlder(true)
     h.filler.fill()
     expect(h.counts().olderLoads).toBe(0)
   })

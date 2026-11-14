@@ -66,8 +66,13 @@ const virtualizerState = vi.hoisted(() => ({
   setDeferred: undefined as undefined | ((deferred: boolean) => void),
   /** The readiness scope that ChatView handed the stub virtualizer with each row copy. */
   attachedReadiness: new Map<string, RowContentReadiness>(),
-  /** What the stub virtualizer's `contentTopOf` adds to a scroll coordinate: the negated layout shift. */
-  contentTopOffset: 0,
+  /**
+   * The layout shift of the stub virtualizer (`scroll = content + layoutShift`). Its layer
+   * transform, its spacer height and its coordinate conversions all derive from this one number.
+   */
+  layoutShift: 0,
+  /** Each element that ChatView handed the stub virtualizer for its layout writes, in order. */
+  layoutAttachments: [] as { slot: 'spacer' | 'layer', element: HTMLElement | undefined }[],
 }))
 
 /** The host bindings that ChatView handed each stubbed visible bubble, by message id. */
@@ -274,6 +279,7 @@ vi.mock('./useChatScroll', async () => {
 vi.mock('./useChatVirtualizer', async () => {
   const actual = await vi.importActual<typeof import('./useChatVirtualizer')>('./useChatVirtualizer')
   const { createSignal } = await import('solid-js')
+  const { placementScrollTop } = await import('./createLayoutShift')
   const [version, setVersion] = createSignal(0)
   const [deferred, setDeferred] = createSignal(false)
   virtualizerState.setRange = (range: ChatVirtualizerRange) => {
@@ -289,6 +295,7 @@ vi.mock('./useChatVirtualizer', async () => {
         virtualizerState.realInstances.push(virt)
         return virt
       }
+      const totalHeight = 10_000
       return {
         mountedIds: new Set<string>(),
         fastScrollActive: deferred,
@@ -297,12 +304,18 @@ vi.mock('./useChatVirtualizer', async () => {
           return virtualizerState.range
         },
         geometryVersion: version,
-        totalHeight: () => 10_000,
-        layoutShift: () => 0,
-        spacerHeight: () => 10_000,
-        contentTopOf: (scrollTop: number) => scrollTop + virtualizerState.contentTopOffset,
-        scrollTopOf: (contentTop: number) => contentTop - virtualizerState.contentTopOffset,
-        attachLayout: vi.fn(),
+        totalHeight: () => totalHeight,
+        layoutShift: () => virtualizerState.layoutShift,
+        spacerHeight: () => totalHeight + virtualizerState.layoutShift,
+        contentTopOf: (scrollTop: number) => scrollTop - virtualizerState.layoutShift,
+        scrollTopOf: (contentTop: number) => contentTop + virtualizerState.layoutShift,
+        placementScrollTopOf: (contentTop: number) => placementScrollTop(contentTop, top => top + virtualizerState.layoutShift),
+        attachSpacer: (element: HTMLElement | undefined) => {
+          virtualizerState.layoutAttachments.push({ slot: 'spacer', element })
+        },
+        attachLayer: (element: HTMLElement | undefined) => {
+          virtualizerState.layoutAttachments.push({ slot: 'layer', element })
+        },
         rebase: () => 0,
         offsetOfId: (id: string) => Number(id.slice(1)) * 100,
         indexOfId: (id: string) => Number(id.slice(1)),
@@ -415,6 +428,71 @@ function stubChatScrollGeometry(view: { container: HTMLElement }, clientHeight =
   }
 }
 
+/**
+ * Record each write to the `scrollTop` of `list`. The getter returns the last write as
+ * written: jsdom has no layout, so nothing clamps it.
+ */
+function recordScrollTopWrites(list: HTMLElement): number[] {
+  const writes: number[] = []
+  Object.defineProperty(list, 'scrollTop', {
+    configurable: true,
+    get: () => writes[writes.length - 1] ?? 0,
+    set: (top: number) => {
+      writes.push(top)
+    },
+  })
+  return writes
+}
+
+/** The two computed values of the chat scroll container that make the inset of its spacer. */
+interface ListInsetStyle {
+  paddingTop: string
+  rowGap: string
+}
+
+/**
+ * Make the computed style of every chat scroll container report `style`, until `restore`.
+ * `set` replaces the values for the next read. jsdom resolves no `var()` to px, so without
+ * this stub the list reads an inset of 0.
+ */
+function stubListInsetStyle(style: ListInsetStyle): { set: (next: ListInsetStyle) => void, restore: () => void } {
+  let current = style
+  const realGetComputedStyle = window.getComputedStyle.bind(window)
+  const spy = vi.spyOn(window, 'getComputedStyle').mockImplementation((element, pseudoElement) => {
+    const computed = realGetComputedStyle(element, pseudoElement)
+    if (!(element instanceof HTMLElement) || element.dataset.chatScrollContainer !== 'true')
+      return computed
+    return new Proxy(computed, {
+      get: (target, key) => {
+        if (key === 'paddingTop')
+          return current.paddingTop
+        if (key === 'rowGap')
+          return current.rowGap
+        const value: unknown = Reflect.get(target, key, target)
+        return typeof value === 'function'
+          ? value.bind(target)
+          : value
+      },
+    })
+  })
+  return {
+    set: (next) => {
+      current = next
+    },
+    restore: () => spy.mockRestore(),
+  }
+}
+
+/**
+ * Stub the scroll geometry of `view` (see `stubChatScrollGeometry`) and report the size of its
+ * scroll container to ChatView, both with the one viewport height `clientHeight`.
+ */
+async function stubChatViewport(view: { container: HTMLElement }, clientHeight = 500): Promise<StubbedChatScroll> {
+  const scroll = stubChatScrollGeometry(view, clientHeight)
+  await reportChatViewportSize(view, 800, clientHeight)
+  return scroll
+}
+
 // `role` ('user' | 'assistant') only labels the call site for readability;
 // ChatView classifies messages off `message.source` (left UNSPECIFIED here,
 // matching the historical behavior of these tests), not a `role` field —
@@ -442,6 +520,14 @@ function makeMessage(role: string, text: string, id: string = '1'): AgentChatMes
     // makeCodex* helpers below — the omitted proto fields default to
     // their zero values, preserving these tests' historical behavior.
   } as AgentChatMessage
+}
+
+/** An assistant message at `seq`, whose id (`msg-<seq>`) and text (`Message <seq>`) follow from it. */
+function seqMessage(seq: number): AgentChatMessage {
+  return {
+    ...makeMessage('assistant', `Message ${seq}`, `msg-${seq}`),
+    seq: BigInt(seq),
+  }
 }
 
 function makeCodexCommandMessage(params: {
@@ -760,6 +846,87 @@ describe('ChatView', () => {
     ))
     await reportChatViewportSize(view)
     expect(view.getByTestId('compaction-indicator')).toHaveTextContent('Compacting context... (auto)')
+  })
+
+  it('passes the top padding and the row gap of the list to the virtualizer as the inset of its spacer', async () => {
+    const inset = stubListInsetStyle({ paddingTop: '16px', rowGap: '12px' })
+    try {
+      const view = render(() => (
+        <PreferencesProvider>
+          <ChatView messages={[
+            makeMessage('assistant', 'An answer', 'msg-1'),
+          ]}
+          />
+        </PreferencesProvider>
+      ))
+      await reportChatViewportSize(view)
+
+      const virt = virtualizerState.realInstances.at(-1)!
+      expect(virt.layoutShift()).toBe(0)
+      expect(virt.scrollTopOf(0)).toBe(28)
+      expect(virt.contentTopOf(100)).toBe(72)
+      view.unmount()
+    }
+    finally {
+      inset.restore()
+    }
+  })
+
+  it('reads a padding or a gap that is not in px as no inset, and keeps the other part', async () => {
+    // A computed `row-gap` of `normal` and an empty value both parse to NaN.
+    const inset = stubListInsetStyle({ paddingTop: '16px', rowGap: 'normal' })
+    try {
+      const view = render(() => (
+        <PreferencesProvider>
+          <ChatView messages={[
+            makeMessage('assistant', 'An answer', 'msg-1'),
+          ]}
+          />
+        </PreferencesProvider>
+      ))
+      await reportChatViewportSize(view, 800, 733)
+      const virt = virtualizerState.realInstances.at(-1)!
+      expect(virt.scrollTopOf(0)).toBe(16)
+
+      inset.set({ paddingTop: '', rowGap: '12px' })
+      await reportChatViewportSize(view, 800, 600)
+      expect(virt.scrollTopOf(0)).toBe(12)
+      view.unmount()
+    }
+    finally {
+      inset.restore()
+    }
+  })
+
+  it('reads the inset again when the list changes its height alone or its width alone', async () => {
+    // A new padding, such as a narrower pane can give the list, comes with a new size of the
+    // list. The size observer reports a change of each dimension on its own.
+    const inset = stubListInsetStyle({ paddingTop: '16px', rowGap: '12px' })
+    try {
+      const view = render(() => (
+        <PreferencesProvider>
+          <ChatView messages={[
+            makeMessage('assistant', 'An answer', 'msg-1'),
+          ]}
+          />
+        </PreferencesProvider>
+      ))
+      await reportChatViewportSize(view, 800, 733)
+      const virt = virtualizerState.realInstances.at(-1)!
+      expect(virt.scrollTopOf(0)).toBe(28)
+
+      inset.set({ paddingTop: '24px', rowGap: '12px' })
+      await reportChatViewportSize(view, 800, 600)
+      expect(virt.scrollTopOf(0)).toBe(36)
+
+      inset.set({ paddingTop: '24px', rowGap: '20px' })
+      await reportChatViewportSize(view, 1200, 600)
+      expect(virt.scrollTopOf(0)).toBe(44)
+      view.unmount()
+    }
+    finally {
+      inset.restore()
+    }
   })
 
   it('hides the live compaction when the reader views older history', async () => {
@@ -1441,7 +1608,7 @@ describe('ChatView', () => {
     await triggerResizeObserverFor(row!)
     await waitFor(() => expect(row!.style.visibility).toBe(''))
     const virt = virtualizerState.realInstances.at(-1)!
-    expect(virt.hasConfirmedHeight('edit-row')).toBe(true)
+    expect(virt.snapshotHeights().some(height => height.id === 'edit-row')).toBe(true)
 
     const slices = installControlledSlices(10)
     preferences!.dual.diffView.setBrowser('split')
@@ -1449,14 +1616,14 @@ describe('ChatView', () => {
 
     // The new layout mounts behind the old one, so the row reads nothing yet.
     expect(row!.querySelectorAll('[data-file-diff]')).toHaveLength(2)
-    expect(virt.hasConfirmedHeight('edit-row')).toBe(false)
+    expect(virt.snapshotHeights().some(height => height.id === 'edit-row')).toBe(false)
     while (slices.waiting() > 0) {
       slices.runSlice()
       await settleWorkerReplies()
     }
 
     expect(row!.querySelectorAll('[data-file-diff]')).toHaveLength(1)
-    expect(virt.hasConfirmedHeight('edit-row')).toBe(true)
+    expect(virt.snapshotHeights().some(height => height.id === 'edit-row')).toBe(true)
     expect(virt.heightOfId('edit-row')).toBe(500)
     expect(virt.snapshotHeights().find(height => height.id === 'edit-row')?.height).toBe(500)
     expect(row!.style.visibility).toBe('')
@@ -1659,10 +1826,6 @@ describe('ChatView', () => {
   })
 
   it('keeps the mounted rows when an older page is prepended', async () => {
-    const seqMessage = (seq: number) => ({
-      ...makeMessage('assistant', `Message ${seq}`, `msg-${seq}`),
-      seq: BigInt(seq),
-    })
     const newest = Array.from({ length: 150 }, (_, i) => seqMessage(100 + i))
     const older = Array.from({ length: 50 }, (_, i) => seqMessage(50 + i))
     let setMessages!: (messages: AgentChatMessage[]) => void
@@ -1675,8 +1838,7 @@ describe('ChatView', () => {
         </PreferencesProvider>
       )
     })
-    const scroll = stubChatScrollGeometry(view)
-    await reportChatViewportSize(view, 800, 500)
+    const scroll = await stubChatViewport(view)
     scroll.scrollTo(6000)
     await flushAnimationFrame()
 
@@ -1726,18 +1888,14 @@ describe('ChatView', () => {
   })
 
   it('keeps the view when the row under the reader grows at its bottom', async () => {
-    const messages = [1, 2, 3].map(seq => ({
-      ...makeMessage('assistant', `Message ${seq}`, `msg-${seq}`),
-      seq: BigInt(seq),
-    }))
+    const messages = [1, 2, 3].map(seq => seqMessage(seq))
     const view = render(() => (
       <PreferencesProvider>
         <ChatView messages={messages} />
       </PreferencesProvider>
     ))
     await settleWorkerReplies()
-    const scroll = stubChatScrollGeometry(view)
-    await reportChatViewportSize(view, 800, 500)
+    const scroll = await stubChatViewport(view)
     const row = (seq: number): HTMLElement => {
       const element = scroll.spacer().querySelector(`[data-seq="${seq}"]`)
       if (!(element instanceof HTMLElement))
@@ -1770,18 +1928,14 @@ describe('ChatView', () => {
   })
 
   it('moves the layer and keeps the rows when a row above measures', async () => {
-    const messages = Array.from({ length: 30 }, (_, i) => ({
-      ...makeMessage('assistant', `Message ${i + 1}`, `msg-${i + 1}`),
-      seq: BigInt(i + 1),
-    }))
+    const messages = Array.from({ length: 30 }, (_, i) => seqMessage(i + 1))
     const view = render(() => (
       <PreferencesProvider>
         <ChatView messages={messages} />
       </PreferencesProvider>
     ))
     await settleWorkerReplies()
-    const scroll = stubChatScrollGeometry(view)
-    await reportChatViewportSize(view, 800, 500)
+    const scroll = await stubChatViewport(view)
     const layer = () => scroll.spacer().querySelector<HTMLElement>(`.${virtualLayer}`)!
     const mountedRows = () => [
       ...scroll.spacer().querySelectorAll<HTMLElement>('[data-seq]'),
@@ -1818,18 +1972,160 @@ describe('ChatView', () => {
     }
   })
 
-  it('gives the scroll-to-bottom button an accessible name', async () => {
-    const messages = Array.from({ length: 30 }, (_, i) => ({
-      ...makeMessage('assistant', `Message ${i + 1}`, `msg-${i + 1}`),
-      seq: BigInt(i + 1),
-    }))
+  it('keeps the rows under a drag whose scroll event did not arrive when the last row measures', async () => {
+    const messages = Array.from({ length: 30 }, (_, i) => seqMessage(i + 1))
     const view = render(() => (
       <PreferencesProvider>
         <ChatView messages={messages} />
       </PreferencesProvider>
     ))
-    const scroll = stubChatScrollGeometry(view)
-    await reportChatViewportSize(view, 800, 500)
+    await settleWorkerReplies()
+    const scroll = await stubChatViewport(view)
+    await settleWorkerReplies()
+    const layer = () => scroll.spacer().querySelector<HTMLElement>(`.${virtualLayer}`)!
+    const mountedRows = () => [
+      ...scroll.spacer().querySelectorAll<HTMLElement>('[data-seq]'),
+    ]
+    const bottom = () => scroll.list.scrollHeight - scroll.list.clientHeight
+    try {
+      // Every mounted row measures 100px, so 100px also becomes the estimate of the rows
+      // above them, and one more measure changes no estimate.
+      for (const row of mountedRows()) {
+        vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 800, 100))
+        await triggerResizeObserverFor(row)
+      }
+      // The follower rests at the bottom, and the rebase at rest removed the shift.
+      await waitFor(() => expect(layer().style.transform).toBe('translateY(0px)'))
+      expect(scroll.scrollTop()).toBe(bottom())
+      // A touch or scrollbar drag moved the view up, and its first `scroll` event did not
+      // arrive yet.
+      const dragged = bottom() - 300
+      scroll.list.scrollTop = dragged
+
+      const last = scroll.spacer().querySelector<HTMLElement>('[data-seq="30"]')!
+      vi.spyOn(last, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 800, 400))
+      await triggerResizeObserverFor(last)
+
+      // The view no longer follows the tail, so the rule holds the rows under the reader,
+      // and the last row grows below the view. Holding the bottom instead would move the
+      // rows up under the drag by the growth of the row, 300px.
+      expect(layer().style.transform).toBe('translateY(0px)')
+      expect(scroll.scrollTop()).toBe(dragged)
+    }
+    finally {
+      view.unmount()
+    }
+  })
+
+  describe('a restore onto a row with an estimated height', () => {
+    // The reader sat 10px into msg-15 when the previous pane saved, and the row was 96px.
+    const anchor = {
+      id: 'msg-15',
+      offsetWithinRow: 10,
+      basisHeight: 96,
+      seq: 15n,
+    }
+
+    /** Mount with the saved anchor, show the pane, and measure nothing yet. */
+    async function restored() {
+      const messages = Array.from({ length: 30 }, (_, i) => seqMessage(i + 1))
+      const view = render(() => (
+        <PreferencesProvider>
+          <ChatView
+            messages={messages}
+            savedViewportScroll={{ atBottom: false, hasMoreNewer: false, anchor }}
+            onClearSavedViewportScroll={() => {}}
+          />
+        </PreferencesProvider>
+      ))
+      await settleWorkerReplies()
+      const scroll = await stubChatViewport(view)
+      await settleWorkerReplies()
+      const translateY = (element: HTMLElement) => Number.parseFloat(element.style.transform.replace('translateY(', ''))
+      const layer = () => scroll.spacer().querySelector<HTMLElement>(`.${virtualLayer}`)!
+      const row = scroll.spacer().querySelector<HTMLElement>('[data-seq="15"]')!
+      return {
+        view,
+        scroll,
+        row,
+        /** The distance from the top of msg-15 to the viewport top. */
+        intoRow: () => scroll.scrollTop() - translateY(layer()) - translateY(row),
+        /** msg-15 measures `height`. */
+        measure: async (height: number) => {
+          vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 800, height))
+          await triggerResizeObserverFor(row)
+        },
+      }
+    }
+
+    it('keeps the position once the row measures', async () => {
+      const r = await restored()
+      try {
+        expect(r.intoRow()).toBeCloseTo(10)
+        // The row now measures 400px, so the view lands as far into it as the saved
+        // fraction of the row: 10 / 96 of 400px.
+        await r.measure(400)
+        expect(r.intoRow()).toBeCloseTo(10 * 400 / 96)
+      }
+      finally {
+        r.view.unmount()
+      }
+    })
+
+    it('leaves a reader who moved to the shift rule', async () => {
+      const r = await restored()
+      try {
+        r.scroll.scrollTo(r.scroll.scrollTop() + 50)
+        expect(r.intoRow()).toBeCloseTo(60)
+        // The rule holds the bottom edge of a row with an estimated height: the 36px of
+        // the row below the viewport top stay where they are.
+        await r.measure(400)
+        expect(r.intoRow()).toBeCloseTo(400 - 36)
+      }
+      finally {
+        r.view.unmount()
+      }
+    })
+
+    it('leaves a reader whose move has no event yet to the shift rule', async () => {
+      const r = await restored()
+      try {
+        // The browser moved the view, and the `scroll` event of the move did not arrive yet.
+        r.scroll.list.scrollTop = r.scroll.scrollTop() + 50
+        expect(r.intoRow()).toBeCloseTo(60)
+        // A placement on the anchor would undo the move of the reader. The rule holds the
+        // bottom edge of the row instead, as for a reader whose event arrived.
+        await r.measure(400)
+        expect(r.intoRow()).toBeCloseTo(400 - 36)
+      }
+      finally {
+        r.view.unmount()
+      }
+    })
+
+    it('leaves a reader who asked for the live tail at the bottom', async () => {
+      const r = await restored()
+      try {
+        fireEvent.keyDown(r.scroll.list, { key: 'End' })
+        const bottom = () => r.scroll.list.scrollHeight - r.scroll.list.clientHeight
+        expect(r.scroll.scrollTop()).toBe(bottom())
+        await r.measure(400)
+        expect(r.scroll.scrollTop()).toBe(bottom())
+      }
+      finally {
+        r.view.unmount()
+      }
+    })
+  })
+
+  it('gives the scroll-to-bottom button an accessible name', async () => {
+    const messages = Array.from({ length: 30 }, (_, i) => seqMessage(i + 1))
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={messages} />
+      </PreferencesProvider>
+    ))
+    const scroll = await stubChatViewport(view)
     try {
       expect(view.queryByRole('button', { name: 'Scroll to bottom' })).toBeNull()
       scroll.scrollTo(1000)
@@ -2242,7 +2538,7 @@ describe('ChatView', () => {
 
     const chatContainer = screen.getByTestId('chat-container')
     const messageList = chatContainer.firstElementChild?.firstElementChild as HTMLDivElement
-    messageList.scrollBy = vi.fn()
+    const writes = recordScrollTopWrites(messageList)
     Object.defineProperty(messageList, 'clientHeight', {
       configurable: true,
       get: () => 240,
@@ -2250,7 +2546,7 @@ describe('ChatView', () => {
 
     pageScroll(1)
     // A page jump keeps PAGE_SCROLL_OVERLAP_PX (48) of context: 240 - 48 = 192.
-    expect(messageList.scrollBy).toHaveBeenCalledWith({ top: 192, behavior: 'auto' })
+    expect(writes).toEqual([192])
   })
 
   it('scrolls only the targeted chat when multiple chat views are mounted', () => {
@@ -2298,19 +2594,20 @@ describe('ChatView', () => {
       configurable: true,
       get: () => 240,
     })
-    hiddenList.scrollBy = vi.fn()
-    visibleList.scrollBy = vi.fn()
+    const hiddenWrites = recordScrollTopWrites(hiddenList)
+    const visibleWrites = recordScrollTopWrites(visibleList)
 
     visiblePageScroll(-1)
 
-    expect(hiddenList.scrollBy).not.toHaveBeenCalled()
-    // 240 viewport - 48 overlap = 192 (negative: paging up).
-    expect(visibleList.scrollBy).toHaveBeenCalledWith({ top: -192, behavior: 'auto' })
+    expect(hiddenWrites).toEqual([])
+    // 240 viewport - 48 overlap = 192 (negative: paging up). The page writes its target
+    // unclamped, and the browser clamps it.
+    expect(visibleWrites).toEqual([-192])
 
     hiddenPageScroll(1)
 
     // 120 viewport - 48 overlap = 72.
-    expect(hiddenList.scrollBy).toHaveBeenCalledWith({ top: 72, behavior: 'auto' })
+    expect(hiddenWrites).toEqual([72])
   })
 
   it('loads older messages on touch and pointer overscroll intent while at top', () => {
@@ -3132,7 +3429,7 @@ describe('chat view virtualized with stubbed deps', () => {
 
   afterEach(() => {
     vi.useRealTimers()
-    virtualizerState.contentTopOffset = 0
+    virtualizerState.layoutShift = 0
     bubbleHostState.byId.clear()
     viewportSizeObserverState.width = 640
     viewportSizeObserverState.height = 733
@@ -3933,11 +4230,13 @@ describe('chat view virtualized with stubbed deps', () => {
 
     it('reads the near-viewport band in content coordinates', async () => {
       // The layer is shifted by -1000: scroll coordinate 100 is content 1100.
-      virtualizerState.contentTopOffset = 1000
+      virtualizerState.layoutShift = -1000
       virtualizerState.setRange?.({ start: 0, end: 40 })
       const messages = Array.from({ length: 40 }, (_, index) => message(`m${index}`, index + 1))
       const { container } = render(() => <ChatView messages={messages} />)
       const list = container.querySelector('[data-chat-scroll-container]') as HTMLDivElement
+      expect(list.querySelector<HTMLElement>(`.${virtualLayer}`)?.style.transform).toBe('translateY(-1000px)')
+      expect(list.querySelector<HTMLElement>(`.${virtualSpacer}`)?.style.height).toBe('9000px')
       Object.defineProperty(list, 'scrollTop', {
         configurable: true,
         get: () => 100,
@@ -3954,6 +4253,40 @@ describe('chat view virtualized with stubbed deps', () => {
       // Row 12 spans content 1200 to 1300, inside the view (1100 to 1600) and its slack.
       expect(bubbleHostState.byId.get('m12')!.rowOffscreen?.()).toBe(false)
       expect(bubbleHostState.byId.get('m30')!.rowOffscreen?.()).toBe(true)
+    })
+
+    it('attaches the spacer and the layer of rows to the virtualizer, and detaches each one when it unmounts', () => {
+      // A rebase writes the height of the spacer and the transform of the layer. Each one
+      // must reach the slot that writes its own property, and leave it when it unmounts.
+      //
+      // The record is cleared here and not in an afterEach: the testing library unmounts the
+      // view of the previous test after the afterEach of this suite, and that unmount
+      // detaches its elements into the record.
+      virtualizerState.layoutAttachments = []
+      virtualizerState.setRange?.({ start: 0, end: 1 })
+      const { container, unmount } = render(() => (
+        <ChatView messages={[
+          message('m0', 1),
+        ]}
+        />
+      ))
+      const attached = (slot: 'spacer' | 'layer') => virtualizerState.layoutAttachments
+        .filter(attachment => attachment.slot === slot)
+        .map(attachment => attachment.element)
+      const spacer = container.querySelector<HTMLElement>(`.${virtualSpacer}`)
+      const layer = container.querySelector<HTMLElement>(`.${virtualLayer}`)
+      expect(spacer).not.toBeNull()
+      expect(layer).not.toBeNull()
+      expect(attached('spacer')).toHaveLength(1)
+      expect(attached('spacer')[0]).toBe(spacer)
+      expect(attached('layer')).toHaveLength(1)
+      expect(attached('layer')[0]).toBe(layer)
+
+      unmount()
+      expect(attached('spacer')).toHaveLength(2)
+      expect(attached('spacer')[1]).toBeUndefined()
+      expect(attached('layer')).toHaveLength(2)
+      expect(attached('layer')[1]).toBeUndefined()
     })
   })
 
@@ -4036,6 +4369,25 @@ describe('chat view virtualized with stubbed deps', () => {
       const { container } = renderChat()
 
       fireEvent.keyDown(scroller(container), { key: 'a' })
+      expect(paused(container)).toBe('false')
+      // A shortcut with a modifier is no scroll of the list.
+      fireEvent.keyDown(scroller(container), { key: 'End', ctrlKey: true })
+      expect(paused(container)).toBe('false')
+
+      fireEvent.keyDown(scroller(container), { key: 'PageDown' })
+      expect(paused(container)).toBe('true')
+    })
+
+    it('ignores a scroll key that a text field in the list receives', () => {
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
+      const { container } = renderChat()
+      // PageDown in a text field moves its caret, and the list does not scroll.
+      const field = document.createElement('textarea')
+      scroller(container).append(field)
+
+      fireEvent.keyDown(field, { key: 'PageDown' })
       expect(paused(container)).toBe('false')
 
       fireEvent.keyDown(scroller(container), { key: 'PageDown' })
@@ -4194,7 +4546,7 @@ describe('chat view virtualized with stubbed deps', () => {
       // The coast: the hook reports its momentum scrolls with the finger long
       // gone, each one pushing the window out past where the touch would have
       // closed it. Fired through the hook's callback because the stub here
-      // never runs the real classification (see mockState.scrollOpts).
+      // never runs the real scroll handler (see mockState.scrollOpts).
       const COAST_TICK_MS = RAIL_VISIBLE_IDLE_MS - 100
       const COAST_TICKS = 3
       // The whole coast stays inside the cap; outrunning it is the next test.
@@ -4213,9 +4565,10 @@ describe('chat view virtualized with stubbed deps', () => {
     })
 
     // The cap on that relight. The hook also reports a scroll that the browser makes
-    // by itself, such as the clamp after the content shrinks, and an uncapped relight
-    // would then light the rail again for each such scroll through a streaming turn.
-    // The bound is measured from the last INPUT and never re-based by a scroll.
+    // by itself, such as one that brings a focused element into view, and an uncapped
+    // relight would then light the rail again for each such scroll, however long after
+    // the last input. The cap is measured from the last INPUT and never re-based by a
+    // scroll.
     it('stops relighting the rail once a coast outruns its bound', () => {
       vi.useFakeTimers({
         toFake: ['performance', 'setTimeout', 'clearTimeout'],
@@ -4258,6 +4611,24 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(rail(container).className).toContain(railIdle)
 
       fireEvent.pointerMove(scroller(container), { pointerType: 'touch' })
+      expect(rail(container).className).not.toContain(railIdle)
+    })
+
+    it('lights the rail for a key that scrolls the list, and not for a shortcut or a key in a text field', () => {
+      vi.useFakeTimers({
+        toFake: ['performance', 'setTimeout', 'clearTimeout'],
+      })
+      const { container } = renderWithRail()
+
+      fireEvent.keyDown(scroller(container), { key: 'End', ctrlKey: true })
+      expect(rail(container).className).toContain(railIdle)
+
+      const field = document.createElement('textarea')
+      scroller(container).append(field)
+      fireEvent.keyDown(field, { key: 'PageDown' })
+      expect(rail(container).className).toContain(railIdle)
+
+      fireEvent.keyDown(scroller(container), { key: 'PageDown' })
       expect(rail(container).className).not.toContain(railIdle)
     })
 

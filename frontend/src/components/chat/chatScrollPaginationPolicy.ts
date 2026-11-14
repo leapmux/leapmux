@@ -48,11 +48,8 @@ export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
     return true
   }
 
-  const tryLoadOlderOnExplicitTopIntent = (): boolean => {
-    if (!deps.isAtTopEdge() || !canLoadOlderMessages())
-      return false
-    return loadOlderMessages()
-  }
+  const tryLoadOlderOnExplicitTopIntent = (): boolean =>
+    deps.isAtTopEdge() && loadOlderMessages()
 
   const canLoadNewerMessages = (): boolean =>
     deps.getEl() !== undefined && deps.hasNewer() && !deps.fetchingNewer()
@@ -64,11 +61,8 @@ export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
     return true
   }
 
-  const tryLoadNewerOnExplicitBottomIntent = (): boolean => {
-    if (!deps.isAtBottomEdge() || !canLoadNewerMessages())
-      return false
-    return loadNewerMessages()
-  }
+  const tryLoadNewerOnExplicitBottomIntent = (): boolean =>
+    deps.isAtBottomEdge() && loadNewerMessages()
 
   const stalledOlder = createMemo(() => {
     deps.geomVersion()

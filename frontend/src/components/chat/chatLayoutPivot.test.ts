@@ -1,6 +1,7 @@
 import type { ContentMovedInfo, LayoutPivotDeps, PivotRow } from './chatLayoutPivot'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createLayoutPivot, selectPivotElement } from './chatLayoutPivot'
+import { createManualFrames } from '~/test-support/manualFrames'
+import { CONTENT_MOVED_WARN_PX, createLayoutPivot, selectPivotElement } from './chatLayoutPivot'
 
 /** Give `el` a client rectangle from `top` to `bottom`, and count the reads in `reads`. */
 function place(el: Element, top: number, bottom: number, reads?: { count: number }): void {
@@ -143,6 +144,26 @@ describe('selectPivotElement', () => {
     expect(selectPivotElement(row, 555, 1000)).toBe(children[56])
     expect(reads.count).toBeLessThan(20)
   })
+
+  it('finds the child among 100 children of a wrapper with no box', () => {
+    const children = Array.from({ length: 100 }, (_, i) => box(10 * i, 10 * i + 10))
+    const wrapper = box(0, 0, children)
+    wrapper.getBoundingClientRect = () => new DOMRect(0, 0, 0, 0)
+    const row = box(0, 1000, [wrapper])
+    expect(selectPivotElement(row, 555, 1000)).toBe(children[56])
+  })
+
+  it('reads the rectangle of each child once', () => {
+    const reads = { count: 0 }
+    // Each child has a child of its own, so the search also asks whether it has a box.
+    const children = Array.from({ length: 4 }, (_, i) => box(100 * i, 100 * i + 100, [
+      box(100 * i, 100 * i + 100),
+    ], reads))
+    const row = box(0, 400, children)
+    // The line cuts child 1, and child 2 starts inside the viewport.
+    expect(selectPivotElement(row, 150, 600)).toBe(children[2])
+    expect(reads.count).toBe(4)
+  })
 })
 
 /** A scroll element, one row with one pivot child, and a manual frame queue. */
@@ -158,6 +179,7 @@ function pivotHarness() {
     inRowTop: 300,
     rowRectHasTop: true,
     suspended: false,
+    pinBottom: false,
     uncommitted: false,
     pivotRowPresent: true,
   }
@@ -185,24 +207,7 @@ function pivotHarness() {
   scroll.append(row)
   document.body.append(scroll)
 
-  const frames = new Map<number, () => void>()
-  let nextHandle = 1
-  const requestFrame = vi.fn((cb: () => void) => {
-    const handle = nextHandle++
-    frames.set(handle, cb)
-    return handle
-  })
-  const cancelFrame = vi.fn((handle: number) => {
-    frames.delete(handle)
-  })
-  const runFrames = () => {
-    const pending = [
-      ...frames.values(),
-    ]
-    frames.clear()
-    for (const cb of pending)
-      cb()
-  }
+  const { requestFrame, cancelFrame, runFrames } = createManualFrames()
   const onContentMoved = vi.fn((_info: ContentMovedInfo) => {})
   const deps: LayoutPivotDeps = {
     scrollElement: () => scroll,
@@ -211,6 +216,7 @@ function pivotHarness() {
       : undefined),
     hasUncommittedHeight: () => state.uncommitted,
     isSuspended: () => state.suspended,
+    pinBottom: () => state.pinBottom,
     requestFrame,
     cancelFrame,
     onContentMoved,
@@ -330,6 +336,64 @@ describe('createLayoutPivot', () => {
     expect(requestFrame).toHaveBeenCalledTimes(2)
   })
 
+  it('requests no frame and drops the record while pinBottom is true', () => {
+    const { state, layoutPivot, record, requestFrame } = pivotHarness()
+    record()
+    state.pinBottom = true
+
+    layoutPivot.scheduleRecord()
+
+    expect(requestFrame).toHaveBeenCalledOnce()
+    // The content moves inside the row while the bottom is held. A kept record would
+    // measure that move at the first read after follow mode.
+    state.inRowTop = 340
+    state.pinBottom = false
+    expect(layoutPivot.takeIntraRowShift('r1')).toBe(0)
+    layoutPivot.scheduleRecord()
+    expect(requestFrame).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancels a pending frame when pinBottom turns true', () => {
+    const { state, layoutPivot, requestFrame, cancelFrame, runFrames } = pivotHarness()
+    layoutPivot.scheduleRecord()
+    const handle = requestFrame.mock.results[0]?.value as number
+    state.pinBottom = true
+
+    layoutPivot.scheduleRecord()
+
+    expect(cancelFrame).toHaveBeenCalledWith(handle)
+    runFrames()
+    state.pinBottom = false
+    state.inRowTop = 340
+    expect(layoutPivot.takeIntraRowShift('r1')).toBe(0)
+  })
+
+  it('compares the first frame after pinBottom with no frame before it', () => {
+    const { state, layoutPivot, record, runFrames, requestFrame } = pivotHarness()
+    state.suspended = true
+    // The second suspended frame at 1000 sees the position of the first one, and records.
+    record()
+    runFrames()
+    expect(requestFrame).toHaveBeenCalledTimes(2)
+    state.pinBottom = true
+    layoutPivot.scheduleRecord()
+    state.pinBottom = false
+
+    // The scroller is at 1000 again while the scroll still counts as fast. The frames that
+    // ran before follow mode are no evidence that it stopped there, so the first frame
+    // records nothing and asks for one more frame.
+    layoutPivot.scheduleRecord()
+    runFrames()
+    expect(requestFrame).toHaveBeenCalledTimes(4)
+    state.inRowTop = 340
+    expect(layoutPivot.takeIntraRowShift('r1')).toBe(0)
+
+    // The next frame sees the same position, and records.
+    runFrames()
+    state.inRowTop = 360
+    expect(layoutPivot.takeIntraRowShift('r1')).toBe(20)
+  })
+
   it('records once when the frame runs inside requestFrame', () => {
     const { state, scroll, row } = pivotHarness()
     const layoutPivot = createLayoutPivot({
@@ -337,6 +401,7 @@ describe('createLayoutPivot', () => {
       pivotRow: () => ({ id: 'r1', element: row, top: state.rowTop }),
       hasUncommittedHeight: () => false,
       isSuspended: () => false,
+      pinBottom: () => false,
       requestFrame: (cb) => {
         cb()
         return 7
@@ -411,14 +476,14 @@ describe('createLayoutPivot', () => {
     expect(layoutPivot.takeIntraRowShift('r1')).toBe(0)
   })
 
-  it('reports an element that moved on screen without a scroll', () => {
+  it('reports an element that moved on screen without a scroll by the warning distance', () => {
     const { state, record, onContentMoved } = pivotHarness()
     state.rowClientTop = -200
     record()
-    state.inRowTop = 303
+    state.inRowTop = 300 + CONTENT_MOVED_WARN_PX
     record()
     expect(onContentMoved).toHaveBeenCalledOnce()
-    expect(onContentMoved).toHaveBeenCalledWith({ rowId: 'r1', movedPx: 3, scrollTop: 1000 })
+    expect(onContentMoved).toHaveBeenCalledWith({ rowId: 'r1', movedPx: CONTENT_MOVED_WARN_PX, scrollTop: 1000 })
   })
 
   it('reports nothing for a move that the layout made', () => {
@@ -431,11 +496,11 @@ describe('createLayoutPivot', () => {
     expect(onContentMoved).not.toHaveBeenCalled()
   })
 
-  it('reports nothing below 2px', () => {
+  it('reports nothing for a move below the warning distance', () => {
     const { state, record, onContentMoved } = pivotHarness()
     state.rowClientTop = -200
     record()
-    state.inRowTop = 301
+    state.inRowTop = 300 + CONTENT_MOVED_WARN_PX - 0.5
     record()
     expect(onContentMoved).not.toHaveBeenCalled()
   })
@@ -445,7 +510,25 @@ describe('createLayoutPivot', () => {
     state.rowClientTop = -200
     record()
     state.scrollTop += 5
-    state.inRowTop = 303
+    state.inRowTop = 300 + CONTENT_MOVED_WARN_PX
+    record()
+    expect(onContentMoved).not.toHaveBeenCalled()
+  })
+
+  // The scroll range is 10000 - 500, so the maximum `scrollTop` is 9500.
+  it.each([
+    ['above the maximum', 9500, 9520],
+    ['below 0', 0, -20],
+  ])('reports nothing for a rubber-band overscroll %s', (_name, edgeTop, overscrollTop) => {
+    const { state, record, onContentMoved } = pivotHarness()
+    state.scrollTop = edgeTop
+    state.rowTop = edgeTop - 200
+    state.rowClientTop = -200
+    record()
+    // WebKit moves the raw `scrollTop` outside the scroll range during a rubber-band
+    // overscroll. The content moves on screen with it, while the clamped position holds.
+    state.scrollTop = overscrollTop
+    state.rowClientTop -= overscrollTop - edgeTop
     record()
     expect(onContentMoved).not.toHaveBeenCalled()
   })
@@ -457,6 +540,16 @@ describe('createLayoutPivot', () => {
     layoutPivot.dispose()
     expect(cancelFrame).toHaveBeenCalledWith(handle)
     runFrames()
+    state.inRowTop = 340
+    expect(layoutPivot.takeIntraRowShift('r1')).toBe(0)
+  })
+
+  it('drops the record on dispose', () => {
+    const { state, layoutPivot, record } = pivotHarness()
+    record()
+
+    layoutPivot.dispose()
+
     state.inRowTop = 340
     expect(layoutPivot.takeIntraRowShift('r1')).toBe(0)
   })

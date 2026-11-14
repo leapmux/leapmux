@@ -1,6 +1,43 @@
-import { createSignal } from 'solid-js'
+import { createSignal, onCleanup } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { flush, untilTrue } from './async'
+import { flush, inRoot, untilTrue } from './async'
+
+describe('inRoot', () => {
+  it('resolves after the body and disposes the root', async () => {
+    const events: string[] = []
+
+    await inRoot(async () => {
+      onCleanup(() => events.push('disposed'))
+      await flush()
+      events.push('body done')
+    })
+
+    expect(events).toEqual(['body done', 'disposed'])
+  })
+
+  it('rejects with the error of the body and disposes the root', async () => {
+    const failure = new Error('assertion failed in the body')
+    let disposed = false
+
+    await expect(inRoot(async () => {
+      onCleanup(() => {
+        disposed = true
+      })
+      await flush()
+      throw failure
+    })).rejects.toBe(failure)
+
+    expect(disposed).toBe(true)
+  })
+
+  it('rejects with an Error that states a thrown value that is not an Error', async () => {
+    await expect(inRoot(async () => {
+      await flush()
+      // eslint-disable-next-line no-throw-literal -- the case under test is a non-Error throw
+      throw 'not an error'
+    })).rejects.toThrow(new Error('not an error'))
+  })
+})
 
 describe('untilTrue', () => {
   it('resolves at once when the condition already holds', async () => {

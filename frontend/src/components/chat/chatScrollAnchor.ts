@@ -37,39 +37,42 @@ export interface AnchorOffsetGeometry {
 }
 
 /**
- * The scroll anchor for a viewport whose top edge sits at `scrollTop`: the row at that
- * offset, the pixels from the row's top to the viewport top (clamped to the row body),
- * the row's height as the proportional basis, and how far into the gap below the row
- * the top sat (as a [0,1] fraction). Null for an empty list.
+ * The scroll anchor for a viewport whose top edge sits at the content coordinate
+ * `contentTop`: the offset from the top of the first row, the coordinate of
+ * `offsetOfIndex`. Under a layout shift a `scrollTop` is not one; the virtualizer
+ * converts it first (contentTopOf). The anchor holds the row at that offset, the pixels
+ * from the row's top to the viewport top (clamped to the row body), the row's height as
+ * the proportional basis, and how far into the gap below the row the top sat (as a [0,1]
+ * fraction). Null for an empty list.
  */
-export function anchorAtOffset(geo: AnchorOffsetGeometry, scrollTop: number): ScrollAnchor | null {
+export function anchorAtOffset(geo: AnchorOffsetGeometry, contentTop: number): ScrollAnchor | null {
   const n = geo.list.length
   if (n === 0)
     return null
-  let idx = geo.indexAtOffset(scrollTop)
+  let idx = geo.indexAtOffset(contentTop)
   // At a shared offset, prefer the first row. Zero-height rows can share
   // an offset with the next row. Anchoring to the first row keeps later growth
   // below the anchor, so that growth does not move the viewport.
   //
-  // Keep the selected row when scrollTop sits inside its body. A zero-height
+  // Keep the selected row when contentTop sits inside its body. A zero-height
   // row above it would lose that within-row offset during the round trip.
   const anchorOffset = geo.offsetOfIndex(idx)
-  if (scrollTop <= anchorOffset) {
+  if (contentTop <= anchorOffset) {
     while (idx > 0 && geo.offsetOfIndex(idx - 1) === anchorOffset)
       idx--
   }
-  // Floor at 0 for a transient NEGATIVE scrollTop -- some browsers report one
-  // during elastic/rubber-band overscroll at the top, which indexAtOffset floors
-  // to row 0, yielding a negative `within` that would store a negative offset and
+  // Floor at 0 for a transient NEGATIVE contentTop -- some browsers report a negative
+  // scrollTop during elastic/rubber-band overscroll at the top, which indexAtOffset
+  // floors to row 0, yielding a negative `within` that would store a negative offset and
   // restore above the top.
-  const within = Math.max(0, scrollTop - geo.offsetOfIndex(idx))
+  const within = Math.max(0, contentTop - geo.offsetOfIndex(idx))
   // Clamp `within` to the row's height (measured or estimated) and record that
   // height as the basis. Clamping restricts the stored fraction (within / basisHeight)
   // to [0, 1], so scrollTopForAnchor's proportional resolve can never overshoot the
   // row body.
   const basisHeight = geo.heightOfIndex(idx)
   const offsetWithinRow = Math.min(within, basisHeight)
-  // When scrollTop landed PAST the row body, it sat in the inter-row gap below the
+  // When contentTop landed PAST the row body, it sat in the inter-row gap below the
   // row. Record how far into the gap as a fraction so the restore can reproduce a
   // viewport parked mid-gap (instead of snapping to the row bottom), re-applied
   // against the CURRENT gap so it stays gap-size-independent. 0 within the body.
@@ -92,11 +95,12 @@ export function anchorAtOffset(geo: AnchorOffsetGeometry, scrollTop: number): Sc
 }
 
 /**
- * Resolve an anchor back to a scrollTop, or null when its row id is no longer in the
- * list. offsetWithinRow is resolved PROPORTIONALLY against the row's CURRENT height so
- * a height change between capture and resolve scales the offset with the row instead of
- * truncating (yanking up) or overshooting it; the in-gap fraction is re-added against
- * the current gap.
+ * Resolve an anchor back to a content coordinate (the coordinate of `offsetOfIndex`, which
+ * the virtualizer converts to a `scrollTop` under a layout shift), or null when its row id
+ * is no longer in the list. offsetWithinRow is resolved PROPORTIONALLY against the row's
+ * CURRENT height so a height change between capture and resolve scales the offset with
+ * the row instead of truncating (yanking up) or overshooting it; the in-gap fraction is
+ * re-added against the current gap.
  */
 export function resolveAnchorScrollTop(geo: AnchorOffsetGeometry, anchor: ScrollAnchor): number | null {
   const idx = geo.indexOfId(anchor.id)
@@ -125,7 +129,7 @@ export function resolveAnchorScrollTop(geo: AnchorOffsetGeometry, anchor: Scroll
  * Index of the row whose sequence is nearest `target`, or -1 when no row has a sequence.
  * This is the single home for the "nearest surviving row by sequence"
  * scan shared by the trim-restore recovery ({@link resolveNearestAnchorScrollTop}) and the
- * scroll rail's out-of-window seek landing (useChatScroll.landOnSeq), so the two can't
+ * scroll rail's out-of-window seek landing (landOnSeq in chatSeek), so the two can't
  * drift on the skip rule or the tie-break (strict `<` keeps the first/oldest on a tie).
  * Linear over a list with a size limit; callers run it only on a rare restore/seek.
  */
@@ -149,10 +153,11 @@ export function nearestServerRowIndexBySeq(rows: readonly { seq?: bigint }[], ta
 }
 
 /**
- * Resolve an anchor to a scrollTop, recovering when its row was TRIMMED away (id gone)
- * by landing on the NEAREST surviving row by seq. Returns the exact scrollTopForAnchor
- * when the row still resolves; otherwise, if the anchor carries a seq and the list has a
- * row, the offset of the surviving row whose sequence is closest to the anchor.
+ * Resolve an anchor to a content coordinate, as resolveAnchorScrollTop does, recovering
+ * when its row was TRIMMED away (id gone) by landing on the NEAREST surviving row by seq.
+ * Returns the exact resolveAnchorScrollTop when the row still resolves; otherwise, if the
+ * anchor carries a seq and the list has a row, the offset of the surviving row whose
+ * sequence is closest to the anchor.
  * Returns null when the row is gone and no sequence is available.
  */
 export function resolveNearestAnchorScrollTop(geo: AnchorOffsetGeometry, anchor: ScrollAnchor): number | null {

@@ -155,6 +155,11 @@ export const messageListContent = style({
   gap: MESSAGE_LIST_ROW_GAP,
 })
 
+// ChatView reads the top padding and the row gap of this list as the inset of the virtual
+// spacer: the distance from scroll coordinate 0 to the top of the spacer (see
+// readSpacerInset in ./ChatView.tsx). The sum holds while one row gap separates the flex
+// spacer from the block that starts with the virtual spacer. An element added above the
+// virtual spacer must join that sum.
 export const messageList = style({
   'flex': 1,
   'overflowX': 'hidden',
