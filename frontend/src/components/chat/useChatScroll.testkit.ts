@@ -45,8 +45,8 @@ export function virtualizerNoOps(): Omit<
 > {
   return {
     setFastScrollActive: () => {},
-    // A stub has no estimated height: every row counts as measured.
-    hasMeasuredHeight: () => true,
+    // A stub has no height that the reader did not see: every row shows its height.
+    showsHeight: () => true,
     layoutShift: () => 0,
     rebase: () => 0,
     contentTopOf: scrollTop => scrollTop,
@@ -293,10 +293,18 @@ export interface ShiftVirtualizerDeps {
   pinBottom: () => boolean
   /**
    * The indexes of the rows whose height is an estimate, as a row that has not measured yet.
-   * `hasMeasuredHeight` reports such a row as not measured, and a change of such a row
-   * measures it. Default: none, every row is measured.
+   * `showsHeight` reports such a row as not shown, and a change of such a row measures it.
+   * Default: none, every row is measured.
    */
   estimatedRows?: readonly number[]
+  /**
+   * The indexes of the rows with a measured height that the reader did not see, as a row
+   * that a hidden copy measured and whose mounted copy no read measured yet. `showsHeight`
+   * reports such a row as not shown. A change of such a row is the first read of its copy:
+   * the shift rule holds its bottom edge (`sawHeight` false), and the row then shows its
+   * height. Default: none, the reader saw each measured height.
+   */
+  unseenRows?: readonly number[]
 }
 
 /**
@@ -308,8 +316,10 @@ export interface ShiftVirtualizerDeps {
  *
  * Each change function computes the next shift as the computation of the real layout shift
  * does: nextLayoutShift over a snapshot of the rows before and after the change, with every
- * row measured except `deps.estimatedRows` (a change of such a row measures it), no move
- * inside a row (`intraRowShift` 0), and `deps.pinBottom()` read before
+ * row measured except `deps.estimatedRows` (a change of such a row measures it), each
+ * measured height one that the reader saw except those of `deps.unseenRows` (a change of
+ * such a row is the first read of its copy), no move inside a row (`intraRowShift` 0), and
+ * `deps.pinBottom()` read before
  * the change reaches the element. For a hidden `div`, the shift becomes 0. Then the
  * `scrollHeight` of `div` changes by the change of the spacer height, `max(0, total +
  * shift)`, as the style binding of ChatView writes it, and the browser clamps `scrollTop`
@@ -335,6 +345,8 @@ export function makeShiftVirtualizer(heights: number[], div: FakeScrollDiv, deps
   const [geometryVersion, setGeometryVersion] = createSignal(0)
   // The rows whose height is still an estimate.
   const estimated = new Set(deps.estimatedRows ?? [])
+  // The rows whose measured height the reader did not see yet.
+  const unseen = new Set(deps.unseenRows ?? [])
   // The snapshot that the current shift applies to.
   let shiftedSnapshot = layoutSnapshotOf(rowAnchorGeometry(heights, 'r'), estimated)
   let rebases = 0
@@ -353,11 +365,11 @@ export function makeShiftVirtualizer(heights: number[], div: FakeScrollDiv, deps
   const contentTopForAnchor = (anchor: ScrollAnchor): number | null => resolveAnchorScrollTop(geometry(), anchor)
   const virt: ChatScrollVirtualizer = {
     ...virtualizerNoOps(),
-    // As the real virtualizer: false for a row with an estimated height and for an id that
-    // is not in the list.
-    hasMeasuredHeight: (id: string) => {
+    // As the real virtualizer: false for a row with an estimated height, for a row whose
+    // measured height the reader did not see, and for an id that is not in the list.
+    showsHeight: (id: string) => {
       const index = geometry().indexOfId(id)
-      return index >= 0 && !estimated.has(index)
+      return index >= 0 && !estimated.has(index) && !unseen.has(index)
     },
     totalHeight: total,
     geometryVersion: () => geometryVersion(),
@@ -390,13 +402,18 @@ export function makeShiftVirtualizer(heights: number[], div: FakeScrollDiv, deps
   const changeRows = (changes: readonly RowChange[]) => {
     const previousRows = untrack(rows)
     const nextRows = [...previousRows]
+    // The rows whose change is the first read of their copy.
+    const firstReads = new Set<number>()
     for (const [index, px] of changes) {
       const i = index(nextRows)
       nextRows[i] = (nextRows[i] ?? 0) + px
       // The change is the measure of a row with an estimated height.
       estimated.delete(i)
+      if (unseen.delete(i))
+        firstReads.add(i)
     }
-    const next = layoutSnapshotOf(rowAnchorGeometry(nextRows, 'r'), estimated)
+    const nextGeometry = rowAnchorGeometry(nextRows, 'r')
+    const next = layoutSnapshotOf(nextGeometry, estimated)
     const previousShift = untrack(shift)
     const nextShift = div.el.clientHeight === 0
       ? 0
@@ -407,6 +424,7 @@ export function makeShiftVirtualizer(heights: number[], div: FakeScrollDiv, deps
           scrollTop: readLogicalScrollTop(div.el),
           pinBottom: deps.pinBottom(),
           intraRowShift: () => 0,
+          sawHeight: id => !firstReads.has(nextGeometry.indexOfId(id)),
         })
     shiftedSnapshot = next
     const spacerChange = spacerHeightFor(totalRowHeight(nextRows), nextShift)
@@ -578,6 +596,8 @@ export interface ScrollHarnessOptions {
   scrollHeight?: number
   /** The indexes of the rows whose height is an estimate (see ShiftVirtualizerDeps). */
   estimatedRows?: readonly number[]
+  /** The indexes of the rows with a measured height that the reader did not see (see ShiftVirtualizerDeps). */
+  unseenRows?: readonly number[]
   messages?: AgentChatMessage[]
   /** More options of the hook: callbacks and accessors that a test asserts on. */
   hookOptions?: Partial<UseChatScrollOptions>
@@ -622,6 +642,9 @@ export function mountScrollHarness(opts: ScrollHarnessOptions = {}) {
     ...(opts.estimatedRows === undefined
       ? {}
       : { estimatedRows: opts.estimatedRows }),
+    ...(opts.unseenRows === undefined
+      ? {}
+      : { unseenRows: opts.unseenRows }),
   })
   const setFastScrollActive = vi.fn()
   const updateViewport = vi.fn()

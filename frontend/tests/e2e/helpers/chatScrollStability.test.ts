@@ -1,13 +1,20 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { createManualFrames } from '~/test-support/manualFrames'
 import {
+  contentBoxWidthIn,
   markedParagraphs,
   paragraphMarker,
+  premeasureCommitIn,
+  rowBoxIn,
   rowDistanceIn,
+  rowHeightsIn,
+  rowSeqWithTextIn,
+  startPremeasureRecordIn,
   startRowWatchIn,
   stopRowWatchIn,
   topParagraphIn,
   topRowIn,
+  widthSensitiveParagraphs,
 } from './chatScrollStability'
 
 /** Give `element` a box whose top is `top` and whose height is `height`. */
@@ -83,6 +90,99 @@ describe('rowDistanceIn', () => {
   })
 })
 
+describe('rowBoxIn', () => {
+  it('returns the distance from the container top to the top of the row, and the height of the row', () => {
+    const container = containerWith([
+      { seq: '7', top: 60.5, height: 4000 },
+    ])
+
+    // The row starts 39.5px above the container top at 100.
+    expect(rowBoxIn(container, '7')).toEqual({ distance: -39.5, height: 4000 })
+  })
+
+  it('returns null for a row that is not mounted', () => {
+    expect(rowBoxIn(containerWith([
+      { seq: '7', top: 120, height: 40 },
+    ]), '8')).toBeNull()
+  })
+})
+
+describe('rowHeightsIn', () => {
+  it('returns the height of each mounted row by its sequence number', () => {
+    const container = containerWith([
+      { seq: '7', top: 60, height: 152.5 },
+      { seq: '8', top: 232.5, height: 4000 },
+    ])
+
+    expect(rowHeightsIn(container)).toEqual({ 7: 152.5, 8: 4000 })
+  })
+
+  it('returns no height for a container with no row', () => {
+    expect(rowHeightsIn(containerWith([]))).toEqual({})
+  })
+})
+
+describe('rowSeqWithTextIn', () => {
+  /** A container with one row for each of `rows`, each with its text. */
+  function containerWithTexts(rows: { seq: string, text: string }[]): HTMLElement {
+    const container = containerWith(rows.map(({ seq }, index) => ({ seq, top: 100 + index * 50, height: 40 })))
+    for (const { seq, text } of rows)
+      container.querySelector(`[data-seq="${seq}"]`)!.textContent = text
+    return container
+  }
+
+  it('returns the sequence number of the row whose text contains the text', () => {
+    const container = containerWithTexts([
+      { seq: '4', text: 'Turn 1.' },
+      { seq: '5', text: 'Tall0: the first paragraph. Tall1: the second one.' },
+    ])
+
+    expect(rowSeqWithTextIn(container, 'Tall0:')).toBe('5')
+  })
+
+  it('returns the first row in document order when two rows contain the text', () => {
+    const container = containerWithTexts([
+      { seq: '9', text: 'Answer 12.' },
+      { seq: '3', text: 'Answer 12. Again.' },
+    ])
+
+    expect(rowSeqWithTextIn(container, 'Answer 12.')).toBe('9')
+  })
+
+  it('returns null when no mounted row contains the text', () => {
+    const container = containerWithTexts([
+      { seq: '4', text: 'Turn 11.' },
+    ])
+
+    expect(rowSeqWithTextIn(container, 'Turn 1.')).toBeNull()
+    expect(rowSeqWithTextIn(containerWith([]), 'Turn 1.')).toBeNull()
+  })
+})
+
+describe('contentBoxWidthIn', () => {
+  /** A container with the given client width and paddings. jsdom computes no layout, so the test sets the width. */
+  function containerOfWidth(clientWidth: number, padding: { left: string, right: string }): HTMLElement {
+    const container = document.createElement('div')
+    container.style.paddingLeft = padding.left
+    container.style.paddingRight = padding.right
+    Object.defineProperty(container, 'clientWidth', { configurable: true, value: clientWidth })
+    document.body.append(container)
+    return container
+  }
+
+  it('subtracts the left and the right padding from the client width', () => {
+    expect(contentBoxWidthIn(containerOfWidth(388, { left: '8px', right: '8px' }))).toBe(372)
+  })
+
+  it('keeps a fraction of a pixel, and takes each padding on its own', () => {
+    expect(contentBoxWidthIn(containerOfWidth(400, { left: '4.5px', right: '16px' }))).toBe(379.5)
+  })
+
+  it('returns the client width of a container with no padding', () => {
+    expect(contentBoxWidthIn(containerOfWidth(388, { left: '0px', right: '0px' }))).toBe(388)
+  })
+})
+
 describe('topParagraphIn', () => {
   /** A row of `seq` that holds one paragraph for each of `paragraphs`, each with its text and its top. */
   function rowWithParagraphs(seq: string, rowTop: number, paragraphs: { text: string, top: number }[]): HTMLElement {
@@ -132,6 +232,157 @@ describe('markedParagraphs', () => {
 
   it('returns an empty text for no paragraph', () => {
     expect(markedParagraphs('A', 0, 'text')).toBe('')
+  })
+})
+
+describe('widthSensitiveParagraphs', () => {
+  it('marks each paragraph, and separates two paragraphs with a blank line', () => {
+    const paragraphs = widthSensitiveParagraphs('Tall', 4).split('\n\n')
+
+    expect(paragraphs).toHaveLength(4)
+    paragraphs.forEach((paragraph, index) => {
+      expect(paragraph.startsWith(`Tall${index}: `)).toBe(true)
+    })
+    expect(paragraphMarker('Tall').exec(paragraphs[3]!)?.[0]).toBe('Tall3:')
+  })
+
+  it('gives each paragraph one unbroken text of letters and digits', () => {
+    for (const paragraph of widthSensitiveParagraphs('Tall', 150).split('\n\n'))
+      expect(paragraph).toMatch(/^Tall\d+: [a-z0-9]+$/i)
+  })
+
+  it('gives the texts many different lengths, from 200 to 699 characters', () => {
+    const lengths = widthSensitiveParagraphs('Tall', 150).split('\n\n').map(paragraph => paragraph.split(' ')[1]!.length)
+
+    expect(Math.min(...lengths)).toBeGreaterThanOrEqual(200)
+    expect(Math.max(...lengths)).toBeLessThanOrEqual(699)
+    expect(lengths[0]).toBe(200)
+    expect(lengths[1]).toBe(237)
+    expect(new Set(lengths).size).toBe(150)
+  })
+
+  it('gives each text its own characters, so two texts break their lines at different places', () => {
+    const texts = widthSensitiveParagraphs('Tall', 150).split('\n\n').map(paragraph => paragraph.split(' ')[1]!)
+
+    expect(new Set(texts.map(text => text.slice(0, 40))).size).toBeGreaterThan(50)
+    // Each text mixes narrow and wide glyphs: no text repeats one character.
+    for (const text of texts)
+      expect(new Set(text).size).toBeGreaterThan(20)
+  })
+
+  it('returns the same text for the same arguments, and an empty text for no paragraph', () => {
+    expect(widthSensitiveParagraphs('Tall', 7)).toBe(widthSensitiveParagraphs('Tall', 7))
+    expect(widthSensitiveParagraphs('Tall', 0)).toBe('')
+  })
+})
+
+describe('startPremeasureRecordIn', () => {
+  const KEY = 'testPremeasureCommits'
+
+  /** Start a record under KEY, and remove its state after the test. Its listener stays, and writes to no state then. */
+  function startRecord(): void {
+    startPremeasureRecordIn(KEY)
+    onTestFinished(() => {
+      Reflect.deleteProperty(window, KEY)
+    })
+  }
+
+  /** Dispatch the event that the app sends for one step of a hidden premeasure. */
+  function dispatchPremeasure(detail: unknown): void {
+    window.dispatchEvent(new CustomEvent('leapmux:chat-premeasure', { detail }))
+  }
+
+  it('records the height and the height key of each accepted commit by the sequence number of its row', () => {
+    startRecord()
+    dispatchPremeasure({
+      phase: 'commit',
+      accepted: true,
+      seq: '12',
+      height: 4321.5,
+      heightKey: 'k|376',
+    })
+    dispatchPremeasure({
+      phase: 'commit',
+      accepted: true,
+      seq: '13',
+      height: 0,
+      heightKey: '',
+    })
+
+    expect(premeasureCommitIn({ key: KEY, seq: '12' })).toEqual({ height: 4321.5, heightKey: 'k|376' })
+    expect(premeasureCommitIn({ key: KEY, seq: '13' })).toEqual({ height: 0, heightKey: '' })
+    expect(premeasureCommitIn({ key: KEY, seq: '14' })).toBeNull()
+  })
+
+  it('keeps the last accepted commit of one row', () => {
+    startRecord()
+    dispatchPremeasure({
+      phase: 'commit',
+      accepted: true,
+      seq: '12',
+      height: 100,
+      heightKey: 'k|424',
+    })
+    dispatchPremeasure({
+      phase: 'commit',
+      accepted: true,
+      seq: '12',
+      height: 180,
+      heightKey: 'k|376',
+    })
+
+    expect(premeasureCommitIn({ key: KEY, seq: '12' })).toEqual({ height: 180, heightKey: 'k|376' })
+  })
+
+  it('ignores a read, a commit that the virtualizer refused, and a detail of another shape', () => {
+    startRecord()
+    dispatchPremeasure({
+      phase: 'read',
+      accepted: true,
+      seq: '1',
+      height: 100,
+      heightKey: 'k',
+    })
+    dispatchPremeasure({
+      phase: 'commit',
+      accepted: false,
+      seq: '2',
+      height: 100,
+      heightKey: 'k',
+    })
+    dispatchPremeasure({
+      phase: 'commit',
+      accepted: true,
+      seq: null,
+      height: 100,
+      heightKey: 'k',
+    })
+    dispatchPremeasure({
+      phase: 'commit',
+      accepted: true,
+      seq: '4',
+      height: 'Infinity',
+      heightKey: 'k',
+    })
+    dispatchPremeasure({
+      phase: 'commit',
+      accepted: true,
+      seq: '5',
+      height: 100,
+      heightKey: null,
+    })
+    dispatchPremeasure(null)
+    dispatchPremeasure('commit')
+    window.dispatchEvent(new Event('leapmux:chat-premeasure'))
+
+    for (const seq of ['1', '2', '4', '5'])
+      expect(premeasureCommitIn({ key: KEY, seq })).toBeNull()
+  })
+})
+
+describe('premeasureCommitIn', () => {
+  it('returns null when no record runs under the key', () => {
+    expect(premeasureCommitIn({ key: 'noPremeasureRecord', seq: '1' })).toBeNull()
   })
 })
 

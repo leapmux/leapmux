@@ -419,6 +419,44 @@ describe('useChatScroll restore onto a row with an estimated height', () => {
     h.dispose()
   })
 
+  it('lands again on the anchor when its row corrects a measured height that the reader did not see', async () => {
+    // Row 0 has a measured height of 1000px that no read of its mounted copy confirmed: a
+    // hidden copy measured it, or a fling skeleton stands in for the row. Its first read
+    // gives 600px. The rule holds the bottom edge of the row, as for an estimate, and the
+    // hold places the view on the anchor again, halfway into the row: at 300.
+    const h = mountScrollHarness({
+      heights,
+      unseenRows: [0],
+    })
+    await h.anchoredAt(500)
+    await h.hideThenShow()
+    expect(h.div.getScrollTop()).toBe(500)
+
+    h.changeAbove(-400)
+
+    expect(h.div.getScrollTop()).toBe(300)
+    expect(h.virt.layoutShift()).toBe(0)
+    h.dispose()
+  })
+
+  it('keeps the hold while another row changes, and the row that the reader did not see keeps its height', async () => {
+    const h = mountScrollHarness({
+      heights,
+      unseenRows: [0],
+    })
+    await h.anchoredAt(500)
+    await h.hideThenShow()
+
+    // The last row grows below the reader. Row 0 has no read yet, so the hold stays, and
+    // its first read then lands the view on the anchor.
+    h.changeBelow(50)
+    expect(h.div.getScrollTop()).toBe(500)
+    h.changeAbove(-400)
+
+    expect(h.div.getScrollTop()).toBe(300)
+    h.dispose()
+  })
+
   it('keeps the hold while its row has only an estimated height', async () => {
     const h = await restoredHalfwayIntoRow0()
     // The last row measures, and row 0 keeps its estimate.

@@ -49,8 +49,11 @@ type StoredRow = [id: string, digest: string, height: number]
  *    so every stored digest identifies a key format no code builds any more. The old
  *    payload is discarded on load, never retained as a pending digest a new key
  *    cannot match.
+ * 4: the hidden premeasure copy became as wide as the rows. Before, it was as wide as
+ *    the 8px step of that width, up to 4px wider or narrower, so a stored height that
+ *    it measured is wrong by each line that wrapped differently.
  */
-export const STORED_ROW_HEIGHTS_VERSION = 3
+export const STORED_ROW_HEIGHTS_VERSION = 4
 
 interface StoredRowHeights {
   v: typeof STORED_ROW_HEIGHTS_VERSION

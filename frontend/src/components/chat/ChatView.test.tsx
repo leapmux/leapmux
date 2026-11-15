@@ -848,6 +848,49 @@ describe('ChatView', () => {
     expect(view.getByTestId('compaction-indicator')).toHaveTextContent('Compacting context... (auto)')
   })
 
+  it('lays out the hidden premeasure copy at the exact width of the list, and keys the heights by its 8px step', async () => {
+    // A hidden copy 4px wider than the row wraps its text differently, and its height is
+    // then wrong by each line that wraps differently: thousands of pixels for a long row.
+    const view = render(() => (
+      <PreferencesProvider>
+        <ChatView messages={[
+          makeMessage('assistant', 'An answer', 'msg-1'),
+        ]}
+        />
+      </PreferencesProvider>
+    ))
+    await settleWorkerReplies()
+    const premeasureRoot = view.container.querySelector('[data-chat-premeasure-root]') as HTMLElement | null
+    expect(premeasureRoot).not.toBeNull()
+    const virt = virtualizerState.realInstances.at(-1)!
+    const storedKey = () => virt.snapshotHeights().find(height => height.id === 'msg-1')?.heightKey
+
+    // 372 is 4px below its 8px step, 376: the largest distance between the two.
+    await reportChatViewportSize(view, 372, 733)
+    expect(premeasureRoot!.style.width).toBe('372px')
+    const row = view.container.querySelector('[data-seq="1"]') as HTMLElement | null
+    expect(row).not.toBeNull()
+    vi.spyOn(row!, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 372, 120))
+    await triggerResizeObserverFor(row!)
+    const keyAt372 = storedKey()
+    expect(keyAt372).toBeDefined()
+
+    // A width in the same step keeps the key of each row, so no cached height is dropped.
+    await reportChatViewportSize(view, 379.5, 733)
+    expect(premeasureRoot!.style.width).toBe('379.5px')
+    expect(storedKey()).toBe(keyAt372)
+
+    // 380 is in the next step, 384. The key of the row changes, and the row confirms its
+    // height under the new key at its next read.
+    await reportChatViewportSize(view, 380, 733)
+    expect(premeasureRoot!.style.width).toBe('380px')
+    await triggerResizeObserverFor(row!)
+    const keyAt380 = storedKey()
+    expect(keyAt380).toBeDefined()
+    expect(keyAt380).not.toBe(keyAt372)
+    view.unmount()
+  })
+
   it('passes the top padding and the row gap of the list to the virtualizer as the inset of its spacer', async () => {
     const inset = stubListInsetStyle({ paddingTop: '16px', rowGap: '12px' })
     try {

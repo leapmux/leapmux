@@ -390,7 +390,11 @@ export interface UseChatVirtualizerResult extends LayoutShiftSurface {
   computeRange: (scrollTop: number, clientHeight: number, lead?: ViewportLead) => ChatVirtualizerRange
   /** Recompute and commit the visible slice for a scroll coordinate (see computeRange for `lead`). */
   updateViewport: (scrollTop: number, clientHeight: number, lead?: ViewportLead) => void
-  /** Record a measured row height. Returns true if the offset map changed. */
+  /**
+   * Record a height that a read of the mounted row gave. Returns true if the offset map
+   * changed. The first read since the row mounted corrects a height that the reader did not
+   * see, so the layout shift then holds the bottom edge of the row (see nextLayoutShift).
+   */
   measure: (id: string, height: number) => boolean
   /**
    * Prime the measured-height cache from an offscreen DOM pre-measurement. This
@@ -418,6 +422,16 @@ export interface UseChatVirtualizerResult extends LayoutShiftSurface {
    * key until a read of its element under the new key (see pruneStaleKeyedHeights).
    */
   hasMeasuredHeight: (id: string) => boolean
+  /**
+   * Whether the mounted row `id` shows the height that the offset map holds for it: a read
+   * of the row gave or confirmed that height since the row mounted. False for a row that is
+   * not mounted, and for a mounted row that no read measured yet. The height of such a row
+   * is a guess: an estimate, or a measured height from a hidden copy, from storage, or from
+   * an earlier mount, under a fling skeleton or a copy that waits for its content. The
+   * first read of the row can change it, and the layout shift then holds the bottom edge
+   * of the row (see nextLayoutShift). Not reactive: read it when the answer is needed.
+   */
+  showsHeight: (id: string) => boolean
   /**
    * Reactive "fast user scroll in flight" flag — a momentum fling OR a fast
    * scrollbar/touch drag. Set by the scroll hook; rows entering the window
@@ -703,6 +717,20 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // every reactive getter recompute. Plain caches stay non-reactive for speed.
   const [geomVersion, setGeomVersion] = createSignal(0)
 
+  // The number of reads of each row that reached `measure` since the row mounted. The
+  // first read of a mounted row replaces a height that the reader did not see on that
+  // row: an estimate, a height from a hidden copy or from storage, or the height of an
+  // earlier mount, under a fling skeleton or a copy that waited for its content. Each
+  // later read changes a height that the reader saw (see sawHeight). A row that stays
+  // mounted while a new element takes it over keeps its count: the reader saw it.
+  const readsSinceMount = new Map<string, number>()
+  // See UseChatVirtualizerResult.showsHeight.
+  const showsHeight = (id: string): boolean => (readsSinceMount.get(id) ?? 0) > 0
+  // Whether the reader saw the row at the height that the offset map held for it before
+  // the last read of the row: an earlier read gave or confirmed that height. The layout
+  // shift asks after a read changed the height (see LayoutShiftInput.sawHeight).
+  const sawHeight = (id: string): boolean => (readsSinceMount.get(id) ?? 0) > 1
+
   // A provisional height describes only the element that still shows it. When the
   // row's last element unmounts, the row is unmeasured under its key again.
   const dropProvisionalHeight = (id: string): void => {
@@ -712,6 +740,11 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     heightCache.delete(id)
     removeFallbackContribution(cached)
     setGeomVersion(v => v + 1)
+  }
+  // The last element of the row detached: the next mount shows the reader no height yet.
+  const noteRowUnmounted = (id: string): void => {
+    readsSinceMount.delete(id)
+    dropProvisionalHeight(id)
   }
 
   // The gap between row i and i+1 is tightened (small) whenever the LOWER row
@@ -1123,8 +1156,11 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       setGeomVersion(v => v + 1)
     return result === 'moved'
   }
-  const measure = (id: string, height: number): boolean =>
-    commitMeasuredHeight(id, height, currentHeightKey(id), 'visible')
+  const measure = (id: string, height: number): boolean => {
+    // Count the read before its commit: the layout shift of the commit asks sawHeight.
+    readsSinceMount.set(id, (readsSinceMount.get(id) ?? 0) + 1)
+    return commitMeasuredHeight(id, height, currentHeightKey(id), 'visible')
+  }
   const primeHeight = (id: string, height: number, heightKey?: string): boolean => {
     // Once a visible row has committed a measurement, the live DOM is the
     // authoritative geometry. A hidden premeasure queued before mount can finish
@@ -1182,7 +1218,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   const measurer = createRowMeasurer({
     measure,
     mountedIds,
-    onRowUnmounted: dropProvisionalHeight,
+    onRowUnmounted: noteRowUnmounted,
     currentMeasurementKey: currentHeightKey,
   })
   const { attachRow, detachRow } = measurer
@@ -1206,6 +1242,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     pinBottom: () => opts.pinBottom?.() ?? false,
     isSuspended: fastScrollActive,
     rows: measurer,
+    sawHeight,
     lastMeasurement: () => lastMeasurement,
   })
   const { contentTopOf, placementScrollTopOf } = layoutShiftSurface
@@ -1280,6 +1317,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     primeHeights,
     snapshotHeights,
     hasMeasuredHeight,
+    showsHeight,
     fastScrollActive,
     setFastScrollActive,
     attachRow,

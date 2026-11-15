@@ -39,7 +39,7 @@ import { ChatScrollRail } from './ChatScrollRail'
 import { rowStartSeqs } from './chatScrollRailGeometry'
 import { createDelayedSet, createFlingSkeletonRegistry, createLingerSet } from './chatSkeletonCrossfade'
 import * as styles from './ChatView.css'
-import { computeOverscanPx, createViewportSizeObserver, measureSpaceToken, PRE_MEASURE_WIDTH_PX } from './chatViewportGeometry'
+import { bucketWidth, computeOverscanPx, createViewportSizeObserver, measureSpaceToken, PRE_MEASURE_WIDTH_PX } from './chatViewportGeometry'
 import { MessageBubble } from './MessageBubble'
 import { MessageContextMenuHostProvider } from './MessageContextMenuHost'
 import { createMessageRenderCacheStore } from './messageRenderCache'
@@ -355,9 +355,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     setGapLargePx(measureSpaceToken('--space-5', 20))
   })
 
-  // Inner content width of the message list. One signal for all rows, bucketed
-  // by the viewport observer so scrollbar/sub-pixel jitter doesn't storm the
-  // measured-height cache keys.
+  // Inner content width of the message list: the width of each row, as the browser lays
+  // it out. One signal for all rows. `contentWidth` below is the same width in 8px steps.
   // We observe the SCROLL CONTAINER (messageList), NOT the inner content element.
   // "ResizeObserver loop completed with undelivered notifications" fires whenever
   // ANY observed element resizes DURING RO delivery -- the early-return in the
@@ -369,7 +368,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // grow), so it only resizes on a real viewport/sidebar change. Its content-box
   // width (padding excluded) IS the bubble wrap width. The write is still
   // deferred to a microtask as defense-in-depth.
-  const [contentWidth, setContentWidth] = createSignal(0)
+  const [rowWidth, setRowWidth] = createSignal(0)
+  // The row width in 8px steps (see bucketWidth): the layout epoch in the key of each
+  // cached height, so scrollbar and sub-pixel jitter does not storm those keys. It is 0
+  // until the list has a width. Nothing lays out at it: it lies up to 4px from the rows.
+  const contentWidth = createMemo(() => bucketWidth(rowWidth()))
   // Message-list viewport height (the scroll container's content-box height),
   // tracked from the same observer. Drives the viewport-relative overscan below.
   const [viewportHeight, setViewportHeight] = createSignal(0)
@@ -383,7 +386,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   }
   const viewportSizeObserver = createViewportSizeObserver({
     onWidth: (width) => {
-      setContentWidth(width)
+      setRowWidth(width)
       measureSpacerInset()
     },
     onHeight: (height) => {
@@ -394,6 +397,14 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   onCleanup(() => viewportSizeObserver.disconnect())
   const effectiveContentWidth = createMemo(() => contentWidth() > 0
     ? contentWidth()
+    : PRE_MEASURE_WIDTH_PX)
+  // The width of the hidden premeasure copy: the exact width of the rows, so the copy wraps
+  // its text as the row does and measures the height that the row takes. A copy as wide as
+  // the 8px step is up to 4px wider or narrower than the row, and its height is then wrong
+  // by each line that wraps differently: thousands of pixels for a long diff or report on a
+  // narrow screen. It takes the fallback together with the key above.
+  const premeasureWidth = createMemo(() => contentWidth() > 0
+    ? rowWidth()
     : PRE_MEASURE_WIDTH_PX)
 
   // DOM heights are width-sensitive, so the measured-height cache key folds the effective
@@ -1417,7 +1428,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         </div>
         <ChatHiddenPremeasure
           candidates={premeasureCandidates()}
-          contentWidthPx={effectiveContentWidth()}
+          contentWidthPx={premeasureWidth()}
           renderBubble={(entry, readiness) => renderMessageBubble(entry, readiness, true)}
           onMeasure={premeasure.onMeasure}
         />

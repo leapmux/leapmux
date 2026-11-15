@@ -25,6 +25,11 @@ export type PremeasureBubbleRenderer = (entry: ClassifiedEntry, readiness: Rende
 
 export interface ChatDomPremeasureProps {
   candidates: readonly ChatDomPremeasureCandidate[]
+  /**
+   * The width (px) of the hidden copies: the exact width of the rows of the list, not a
+   * rounded one. A copy measures the height that its row takes only when it wraps its text
+   * as the row does.
+   */
   contentWidthPx: number
   renderBubble: PremeasureBubbleRenderer
   onMeasure: (id: string, height: number, heightKey: string | undefined, measureDurationMs: number, settled: boolean) => boolean

@@ -10,7 +10,7 @@ import { createRafCoalescer } from '~/lib/rafCoalesce'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { firstMessageSeq, lastMessageSeq } from '~/stores/chatMessageOrder'
 import { createScrollBufferFiller } from './chatScrollBufferFiller'
-import { clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, FOLLOW_TOLERANCE_PX, inferScrollDirection, maxScrollTopOf, readLogicalScrollTop, warnSlowScrollPhase } from './chatScrollGeometry'
+import { clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, FOLLOW_TOLERANCE_PX, inferScrollDirection, readLogicalScrollTop, warnSlowScrollPhase } from './chatScrollGeometry'
 import { createHmrSettleWindow } from './chatScrollHmrSettleWindow'
 import { createScrollInput } from './chatScrollInput'
 import { createScrollInputActivity } from './chatScrollInputActivity'
@@ -42,7 +42,7 @@ export type ChatScrollVirtualizer = Pick<
   'totalHeight' | 'updateViewport' | 'anchorAt' | 'scrollTopForAnchor' | 'scrollTopNearAnchor' | 'geometryVersion'
   | 'anchorAtContent' | 'contentTopForAnchor'
   | 'layoutShift' | 'rebase' | 'contentTopOf' | 'scrollTopOf' | 'placementScrollTopOf' | 'setFastScrollActive'
-  | 'hasMeasuredHeight'
+  | 'showsHeight'
 >
 
 /**
@@ -93,8 +93,9 @@ export interface ScrollContext {
    * scrollTop to the new maximum with no move of the reader. A clamp that this call or a
    * position check recorded stays forced after the content grows again, so isFollowing()
    * does not read it as an unseen move of the reader. A clamp that neither recorded before
-   * the content grew past it again reads as such a move. Does nothing for an absent or
-   * hidden element.
+   * the content grew past it again reads as such a move. A clamp of a viewport that grew
+   * taller needs no record (see SeenScrollPosition.lowestMaxTop). Does nothing for an
+   * absent or hidden element.
    */
   noteScrollRange: () => void
   /** True while a scroll animation is running. */
@@ -135,8 +136,10 @@ export interface ScrollContext {
   placeAt: (resolve: () => number | null) => boolean | null
   /**
    * Place the view at `anchor` (see placeAt): at its row, or with `nearest`, at the nearest
-   * surviving row by seq when its row is gone. When the row has only an estimated height,
-   * the view lands again on the anchor once the row measures (see releaseAnchorHold).
+   * surviving row by seq when its row is gone. When the row does not show its height yet
+   * (the height is an estimate, or a measured height that no read of the mounted row
+   * confirmed), the view lands again on the anchor at the first read of the row (see
+   * releaseAnchorHold).
    */
   placeAtAnchor: (anchor: ScrollAnchor, nearest: boolean) => boolean | null
   /**
@@ -568,10 +571,10 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // The anchor of the reader's last position while follow mode does not apply. A resize
   // restores it after the pane was hidden (see createViewportRestore).
   let lastAnchor: ScrollAnchor | null = null
-  // An anchor that a placement resolved while its row had only an estimated height, until
-  // the row measures (see releaseAnchorHold). A move of the reader ends the hold, also a
-  // move whose `scroll` event did not arrive yet, and so does every other own write that
-  // places the view.
+  // An anchor that a placement resolved while its row did not show its height yet (see
+  // UseChatVirtualizerResult.showsHeight), until the first read of the row (see
+  // releaseAnchorHold). A move of the reader ends the hold, also a move whose `scroll`
+  // event did not arrive yet, and so does every other own write that places the view.
   let heldAnchor: ScrollAnchor | null = null
   let scrollAnimationId: number | null = null
   let savedScrollRecheckRaf = 0
@@ -735,9 +738,8 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     const el = visibleListEl()
     if (!el)
       return
-    const top = readLogicalScrollTop(el)
-    seen.note(top, el.scrollTop)
-    velocity.syncToProgrammatic(top)
+    seen.note(el)
+    velocity.syncToProgrammatic(seen.seenTop())
     checkPosition()
     bumpGeomTick(t => t + 1)
   }
@@ -897,20 +899,24 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     const placed = placeAt(() => nearest
       ? virt.scrollTopNearAnchor(anchor)
       : virt.scrollTopForAnchor(anchor))
-    if (placed !== null && untrack(() => virt.scrollTopForAnchor(anchor) !== null && !virt.hasMeasuredHeight(anchor.id)))
+    if (placed !== null && untrack(() => virt.scrollTopForAnchor(anchor) !== null && !virt.showsHeight(anchor.id)))
       heldAnchor = anchor
     return placed
   }
 
   /**
-   * Place the view on the held anchor once its row measures. The placement resolved the
-   * anchor against the estimated height of the row, and the first measure of that row keeps
-   * the bottom edge of the row in place (the shift rule holds the bottom edge of a row with
-   * an estimated height, see nextLayoutShift). Without this placement, the view would move
-   * inside the row by the difference between the estimate and the height. Runs in the
-   * geometry effect, in the flush of the measure, so the reader sees no move. The effect
-   * refreshes the rendered rows in the next frame, so this placement mounts no row inside
-   * the flush.
+   * Place the view on the held anchor once its row shows its height. The placement resolved
+   * the anchor against a height that the reader did not see: an estimate, or a measured
+   * height that no read of the mounted row confirmed. The first read of that row keeps the
+   * bottom edge of the row in place (the shift rule holds the bottom edge of a row that
+   * corrects such a height, see nextLayoutShift). Without this placement, the view would
+   * move inside the row by the difference between the two heights. Runs in the geometry
+   * effect, in the flush of the read, so the reader sees no move. The effect refreshes the
+   * rendered rows in the next frame, so this placement mounts no row inside the flush.
+   *
+   * A first read that confirms the height changes no geometry, so this function does not
+   * run for it. The hold then stays until the next geometry change, which places the view
+   * where it is, or until a move of the reader ends it.
    */
   function releaseAnchorHold(): void {
     const anchor = heldAnchor
@@ -924,7 +930,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       heldAnchor = null
       return
     }
-    if (untrack(() => virt.hasMeasuredHeight(anchor.id)))
+    if (untrack(() => virt.showsHeight(anchor.id)))
       writePlacement(el, () => untrack(() => virt.scrollTopForAnchor(anchor)))
   }
 
@@ -1132,9 +1138,10 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   /**
    * The scroll handler reads; it does not classify. An own write recorded its position
    * already, so its event has `moved === false`, with no marker and no time limit. A clamp
-   * of the browser to a scroll range that shrank also reads as no move (step 2). Every
-   * other event that moved the position is the reader's: it samples the speed, sets the
-   * direction, ends the buffer-fill pause, and can end follow mode.
+   * of the browser to a scroll range that shrank also reads as no move (step 2), whether
+   * the content shrank or the viewport grew taller. Every other event that moved the
+   * position is the reader's: it samples the speed, sets the direction, ends the
+   * buffer-fill pause, and can end follow mode.
    */
   const handleScroll = () => {
     // A hidden pane reads scrollTop as 0: its event moved nothing that the reader sees, and
@@ -1146,17 +1153,20 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     //    writes the translated position, so the reads below see it, and returns the
     //    position after the rebase: the move of the event counts from there.
     let baseline = staleNativeTranslator.translate() ?? seen.seenTop()
-    // 2. What moved since the last event or own write. A content shrink clamps scrollTop to
-    //    the new maximum with no move of the reader. Lower the baseline and the baseline of
-    //    the speed to the maximum first: a pure clamp then reads as no move, and the next
-    //    move of the reader is measured from the clamped position.
-    const maxTop = maxScrollTopOf(el)
-    if (baseline > maxTop) {
-      baseline = maxTop
-      velocity.syncToProgrammatic(maxTop)
+    // 2. What moved since the last event or own write. A scroll range that shrinks clamps
+    //    scrollTop to its new maximum with no move of the reader: the content shrank, or
+    //    the viewport grew taller, as when a send shrinks the composer. The content can
+    //    grow again before this event arrives, so the current maximum alone can hide the
+    //    clamp. Lower the baseline and the baseline of the speed to the lowest maximum that
+    //    the range can have had since the last note (see SeenScrollPosition.lowestMaxTop):
+    //    a pure clamp then reads as no move, and the next move of the reader is measured
+    //    from the clamped position.
+    const forcedTop = seen.lowestMaxTop(el)
+    if (baseline > forcedTop) {
+      baseline = forcedTop
+      velocity.syncToProgrammatic(forcedTop)
     }
     const st = readLogicalScrollTop(el)
-    const rawTop = el.scrollTop
     const moved = st !== baseline
     const rawMoved = seen.hasUnseenRawMove(el)
     // 3. End the request for the tail when the reader moves away from the bottom: up and
@@ -1205,7 +1215,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
         opts.onMomentumScroll?.()
     }
     // 6. The position of this event is the last seen one.
-    seen.note(st, rawTop)
+    seen.note(el)
     // 7. After step 6, so that it records the anchor of this position.
     checkPosition()
     // 8. Time the synchronous render cascade this scroll triggers: setting the range
@@ -1604,7 +1614,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       if (el) {
         // The first event then measures its move and its direction from the real position
         // of the element, not from 0.
-        seen.note(readLogicalScrollTop(el), el.scrollTop)
+        seen.note(el)
       }
       // The stall memos read messageListRef (a plain ref they can't track) and were
       // eagerly computed at hook-construction time while it was still undefined. Bump

@@ -1553,7 +1553,9 @@ describe('useChatVirtualizer layoutShift', () => {
   /**
    * Mount a virtualizer over 20 measured rows. The test continues outside the root, so a
    * signal write runs its effects at once, as a browser event does. `scrollElement` gives
-   * an accessor that can return no element, in place of the fixed `scroller`.
+   * an accessor that can return no element, in place of the fixed `scroller`. Each row of
+   * `premeasuredIds` takes its 100px from a hidden copy (`primeHeight`), so no read of a
+   * mounted copy gave it: the reader did not see the row at that height.
    */
   function mount(opts: {
     scroller?: HTMLElement
@@ -1561,6 +1563,7 @@ describe('useChatVirtualizer layoutShift', () => {
     pinBottom?: () => boolean
     rowCount?: number
     spacerInsetPx?: Accessor<number> | number
+    premeasuredIds?: readonly string[]
   } = {}) {
     let dispose!: () => void
     const mounted = createRoot((d) => {
@@ -1581,8 +1584,12 @@ describe('useChatVirtualizer layoutShift', () => {
           : { spacerInsetPx: opts.spacerInsetPx }),
       })
     })
-    for (let i = 1; i <= (opts.rowCount ?? 20); i++)
-      mounted.virt.measure(`m${i}`, 100)
+    for (let i = 1; i <= (opts.rowCount ?? 20); i++) {
+      if (opts.premeasuredIds?.includes(`m${i}`) === true)
+        mounted.virt.primeHeight(`m${i}`, 100)
+      else
+        mounted.virt.measure(`m${i}`, 100)
+    }
     return { ...mounted, dispose }
   }
 
@@ -1598,12 +1605,13 @@ describe('useChatVirtualizer layoutShift', () => {
    * Mount the row `id` as an element with one child, both with stubbed rectangles. The
    * scroll element is at client top 0, so the row starts at `rowScrollTop - scrollTop` in
    * client coordinates, where `rowScrollTop` is the scroll coordinate of the row top.
-   * `rowHeight` and `childTop` (from the row top) are live.
+   * `rowHeight` and `childTop` (from the row top) are live, and the attach reads
+   * `rowHeight`. `element` is the row element, for a detach.
    */
-  function mountRow(virt: ReturnType<typeof setup>['virt'], id: string, rowScrollTop: number, scrollTop: number) {
-    const geometry = { rowHeight: 100, childTop: 20 }
+  function mountRow(virt: ReturnType<typeof setup>['virt'], id: string, rowScrollTop: number, scrollTop: number, rowHeight = 100) {
     const rowTop = rowScrollTop - scrollTop
     const row = document.createElement('div')
+    const geometry = { rowHeight, childTop: 20, element: row }
     row.getBoundingClientRect = () => new DOMRect(0, rowTop, 400, geometry.rowHeight)
     const child = document.createElement('div')
     child.getBoundingClientRect = () => new DOMRect(0, rowTop + geometry.childTop, 400, 70)
@@ -1614,8 +1622,8 @@ describe('useChatVirtualizer layoutShift', () => {
   }
 
   /** Mount row 10, which starts at scroll coordinate 1200, as `mountRow` does. */
-  function mountRow10(virt: ReturnType<typeof setup>['virt'], scrollTop: number) {
-    return mountRow(virt, ROW_10, 1200, scrollTop)
+  function mountRow10(virt: ReturnType<typeof setup>['virt'], scrollTop: number, rowHeight = 100) {
+    return mountRow(virt, ROW_10, 1200, scrollTop, rowHeight)
   }
 
   afterEach(() => {
@@ -1765,6 +1773,253 @@ describe('useChatVirtualizer layoutShift', () => {
 
     expect(virt.layoutShift()).toBe(-30)
     dispose()
+  })
+
+  describe('a height that the reader did not see', () => {
+    // Row 10 spans the scroll coordinates 1200 to 1300, and row 11 (`m12`) starts at 1320.
+    // The viewport top is at 1250, inside row 10, as after an upward scroll into the row.
+    const ROW_11 = 'm12'
+
+    it('holds the bottom edge of a premeasured row when its mounted copy reads another height', () => {
+      const { scroller } = fakeLayout({ scrollTop: 1250 })
+      const { virt, dispose } = mount({
+        scroller,
+        premeasuredIds: [ROW_10],
+      })
+      const spacer = virt.spacerHeight()
+      expect(virt.hasMeasuredHeight(ROW_10)).toBe(true)
+
+      // The copy is 30px taller than the hidden copy measured. Its attach reads it.
+      mountRow10(virt, 1250, 130)
+
+      expect(virt.heightOfId(ROW_10)).toBe(130)
+      // The rows below row 10 keep their scroll coordinates: the row grows above the
+      // reader. The spacer keeps its height, so the scroll range does not move either.
+      expect(virt.offsetOfId(ROW_11)! + virt.layoutShift()).toBe(1320)
+      expect(virt.layoutShift()).toBe(-30)
+      expect(virt.spacerHeight()).toBe(spacer)
+      dispose()
+    })
+
+    it('holds the bottom edge when the first read of the copy gives a smaller height', () => {
+      const { scroller } = fakeLayout({ scrollTop: 1250 })
+      const { virt, dispose } = mount({
+        scroller,
+        premeasuredIds: [ROW_10],
+      })
+
+      mountRow10(virt, 1250, 70)
+
+      expect(virt.offsetOfId(ROW_11)! + virt.layoutShift()).toBe(1320)
+      expect(virt.layoutShift()).toBe(30)
+      dispose()
+    })
+
+    it('holds the distance from the top edge at a later read of the same copy', () => {
+      const { scroller } = fakeLayout({ scrollTop: 1250 })
+      const { virt, dispose } = mount({
+        scroller,
+        premeasuredIds: [ROW_10],
+      })
+      mountRow10(virt, 1250, 130)
+      expect(virt.layoutShift()).toBe(-30)
+
+      // The reader saw the row at 130px, so a later growth is a change of content that the
+      // reader saw. No frame recorded a pivot element, so the content at the viewport top
+      // keeps its distance from the row top, and the rows below move down.
+      virt.measure(ROW_10, 170)
+
+      expect(virt.layoutShift()).toBe(-30)
+      expect(virt.offsetOfId(ROW_11)! + virt.layoutShift()).toBe(1360)
+      dispose()
+    })
+
+    it('holds the distance from the top edge after a first read that confirmed the height', () => {
+      const { scroller } = fakeLayout({ scrollTop: 1250 })
+      const { virt, dispose } = mount({
+        scroller,
+        premeasuredIds: [ROW_10],
+      })
+      // The first read gives the premeasured height, so nothing moves, and the reader sees
+      // the row at 100px from then on.
+      mountRow10(virt, 1250, 100)
+      expect(virt.layoutShift()).toBe(0)
+
+      virt.measure(ROW_10, 140)
+
+      expect(virt.layoutShift()).toBe(0)
+      expect(virt.offsetOfId(ROW_11)! + virt.layoutShift()).toBe(1360)
+      dispose()
+    })
+
+    it('holds the bottom edge of a mounted row that a hidden copy measured before its first read', () => {
+      // The row mounts with an estimate and waits for its content, so no read measures it.
+      // A hidden copy then gives it 100px, and its own first read gives 130px.
+      const { scroller } = fakeLayout({ scrollTop: 1250 })
+      let dispose!: () => void
+      const { virt } = createRoot((d) => {
+        dispose = d
+        return setup(plainItems(20), {
+          scrollElement: () => scroller,
+        })
+      })
+      for (let i = 1; i <= 20; i++) {
+        if (`m${i}` !== ROW_10)
+          virt.measure(`m${i}`, 100)
+      }
+      const waiting = createRoot((disposeRow) => {
+        const [pending, setPending] = createSignal(true)
+        const readiness = createRenderReadinessScope()
+        readiness.track(pending)
+        const row = document.createElement('div')
+        row.getBoundingClientRect = () => new DOMRect(0, -50, 400, 130)
+        document.body.append(row)
+        virt.attachRow(ROW_10, row, readiness)
+        return { setPending, disposeRow }
+      })
+      expect(virt.showsHeight(ROW_10)).toBe(false)
+      expect(virt.primeHeight(ROW_10, 100)).toBe(true)
+      expect(virt.showsHeight(ROW_10)).toBe(false)
+      const shiftBeforeRead = virt.layoutShift()
+      const belowBeforeRead = virt.offsetOfId(ROW_11)! + shiftBeforeRead
+
+      // The content lands: the copy turns measurable, and the next flush reads it.
+      waiting.setPending(false)
+      return Promise.resolve().then(() => {
+        expect(virt.heightOfId(ROW_10)).toBe(130)
+        expect(virt.showsHeight(ROW_10)).toBe(true)
+        expect(virt.offsetOfId(ROW_11)! + virt.layoutShift()).toBe(belowBeforeRead)
+        expect(virt.layoutShift()).toBe(shiftBeforeRead - 30)
+        waiting.disposeRow()
+        dispose()
+      })
+    })
+
+    it('holds the bottom edge again for the first read of a copy that mounts after the row unmounted', () => {
+      const { scroller } = fakeLayout({ scrollTop: 1250 })
+      const { virt, dispose } = mount({ scroller })
+      const first = mountRow10(virt, 1250)
+      virt.detachRow(first.element)
+      expect(virt.hasMeasuredHeight(ROW_10)).toBe(true)
+
+      // The new copy stands for a fling skeleton that gives way to the row: it shows no
+      // content at the cached 100px, and its first read gives 140px.
+      mountRow10(virt, 1250, 140)
+
+      expect(virt.offsetOfId(ROW_11)! + virt.layoutShift()).toBe(1320)
+      expect(virt.layoutShift()).toBe(-40)
+      dispose()
+    })
+
+    it('keeps the reader\'s view of a row whose new element takes over before the old one detaches', () => {
+      const { scroller } = fakeLayout({ scrollTop: 1250 })
+      const { virt, dispose } = mount({ scroller })
+      const first = mountRow10(virt, 1250)
+
+      // The row stays mounted across the two elements, so the reader saw its 100px. The
+      // new element reads 140px: a change of content that the reader saw.
+      mountRow10(virt, 1250, 140)
+      virt.detachRow(first.element)
+
+      expect(virt.layoutShift()).toBe(0)
+      expect(virt.offsetOfId(ROW_11)! + virt.layoutShift()).toBe(1360)
+      dispose()
+    })
+
+    describe('showsHeight', () => {
+      it('is false for a row with an estimate, and for a row that only a hidden copy measured', () => {
+        const { scroller } = fakeLayout({ scrollTop: 1250 })
+        let dispose!: () => void
+        const { virt } = createRoot((d) => {
+          dispose = d
+          return setup(plainItems(3), {
+            scrollElement: () => scroller,
+          })
+        })
+        expect(virt.showsHeight('m1')).toBe(false)
+
+        virt.primeHeight('m1', 100)
+
+        expect(virt.hasMeasuredHeight('m1')).toBe(true)
+        expect(virt.showsHeight('m1')).toBe(false)
+        expect(virt.showsHeight('not-in-the-list')).toBe(false)
+        dispose()
+      })
+
+      it('turns true at the first read of the mounted row, and false again when the row unmounts', () => {
+        const { scroller } = fakeLayout({ scrollTop: 1250 })
+        const { virt, dispose } = mount({
+          scroller,
+          premeasuredIds: [ROW_10],
+        })
+        expect(virt.showsHeight(ROW_10)).toBe(false)
+
+        const copy = mountRow10(virt, 1250, 130)
+        expect(virt.showsHeight(ROW_10)).toBe(true)
+
+        virt.detachRow(copy.element)
+        expect(virt.hasMeasuredHeight(ROW_10)).toBe(true)
+        expect(virt.showsHeight(ROW_10)).toBe(false)
+        dispose()
+      })
+
+      it('stays true while a new element takes the row over before the old one detaches', () => {
+        const { scroller } = fakeLayout({ scrollTop: 1250 })
+        const { virt, dispose } = mount({
+          scroller,
+          premeasuredIds: [ROW_10],
+        })
+        const first = mountRow10(virt, 1250)
+        const second = mountRow10(virt, 1250)
+
+        virt.detachRow(first.element)
+        expect(virt.showsHeight(ROW_10)).toBe(true)
+
+        virt.detachRow(second.element)
+        expect(virt.showsHeight(ROW_10)).toBe(false)
+        dispose()
+      })
+
+      it('stays true when the height key of the mounted row changes', () => {
+        const { scroller } = fakeLayout({ scrollTop: 1250 })
+        let dispose!: () => void
+        const { virt, setList } = createRoot((d) => {
+          dispose = d
+          return setup([
+            { id: 'a', heightKey: 'old', hasSpanLines: false },
+          ], {
+            scrollElement: () => scroller,
+          })
+        })
+        const row = document.createElement('div')
+        row.getBoundingClientRect = () => new DOMRect(0, 0, 400, 100)
+        document.body.append(row)
+        virt.attachRow('a', row)
+        expect(virt.showsHeight('a')).toBe(true)
+
+        // The element still shows its 100px, which the row keeps under the new key.
+        setList([
+          { id: 'a', heightKey: 'new', hasSpanLines: false },
+        ])
+
+        expect(virt.showsHeight('a')).toBe(true)
+        dispose()
+      })
+    })
+
+    it('holds the row at the viewport top when a premeasured row above it reads another height', () => {
+      const { scroller } = fakeLayout({ scrollTop: 1250 })
+      const { virt, dispose } = mount({
+        scroller,
+        premeasuredIds: ['m4'],
+      })
+
+      mountRow(virt, 'm4', 360, 1250, 160)
+
+      expect(virt.offsetOfId(ROW_10)! + virt.layoutShift()).toBe(1200)
+      expect(virt.layoutShift()).toBe(-60)
+      dispose()
+    })
   })
 
   it('requests no pivot frame while pinBottom is true, and requests one again once it is false', () => {

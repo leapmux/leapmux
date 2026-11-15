@@ -28,6 +28,9 @@ export function measureSpaceToken(varName: string, fallback: number): number {
  * doesn't storm the geom recompute (only unmeasured/off-screen rows need their
  * cached DOM height invalidated on a width change, but every 1px wobble would
  * still churn the memo).
+ *
+ * The result is a step for the key of a cached height, never a width to lay out at: it
+ * lies up to 4px from the width of the rows, and text wraps differently at it.
  */
 export function bucketWidth(w: number): number {
   return Math.round(w / 8) * 8
@@ -35,9 +38,9 @@ export function bucketWidth(w: number): number {
 
 /**
  * A ResizeObserver wrapper for the message-list scroll container that reports its
- * content-box WIDTH (bucketed to 8px -- the bubble wrap width) and HEIGHT (rounded
- * -- the overscan viewport) to two callbacks. Owns the change-detection (per-axis
- * last-value dedup, so a measure that left an axis unchanged fires nothing) and
+ * content-box WIDTH (exact, as the browser lays it out -- the width of each row) and
+ * HEIGHT (rounded -- the overscan viewport) to two callbacks. Owns the change-detection
+ * (per-axis last-value dedup, so a measure that left an axis unchanged fires nothing) and
  * defers each write to a microtask (defense-in-depth against a write-during-observe
  * layout thrash). `observe` is a no-op when ResizeObserver is unavailable
  * (jsdom / older Safari) so callers don't branch. Carries values out via callbacks
@@ -64,7 +67,7 @@ export function createViewportSizeObserver(opts: {
   const ro = new ResizeObserver((entries) => {
     // contentRect avoids a forced layout read; `?? 0` tolerates a stub entry.
     const rect = entries[entries.length - 1]?.contentRect
-    const w = bucketWidth(rect?.width ?? 0)
+    const w = rect?.width ?? 0
     if (w !== lastWidth) {
       lastWidth = w
       queueMicrotask(() => {

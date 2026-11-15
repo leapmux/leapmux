@@ -2,7 +2,7 @@ import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import { MESSAGE_PAGE_LIMIT } from '../../src/generated/contracts/chat-history'
 import { test } from './fixtures'
-import { expectRowMoved, pointAtChat, requireTopRow, waitForScrollRest, watchRow, wheelChatUp } from './helpers/chatScrollStability'
+import { expectRowMoved, pointAtChat, readRowSeqWithText, requireTopRow, waitForScrollRest, watchRow, wheelChatUp } from './helpers/chatScrollStability'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { assistantBubbles, chatScrollContainer, chatScrollTop, userBubbles, waitForAgentStarted } from './helpers/ui'
 
@@ -27,16 +27,6 @@ function shortTurn(turn: number) {
   return { prompt: `Turn ${turn}: reply with its number.`, answer: `Answer ${turn}.`, entry: 'insert' as const }
 }
 
-/** The sequence number of the mounted row whose text contains `text`, or null when no such row is mounted. */
-function rowSeqWithText(page: Page, text: string): Promise<number | null> {
-  return chatScrollContainer(page).evaluate((container, rowText) => {
-    const row = Array.from(container.querySelectorAll<HTMLElement>('[data-seq]')).find(candidate => candidate.textContent?.includes(rowText))
-    return row === undefined
-      ? null
-      : Number(row.dataset.seq)
-  }, text)
-}
-
 /** The highest sequence number of the mounted rows: at the bottom of the chat, the newest row on screen. */
 function newestMountedSeq(page: Page): Promise<number> {
   return chatScrollContainer(page).evaluate(container =>
@@ -48,12 +38,13 @@ test.describe('chat scroll stability while the history above the reader changes'
     await page.setViewportSize({ width: 1024, height: 600 })
     await waitForAgentStarted(page)
     await sendScriptedTurn(page, modelScript, shortTurn(1))
-    const firstSeq = await rowSeqWithText(page, 'Turn 1:')
-    expect(firstSeq, 'the row of the first prompt is mounted').not.toBeNull()
+    const firstSeqText = await readRowSeqWithText(page, 'Turn 1:')
+    expect(firstSeqText, 'the row of the first prompt is mounted').not.toBeNull()
+    const firstSeq = Number(firstSeqText)
     // Send turns until the newest rows lie more than one page after the first prompt. After a reload the chat loads
     // the newest page alone, so the first prompt loads only when the reader scrolls up to it.
     let turns = 1
-    while (await newestMountedSeq(page) - firstSeq! <= MESSAGE_PAGE_LIMIT + 1) {
+    while (await newestMountedSeq(page) - firstSeq <= MESSAGE_PAGE_LIMIT + 1) {
       turns++
       expect(turns, 'the history grows past one page within the expected number of turns').toBeLessThanOrEqual(MAX_SEED_TURNS)
       await sendScriptedTurn(page, modelScript, shortTurn(turns))

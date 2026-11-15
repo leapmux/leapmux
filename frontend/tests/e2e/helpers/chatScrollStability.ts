@@ -9,8 +9,8 @@ import { assistantBubbles, CHAT_SCROLL_CONTAINER, chatDistanceFromBottom, chatSc
  *
  * Each read of a row runs in ONE `evaluate` on the scroll container, which the app never rebuilds. A read through a
  * chat locator could hold a row that ChatView replaced between the resolve and the read (see `readAttached`). The
- * functions that run in the browser (`topRowIn`, `rowDistanceIn`, `topParagraphIn`) reference nothing outside their
- * own body, because Playwright sends only their source text to the page.
+ * functions that run in the browser (each one whose name ends in `In`) reference nothing outside their own body,
+ * because Playwright sends only their source text to the page.
  */
 
 /** A row of the chat, and the distance from the top edge of the scroll container to the top edge of the row. */
@@ -56,6 +56,49 @@ export function rowDistanceIn(container: Element, seq: string): number | null {
     : row.getBoundingClientRect().top - container.getBoundingClientRect().top
 }
 
+/** A row of the chat: the distance from the top edge of the scroll container to its top edge, and its height. */
+export interface RowBox {
+  distance: number
+  height: number
+}
+
+/** The box of the row of `seq` in `container`, or null when the row is not mounted. Runs in the browser. */
+export function rowBoxIn(container: Element, seq: string): RowBox | null {
+  const row = container.querySelector(`[data-seq="${seq}"]`)
+  if (row === null)
+    return null
+  const rect = row.getBoundingClientRect()
+  return { distance: rect.top - container.getBoundingClientRect().top, height: rect.height }
+}
+
+/** The height of each mounted row of `container`, by its sequence number. Runs in the browser. */
+export function rowHeightsIn(container: Element): Record<string, number> {
+  const heights: Record<string, number> = {}
+  for (const row of Array.from(container.querySelectorAll<HTMLElement>('[data-seq]'))) {
+    if (row.dataset.seq !== undefined)
+      heights[row.dataset.seq] = row.getBoundingClientRect().height
+  }
+  return heights
+}
+
+/**
+ * The sequence number of the first mounted row of `container`, in document order, whose text contains `text`, or null
+ * when no mounted row contains it. Runs in the browser.
+ */
+export function rowSeqWithTextIn(container: Element, text: string): string | null {
+  const row = Array.from(container.querySelectorAll<HTMLElement>('[data-seq]')).find(candidate => candidate.textContent?.includes(text))
+  return row?.dataset.seq ?? null
+}
+
+/**
+ * The width of the content box of `container`: its client width without its left and right padding. Each row of the
+ * chat is that wide. Runs in the browser.
+ */
+export function contentBoxWidthIn(container: Element): number {
+  const style = getComputedStyle(container)
+  return container.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight)
+}
+
 /**
  * The first paragraph, in document order, whose text starts with a match of `markerSource` and whose top edge is at
  * or below the top edge of `container`. Null when no such paragraph exists or it has no row. Runs in the browser.
@@ -84,6 +127,26 @@ export function readTopRow(page: Page): Promise<RowDistance | null> {
 /** Read the distance of the row of `seq` from the top of the chat (see rowDistanceIn). */
 export function readRowDistance(page: Page, seq: string): Promise<number | null> {
   return chatScrollContainer(page).evaluate(rowDistanceIn, seq)
+}
+
+/** Read the box of the row of `seq` (see rowBoxIn). */
+export function readRowBox(page: Page, seq: string): Promise<RowBox | null> {
+  return chatScrollContainer(page).evaluate(rowBoxIn, seq)
+}
+
+/** Read the height of each mounted row, by its sequence number (see rowHeightsIn). */
+export function readRowHeights(page: Page): Promise<Record<string, number>> {
+  return chatScrollContainer(page).evaluate(rowHeightsIn)
+}
+
+/** Read the sequence number of the mounted row whose text contains `text` (see rowSeqWithTextIn). */
+export function readRowSeqWithText(page: Page, text: string): Promise<string | null> {
+  return chatScrollContainer(page).evaluate(rowSeqWithTextIn, text)
+}
+
+/** Read the width of the content box of the chat, which is the width of each row (see contentBoxWidthIn). */
+export function readContentBoxWidth(page: Page): Promise<number> {
+  return chatScrollContainer(page).evaluate(contentBoxWidthIn)
 }
 
 /** Read the paragraph near the top of the chat whose text starts with a match of `marker` (see topParagraphIn). */
@@ -138,6 +201,18 @@ export async function wheelChatUp(page: Page, pixels: number): Promise<void> {
   await expect.poll(async () => await readRowDistance(page, before.seq) ?? Number.POSITIVE_INFINITY, {
     message: 'the wheel moves the content down the screen',
   }).toBeGreaterThan(before.distance)
+  await waitForScrollRest(page)
+}
+
+/**
+ * Move the view up by `pixels` in one step, as one move of a drag of the scrollbar thumb does, then wait until the
+ * chat stops scrolling. The whole distance arrives in one `scroll` event, whatever the platform does with a wheel.
+ * A row that was not mounted before the step therefore mounts with the viewport already at its end position.
+ */
+export async function dragChatUp(page: Page, pixels: number): Promise<void> {
+  await chatScrollContainer(page).evaluate((container, distance) => {
+    container.scrollTop -= distance
+  }, pixels)
   await waitForScrollRest(page)
 }
 
@@ -284,6 +359,83 @@ export function markedParagraphs(label: string, count: number, filler: string): 
 /** The pattern that matches the marker at the start of a paragraph of `markedParagraphs(label, …)`. */
 export function paragraphMarker(label: string): RegExp {
   return new RegExp(`^${label}\\d+:`)
+}
+
+/** The characters of the unbroken texts of `widthSensitiveParagraphs`: glyphs of many widths in a proportional font. */
+const UNBROKEN_TEXT_CHARACTERS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+
+/**
+ * `count` paragraphs of the form `${label}${i}: ${text}`, with a blank line between two paragraphs. Each text is one
+ * unbroken run of 200 to 699 characters, with its own length and its own characters, as a long hash or an encoded
+ * value is.
+ *
+ * The chat breaks such a run at any character, so the run fills each line, and its number of lines is its width
+ * divided by the width of the line. A paragraph of ten lines therefore gains or loses a line for one width change in
+ * ten of 1%, which is 4px on a narrow screen. Among many paragraphs of different lengths, some change their number of
+ * lines for a change of the width by a few pixels, whatever the font is. Prose does not: a paragraph of words keeps
+ * its number of lines until a whole word fits on another line.
+ */
+export function widthSensitiveParagraphs(label: string, count: number): string {
+  return Array.from({ length: count }, (_, i) => {
+    const text = Array.from(
+      { length: 200 + (i * 37) % 500 },
+      (_, c) => UNBROKEN_TEXT_CHARACTERS[(i * 7 + c * (17 + (i % 3) * 4) + (c * c) % 7) % UNBROKEN_TEXT_CHARACTERS.length],
+    ).join('')
+    return `${label}${i}: ${text}`
+  }).join('\n\n')
+}
+
+/** The height that the hidden premeasure copy of a row committed, and the height key of the row at that commit. */
+export interface PremeasureCommit {
+  height: number
+  /** The height key holds the 8px step of the row width, so a commit at another step has another key. */
+  heightKey: string
+}
+
+/** The property of `window` that holds the commits that `recordPremeasureCommits` collects. */
+const PREMEASURE_COMMITS_KEY = '__chatScrollStabilityPremeasureCommits'
+
+/**
+ * Collect, on `window` under `key`, the last height that the hidden premeasure copy of each row commits, by the
+ * sequence number of the row. The app reports each commit as a `leapmux:chat-premeasure` event in a development
+ * build, which the E2E launcher builds. Runs in the browser.
+ */
+export function startPremeasureRecordIn(key: string): void {
+  const commits: Record<string, PremeasureCommit> = {}
+  Reflect.set(window, key, commits)
+  window.addEventListener('leapmux:chat-premeasure', (event) => {
+    const detail: unknown = event instanceof CustomEvent
+      ? event.detail
+      : undefined
+    if (typeof detail !== 'object' || detail === null)
+      return
+    const { phase, accepted, seq, height, heightKey } = detail as Record<string, unknown>
+    if (phase === 'commit' && accepted === true && typeof seq === 'string' && typeof height === 'number' && typeof heightKey === 'string')
+      commits[seq] = { height, heightKey }
+  })
+}
+
+/** The commit that the record under `key` holds for the row of `seq`, or null. Runs in the browser. */
+export function premeasureCommitIn({ key, seq }: { key: string, seq: string }): PremeasureCommit | null {
+  const commits = Reflect.get(window, key) as Record<string, PremeasureCommit> | undefined
+  return commits?.[seq] ?? null
+}
+
+/** The record that `recordPremeasureCommits` starts. */
+export interface PremeasureCommits {
+  /** The last commit of the hidden copy of the row of `seq` since the record started, or null. */
+  commitOf: (seq: string) => Promise<PremeasureCommit | null>
+}
+
+/**
+ * Record the height that the hidden premeasure copy of each row commits from now on (see startPremeasureRecordIn).
+ * A navigation ends the record, so the next test starts with none.
+ */
+export async function recordPremeasureCommits(page: Page): Promise<PremeasureCommits> {
+  await page.evaluate(startPremeasureRecordIn, PREMEASURE_COMMITS_KEY)
+  return {
+    commitOf: seq => page.evaluate(premeasureCommitIn, { key: PREMEASURE_COMMITS_KEY, seq }),
+  }
 }
 
 /**

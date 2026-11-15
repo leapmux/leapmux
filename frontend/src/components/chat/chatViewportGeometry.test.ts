@@ -70,7 +70,7 @@ describe('chatViewportGeometry createViewportSizeObserver', () => {
     }
   }
 
-  it('reports bucketed width + rounded height, deduped per axis, deferred to a microtask', async () => {
+  it('reports the exact width and the rounded height, deduped per axis, deferred to a microtask', async () => {
     let instance: FakeResizeObserver | undefined
     const real = globalThis.ResizeObserver
     globalThis.ResizeObserver = function (cb: ResizeObserverCallback) {
@@ -88,24 +88,28 @@ describe('chatViewportGeometry createViewportSizeObserver', () => {
       obs.observe(el)
       expect(instance!.observed).toContain(el)
 
-      instance!.emit(803, 599.6) // 803 -> bucket 800; 599.6 -> round 600
+      // The width is the width of each row, so it arrives as the browser lays it out:
+      // 803 is not rounded to its 8px step, 800. 599.6 rounds to 600.
+      instance!.emit(803, 599.6)
       await Promise.resolve()
-      expect(widths).toEqual([800])
+      expect(widths).toEqual([803])
       expect(heights).toEqual([600])
 
-      // A measure that leaves BOTH axes in the same bucket fires nothing.
-      instance!.emit(801, 600.2)
+      // A measure that changes neither value fires nothing.
+      instance!.emit(803, 600.2)
       await Promise.resolve()
-      expect(widths).toEqual([800])
+      expect(widths).toEqual([803])
       expect(heights).toEqual([600])
 
-      // A real change to one axis fires ONLY that axis.
-      instance!.emit(900, 600.4) // 900 -> bucket 904; 600.4 -> round 600 (unchanged)
+      // A change of one axis fires ONLY that axis, also a change inside one 8px step and
+      // a change of a fraction of a pixel.
+      instance!.emit(801, 600.4)
       await Promise.resolve()
-      expect(widths).toEqual([
-        800,
-        bucketWidth(900),
-      ])
+      expect(widths).toEqual([803, 801])
+      expect(heights).toEqual([600])
+      instance!.emit(801.5, 600.4)
+      await Promise.resolve()
+      expect(widths).toEqual([803, 801, 801.5])
       expect(heights).toEqual([600])
 
       obs.disconnect()

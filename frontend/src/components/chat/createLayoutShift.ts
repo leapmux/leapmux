@@ -93,6 +93,12 @@ export interface LayoutShiftDeps {
   isSuspended: Accessor<boolean>
   /** The mounted rows, in which the pivot element is recorded. */
   rows: Pick<RowMeasurer, 'elementOf' | 'hasUncommittedHeight'>
+  /**
+   * Whether the reader saw the row at the height that the last snapshot holds for it (see
+   * LayoutShiftInput.sawHeight). The shift rule holds the bottom edge of a row that changes
+   * a height that the reader did not see.
+   */
+  sawHeight: (rowId: string) => boolean
   /** The last height commit that moved the offset map, for the report of a content move. */
   lastMeasurement: ContentMovedReporterDeps['lastMeasurement']
 }
@@ -232,6 +238,7 @@ export function createLayoutShift(deps: LayoutShiftDeps): LayoutShiftController 
           scrollTop: readLogicalScrollTop(el) - deps.spacerInsetPx(),
           pinBottom: deps.pinBottom(),
           intraRowShift: pivot.takeIntraRowShift,
+          sawHeight: deps.sawHeight,
         }))
       })
     })

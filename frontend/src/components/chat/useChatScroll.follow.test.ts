@@ -68,6 +68,97 @@ describe('useChatScroll follow mode', () => {
     h.dispose()
   })
 
+  describe('a viewport that grows taller under a follower', () => {
+    // A send from the bottom. The composer grew while the reader wrote, so the list is
+    // 400px tall and the follower is at its bottom, 4600. The send shrinks the composer:
+    // the list grows back to 500px, and the browser clamps the position to 4500.
+    async function followerWithGrownComposer() {
+      const h = mountScrollHarness()
+      h.div.setClientHeight(400)
+      await h.resizeFlush()
+      expect(h.div.getScrollTop()).toBe(4600)
+      expect(h.hook.isFollowing()).toBe(true)
+      return h
+    }
+
+    it('stays when the tail grows before the scroll event of the clamp arrives', async () => {
+      const h = await followerWithGrownComposer()
+      h.div.setClientHeight(500)
+      expect(h.div.getScrollTop()).toBe(4500)
+      // The thinking indicator mounts in the same frame, so the maximum position is 4540
+      // when the scroll event of the clamp arrives: the view is 40px above the bottom.
+      h.div.setScrollHeight(5040)
+
+      h.hook.handlers.onScroll()
+
+      expect(h.hook.isFollowing()).toBe(true)
+      // The answer arrives, and the follower goes to the bottom with it.
+      h.changeBelow(200)
+      expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+      h.dispose()
+    })
+
+    it('follows the tail that grew after the clamp, before any scroll event', async () => {
+      const h = await followerWithGrownComposer()
+      h.div.setClientHeight(500)
+      h.div.setScrollHeight(5040)
+
+      // ChatView calls this after the thinking indicator renders.
+      expect(h.hook.isFollowing()).toBe(true)
+      h.hook.restickIfAtBottom()
+
+      expect(h.div.getScrollTop()).toBe(4540)
+      h.hook.handlers.onScroll()
+      expect(h.hook.isFollowing()).toBe(true)
+      h.dispose()
+    })
+
+    it('reads the scroll event of the clamp as no move of the reader', async () => {
+      const h = await followerWithGrownComposer()
+      h.onMomentumScroll.mockClear()
+      h.div.setClientHeight(500)
+      h.div.setScrollHeight(5040)
+
+      h.hook.handlers.onScroll()
+
+      // A move of the reader with no pointer down reports momentum, and a clamp does not.
+      expect(h.onMomentumScroll).not.toHaveBeenCalled()
+      h.dispose()
+    })
+
+    it('leaves when the reader moves up farther than the viewport grew', async () => {
+      const h = await followerWithGrownComposer()
+      h.div.setClientHeight(500)
+      h.div.setScrollHeight(5040)
+      // The clamp accounts for 100px. The reader moved 30px more.
+      h.div.setScrollTop(4470)
+
+      expect(h.hook.isFollowing()).toBe(false)
+      h.hook.handlers.onScroll()
+
+      expect(h.hook.isFollowing()).toBe(false)
+      expect(h.hook.atBottom()).toBe(false)
+      h.dispose()
+    })
+
+    it('leaves when a reader far above the bottom moves up while the viewport grows', async () => {
+      const h = mountScrollHarness()
+      h.div.setClientHeight(400)
+      await h.resizeFlush()
+      // The follower is at 4600. The list grows to 500px, which clamps the position to
+      // 4500, and its event arrives. The reader then scrolls up by 60px with no change of
+      // the viewport, so the growth explains none of it.
+      h.div.setClientHeight(500)
+      h.hook.handlers.onScroll()
+      expect(h.hook.isFollowing()).toBe(true)
+
+      h.scrollTo(4440)
+
+      expect(h.hook.isFollowing()).toBe(false)
+      h.dispose()
+    })
+  })
+
   it('leaves on an upward wheel with scroll room', () => {
     const h = mountScrollHarness()
     h.hook.handlers.onWheel(new WheelEvent('wheel', { deltaY: -10 }))
