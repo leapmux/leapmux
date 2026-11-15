@@ -1895,6 +1895,61 @@ describe('useChatVirtualizer layoutShift', () => {
       })
     })
 
+    it('holds the bottom edge of the row at the viewport top when a row above it takes its first read in the same batch', () => {
+      const { scroller } = fakeLayout({ scrollTop: 1250 })
+      const { virt, dispose } = mount({
+        scroller,
+        premeasuredIds: [
+          'm4',
+          ROW_10,
+        ],
+      })
+
+      // The row measurer commits the reads of one flush in one batch, as here.
+      batch(() => {
+        virt.measure('m4', 160)
+        virt.measure(ROW_10, 130)
+      })
+
+      // Row 3 grew by 60px above the reader, and row 10 by 30px at its top.
+      expect(virt.offsetOfId(ROW_11)! + virt.layoutShift()).toBe(1320)
+      expect(virt.layoutShift()).toBe(-90)
+      dispose()
+    })
+
+    it('holds the distance from the top edge when a row that the reader saw reads a new height under a new key', async () => {
+      const { scroller } = fakeLayout({ scrollTop: 1250 })
+      const keyed = (key: string): VirtualItem[] => plainItems(20).map(item => ({
+        ...item,
+        ...(item.id === ROW_10
+          ? { heightKey: key }
+          : {}),
+      }))
+      let dispose!: () => void
+      const { virt, setList } = createRoot((d) => {
+        dispose = d
+        return setup(keyed('old'), {
+          scrollElement: () => scroller,
+        })
+      })
+      for (let i = 1; i <= 20; i++)
+        virt.measure(`m${i}`, 100)
+      const row = mountRow10(virt, 1250)
+
+      // The content of the row changes with its key, as at an expand. The row keeps its
+      // 100px until the next flush reads its element, which now gives 140px.
+      row.rowHeight = 140
+      setList(keyed('new'))
+      expect(virt.heightOfId(ROW_10)).toBe(100)
+      await Promise.resolve()
+
+      // The reader saw the row at 100px, so the row grows at its bottom.
+      expect(virt.heightOfId(ROW_10)).toBe(140)
+      expect(virt.layoutShift()).toBe(0)
+      expect(virt.offsetOfId(ROW_11)! + virt.layoutShift()).toBe(1360)
+      dispose()
+    })
+
     it('holds the bottom edge again for the first read of a copy that mounts after the row unmounted', () => {
       const { scroller } = fakeLayout({ scrollTop: 1250 })
       const { virt, dispose } = mount({ scroller })

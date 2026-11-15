@@ -141,7 +141,7 @@ describe('useChatScroll follow mode', () => {
       h.dispose()
     })
 
-    it('leaves when a reader far above the bottom moves up while the viewport grows', async () => {
+    it('leaves on a move up after the scroll event of the clamp, which the growth no longer explains', async () => {
       const h = mountScrollHarness()
       h.div.setClientHeight(400)
       await h.resizeFlush()
@@ -157,6 +157,49 @@ describe('useChatScroll follow mode', () => {
       expect(h.hook.isFollowing()).toBe(false)
       h.dispose()
     })
+
+    it('reads the clamp as no move for a reader near the bottom who does not follow', async () => {
+      const h = mountScrollHarness()
+      h.div.setClientHeight(400)
+      await h.resizeFlush()
+      // The reader leaves the bottom, 4600, for 4550 and rests there.
+      await h.anchoredAt(4550)
+      expect(h.hook.isFollowing()).toBe(false)
+      h.onMomentumScroll.mockClear()
+
+      // The list grows to 500px: the maximum is 4500, so the browser moves the reader by
+      // 50px. The tail then grows by 40px before the scroll event arrives.
+      h.div.setClientHeight(500)
+      h.div.setScrollHeight(5040)
+      expect(h.div.getScrollTop()).toBe(4500)
+      h.hook.handlers.onScroll()
+
+      expect(h.onMomentumScroll).not.toHaveBeenCalled()
+      expect(h.hook.isFollowing()).toBe(false)
+      expect(h.div.getScrollTop()).toBe(4500)
+      h.dispose()
+    })
+  })
+
+  it('stays when a check recorded the clamp of a content shrink, and the tail grows before its scroll event arrives', () => {
+    const h = mountScrollHarness()
+    h.onMomentumScroll.mockClear()
+    // A tail sibling shrinks by 100px: the browser clamps the follower to 4400. The check
+    // of a re-stick records that clamp, and it writes nothing, because the view is at the
+    // bottom.
+    h.div.setScrollHeight(4900)
+    h.hook.restickIfAtBottom()
+    expect(h.div.getScrollTop()).toBe(4400)
+    // The tail grows by 300px, and the scroll event of the clamp arrives before a stick.
+    h.div.setScrollHeight(5200)
+
+    h.hook.handlers.onScroll()
+
+    expect(h.hook.isFollowing()).toBe(true)
+    expect(h.onMomentumScroll).not.toHaveBeenCalled()
+    h.changeBelow(100)
+    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    h.dispose()
   })
 
   it('leaves on an upward wheel with scroll room', () => {

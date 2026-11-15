@@ -125,6 +125,18 @@ describe('nextLayoutShift', () => {
       .toMatchObject({ shift: -500, calls: 0 })
   })
 
+  it('keeps the content bottom while pinned, also when the row at the viewport top changes a height the reader did not see', () => {
+    // Follow mode holds the content bottom, so the rule asks about no row.
+    expect(shiftFor({
+      previous: rows(),
+      next: withHeight(rows(), 'r2', 180),
+      c: 230,
+      pinBottom: true,
+      sawHeight: false,
+    }))
+      .toMatchObject({ shift: -40 - 80, calls: 0, sawCalls: 0 })
+  })
+
   it('keeps the spacer height at 0 or more while pinned', () => {
     // A previous spacer of 1000 - 1200 is below 0 only for a shift that no rule produced.
     expect(shiftFor({
@@ -243,6 +255,20 @@ describe('nextLayoutShift', () => {
       .toMatchObject({ shift: -40 - 150, calls: 0, sawCalls: 1 })
   })
 
+  it('holds the bottom edge of the row at the viewport top when a row above it changes in the same step', () => {
+    // Row 0 grows by 60px and row 2 by 30px, both at their first read, as two rows that
+    // mount in one flush do. Row 2 then spans 260 to 390, and the rows below it keep their
+    // scroll coordinates: the shift takes both changes.
+    const next = withHeight(withHeight(rows(), 'r0', 160), 'r2', 130)
+    expect(shiftFor({
+      previous: rows(),
+      next,
+      c: 230,
+      sawHeight: false,
+    }))
+      .toMatchObject({ shift: -40 - 60 - 30, calls: 0, sawCalls: 1 })
+  })
+
   it('holds the bottom edge of an unmeasured row without asking whether the reader saw it', () => {
     const previous = withHeight(rows(), 'r2', 100, false)
     expect(shiftFor({
@@ -295,8 +321,9 @@ describe('nextLayoutShift', () => {
       next: withHeight(rows(), 'r2', 150),
       c: 350,
       gap: 20,
+      sawHeight: false,
     }))
-      .toMatchObject({ shift: -40 - 50, calls: 0 })
+      .toMatchObject({ shift: -40 - 50, calls: 0, sawCalls: 0 })
   })
 
   it('holds the top edge of a row that a seek placed just below the viewport top', () => {
@@ -383,7 +410,8 @@ describe('nextLayoutShift', () => {
       previous: rows(),
       next,
       c: 250,
-    })).toMatchObject({ shift: -40 + 100, calls: 0 })
+      sawHeight: false,
+    })).toMatchObject({ shift: -40 + 100, calls: 0, sawCalls: 0 })
   })
 
   it('uses the nearest upper row when no lower row remains', () => {

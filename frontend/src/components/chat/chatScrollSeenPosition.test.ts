@@ -154,6 +154,18 @@ describe('createSeenScrollPosition', () => {
       seen.note(div.el)
       expect(seen.lowestMaxTop(div.el)).toBe(4700)
     })
+
+    it('is 0 for a list that is shorter than the view, whatever the viewport does', () => {
+      // 300px of content in a 500px view: the list cannot scroll.
+      const { div, seen } = notedAt(0, 300)
+      expect(seen.seenTop()).toBe(0)
+      expect(seen.lowestMaxTop(div.el)).toBe(0)
+      div.setClientHeight(800)
+      expect(seen.lowestMaxTop(div.el)).toBe(0)
+      div.setClientHeight(200)
+      expect(seen.lowestMaxTop(div.el)).toBe(0)
+      expect(seen.hasUnseenUpwardMove(div.el)).toBe(false)
+    })
   })
 
   describe('hasUnseenUpwardMove', () => {

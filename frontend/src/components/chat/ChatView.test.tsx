@@ -3610,6 +3610,41 @@ describe('chat view virtualized with stubbed deps', () => {
       })
     })
 
+    it('takes the fallback width for the key and for the hidden copy together, for a width whose 8px step is 0', async () => {
+      render(() => (
+        <ChatView
+          messages={[
+            message('m0', 1),
+          ]}
+
+        />
+      ))
+      await waitFor(() => {
+        expect(hiddenPremeasureState.candidates.map(candidate => candidate.item.id)).toEqual(['m0'])
+      })
+      viewportSizeObserverState.onWidth?.(0)
+      let fallbackWidthHeightKey: string | undefined
+      await waitFor(() => {
+        expect(hiddenPremeasureState.contentWidthPx).toBe(PRE_MEASURE_WIDTH_PX)
+        fallbackWidthHeightKey = hiddenPremeasureState.candidates[0]?.item.heightKey
+        expect(fallbackWidthHeightKey).toBeDefined()
+      })
+
+      // 3px rounds to the step 0, which is no width for a key. A hidden copy of 3px under a
+      // key of the fallback width would commit a height that fits neither.
+      viewportSizeObserverState.onWidth?.(3)
+      await Promise.resolve()
+      expect(hiddenPremeasureState.contentWidthPx).toBe(PRE_MEASURE_WIDTH_PX)
+      expect(hiddenPremeasureState.candidates[0]?.item.heightKey).toBe(fallbackWidthHeightKey)
+
+      // 4px rounds to the step 8: the copy takes the exact width, and the key takes the step.
+      viewportSizeObserverState.onWidth?.(4)
+      await waitFor(() => {
+        expect(hiddenPremeasureState.contentWidthPx).toBe(4)
+      })
+      expect(hiddenPremeasureState.candidates[0]?.item.heightKey).not.toBe(fallbackWidthHeightKey)
+    })
+
     it('hides a newly appended live-tail row until it is measured (no overflow onto trailing UI)', async () => {
       // Regression: the live tail was shown at its ESTIMATED height immediately, so a
       // tall unmeasured tail overflowed its slot onto the in-flow thinking indicator,

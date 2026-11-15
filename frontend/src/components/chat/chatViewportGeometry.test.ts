@@ -148,6 +148,43 @@ describe('chatViewportGeometry createViewportSizeObserver', () => {
     }
   })
 
+  it('reports a width and a height of 0 for an entry with no content rectangle, once', async () => {
+    let callback: ResizeObserverCallback | undefined
+    const real = globalThis.ResizeObserver
+    globalThis.ResizeObserver = function (cb: ResizeObserverCallback) {
+      callback = cb
+      return new FakeResizeObserver(cb)
+    } as unknown as typeof ResizeObserver
+    try {
+      const widths: number[] = []
+      const heights: number[] = []
+      const obs = createViewportSizeObserver({
+        onWidth: w => widths.push(w),
+        onHeight: h => heights.push(h),
+      })
+      obs.observe({} as HTMLElement)
+      const emitEmptyEntry = () => callback!([
+        {} as ResizeObserverEntry,
+      ], {} as ResizeObserver)
+
+      emitEmptyEntry()
+      await Promise.resolve()
+      expect(widths).toEqual([0])
+      expect(heights).toEqual([0])
+
+      // The second entry changes neither value. An empty list of entries reads as 0 too.
+      emitEmptyEntry()
+      callback!([], {} as ResizeObserver)
+      await Promise.resolve()
+      expect(widths).toEqual([0])
+      expect(heights).toEqual([0])
+      obs.disconnect()
+    }
+    finally {
+      globalThis.ResizeObserver = real
+    }
+  })
+
   it('observe is a no-op when ResizeObserver is unavailable (jsdom/older Safari)', () => {
     const real = globalThis.ResizeObserver
     // @ts-expect-error -- remove RO to exercise the unavailable guard.
