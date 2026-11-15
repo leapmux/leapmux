@@ -47,6 +47,7 @@ export function virtualizerNoOps(): Omit<
     setFastScrollActive: () => {},
     // A stub has no height that the reader did not see: every row shows its height.
     showsHeight: () => true,
+    notePlacement: () => {},
     layoutShift: () => 0,
     rebase: () => 0,
     contentTopOf: scrollTop => scrollTop,
@@ -318,7 +319,8 @@ export interface ShiftVirtualizerDeps {
  * does: nextLayoutShift over a snapshot of the rows before and after the change, with every
  * row measured except `deps.estimatedRows` (a change of such a row measures it), each
  * measured height one that the reader saw except those of `deps.unseenRows` (a change of
- * such a row is the first read of its copy), no move inside a row (`intraRowShift` 0), and
+ * such a row is the first read of its copy), no move inside a row (`intraRowShift` 0), no
+ * row that came into the view over the top edge (`enteredFromAbove` false), and
  * `deps.pinBottom()` read before
  * the change reaches the element. For a hidden `div`, the shift becomes 0. Then the
  * `scrollHeight` of `div` changes by the change of the spacer height, `max(0, total +
@@ -422,9 +424,12 @@ export function makeShiftVirtualizer(heights: number[], div: FakeScrollDiv, deps
           next,
           previousShift,
           scrollTop: readLogicalScrollTop(div.el),
+          viewHeight: div.el.clientHeight,
           pinBottom: deps.pinBottom(),
           intraRowShift: () => 0,
           sawHeight: id => !firstReads.has(nextGeometry.indexOfId(id)),
+          // The stub mounts no row, so no row came into the view over the top edge.
+          enteredFromAbove: () => false,
         })
     shiftedSnapshot = next
     const spacerChange = spacerHeightFor(totalRowHeight(nextRows), nextShift)
@@ -648,7 +653,13 @@ export function mountScrollHarness(opts: ScrollHarnessOptions = {}) {
   })
   const setFastScrollActive = vi.fn()
   const updateViewport = vi.fn()
-  const virt: ChatScrollVirtualizer = { ...shift.virt, setFastScrollActive, updateViewport }
+  const notePlacement = vi.fn()
+  const virt: ChatScrollVirtualizer = {
+    ...shift.virt,
+    setFastScrollActive,
+    updateViewport,
+    notePlacement,
+  }
   const [hasNewer, setHasNewer] = createSignal(opts.hasNewer ?? false)
   const [messages, setMessages] = createSignal<AgentChatMessage[]>(opts.messages ?? [])
   const onMomentumScroll = vi.fn()
@@ -705,6 +716,7 @@ export function mountScrollHarness(opts: ScrollHarnessOptions = {}) {
     onMomentumScroll,
     setFastScrollActive,
     updateViewport,
+    notePlacement,
     frame,
     scrollTo,
     rest,

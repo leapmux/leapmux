@@ -1,14 +1,23 @@
+import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { LARGE_MARKDOWN_BODY_CHARS } from '~/lib/markdownWorkerClient'
 import { createManualFrames } from '~/test-support/manualFrames'
 import {
+  clearObjectStoreIn,
   contentBoxWidthIn,
+  heldReplyCountIn,
+  installReplyHoldIn,
+  LARGE_BODY_FILLER_CHARS,
+  largeBodyFiller,
   markedParagraphs,
   paragraphMarker,
   premeasureCommitIn,
+  releaseHeldRepliesIn,
   rowBoxIn,
   rowDistanceIn,
   rowHeightsIn,
   rowSeqWithTextIn,
+  rowStatesIn,
   startPremeasureRecordIn,
   startRowWatchIn,
   stopRowWatchIn,
@@ -486,5 +495,262 @@ describe('stopRowWatchIn', () => {
 
     expect(stopRowWatchIn('stoppedTwice')).not.toBeNull()
     expect(stopRowWatchIn('stoppedTwice')).toBeNull()
+  })
+})
+
+describe('rowStatesIn', () => {
+  it('returns the distance, the height, and the hidden state of each row, in document order', () => {
+    const container = containerWith([
+      { seq: '4', top: 60, height: 80 },
+      { seq: '5', top: 160, height: 26 },
+    ])
+    container.querySelector<HTMLElement>('[data-seq="5"]')!.style.visibility = 'hidden'
+
+    expect(rowStatesIn(container)).toEqual([
+      {
+        seq: '4',
+        distance: -40,
+        height: 80,
+        hidden: false,
+      },
+      {
+        seq: '5',
+        distance: 60,
+        height: 26,
+        hidden: true,
+      },
+    ])
+  })
+
+  it('returns no row for a container with no row', () => {
+    expect(rowStatesIn(containerWith([]))).toEqual([])
+  })
+})
+
+describe('installReplyHoldIn', () => {
+  const KEY = '__testReplyHold'
+
+  /** A stand-in for the Worker of a browser: its `onmessage` is an accessor of the prototype, as in a browser. */
+  class FakeWorker {
+    #handler: unknown = null
+
+    get onmessage(): unknown {
+      return this.#handler
+    }
+
+    set onmessage(handler: unknown) {
+      this.#handler = handler
+    }
+
+    /** Deliver a message with `data` to the handler, as the browser does for a reply of the worker. */
+    reply(data: unknown): void {
+      const handler = this.onmessage
+      if (typeof handler === 'function')
+        handler.call(this, { data })
+    }
+  }
+
+  /** A FakeWorker class of its own for one test, as the global `Worker`, with the hold of `marker` installed. */
+  function installOn(marker: string): typeof FakeWorker {
+    const WorkerOfTest = class extends FakeWorker {}
+    // The hold reads the accessor from the prototype of `Worker` itself.
+    Object.defineProperty(WorkerOfTest.prototype, 'onmessage', Object.getOwnPropertyDescriptor(FakeWorker.prototype, 'onmessage')!)
+    vi.stubGlobal('Worker', WorkerOfTest)
+    onTestFinished(() => {
+      vi.unstubAllGlobals()
+      Reflect.deleteProperty(window, KEY)
+    })
+    installReplyHoldIn({ key: KEY, marker })
+    return WorkerOfTest
+  }
+
+  /** A worker of `WorkerOfTest` whose handler records the `html` of each reply that reaches it. */
+  function workerRecordingInto(WorkerOfTest: typeof FakeWorker, delivered: string[]): FakeWorker {
+    const worker = new WorkerOfTest()
+    worker.onmessage = (event: { data: { html: string } }) => {
+      delivered.push(event.data.html)
+    }
+    return worker
+  }
+
+  it('holds back a reply whose HTML contains the marker, and delivers every other reply', () => {
+    const delivered: string[] = []
+    const worker = workerRecordingInto(installOn('Late0:'), delivered)
+
+    worker.reply({ html: '<p>Answer 1.</p>' })
+    worker.reply({ html: '<p>Late0: text</p>' })
+    worker.reply({ html: '<p>Answer 2.</p>' })
+
+    expect(delivered).toEqual(['<p>Answer 1.</p>', '<p>Answer 2.</p>'])
+    expect(heldReplyCountIn(KEY)).toBe(1)
+  })
+
+  it('delivers a message with no HTML text', () => {
+    const seen: unknown[] = []
+    const WorkerOfTest = installOn('Late0:')
+    const worker = new WorkerOfTest()
+    worker.onmessage = (event: { data: unknown }) => {
+      seen.push(event.data)
+    }
+
+    worker.reply(null)
+    worker.reply('Late0: a plain text')
+    worker.reply({ html: 7 })
+    worker.reply({ text: 'Late0: a request text' })
+
+    expect(seen).toEqual([
+      null,
+      'Late0: a plain text',
+      { html: 7 },
+      { text: 'Late0: a request text' },
+    ])
+    expect(heldReplyCountIn(KEY)).toBe(0)
+  })
+
+  it('calls the handler with the worker as `this`, for a reply that it delivers and for one that it held', () => {
+    const receivers: unknown[] = []
+    const WorkerOfTest = installOn('Late0:')
+    const worker = new WorkerOfTest()
+    worker.onmessage = function (this: unknown) {
+      receivers.push(this)
+    }
+
+    worker.reply({ html: 'Answer' })
+    worker.reply({ html: 'Late0:' })
+    releaseHeldRepliesIn(KEY)
+
+    expect(receivers).toEqual([worker, worker])
+  })
+
+  it('passes a handler that is no function on unchanged', () => {
+    const WorkerOfTest = installOn('Late0:')
+    const worker = new WorkerOfTest()
+
+    worker.onmessage = null
+
+    expect(worker.onmessage).toBeNull()
+    // A reply to a worker with no handler reaches nothing, and holds nothing.
+    worker.reply({ html: 'Late0:' })
+    expect(heldReplyCountIn(KEY)).toBe(0)
+  })
+
+  it('fails when `onmessage` is no accessor of the Worker prototype', () => {
+    vi.stubGlobal('Worker', class {})
+    onTestFinished(() => {
+      vi.unstubAllGlobals()
+    })
+
+    expect(() => installReplyHoldIn({ key: KEY, marker: 'Late0:' })).toThrow('Worker.prototype.onmessage is not an accessor')
+  })
+
+  describe('releaseHeldRepliesIn', () => {
+    it('delivers the held replies in the order of their arrival, and holds no later reply', () => {
+      const delivered: string[] = []
+      const WorkerOfTest = installOn('Late')
+      const first = workerRecordingInto(WorkerOfTest, delivered)
+      const second = workerRecordingInto(WorkerOfTest, delivered)
+      first.reply({ html: 'Late A' })
+      second.reply({ html: 'Late B' })
+      first.reply({ html: 'Late C' })
+      expect(delivered).toEqual([])
+      expect(heldReplyCountIn(KEY)).toBe(3)
+
+      releaseHeldRepliesIn(KEY)
+
+      expect(delivered).toEqual(['Late A', 'Late B', 'Late C'])
+      expect(heldReplyCountIn(KEY)).toBe(0)
+      // The hold ended.
+      first.reply({ html: 'Late D' })
+      expect(delivered).toEqual(['Late A', 'Late B', 'Late C', 'Late D'])
+    })
+
+    it('does nothing when no hold exists under the key', () => {
+      expect(() => releaseHeldRepliesIn('__noSuchHold')).not.toThrow()
+    })
+  })
+
+  describe('heldReplyCountIn', () => {
+    it('returns 0 when no hold exists under the key', () => {
+      expect(heldReplyCountIn('__noSuchHold')).toBe(0)
+    })
+  })
+})
+
+describe('largeBodyFiller', () => {
+  it('is larger than the size at which the app renders a Markdown body in a worker of its own', () => {
+    expect(LARGE_BODY_FILLER_CHARS).toBeGreaterThan(LARGE_MARKDOWN_BODY_CHARS)
+    expect(largeBodyFiller().length).toBeGreaterThan(LARGE_MARKDOWN_BODY_CHARS)
+  })
+
+  it('is one link definition on one line', () => {
+    const filler = largeBodyFiller()
+
+    expect(filler).toMatch(/^\[large-body-filler\]: https:\/\/example\.invalid\/f+$/)
+    expect(filler).not.toContain('\n')
+  })
+})
+
+describe('clearObjectStoreIn', () => {
+  /** A fresh IndexedDB as the global one, with the database `name` and its object stores `stores`. */
+  async function databaseWith(name: string, stores: readonly string[]): Promise<void> {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    onTestFinished(() => {
+      vi.unstubAllGlobals()
+    })
+    await new Promise<void>((resolve, reject) => {
+      const open = indexedDB.open(name, 1)
+      open.onupgradeneeded = () => {
+        for (const store of stores)
+          open.result.createObjectStore(store)
+      }
+      open.onerror = () => reject(open.error)
+      open.onsuccess = () => {
+        open.result.close()
+        resolve()
+      }
+    })
+  }
+
+  /** Run `work` in a transaction of `mode` on the store `store` of the database `name`, and return its result. */
+  function inStore<T>(name: string, store: string, mode: IDBTransactionMode, work: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const open = indexedDB.open(name)
+      open.onerror = () => reject(open.error)
+      open.onsuccess = () => {
+        const transaction = open.result.transaction(store, mode)
+        const request = work(transaction.objectStore(store))
+        transaction.oncomplete = () => {
+          open.result.close()
+          resolve(request.result)
+        }
+        transaction.onerror = () => reject(transaction.error)
+      }
+    })
+  }
+
+  it('deletes every entry of the store, and keeps the entries of another store', async () => {
+    await databaseWith('renders', ['artifacts', 'other'])
+    await inStore('renders', 'artifacts', 'readwrite', store => store.put('<p>a</p>', 'md:a'))
+    await inStore('renders', 'artifacts', 'readwrite', store => store.put('<p>b</p>', 'md:b'))
+    await inStore('renders', 'other', 'readwrite', store => store.put('kept', 'key'))
+
+    await clearObjectStoreIn({ database: 'renders', store: 'artifacts' })
+
+    expect(await inStore('renders', 'artifacts', 'readonly', store => store.count())).toBe(0)
+    expect(await inStore('renders', 'other', 'readonly', store => store.count())).toBe(1)
+  })
+
+  it('resolves for a store with no entry', async () => {
+    await databaseWith('renders', ['artifacts'])
+
+    await expect(clearObjectStoreIn({ database: 'renders', store: 'artifacts' })).resolves.toBeUndefined()
+  })
+
+  it('rejects when the database has no such store', async () => {
+    await databaseWith('renders', ['other'])
+
+    await expect(clearObjectStoreIn({ database: 'renders', store: 'artifacts' }))
+      .rejects
+      .toThrow('the database renders has no object store artifacts')
   })
 })

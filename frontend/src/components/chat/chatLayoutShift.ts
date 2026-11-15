@@ -55,6 +55,8 @@ export interface LayoutShiftInput {
    * the viewport top.
    */
   scrollTop: number
+  /** The height (px) of the visible area of the scroll element. The view starts at the viewport top. */
+  viewHeight: number
   /** Keep the bottom of the content in place: the reader follows the live tail. */
   pinBottom: boolean
   /**
@@ -70,10 +72,21 @@ export interface LayoutShiftInput {
    * reader no content at that height: a hidden copy or an earlier session measured it, or
    * an earlier copy of the row did, and a placeholder stood in for the row since.
    *
-   * The rule calls it at most once, and only for the measured row whose body the viewport
-   * top cuts, when the height of that row differs in `next`.
+   * The rule calls it only for a measured row whose height differs in `next`: at most once
+   * for the row whose body the viewport top cuts, and at most once for each row that
+   * `enteredFromAbove` and whose top edge is in the view.
    */
   sawHeight: (rowId: string) => boolean
+  /**
+   * Whether the row `rowId` came into the view over the top edge of the view: it lay above
+   * the viewport top when it mounted, or at the last placement of the view. The reader then
+   * reached the row from below, by a move of the view up the content. False for a row that
+   * mounted inside the view or below it, as after a seek, a restore, or a scroll down.
+   *
+   * The rule calls it only for a row whose top edge is in the view and whose height differs
+   * in `next`.
+   */
+  enteredFromAbove: (rowId: string) => boolean
 }
 
 /**
@@ -111,6 +124,9 @@ export const ROW_ALIGN_OFFSET_PX = 8
  * - `body`: inside the measured body of the row. Only this kind reads a pivot element. The
  *   shift rule holds the bottom edge for it too when the row changes a height that the
  *   reader did not see (see nextLayoutShift).
+ *
+ * The shift rule holds no point of this row when a late row inside the view holds instead
+ * (see lateRowAboveLargestBlock).
  */
 export interface RowCut {
   kind: 'top-edge' | 'bottom-edge' | 'body'
@@ -161,6 +177,9 @@ function rowBottom(s: LayoutSnapshot, i: number): number {
  *
  * - No previous snapshot, or no row in the next one: 0.
  * - `pinBottom`: the bottom of the content keeps its scroll coordinate.
+ * - A late row can hold in place of the viewport top (see lateRowAboveLargestBlock): the
+ *   rule then holds the bottom edge of that row, so the row corrects its height above
+ *   itself, and the larger part of the view, which lies below it, stays in place.
  * - Otherwise the rule finds the row `R` that holds the viewport top (see rowCutAt), and
  *   it holds:
  *   - the top edge of `R` when the viewport top is at that edge, or a seek placed the top
@@ -202,23 +221,121 @@ export function nextLayoutShift(input: LayoutShiftInput): number {
   // The viewport top in the content coordinates of the previous snapshot. Before the
   // first row (a positive shift above the reachable top), the row 0 holds by its top edge.
   const c = scrollTop - previousShift
-  const heldContentTop = heldPoint(previous, next, c, input)
+  const cut = rowCutAt(previous, c)
+  const late = lateRowAboveLargestBlock(previous, next, c, cut, input)
+  // A held bottom edge moves the point at the viewport top by as much as the edge moved.
+  const heldContentTop = late === undefined
+    ? heldPoint(previous, next, c, cut, input)
+    : c + rowBottom(next, late.nextIndex) - rowBottom(previous, late.index)
   return heldContentTop === undefined
     ? 0
     : limitSpacer(scrollTop - heldContentTop)
 }
 
+/** A row of both snapshots, by its index in each. */
+interface RowInBoth {
+  index: number
+  nextIndex: number
+}
+
+/**
+ * The late row whose bottom edge holds in place of the viewport top, or `undefined` when
+ * the viewport top holds. `previous` must hold a row, and `cut` is `rowCutAt(previous, c)`.
+ *
+ * A late row is a row that fits all of these:
+ *
+ * - Its top edge is in the view: at the viewport top (the `top-edge` kind of `cut`) or
+ *   below it, and above the bottom of the view.
+ * - It came into the view over the top edge (`enteredFromAbove`), so the reader reached
+ *   it from below.
+ * - This step corrects its height, and that height was a guess: an estimate, or a
+ *   measured height that the reader did not see (`sawHeight`).
+ *
+ * Such a row waited for its content behind a placeholder of the guessed height while the
+ * reader scrolled up to it, as a long report does while its worker renders it. An
+ * estimate is the usual height of a short row, so the row can take a height of several
+ * views in that step. Wherever the row grows, a part of the view moves: the part above it
+ * or the part below it.
+ *
+ * The late rows divide the view into blocks that no late row touches: from the viewport
+ * top to the first late row, between two late rows, and from the last late row to the
+ * bottom of the view. The rule keeps the largest block in place, so the smaller part of
+ * what the reader sees moves:
+ *
+ * - The block at the viewport top is the largest, or as large as the largest: the
+ *   viewport top holds, as with no late row. Each late row then grows at its bottom.
+ * - Another block is the largest: the bottom edge of the late row above that block holds.
+ *   That row and each row above it move up, and each late row below the block grows at
+ *   its bottom.
+ *
+ * A reader who scrolls up meets the placeholder high in the view, with the rows that the
+ * reader looked at below it. The row then grows above itself, and those rows stay in
+ * place. A row that mounted inside the view or below it is never late, so a seek, a
+ * restore, and a scroll down keep the viewport top.
+ */
+function lateRowAboveLargestBlock(
+  previous: LayoutSnapshot,
+  next: LayoutSnapshot,
+  c: number,
+  cut: RowCut,
+  { viewHeight, sawHeight, enteredFromAbove }: Pick<LayoutShiftInput, 'viewHeight' | 'sawHeight' | 'enteredFromAbove'>,
+): RowInBoth | undefined {
+  const viewBottom = c + viewHeight
+  // The index in `next` of the row `i` when the row is late, or `undefined`.
+  const lateNextIndex = (i: number): number | undefined => {
+    const id = previous.list[i]?.id
+    const nextIndex = id === undefined
+      ? undefined
+      : next.indexById.get(id)
+    if (id === undefined || nextIndex === undefined)
+      return undefined
+    if ((next.heights[nextIndex] ?? 0) === (previous.heights[i] ?? 0) || !enteredFromAbove(id))
+      return undefined
+    return previous.measured[i] !== 1 || !sawHeight(id)
+      ? nextIndex
+      : undefined
+  }
+  // The largest block so far, with the late row above it: `undefined` for the block at the
+  // viewport top. A later block replaces it only when it is larger.
+  let largest: RowInBoth | undefined
+  let largestSize = -1
+  // The block that is open now: its start, and the late row above it.
+  let blockStart = c
+  let above: RowInBoth | undefined
+  const closeBlockAt = (end: number): void => {
+    const size = Math.max(0, Math.min(end, viewBottom) - blockStart)
+    if (size > largestSize) {
+      largestSize = size
+      largest = above
+    }
+  }
+  // The top edge of the row at the viewport top is in the view only for the `top-edge` kind.
+  const first = cut.kind === 'top-edge'
+    ? cut.index
+    : cut.index + 1
+  for (let i = first; i < previous.n && rowTop(previous, i) < viewBottom; i++) {
+    const nextIndex = lateNextIndex(i)
+    if (nextIndex === undefined)
+      continue
+    closeBlockAt(rowTop(previous, i))
+    above = { index: i, nextIndex }
+    blockStart = rowBottom(previous, i)
+  }
+  closeBlockAt(viewBottom)
+  return largest
+}
+
 /**
  * The content coordinate in `next` of the point at `c` in `previous`, or `undefined` when
- * no row is in both. `previous` must hold a row.
+ * no row is in both. `previous` must hold a row, and `cut` is `rowCutAt(previous, c)`.
  */
 function heldPoint(
   previous: LayoutSnapshot,
   next: LayoutSnapshot,
   c: number,
+  cut: RowCut,
   { intraRowShift, sawHeight }: Pick<LayoutShiftInput, 'intraRowShift' | 'sawHeight'>,
 ): number | undefined {
-  const cut = rowCutAt(previous, c)
   const r = cut.index
   const rowId = previous.list[r]?.id
   const nextIndex = rowId === undefined

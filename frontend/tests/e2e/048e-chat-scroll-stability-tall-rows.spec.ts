@@ -84,8 +84,14 @@ const FAST_STEPS = SCROLL_UP_PX / FAST_STEP_PX
 const TALL_LABEL = 'Tall'
 const TALL_PARAGRAPHS = 150
 
-/** The property of `window` that holds whether the watched row showed a placeholder. */
+/** The property of `window` that holds what the watch of a row placeholder saw. */
 const PLACEHOLDER_WATCH_KEY = '__chatScrollStabilityPlaceholderSeen'
+
+/** The smallest and the largest height of a row over the frames in which it showed a placeholder, or null for none. */
+interface PlaceholderHeights {
+  min: number
+  max: number
+}
 
 /** A short scripted turn. */
 function shortTurn(turn: number) {
@@ -173,22 +179,34 @@ async function expectScrolledUpBy(page: Page, before: number, pixels: number): P
 }
 
 /**
- * Record, in every animation frame from now on, whether the row of `seq` shows a row placeholder. Returns a read of
- * the record. A navigation ends the record.
+ * Record, in every animation frame from now on, the height of the row of `seq` while the row shows a placeholder in
+ * place of its content. Returns a read of the record. A navigation ends the record.
+ *
+ * The placeholder is a direct child of the row. A row that shows its content again keeps a copy of the placeholder
+ * over that content for one fade, inside a wrapper, and the record does not count it.
  */
-async function watchRowPlaceholder(page: Page, seq: string): Promise<() => Promise<boolean>> {
+async function watchRowPlaceholder(page: Page, seq: string): Promise<() => Promise<PlaceholderHeights | null>> {
   await chatScrollContainer(page).evaluate((container, { rowSeq, key }) => {
-    Reflect.set(window, key, false)
+    Reflect.set(window, key, null)
     const sample = () => {
       if (!container.isConnected)
         return
-      if (container.querySelector(`[data-seq="${rowSeq}"] [data-testid="row-skeleton"]`) !== null)
-        Reflect.set(window, key, true)
+      const row = container.querySelector(`[data-seq="${rowSeq}"]`)
+      if (row !== null && row.querySelector(':scope > [data-testid="row-skeleton"]') !== null) {
+        const height = row.getBoundingClientRect().height
+        const seen = Reflect.get(window, key) as { min: number, max: number } | null
+        Reflect.set(window, key, seen === null
+          ? { min: height, max: height }
+          : {
+              min: Math.min(seen.min, height),
+              max: Math.max(seen.max, height),
+            })
+      }
       requestAnimationFrame(sample)
     }
     requestAnimationFrame(sample)
   }, { rowSeq: seq, key: PLACEHOLDER_WATCH_KEY })
-  return () => page.evaluate(key => Reflect.get(window, key) === true, PLACEHOLDER_WATCH_KEY)
+  return () => page.evaluate(key => Reflect.get(window, key) as PlaceholderHeights | null, PLACEHOLDER_WATCH_KEY)
 }
 
 test.describe('chat scroll stability while the reader scrolls up into a very tall row', () => {
@@ -209,17 +227,23 @@ test.describe('chat scroll stability while the reader scrolls up into a very tal
   test('keeps the rows below a very tall row in place when a fast scroll ends inside the row', async ({ page, authenticatedWorkspace, modelScript }) => {
     const chat = await seedTallRow(page, modelScript)
     await resizeRowsTo(page, UNEVEN_ROW_WIDTH)
-    await expectTallRowPremeasuredAgain(page, chat, chat.narrowCommit)
+    const premeasured = await expectTallRowPremeasuredAgain(page, chat, chat.narrowCommit)
 
     const before = await chatDistanceFromBottom(page)
-    const sawPlaceholder = await watchRowPlaceholder(page, chat.tallSeq)
+    const readPlaceholder = await watchRowPlaceholder(page, chat.tallSeq)
     // A fast scroll mounts a row with a known height as a placeholder, and the row replaces it when the scroll ends.
     await pointAtChat(page)
     for (let step = 0; step < FAST_STEPS; step++)
       await page.mouse.wheel(0, -FAST_STEP_PX)
 
     await expectViewInsideTallRow(page, chat.tallSeq)
-    expect(await sawPlaceholder(), 'the tall row mounted as a placeholder during the fast scroll').toBe(true)
+    const placeholder = await readPlaceholder()
+    expect(placeholder, 'the tall row mounted as a placeholder during the fast scroll').not.toBeNull()
+    // The placeholder fills the slot that the app keeps for the row, which has the height that the hidden copy
+    // measured. A placeholder that is taller than its slot covers the top of the next row, and the edge of the row
+    // moves when the content replaces it.
+    for (const height of [placeholder!.min, placeholder!.max])
+      expect(Math.abs(height - premeasured.height), `the placeholder is as tall as its slot, within half a pixel (${height}px for ${premeasured.height}px)`).toBeLessThanOrEqual(0.5)
     await expectScrolledUpBy(page, before, SCROLL_UP_PX)
   })
 

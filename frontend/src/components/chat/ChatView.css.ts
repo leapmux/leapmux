@@ -555,13 +555,16 @@ export const rowSkeletonClosing = style({
 
 // The in-row crossfade copy: when a fling skeleton upgrades to the real
 // bubble, a fading-out skeleton copy sits absolutely on top of the fresh
-// content for one transition beat. Inert — it must never intercept clicks on
+// content for one transition beat. It covers the row from its top to its
+// bottom, and the skeleton fills it (see ChatRowSkeleton in
+// ./widgets/ChatRowSkeleton.tsx). Inert — it must never intercept clicks on
 // the content beneath.
 export const rowSkeletonUpgradeOverlay = style({
   position: 'absolute',
   top: 0,
   left: 0,
   right: 0,
+  bottom: 0,
   pointerEvents: 'none',
 })
 

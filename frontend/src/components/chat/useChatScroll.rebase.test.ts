@@ -36,6 +36,17 @@ function scrolledNearTheTop() {
 }
 
 describe('useChatScroll rebase', () => {
+  it('reports no placement to the virtualizer for a rebase', async () => {
+    const h = scrolledUpWithChange(60)
+
+    await h.rest()
+
+    // The rebase wrote `scrollTop`, and nothing moved on screen.
+    expect(h.rebaseCount()).toBe(1)
+    expect(h.notePlacement).not.toHaveBeenCalled()
+    h.dispose()
+  })
+
   it('rebases after the quiet time', async () => {
     const h = scrolledUpWithChange(60)
 

@@ -494,6 +494,33 @@ describe('useChatScroll restore onto a row with an estimated height', () => {
     h.dispose()
   })
 
+  it('reports the placement of a restore to the virtualizer, and no placement for a page key', async () => {
+    const h = await restoredHalfwayIntoRow0()
+    // The show placed the view on the anchor of the reader.
+    expect(h.notePlacement).toHaveBeenLastCalledWith(500)
+    h.notePlacement.mockClear()
+
+    // A page moves the reader along the content, as a scroll does.
+    h.hook.pageScroll(1)
+
+    expect(h.div.getScrollTop()).toBe(952)
+    expect(h.notePlacement).not.toHaveBeenCalled()
+    h.dispose()
+  })
+
+  it('reports the placement to the virtualizer when the view lands again on a held anchor', async () => {
+    const h = await restoredHalfwayIntoRow0()
+    h.notePlacement.mockClear()
+
+    // The row of the anchor measures, and the view lands on the anchor again.
+    h.changeAbove(-400)
+
+    expect(h.div.getScrollTop()).toBe(300)
+    expect(h.notePlacement).toHaveBeenCalledTimes(1)
+    expect(h.notePlacement).toHaveBeenLastCalledWith(300)
+    h.dispose()
+  })
+
   it('ends the hold at a page key', async () => {
     const h = await restoredHalfwayIntoRow0()
     h.hook.pageScroll(1)

@@ -4,11 +4,12 @@ import type { AnchorOffsetGeometry } from './chatScrollAnchor'
 import type { LayoutShiftSurface } from './createLayoutShift'
 import type { RowContentReadiness } from './createRowMeasurer'
 import type { ScrollAnchor } from '~/stores/chatTypes'
-import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
+import { createEffect, createMemo, createSignal, onCleanup, untrack } from 'solid-js'
 import { largestIndexWhere, smallestIndexWhere } from '~/lib/binarySearch'
 import { clamp } from '~/lib/clamp'
 import { capMapInsertionOrder } from '~/lib/mapLru'
 import { monotonicNow } from '~/lib/monotonicNow'
+import { TOP_EDGE_SLACK_PX } from './chatLayoutShift'
 import { BAND_BORDER_PX, messageBandKind } from './chatRowGeometry'
 import { anchorAtOffset, resolveAnchorScrollTop, resolveNearestAnchorScrollTop } from './chatScrollAnchor'
 import { warnSlowScrollPhase } from './chatScrollGeometry'
@@ -391,6 +392,19 @@ export interface UseChatVirtualizerResult extends LayoutShiftSurface {
   /** Recompute and commit the visible slice for a scroll coordinate (see computeRange for `lead`). */
   updateViewport: (scrollTop: number, clientHeight: number, lead?: ViewportLead) => void
   /**
+   * Record that the scroll hook placed the view at the scroll coordinate `scrollTop`: a
+   * seek, a restore, or a jump to the top, and not a move of the reader along the content.
+   * Call it after the write of the position.
+   *
+   * The virtualizer records each mounted row that lay above the viewport top when it
+   * mounted: the reader reaches such a row from below, and the layout shift can then hold
+   * its bottom edge inside the view (see LayoutShiftInput.enteredFromAbove). A placement
+   * moves the view with no such move of the reader, so this call makes the record again
+   * from the new position: a row above the new viewport top is in it, and every other row
+   * is not.
+   */
+  notePlacement: (scrollTop: number) => void
+  /**
    * Record a height that a read of the mounted row gave. Returns true if the offset map
    * changed. The first read since the row mounted corrects a height that the reader did not
    * see, so the layout shift then holds the bottom edge of the row (see nextLayoutShift).
@@ -731,6 +745,12 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // shift asks after a read changed the height (see LayoutShiftInput.sawHeight).
   const sawHeight = (id: string): boolean => (readsSinceMount.get(id) ?? 0) > 1
 
+  // The mounted rows that lay above the viewport top when they mounted, or at the last
+  // placement of the view (see notePlacement). The reader reaches such a row from below: it
+  // comes into the view over the top edge (see LayoutShiftInput.enteredFromAbove).
+  const rowsAboveView = new Set<string>()
+  const enteredFromAbove = (id: string): boolean => rowsAboveView.has(id)
+
   // A provisional height describes only the element that still shows it. When the
   // row's last element unmounts, the row is unmeasured under its key again.
   const dropProvisionalHeight = (id: string): void => {
@@ -744,6 +764,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // The last element of the row detached: the next mount shows the reader no height yet.
   const noteRowUnmounted = (id: string): void => {
     readsSinceMount.delete(id)
+    rowsAboveView.delete(id)
     dropProvisionalHeight(id)
   }
 
@@ -1221,7 +1242,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     onRowUnmounted: noteRowUnmounted,
     currentMeasurementKey: currentHeightKey,
   })
-  const { attachRow, detachRow } = measurer
+  const { detachRow } = measurer
   onCleanup(measurer.dispose)
   // Read each mounted row that the last prune re-keyed again, at the measurer's next
   // flush: a row whose new content keeps its height never resizes, and only a read of
@@ -1243,9 +1264,45 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     isSuspended: fastScrollActive,
     rows: measurer,
     sawHeight,
+    enteredFromAbove,
     lastMeasurement: () => lastMeasurement,
   })
   const { contentTopOf, placementScrollTopOf } = layoutShiftSurface
+
+  // The scroll coordinate of the viewport top at the last updateViewport or notePlacement,
+  // or `undefined` before the first one. A rebase moves `scrollTop` and the shift by the
+  // same distance, so `rebase` below moves this coordinate with them: it then still
+  // converts to the content coordinate of the viewport top.
+  let viewportScrollTop: number | undefined
+  const rebase = (): number => {
+    const removed = layoutShiftSurface.rebase()
+    if (viewportScrollTop !== undefined)
+      viewportScrollTop -= removed
+    return removed
+  }
+  // Whether the top edge of the row lies above the viewport top at `scrollTop`, by more
+  // than the slack within which the viewport top counts as that edge (see
+  // TOP_EDGE_SLACK_PX). Untracked: the callers record a fact of this moment.
+  const liesAboveView = (id: string, scrollTop: number): boolean => untrack(() => {
+    const top = offsetOfId(id)
+    return top !== undefined && top < contentTopOf(scrollTop) - TOP_EDGE_SLACK_PX
+  })
+  const attachRow = (id: string, el: HTMLElement, readiness?: RowContentReadiness): void => {
+    // The record comes before the attach: the measurer reads the row at once, and the
+    // layout shift of that read asks enteredFromAbove. A row that a new element takes over
+    // stays mounted, and keeps its record.
+    if (!mountedIds.has(id) && viewportScrollTop !== undefined && liesAboveView(id, viewportScrollTop))
+      rowsAboveView.add(id)
+    measurer.attachRow(id, el, readiness)
+  }
+  const notePlacement = (scrollTop: number): void => {
+    viewportScrollTop = scrollTop
+    rowsAboveView.clear()
+    for (const id of mountedIds) {
+      if (liesAboveView(id, scrollTop))
+        rowsAboveView.add(id)
+    }
+  }
 
   // These resolvers take and return scroll coordinates, so a caller that holds a scroll
   // position needs no conversion of its own. A resolved anchor is a placement, so the top
@@ -1276,6 +1333,9 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     clientHeight: number,
     lead?: ViewportLead,
   ) => {
+    // Before the range commits: a row that the new range mounts compares its top edge with
+    // this position (see attachRow).
+    viewportScrollTop = scrollTop
     const next = computeRange(scrollTop, clientHeight, lead)
     const cur = range()
     const { list } = rowIndex()
@@ -1295,6 +1355,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     geometryVersion: geomVersion,
     totalHeight,
     ...layoutShiftSurface,
+    rebase,
     offsetOfIndex,
     offsetOfId,
     indexOfId,
@@ -1312,6 +1373,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     lastMeasurement: () => lastMeasurement,
     computeRange,
     updateViewport,
+    notePlacement,
     measure,
     primeHeight,
     primeHeights,

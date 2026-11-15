@@ -1014,6 +1014,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // the crossfade (lingering) band below -- they differ only by the closing
   // class, so the translateY-offset / reserved-height / seed wiring lives in one
   // place instead of two copies that could drift.
+  //
+  // The slot carries the reserved height of the row, and the skeleton fills it (see
+  // ChatRowSkeleton). The border of a band row then lies inside the reserved height, as
+  // it does in the row that the slot stands in for.
   const positionedRowSkeleton = (entry: ClassifiedEntry, closing = false) => (
     <div
       // A band row's decoration is the ROW's own background and border, and the row
@@ -1029,9 +1033,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       class={closing
         ? `${styles.virtualRow} ${styles.rowSkeletonClosing}`
         : messageRowChrome(styles.virtualRow, entry.category.kind, entry.message.source).class}
-      style={{ transform: `translateY(${virt.offsetOfId(entry.message.id) ?? 0}px)` }}
+      style={{
+        transform: `translateY(${virt.offsetOfId(entry.message.id) ?? 0}px)`,
+        height: `${virt.heightOfId(entry.message.id)}px`,
+      }}
     >
-      <ChatRowSkeleton height={virt.heightOfId(entry.message.id)} seed={entry.message.id} />
+      <ChatRowSkeleton seed={entry.message.id} />
     </div>
   )
 
@@ -1170,7 +1177,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                           // its known height instead of paying full bubble
                           // construction on the scroll-critical path, then upgrades
                           // in place (skeleton -> crossfade -> real) once the scroll
-                          // settles. The per-row phase machine lives in
+                          // settles. While the skeleton shows, the row carries that
+                          // height itself, and the skeleton fills it, so the border of
+                          // a band row lies inside the height (see ChatRowSkeleton).
+                          // The row sizes to its content again when it upgrades.
+                          // The per-row phase machine lives in
                           // createRowUpgradePhase (see rowSkeletonUpgradeOverlay for
                           // the crossfade copy). trackRow also registers this row's phase
                           // in flingSkeletons.skeletonIds so the gap-bridge overlay hides
@@ -1217,6 +1228,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                                 opacity: rowHiddenPendingReveal(message.id)
                                   ? '0'
                                   : '1',
+                                height: upgradePhase() === 'skeleton'
+                                  ? `${virt.heightOfId(message.id)}px`
+                                  : undefined,
                               }}
                               data-seq={message.seq.toString()}
                               ref={(el) => {
@@ -1226,12 +1240,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                             >
                               <Show
                                 when={upgradePhase() !== 'skeleton'}
-                                fallback={(
-                                  <ChatRowSkeleton
-                                    height={virt.heightOfId(message.id)}
-                                    seed={message.id}
-                                  />
-                                )}
+                                fallback={<ChatRowSkeleton seed={message.id} />}
                               >
                                 {(() => {
                                   // Constructed lazily: while the skeleton shows,
@@ -1276,10 +1285,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                                       </Show>
                                       <Show when={upgradePhase() === 'crossfade'}>
                                         <div class={`${styles.rowSkeletonUpgradeOverlay} ${styles.rowSkeletonClosing}`}>
-                                          <ChatRowSkeleton
-                                            height={virt.heightOfId(message.id)}
-                                            seed={message.id}
-                                          />
+                                          <ChatRowSkeleton seed={message.id} />
                                         </div>
                                       </Show>
                                     </>

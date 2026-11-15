@@ -452,3 +452,193 @@ export async function sendLongTurn(page: Page, script: ModelScript, prompt: stri
   await waitForScrollRest(page)
   return step
 }
+
+/** A mounted row of the chat, as `rowStatesIn` reads it. */
+export interface RowState {
+  seq: string
+  /** The distance from the top edge of the scroll container to the top edge of the row. */
+  distance: number
+  height: number
+  /** The app hides a row until the row measures its height, as while the row waits for its content. */
+  hidden: boolean
+}
+
+/** The state of each mounted row of `container`, in document order. Runs in the browser. */
+export function rowStatesIn(container: Element): RowState[] {
+  const top = container.getBoundingClientRect().top
+  return Array.from(container.querySelectorAll<HTMLElement>('[data-seq]')).map((row) => {
+    const rect = row.getBoundingClientRect()
+    return {
+      seq: row.dataset.seq ?? '',
+      distance: rect.top - top,
+      height: rect.height,
+      hidden: row.style.visibility === 'hidden',
+    }
+  })
+}
+
+/** Read the state of each mounted row (see rowStatesIn). */
+export function readRowStates(page: Page): Promise<RowState[]> {
+  return chatScrollContainer(page).evaluate(rowStatesIn)
+}
+
+/** The hold that `installReplyHoldIn` keeps on `window`. */
+interface ReplyHold {
+  /** The text that marks a reply to hold, or null once the hold ended. */
+  marker: string | null
+  /** The deliveries of the held replies, in the order of their arrival. */
+  held: (() => void)[]
+}
+
+/**
+ * Hold back each worker reply whose rendered HTML contains `marker`, and keep the hold on `window` under `key`. A
+ * reply is a message with an `html` text, as the Markdown worker sends. The row of that text then stays behind its
+ * placeholder, as a long report does on a slow device.
+ *
+ * It replaces the `onmessage` accessor of `Worker.prototype`, so it holds only for a worker whose handler the page
+ * sets after this function runs. Run it before the scripts of the page. Runs in the browser.
+ */
+export function installReplyHoldIn({ key, marker }: { key: string, marker: string }): void {
+  const descriptor = Object.getOwnPropertyDescriptor(Worker.prototype, 'onmessage')
+  const get = descriptor?.get
+  const set = descriptor?.set
+  if (get === undefined || set === undefined)
+    throw new Error('Worker.prototype.onmessage is not an accessor')
+  const hold: ReplyHold = { marker, held: [] }
+  Reflect.set(window, key, hold)
+  Object.defineProperty(Worker.prototype, 'onmessage', {
+    configurable: true,
+    enumerable: descriptor?.enumerable ?? true,
+    get(this: Worker) {
+      return get.call(this)
+    },
+    set(this: Worker, handler: unknown) {
+      if (typeof handler !== 'function') {
+        set.call(this, handler)
+        return
+      }
+      set.call(this, (event: MessageEvent) => {
+        const html = (event.data as { html?: unknown } | null)?.html
+        if (hold.marker !== null && typeof html === 'string' && html.includes(hold.marker)) {
+          hold.held.push(() => handler.call(this, event))
+          return
+        }
+        handler.call(this, event)
+      })
+    },
+  })
+}
+
+/** The number of replies that the hold under `key` keeps back, or 0 when no hold exists. Runs in the browser. */
+export function heldReplyCountIn(key: string): number {
+  const hold = Reflect.get(window, key) as ReplyHold | undefined
+  return hold?.held.length ?? 0
+}
+
+/**
+ * Deliver the replies that the hold under `key` keeps back, in the order of their arrival, and end the hold, so it
+ * keeps back no later reply. Does nothing when no hold exists. Runs in the browser.
+ */
+export function releaseHeldRepliesIn(key: string): void {
+  const hold = Reflect.get(window, key) as ReplyHold | undefined
+  if (hold === undefined)
+    return
+  hold.marker = null
+  for (const deliver of hold.held.splice(0))
+    deliver()
+}
+
+/** The property of `window` that holds the hold of `holdRenderRepliesWith`. */
+const REPLY_HOLD_KEY = '__chatScrollStabilityReplyHold'
+
+/** The hold that `holdRenderRepliesWith` starts. */
+export interface HeldRenderReplies {
+  /** The number of replies that the hold keeps back now. */
+  heldCount: () => Promise<number>
+  /** Deliver the held replies and end the hold (see releaseHeldRepliesIn). */
+  release: () => Promise<void>
+}
+
+/**
+ * From the next navigation of `page` on, hold back each worker reply whose rendered HTML contains `marker` (see
+ * installReplyHoldIn), until `release`.
+ *
+ * It adds an init script to the page, and no API removes an init script again. So only a spec with a page of its own
+ * may call it: list the spec in ISOLATED_CONTEXT_SPECS (see fixtures.ts).
+ *
+ * The app ends a render that takes longer than its time budget, and then shows the source of the text. The budget
+ * of a held reply runs from the moment its request is the oldest one of its worker without a reply:
+ *
+ * - A body of ordinary size shares its worker with every other row, and its budget is about 10 seconds (see
+ *   markdownRenderBudgetMs). A test that scrolls for a few seconds under load does not finish in that time.
+ * - A body above 32 KiB renders in a worker of its own (see LARGE_MARKDOWN_BODY_CHARS). The held reply is then the
+ *   first answer that this worker owes, and the app waits 30 seconds longer for the first answer of a worker (see
+ *   WORKER_COLD_START_ALLOWANCE_MS). Give the held body that size with `largeBodyFiller`.
+ *
+ * Check that the row still waits right before the release.
+ */
+export async function holdRenderRepliesWith(page: Page, marker: string): Promise<HeldRenderReplies> {
+  await page.addInitScript(installReplyHoldIn, { key: REPLY_HOLD_KEY, marker })
+  return {
+    heldCount: () => page.evaluate(heldReplyCountIn, REPLY_HOLD_KEY),
+    release: () => page.evaluate(releaseHeldRepliesIn, REPLY_HOLD_KEY),
+  }
+}
+
+/**
+ * The length of the address in the link definition of `largeBodyFiller`: above the 32 KiB at which the app renders a
+ * Markdown body in a worker of its own (LARGE_MARKDOWN_BODY_CHARS, which the test of this file compares it with).
+ */
+export const LARGE_BODY_FILLER_CHARS = 40 * 1024
+
+/**
+ * A Markdown block that makes a body large and draws nothing: one link definition that no link uses, with an address
+ * of LARGE_BODY_FILLER_CHARS characters. Append it to a body after a blank line. The height of the row stays the
+ * height of the rest of the body.
+ */
+export function largeBodyFiller(): string {
+  return `[large-body-filler]: https://example.invalid/${'f'.repeat(LARGE_BODY_FILLER_CHARS)}`
+}
+
+/**
+ * The database in which the app keeps each rendered Markdown body and each highlighted code block for the next load
+ * of the page, and its object store (see renderArtifactStore.ts in the app).
+ */
+const STORED_RENDERS = { database: 'leapmux-render-cache', store: 'artifacts' } as const
+
+/**
+ * Delete every entry of the object store `store` of the IndexedDB database `database`. Rejects when the database
+ * has no such store, so a renamed store fails the caller. Runs in the browser.
+ */
+export function clearObjectStoreIn({ database, store }: { database: string, store: string }): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const open = indexedDB.open(database)
+    open.onerror = () => reject(open.error ?? new Error(`cannot open the database ${database}`))
+    open.onsuccess = () => {
+      const db = open.result
+      if (!db.objectStoreNames.contains(store)) {
+        db.close()
+        reject(new Error(`the database ${database} has no object store ${store}`))
+        return
+      }
+      const transaction = db.transaction(store, 'readwrite')
+      transaction.objectStore(store).clear()
+      transaction.oncomplete = () => {
+        db.close()
+        resolve()
+      }
+      transaction.onerror = () => {
+        db.close()
+        reject(transaction.error ?? new Error(`cannot clear the object store ${store}`))
+      }
+    }
+  })
+}
+
+/**
+ * Delete each render that the app keeps for the next load of the page. After a reload, the page then renders each
+ * row again in its worker, as a browser does that shows the chat for the first time.
+ */
+export function clearStoredRenders(page: Page): Promise<void> {
+  return page.evaluate(clearObjectStoreIn, STORED_RENDERS)
+}

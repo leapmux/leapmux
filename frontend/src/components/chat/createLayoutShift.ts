@@ -99,6 +99,13 @@ export interface LayoutShiftDeps {
    * a height that the reader did not see.
    */
   sawHeight: (rowId: string) => boolean
+  /**
+   * Whether the row came into the view over the top edge of the view, so the reader reached
+   * it from below (see LayoutShiftInput.enteredFromAbove). The shift rule can hold the
+   * bottom edge of such a row inside the view, when the row corrects a height that the
+   * reader did not see.
+   */
+  enteredFromAbove: (rowId: string) => boolean
   /** The last height commit that moved the offset map, for the report of a content move. */
   lastMeasurement: ContentMovedReporterDeps['lastMeasurement']
 }
@@ -236,9 +243,11 @@ export function createLayoutShift(deps: LayoutShiftDeps): LayoutShiftController 
           next,
           previousShift: layoutShift(),
           scrollTop: readLogicalScrollTop(el) - deps.spacerInsetPx(),
+          viewHeight: el.clientHeight,
           pinBottom: deps.pinBottom(),
           intraRowShift: pivot.takeIntraRowShift,
           sawHeight: deps.sawHeight,
+          enteredFromAbove: deps.enteredFromAbove,
         }))
       })
     })

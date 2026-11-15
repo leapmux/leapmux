@@ -2062,6 +2062,251 @@ describe('useChatVirtualizer layoutShift', () => {
       })
     })
 
+    // The reader scrolls up to a row that waits for its content behind a placeholder: the
+    // copy of row 10 mounts above the view and reads nothing, because it is not measurable.
+    // Then the view moves up, to the viewport top 1150: 50px of the view lie above row 10,
+    // and 350px below it. The first read of the copy gives 700px.
+    describe('a late row inside the view', () => {
+      /** The viewport top at which row 10 is high in the view. */
+      const VIEW_TOP = 1150
+
+      /** Mount a copy of row 10 that waits for its content, so its attach reads nothing. */
+      function mountWaitingRow10(virt: ReturnType<typeof setup>['virt']): HTMLElement {
+        const row = document.createElement('div')
+        row.getBoundingClientRect = () => new DOMRect(0, 0, 400, 100)
+        document.body.append(row)
+        virt.attachRow(ROW_10, row, {
+          measurable: () => false,
+          onMeasurable: () => {},
+        })
+        return row
+      }
+
+      /** Move the view to the viewport top `scrollTop`, as a scroll of the reader does. */
+      function scrollTo(layout: ReturnType<typeof fakeLayout>, virt: ReturnType<typeof setup>['virt'], scrollTop: number): void {
+        layout.state.scrollTop = scrollTop
+        virt.updateViewport(scrollTop, layout.state.clientHeight)
+      }
+
+      it('holds the bottom edge of a row that mounted above the view', () => {
+        const layout = fakeLayout({ scrollTop: 1400 })
+        const { virt, dispose } = mount({
+          scroller: layout.scroller,
+          premeasuredIds: [ROW_10],
+        })
+        scrollTo(layout, virt, 1400)
+        mountWaitingRow10(virt)
+        expect(virt.showsHeight(ROW_10)).toBe(false)
+        scrollTo(layout, virt, VIEW_TOP)
+        const spacer = virt.spacerHeight()
+
+        virt.measure(ROW_10, 700)
+
+        // The rows below row 10 keep their scroll coordinates: the row grows above itself.
+        expect(virt.offsetOfId(ROW_11)! + virt.layoutShift()).toBe(1320)
+        expect(virt.layoutShift()).toBe(-600)
+        expect(virt.spacerHeight()).toBe(spacer)
+        dispose()
+      })
+
+      it('holds the viewport top for a row that mounted inside the view', () => {
+        const layout = fakeLayout({ scrollTop: VIEW_TOP })
+        const { virt, dispose } = mount({
+          scroller: layout.scroller,
+          premeasuredIds: [ROW_10],
+        })
+        scrollTo(layout, virt, VIEW_TOP)
+        mountWaitingRow10(virt)
+
+        virt.measure(ROW_10, 700)
+
+        // The row grows at its bottom, and the rows below it move down.
+        expect(virt.layoutShift()).toBe(0)
+        expect(virt.offsetOfId(ROW_11)! + virt.layoutShift()).toBe(1920)
+        dispose()
+      })
+
+      it('holds the viewport top for a row that mounted before the first viewport update', () => {
+        const layout = fakeLayout({ scrollTop: 1400 })
+        const { virt, dispose } = mount({
+          scroller: layout.scroller,
+          premeasuredIds: [ROW_10],
+        })
+        mountWaitingRow10(virt)
+        scrollTo(layout, virt, VIEW_TOP)
+
+        virt.measure(ROW_10, 700)
+
+        expect(virt.layoutShift()).toBe(0)
+        dispose()
+      })
+
+      it('holds the viewport top for a row that mounted within the slack of the viewport top', () => {
+        // The top edge of row 10 is at 1200, half a pixel above the viewport top.
+        const layout = fakeLayout({ scrollTop: 1200.5 })
+        const { virt, dispose } = mount({
+          scroller: layout.scroller,
+          premeasuredIds: [ROW_10],
+        })
+        scrollTo(layout, virt, 1200.5)
+        mountWaitingRow10(virt)
+        scrollTo(layout, virt, VIEW_TOP)
+
+        virt.measure(ROW_10, 700)
+
+        expect(virt.layoutShift()).toBe(0)
+        dispose()
+      })
+
+      it('holds the viewport top after the row unmounted and mounted again inside the view', () => {
+        const layout = fakeLayout({ scrollTop: 1400 })
+        const { virt, dispose } = mount({
+          scroller: layout.scroller,
+          premeasuredIds: [ROW_10],
+        })
+        scrollTo(layout, virt, 1400)
+        virt.detachRow(mountWaitingRow10(virt))
+        scrollTo(layout, virt, VIEW_TOP)
+        mountWaitingRow10(virt)
+
+        virt.measure(ROW_10, 700)
+
+        expect(virt.layoutShift()).toBe(0)
+        dispose()
+      })
+
+      it('holds the bottom edge when a new element takes the row over inside the view', () => {
+        const layout = fakeLayout({ scrollTop: 1400 })
+        const { virt, dispose } = mount({
+          scroller: layout.scroller,
+          premeasuredIds: [ROW_10],
+        })
+        scrollTo(layout, virt, 1400)
+        const first = mountWaitingRow10(virt)
+        scrollTo(layout, virt, VIEW_TOP)
+        // The row stays mounted across the two elements, so it keeps its record.
+        mountWaitingRow10(virt)
+        virt.detachRow(first)
+
+        virt.measure(ROW_10, 700)
+
+        expect(virt.layoutShift()).toBe(-600)
+        dispose()
+      })
+
+      it('compares a row that mounts after a rebase with the viewport top after that rebase', () => {
+        // Row 12 (`m13`) spans the content coordinates 1440 to 1540.
+        const ROW_12 = 'm13'
+        const ROW_13 = 'm14'
+        const layout = fakeLayout({ scrollTop: 1400 })
+        const { virt, dispose } = mount({
+          scroller: layout.scroller,
+          premeasuredIds: [ROW_12],
+        })
+        virt.attachSpacer(layout.spacer)
+        virt.attachLayer(layout.layer)
+        scrollTo(layout, virt, 1400)
+        // A row above the view shrinks by 60px, so the shift is 60, and the rebase moves the
+        // shift into the position: the viewport top is at 1340 from then on.
+        virt.measure('m4', 40)
+        expect(virt.layoutShift()).toBe(60)
+        expect(virt.rebase()).toBe(60)
+        expect(layout.scroller.scrollTop).toBe(1340)
+        // Row 12 starts at 1380 now, which is inside the view, and below 1400.
+        const row = document.createElement('div')
+        row.getBoundingClientRect = () => new DOMRect(0, 0, 400, 100)
+        document.body.append(row)
+        virt.attachRow(ROW_12, row, {
+          measurable: () => false,
+          onMeasurable: () => {},
+        })
+
+        virt.measure(ROW_12, 700)
+
+        // The row mounted inside the view, so the viewport top holds, and the row below it
+        // moves down. With the position from before the rebase, the row would count as
+        // above the view.
+        expect(virt.layoutShift()).toBe(0)
+        expect(virt.offsetOfId(ROW_13)!).toBe(2100)
+        dispose()
+      })
+
+      describe('notePlacement', () => {
+        it('holds the viewport top after a placement that puts the row inside the view', () => {
+          const layout = fakeLayout({ scrollTop: 1400 })
+          const { virt, dispose } = mount({
+            scroller: layout.scroller,
+            premeasuredIds: [ROW_10],
+          })
+          scrollTo(layout, virt, 1400)
+          mountWaitingRow10(virt)
+          // A seek or a restore places the view: the reader did not move up to the row.
+          layout.state.scrollTop = VIEW_TOP
+          virt.notePlacement(VIEW_TOP)
+
+          virt.measure(ROW_10, 700)
+
+          expect(virt.layoutShift()).toBe(0)
+          expect(virt.offsetOfId(ROW_11)! + virt.layoutShift()).toBe(1920)
+          dispose()
+        })
+
+        it('holds the bottom edge after a placement that leaves the row above the view', () => {
+          const layout = fakeLayout({ scrollTop: 1400 })
+          const { virt, dispose } = mount({
+            scroller: layout.scroller,
+            premeasuredIds: [ROW_10],
+          })
+          scrollTo(layout, virt, 1400)
+          mountWaitingRow10(virt)
+          layout.state.scrollTop = 1350
+          virt.notePlacement(1350)
+          scrollTo(layout, virt, VIEW_TOP)
+
+          virt.measure(ROW_10, 700)
+
+          expect(virt.layoutShift()).toBe(-600)
+          dispose()
+        })
+
+        it('holds the bottom edge of a row that mounted inside the view, after a placement below it', () => {
+          const layout = fakeLayout({ scrollTop: VIEW_TOP })
+          const { virt, dispose } = mount({
+            scroller: layout.scroller,
+            premeasuredIds: [ROW_10],
+          })
+          scrollTo(layout, virt, VIEW_TOP)
+          mountWaitingRow10(virt)
+          // The placement leaves the row above the view, so the reader reaches it from below.
+          layout.state.scrollTop = 1350
+          virt.notePlacement(1350)
+          scrollTo(layout, virt, VIEW_TOP)
+
+          virt.measure(ROW_10, 700)
+
+          expect(virt.layoutShift()).toBe(-600)
+          dispose()
+        })
+
+        it('records no row that is not mounted', () => {
+          const layout = fakeLayout({ scrollTop: 1400 })
+          const { virt, dispose } = mount({
+            scroller: layout.scroller,
+            premeasuredIds: [ROW_10],
+          })
+          // Row 10 lies above the view at the placement, but it mounts later, inside the view.
+          virt.notePlacement(1400)
+          scrollTo(layout, virt, VIEW_TOP)
+          mountWaitingRow10(virt)
+
+          virt.measure(ROW_10, 700)
+
+          expect(virt.layoutShift()).toBe(0)
+          dispose()
+        })
+      })
+    })
+
     it('holds the row at the viewport top when a premeasured row above it reads another height', () => {
       const { scroller } = fakeLayout({ scrollTop: 1250 })
       const { virt, dispose } = mount({

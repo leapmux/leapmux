@@ -317,6 +317,7 @@ vi.mock('./useChatVirtualizer', async () => {
           virtualizerState.layoutAttachments.push({ slot: 'layer', element })
         },
         rebase: () => 0,
+        notePlacement: () => {},
         offsetOfId: (id: string) => Number(id.slice(1)) * 100,
         indexOfId: (id: string) => Number(id.slice(1)),
         offsetOfIndex: (index: number) => index * 100,
@@ -3762,6 +3763,11 @@ describe('chat view virtualized with stubbed deps', () => {
       // The class ONLY. `data-band` is the e2e hook, and a second visible element carrying
       // it would break the seam check that walks every [data-band] in DOM order.
       expect(slot.hasAttribute('data-band')).toBe(false)
+      // The slot carries the reserved height (the stub's heightOfId), so the border of the
+      // band lies inside it, and the skeleton fills what remains. A skeleton with the
+      // reserved height inside the band would make the slot taller by the two borders.
+      expect(slot.style.height).toBe('100px')
+      expect((skeleton as HTMLElement).style.height).toBe('100%')
     })
 
     it('defers loading skeletons past the show-delay, then paints them (including the live tail)', () => {
@@ -3795,7 +3801,9 @@ describe('chat view virtualized with stubbed deps', () => {
         ...container.querySelectorAll('[data-testid="row-skeleton"]'),
       ] as HTMLElement[]
       expect(skeletons).toHaveLength(2)
-      expect(skeletons.every(s => s.style.height === '100px')).toBe(true) // stub heightOfIndex
+      // Each slot carries the reserved height (the stub's heightOfId), and its skeleton fills it.
+      expect(skeletons.every(s => s.parentElement!.style.height === '100px')).toBe(true)
+      expect(skeletons.every(s => s.style.height === '100%')).toBe(true)
       expect(skeletons.map(s => s.parentElement!.style.transform).sort())
         .toEqual(['translateY(100px)', 'translateY(200px)'])
 
@@ -3811,6 +3819,8 @@ describe('chat view virtualized with stubbed deps', () => {
       ] as HTMLElement[]
       expect(lingering).toHaveLength(2)
       expect(lingering.every(s => s.parentElement!.classList.contains(rowSkeletonClosing))).toBe(true)
+      // The closing copy keeps the reserved height of its slot.
+      expect(lingering.every(s => s.parentElement!.style.height === '100px')).toBe(true)
 
       // After the crossfade beat the skeletons unmount for good.
       vi.advanceTimersByTime(SKELETON_SHOW_DELAY_MS)
@@ -4113,7 +4123,12 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(inRow).toHaveLength(2) // m8, m9 (m0 was already real)
       expect(overlay).toHaveLength(7) // m1..m7 (unmeasured, premeasure-hidden)
       // The lengths are asserted above; `?.` reads are the type-level guard alone.
-      expect(inRow[0]?.style.height).toBe('100px') // stub heightOfIndex
+      // The row carries the reserved height (the stub's heightOfId) while its skeleton
+      // shows, and the skeleton fills the row.
+      expect(inRow.every(s => s.parentElement?.style.height === '100px')).toBe(true)
+      expect(inRow.every(s => s.style.height === '100%')).toBe(true)
+      // A row that shows its bubble sizes to its content.
+      expect(container.querySelector<HTMLElement>('[data-seq="1"]')?.style.height).toBe('')
       // The body is ONE masked Oat fill block; its role="status" is what Oat's
       // `[role=status].skeleton` selector REQUIRES for the styles to apply.
       const fills = [
@@ -4162,6 +4177,9 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(crossfading).toHaveLength(2) // m8, m9 fading out over their bubbles
       // Two crossfading skeletons asserted above; `?.` is the type-level guard alone.
       expect(crossfading[0]?.parentElement?.classList.contains(rowSkeletonClosing)).toBe(true)
+      // The upgraded rows size to their content again, and each fading copy fills its row.
+      expect(crossfading.every(s => s.closest<HTMLElement>('[data-seq]')?.style.height === '')).toBe(true)
+      expect(crossfading.every(s => s.style.height === '100%')).toBe(true)
 
       // After the crossfade beat, only the 7 loading overlays (unmeasured rows)
       // remain.

@@ -42,7 +42,7 @@ export type ChatScrollVirtualizer = Pick<
   'totalHeight' | 'updateViewport' | 'anchorAt' | 'scrollTopForAnchor' | 'scrollTopNearAnchor' | 'geometryVersion'
   | 'anchorAtContent' | 'contentTopForAnchor'
   | 'layoutShift' | 'rebase' | 'contentTopOf' | 'scrollTopOf' | 'placementScrollTopOf' | 'setFastScrollActive'
-  | 'showsHeight'
+  | 'showsHeight' | 'notePlacement'
 >
 
 /**
@@ -859,7 +859,15 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     return placed
   }
 
-  /** The write of placeAt, with no refresh of the rendered rows. Returns as placeAt. */
+  /**
+   * The write of placeAt, with no refresh of the rendered rows. Returns as placeAt.
+   *
+   * It tells the virtualizer about the placement (see UseChatVirtualizerResult.notePlacement):
+   * the view moved with no move of the reader along the content, so a row that the reader
+   * had reached from below can now lie anywhere in the view. A page scroll and a rebase are
+   * no placement in that meaning: a page moves the reader along the content, and a rebase
+   * moves nothing on screen.
+   */
   function writePlacement(el: HTMLDivElement, resolve: () => number | null): boolean | null {
     rebase()
     const top = resolve()
@@ -868,6 +876,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     following = false
     const before = el.scrollTop
     writeOwnScrollTop(clampScrollTop(el, top), { refresh: false })
+    virt.notePlacement(readLogicalScrollTop(el))
     return el.scrollTop !== before
   }
 

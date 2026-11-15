@@ -597,6 +597,24 @@ describe('useChatScroll jump to seq', () => {
     h.dispose()
   })
 
+  it('reports the placement of a seek to the virtualizer, with the position that it wrote', async () => {
+    // Row 20 has seq 21.
+    const h = mountScrollHarness({
+      messages: rowMessages(1),
+    })
+    h.scrollTo(2400)
+    // A scroll of the reader is no placement.
+    expect(h.notePlacement).not.toHaveBeenCalled()
+
+    expect(await h.hook.jumpToSeq(21n)).toBe(true)
+
+    // The landing keeps 8px above the top of row 20, which is 2000.
+    expect(h.div.getScrollTop()).toBe(1992)
+    expect(h.notePlacement).toHaveBeenCalledTimes(1)
+    expect(h.notePlacement).toHaveBeenLastCalledWith(1992)
+    h.dispose()
+  })
+
   it('resolves the landing row after the rebase', async () => {
     // Row 20 has seq 21.
     const messages = rowMessages(1)
