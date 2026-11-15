@@ -1,13 +1,51 @@
+import type { Accessor } from 'solid-js'
 import type { VirtualItem } from './useChatVirtualizer'
-import { createRoot, createSignal } from 'solid-js'
-import { describe, expect, it } from 'vitest'
+import { batch, createRenderEffect, createRoot, createSignal } from 'solid-js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
+import { createManualFrames } from '~/test-support/manualFrames'
 import { BAND_BORDER_PX } from './chatRowGeometry'
+import { warnSlowScrollPhase } from './chatScrollGeometry'
+import { MEASURE_EPSILON_PX } from './createRowMeasurer'
 import { createRenderReadinessScope } from './renderReadiness'
 import { HEIGHT_CACHE_MAX, sameVirtualItems, useChatVirtualizer } from './useChatVirtualizer'
 import { fakeRow, makeItems, plainItems, setup } from './useChatVirtualizer.testkit'
 
+// The virtualizer reports the time of each rebuild of its offset map to
+// `warnSlowScrollPhase`, so a spy on it counts the rebuilds.
+vi.mock('./chatScrollGeometry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./chatScrollGeometry')>()
+  return {
+    ...actual,
+    warnSlowScrollPhase: vi.fn(actual.warnSlowScrollPhase),
+  }
+})
+
+/** The rebuilds of the offset map since the last `mockClear` of the spy. */
+function geomRebuilds(): number {
+  return vi.mocked(warnSlowScrollPhase).mock.calls.filter(([phase]) => phase === 'geomRebuild').length
+}
+
 describe('useChatVirtualizer geometry', () => {
+  it('rebuilds the offset map once for several height commits in one batch', () => {
+    createRoot((dispose) => {
+      const { virt } = setup(plainItems(5))
+      vi.mocked(warnSlowScrollPhase).mockClear()
+
+      // The row measurer commits the reads of one flush in one batch, as here.
+      batch(() => {
+        virt.measure('m1', 110)
+        virt.measure('m2', 120)
+        virt.measure('m3', 130)
+      })
+
+      // The two unmeasured rows take the median of the three measures, 120.
+      expect(virt.totalHeight()).toBe(110 + 120 + 130 + 2 * 120 + 4 * 20)
+      expect(geomRebuilds()).toBe(1)
+      dispose()
+    })
+  })
+
   it('completes an empty row without changing the positive estimate', () => {
     createRoot((dispose) => {
       const { virt } = setup(plainItems(3))
@@ -46,10 +84,6 @@ describe('useChatVirtualizer geometry', () => {
         expect(virt.primeHeight('empty', 0, 'old')).toBe(false)
         expect(virt.primeHeight('missing', 0)).toBe(false)
         expect(virt.measure('missing', 0)).toBe(false)
-        virt.setVisibleMeasurementDeferral(true)
-        expect(virt.primeHeight('missing', 0)).toBe(false)
-        expect(virt.hasPendingPremeasuredHeight('missing')).toBe(false)
-        virt.setVisibleMeasurementDeferral(false)
         expect(virt.heightOfIndex(0)).toBe(100)
       }
       finally {
@@ -120,6 +154,23 @@ describe('useChatVirtualizer geometry', () => {
       expect(virt.offsetOfIndex(2)).toBe(240)
       expect(virt.offsetOfIndex(4)).toBe(480)
       expect(virt.totalHeight()).toBe(580) // 5*100 + 4*20
+      dispose()
+    })
+  })
+
+  it('returns the measured height of a row, and the estimate for an index outside the list', () => {
+    createRoot((dispose) => {
+      const { virt } = setup(plainItems(2))
+      virt.measure('m1', 140)
+      virt.measure('m2', 60)
+      // The estimate is the lower median of the two measures.
+      expect(virt.estimateHeight()).toBe(60)
+      expect(virt.heightOfIndex(0)).toBe(140)
+      expect(virt.heightOfIndex(1)).toBe(60)
+      expect(virt.heightOfIndex(-1)).toBe(60)
+      expect(virt.heightOfIndex(2)).toBe(60)
+      expect(virt.heightOfId('m1')).toBe(140)
+      expect(virt.heightOfId('missing')).toBe(60)
       dispose()
     })
   })
@@ -261,6 +312,21 @@ describe('useChatVirtualizer geometry', () => {
       // Re-measuring within epsilon is a no-op.
       expect(virt.measure('m1', 200.2)).toBe(false)
       expect(virt.heightOfIndex(0)).toBe(200)
+      dispose()
+    })
+  })
+
+  it('keeps the cached height below MEASURE_EPSILON_PX and commits a re-measure of MEASURE_EPSILON_PX', () => {
+    createRoot((dispose) => {
+      const { virt } = setup(plainItems(3))
+      virt.measure('m1', 200)
+
+      expect(virt.measure('m1', 200 + MEASURE_EPSILON_PX - 0.01)).toBe(false)
+      expect(virt.measure('m1', 200 - MEASURE_EPSILON_PX + 0.01)).toBe(false)
+      expect(virt.heightOfIndex(0)).toBe(200)
+
+      expect(virt.measure('m1', 200 - MEASURE_EPSILON_PX)).toBe(true)
+      expect(virt.heightOfIndex(0)).toBe(200 - MEASURE_EPSILON_PX)
       dispose()
     })
   })
@@ -484,142 +550,6 @@ describe('useChatVirtualizer geometry', () => {
     })
   })
 
-  it('totals a whole flush of commits, which the last commit alone cannot explain', () => {
-    createRoot((dispose) => {
-      // Three unmeasured tool_result rows plus one that will be committed. The per-kind
-      // median re-prices the unmeasured ones, so committing a row AT the current estimate
-      // (delta 0 -- the shape the reported drift WARNs carried) can still move the map.
-      const items: VirtualItem[] = [
-        { id: 'a', hasSpanLines: false, kind: 'tool_result' },
-        { id: 'b', hasSpanLines: false, kind: 'tool_result' },
-        { id: 'c', hasSpanLines: false, kind: 'tool_result' },
-        { id: 'd', hasSpanLines: false, kind: 'tool_result' },
-      ]
-      const [list] = createSignal(items)
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 0,
-        gapLargePx: 0,
-      })
-      // Seed the baseline: the first call reports a 0 delta rather than the whole height.
-      expect(virt.takeMeasurementBatch()).toEqual({ commits: 0, deltaSum: 0, totalHeightDelta: 0 })
-      expect(virt.totalHeight()).toBe(400) // 4 x the 100 seed
-
-      // One flush, two commits. 'a' at 40 drops the tool_result median to 40, which re-prices
-      // b/c/d; 'd' then commits AT that median, so its own delta is 0.
-      virt.measure('a', 40)
-      virt.measure('d', 40)
-      expect(virt.lastMeasurement()).toMatchObject({ id: 'd', delta: 0 })
-      expect(virt.totalHeight()).toBe(160) // 4 x 40
-
-      const batch = virt.takeMeasurementBatch()
-      expect(batch.commits).toBe(2)
-      expect(batch.deltaSum).toBe(-60) // only 'a' moved its own row: (40 - 100) + (40 - 40)
-      // The map moved 240px, four times what the commits' own deltas account for -- the rest
-      // is the median re-pricing b and c. This is what the last commit cannot report.
-      expect(batch.totalHeightDelta).toBe(-240)
-
-      // Taking the batch RESETS it, so the next flush starts clean.
-      expect(virt.takeMeasurementBatch()).toEqual({ commits: 0, deltaSum: 0, totalHeightDelta: 0 })
-      dispose()
-    })
-  })
-
-  it('counts only the commits that reached the offset map, never a rejected one', () => {
-    createRoot((dispose) => {
-      const items: VirtualItem[] = [
-        { id: 'a', hasSpanLines: false, heightKey: 'k1' },
-      ]
-      const [list] = createSignal(items)
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 0,
-        gapLargePx: 0,
-      })
-      virt.takeMeasurementBatch() // seed the baseline
-
-      // Each of these is refused BEFORE the commit lands, so none may inflate the totals --
-      // a count that drifts from the real commits makes the WARN attribution a lie.
-      expect(virt.measure('a', -1)).toBe(false) // A negative height cannot enter the offset map.
-      expect(virt.measure('a', Number.NaN)).toBe(false) // NaN
-      expect(virt.measure('a', Number.POSITIVE_INFINITY)).toBe(false) // Infinity
-      expect(virt.primeHeight('a', 250, 'stale-key')).toBe(false) // heightKey mismatch
-      expect(virt.takeMeasurementBatch()).toEqual({ commits: 0, deltaSum: 0, totalHeightDelta: 0 })
-
-      expect(virt.measure('a', 250)).toBe(true)
-      // A re-measure inside the epsilon changes no offset, so it is not a commit either.
-      expect(virt.measure('a', 250.2)).toBe(false)
-      expect(virt.takeMeasurementBatch()).toEqual({ commits: 1, deltaSum: 150, totalHeightDelta: 150 })
-      dispose()
-    })
-  })
-
-  it('reports the FIRST take as an empty batch, not as the startup pass', () => {
-    createRoot((dispose) => {
-      const items: VirtualItem[] = [
-        { id: 'a', hasSpanLines: false, kind: 'tool_result' },
-        { id: 'b', hasSpanLines: false, kind: 'tool_result' },
-      ]
-      const [list] = createSignal(items)
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 0,
-        gapLargePx: 0,
-      })
-
-      // Commits that land before anyone takes a batch belong to the initial mount pass -- the
-      // row-height persistence primes whole pages of heights, and the consuming effect is
-      // `defer: true`, so it never runs at creation to separate them. No flush boundary exists
-      // to attribute them to.
-      virt.measure('a', 40)
-      virt.measure('b', 40)
-      expect(virt.totalHeight()).toBe(80)
-
-      // Reporting them as one flush produced a payload that contradicted itself: a real commit
-      // count against a zero map movement, because only the height baseline was seeded lazily.
-      // All three fields must agree that nothing was measured yet.
-      expect(virt.takeMeasurementBatch()).toEqual({ commits: 0, deltaSum: 0, totalHeightDelta: 0 })
-
-      // And the seeding call must not swallow the NEXT flush, which is a real one.
-      virt.measure('a', 90)
-      expect(virt.takeMeasurementBatch()).toEqual({ commits: 1, deltaSum: 50, totalHeightDelta: 50 })
-      dispose()
-    })
-  })
-
-  it('reports zero commits when the geometry moved without one (a prepend)', () => {
-    createRoot((dispose) => {
-      const [list, setList] = createSignal<VirtualItem[]>([
-        { id: 'b', hasSpanLines: false },
-      ])
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 0,
-        gapLargePx: 0,
-      })
-      virt.takeMeasurementBatch() // seed the baseline
-      expect(virt.totalHeight()).toBe(100)
-
-      // A prepend moves the offset map with no height commit at all. `commits: 0` beside a
-      // non-zero totalHeightDelta is what tells a drift WARN that no measurement caused it.
-      setList([
-        { id: 'a', hasSpanLines: false },
-        { id: 'b', hasSpanLines: false },
-      ])
-      expect(virt.totalHeight()).toBe(200)
-      expect(virt.takeMeasurementBatch()).toEqual({ commits: 0, deltaSum: 0, totalHeightDelta: 100 })
-      dispose()
-    })
-  })
-
   it('keeps the measured-height cache bound above the chat window ceiling', () => {
     // The height cache is LRU-capped with mountedIds protected, so its cap must
     // exceed the largest in-memory window or it would evict in-window rows.
@@ -761,12 +691,19 @@ describe('useChatVirtualizer geometry', () => {
       { id: 'b', hasSpanLines: false, heightKey: 'b' },
     ]
 
+    /**
+     * The height of row `a` that a snapshot saves, or undefined while no measure under the
+     * current key of the row produced its height: a snapshot leaves a provisional height out.
+     */
+    const savedHeightOfA = (virt: ReturnType<typeof useChatVirtualizer>) =>
+      virt.snapshotHeights().find(height => height.id === 'a')
+
     it('keeps the height that the row measured as its slot, with no commit, so the row needs no hidden copy', () => {
       createRoot((dispose) => {
         const { virt, setList } = setup(keyedItems('old'))
         virt.attachRow('a', fakeRow(320))
         expect(virt.heightOfIndex(0)).toBe(320)
-        expect(virt.hasConfirmedHeight('a')).toBe(true)
+        expect(savedHeightOfA(virt)).toEqual({ id: 'a', heightKey: 'old', height: 320 })
         const commitSeq = virt.lastMeasurement()?.commitSeq
 
         setList(keyedItems('new'))
@@ -774,7 +711,7 @@ describe('useChatVirtualizer geometry', () => {
         expect(virt.heightOfIndex(0)).toBe(320)
         expect(virt.hasMeasuredHeight('a')).toBe(true)
         // No measure under the new key produced the height yet.
-        expect(virt.hasConfirmedHeight('a')).toBe(false)
+        expect(savedHeightOfA(virt)).toBeUndefined()
         expect(virt.lastMeasurement()?.commitSeq).toBe(commitSeq)
         // The visible copy is the authority on what the row shows.
         expect(virt.primeHeight('a', 120, 'new')).toBe(false)
@@ -792,7 +729,7 @@ describe('useChatVirtualizer geometry', () => {
         expect(virt.measure('a', 200)).toBe(true)
 
         expect(virt.heightOfIndex(0)).toBe(200)
-        expect(virt.hasConfirmedHeight('a')).toBe(true)
+        expect(savedHeightOfA(virt)).toEqual({ id: 'a', heightKey: 'new', height: 200 })
         expect(virt.lastMeasurement()).toMatchObject({
           id: 'a',
           source: 'visible',
@@ -832,7 +769,7 @@ describe('useChatVirtualizer geometry', () => {
         setList(keyedItems('new'))
 
         expect(virt.measure('a', 320)).toBe(false)
-        expect(virt.hasConfirmedHeight('a')).toBe(true)
+        expect(savedHeightOfA(virt)).toEqual({ id: 'a', heightKey: 'new', height: 320 })
         virt.detachRow(row)
 
         expect(virt.hasMeasuredHeight('a')).toBe(true)
@@ -885,11 +822,11 @@ describe('useChatVirtualizer geometry', () => {
         const row = fakeRow(320)
         virt.attachRow('a', row)
         setList(keyedItems('new'))
-        expect(virt.hasConfirmedHeight('a')).toBe(false)
+        expect(savedHeightOfA(virt)).toBeUndefined()
 
         setList(keyedItems('old'))
 
-        expect(virt.hasConfirmedHeight('a')).toBe(true)
+        expect(savedHeightOfA(virt)).toEqual({ id: 'a', heightKey: 'old', height: 320 })
         virt.detachRow(row)
         expect(virt.heightOfIndex(0)).toBe(320)
         dispose()
@@ -907,15 +844,15 @@ describe('useChatVirtualizer geometry', () => {
       try {
         setList(keyedItems('new'))
         const version = virt.geometryVersion()
-        expect(virt.hasConfirmedHeight('a')).toBe(false)
+        expect(savedHeightOfA(virt)).toBeUndefined()
 
         await Promise.resolve()
 
-        expect(virt.hasConfirmedHeight('a')).toBe(true)
+        expect(savedHeightOfA(virt)).toEqual({ id: 'a', heightKey: 'new', height: 320 })
         expect(virt.heightOfIndex(0)).toBe(320)
-        // The confirmation moves no row, but a reader of hasConfirmedHeight runs again.
+        // The confirmation moves no row, but it bumps the geometry version: the persistence
+        // saves the snapshot on that bump, and the snapshot now holds the height.
         expect(virt.geometryVersion()).toBeGreaterThan(version)
-        expect(virt.snapshotHeights()).toContainEqual({ id: 'a', heightKey: 'new', height: 320 })
       }
       finally {
         dispose()
@@ -940,7 +877,7 @@ describe('useChatVirtualizer geometry', () => {
         await Promise.resolve()
 
         expect(virt.heightOfIndex(0)).toBe(200)
-        expect(virt.hasConfirmedHeight('a')).toBe(true)
+        expect(savedHeightOfA(virt)).toEqual({ id: 'a', heightKey: 'new', height: 200 })
       }
       finally {
         dispose()
@@ -961,12 +898,12 @@ describe('useChatVirtualizer geometry', () => {
         return disposeRoot
       })
       try {
-        expect(virt.hasConfirmedHeight('a')).toBe(true)
+        expect(savedHeightOfA(virt)).toEqual({ id: 'a', heightKey: 'old', height: 320 })
         // A diff view switches its layout: the old one stays in view while the new one mounts.
         setReplacing(true)
         setList(keyedItems('new'))
         await Promise.resolve()
-        expect(virt.hasConfirmedHeight('a')).toBe(false)
+        expect(savedHeightOfA(virt)).toBeUndefined()
         expect(virt.heightOfIndex(0)).toBe(320)
 
         row.getBoundingClientRect = () => new DOMRect(0, 0, 400, 200)
@@ -974,7 +911,7 @@ describe('useChatVirtualizer geometry', () => {
         await Promise.resolve()
 
         expect(virt.heightOfIndex(0)).toBe(200)
-        expect(virt.hasConfirmedHeight('a')).toBe(true)
+        expect(savedHeightOfA(virt)).toEqual({ id: 'a', heightKey: 'new', height: 200 })
       }
       finally {
         dispose()
@@ -1336,22 +1273,6 @@ describe('primeHeights bulk hydration and snapshotheights', () => {
     })
   })
 
-  it('queues behind the momentum-scroll deferral gate instead of committing', () => {
-    createRoot((dispose) => {
-      const { virt } = setup(plainItems(2))
-      virt.setVisibleMeasurementDeferral(true)
-      expect(virt.primeHeights([
-        { id: 'm1', heightKey: undefined, height: 220 },
-      ])).toBe(0)
-      expect(virt.hasMeasuredHeight('m1')).toBe(false)
-      expect(virt.hasPendingPremeasuredHeight('m1')).toBe(true)
-      virt.setVisibleMeasurementDeferral(false)
-      expect(virt.flushDeferredMeasurements()).toBe(true)
-      expect(virt.heightOfIndex(0)).toBe(220)
-      dispose()
-    })
-  })
-
   it('exports the cache in LRU order (oldest measurement first) through snapshotHeights', () => {
     createRoot((dispose) => {
       const { virt } = setup(plainItems(3))
@@ -1364,5 +1285,978 @@ describe('primeHeights bulk hydration and snapshotheights', () => {
       ])
       dispose()
     })
+  })
+})
+
+describe('useChatVirtualizer range', () => {
+  // `setup` estimates every row at 100px with a gap of 20px, so row i starts at 120 * i,
+  // and it renders no overscan.
+  const rangeIds = (virt: ReturnType<typeof setup>['virt'], list: readonly VirtualItem[]) => {
+    const { start, end } = virt.range()
+    return { first: list[start]?.id, last: list[end - 1]?.id }
+  }
+
+  it('moves the range with its rows when rows are prepended', () => {
+    createRoot((dispose) => {
+      const newest = plainItems(100, 51)
+      const { virt, setList } = setup(newest)
+      virt.updateViewport(5000, 500)
+      const before = virt.range()
+      expect(before).toEqual({ start: 41, end: 46 })
+      const idsBefore = rangeIds(virt, newest)
+
+      const prepended = [
+        ...plainItems(50, 1),
+        ...newest,
+      ]
+      setList(prepended)
+
+      expect(virt.range()).toEqual({ start: before.start + 50, end: before.end + 50 })
+      expect(rangeIds(virt, prepended)).toEqual(idsBefore)
+      dispose()
+    })
+  })
+
+  it('keeps the range when its first row is trimmed away', () => {
+    createRoot((dispose) => {
+      const items = plainItems(100)
+      const { virt, setList } = setup(items)
+      virt.updateViewport(1200, 2000)
+      expect(virt.range()).toEqual({ start: 10, end: 27 })
+      const lastId = items[26]?.id
+
+      const trimmed = items.slice(20)
+      setList(trimmed)
+
+      // The last row is now at index 6. The length of 17 rows ends before index 0,
+      // so the start clamps to the list.
+      expect(virt.range()).toEqual({ start: 0, end: 7 })
+      expect(trimmed[virt.range().end - 1]?.id).toBe(lastId)
+      dispose()
+    })
+  })
+
+  it('keeps the length when only the first row remains', () => {
+    createRoot((dispose) => {
+      const items = plainItems(100)
+      const { virt, setList } = setup(items)
+      virt.updateViewport(1200, 500)
+      expect(virt.range()).toEqual({ start: 10, end: 15 })
+
+      // Rows above the slice and its last row leave: the first row moves to index 2.
+      setList([
+        ...items.slice(8, 14),
+        ...items.slice(15),
+      ])
+
+      expect(virt.range()).toEqual({ start: 2, end: 7 })
+      dispose()
+    })
+  })
+
+  it('keeps the stored indices when both edge rows left the list', () => {
+    createRoot((dispose) => {
+      const { virt, setList } = setup(plainItems(100))
+      virt.updateViewport(1200, 500)
+      expect(virt.range()).toEqual({ start: 10, end: 15 })
+
+      setList(plainItems(100, 1000))
+
+      expect(virt.range()).toEqual({ start: 10, end: 15 })
+      dispose()
+    })
+  })
+
+  it('commits the current edge ids when only the ids changed', () => {
+    createRoot((dispose) => {
+      const { virt, setList } = setup(plainItems(100))
+      virt.updateViewport(1200, 500)
+      // A replaced window keeps the stored indices, and the next commit must store the
+      // ids of the new rows. A later prepend then moves the slice with them.
+      const replaced = plainItems(100, 1000)
+      setList(replaced)
+      virt.updateViewport(1200, 500)
+      expect(virt.range()).toEqual({ start: 10, end: 15 })
+
+      setList([
+        ...plainItems(5, 500),
+        ...replaced,
+      ])
+
+      expect(virt.range()).toEqual({ start: 15, end: 20 })
+      dispose()
+    })
+  })
+
+  it('keeps one neighbor on each side of a row that holds the whole view and its overscan', () => {
+    createRoot((dispose) => {
+      const [list] = createSignal(plainItems(10))
+      const virt = useChatVirtualizer({
+        items: list,
+        overscanPx: 200,
+        estimateHeight: 100,
+        gapSmallPx: 10,
+        gapLargePx: 20,
+      })
+      for (let i = 1; i <= 10; i++) {
+        virt.measure(`m${i}`, i === 5
+          ? 2000
+          : 100)
+      }
+
+      // Row 4 spans 480 to 2480, and holds the view at 1000 with 200px of overscan on each side.
+      expect(virt.computeRange(1000, 500)).toEqual({ start: 3, end: 6 })
+      // Rows of a normal height keep the slice of the view and its overscan.
+      expect(virt.computeRange(0, 300)).toEqual({ start: 0, end: 5 })
+      dispose()
+    })
+  })
+
+  it('returns an empty range for an empty list', () => {
+    createRoot((dispose) => {
+      const { virt, setList } = setup(plainItems(10))
+      virt.updateViewport(0, 500)
+      expect(virt.range()).toEqual({ start: 0, end: 5 })
+
+      setList([])
+      expect(virt.range()).toEqual({ start: 0, end: 0 })
+
+      setList(plainItems(1))
+      expect(virt.range()).toEqual({ start: 0, end: 1 })
+      dispose()
+    })
+  })
+
+  it('renders no row before the first commit', () => {
+    createRoot((dispose) => {
+      const { virt } = setup(plainItems(10))
+      expect(virt.range()).toEqual({ start: 0, end: 0 })
+
+      virt.updateViewport(0, 500)
+      expect(virt.range()).toEqual({ start: 0, end: 5 })
+      dispose()
+    })
+  })
+
+  it('keeps an empty commit empty when rows arrive before the next commit', () => {
+    createRoot((dispose) => {
+      const { virt, setList } = setup([])
+      virt.updateViewport(0, 500)
+      expect(virt.range()).toEqual({ start: 0, end: 0 })
+
+      setList(plainItems(3))
+      expect(virt.range()).toEqual({ start: 0, end: 0 })
+
+      virt.updateViewport(0, 500)
+      expect(virt.range()).toEqual({ start: 0, end: 3 })
+      dispose()
+    })
+  })
+
+  it('keeps the same range object while the indices hold', () => {
+    createRoot((dispose) => {
+      const items = plainItems(100)
+      const { virt, setList } = setup(items)
+      virt.updateViewport(1200, 500)
+      const first = virt.range()
+
+      // An append below the slice moves no index of it.
+      setList([
+        ...items,
+        ...plainItems(3, 500),
+      ])
+
+      expect(virt.range()).toBe(first)
+      dispose()
+    })
+  })
+})
+
+describe('useChatVirtualizer layoutShift', () => {
+  // `setup` estimates every row at 100px with a gap of 20px, so row i starts at 120 * i.
+  // Each test measures the 20 rows as 100px, so every row is measured. Row 10 is `m11`.
+  const ROW_10 = 'm11'
+
+  /**
+   * A scroll element whose geometry the test sets, and a spacer and a layer for
+   * `attachSpacer` and `attachLayer`. Each records its writes in `writes`, in order. The scroll element
+   * follows the inline height of the spacer once the spacer has one, and its `scrollTop`
+   * stays inside the scroll range, as a browser keeps it. With `roundScrollTop`, it also
+   * stores each written `scrollTop` rounded to a whole pixel, as a browser rounds it to a
+   * device pixel.
+   */
+  function fakeLayout(init: { clientHeight?: number, scrollHeight?: number, scrollTop?: number, roundScrollTop?: boolean } = {}) {
+    const state = {
+      clientHeight: init.clientHeight ?? 500,
+      scrollHeight: init.scrollHeight ?? 2380,
+      scrollTop: init.scrollTop ?? 0,
+      spacerHeight: '',
+      layerTransform: '',
+    }
+    const writes: string[] = []
+    const scrollHeight = () => (state.spacerHeight === ''
+      ? state.scrollHeight
+      : Number.parseFloat(state.spacerHeight))
+    const maxTop = () => Math.max(0, scrollHeight() - state.clientHeight)
+    const scroller = document.createElement('div')
+    Object.defineProperty(scroller, 'clientHeight', {
+      configurable: true,
+      get: () => state.clientHeight,
+    })
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: scrollHeight })
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => Math.min(state.scrollTop, maxTop()),
+      set: (top: number) => {
+        writes.push('scrollTop')
+        const clamped = Math.max(0, Math.min(top, maxTop()))
+        state.scrollTop = init.roundScrollTop === true
+          ? Math.round(clamped)
+          : clamped
+      },
+    })
+    const spacer = document.createElement('div')
+    Object.defineProperty(spacer, 'style', {
+      configurable: true,
+      value: {
+        get height() {
+          return state.spacerHeight
+        },
+        set height(value: string) {
+          writes.push('spacer')
+          state.spacerHeight = value
+        },
+      },
+    })
+    const layer = document.createElement('div')
+    Object.defineProperty(layer, 'style', {
+      configurable: true,
+      value: {
+        get transform() {
+          return state.layerTransform
+        },
+        set transform(value: string) {
+          writes.push('layer')
+          state.layerTransform = value
+        },
+      },
+    })
+    return {
+      state,
+      writes,
+      scroller,
+      spacer,
+      layer,
+    }
+  }
+
+  /**
+   * Mount a virtualizer over 20 measured rows. The test continues outside the root, so a
+   * signal write runs its effects at once, as a browser event does. `scrollElement` gives
+   * an accessor that can return no element, in place of the fixed `scroller`.
+   */
+  function mount(opts: {
+    scroller?: HTMLElement
+    scrollElement?: () => HTMLElement | undefined
+    pinBottom?: () => boolean
+    rowCount?: number
+    spacerInsetPx?: Accessor<number> | number
+  } = {}) {
+    let dispose!: () => void
+    const mounted = createRoot((d) => {
+      dispose = d
+      const scroller = opts.scroller
+      const scrollElement = opts.scrollElement ?? (scroller === undefined
+        ? undefined
+        : () => scroller)
+      return setup(plainItems(opts.rowCount ?? 20), {
+        ...(scrollElement === undefined
+          ? {}
+          : { scrollElement }),
+        ...(opts.pinBottom === undefined
+          ? {}
+          : { pinBottom: opts.pinBottom }),
+        ...(opts.spacerInsetPx === undefined
+          ? {}
+          : { spacerInsetPx: opts.spacerInsetPx }),
+      })
+    })
+    for (let i = 1; i <= (opts.rowCount ?? 20); i++)
+      mounted.virt.measure(`m${i}`, 100)
+    return { ...mounted, dispose }
+  }
+
+  /** A manual animation frame queue in place of the global one, until `afterEach` removes it. */
+  function manualFrames() {
+    const frames = createManualFrames()
+    vi.stubGlobal('requestAnimationFrame', frames.requestFrame)
+    vi.stubGlobal('cancelAnimationFrame', frames.cancelFrame)
+    return frames
+  }
+
+  /**
+   * Mount the row `id` as an element with one child, both with stubbed rectangles. The
+   * scroll element is at client top 0, so the row starts at `rowScrollTop - scrollTop` in
+   * client coordinates, where `rowScrollTop` is the scroll coordinate of the row top.
+   * `rowHeight` and `childTop` (from the row top) are live.
+   */
+  function mountRow(virt: ReturnType<typeof setup>['virt'], id: string, rowScrollTop: number, scrollTop: number) {
+    const geometry = { rowHeight: 100, childTop: 20 }
+    const rowTop = rowScrollTop - scrollTop
+    const row = document.createElement('div')
+    row.getBoundingClientRect = () => new DOMRect(0, rowTop, 400, geometry.rowHeight)
+    const child = document.createElement('div')
+    child.getBoundingClientRect = () => new DOMRect(0, rowTop + geometry.childTop, 400, 70)
+    row.append(child)
+    document.body.append(row)
+    virt.attachRow(id, row)
+    return geometry
+  }
+
+  /** Mount row 10, which starts at scroll coordinate 1200, as `mountRow` does. */
+  function mountRow10(virt: ReturnType<typeof setup>['virt'], scrollTop: number) {
+    return mountRow(virt, ROW_10, 1200, scrollTop)
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    document.body.replaceChildren()
+  })
+
+  it('stays 0 without a scroll element', () => {
+    const { virt, dispose } = mount()
+    virt.measure('m4', 160)
+    expect(virt.layoutShift()).toBe(0)
+    expect(virt.spacerHeight()).toBe(virt.totalHeight())
+    dispose()
+  })
+
+  it('stays 0 for a hidden element', () => {
+    const { scroller } = fakeLayout({ clientHeight: 0, scrollTop: 1250 })
+    const { virt, dispose } = mount({ scroller })
+    virt.measure('m4', 160)
+    expect(virt.layoutShift()).toBe(0)
+    dispose()
+  })
+
+  /**
+   * A scroll element that the test can hide (a `clientHeight` of 0) or detach (the accessor
+   * returns no element), with the layout of `fakeLayout`.
+   */
+  function leavingLayout(init: Parameters<typeof fakeLayout>[0]) {
+    const layout = fakeLayout(init)
+    const element = { attached: true }
+    return {
+      ...layout,
+      scrollElement: () => (element.attached
+        ? layout.scroller
+        : undefined),
+      leave: (how: 'hides' | 'detaches') => {
+        if (how === 'hides')
+          layout.state.clientHeight = 0
+        else
+          element.attached = false
+      },
+    }
+  }
+
+  it.each(['hides', 'detaches'] as const)('drops the shift to 0 at a geometry change once the scroll element %s', (how) => {
+    const layout = leavingLayout({ scrollTop: 1250 })
+    const { virt, dispose } = mount({ scrollElement: layout.scrollElement })
+    virt.measure('m4', 160)
+    expect(virt.layoutShift()).toBe(-60)
+
+    layout.leave(how)
+    virt.measure('m5', 130)
+
+    expect(virt.layoutShift()).toBe(0)
+    expect(virt.spacerHeight()).toBe(virt.totalHeight())
+    dispose()
+  })
+
+  it('keeps the row at the viewport top in place when a row above measures', () => {
+    const { scroller } = fakeLayout({ scrollTop: 1250 })
+    const { virt, dispose } = mount({ scroller })
+    const spacer = virt.spacerHeight()
+    expect(virt.offsetOfId(ROW_10)! + virt.layoutShift()).toBe(1200)
+
+    virt.measure('m4', 160)
+
+    expect(virt.offsetOfId(ROW_10)! + virt.layoutShift()).toBe(1200)
+    expect(virt.layoutShift()).toBe(-60)
+    expect(virt.spacerHeight()).toBe(spacer)
+    dispose()
+  })
+
+  it('keeps the rows in place across a prepend', () => {
+    const { scroller } = fakeLayout({ scrollTop: 1250 })
+    const { virt, setList, dispose } = mount({ scroller })
+
+    setList([
+      ...plainItems(5, 100),
+      ...plainItems(20),
+    ])
+
+    expect(virt.offsetOfId(ROW_10)! + virt.layoutShift()).toBe(1200)
+    expect(virt.layoutShift()).toBe(-600)
+    dispose()
+  })
+
+  /**
+   * The shift after `measuredId` measures 160px, on a scroll element whose `scrollTop`
+   * reads `scrollTop` with no clamp. A rubber-band overscroll in Safari or WebKit can
+   * report a `scrollTop` outside the scroll range, above the maximum at the bottom edge.
+   * The virtualizer therefore passes `clampScrollTop` of the value to the shift rule.
+   * The scroll range is 2380 - 500, so the maximum `scrollTop` is 1880.
+   */
+  function shiftAtUnclampedScrollTop(scrollTop: number, measuredId: string): number {
+    const { scroller } = fakeLayout({ scrollHeight: 2380 })
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+    })
+    const { virt, dispose } = mount({ scroller })
+    virt.measure(measuredId, 160)
+    const shift = virt.layoutShift()
+    dispose()
+    return shift
+  }
+
+  it('clamps a scrollTop above the maximum', () => {
+    const shiftAt = (scrollTop: number) => shiftAtUnclampedScrollTop(scrollTop, 'm4')
+    expect(shiftAt(99_999)).toBe(shiftAt(1880))
+    expect(shiftAt(1880)).toBe(-60)
+  })
+
+  it('holds the row under the clamped viewport top for a scrollTop above the maximum', () => {
+    // Row 15 (`m16`) spans 1800 to 1900, so it holds the clamped viewport top at 1880. It
+    // grows below that point, so the shift is 0. An unclamped 99999 lies below the last
+    // row instead, which holds its bottom edge and moves the rows up by the 60px growth.
+    const shiftAt = (scrollTop: number) => shiftAtUnclampedScrollTop(scrollTop, 'm16')
+    expect(shiftAt(1880)).toBe(0)
+    expect(shiftAt(99_999)).toBe(shiftAt(1880))
+  })
+
+  it('keeps the content bottom while pinBottom is true', () => {
+    const { scroller } = fakeLayout({ scrollTop: 1880 })
+    const { virt, setList, dispose } = mount({
+      scroller,
+      pinBottom: () => true,
+    })
+    const spacer = virt.spacerHeight()
+
+    setList(plainItems(21))
+
+    expect(virt.spacerHeight()).toBe(spacer)
+    expect(virt.layoutShift()).toBe(-120)
+    dispose()
+  })
+
+  it('adds the displacement of the pivot element', () => {
+    const frames = manualFrames()
+    const { scroller } = fakeLayout({ scrollTop: 1250 })
+    const { virt, dispose } = mount({ scroller })
+    const row = mountRow10(virt, 1250)
+    virt.updateViewport(1250, 500)
+    frames.runFrames()
+
+    row.childTop = 50
+    virt.measure(ROW_10, 130)
+
+    expect(virt.layoutShift()).toBe(-30)
+    dispose()
+  })
+
+  it('requests no pivot frame while pinBottom is true, and requests one again once it is false', () => {
+    const frames = manualFrames()
+    let pinned = true
+    const { scroller } = fakeLayout({ scrollTop: 1880 })
+    const { virt, setList, dispose } = mount({
+      scroller,
+      pinBottom: () => pinned,
+    })
+
+    virt.updateViewport(1880, 500)
+    setList(plainItems(21))
+    expect(frames.pendingFrames()).toBe(0)
+
+    pinned = false
+    virt.updateViewport(1880, 500)
+    expect(frames.pendingFrames()).toBe(1)
+    dispose()
+  })
+
+  it('reads no pivot record from before a commit that pinBottom held', () => {
+    const frames = manualFrames()
+    let pinned = false
+    const { scroller } = fakeLayout({ scrollTop: 1250 })
+    const { virt, dispose } = mount({
+      scroller,
+      pinBottom: () => pinned,
+    })
+    const row = mountRow10(virt, 1250)
+    virt.updateViewport(1250, 500)
+    frames.runFrames()
+
+    // A commit in follow mode holds the content bottom: row 10 grows by 30px above the
+    // child. The rectangle height of the row stays at the last read of the measurer, as
+    // after a ResizeObserver delivery, so a frame finds no uncommitted height.
+    pinned = true
+    row.childTop = 50
+    virt.measure(ROW_10, 130)
+    expect(virt.layoutShift()).toBe(-30)
+    frames.runFrames()
+
+    // Follow mode ends with no scroll, and the next commit holds the viewport top. Follow
+    // mode keeps no record, so the content at the viewport top keeps its distance from the
+    // row top: the shift stays -30. A record from before follow mode would add the 30px move
+    // that the screen already showed, and give -70.
+    pinned = false
+    row.childTop = 60
+    virt.measure(ROW_10, 140)
+    expect(virt.layoutShift()).toBe(-30)
+    dispose()
+  })
+
+  it('records the pivot element once a fast scroll stops, before the fast scroll ends', () => {
+    const frames = manualFrames()
+    const { scroller } = fakeLayout({ scrollTop: 1200 })
+    const { virt, dispose } = mount({ scroller })
+    const row = mountRow10(virt, 1250)
+    // A fast scroll moves the view to 1250. Its frame sees a new position, so it drops the
+    // record and asks for one more frame.
+    virt.setFastScrollActive(true)
+    scroller.scrollTop = 1250
+    virt.updateViewport(1250, 500)
+    frames.runFrames()
+
+    // The scroll stopped at 1250, and the fast scroll has not ended: the next frame sees
+    // the same position and records.
+    frames.runFrames()
+    row.childTop = 50
+    virt.measure(ROW_10, 130)
+
+    expect(virt.layoutShift()).toBe(-30)
+    dispose()
+  })
+
+  it('takes the displacement at each step of a repeated resize', () => {
+    const frames = manualFrames()
+    const { scroller } = fakeLayout({ scrollTop: 1250 })
+    const { virt, dispose } = mount({ scroller })
+    const row = mountRow10(virt, 1250)
+    virt.updateViewport(1250, 500)
+    frames.runFrames()
+
+    // The direct `measure` call leaves the last read of the measurer at 100, so the measurer
+    // reports an uncommitted height in both frames, as it does in a browser before the
+    // ResizeObserver delivery.
+    row.childTop = 50
+    row.rowHeight = 130
+    virt.updateViewport(1250, 500)
+    frames.runFrames()
+    virt.measure(ROW_10, 130)
+    expect(virt.layoutShift()).toBe(-30)
+
+    row.childTop = 90
+    row.rowHeight = 170
+    frames.runFrames()
+    virt.measure(ROW_10, 170)
+    expect(virt.layoutShift()).toBe(-70)
+    dispose()
+  })
+
+  it('removes the shift on rebase', () => {
+    const layout = fakeLayout({ scrollTop: 1250 })
+    const { virt, dispose } = mount({ scroller: layout.scroller })
+    virt.attachSpacer(layout.spacer)
+    virt.attachLayer(layout.layer)
+    virt.measure('m4', 160)
+    expect(virt.layoutShift()).toBe(-60)
+
+    expect(virt.rebase()).toBe(-60)
+    expect(virt.layoutShift()).toBe(0)
+    expect(layout.scroller.scrollTop).toBe(1310)
+    layout.writes.length = 0
+    expect(virt.rebase()).toBe(0)
+    expect(layout.writes).toEqual([])
+    dispose()
+  })
+
+  it('writes the scroll position first for a positive shift', () => {
+    const layout = fakeLayout({ clientHeight: 0, scrollTop: 0 })
+    const { virt, dispose } = mount({ scroller: layout.scroller })
+    virt.attachSpacer(layout.spacer)
+    virt.attachLayer(layout.layer)
+    // Row 3 measures 300px while the pane is hidden, so no shift comes of it.
+    virt.measure('m4', 300)
+    expect(virt.layoutShift()).toBe(0)
+    layout.state.clientHeight = 500
+    layout.state.spacerHeight = `${virt.spacerHeight()}px`
+    layout.scroller.scrollTop = 99_999
+    expect(layout.scroller.scrollTop).toBe(2080)
+
+    virt.measure('m4', 100)
+    expect(virt.layoutShift()).toBe(200)
+    layout.writes.length = 0
+
+    expect(virt.rebase()).toBe(200)
+    expect(layout.writes).toEqual(['scrollTop', 'spacer', 'layer'])
+    expect(layout.scroller.scrollTop).toBe(1880)
+    expect(layout.state.spacerHeight).toBe('2380px')
+    expect(layout.state.layerTransform).toBe('translateY(0px)')
+    dispose()
+  })
+
+  it('writes the layout first for a negative shift', () => {
+    const layout = fakeLayout({ scrollTop: 1250 })
+    const { virt, dispose } = mount({ scroller: layout.scroller })
+    virt.attachSpacer(layout.spacer)
+    virt.attachLayer(layout.layer)
+    virt.measure('m1', 300)
+    expect(virt.layoutShift()).toBe(-200)
+    layout.state.spacerHeight = `${virt.spacerHeight()}px`
+    layout.scroller.scrollTop = 0
+    layout.writes.length = 0
+
+    expect(virt.rebase()).toBe(-200)
+    expect(layout.writes).toEqual(['spacer', 'layer', 'scrollTop'])
+    expect(layout.scroller.scrollTop).toBe(200)
+    expect(layout.state.spacerHeight).toBe('2580px')
+    dispose()
+  })
+
+  it('rebases without attached layout elements', () => {
+    const layout = fakeLayout({ scrollTop: 1250 })
+    const { virt, dispose } = mount({ scroller: layout.scroller })
+    virt.measure('m1', 300)
+    expect(virt.layoutShift()).toBe(-200)
+    // The scroll range holds the target with no spacer: the content stands for it.
+    layout.state.scrollHeight = 2580
+
+    expect(virt.rebase()).toBe(-200)
+    expect(layout.scroller.scrollTop).toBe(1450)
+    expect(virt.layoutShift()).toBe(0)
+    dispose()
+  })
+
+  it.each(['hides', 'detaches'] as const)('writes nothing and keeps the shift once the scroll element %s', (how) => {
+    const layout = leavingLayout({ scrollTop: 1250 })
+    const { virt, dispose } = mount({ scrollElement: layout.scrollElement })
+    virt.attachSpacer(layout.spacer)
+    virt.attachLayer(layout.layer)
+    virt.measure('m4', 160)
+    expect(virt.layoutShift()).toBe(-60)
+    layout.leave(how)
+    layout.writes.length = 0
+
+    expect(virt.rebase()).toBe(0)
+    expect(layout.writes).toEqual([])
+    // The rows keep their place: a shift of 0 with no `scrollTop` write would move them.
+    expect(virt.layoutShift()).toBe(-60)
+    dispose()
+  })
+
+  it('subscribes an effect that rebases to no signal', () => {
+    const layout = fakeLayout({ scrollTop: 1250 })
+    const { virt, dispose } = mount({ scroller: layout.scroller })
+    virt.attachSpacer(layout.spacer)
+    virt.attachLayer(layout.layer)
+    virt.measure('m4', 160)
+    let runs = 0
+    const disposeEffect = createRoot((d) => {
+      createRenderEffect(() => {
+        runs += 1
+        virt.rebase()
+      })
+      return d
+    })
+    expect(runs).toBe(1)
+    expect(virt.layoutShift()).toBe(0)
+
+    // A new shift and a new total height. An effect that read either one would run again,
+    // and its rebase would remove the new shift.
+    virt.measure('m5', 130)
+
+    expect(virt.layoutShift()).toBe(-30)
+    expect(runs).toBe(1)
+    disposeEffect()
+    dispose()
+  })
+
+  /**
+   * The distance (px) from the viewport top to the top of row 10: its scroll coordinate
+   * minus `scrollTop`. It stays the same while the content stays in place on screen.
+   */
+  function row10OnScreen(virt: ReturnType<typeof setup>['virt'], scroller: HTMLElement): number {
+    return virt.scrollTopOf(virt.offsetOfId(ROW_10)!) - scroller.scrollTop
+  }
+
+  it('keeps the content in place when the browser rounds the written position', () => {
+    const layout = fakeLayout({ scrollTop: 1250, roundScrollTop: true })
+    const { virt, dispose } = mount({ scroller: layout.scroller })
+    virt.attachSpacer(layout.spacer)
+    virt.attachLayer(layout.layer)
+    virt.measure('m4', 160.37)
+    expect(row10OnScreen(virt, layout.scroller)).toBeCloseTo(-50, 9)
+
+    // The browser stores the target 1310.37 as 1310, so the shift keeps the 0.37px that the
+    // write could not remove.
+    expect(virt.rebase()).toBeCloseTo(-60, 9)
+
+    expect(layout.scroller.scrollTop).toBe(1310)
+    expect(virt.layoutShift()).toBeCloseTo(-0.37, 9)
+    expect(row10OnScreen(virt, layout.scroller)).toBeCloseTo(-50, 9)
+    expect(layout.state.layerTransform).toBe(`translateY(${virt.layoutShift()}px)`)
+    expect(layout.state.spacerHeight).toBe(`${virt.spacerHeight()}px`)
+    dispose()
+  })
+
+  it('keeps the content in place across consecutive rebases', () => {
+    const layout = fakeLayout({ scrollTop: 1250, roundScrollTop: true })
+    const { virt, dispose } = mount({ scroller: layout.scroller })
+    virt.attachSpacer(layout.spacer)
+    virt.attachLayer(layout.layer)
+
+    // Each row above row 10 changes by more than one pixel plus a fraction, so each rebase
+    // writes, and the browser rounds each target.
+    for (const [id, height] of [
+      ['m2', 101.37],
+      ['m3', 102.74],
+      ['m4', 98.39],
+      ['m5', 103.29],
+      ['m6', 101.83],
+    ] as const) {
+      virt.measure(id, height)
+      expect(virt.rebase()).not.toBe(0)
+      expect(Number.isInteger(layout.scroller.scrollTop)).toBe(true)
+      expect(Math.abs(virt.layoutShift())).toBeLessThan(1)
+      expect(row10OnScreen(virt, layout.scroller)).toBeCloseTo(-50, 9)
+    }
+    dispose()
+  })
+
+  it('leaves a shift below one pixel in place', () => {
+    const layout = fakeLayout({ scrollTop: 1250 })
+    const { virt, dispose } = mount({ scroller: layout.scroller })
+    virt.attachSpacer(layout.spacer)
+    virt.attachLayer(layout.layer)
+    virt.measure('m4', 100.6)
+    expect(virt.layoutShift()).toBeCloseTo(-0.6, 9)
+    layout.writes.length = 0
+
+    expect(virt.rebase()).toBe(0)
+
+    expect(layout.writes).toEqual([])
+    expect(virt.layoutShift()).toBeCloseTo(-0.6, 9)
+    dispose()
+  })
+
+  it('drops a remainder of a clamp', () => {
+    const layout = fakeLayout({ clientHeight: 0, scrollTop: 0 })
+    const { virt, dispose } = mount({ scroller: layout.scroller })
+    virt.attachSpacer(layout.spacer)
+    virt.attachLayer(layout.layer)
+    // Row 3 measures 300px while the pane is hidden, so no shift comes of it. At the bottom,
+    // its shrink back to 100px gives a shift of 200.
+    virt.measure('m4', 300)
+    layout.state.clientHeight = 500
+    layout.state.spacerHeight = `${virt.spacerHeight()}px`
+    layout.scroller.scrollTop = 99_999
+    virt.measure('m4', 100)
+    expect(virt.layoutShift()).toBe(200)
+    // The reader then scrolls into the blank band above the first row. The target -100 lies
+    // outside the scroll range, so the browser clamps it to 0.
+    layout.scroller.scrollTop = 100
+
+    expect(virt.rebase()).toBe(200)
+
+    expect(layout.scroller.scrollTop).toBe(0)
+    expect(virt.layoutShift()).toBe(0)
+    expect(layout.state.spacerHeight).toBe('2380px')
+    expect(layout.state.layerTransform).toBe('translateY(0px)')
+    dispose()
+  })
+
+  it('converts scroll coordinates', () => {
+    const { scroller } = fakeLayout({ scrollTop: 1250 })
+    const { virt, dispose } = mount({ scroller })
+    virt.measure('m4', 200)
+    expect(virt.layoutShift()).toBe(-100)
+    // The same geometry with no scroll element, so its shift is 0.
+    const reference = mount()
+    reference.virt.measure('m4', 200)
+
+    expect(virt.contentTopOf(500)).toBe(600)
+    expect(virt.scrollTopOf(600)).toBe(500)
+    const anchor = virt.anchorAt(500)
+    expect(anchor).toEqual(reference.virt.anchorAt(600))
+    expect(virt.scrollTopForAnchor(anchor!)).toBe(reference.virt.scrollTopForAnchor(anchor!)! - 100)
+    expect(virt.scrollTopNearAnchor(anchor!)).toBe(reference.virt.scrollTopNearAnchor(anchor!)! - 100)
+    expect(virt.computeRange(500, 500)).toEqual(reference.virt.computeRange(600, 500))
+    reference.dispose()
+    dispose()
+  })
+
+  it('converts scroll coordinates across the inset of the spacer', () => {
+    const { scroller } = fakeLayout({ scrollTop: 1250 })
+    const { virt, dispose } = mount({ scroller, spacerInsetPx: 28 })
+    virt.measure('m4', 200)
+    const shift = virt.layoutShift()
+    expect(shift).toBe(-100)
+
+    expect(virt.contentTopOf(1250)).toBe(1222 - shift)
+    expect(virt.scrollTopOf(1222 - shift)).toBe(1250)
+    // The anchor of the viewport top lies in row 10 (`m11`), at content 1322.
+    expect(virt.anchorAt(1250)).toMatchObject({ id: ROW_10, offsetWithinRow: 22 })
+    // Scroll 1210 is content 1282, in the gap below row 9, which spans 1180 to 1280 after row
+    // 3 grows. So the slice starts at row 9. Without the inset, content 1310 lies in row 10.
+    const reference = mount()
+    reference.virt.measure('m4', 200)
+    expect(virt.computeRange(1210, 500)).toEqual(reference.virt.computeRange(1282, 500))
+    expect(virt.computeRange(1210, 500).start).toBe(9)
+    reference.dispose()
+    dispose()
+  })
+
+  it('places the top of the first row at the top of the scroller, above the inset of the spacer', () => {
+    const { scroller } = fakeLayout({ scrollTop: 0 })
+    const { virt, dispose } = mount({ scroller, spacerInsetPx: 28 })
+    expect(virt.layoutShift()).toBe(0)
+
+    // A reader at the top of the history sees the inset, which no anchor captures: the anchor
+    // floors it to the top of the first row. That anchor resolves back to the top of the
+    // scroller, not to the top of the row 28px below it.
+    const atTop = virt.anchorAt(0)
+    expect(atTop).toMatchObject({ id: 'm1', offsetWithinRow: 0 })
+    expect(virt.scrollTopForAnchor(atTop!)).toBe(0)
+    expect(virt.scrollTopNearAnchor(atTop!)).toBe(0)
+    // A seek lands its row 8px below the viewport top, which lies above the content top for
+    // the first row; the scrub's top end is the content top itself.
+    expect(virt.placementScrollTopOf(-8)).toBe(0)
+    expect(virt.placementScrollTopOf(0)).toBe(0)
+    // Below the content top, a placement converts exactly.
+    expect(virt.placementScrollTopOf(12)).toBe(40)
+    expect(virt.scrollTopForAnchor({ id: 'm1', offsetWithinRow: 12 })).toBe(40)
+    expect(virt.scrollTopForAnchor({ id: 'm2', offsetWithinRow: 0 })).toBe(virt.scrollTopOf(virt.offsetOfId('m2')!))
+    dispose()
+  })
+
+  it('resolves anchors in content coordinates with no conversion', () => {
+    const { scroller } = fakeLayout({ scrollTop: 1250 })
+    const { virt, dispose } = mount({ scroller, spacerInsetPx: 28 })
+    virt.measure('m4', 200.37)
+    expect(virt.layoutShift()).toBeCloseTo(-100.37, 9)
+    // The same geometry with no scroll element, so its scroll coordinates are content ones.
+    const reference = mount()
+    reference.virt.measure('m4', 200.37)
+
+    for (const contentTop of [0, 499.99, 1234.56, 1900]) {
+      const anchor = virt.anchorAtContent(contentTop)
+      expect(anchor).not.toBeNull()
+      expect(anchor).toEqual(reference.virt.anchorAt(contentTop))
+      expect(virt.contentTopForAnchor(anchor!)).toBe(reference.virt.scrollTopForAnchor(anchor!))
+      // The scroll resolvers agree through the conversions. A resolved anchor is a placement,
+      // so it converts as placementScrollTopOf does: the content top resolves to the top of
+      // the scroller (see "places the top of the first row at the top of the scroller").
+      const viaScroll = virt.anchorAt(virt.scrollTopOf(contentTop))
+      expect(viaScroll?.id).toBe(anchor!.id)
+      expect(viaScroll?.offsetWithinRow).toBeCloseTo(anchor!.offsetWithinRow, 9)
+      expect(virt.scrollTopForAnchor(anchor!)).toBeCloseTo(virt.placementScrollTopOf(virt.contentTopForAnchor(anchor!)!), 9)
+    }
+    expect(virt.contentTopForAnchor({ id: 'gone', offsetWithinRow: 0 })).toBeNull()
+    reference.dispose()
+    dispose()
+  })
+
+  it('holds the content at the viewport top below the inset of the spacer', () => {
+    // With the inset 28, scroll 1188 is content 1160, inside the body of row 9 (1080 to
+    // 1180). Without the inset, 1188 would lie in the gap below row 9, where the rule holds
+    // the bottom edge of the row.
+    const { scroller } = fakeLayout({ scrollTop: 1188 })
+    const { virt, dispose } = mount({ scroller, spacerInsetPx: 28 })
+
+    // Row 9 grows at its bottom, below the viewport top, so the content at the viewport top
+    // keeps its place in the row, and nothing above it moves.
+    virt.measure('m10', 130)
+
+    expect(virt.layoutShift()).toBe(0)
+    dispose()
+  })
+
+  it('records the pivot element in the row that the viewport top cuts below the inset of the spacer', () => {
+    const frames = manualFrames()
+    // With the inset 28, scroll 1188 is content 1160, inside the body of row 9 (`m10`, 1080
+    // to 1180), whose top is at scroll 1108. Without the inset, 1188 would lie in the gap
+    // below row 9, where no pivot element is recorded.
+    const { scroller } = fakeLayout({ scrollTop: 1188 })
+    const { virt, dispose } = mount({ scroller, spacerInsetPx: 28 })
+    const row = mountRow(virt, 'm10', 1108, 1188)
+    virt.updateViewport(1188, 500)
+    frames.runFrames()
+
+    // Row 9 grows by 30px above the child, so the content at the viewport top moves 30px
+    // down inside the row, and the rows move up by 30px to keep it in place.
+    row.childTop = 50
+    virt.measure('m10', 130)
+
+    expect(virt.layoutShift()).toBe(-30)
+    dispose()
+  })
+
+  it('follows a change of the inset of the spacer that an accessor gives', () => {
+    // ChatView measures the inset after its first layout, so the inset changes after the
+    // mount. Scroll 1188 lies in the gap below row 9 with the inset 0, and inside its body
+    // with the inset 28.
+    const { scroller } = fakeLayout({ scrollTop: 1188 })
+    const [inset, setInset] = createSignal(0)
+    const { virt, dispose } = mount({ scroller, spacerInsetPx: inset })
+    expect(virt.contentTopOf(1188)).toBe(1188)
+
+    setInset(28)
+
+    expect(virt.contentTopOf(1188)).toBe(1160)
+    expect(virt.scrollTopOf(1160)).toBe(1188)
+    expect(virt.placementScrollTopOf(12)).toBe(40)
+    // The shift rule reads the new inset too: row 9 grows below the viewport top, inside
+    // its body, so nothing moves. With the inset 0, the rule would hold the bottom edge of
+    // the row and move the rows up by 30px.
+    virt.measure('m10', 130)
+    expect(virt.layoutShift()).toBe(0)
+    dispose()
+  })
+
+  it('changes the shift in the same update as the offsets', () => {
+    const { scroller } = fakeLayout({ scrollTop: 1250 })
+    const records: Array<[number | undefined, number]> = []
+    let dispose!: () => void
+    const { virt } = createRoot((d) => {
+      dispose = d
+      const mounted = setup(plainItems(20), {
+        scrollElement: () => scroller,
+      })
+      for (let i = 1; i <= 20; i++)
+        mounted.virt.measure(`m${i}`, 100)
+      createRenderEffect(() => {
+        records.push([
+          mounted.virt.offsetOfId(ROW_10),
+          mounted.virt.layoutShift(),
+        ])
+      })
+      return mounted
+    })
+    expect(records).toEqual([
+      [1200, 0],
+    ])
+
+    virt.measure('m4', 160)
+    virt.measure('m5', 130)
+
+    expect(records).toEqual([
+      [1200, 0],
+      [1260, -60],
+      [1290, -90],
+    ])
+    dispose()
   })
 })

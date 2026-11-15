@@ -1,7 +1,8 @@
 import type { Accessor } from 'solid-js'
+import type { UseChatVirtualizerResult } from './useChatVirtualizer'
 import { createEffect, createSignal, on, onCleanup } from 'solid-js'
 import { createRafCoalescer } from '~/lib/rafCoalesce'
-import { clampScrollTop, distFromBottom } from './chatScrollGeometry'
+import { distFromBottom, readLogicalScrollTop } from './chatScrollGeometry'
 
 // ---------------------------------------------------------------------------
 // Scroll-rail metrics sampler
@@ -14,9 +15,12 @@ import { clampScrollTop, distFromBottom } from './chatScrollGeometry'
 // ---------------------------------------------------------------------------
 
 export interface RailScrollMetrics {
-  /** Logical (clamped) scrollTop of the scroll container. */
-  scrollTop: number
-  /** distFromBottom(el): scrollHeight - scrollTop - clientHeight, for the bottom-edge snap. */
+  /**
+   * The content coordinate of the viewport top: the logical (clamped) scrollTop of the
+   * scroll container, converted to content coordinates, where the rail's row offsets live.
+   */
+  contentTop: number
+  /** distFromBottom(el): scrollHeight - scrollTop - clientHeight, for the bottom-edge snap. A scroll-coordinate distance. */
   dist: number
   /** The scroll container's viewport height. */
   clientHeight: number
@@ -25,10 +29,12 @@ export interface RailScrollMetrics {
 export interface RailMetricsInputs {
   /** The chat scroll container (the element the native scrollbar was hidden on). */
   scrollEl: Accessor<HTMLDivElement | undefined>
-  /** Total virtual content height (px); a change is a geometry commit to re-sample against. */
-  totalHeight: Accessor<number>
-  /** Bumped by the virtualizer whenever the offset map changes (measurement/prepend/trim). */
-  geometryVersion: Accessor<number>
+  /**
+   * The virtualizer members that the metrics read. `contentTopOf` converts each sample to
+   * content coordinates. A change of `totalHeight`, `geometryVersion`, or `layoutShift` can move
+   * the content without a scroll event, so each one is a trigger to sample again.
+   */
+  geometry: Accessor<Pick<UseChatVirtualizerResult, 'totalHeight' | 'geometryVersion' | 'contentTopOf' | 'layoutShift'>>
 }
 
 /**
@@ -41,9 +47,9 @@ export interface RailMetricsInputs {
  */
 export function createRailMetrics(inp: RailMetricsInputs): Accessor<RailScrollMetrics> {
   const [metrics, setMetrics] = createSignal<RailScrollMetrics>(
-    { scrollTop: 0, dist: 0, clientHeight: 0 },
+    { contentTop: 0, dist: 0, clientHeight: 0 },
     {
-      equals: (a, b) => a.scrollTop === b.scrollTop && a.dist === b.dist && a.clientHeight === b.clientHeight,
+      equals: (a, b) => a.contentTop === b.contentTop && a.dist === b.dist && a.clientHeight === b.clientHeight,
     },
   )
 
@@ -52,7 +58,7 @@ export function createRailMetrics(inp: RailMetricsInputs): Accessor<RailScrollMe
     if (!el)
       return
     setMetrics({
-      scrollTop: clampScrollTop(el, el.scrollTop),
+      contentTop: Math.max(0, inp.geometry().contentTopOf(readLogicalScrollTop(el))),
       dist: distFromBottom(el),
       clientHeight: el.clientHeight,
     })
@@ -77,25 +83,22 @@ export function createRailMetrics(inp: RailMetricsInputs): Accessor<RailScrollMe
     })
   }))
 
-  // A geometry commit (measurement/prepend/trim) can move the offset map without a scroll
-  // event; re-sample so the thumb recomputes against the new mapping. rAF-coalesced (like the
+  // A change of the total height, a row-height commit, or a change of the layout shift can
+  // move the content without a scroll event; re-sample so the thumb recomputes against the new
+  // mapping. rAF-coalesced (like the
   // scroll path above) so a streaming turn's burst of commits forces at most ONE layout read
   // per frame rather than one synchronous read per commit -- the value-equals signal drops the
   // redundant re-samples, and the thumb lagging a commit by a single frame is imperceptible.
-  // Falls back to a synchronous sample where rAF is unavailable (SSR / some test envs) -- the
-  // shared coalescer schedules unconditionally, so the guard stays here BEFORE push().
+  // Where rAF is unavailable (SSR / some test envs), the coalescer samples synchronously.
   const geoCoalescer = createRafCoalescer<void>(sample)
-  const sampleAfterGeometryCommit = () => {
-    if (typeof requestAnimationFrame !== 'function') {
-      sample()
-      return
-    }
-    geoCoalescer.push()
-  }
-  createEffect(on(() => [
-    inp.totalHeight(),
-    inp.geometryVersion(),
-  ], () => sampleAfterGeometryCommit()))
+  createEffect(on(() => {
+    const geometry = inp.geometry()
+    return [
+      geometry.totalHeight(),
+      geometry.geometryVersion(),
+      geometry.layoutShift(),
+    ]
+  }, () => geoCoalescer.push()))
   onCleanup(() => geoCoalescer.abort())
 
   return metrics

@@ -32,6 +32,28 @@ export function settle(): Promise<void> {
 }
 
 /**
+ * Run `body` inside a root, rejecting the returned promise on throw so async assertions surface.
+ * The root is disposed once `body` settles, whether it resolves or throws.
+ */
+export function inRoot(body: (dispose: () => void) => Promise<void>): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    createRoot(async (dispose) => {
+      try {
+        await body(dispose)
+        dispose()
+        resolve()
+      }
+      catch (e) {
+        dispose()
+        reject(e instanceof Error
+          ? e
+          : new Error(String(e)))
+      }
+    })
+  })
+}
+
+/**
  * Resolve when `condition` holds. Solid runs `condition` again each time a
  * signal that it reads changes, and the wait stops reading once it resolves.
  *

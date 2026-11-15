@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { cannotLeaveStickyBand, hasScrollRoom, maxScrollTopOf, STICKY_BOTTOM_THRESHOLD_PX } from './chatScrollGeometry'
+import { cannotScroll, FOLLOW_TOLERANCE_PX, hasScrollRoom, maxScrollTopOf, readLogicalScrollTop } from './chatScrollGeometry'
 import { makeFakeScrollDiv } from './useChatScroll.testkit'
 
-describe('cannotLeaveStickyBand', () => {
+describe('cannotScroll', () => {
   const paneOf = (scrollHeight: number, clientHeight: number) => {
     const div = makeFakeScrollDiv()
     div.setClientHeight(clientHeight)
@@ -10,25 +10,56 @@ describe('cannotLeaveStickyBand', () => {
     return div.el
   }
 
-  it('is true when the content fits (no scrollable range)', () => {
-    // maxScrollTop 0: every scroll position is the bottom.
-    expect(cannotLeaveStickyBand(paneOf(500, 500))).toBe(true)
-    expect(cannotLeaveStickyBand(paneOf(400, 500))).toBe(true) // clamps to 0
+  it('returns true when the content fits', () => {
+    expect(cannotScroll(paneOf(500, 500))).toBe(true)
+    expect(cannotScroll(paneOf(400, 500))).toBe(true)
   })
 
-  it('is true at or below the sticky-band threshold, false just past it', () => {
-    // The bound is the sticky band, not a strict 0: a barely-scrollable page whose whole
-    // range fits inside the band can never scroll OUT of it, so it must still unwedge.
-    const atThreshold = paneOf(500 + STICKY_BOTTOM_THRESHOLD_PX, 500)
-    expect(maxScrollTopOf(atThreshold)).toBe(STICKY_BOTTOM_THRESHOLD_PX)
-    expect(cannotLeaveStickyBand(atThreshold)).toBe(true)
-
-    const justPast = paneOf(500 + STICKY_BOTTOM_THRESHOLD_PX + 1, 500)
-    expect(cannotLeaveStickyBand(justPast)).toBe(false)
+  it('returns true for a range of 2px', () => {
+    const pane = paneOf(502, 500)
+    expect(maxScrollTopOf(pane)).toBe(FOLLOW_TOLERANCE_PX)
+    expect(cannotScroll(pane)).toBe(true)
   })
 
-  it('is false for a comfortably scrollable pane', () => {
-    expect(cannotLeaveStickyBand(paneOf(50000, 500))).toBe(false)
+  it('returns false for a range of 3px', () => {
+    expect(cannotScroll(paneOf(503, 500))).toBe(false)
+  })
+})
+
+describe('readLogicalScrollTop', () => {
+  /** A 500px box over 2000px of content that reports a raw `scrollTop`. */
+  const scrollerReading = (rawTop: number) => {
+    const div = makeFakeScrollDiv()
+    div.setClientHeight(500)
+    div.setScrollHeight(2000)
+    div.setRawScrollTop(rawTop)
+    return div.el
+  }
+
+  it('returns a position inside the range unchanged', () => {
+    expect(readLogicalScrollTop(scrollerReading(700.5))).toBe(700.5)
+  })
+
+  it('clamps a rubber-band overscroll to the range', () => {
+    expect(readLogicalScrollTop(scrollerReading(-40))).toBe(0)
+    expect(readLogicalScrollTop(scrollerReading(1560))).toBe(1500)
+  })
+
+  it('does not write the position', () => {
+    const el = scrollerReading(-40)
+    readLogicalScrollTop(el)
+    expect(el.scrollTop).toBe(-40)
+  })
+
+  it('returns 0 for any position when the content fits the box', () => {
+    // 300px of content in a 500px box: the scroll range holds 0 alone.
+    for (const rawTop of [-40, 0, 25]) {
+      const div = makeFakeScrollDiv()
+      div.setClientHeight(500)
+      div.setScrollHeight(300)
+      div.setRawScrollTop(rawTop)
+      expect(readLogicalScrollTop(div.el)).toBe(0)
+    }
   })
 })
 

@@ -1,7 +1,7 @@
 import { expect } from '@playwright/test'
 import { test } from './fixtures'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
-import { chatScrollContainer, interruptButton, readAttached } from './helpers/ui'
+import { chatDistanceFromBottom, chatScrollContainer, interruptButton, readAttached } from './helpers/ui'
 
 /**
  * Check chat layout and scroll position after a real streamed response.
@@ -46,7 +46,6 @@ test.describe('Chat Pagination & Scroll', () => {
     expect(await rowTransform(seqElements.last())).toMatch(/^matrix/)
 
     // The viewport must stay at the bottom after a streamed turn with virtualized rows.
-    const distFromBottom = await scroller.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)
-    expect(distFromBottom).toBeLessThan(40)
+    expect(await chatDistanceFromBottom(page)).toBeLessThan(40)
   })
 })

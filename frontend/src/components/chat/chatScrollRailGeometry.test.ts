@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest'
 // geometry siblings fractionToSeq / railYToSeq because they share the seq-range fail-closed
 // contract; the clustering / owner-resolution policy tests live in chatRailPolicy.test.ts.
 import { dotFraction } from './chatRailPolicy'
+import { EDGE_INTENT_TOLERANCE_PX } from './chatScrollGeometry'
 import {
   centerAxisFraction,
   centerAxisY,
@@ -79,7 +80,7 @@ describe('chatScrollRailGeometry', () => {
     it('computes the viewport share when the whole conversation is loaded', () => {
       const thumb = computeSeqThumb(prepOf([1n, 2n, 3n, 4n, 5n]), {
         ...base,
-        scrollTop: 0,
+        contentTop: 0,
         clientHeight: 200,
         minSeq: 1n,
         maxSeq: 5n,
@@ -91,7 +92,7 @@ describe('chatScrollRailGeometry', () => {
     it('reports a smaller visible seq span when the loaded window is a slice of remote history', () => {
       // Loaded window = seqs 10..12 (fits the viewport), whole conversation = 1..100.
       const thumb = computeSeqThumb(prepOf([10n, 11n, 12n]), {
-        scrollTop: 0,
+        contentTop: 0,
         clientHeight: 500, // >= totalHeight (300): the native scrollbar would show full height
         minSeq: 1n,
         maxSeq: 100n,
@@ -103,9 +104,39 @@ describe('chatScrollRailGeometry', () => {
       expect(thumb.visibleFraction).toBeCloseTo(0.03, 5) // 3 of 100 seqs
     })
 
+    it('places the thumb by the content coordinate of the viewport top', () => {
+      // Rows of 100px for seqs 1..5. Content 200 is the top of seq 3, and content 400 is the
+      // top of seq 5, so the view covers seqs 3 and 4 of the five.
+      const thumb = computeSeqThumb(prepOf([1n, 2n, 3n, 4n, 5n]), {
+        ...base,
+        contentTop: 200,
+        clientHeight: 200,
+        minSeq: 1n,
+        maxSeq: 5n,
+      })!
+      expect(thumb.topFraction).toBeCloseTo(0.4, 5)
+      expect(thumb.visibleFraction).toBeCloseTo(0.4, 5)
+    })
+
+    it('snaps the top edge only within the edge tolerance of the content top, and only at the true start', () => {
+      const topFraction = (contentTop: number, hasMoreOlder: boolean) => computeSeqThumb(prepOf([1n, 2n, 3n, 4n, 5n]), {
+        ...base,
+        contentTop,
+        clientHeight: 200,
+        minSeq: 1n,
+        maxSeq: 5n,
+        hasMoreOlder,
+      })!.topFraction
+      expect(topFraction(EDGE_INTENT_TOLERANCE_PX, false)).toBe(0)
+      // One more pixel is a real position: 2px into the 100px row of seq 1 of five seqs.
+      expect(topFraction(EDGE_INTENT_TOLERANCE_PX + 1, false)).toBeCloseTo((EDGE_INTENT_TOLERANCE_PX + 1) / 100 / 5, 9)
+      // Older history exists above the loaded rows, so the thumb does not belong at the top.
+      expect(topFraction(EDGE_INTENT_TOLERANCE_PX, true)).toBeCloseTo(EDGE_INTENT_TOLERANCE_PX / 100 / 5, 9)
+    })
+
     it('snaps to the top/bottom edges when the window is at the true start/end', () => {
       const thumb = computeSeqThumb(prepOf([1n, 2n, 3n, 4n, 5n]), {
-        scrollTop: 0,
+        contentTop: 0,
         clientHeight: 500,
         minSeq: 1n,
         maxSeq: 5n,
@@ -120,14 +151,14 @@ describe('chatScrollRailGeometry', () => {
     it('returns null for an empty conversation and a full thumb for a single seq', () => {
       expect(computeSeqThumb(prepOf([1n]), {
         ...base,
-        scrollTop: 0,
+        contentTop: 0,
         clientHeight: 100,
         minSeq: 0n,
         maxSeq: 0n,
       })).toBeNull()
       const single = computeSeqThumb(prepOf([7n]), {
         ...base,
-        scrollTop: 0,
+        contentTop: 0,
         clientHeight: 100,
         minSeq: 7n,
         maxSeq: 7n,
@@ -141,7 +172,7 @@ describe('chatScrollRailGeometry', () => {
       // the guard yields NaN fractions -> the thumb/track render at `NaNpx`. Hide instead.
       const thumb = computeSeqThumb(prepOf([3n, 4n]), {
         ...base,
-        scrollTop: 0,
+        contentTop: 0,
         clientHeight: 100,
         minSeq: 9n,
         maxSeq: 4n,

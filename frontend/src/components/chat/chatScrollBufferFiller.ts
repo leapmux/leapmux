@@ -4,13 +4,21 @@ import { createEffect } from 'solid-js'
 import { distFromBottom } from './chatScrollGeometry'
 
 /**
- * Fetching one raw page is a large mutation: it prepends/appends rows, re-pins the
- * viewport, and may immediately trigger an opposite-end trim. Do not do that for a
+ * Fetching one raw page is a large mutation: it prepends/appends rows, shifts the
+ * layout, and may immediately trigger an opposite-end trim. Do not do that for a
  * tiny shortfall just below the ideal buffer target, or slow scrolling can fall into a
  * fetch -> trim -> tiny-deficit -> fetch loop. The trim logic still keeps the full
  * target when content exists; this is only the lower refill watermark.
  */
 const BUFFER_REFILL_HYSTERESIS_SCREENS = 0.5
+
+/**
+ * The least growth (px) of a side's content that counts as progress of a load. A page
+ * that shows a row adds far more. A smaller change is no new content: a row that measures
+ * again, or a content top that was converted to scroll coordinates and back under a
+ * fractional layout shift.
+ */
+const LOAD_PROGRESS_MIN_PX = 1
 
 /**
  * The scroll-buffer filler: pre-fetches RAW history pages to keep a buffer of
@@ -19,8 +27,8 @@ const BUFFER_REFILL_HYSTERESIS_SCREENS = 0.5
  * the old load-at-the-edge policy thrashed).
  *
  * Only visible rows have height, so the buffer is measured in pixels off the live
- * geometry: scrollTop is the visible content ABOVE the viewport, distFromBottom the
- * visible content BELOW. While either side has less than `bufferTargetPx` AND more
+ * geometry: the content above the viewport top (viewportContentTop) is the visible
+ * content ABOVE the viewport, distFromBottom the visible content BELOW. While either side has less than `bufferTargetPx` AND more
  * history to load, it pages that direction; loadOlder/loadNewer grow the window to
  * the raw CEILING (chat.store), so the buffer accumulates rather than sliding.
  *
@@ -34,8 +42,12 @@ const BUFFER_REFILL_HYSTERESIS_SCREENS = 0.5
  * the filler keeps paging the user's scroll direction until history is exhausted or the
  * store's raw window ceiling stops growth.
  *
- * Driven from BOTH a reactive effect (window changes) and handleScroll (the
- * viewport moving toward an edge shrinks that side's buffer). A self-contained unit.
+ * Driven from BOTH a reactive effect and handleScroll (the viewport moving toward an edge
+ * shrinks that side's buffer). The effect runs fill() again when the window content
+ * changes (a page landed) and when a signal that fill() reads changes: the fetch flags,
+ * the history flags, the ceiling, and the suppression of the older side. The caller gives
+ * `viewportContentTop` untracked, so a change of the layout shift alone does not run it.
+ * A self-contained unit.
  *
  * This is mechanism #2 of the NO-SKIP INVARIANT (see FLING_OVERSCAN_LOOKAHEAD_MS):
  * growing the loaded window ahead of the viewport is what lets a fast fling keep
@@ -44,6 +56,11 @@ const BUFFER_REFILL_HYSTERESIS_SCREENS = 0.5
  */
 export function createScrollBufferFiller(deps: {
   getEl: () => HTMLDivElement | undefined
+  /**
+   * The content height above the viewport top, in content coordinates. Under a layout
+   * shift, `scrollTop` also counts the shift, so it is not the content above the view.
+   */
+  viewportContentTop: () => number
   messages: () => AgentChatMessage[]
   bufferTargetPx: () => number
   hasOlder: () => boolean
@@ -56,13 +73,11 @@ export function createScrollBufferFiller(deps: {
   // Pause the pre-fetch (a forced stop halts loading until the next scroll). The
   // explicit wheel/key-at-edge loads bypass the filler, so the user can still page.
   paused: () => boolean
-  // Suppress ONLY the older-side auto-load. The hook arms this for two reasons (see its
-  // wiring): a near-top viewport restore, so an immediate older prepend can't yank the
-  // just-restored position (cleared once the user explicitly scrolls to the very top);
-  // and being pinned at the live tail, where the older buffer is purely speculative until
-  // the reader scrolls up. The newer side stays free either way -- an append lands below
-  // the viewport and never disturbs it -- so a quiescent thread scrolled toward its loaded
-  // bottom still pages forward instead of stalling.
+  // Suppress ONLY the older-side auto-load. The hook arms this while the view is pinned
+  // at the live tail, where the older buffer is purely speculative until the reader
+  // scrolls up. The newer side stays free -- an append lands below the viewport and never
+  // disturbs it -- so a quiescent thread scrolled toward its loaded bottom still pages
+  // forward instead of stalling.
   suppressOlder: () => boolean
   // BOTH sides' progress is measured by how much content a load added on its side of a
   // STABLE reference row, NOT by raw scrollTop / distFromBottom growth. captureAnchor()
@@ -77,7 +92,7 @@ export function createScrollBufferFiller(deps: {
   // of that side's measure). This replaces the old scrollTop / distFromBottom metrics,
   // which a mid-fetch scroll could drive past the baseline and mis-count a productive
   // load as no-progress; it also subsumes the old pendingFlingDrift correction (the
-  // geometry offset reflects a prepend regardless of a deferred re-pin write). Either
+  // geometry offset reflects a prepend before any scroll write). Either
   // returns null when the ref row was trimmed / the
   // virtualizer can't anchor -- which attributeLastLoadProgress reads as unmeasurable
   // PROGRESS (a trim implies the window grew), distinct from a captured-but-flat measure.
@@ -127,8 +142,9 @@ export function createScrollBufferFiller(deps: {
     !deps.atCeiling() || (deps.hasNewer() && deps.lastScrollDir() === side)
 
   // Which sides are under the buffer target, have more to load, AND are allowed to
-  // fetch right now (ceiling gate + the post-restore older suppression). Hidden rows
-  // have zero height, so scrollTop / distFromBottom ARE the visible buffers above/below.
+  // fetch right now (ceiling gate + the older suppression). Hidden rows have zero height,
+  // so the content above the viewport top and distFromBottom ARE the visible buffers
+  // above/below.
   const deficits = () => {
     const el = deps.getEl()
     if (!el)
@@ -136,7 +152,7 @@ export function createScrollBufferFiller(deps: {
     const target = deps.bufferTargetPx()
     const triggerPx = Math.max(0, target - el.clientHeight * BUFFER_REFILL_HYSTERESIS_SCREENS)
     return {
-      older: ceilingAllowed('older') && el.scrollTop < triggerPx && deps.hasOlder() && !deps.suppressOlder(),
+      older: ceilingAllowed('older') && deps.viewportContentTop() < triggerPx && deps.hasOlder() && !deps.suppressOlder(),
       newer: ceilingAllowed('newer') && distFromBottom(el) < triggerPx && deps.hasNewer(),
     }
   }
@@ -168,7 +184,7 @@ export function createScrollBufferFiller(deps: {
       return
     const now = sideContent(lastLoadedSide)
     const refTrimmed = lastRefAnchor !== null && now === null
-    if (refTrimmed || (now != null && now > lastLoadedMetric)) {
+    if (refTrimmed || (now != null && now - lastLoadedMetric >= LOAD_PROGRESS_MIN_PX)) {
       stuck[lastLoadedSide] = false
     }
     else {

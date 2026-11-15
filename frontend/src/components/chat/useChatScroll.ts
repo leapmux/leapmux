@@ -1,98 +1,168 @@
 import type { Accessor } from 'solid-js'
-import type { MeasurementBatchInfo, UseChatVirtualizerResult, ViewportLead } from './useChatVirtualizer'
+import type { ChatScrollController } from './chatScrollPreserve'
+import type { UseChatVirtualizerResult, ViewportLead } from './useChatVirtualizer'
 import type { AgentChatMessage, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { SavedViewportScroll, ScrollAnchor } from '~/stores/chatTypes'
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from 'solid-js'
+import { trailingDebounce } from '~/lib/debounce'
 import { monotonicNow } from '~/lib/monotonicNow'
+import { createRafCoalescer } from '~/lib/rafCoalesce'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
 import { firstMessageSeq, lastMessageSeq } from '~/stores/chatMessageOrder'
-import { createAnchorRepin } from './chatScrollAnchorRepin'
 import { createScrollBufferFiller } from './chatScrollBufferFiller'
-import { classifyUnexplainedJump, createScrollDiagnostics, KEYBOARD_SCROLL_GRACE_MS } from './chatScrollDiagnostics'
-import { createFlingSettle, FLING_SETTLE_MS } from './chatScrollFlingSettle'
-import { cannotLeaveStickyBand, clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, inferScrollDirection, isNearTopBand, maxScrollTopOf, REPIN_MIN_DELTA_PX, STICKY_BOTTOM_THRESHOLD_PX, warnSlowScrollPhase } from './chatScrollGeometry'
+import { clampScrollTop, distFromBottom, EDGE_INTENT_TOLERANCE_PX, FOLLOW_TOLERANCE_PX, inferScrollDirection, maxScrollTopOf, readLogicalScrollTop, warnSlowScrollPhase } from './chatScrollGeometry'
+import { createHmrSettleWindow } from './chatScrollHmrSettleWindow'
 import { createScrollInput } from './chatScrollInput'
+import { createScrollInputActivity } from './chatScrollInputActivity'
 import { createOverscrollDrag } from './chatScrollOverscrollDrag'
 import { createChatPaginationPolicy } from './chatScrollPaginationPolicy'
-import { registerProgrammaticScrollWriter } from './chatScrollPreserve'
-import { createProgrammaticScrollGuard } from './chatScrollProgrammaticGuard'
+import { registerChatScrollController } from './chatScrollPreserve'
+import { createScrollRest } from './chatScrollRest'
+import { createSeenScrollPosition } from './chatScrollSeenPosition'
 import { createStaleNativeScrollTranslator } from './chatScrollStaleNative'
 import { createStickyBottom } from './chatScrollSticky'
 import { createChatTailFollower } from './chatScrollTailFollower'
-import { createScrollVelocity } from './chatScrollVelocity'
+import { createScrollVelocity, VELOCITY_IDLE_MS } from './chatScrollVelocity'
 import { createViewportRestore } from './chatScrollViewportRestore'
 import { createChatSeek } from './chatSeek'
-import { EMPTY_MEASUREMENT_BATCH } from './useChatVirtualizer'
 
 /** Saved/queried scroll position — anchored to a message, see SavedViewportScroll. */
 export type ChatScrollState = SavedViewportScroll
 
 /**
- * The geometry surface useChatScroll needs from the virtualizer. The scroll
- * hook owns the scroll position; the virtualizer owns the offset map. Sizing
- * the spacer to `totalHeight()` keeps the DOM's scrollHeight truthful, so the
- * existing scrollHeight/scrollTop math continues to work. Declared as a `Pick`
- * so it stays provably a subset of the virtualizer's surface — a signature
- * change there breaks here at compile time instead of silently diverging.
- * Every member is REQUIRED: the measurement-deferral surface was once optional
- * for test fakes, which forced `?.`-guards at every hook call site and meant a
- * production caller could silently disable the fling deferral machinery by
- * omitting a method — the testkit supplies no-op defaults instead.
+ * The geometry surface useChatScroll needs from the virtualizer. The scroll hook decides
+ * the scroll position; the virtualizer owns the offset map and the layout shift that
+ * keeps the content under the reader in place across a geometry change (see
+ * chatLayoutShift). Declared as a `Pick` so it stays provably a subset of the
+ * virtualizer's surface — a signature change there breaks here at compile time instead
+ * of silently diverging. Every member is REQUIRED: the testkit supplies no-op defaults.
  */
 export type ChatScrollVirtualizer = Pick<
   UseChatVirtualizerResult,
   'totalHeight' | 'updateViewport' | 'anchorAt' | 'scrollTopForAnchor' | 'scrollTopNearAnchor' | 'geometryVersion'
-  | 'setVisibleMeasurementDeferral' | 'hasDeferredMeasurements' | 'flushDeferredMeasurements' | 'lastMeasurement' | 'hasConfirmedHeight'
-  | 'setFastScrollActive' | 'takeMeasurementBatch'
+  | 'anchorAtContent' | 'contentTopForAnchor'
+  | 'layoutShift' | 'rebase' | 'contentTopOf' | 'scrollTopOf' | 'placementScrollTopOf' | 'setFastScrollActive'
+  | 'hasMeasuredHeight'
 >
 
 /**
- * The STABLE scroll primitives the extracted scroll helpers (createStickyBottom /
- * createScrollInput / createViewportRestore) all reach back into useChatScroll for:
- * the element + virtualizer handles, the atBottom / scroll-mode reads, the viewport
- * refresh, the programmatic write and its velocity/guard hooks, and the anchor set.
- * Built ONCE in the hook and threaded as a single value so a new shared primitive is
- * added in one place instead of re-listed in each helper's dependency bag (the leaky
- * decomposition those three near-identical bags were). Each helper additionally takes
- * a small `extras` object for the deps unique to it -- including the high-level
- * composite actions (captureAnchor / repinToAnchor / checkAtBottom / stickToBottom /
- * forceScrollToBottom), which are declared LATER in the hook than this context and so
- * are wired per helper where they are already in scope rather than forward-referenced.
+ * The scroll primitives of useChatScroll, and the hook actions that two or more of its
+ * extracted helpers call, as one value. The helpers are createStickyBottom,
+ * createChatTailFollower, createScrollInput, createViewportRestore, and createChatSeek. The
+ * hook builds the context ONCE and passes it to each helper. Each helper except
+ * createStickyBottom also takes an `extras` object for the other deps that only it reads.
+ * stickToBottom and forceScrollToBottom are not members: the hook builds them from this
+ * context, so a helper that calls them takes them in its `extras` object.
  */
 export interface ScrollContext {
+  /** The list element while it is attached, shown or hidden. */
   getEl: () => HTMLDivElement | undefined
+  /**
+   * The list element while it is attached and shown, else undefined. A hidden pane
+   * (`display: none`) reads clientHeight and scrollTop as 0, so a position read from it
+   * means nothing, and a write to it does not move the view.
+   */
+  getVisibleEl: () => HTMLDivElement | undefined
   virt: ChatScrollVirtualizer
-  /** The atBottom signal accessor. */
-  atBottom: () => boolean
-  setAtBottom: (v: boolean) => void
-  /** Fresh DOM check: scrollTop within the sticky threshold of the bottom. */
-  isAtBottom: () => boolean
-  /** True while the scroll-mode machine is following the tail (not anchored to a row). */
+  /**
+   * Follow mode: the reader requested the tail, the tail is loaded, and the view did not
+   * move up with no `scroll` event. Every reader of follow mode reads it: the layout shift
+   * (it holds the bottom of the content while this is true), the two automatic sticks, and
+   * the suppression of the older pre-fetch.
+   *
+   * A touch or scrollbar drag moves the view before its first `scroll` event arrives. While
+   * the view sits more than FOLLOW_TOLERANCE_PX above the position that the scroll handler
+   * or an own write saw last, and the scroll range did not force that move (see
+   * SeenScrollPosition.hasUnseenUpwardMove), follow mode does not apply: the layout shift
+   * holds the rows under the reader, and an automatic stick writes nothing. The event of the
+   * move then ends the request (leave by position). An explicit command (End, the
+   * scroll-to-bottom button, a send, a completed jump to the latest page) still sticks.
+   * With no shown list element, it is the request at the live tail.
+   */
   isFollowing: () => boolean
+  /**
+   * Whether the reader's request for the live tail stands: the `following` flag of the
+   * hook. It stays set while the newer pages are on their way, so it can hold while
+   * isFollowing() is false.
+   */
+  followRequested: () => boolean
+  /** Whether newer messages exist beyond the loaded window: the window is paged away from the live tail. */
+  hasNewerMessages: () => boolean
+  /**
+   * Record a clamp of the browser to a scroll range that shrank: a content shrink clamps
+   * scrollTop to the new maximum with no move of the reader. A clamp that this call or a
+   * position check recorded stays forced after the content grows again, so isFollowing()
+   * does not read it as an unseen move of the reader. A clamp that neither recorded before
+   * the content grew past it again reads as such a move. Does nothing for an absent or
+   * hidden element.
+   */
+  noteScrollRange: () => void
   /** True while a scroll animation is running. */
   isAnimating: () => boolean
-  /** Transition the scroll-mode machine to following the tail. */
+  /** Record the reader's request for the live tail. */
   followTail: () => void
-  /** Recompute the rendered row slice for the current scroll position. */
-  refreshViewport: () => void
-  /** Programmatic scrollTop write whose echo the guard recognizes as ours. */
-  writeScrollTop: (top: number, source?: string) => void
-  /** Advance the velocity baseline without scoring a sample (a programmatic write is not a gesture). */
-  syncVelocityToProgrammatic: (pos: number) => void
-  setAnchor: (a: ScrollAnchor | null, captureTop?: number, viewportOffsetRatio?: number) => void
+  /** End the reader's request for the live tail, and record the anchor of the view. */
+  leaveFollow: () => void
+  /**
+   * The position check. It publishes the atBottom signal, enters follow mode at the bottom
+   * of the live tail, and records the anchor of a reader who does not follow. It never ends
+   * follow mode: it also runs after an own write, and an own write is no move of the
+   * reader. Each own write runs it after the write, each step of the scroll animation
+   * included. Does nothing for an absent or hidden element.
+   */
+  checkPosition: () => void
+  /** Stop the running scroll animation, if one runs. */
+  cancelScrollAnimation: () => void
+  /**
+   * End the pause of the buffer fill that a forced stop (a press, a touch, or a wheel event
+   * that cancels momentum) or an HMR remount started. A jump, a landing, or a page is a
+   * command of the reader, as a scroll is, but its `scroll` event is an own write, and only
+   * a move of the reader ends the pause.
+   */
+  retakeScrollControl: () => void
+  /** Drop the per-window state of the buffer filler, for a jump that replaces the message window. */
+  rearmScrollBufferFiller: () => void
+  /** Remove the layout shift with no visible change (see LayoutShiftSurface.rebase). */
+  rebase: () => void
+  /**
+   * Place the view: rebase (a `scrollTop` write when the shift is SCROLL_ROUNDING_MAX_PX
+   * or more), then call `resolve` for the scroll coordinate, then write it and record the
+   * write. A placement that writes is a command, so it ends the request for the tail.
+   * Returns `null` when the element is absent or hidden (nothing is written) or when
+   * `resolve` returned `null` (only the rebase wrote), and otherwise whether `scrollTop`
+   * changed.
+   */
+  placeAt: (resolve: () => number | null) => boolean | null
+  /**
+   * Place the view at `anchor` (see placeAt): at its row, or with `nearest`, at the nearest
+   * surviving row by seq when its row is gone. When the row has only an estimated height,
+   * the view lands again on the anchor once the row measures (see releaseAnchorHold).
+   */
+  placeAtAnchor: (anchor: ScrollAnchor, nearest: boolean) => boolean | null
+  /**
+   * Write `top` to `scrollTop`, and record the position after the write, so the `scroll`
+   * event of the write reads as no move, whatever distance it moved. Every own write goes
+   * through it, except the rebase and the translation of a stale native event, which record
+   * their writes in their own way. The record also ends a held anchor (see placeAtAnchor)
+   * and runs the position check. With `refresh`, it then refreshes the rendered rows. A
+   * ResizeObserver delivery must not refresh them: a row that mounts there re-enters the
+   * delivery. Does nothing for an absent or hidden element.
+   *
+   * It does not clamp `top`. A write of `scrollHeight` relies on the browser, which clamps
+   * it to the maximum position, and that maximum can be fractional.
+   */
+  writeOwnScrollTop: (top: number, opts: { refresh: boolean }) => void
+  /**
+   * Record the current position as writeOwnScrollTop records its write, and refresh the
+   * rendered rows: for a position that changed with no own write, as after a resize.
+   */
+  recordPosition: () => void
 }
 
 /**
- * DEV-SERVER-ONLY: how long after a genuine HMR remount the buffer fill stays paused so
- * it doesn't pile onto the hot-reload's whole-list re-measure storm (see
- * bufferFillSettling). A developer scroll ends it sooner. Never bites a cold page load /
- * refresh, prod, or tests -- only a real HMR module swap arms it (see hmrRemount).
- */
-const HMR_SETTLE_MS = 600
-
-/**
  * True ONLY for the synchronous burst of component remounts Vite triggers right after an
- * HMR module swap -- the one case the buffer-fill settle window guards. Vite runs
+ * HMR module swap -- the one case that opens the settle window of the buffer fill (see
+ * createHmrSettleWindow). It stays here, because it marks the swap of this module. Vite runs
  * `dispose` on the OLD module instance before evaluating the NEW one, persisting a marker
  * across the swap via `import.meta.hot.data`; a cold page load / refresh evaluates this
  * module fresh with empty `data`, so this stays false and the cold-load pre-fetch runs
@@ -117,32 +187,27 @@ if (import.meta.hot) {
   }
 }
 /**
- * Scroll speed (px/ms) at or above which a wheel/trackpad scroll counts as an
- * inertial FLING whose momentum a scrollTop write would cancel -- so the geometry
- * re-pin defers a small correction into flingSettle instead of writing it. Below
- * it the scroll is a slow DELIBERATE gesture. The re-pin then absorbs a correction
- * only when it is imperceptible AND arrives inside the scroll handler (see
- * SMALL_USER_SCROLL_REPIN_ABSORB_PX); every larger correction writes immediately.
- * A fling fires events tens of px apart every ~16ms (well above 1 px/ms); a
- * deliberate scroll creeps a few px per event. The tracker reports an unknown or
- * idle velocity as a fling (defer), so the prior always-defer behavior holds until
- * the tracker measures a slow cadence.
+ * Scroll speed (px/ms) at or above which a move of the reader starts a fast scroll:
+ * rows that enter the window then mount as skeletons (see the virtualizer's
+ * fastScrollActive), and no pivot element is recorded until the scroll position holds
+ * for a frame (see createLayoutPivot). A fling fires events tens of px apart every ~16ms
+ * (well above 1 px/ms); a deliberate scroll creeps a few px per event.
  */
-const FLING_VELOCITY_THRESHOLD_PX_PER_MS = 1
+const FAST_SCROLL_PX_PER_MS = 1
 /**
  * Render-ahead look-ahead window (ms) for the fling overscan: the rendered slice is
  * extended in the scroll direction by `velocity * this`, covering the distance the
  * viewport travels between the compositor scrolling a frame and the next range
  * update. Sized to a few frames of lag (scroll events can coalesce under load) while
  * keeping the cap small enough that an extreme flick cannot mount dozens of rows in
- * one synchronous scroll commit.
+ * one synchronous scroll commit. The same lead widens the margin of a rebase near the
+ * reachable top (see needsRebaseDuringScroll).
  *
  * NO-SKIP INVARIANT -- a fast fling STALLS, it never SKIPS a message. Three
  * mechanisms together guarantee every message in a fling's path is shown:
- *  1. The scrollable area IS the loaded window (the spacer is sized to
- *     virt.totalHeight() = the sum of loaded row heights), so the browser clamps
- *     scrollTop at the loaded edge -- a fling physically cannot scroll INTO
- *     not-yet-loaded history.
+ *  1. The scrollable area IS the loaded window (the spacer is sized to the loaded
+ *     rows), so the browser clamps scrollTop at the loaded edge -- a fling physically
+ *     cannot scroll INTO not-yet-loaded history.
  *  2. The buffer filler (createScrollBufferFiller) grows that loaded window ahead
  *     of the viewport as it nears an edge, so the edge keeps moving outward.
  *  3. This render-ahead paints the loaded rows the fling is ABOUT to reach, so the
@@ -175,12 +240,12 @@ export function flingOverscanCapPx(clientHeight: number): number {
   return Math.min(FLING_OVERSCAN_SCREENS * clientHeight, FLING_OVERSCAN_HARD_CAP_PX)
 }
 /**
- * How long after a wheel/trackpad or touch-end gesture we consider asynchronous
- * geometry re-pins unsafe to write synchronously. Scroll events can trail the input
- * event by a few frames; keep the window comfortably above one fling-settle debounce
- * without letting unrelated later layout work inherit "momentum" semantics.
+ * The render-ahead lead (px) of a scroll at `speed` (px/ms) in a pane of the given height:
+ * the travel in FLING_OVERSCAN_LOOKAHEAD_MS, capped by flingOverscanCapPx.
  */
-const MOMENTUM_INPUT_GRACE_MS = 750
+function renderAheadLeadPx(clientHeight: number, speed: number): number {
+  return Math.min(flingOverscanCapPx(clientHeight), speed * FLING_OVERSCAN_LOOKAHEAD_MS)
+}
 /**
  * Screens of VISIBLE content the buffer filler keeps loaded beyond the viewport in
  * each direction (see createScrollBufferFiller). Big enough that a deliberate scroll
@@ -201,8 +266,8 @@ const SCROLL_TO_BOTTOM_MAX_FRAMES = 60
  * resolved index `anchorIdx` in `msgs`, -1 when absent) down to the tail:
  *  - no anchor: 0, so the store applies the normal base cap. The sole production caller
  *    (the auto-scroll trim) never takes this path -- it derives a buffer-top anchor from
- *    scrollTop and maps an UNRESOLVABLE one to the whole window itself -- so this is just
- *    the neutral default for a null keep-from.
+ *    the viewport position and maps an UNRESOLVABLE one to the whole window itself -- so
+ *    this is just the neutral default for a null keep-from.
  *  - anchor set but UNRESOLVABLE in `msgs` (displaced / not present): the whole window,
  *    so no still-visible row is trimmed (the store clamps to the hard ceiling so memory
  *    stays bounded).
@@ -223,20 +288,22 @@ export function computeKeepNewest(msgs: AgentChatMessage[], anchor: ScrollAnchor
  * The trim must KEEP the viewport PLUS the older pre-fetch buffer the filler maintains
  * above it -- otherwise every tail append reaps the rows the filler just fetched (or the
  * hidden-page auto-advance just surfaced) and the filler refetches them: a trim/refetch
- * loop in a hidden-heavy stream. Hidden rows have zero height, so `scrollTop` measures
- * the VISIBLE content above the viewport top; the keep-from anchor sits one buffer
- * (`bufferTargetPx`) above it. The result is a SUPERSET of the viewport span -- it can
- * only keep MORE rows, never reaping a visible one -- and the store clamps it to
- * [base, ceiling], so a NORMAL followed tail still trims to the lean base while a
- * hidden-heavy window holds what the filler surfaced up to the ceiling.
+ * loop in a hidden-heavy stream. Hidden rows have zero height, so `viewportContentTop` (the
+ * content above the viewport top, in content coordinates) measures the VISIBLE content
+ * above the viewport top; the keep-from anchor sits one buffer (`bufferTargetPx`) above
+ * it. The result is a SUPERSET of the viewport span -- it can only keep MORE rows, never
+ * reaping a visible one -- and the store clamps it to [base, ceiling], so a NORMAL
+ * followed tail still trims to the lean base while a hidden-heavy window holds what the
+ * filler surfaced up to the ceiling.
  *
  * Pure given its inputs: the caller passes live DOM reads and an (untracked) anchor
  * resolver, so the branch logic is unit-testable in isolation. `anchorAt(bufTop)`
- * returns the row at the buffer top, or null when the offset map can't locate it.
+ * returns the row at the content coordinate `bufTop`, or null when the offset map can't
+ * locate it.
  */
 export function computeBufferAwareKeepNewest(
   msgs: AgentChatMessage[],
-  scrollTop: number,
+  viewportContentTop: number,
   clientHeight: number,
   bufferTargetPx: number,
   anchorAt: (bufTop: number) => ScrollAnchor | null,
@@ -245,7 +312,7 @@ export function computeBufferAwareKeepNewest(
   // cap (keepNewest 0); a later restore re-evaluates when the tab becomes visible.
   if (clientHeight === 0)
     return 0
-  const bufTop = scrollTop - bufferTargetPx
+  const bufTop = viewportContentTop - bufferTargetPx
   // Less than a buffer of visible content sits above the viewport top (a hidden-heavy /
   // all-hidden window, or the viewport is near the top): keep the WHOLE window so the
   // trim never reaps content the filler surfaced. The store's base clamp still bounds a
@@ -330,24 +397,28 @@ export interface UseChatScrollOptions extends PaginationCallbacks {
    */
   onSaveViewportScroll?: (state: ChatScrollState) => void
   /**
-   * Called for each scroll event this hook classifies as the user's own
-   * MOMENTUM -- the coast after a flick, and never one of our programmatic
-   * writes echoing back, a discrete page jump, or a drag still under the
-   * finger.
+   * Called for each `scroll` event that the scroll handler reads as a move while no
+   * pointer or touch is down: the reader's momentum, the coast after a flick, or a native
+   * scroll of a wheel or a key. Never for the event of an own write of this hook, which
+   * records its position at once, never for a clamp of the browser to a scroll range that
+   * shrank, and never for a drag still under the finger.
    *
-   * It exists because that classification is the honest answer to "is the
-   * content still moving because the reader moved it", and only this hook can
-   * give it: the echo marker it reads is per-event state, consumed as the
-   * event is handled. The scroll rail keeps itself lit on it, so a fling holds
-   * the rail for however long it coasts.
+   * It exists because only this hook can tell a move of the reader from its own writes.
+   * The scroll rail keeps itself lit on it, so a fling holds the rail for however long it
+   * coasts.
    */
   onMomentumScroll?: () => void
 }
 
 export interface UseChatScrollResult {
+  /** Whether the view is at the bottom of the content, as of the last position check. */
   atBottom: Accessor<boolean>
-  /** Fresh DOM-measured atBottom check (read this when the signal might be stale). */
-  isAtBottomFresh: () => boolean
+  /**
+   * Follow mode: the reader requested the tail, the tail is loaded, and the view did not
+   * move up with no `scroll` event (see ScrollContext.isFollowing). ChatView passes it to
+   * the virtualizer, whose layout shift holds the bottom of the content while it is true.
+   */
+  isFollowing: () => boolean
   /**
    * True only while the view is stalled hard against the loaded TOP edge waiting on an
    * in-flight older fetch (a scroll outran the pre-fetch buffer). Drives the "Loading
@@ -361,8 +432,6 @@ export interface UseChatScrollResult {
    */
   stalledNewer: Accessor<boolean>
   attachListRef: (el: HTMLDivElement | undefined) => void
-  /** Animated scroll-to-bottom (the in-window case behind {@link scrollToBottom}). */
-  scrollToBottomAnimated: () => void
   /**
    * The floating scroll-to-bottom button's windowing-aware jump: forces a jump to
    * the latest page when windowed away from the live tail (the tail isn't loaded),
@@ -370,8 +439,6 @@ export interface UseChatScrollResult {
    * the view doesn't encode which primitive applies in which window state.
    */
   scrollToBottom: () => void
-  /** Synchronous jump to bottom (used by the inline "show more" button). */
-  jumpToBottom: () => void
   /**
    * Seek to a message seq (a scroll-rail dot click, track click, or thumb release):
    * an in-window aligned landing, or a fetch-around-seq window swap then land. Resolves
@@ -380,9 +447,11 @@ export interface UseChatScrollResult {
    */
   jumpToSeq: (seq: bigint) => Promise<boolean>
   /**
-   * A guard-marked programmatic scroll write for in-window rail thumb-drag live-scroll.
-   * Marked like the landing writes so the drag's scroll events don't trip velocity
-   * sampling, edge pagination, or the buffer filler.
+   * A placement for in-window rail thumb-drag live-scroll, at the content coordinate
+   * `top`. A `top` at the content top (0) places the view at the top of the scroller,
+   * above the inset of the spacer. An own write, so the `scroll` event of each placement
+   * reads as no move: it samples no speed and reports no momentum. The scroll handler still
+   * tops up the buffer for the new position, as it does for every event.
    */
   previewScrollTo: (top: number) => void
   /**
@@ -392,13 +461,14 @@ export interface UseChatScrollResult {
    */
   cancelPendingSeek: () => void
   /**
-   * Re-stick to the bottom if we were pinned there and content below the
-   * viewport just grew. For tail content that is NOT a virtualizer row -- the
-   * streaming-markdown block and the thinking indicator, rendered as siblings of
-   * the virtual spacer -- whose growth no ResizeObserver here observes (the
-   * virtualizer only measures rows, the scroll container's content-box is fixed).
-   * ChatView calls this after that content renders. Position-only and idempotent,
-   * so it is safe to call on every streaming frame.
+   * Re-stick to the bottom while follow mode applies and content below the viewport just
+   * grew. For tail content that is NOT a virtualizer row -- the streaming-markdown block
+   * and the thinking indicator, rendered as siblings of the virtual spacer -- whose growth
+   * no ResizeObserver here observes (the virtualizer only measures rows, the scroll
+   * container's content-box is fixed). ChatView calls this after that content renders.
+   * Position-only and idempotent, so it is safe to call on every streaming frame. It
+   * writes nothing while the browser moved the view up and the scroll handler did not see
+   * that move yet: follow mode does not apply then (see ScrollContext.isFollowing).
    */
   restickIfAtBottom: () => void
   /** Capture the current viewport scroll position for tab-switch restoration. */
@@ -407,14 +477,6 @@ export interface UseChatScrollResult {
   forceScrollToBottom: () => void
   /** Page-wise scroll for keyboard navigation. */
   pageScroll: (direction: -1 | 1) => void
-  /**
-   * Pin the given row's top at its current viewport position so a user toggle that
-   * changes THAT row's height (expand/collapse, diff-view switch) keeps it visually
-   * stationary instead of scrolling it. Call immediately BEFORE applying the toggle,
-   * while the DOM still reflects the pre-toggle geometry; the geometry re-pin the toggle
-   * triggers then holds the row in place. See createAnchorRepin.captureRowTopAnchor.
-   */
-  anchorRowForResize: (messageId: string) => void
   handlers: {
     onScroll: () => void
     onWheel: (event: WheelEvent) => void
@@ -430,64 +492,42 @@ export interface UseChatScrollResult {
   }
 }
 
+/** What the scroll controller of `chatScrollPreserve` restores after a heavy re-render. */
+interface PreservedScroll {
+  /**
+   * Where the view was: the anchor of the row at the viewport top, or for a window with no
+   * row, the scroll position. The restore resolves the anchor again, and writes the scroll
+   * position back as it is.
+   */
+  position: { anchor: ScrollAnchor } | { emptyWindowTop: number }
+  /** The count of the reader's moves at the snapshot. */
+  moves: number
+  /** The reader's request for the live tail at the snapshot. */
+  requested: boolean
+  /** The latest-page jump that was pending at the snapshot. */
+  jump: number | null
+}
+
 /**
- * Manages all scroll behavior for the chat message list:
- * sticky-bottom tracking, auto-scroll on new content, scroll anchoring when
- * older messages are prepended, viewport restoration on tab switch, and
- * load-older-on-overscroll for touch/wheel/keyboard.
+ * Manages all scroll behavior for the chat message list: follow mode at the live tail,
+ * auto-scroll on new content, the rebase of the layout shift that keeps the view in place
+ * across a geometry change, viewport restoration on tab switch, and load-older on
+ * overscroll for touch/wheel/keyboard.
+ *
+ * The scroll handler does not classify a `scroll` event. Every own write records the
+ * position it wrote at once, and the handler lowers the recorded position to the maximum
+ * of a scroll range that shrank. So the event of an own write and a clamp of the browser
+ * read as no move, and every event that moved the position is the reader's (see the
+ * handler).
  *
  * Attaches via ref callbacks so the same refs feed event handlers, effects,
  * and the imperative `getScrollState`/`forceScrollToBottom`/`pageScroll`
  * methods exposed on the result.
  */
-
 export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   let messageListRef: HTMLDivElement | undefined
-
-  const [atBottom, setAtBottom] = createSignal(true)
-  // A monotonic tick bumped whenever the viewport's geometry (or its availability)
-  // changes WITHOUT a signal of its own: every scroll event (a position-only edge
-  // clamp/unclamp) and the ref (un)attaching (messageListRef is a plain ref, so a memo
-  // that reads it can't react to it). The stall memos (stalledOlder / stalledNewer) read
-  // the DOM fresh; this tick is the dependency that triggers that re-read.
-  const [geomTick, bumpGeomTick] = createSignal(0)
-  // Plain ref: only read inside `untrack` from the auto-scroll effect, never
-  // as a reactive dependency.
-  let preserveBrowsingPosition = false
-  let scrollAnimationId: number | null = null
-  let suppressAutoLoadOlderAfterRestore = false
-  // The scroll-rail seek unit (createChatSeek), assigned below where its deps are all in
-  // scope. It owns the in-flight out-of-window seek + epoch; a forward `let` (read only at
-  // call time) lets handleScroll cancel a live seek on a genuine user scroll before the unit
-  // is created. See the wiring at the assignment site.
-  let chatSeek!: ReturnType<typeof createChatSeek>
-  let autoScrollFirstSeq: bigint | undefined
-  let autoScrollLastSeq: bigint | undefined
-  let lastAutoScrollSig: unknown[] = []
-  let lastTrimMessageCount: number | undefined
-  let resizeObserver: ResizeObserver | undefined
-  // resizeRafId / prevClientHeight now live inside createViewportRestore.
-  // The scroll-buffer filler's fill(), assigned where the unit is created (after the
-  // geometry re-pin AND auto-scroll effects, so its reactive pass runs once the re-pin
-  // has settled scrollTop and the mount placement / tail stick has run -- see the
-  // wiring comment at the creation site). handleScroll calls it through this forward
-  // ref to top up the buffer for the new scroll position. A no-op until wired, so an
-  // early scroll event is simply ignored.
-  let fillScrollBuffer: () => void = () => {}
-  // The filler's rearm(), through the same forward ref pattern: forceScrollToBottom and
-  // the jump-to-oldest wrapper (both declared BEFORE the filler unit) drop the old
-  // window's per-side filler state when a jump replaces the message window.
-  let rearmScrollBufferFiller: () => void = () => {}
-  // The fling-settle unit, assigned below. The anchor engine (createAnchorRepin, created
-  // earlier) and createStickyBottom reference it lazily through thunks; flingSettle in turn
-  // closes over the anchor engine's captureAnchor/currentAnchor -- a genuine definition
-  // cycle (the engine's captureAnchor rebases flingSettle, flingSettle re-captures via the
-  // engine). A single forward `let` (read only at call time, never before assignment)
-  // breaks it without the old pair of reassigned `() => {}` stubs, which would silently
-  // no-op if a future edit forgot to wire them.
-  let flingSettle!: ReturnType<typeof createFlingSettle>
-
   const virt = opts.virtualizer
+
   // Keep the host accessor behind a hook-owned memo. Solid cleans this memo before
   // owner cleanups. The unmount save reads the plain snapshot. Reading the host
   // accessor there can update a stale parent and re-enter disposal.
@@ -496,286 +536,422 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     hasNewerMessagesSnapshot = !!opts.hasNewerMessages?.()
     return hasNewerMessagesSnapshot
   })
-  // Distinguishes a fast fling (defer corrections to protect momentum) from a slow
-  // deliberate wheel/trackpad scroll (correct immediately, no drift-then-settle).
-  // handleScroll samples it on each real scroll event; repinToAnchor consults it.
-  // Created before progGuard so the guard's onMark can feed it (below).
-  const scrollVelocity = createScrollVelocity({
-    // monotonicNow prefers perf.now() and falls back to Date.now() where `performance`
-    // is absent (SSR / some test envs) -- never a constant 0, which would pin velocity
-    // to its Infinity seed and make every scroll defer as a fling.
-    now: monotonicNow,
-    thresholdPxPerMs: FLING_VELOCITY_THRESHOLD_PX_PER_MS,
-    idleMs: FLING_SETTLE_MS,
-  })
-  // Programmatic-scroll guard: recognizes our own scrollTop writes (by position)
-  // so their echoing scroll events don't trigger pagination/fling handling.
-  // Destructured to the verbose call-site names the hook already uses. onMark feeds
-  // every programmatic write's landing position to the velocity tracker so a re-pin's
-  // displacement is excluded from the user's measured gesture speed.
-  const progGuard = createProgrammaticScrollGuard(
-    () => messageListRef,
-    pos => scrollVelocity.syncToProgrammatic(pos),
-  )
-  const isProgrammaticEcho = progGuard.isEcho
 
-  // The user's most recent scroll/keyboard intent. Drives pagination when the
-  // viewport can't scroll (content fits, e.g. an all-hidden window page), the
-  // auto-advance through hidden-only pages, and stale-native-scroll translation
-  // after large coordinate-space shifts.
+  // The reader's request for the live tail. A mount on a window that is paged away from
+  // the live tail holds no such request. Follow mode is this request while the tail is
+  // loaded (isFollowing).
+  let following = !untrack(hasNewerMessages)
+  // Whether the view is at the bottom, as of the last position check, which is its one
+  // writer. It starts as the request: a mount on a window that is paged away ran no
+  // position check yet, and it is not at the bottom of the tail.
+  const [atBottom, setAtBottom] = createSignal(following)
+  // A monotonic tick bumped whenever the viewport's geometry (or its availability)
+  // changes WITHOUT a signal of its own: every scroll event (a position-only edge
+  // clamp/unclamp), every own write, and the ref (un)attaching (messageListRef is a plain
+  // ref, so a memo that reads it can't react to it). The stall memos (stalledOlder /
+  // stalledNewer) read the DOM fresh; this tick is the dependency that triggers that
+  // re-read.
+  const [geomTick, bumpGeomTick] = createSignal(0)
+
+  // The position that the scroll handler or an own write saw last (see
+  // createSeenScrollPosition). An own write notes its position at once, so the `scroll`
+  // event of the write reads as no move.
+  const seen = createSeenScrollPosition()
+  // The count of the reader's moves: the scroll events that the handler reads as a move.
+  // The controller of chatScrollPreserve compares it across a re-render to learn whether
+  // the view moved.
+  let moveCount = 0
+  // The user's most recent scroll/keyboard intent. Drives pagination when the viewport
+  // can't scroll (content fits, e.g. an all-hidden window page), the auto-advance through
+  // hidden-only pages, and the stale-native translation after a large rebase.
   let lastScrollDir: 'older' | 'newer' = 'older'
+  // The anchor of the reader's last position while follow mode does not apply. A resize
+  // restores it after the pane was hidden (see createViewportRestore).
+  let lastAnchor: ScrollAnchor | null = null
+  // An anchor that a placement resolved while its row had only an estimated height, until
+  // the row measures (see releaseAnchorHold). A move of the reader ends the hold, also a
+  // move whose `scroll` event did not arrive yet, and so does every other own write that
+  // places the view.
+  let heldAnchor: ScrollAnchor | null = null
+  let scrollAnimationId: number | null = null
+  let savedScrollRecheckRaf = 0
+  let autoScrollFirstSeq: bigint | undefined
+  let autoScrollLastSeq: bigint | undefined
+  let lastAutoScrollSig: unknown[] = []
+  let lastTrimMessageCount: number | undefined
+  let resizeObserver: ResizeObserver | undefined
+  // The scroll-buffer filler's fill() and rearm(), assigned where the unit is created
+  // (after the auto-scroll effect -- see the wiring comment at the creation site). A no-op
+  // until wired, so an early scroll event is simply ignored.
+  let fillScrollBuffer: () => void = () => {}
+  let rearmScrollBufferFiller: () => void = () => {}
 
-  // The scrollTop observed on the previous scroll event, so handleScroll can infer the
-  // direction from the position delta. handleWheel/handleKeyDown set lastScrollDir for
-  // wheel/key input, but a scrollbar drag, touch scroll, or momentum fling fires only
-  // `scroll` events -- this keeps lastScrollDir correct for those too. Kept in sync on our
-  // own programmatic writes: writeScrollTopProgrammatically advances it to the written
-  // position immediately (the write's echo event later re-affirms it without changing
-  // direction), so the next user delta -- and the scroll-anomaly WARN -- measures from the
-  // real current position, not a stale one, even when the echo is delivered late.
-  let lastScrollTopForDir = 0
-  // Timestamp (monotonicNow) of the previous scroll event, so Detector B can report the gap
-  // since it. A large gap means scroll events STALLED -- a heavy measurement pass blocking
-  // the main thread while momentum coasted -- after which the browser delivers one catch-up
-  // delta that reads as an isolated jump. undefined until the first event.
-  let lastScrollEventAt: number | undefined
-  // The most recent native-scroll keydown (Space / arrows -- see KEYBOARD_SCROLL_GRACE_MS),
-  // consulted by Detector B's exclusion list. NEGATIVE_INFINITY so the first real event
-  // can't fall inside a grace window measured from a zero epoch (performance.now() starts
-  // near 0 at page load). Detector B/C's suppression bookkeeping now lives in the emitter
-  // (createScrollDiagnostics).
-  let lastNativeKeyScrollAt = Number.NEGATIVE_INFINITY
-  const hasRecentKeyboardScroll = () => monotonicNow() - lastNativeKeyScrollAt <= KEYBOARD_SCROLL_GRACE_MS
-
-  // The height commits of the geometry flush that the re-pin effect below reacts to (see
-  // MeasurementBatchInfo). The effect samples it, and a WARN reads it here: `lastMeasurement`
-  // alone names only the final row of a batched premeasure, so a drift it cannot explain
-  // reads as "the geometry moved for no reason".
-  //
-  // Only that effect refreshes it, and two callers reach a WARN without passing through it:
-  // Detector B fires from handleScroll (a scroll event carries no flush of its own), and
-  // applyDeferredRepinOnCancel / the viewport restore re-pin directly. Each would print an
-  // older flush as this event's cause, so every payload carries `ageMs` beside the totals.
-  // A batch that is hundreds of ms old did not cause the event you are reading.
-  let measurementBatch: MeasurementBatchInfo = EMPTY_MEASUREMENT_BATCH
-  let measurementBatchAt = Number.NEGATIVE_INFINITY
-  const measurementBatchPayload = () => ({
-    ...measurementBatch,
-    ageMs: measurementBatchAt === Number.NEGATIVE_INFINITY
-      ? null
-      : Math.round(monotonicNow() - measurementBatchAt),
+  // The pointers and the fingers that are down on the list (see createScrollInputActivity).
+  // When the last one goes up, the scroller can enter rest (see noteInputEnded).
+  const inputActivity = createScrollInputActivity({
+    onInputEnded: noteInputEnded,
   })
 
-  const scrollDomDebugSnapshot = () => {
+  // True between a forced stop (grab/tap) and the user's next genuine scroll: pauses
+  // the buffer fill so a stop also stops the older/newer pre-fetch ("stop = stop
+  // loading too"). The scroll handler clears it on the next move of the reader, so a
+  // fling or a slow scroll resumes pre-fetching; the pause does not block the explicit
+  // wheel/key-at-edge loads, so the user can always still page at the very edge.
+  let bufferFillPaused = false
+  // DEV-SERVER-ONLY: the buffer fill of a mount after an HMR module swap waits until the
+  // re-measure of the whole list settles (see createHmrSettleWindow). A move of the reader
+  // and a command of the reader end the window sooner.
+  const hmrSettle = createHmrSettleWindow(hmrRemount)
+
+  // monotonicNow prefers perf.now() and falls back to Date.now() where `performance` is
+  // absent (SSR / some test envs).
+  const velocity = createScrollVelocity({ now: monotonicNow, idleMs: VELOCITY_IDLE_MS })
+
+  /**
+   * The anchor of the row at the viewport top, or null with no element or no row.
+   * Untracked: no caller means to subscribe to the geometry that the anchor reads.
+   */
+  const anchorAtViewportTop = (): ScrollAnchor | null => {
     const el = messageListRef
-    if (!el)
-      return undefined
-    return {
-      scrollTop: el.scrollTop,
-      scrollHeight: el.scrollHeight,
-      clientHeight: el.clientHeight,
-      maxScrollTop: maxScrollTopOf(el),
-      virtTotalHeight: virt.totalHeight(),
-      rowCount: opts.messages().length,
-      hasOlder: !!opts.hasOlderMessages?.(),
-      hasNewer: hasNewerMessages(),
-      fetchingOlder: !!opts.fetchingOlder?.(),
-      fetchingNewer: !!opts.fetchingNewer?.(),
-    }
+    return el
+      ? untrack(() => virt.anchorAt(readLogicalScrollTop(el)))
+      : null
   }
 
-  // Scroll-anomaly WARN emitter: owns the three detectors' payload assembly, burst
-  // suppression, and rate limiting (see createScrollDiagnostics). The hook samples the
-  // scroll state below (in the re-pin clamp/drift callbacks and Detector B) and forwards
-  // it here; the emitter reads its DOM/measurement/marker context through these thunks.
-  const diagnostics = createScrollDiagnostics({
-    domSnapshot: scrollDomDebugSnapshot,
-    lastMeasurement: () => virt.lastMeasurement(),
-    measurementBatch: measurementBatchPayload,
-    debugMarkers: () => progGuard.debugMarkers(),
-    hasOlderMessages: () => !!opts.hasOlderMessages?.(),
-    hasNewerMessages,
-  })
+  /**
+   * The list element while it is attached and shown, else undefined. A hidden pane
+   * (`display: none`) reads clientHeight and scrollTop as 0, and no position read from it
+   * may become a recorded one.
+   */
+  const visibleListEl = (): HTMLDivElement | undefined => {
+    const el = messageListRef
+    return el !== undefined && el.clientHeight > 0
+      ? el
+      : undefined
+  }
 
-  // True only while a USER scroll event is refreshing newly revealed rows (inside
-  // handleScroll's refreshViewport). The geometry re-pin can fire synchronously
-  // from same-flush geometry changes; while this is set it suppresses small
-  // scrollTop corrections, because writing scrollTop mid-fling cancels the
-  // browser's momentum and reads as a jump. Idle/async re-pins (post-mount
-  // growth, prepend, trim, restore) leave it false and write normally.
-  let userScrolling = false
-  // The "a toggle row-top anchor is held; don't re-capture the midpoint" state now lives in
-  // the anchor engine (isHoldingRowTop / releaseRowTopHold), with the anchor it guards --
-  // see createAnchorRepin.captureRowTopAnchor and the handleScroll gate below.
-  // Direct-manipulation input tracking: pointers currently down + whether a touch
-  // is active. A scroll WHILE input is down is a DRAG (scrollbar thumb or finger)
-  // with no inertia, so its re-pin correction applies immediately; a scroll with
-  // NO input down is wheel/trackpad MOMENTUM (a fling), where writing scrollTop
-  // cancels the browser's momentum. This is what lets the re-pin distinguish a
-  // slow drag (correct immediately, no drift-then-snap) from a fling (defer).
-  // Track the live pointer/touch state from the browser's authoritative lists
-  // rather than a hand-balanced counter: a DROPPED pointerup/touchend (pointer-
-  // capture transfer to another element, a browser gesture intercept swallowing
-  // the up, an unmount mid-gesture) would otherwise leave a counter stuck above 0
-  // for the session, latching isScrollInputActive() true and wedging fling-settle
-  // off (every re-pin would then write mid-fling as if dragging). The pointer set
-  // is keyed by pointerId (idempotent) and cleared when a PRIMARY pointer starts a
-  // fresh gesture; touch state is read from event.touches.length, so a missed end
-  // self-corrects on the next touch event and a multi-touch gesture stays active
-  // while a finger remains.
-  const activePointers = new Set<number>()
-  let touchActive = false
-  const isScrollInputActive = () => activePointers.size > 0 || touchActive
-  let momentumInputUntil = 0
-  const markMomentumInput = () => {
-    momentumInputUntil = monotonicNow() + MOMENTUM_INPUT_GRACE_MS
+  /** Fresh DOM measurement — true when the view is within FOLLOW_TOLERANCE_PX of the bottom. */
+  const isAtBottom = () =>
+    !!messageListRef && distFromBottom(messageListRef) <= FOLLOW_TOLERANCE_PX
+
+  /**
+   * See ScrollContext.isFollowing. Follow mode exists only at the live tail: the loaded
+   * bottom of a window that is paged away is not the tail, and following it would chase
+   * every newer append.
+   */
+  const isFollowing = (): boolean => {
+    if (!following || hasNewerMessages())
+      return false
+    const el = visibleListEl()
+    return el === undefined || !seen.hasUnseenUpwardMove(el)
   }
-  const clearMomentumInput = () => {
-    momentumInputUntil = 0
+
+  /** See ScrollContext.noteScrollRange. */
+  function noteScrollRange(): void {
+    const el = visibleListEl()
+    if (el)
+      seen.noteRange(el)
   }
-  const hasRecentMomentumInput = () => monotonicNow() <= momentumInputUntil
-  // The clamped target scrollTop of an in-flight keyboard PageUp/PageDown (null =
-  // none). A discrete page is NOT a momentum fling: the geometry re-pin it
-  // triggers must apply immediately (so the page lands where the user can already
-  // read it), never deferred into flingSettle's accept-and-reanchor path. Matched
-  // by POSITION rather than "the next scroll event" so an unrelated fling that
-  // interleaves before the page's own native scroll event can't consume it.
-  let discretePageTarget: number | null = null
-  let viewportRefreshRafId = 0
-  // Safari/WebKit rubber-band overscroll can expose transient negative/over-max
-  // scrollTop values on read. Treat those as native edge physics, not list
-  // coordinates: anchor resolution, viewport ranges, velocity, and saved state must
-  // operate in the clamped scroll coordinate space without writing to the DOM.
-  const readLogicalScrollTop = (el: HTMLDivElement) => clampScrollTop(el, el.scrollTop)
+
+  /** The content height above the viewport top, in content coordinates. */
+  const viewportContentTop = () => messageListRef
+    ? virt.contentTopOf(readLogicalScrollTop(messageListRef))
+    : 0
+
+  /**
+   * Hard against the very TOP / BOTTOM edge of the loaded rows, within
+   * EDGE_INTENT_TOLERANCE_PX (see chatScrollGeometry). The one home for the read each
+   * edge uses (the content above the viewport top; distFromBottom at the bottom), shared
+   * by the explicit edge-intent loaders, the stall indicators, and the overscroll-drag
+   * gate so they can't drift asymmetrically.
+   */
+  const isAtTopEdge = () =>
+    !!messageListRef && viewportContentTop() <= EDGE_INTENT_TOLERANCE_PX
+  const isAtBottomEdge = () =>
+    !!messageListRef && distFromBottom(messageListRef) <= EDGE_INTENT_TOLERANCE_PX
 
   // Stale-native-scroll translator: recognizes a compositor-delayed OLD-COORDINATE
-  // momentum event after a large anchor re-pin and rewrites it into the current
-  // coordinate space (see createStaleNativeScrollTranslator). Fed every programmatic
-  // write below; consulted at the top of handleScroll.
+  // momentum event after a large rebase during a scroll and rewrites it into the current
+  // coordinate space (see createStaleNativeScrollTranslator). Every own write reports to
+  // it (rebase and notePosition); the scroll handler consults it first.
   const staleNativeTranslator = createStaleNativeScrollTranslator({
     getEl: () => messageListRef,
-    isScrollInputActive,
-    isProgrammaticEcho,
-    setLastScrollTopForDir: (top) => { lastScrollTopForDir = top },
+    isScrollInputActive: inputActivity.isActive,
+    isOwnWriteEvent: () => {
+      const el = visibleListEl()
+      return el !== undefined && !seen.hasUnseenRawMove(el)
+    },
     // Same pane-derived render-ahead cap the fling overscan uses, so the stale-native
     // window covers the full fling travel on any pane height (see flingOverscanCapPx).
     flingOverscanCapPx,
   })
 
-  const writeScrollTopProgrammatically = (top: number, source?: string) => {
+  // The rest detector: the scroller rests 150ms after its raw position last changed, with
+  // no pointer or touch down. At rest, the layout shift goes (see rebase).
+  const rest = createScrollRest({
+    isInputActive: inputActivity.isActive,
+    hasUnseenMove: () => {
+      const el = visibleListEl()
+      return el !== undefined && seen.hasUnseenRawMove(el)
+    },
+    onRest: () => rebase(),
+  })
+
+  /**
+   * The last pointer or finger went up: the scroller can enter rest. The input tracker,
+   * created above `rest`, calls it from an event listener only, after the hook body ran.
+   */
+  function noteInputEnded(): void {
+    rest.noteInputEnded()
+  }
+
+  /** See ScrollContext.checkPosition. */
+  function checkPosition(): void {
+    const el = visibleListEl()
+    if (!el)
+      return
+    // The check can enter follow mode at a bottom that a shrink clamped. Record that clamp,
+    // or isFollowing() reads it as an unseen move of the reader once the content grows again.
+    seen.noteRange(el)
+    untrack(() => {
+      const atBottomNow = isAtBottom()
+      if (!following && !hasNewerMessages() && atBottomNow)
+        following = true
+      setAtBottom(atBottomNow)
+      // The second condition keeps the anchor of the reader while the browser moved
+      // scrollTop and the handler did not see that move yet, as after a pane was hidden
+      // and shown.
+      if (!isFollowing() && !seen.hasUnseenRawMove(el))
+        lastAnchor = anchorAtViewportTop()
+    })
+  }
+
+  /**
+   * Record an own `scrollTop` write: the position it wrote, so its `scroll` event reads as
+   * no move, the velocity baseline, and the position check. A hidden pane reads scrollTop
+   * as 0, and that value must not become the recorded position.
+   */
+  function recordOwnWrite(): void {
+    const el = visibleListEl()
+    if (!el)
+      return
+    const top = readLogicalScrollTop(el)
+    seen.note(top, el.scrollTop)
+    velocity.syncToProgrammatic(top)
+    checkPosition()
+    bumpGeomTick(t => t + 1)
+  }
+
+  /**
+   * Record an own write (see ScrollContext.writeOwnScrollTop): a record of the translator
+   * no longer applies, and neither does a held anchor (the write replaces the placement
+   * that held it).
+   */
+  function notePosition(): void {
+    if (!visibleListEl())
+      return
+    heldAnchor = null
+    recordOwnWrite()
+    staleNativeTranslator.invalidate()
+  }
+
+  /**
+   * Recompute the rendered row slice for the current scroll position. `lead` extends the
+   * rendered slice ahead in the fling direction (see the scroll handler) so a fast scroll
+   * paints the rows it is about to reach; other callers pass none and get the symmetric
+   * overscan. Untracked: no caller means to subscribe to the geometry it reads.
+   */
+  function refreshViewport(lead?: ViewportLead): void {
     const el = messageListRef
-    const beforeTop = el?.scrollTop
-    const beforeClientHeight = el?.clientHeight ?? 0
-    progGuard.write(top, source)
-    const afterTop = el?.scrollTop
-    // Arm/extend/disarm the stale-native shift record for this write (an 'anchor-repin'
-    // larger than a screen arms it; other sources invalidate it).
-    staleNativeTranslator.noteProgrammaticWrite({
-      ...(source !== undefined
-        ? { source }
-        : {}),
+    if (el)
+      untrack(() => virt.updateViewport(readLogicalScrollTop(el), el.clientHeight, lead))
+  }
+
+  /** See ScrollContext.writeOwnScrollTop. */
+  function writeOwnScrollTop(top: number, opts: { refresh: boolean }): void {
+    const el = visibleListEl()
+    if (!el)
+      return
+    el.scrollTop = top
+    notePosition()
+    if (opts.refresh)
+      refreshViewport()
+  }
+
+  /** See ScrollContext.recordPosition. */
+  function recordPosition(): void {
+    if (!visibleListEl())
+      return
+    notePosition()
+    refreshViewport()
+  }
+
+  /**
+   * Remove the layout shift (see LayoutShiftSurface.rebase) and record the write.
+   * A rebase while the scroller moves reports its move to the stale-native translator,
+   * which can then translate a `scroll` event in the old coordinates; a rebase at rest
+   * clears its record. It must not call notePosition: that clear removes the record that
+   * the translator joins a second rebase to.
+   */
+  function rebase(): void {
+    const el = visibleListEl()
+    if (!el)
+      return
+    const beforeTop = el.scrollTop
+    const wasResting = rest.isResting()
+    if (virt.rebase() === 0)
+      return
+    recordOwnWrite()
+    if (wasResting) {
+      staleNativeTranslator.invalidate()
+      return
+    }
+    staleNativeTranslator.noteRebase({
       beforeTop,
-      afterTop,
-      clientHeight: beforeClientHeight,
+      afterTop: el.scrollTop,
+      clientHeight: el.clientHeight,
       dir: lastScrollDir,
     })
-    // Advance the direction / last-position baseline to where we just moved. handleScroll
-    // otherwise only re-syncs it from a programmatic write's ECHO scroll event -- but the
-    // browser can deliver that echo LATER than the programmatic guard's echo-marker TTL
-    // (~150ms) when the main thread is busy, e.g. a keep-position re-pin during a long
-    // older-page prepend re-measuring a huge list. A late echo is then no longer matched
-    // as ours, and measured against the stale pre-write baseline it reads as a large
-    // unexplained user jump: a spurious scroll-anomaly WARN and a mis-inferred scroll
-    // direction. Syncing at write time makes the baseline reflect our own move
-    // immediately, so a delayed echo shows ~0 delta and a genuine later user scroll
-    // measures from the real current position. The large-prepend case stays correct too:
-    // its stale-native momentum events are recognized via the translator's shift record
-    // (armed above) and translated in handleScroll, independent of this baseline.
-    if (afterTop !== undefined)
-      lastScrollTopForDir = afterTop
   }
 
-  // The anchor + re-pin engine (scroll-mode state machine + the keep-position re-pin),
-  // extracted into its own unit (createAnchorRepin). It owns scrollMode / anchorCaptureTop
-  // / repinning / the deferred-during-animation flag; the hook keeps the orthogonal scroll
-  // guards. Built here from raw deps (not scrollCtx) so ScrollContext below can delegate to
-  // its anchor accessors without a creation cycle. `flingSettle` is read through a thunk:
-  // the engine's captureAnchor and the fling-settle unit close over each other (a genuine
-  // definition cycle the forward `let flingSettle` breaks).
-  const anchorRepin = createAnchorRepin({
-    getEl: () => messageListRef,
-    virt,
-    isAnimating: () => scrollAnimationId !== null,
-    writeScrollTop: writeScrollTopProgrammatically,
-    velocity: {
-      isFling: () => scrollVelocity.isFling(),
-      // The engine asks ONE question here: would a scrollTop write cancel INERTIA? Two facts
-      // answer it, and neither alone does.
-      //
-      // isCoasting, not isActivelyFlinging: momentum decays continuously, so a speed test
-      // reports "stopped" for the last few hundred ms of a coast that still visibly moves,
-      // and the engine then wrote into it. The tracker latches the coast on a measured fling
-      // and clears it when the motion stops, so the whole coast is covered, tail included.
-      //
-      // AND no direct manipulation: a fast finger or scrollbar drag measures like a coast and
-      // carries no inertia, so a write during one costs nothing. It must not defer either --
-      // handleScroll schedules the fling-settle for momentum scrolls only, so a correction
-      // deferred by a drag has nothing to apply it, ever.
-      //
-      // NOT hasRecentMomentumInput(). That 750ms grace stands in for both facts and is wrong
-      // about both: it lapses mid-coast (the OS drives a coast with bare scroll events), and
-      // it is false for a whole drag (markMomentumInput fires on a wheel event and on
-      // touch-END only), so it kept drags out of the deferral only by accident.
-      isActivelyFlinging: () => scrollVelocity.isCoasting() && !isScrollInputActive(),
-    },
-    flingSettle: () => flingSettle,
-    isUserScrolling: () => userScrolling,
-    hasNewerMessages,
-    readScrollTop: readLogicalScrollTop,
-    // Detectors A and C: the engine reports THAT a clamp/drift happened; the emission
-    // policy (visible-px floor, whether history exists that direction, fast-fling skip,
-    // rate limiting, payload assembly) lives in createScrollDiagnostics.
-    onRepinClamp: info => diagnostics.emitRepinClamp(info),
-    onAnchorDrift: info => diagnostics.emitAnchorDrift(info, monotonicNow()),
-  })
-  const { currentAnchor, currentAnchorState, isFollowing, isHoldingRowTop, releaseRowTopHold, followTail, setAnchor, captureAnchor, captureTopAnchor, captureRowTopAnchor, repinToAnchor } = anchorRepin
+  /**
+   * Whether the layout shift must go while the scroller moves. Otherwise it waits for
+   * rest (see createScrollRest):
+   *
+   * - A shift larger than the view near the reachable top. A negative shift leaves loaded
+   *   rows above scroll coordinate 0, out of reach; a positive one puts a blank band above
+   *   the first row. A prepended page is such a shift. The margin is the view plus the
+   *   render-ahead lead of the current speed, so a fling meets the grown range in time.
+   * - The viewport top above the first row: the reader would see the blank band.
+   *
+   * A smaller shift waits for rest: the first measure of each row changes the shift by a
+   * few pixels, and a write for each one ends the momentum in iOS WebKit.
+   *
+   * No shift must go while the browser moved the view and the `scroll` event of that move
+   * did not arrive yet, as ScrollRest.isResting states: the rebase would record the moved
+   * position as seen, so the late event would read as no move. The handler asks again at
+   * that event.
+   */
+  function needsRebaseDuringScroll(): boolean {
+    const el = visibleListEl()
+    if (!el || seen.hasUnseenRawMove(el))
+      return false
+    const shift = untrack(virt.layoutShift)
+    if (shift === 0)
+      return false
+    const scrollTop = readLogicalScrollTop(el)
+    if (shift > 0 && scrollTop < shift)
+      return true
+    const rebaseMarginPx = el.clientHeight + renderAheadLeadPx(el.clientHeight, velocity.speed())
+    return Math.abs(shift) > el.clientHeight && scrollTop - Math.max(0, shift) < rebaseMarginPx
+  }
 
-  // Fast-scroll flag for the fling skeletons (virt.setFastScrollActive): set on
-  // any genuine user scroll at fling velocity — momentum AND direct drags — and
-  // cleared by this trailing debounce, because a scrollbar/touch drag has no
-  // fling-settle to clear it (the settle is armed for momentum scrolls only).
-  // FLING_SETTLE_MS matches the velocity tracker's own idle window, so the flag
-  // drops as soon as the tracker would stop reporting a fling anyway.
-  let fastScrollResetTimer: ReturnType<typeof setTimeout> | undefined
-  const clearFastScrollReset = () => {
-    if (fastScrollResetTimer !== undefined) {
-      clearTimeout(fastScrollResetTimer)
-      fastScrollResetTimer = undefined
+  /** See ScrollContext.placeAt. */
+  function placeAt(resolve: () => number | null): boolean | null {
+    const el = visibleListEl()
+    if (!el)
+      return null
+    const placed = writePlacement(el, resolve)
+    if (placed !== null)
+      refreshViewport()
+    return placed
+  }
+
+  /** The write of placeAt, with no refresh of the rendered rows. Returns as placeAt. */
+  function writePlacement(el: HTMLDivElement, resolve: () => number | null): boolean | null {
+    rebase()
+    const top = resolve()
+    if (top === null)
+      return null
+    following = false
+    const before = el.scrollTop
+    writeOwnScrollTop(clampScrollTop(el, top), { refresh: false })
+    return el.scrollTop !== before
+  }
+
+  /** End the request for the tail, and record where the reader is. */
+  function leaveFollow(): void {
+    following = false
+    if (visibleListEl())
+      lastAnchor = anchorAtViewportTop()
+  }
+
+  function followTail(): void {
+    following = true
+  }
+
+  /**
+   * Place the view back at `anchor` for a reader who does not request the tail: at the
+   * row itself, or at the nearest survivor by seq when the row is gone. It reads the
+   * `following` flag, not isFollowing(): during a jump to the latest page the flag is set,
+   * and this restore must not end that request.
+   */
+  function restoreAnchor(anchor: ScrollAnchor | null): boolean {
+    if (following || anchor === null)
+      return false
+    return placeAtAnchor(anchor, true) !== null
+  }
+
+  /** See ScrollContext.placeAtAnchor. */
+  function placeAtAnchor(anchor: ScrollAnchor, nearest: boolean): boolean | null {
+    const placed = placeAt(() => nearest
+      ? virt.scrollTopNearAnchor(anchor)
+      : virt.scrollTopForAnchor(anchor))
+    if (placed !== null && untrack(() => virt.scrollTopForAnchor(anchor) !== null && !virt.hasMeasuredHeight(anchor.id)))
+      heldAnchor = anchor
+    return placed
+  }
+
+  /**
+   * Place the view on the held anchor once its row measures. The placement resolved the
+   * anchor against the estimated height of the row, and the first measure of that row keeps
+   * the bottom edge of the row in place (the shift rule holds the bottom edge of a row with
+   * an estimated height, see nextLayoutShift). Without this placement, the view would move
+   * inside the row by the difference between the estimate and the height. Runs in the
+   * geometry effect, in the flush of the measure, so the reader sees no move. The effect
+   * refreshes the rendered rows in the next frame, so this placement mounts no row inside
+   * the flush.
+   */
+  function releaseAnchorHold(): void {
+    const anchor = heldAnchor
+    const el = visibleListEl()
+    if (anchor === null || !el)
+      return
+    // A request for the tail replaces the restore, and a row that left the list holds
+    // nothing. A move of the reader whose `scroll` event did not arrive yet ends the hold
+    // too: a placement now would undo that move and record it as seen.
+    if (following || seen.hasUnseenRawMove(el) || untrack(() => virt.scrollTopForAnchor(anchor)) === null) {
+      heldAnchor = null
+      return
     }
+    if (untrack(() => virt.hasMeasuredHeight(anchor.id)))
+      writePlacement(el, () => untrack(() => virt.scrollTopForAnchor(anchor)))
   }
-  const armFastScrollReset = () => {
-    clearFastScrollReset()
-    fastScrollResetTimer = setTimeout(() => {
-      fastScrollResetTimer = undefined
-      virt.setFastScrollActive(false)
-    }, FLING_SETTLE_MS)
-  }
-  onCleanup(clearFastScrollReset)
 
-  const hasDeferredMeasurements = () => virt.hasDeferredMeasurements()
-  const releaseDeferredMeasurements = () => {
-    clearMomentumInput()
-    virt.setVisibleMeasurementDeferral(false)
-    // The fast scroll is over (fling settled, or the user took manual control):
-    // upgrade any skeleton rows now instead of waiting out the debounce.
-    clearFastScrollReset()
-    virt.setFastScrollActive(false)
-    virt.flushDeferredMeasurements()
-  }
-  const acceptDeferredMeasurementsAtCurrentViewport = () => {
-    if (hasDeferredMeasurements())
-      captureAnchor()
-    releaseDeferredMeasurements()
+  /**
+   * Recompute the slice on a rAF, NOT synchronously. Mounting/unmounting rows
+   * observes/unobserves them on the virtualizer's ResizeObserver, and a fresh observe()
+   * fires a notification. If that happens inside the RO delivery cycle (which the
+   * geometry effect runs within), it re-enters delivery in the same frame → "ResizeObserver
+   * loop completed with undelivered notifications". Deferring the mount to the next frame
+   * breaks that cycle. The pushes of one frame refresh once.
+   */
+  const viewportRefreshFrame = createRafCoalescer<void>(() => refreshViewport())
+
+  // Fast-scroll flag for the fling skeletons and the pivot record (virt.setFastScrollActive):
+  // set on any move of the reader at FAST_SCROLL_PX_PER_MS or faster -- momentum AND
+  // direct drags -- and each such move restarts the trailing debounce below, which ends
+  // the flag VELOCITY_IDLE_MS after the last fast move. A slower move changes neither the
+  // flag nor the debounce. The speed is measured over the last gap between two events, so
+  // a fling that decelerates through 1 px/ms reads above and below it on alternate events;
+  // the debounce holds the flag through that jitter. The velocity tracker reads 0
+  // VELOCITY_IDLE_MS after the last move of any speed, so the flag drops no later than
+  // the tracker stops reporting a speed, and earlier when slower moves follow the last fast
+  // one.
+  const endFastScroll = trailingDebounce(() => virt.setFastScrollActive(false), VELOCITY_IDLE_MS)
+  const markFastScroll = () => {
+    virt.setFastScrollActive(true)
+    endFastScroll()
   }
 
   const cancelScrollAnimation = () => {
@@ -783,185 +959,66 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       cancelAnimationFrame(scrollAnimationId)
       scrollAnimationId = null
     }
-    // Apply a keep-position re-pin that arrived DURING the animation: the animation is
-    // ending here without landing at the bottom (a mid-flight cancel), so the shift it
-    // deferred (a prepend/trim above the anchor) must be absorbed now rather than left as
-    // a jump until the next scroll/geometry event. A no-op when nothing was deferred.
-    anchorRepin.applyDeferredRepinOnCancel()
   }
 
-  /** Fresh DOM measurement — true if the scroll position is at/near the bottom. */
-  const isAtBottom = () =>
-    !!messageListRef && distFromBottom(messageListRef) < STICKY_BOTTOM_THRESHOLD_PX
-
-  /**
-   * Fresh DOM measurement — true only when the scroll position is at the GENUINE
-   * clamped bottom (within a re-pin's no-op delta), not merely inside the 32px
-   * sticky band. Used to gate RE-ENGAGING tail-follow from an anchored (scrolled-up)
-   * state: a small downward scroll toward a freshly-trimmed, now-shorter bottom must
-   * not snap to the live tail. Staying sticky while ALREADY following keeps using the
-   * looser isAtBottom, so a sub-pixel gap during a turn cannot drop the follow.
-   */
-  const isAtClampedBottom = () =>
-    !!messageListRef && distFromBottom(messageListRef) <= REPIN_MIN_DELTA_PX
-
-  /**
-   * At the LIVE tail: the loaded window's bottom IS the real tail (no newer rows
-   * beyond the window) and the viewport sits inside the 32px sticky band of it.
-   * The single definition behind handleScroll's two follow re-engage gates and the
-   * older-prefetch suppression, so the sites can't drift on what counts as the
-   * live tail (atBottom must imply following ONLY here -- a windowed-away loaded
-   * bottom is not the tail, and following it would chase every newer append).
-   */
-  const isAtLiveTail = () => !hasNewerMessages() && isAtBottom()
-
-  /**
-   * Hard against the very TOP / BOTTOM edge, within EDGE_INTENT_TOLERANCE_PX -- the 1px
-   * edge-intent band (see chatScrollGeometry), NOT the looser 32px sticky band. The one
-   * home for the read each edge uses (the clamped logical scrollTop at the top;
-   * distFromBottom at the bottom), shared by the explicit edge-intent loaders, the
-   * stall indicators, and the overscroll-drag gate so they can't drift asymmetrically.
-   */
-  const isAtTopEdge = () =>
-    !!messageListRef && readLogicalScrollTop(messageListRef) <= EDGE_INTENT_TOLERANCE_PX
-  const isAtBottomEdge = () =>
-    !!messageListRef && distFromBottom(messageListRef) <= EDGE_INTENT_TOLERANCE_PX
-
-  /**
-   * Recompute the rendered row slice for the current scroll position. `lead`
-   * extends the rendered slice ahead in the fling direction (see handleScroll) so a
-   * fast scroll paints the rows it is about to reach; correction/settle callers pass
-   * none and get the symmetric overscan.
-   */
-  const refreshViewport = (lead?: ViewportLead) => {
-    if (messageListRef)
-      virt.updateViewport(readLogicalScrollTop(messageListRef), messageListRef.clientHeight, lead)
-  }
-
-  /**
-   * Recompute the slice on a rAF, NOT synchronously. Mounting/unmounting rows
-   * (setRange) observes/unobserves them on the virtualizer's ResizeObserver,
-   * and a fresh observe() fires a notification. If that happens inside the RO
-   * delivery cycle (which the synchronous geometry re-pin runs within), it
-   * re-enters delivery in the same frame → "ResizeObserver loop completed with
-   * undelivered notifications". Deferring the mount to the next frame breaks
-   * that cycle; the scroll-position correction stays synchronous (see
-   * repinToAnchor) so the wiggle fix is preserved.
-   */
-  const scheduleViewportRefresh = () => {
-    if (typeof requestAnimationFrame !== 'function') {
-      refreshViewport()
-      return
-    }
-    cancelAnimationFrame(viewportRefreshRafId)
-    viewportRefreshRafId = requestAnimationFrame(() => refreshViewport())
-  }
-
-  // The shared STABLE scroll primitives threaded through the extracted scroll helpers
-  // (see ScrollContext). Built once here from values already in scope -- including the
-  // anchor engine's accessors (isFollowing / followTail / setAnchor) so the helpers and
-  // ScrollContext share one anchor source. Each helper takes this plus a small `extras`
-  // bag of its own deps -- the remaining high-level composite actions (checkAtBottom /
-  // stickToBottom / forceScrollToBottom) are declared further down and wired into the
-  // late helpers' extras where they are in scope, rather than forward-referenced here.
-  const scrollCtx: ScrollContext = {
-    getEl: () => messageListRef,
-    virt,
-    atBottom,
-    setAtBottom,
-    isAtBottom,
-    isFollowing,
-    isAnimating: () => scrollAnimationId !== null,
-    followTail,
-    refreshViewport,
-    writeScrollTop: writeScrollTopProgrammatically,
-    syncVelocityToProgrammatic: pos => scrollVelocity.syncToProgrammatic(pos),
-    setAnchor,
-  }
-
-  // Sticky-bottom record + re-stick logic (see createStickyBottom). It owns the
-  // "last clamped bottom" record and its recovery operations.
-  // dropDeferredFlingDrift is passed lazily (it's wired to flingSettle.reset
-  // below, after this unit is created).
-  const stickyBottom = createStickyBottom(scrollCtx, {
-    clearPreserveBrowsingPosition: () => { preserveBrowsingPosition = false },
-    dropDeferredFlingDrift: () => flingSettle.reset(),
-  })
-  const { stickToBottom, shouldRestickToBottom, restickIfAtBottom } = stickyBottom
-
-  // Fling-settle: accumulates the re-pin corrections deferred mid-fling and
-  // accepts them by re-anchoring to the current viewport once momentum stops.
-  // Assigns the forward `let` above; stickyBottom (drop-on-stick) and the anchor engine's
-  // captureAnchor (rebase) reach it through their thunks now that it exists.
-  flingSettle = createFlingSettle(scrollCtx, {
-    isRepinning: anchorRepin.isRepinning,
-    getAnchor: currentAnchor,
-    captureAnchor,
-    hasDeferredWork: hasDeferredMeasurements,
-    onSettleQuiet: releaseDeferredMeasurements,
-  })
-
-  // True between a forced stop (grab/tap) and the user's next genuine scroll: pauses
-  // the buffer fill so a stop also stops the older/newer pre-fetch ("stop = stop
-  // loading too"). handleScroll clears it on the next non-echo scroll, so a fling or
-  // a slow scroll resumes pre-fetching; the explicit wheel/key-at-edge loads are NOT
-  // gated by it, so the user can always still page at the very edge.
-  let bufferFillPaused = false
-
-  // DEV-SERVER-ONLY: a short settle window after a genuine HMR REMOUNT (hmrRemount --
-  // false on a cold page load / refresh and in prod/tests) during which the buffer fill
-  // stays paused. A hot reload re-renders the WHOLE message list at once -> every row
-  // re-measures in a burst -> totalHeight churns for ~a second; pre-fetching on top of
-  // that churn is what makes the view drift on its own after an HMR. Holding the
-  // pre-fetch until the geometry settles (or the developer scrolls -- handleScroll
-  // clears it too) keeps the reload quiet. Gated on hmrRemount, NOT a blanket DEV check:
-  // arming it on every mount also paused the cold-load pre-fetch, and -- since the timer
-  // that clears it is a non-reactive write that never re-kicks fill() -- left a
-  // hidden-heavy newest page stranded half-empty on refresh until a scroll / new message.
-  let bufferFillSettling = hmrRemount
-
-  // Halt all PROGRAMMATIC scroll: a running scroll animation AND the deferred
-  // fling-settle (which would otherwise write scrollTop ~FLING_SETTLE_MS after the
-  // last momentum event -- a drift the view keeps moving by even after momentum has
-  // stopped). Also pauses the buffer-fill pre-fetch until the next scroll. Called
-  // when the user takes manual control (taps, touches, or sends a momentum-cancel
-  // wheel) so a forced stop halts the view -- and the loading -- IMMEDIATELY rather
-  // than coasting through one more settle / pre-fetch page. cancel() kills the
-  // pending timer; reset() drops the accumulated drift so a later gesture's settle
-  // can't apply this one's.
+  // Halt all PROGRAMMATIC scroll (a running scroll animation) and pause the buffer-fill
+  // pre-fetch until the next move of the reader. Called when the user takes manual
+  // control (taps, touches, or sends a momentum-cancel wheel) so a forced stop halts the
+  // view -- and the loading -- IMMEDIATELY rather than coasting through one more
+  // pre-fetch page.
   const cancelPendingScroll = () => {
     cancelScrollAnimation()
-    flingSettle.cancel()
-    flingSettle.reset()
-    acceptDeferredMeasurementsAtCurrentViewport()
     bufferFillPaused = true
   }
 
-  const checkAtBottom = () => {
-    if (!messageListRef || scrollAnimationId !== null)
-      return
-    // Stale scroll event after content grew: the browser reports the
-    // pre-growth scrollTop matching our last sticky record. Re-stick to
-    // the new visual bottom rather than dropping atBottom.
-    if (shouldRestickToBottom()) {
-      stickToBottom()
-      return
-    }
-    setAtBottom(isAtBottom())
+  /**
+   * Clear the "buffer filler paused / settling" flags -- a deliberate jump (to bottom, to a
+   * rail seq, a page) is the user re-taking control of position, exactly like a genuine
+   * scroll, but its `scroll` event is an own write that never clears them. Callers that
+   * REPLACE the window additionally rearmScrollBufferFiller() for the fresh window's
+   * per-window state.
+   */
+  const retakeScrollControl = () => {
+    bufferFillPaused = false
+    hmrSettle.end()
   }
+
+  // The state and the actions that the extracted scroll helpers share (see ScrollContext).
+  const scrollCtx: ScrollContext = {
+    getEl: () => messageListRef,
+    getVisibleEl: visibleListEl,
+    virt,
+    isFollowing,
+    followRequested: () => following,
+    hasNewerMessages,
+    noteScrollRange,
+    isAnimating: () => scrollAnimationId !== null,
+    followTail,
+    leaveFollow,
+    checkPosition,
+    cancelScrollAnimation,
+    retakeScrollControl,
+    // A thunk: the buffer filler is created after the context, and it assigns the local.
+    rearmScrollBufferFiller: () => rearmScrollBufferFiller(),
+    rebase,
+    placeAt,
+    placeAtAnchor,
+    writeOwnScrollTop,
+    recordPosition,
+  }
+
+  const { stickToBottom, restickIfAtBottom } = createStickyBottom(scrollCtx)
 
   // ---- Pagination: maintain a VISIBLE-content buffer beyond the viewport ----
   //
-  // Only VISIBLE rows have scroll height: scrollTop is the visible content ABOVE the
-  // viewport, distFromBottom the visible content BELOW. In a hidden-heavy stretch a
-  // raw page adds almost no visible height, so a "load when within half a screen of
-  // the edge" policy thrashed -- the viewport sat permanently in both near-edge bands
-  // and every scroll event paginated. Instead, pre-fetch AHEAD: keep
-  // SCROLL_BUFFER_SCREENS screens of visible content on each side. loadOlderMessages
-  // / loadNewerPage now grow the window to the raw CEILING (chat.store), so the
-  // buffer actually accumulates rather than sliding. The fill loops through hidden
-  // runs until the buffer is full, history is exhausted, or the raw window ceiling
-  // stops growth; createScrollBufferFiller owns that loop.
+  // Only VISIBLE rows have scroll height: the content above the viewport top is the
+  // visible content ABOVE the viewport, distFromBottom the visible content BELOW. In a
+  // hidden-heavy stretch a raw page adds almost no visible height, so a "load when within
+  // half a screen of the edge" policy thrashed -- the viewport sat permanently in both
+  // near-edge bands and every scroll event paginated. Instead, pre-fetch AHEAD: keep
+  // SCROLL_BUFFER_SCREENS screens of visible content on each side. loadOlderMessages /
+  // loadNewerPage grow the window to the raw CEILING (chat.store), so the buffer actually
+  // accumulates rather than sliding. createScrollBufferFiller owns the loop.
   const paginationPolicy = createChatPaginationPolicy({
     getEl: () => messageListRef,
     hasOlder: () => !!opts.hasOlderMessages?.(),
@@ -971,15 +1028,11 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     geomVersion: geomTick,
     isAtTopEdge,
     isAtBottomEdge,
-    preserveBrowsingPosition: () => { preserveBrowsingPosition = true },
-    clearRestoreSuppression: () => { suppressAutoLoadOlderAfterRestore = false },
     onLoadOlder: () => opts.onLoadOlderMessages?.(),
     onLoadNewer: () => opts.onLoadNewerMessages?.(),
     isAtBottom,
     isFollowing,
-    anchorAtViewportTop: () => messageListRef
-      ? virt.anchorAt(readLogicalScrollTop(messageListRef))
-      : null,
+    anchorAtViewportTop,
     bufferScreens: SCROLL_BUFFER_SCREENS,
   })
   const {
@@ -992,377 +1045,185 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     stalledNewer,
   } = paginationPolicy
 
-  /**
-   * Classify a scroll event AND consume the one-shot discrete-page target. Returns
-   * whether the event is our own programmatic write echoing back, and whether it is
-   * a genuine momentum (fling) scroll -- the only kind the synchronous re-pin defers
-   * as drift and the only kind that (re)arms the fling-end settle, so the two stay in
-   * lockstep behind one predicate.
-   */
-  const classifyScrollEvent = ({ forceUserScroll, layoutScroll }: { forceUserScroll: boolean, layoutScroll: boolean }): {
-    programmaticEcho: boolean
-    isMomentumScroll: boolean
-    discretePage: boolean
-  } => {
-    // A known layout position or a matched write is not a user gesture.
-    // Neither event must enter the momentum tracker or suppress an anchor correction.
-    const programmaticEcho = !forceUserScroll && (layoutScroll || isProgrammaticEcho())
-    // Is THIS event the in-flight keyboard PageUp/PageDown's own scroll? Match by
-    // position (its clamped target), not "the next scroll event", so an unrelated
-    // fling interleaving before the page's native event isn't mistaken for it. A
-    // discrete page is a user gesture for direction/pagination but NOT a fling.
-    const discretePage = discretePageTarget !== null && !!messageListRef
-      && Math.abs(readLogicalScrollTop(messageListRef) - clampScrollTop(messageListRef, discretePageTarget)) <= EDGE_INTENT_TOLERANCE_PX
-    // Consume the page target on the FIRST scroll event after scrollBy, whether or
-    // not it matched. clampScrollTop tracks the browser's clamp, but a
-    // measurement-induced scrollHeight shift between scrollBy and its native event
-    // can still land the browser's clamped scrollTop >1px from the re-clamped
-    // target and miss the <=1px match above. Clearing only on a match would strand
-    // the target so a LATER unrelated fling landing within 1px of it is mis-handled
-    // as a discrete page (re-pinned immediately, cancelling its momentum); bounding
-    // it to one event closes that. The trade -- a fling event interleaving BEFORE
-    // the page's own native event clears it early, deferring the page's re-pin as
-    // fling drift -- is benign and rarer than the strand it fixes.
-    // Exempt a programmatic ECHO, though: pageScroll moves via scrollBy (never
-    // writeScrollTopProgrammatically), so the page's OWN native event is never an
-    // echo -- but an unrelated re-pin write's echo can interleave between scrollBy
-    // and that native event. Consuming the target on the echo would strand the
-    // page's real event as deferred fling drift; skip the clear for echoes so the
-    // page's native event still matches. (A fling is not an echo, so its early-clear
-    // trade above is unchanged.)
-    if (discretePageTarget !== null && !programmaticEcho)
-      discretePageTarget = null
-    // A genuine MOMENTUM scroll: not our own programmatic echo, not a discrete page,
-    // and not direct pointer/touch manipulation (a drag has no inertia to protect --
-    // see isScrollInputActive).
-    const isMomentumScroll = !programmaticEcho && !discretePage && !isScrollInputActive()
-    return { programmaticEcho, isMomentumScroll, discretePage }
+  const scrollToBottomAnimated = () => {
+    if (!messageListRef)
+      return
+    cancelScrollAnimation()
+
+    // A streaming tail can grow on every frame. Limit the chase, then hand the
+    // position to sticky-bottom so the animation cannot run without an end.
+    let framesLeft = SCROLL_TO_BOTTOM_MAX_FRAMES
+    const animate = () => {
+      const el = messageListRef
+      if (!el) {
+        scrollAnimationId = null
+        return
+      }
+      const remaining = distFromBottom(el)
+      if (remaining < 1 || framesLeft <= 0) {
+        scrollAnimationId = null
+        stickToBottom()
+        return
+      }
+      framesLeft--
+      const step = remaining > 48
+        ? remaining * 0.5
+        : remaining * 0.4
+      writeOwnScrollTop(readLogicalScrollTop(el) + Math.ceil(step), { refresh: true })
+      scrollAnimationId = requestAnimationFrame(animate)
+    }
+
+    scrollAnimationId = requestAnimationFrame(animate)
   }
 
+  const tailFollower = createChatTailFollower(scrollCtx, {
+    jumpToLatest: () => opts.onJumpToLatest?.(),
+    stickToBottom,
+    animateToBottom: scrollToBottomAnimated,
+  })
+  const { forceScrollToBottom, scrollToBottom } = tailFollower
+
+  // ---- Scroll-rail seek (jumpToSeq / previewScrollTo / cancelPendingSeek) -------------
+  // The seek machine (dot/track/thumb -> land, or fetch-around-seq then land) lives in its
+  // own tested unit, createChatSeek; wired here where all its deps are in scope. It owns the
+  // pendingSeek/epoch state.
+  const chatSeek = createChatSeek(scrollCtx, {
+    messages: opts.messages,
+    onJumpToSeq: opts.onJumpToSeq,
+    onSaveViewportScroll: opts.onSaveViewportScroll,
+  })
+
+  // The keyboard / wheel input layer (createScrollInput). Owns no scroll state -- the
+  // shared `lastScrollDir` stays here (the scroll handler reads it) and is written through
+  // the setter below.
+  const { handleKeyDown, handleWheel, pageScroll } = createScrollInput(scrollCtx, {
+    forceScrollToBottom,
+    cancelPendingScroll,
+    cancelPendingSeek: () => chatSeek.cancelPendingSeek(),
+    tryLoadOlderOnExplicitTopIntent,
+    tryLoadNewerOnExplicitBottomIntent,
+    setLastScrollDir: (dir) => {
+      lastScrollDir = dir
+    },
+    hasOlderMessages: () => !!opts.hasOlderMessages?.(),
+    // jump-to-oldest (Home) REPLACES the window with the earliest page; re-arm the
+    // buffer-filler side-selection state. Mirrors forceScrollToBottom's jump-to-latest
+    // handling.
+    onJumpToOldest: opts.onJumpToOldest
+      ? () => {
+          rearmScrollBufferFiller()
+          return opts.onJumpToOldest!()
+        }
+      : undefined,
+  })
+
+  // Saved-viewport restore + resize handling (createViewportRestore). It owns only the
+  // resize bookkeeping (prevClientHeight, the pending rAF).
+  const viewportRestore = createViewportRestore(scrollCtx, {
+    stickToBottom,
+    forceScrollToBottom,
+    clearSavedViewportScroll: () => opts.onClearSavedViewportScroll?.(),
+    savedViewportScroll: () => opts.savedViewportScroll?.(),
+    restoreAnchor,
+    lastAnchor: () => lastAnchor,
+    onGeometrySettled: () => bumpGeomTick(t => t + 1),
+  })
+
   /**
-   * The per-scroll-event USER-GESTURE bookkeeping plus the render-ahead lead it feeds.
-   * For a genuine (non-echo) scroll this TRACKS the gesture -- resumes a paused buffer
-   * fill, samples velocity, updates lastScrollDir, and clears the post-restore older
-   * suppression once the viewport leaves the protected band -- then derives the lead:
-   * the slice extension in the fling direction so a fast momentum scroll paints the
-   * rows it is about to reach (see refreshViewport / computeRange -- mechanism #3 of
-   * the NO-SKIP INVARIANT). A programmatic echo tracks nothing (its sample would
-   * register as a huge instantaneous jump) and yields no lead; the direction baseline
-   * is advanced for every event so the next user delta measures from the current
-   * position.
+   * The scroll handler reads; it does not classify. An own write recorded its position
+   * already, so its event has `moved === false`, with no marker and no time limit. A clamp
+   * of the browser to a scroll range that shrank also reads as no move (step 2). Every
+   * other event that moved the position is the reader's: it samples the speed, sets the
+   * direction, ends the buffer-fill pause, and can end follow mode.
    */
-  const trackUserScrollAndComputeLead = (st: number, programmaticEcho: boolean): ViewportLead | undefined => {
+  const handleScroll = () => {
+    // A hidden pane reads scrollTop as 0: its event moved nothing that the reader sees, and
+    // its position must not become the recorded one.
+    const el = visibleListEl()
+    if (!el)
+      return
+    // 1. A compositor-delayed event in the coordinates before a rebase. The translator
+    //    writes the translated position, so the reads below see it, and returns the
+    //    position after the rebase: the move of the event counts from there.
+    let baseline = staleNativeTranslator.translate() ?? seen.seenTop()
+    // 2. What moved since the last event or own write. A content shrink clamps scrollTop to
+    //    the new maximum with no move of the reader. Lower the baseline and the baseline of
+    //    the speed to the maximum first: a pure clamp then reads as no move, and the next
+    //    move of the reader is measured from the clamped position.
+    const maxTop = maxScrollTopOf(el)
+    if (baseline > maxTop) {
+      baseline = maxTop
+      velocity.syncToProgrammatic(maxTop)
+    }
+    const st = readLogicalScrollTop(el)
+    const rawTop = el.scrollTop
+    const moved = st !== baseline
+    const rawMoved = seen.hasUnseenRawMove(el)
+    // 3. End the request for the tail when the reader moves away from the bottom: up and
+    //    past FOLLOW_TOLERANCE_PX, or, while newer messages exist, in either direction to a
+    //    position more than FOLLOW_TOLERANCE_PX above the loaded bottom. A reader who moves
+    //    down to the loaded bottom while the newer pages load keeps the request.
+    const awayFromBottom = !isAtBottom()
+    if (moved && hasNewerMessages() && awayFromBottom)
+      following = false
+    if (following && awayFromBottom && st < baseline)
+      leaveFollow()
+    // 4. The scroller is not at rest.
+    if (rawMoved)
+      rest.noteScroll()
+    // 5. A move of the reader.
     let lead: ViewportLead | undefined
-    if (!programmaticEcho) {
-      // A genuine user scroll resumes the buffer-fill pre-fetch a forced stop OR the
-      // dev HMR settle window paused (see cancelPendingScroll / bufferFillSettling):
-      // the user is scrolling again, so top the buffer back up. Cleared BEFORE the
-      // fillScrollBuffer() at the end of handleScroll so that fill runs.
+    if (moved) {
+      moveCount++
+      // The reader's own position replaces a restored one.
+      heldAnchor = null
+      // A move resumes the buffer-fill pre-fetch a forced stop OR the dev HMR settle
+      // window paused (see cancelPendingScroll and createHmrSettleWindow).
       bufferFillPaused = false
-      bufferFillSettling = false
-      // Sample velocity from this real (non-echo) scroll so the synchronous re-pin
-      // can tell a fling from a slow scroll. Our own programmatic writes are excluded
-      // -- they'd register as huge instantaneous jumps.
-      scrollVelocity.sample(st)
-      const dir = inferScrollDirection(lastScrollTopForDir, st)
+      hmrSettle.end()
+      velocity.sample(st)
+      const dir = inferScrollDirection(baseline, st)
       if (dir)
         lastScrollDir = dir
-      // Clear the post-restore older-suppression once the user scrolls OUT of the
-      // near-top band the restore landed in -- the same clientHeight/2 band
-      // armSuppressIfNearTop arms within. Below that band (scrolled down away from the
-      // top) an older prepend is absorbed by the anchor re-pin without disturbing the
-      // reader, so older pre-fetch can safely resume; staying within the band keeps it
-      // suppressed until an explicit scroll-to-top (tryLoadOlderOnExplicitTopIntent,
-      // which clears it with its own load). Without this the older buffer stayed gated
-      // after a near-top restore until scrollTop reached the very top, stalling a later
-      // fling-up.
-      //
-      // ALSO clear it when the user actively scrolls UP and reaches the very top edge:
-      // that IS the explicit scroll-to-top intent. The wheel/key/touch handlers clear it
-      // via tryLoadOlderOnExplicitTopIntent, but a scrollbar-THUMB drag fires only
-      // `scroll` events (no wheel/touch/key), so without this a drag up to the top while
-      // suppressed would leave the older buffer gated and the reader unable to page up
-      // (the filler pages older on the next deficit pass once the gate clears). Gated on
-      // dir==='older' so a STATIONARY scroll event at an already-restored top (no
-      // movement -> dir null) keeps the suppression -- a restore-to-top landing must not
-      // auto-load older on a spurious passive scroll (suppressesPassiveOlderLoad...).
-      const reachedTopScrollingUp = dir === 'older' && st <= EDGE_INTENT_TOLERANCE_PX
-      if (messageListRef && (!isNearTopBand(messageListRef, st) || reachedTopScrollingUp))
-        suppressAutoLoadOlderAfterRestore = false
-      // Scale the render-ahead by the just-sampled speed (0 while idle / on the cold
-      // Infinity seed -> no lead), capped so an extreme flick can't mount an unbounded
-      // slice. Head in THIS event's resolved direction -- not the stale lastScrollDir:
-      // a zero-delta event (coalesced same-tick samples at a clamped plateau during a
-      // fling reversal / rubber-band bounce) keeps a nonzero sampled speed but leaves
-      // `dir` null, and trusting lastScrollDir there would paint overscan on the side
-      // the viewport just LEFT, flashing an unrendered gap on the side it now heads to.
-      const capPx = messageListRef
-        ? flingOverscanCapPx(messageListRef.clientHeight)
-        : 0
+      // Scale the render-ahead by the just-sampled speed (0 while idle or before two
+      // samples -> no lead), capped so an extreme flick can't mount an unbounded slice.
+      // Head in THIS event's resolved direction -- not the stale lastScrollDir.
+      const speed = velocity.speed()
       const px = dir
-        ? Math.min(capPx, scrollVelocity.speed() * FLING_OVERSCAN_LOOKAHEAD_MS)
+        ? renderAheadLeadPx(el.clientHeight, speed)
         : 0
       if (px > 0 && dir)
         lead = { dir, px }
+      if (speed >= FAST_SCROLL_PX_PER_MS)
+        markFastScroll()
+      // A drag with a pointer or a finger (a scrollbar thumb, a touch) is the reader
+      // taking control: an out-of-window seek must not land after it. A wheel, a key, and
+      // a touch move cancel the seek in their own handlers.
+      if (inputActivity.isActive())
+        chatSeek.cancelPendingSeek()
+      else
+        opts.onMomentumScroll?.()
     }
-    lastScrollTopForDir = st
-    return lead
-  }
-
-  const handleScroll = () => {
-    // Record this event's marker before layout recovery writes a new position.
-    // The new position's marker belongs to a later browser event.
-    const echoGen = progGuard.matchedEchoGen()
-    // A resize can clamp the old bottom before a new row grows the content.
-    // Recover that known position before anchor capture. Reader input keeps control.
-    let layoutScroll = false
-    if (!hasNewerMessages() && discretePageTarget === null && !isScrollInputActive()
-      && !hasRecentMomentumInput() && !hasRecentKeyboardScroll() && !scrollVelocity.isCoasting()) {
-      layoutScroll = stickyBottom.restickAfterLayoutChange()
-    }
-    // Re-arm the stall memos: this position move may have clamped the view against (or
-    // freed it from) a loaded edge, which is invisible to them otherwise (scrollTop has
-    // no signal). Cheap -- the memos short-circuit on the fetch flags before measuring.
-    bumpGeomTick(t => t + 1)
-    const staleNativeScrollTranslated = staleNativeTranslator.translate()
-    // Scroll mode BEFORE the capture block below can flip it: a teleport that LANDS in
-    // the bottom sticky band re-engages follow inside this very handler, and Detector B
-    // must classify the delta against the PRE-event mode or that teleport excuses itself
-    // (see classifyUnexplainedJump's tailFollowToBottom).
-    const wasFollowingBeforeEvent = isFollowing()
-    // Pin the anchor to the user's CURRENT scroll position BEFORE refreshViewport
-    // mounts any newly-revealed row. That mount can measure a row far taller than
-    // its estimate, which shifts the offset map and synchronously fires the
-    // geometry re-pin (the createEffect flushes within the setRange update). The
-    // re-pin reads `anchor`, so it has to already hold where the user scrolled to;
-    // resolving it AFTER the mount — against the shifted map, with a not-yet-
-    // corrected scrollTop — pins a far-away row and the re-pin yanks the view to
-    // it. That is the jump when a message taller than the viewport scrolls into
-    // view at the top.
-    //
-    // Captured on EVERY scroll event (including our own programmatic writes) so a
-    // fast scroll-up whose events land inside the programmatic-write window
-    // doesn't leave a stale anchor for the next re-pin to yank back. At the bottom we
-    // follow the tail (sticky) instead of anchoring; captureAnchor itself is edge-aware
-    // and pins the top row (not the midpoint) at the very top (see captureViewportAnchor).
-    if (messageListRef) {
-      // Re-engage tail-follow whenever the viewport is within the 32px sticky band of
-      // the live tail -- the SAME band the `atBottom` signal uses -- so `atBottom`
-      // always implies following (no anchored-but-atBottom hybrid where the
-      // scroll-to-bottom affordance hides yet growth won't restick). A reader sitting
-      // slightly above the bottom is treated as following and auto-sticks on the next
-      // append.
-      //
-      // Gated on the genuine LIVE tail (no more newer to load): when windowed AWAY from
-      // the tail (hasNewerMessages), the loaded window's bottom is NOT the tail, so
-      // following it would let a surviving sticky record drive restickIfAtBottom to
-      // CHASE every newer append to the bottom -- the view runs far past where the user
-      // stopped while a mostly-hidden newer run loads. Stay ANCHORED there instead;
-      // newer paginates in the background and the user scrolls into it, with follow
-      // re-engaging once they reach the real tail (hasNewerMessages false). That
-      // guard also covers a load-older trim that drops the newest rows: it sets
-      // hasNewerMessages, so the now-shorter bottom can't spuriously snap to follow.
-      //
-      // followTail only sets the MODE -- it does NOT snap to the bottom, so a reader
-      // resting a few px above the tail keeps their position (no yank). The next
-      // content GROW sticks to the bottom (shouldRestickToBottom fires within the band),
-      // which is the "auto-scroll when sitting slightly above the bottom" behavior.
-      // Hold an active toggle-anchor across its own re-pin's echo scroll events: a user
-      // toggle pinned a SPECIFIC row's top, and re-capturing the viewport-midpoint anchor
-      // here would discard it, so the resize's next phase re-pins against the midpoint and
-      // jumps (see createAnchorRepin's ScrollMode.origin 'row-top').
-      if (!isHoldingRowTop()) {
-        if (isAtLiveTail())
-          followTail()
-        else
-          captureAnchor()
-      }
-      else if (!isProgrammaticEcho()) {
-        // A genuine (non-echo) scroll moved the viewport WHILE a toggle row-top hold is
-        // armed. Wheel/key/touch/pointer gestures release the hold before their scroll
-        // event arrives (see handlers below), so what reaches here fires only `scroll`
-        // events: a scrollbar-thumb drag (no pointer events in Firefox), a momentum
-        // coast, or the browser force-clamping scrollTop when the toggled row SHRANK.
-        // Keep holding the SAME row but re-pin it at its NEW viewport line -- the resize
-        // then keeps growing below a line the user actually sees, and the next geometry
-        // commit's re-pin cannot yank the drag back to the stale toggle-time line. When
-        // the held row's top has left the viewport a row-top pin is unrepresentable
-        // (captureRowTopAnchor bails), so release and fall back to the normal
-        // follow/midpoint capture.
-        const heldId = currentAnchor()?.id
-        if (heldId === undefined || !captureRowTopAnchor(heldId)) {
-          releaseRowTopHold()
-          if (isAtLiveTail())
-            followTail()
-          else
-            captureAnchor()
-        }
-      }
-    }
-    const scrollTopAtStart = messageListRef
-      ? readLogicalScrollTop(messageListRef)
-      : undefined
-    // Same-epoch geometry for Detector B: refreshViewport's row mounts can grow
-    // scrollHeight in this very flush, so maxScrollTop must be read HERE, alongside
-    // scrollTopAtStart, not live at classification time -- else the positions and the
-    // range they're compared against belong to different coordinate epochs.
-    const maxScrollTopAtStart = messageListRef
-      ? maxScrollTopOf(messageListRef)
-      : 0
-    const lastScrollTopBeforeEvent = lastScrollTopForDir
-    // Whether a fling was ALREADY in progress as of the PREVIOUS scroll event -- captured
-    // before trackUserScrollAndComputeLead (below) samples THIS event's velocity. A trackpad momentum
-    // coast fires scroll events with no fresh wheel input, so its input grace
-    // (hasRecentMomentumInput) lapses after 750ms even while it is still moving; the velocity
-    // tracker, fed by those scroll events, still knows it is flinging. Detector B uses this
-    // to excuse the coast. Read PRE-sample deliberately: a genuine teleport's OWN event
-    // samples a huge speed, so the post-sample isActivelyFlinging would mask the very jump we
-    // want -- but a teleport from rest was NOT flinging on the prior event, so this stays false.
-    const wasActivelyFlingingBeforeEvent = scrollVelocity.isActivelyFlinging()
-    // Diagnostic timing for the Detector B WARN: the gap since the previous scroll event
-    // (a stall vs a steady cadence) and the tracker's PRE-sample speed (0 once idle). Read
-    // before trackUserScrollAndComputeLead samples this event, for the same reason as the fling flag.
-    const nowMs = monotonicNow()
-    const msSinceLastScrollEvent = lastScrollEventAt === undefined
-      ? undefined
-      : nowMs - lastScrollEventAt
-    lastScrollEventAt = nowMs
-    const speedBeforeEvent = scrollVelocity.speed()
-    // Genuine user scrolls mark the window so the synchronous re-pin (fired while
-    // refreshViewport mounts+measures rows) suppresses its scrollTop write; an echo
-    // or a discrete page leaves userScrolling false so it writes immediately rather
-    // than deferring ~150ms into flingSettle.
-    const { programmaticEcho, isMomentumScroll, discretePage } = classifyScrollEvent({
-      forceUserScroll: staleNativeScrollTranslated,
-      layoutScroll,
-    })
-    // Defer the re-pin as fling drift only for a momentum scroll.
-    userScrolling = isMomentumScroll
-    // The reader's own motion, still going. The rail relights on it, so a
-    // coast holds the rail for its whole length instead of for a fixed window.
-    if (isMomentumScroll)
-      opts.onMomentumScroll?.()
-    // Only a user-directed scroll cancels an in-flight out-of-window seek: ambient layout
-    // shifts/window swaps can emit real scroll events while the fetch is pending, but they
-    // are not the reader taking control and must not strand the seek before it can land.
-    const userDirectedScroll = !programmaticEcho
-      && (discretePage || isScrollInputActive() || hasRecentMomentumInput() || hasRecentKeyboardScroll())
-    if (userDirectedScroll)
-      chatSeek.cancelPendingSeek()
-    // Render-ahead overscan for this scroll (undefined for echoes and idle), read
-    // BEFORE refreshViewport / checkAtBottom can move scrollTop.
-    const viewportLead = scrollTopAtStart !== undefined
-      ? trackUserScrollAndComputeLead(scrollTopAtStart, programmaticEcho)
-      : undefined
-    // Fling-skeleton gate: unlike the measurement deferral below (momentum-only
-    // — a drag re-pins immediately by design), rows entering during ANY fast
-    // user scroll mount as skeletons, scrollbar/touch drags included. Requires a
-    // live user-scroll signal on top of isFling(): a pointer/touch drag
-    // (isScrollInputActive), recent wheel/touch momentum (hasRecentMomentumInput,
-    // set on wheel + touch-end), or a measured in-flight coast (isActivelyFlinging,
-    // which covers a trackpad coast that outlives the 750ms input grace). isFling()
-    // alone is NOT enough: it reports true for an UNKNOWN or STALE velocity (its
-    // defer-biased default, correct for the re-pin), so a non-echo scroll event while
-    // the list sits IDLE -- a stick echo delivered past its marker TTL, browser scroll
-    // anchoring, a sub-pixel nudge after a tail append -- would otherwise trip it and
-    // flash a one-frame skeleton over the freshly appended (still-unmeasured) tail row.
-    if (!programmaticEcho && scrollVelocity.isFling()
-      && (scrollVelocity.isActivelyFlinging() || isScrollInputActive() || hasRecentMomentumInput())) {
-      virt.setFastScrollActive(true)
-      armFastScrollReset()
-    }
-    if (isMomentumScroll && scrollVelocity.isFling())
-      virt.setVisibleMeasurementDeferral(true)
-    // Time the synchronous render cascade this scroll triggers: setting the range mounts
-    // newly-visible rows AND runs the premeasure computed (rendering the hidden look-ahead
-    // rows) in the same flush. If that blows the frame budget, it stalls the scroll loop --
-    // the batched catch-up delta a later event reports as an unexplained jump. Only a slow
-    // pass logs (see warnSlowScrollPhase).
+    // 6. The position of this event is the last seen one.
+    seen.note(st, rawTop)
+    // 7. After step 6, so that it records the anchor of this position.
+    checkPosition()
+    // 8. Time the synchronous render cascade this scroll triggers: setting the range
+    //    mounts newly-visible rows AND runs the premeasure computed (rendering the hidden
+    //    look-ahead rows) in the same flush. If that blows the frame budget, it stalls the
+    //    scroll loop. Only a slow pass logs (see warnSlowScrollPhase).
     const refreshStart = monotonicNow()
-    try {
-      refreshViewport(viewportLead)
-    }
-    finally {
-      userScrolling = false
-    }
+    refreshViewport(lead)
     warnSlowScrollPhase('refreshViewport', monotonicNow() - refreshStart, { rows: opts.messages().length })
-    // For a genuine MOMENTUM scroll, (re)arm the fling-end settle: each event
-    // pushes the debounce out, so it fires once momentum stops and re-anchors to
-    // the visual position the user actually reached. A programmatic echo has no
-    // fling to settle (and its own write would re-arm it in a loop); a discrete
-    // page and a direct pointer/touch drag both re-pinned immediately above
-    // (userScrolling false), so they deferred nothing to settle.
-    if (isMomentumScroll)
-      flingSettle.schedule()
-    // checkAtBottom owns the stale-scroll-event re-stick that keeps sticky-bottom
-    // robust; it runs after refreshViewport so it sees the post-mount scrollHeight.
-    // A re-stick here (stickToBottom) overrides the anchor set above within the
-    // same synchronous handler, so there is no intermediate paint.
-    checkAtBottom()
-    // Re-engage follow within the 32px sticky band of the LIVE tail -- the same band
-    // the start-of-handler gate uses, so `atBottom` always implies following. NOT a
-    // windowed-away loaded bottom (hasNewerMessages): there the loaded bottom isn't the
-    // tail, so following would CHASE every newer append past where the user stopped.
-    // checkAtBottom's own shouldRestickToBottom handles a real grow-while-at-bottom
-    // restick first; this catches the case where the user scrolled back into the band.
-    if (untrack(atBottom) && isAtLiveTail()) {
-      followTail()
-      preserveBrowsingPosition = false
-    }
-    // Pagination, on the other hand, must not fire from our own scroll writes.
-    // Recognize our write by position: a scroll event at the exact pixel we last
-    // wrote is ours; one elsewhere is the user — even mid-write-burst, where a
-    // frame-delayed flag would still be set and would swallow the gesture.
-    const stillEcho = !staleNativeScrollTranslated && isProgrammaticEcho()
-    // This event has been fully handled. If it matched our marker (here or at the
-    // read above), consume that marker so a LATER user gesture coincidentally
-    // landing within 1px of the same pixel is treated as a real scroll, not a
-    // second echo. Skipped when a re-stick armed a fresher marker (gen advanced).
-    if (programmaticEcho || stillEcho)
-      progGuard.consumeEcho(echoGen)
-    if (staleNativeScrollTranslated)
-      progGuard.mark('stale-native-scroll-translate')
-    // Detector B: warn on an unexplained teleport between two consecutive scroll events (see
-    // classifyUnexplainedJump for the full exclusion list and why deliberate scrolling never
-    // trips it).
-    if (messageListRef && scrollTopAtStart !== undefined) {
-      const { deltaFromLast, isUnexplained } = classifyUnexplainedJump({
-        scrollTopAtStart,
-        lastScrollTopBeforeEvent,
-        maxScrollTopAtStart,
-        programmaticEcho,
-        stillEcho,
-        discretePage,
-        staleNative: staleNativeScrollTranslated,
-        wasActivelyFlingingBeforeEvent,
-        wasFollowingBeforeEvent,
-        scrollInputActive: isScrollInputActive(),
-        recentMomentumInput: hasRecentMomentumInput(),
-        recentKeyboardScroll: hasRecentKeyboardScroll(),
-      })
-      if (isUnexplained) {
-        // The emitter owns the burst suppression (sliding window) and payload assembly.
-        // nowMs is this scroll event's timestamp -- the same clock the suppression window
-        // and lastScrollEventAt share above.
-        diagnostics.emitUnexplainedJump({
-          deltaFromLast,
-          scrollTop: scrollTopAtStart,
-          lastScrollTop: lastScrollTopBeforeEvent,
-          msSinceLastScrollEvent,
-          speedPxPerMs: speedBeforeEvent,
-          wasActivelyFlinging: wasActivelyFlingingBeforeEvent,
-        }, nowMs)
-      }
-    }
-    if (stillEcho)
-      return
-    // Top up the visible buffer for the new scroll position (scrolling toward an
-    // edge shrinks that side's buffer). The restore-arm suppression is applied
-    // INSIDE the filler (older side only, see suppressOlder) rather than skipping the
-    // whole fill here -- otherwise a quiescent thread scrolled toward its loaded
-    // bottom would never top up the newer side and would stall short of the tail.
-    // Forward ref: the filler is created after the geometry re-pin effect so its own
-    // reactive pass runs after the re-pin settles.
+    // 9. Re-arm the stall memos: this position move may have clamped the view against (or
+    //    freed it from) a loaded edge, which is invisible to them otherwise.
+    bumpGeomTick(t => t + 1)
+    // 10. Grow the scroll range near the reachable top, or close a blank band above the
+    //     first row.
+    if (needsRebaseDuringScroll())
+      rebase()
+    // 11. Top up the visible buffer for the new scroll position (scrolling toward an
+    //     edge shrinks that side's buffer).
     fillScrollBuffer()
   }
 
@@ -1373,70 +1234,53 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     onDragAtTop: tryLoadOlderOnExplicitTopIntent,
   })
 
-  // Re-pin the viewport after any geometry change — older-message prepend,
-  // window trim, or a row-height measurement shifting the offset map. The
-  // spacer is sized to virt.totalHeight() so scrollHeight tracks geometry, but
-  // we re-resolve the anchor explicitly because a programmatic scroll write
-  // doesn't emit a reliable scroll event.
+  // After any geometry change -- older-message prepend, window trim, or a row-height
+  // measurement -- the layout shift already kept the view in place (the virtualizer set
+  // it before this effect runs). This effect follows the tail for a reader in follow
+  // mode, runs the position check (rows can land below a reader who does not follow),
+  // removes the shift when it may go, and refreshes the rendered rows.
   //
-  // We depend on BOTH totalHeight and geometryVersion: totalHeight catches
-  // list mutations (prepend/trim, which don't bump geometryVersion), while
-  // geometryVersion catches measurements that shift offsets without changing
-  // the total (e.g. a row above the anchor grows while one below shrinks) —
-  // totalHeight alone would miss those and let the anchored row jump.
-  // `defer:true` so the first render doesn't re-pin before anything has been
-  // measured.
+  // The effect depends on totalHeight and geometryVersion. totalHeight reads the offset map
+  // of the virtualizer, a memo with a new value on each geometry change, so it alone reruns
+  // the effect for a list change (prepend/trim) and for a measurement that keeps the
+  // total. geometryVersion states the second case on its own: a measurement that keeps the
+  // total must still run the effect if totalHeight compares its value one day.
+  // `defer: true` so the first render does nothing before anything has been measured.
+  //
+  // This effect runs inside the measurer's ResizeObserver flush, so it mounts no row: the
+  // refresh goes to the next frame (viewportRefreshFrame), and the position check and
+  // the rebase mount nothing.
   createEffect(on([
     () => virt.totalHeight(),
     () => virt.geometryVersion(),
   ], () => {
-    // Close the measurement batch FIRST: every commit of this flush already landed, and
-    // nothing below read the new geometry yet, so these totals describe exactly the geometry
-    // change the re-pin is about to compensate. `on(...)` runs this body untracked, so the
-    // totalHeight read inside takeMeasurementBatch adds no dependency.
-    measurementBatch = virt.takeMeasurementBatch()
-    measurementBatchAt = monotonicNow()
-    // Correct scrollTop synchronously (same paint as the row transforms — no
-    // wiggle), but defer the slice recompute to the next frame so mounting rows
-    // never re-enters the in-progress ResizeObserver delivery (no RO loop).
-    // Both branches are position-only (no mount): repin keeps a scrolled-up
-    // anchor stationary; restick follows the growing bottom when pinned there.
-    repinToAnchor()
-    // Release the toggle row-top hold once the toggled row's resize has settled -- i.e. its
-    // real height has committed again under its new key. A toggle changes the row's
-    // heightKey, and the mounted row keeps its earlier height until the next read of its
-    // element under the new key, which a diff view's sliced layout switch delays for many
-    // frames. hasConfirmedHeight is false through that phase and true once the read lands,
-    // even when the row keeps its height: a confirmation bumps geometryVersion, which
-    // re-runs this effect. The hold exists ONLY to survive that transition (see
-    // captureRowTopAnchor); left armed it would linger until the next wheel/key/touch/pointer
-    // gesture, and a scroll-only move in that time -- a SCROLLBAR-THUMB drag fires only
-    // `scroll` events, no pointer event to release it -- would keep pinning the toggled row
-    // at its new line (see handleScroll) instead of re-capturing the viewport midpoint.
-    // currentAnchor().id IS the held row while holding; releasing clears only the re-capture
-    // guard (the anchor stays until the next capture), so any later async re-measure of the
-    // same row still keeps it pinned until the user scrolls.
-    if (isHoldingRowTop()) {
-      const heldId = currentAnchor()?.id
-      if (heldId !== undefined && virt.hasConfirmedHeight(heldId))
-        releaseRowTopHold()
-    }
+    releaseAnchorHold()
     restickIfAtBottom()
-    // Clear the post-restore older-load suppression once a trim or a measurement
-    // shrink has made the content fit (or shrunk to a barely-scrollable page the reader
-    // can't scroll out of). The same clear lives in createViewportRestore's resize flush,
-    // but a window trim / row re-measure changes virt.totalHeight()/geometryVersion()
-    // WITHOUT resizing the container box or emitting a scroll event, so neither
-    // handleResize nor handleScroll would otherwise run -- wedging older-history pre-fetch
-    // off forever (hasOlderMessages stays true but the unscrollable viewport never pages
-    // up). The bound is the STICKY BAND, not 0: with 0 < maxScrollTop <= the band, every
-    // scroll position is inside the tail's sticky band, so the reader can never scroll up
-    // to trigger the fill -- exactly the wedge suppressOlderPrefetchAtLiveTail avoids with
-    // the same bound (a strict `<= 0` here re-introduced it for the restore path). Guarded
-    // on the flag so this fires only when something is actually suppressed.
-    if (messageListRef && suppressAutoLoadOlderAfterRestore && cannotLeaveStickyBand(messageListRef))
-      suppressAutoLoadOlderAfterRestore = false
-    scheduleViewportRefresh()
+    checkPosition()
+    if (rest.isResting() || needsRebaseDuringScroll())
+      rebase()
+    viewportRefreshFrame.push()
+  }, { defer: true }))
+
+  // Enter follow mode when the tail becomes live under a reader who waited at the loaded
+  // bottom. ChatView adds the tail siblings (the thinking indicator, banners) in the same
+  // update that clears `hasNewerMessages`, before this effect runs, so a fresh position
+  // check alone would find that reader above the bottom by their height. The atBottom
+  // signal still holds the last check. The paginator merges a newer page in one update
+  // and clears the flag in a later one, so the geometry effect of the merge lowered the
+  // signal first when rows landed below the reader.
+  createEffect(on(hasNewerMessages, (hasNewer) => {
+    if (hasNewer)
+      return
+    // No position check ran while the pane was hidden, so the signal can be stale there;
+    // the resize flush of the show runs the check.
+    if (!visibleListEl())
+      return
+    if (untrack(atBottom) && !following) {
+      following = true
+      restickIfAtBottom()
+    }
+    checkPosition()
   }, { defer: true }))
 
   // Recompute the rendered slice whenever the message list changes (added,
@@ -1450,22 +1294,25 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // Expose scroll state for viewport save on tab switch and on unmount (the
   // onSaveViewportScroll cleanup). Anchored to the viewport-top row (by seq) so
   // restoration survives the spacer's estimated height — a raw distance-from-bottom
-  // would resolve to the wrong place.
+  // would resolve to the wrong place. The at-bottom value is the reader's request for
+  // the tail, not the position: a request that waits for its page is saved as at-bottom,
+  // and a reader at the loaded bottom of a paged-away window is saved with an anchor.
   const captureScrollState = (hasMoreNewer: boolean): ChatScrollState | undefined => {
-    if (!messageListRef || messageListRef.clientHeight === 0)
+    const el = visibleListEl()
+    if (!el)
       return undefined
-    const atBot = atBottom()
-    const scrollTop = readLogicalScrollTop(messageListRef)
-    const a = atBot
+    const requested = following
+    const scrollTop = readLogicalScrollTop(el)
+    const a = requested
       ? null
       : virt.anchorAt(scrollTop)
     // Scrolled away from the bottom but no resolvable anchor means the virtual
     // list is empty (e.g. an all-hidden window). There is no estimated spacer
-    // here (totalHeight is 0), so a clamped raw scrollTop carries no drift risk
-    // -- save it as a fallback rather than losing the position to bottom-follow
-    // on return. (A non-zero scrollTop comes from non-virtual content: a tall
-    // streaming block or startup banner.)
-    const rawScrollTop = !atBot && a === null
+    // here (totalHeight is 0, and so is the layout shift), so a clamped raw scrollTop
+    // carries no drift risk -- save it as a fallback rather than losing the position to
+    // bottom-follow on return. (A non-zero scrollTop comes from non-virtual content: a
+    // tall streaming block or startup banner.)
+    const rawScrollTop = !requested && a === null
       ? scrollTop
       : undefined
     return {
@@ -1475,163 +1322,25 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       ...(rawScrollTop !== undefined
         ? { rawScrollTop }
         : {}),
-      atBottom: atBot,
+      atBottom: requested,
       hasMoreNewer,
     }
   }
   const getScrollState = (): ChatScrollState | undefined =>
     captureScrollState(hasNewerMessages())
 
-  /**
-   * Clear the per-window "buffer filler paused / suppressed" flags -- a deliberate jump
-   * (to bottom, or to a rail seq) is the user re-taking control of position, exactly like
-   * a genuine scroll, but a jump emits only programmatic echoes that never clear them.
-   * Resumes a pre-fetch a prior forced-stop tap paused, drops the settle gate, and
-   * abandons any near-top restore's older-load suppression. Callers that REPLACE the
-   * window additionally rearmScrollBufferFiller() for the fresh window's per-window state.
-   */
-  const retakeScrollControl = () => {
-    bufferFillPaused = false
-    bufferFillSettling = false
-    suppressAutoLoadOlderAfterRestore = false
-  }
-
-  const scrollToBottomAnimated = () => {
-    if (!messageListRef)
-      return
-    cancelScrollAnimation()
-
-    // A streaming tail can grow on every frame. Limit the chase, then hand the
-    // position to sticky-bottom so the animation cannot run without an end.
-    let framesLeft = SCROLL_TO_BOTTOM_MAX_FRAMES
-    const animate = () => {
-      if (!messageListRef) {
-        scrollAnimationId = null
-        anchorRepin.resetDeferredRepin()
-        return
-      }
-      const remaining = distFromBottom(messageListRef)
-      if (remaining < 1 || framesLeft <= 0) {
-        scrollAnimationId = null
-        anchorRepin.resetDeferredRepin()
-        stickToBottom()
-        return
-      }
-      framesLeft--
-      const step = remaining > 48
-        ? remaining * 0.5
-        : remaining * 0.4
-      writeScrollTopProgrammatically(readLogicalScrollTop(messageListRef) + Math.ceil(step), 'scroll-bottom-animation')
-      scrollAnimationId = requestAnimationFrame(animate)
-    }
-
-    scrollAnimationId = requestAnimationFrame(animate)
-  }
-
-  const tailFollower = createChatTailFollower({
-    getEl: () => messageListRef,
-    hasNewerMessages,
-    cancelAnimation: cancelScrollAnimation,
-    retakeControl: retakeScrollControl,
-    rearmBuffer: () => rearmScrollBufferFiller(),
-    currentAnchorState,
-    followTail,
-    atBottomSnapshot: () => untrack(atBottom),
-    setAtBottom,
-    jumpToLatest: () => opts.onJumpToLatest?.(),
-    checkAtBottom,
-    stickToBottom,
-    setAnchor,
-    anchorAtCurrentTop: () => messageListRef
-      ? virt.anchorAt(readLogicalScrollTop(messageListRef))
-      : null,
-    animateToBottom: scrollToBottomAnimated,
-  })
-  const { forceScrollToBottom, jumpToBottom, scrollToBottom } = tailFollower
-
-  // ---- Scroll-rail seek (jumpToSeq / previewScrollTo / cancelPendingSeek) -------------
-  // The seek machine (dot/track/thumb -> land, or fetch-around-seq then land) lives in its
-  // own tested unit, createChatSeek; wired here where all its deps are in scope. It owns the
-  // pendingSeek/epoch state. rearmScrollBufferFiller is threaded as a thunk because the
-  // buffer filler is created LATER than this seam; the rest are already defined above.
-  chatSeek = createChatSeek(scrollCtx, {
-    messages: opts.messages,
-    readScrollTop: readLogicalScrollTop,
-    cancelScrollAnimation,
-    cancelFlingSettle: () => {
-      flingSettle.cancel()
-      flingSettle.reset()
-    },
-    captureAnchor,
-    captureRowTopAnchor,
-    bumpGeomTick: () => bumpGeomTick(t => t + 1),
-    retakeScrollControl,
-    rearmScrollBufferFiller: () => rearmScrollBufferFiller(),
-    checkAtBottom,
-    onJumpToSeq: opts.onJumpToSeq,
-    onSaveViewportScroll: opts.onSaveViewportScroll,
-    hasNewerMessages,
-  })
-
-  // The keyboard / wheel input layer (createScrollInput). Owns no scroll state -- the
-  // shared `lastScrollDir` / `discretePageTarget` stay here (handleScroll reads them)
-  // and are written through the setters below; forceScrollToBottom and the load-on-edge
-  // helpers stay here too (other units / the API also use them) and are passed in.
-  const { handleKeyDown, handleWheel, pageScroll } = createScrollInput(scrollCtx, {
-    captureAnchor,
-    captureTopAnchor,
-    checkAtBottom,
-    forceScrollToBottom,
-    cancelScrollAnimation,
-    cancelPendingScroll,
-    tryLoadOlderOnExplicitTopIntent,
-    tryLoadNewerOnExplicitBottomIntent,
-    setLastScrollDir: (dir) => { lastScrollDir = dir },
-    setDiscretePageTarget: (target) => { discretePageTarget = target },
-    hasOlderMessages: () => !!opts.hasOlderMessages?.(),
-    // jump-to-oldest (Home) REPLACES the window with the earliest page; re-arm the
-    // buffer-filler side-selection state and drop the post-restore older-suppression
-    // (it was armed against the OLD window's landing). Mirrors forceScrollToBottom's
-    // jump-to-latest handling.
-    onJumpToOldest: opts.onJumpToOldest
-      ? () => {
-          rearmScrollBufferFiller()
-          suppressAutoLoadOlderAfterRestore = false
-          return opts.onJumpToOldest!()
-        }
-      : undefined,
-  })
-
-  // Saved-viewport restore + resize handling, extracted into createViewportRestore
-  // (a factory like createStickyBottom / createFlingSettle). The hook keeps owning the
-  // mutable state the restore writes -- suppressAutoLoadOlderAfterRestore (the buffer
-  // filler reads it) and lastScrollTopForDir (trackUserScrollAndComputeLead reads it) -- and
-  // passes setters; the factory owns only the resize bookkeeping (prevClientHeight,
-  // the pending rAF).
-  const viewportRestore = createViewportRestore(scrollCtx, {
-    checkAtBottom,
-    repinToAnchor,
-    stickToBottom,
-    forceScrollToBottom,
-    clearSavedViewportScroll: () => opts.onClearSavedViewportScroll?.(),
-    savedViewportScroll: () => opts.savedViewportScroll?.(),
-    setSuppressOlder: (v) => { suppressAutoLoadOlderAfterRestore = v },
-    setLastScrollTopForDir: (v) => { lastScrollTopForDir = v },
-    onGeometrySettled: () => bumpGeomTick(t => t + 1),
-  })
-
   // Mount placement, part 1 of 2: restore a SAVED viewport on a visible (re)mount --
   // a tile split/merge or workspace switch saved the reading position at unmount (see
   // onSaveViewportScroll). Registered BEFORE the auto-scroll effect below (onMount is
   // an effect, and effects flush in creation order), so within the mount flush the
-  // restore lands first: it consumes the saved state and drops atBottom, which part 2
-  // (the auto-scroll effect's creation run, the default tail stick for a populated
-  // fresh mount) then respects. With no saved state -- or a hidden mount, which the
-  // RO hidden->visible path owns -- this is a no-op and the tail stick stands.
+  // restore lands first: it consumes the saved state and ends the request for the tail,
+  // which part 2 (the auto-scroll effect's creation run, the default tail stick for a
+  // populated fresh mount) then respects. With no saved state -- or a hidden mount, which
+  // the RO hidden->visible path owns -- this is a no-op and the tail stick stands.
   onMount(() => viewportRestore.restoreOnMount())
 
   // Auto-scroll the message list to the bottom when new content arrives
-  // and the user is already at (or near) the bottom. Its CREATION run doubles as
+  // and the reader follows the tail. Its CREATION run doubles as
   // mount placement part 2: over an already-populated window with no saved viewport
   // (or an at-bottom one, already consumed above), it performs the initial tail
   // stick that moves a fresh container off its unplaced scrollTop 0.
@@ -1679,11 +1388,6 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     if (shallowEqualArrays(sig, lastAutoScrollSig))
       return
     lastAutoScrollSig = sig
-    // Use the atBottom signal (not a fresh DOM check) because by the time
-    // this effect runs, SolidJS has already updated the DOM — scrollHeight
-    // has grown but scrollTop hasn't, so a fresh measurement would wrongly
-    // conclude the user is no longer at the bottom. The signal captures
-    // the user's scroll position from before the content changed.
     // Windowed away from the live tail: live messages are dropped from the
     // store, and the bottom of the in-memory list is not the real bottom.
     if (hasNewerMessages())
@@ -1691,166 +1395,111 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // Cap the in-memory window on every tail append, INDEPENDENT of scroll
     // position. While still at the live tail (hasNewerMessages false) but
     // scrolled up, live messages append to the tail and this is the ONLY window
-    // cap -- the pagination trims fire only on overscroll, and the at-bottom
-    // stick path below is skipped. Without this an active tab watched from a
-    // scrolled-up position grows the in-memory set without a limit during a long
-    // turn. Only run the raw-row cap when the message count changed. Status or
-    // message-version updates can need sticky-bottom handling below, but
-    // they do not increase the number of rows and must not reap the older buffer.
+    // cap -- the pagination trims fire only on overscroll, and the stick path below
+    // is skipped. Without this an active tab watched from a scrolled-up position grows
+    // the in-memory set without a limit during a long turn. Only run the raw-row cap when
+    // the message count changed. Status or message-version updates can need sticky-bottom
+    // handling below, but they do not increase the number of rows and must not reap the
+    // older buffer.
     const messageCountChanged = lastTrimMessageCount !== msgs.length
     lastTrimMessageCount = msgs.length
-    if (messageCountChanged && messageListRef) {
+    const el = messageListRef
+    if (messageCountChanged && el) {
       // Buffer-top anchor resolution reads the offset map (reactive) -- untrack it so
       // this auto-scroll effect doesn't subscribe to every geometry nudge. The rest of
       // the keep-newest derivation is pure; see computeBufferAwareKeepNewest.
       const keepNewest = computeBufferAwareKeepNewest(
         msgs,
-        readLogicalScrollTop(messageListRef),
-        messageListRef.clientHeight,
+        untrack(viewportContentTop),
+        el.clientHeight,
         bufferTargetPx(),
-        bufTop => untrack(() => virt.anchorAt(bufTop)),
+        bufTop => untrack(() => virt.anchorAtContent(bufTop)),
       )
       opts.onTrimOldMessages?.(keepNewest)
     }
-    if (untrack(atBottom) && !preserveBrowsingPosition && messageListRef) {
-      // Skip scroll when hidden (e.g. inactive tab with display:none).
-      // The ResizeObserver will scroll to bottom when the tab becomes visible.
-      if (messageListRef.clientHeight === 0)
-        return
-      // Stick only when the viewport is NOT already pinned to the real bottom --
-      // streaming chunks fire this effect every frame even when the view didn't move.
-      // Gating on the live position (not scrollHeight vs the last stick) is robust to
-      // a trim+grow that lands back on an identical scrollHeight: the new tail still
-      // pushed content below the fold, so we're no longer at the bottom and must
-      // stick. Scroll synchronously (the DOM is already updated by SolidJS) so
-      // deferring to rAF can't paint one frame scrolled up before snapping to bottom.
-      // When we ARE at the bottom, skip the costly stick (write + slice refresh) but
-      // keep the sticky record current via restickIfAtBottom -- it also SEEDS the
-      // record on the first run, which a later growth's re-stick guard needs.
-      if (!isAtClampedBottom())
+    // Follow the tail: stick when content (a new row, the thinking indicator, a banner)
+    // left the view above the bottom. Skip a hidden pane (an inactive tab with
+    // display:none); the ResizeObserver sticks when the tab becomes visible. Stick
+    // synchronously (the DOM is already updated by SolidJS) so a deferral to rAF can't
+    // paint one frame scrolled up before snapping to bottom. A shrink that clamped the view
+    // to the bottom is recorded first, so it stays no move of the reader when the content
+    // grows again. While the browser moved the view up and the handler did not see that
+    // move yet, follow mode does not apply, and the event of the move ends the request.
+    if (visibleListEl()) {
+      noteScrollRange()
+      if (untrack(isFollowing) && !isAtBottom())
         stickToBottom()
-      else
-        stickyBottom.restickIfAtBottom()
     }
   })
 
-  // Suppress the SPECULATIVE older-history pre-fetch while the viewport is pinned at
-  // (or the scroll-mode machine is FOLLOWING) the live tail. The older buffer only
-  // earns its keep once the reader scrolls UP into history; at the bottom it is pure
-  // speculation. Pre-fetching it there turned a fresh mount at the bottom (a page
-  // reload or an HMR remount) into a runaway: the filler saw scrollTop far below the
-  // older buffer target, paged older, prepended a page mid re-measure storm, and that
-  // prepend stream fought tail-follow and dragged the view up-list -- which kept
-  // scrollTop low, so the older side stayed "deficient" and it paged EVERY page to the
-  // window ceiling. Suppressing it holds the view at the bottom (the storm is then only
-  // the newest page's own row measurements, which tail-follow absorbs) and stops the
-  // every-page fetch. The reader's first genuine scroll-up leaves the tail
-  // (handleScroll captures an anchor, so isFollowing() goes false along with
-  // isAtBottom()) and resumes the pre-fetch via handleScroll -> fillScrollBuffer; the
-  // NO-SKIP loaded-window bound turns that first page's latency into a one-time stall,
-  // never a skip.
-  //
-  // The FOLLOW-MODE arm covers follow mode with the viewport NOT at the live tail's
-  // bottom band: a fresh mount's pre-placement scrollTop 0 (including one whose window
-  // is paged AWAY from the live tail, which the placement stick skips), a transient
-  // strand mid restick, or an in-flight jump-to-latest. In all of those the machinery
-  // -- not the reader -- owns the position: an older prepend fetched off such a reading
-  // is the seed of the reload runaway above (the viewport parks at the top, every page
-  // lands in-view, and the deficit re-arms forever). Only a genuine user scroll-up
-  // (which captures an anchor and leaves follow mode) makes the older buffer real.
-  //
-  // The arm is guarded on the viewport-top row being ANCHORABLE: setAnchor(null)
-  // aliases an UNANCHORABLE window (all-hidden pages, an empty offset map) into
-  // 'following', and those windows legitimately auto-advance older pages to surface
-  // content -- but when a real row sits at the viewport top, a genuine scroll-up would
-  // have anchored to it, so follow mode there is never a reader position. untracked:
-  // this read must not subscribe the filler's effect to every offset-map nudge.
-  //
-  // EXCEPTION: a viewport that can't scroll OUT of the sticky band (maxScrollTop <=
-  // STICKY_BOTTOM_THRESHOLD_PX -- a hidden-heavy newest page whose few visible rows
-  // barely fill the pane, or don't fill it at all) still needs the older fill to become
-  // genuinely scrollable. Without it that page stays stranded half-empty until a new
-  // message -- the very bug the blanket dev-mount settle once reintroduced (see
-  // hmrRemount). The bound is the STICKY BAND, not 0: with 0 < maxScrollTop <= the band,
-  // isAtBottom() is true at EVERY scroll position, so the "first scroll-up leaves the
-  // tail and resumes the fill" escape above is mathematically unreachable and the older
-  // history would be wedged off for good (a scrollbar-thumb drag to the very top fires
-  // only `scroll` events, so the explicit wheel/key edge-intent loaders never run
-  // either). Only once the pane can actually LEAVE the band does the suppression bite.
-  // Pre-fetch a VISIBLE-content buffer beyond the viewport so scrolling stays smooth
-  // in hidden-heavy stretches (see createScrollBufferFiller). Self-contained reactive
-  // unit; wired here so its createEffect runs AFTER the geometry re-pin /
-  // messages-refresh / auto-scroll effects above. The re-pin ordering means it reads
-  // the post-re-pin scrollTop / distFromBottom; the AUTO-SCROLL ordering is the mount
+  // Suppress the SPECULATIVE older-history pre-fetch while the view follows the live tail
+  // (see suppressOlderPrefetchAtLiveTail): the older buffer only earns its keep once the
+  // reader scrolls UP into history. Pre-fetch a VISIBLE-content buffer beyond the viewport
+  // so scrolling stays smooth in hidden-heavy stretches (see createScrollBufferFiller).
+  // Self-contained reactive unit; wired here so its createEffect runs AFTER the geometry /
+  // messages-refresh / auto-scroll effects above. The AUTO-SCROLL ordering is the mount
   // placement invariant: within one flush, the initial stick-to-bottom (the auto-scroll
   // effect's creation run over an already-populated window -- a tile-split remount or a
   // reload that mounted after the replay landed) runs BEFORE the filler's first fill.
-  // Created before the auto-scroll effect, the filler's creation pass read the
-  // UNPLACED container (scrollTop 0) as an older-buffer deficit and fired a fetch whose
-  // preserveBrowsingPosition then cancelled that initial stick -- stranding the view at
-  // the top and paging older history to exhaustion (the reload climb-to-top runaway).
+  // Created before the auto-scroll effect, the filler's creation pass read the UNPLACED
+  // container (scrollTop 0) as an older-buffer deficit and fired a fetch -- stranding the
+  // view at the top and paging older history to exhaustion (the reload climb-to-top
+  // runaway).
   const bufferFiller = createScrollBufferFiller({
     getEl: () => messageListRef,
+    // Each geometry read below is untracked. The geometry and the layout shift change on
+    // each row measure and on each rebase, and the effect of the filler must not run fill()
+    // for such a change: it runs inside the ResizeObserver flush, with no scroll and no new
+    // message. The scroll handler fills for a move of the view.
+    viewportContentTop: () => untrack(viewportContentTop),
     messages: opts.messages,
     bufferTargetPx,
     hasOlder: () => !!opts.hasOlderMessages?.(),
     hasNewer: hasNewerMessages,
     fetchingOlder: () => !!opts.fetchingOlder?.(),
     fetchingNewer: () => !!opts.fetchingNewer?.(),
-    // The filler's own loads go through loadOlderMessages/loadNewerMessages so they
-    // share preserveBrowsingPosition, not the raw store callbacks.
     onLoadOlder: loadOlderMessages,
     onLoadNewer: loadNewerMessages,
     lastScrollDir: () => lastScrollDir,
-    paused: () => bufferFillPaused || bufferFillSettling,
-    // Gate the older PRE-FETCH on either a near-top restore's one-shot arm OR being pinned
-    // at / following the live tail (where the older buffer is speculative -- see
-    // suppressOlderPrefetchAtLiveTail). Both leave the newer side free.
-    suppressOlder: () => suppressAutoLoadOlderAfterRestore || paginationPolicy.suppressOlderPrefetchAtLiveTail(),
+    paused: () => bufferFillPaused || hmrSettle.isSettling(),
+    suppressOlder: paginationPolicy.suppressOlderPrefetchAtLiveTail,
     atCeiling: () => !!opts.atWindowCeiling?.(),
     // Both sides' progress is measured against a stable reference row, not raw
     // scrollTop/distFromBottom, so a mid-fetch scroll in either direction can't mask a
-    // productive load (see captureAnchor). anchorAt(scrollTop) is the viewport-top row;
-    // scrollTopForAnchor reads its content-coordinate offset (= height ABOVE it) from the
-    // offset map, and totalHeight - that is the height BELOW it. (This also makes the old
-    // fling-deferred-write correction unnecessary -- the offset reflects a prepend
-    // regardless of a deferred scrollTop write.)
-    captureAnchor: () => messageListRef
-      ? virt.anchorAt(readLogicalScrollTop(messageListRef))
-      : null,
-    contentAbove: anchor => virt.scrollTopForAnchor(anchor),
-    contentBelow: (anchor) => {
-      const above = virt.scrollTopForAnchor(anchor)
-      return above == null
+    // productive load. The content top of the viewport-top row is the height ABOVE it, and
+    // totalHeight - that is the height BELOW it. Content coordinates, so a layout shift
+    // between the load and the measure does not read as progress or as none.
+    captureAnchor: anchorAtViewportTop,
+    contentAbove: anchor => untrack(() => virt.contentTopForAnchor(anchor)),
+    contentBelow: anchor => untrack(() => {
+      const top = virt.contentTopForAnchor(anchor)
+      return top === null
         ? null
-        : virt.totalHeight() - above
-    },
+        : virt.totalHeight() - top
+    }),
   })
-  // handleScroll tops up the buffer for the new scroll position through this ref; the
-  // jump paths (forceScrollToBottom, jump-to-oldest -- both declared before this unit)
-  // drop per-window filler state through the rearm ref. See the forward-ref comments
-  // where both are declared.
+  // The scroll handler tops up the buffer for the new scroll position through this ref;
+  // the jump paths (forceScrollToBottom, jump-to-oldest -- both declared before this unit)
+  // drop per-window filler state through the rearm ref.
   fillScrollBuffer = bufferFiller.fill
   rearmScrollBufferFiller = bufferFiller.rearm
 
-  // Re-check atBottom after the parent clears saved scroll state.
+  // Re-check the position after the parent clears saved scroll state.
   // Restoration itself is handled exclusively by the ResizeObserver's
   // hidden→visible path so that we avoid a race where this effect runs
   // before the tab is actually hidden (clearing saved state too early).
   // `defer: true`: this effect exists for the CLEAR transition only. Its creation run
-  // (saved undefined on a fresh mount) would schedule a checkAtBottom rAF that reads
-  // the container BEFORE the mount placement has moved it off scrollTop 0, dropping
-  // the atBottom signal and disabling the restick machinery for the initial landing.
-  let savedScrollRecheckRaf = 0
+  // (saved undefined on a fresh mount) would schedule a check that reads the container
+  // BEFORE the mount placement has moved it off scrollTop 0.
   createEffect(on(
     () => opts.savedViewportScroll?.(),
     (saved) => {
-      if (!saved && messageListRef && messageListRef.clientHeight > 0) {
+      if (!saved && visibleListEl()) {
         // Cancel any prior pending re-check and store the handle so onCleanup can
         // cancel it -- otherwise a tile disposed between scheduling and firing
-        // would still run checkAtBottom against a detached element.
+        // would still run the position check against a detached element.
         cancelAnimationFrame(savedScrollRecheckRaf)
-        savedScrollRecheckRaf = requestAnimationFrame(() => checkAtBottom())
+        savedScrollRecheckRaf = requestAnimationFrame(() => checkPosition())
       }
     },
     { defer: true },
@@ -1858,9 +1507,10 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
 
   onCleanup(() => {
     cancelScrollAnimation()
-    cancelAnimationFrame(viewportRefreshRafId)
+    viewportRefreshFrame.abort()
     cancelAnimationFrame(savedScrollRecheckRaf)
-    flingSettle.cancel()
+    endFastScroll.cancel()
+    rest.dispose()
     // Save the final reading position for the next mount of this agent (a tile
     // split/merge or workspace switch remounts ChatView over the same store; see
     // restoreOnMount). Owner cleanups run before the DOM detaches, so the geometry
@@ -1873,13 +1523,12 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
 
   // Observe ONLY the scroll container (editor/window/keyboard resize, and
   // hidden→visible). We deliberately do NOT observe the content wrapper: under
-  // virtualization its height is the spacer, which the geometry re-pin keeps
-  // changing — observing it would re-enter ResizeObserver delivery every time a
-  // row measures and trip "ResizeObserver loop completed with undelivered
-  // notifications". Content-height growth (streaming, expand/collapse, async
-  // syntax highlighting) is handled instead by the virtualizer's own row
-  // observer via the totalHeight effect (restickIfAtBottom) and by the
-  // auto-scroll effect (streaming/thinking).
+  // virtualization its height is the spacer, which every row measure changes --
+  // observing it would re-enter ResizeObserver delivery every time a row measures and
+  // trip "ResizeObserver loop completed with undelivered notifications". Content-height
+  // growth (streaming, expand/collapse, async syntax highlighting) is handled instead by
+  // the virtualizer's own row observer via the geometry effect (restickIfAtBottom) and by
+  // the auto-scroll effect (streaming/thinking).
   onMount(() => {
     viewportRestore.initClientHeight()
     // Render the initial slice for the freshly-measured viewport.
@@ -1887,149 +1536,128 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     resizeObserver = new ResizeObserver(viewportRestore.handleResize)
     if (messageListRef)
       resizeObserver.observe(messageListRef)
-    // End the dev-only HMR settle window once the post-HMR-remount re-measure storm
-    // has had time to quiesce (no-op unless this mount is a genuine HMR remount -- so
-    // never on a cold load, in prod, or in tests). A developer scroll clears it sooner.
-    let settleTimer: ReturnType<typeof setTimeout> | undefined
-    if (bufferFillSettling && typeof setTimeout === 'function')
-      settleTimer = setTimeout(() => { bufferFillSettling = false }, HMR_SETTLE_MS)
     onCleanup(() => {
       viewportRestore.cancelPendingResize()
       resizeObserver?.disconnect()
       resizeObserver = undefined
-      if (settleTimer !== undefined)
-        clearTimeout(settleTimer)
     })
   })
 
-  // The public API's page-scroll (the shell's focus-hotkey path in TileRenderer). The
-  // container's own onKeyDown wrapper releases a toggle row-top hold before paging; give
-  // the direct API entry point the same semantics so the two paths can't diverge -- a
-  // page jump is a user gesture taking control of position, and paging with the hold
-  // armed would skip the anchor re-capture its scroll event needs.
-  const pageScrollReleasingHold = (direction: -1 | 1) => {
-    releaseRowTopHold()
-    pageScroll(direction)
-  }
-
-  // A user toggle (expand/collapse, diff-view switch) pins the toggled row's top so its own
-  // resize keeps it visually stationary; captureRowTopAnchor arms the hold across the resize's
-  // re-pin echoes (see createAnchorRepin). Skip it while FOLLOWING the live tail: switching to
-  // 'anchored' would freeze auto-scroll (shouldRestickToBottom / restickIfAtBottom both require
-  // isFollowing()), so streamed/appended content would stop sticking until the user scrolled.
-  // The toggled row is at/near the bottom there anyway, so the resize rides the tail instead.
-  const anchorRowForResize = (messageId: string) => {
-    if (!isFollowing())
-      captureRowTopAnchor(messageId)
+  // The controller that chatScrollPreserve restores through after a heavy re-render. The
+  // snapshot holds the position and the request for the tail; the restore writes only when
+  // the view moved since the snapshot: the handler counted a move of the reader, or
+  // scrollTop differs from the raw position that the handler or an own write saw last.
+  // An own write, a geometry change (a rebase, a row that changed under the reader), and
+  // a clamp of the browser whose `scroll` event arrived count as no move. A change whose
+  // event did not arrive yet counts as a move, a clamp included.
+  const scrollController: ChatScrollController<PreservedScroll> = {
+    snapshot: () => {
+      const el = visibleListEl()
+      if (!el)
+        return undefined
+      const top = readLogicalScrollTop(el)
+      const anchor = untrack(() => virt.anchorAt(top))
+      return {
+        position: anchor !== null
+          ? { anchor }
+          : { emptyWindowTop: top },
+        moves: moveCount,
+        requested: following,
+        jump: tailFollower.pendingJump(),
+      }
+    },
+    restore: (snapshot) => {
+      const el = visibleListEl()
+      if (!el)
+        return
+      // The second test finds a move whose `scroll` event did not arrive yet.
+      const moved = moveCount !== snapshot.moves || seen.hasUnseenRawMove(el)
+      if (!moved)
+        return
+      if (snapshot.requested && !hasNewerMessages()) {
+        stickToBottom()
+        return
+      }
+      const position = snapshot.position
+      placeAt(() => 'anchor' in position
+        ? virt.scrollTopForAnchor(position.anchor)
+        : position.emptyWindowTop)
+      // A restore is no command of the reader: a request whose jump is still pending
+      // survives it. A request whose jump failed during the work stays ended, because no
+      // fetch would fulfill it.
+      if (snapshot.requested && snapshot.jump !== null && tailFollower.pendingJump() === snapshot.jump)
+        followTail()
+    },
   }
 
   return {
     atBottom,
-    isAtBottomFresh: isAtBottom,
+    isFollowing,
     stalledOlder,
     stalledNewer,
     attachListRef: (el) => {
       messageListRef = el
-      // So a repair that lives OUTSIDE this hook can write a position through
-      // it -- see `chatScrollPreserve`. A bare `scrollTop =` from outside is
-      // read back as a user gesture, because nothing recorded the landing
-      // pixel for `isProgrammaticEcho` to match.
-      registerProgrammaticScrollWriter(el, writeScrollTopProgrammatically)
+      // So a repair that lives OUTSIDE this hook can restore a position through it --
+      // see `chatScrollPreserve`. A raw scrollTop is no position under a layout shift,
+      // and a bare `scrollTop =` from outside reads as a move of the reader.
+      registerChatScrollController(el, scrollController)
+      if (el) {
+        // The first event then measures its move and its direction from the real position
+        // of the element, not from 0.
+        seen.note(readLogicalScrollTop(el), el.scrollTop)
+      }
       // The stall memos read messageListRef (a plain ref they can't track) and were
       // eagerly computed at hook-construction time while it was still undefined. Bump
       // the geometry tick so they re-evaluate now that the element exists (and again if
       // it detaches), instead of staying latched at their initial value.
       bumpGeomTick(t => t + 1)
     },
-    scrollToBottomAnimated,
     scrollToBottom,
-    jumpToBottom,
     jumpToSeq: seq => chatSeek.jumpToSeq(seq),
     previewScrollTo: top => chatSeek.previewScrollTo(top),
     cancelPendingSeek: () => chatSeek.cancelPendingSeek(),
     restickIfAtBottom,
     getScrollState,
     forceScrollToBottom,
-    pageScroll: pageScrollReleasingHold,
-    anchorRowForResize,
+    pageScroll,
     handlers: {
       onScroll: handleScroll,
-      onWheel: (event) => {
-        releaseRowTopHold()
-        if (!event.ctrlKey && Math.abs(event.deltaY) > Math.abs(event.deltaX) && event.deltaY !== 0) {
-          markMomentumInput()
-          // The user drives this increment, so the scroll it produces is not inertia however
-          // fast it measures. Clear the coast latch, or one brisk wheel notch over the fling
-          // threshold would mark a coast that never happens and defer corrections through the
-          // rest of a deliberate scroll. A real coast re-latches from its own samples, because
-          // the OS drives it with bare scroll events and sends no further wheel input.
-          scrollVelocity.noteUserInput()
-        }
-        handleWheel(event)
-      },
-      onKeyDown: (event) => {
-        releaseRowTopHold()
-        // Space and the arrow keys scroll NATIVELY (createScrollInput only nudges edge
-        // pagination for arrows and ignores Space), and Tab can trigger the browser's
-        // focus scrollIntoView when the next focusable sits in an off-screen row -- so
-        // their scroll events carry no other input signal. Record the keydown so Detector
-        // B attributes the resulting move to the keyboard instead of warning on every
-        // Space page or focus jump (see classifyUnexplainedJump).
-        if (!event.altKey && !event.ctrlKey && !event.metaKey
-          && (event.key === ' ' || event.key === 'ArrowUp' || event.key === 'ArrowDown' || event.key === 'Tab')) {
-          lastNativeKeyScrollAt = monotonicNow()
-        }
-        handleKeyDown(event)
-      },
-      // Touch/pointer handlers also feed the direct-manipulation tracker
-      // (isScrollInputActive) so a scroll during a drag re-pins immediately
-      // rather than deferring as fling drift; the overscroll unit owns the
-      // drag-at-top-to-load-older gesture.
+      onWheel: handleWheel,
+      onKeyDown: handleKeyDown,
       onTouchStart: (event) => {
-        releaseRowTopHold()
         // The user grabbed the surface -- stop any coasting programmatic scroll now.
         cancelPendingScroll()
-        // Read the live touch list (authoritative) rather than latching a boolean,
-        // so a dropped touchend self-heals on the next touch event.
-        touchActive = event.touches.length > 0
+        inputActivity.onTouchStart(event)
         overscroll.onTouchStart(event)
       },
-      onTouchMove: overscroll.onTouchMove,
+      onTouchMove: (event) => {
+        // One finger that drags vertically past the touch slop moves the content: the
+        // reader takes control. A horizontal swipe on a wide code block and a pinch move
+        // nothing in the list, and the seek stays. A drag that does move the list also
+        // cancels the seek in the scroll handler.
+        if (inputActivity.isVerticalDrag(event))
+          chatSeek.cancelPendingSeek()
+        overscroll.onTouchMove(event)
+      },
       onTouchEnd: (event) => {
-        // event.touches is the set of STILL-active touches after this one lifted:
-        // 0 for the last finger (-> inactive), >0 while another finger remains.
-        touchActive = event.touches.length > 0
-        if (!touchActive)
-          markMomentumInput()
+        inputActivity.onTouchEnd(event)
         overscroll.onTouchEnd()
       },
       onTouchCancel: (event) => {
-        touchActive = event.touches.length > 0
-        if (!touchActive)
-          clearMomentumInput()
+        inputActivity.onTouchEnd(event)
         overscroll.onTouchEnd()
       },
       onPointerDown: (event) => {
-        releaseRowTopHold()
-        // A tap/press to stop a fling -- halt the deferred settle / animation now.
+        // A tap/press to stop a fling -- halt the animation and the pre-fetch now.
         cancelPendingScroll()
-        // A primary pointer begins a fresh gesture with no sibling pointers down,
-        // so any ids still tracked here had their up/cancel dropped -- clear them
-        // before adding this one so the set can't latch active across gestures.
-        if (event.isPrimary)
-          activePointers.clear()
-        activePointers.add(event.pointerId)
+        inputActivity.onPointerDown(event)
         overscroll.onPointerDown(event)
       },
       onPointerMove: overscroll.onPointerMove,
-      onPointerUp: (event) => {
-        activePointers.delete(event.pointerId)
-        overscroll.onPointerUp()
-      },
-      onPointerCancel: (event) => {
-        activePointers.delete(event.pointerId)
-        overscroll.onPointerUp()
-      },
+      // The window listeners of the input tracker end the pointer. They run first, in the
+      // capture phase, so the list ends only its drag gesture here.
+      onPointerUp: () => overscroll.onPointerUp(),
+      onPointerCancel: () => overscroll.onPointerUp(),
     },
   }
 }

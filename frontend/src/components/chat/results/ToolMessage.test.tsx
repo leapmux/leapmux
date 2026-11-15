@@ -4,10 +4,11 @@ import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 import { render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { failedResult } from '~/components/chat/model/toolCall'
 import { imagesForRow } from '~/components/chat/results/rowImages'
 import { ToolMessage } from '~/components/chat/results/ToolMessage'
+import { settle } from '~/test-support/async'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { nativeOutputPathsPrecedePreview } from '../../../../tests/e2e/helpers/nativeToolOutputFilePaths'
@@ -638,4 +639,76 @@ describe('ToolMessage output DOM ownership', () => {
     expect(liveOutputs).toHaveLength(1)
     expect(liveOutputs[0]?.textContent).toBe(marker)
   })
+})
+
+/**
+ * A held display keeps the picture that a row shows while the view scrolls or the reader
+ * selects text, because a new picture changes the height of the row. ToolMessage draws a file
+ * image at three places, and each one reads the hold from the row's context.
+ */
+describe('a held display in a tool row (ToolMessage)', () => {
+  const file: ImageResultSource = { filePath: '/held.png' }
+  const decoded: ImageResultSource = { mimeType: 'image/png', data: 'iVBORw0KGgo=' }
+  const sites: [string, ToolCall][] = [
+    [
+      'the content of a generic result',
+      toolCallFixture('mcp', {
+        result: {
+          content: [
+            { type: 'image', source: file },
+          ],
+        },
+      }),
+    ],
+    [
+      'the extra content of the call',
+      toolCallFixture('read', {
+        result: { lines: null, fallbackContent: 'the file body' },
+        extraContent: [
+          { type: 'image', source: file },
+        ],
+      }),
+    ],
+    [
+      'the images of the call',
+      toolCallFixture('read', {
+        result: { lines: null, fallbackContent: 'the file body' },
+        images: [file],
+      }),
+    ],
+  ]
+  // Each hold, with the flag of the render context that states it.
+  const holds: [string, 'syntaxHighlightingPaused' | 'textSelectionActive'][] = [
+    ['a scroll', 'syntaxHighlightingPaused'],
+    ['a text selection', 'textSelectionActive'],
+  ]
+
+  it.each(sites.flatMap(([site, call]) => holds.map(([hold, flag]) => [site, hold, call, flag] as const)))(
+    'holds a file image in %s during %s, and shows it once the hold ends',
+    async (_site, _hold, call, flag) => {
+      const [holding, setHolding] = createSignal(true)
+      const read = vi.fn(async () => decoded)
+      const context: ToolResultRenderContext = {
+        ...(flag === 'syntaxHighlightingPaused'
+          ? { syntaxHighlightingPaused: holding }
+          : { textSelectionActive: holding }),
+        images: {
+          loadFileImage: read,
+          cachedFileImage: () => undefined,
+          openImage: () => {},
+          deferLoad: () => false,
+          premeasurePass: () => false,
+        },
+      }
+      const { container } = render(() => <ToolMessage row={toolRow(call)} context={context} />)
+      await settleWorkerReplies()
+      expect(read).toHaveBeenCalledExactlyOnceWith('/held.png')
+      // The read landed, and the row still shows what it showed before the read.
+      expect(container.querySelector('img')).toBeNull()
+
+      setHolding(false)
+      await settle()
+      expect(container.querySelector('img')?.getAttribute('src')).toBe(`data:image/png;base64,${decoded.data}`)
+    },
+  )
 })

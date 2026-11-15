@@ -1,5 +1,6 @@
 import type { Accessor } from 'solid-js'
 import { createSignal, onCleanup } from 'solid-js'
+import { cancelFrame, requestFrame } from '~/lib/animationFrame'
 
 // ---------------------------------------------------------------------------
 // Scroll-rail drag-release "hold"
@@ -79,25 +80,22 @@ export function createDragReleaseHold(): DragReleaseHold {
   let clearRaf: number | null = null
 
   const cancelClear = () => {
-    if (clearRaf !== null && typeof cancelAnimationFrame === 'function')
-      cancelAnimationFrame(clearRaf)
+    if (clearRaf !== null)
+      cancelFrame(clearRaf)
     clearRaf = null
   }
   onCleanup(cancelClear)
 
   // Clear the pin on the next frame IF `epoch` is still the current release -- by the next
   // frame the metrics-derived thumb has caught up to the landing, so the hand-off is flash-
-  // free. Falls back to a synchronous clear where rAF is unavailable (SSR / some test envs).
+  // free. requestFrame clears at once where rAF is unavailable (a test environment with no
+  // DOM); the handle that it returns then cancels nothing.
   const clearNextFrame = (epoch: number) => {
-    const clear = () => {
+    clearRaf = requestFrame(() => {
       clearRaf = null
       if (epoch === releaseEpoch)
         setFraction(null)
-    }
-    if (typeof requestAnimationFrame === 'function')
-      clearRaf = requestAnimationFrame(clear)
-    else
-      clear()
+    })
   }
 
   const clearAfterFailedSeek = (epoch: number) => {

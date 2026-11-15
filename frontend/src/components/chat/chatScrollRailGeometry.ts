@@ -70,8 +70,12 @@ export interface SeqThumb {
 }
 
 export interface SeqThumbInputs {
-  /** Logical (clamped) scrollTop of the scroll container. */
-  scrollTop: number
+  /**
+   * The content coordinate of the viewport top, where the row offsets of the geometry live: the
+   * logical (clamped) scrollTop of the scroll container, converted to content coordinates (see
+   * RailScrollMetrics.contentTop). Not the raw scrollTop, which differs by the layout shift.
+   */
+  contentTop: number
   clientHeight: number
   minSeq: bigint
   maxSeq: bigint
@@ -235,10 +239,10 @@ export function computeSeqThumb(prep: PreparedGeometry, inp: SeqThumbInputs): Se
   // renders the thumb/track at `NaNpx`. Hide the thumb instead until the range heals.
   if (inp.maxSeq < inp.minSeq)
     return null
-  const topSeqF = seqAtContentY(prep, inp.scrollTop)
+  const topSeqF = seqAtContentY(prep, inp.contentTop)
   if (topSeqF === null)
     return null
-  const botSeqF = seqAtContentY(prep, inp.scrollTop + inp.clientHeight)
+  const botSeqF = seqAtContentY(prep, inp.contentTop + inp.clientHeight)
   if (botSeqF === null)
     return null
   const metrics = seqSpan({ minSeq: inp.minSeq, maxSeq: inp.maxSeq })
@@ -248,7 +252,7 @@ export function computeSeqThumb(prep: PreparedGeometry, inp: SeqThumbInputs): Se
   let topFraction = clamp((topSeqF - min) / span, 0, 1)
   let bottomFraction = clamp((botSeqF - min) / span, topFraction, 1)
   // Edge snaps: kill sub-pixel / container-padding bias exactly where users notice it.
-  if (!inp.hasMoreOlder && inp.scrollTop <= EDGE_INTENT_TOLERANCE_PX)
+  if (!inp.hasMoreOlder && inp.contentTop <= EDGE_INTENT_TOLERANCE_PX)
     topFraction = 0
   if (!inp.hasMoreNewer && inp.distFromBottomPx <= EDGE_INTENT_TOLERANCE_PX)
     bottomFraction = 1

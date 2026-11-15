@@ -346,8 +346,8 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
    * (hasMoreNewer false), but the reader can be scrolled up into a ceiling-grown older
    * buffer, and a base trim would reap that buffer (and rows below their anchor). The
    * per-append viewport trim (trimOldestToViewport) brings a FOLLOWED tail back to the
-   * lean base after the replay; the scroll re-pin keeps a scrolled-up reader's anchored
-   * row stationary throughout.
+   * lean base after the replay; the layout shift of the virtualizer keeps a scrolled-up
+   * reader's row stationary throughout.
    */
   async function catchUpToTail(workerId: string, agentId: string, afterSeq: bigint, watchSignal?: AbortSignal): Promise<void> {
     // Idempotent under the continuous reconcile effect (runSingleFlightTailLoop no-ops

@@ -7,14 +7,31 @@ import { CHAT_RAIL_WIDTH_VAR, COARSE_HIT_PX } from './chatChromeVars'
 
 /**
  * Max height of the preview card (px): the point at which a long preview stops growing the card
- * and starts scrolling inside it.
+ * and starts scrolling inside it. On a rail shorter than this, the rail height is the cap instead
+ * (see PREVIEW_CARD_RAIL_HEIGHT_VAR).
  *
- * The cap only. The vertical clamp in `cardTopPx` (`./chatDotPreview.ts`) deliberately does NOT
- * read this: it clamps against the card's MEASURED height, because most previews are far shorter
- * than the cap and clamping them as though they were 200px tall pushed a one-line card up to
- * ~90px away from the dot it describes.
+ * The cap only. The card's vertical placement (`cardLaneFor` in `./chatDotPreview.ts`) deliberately
+ * does NOT read this: the browser clamps the card against its laid-out height, because most
+ * previews are far shorter than the cap and clamping them as though they were 200px tall pushed a
+ * one-line card up to ~90px away from the dot it describes.
  */
 const PREVIEW_CARD_MAX_H_PX = 200
+
+/**
+ * The custom property that carries the rail's height (px) to the preview card. The lane that holds
+ * the card sets it inline from the measured rail height, and the card's max-height takes the
+ * smaller of it and PREVIEW_CARD_MAX_H_PX.
+ *
+ * The lane clamps a card only as far as the rail edge that the lane touches, so a card taller than
+ * the rail would cross the far rail edge. The overflow-hidden wrapper of the message list ends a
+ * few pixels past that edge and clips the card there. The card's own scroll cannot bring the text
+ * under the clipped part into view, so the reader cannot read it. A card that is never taller than
+ * the rail always fits between both rail edges.
+ *
+ * Without the property (before the lane sets it), the fallback leaves PREVIEW_CARD_MAX_H_PX as
+ * the cap.
+ */
+export const PREVIEW_CARD_RAIL_HEIGHT_VAR = '--chat-scroll-rail-height'
 
 /** Width of the muted vertical track line. */
 const TRACK_WIDTH_PX = 2
@@ -211,7 +228,7 @@ export const dot = style({
  * range in `./chatDotPreview.ts` is derived from it rather than hand-synced: a finger presses
  * anywhere inside this circle, and the preview card that press opens is resolved by distance from
  * the dot's rail-Y, so a range narrower than this circle's radius leaves a rim of the hit area
- * that jumps but shows no preview. Same reason PREVIEW_CARD_MAX_H_PX is exported above.
+ * that jumps but shows no preview.
  *
  * The finger size itself comes from the shared constant, which the rail's own column also floors
  * at on a coarse pointer -- so a dot and the track around it take the same press target.
@@ -273,11 +290,48 @@ globalStyle(`${dotPreviewMarkdown} > * > :first-child`, { marginTop: 0 })
 globalStyle(`${dotPreviewMarkdown} > * > :last-child`, { marginBottom: 0 })
 
 /**
+ * The lane that holds the preview card, flush against the rail's left edge. Its top and height
+ * are set inline from `cardLaneFor` (`./chatDotPreview.ts`): it is centred on the active dot and
+ * reaches the nearer rail edge. The card centres itself in it (see previewCard), so the browser
+ * clamps the card to the rail in the same layout that sets the card's height. The lane also sets
+ * PREVIEW_CARD_RAIL_HEIGHT_VAR inline, which caps the card at the rail height.
+ *
+ * The lane itself takes no pointer events. It is wider and taller than the card, and the part
+ * that the card does not cover must pass a click through to the message list under it.
+ */
+export const previewCardLane = style({
+  position: 'absolute',
+  // Flush against the rail's left edge. The rail is a wide hit column whose
+  // visuals sit centred in it, so any gap here is added to the ~10px the column
+  // already puts between its left edge and the dot the card describes -- and the
+  // card drifts away from the thing it points at.
+  right: '100%',
+  // The rail is narrow, so the shrink-to-fit width of an absolute box here would be
+  // the card's min-content width. The lane takes the card's own width instead.
+  width: 'max-content',
+  display: 'flex',
+  flexDirection: 'column',
+  zIndex: 20,
+  pointerEvents: 'none',
+})
+
+/**
+ * The lane touches the rail's bottom edge, so a card taller than the lane keeps its bottom edge
+ * there. In a reversed column the start of the flex line is the bottom, and an item that
+ * overflows the line stays at its start.
+ */
+export const previewCardLaneAtBottom = style({
+  flexDirection: 'column-reverse',
+})
+
+/**
  * The single live preview card shown to the LEFT of the rail for the ACTIVE dot -- whether
  * it's hovered/focused or under the dragging thumb (scrub). One element for both cases, so a
- * hover and a scrub can never show two cards at once. Its top is set inline (clamped to
- * the rail so it never clips against the overflow-hidden wrapper); translateY(-50%) centres
- * it on that Y.
+ * hover and a scrub can never show two cards at once. It sits in previewCardLane, and its auto
+ * block margins centre it there. When the card is taller than the lane, the margins resolve to
+ * 0 and the card stays at the rail edge that the lane touches. Its max-height never exceeds the
+ * rail height (see PREVIEW_CARD_RAIL_HEIGHT_VAR), so the card always fits between both rail edges
+ * and never clips against the overflow-hidden wrapper.
  *
  * The card is INTERACTIVE on a fine pointer: the reader moves onto it to select or to scroll its
  * text, and the close delay in createDotPreview buys them the time to get there. It is inert on a
@@ -303,21 +357,21 @@ globalStyle(`${dotPreviewMarkdown} > * > :last-child`, { marginBottom: 0 })
 export const previewCard = style([
   floatingCardSurface,
   {
-    'position': 'absolute',
-    // Flush against the rail's left edge. The rail is a wide hit column whose
-    // visuals sit centred in it, so any gap here is added to the ~10px the column
-    // already puts between its left edge and the dot the card describes -- and the
-    // card drifts away from the thing it points at.
-    'right': '100%',
-    'transform': 'translateY(-50%)',
+    // Centred in the lane while it fits, at the lane's start when it does not (see
+    // previewCardLane). Never shrunk to the lane: the card keeps its laid-out height and
+    // scrolls only past the max-height cap.
+    'marginBlock': 'auto',
+    'flexShrink': 0,
     'width': 'max-content',
     'maxWidth': '280px',
-    'maxHeight': `${PREVIEW_CARD_MAX_H_PX}px`,
+    // The smaller of the fixed cap and the rail height, so the card never crosses a rail edge
+    // (see PREVIEW_CARD_RAIL_HEIGHT_VAR).
+    'maxHeight': `min(${PREVIEW_CARD_MAX_H_PX}px, var(${PREVIEW_CARD_RAIL_HEIGHT_VAR}, ${PREVIEW_CARD_MAX_H_PX}px))`,
     'overflowY': 'auto',
     // On Oat's type scale, and on the same step as the app's other floating surface. The 0.8125rem
     // this used to specify sat between two steps of that scale and matched nothing else.
     'fontSize': 'var(--text-8)',
-    'zIndex': 20,
+    // The lane takes no pointer events, so the card turns them back on for itself.
     'pointerEvents': 'auto',
     // The rail sets user-select:none (so a thumb drag never selects text) and cursor:pointer, and
     // both inherit into this card. Undo them here: the card's text is meant to be read, selected,

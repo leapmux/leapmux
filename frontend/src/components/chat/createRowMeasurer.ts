@@ -9,9 +9,8 @@ import { rowLayoutMeasurement } from './rowLayoutMeasurement'
 // The virtualizer owns the height cache and the shared mountedIds set.
 //
 // A microtask runs after a resize handler and before paint. A row that grows
-// therefore updates its offsets and scroll anchor in the same frame.
+// therefore updates its offsets and the layout shift in the same frame.
 // A requestAnimationFrame handler would paint stale sibling offsets first.
-// Native momentum defers only the commits while the browser owns scrollTop.
 // Tests inject the observer and scheduler to control these transitions.
 
 /** The subset of ResizeObserver the measurer uses (so a test can inject a fake). */
@@ -55,10 +54,19 @@ export interface RowMeasurer {
    * nothing to read, and a copy that is not measurable waits for its turn.
    */
   measureAgain: (id: string) => void
-  /** Whether at least one visible-row measurement is queued behind the deferral gate. */
-  hasDeferredMeasurements: () => boolean
-  /** Commit any measurements queued while visible measurement commits were deferred. */
-  flushDeferredMeasurements: () => boolean
+  /** The element that currently owns the mounted row `id`, or `undefined`. */
+  elementOf: (id: string) => Element | undefined
+  /**
+   * Whether a flush would commit a new height for the row `id` now: its element is the
+   * connected owner of the id, it is measurable, and its height differs from the last
+   * height that the measurer accepted under the same key. False for an unknown id. It
+   * reads layout and changes no state.
+   *
+   * An animation frame runs before the ResizeObserver delivery of the same rendering
+   * update, so a frame can see a reflow that no flush committed yet. This answers that
+   * question with the read rule of the flush itself, so the two cannot disagree.
+   */
+  hasUncommittedHeight: (id: string) => boolean
   /** Flush any pending measurements synchronously (teardown / tests). */
   flushNow: () => void
   /** Disconnect the observer and drop the pending set (on cleanup). */
@@ -89,12 +97,10 @@ export interface RowMeasurerDeps {
   /**
    * Schedule `flush` to run before paint. Default: queueMicrotask -- a microtask
    * queued from a ResizeObserver callback runs after the callback but BEFORE paint, so
-   * a row that grows post-mount (async syntax highlighting, expand/collapse) normally
-   * updates the offset map and re-pins scrollTop in the SAME frame it grew. During a
-   * native momentum fling the deferral gate below queues the commit instead, because
-   * re-pin intentionally avoids scrollTop writes while the browser owns momentum.
-   * Deferring the scheduler itself to rAF would still paint stale sibling offsets in
-   * non-fling cases -- a visible vertical wiggle while scrolling. Injected for tests.
+   * a row that grows post-mount (async syntax highlighting, expand/collapse) updates
+   * the offset map and the layout shift in the SAME frame it grew. Deferring the
+   * scheduler to rAF would paint stale sibling offsets -- a visible vertical wiggle
+   * while scrolling. Injected for tests.
    */
   scheduleMicrotask?: (cb: () => void) => void
   /**
@@ -103,20 +109,6 @@ export interface RowMeasurerDeps {
    * immediately). Injected for tests with a fake whose callback the test can fire.
    */
   createObserver?: (onResize: (targets: Element[]) => void) => ResizeObserverLike | undefined
-  /**
-   * ResizeObserver callbacks can fire for sub-pixel font/layout jitter while the
-   * user scrolls. Reads within this epsilon of the last accepted DOM read are
-   * dropped before they call into the virtualizer, avoiding no-op reactive commits
-   * and repeated offset-map work. Defaults to half a CSS pixel.
-   */
-  measureEpsilonPx?: number
-  /**
-   * Gate visible-row height commits while a native momentum fling owns scrollTop.
-   * Reads still happen and rows still mount/observe; committing is delayed so the
-   * virtual spacer/translateY map does not churn by one-line estimate corrections
-   * while re-pin is deliberately not writing scrollTop.
-   */
-  shouldDeferMeasurement?: () => boolean
   /** Optional test/perf hook for ResizeObserver churn accounting. */
   onFlush?: (stats: RowMeasureFlushStats) => void
 }
@@ -137,7 +129,14 @@ export interface RowMeasureFlushStats {
   skippedUnchanged: number
 }
 
-const DEFAULT_MEASURE_EPSILON_PX = 0.5
+/**
+ * The sub-pixel jitter (px) of a row height that changes no geometry. A ResizeObserver
+ * callback can fire for font or layout jitter while the user scrolls. The measurer drops a
+ * read within this distance of the last accepted read of the element, before it calls into
+ * the virtualizer, and the virtualizer keeps a cached height within this distance of a new
+ * measure. So the DOM read and the offset map ignore the same jitter.
+ */
+export const MEASURE_EPSILON_PX = 0.5
 
 interface MeasurementRead {
   id: string
@@ -160,14 +159,10 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
   // copy waits for its own content.
   const readinessByEl = new WeakMap<Element, RowContentReadiness>()
   const pending = new Set<Element>()
-  const deferred = new Set<Element>()
   const imageListeners = new Map<HTMLElement, EventListener>()
   let flushScheduled = false
   let ro: ResizeObserverLike | undefined
   const schedule = deps.scheduleMicrotask ?? queueMicrotask
-  const measureEpsilonPx = Math.max(0, deps.measureEpsilonPx ?? DEFAULT_MEASURE_EPSILON_PX)
-
-  const shouldDeferMeasurement = () => deps.shouldDeferMeasurement?.() ?? false
 
   const readMeasurement = (
     el: Element,
@@ -191,7 +186,7 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
       return undefined
     const key = deps.currentMeasurementKey?.(id)
     const last = lastMeasurementByEl.get(el)
-    if (last !== undefined && last.id === id && last.key === key && (height === 0) === (last.height === 0) && Math.abs(height - last.height) < measureEpsilonPx) {
+    if (last !== undefined && last.id === id && last.key === key && (height === 0) === (last.height === 0) && Math.abs(height - last.height) < MEASURE_EPSILON_PX) {
       if (stats)
         stats.skippedUnchanged++
       return undefined
@@ -232,31 +227,12 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
         reads.push(read)
     }
     pending.clear()
-    if (shouldDeferMeasurement()) {
-      for (const { el } of reads)
-        deferred.add(el)
-      deps.onFlush?.(stats)
-      return
-    }
     // Commit all measurements in one reactive batch so the offset map, the row
-    // transforms, and the scroll position update once. readMeasurement already
+    // transforms, and the layout shift update once. readMeasurement already
     // dropped the unready reads, so none reaches the height cache: a row copy that
     // is not measurable (see attachRow), and a row whose layout check fails.
     stats.committed = commitReads(reads)
     deps.onFlush?.(stats)
-  }
-
-  const flushDeferredMeasurements = (): boolean => {
-    if (deferred.size === 0)
-      return false
-    const reads: MeasurementRead[] = []
-    for (const el of deferred) {
-      const read = readMeasurement(el)
-      if (read)
-        reads.push(read)
-    }
-    deferred.clear()
-    return commitReads(reads) > 0
   }
 
   const scheduleFlush = () => {
@@ -326,9 +302,7 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
     // Measure a mounted row immediately. The resize observer retries a read that
     // the layout check rejected, because the row resizes once it lays out.
     const read = readMeasurement(el)
-    if (shouldDeferMeasurement())
-      deferred.add(el)
-    else if (read)
+    if (read)
       commitReads([read])
     ro?.observe(el)
   }
@@ -337,14 +311,13 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
     unobserveImages(el)
     ro?.unobserve(el)
     pending.delete(el)
-    deferred.delete(el)
     readinessByEl.delete(el)
     const id = elToId.get(el)
     // Relinquish the id's mounted-protection only if THIS element still owns it. Under
     // an attach-before-detach remount the id was already re-claimed by a new element, so
     // deleting it here would un-protect the now-mounted row from height-cache eviction
     // (a measure overflowing the cap could then evict its just-measured height, forcing a
-    // fallback-height + visible re-pin). The newer element's later detach clears it.
+    // fallback height and a visible move of the rows). The newer element's later detach clears it.
     const unmounted = id !== undefined && idToEl.get(id) === el
     if (unmounted) {
       deps.mountedIds.delete(id)
@@ -374,18 +347,24 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
     ro = undefined
     idToEl.clear()
     pending.clear()
-    deferred.clear()
     // Clear the scheduled flag so a later attach can schedule another flush.
     // Disposal clears the pending reads before the queued flush runs.
     flushScheduled = false
+  }
+
+  const elementOf = (id: string): Element | undefined => idToEl.get(id)
+
+  const hasUncommittedHeight = (id: string): boolean => {
+    const el = idToEl.get(id)
+    return el !== undefined && readMeasurement(el) !== undefined
   }
 
   return {
     attachRow,
     detachRow,
     measureAgain,
-    hasDeferredMeasurements: () => deferred.size > 0,
-    flushDeferredMeasurements,
+    elementOf,
+    hasUncommittedHeight,
     flushNow: flush,
     dispose,
   }

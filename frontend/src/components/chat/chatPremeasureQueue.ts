@@ -29,8 +29,8 @@ import { warnSlowScrollPhase } from './chatScrollGeometry'
 // ---------------------------------------------------------------------------
 
 export interface PremeasureQueueDeps {
-  /** The height-cache surface consulted for done/pending states, plus the commit. */
-  virt: Pick<UseChatVirtualizerResult, 'hasMeasuredHeight' | 'hasPendingPremeasuredHeight' | 'primeHeight'>
+  /** The height-cache surface consulted for the done state, plus the commit. */
+  virt: Pick<UseChatVirtualizerResult, 'hasMeasuredHeight' | 'primeHeight'>
   /** Entry lookup over the current window (premeasure renders need the entry). */
   visibleEntryById: Accessor<ReadonlyMap<string, ClassifiedEntry>>
   /** Item lookup over the current window (heightKey / kind reads). */
@@ -89,7 +89,7 @@ export function createPremeasureQueue(deps: PremeasureQueueDeps) {
         continue
       }
       const unsettledKeyMatches = nextUnsettled.has(id) && nextUnsettled.get(id) === item.heightKey
-      if ((deps.virt.hasMeasuredHeight(id) || deps.virt.hasPendingPremeasuredHeight(id)) && !unsettledKeyMatches)
+      if (deps.virt.hasMeasuredHeight(id) && !unsettledKeyMatches)
         nextPending.delete(id)
     }
     for (const id of [...nextCollapsed]) {
@@ -149,16 +149,16 @@ export function createPremeasureQueue(deps: PremeasureQueueDeps) {
     // Forced-layout cost of premeasuring this row. When a batch of look-ahead rows
     // premeasures in one frame, the FIRST getBoundingClientRect reflows the dirty DOM
     // (expensive) and the rest are cheap -- so a slow duration here localizes a
-    // premeasure-driven main-thread stall (the batched catch-up scroll deltas Detector
-    // B reports). Only a slow measure logs (see warnSlowScrollPhase).
+    // premeasure-driven main-thread stall (a stalled scroll delivers its moves as one
+    // batched catch-up delta). Only a slow measure logs (see warnSlowScrollPhase).
     warnSlowScrollPhase('premeasure', measureDurationMs, { id, kind: deps.virtualItemById().get(id)?.kind })
     const accepted = deps.virt.primeHeight(id, height, heightKey)
-    const hasCommittedOrPendingHeight = accepted || deps.virt.hasMeasuredHeight(id) || deps.virt.hasPendingPremeasuredHeight(id)
-    if (settled && hasCommittedOrPendingHeight) {
+    const hasCommittedHeight = accepted || deps.virt.hasMeasuredHeight(id)
+    if (settled && hasCommittedHeight) {
       setPendingPremeasureIds(ids => setWithout(ids, id))
       setUnsettledPremeasureKeys(keys => mapWithout(keys, id))
     }
-    else if (!settled && hasCommittedOrPendingHeight) {
+    else if (!settled && hasCommittedHeight) {
       // Keep the row's premeasure mount alive for a re-measure under the SAME heightKey
       // (the copy-on-write short-circuit skips the reference churn when the key is unchanged).
       setUnsettledPremeasureKeys(keys => mapWith(keys, id, heightKey))
@@ -174,12 +174,11 @@ export function createPremeasureQueue(deps: PremeasureQueueDeps) {
       currentHeightKey: deps.virtualItemById().get(id)?.heightKey ?? null,
       accepted,
       hasMeasured: deps.virt.hasMeasuredHeight(id),
-      pending: deps.virt.hasPendingPremeasuredHeight(id),
       settled,
       candidatePending: untrack(pendingPremeasureIds).has(id),
       collapsed: untrack(collapsedPremeasureIds).has(id),
     }))
-    return hasCommittedOrPendingHeight
+    return hasCommittedHeight
   }
 
   return { premeasureCandidates, collapsedPremeasureIds, onMeasure }

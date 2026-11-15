@@ -1,9 +1,10 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
+import { ROW_ALIGN_OFFSET_PX } from '~/components/chat/chatLayoutShift'
 import { test } from './fixtures'
 import { PREVIEW, RAIL, RAIL_DOT, RAIL_FILLER_PREVIEW, seedOverflowingConversation, THUMB } from './helpers/chatScrollRail'
 import { selectedText } from './helpers/selection'
-import { chatScrollContainer, USER_BUBBLE_SELECTOR, waitForAgentStarted } from './helpers/ui'
+import { chatScrollContainer, chatScrollTop, USER_BUBBLE_SELECTOR, waitForAgentStarted } from './helpers/ui'
 
 /**
  * Smoke test for the seq-space chat scroll rail. The geometry math, the marks store,
@@ -61,9 +62,10 @@ test.describe('chat scroll rail', () => {
     // 'thin' until the resize observation lands.
     await expect.poll(() => scroller.evaluate(el => getComputedStyle(el).scrollbarWidth)).toBe('none')
 
-    // Send two tall messages. Both user messages land (their server echoes carry real
-    // seqs), and they overflow the short viewport, so the rail shows.
-    await seedOverflowingConversation(page, modelScript, 2)
+    // Send three tall messages. Each user message lands (its server echo carries a real seq),
+    // and they overflow the short viewport, so the rail shows. The third one keeps the second
+    // far enough above the bottom that its landing below is no clamp of the scroll range.
+    await seedOverflowingConversation(page, modelScript, 3)
 
     // The rail shows with a thumb.
     const rail = page.locator(RAIL)
@@ -132,8 +134,58 @@ test.describe('chat scroll rail', () => {
     expect(thumbBox).not.toBeNull()
     expect(thumbBox!.height).toBeLessThan(railBox!.height)
 
-    // Clicking the FIRST user message's dot jumps the view (scrolled to the tail) up to it.
+    // Clicking the FIRST user message's dot jumps the view (scrolled to the tail) up to it. The
+    // first row is the top of the history, so the view lands at the top of the scroller, with
+    // the top padding of the list above the row, as a scrub to the top of the rail does.
     await dot(firstUserSeq).click()
     await expect(userRow(page, 0)).toBeInViewport()
+    await expect.poll(() => chatScrollTop(page), { message: 'the first row lands at the top of the scroller' }).toBe(0)
+
+    // Clicking the SECOND user message's dot places the top of its row ROW_ALIGN_OFFSET_PX
+    // (8px) below the top of the view. The top padding and the gap of the list lie above the
+    // rows in scroll coordinates, and a landing that ignored them would place the row that much
+    // lower. Hover first: the pointer on the strip keeps the rail lit for the click.
+    await dot(secondUserSeq).hover()
+    await expect(rail).toHaveCSS('opacity', '1')
+    await dot(secondUserSeq).click()
+    await expect(userRow(page, 1)).toBeInViewport()
+    await expect.poll(async () => {
+      const scrollerBox = await scroller.boundingBox()
+      const rowBox = await userRow(page, 1).boundingBox()
+      return scrollerBox === null || rowBox === null
+        ? Number.POSITIVE_INFINITY
+        : Math.abs(rowBox.y - scrollerBox.y - ROW_ALIGN_OFFSET_PX)
+    }, { message: 'the row lands 8px below the top of the view' }).toBeLessThanOrEqual(1)
+  })
+
+  test('caps the dot preview card at the rail height on a short viewport', async ({ page, authenticatedWorkspace, modelScript }) => {
+    await page.setViewportSize({ width: 1024, height: 400 })
+    await seedOverflowingConversation(page, modelScript)
+    const rail = page.locator(RAIL)
+    const preview = page.locator(PREVIEW)
+    const dot = page.locator(RAIL_DOT).first()
+
+    // The natural height of the card, and the height of the rail at this viewport.
+    await dot.hover()
+    await expect(preview).toContainText(RAIL_FILLER_PREVIEW)
+    const naturalPx = await preview.evaluate(el => el.scrollHeight)
+    const railPx = (await rail.boundingBox())!.height
+    await page.mouse.move(0, 0)
+    await expect(preview).toHaveCount(0)
+
+    // The message list absorbs every pixel that the viewport loses: shrink the rail to about
+    // half the card, so the card is taller than the rail.
+    await page.setViewportSize({ width: 1024, height: 400 - (railPx - Math.floor(naturalPx / 2)) })
+    await expect.poll(async () => (await rail.boundingBox())?.height ?? Number.POSITIVE_INFINITY).toBeLessThan(naturalPx)
+
+    // The card stays inside the rail and scrolls its own text, so the list wrapper, which hides
+    // its overflow, cuts off no line of it.
+    await dot.hover()
+    await expect(preview).toContainText(RAIL_FILLER_PREVIEW)
+    const railBox = (await rail.boundingBox())!
+    const card = (await preview.boundingBox())!
+    expect(card.y).toBeGreaterThanOrEqual(railBox.y - 0.5)
+    expect(card.y + card.height).toBeLessThanOrEqual(railBox.y + railBox.height + 0.5)
+    expect(await preview.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true)
   })
 })

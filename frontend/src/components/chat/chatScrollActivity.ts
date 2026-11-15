@@ -24,7 +24,7 @@ import { monotonicNow } from '~/lib/monotonicNow'
 // continuous programmatic writes from holding the window open forever.
 //
 // `now` is injected for determinism (mirroring createScrollVelocity); the idle timer is a
-// bare setTimeout, driven in tests by vitest fake timers (mirroring createFlingSettle).
+// bare setTimeout, driven in tests by vitest fake timers (mirroring createScrollRest).
 // ---------------------------------------------------------------------------
 
 export interface ScrollActivityDeps {
@@ -52,7 +52,7 @@ export interface ScrollActivity {
   /**
    * A bare `scroll` event. Opens the window ONLY within `momentumGraceMs` of the last
    * `noteInput`, so a post-flick coast keeps it open while our own programmatic writes
-   * (stick-to-bottom, anchor re-pin, seek) never do.
+   * (stick-to-bottom, rebase, seek) never do.
    */
   noteScroll: () => void
   /**

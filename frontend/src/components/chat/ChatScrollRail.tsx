@@ -1,9 +1,9 @@
 import type { DotCluster } from './chatRailPolicy'
 import type { PreparedGeometry } from './chatScrollRailGeometry'
-import type { VirtualItem } from './useChatVirtualizer'
+import type { UseChatVirtualizerResult, VirtualItem } from './useChatVirtualizer'
 import type { ChatRailData } from '~/stores/chatMessageMarks'
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
-import { createDotPreview } from './chatDotPreview'
+import { cardLaneFor, createDotPreview } from './chatDotPreview'
 import { clusterMarks, dotClustersEqual } from './chatRailPolicy'
 import { clampScrollTop } from './chatScrollGeometry'
 import * as styles from './ChatScrollRail.css'
@@ -53,12 +53,13 @@ export interface ChatScrollRailProps {
   scrollEl: HTMLDivElement | undefined
   /** Visible virtual rows in ascending sequence order. */
   items: readonly VirtualItem[]
-  /** Content-Y of the top of row `i`. */
-  offsetOfIndex: (index: number) => number
-  /** Total virtual content height (px). */
-  totalHeight: number
-  /** Bumped by the virtualizer whenever the offset map changes (measurement/prepend/trim). */
-  geometryVersion: number
+  /**
+   * The virtualizer members that place the thumb: the row offsets and the total height of the
+   * loaded rows, and the conversion of a scroll coordinate of `scrollEl` to their content
+   * coordinate. A change of `totalHeight`, `geometryVersion`, or `layoutShift` re-samples the
+   * scroll metrics (see createRailMetrics).
+   */
+  geometry: Pick<UseChatVirtualizerResult, 'offsetOfIndex' | 'totalHeight' | 'geometryVersion' | 'contentTopOf' | 'layoutShift'>
   /**
    * The rows' precomputed rowStartSeqs (null when the window holds no server row). Computed ONCE
    * by ChatView (which needs it for the scroll-owner resolution) and passed down so the O(n)
@@ -107,7 +108,11 @@ export interface ChatScrollRailProps {
    * the drag-release hold awaits that to time its thumb hand-off.
    */
   onJumpToSeq: (seq: bigint) => void | Promise<boolean>
-  /** Guard-marked programmatic scroll write for in-window thumb-drag live-scrolling. */
+  /**
+   * Place the view at the content coordinate `top` for in-window thumb-drag live-scrolling;
+   * a `top` of 0 places it at the top of the scroller. The host records the write as its
+   * own, so the `scroll` event of the write reads as no move of the reader.
+   */
   previewScrollTo: (top: number) => void
   /**
    * Abandon the host's in-flight out-of-window seek, so its late fetch can't yank the viewport
@@ -140,8 +145,7 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
   // via a passive scroll listener + ResizeObserver and re-sampled on a geometry commit.
   const metrics = createRailMetrics({
     scrollEl: () => props.scrollEl,
-    totalHeight: () => props.totalHeight,
-    geometryVersion: () => props.geometryVersion,
+    geometry: () => props.geometry,
   })
 
   // The drag-release "hold": the preview thumb fraction (null when idle) plus the state machine
@@ -163,7 +167,11 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
   // rebuilds per streaming-height commit (its offsets moved) while reusing that row-seq map
   // unchanged, so the scan stays off the streaming-commit path exactly as before.
   const prepared = createMemo<PreparedGeometry>(() => ({
-    geo: { items: props.items, offsetOfIndex: props.offsetOfIndex, totalHeight: props.totalHeight },
+    geo: {
+      items: props.items,
+      offsetOfIndex: props.geometry.offsetOfIndex,
+      totalHeight: props.geometry.totalHeight(),
+    },
     rowSeqs: props.railRowSeqs,
   }))
 
@@ -189,20 +197,15 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
     { equals: dotClustersEqual },
   )
 
-  // The dot-preview state machine (which dot the single popover describes, its placement, and when
-  // to warm its preview) extracted into its own unit alongside createRailMetrics /
-  // createDragReleaseHold / createThumbDrag, so this component owns only the wiring + render.
-  // The open card's measured height, reported by the card itself. The card's Y is clamped against
-  // it (see cardTopPx), so the clamp holds a SHORT card near its own dot instead of pushing every
-  // card half the max-height cap away from the dot it points at.
-  const [cardHeightPx, setCardHeightPx] = createSignal(0)
-
-  const { activeDot, cardTopPx, openDot, closeSoon, abandonDot, focusDot, blurDot, closeNow } = createDotPreview({
+  // The dot-preview state machine (which dot the single popover describes, and when to warm its
+  // preview) extracted into its own unit alongside createRailMetrics / createDragReleaseHold /
+  // createThumbDrag, so this component owns only the wiring + render. The card's placement is
+  // cardLaneFor, which the render below applies.
+  const { activeDot, openDot, closeSoon, abandonDot, focusDot, blurDot, closeNow } = createDotPreview({
     dots,
     drag,
     railHeight,
     thumbHeightPx: thumbHeightNow,
-    cardHeightPx,
     warmPreview: seq => props.warmPreview?.(seq),
   })
 
@@ -253,7 +256,7 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
       return null
     const m = metrics()
     return computeSeqThumb(prepared(), {
-      scrollTop: m.scrollTop,
+      contentTop: m.contentTop,
       clientHeight: m.clientHeight,
       minSeq: props.rail.minSeq,
       maxSeq: props.rail.maxSeq,
@@ -766,21 +769,36 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
             />
           )}
         </For>
-        {/* ONE preview card for the active dot (hover/focus OR scrub) -- never two. */}
+        {/* ONE preview card for the active dot (hover/focus OR scrub) -- never two. It sits in a
+            lane that the browser clamps it to, so the card needs no measured height (see
+            cardLaneFor). The lane also publishes the rail height, which caps the card's height,
+            so the clamp keeps even the tallest card inside both rail edges. */}
         <Show when={activeDot()}>
-          {d => (
-            <DotPreviewCard
-              topPx={cardTopPx()}
-              dot={d()}
-              previewFor={seq => props.previewFor?.(seq)}
-              // The card holds ITSELF open while the reader is on it, and re-declares the dot it
-              // shows -- so a card that a scrub opened stays when the scrub ends.
-              onHoldStart={() => openDot(d())}
-              onHoldEnd={closeSoon}
-              onPressChange={(down) => { cardPressed = down }}
-              onHeightChange={setCardHeightPx}
-            />
-          )}
+          {(d) => {
+            const lane = createMemo(() => cardLaneFor(d().topPx, railHeight()))
+            return (
+              <div
+                class={`${styles.previewCardLane} ${lane().edge === 'bottom'
+                  ? styles.previewCardLaneAtBottom
+                  : ''}`}
+                style={{
+                  top: `${lane().topPx}px`,
+                  height: `${lane().heightPx}px`,
+                  [styles.PREVIEW_CARD_RAIL_HEIGHT_VAR]: `${railHeight()}px`,
+                }}
+              >
+                <DotPreviewCard
+                  dot={d()}
+                  previewFor={seq => props.previewFor?.(seq)}
+                  // The card holds ITSELF open while the reader is on it, and re-declares the dot it
+                  // shows -- so a card that a scrub opened stays when the scrub ends.
+                  onHoldStart={() => openDot(d())}
+                  onHoldEnd={closeSoon}
+                  onPressChange={(down) => { cardPressed = down }}
+                />
+              </div>
+            )
+          }}
         </Show>
       </div>
     </Show>

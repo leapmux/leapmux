@@ -1,0 +1,354 @@
+import { smallestIndexWhere } from '~/lib/binarySearch'
+import { createRafCoalescer } from '~/lib/rafCoalesce'
+import { clampScrollTop } from './chatScrollGeometry'
+
+// ---------------------------------------------------------------------------
+// The pivot element of the chat list
+//
+// The layout shift (chatLayoutShift.ts) holds the content at the viewport top in
+// place. When the viewport top cuts the body of a row, the offset map alone cannot
+// say where that content went: a row can rewrap at a new width, or grow above the
+// viewport top inside itself. This module records one DOM element at the viewport
+// top, inside its row, and measures how far that element moved inside the row
+// since the record. The distance inside the row does not depend on `scrollTop`, on
+// a row transform, or on the layout shift, so a flush that moves the row on purpose
+// does not change it.
+// ---------------------------------------------------------------------------
+
+/** The deepest level below the row element that `selectPivotElement` descends to. */
+const PIVOT_MAX_DEPTH = 8
+/** Above this many children, `selectPivotElement` finds the child by a binary search. */
+const PIVOT_LINEAR_SCAN_MAX_CHILDREN = 16
+/** The most side-by-side columns that `selectPivotElement` steps across at one level. */
+const PIVOT_MAX_SIDE_BY_SIDE = 4
+/** An element counts as cut by the line only when it extends this far below it. */
+const LINE_SLACK_PX = 1
+/** The most nested wrappers with no box that `selectPivotElement` looks through at one level. */
+const PIVOT_MAX_BOXLESS_DEPTH = 4
+
+/**
+ * Select the element of `rowElement` whose position the reader sees at the line
+ * `lineY`: the first element that starts at or below the line, or, inside an element
+ * that the line cuts, the deepest such element. `lineY` and `viewportBottomY` are
+ * client coordinates.
+ *
+ * A wrapper with no box (`display: contents`) reports an empty rectangle, so the search
+ * looks through it at its children, as layout does. A wrapper ends the descent
+ * otherwise: no child of it extends below the line, and the container above it, which
+ * starts at the row top, would be the record.
+ *
+ * A wrong pick is not an error: any connected element of the row is a valid record.
+ * It only makes the measured displacement less precise.
+ */
+export function selectPivotElement(rowElement: Element, lineY: number, viewportBottomY: number): Element {
+  const rectOf = createRectReader()
+  let current = rowElement
+  for (let level = 0; level < PIVOT_MAX_DEPTH; level++) {
+    const children = boxChildren(current, rectOf)
+    let index = firstChildBelowLine(children, lineY, rectOf)
+    if (index < 0)
+      return current
+    let selected = children[index]!
+    let selectedRect = rectOf(selected)
+    // Columns side by side, such as a split diff, all start above the line. Take the last
+    // one that the line cuts.
+    for (let step = 0; step < PIVOT_MAX_SIDE_BY_SIDE; step++) {
+      const sibling = children[index + 1]
+      if (sibling === undefined)
+        break
+      const siblingRect = rectOf(sibling)
+      if (!(siblingRect.top < lineY && siblingRect.bottom > lineY + LINE_SLACK_PX))
+        break
+      index += 1
+      selected = sibling
+      selectedRect = siblingRect
+    }
+    if (selectedRect.top >= lineY)
+      return selected
+    const next = children[index + 1]
+    if (next !== undefined) {
+      const nextTop = rectOf(next).top
+      if (lineY <= nextTop && nextTop < viewportBottomY)
+        return next
+    }
+    if (selected.childElementCount === 0)
+      return selected
+    current = selected
+  }
+  return current
+}
+
+/** Returns the client rectangle of an element. */
+type RectReader = (element: Element) => DOMRect
+
+/**
+ * A RectReader for one search that reads each rectangle at most once. The search asks for
+ * some rectangles more than once, and the layout does not change while the search runs.
+ */
+function createRectReader(): RectReader {
+  const rects = new Map<Element, DOMRect>()
+  return (element) => {
+    let rect = rects.get(element)
+    if (rect === undefined) {
+      rect = element.getBoundingClientRect()
+      rects.set(element, rect)
+    }
+    return rect
+  }
+}
+
+/**
+ * The children of `element` that have a box, in document order: a child with no box and
+ * with children of its own (`display: contents`) is replaced by its own box children, at
+ * most PIVOT_MAX_BOXLESS_DEPTH wrappers deep. A long list (a code block, many paragraphs)
+ * keeps its plain children, uncopied, so the binary search reads a few rectangles, not all
+ * of them.
+ */
+function boxChildren(element: Element, rectOf: RectReader, depth = 0): ArrayLike<Element> {
+  if (element.childElementCount > PIVOT_LINEAR_SCAN_MAX_CHILDREN)
+    return element.children
+  const out: Element[] = []
+  for (const child of element.children) {
+    if (depth < PIVOT_MAX_BOXLESS_DEPTH && child.childElementCount > 0 && hasNoBox(rectOf(child))) {
+      const inner = boxChildren(child, rectOf, depth + 1)
+      for (let i = 0; i < inner.length; i++)
+        out.push(inner[i]!)
+    }
+    else {
+      out.push(child)
+    }
+  }
+  return out
+}
+
+/** Whether layout gave an element no box: an empty rectangle at the origin. */
+function hasNoBox(rect: DOMRect): boolean {
+  return rect.width === 0 && rect.height === 0 && rect.top === 0 && rect.left === 0
+}
+
+/** The index of the first child that extends below the line, or -1 when no child does. */
+function firstChildBelowLine(children: ArrayLike<Element>, lineY: number, rectOf: RectReader): number {
+  const count = children.length
+  const extendsBelow = (i: number) => rectOf(children[i]!).bottom > lineY + LINE_SLACK_PX
+  if (count > PIVOT_LINEAR_SCAN_MAX_CHILDREN)
+    return smallestIndexWhere(count, extendsBelow, -1)
+  for (let i = 0; i < count; i++) {
+    if (extendsBelow(i))
+      return i
+  }
+  return -1
+}
+
+/**
+ * The distance (px) at which an element that moved on screen with no scroll and no
+ * move of its row is worth a report. A smaller move is sub-pixel layout.
+ */
+export const CONTENT_MOVED_WARN_PX = 2
+
+/** A move of the content at the viewport top that no scroll and no layout shift caused. */
+export interface ContentMovedInfo {
+  rowId: string
+  /** How far the pivot element moved on screen, positive downward. */
+  movedPx: number
+  scrollTop: number
+}
+
+/** The row that the viewport top cuts, as `createLayoutPivot` needs it. */
+export interface PivotRow {
+  id: string
+  element: Element
+  /**
+   * The scroll-coordinate top of the row: its content top plus the shift and the inset
+   * (see chatLayoutShift).
+   */
+  top: number
+}
+
+export interface LayoutPivotDeps {
+  scrollElement: () => HTMLElement | undefined
+  /**
+   * The row whose measured body the viewport top cuts at `scrollTop`, with its mounted
+   * element, or `undefined`.
+   */
+  pivotRow: (scrollTop: number) => PivotRow | undefined
+  /** Whether the measurer would commit a new height for the row now. */
+  hasUncommittedHeight: (rowId: string) => boolean
+  /**
+   * True during a fast scroll. While it is true, a frame that sees a new raw scroll position
+   * drops the record, and a frame that sees the same raw position as the frame before
+   * records anyway (see createLayoutPivot).
+   */
+  isSuspended: () => boolean
+  /**
+   * True while the shift rule keeps the bottom of the content in place (see
+   * `LayoutShiftInput.pinBottom`). The rule then reads no record, so `scheduleRecord`
+   * requests no frame and drops the record (see createLayoutPivot).
+   */
+  pinBottom: () => boolean
+  requestFrame: (cb: () => void) => number
+  cancelFrame: (handle: number) => void
+  /** Report an element at the viewport top that moved on screen with no scroll and no layout move. */
+  onContentMoved?: (info: ContentMovedInfo) => void
+}
+
+export interface LayoutPivot {
+  /**
+   * Make a new record in the next frame. Several calls before the frame make one record.
+   * While `pinBottom()` is true, cancel the pending frame and drop the record instead.
+   */
+  scheduleRecord: () => void
+  /**
+   * How far the recorded element moved inside the row `rowId` since the last read, positive
+   * downward. The record then holds the new distance, so a second read before the DOM
+   * changes again returns 0. Returns 0 when no usable record exists for the row.
+   */
+  takeIntraRowShift: (rowId: string) => number
+  /** Cancel the pending frame and drop the record. */
+  dispose: () => void
+}
+
+interface PivotRecord {
+  rowId: string
+  rowElement: Element
+  element: Element
+  /** The distance from the top edge of the row element to the top edge of the element. */
+  inRowTop: number
+  /** The distance from the top edge of the scroll element to the top edge of the element. */
+  screenTop: number
+  /** The scroll-coordinate top of the row. */
+  rowTop: number
+  /** The `scrollTop` of the scroll element, clamped to its scroll range. */
+  scrollTop: number
+  /**
+   * The `scrollTop` of the scroll element as it read. A rubber-band overscroll moves it
+   * outside the scroll range, and the content moves on screen with it, while the clamped
+   * `scrollTop` holds.
+   */
+  rawScrollTop: number
+}
+
+/**
+ * Record the pivot element after each scroll and each layout flush, and measure its
+ * displacement inside its row on demand.
+ *
+ * The frame keeps the previous record while the row has a height change that the
+ * measurer did not commit yet. A browser runs the animation frame callbacks before it
+ * delivers a ResizeObserver notification, so without this rule a frame during a
+ * continuous resize records the new layout first, and the commit that follows reads a
+ * displacement of 0.
+ *
+ * While `isSuspended()` is true and the raw scroll position differs from the one that the
+ * frame before saw, the frame drops the record, reads no rectangle, and asks for one more
+ * frame. It still reads `clientHeight` and `scrollTop` of the scroll element, and these
+ * reads force a layout when one is pending. The suspension can outlast the scroll: the
+ * fast-scroll flag ends on a trailing debounce. So a frame that sees the same raw scroll
+ * position as the frame before -- the scroller stopped -- records anyway, and a geometry
+ * change right after a fast scroll still finds a record. The raw position counts, because
+ * a rubber-band overscroll moves it while the clamped position holds.
+ *
+ * While `pinBottom()` is true, the shift rule keeps the bottom of the content in place and
+ * reads no record, so `scheduleRecord` requests no frame: at the live tail, each frame
+ * would read many rectangles that nothing uses. It drops the record instead. The layout
+ * changes while the bottom is held, and a record from before would measure a move that the
+ * screen already showed. So the first commit after follow mode ends with no scroll finds
+ * no record, and it holds the row with an intra-row shift of 0.
+ */
+export function createLayoutPivot(deps: LayoutPivotDeps): LayoutPivot {
+  let record: PivotRecord | undefined
+  // The pending frame of the next record.
+  const recordFrame = createRafCoalescer<void>(recordNow, {
+    requestFrame: deps.requestFrame,
+    cancelFrame: deps.cancelFrame,
+  })
+  // The raw scroll position that the last frame saw, or undefined after a frame that found
+  // no visible scroll element.
+  let lastFrameTop: number | undefined
+
+  function recordNow(): void {
+    const el = deps.scrollElement()
+    if (el === undefined || el.clientHeight === 0) {
+      record = undefined
+      lastFrameTop = undefined
+      return
+    }
+    const rawTop = el.scrollTop
+    const previousFrameTop = lastFrameTop
+    lastFrameTop = rawTop
+    if (deps.isSuspended() && rawTop !== previousFrameTop) {
+      record = undefined
+      scheduleRecord()
+      return
+    }
+    const scrollTop = clampScrollTop(el, rawTop)
+    const row = deps.pivotRow(scrollTop)
+    if (row === undefined) {
+      record = undefined
+      return
+    }
+    if (deps.hasUncommittedHeight(row.id))
+      return
+    const scrollRect = el.getBoundingClientRect()
+    const lineY = scrollRect.top + el.clientTop
+    const element = selectPivotElement(row.element, lineY, lineY + el.clientHeight)
+    const elementTop = element.getBoundingClientRect().top
+    const inRowTop = elementTop - row.element.getBoundingClientRect().top
+    const screenTop = elementTop - scrollRect.top
+    if (!Number.isFinite(inRowTop) || !Number.isFinite(screenTop)) {
+      record = undefined
+      return
+    }
+    const previous = record
+    // Both scroll positions must hold: the raw one moves the content on screen, and the
+    // clamped one locates the row.
+    if (deps.onContentMoved !== undefined
+      && previous !== undefined
+      && previous.element === element
+      && previous.rowId === row.id
+      && Math.abs(previous.scrollTop - scrollTop) < 1
+      && Math.abs(previous.rawScrollTop - rawTop) < 1
+      && Math.abs(previous.rowTop - row.top) < 0.5
+      && Math.abs(screenTop - previous.screenTop) >= CONTENT_MOVED_WARN_PX) {
+      deps.onContentMoved({ rowId: row.id, movedPx: screenTop - previous.screenTop, scrollTop })
+    }
+    record = {
+      rowId: row.id,
+      rowElement: row.element,
+      element,
+      inRowTop,
+      screenTop,
+      rowTop: row.top,
+      scrollTop,
+      rawScrollTop: rawTop,
+    }
+  }
+
+  // Cancel the pending frame and drop the record. The next frame then has no frame before
+  // it to compare its raw scroll position with.
+  function dropRecord(): void {
+    recordFrame.abort()
+    record = undefined
+    lastFrameTop = undefined
+  }
+
+  function scheduleRecord(): void {
+    if (deps.pinBottom()) {
+      dropRecord()
+      return
+    }
+    recordFrame.push()
+  }
+
+  const takeIntraRowShift = (rowId: string): number => {
+    const current = record
+    if (current === undefined || current.rowId !== rowId || !current.element.isConnected || !current.rowElement.isConnected)
+      return 0
+    const inRowTop = current.element.getBoundingClientRect().top - current.rowElement.getBoundingClientRect().top
+    if (!Number.isFinite(inRowTop))
+      return 0
+    const displacement = inRowTop - current.inRowTop
+    current.inRowTop = inRowTop
+    return displacement
+  }
+
+  return { scheduleRecord, takeIntraRowShift, dispose: dropRecord }
+}

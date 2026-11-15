@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { commandCodeTest } from '../command-code-fixtures'
 import { compactionIndicator, expectCompactionNoticeAfterReload, expectNoLiveCompaction } from '../helpers/compaction'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
-import { assistantBubbles, chatScrollContainer, messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { assistantBubbles, chatDistanceFromBottom, messageContents, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { exerciseCommandCodeCompaction } from './compactionScenarios'
 
 commandCodeTest('runs the actual native summarizer and retains the completed compaction notice', async ({ native }) => {
@@ -18,8 +18,7 @@ commandCodeTest('keeps the answer visible after a large preparation message clea
   const history = Array.from({ length: 60 }, (_, index) => `Native preparation line ${index}.`).join('\n\n')
   await sendNativeAnswer(native, 'Prepare enough native history to scroll.', history)
   await sendNativeAnswer(native, `Recent native task ${'padding '.repeat(18000)}`, 'The large preparation turn completed.', { entry: 'insert' })
-  await expect.poll(() => chatScrollContainer(native.page).evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight))
-    .toBeLessThanOrEqual(1)
+  await expect.poll(() => chatDistanceFromBottom(native.page)).toBeLessThanOrEqual(1)
 })
 
 commandCodeTest('ends an automatic compaction that has too little history to summarize', async ({ native }) => {

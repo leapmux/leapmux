@@ -6,6 +6,7 @@ import { createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import { popoverCardPadding } from '~/styles/popover.css'
+import { settle } from '~/test-support/async'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { POINTER_CLOSE_DELAY_MS, SCRUB_WARM_DEBOUNCE_MS } from './chatDotPreview'
 import { resolveScrollbarOwner } from './chatRailPolicy'
@@ -19,9 +20,6 @@ import { rowStartSeqs } from './chatScrollRailGeometry'
 // are meaningful. Restored after each test.
 const VIEWPORT_H = 400
 let clientHeightSpy: PropertyDescriptor | undefined
-
-/** Flush pending microtasks (a macrotask runs after every queued microtask). */
-const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 
 /** Run drag pointermove frames synchronously; jsdom has no real frame clock. */
 function installImmediateRaf() {
@@ -76,6 +74,21 @@ function makeScrollEl(scrollTop = 0, scrollHeight = 500): HTMLDivElement {
   return el
 }
 
+/**
+ * The rail's geometry over five rows of 100px (a total height of 500px) with no layout shift, with
+ * the members of `overrides` in place of the defaults.
+ */
+function railGeometry(overrides: Partial<ChatScrollRailProps['geometry']> = {}): ChatScrollRailProps['geometry'] {
+  return {
+    offsetOfIndex: i => i * 100,
+    totalHeight: () => 500,
+    geometryVersion: () => 0,
+    contentTopOf: scrollTop => scrollTop,
+    layoutShift: () => 0,
+    ...overrides,
+  }
+}
+
 // Accepts flat rail-field overrides (loaded/minSeq/maxSeq/marks/window*) for test convenience and
 // assembles them into the single `rail: ChatRailData` prop, so existing `baseProps({ minSeq, maxSeq,
 // marks })` call sites keep working after the prop shape moved to a ChatRailData object.
@@ -95,7 +108,7 @@ function baseProps(overrides: BasePropsOverrides = {}): ChatScrollRailProps {
     windowFirstSeq: windowFirstSeq ?? 1n,
     windowLastSeq: windowLastSeq ?? 5n,
   }
-  const totalHeight = rest.totalHeight ?? 500
+  const geometry = rest.geometry ?? railGeometry()
   // `hidden` is now resolved by the host (ChatView), not the rail. Default it here the same way
   // ChatView does -- one resolveScrollbarOwner call off the flat fields (VIEWPORT_H is the
   // content-box height the clientHeight spy reports) -- so the pre-existing render/hide tests keep
@@ -107,15 +120,13 @@ function baseProps(overrides: BasePropsOverrides = {}): ChatScrollRailProps {
     range: { minSeq: rail.minSeq, maxSeq: rail.maxSeq },
     hasMoreOlder: rest.hasMoreOlder ?? false,
     hasMoreNewer: rest.hasMoreNewer ?? false,
-    totalHeight,
+    totalHeight: geometry.totalHeight(),
     viewportHeight: VIEWPORT_H,
   }) !== 'rail'
   return {
     scrollEl: makeScrollEl(),
     items,
-    offsetOfIndex: i => i * 100, // totalHeight 500, 5 rows of 100px
-    totalHeight: 500,
-    geometryVersion: 0,
+    geometry,
     railRowSeqs: rowStartSeqs(items), // ChatView computes this once and passes it down (see F2)
     rail,
     hidden: hidden ?? resolvedHidden,
@@ -300,7 +311,7 @@ describe('ChatScrollRail', () => {
 
     dot.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
     expect(onJumpToSeq).toHaveBeenCalledWith(2n)
-    await tick()
+    await settle()
     expect(then).toHaveBeenCalledTimes(1)
     // The call always exists at this point; `?.` is the type-level guard alone.
     expect(typeof then.mock.calls[0]?.[1]).toBe('function') // the onRejected half
@@ -407,6 +418,61 @@ describe('ChatScrollRail', () => {
     // The seq-space visible span affects top projection, but rendered thumb height is fixed.
     expect(thumb.style.height).toBe('24px')
     expect(thumb.style.top).toBe('0px')
+  })
+
+  it('places the thumb from the content position when the layout is shifted', () => {
+    // Five rows of 400px. A shift of -300 puts content 800 at scroll coordinate 500, and the
+    // spacer is 300px shorter, so both views show the same content with the same distance
+    // from the bottom.
+    const tallRows = {
+      offsetOfIndex: (i: number) => i * 400,
+      totalHeight: () => 2000,
+    }
+    const thumbTop = (props: ChatScrollRailProps) => {
+      const { container, unmount } = render(() => <ChatScrollRail {...props} />)
+      const top = (container.querySelector('[data-testid="chat-scroll-rail-thumb"]') as HTMLElement).style.top
+      unmount()
+      return top
+    }
+    const shifted = thumbTop(baseProps({
+      geometry: railGeometry({
+        ...tallRows,
+        contentTopOf: scrollTop => scrollTop + 300,
+        layoutShift: () => -300,
+      }),
+      scrollEl: makeScrollEl(500, 1700),
+    }))
+    const unshifted = thumbTop(baseProps({
+      geometry: railGeometry(tallRows),
+      scrollEl: makeScrollEl(800, 2000),
+    }))
+    expect(shifted).toBe(unshifted)
+    expect(shifted).not.toBe('0px')
+  })
+
+  it('moves the thumb when the total height changes without a scroll event', () => {
+    // The reader sits 50px into the last of five rows, and the row grows from 100px to 500px,
+    // as a streaming answer does. No scroll event fires. Rows 0 to 3 keep their offsets, so
+    // only the new total height places the same position earlier in the row.
+    const [totalHeight, setTotalHeight] = createSignal(500)
+    // Built once, outside the render: baseProps reads the total height to resolve `hidden`, so
+    // a call inside the JSX would subscribe every prop read to it.
+    const props = baseProps({
+      geometry: railGeometry({ totalHeight }),
+      scrollEl: makeScrollEl(450, 900),
+    })
+    const { container } = render(() => <ChatScrollRail {...props} />)
+    const thumbTop = () => Number.parseFloat((container.querySelector('[data-testid="chat-scroll-rail-thumb"]') as HTMLElement).style.top)
+    // The view covers seqs 5.5 to 6 of 1 to 5, so the thumb rests at the end of its travel.
+    const travel = VIEWPORT_H - 24
+    expect(thumbTop()).toBe(travel)
+
+    setTotalHeight(900)
+
+    // Content 450 is now 10% into the 500px row, and content 850 is 90% into it: seqs 5.1 to
+    // 5.9. The thumb projects topFraction 0.82 over the 0.84 of the range that it can travel.
+    // The style keeps three decimals of the pixel value.
+    expect(thumbTop()).toBeCloseTo(travel * 0.82 / 0.84, 2)
   })
 
   it('consumes the railRowSeqs prop rather than recomputing it (no thumb when it is null)', () => {
@@ -610,11 +676,11 @@ describe('ChatScrollRail', () => {
     expect(onJumpToSeq).toHaveBeenCalledTimes(1) // the release added no second seek
     // The pin SURVIVES the settle a resolved seek clears on: it still waits for the
     // press's fetch, not clearing itself the moment the pointer lifted.
-    await tick()
+    await settle()
     expect(thumb.className).toContain(styles.thumbDragging)
     // The press's own seek resolves, so the pin hands off rather than sticking forever.
     landSeek(false)
-    await tick()
+    await settle()
     expect(thumb.className).not.toContain(styles.thumbDragging)
     expect(onJumpToSeq).toHaveBeenCalledTimes(1)
   })
@@ -639,7 +705,7 @@ describe('ChatScrollRail', () => {
     rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 200, pointerId: 1 }))
     const thumb = container.querySelector('[data-testid="chat-scroll-rail-thumb"]') as HTMLElement
     expect(thumb.className).toContain(styles.thumbDragging)
-    await tick()
+    await settle()
     // The seek resolved, but the hand-off waits for the frame -- unlike a seek that scrolled
     // NOWHERE, which clears on the spot (covered by its own test below).
     expect(thumb.className).toContain(styles.thumbDragging)
@@ -663,7 +729,7 @@ describe('ChatScrollRail', () => {
     rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 360, pointerId: 1 }))
     const thumb = container.querySelector('[data-testid="chat-scroll-rail-thumb"]') as HTMLElement
     expect(thumb.className).toContain(styles.thumbDragging)
-    await tick()
+    await settle()
     expect(thumb.className).not.toContain(styles.thumbDragging)
   })
 
@@ -673,9 +739,8 @@ describe('ChatScrollRail', () => {
     // console error mid-scrub (and fails this suite outright), and the scrub must carry on.
     HTMLElement.prototype.setPointerCapture = vi.fn()
     vi.useFakeTimers()
-    // A DEFERRED rAF (drained by flushRaf), not installImmediateRaf: this test dispatches two
-    // moves, and a synchronous rAF leaves the coalescer's rafId set from its own return value,
-    // which swallows the second push. See the fast-scrub coalescing test below.
+    // A DEFERRED rAF (drained by flushRaf), not installImmediateRaf: each move applies in the
+    // frame that the test runs after it, as in the fast-scrub coalescing test below.
     const rafQueue: FrameRequestCallback[] = []
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => rafQueue.push(cb))
     vi.stubGlobal('cancelAnimationFrame', vi.fn())
@@ -894,8 +959,8 @@ describe('ChatScrollRail', () => {
           onJumpToSeq,
           hasMoreOlder: true,
           hasMoreNewer: true,
+          geometry: railGeometry({ geometryVersion }),
         })}
-        geometryVersion={geometryVersion()}
       />
     ))
     const rail = railWithRect(container)
@@ -915,7 +980,7 @@ describe('ChatScrollRail', () => {
     // The seek finally resolves (here scrolled=false: the landing had nowhere to scroll), so the
     // hold clears on the seek's own resolution and the thumb hands off rather than staying stuck.
     landSeek(false)
-    await tick()
+    await settle()
     expect(thumb.className).not.toContain(styles.thumbDragging)
   })
 
@@ -1025,9 +1090,8 @@ describe('ChatScrollRail', () => {
     HTMLElement.prototype.setPointerCapture = vi.fn()
     vi.useFakeTimers()
     // A DEFERRED rAF (drained by flushRaf) rather than the synchronous installImmediateRaf: the
-    // coalescer resets its rafId inside its dispatch, so back-to-back moves in one synchronous run
-    // need a real frame boundary between them for BOTH to apply (a synchronous rAF leaves rafId
-    // set from its own return value, swallowing the second push).
+    // test runs one frame after each move, so each move applies in a frame of its own, as two
+    // moves in a browser do when a frame passes between them.
     const rafQueue: FrameRequestCallback[] = []
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => rafQueue.push(cb))
     vi.stubGlobal('cancelAnimationFrame', vi.fn())
@@ -1134,8 +1198,10 @@ describe('ChatScrollRail', () => {
       <ChatScrollRail
         {...baseProps({
           items,
-          offsetOfIndex: i => i * 100,
-          totalHeight: 200, // < clientHeight (400): no scroll
+          geometry: railGeometry({
+            offsetOfIndex: i => i * 100,
+            totalHeight: () => 200, // < clientHeight (400): no scroll
+          }),
           scrollEl: makeScrollEl(0, 400),
           minSeq: 1n,
           maxSeq: 2n,
@@ -1161,8 +1227,10 @@ describe('ChatScrollRail', () => {
       <ChatScrollRail
         {...baseProps({
           items,
-          offsetOfIndex: i => i * 20, // row0 [0,20], row1 [20,2020]
-          totalHeight: 2020, // >> clientHeight (400): overflows in pixels
+          geometry: railGeometry({
+            offsetOfIndex: i => i * 20, // row0 [0,20], row1 [20,2020]
+            totalHeight: () => 2020, // >> clientHeight (400): overflows in pixels
+          }),
           scrollEl: makeScrollEl(0, 2020),
           minSeq: 1n,
           maxSeq: 1000n,
@@ -1186,8 +1254,10 @@ describe('ChatScrollRail', () => {
       <ChatScrollRail
         {...baseProps({
           items,
-          offsetOfIndex: i => i * 40,
-          totalHeight: 200, // < clientHeight (400): the loaded window fits in pixels
+          geometry: railGeometry({
+            offsetOfIndex: i => i * 40,
+            totalHeight: () => 200, // < clientHeight (400): the loaded window fits in pixels
+          }),
           scrollEl: makeScrollEl(0, 400),
           minSeq: 1n, // whole-history floor is far below the loaded window
           maxSeq: 14n,
@@ -1219,22 +1289,97 @@ describe('ChatScrollRail dot preview card', () => {
     expect(styles.previewCard.split(' ')).toContain(popoverCardPadding)
   })
 
-  it('places the card on the Y the controller resolved for its dot', () => {
-    // The clamp that keeps a near-edge card off the overflow-hidden wrapper reads the card's
-    // MEASURED height, and jsdom implements neither layout nor ResizeObserver -- so here the card
-    // reports height 0 and the clamp correctly resolves to the dot's own Y. What this pins is the
-    // WIRING: the rail hands cardTopPx to the card and the card writes it. The clamp's own
-    // arithmetic, which needs a height to be worth asserting, is unit-tested against injected
-    // heights in chatDotPreview.test.ts.
+  it('places the card in the lane of its dot, at the rail edge that the dot is near', () => {
+    // jsdom computes no layout, so this pins the WIRING: the rail renders the lane of the active
+    // dot around the card, and the card itself carries no position. The lane arithmetic, and
+    // where the browser puts a card of a given height in its lane, are unit-tested in
+    // chatDotPreview.test.ts.
     const marks = [
       { seq: 1n, type: MarkType.USER_MESSAGE },
+      { seq: 100_000n, type: MarkType.USER_MESSAGE },
     ]
     const { container } = render(() => <ChatScrollRail {...baseProps({ minSeq: 1n, maxSeq: 100_000n, marks })} />)
-    const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
-    expect(dot.style.top).toBe('12px') // with the fixed 24px thumb, the seq-1 dot sits at ~12px
-    fireEvent.pointerEnter(dot)
+    const [first, last] = [
+      ...container.querySelectorAll<HTMLElement>('[data-testid="chat-scroll-rail-dot"]'),
+    ]
+    // With the fixed 24px thumb on the 400px rail, the dots sit 12px in from each rail end.
+    expect(first!.style.top).toBe('12px')
+    expect(last!.style.top).toBe('388px')
+    const card = () => container.querySelector('[data-testid="chat-scroll-rail-preview"]') as HTMLElement
+    const lane = () => card().parentElement as HTMLElement
+
+    fireEvent.pointerEnter(first!)
+    expect(lane().classList).toContain(styles.previewCardLane)
+    expect(lane().classList).not.toContain(styles.previewCardLaneAtBottom)
+    expect(lane().style.top).toBe('0px')
+    expect(lane().style.height).toBe('24px')
+    expect(card().style.top).toBe('')
+
+    fireEvent.pointerEnter(last!)
+    expect(lane().classList).toContain(styles.previewCardLaneAtBottom)
+    expect(lane().style.top).toBe('376px')
+    expect(lane().style.height).toBe('24px')
+  })
+
+  it('caps the preview card at the rail height through its lane', () => {
+    // The lane is shorter than the rail, so only the rail height keeps a tall card inside both
+    // rail edges. jsdom applies no stylesheet, so this pins the WIRING: the lane publishes the
+    // rail height (VIEWPORT_H here) as the custom property that the card's max-height reads.
+    const { container } = render(() => <ChatScrollRail {...baseProps()} />)
+    const card = hoverFirstDot(container)!
+    const lane = card.parentElement as HTMLElement
+    expect(lane.classList).toContain(styles.previewCardLane)
+    expect(lane.style.getPropertyValue(styles.PREVIEW_CARD_RAIL_HEIGHT_VAR)).toBe(`${VIEWPORT_H}px`)
+  })
+
+  it('moves the lane and the height cap of an open card with the rail when the rail resizes', async () => {
+    // The rail resizes with the chat pane while a card is open. The lane and the cap both
+    // follow the new rail height, so the card stays inside the rail that it is drawn on.
+    const observed: { target: Element, callback: () => void }[] = []
+    class RailResizeObserver {
+      callback: () => void
+      constructor(callback: () => void) {
+        this.callback = callback
+      }
+
+      observe(target: Element) {
+        observed.push({ target, callback: this.callback })
+      }
+
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', RailResizeObserver)
+    const { container } = render(() => <ChatScrollRail {...baseProps()} />)
+    const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
+    const lastDot = () => [
+      ...container.querySelectorAll<HTMLElement>('[data-testid="chat-scroll-rail-dot"]'),
+    ].at(-1)!
+    fireEvent.pointerEnter(lastDot())
     const card = container.querySelector('[data-testid="chat-scroll-rail-preview"]') as HTMLElement
-    expect(card.style.top).toBe('12px')
+    const lane = card.parentElement as HTMLElement
+    // The 275px dot of seq 4 on the 400px rail: the lane reaches 125px to each side of it.
+    expect(lane.style.top).toBe('150px')
+    expect(lane.style.height).toBe('250px')
+
+    Object.defineProperty(rail, 'clientHeight', {
+      configurable: true,
+      get: () => 300,
+    })
+    for (const { target, callback } of observed) {
+      if (target === rail)
+        callback()
+    }
+    await settle()
+
+    // On the 300px rail, the dot of seq 4 sits at 205px: 12 + 0.7 * (300 - 24), rounded. Its
+    // lane reaches the 95px to the new rail bottom.
+    expect(lastDot().style.top).toBe('205px')
+    expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toBe(card)
+    expect(lane.classList).toContain(styles.previewCardLaneAtBottom)
+    expect(lane.style.top).toBe('110px')
+    expect(lane.style.height).toBe('190px')
+    expect(lane.style.getPropertyValue(styles.PREVIEW_CARD_RAIL_HEIGHT_VAR)).toBe('300px')
   })
 
   it('opens the card immediately on hover and renders the resolved preview as markdown', async () => {
@@ -1619,7 +1764,7 @@ describe('ChatScrollRail dot preview card', () => {
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toHaveTextContent('message four')
   })
 
-  it('moves the SAME card element to the new dot\'s Y, and sends its scroll back to the top', async () => {
+  it('moves the SAME card element to the new dot\'s lane, and sends its scroll back to the top', async () => {
     const previewFor = (seq: bigint) => (seq === 2n
       ? 'message two'
       : seq === 4n
@@ -1633,7 +1778,10 @@ describe('ChatScrollRail dot preview card', () => {
       throw new Error('expected both dots to mount')
     fireEvent.pointerEnter(firstDot)
     const card = container.querySelector('[data-testid="chat-scroll-rail-preview"]') as HTMLElement
-    expect(card.style.top).toBe('125px')
+    const lane = card.parentElement as HTMLElement
+    // The 125px dot is nearer the rail top, so its lane runs from the top to 250px.
+    expect(lane.style.top).toBe('0px')
+    expect(lane.style.height).toBe('250px')
     card.scrollTop = 150 // the reader scrolled deep into this dot's preview
 
     fireEvent.pointerLeave(firstDot)
@@ -1641,11 +1789,15 @@ describe('ChatScrollRail dot preview card', () => {
     await settleWorkerReplies()
 
     // <Show> is not keyed, so the same element carries the next dot. Both of these would pass
-    // silently if the card froze its props at creation: the card would sit at the first dot's Y,
-    // still scrolled into the first dot's text, describing the second dot's message.
+    // silently if the card froze its props at creation: the card would sit in the first dot's
+    // lane, still scrolled into the first dot's text, describing the second dot's message.
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toBe(card)
     expect(card).toHaveTextContent('message four')
-    expect(card.style.top).toBe('275px')
+    // The 275px dot is nearer the rail bottom, so its lane runs from 150px to the bottom.
+    expect(card.parentElement).toBe(lane)
+    expect(lane.style.top).toBe('150px')
+    expect(lane.style.height).toBe('250px')
+    expect(lane.classList).toContain(styles.previewCardLaneAtBottom)
     expect(card.scrollTop).toBe(0)
   })
 
@@ -1671,7 +1823,7 @@ describe('ChatScrollRail dot preview card', () => {
     setMarks([
       { seq: 2n, type: MarkType.CONTROL_RESPONSE },
     ])
-    await tick()
+    await settle()
 
     // Resetting here would yank the card out from under a reader who is mid-read, once per
     // persisted row of a streaming turn. The reset keys on the SEQ for exactly this reason.
@@ -1862,7 +2014,7 @@ describe('ChatScrollRail dot preview card', () => {
     setMarks([
       { seq: 4n, type: MarkType.USER_MESSAGE },
     ])
-    await tick()
+    await settle()
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toBeNull()
 
     fireEvent.pointerEnter(container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement)
@@ -2030,7 +2182,7 @@ describe('ChatScrollRail dot preview card', () => {
       expect(rail.className).not.toContain(styles.railIdle)
 
       landSeek(false)
-      await tick()
+      await settle()
       expect(rail.className).toContain(styles.railIdle)
     })
 
@@ -2099,7 +2251,7 @@ describe('ChatScrollRail dot preview card', () => {
       rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 200, pointerId: 1 }))
       // The re-arm keys on the rail releasing ITSELF, not on the pointer lifting: the release
       // hold outlives the pointer, and it is one of the states that outrank the host's window.
-      await tick()
+      await settle()
       expect(onActivity).toHaveBeenCalledTimes(1)
     })
 
@@ -2123,12 +2275,12 @@ describe('ChatScrollRail dot preview card', () => {
       rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, clientY: 200, pointerId: 1 }))
       onActivity.mockClear()
       rail.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, clientY: 200, pointerId: 1 }))
-      await tick()
+      await settle()
       // Still fetching: the rail holds itself lit, so a window opened now would only burn down.
       expect(onActivity).not.toHaveBeenCalled()
 
       landSeek(false) // resolved with no landing scroll -> the hold clears at once
-      await tick()
+      await settle()
       expect(onActivity).toHaveBeenCalledTimes(1)
     })
 

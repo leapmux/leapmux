@@ -1,7 +1,6 @@
 import type { DotCluster } from './chatRailPolicy'
-import { createEffect, createMemo, on, onCleanup, onMount, Show } from 'solid-js'
+import { createEffect, createMemo, on, onCleanup, Show } from 'solid-js'
 import { MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
-import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { hasScrollRoom } from './chatScrollGeometry'
 import * as styles from './ChatScrollRail.css'
 import { MarkdownText } from './MarkdownText'
@@ -49,8 +48,6 @@ export function dotLabel(cluster: DotCluster): string {
 export const DOT_PREVIEW_CARD_ID = 'chat-scroll-rail-preview-card'
 
 export interface DotPreviewCardProps {
-  /** The card's rail-Y, already clamped by the rail so a near-edge card is not clipped. */
-  topPx: number
   /**
    * The dot the card describes. Passed WHOLE rather than re-flattened into a mark type and a
    * count, so the card cannot be handed a type and a count that belong to different dots, and so
@@ -76,13 +73,6 @@ export interface DotPreviewCardProps {
    * card, because re-rendering the body under a live selection collapses it.
    */
   onPressChange: (down: boolean) => void
-  /**
-   * The card's rendered height (px), reported on mount and whenever it changes. The rail clamps
-   * the card's Y against this, so it must be the real height and not the max-height cap -- and it
-   * must keep coming, because the preview arrives after a fetch and the markdown reflows when it
-   * lands.
-   */
-  onHeightChange: (px: number) => void
 }
 
 /**
@@ -143,10 +133,6 @@ export function DotPreviewCard(props: DotPreviewCardProps) {
   onCleanup(() => {
     dropPressListeners()
     dropSelectionListener()
-    // The measured height belongs to THIS card. Retract it, or the next card's very first frame is
-    // clamped against a height it does not have. A dot-to-dot swap keeps the same element and
-    // never reaches here, so its observer reports the new height instead.
-    props.onHeightChange(0)
   })
 
   /**
@@ -261,28 +247,12 @@ export function DotPreviewCard(props: DotPreviewCardProps) {
       cardEl.scrollTop = 0
   }, { defer: true }))
 
-  // Report the card's real height so the rail can centre it on its dot without clipping. An
-  // observer rather than a one-shot measure: the preview arrives from a fetch after the card
-  // opens, and the markdown reflows the card when it lands. The rAF-batched wrapper is the house
-  // one -- a raw ResizeObserver callback that drives a reactive write can resize another observed
-  // element inside the same delivery, which is the "undelivered notifications" loop.
-  onMount(() => {
-    const el = cardEl
-    if (!el)
-      return
-    props.onHeightChange(el.offsetHeight)
-    const observer = createRafResizeObserver(() => props.onHeightChange(el.offsetHeight))
-    observer?.observe(el)
-    onCleanup(() => observer?.disconnect())
-  })
-
   return (
     <div
       ref={cardEl}
       id={DOT_PREVIEW_CARD_ID}
       class={styles.previewCard}
       data-testid="chat-scroll-rail-preview"
-      style={{ top: `${props.topPx}px` }}
       onPointerEnter={() => {
         hovered = true
         props.onHoldStart()

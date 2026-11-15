@@ -12,9 +12,9 @@ import { centerAxisY } from './chatScrollRailGeometry'
 //
 // The rail's "which dot the single card describes + when to open and close it + when to warm its
 // preview" state machine: a scrub target (the dot the dragging thumb is over) takes precedence
-// over a pointer or a keyboard focus, the card is placed on the dot's centre-axis Y (clamped off
-// the rail edges), and the preview is warmed instantly on hover/focus but DEBOUNCED during a
-// scrub -- so dragging across a dense rail doesn't fire a GetAgentMessage per fly-over dot.
+// over a pointer or a keyboard focus, and the preview is warmed instantly on hover/focus but
+// DEBOUNCED during a scrub -- so dragging across a dense rail doesn't fire a GetAgentMessage per
+// fly-over dot. The card's placement on the rail is the pure cardLaneFor below.
 // Opening is always immediate; the POINTER channel closes after a short delay (see
 // POINTER_CLOSE_DELAY_MS), because the card is a place the reader goes rather than only a label.
 // Extracted from ChatScrollRail (where it was a signal, three memos, an effect, and a debounce
@@ -60,24 +60,59 @@ export const POINTER_CLOSE_DELAY_MS = 300
  */
 export const SCRUB_WARM_DEBOUNCE_MS = 120
 
+/**
+ * The stretch of the rail that holds the preview card. It is centred on the dot and reaches the
+ * nearer rail edge, so its height is twice the distance from the dot to that edge.
+ *
+ * The rail renders the lane as a flex column, and the card centres itself in it with auto
+ * margins. A card that fits the lane is therefore centred on its dot. A card taller than the lane
+ * gets no free space to share, so it keeps its own edge on the rail edge that the lane touches and
+ * grows toward the far rail edge. That is a clamp to the rail, and the browser computes it in the
+ * same layout that sets the card's height. The card's max-height never exceeds the rail height
+ * (see PREVIEW_CARD_RAIL_HEIGHT_VAR in `./ChatScrollRail.css.ts`), so the card always ends at or
+ * before the far rail edge.
+ *
+ * The clamp must not read a height that the card measures and reports. Such a report arrives a
+ * frame after the layout that changed the height, so for that frame a card near a rail edge is
+ * clamped for its old height: it paints clipped, and then it jumps.
+ */
+export interface CardLane {
+  /** The top edge of the lane (rail px). */
+  topPx: number
+  /** The height of the lane (px). */
+  heightPx: number
+  /** The rail edge that the lane touches. A card taller than the lane keeps its own edge on it. */
+  edge: 'top' | 'bottom'
+}
+
+/**
+ * The lane of the preview card for a dot at `dotTopPx` on a rail that is `railHeightPx` tall (see
+ * {@link CardLane}). The browser then puts the top edge of a card that is `h` px tall, and no
+ * taller than the rail, at `clamp(dotTopPx - h / 2, 0, railHeightPx - h)`: centred on its dot, and
+ * moved in from each rail edge that it would cross.
+ */
+export function cardLaneFor(dotTopPx: number, railHeightPx: number): CardLane {
+  const railPx = Math.max(railHeightPx, 0)
+  const centerPx = clamp(dotTopPx, 0, railPx)
+  const reachPx = Math.min(centerPx, railPx - centerPx)
+  return {
+    topPx: centerPx - reachPx,
+    heightPx: 2 * reachPx,
+    edge: centerPx <= railPx / 2
+      ? 'top'
+      : 'bottom',
+  }
+}
+
 export interface DotPreviewDeps {
   /** The rail's current dot clusters (ascending by topPx). */
   dots: Accessor<DotCluster[]>
   /** The live drag fraction (null when not dragging), so a scrub can take card precedence. */
   drag: Accessor<number | null>
-  /** The rail's pixel height, for the centre-axis mapping and the card clamp. */
+  /** The rail's pixel height, for the centre-axis mapping of a scrub. */
   railHeight: Accessor<number>
   /** The current thumb height (px), for mapping a drag fraction to the thumb-centre rail-Y. */
   thumbHeightPx: Accessor<number>
-  /**
-   * The open card's MEASURED height (px), or 0 before the first measurement.
-   *
-   * The clamp reads this rather than PREVIEW_CARD_MAX_H_PX, because that constant is the CAP and
-   * not the height. A one-line card clamped against half the cap lands up to ~90px from the dot it
-   * points at, and on a rail shorter than twice the cap the clamp interval collapses to a single
-   * point, so EVERY card sits at the rail's midpoint whatever dot it describes.
-   */
-  cardHeightPx: Accessor<number>
   /** Kick off resolving a mark's preview (dot hover/focus or scrub-settle). Deduped upstream. */
   warmPreview?: (seq: bigint) => void
 }
@@ -88,8 +123,6 @@ export interface DotPreviewDeps {
 export interface DotPreviewController {
   /** The dot the single preview card describes: the scrub target while dragging, else hover/focus. */
   activeDot: Accessor<DotCluster | null>
-  /** The card's rail-Y, clamped so a dot near the top/bottom doesn't clip past the wrapper. */
-  cardTopPx: Accessor<number>
   /**
    * The POINTER reached a dot, or reached the open card: show that dot's card NOW, and cancel a
    * pending close. The card re-declares the dot it shows, so a card that a scrub opened stays
@@ -232,24 +265,6 @@ export function createDotPreview(deps: DotPreviewDeps): DotPreviewController {
     reanchor(untrack(focusedDot), currentDots, setFocusedDot)
   })
 
-  // The card's rail-Y: centred on the active dot but clamped so a dot near the rail's top
-  // or bottom doesn't push the card past the overflow-hidden wrapper and clip it.
-  //
-  // Clamped against the card's MEASURED half-height, not against half the max-height cap. The cap
-  // is what the card may grow to, and most previews are far shorter: clamping a one-line card as
-  // though it were 200px tall pushed it up to ~90px away from the dot it describes, and on a rail
-  // shorter than twice the cap it left no interval at all, so every card was pinned to the rail
-  // midpoint. Before the first measurement the height is 0, which clamps to nothing and puts the
-  // card exactly on its dot -- the right answer for one frame, and better than a fixed offset.
-  const cardTopPx = createMemo(() => {
-    const d = activeDot()
-    if (!d)
-      return 0
-    const rh = deps.railHeight()
-    const half = Math.min(deps.cardHeightPx() / 2, rh / 2)
-    return clamp(d.topPx, half, rh - half)
-  })
-
   // Warm the active dot's preview so the card fills in. A HOVER/focus warms instantly; a SCRUB
   // (thumb drag) debounces -- dragging across a dense rail changes activeDot dot-by-dot, and
   // warming each would fire a GetAgentMessage RPC per out-of-window mark it crosses. The effect
@@ -284,7 +299,6 @@ export function createDotPreview(deps: DotPreviewDeps): DotPreviewController {
 
   return {
     activeDot,
-    cardTopPx,
     openDot,
     closeSoon,
     abandonDot,

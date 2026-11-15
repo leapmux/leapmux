@@ -4,6 +4,7 @@ import type { MarkdownRenderContext } from './renderContext'
 import type { TokenGate } from './useAsyncCodeTokens'
 import type { CachedToken } from '~/lib/tokenCache'
 import { createMemo, For, Show } from 'solid-js'
+import { isDisplayHeld } from './renderContext'
 import { canHighlightBySize } from './results/collapse'
 import { useAsyncCodeTokens } from './useAsyncCodeTokens'
 
@@ -11,7 +12,7 @@ import { useAsyncCodeTokens } from './useAsyncCodeTokens'
 function tokenGateFromContext(context: MarkdownRenderContext | undefined): TokenGate {
   return {
     premeasure: context?.premeasureMode === true,
-    hold: context?.syntaxHighlightingPaused?.() === true || context?.textSelectionActive?.() === true,
+    hold: isDisplayHeld(context),
   }
 }
 

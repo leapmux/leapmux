@@ -28,6 +28,8 @@ function harness(opts: {
   bufferTargetPx?: number
   scrollTop?: number
   distBottom?: number
+  /** The content above the viewport top. Default: `scrollTop`, as with no layout shift. */
+  viewportContentTop?: number
 } = {}) {
   const olderGrowsBy = opts.olderGrowsBy ?? 0
   const newerGrowsBy = opts.newerGrowsBy ?? 0
@@ -64,6 +66,7 @@ function harness(opts: {
     Object.assign(
       createScrollBufferFiller({
         getEl,
+        viewportContentTop: () => opts.viewportContentTop ?? scrollTop,
         messages: () => [] as AgentChatMessage[],
         bufferTargetPx: () => bufferTargetPx,
         hasOlder: () => hasOlder,
@@ -173,6 +176,31 @@ describe('chatScrollBufferFiller', () => {
     // Older is probed once or twice, then excluded as stuck; newer carries the rest.
     expect(olderLoads).toBeLessThanOrEqual(2)
     expect(newerLoads).toBeGreaterThan(30)
+  })
+
+  it('counts a gain of less than a pixel as no progress', () => {
+    // An all-hidden older page adds no row, but the measure of the content above can still
+    // differ by a fraction of a pixel: a row re-measures, or a content top is converted to
+    // the scroll coordinates and back under a fractional layout shift. That is no new
+    // content, so the older side goes stuck and the newer side carries the fill.
+    const h = harness({ olderGrowsBy: 0.25, newerGrowsBy: 50 })
+    h.enable()
+    for (let i = 0; i < 40; i++)
+      h.filler.fill()
+
+    const { olderLoads, newerLoads } = h.counts()
+    expect(olderLoads).toBeLessThanOrEqual(2)
+    expect(newerLoads).toBeGreaterThan(30)
+  })
+
+  it('counts a gain of one pixel as progress', () => {
+    // The older side never goes stuck, so the last scroll direction keeps it first.
+    const h = harness({ olderGrowsBy: 1, newerGrowsBy: 50 })
+    h.enable()
+    for (let i = 0; i < 40; i++)
+      h.filler.fill()
+
+    expect(h.counts()).toEqual({ olderLoads: 40, newerLoads: 0 })
   })
 
   it('counts a productive older load as progress even while the user scrolls UP mid-fetch', () => {
@@ -326,15 +354,21 @@ describe('chatScrollBufferFiller', () => {
     expect(h.counts().olderLoads).toBe(0)
   })
 
-  it('a post-restore SUPPRESSED older side at the ceiling does not fetch', () => {
-    // suppressOlder (armed by a near-top restore) gates the older PRE-FETCH.
+  it('does not fetch for a suppressed older side below the ceiling', () => {
+    // At the ceiling on the live tail, the ceiling gate alone blocks the older side (see
+    // "at the ceiling on the live tail, an older deficit does not fetch"), so that input
+    // cannot show the suppression. Below the ceiling, only the suppression blocks it.
     const h = harness({ olderGrowsBy: 0, newerGrowsBy: 0 })
     h.enable()
     h.setHas(true, false)
-    h.setCeiling(true)
     h.setSuppressOlder(true)
     h.filler.fill()
     expect(h.counts().olderLoads).toBe(0)
+
+    // The same input pages once the suppression ends.
+    h.setSuppressOlder(false)
+    h.filler.fill()
+    expect(h.counts().olderLoads).toBe(1)
   })
 
   it('at the ceiling, a deficit on the side scrolled AWAY from does not fetch', () => {
@@ -374,5 +408,32 @@ describe('chatScrollBufferFiller', () => {
       newer.filler.fill()
     expect(newer.counts().olderLoads).toBe(0)
     expect(newer.counts().newerLoads).toBe(20)
+  })
+
+  it('reads the older deficit from the content above the viewport', () => {
+    // A layout shift can put scrollTop at 0 while 5000px of content sits above the view.
+    const h = harness({
+      bufferTargetPx: 1500,
+      scrollTop: 0,
+      viewportContentTop: 5000,
+      distBottom: 5000,
+    })
+    h.enable()
+    h.setHas(true, false)
+    h.filler.fill()
+    expect(h.counts().olderLoads).toBe(0)
+  })
+
+  it('fetches older when the content above is short', () => {
+    const h = harness({
+      bufferTargetPx: 1500,
+      scrollTop: 5000,
+      viewportContentTop: 100,
+      distBottom: 5000,
+    })
+    h.enable()
+    h.setHas(true, false)
+    h.filler.fill()
+    expect(h.counts().olderLoads).toBe(1)
   })
 })

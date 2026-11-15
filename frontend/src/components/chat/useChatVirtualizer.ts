@@ -1,8 +1,10 @@
 import type { Accessor } from 'solid-js'
+import type { LayoutSnapshot } from './chatLayoutShift'
 import type { AnchorOffsetGeometry } from './chatScrollAnchor'
+import type { LayoutShiftSurface } from './createLayoutShift'
 import type { RowContentReadiness } from './createRowMeasurer'
 import type { ScrollAnchor } from '~/stores/chatTypes'
-import { batch, createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
+import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
 import { largestIndexWhere, smallestIndexWhere } from '~/lib/binarySearch'
 import { clamp } from '~/lib/clamp'
 import { capMapInsertionOrder } from '~/lib/mapLru'
@@ -10,7 +12,8 @@ import { monotonicNow } from '~/lib/monotonicNow'
 import { BAND_BORDER_PX, messageBandKind } from './chatRowGeometry'
 import { anchorAtOffset, resolveAnchorScrollTop, resolveNearestAnchorScrollTop } from './chatScrollAnchor'
 import { warnSlowScrollPhase } from './chatScrollGeometry'
-import { createRowMeasurer } from './createRowMeasurer'
+import { createLayoutShift } from './createLayoutShift'
+import { createRowMeasurer, MEASURE_EPSILON_PX } from './createRowMeasurer'
 
 /**
  * Minimal per-row descriptor the virtualizer needs. `id` keys the height
@@ -83,7 +86,7 @@ const GEOMETRY_KEYS = (Object.keys(GEOMETRY_RELEVANCE) as (keyof VirtualItem)[])
  * `virtualItems` memo's `equals` so a recompute that DOESN'T change the visible window's
  * rows. A recompute that does not add, remove, reorder, or revise a visible row
  * keeps the prior array
- * reference. That stops an unnecessary geometry rebuild and scroll re-pin. Row
+ * reference. That stops an unnecessary geometry rebuild and layout-shift pass. Row
  * content still updates through visibleEntries. Row measurement catches a real
  * height change.
  *
@@ -117,6 +120,63 @@ export interface ChatVirtualizerRange {
 }
 
 /**
+ * The slice that `updateViewport` committed last: its indices, and the ids of its
+ * first and last row at the moment of the commit. `range` maps the two ids to their
+ * current indices, so the slice follows its rows when the list changes before the
+ * next commit.
+ */
+interface CommittedRange extends ChatVirtualizerRange {
+  firstId: string | undefined
+  lastId: string | undefined
+}
+
+/**
+ * Map a committed slice onto the current row list through the ids of its edge rows.
+ *
+ * A prepend or a trim above the slice moves every index. The scroll hook commits a
+ * new slice only in a later effect, so slicing the list by the old indices selected
+ * other rows for one update: every mounted row was destroyed and built again. The
+ * ids keep the same rows selected instead. When one id left the list, the slice
+ * keeps its length from the other one. When both left, the stored indices are the
+ * best guess. A non-empty commit gives a non-empty list a non-empty slice inside its
+ * index range. An empty commit (none yet, or one over an empty list) gives no row until
+ * the next commit: the scroll hook commits the first slice at its mount, and a row that
+ * rendered before it would be built only to be removed.
+ */
+function followCommittedRange(
+  committed: CommittedRange,
+  indexById: ReadonlyMap<string, number>,
+  n: number,
+): ChatVirtualizerRange {
+  const length = committed.end - committed.start
+  if (n === 0 || length <= 0)
+    return { start: 0, end: 0 }
+  const first = committed.firstId === undefined
+    ? undefined
+    : indexById.get(committed.firstId)
+  const last = committed.lastId === undefined
+    ? undefined
+    : indexById.get(committed.lastId)
+  let start = committed.start
+  let end = committed.end
+  if (first !== undefined && last !== undefined) {
+    start = first
+    end = last + 1
+  }
+  else if (first !== undefined) {
+    start = first
+    end = first + length
+  }
+  else if (last !== undefined) {
+    end = last + 1
+    start = end - length
+  }
+  start = clamp(start, 0, n - 1)
+  end = clamp(end, start + 1, n)
+  return { start, end }
+}
+
+/**
  * Direction of a fling's render-ahead overscan: `'older'` extends the slice
  * toward index 0 (scrolling UP), `'newer'` toward the tail (scrolling DOWN). Names
  * mirror the scroll hook's `lastScrollDir` so the look-ahead follows the gesture.
@@ -133,12 +193,6 @@ export interface ViewportLead {
   px: number
 }
 
-interface DeferredPremeasure {
-  id: string
-  height: number
-  heightKey: string | undefined
-}
-
 /**
  * One measured row height in transportable form — what `snapshotHeights`
  * exports and `primeHeights` re-imports (the reload warm-start round trip,
@@ -152,14 +206,13 @@ export interface PersistableRowHeight {
 
 /**
  * The most recent height commit that changed the offset map -- diagnostic attribution for
- * the scroll-anchor drift WARN. The re-pin fires off `totalHeight()` and only sees THAT the
- * geometry moved, not which row moved it; this identifies the row and the change, so a logged
- * drift can be traced to its cause: `firstMeasure` (an estimate->real correction, i.e. the
- * per-kind median was off for this row / it outran premeasure) vs a re-measure (a
- * premeasured-vs-visible height mismatch or a chrome/content change), and `delta`
- * (= newHeight - assumedHeight) against the drift's residualPx tells whether this single
- * commit explains it or a batch did. `commitSeq` is monotonic, so two consecutive WARNs
- * reveal how many commits fell between them.
+ * the `content moved without a scroll` WARN (see chatScrollDiagnostics). A move of the
+ * content at the viewport top that no scroll caused follows a geometry change; this
+ * identifies the row and the change, so a logged move can be traced to its cause:
+ * `firstMeasure` (an estimate->real correction, i.e. the per-kind median was off for this
+ * row / it outran premeasure) vs a re-measure (a premeasured-vs-visible height mismatch or
+ * a chrome/content change), and `delta` (= newHeight - assumedHeight). `commitSeq` is
+ * monotonic, so two consecutive WARNs reveal how many commits fell between them.
  */
 export interface MeasurementCommitInfo {
   id: string
@@ -177,37 +230,6 @@ export interface MeasurementCommitInfo {
   commitSeq: number
 }
 
-/**
- * Every height commit of ONE geometry flush, totalled. It is what makes the companion
- * `lastMeasurement` readable, because a flush is rarely one commit.
- *
- * The hidden premeasure pipeline reads a whole band's rects,
- * then commits them inside a single `batch()` (see chatHiddenPremeasure's shared frame), so
- * the consumer's effect runs ONCE for N commits while `lastMeasurement` keeps only the LAST
- * of them. A drift WARN carrying `delta: 0` and a 74px residual is that gap, not a
- * contradiction: the final row of the batch happened to measure exactly at its estimate.
- */
-export interface MeasurementBatchInfo {
-  /** Commits in this flush. 0 when the geometry moved with no commit at all (a prepend/trim). */
-  readonly commits: number
-  /** Signed sum of every commit's own `delta`. */
-  readonly deltaSum: number
-  /**
-   * How far the whole offset map actually moved. This is NOT `deltaSum`, because a commit
-   * also feeds the per-kind median, and a median that steps re-prices every still-unmeasured
-   * row of that kind in the window. So the map can move while `deltaSum` is 0.
-   *
-   * The gap between the two is that re-pricing PLUS anything else that moved the map in the
-   * same flush: a list mutation (prepend, append, trim), a height-cache eviction that reverts
-   * a row to its estimate, or a stale-key prune. Read it beside `commits`: `commits: 0` with
-   * a non-zero delta means no measurement caused the move at all.
-   */
-  readonly totalHeightDelta: number
-}
-
-/** The zero batch: no flush sampled yet, or a flush that carried no commit and moved nothing. */
-export const EMPTY_MEASUREMENT_BATCH: MeasurementBatchInfo = { commits: 0, deltaSum: 0, totalHeightDelta: 0 }
-
 export interface UseChatVirtualizerOptions {
   /** Reactive list of rows to virtualize, in display order. */
   items: Accessor<VirtualItem[]>
@@ -219,6 +241,28 @@ export interface UseChatVirtualizerOptions {
   gapSmallPx?: Accessor<number> | number
   /** Inter-row gap (px) for all other adjacent rows (~--space-5). */
   gapLargePx?: Accessor<number> | number
+  /**
+   * The scroll element of the list. With it, the virtualizer keeps the content under
+   * the reader in place across a geometry change by a layout shift (see
+   * chatLayoutShift). Without it, the shift stays 0.
+   */
+  scrollElement?: () => HTMLElement | undefined
+  /**
+   * The inset (px) of the spacer: the distance from scroll coordinate 0 to the top of the
+   * spacer that holds the rows (see chatLayoutShift). ChatView measures the top padding
+   * and the row gap of the list. Default 0.
+   */
+  spacerInsetPx?: Accessor<number> | number
+  /** Keep the bottom of the content in place across a geometry change: the reader follows the tail. */
+  pinBottom?: () => boolean
+}
+
+/**
+ * The geometry of the loaded rows: the offset map with the row list it was built
+ * from. The snapshot that the layout shift compares (see chatLayoutShift).
+ */
+interface VirtualizerGeometry extends LayoutSnapshot {
+  list: VirtualItem[]
 }
 
 const DEFAULT_OVERSCAN_PX = 800
@@ -229,8 +273,6 @@ const DEFAULT_OVERSCAN_PX = 800
 const DEFAULT_ESTIMATE_PX = 96
 const DEFAULT_GAP_SMALL_PX = 8 // --space-2
 const DEFAULT_GAP_LARGE_PX = 20 // --space-5
-/** Ignore sub-pixel measurement jitter below this threshold. */
-const MEASURE_EPSILON_PX = 0.5
 /**
  * A real DOM measurement above this stays authoritative for that row, but is excluded
  * from the global fallback estimate for rows that have not measured yet. The fallback
@@ -253,6 +295,7 @@ const FALLBACK_ESTIMATE_OUTLIER_PX = 1200
  * value instead of hard-coding it (and silently breaking when the cap changes).
  */
 export const HEIGHT_CACHE_MAX = 2400
+
 function resolve(v: Accessor<number> | number | undefined, fallback: number): number {
   if (v === undefined)
     return fallback
@@ -266,36 +309,49 @@ function isUsableHeight(n: number): boolean {
   return n >= 0 && Number.isFinite(n)
 }
 
-export interface UseChatVirtualizerResult {
+/**
+ * The virtualizer's surface. The layout shift members (`layoutShift`, the coordinate
+ * conversions, the spacer, and `rebase`) come from LayoutShiftSurface (see
+ * createLayoutShift).
+ */
+export interface UseChatVirtualizerResult extends LayoutShiftSurface {
   /** Reactive [start, end) slice of `items` to render. */
   range: Accessor<ChatVirtualizerRange>
   /**
    * Monotonic counter bumped on every measurement that changes a row height.
-   * Lets a consumer re-pin scroll on geometry changes that leave totalHeight
-   * unchanged (e.g. a row above the anchor grows while one below shrinks).
+   * Lets a consumer react to geometry changes that leave totalHeight unchanged
+   * (e.g. a row above the viewport grows while one below shrinks).
    */
   geometryVersion: Accessor<number>
-  /** Total height (px) of the whole in-memory window — the scroll spacer height. */
+  /** Total height (px) of the whole in-memory window, in content coordinates. */
   totalHeight: Accessor<number>
-  /** Top offset (px) of a row by index. */
+  /** Top offset (px) of a row by index, in content coordinates. */
   offsetOfIndex: (index: number) => number
-  /** Top offset (px) of the row with the given id, or undefined if absent. */
+  /** Top offset (px) of the row with the given id, or undefined if absent, in content coordinates. */
   offsetOfId: (id: string) => number | undefined
   /** Index of the row with the given id, or -1 if absent. */
   indexOfId: (id: string) => number
-  /** Index of the row whose vertical span contains offset `y` (clamped). */
+  /** Index of the row whose vertical span contains the content offset `y` (clamped). */
   indexAtOffset: (y: number) => number
   /**
-   * The scroll anchor for a viewport whose top edge is at `scrollTop`: the
-   * row at that offset plus the pixels from the row's top to the viewport top.
+   * The scroll anchor for a viewport whose top edge is at the content coordinate
+   * `contentTop`: the row at that offset plus the pixels from the row's top to the
+   * viewport top. Exact: it converts nothing.
    */
+  anchorAtContent: (contentTop: number) => ScrollAnchor | null
+  /**
+   * Resolve an anchor to a content coordinate, or null if its row id is no longer present.
+   * Exact: it converts nothing.
+   */
+  contentTopForAnchor: (anchor: ScrollAnchor) => number | null
+  /** `anchorAtContent` for the scroll coordinate `scrollTop` (see contentTopOf). */
   anchorAt: (scrollTop: number) => ScrollAnchor | null
-  /** Resolve an anchor back to a scrollTop, or null if its row id is no longer present. */
+  /** `contentTopForAnchor` as the scroll coordinate of a placement (see placementScrollTopOf). */
   scrollTopForAnchor: (anchor: ScrollAnchor) => number | null
   /**
-   * Resolve an anchor to a scrollTop, recovering a TRIMMED-away row by landing on the
-   * nearest surviving row by seq. Null only when the row is gone and there is no seq /
-   * no surviving server row to fall back to.
+   * Resolve an anchor to the scroll coordinate of a placement (see placementScrollTopOf),
+   * recovering a TRIMMED-away row by landing on the nearest surviving row by seq. Null only
+   * when the row is gone and there is no seq / no surviving server row to fall back to.
    */
   scrollTopNearAnchor: (anchor: ScrollAnchor) => number | null
   /** Measured-or-estimated height (px) of a row by index (excludes the gap). */
@@ -324,22 +380,15 @@ export interface UseChatVirtualizerResult {
   heightDebugOfId: (id: string) => { measured?: number }
   /** Current global-median estimate for rows that have not reached DOM measurement yet. */
   estimateHeight: Accessor<number>
-  /** Diagnostic: the most recent geometry-changing height commit, for drift-WARN attribution. */
+  /** Diagnostic: the most recent geometry-changing height commit, for WARN attribution. */
   lastMeasurement: () => MeasurementCommitInfo | undefined
   /**
-   * Diagnostic: the commits accumulated since the previous call, and reset. Call ONCE per
-   * geometry flush, from the effect that reacts to it and BEFORE anything reads the new
-   * geometry -- that call boundary is what makes the totals mean "this flush" (see
-   * MeasurementBatchInfo). A caller that never calls it just leaves the totals accumulating.
-   */
-  takeMeasurementBatch: () => MeasurementBatchInfo
-  /**
-   * Compute (without committing) the visible slice for a given scroll position.
+   * Compute (without committing) the visible slice for a given scroll coordinate.
    * `lead` extends the overscan in its `dir` (the fling direction) so a fast
    * scroll renders the rows it is about to reach; omitted falls back to symmetric overscan.
    */
   computeRange: (scrollTop: number, clientHeight: number, lead?: ViewportLead) => ChatVirtualizerRange
-  /** Recompute and commit the visible slice for a scroll position (see computeRange for `lead`). */
+  /** Recompute and commit the visible slice for a scroll coordinate (see computeRange for `lead`). */
   updateViewport: (scrollTop: number, clientHeight: number, lead?: ViewportLead) => void
   /** Record a measured row height. Returns true if the offset map changed. */
   measure: (id: string, height: number) => boolean
@@ -370,32 +419,14 @@ export interface UseChatVirtualizerResult {
    */
   hasMeasuredHeight: (id: string) => boolean
   /**
-   * Whether a measure under the current key of row `id` produced its height: as
-   * `hasMeasuredHeight`, but false for a height that a mounted row keeps from an
-   * earlier key. A toggled row is confirmed at the first read of its element under
-   * the new key, which waits while the row replaces its content (see
-   * RowMeasurer.attachRow). Reactive: a confirmation bumps `geometryVersion`.
-   */
-  hasConfirmedHeight: (id: string) => boolean
-  /**
-   * Whether a hidden premeasurement already produced a valid height but its
-   * geometry commit is queued behind the momentum-scroll deferral gate.
-   */
-  hasPendingPremeasuredHeight: (id: string) => boolean
-  /** Defer DOM measurement commits while native momentum owns scrollTop. */
-  setVisibleMeasurementDeferral: (defer: boolean) => void
-  /**
    * Reactive "fast user scroll in flight" flag — a momentum fling OR a fast
    * scrollbar/touch drag. Set by the scroll hook; rows entering the window
-   * read it to decide skeleton-vs-full mount (ChatView's fling skeletons).
-   * Broader than the momentum-only measurement deferral above.
+   * read it to decide skeleton-vs-full mount (ChatView's fling skeletons), and
+   * no pivot element is recorded while it is set and the scroll position still
+   * moves (see createLayoutPivot).
    */
   fastScrollActive: Accessor<boolean>
   setFastScrollActive: (active: boolean) => void
-  /** Whether row measurements are waiting behind the deferral gate. */
-  hasDeferredMeasurements: () => boolean
-  /** Commit queued row measurements in one batch. */
-  flushDeferredMeasurements: () => boolean
   /**
    * Ref callback: start observing a rendered row element. `readiness` holds the
    * measurement while the row copy is not measurable (it waits for content, or
@@ -455,7 +486,9 @@ function isProvisional(entry: CachedMeasuredHeight): boolean {
 /**
  * What a height commit changed: `moved` when it changed the offset map, `confirmed` when
  * it only confirmed a provisional height under its key, and `none` otherwise. Each change
- * owes a geometryVersion bump, because `hasConfirmedHeight` reads through geom().
+ * owes a geometryVersion bump. A confirmation moves no row, but it changes the persisted
+ * snapshot: `snapshotHeights` leaves a provisional height out, and chatRowHeightPersistence
+ * saves the snapshot when geometryVersion changes.
  */
 type HeightCommitResult = 'moved' | 'confirmed' | 'none'
 
@@ -501,8 +534,8 @@ function createHeightMedian() {
       if (cachedMedian !== undefined)
         return cachedMedian
       // Lower median: the element at 0-indexed floor((n-1)/2), so an even count leans to
-      // the SHORTER side -- deliberate, since over-estimating a short row is what drifts
-      // the pin. Walk the sorted buckets, accumulating counts, to the bucket that contains
+      // the SHORTER side -- deliberate, since an over-estimated short row reserves space
+      // that its measure takes back. Walk the sorted buckets, accumulating counts, to the bucket that contains
       // that rank.
       const rank = Math.floor((total - 1) / 2)
       const keys = [
@@ -568,9 +601,10 @@ const DEFAULT_ESTIMATE_KIND = ''
 
 /**
  * Geometry engine for the virtualized chat list. Owns the per-row height cache,
- * the cumulative offset map, and the visible-row slice. It deliberately does
- * NOT own scroll position — useChatScroll reads `offsetOfId`/`totalHeight` to
- * keep the viewport anchored, and feeds scroll positions in via `updateViewport`.
+ * the cumulative offset map, the visible-row slice, and, through createLayoutShift, the
+ * layout shift that keeps the content under the reader in place across a geometry change
+ * (see chatLayoutShift). It does not decide the scroll position: useChatScroll feeds
+ * positions in via `updateViewport`, and asks for a `rebase` when the shift may go.
  */
 export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirtualizerResult {
   const seed = opts.estimateHeight ?? DEFAULT_ESTIMATE_PX
@@ -589,26 +623,16 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // could momentarily omit a row that just scrolled in, letting it be evicted the
   // same frame it measured.
   const mountedIds = new Set<string>()
-  let deferMeasurements = false
   // Reactive "fast user scroll in flight" flag, set by the scroll hook for ANY
   // genuine user scroll at fling velocity — momentum flings AND direct drags
   // (scrollbar thumb, touch). Rows entering the window read it to decide
-  // skeleton-vs-full mount (ChatView's fling skeletons). Deliberately BROADER
-  // than the measurement deferral above, which stays momentum-only: a drag
-  // re-pins immediately by design, but its mount cost is the same.
+  // skeleton-vs-full mount (ChatView's fling skeletons).
   const [fastScrollActive, setFastScrollActive] = createSignal(false)
-  const deferredPremeasures = new Map<string, DeferredPremeasure>()
-  // Diagnostic-only: the most recent geometry-changing height commit, so the scroll-anchor
-  // drift WARN can attribute a drift to the row that caused it (see MeasurementCommitInfo).
-  // Non-reactive -- read at WARN time, never a render input.
+  // Diagnostic-only: the most recent geometry-changing height commit, so the
+  // `content moved without a scroll` WARN can identify the row that likely caused a move
+  // (see MeasurementCommitInfo). Non-reactive -- read at WARN time, never a render input.
   let lastMeasurement: MeasurementCommitInfo | undefined
   let measurementCommitSeq = 0
-  // Diagnostic-only: the commits since the last takeMeasurementBatch, and the total height at
-  // that call. `undefined` until the first call, so the first flush reports a 0 delta instead
-  // of the whole initial content height.
-  let batchCommits = 0
-  let batchDeltaSum = 0
-  let batchBaseTotalHeight: number | undefined
   // Per-kind median of measured heights. An unmeasured row uses the median for its OWN
   // kind (falling back to the global median, then the seed) until visible or hidden DOM
   // measurement commits its real height -- see createPerKindHeightEstimate.
@@ -737,24 +761,41 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     return { list, indexById, n }
   })
 
-  // Cumulative offsets, recomputed when items or measurements change. The identity
-  // map rides along from rowIndex so every consumer keeps its one-stop
-  // { offsets, indexById, list, n } read.
-  const geom = createMemo(() => {
+  // Cumulative offsets, recomputed when items or measurements change, with the resolved
+  // height of each row and whether a measure produced it: the snapshot that the layout
+  // shift compares. The identity map rides along from rowIndex so every consumer keeps
+  // its one-stop read.
+  const geom = createMemo((): VirtualizerGeometry => {
     const rebuildStart = monotonicNow()
     geomVersion()
     const { list, indexById, n } = rowIndex()
     const offsets = new Float64Array(n + 1)
+    const heights = new Float64Array(n)
+    const measured = new Uint8Array(n)
     for (let i = 0; i < n; i++) {
       const item = list[i]
-      if (item !== undefined)
-        offsets[i + 1] = (offsets[i] ?? 0) + resolvedHeight(item) + gapAfter(list, i)
+      if (item === undefined)
+        continue
+      const cached = cachedMeasuredHeight(item)
+      const height = cached ?? estimateFor(item)
+      heights[i] = height
+      measured[i] = cached === undefined
+        ? 0
+        : 1
+      offsets[i + 1] = (offsets[i] ?? 0) + height + gapAfter(list, i)
     }
     // Rebuilding the offset map is an O(n) array fill (microseconds for any real n), so this
     // should never trip -- but instrumenting it rules the offset map IN or OUT as a stall
     // source instead of leaving it a suspect. Only a slow rebuild logs.
     warnSlowScrollPhase('geomRebuild', monotonicNow() - rebuildStart, { rows: n })
-    return { offsets, indexById, list, n }
+    return {
+      offsets,
+      heights,
+      measured,
+      indexById,
+      list,
+      n,
+    }
   })
 
   const totalHeight: Accessor<number> = () => {
@@ -782,12 +823,10 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
 
   const heightOfIndex = (index: number): number => {
     const g = geom()
-    if (index < 0 || index >= g.n)
-      return estimateHeight()
-    const item = g.list[index]
-    return item !== undefined
-      ? resolvedHeight(item)
-      : estimateHeight()
+    const height = index >= 0 && index < g.n
+      ? g.heights[index]
+      : undefined
+    return height ?? estimateHeight()
   }
 
   const heightOfId = (id: string): number => heightOfIndex(indexOfId(id))
@@ -799,34 +838,25 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       : 0
   }
 
+  // The height key of row `id` in the current list. It reads `rowIndex`, not `geom`: the
+  // measurer calls it for each read that it commits, and inside the batch of one flush a
+  // read of `geom` after a commit would rebuild the whole offset map once per commit.
   const currentHeightKey = (id: string): string | undefined => {
-    const g = geom()
-    const index = g.indexById.get(id)
+    const { list, indexById } = rowIndex()
+    const index = indexById.get(id)
     const item = index === undefined
       ? undefined
-      : g.list[index]
+      : list[index]
     return item !== undefined
       ? item.heightKey
       : undefined
   }
 
-  // The cache entry of row `id` under its current key, read through geom() so that a
-  // reactive caller re-reads it when a measurement commits.
-  const currentHeightEntry = (id: string): CachedMeasuredHeight | undefined => {
+  // Read through geom(), so that a reactive caller re-reads it when a measurement commits.
+  const hasMeasuredHeight = (id: string): boolean => {
     const g = geom()
     const index = g.indexById.get(id)
-    const item = index === undefined
-      ? undefined
-      : g.list[index]
-    const cached = heightCache.get(id)
-    return item !== undefined && cached !== undefined && cached.key === item.heightKey
-      ? cached
-      : undefined
-  }
-  const hasMeasuredHeight = (id: string): boolean => currentHeightEntry(id) !== undefined
-  const hasConfirmedHeight = (id: string): boolean => {
-    const entry = currentHeightEntry(id)
-    return entry !== undefined && !isProvisional(entry)
+    return index !== undefined && g.measured[index] === 1
   }
 
   // Debug-only: surface the measured height without exposing the generic fallback
@@ -867,16 +897,17 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     heightOfIndex,
     gapAfter: i => gapAfter(geom().list, i),
   })
-
-  const anchorAt = (scrollTop: number): ScrollAnchor | null =>
-    anchorAtOffset(anchorGeometry(), scrollTop)
-  const scrollTopForAnchor = (anchor: ScrollAnchor): number | null =>
+  // The anchor math works in content coordinates, so these two resolvers convert nothing.
+  // A caller that holds a content coordinate uses them, and no round trip through the
+  // scroll coordinates can lose a fraction of a pixel.
+  const anchorAtContent = (contentTop: number): ScrollAnchor | null =>
+    anchorAtOffset(anchorGeometry(), contentTop)
+  const contentTopForAnchor = (anchor: ScrollAnchor): number | null =>
     resolveAnchorScrollTop(anchorGeometry(), anchor)
-  const scrollTopNearAnchor = (anchor: ScrollAnchor): number | null =>
-    resolveNearestAnchorScrollTop(anchorGeometry(), anchor)
 
-  const computeRange = (
-    scrollTop: number,
+  // The slice for a viewport whose top edge is at the content coordinate `contentTop`.
+  const computeContentRange = (
+    contentTop: number,
     clientHeight: number,
     lead?: ViewportLead,
   ): ChatVirtualizerRange => {
@@ -899,16 +930,16 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     const overBottom = over + (lead?.dir === 'newer'
       ? leadPx
       : 0)
-    // Clamp a stale-high scrollTop to the scrollable range before slicing. After a
-    // trim/shrink the spacer (totalHeight = offsets[n]) drops in the same flush
-    // that the DOM still reports the old, larger scrollTop; without this clamp
-    // `top` would exceed every offset and the `start` search below would fall back
-    // to its last index, collapsing the slice to the last row alone for one frame,
-    // until the browser clamps scrollTop and the re-pin corrects. (Negative
-    // scrollTop from rubber-band overscroll already floors to row 0.)
+    // Clamp a stale-high position to the content before slicing. After a trim/shrink
+    // the spacer drops in the same flush that the DOM still reports the old, larger
+    // scrollTop; without this clamp `top` would exceed every offset and the `start`
+    // search below would fall back to its last index, collapsing the slice to the last
+    // row alone for one frame. (A negative position -- rubber-band overscroll, the inset of
+    // the spacer, or the blank band above the first row under a positive layout shift --
+    // floors to row 0.)
     const total = g.offsets[n] ?? 0
-    const maxScrollTop = Math.max(0, total - clientHeight)
-    const clampedTop = clamp(scrollTop, 0, maxScrollTop)
+    const maxContentTop = Math.max(0, total - clientHeight)
+    const clampedTop = clamp(contentTop, 0, maxContentTop)
     const top = clampedTop - overTop
     const bottom = clampedTop + clientHeight + overBottom
     // First row extending past `top` (smallest i with offsets[i+1] > top), and one
@@ -930,26 +961,32 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // Normal rows keep the pure pixel window; this adds at most two rows, only for
     // the oversized-row case.
     const guardBandPx = Math.max(overTop, overBottom)
-    const startItem = g.list[start]
-    if (guardBandPx > 0 && end === start + 1 && startItem !== undefined && resolvedHeight(startItem) > guardBandPx) {
+    if (guardBandPx > 0 && end === start + 1 && (g.heights[start] ?? 0) > guardBandPx) {
       start = Math.max(0, start - 1)
       end = Math.min(n, end + 1)
     }
     return { start, end }
   }
 
-  const [range, setRange] = createSignal<ChatVirtualizerRange>({ start: 0, end: 0 })
-
-  const updateViewport = (
-    scrollTop: number,
-    clientHeight: number,
-    lead?: ViewportLead,
-  ) => {
-    const next = computeRange(scrollTop, clientHeight, lead)
-    const cur = range()
-    if (cur.start !== next.start || cur.end !== next.end)
-      setRange(next)
-  }
+  const [committedRange, setCommittedRange] = createSignal<CommittedRange>({
+    start: 0,
+    end: 0,
+    firstId: undefined,
+    lastId: undefined,
+  })
+  // The committed slice, mapped onto the current row list by the ids of its edge rows
+  // (see followCommittedRange). It keeps its previous object while the indices hold,
+  // so a commit that changes only the stored ids notifies no reader.
+  const range = createMemo<ChatVirtualizerRange>(
+    () => {
+      const { indexById, n } = rowIndex()
+      return followCommittedRange(committedRange(), indexById, n)
+    },
+    { start: 0, end: 0 },
+    {
+      equals: (a, b) => a.start === b.start && a.end === b.end,
+    },
+  )
 
   /**
    * The commit core shared by the single-row paths (which bump
@@ -984,7 +1021,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // The height the offset map reserved for this row BEFORE this commit -- the per-kind
     // estimate for a first measure (read now, before this row's contribution is folded in)
     // or the previously cached height for a re-measure. Its diff from the new height is
-    // exactly what shifts the offset map (and, if above the anchor, drifts the pin).
+    // exactly what shifts the offset map (the layout shift then holds the view).
     const assumedHeight = prevEntry !== undefined
       ? prevEntry.height
       : heightEstimate.value(kind, seed)
@@ -1053,12 +1090,9 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
         },
       })
     }
-    // Record the commit that is about to move the offset map, so a re-pin drift the
-    // resulting totalHeight change triggers can name its cause (see MeasurementCommitInfo).
+    // Record the commit that is about to move the offset map, so a WARN about a move of
+    // the content at the viewport top can identify its likely cause (see MeasurementCommitInfo).
     measurementCommitSeq += 1
-    // One binding for both readers below: lastMeasurement reports this commit's own delta and
-    // the batch sums it, so a later clamp or rounding on one must not miss the other.
-    const delta = height - assumedHeight
     lastMeasurement = {
       id,
       kind,
@@ -1066,13 +1100,9 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       firstMeasure: isFirst,
       assumedHeight,
       newHeight: height,
-      delta,
+      delta: height - assumedHeight,
       commitSeq: measurementCommitSeq,
     }
-    // Total this commit into the current flush's batch as well: a batched premeasure
-    // overwrites lastMeasurement per row, so only these survive the whole batch.
-    batchCommits += 1
-    batchDeltaSum += delta
     return 'moved'
   }
   const commitMeasuredHeight = (
@@ -1095,30 +1125,14 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   }
   const measure = (id: string, height: number): boolean =>
     commitMeasuredHeight(id, height, currentHeightKey(id), 'visible')
-  const commitPremeasureHeight = (id: string, height: number, heightKey?: string): boolean => {
+  const primeHeight = (id: string, height: number, heightKey?: string): boolean => {
     // Once a visible row has committed a measurement, the live DOM is the
     // authoritative geometry. A hidden premeasure queued before mount can finish
-    // later; don't let that hidden-layout read replace the visible height.
+    // later; don't let that hidden-layout read replace the visible height. A row that
+    // left the list commits nothing (see commitMeasuredHeight).
     if (mountedIds.has(id) && hasMeasuredHeight(id))
       return false
     return commitMeasuredHeight(id, height, heightKey, 'premeasure')
-  }
-  const primeHeight = (id: string, height: number, heightKey?: string): boolean => {
-    if (!rowIndex().indexById.has(id))
-      return false
-    if (mountedIds.has(id) && hasMeasuredHeight(id))
-      return false
-    if (deferMeasurements) {
-      if (!isUsableHeight(height) || heightKey !== currentHeightKey(id))
-        return false
-      deferredPremeasures.set(id, { id, height, heightKey })
-      return false
-    }
-    return commitPremeasureHeight(id, height, heightKey)
-  }
-  const hasPendingPremeasuredHeight = (id: string): boolean => {
-    const pending = deferredPremeasures.get(id)
-    return pending !== undefined && pending.heightKey === currentHeightKey(id)
   }
   const primeHeights = (entries: readonly PersistableRowHeight[]): number => {
     if (entries.length === 0)
@@ -1137,16 +1151,9 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       const item = g.list[index]
       if (item === undefined)
         continue
-      // Mirror primeHeight's guards: a live visible measurement is
-      // authoritative, and the momentum-scroll deferral gate queues instead
-      // of committing.
+      // Mirror primeHeight's guard: a live visible measurement is authoritative.
       if (mountedIds.has(entry.id) && cachedMeasuredHeight(item) !== undefined)
         continue
-      if (deferMeasurements) {
-        if (isUsableHeight(entry.height) && entry.heightKey === item.heightKey)
-          deferredPremeasures.set(entry.id, { id: entry.id, height: entry.height, heightKey: entry.heightKey })
-        continue
-      }
       const result = applyHeightCommit(entry.id, entry.height, entry.heightKey, 'premeasure', item.heightKey, kindOf(item))
       if (result === 'moved')
         adopted += 1
@@ -1168,8 +1175,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   }
 
   // The ResizeObserver / batched-microtask-flush DOM glue lives in createRowMeasurer
-  // (its coupling here is `measure`, the height key, the deferral flag and the shared
-  // mountedIds set), keeping this file the offset engine. The default
+  // (its coupling here is `measure`, the height key and the shared mountedIds set),
+  // keeping this file the offset engine. The default
   // scheduler/observer are the production ones; a unit test injects fakes to drive
   // the flush timing deterministically.
   const measurer = createRowMeasurer({
@@ -1177,7 +1184,6 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     mountedIds,
     onRowUnmounted: dropProvisionalHeight,
     currentMeasurementKey: currentHeightKey,
-    shouldDeferMeasurement: () => deferMeasurements,
   })
   const { attachRow, detachRow } = measurer
   onCleanup(measurer.dispose)
@@ -1190,55 +1196,74 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       measurer.measureAgain(id)
   })
 
-  const hasDeferredMeasurements = (): boolean =>
-    measurer.hasDeferredMeasurements() || deferredPremeasures.size > 0
+  // The layout shift on top of the offset map (see createLayoutShift). It needs the row
+  // measurer, which holds the element of each mounted row.
+  const { schedulePivotRecord, ...layoutShiftSurface } = createLayoutShift({
+    geometry: geom,
+    totalHeight,
+    scrollElement: opts.scrollElement,
+    spacerInsetPx: () => resolve(opts.spacerInsetPx, 0),
+    pinBottom: () => opts.pinBottom?.() ?? false,
+    isSuspended: fastScrollActive,
+    rows: measurer,
+    lastMeasurement: () => lastMeasurement,
+  })
+  const { contentTopOf, placementScrollTopOf } = layoutShiftSurface
 
-  const flushDeferredMeasurements = (): boolean => {
-    if (!hasDeferredMeasurements())
-      return false
-    let committed = false
-    batch(() => {
-      committed = measurer.flushDeferredMeasurements()
-      for (const premeasure of deferredPremeasures.values()) {
-        if (commitPremeasureHeight(premeasure.id, premeasure.height, premeasure.heightKey))
-          committed = true
-      }
-      deferredPremeasures.clear()
-    })
-    return committed
+  // These resolvers take and return scroll coordinates, so a caller that holds a scroll
+  // position needs no conversion of its own. A resolved anchor is a placement, so the top
+  // of the first row resolves to the top of the scroller (see placementScrollTop).
+  const anchorAt = (scrollTop: number): ScrollAnchor | null =>
+    anchorAtContent(contentTopOf(scrollTop))
+  const scrollTopForAnchor = (anchor: ScrollAnchor): number | null => {
+    const contentTop = contentTopForAnchor(anchor)
+    return contentTop === null
+      ? null
+      : placementScrollTopOf(contentTop)
+  }
+  const scrollTopNearAnchor = (anchor: ScrollAnchor): number | null => {
+    const contentTop = resolveNearestAnchorScrollTop(anchorGeometry(), anchor)
+    return contentTop === null
+      ? null
+      : placementScrollTopOf(contentTop)
   }
 
-  // Close the flush: report the commits that accumulated since the previous call, plus how
-  // far the offset map actually moved across them, then reset. `totalHeight()` reads the
-  // memo, so the caller must be untracked (useChatScroll's re-pin effect uses `on(...)`,
-  // whose body runs untracked) or it would subscribe to geometry it only means to sample.
-  const takeMeasurementBatch = (): MeasurementBatchInfo => {
-    const total = totalHeight()
-    const base = batchBaseTotalHeight
-    batchBaseTotalHeight = total
-    const commits = batchCommits
-    const deltaSum = batchDeltaSum
-    batchCommits = 0
-    batchDeltaSum = 0
-    // The FIRST call is a seeding call, not a flush report. Every counter above it belongs to
-    // the initial mount pass, which no flush boundary separates: the consumer's effect is
-    // `defer: true`, so it never runs at creation, and the row-height persistence load primes
-    // whole pages of heights before it. Reporting those as one flush produced a payload that
-    // contradicted itself -- `commits: 140` beside `totalHeightDelta: 0`, because only the
-    // height baseline was seeded lazily. Report the zero batch and start clean.
-    if (base === undefined)
-      return EMPTY_MEASUREMENT_BATCH
-    return { commits, deltaSum, totalHeightDelta: total - base }
+  const computeRange = (
+    scrollTop: number,
+    clientHeight: number,
+    lead?: ViewportLead,
+  ): ChatVirtualizerRange => computeContentRange(contentTopOf(scrollTop), clientHeight, lead)
+
+  const updateViewport = (
+    scrollTop: number,
+    clientHeight: number,
+    lead?: ViewportLead,
+  ) => {
+    const next = computeRange(scrollTop, clientHeight, lead)
+    const cur = range()
+    const { list } = rowIndex()
+    const firstId = list[next.start]?.id
+    const lastId = list[next.end - 1]?.id
+    // Commit new ids also when the indices hold: ids that left the list would
+    // otherwise stay stored, and the next prepend would slice by the stale indices.
+    const stored = committedRange()
+    if (cur.start !== next.start || cur.end !== next.end || stored.firstId !== firstId || stored.lastId !== lastId)
+      setCommittedRange({ ...next, firstId, lastId })
+    // A new position needs a new record of the element at the viewport top.
+    schedulePivotRecord()
   }
 
   return {
     range,
     geometryVersion: geomVersion,
     totalHeight,
+    ...layoutShiftSurface,
     offsetOfIndex,
     offsetOfId,
     indexOfId,
     indexAtOffset,
+    anchorAtContent,
+    contentTopForAnchor,
     anchorAt,
     scrollTopForAnchor,
     scrollTopNearAnchor,
@@ -1248,7 +1273,6 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     heightDebugOfId,
     estimateHeight,
     lastMeasurement: () => lastMeasurement,
-    takeMeasurementBatch,
     computeRange,
     updateViewport,
     measure,
@@ -1256,15 +1280,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     primeHeights,
     snapshotHeights,
     hasMeasuredHeight,
-    hasConfirmedHeight,
-    hasPendingPremeasuredHeight,
-    setVisibleMeasurementDeferral: (defer: boolean) => {
-      deferMeasurements = defer
-    },
     fastScrollActive,
     setFastScrollActive,
-    hasDeferredMeasurements,
-    flushDeferredMeasurements,
     attachRow,
     detachRow,
     mountedIds,

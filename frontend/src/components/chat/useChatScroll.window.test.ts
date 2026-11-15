@@ -1,11 +1,11 @@
-import type { ChatScrollVirtualizer } from './useChatScroll'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 
+import { VELOCITY_IDLE_MS } from './chatScrollVelocity'
 import { FLING_OVERSCAN_HARD_CAP_PX, flingOverscanCapPx, useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, virtualizerNoOps } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, mountScrollHarness, virtualizerNoOps, withContentAnchors } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -39,7 +39,7 @@ describe('useChatScroll render-ahead overscan', () => {
           // Record the look-ahead args handleScroll passes to updateViewport.
           let lastLeadPx = -1
           let lastLeadDir: 'older' | 'newer' | undefined = 'newer'
-          const virt: ChatScrollVirtualizer = {
+          const virt = withContentAnchors({
             ...virtualizerNoOps(),
             totalHeight: () => 50000,
             geometryVersion: () => 0,
@@ -50,7 +50,7 @@ describe('useChatScroll render-ahead overscan', () => {
             anchorAt: () => null,
             scrollTopNearAnchor: () => null,
             scrollTopForAnchor: () => null,
-          }
+          })
           const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -99,7 +99,7 @@ describe('useChatScroll render-ahead overscan', () => {
           const [messages] = createSignal<AgentChatMessage[]>([])
           let lastLeadPx = -1
           let lastLeadDir: 'older' | 'newer' | undefined = 'older'
-          const virt: ChatScrollVirtualizer = {
+          const virt = withContentAnchors({
             ...virtualizerNoOps(),
             totalHeight: () => 50000,
             geometryVersion: () => 0,
@@ -110,7 +110,7 @@ describe('useChatScroll render-ahead overscan', () => {
             anchorAt: () => null,
             scrollTopNearAnchor: () => null,
             scrollTopForAnchor: () => null,
-          }
+          })
           const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -159,7 +159,7 @@ describe('useChatScroll render-ahead overscan', () => {
           const [messages] = createSignal<AgentChatMessage[]>([])
           let lastLeadPx = -1
           let lastLeadDir: 'older' | 'newer' | undefined
-          const virt: ChatScrollVirtualizer = {
+          const virt = withContentAnchors({
             ...virtualizerNoOps(),
             totalHeight: () => 50000,
             geometryVersion: () => 0,
@@ -170,7 +170,7 @@ describe('useChatScroll render-ahead overscan', () => {
             anchorAt: () => null,
             scrollTopNearAnchor: () => null,
             scrollTopForAnchor: () => null,
-          }
+          })
           const hook = useChatScroll({ virtualizer: virt, messages })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -213,7 +213,7 @@ describe('useChatScroll windowing trim', () => {
       seq: BigInt(i + 1),
     } as AgentChatMessage))
 
-  it('trims the oldest end while following the tail even after the geometry re-pin advanced the sticky record', () =>
+  it('trims the oldest end while following the tail even after the geometry effect followed the growth', () =>
     new Promise<void>((resolve, reject) => {
       createRoot(async (dispose) => {
         try {
@@ -239,15 +239,14 @@ describe('useChatScroll windowing trim', () => {
           await Promise.resolve()
           await Promise.resolve()
 
-          // Establish the sticky record at the current bottom while following.
+          // Follow the tail at the current bottom.
           hook.forceScrollToBottom()
           expect(hook.atBottom()).toBe(true)
 
           // A new tail message arrives (length crosses the cap) AND the spacer
-          // grows. The geometry re-pin effect is created before the auto-scroll
-          // effect, so it runs first: it re-sticks to the new bottom and advances
-          // stickyScrollHeight to the grown value. The auto-scroll effect then
-          // sees scrollHeight === stickyScrollHeight. The trim must STILL fire --
+          // grows. The geometry effect is created before the auto-scroll effect, so
+          // it runs first: it re-sticks to the new bottom. The auto-scroll effect then
+          // sees the view at the bottom already. The trim must STILL fire --
           // it's the only window cap while following the tail (pagination trims
           // don't run then), so gating it on the height delta would let the
           // in-memory set grow unbounded during streaming.
@@ -394,15 +393,15 @@ describe('useChatScroll windowing trim', () => {
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(MAX_LOADED_CHAT_MESSAGES))
           // A virtualizer that pins the viewport midpoint to row 'm50' (the reader
           // scrolled up to it). totalHeight constant so the geometry effect is quiet.
-          const virt: ChatScrollVirtualizer = {
+          const virt = withContentAnchors({
             ...virtualizerNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
             anchorAt: () => ({ id: 'm50', offsetWithinRow: 0 }),
-            scrollTopNearAnchor: () => null,
+            scrollTopNearAnchor: () => 2000,
             scrollTopForAnchor: () => 2000,
-          }
+          })
           let lastKeep = -1
           const hook = useChatScroll({
             virtualizer: virt,
@@ -455,15 +454,15 @@ describe('useChatScroll windowing trim', () => {
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(MAX_LOADED_CHAT_MESSAGES))
           // The captured anchor row is NOT present in the window (deleted / reseq'd
           // out between capture and the trim), so findIndex returns -1.
-          const virt: ChatScrollVirtualizer = {
+          const virt = withContentAnchors({
             ...virtualizerNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
             updateViewport: () => {},
             anchorAt: () => ({ id: 'gone', offsetWithinRow: 0 }),
-            scrollTopNearAnchor: () => null,
+            scrollTopNearAnchor: () => 2000,
             scrollTopForAnchor: () => 2000,
-          }
+          })
           let lastKeep = -1
           const hook = useChatScroll({
             virtualizer: virt,
@@ -518,15 +517,15 @@ describe('useChatScroll windowing trim', () => {
           // A virtualizer whose anchorAt maps a scroll offset to the row at that offset
           // (rows are rowH tall), so the buffer-top anchor (bufferTargetPx above the
           // viewport top) resolves to a row STRICTLY above the viewport anchor.
-          const virt: ChatScrollVirtualizer = {
+          const virt = withContentAnchors({
             ...virtualizerNoOps(),
             totalHeight: () => 40000,
             geometryVersion: () => 0,
             updateViewport: () => {},
             anchorAt: (y: number) => ({ id: `m${Math.max(0, Math.floor(y / rowH)) + 1}`, offsetWithinRow: 0 }),
-            scrollTopNearAnchor: () => null,
+            scrollTopNearAnchor: (a: { id: string }) => (Number(a.id.slice(1)) - 1) * rowH,
             scrollTopForAnchor: (a: { id: string }) => (Number(a.id.slice(1)) - 1) * rowH,
-          }
+          })
           let lastKeep = -1
           const hook = useChatScroll({
             virtualizer: virt,
@@ -584,7 +583,7 @@ describe('useChatScroll windowing trim', () => {
               seq: BigInt(i + 1),
             } as AgentChatMessage))
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(MAX_LOADED_CHAT_MESSAGES))
-          const virt: ChatScrollVirtualizer = {
+          const virt = withContentAnchors({
             ...virtualizerNoOps(),
             totalHeight: () => 5000,
             geometryVersion: () => 0,
@@ -592,9 +591,9 @@ describe('useChatScroll windowing trim', () => {
             // Would resolve a buffer-top row (from the stale scrollTop) if consulted --
             // the clientHeight===0 guard must skip the buffer-aware computation entirely.
             anchorAt: (y: number) => ({ id: `m${Math.max(0, Math.floor(y / 100)) + 1}`, offsetWithinRow: 0 }),
-            scrollTopNearAnchor: () => null,
+            scrollTopNearAnchor: () => 2000,
             scrollTopForAnchor: () => 2000,
-          }
+          })
           let lastKeep = -1
           const hook = useChatScroll({
             virtualizer: virt,
@@ -625,4 +624,150 @@ describe('useChatScroll windowing trim', () => {
         }
       })
     }))
+})
+
+describe('useChatScroll layout coordinates', () => {
+  it('uses the clamped position during rubber-band overscroll', () => {
+    const h = mountScrollHarness()
+    h.updateViewport.mockClear()
+    h.div.setRawScrollTop(-40)
+    h.hook.handlers.onScroll()
+    expect(h.updateViewport).toHaveBeenCalled()
+    expect(h.updateViewport.mock.calls.at(-1)?.[0]).toBe(0)
+    h.dispose()
+  })
+
+  it('passes the content above the viewport to the trim when the layout is shifted', () => {
+    // 50 messages, one per row, with ids of the rows, so the trim resolves its anchor.
+    const rows = (count: number) => Array.from({ length: count }, (_, i) => ({
+      id: `r${i}`,
+      seq: BigInt(i + 1),
+    } as AgentChatMessage))
+    const trimCount = (opts: { shifted: boolean }) => {
+      const onTrimOldMessages = vi.fn()
+      // Row 0 is 600px in both: changeAbove(500) grows it, or the heights state it.
+      const h = mountScrollHarness({
+        heights: opts.shifted
+          ? Array.from<number>({ length: 50 }).fill(100)
+          : [
+              600,
+              ...Array.from<number>({ length: 49 }).fill(100),
+            ],
+        messages: rows(50),
+        hookOptions: { onTrimOldMessages },
+      })
+      if (opts.shifted) {
+        h.scrollTo(2000)
+        h.scrollTo(1990)
+        h.changeAbove(500)
+        expect(h.virt.layoutShift()).toBe(-500)
+      }
+      else {
+        h.scrollTo(2490)
+      }
+      h.setMessages(rows(51))
+      const count = onTrimOldMessages.mock.calls.at(-1)?.[0] as number
+      h.dispose()
+      return count
+    }
+    const unshifted = trimCount({ shifted: false })
+    expect(unshifted).toBeGreaterThan(0)
+    expect(trimCount({ shifted: true })).toBe(unshifted)
+  })
+})
+
+describe('useChatScroll fast scroll', () => {
+  /** Three scroll events 16ms apart, each `stepPx` up from the bottom. */
+  const scrollSteps = (h: ReturnType<typeof mountScrollHarness>, stepPx: number) => {
+    let top = 4500
+    for (let i = 0; i < 3; i++) {
+      vi.advanceTimersByTime(16)
+      top -= stepPx
+      h.div.setScrollTop(top)
+      h.hook.handlers.onScroll()
+    }
+  }
+
+  it('flags a fast scroll at 1 px/ms', () => {
+    const h = mountScrollHarness()
+    h.setFastScrollActive.mockClear()
+    scrollSteps(h, 32)
+    expect(h.setFastScrollActive).toHaveBeenCalledWith(true)
+    h.dispose()
+  })
+
+  it('flags a scroll at exactly the fast speed', () => {
+    const h = mountScrollHarness()
+    h.setFastScrollActive.mockClear()
+    // 16px every 16ms: exactly 1 px/ms.
+    scrollSteps(h, 16)
+    expect(h.setFastScrollActive).toHaveBeenCalledWith(true)
+    h.dispose()
+  })
+
+  it('does not flag a scroll just below the fast speed', () => {
+    const h = mountScrollHarness()
+    h.setFastScrollActive.mockClear()
+    // 15px every 16ms: 0.9375 px/ms.
+    scrollSteps(h, 15)
+    expect(h.setFastScrollActive).not.toHaveBeenCalledWith(true)
+    h.dispose()
+  })
+
+  it('does not flag a slow scroll', () => {
+    const h = mountScrollHarness()
+    h.setFastScrollActive.mockClear()
+    scrollSteps(h, 4)
+    expect(h.setFastScrollActive).not.toHaveBeenCalledWith(true)
+    h.dispose()
+  })
+
+  it.each([
+    { speed: '0.75 px/ms', stepPx: 12 },
+    { speed: '0.25 px/ms', stepPx: 4 },
+  ])('keeps the flag and its idle timer through a slower move at $speed', ({ stepPx }) => {
+    const h = mountScrollHarness()
+    h.setFastScrollActive.mockClear()
+    scrollSteps(h, 32)
+    expect(h.setFastScrollActive).toHaveBeenLastCalledWith(true)
+    h.setFastScrollActive.mockClear()
+
+    // The decelerating tail of a fling: a slower move changes neither the flag nor its
+    // idle timer, so the flag cannot change on each event while the speed jitters.
+    vi.advanceTimersByTime(16)
+    h.div.setScrollTop(h.div.getScrollTop() - stepPx)
+    h.hook.handlers.onScroll()
+    expect(h.setFastScrollActive).not.toHaveBeenCalled()
+
+    // The idle timer of the last fast move still runs: it ends the flag 150ms after
+    // that move, neither earlier nor 150ms after the slower one.
+    vi.advanceTimersByTime(133)
+    expect(h.setFastScrollActive).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(h.setFastScrollActive).toHaveBeenLastCalledWith(false)
+    h.dispose()
+  })
+
+  it('clears the flag after the idle time', () => {
+    const h = mountScrollHarness()
+    h.setFastScrollActive.mockClear()
+    scrollSteps(h, 32)
+    // The scroll stops while still fast: only the idle time ends the flag.
+    vi.advanceTimersByTime(149)
+    expect(h.setFastScrollActive).toHaveBeenLastCalledWith(true)
+    vi.advanceTimersByTime(1)
+    expect(h.setFastScrollActive).toHaveBeenLastCalledWith(false)
+    h.dispose()
+  })
+
+  it('cancels the idle timer of the flag at the unmount', () => {
+    const h = mountScrollHarness()
+    scrollSteps(h, 32)
+    h.setFastScrollActive.mockClear()
+
+    h.dispose()
+    vi.advanceTimersByTime(VELOCITY_IDLE_MS)
+
+    expect(h.setFastScrollActive).not.toHaveBeenCalled()
+  })
 })

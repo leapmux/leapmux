@@ -1,7 +1,7 @@
 import type { Accessor } from 'solid-js'
 import type { ScrollAnchor } from '~/stores/chatTypes'
 import { createMemo, untrack } from 'solid-js'
-import { cannotLeaveStickyBand } from './chatScrollGeometry'
+import { cannotScroll } from './chatScrollGeometry'
 
 export interface ChatPaginationPolicyDeps {
   getEl: () => HTMLDivElement | undefined
@@ -12,8 +12,6 @@ export interface ChatPaginationPolicyDeps {
   geomVersion: Accessor<unknown>
   isAtTopEdge: () => boolean
   isAtBottomEdge: () => boolean
-  preserveBrowsingPosition: () => void
-  clearRestoreSuppression: () => void
   onLoadOlder: () => void
   onLoadNewer: () => void
   isAtBottom: () => boolean
@@ -27,8 +25,8 @@ export interface ChatPaginationPolicyDeps {
  *
  * A stall is stricter than a background prefetch. It requires an active fetch,
  * more history, and a viewport clamped at the loaded edge. Live-tail suppression
- * applies only after the pane can leave the sticky band. A short hidden-heavy page
- * must still fetch older rows until it becomes scrollable.
+ * applies only while the pane can scroll. A short hidden-heavy page must still fetch
+ * older rows until it becomes scrollable.
  */
 export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
   const bufferTargetPx = (): number => {
@@ -44,19 +42,14 @@ export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
   const loadOlderMessages = (): boolean => {
     if (!canLoadOlderMessages())
       return false
-    // A prepend changes geometry above the viewport. Preserve the anchor before
-    // the request starts so the re-pin absorbs that growth.
-    deps.preserveBrowsingPosition()
+    // A prepend changes geometry above the viewport. The layout shift keeps the view in
+    // place across it, so nothing needs to be held for it here.
     deps.onLoadOlder()
     return true
   }
 
-  const tryLoadOlderOnExplicitTopIntent = (): boolean => {
-    if (!deps.isAtTopEdge() || !canLoadOlderMessages())
-      return false
-    deps.clearRestoreSuppression()
-    return loadOlderMessages()
-  }
+  const tryLoadOlderOnExplicitTopIntent = (): boolean =>
+    deps.isAtTopEdge() && loadOlderMessages()
 
   const canLoadNewerMessages = (): boolean =>
     deps.getEl() !== undefined && deps.hasNewer() && !deps.fetchingNewer()
@@ -68,11 +61,8 @@ export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
     return true
   }
 
-  const tryLoadNewerOnExplicitBottomIntent = (): boolean => {
-    if (!deps.isAtBottomEdge() || !canLoadNewerMessages())
-      return false
-    return loadNewerMessages()
-  }
+  const tryLoadNewerOnExplicitBottomIntent = (): boolean =>
+    deps.isAtBottomEdge() && loadNewerMessages()
 
   const stalledOlder = createMemo(() => {
     deps.geomVersion()
@@ -85,7 +75,7 @@ export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
 
   const suppressOlderPrefetchAtLiveTail = (): boolean => {
     const element = deps.getEl()
-    if (!element || cannotLeaveStickyBand(element))
+    if (!element || cannotScroll(element))
       return false
     if (!deps.hasNewer() && deps.isAtBottom())
       return true

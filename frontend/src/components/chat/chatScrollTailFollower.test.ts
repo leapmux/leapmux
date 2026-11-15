@@ -1,65 +1,58 @@
-import type { ScrollAnchor } from '~/stores/chatTypes'
 import { describe, expect, it, vi } from 'vitest'
+import { deferred } from '~/test-support/async'
 import { createChatTailFollower } from './chatScrollTailFollower'
+import { makeScrollContext, settleJump } from './useChatScroll.testkit'
 
-function deferred() {
-  let resolve!: () => void
-  let reject!: () => void
-  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
-    resolve = resolvePromise
-    reject = rejectPromise
-  })
-  return { promise, resolve, reject }
-}
-
-function setup(overrides: { hasNewer?: boolean, atBottom?: boolean, anchor?: ScrollAnchor | null } = {}) {
+/**
+ * A follower over spies. The harness holds one value for the request for the tail: the
+ * `followTail` stub sets it, the `leaveFollow` stub clears it, and `followRequested`
+ * returns it.
+ */
+function setup(overrides: { hasNewer?: boolean } = {}) {
   let hasNewer = overrides.hasNewer ?? false
-  let atBottom = overrides.atBottom ?? true
-  const jump = deferred()
+  let requested = false
+  const jump = deferred<void>()
   const calls = {
-    cancelAnimation: vi.fn(),
-    retakeControl: vi.fn(),
-    rearmBuffer: vi.fn(),
-    followTail: vi.fn(),
-    setAtBottom: vi.fn((value: boolean) => { atBottom = value }),
-    checkAtBottom: vi.fn(),
+    cancelScrollAnimation: vi.fn(),
+    retakeScrollControl: vi.fn(),
+    rearmScrollBufferFiller: vi.fn(),
+    followTail: vi.fn(() => {
+      requested = true
+    }),
+    leaveFollow: vi.fn(() => {
+      requested = false
+    }),
+    checkPosition: vi.fn(),
     stickToBottom: vi.fn(),
-    setAnchor: vi.fn(),
     animateToBottom: vi.fn(),
   }
-  const follower = createChatTailFollower({
-    getEl: () => ({ scrollTop: 25 } as HTMLDivElement),
-    hasNewerMessages: () => hasNewer,
-    cancelAnimation: calls.cancelAnimation,
-    retakeControl: calls.retakeControl,
-    rearmBuffer: calls.rearmBuffer,
-    currentAnchorState: () => overrides.anchor === undefined
-      ? null
-      : overrides.anchor === null
-        ? null
-        : { anchor: overrides.anchor, viewportOffsetRatio: 0.25 },
-    followTail: calls.followTail,
-    atBottomSnapshot: () => atBottom,
-    setAtBottom: calls.setAtBottom,
-    jumpToLatest: () => jump.promise,
-    checkAtBottom: calls.checkAtBottom,
-    stickToBottom: calls.stickToBottom,
-    setAnchor: calls.setAnchor,
-    anchorAtCurrentTop: () => ({ id: 'current', offsetWithinRow: 4 }),
-    animateToBottom: calls.animateToBottom,
-  })
-  const setHasNewer = (value: boolean) => {
-    hasNewer = value
-  }
-  const setAtBottom = (value: boolean) => {
-    atBottom = value
-  }
+  const follower = createChatTailFollower(
+    makeScrollContext({
+      hasNewerMessages: () => hasNewer,
+      cancelScrollAnimation: calls.cancelScrollAnimation,
+      retakeScrollControl: calls.retakeScrollControl,
+      rearmScrollBufferFiller: calls.rearmScrollBufferFiller,
+      followTail: calls.followTail,
+      leaveFollow: calls.leaveFollow,
+      followRequested: () => requested,
+      checkPosition: calls.checkPosition,
+    }),
+    {
+      jumpToLatest: () => jump.promise,
+      stickToBottom: calls.stickToBottom,
+      animateToBottom: calls.animateToBottom,
+    },
+  )
   return {
     follower,
     calls,
     jump,
-    setHasNewer,
-    setAtBottom,
+    setHasNewer: (value: boolean) => {
+      hasNewer = value
+    },
+    setRequested: (value: boolean) => {
+      requested = value
+    },
   }
 }
 
@@ -69,22 +62,21 @@ describe('createChatTailFollower', () => {
 
     follower.forceScrollToBottom()
 
-    expect(calls.cancelAnimation).toHaveBeenCalledOnce()
-    expect(calls.retakeControl).toHaveBeenCalledOnce()
+    expect(calls.cancelScrollAnimation).toHaveBeenCalledOnce()
+    expect(calls.retakeScrollControl).toHaveBeenCalledOnce()
     expect(calls.stickToBottom).toHaveBeenCalledOnce()
-    expect(calls.rearmBuffer).not.toHaveBeenCalled()
+    expect(calls.rearmScrollBufferFiller).not.toHaveBeenCalled()
   })
 
   it('jumps to the latest page and sticks after a successful catch-up', async () => {
     const harness = setup({ hasNewer: true })
 
     harness.follower.forceScrollToBottom()
-    expect(harness.calls.rearmBuffer).toHaveBeenCalledOnce()
+    expect(harness.calls.rearmScrollBufferFiller).toHaveBeenCalledOnce()
     expect(harness.calls.followTail).toHaveBeenCalledOnce()
     harness.setHasNewer(false)
     harness.jump.resolve()
-    await harness.jump.promise
-    await Promise.resolve()
+    await settleJump(harness.jump.promise)
 
     expect(harness.calls.stickToBottom).toHaveBeenCalledOnce()
   })
@@ -94,94 +86,84 @@ describe('createChatTailFollower', () => {
 
     harness.follower.forceScrollToBottom()
     harness.jump.resolve()
-    await harness.jump.promise
-    await Promise.resolve()
+    await settleJump(harness.jump.promise)
 
-    expect(harness.calls.checkAtBottom).toHaveBeenCalledOnce()
+    expect(harness.calls.checkPosition).toHaveBeenCalledOnce()
     expect(harness.calls.stickToBottom).not.toHaveBeenCalled()
   })
 
-  it('restores the prior anchor after a failed jump', async () => {
-    const anchor: ScrollAnchor = { id: 'before', offsetWithinRow: 8 }
-    const harness = setup({ hasNewer: true, anchor })
+  it('keeps the position of a reader who scrolled during a successful jump', async () => {
+    const harness = setup({ hasNewer: true })
 
     harness.follower.forceScrollToBottom()
-    harness.jump.reject()
-    await harness.jump.promise.catch(() => undefined)
-    await Promise.resolve()
+    harness.setRequested(false)
+    harness.setHasNewer(false)
+    harness.jump.resolve()
+    await settleJump(harness.jump.promise)
 
-    expect(harness.calls.setAnchor).toHaveBeenCalledWith(anchor, undefined, 0.25)
-    expect(harness.calls.checkAtBottom).toHaveBeenCalledOnce()
+    expect(harness.calls.stickToBottom).not.toHaveBeenCalled()
+    expect(harness.calls.checkPosition).not.toHaveBeenCalled()
+  })
+
+  it('leaves follow mode after a failed jump', async () => {
+    const harness = setup({ hasNewer: true })
+
+    harness.follower.forceScrollToBottom()
+    harness.jump.reject(new Error('the latest page did not load'))
+    await settleJump(harness.jump.promise)
+
+    expect(harness.calls.leaveFollow).toHaveBeenCalledOnce()
+    expect(harness.calls.checkPosition).toHaveBeenCalledOnce()
+    expect(harness.calls.leaveFollow.mock.invocationCallOrder[0]!)
+      .toBeLessThan(harness.calls.checkPosition.mock.invocationCallOrder[0]!)
   })
 
   it('preserves a mid-flight user scroll when the jump fails', async () => {
-    const harness = setup({
-      hasNewer: true,
-      anchor: { id: 'before', offsetWithinRow: 8 },
-    })
+    const harness = setup({ hasNewer: true })
 
     harness.follower.forceScrollToBottom()
-    harness.setAtBottom(false)
-    harness.jump.reject()
-    await harness.jump.promise.catch(() => undefined)
-    await Promise.resolve()
+    harness.setRequested(false)
+    harness.jump.reject(new Error('the latest page did not load'))
+    await settleJump(harness.jump.promise)
 
-    expect(harness.calls.setAnchor).not.toHaveBeenCalled()
-    expect(harness.calls.checkAtBottom).toHaveBeenCalledOnce()
+    expect(harness.calls.leaveFollow).not.toHaveBeenCalled()
+    expect(harness.calls.checkPosition).toHaveBeenCalledOnce()
   })
 
   it('ignores a failed jump after a newer jump starts', async () => {
-    let atBottom = true
-    const first = deferred()
-    const second = deferred()
+    let requested = false
+    const first = deferred<void>()
+    const second = deferred<void>()
     const jumps = [first, second]
     let jumpIndex = 0
-    const setAnchor = vi.fn()
-    const checkAtBottom = vi.fn()
-    const follower = createChatTailFollower({
-      getEl: () => ({ scrollTop: 25 } as HTMLDivElement),
-      hasNewerMessages: () => true,
-      cancelAnimation: vi.fn(),
-      retakeControl: vi.fn(),
-      rearmBuffer: vi.fn(),
-      currentAnchorState: () => ({
-        anchor: { id: `before-${jumpIndex}`, offsetWithinRow: 0 },
-        viewportOffsetRatio: 0,
+    const leaveFollow = vi.fn()
+    const checkPosition = vi.fn()
+    const follower = createChatTailFollower(
+      makeScrollContext({
+        hasNewerMessages: () => true,
+        followTail: () => {
+          requested = true
+        },
+        leaveFollow,
+        followRequested: () => requested,
+        checkPosition,
       }),
-      followTail: vi.fn(),
-      atBottomSnapshot: () => atBottom,
-      setAtBottom: (value) => { atBottom = value },
-      jumpToLatest: () => jumps[jumpIndex++]!.promise,
-      checkAtBottom,
-      stickToBottom: vi.fn(),
-      setAnchor,
-      anchorAtCurrentTop: () => null,
-      animateToBottom: vi.fn(),
-    })
+      {
+        jumpToLatest: () => jumps[jumpIndex++]!.promise,
+        stickToBottom: vi.fn(),
+        animateToBottom: vi.fn(),
+      },
+    )
 
     follower.forceScrollToBottom()
     follower.forceScrollToBottom()
     second.resolve()
-    await second.promise
-    await Promise.resolve()
-    first.reject()
-    await first.promise.catch(() => undefined)
-    await Promise.resolve()
+    await settleJump(second.promise)
+    first.reject(new Error('the latest page did not load'))
+    await settleJump(first.promise)
 
-    expect(setAnchor).not.toHaveBeenCalled()
-    expect(checkAtBottom).toHaveBeenCalledOnce()
-  })
-
-  it('anchors at the current viewport after a failed jump from follow mode', async () => {
-    const harness = setup({ hasNewer: true, anchor: null })
-
-    harness.follower.forceScrollToBottom()
-    harness.jump.reject()
-    await harness.jump.promise.catch(() => undefined)
-    await Promise.resolve()
-
-    expect(harness.calls.setAnchor).toHaveBeenCalledWith({ id: 'current', offsetWithinRow: 4 })
-    expect(harness.calls.checkAtBottom).toHaveBeenCalledOnce()
+    expect(leaveFollow).not.toHaveBeenCalled()
+    expect(checkPosition).toHaveBeenCalledOnce()
   })
 
   it('selects a latest-page jump or local animation from window state', () => {
@@ -191,6 +173,66 @@ describe('createChatTailFollower', () => {
 
     harness.setHasNewer(true)
     harness.follower.scrollToBottom()
-    expect(harness.calls.rearmBuffer).toHaveBeenCalledOnce()
+    expect(harness.calls.rearmScrollBufferFiller).toHaveBeenCalledOnce()
+  })
+
+  describe('pendingJump', () => {
+    it('reports no jump before a request', () => {
+      const { follower } = setup({ hasNewer: true })
+      expect(follower.pendingJump()).toBeNull()
+    })
+
+    it('reports the pending jump until it resolves', async () => {
+      const harness = setup({ hasNewer: true })
+      harness.follower.forceScrollToBottom()
+      expect(harness.follower.pendingJump()).toEqual(expect.any(Number))
+      harness.jump.resolve()
+      await settleJump(harness.jump.promise)
+      expect(harness.follower.pendingJump()).toBeNull()
+    })
+
+    it('reports no jump after a failure', async () => {
+      const harness = setup({ hasNewer: true })
+      harness.follower.forceScrollToBottom()
+      harness.jump.reject(new Error('the latest page did not load'))
+      await settleJump(harness.jump.promise)
+      expect(harness.follower.pendingJump()).toBeNull()
+    })
+
+    it('reports the newer of two jumps', async () => {
+      const first = deferred<void>()
+      const second = deferred<void>()
+      const jumps = [first, second]
+      let jumpIndex = 0
+      const follower = createChatTailFollower(
+        makeScrollContext({
+          hasNewerMessages: () => true,
+          followRequested: () => true,
+        }),
+        {
+          jumpToLatest: () => jumps[jumpIndex++]!.promise,
+          stickToBottom: vi.fn(),
+          animateToBottom: vi.fn(),
+        },
+      )
+      follower.forceScrollToBottom()
+      const firstJump = follower.pendingJump()
+      follower.forceScrollToBottom()
+      const secondJump = follower.pendingJump()
+      expect(secondJump).not.toBe(firstJump)
+      expect(secondJump).toEqual(expect.any(Number))
+
+      first.resolve()
+      await settleJump(first.promise)
+      expect(follower.pendingJump()).toBe(secondJump)
+    })
+
+    it('reports no jump after scrollToBottom animates', () => {
+      const harness = setup({ hasNewer: true })
+      harness.follower.forceScrollToBottom()
+      harness.setHasNewer(false)
+      harness.follower.scrollToBottom()
+      expect(harness.follower.pendingJump()).toBeNull()
+    })
   })
 })

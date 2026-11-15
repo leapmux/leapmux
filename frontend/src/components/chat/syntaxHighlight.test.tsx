@@ -1,5 +1,6 @@
 import type { MarkdownRenderContext } from './renderContext'
 import { render } from '@solidjs/testing-library'
+import { createSignal } from 'solid-js'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { _resetTokenCache, setCachedTokens, toCachedTokens } from '~/lib/tokenCache'
 import { recordWorkerRequests, settleWorkerReplies } from '~/test-support/fakeWorker'
@@ -110,6 +111,29 @@ describe('json/bash async token highlighting', () => {
 
     expect(tokenized()).toEqual([])
     expect(container.querySelector('[data-shiki-token]')).toBeNull()
+  })
+
+  it('holds the tokens while a text selection is active', async () => {
+    // Token spans replace the text nodes, so tokens that arrive under the reader's selection
+    // would clear it. The selection alone holds them, with no scroll pause.
+    const tokenized = recordTokenizeRequests()
+    const [selecting, setSelecting] = createSignal(true)
+    const context: MarkdownRenderContext = { textSelectionActive: selecting }
+
+    const { container } = render(() => <JsonHighlightHtml code={'{"a":1}'} context={context} />)
+    await settleWorkerReplies()
+
+    expect(tokenized()).toEqual([])
+    expect(container.querySelector('[data-shiki-token]')).toBeNull()
+
+    // The selection ends, and the held work runs.
+    setSelecting(false)
+    await settleWorkerReplies()
+
+    expect(tokenized()).toEqual([
+      ['json', '{"a":1}'],
+    ])
+    expect(tokenTexts(container).join('')).toBe('{"a":1}')
   })
 })
 

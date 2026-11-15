@@ -62,11 +62,11 @@ interface PremeasureTask {
  * One shared frame for ALL pending premeasure rows, split into a read phase and a
  * commit phase. A band shift mounts up to the whole look-ahead band at once, and each
  * row's onMeasure commit synchronously rebuilds the offset map, rewrites the spacer
- * height, and runs the scroll re-pin effect -- so interleaving each row's rect read
+ * height, and runs the geometry effect of the scroll hook -- so interleaving each row's rect read
  * with its commit forced a fresh reflow per row (k reflow + O(window) rebuild cycles
  * per band shift). Reading every pending row's rect FIRST costs one reflow total, and
  * committing them inside one batch() lets the downstream effects (spacer write,
- * re-pin) run once per frame instead of once per row.
+ * layout shift) run once per frame instead of once per row.
  */
 function createSharedPremeasureFrame() {
   const pending = new Map<string, PremeasureTask>()

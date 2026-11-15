@@ -87,7 +87,7 @@ export interface ChatPremeasureBandsDeps {
   /** The per-row virtual descriptors, index-aligned with visibleEntries. */
   virtualItems: Accessor<readonly VirtualItem[]>
   /** The virtualizer geometry surface the bands, warm-up, and queue consult. */
-  virt: Pick<UseChatVirtualizerResult, 'range' | 'hasMeasuredHeight' | 'hasPendingPremeasuredHeight' | 'primeHeight'>
+  virt: Pick<UseChatVirtualizerResult, 'range' | 'hasMeasuredHeight' | 'primeHeight'>
   /** Effective inner content width; the bands stay empty until it is measured (> 0). */
   contentWidth: Accessor<number>
   /** id -> entry for the visible window (built once in ChatView; shared with its crossfade slice). */

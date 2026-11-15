@@ -1,103 +1,91 @@
-import type { ScrollAnchor } from '~/stores/chatTypes'
+import type { ScrollContext } from './useChatScroll'
 
-interface AnchorState {
-  anchor: ScrollAnchor
-  viewportOffsetRatio: number
-}
-
-export interface ChatTailFollowerDeps {
-  getEl: () => HTMLDivElement | undefined
-  hasNewerMessages: () => boolean
-  cancelAnimation: () => void
-  retakeControl: () => void
-  rearmBuffer: () => void
-  currentAnchorState: () => AnchorState | null
-  followTail: () => void
-  atBottomSnapshot: () => boolean
-  setAtBottom: (value: boolean) => void
+/** The deps that only createChatTailFollower reads, beyond the shared ScrollContext. */
+export interface ChatTailFollowerExtras {
+  /** Replace the message window with the latest page. */
   jumpToLatest: () => Promise<void> | void
-  checkAtBottom: () => void
   stickToBottom: () => void
-  setAnchor: (anchor: ScrollAnchor | null, captureTop?: number, viewportOffsetRatio?: number) => void
-  anchorAtCurrentTop: () => ScrollAnchor | null
   animateToBottom: () => void
 }
 
 /**
  * Own catch-up, failure recovery, and the public ways to return to the live tail.
  *
- * A latest-page jump replaces the message window. The controller records the
- * prior anchor before it enters follow mode. A failed jump restores that anchor,
- * unless the user scrolled while the request was active. A successful jump only
- * sticks when no newer page appeared during the request.
+ * A latest-page jump replaces the message window. The controller records the request
+ * for the tail before the jump. A move of the reader during the request ends it, and a
+ * jump that settles after that leaves the view where the reader went. A successful jump
+ * sticks only when no newer page appeared during the request. A failed jump ends the
+ * request, so no later restore or resize moves the view for it.
  */
-export function createChatTailFollower(deps: ChatTailFollowerDeps) {
+export function createChatTailFollower(ctx: ScrollContext, extras: ChatTailFollowerExtras) {
   let jumpRequestRevision = 0
+  // Whether the jump of the current revision did not run its `then` or `catch` branch yet.
+  // A jump of an older revision is never pending: the request that superseded it ended it.
+  let jumpPending = false
+
+  // A request that supersedes the pending jump: the jump's branches then do nothing.
+  const supersedeJump = (): number => {
+    jumpPending = false
+    return ++jumpRequestRevision
+  }
 
   const forceScrollToBottom = (): void => {
-    const requestRevision = ++jumpRequestRevision
-    deps.cancelAnimation()
-    deps.retakeControl()
-    if (!deps.hasNewerMessages()) {
-      deps.stickToBottom()
+    const requestRevision = supersedeJump()
+    ctx.cancelScrollAnimation()
+    ctx.retakeScrollControl()
+    if (!ctx.hasNewerMessages()) {
+      extras.stickToBottom()
       return
     }
 
-    deps.rearmBuffer()
-    const previousAnchorState = deps.currentAnchorState()
-    deps.followTail()
-    deps.setAtBottom(true)
-    void Promise.resolve(deps.jumpToLatest())
+    ctx.rearmScrollBufferFiller()
+    ctx.followTail()
+    jumpPending = true
+    // Whether this jump is still the current request; it then stops being pending.
+    const settle = () => {
+      const current = requestRevision === jumpRequestRevision
+      if (current)
+        jumpPending = false
+      return current
+    }
+    void Promise.resolve(extras.jumpToLatest())
       .then(() => {
-        if (requestRevision !== jumpRequestRevision)
+        if (!settle())
           return
-        if (!deps.atBottomSnapshot())
+        if (!ctx.followRequested())
           return
-        if (deps.hasNewerMessages())
-          deps.checkAtBottom()
+        if (ctx.hasNewerMessages())
+          ctx.checkPosition()
         else
-          deps.stickToBottom()
+          extras.stickToBottom()
       })
       .catch(() => {
-        if (requestRevision !== jumpRequestRevision)
+        if (!settle())
           return
-        if (!deps.atBottomSnapshot()) {
-          deps.checkAtBottom()
-          return
-        }
-        if (previousAnchorState) {
-          deps.setAnchor(
-            previousAnchorState.anchor,
-            undefined,
-            previousAnchorState.viewportOffsetRatio,
-          )
-        }
-        else {
-          deps.setAnchor(deps.getEl()
-            ? deps.anchorAtCurrentTop()
-            : null)
-        }
-        deps.checkAtBottom()
+        if (ctx.followRequested())
+          ctx.leaveFollow()
+        ctx.checkPosition()
       })
-  }
-
-  const jumpToBottom = (): void => {
-    jumpRequestRevision++
-    deps.cancelAnimation()
-    deps.stickToBottom()
   }
 
   const scrollToBottom = (): void => {
-    if (deps.hasNewerMessages()) {
+    if (ctx.hasNewerMessages()) {
       forceScrollToBottom()
     }
     else {
-      jumpRequestRevision++
-      deps.animateToBottom()
+      supersedeJump()
+      extras.animateToBottom()
     }
   }
 
-  return { forceScrollToBottom, jumpToBottom, scrollToBottom }
+  return {
+    forceScrollToBottom,
+    scrollToBottom,
+    /** The revision of the latest-page jump that did not settle yet, or `null`. */
+    pendingJump: (): number | null => jumpPending
+      ? jumpRequestRevision
+      : null,
+  }
 }
 
 export type ChatTailFollower = ReturnType<typeof createChatTailFollower>

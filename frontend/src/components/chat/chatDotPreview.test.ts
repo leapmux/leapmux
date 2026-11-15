@@ -1,17 +1,18 @@
+import type { CardLane } from './chatDotPreview'
 import type { DotCluster } from './chatRailPolicy'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
-import { createDotPreview, POINTER_CLOSE_DELAY_MS } from './chatDotPreview'
+import { cardLaneFor, createDotPreview, POINTER_CLOSE_DELAY_MS } from './chatDotPreview'
 
 // Flush queued Solid effects (the stale-hover re-anchor effect is not a pull-based memo).
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 
-// activeDot / cardTopPx are memos (pull-based), so these read synchronously after a signal
-// write -- no effect flush needed. The scrub-warm DEBOUNCE effect (instant-hover vs settled-scrub
-// timing) is exercised end-to-end by ChatScrollRail.test.tsx; here we pin the pure reactive
-// selection + placement the component delegates to this unit, plus the open/close policy (which
-// needs fake timers for the close delay).
+// activeDot is a memo (pull-based), so these read synchronously after a signal write -- no
+// effect flush needed. The scrub-warm DEBOUNCE effect (instant-hover vs settled-scrub timing) is
+// exercised end-to-end by ChatScrollRail.test.tsx; here we pin the pure reactive selection and
+// the card placement (cardLaneFor) the component delegates to this unit, plus the open/close
+// policy (which needs fake timers for the close delay).
 
 afterEach(() => {
   vi.useRealTimers()
@@ -35,13 +36,11 @@ describe('createDotPreview', () => {
       const [drag] = createSignal<number | null>(null)
       const [railHeight] = createSignal(200)
       const [thumbHeightPx] = createSignal(24)
-      const [cardHeightPx] = createSignal(0)
       const p = createDotPreview({
         dots,
         drag,
         railHeight,
         thumbHeightPx,
-        cardHeightPx,
       })
       expect(p.activeDot()).toBeNull()
       p.openDot(dot(5n, 100))
@@ -60,13 +59,11 @@ describe('createDotPreview', () => {
       const [drag] = createSignal<number | null>(0.5)
       const [railHeight] = createSignal(200)
       const [thumbHeightPx] = createSignal(24)
-      const [cardHeightPx] = createSignal(0)
       const p = createDotPreview({
         dots,
         drag,
         railHeight,
         thumbHeightPx,
-        cardHeightPx,
       })
       p.openDot(dot(9n, 20))
       expect(p.activeDot()?.seq).toBe(5n) // the scrub target wins over the hover
@@ -81,13 +78,11 @@ describe('createDotPreview', () => {
       const [drag] = createSignal<number | null>(0.5)
       const [railHeight] = createSignal(200)
       const [thumbHeightPx] = createSignal(24)
-      const [cardHeightPx] = createSignal(0)
       const p = createDotPreview({
         dots,
         drag,
         railHeight,
         thumbHeightPx,
-        cardHeightPx,
       })
       // A mouse press starts ON a dot, so the pointer channel holds that dot for the whole
       // gesture: the captured drag fires no pointerleave to release it. The rail ABANDONS the
@@ -107,13 +102,11 @@ describe('createDotPreview', () => {
       const [drag, setDrag] = createSignal<number | null>(0.5)
       const [railHeight] = createSignal(200)
       const [thumbHeightPx] = createSignal(24)
-      const [cardHeightPx] = createSignal(0)
       const p = createDotPreview({
         dots,
         drag,
         railHeight,
         thumbHeightPx,
-        cardHeightPx,
       })
       p.openDot(dot(9n, 20))
       p.abandonDot() // the grab became a scrub
@@ -134,112 +127,16 @@ describe('createDotPreview', () => {
       const [drag] = createSignal<number | null>(0.5)
       const [railHeight] = createSignal(200)
       const [thumbHeightPx] = createSignal(24)
-      const [cardHeightPx] = createSignal(0)
       const p = createDotPreview({
         dots,
         drag,
         railHeight,
         thumbHeightPx,
-        cardHeightPx,
       })
       p.openDot(dot(9n, 20)) // the reader hovers a dot while the fetch is still in flight
       // Masking the hover channel for as long as drag() is non-null would show nothing at all
       // here, for as long as the fetch took.
       expect(p.activeDot()?.seq).toBe(9n)
-      dispose()
-    }))
-
-  it('clamps cardTopPx for a top/bottom dot inside the rail so the card is not clipped', () =>
-    createRoot((dispose) => {
-      const [dots] = createSignal<DotCluster[]>([
-        dot(1n, 0),
-        dot(2n, 200),
-      ])
-      const [drag] = createSignal<number | null>(null)
-      const [railHeight] = createSignal(200)
-      const [thumbHeightPx] = createSignal(24)
-      const [cardHeightPx] = createSignal(120)
-      const p = createDotPreview({
-        dots,
-        drag,
-        railHeight,
-        thumbHeightPx,
-        cardHeightPx,
-      })
-      p.openDot(dot(1n, 0)) // a dot at the very top
-      expect(p.cardTopPx()).toBe(60) // pushed down by its own half-height, not past the wrapper
-      p.openDot(dot(2n, 200)) // a dot at the very bottom
-      expect(p.cardTopPx()).toBe(140)
-      dispose()
-    }))
-
-  it('clamps cardTopPx on the card\'s MEASURED height, not on the max-height cap', () =>
-    createRoot((dispose) => {
-      const [dots] = createSignal<DotCluster[]>([
-        dot(1n, 8),
-      ])
-      const [drag] = createSignal<number | null>(null)
-      const [railHeight] = createSignal(600)
-      const [thumbHeightPx] = createSignal(24)
-      const [cardHeightPx] = createSignal(40) // a one-line preview, far short of the 200px cap
-      const p = createDotPreview({
-        dots,
-        drag,
-        railHeight,
-        thumbHeightPx,
-        cardHeightPx,
-      })
-      p.openDot(dot(1n, 8))
-      // Clamping against half the CAP would put this card at y=100 -- 92px from the 8px dot it
-      // describes, pointing at nothing. Its own half-height is the real floor.
-      expect(p.cardTopPx()).toBe(20)
-      dispose()
-    }))
-
-  it('still points cardTopPx at its dot on a rail shorter than the card cap', () =>
-    createRoot((dispose) => {
-      const [dots] = createSignal<DotCluster[]>([
-        dot(1n, 40),
-        dot(2n, 120),
-      ])
-      const [drag] = createSignal<number | null>(null)
-      const [railHeight] = createSignal(160) // shorter than 2 * the 200px cap
-      const [thumbHeightPx] = createSignal(24)
-      const [cardHeightPx] = createSignal(40)
-      const p = createDotPreview({
-        dots,
-        drag,
-        railHeight,
-        thumbHeightPx,
-        cardHeightPx,
-      })
-      // Against the cap the clamp interval collapsed to the single point rh/2, so EVERY dot's
-      // card sat at the rail midpoint -- the short-viewport case the e2e run exercises.
-      p.openDot(dot(1n, 40))
-      expect(p.cardTopPx()).toBe(40)
-      p.openDot(dot(2n, 120))
-      expect(p.cardTopPx()).toBe(120)
-      dispose()
-    }))
-
-  it('puts an unmeasured card exactly on its dot, rather than at a guessed offset', () =>
-    createRoot((dispose) => {
-      const [dots] = createSignal<DotCluster[]>([
-        dot(1n, 8),
-      ])
-      const [drag] = createSignal<number | null>(null)
-      const [railHeight] = createSignal(600)
-      const [thumbHeightPx] = createSignal(24)
-      const [cardHeightPx] = createSignal(0) // the frame before the card reports its size
-      const p = createDotPreview({
-        dots,
-        drag,
-        railHeight,
-        thumbHeightPx,
-        cardHeightPx,
-      })
-      p.openDot(dot(1n, 8))
-      expect(p.cardTopPx()).toBe(8)
       dispose()
     }))
 
@@ -251,13 +148,11 @@ describe('createDotPreview', () => {
       const [drag] = createSignal<number | null>(null)
       const [railHeight] = createSignal(200)
       const [thumbHeightPx] = createSignal(24)
-      const [cardHeightPx] = createSignal(0)
       const p = createDotPreview({
         dots,
         drag,
         railHeight,
         thumbHeightPx,
-        cardHeightPx,
       })
       p.openDot(dot(5n, 100))
       expect(p.activeDot()?.seq).toBe(5n)
@@ -281,13 +176,11 @@ describe('createDotPreview', () => {
       const [drag] = createSignal<number | null>(null)
       const [railHeight] = createSignal(200)
       const [thumbHeightPx] = createSignal(24)
-      const [cardHeightPx] = createSignal(0)
       const p = createDotPreview({
         dots,
         drag,
         railHeight,
         thumbHeightPx,
-        cardHeightPx,
       })
       p.openDot(dot(5n, 100))
       expect(p.activeDot()?.seq).toBe(5n)
@@ -310,13 +203,11 @@ describe('createDotPreview', () => {
       const [drag] = createSignal<number | null>(null)
       const [railHeight] = createSignal(200)
       const [thumbHeightPx] = createSignal(24)
-      const [cardHeightPx] = createSignal(0)
       const p = createDotPreview({
         dots,
         drag,
         railHeight,
         thumbHeightPx,
-        cardHeightPx,
       })
       // The focus channel is a second holder of a cluster reference, so it needs the same
       // re-anchor the pointer channel gets -- otherwise a streaming tick strands a focused dot's
@@ -347,13 +238,11 @@ describe('createDotPreview', () => {
       const [drag] = createSignal<number | null>(null)
       const [railHeight] = createSignal(200)
       const [thumbHeightPx] = createSignal(24)
-      const [cardHeightPx] = createSignal(0)
       const p = createDotPreview({
         dots,
         drag,
         railHeight,
         thumbHeightPx,
-        cardHeightPx,
       })
       p.openDot(dot(5n, 100))
       p.closeSoon()
@@ -372,6 +261,90 @@ describe('createDotPreview', () => {
   })
 })
 
+/**
+ * The top edge (rail px) at which a browser lays out a card that is `heightPx` tall in `lane`.
+ * jsdom computes no layout, so this models the CSS of previewCardLane and previewCard
+ * (`./ChatScrollRail.css.ts`): a flex column whose single item has auto block margins. Positive
+ * free space goes to the margins in equal halves. With negative free space the margins are 0 and
+ * the item stays at the start of the line, which is the top of a column and the bottom of a
+ * reversed column.
+ */
+function cardTopEdge(lane: CardLane, heightPx: number): number {
+  const freePx = lane.heightPx - heightPx
+  if (freePx >= 0)
+    return lane.topPx + freePx / 2
+  return lane.edge === 'top'
+    ? lane.topPx
+    : lane.topPx + lane.heightPx - heightPx
+}
+
+describe('cardLaneFor', () => {
+  it('keeps a near-edge card inside the rail in the frame its preview grows it', () => {
+    // The card showed "Loading preview…" and was 32px tall. The preview lands and the card is
+    // 51px tall. The browser lays the card out at that height in this frame, so this first paint
+    // must already sit inside the rail. The lane reads no card height, so no report can lag it.
+    expect(cardTopEdge(cardLaneFor(8, 200), 32)).toBe(0)
+    expect(cardTopEdge(cardLaneFor(8, 200), 51)).toBe(0)
+    expect(cardTopEdge(cardLaneFor(192, 200), 32)).toBe(200 - 32)
+    expect(cardTopEdge(cardLaneFor(192, 200), 51)).toBe(200 - 51)
+  })
+
+  it('centres a card on its dot when the card fits between the dot and the nearer rail edge', () => {
+    expect(cardTopEdge(cardLaneFor(300, 600), 40)).toBe(280)
+    expect(cardTopEdge(cardLaneFor(100, 600), 40)).toBe(80)
+    expect(cardTopEdge(cardLaneFor(500, 600), 40)).toBe(480)
+  })
+
+  it('pushes a card in from the rail edge that it would cross, by its own height', () => {
+    // A one-line card near the top stays next to its dot. Clamping it as though it were as tall
+    // as the 200px max-height cap would put it ~90px away from the dot it describes.
+    expect(cardTopEdge(cardLaneFor(8, 600), 40)).toBe(0)
+    expect(cardTopEdge(cardLaneFor(0, 200), 120)).toBe(0)
+    expect(cardTopEdge(cardLaneFor(200, 200), 120)).toBe(80)
+  })
+
+  it('centres each card on its own dot on a rail shorter than twice the card cap', () => {
+    // Clamped against the cap, every card on such a rail sat at the rail midpoint.
+    expect(cardTopEdge(cardLaneFor(40, 160), 40)).toBe(20)
+    expect(cardTopEdge(cardLaneFor(120, 160), 40)).toBe(100)
+  })
+
+  it('places every card that fits the rail where a clamp on its laid-out height puts it', () => {
+    const railPx = 300
+    for (let dotPx = 0; dotPx <= railPx; dotPx += 5) {
+      for (let heightPx = 0; heightPx <= railPx; heightPx += 7) {
+        const clamped = Math.min(Math.max(dotPx - heightPx / 2, 0), railPx - heightPx)
+        expect(cardTopEdge(cardLaneFor(dotPx, railPx), heightPx), `dot ${dotPx}, card ${heightPx}`).toBe(clamped)
+      }
+    }
+  })
+
+  it('reaches the nearer rail edge on both sides of its dot', () => {
+    expect(cardLaneFor(30, 200)).toEqual({ topPx: 0, heightPx: 60, edge: 'top' })
+    expect(cardLaneFor(100, 200)).toEqual({ topPx: 0, heightPx: 200, edge: 'top' })
+    expect(cardLaneFor(150, 200)).toEqual({ topPx: 100, heightPx: 100, edge: 'bottom' })
+  })
+
+  it('fits a card as tall as the rail between both rail edges', () => {
+    // The card's max-height is never above the rail height (PREVIEW_CARD_RAIL_HEIGHT_VAR), so a
+    // card as tall as the rail is the tallest one. Wherever its dot sits, the card then fills the
+    // rail exactly: its top edge is on the rail top, and its bottom edge on the rail bottom.
+    const railPx = 100
+    for (let dotPx = 0; dotPx <= railPx; dotPx += 5)
+      expect(cardTopEdge(cardLaneFor(dotPx, railPx), railPx), `dot ${dotPx}`).toBe(0)
+  })
+
+  it('treats a dot outside the rail as one on the nearer rail edge', () => {
+    expect(cardLaneFor(-20, 200)).toEqual({ topPx: 0, heightPx: 0, edge: 'top' })
+    expect(cardLaneFor(260, 200)).toEqual({ topPx: 200, heightPx: 0, edge: 'bottom' })
+  })
+
+  it('gives an empty lane at the rail top before the rail has a height', () => {
+    expect(cardLaneFor(12, 0)).toEqual({ topPx: 0, heightPx: 0, edge: 'top' })
+    expect(cardLaneFor(12, -5)).toEqual({ topPx: 0, heightPx: 0, edge: 'top' })
+  })
+})
+
 describe('createDotPreview open/close policy', () => {
   /** A controller over one dot at topPx 100, with no drag in progress. */
   function oneDot() {
@@ -382,13 +355,11 @@ describe('createDotPreview open/close policy', () => {
     const [drag] = createSignal<number | null>(null)
     const [railHeight] = createSignal(200)
     const [thumbHeightPx] = createSignal(24)
-    const [cardHeightPx] = createSignal(0)
     return createDotPreview({
       dots,
       drag,
       railHeight,
       thumbHeightPx,
-      cardHeightPx,
     })
   }
 
