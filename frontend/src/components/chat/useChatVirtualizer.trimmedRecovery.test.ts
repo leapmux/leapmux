@@ -1,13 +1,14 @@
-import type { VirtualItem } from './useChatVirtualizer'
+import type { RowHeightCache } from './chatRowHeightCache'
+import type { ChatRowItem } from './chatRowItem'
 import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { HEIGHT_CACHE_EVICTION_BATCH, HEIGHT_CACHE_MAX } from './chatRowHeightCache'
-import { fakeRow, makeItems, plainItems, setup } from './useChatVirtualizer.testkit'
+import { fakeRow, makeItems, plainItems, setup, spyOnUnmeasuredRowReports } from './useChatVirtualizer.testkit'
 
 describe('useChatVirtualizer geometry', () => {
   describe('scrollTopNearAnchor (trimmed-row recovery)', () => {
     // Five plain rows use offsets 0, 120, 240, 360, and 480.
-    function seqItems(): VirtualItem[] {
+    function seqItems(): ChatRowItem[] {
       const rows = [10, 20, 30, 40, 50].map(n => ({
         id: `m${n}`,
         hasSpanLines: false,
@@ -54,7 +55,7 @@ describe('useChatVirtualizer geometry', () => {
   it('resolves a row at a height that the reader did not see PROPORTIONALLY so a measure-smaller keeps the fraction (no yank to the bottom)', () => {
     createRoot((dispose) => {
       // A hidden copy measured row 'a' at 400px before the row mounts.
-      const items: VirtualItem[] = [
+      const items: ChatRowItem[] = [
         { id: 'a', hasSpanLines: false },
         { id: 'b', hasSpanLines: false },
       ]
@@ -170,21 +171,31 @@ describe('useChatVirtualizer geometry', () => {
     })
   })
 
+  /** Commit 100px for each of `count` staged rows from `m<startSeq>` on, as their hidden copies do. */
+  function commitStagedRows(cache: RowHeightCache, count: number, startSeq: number): void {
+    for (const row of plainItems(count, startSeq))
+      cache.commit(row, 100, row.heightKey, 'premeasure')
+  }
+
   it('evicts the least-recently-measured heights once over the cap', () => {
     createRoot((dispose) => {
-      // One row more than the cap, and no row mounted or protected as loaded.
-      const { virt } = setup(plainItems(HEIGHT_CACHE_MAX + 1), { measured: false })
+      // The list holds row m1, and no row is mounted or protected as loaded. The app
+      // protects each loaded row (see RowHeightCacheOptions.loadedIds), and the kit does not.
+      const reports = spyOnUnmeasuredRowReports()
+      const { virt, cache } = setup(plainItems(1))
       // Measured first -> the LRU tail and first eviction target.
       virt.measure('m1', 500)
       expect(virt.heightOfId('m1')).toBe(500)
       // HEIGHT_CACHE_MAX more distinct rows push the cache one past the cap, so the
-      // eviction drops the oldest heights, one batch below the cap: the height of m1 is
-      // evicted, and the row has no height again.
-      for (let i = 2; i <= HEIGHT_CACHE_MAX + 1; i++)
-        virt.measure(`m${i}`, 100)
+      // eviction drops the oldest heights, one batch below the cap.
+      commitStagedRows(cache, HEIGHT_CACHE_MAX, 2)
+      expect(cache.heightOf({ id: `m${HEIGHT_CACHE_EVICTION_BATCH + 1}` })).toBeUndefined()
+      expect(cache.heightOf({ id: `m${HEIGHT_CACHE_EVICTION_BATCH + 2}` })).toBe(100)
+      // The height of m1 is evicted too, so the listed row has no height again: it takes no
+      // space, and the virtualizer reports it.
+      expect(cache.heightOf({ id: 'm1' })).toBeUndefined()
       expect(virt.heightOfId('m1')).toBe(0)
-      expect(virt.heightOfId(`m${HEIGHT_CACHE_EVICTION_BATCH + 1}`)).toBe(0)
-      expect(virt.heightOfId(`m${HEIGHT_CACHE_EVICTION_BATCH + 2}`)).toBe(100)
+      expect(reports.reportedIds()).toEqual(['m1'])
       dispose()
     })
   })
@@ -192,18 +203,17 @@ describe('useChatVirtualizer geometry', () => {
   it('never evicts a MOUNTED row, even when it is the oldest measured', () => {
     createRoot((dispose) => {
       try {
-        const { virt } = setup(plainItems(HEIGHT_CACHE_MAX + 2), { measured: false }) // item m1 at index 0
+        const { virt, cache } = setup(plainItems(1)) // item m1 at index 0
         // Mounting a keyed row attaches its element, joining the protected set and
-        // measuring it (333). Attached FIRST, so m1 is the oldest insertion ->
+        // measuring it (333). Measured FIRST, so m1 is the oldest entry ->
         // normally the first eviction target once the cache crosses its cap.
         virt.attachRow('m1', fakeRow(333))
-        // Flood the height cache past the cap (HEIGHT_CACHE_MAX) with the other, UNMOUNTED
+        // Flood the height cache past the cap (HEIGHT_CACHE_MAX) with staged, UNMOUNTED
         // rows. Without the mounted-row protection m1 (oldest) would be evicted and
         // lose its height; mounted, it keeps its 333px, and the oldest unmounted row goes.
-        for (let i = 2; i <= HEIGHT_CACHE_MAX + 2; i++)
-          virt.measure(`m${i}`, 100)
+        commitStagedRows(cache, HEIGHT_CACHE_MAX + 1, 2)
         expect(virt.heightOfIndex(0)).toBe(333)
-        expect(virt.heightOfId('m2')).toBe(0)
+        expect(cache.heightOf({ id: 'm2' })).toBeUndefined()
         // Unmount m1 -> it leaves the protected set but keeps its cached height
         // (flash-free re-entry); a further over-cap flood may now evict it.
       }

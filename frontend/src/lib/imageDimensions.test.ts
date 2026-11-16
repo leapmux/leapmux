@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { box, chars, fullBox, ispeBox, jpegBytes, u16be, u32be } from '~/test-support/imageBytes'
+import { box, chars, fullBox, ispeBox, jpegBytes, pngBytes, u16be, u32be } from '~/test-support/imageBytes'
 import { imageHeaderBytesNeeded, sniffImageDimensionsFromBase64, sniffImageDimensionsFromBytes, sniffImageDimensionsFromDataUrl } from './imageDimensions'
 
 function b64(bytes: number[]): string {
@@ -20,23 +20,6 @@ function u32le(v: number): number[] {
 }
 
 // --- fixture builders ---
-
-function pngBytes(width: number, height: number): number[] {
-  return [
-    0x89,
-    0x50,
-    0x4E,
-    0x47,
-    0x0D,
-    0x0A,
-    0x1A,
-    0x0A, // signature
-    ...u32be(13),
-    ...chars('IHDR'),
-    ...u32be(width),
-    ...u32be(height),
-  ]
-}
 
 function gifBytes(width: number, height: number): number[] {
   return [

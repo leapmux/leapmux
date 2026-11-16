@@ -53,8 +53,6 @@ function harness(opts: {
   nearAnchor?: number | null
   followRequested?: boolean
   lastAnchor?: () => ScrollAnchor | null
-  /** Whether the hook's restoreAnchor placed the view. Default: false. */
-  anchorRestored?: boolean
   context?: Partial<ScrollContext>
 } = {}) {
   const el = { scrollTop: 0, scrollHeight: 5000, clientHeight: 500 } as HTMLDivElement
@@ -75,7 +73,6 @@ function harness(opts: {
     forceScrollToBottom: vi.fn(),
     clearSavedViewportScroll: vi.fn(),
     savedViewportScroll: () => opts.saved,
-    restoreAnchor: vi.fn((_anchor: ScrollAnchor | null) => opts.anchorRestored ?? false),
     lastAnchor: vi.fn(opts.lastAnchor ?? (() => null)),
     onGeometrySettled: vi.fn(),
   }
@@ -155,14 +152,14 @@ describe('chatScrollViewportRestore handleResize', () => {
     expect(extras.clearSavedViewportScroll).toHaveBeenCalledOnce()
   })
 
-  it('passes the anchor of the ResizeObserver callback to the restore', () => {
+  it('asks for the place of the anchor of the ResizeObserver callback at a show', () => {
     const frames = stubFrames()
     const anchorA: ScrollAnchor = { id: 'a', offsetWithinRow: 1 }
     const anchorB: ScrollAnchor = { id: 'b', offsetWithinRow: 2 }
     let current = anchorA
     // No saved state and no request: the show takes the recheck path. The test does
     // not call initClientHeight, so the pane counts as hidden before the resize.
-    const { restore, extras, recordPosition } = harness({
+    const { restore, ctx, recordPosition } = harness({
       saved: undefined,
       lastAnchor: () => current,
     })
@@ -170,24 +167,100 @@ describe('chatScrollViewportRestore handleResize', () => {
     // A scroll event of the browser replaces the anchor of the hook before the flush.
     current = anchorB
     frames.runFrames()
-    expect(extras.restoreAnchor).toHaveBeenCalledWith(anchorA)
-    expect(recordPosition).toHaveBeenCalledOnce()
+    expect(vi.mocked(ctx.requestPlace).mock.calls).toEqual([
+      [
+        { kind: 'row', anchor: anchorA },
+      ],
+    ])
+    // The placement of the place recorded its own write. A second record would end the
+    // anchor that the hook holds for a row that does not show its height yet.
+    expect(recordPosition).not.toHaveBeenCalled()
   })
 
-  it('records no second write after a restore of the anchor that placed the view', () => {
+  it('records the position at a show while the place of the anchor waits for its row', () => {
     const frames = stubFrames()
-    // A restore that placed the view recorded its own write. A second record would end
-    // the anchor that the hook holds for a row that does not show its height yet.
     const anchor: ScrollAnchor = { id: 'a', offsetWithinRow: 1 }
-    const { restore, extras, recordPosition } = harness({
+    let requested = false
+    const { restore, ctx, recordPosition } = harness({
       saved: undefined,
       lastAnchor: () => anchor,
-      anchorRestored: true,
+      context: {
+        // The row of the anchor is staged: the request shows nothing yet.
+        requestPlace: vi.fn(() => {
+          requested = true
+          return new Promise<boolean>(() => {})
+        }),
+        showWaitingPlace: vi.fn(() => (requested
+          ? 'waiting'
+          : 'none')),
+      },
     })
     restore.handleResize()
     frames.runFrames()
-    expect(extras.restoreAnchor).toHaveBeenCalledWith(anchor)
-    expect(recordPosition).not.toHaveBeenCalled()
+    expect(ctx.requestPlace).toHaveBeenCalledExactlyOnceWith({ kind: 'row', anchor })
+    expect(recordPosition).toHaveBeenCalledOnce()
+  })
+
+  it('asks for no place at a show for a reader who requests the tail at the flush', () => {
+    const frames = stubFrames()
+    const anchor: ScrollAnchor = { id: 'a', offsetWithinRow: 1 }
+    const { restore, ctx, recordPosition, state } = harness({
+      saved: undefined,
+      lastAnchor: () => anchor,
+    })
+    restore.handleResize()
+    // A jump to the latest page began between the callback and the flush: its request for
+    // the tail stands, and a restore of the anchor must not end it.
+    state.followRequested = true
+    frames.runFrames()
+    expect(ctx.requestPlace).not.toHaveBeenCalled()
+    expect(recordPosition).toHaveBeenCalledOnce()
+  })
+
+  it('records the position at a show with no anchor', () => {
+    const frames = stubFrames()
+    const { restore, ctx, recordPosition } = harness({ saved: undefined })
+    restore.handleResize()
+    frames.runFrames()
+    expect(ctx.requestPlace).not.toHaveBeenCalled()
+    expect(recordPosition).toHaveBeenCalledOnce()
+  })
+
+  it('drops a saved viewport at a show while a place for a row or for the top waits', () => {
+    const frames = stubFrames()
+    const { restore, ctx, extras, placed, recordPosition } = harness({
+      saved: SAVED_ANCHOR,
+      context: {
+        positionPlaceWaits: () => true,
+        showWaitingPlace: vi.fn((): 'waiting' => 'waiting'),
+      },
+    })
+    restore.handleResize()
+    frames.runFrames()
+    // The reader asked for that place after the save, so the save restores nothing.
+    expect(extras.clearSavedViewportScroll).toHaveBeenCalledOnce()
+    expect(ctx.requestPlace).not.toHaveBeenCalled()
+    expect(extras.forceScrollToBottom).not.toHaveBeenCalled()
+    expect(placed).toEqual([])
+    expect(recordPosition).toHaveBeenCalledOnce()
+  })
+
+  it('reports the pane as hidden until the flush of a show decided its outcome', () => {
+    const frames = stubFrames()
+    const hiddenAtRequest: boolean[] = []
+    const { restore, ctx } = harness({ saved: SAVED_ANCHOR })
+    vi.mocked(ctx.requestPlace).mockImplementation(() => {
+      hiddenAtRequest.push(restore.paneHidden())
+      return Promise.resolve(true)
+    })
+    // No initClientHeight: the pane had no layout box at the mount.
+    expect(restore.paneHidden()).toBe(true)
+    restore.handleResize()
+    expect(restore.paneHidden()).toBe(true)
+    frames.runFrames()
+    // The restore asked for its place while the pane still counted as hidden.
+    expect(hiddenAtRequest).toEqual([true])
+    expect(restore.paneHidden()).toBe(false)
   })
 
   it('sticks on a resize while the reader requests the tail', () => {
@@ -197,7 +270,6 @@ describe('chatScrollViewportRestore handleResize', () => {
     restore.handleResize()
     frames.runFrames()
     expect(extras.stickToBottom).toHaveBeenCalledOnce()
-    expect(extras.restoreAnchor).not.toHaveBeenCalled()
   })
 
   it('keeps the request of the ResizeObserver callback for a show', () => {
@@ -215,19 +287,21 @@ describe('chatScrollViewportRestore handleResize', () => {
       ],
     ])
     expect(extras.stickToBottom).not.toHaveBeenCalled()
-    expect(extras.restoreAnchor).not.toHaveBeenCalled()
     expect(recordPosition).not.toHaveBeenCalled()
   })
 
   it('records the position on a resize of a visible reader with no request', () => {
     const frames = stubFrames()
-    const { restore, extras, recordPosition } = harness({ saved: undefined })
+    const { restore, ctx, extras, recordPosition } = harness({
+      saved: undefined,
+      lastAnchor: () => ({ id: 'r3', offsetWithinRow: 4 }),
+    })
     restore.initClientHeight()
     restore.handleResize()
     frames.runFrames()
     expect(extras.stickToBottom).not.toHaveBeenCalled()
-    // Only a show restores the anchor: the pane was visible before this resize.
-    expect(extras.restoreAnchor).not.toHaveBeenCalled()
+    // Only a show asks for the place of the anchor: the pane was visible before this resize.
+    expect(ctx.requestPlace).not.toHaveBeenCalled()
     expect(recordPosition).toHaveBeenCalledOnce()
   })
 })
@@ -485,33 +559,31 @@ describe('chatScrollViewportRestore requested places', () => {
 
   it('restores no anchor at a show while a place waits', () => {
     const frames = stubFrames()
-    const { restore, extras, recordPosition } = harness({
+    const { restore, ctx, recordPosition } = harness({
       saved: undefined,
       lastAnchor: () => ({ id: 'r3', offsetWithinRow: 4 }),
-      anchorRestored: true,
       context: {
         showWaitingPlace: vi.fn((): 'waiting' => 'waiting'),
       },
     })
     restore.handleResize()
     frames.runFrames()
-    expect(extras.restoreAnchor).not.toHaveBeenCalled()
+    expect(ctx.requestPlace).not.toHaveBeenCalled()
     expect(recordPosition).toHaveBeenCalledOnce()
   })
 
   it('restores no anchor and records nothing at a show that showed the place that waited', () => {
     const frames = stubFrames()
-    const { restore, extras, recordPosition } = harness({
+    const { restore, ctx, recordPosition } = harness({
       saved: undefined,
       lastAnchor: () => ({ id: 'r3', offsetWithinRow: 4 }),
-      anchorRestored: true,
       context: {
         showWaitingPlace: vi.fn((): 'shown' => 'shown'),
       },
     })
     restore.handleResize()
     frames.runFrames()
-    expect(extras.restoreAnchor).not.toHaveBeenCalled()
+    expect(ctx.requestPlace).not.toHaveBeenCalled()
     expect(recordPosition).not.toHaveBeenCalled()
   })
 

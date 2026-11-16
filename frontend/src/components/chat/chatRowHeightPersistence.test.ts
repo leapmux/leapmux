@@ -1,5 +1,5 @@
 import type { PersistableRowHeight, RowHeightCache } from './chatRowHeightCache'
-import type { VirtualItem } from './useChatVirtualizer'
+import type { ChatRowItem } from './chatRowItem'
 import { batch, createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
@@ -54,7 +54,7 @@ interface StoredShape {
   rows: [string, string, number][]
 }
 
-function item(id: string, heightKey: string): VirtualItem {
+function item(id: string, heightKey: string): ChatRowItem {
   return { id, hasSpanLines: false, heightKey }
 }
 
@@ -88,11 +88,11 @@ describe('chatRowHeightPersistence', () => {
    */
   function makeHarness(opts: {
     storageId?: string
-    items?: VirtualItem[]
-    measured?: VirtualItem[]
+    items?: ChatRowItem[]
+    measured?: ChatRowItem[]
     commitAll?: RowHeightCache['commitAll']
   } = {}) {
-    const [items, setItems] = createSignal<VirtualItem[]>(opts.items ?? [])
+    const [items, setItems] = createSignal<ChatRowItem[]>(opts.items ?? [])
     const [extraVersion, setExtraVersion] = createSignal(0)
     const [storageId, setStorageId] = createSignal(opts.storageId)
     const cache = createRowHeightCache({

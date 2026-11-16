@@ -9,6 +9,7 @@ import {
   dragChatUp,
   expectAtBottom,
   expectTailFartherBy,
+  framesPass,
   readRowBox,
   readRowStates,
   readViewportHeight,
@@ -60,6 +61,25 @@ const MOVED_PX = 1
 
 /** How far below the top of the view the image row starts once the reader reached it. */
 const IMAGE_TOP_IN_VIEW_PX = 100
+
+/**
+ * How far outside the band near the view the image row ends before the pane grows. The band reaches half of the
+ * height of the view above the view.
+ */
+const OUTSIDE_NEAR_BAND_PX = 40
+
+/**
+ * How much taller the pane grows. The band near the view grows by half of it, which is more than
+ * OUTSIDE_NEAR_BAND_PX, so the image row is inside the band afterwards.
+ */
+const PANE_GROWTH_PX = 200
+
+/**
+ * The frames that pass before the pane grows: more than the time after a scroll in which the app holds the test for a
+ * row near the view (160ms, SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS of ChatView). The test of the app then ran for the place
+ * where the scroll stopped, so only the growth of the pane can run it again.
+ */
+const FRAMES_AFTER_SCROLL = 30
 
 /** A seeded chat that was opened again, with the view at its bottom. */
 interface ImageChat {
@@ -201,6 +221,45 @@ codexTest.describe('chat scroll stability while a tool row loads an image from a
     expect(Math.abs(loaded!.height - mounted.height), `the image row keeps its height when the image loads, within 1px (${mounted.height}px to ${loaded!.height}px)`).toBeLessThanOrEqual(1)
     // A row that grows below the top of the view pushes the tail farther away.
     await expectTailFartherBy(page, tailBefore, distance, 'after the image loads')
+  })
+
+  codexTest('reads the image of a row that comes near the view when the pane grows taller, with no scroll', async ({ native, authenticatedCodexWorkspace }) => {
+    const { page } = native
+    const chat = await seedChatWithFileImage(native, authenticatedCodexWorkspace.workingDir)
+    await expect.poll(() => chat.premeasured.commitOf(chat.imageSeq), { message: 'a hidden copy measures the image row' }).not.toBeNull()
+
+    await scrollUpUntilImageRowMounts(page, chat.imageSeq)
+    await expect.poll(() => readImageRowState(page, chat.imageSeq), { message: 'the image row holds the box of its image, and no image yet' }).toEqual({ box: true, image: false })
+    await waitForScrollRest(page)
+
+    // Bring the end of the image row to OUTSIDE_NEAR_BAND_PX outside the band near the view. The band reaches half
+    // of the height of the view above the view, so the app still reads no image for the row.
+    const viewHeight = await readViewportHeight(page)
+    const mounted = (await readRowBox(page, chat.imageSeq))!
+    const endAboveView = -(mounted.distance + mounted.height)
+    const step = endAboveView - (viewHeight / 2 + OUTSIDE_NEAR_BAND_PX)
+    expect(step, 'the image row mounted farther above the view than the place of this test').toBeGreaterThan(0)
+    await expect.poll(() => chatScrollTop(page), {
+      message: `the list holds at least ${step}px of rows above the view, so a step of that size does not stop at the top of the list`,
+    }).toBeGreaterThanOrEqual(step)
+    await chatScrollContainer(page).evaluate((container, pixels) => {
+      container.scrollTop -= pixels
+    }, step)
+    await waitForScrollRest(page)
+    await framesPass(page, FRAMES_AFTER_SCROLL)
+    expect(await readImageRowState(page, chat.imageSeq), 'the app reads no image for a row outside the band near the view').toEqual({ box: true, image: false })
+    // The taller view must not reach past the bottom of the content: the browser would then move the view, and
+    // the scroll event of that move would run the test of the app again.
+    expect(await chatDistanceFromBottom(page), 'the content below the view is longer than the growth of the pane').toBeGreaterThan(PANE_GROWTH_PX)
+    const top = await chatScrollTop(page)
+
+    await page.setViewportSize({ width: VIEW_WIDTH, height: VIEW_HEIGHT + PANE_GROWTH_PX })
+
+    // The band near the view grew with the pane, and the image row is inside it now. No scroll told the app: the
+    // view did not move.
+    await expect.poll(() => readImageRowState(page, chat.imageSeq), { message: 'the image replaces its box after the pane grew' }).toEqual({ box: false, image: true })
+    expect(await readViewportHeight(page), 'the pane grew').toBe(viewHeight + PANE_GROWTH_PX)
+    expect(await chatScrollTop(page), 'the view did not move').toBe(top)
   })
 
   codexTest('measures a file image row at its final height before the reader reaches it', async ({ native, authenticatedCodexWorkspace }) => {

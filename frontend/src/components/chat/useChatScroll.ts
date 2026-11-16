@@ -200,9 +200,10 @@ export interface ScrollContext {
    * event of the write reads as no move, whatever distance it moved. Every own write goes
    * through it, except the rebase and the translation of a stale native event, which record
    * their writes in their own way. The record also ends a held anchor (see releaseAnchorHold)
-   * and runs the position check. With `refresh`, it then refreshes the rendered rows. A
-   * ResizeObserver delivery must not refresh them: a row that mounts there re-enters the
-   * delivery. Does nothing for an absent or hidden element.
+   * and runs the position check. With `refresh`, it then refreshes the rendered rows, also
+   * inside a flush of the row measurer: the measurer observes a row that mounts during its
+   * flush in the next frame (see RowMeasurer.attachRow). Does nothing for an absent or
+   * hidden element.
    *
    * It does not clamp `top`. A write of `scrollHeight` relies on the browser, which clamps
    * it to the maximum position, and that maximum can be fractional.
@@ -278,6 +279,11 @@ export interface ScrollContext {
    * else the loaded visible row nearest its seq with an offset of 0, else `undefined`.
    */
   placeForAnchor: (anchor: ScrollAnchor) => AdmissionTarget | undefined
+  /**
+   * Whether a place for a row or for the top waits for its rows. Only a command or an
+   * input of the reader ends such a wait, so it is newer than every saved viewport.
+   */
+  positionPlaceWaits: () => boolean
   /** The loaded visible rows (see ChatLoadedRows). */
   loadedRows: ChatLoadedRows
   /**
@@ -564,8 +570,18 @@ export interface UseChatScrollResult {
    * is loaded, the jump to the latest page of the request settled, and the view did not
    * move up with no `scroll` event (see ScrollContext.isFollowing). ChatView passes it to
    * the virtualizer, whose layout shift holds the bottom of the content while it is true.
+   *
+   * It reads the reader place untracked, so an effect or a function that reads it gets no
+   * dependency on the place. A memo reads isFollowingTracked instead.
    */
   isFollowing: () => boolean
+  /**
+   * isFollowing for a memo: it also reads the reader place and the pending history jump
+   * tracked, so the memo runs again when follow mode starts or ends with no `scroll`
+   * event. An effect that reads it runs for each change of the reader place, so an effect
+   * reads isFollowing.
+   */
+  isFollowingTracked: Accessor<boolean>
   /**
    * True only while the view is stalled hard against the loaded TOP edge waiting on an
    * in-flight older fetch (a scroll outran the pre-fetch buffer). Drives the "Loading
@@ -625,6 +641,13 @@ export interface UseChatScrollResult {
    * while loaded rows exist and none is in the list.
    */
   takeReaderInput: () => void
+  /**
+   * Whether the pane counts as hidden: it has no layout box, or the flush of its show did
+   * not decide yet where the view goes (see ViewportRestore.paneHidden). Reactive. ChatView
+   * gives the row admission a view height of 0 meanwhile, so no target is reached before
+   * that flush.
+   */
+  paneHidden: Accessor<boolean>
   /**
    * Re-stick to the bottom while follow mode applies and content below the viewport just
    * grew. For tail content that is NOT a virtualizer row -- the streaming-markdown block
@@ -704,8 +727,8 @@ interface PreservedScroll {
   moves: number
   /** The reader's request for the live tail at the snapshot. */
   requested: boolean
-  /** The latest-page jump that was pending at the snapshot. */
-  jump: number | null
+  /** The signal of the latest-page jump that was pending at the snapshot. */
+  jump: AbortSignal | null
 }
 
 /**
@@ -738,10 +761,10 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   })
 
   // What the reader asked the view to show (see ReaderPlace). A mount on a window that is
-  // paged away from the live tail requests no tail. Only the effect that shows a place and
-  // the first-view rule read the signal tracked. Every other reader reads it untracked
-  // (`readerPlace`), so no caller gets a new dependency. Its two writers are setReaderPlace
-  // and showWaitingPlace.
+  // paged away from the live tail requests no tail. Only the effect that shows a place, the
+  // first-view rule, and isFollowingTracked read the signal tracked. Every other reader
+  // reads it untracked (`readerPlace`), so no caller gets a new dependency. Its two writers
+  // are setReaderPlace and showWaitingPlace.
   const [readerPlaceSignal, writeReaderPlace] = createSignal<ReaderPlace>(untrack(hasNewerMessages)
     ? POSITION_PLACE
     : TAIL_PLACE)
@@ -809,12 +832,13 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // placement of a tail that waits reads it, and no place can show before then.
   let stickToBottomNow: () => void = () => {}
   // The controller of the pending history jump (see ScrollContext.beginHistoryJump), or
-  // null while no jump is pending. A signal, so that the first-view rule runs again when a
-  // jump begins and when it ends. Every other reader reads it untracked.
+  // null while no jump is pending. A signal, so that the first-view rule and a memo over
+  // isFollowingTracked run again when a jump begins and when it ends. Every other reader
+  // reads it untracked.
   const [historyJump, setHistoryJump] = createSignal<AbortController | null>(null)
   // The jump to the latest page that did not settle (see ChatTailFollower.pendingJump),
   // assigned where the tail follower is created. No jump is pending before that.
-  let pendingLatestJump: () => number | null = () => null
+  let pendingLatestJump: () => AbortSignal | null = () => null
 
   // The pointers and the fingers that are down on the list (see createScrollInputActivity).
   // When the last one goes up, the scroller can enter rest (see noteInputEnded).
@@ -876,12 +900,21 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       return false
     // The store clears its newer-pages flag when the page of a jump arrives, and the
     // landing of the jump runs after that. Between the two, the rows of the page can be
-    // staged, and the bottom of the measured rows is not the tail. Untracked: the pending
-    // jump is a signal, and no caller means to subscribe to it here.
-    if (untrack(pendingLatestJump) !== null)
+    // staged, and the bottom of the measured rows is not the tail.
+    if (pendingLatestJump() !== null)
       return false
     const el = visibleListEl()
     return el === undefined || !seen.hasUnseenUpwardMove(el)
+  }
+
+  /** See UseChatScrollResult.isFollowingTracked. */
+  const isFollowingTracked = (): boolean => {
+    // The two signals whose change can start or end follow mode with no `scroll` event.
+    // The jump to the latest page is pending only while it is the history jump of the hook
+    // (see ChatTailFollower.pendingJump), so the history jump covers each change of it.
+    readerPlaceSignal()
+    historyJump()
+    return isFollowing()
   }
 
   /** See ScrollContext.noteScrollRange. */
@@ -1157,10 +1190,6 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     if (previous === next)
       return
     writeReaderPlace(next)
-    // The memos of the pagination policy read isFollowing(), which reads the place
-    // untracked.
-    if (previous.kind !== next.kind)
-      bumpGeomTick()
     if (previous.kind !== 'waiting')
       return
     previous.wait.request.end()
@@ -1187,7 +1216,6 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     writeReaderPlace(wait.place.kind === 'tail'
       ? TAIL_PLACE
       : POSITION_PLACE)
-    bumpGeomTick()
     // The wait ends also when its placement throws: the request of the admission must not
     // stay as the current one, and the promise must settle.
     let shown = false
@@ -1285,14 +1313,19 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     })
   }
 
+  /** See ScrollContext.positionPlaceWaits. */
+  function positionPlaceWaits(): boolean {
+    const place = readerPlace()
+    return place.kind === 'waiting' && place.wait.place.kind !== 'tail'
+  }
+
   /**
    * End the request for the tail, and record where the reader is. A place for a row or
    * for the top that waits stays: only a command, or an input of the reader, ends it (see
    * readerTookControl).
    */
   function leaveFollow(): void {
-    const place = readerPlace()
-    if (place.kind === 'waiting' && place.wait.place.kind !== 'tail')
+    if (positionPlaceWaits())
       return
     setReaderPlace(POSITION_PLACE)
     // The function has no test of its own for the state in which loaded rows exist and
@@ -1324,9 +1357,8 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
    * record it, and the next mount would run the jump that the reader stopped.
    */
   function abortHistoryJump(): void {
-    // Read before the abort: an aborted jump no longer counts as pending. Untracked: the
-    // pending jump is a signal, and a caller inside an effect must not subscribe to it.
-    const latestJumpWasPending = untrack(pendingLatestJump) !== null
+    // Read before the abort: an aborted jump no longer counts as pending.
+    const latestJumpWasPending = pendingLatestJump() !== null
     untrack(historyJump)?.abort()
     setHistoryJump(null)
     if (latestJumpWasPending)
@@ -1390,18 +1422,6 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   }
 
   /**
-   * Place the view back at `anchor` for a reader who does not request the tail: at the
-   * row itself, or at the nearest survivor by seq when the row is gone. It reads the
-   * request, not isFollowing(): during a jump to the latest page the request stands,
-   * and this restore must not end that request.
-   */
-  function restoreAnchor(anchor: ScrollAnchor | null): boolean {
-    if (followRequested() || anchor === null)
-      return false
-    return placeAtAnchor(anchor) !== null
-  }
-
-  /**
    * Place the view at `anchor` (see ScrollContext.placeAt): at its row, or at the nearest
    * surviving row by seq when its row is gone. When the row does not show its height yet
    * (no read of the mounted row confirmed the height that a hidden copy or the storage
@@ -1446,12 +1466,11 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   }
 
   /**
-   * Recompute the slice on a rAF, NOT synchronously. Mounting/unmounting rows
-   * observes/unobserves them on the virtualizer's ResizeObserver, and a fresh observe()
-   * fires a notification. If that happens inside the RO delivery cycle (which the
-   * geometry effect runs within), it re-enters delivery in the same frame → "ResizeObserver
-   * loop completed with undelivered notifications". Deferring the mount to the next frame
-   * breaks that cycle. The pushes of one frame refresh once.
+   * Recompute the slice in the next frame, once for all the pushes of that frame. The
+   * geometry effect pushes it, and that effect can run several times in one frame: in each
+   * flush of the row measurer, and for each list change. A synchronous refresh would also
+   * be safe inside the flush: the measurer observes a row that mounts during its flush in
+   * the next frame (see RowMeasurer.attachRow). So the frame only coalesces the refreshes.
    */
   const viewportRefreshFrame = createRafCoalescer<void>(() => refreshViewport())
 
@@ -1530,6 +1549,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     requestPlace,
     showWaitingPlace,
     placeForAnchor: anchor => placeForAnchor(opts.loadedRows, anchor),
+    positionPlaceWaits,
     loadedRows: opts.loadedRows,
     stagedNewer: () => untrack(stagedNewer),
     awaitingFirstView,
@@ -1560,7 +1580,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     onLoadOlder: () => opts.onLoadOlderMessages?.(),
     onLoadNewer: () => opts.onLoadNewerMessages?.(),
     isAtBottom,
-    isFollowing,
+    isFollowing: isFollowingTracked,
     anchorAtViewportTop,
     bufferScreens: SCROLL_BUFFER_SCREENS,
     stagedOlder,
@@ -1651,7 +1671,6 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     forceScrollToBottom,
     clearSavedViewportScroll: () => opts.onClearSavedViewportScroll?.(),
     savedViewportScroll: () => opts.savedViewportScroll?.(),
-    restoreAnchor,
     lastAnchor: () => lastAnchor,
     onGeometrySettled: bumpGeomTick,
   })
@@ -1781,9 +1800,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // total must still run the effect if totalHeight compares its value one day.
   // `defer: true` so the first render does nothing before anything has been measured.
   //
-  // This effect runs inside the measurer's ResizeObserver flush, so it mounts no row: the
-  // refresh goes to the next frame (viewportRefreshFrame), and the position check and
-  // the rebase mount nothing.
+  // This effect runs inside the measurer's ResizeObserver flush. The refresh goes to the
+  // next frame (viewportRefreshFrame), which coalesces the refreshes of that frame, and the
+  // position check and the rebase mount nothing.
   createEffect(on([
     () => virt.totalHeight(),
     () => virt.geometryVersion(),
@@ -1931,6 +1950,10 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // The landing clears the pending jump and asks for its place in one update (see
   // ScrollContext.settleHistoryJump). When the jump fails, or another fetch replaced its
   // page, this rule asks for the place of the reader then.
+  //
+  // Cost: when a live message arrives during the fetch of the latest page, the store fills
+  // forward before the jump settles (forwardFillToLiveTail), and no hidden copy measures
+  // the rows of the page until then.
   //
   // Its creation run is mount placement part 2 of 3: over a window with loaded rows, it
   // asks for the place of the mount, and the placement of that place moves a fresh
@@ -2198,7 +2221,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
           : { emptyWindowTop: top },
         moves: moveCount,
         requested: followRequested(),
-        jump: untrack(tailFollower.pendingJump),
+        jump: tailFollower.pendingJump(),
       }
     },
     restore: (snapshot) => {
@@ -2222,7 +2245,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       // survives it. A request whose jump failed during the work stays ended, because no
       // fetch would fulfill it.
       const keepsTailRequest = snapshot.requested && snapshot.jump !== null
-        && untrack(tailFollower.pendingJump) === snapshot.jump
+        && tailFollower.pendingJump() === snapshot.jump
       if (!('anchor' in position)) {
         placeAt(() => position.emptyWindowTop)
       }
@@ -2247,6 +2270,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   return {
     atBottom,
     isFollowing,
+    isFollowingTracked,
     stalledOlder,
     stalledNewer,
     atStagedTopEdge,
@@ -2279,6 +2303,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     jumpToSeq: seq => chatSeek.jumpToSeq(seq),
     previewScrollTo: top => chatSeek.previewScrollTo(top),
     takeReaderInput,
+    paneHidden: viewportRestore.paneHidden,
     restickIfAtBottom,
     getScrollState,
     forceScrollToBottom,

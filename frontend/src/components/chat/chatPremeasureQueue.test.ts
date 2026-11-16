@@ -1,7 +1,6 @@
 import type { ClassifiedEntry } from './chatEntryCache'
 import type { ChatDomPremeasureCandidate } from './chatHiddenPremeasure'
-import type { VirtualItem } from './useChatVirtualizer'
-import { createRoot, createSignal } from 'solid-js'
+import { createMemo, createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { createPremeasureQueue } from './chatPremeasureQueue'
 import { createRowHeightCache } from './chatRowHeightCache'
@@ -9,24 +8,23 @@ import { createRowHeightCache } from './chatRowHeightCache'
 describe('chatPremeasureQueue', () => {
   /**
    * A queue over the loaded rows `ids` (height key `k-${id}`), with a real height cache.
-   * No row is measured at the start, and staging is enabled.
+   * No row is measured at the start, and staging is enabled. `candidate` gives the object
+   * of a row, and `setRows` replaces the loaded rows. Call within a reactive owner.
    */
   function makeHarness(ids: string[]) {
     const heights = createRowHeightCache({
       loadedIds: () => ids,
     })
-    const items = ids.map(id => ({ id, hasSpanLines: false, heightKey: `k-${id}` } as VirtualItem))
-    const entries = new Map(ids.map(id => [
-      id,
-      {
+    const allRows: readonly ChatDomPremeasureCandidate[] = ids.map(id => ({
+      entry: {
         message: { id },
       } as ClassifiedEntry,
-    ]))
-    const itemById = new Map(items.map(item => [item.id, item]))
-    const candidate = (id: string): ChatDomPremeasureCandidate => ({
-      entry: entries.get(id)!,
-      item: itemById.get(id)!,
-    })
+      item: { id, hasSpanLines: false, heightKey: `k-${id}` },
+    }))
+    const rowOf = new Map(allRows.map(row => [row.item.id, row]))
+    const itemById = new Map(allRows.map(row => [row.item.id, row.item]))
+    const candidate = (id: string): ChatDomPremeasureCandidate => rowOf.get(id)!
+    const [rows, setRows] = createSignal(allRows)
     const [target, setTarget] = createSignal<ChatDomPremeasureCandidate[]>([])
     const [lookAhead, setLookAhead] = createSignal<ChatDomPremeasureCandidate[]>([])
     const [warmup, setWarmup] = createSignal<ChatDomPremeasureCandidate[]>([])
@@ -34,9 +32,8 @@ describe('chatPremeasureQueue', () => {
     const queue = createPremeasureQueue({
       heights,
       stagingEnabled,
-      visibleEntryById: () => entries,
-      loadedItemById: () => itemById,
-      loadedItems: () => items,
+      rows,
+      rowById: createMemo(() => new Map(rows().map(row => [row.item.id, row]))),
       targetCandidates: target,
       lookAheadCandidates: lookAhead,
       warmupCandidates: warmup,
@@ -44,7 +41,9 @@ describe('chatPremeasureQueue', () => {
     return {
       queue,
       heights,
+      allRows,
       candidate,
+      setRows,
       setTarget,
       setLookAhead,
       setWarmup,
@@ -218,9 +217,9 @@ describe('chatPremeasureQueue', () => {
     })
   })
 
-  it('keeps each candidate object while its entry and height key stay the same', () => {
-    // ChatHiddenPremeasure's <For> keys rows by object identity, so a new object
-    // for an unchanged row remounts its whole hidden bubble.
+  it('gives each pending row as its object of the loaded rows, so a change of the pending rows keeps the other objects', () => {
+    // ChatHiddenPremeasure's <For> keys its copies by object identity, so a new object
+    // for an unchanged row mounts its whole hidden copy again.
     createRoot((dispose) => {
       const h = makeHarness(['a', 'b', 'c'])
       h.setTarget([
@@ -228,72 +227,46 @@ describe('chatPremeasureQueue', () => {
         h.candidate('b'),
       ])
       const [first, second] = h.queue.premeasureCandidates()
+      expect(first).toBe(h.candidate('a'))
+      expect(second).toBe(h.candidate('b'))
 
       h.setWarmup([
         h.candidate('c'),
       ])
       const grown = h.queue.premeasureCandidates()
       expect(grown.map(c => c.item.id)).toEqual(['a', 'b', 'c'])
-      expect(grown[0]).toBe(first)
-      expect(grown[1]).toBe(second)
+      expect(grown[0]).toBe(h.candidate('a'))
+      expect(grown[1]).toBe(h.candidate('b'))
+      expect(grown[2]).toBe(h.candidate('c'))
 
       // A measure retires its own row and leaves the others mounted.
       h.queue.onMeasure('a', 10, 'k-a', 0)
       const shrunk = h.queue.premeasureCandidates()
       expect(shrunk.map(c => c.item.id)).toEqual(['b', 'c'])
-      expect(shrunk[0]).toBe(second)
-      expect(shrunk[1]).toBe(grown[2])
+      expect(shrunk[0]).toBe(h.candidate('b'))
+      expect(shrunk[1]).toBe(h.candidate('c'))
       dispose()
     })
   })
 
-  it('gives a row a new candidate object when its entry or its height key changes', () => {
+  it('drops a pending row that leaves the loaded rows, so the row is not pending when it returns', () => {
     createRoot((dispose) => {
-      const entryOf = (id: string) => ({
-        message: { id },
-      } as ClassifiedEntry)
-      const [entries, setEntries] = createSignal<ReadonlyMap<string, ClassifiedEntry>>(new Map<string, ClassifiedEntry>()
-        .set('a', entryOf('a'))
-        .set('b', entryOf('b')))
-      const [items, setItems] = createSignal<VirtualItem[]>([
-        { id: 'a', hasSpanLines: false, heightKey: 'k-a' },
-        { id: 'b', hasSpanLines: false, heightKey: 'k-b' },
+      const h = makeHarness(['a', 'b'])
+      h.setTarget([
+        h.candidate('a'),
+        h.candidate('b'),
       ])
-      const queue = createPremeasureQueue({
-        heights: createRowHeightCache({
-          loadedIds: () => items().map(item => item.id),
-        }),
-        stagingEnabled: () => true,
-        visibleEntryById: entries,
-        loadedItemById: () => new Map(items().map(item => [item.id, item])),
-        loadedItems: items,
-        targetCandidates: () => items().map(item => ({
-          entry: entries().get(item.id)!,
-          item,
-        })),
-        lookAheadCandidates: () => [],
-      })
-      const [a, b] = queue.premeasureCandidates()
 
-      // The window rebuilds every item object, but the height keys stay the same.
-      setItems(prev => prev.map(item => ({ ...item })))
-      expect(queue.premeasureCandidates()[0]).toBe(a)
-      expect(queue.premeasureCandidates()[1]).toBe(b)
+      // Row a leaves the loaded rows while its band still lists it.
+      h.setRows(rows => rows.filter(row => row.item.id !== 'a'))
+      expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['b'])
 
-      setItems(prev => prev.map(item => (item.id === 'a'
-        ? { ...item, heightKey: 'k-a2' }
-        : item)))
-      const rekeyed = queue.premeasureCandidates()
-      expect(rekeyed[0]).not.toBe(a)
-      expect(rekeyed[0]?.item.heightKey).toBe('k-a2')
-      expect(rekeyed[1]).toBe(b)
-
-      const rebuiltB = entryOf('b')
-      setEntries(prev => new Map(prev).set('b', rebuiltB))
-      const reclassified = queue.premeasureCandidates()
-      expect(reclassified[0]).toBe(rekeyed[0])
-      expect(reclassified[1]).not.toBe(b)
-      expect(reclassified[1]?.entry).toBe(rebuiltB)
+      // The band drops the row, and the row returns: no band adds it, so it stays out.
+      h.setTarget([
+        h.candidate('b'),
+      ])
+      h.setRows(h.allRows)
+      expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['b'])
       dispose()
     })
   })

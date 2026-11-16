@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test'
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { countRows, waitForStoredEntry, writeEntry } from './storage'
+import { countRows, deleteEntries, storageKeys, waitForStoredEntry, writeEntry } from './storage'
 
 // Run the real poll with a short unit-test deadline.
 vi.mock('@playwright/test', async (importOriginal) => {
@@ -74,6 +74,46 @@ describe('countRows', () => {
     await createDatabase('leapmux-crdt-state', 'other', 1)
     await expect(countRows(page, 'leapmux-crdt-state', 'checkpoints')).resolves.toBeNull()
     expect(await databaseNames()).toEqual(['leapmux-crdt-state'])
+  })
+})
+
+describe('deleteEntries', () => {
+  const draft = 'leapmux:u:user-1:editor-draft:agent-a'
+  const heights = 'leapmux:u:user-1:chat-row-heights:agent-a'
+  const theme = 'leapmux:device:theme'
+
+  /** Store one row at each of the three keys above. */
+  async function storeRows(): Promise<void> {
+    for (const key of [draft, heights, theme])
+      await writeEntry(page, key, 'value', NEVER)
+  }
+
+  it('deletes the listed keys, keeps the others, and resolves the number of deleted rows', async () => {
+    await storeRows()
+    await expect(deleteEntries(page, [heights, theme])).resolves.toBe(2)
+    expect(await storageKeys(page)).toEqual([draft])
+  })
+
+  it('does not count a listed key that holds no row, nor a key that the list repeats', async () => {
+    await storeRows()
+    await expect(deleteEntries(page, [heights, 'leapmux:u:user-1:chat-row-heights:absent', heights])).resolves.toBe(1)
+    expect(await storageKeys(page)).toEqual([draft, theme].sort())
+  })
+
+  it('resolves 0 for an empty list and deletes nothing', async () => {
+    await storeRows()
+    await expect(deleteEntries(page, [])).resolves.toBe(0)
+    expect(await storageKeys(page)).toEqual([draft, heights, theme].sort())
+  })
+
+  it('rejects for a database that holds another store, also for an empty list', async () => {
+    await createDatabase('leapmux-kv', 'other', 1)
+    await expect(deleteEntries(page, ['leapmux:device:theme'])).rejects.toThrow('the database leapmux-kv has no object store entries')
+    await expect(deleteEntries(page, [])).rejects.toThrow('the database leapmux-kv has no object store entries')
+  })
+
+  it('rejects when the database does not exist', async () => {
+    await expect(deleteEntries(page, ['leapmux:device:theme'])).rejects.toThrow('the database leapmux-kv has no object store entries')
   })
 })
 

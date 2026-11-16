@@ -1,6 +1,7 @@
 import type { Accessor } from 'solid-js'
 import type { LayoutSnapshot } from './chatLayoutShift'
 import type { RowHeightCache } from './chatRowHeightCache'
+import type { ChatRowItem } from './chatRowItem'
 import type { AnchorOffsetGeometry } from './chatScrollAnchor'
 import type { LayoutShiftSurface } from './createLayoutShift'
 import type { RowContentReadiness } from './createRowMeasurer'
@@ -15,98 +16,6 @@ import { anchorAtOffset, resolveAnchorScrollTop, resolveNearestAnchorScrollTop }
 import { warnSlowScrollPhase } from './chatScrollGeometry'
 import { createLayoutShift } from './createLayoutShift'
 import { createRowMeasurer } from './createRowMeasurer'
-
-/**
- * Minimal per-row descriptor the virtualizer needs. `id` keys the height
- * cache, the offset map, and the scroll anchor. It is stable across window
- * trims and unique per row. A sequence can change when the worker consolidates
- * a notification. `hasSpanLines` drives the inter-row gap (span-line rows sit closer
- * together so their vertical rails bridge — see SpanLines.css.ts).
- */
-export interface VirtualItem {
-  id: string
-  hasSpanLines: boolean
-  /**
-   * The row's message seq, recorded onto a captured ScrollAnchor so a trimmed-away
-   * anchor can be ordered against the surviving rows for the nearest-survivor restore
-   * (scrollTopNearAnchor). Optional: a caller that doesn't supply it just can't do
-   * that recovery (the offset map and slicing never read it -- ordering is positional).
-   */
-  seq?: bigint
-  /**
-   * Per-row geometry version for cached DOM heights.
-   * A stable id can change content, width-sensitive layout, or UI state in place; this
-   * key changes in those cases so stale measured/premeasured heights are ignored.
-   * Absent -> id-only caching.
-   */
-  heightKey?: string
-  /**
-   * The message's rendering kind (category.kind: 'user_text', 'tool_result', ...). Two
-   * adjacent band rows share one border (see `gapAfter`), and the diagnostic of a height
-   * commit records it. Reuses the entry's EXISTING classification (ChatView passes
-   * `category.kind`), never re-classifying.
-   */
-  kind?: string
-}
-
-/**
- * Classifies EVERY VirtualItem field as geometry-affecting (true -> compared by
- * sameVirtualItems / feeds the offset map, gap, and measured-height cache) or not. The
- * `Record<keyof Required<VirtualItem>, boolean>` annotation forces a COMPILE error when a
- * field is added to VirtualItem without classifying it here, closing the "forgot to update
- * the equality" hazard. `seq` (anchor label) is NOT geometry -- it does not feed the offset
- * map.
- */
-const GEOMETRY_RELEVANCE: Record<keyof Required<VirtualItem>, boolean> = {
-  id: true,
-  hasSpanLines: true,
-  heightKey: true,
-  seq: false,
-  // Decides the gap between two adjacent bands, so a kind change shifts the offset map.
-  // In practice a kind flip also bumps heightKey (both track the same reclassification),
-  // so this rarely forces an extra rebuild on its own -- but classifying it as geometry
-  // keeps the offset map correct even if that coupling ever loosens.
-  kind: true,
-}
-
-/** The geometry-affecting VirtualItem keys, derived once (module load) from the above. */
-const GEOMETRY_KEYS = (Object.keys(GEOMETRY_RELEVANCE) as (keyof VirtualItem)[])
-  .filter(k => GEOMETRY_RELEVANCE[k])
-
-/**
- * Whether two virtual-item arrays are GEOMETRY-EQUIVALENT: same length and the same
- * geometry fields (GEOMETRY_KEYS = id, hasSpanLines, heightKey, kind) at every index. The
- * virtualizer keys its offset map, inter-row gap, and measured-height cache on exactly
- * those fields, so a recompute that preserves them produces an
- * identical offset map. Used as the
- * `virtualItems` memo's `equals` so a recompute that DOESN'T change the visible window's
- * rows. A recompute that does not add, remove, reorder, or revise a visible row
- * keeps the prior array
- * reference. That stops an unnecessary geometry rebuild and layout-shift pass. Row
- * content still updates through visibleEntries. Row measurement catches a real
- * height change.
- *
- * MAINTENANCE: the compared fields are DERIVED from GEOMETRY_RELEVANCE above (compile-
- * enforced exhaustive over VirtualItem's keys), so a new geometry-affecting field can't be
- * silently omitted from the equality and leave the offset map stale.
- */
-export function sameVirtualItems(a: VirtualItem[], b: VirtualItem[]): boolean {
-  if (a === b)
-    return true
-  if (a.length !== b.length)
-    return false
-  for (let i = 0; i < a.length; i++) {
-    const x = a[i]
-    const y = b[i]
-    if (x === undefined || y === undefined)
-      return false
-    for (const k of GEOMETRY_KEYS) {
-      if (x[k] !== y[k])
-        return false
-    }
-  }
-  return true
-}
 
 export interface ChatVirtualizerRange {
   /** First rendered row index (inclusive). */
@@ -191,14 +100,14 @@ export interface ViewportLead {
 
 export interface UseChatVirtualizerOptions {
   /** Reactive list of rows to virtualize, in display order. */
-  items: Accessor<VirtualItem[]>
+  items: Accessor<ChatRowItem[]>
   /** Off-screen pixels to keep mounted on each side of the viewport. */
   overscanPx?: Accessor<number> | number
   /**
    * The cache of measured row heights. The caller owns it, and shares it with the other
    * readers of the heights: the row admission, the staging bands, and the persistence.
    * Every row of `items` has a height there in the app, because the admission passes
-   * measured rows only.
+   * measured rows only. A development build reports a row of `items` with no height.
    */
   heightCache: RowHeightCache
   /** Inter-row gap (px) between two consecutive span-line rows (~--space-2). */
@@ -219,6 +128,12 @@ export interface UseChatVirtualizerOptions {
   spacerInsetPx?: Accessor<number> | number
   /** Keep the bottom of the content in place across a geometry change: the reader follows the tail. */
   pinBottom?: () => boolean
+  /**
+   * The first row of the list is the first loaded row: no loaded row waits above the list
+   * for its measure (see LayoutShiftDeps.listStartsAtLoadedTop). ChatView reads the row
+   * admission. Default: true, for a list that holds every loaded row.
+   */
+  listStartsAtLoadedTop?: Accessor<boolean>
 }
 
 /**
@@ -226,7 +141,7 @@ export interface UseChatVirtualizerOptions {
  * from. The snapshot that the layout shift compares (see chatLayoutShift).
  */
 interface VirtualizerGeometry extends LayoutSnapshot {
-  list: VirtualItem[]
+  list: ChatRowItem[]
 }
 
 const DEFAULT_OVERSCAN_PX = 800
@@ -241,6 +156,17 @@ function resolve(v: Accessor<number> | number | undefined, fallback: number): nu
     : v
 }
 
+/** Whether two arrays hold the same numbers at the same indices. */
+function sameFloats(a: Float64Array, b: Float64Array): boolean {
+  if (a.length !== b.length)
+    return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i])
+      return false
+  }
+  return true
+}
+
 /**
  * The virtualizer's surface. The layout shift members (`layoutShift`, the coordinate
  * conversions, the spacer, and `rebase`) come from LayoutShiftSurface (see
@@ -250,9 +176,8 @@ export interface UseChatVirtualizerResult extends LayoutShiftSurface {
   /** Reactive [start, end) slice of `items` to render. */
   range: Accessor<ChatVirtualizerRange>
   /**
-   * Monotonic counter bumped on every measurement that changes a row height.
-   * Lets a consumer react to geometry changes that leave totalHeight unchanged
-   * (e.g. a row above the viewport grows while one below shrinks).
+   * Changes with each change of the offset map of the listed rows, also one that keeps
+   * totalHeight (e.g. a row above the viewport grows while one below shrinks).
    */
   geometryVersion: Accessor<number>
   /** Total height (px) of the whole in-memory window, in content coordinates. */
@@ -371,12 +296,12 @@ export interface UseChatVirtualizerResult extends LayoutShiftSurface {
 
 /** The rows of the list, with the index of each row by its id. */
 interface IndexedRows {
-  list: readonly VirtualItem[]
+  list: readonly ChatRowItem[]
   indexById: ReadonlyMap<string, number>
 }
 
 /** The item of row `id` in `rows`, or `undefined` for a row that is not in the list. */
-function itemOf(rows: IndexedRows, id: string): VirtualItem | undefined {
+function itemOf(rows: IndexedRows, id: string): ChatRowItem | undefined {
   const index = rows.indexById.get(id)
   return index === undefined
     ? undefined
@@ -409,10 +334,24 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // the current key again.
   const rereadKeyById = new Map<string, string | undefined>()
 
-  // A row's height: the height that the cache holds for it. Every row of the list has one
-  // in the app, because the admission passes measured rows only. The fallback of 0 only
-  // serves a unit test that builds a list by hand.
-  const resolvedHeight = (item: VirtualItem): number => cache.heightOf(item) ?? 0
+  // The ids of the listed rows with no height that this virtualizer reported, so that it
+  // reports each id once (see resolvedHeight).
+  const reportedUnmeasuredIds = new Set<string>()
+
+  // A row's height: the height that the cache holds for it. Every row of the list has one,
+  // because the admission passes measured rows only. A row with no height breaks that
+  // invariant: a development build reports its id once, and the row takes 0px, so the rows
+  // below it overlap its content.
+  const resolvedHeight = (item: ChatRowItem): number => {
+    const height = cache.heightOf(item)
+    if (height !== undefined)
+      return height
+    if (import.meta.env.DEV && !reportedUnmeasuredIds.has(item.id)) {
+      reportedUnmeasuredIds.add(item.id)
+      console.error(`useChatVirtualizer: the row ${item.id} is in the list with no measured height. The admission must pass measured rows only.`)
+    }
+    return 0
+  }
 
   // The number of reads of each row that reached `measure` since the row mounted. The
   // first read of a mounted row replaces a height that the reader did not see on that
@@ -474,7 +413,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // Adjacent bands share one border. Overlap their edges by one border width
   // when both heights support it. Reduce the overlap for an empty or short band
   // so offsets never decrease. Premeasure still measures each row separately.
-  const gapAfter = (list: VirtualItem[], i: number): number => {
+  const gapAfter = (list: ChatRowItem[], i: number): number => {
     if (i >= list.length - 1)
       return 0
     const next = list[i + 1]
@@ -510,6 +449,11 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // Cumulative offsets, recomputed when items or measurements change, with the height of
   // each row: the snapshot that the layout shift compares. The identity map rides along
   // from rowIndex so every consumer keeps its one-stop read.
+  //
+  // The cache changes its version for commits that move no listed row: a hidden copy that
+  // measures a staged row, and a read that confirms a height under a new key. The memo then
+  // keeps its previous value, so the layout shift, the scroll hook, and the rail do not run
+  // for a geometry that did not change. `indexById` and `n` follow from `list`.
   const geom = createMemo((): VirtualizerGeometry => {
     const rebuildStart = monotonicNow()
     cache.version()
@@ -535,7 +479,14 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       list,
       n,
     }
+  }, undefined, {
+    equals: (a, b) => a.list === b.list && sameFloats(a.offsets, b.offsets) && sameFloats(a.heights, b.heights),
   })
+  // See UseChatVirtualizerResult.geometryVersion.
+  const geometryVersion = createMemo<number>((version) => {
+    geom()
+    return version + 1
+  }, 0)
 
   const totalHeight: Accessor<number> = () => {
     const g = geom()
@@ -581,12 +532,14 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // `rowIndex`, not `geom`: the measurer asks for each read that it commits, and inside
   // the batch of one flush a read of `geom` after a commit would rebuild the whole offset
   // map once per commit.
-  const currentItem = (id: string): VirtualItem | undefined => itemOf(rowIndex(), id)
+  const currentItem = (id: string): ChatRowItem | undefined => itemOf(rowIndex(), id)
 
   // Debug-only: the measured height of a row, under its current key when the row is in
-  // the list. It reads `geom`, so it follows the version of the cache.
+  // the list. It reads the version of the cache, and not `geom`: a commit that confirms a
+  // height under a new key changes the answer, and no geometry.
   const heightDebugOfId = (id: string): { measured?: number } => {
-    const item = itemOf(geom(), id)
+    cache.version()
+    const item = currentItem(id)
     const measured = item === undefined
       ? cache.debugEntry(id)?.height
       : cache.heightUnderCurrentKey(item)
@@ -769,6 +722,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     scrollElement: opts.scrollElement,
     spacerInsetPx: () => resolve(opts.spacerInsetPx, 0),
     pinBottom: () => opts.pinBottom?.() ?? false,
+    listStartsAtLoadedTop: () => opts.listStartsAtLoadedTop?.() ?? true,
     isSuspended: fastScrollActive,
     rows: measurer,
     sawHeight,
@@ -814,7 +768,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
 
   // These resolvers take and return scroll coordinates, so a caller that holds a scroll
   // position needs no conversion of its own. A resolved anchor is a placement, so the top
-  // of the first row resolves to the top of the scroller (see placementScrollTop).
+  // of the first loaded row resolves to the top of the scroller (see placementScrollTop).
   const anchorAt = (scrollTop: number): ScrollAnchor | null =>
     anchorAtContent(contentTopOf(scrollTop))
   const scrollTopForAnchor = (anchor: ScrollAnchor): number | null => {
@@ -860,7 +814,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
 
   return {
     range,
-    geometryVersion: cache.version,
+    geometryVersion,
     totalHeight,
     ...layoutShiftSurface,
     rebase,

@@ -1,7 +1,7 @@
 import type { JSX } from 'solid-js'
 import type { ClassifiedEntry } from './chatEntryCache'
+import type { ChatRowItem } from './chatRowItem'
 import type { RenderReadiness } from './renderReadiness'
-import type { VirtualItem } from './useChatVirtualizer'
 import { batch, createEffect, createMemo, For, onCleanup, onMount } from 'solid-js'
 import { emitDevEvent } from '~/lib/devInstrument'
 import { monotonicNow } from '~/lib/monotonicNow'
@@ -14,11 +14,11 @@ import { reservedRowContentColumnStyle } from './widgets/SpanLines.geometry'
 
 export interface ChatDomPremeasureCandidate {
   entry: ClassifiedEntry
-  item: VirtualItem
+  item: ChatRowItem
 }
 
 /**
- * The longest time that a hidden copy waits for its images before it reports a height.
+ * The longest time that a hidden copy waits for an image before it reports a height.
  * A copy reports no height while an image of it still loads: the image can change the
  * height of the row when it arrives. An image that neither loads nor fails within this
  * time no longer holds the copy, so one slow image does not keep its row out of the
@@ -126,10 +126,10 @@ function PremeasureRow(props: {
   // The key of this copy in the shared frame.
   const taskKey = {}
   // The limit of the wait for the images of this copy (see PREMEASURE_IMAGE_SETTLE_LIMIT_MS):
-  // its timer, and whether the time passed. One timer for the copy, started at the first
-  // read that finds an image still loading. A copy keeps one candidate, and so one height
-  // key, for its life: a new key gives a new candidate object, and <For> then mounts a new
-  // copy (see createPremeasureQueue).
+  // its timer, and whether the time passed. One timer for each wait: the first read that
+  // finds an image still loading starts it, and a read that finds none ends it. A copy
+  // keeps one candidate, and so one height key, for its life: a new key gives a new
+  // candidate object, and <For> then mounts a new copy (see createChatPremeasureBands).
   let imageLimit: { passed: boolean, timer: ReturnType<typeof setTimeout> } | undefined
   const clearImageLimit = (): void => {
     if (imageLimit !== undefined)
@@ -153,12 +153,15 @@ function PremeasureRow(props: {
   }
   /**
    * Whether the images of the copy hold its measure: an image still loads, and the limit
-   * of the copy did not pass. The first call that finds such an image starts the limit
-   * timer, which measures the copy again when it fires.
+   * of the current wait did not pass. The first call that finds such an image starts the
+   * limit timer, which measures the copy again when it fires. A call that finds no image
+   * loading ends the wait, so an image that mounts later starts a wait of its own.
    */
   const waitsForImages = (imagesPending: boolean): boolean => {
-    if (!imagesPending)
+    if (!imagesPending) {
+      clearImageLimit()
       return false
+    }
     if (imageLimit === undefined) {
       const limit = {
         passed: false,

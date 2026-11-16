@@ -1,5 +1,5 @@
 import { createRoot } from 'solid-js'
-import { afterEach, beforeEach } from 'vitest'
+import { afterAll, afterEach, beforeEach, vi } from 'vitest'
 import {
   localStorageClearForTests,
   resetBrowserStorageForTests,
@@ -9,6 +9,7 @@ import {
 } from './src/lib/browserStorage'
 import { setCRDTBridge } from './src/lib/crdt'
 import { setSliceSchedulerForTests } from './src/lib/idleSlices'
+import { settle } from './src/test-support/async'
 import { installTestBridge, TEST_USER_ID } from './src/test-support/crdtBridge'
 import { installAnsweringWorkers, resetWorkerStandIns, settleWorkerReplies } from './src/test-support/fakeWorker'
 import { installNetworkGuard } from './src/test-support/networkGuard'
@@ -130,6 +131,22 @@ afterEach(async () => {
     disposeBridgeRoot = null
   }
   setCRDTBridge(null)
+})
+
+// A navigation of the memory router starts a 0 ms timer that scrolls the window
+// (`createMemoryHistory` of @solidjs/router). A test that ends right after a navigation
+// leaves that timer pending. Vitest removes the test environment after the last test of a
+// file, so the timer of the last test can fire after jsdom is gone. It then fails with
+// "window is not defined", and vitest fails the whole run for the unhandled error. A timer
+// of an earlier test fires while jsdom exists, against the no-op `window.scrollTo` above, so
+// one wait after the last test of each file is enough. Timers of one delay fire in the
+// order of their start, so the timer of `settle` fires after the timer of the router.
+//
+// Under fake timers the router timer never fires, and `settle` would wait until the hook
+// times out, so the hook skips the wait then.
+afterAll(async () => {
+  if (!vi.isFakeTimers())
+    await settle()
 })
 
 // Node.js 25+ exposes a broken localStorage/sessionStorage stub on globalThis

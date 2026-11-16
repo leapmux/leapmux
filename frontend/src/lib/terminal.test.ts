@@ -1,9 +1,11 @@
 import type { Terminal } from '@xterm/xterm'
+import type { Mock } from 'vitest'
 import type { CopyTextOptions } from './clipboard'
 import type { UntrustedLinkConfirmRequest } from './untrustedLinks'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { resolveVariant, themeById } from '~/styles/themes'
 import { flush } from '~/test-support/async'
+import { stubDocumentFonts } from '~/test-support/documentFonts'
 import { stubMatchMedia } from '~/test-support/matchMediaStub'
 import { KEY_BROWSER_PREFS, localStorageClearForTests, localStorageSet } from './browserStorage'
 import { applyTerminalData, attachWebgl, createTerminalInstance, detachWebgl, getTerminalRendererPreference, getTerminalThemePreference, loadTerminalFonts, refreshTerminalFont, resolveTerminalRendererPreference, resolveTerminalTheme, resolveTerminalThemeMode, serializeXtermBuffer, terminalThemeFor } from './terminal'
@@ -752,31 +754,19 @@ describe('lazy WebGL renderer', () => {
     // WebGL-ineligible terminal (DOM renderer, no atlas) must not trigger it --
     // its `fontsReady` is never awaited by the pool.
     const load = vi.fn(() => Promise.resolve([]))
-    const originalFonts = Object.getOwnPropertyDescriptor(document, 'fonts')
-    Object.defineProperty(document, 'fonts', {
-      configurable: true,
-      value: { load },
-    })
-    try {
-      localStorageSet(KEY_BROWSER_PREFS, { terminalRenderer: 'canvas' })
-      const canvas = createTerminalInstance()
-      expect(canvas.webglAllowed).toBe(false)
-      expect(load).not.toHaveBeenCalled()
-      canvas.dispose()
+    stubDocumentFonts({ load })
+    localStorageSet(KEY_BROWSER_PREFS, { terminalRenderer: 'canvas' })
+    const canvas = createTerminalInstance()
+    expect(canvas.webglAllowed).toBe(false)
+    expect(load).not.toHaveBeenCalled()
+    canvas.dispose()
 
-      // A WebGL-eligible terminal still fetches all four (weight, style) variants.
-      localStorageSet(KEY_BROWSER_PREFS, { terminalRenderer: 'webgl' })
-      const webgl = createTerminalInstance()
-      expect(webgl.webglAllowed).toBe(true)
-      expect(load).toHaveBeenCalledTimes(4)
-      webgl.dispose()
-    }
-    finally {
-      if (originalFonts)
-        Object.defineProperty(document, 'fonts', originalFonts)
-      else
-        delete (document as any).fonts
-    }
+    // A WebGL-eligible terminal still fetches all four (weight, style) variants.
+    localStorageSet(KEY_BROWSER_PREFS, { terminalRenderer: 'webgl' })
+    const webgl = createTerminalInstance()
+    expect(webgl.webglAllowed).toBe(true)
+    expect(load).toHaveBeenCalledTimes(4)
+    webgl.dispose()
   })
 
   it('attaches idempotently and detaches back to the DOM renderer, without throwing', () => {
@@ -833,15 +823,11 @@ describe('lazy WebGL renderer', () => {
 describe('loadTerminalFonts cold-start retry', () => {
   // jsdom does not implement document.fonts; install a controllable stub so we
   // can drive the load/fail/retry sequence deterministically with fake timers.
-  let originalFonts: PropertyDescriptor | undefined
-  let load: ReturnType<typeof vi.fn>
+  let load: Mock<(spec: string) => Promise<unknown>>
 
   function installFonts(loadImpl: (spec: string) => Promise<unknown>) {
     load = vi.fn(loadImpl)
-    Object.defineProperty(document, 'fonts', {
-      configurable: true,
-      value: { load },
-    })
+    stubDocumentFonts({ load })
   }
 
   function fakeTerminal(): { terminal: Terminal, clearTextureAtlas: ReturnType<typeof vi.fn> } {
@@ -854,18 +840,14 @@ describe('loadTerminalFonts cold-start retry', () => {
 
   beforeEach(() => {
     vi.useFakeTimers()
-    originalFonts = Object.getOwnPropertyDescriptor(document, 'fonts')
   })
 
   afterEach(async () => {
     // Drain any pending retry timers before tearing down the stub so a
     // background retry can't throw into a floating promise mid-restore.
+    // `stubDocumentFonts` restores the property after this hook.
     await vi.runAllTimersAsync()
     vi.useRealTimers()
-    if (originalFonts)
-      Object.defineProperty(document, 'fonts', originalFonts)
-    else
-      delete (document as any).fonts
     vi.restoreAllMocks()
   })
 
@@ -946,7 +928,7 @@ describe('loadTerminalFonts cold-start retry', () => {
   })
 
   it('is a no-op when the platform has no FontFaceSet', async () => {
-    delete (document as any).fonts
+    stubDocumentFonts(undefined)
     const { terminal, clearTextureAtlas } = fakeTerminal()
     await expect(loadTerminalFonts(terminal, '"Hack NF", monospace', 13)).resolves.toBeUndefined()
     expect(clearTextureAtlas).not.toHaveBeenCalled()

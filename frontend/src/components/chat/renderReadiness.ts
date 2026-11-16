@@ -1,6 +1,7 @@
 import type { Accessor, Setter } from 'solid-js'
 import { createEffect, createMemo, createSignal, getListener, on, onCleanup, untrack } from 'solid-js'
 import { setWith, setWithout } from '~/lib/immutableCollections'
+import { createOwnedTimers } from '~/lib/ownedTimers'
 
 // ---------------------------------------------------------------------------
 // Render readiness
@@ -67,9 +68,13 @@ export function useRenderReadiness(
  *
  * A body can wait for a Worker request before it draws its final content: the read of
  * an image file, or the lookup of the other half of a tool call. Such a request ends
- * only when the Worker answers or the transport gives up, which can take a minute. The
- * limit keeps one slow request from holding its row out of the list for that long: the
- * row then takes the height that it has, and it draws again when the content arrives.
+ * only when the Worker answers or the transport gives up, which can take a minute. After
+ * the limit, the row takes the height that it has, and it draws again when the content
+ * arrives.
+ *
+ * The limit counts for each wait of a copy: a new copy of the row, or a new message of the
+ * bubble, starts a new limit, also when it joins a request that still runs. A row whose
+ * content changes more often than the limit therefore waits until that request settles.
  *
  * The user asked for one limit for both waits of a row, so the wait of a hidden copy for
  * its images takes this value (see PREMEASURE_IMAGE_SETTLE_LIMIT_MS).
@@ -89,26 +94,20 @@ export function useRequestReadiness(
   context: () => { readiness?: RenderReadiness | undefined } | undefined,
 ): { pending: Accessor<boolean>, begin: () => () => void } {
   const [pendingCount, setPendingCount] = createSignal(0)
-  const limitTimers = new Set<ReturnType<typeof setTimeout>>()
-  onCleanup(() => {
-    for (const timer of limitTimers)
-      clearTimeout(timer)
-    limitTimers.clear()
-  })
+  const limitTimers = createOwnedTimers()
   const begin = (): (() => void) => {
-    // The timer of the limit while the request counts, and undefined once it ended.
-    let limitTimer: ReturnType<typeof setTimeout> | undefined
+    // The function that cancels the timer of the limit while the request counts, and
+    // undefined once the request ended.
+    let cancelLimit: (() => void) | undefined
     // Ends the request once: by its caller, or by the limit, whichever comes first.
     const end = (): void => {
-      if (limitTimer === undefined)
+      if (cancelLimit === undefined)
         return
-      clearTimeout(limitTimer)
-      limitTimers.delete(limitTimer)
-      limitTimer = undefined
+      cancelLimit()
+      cancelLimit = undefined
       setPendingCount(count => count - 1)
     }
-    limitTimer = setTimeout(end, READINESS_REQUEST_LIMIT_MS)
-    limitTimers.add(limitTimer)
+    cancelLimit = limitTimers.after(READINESS_REQUEST_LIMIT_MS, end)
     setPendingCount(count => count + 1)
     return end
   }

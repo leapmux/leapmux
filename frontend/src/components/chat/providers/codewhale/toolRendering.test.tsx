@@ -3,9 +3,9 @@ import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { CODEWHALE_TOOL } from '~/generated/contracts/codewhale-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { testImageActions } from '~/test-support/imageActions'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { renderMessageContent } from '../../messageContentRenderer'
-import { imageActionsFrom } from '../../renderContext'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import { MEDIA_DATA_URI, MEDIA_DESCRIPTOR, MEDIA_OUTPUT_FILE_ID, requestSide, toolCompleted, toolStarted } from './toolResults.fixtures'
@@ -43,7 +43,7 @@ function renderResult(toolName: string, args: Record<string, unknown>, detail: s
 describe('codewhale tool rendering', () => {
   it('draws recovered native image bytes in the completed Read media row', () => {
     const openImage = vi.fn()
-    const images = imageActionsFrom({ openImage })
+    const images = testImageActions({ openImage })
     const { container } = renderResult(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' }, 'The native image is ready.', {
       metadata: {
         tool_media: [MEDIA_DESCRIPTOR],
@@ -51,9 +51,7 @@ describe('codewhale tool rendering', () => {
       supplementalContent: {
         outputFiles: { [MEDIA_OUTPUT_FILE_ID]: MEDIA_DATA_URI },
       },
-      context: images
-        ? { images }
-        : {},
+      context: { images },
     })
     const image = container.querySelector('button[aria-label="Open image"] img')
     expect(image).not.toBeNull()

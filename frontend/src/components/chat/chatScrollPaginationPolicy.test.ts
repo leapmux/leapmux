@@ -1,5 +1,5 @@
 import type { ChatPaginationPolicyDeps } from './chatScrollPaginationPolicy'
-import { createRoot, createSignal } from 'solid-js'
+import { createRenderEffect, createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { createChatPaginationPolicy } from './chatScrollPaginationPolicy'
 
@@ -248,6 +248,52 @@ describe('createChatPaginationPolicy', () => {
       expect(policy.atStagedTopEdge()).toBe(false)
       dispose()
     })
+  })
+
+  it('ends the staged bottom edge when the reader starts to follow, with no scroll event', () => {
+    createRoot((dispose) => {
+      const [following, setFollowing] = createSignal(false)
+      const { policy } = createTestPolicy({
+        stagedNewer: () => true,
+        isFollowing: following,
+      })
+      expect(policy.atStagedBottomEdge()).toBe(true)
+
+      // No change of the geometry version: follow mode alone runs the memo again.
+      setFollowing(true)
+      expect(policy.atStagedBottomEdge()).toBe(false)
+
+      setFollowing(false)
+      expect(policy.atStagedBottomEdge()).toBe(true)
+      dispose()
+    })
+  })
+
+  it('gives the caller of the live-tail suppression no dependency on follow mode', () => {
+    const [following, setFollowing] = createSignal(false)
+    const results: boolean[] = []
+    // The root returns before the writes below: a write inside the root function would
+    // wait for that function to return, and the effect would not run in between.
+    const { policy, dispose } = createRoot((dispose) => {
+      const { policy } = createTestPolicy({
+        isFollowing: following,
+        anchorAtViewportTop: () => ({ id: 'm1', offsetWithinRow: 0 }),
+      })
+      // The effect of the buffer filler calls the suppression. A change of follow mode
+      // must not run that effect again: the filler fills for a move of the view.
+      createRenderEffect(() => {
+        results.push(policy.suppressOlderPrefetchAtLiveTail())
+      })
+      return { policy, dispose }
+    })
+    expect(results).toEqual([false])
+
+    setFollowing(true)
+
+    expect(results).toEqual([false])
+    // A direct call still reads the current follow mode.
+    expect(policy.suppressOlderPrefetchAtLiveTail()).toBe(true)
+    dispose()
   })
 
   it('reports a stall for a fetch at the edge with no staged row', () => {

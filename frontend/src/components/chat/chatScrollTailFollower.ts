@@ -1,5 +1,5 @@
 import type { ScrollContext } from './useChatScroll'
-import { batch, createSignal } from 'solid-js'
+import { batch } from 'solid-js'
 
 /** The deps that only createChatTailFollower reads, beyond the shared ScrollContext. */
 export interface ChatTailFollowerExtras {
@@ -37,21 +37,12 @@ export interface ChatTailFollowerExtras {
  * whichever fetch of the store delivered it.
  */
 export function createChatTailFollower(ctx: ScrollContext, extras: ChatTailFollowerExtras) {
-  let jumpRequestRevision = 0
-  // Whether the jump of the current revision did not run its `then` or `catch` branch yet.
-  // A jump of an older revision is never pending: the request that superseded it ended it.
-  // The first-view rule of the hook does not read this signal: it reads the pending history
-  // jump of the hook, and each reader of this value reads it untracked.
-  const [jumpPending, setJumpPending] = createSignal(false)
-  // The signal of the jump of the current revision, while that jump is pending.
-  let jumpSignal: AbortSignal | undefined
-
-  // A request that supersedes the pending jump: the jump's branches then do nothing.
-  const supersedeJump = (): number => {
-    setJumpPending(false)
-    jumpSignal = undefined
-    return ++jumpRequestRevision
-  }
+  // The signal of the jump to the latest page of this module, from its start until its
+  // `then` or `catch` branch ran, or until a later request of this module replaced it. The
+  // hook owns the pending history jump. This value only states which jump is the own one:
+  // every other history jump aborts its signal, so a signal here that is not aborted is
+  // the signal of the pending jump of the hook.
+  let latestJumpSignal: AbortSignal | undefined
 
   /** Ask the hook for the tail: its stick runs when the last rows are measured. */
   const requestTail = (): void => {
@@ -59,7 +50,8 @@ export function createChatTailFollower(ctx: ScrollContext, extras: ChatTailFollo
   }
 
   const forceScrollToBottom = (): void => batch(() => {
-    const requestRevision = supersedeJump()
+    // This request replaces the jump of this module: the branches of that jump then do nothing.
+    latestJumpSignal = undefined
     // This command ends each history jump before it, also when it starts no fetch of its
     // own: the scroll-to-bottom button with no newer page ends the fetch of Home. The jump
     // of this module no longer counts as pending here, so the call keeps the request for
@@ -79,16 +71,13 @@ export function createChatTailFollower(ctx: ScrollContext, extras: ChatTailFollo
     // The reader place becomes the tail. Follow mode does not apply until the jump settled
     // (see ScrollContext.isFollowing).
     ctx.followTail()
-    setJumpPending(true)
-    jumpSignal = signal
+    latestJumpSignal = signal
     // Whether this jump is still the current request, and nothing aborted it. A current
     // jump then stops being pending, here and in the hook.
     const settle = () => {
-      const current = requestRevision === jumpRequestRevision
-      if (current) {
-        setJumpPending(false)
-        jumpSignal = undefined
-      }
+      const current = latestJumpSignal === signal
+      if (current)
+        latestJumpSignal = undefined
       return ctx.settleHistoryJump(signal) && current
     }
     void Promise.resolve(extras.jumpToLatest(signal))
@@ -120,7 +109,8 @@ export function createChatTailFollower(ctx: ScrollContext, extras: ChatTailFollo
       return
     }
     batch(() => {
-      supersedeJump()
+      // The button replaces the jump of this module, as forceScrollToBottom does.
+      latestJumpSignal = undefined
       // The button starts no fetch here, but it still ends one that runs.
       ctx.abandonHistoryJump()
       // A command of the reader, as End is: it ends the pause of the buffer fill that a
@@ -134,12 +124,12 @@ export function createChatTailFollower(ctx: ScrollContext, extras: ChatTailFollo
     forceScrollToBottom,
     scrollToBottom,
     /**
-     * The revision of the latest-page jump that did not settle yet, or `null`. A jump
-     * whose signal is aborted is not pending: its landing does nothing. Reactive in the
-     * settled state of the jump, and not in the abort of its signal.
+     * The signal of the latest-page jump that did not settle yet, or `null`. A jump whose
+     * signal is aborted is not pending: its landing does nothing. Not reactive: the
+     * first-view rule reads the pending history jump of the hook.
      */
-    pendingJump: (): number | null => jumpPending() && jumpSignal?.aborted !== true
-      ? jumpRequestRevision
+    pendingJump: (): AbortSignal | null => latestJumpSignal !== undefined && !latestJumpSignal.aborted
+      ? latestJumpSignal
       : null,
   }
 }

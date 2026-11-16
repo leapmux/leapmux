@@ -1,7 +1,7 @@
 import type { ChatScrollState, ChatScrollVirtualizer } from './useChatScroll'
 import type { ScrollHarnessOptions } from './useChatScroll.testkit'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import { batch, createRoot, createSignal, onCleanup } from 'solid-js'
+import { batch, createEffect, createRoot, createSignal, onCleanup } from 'solid-js'
 import { insert } from 'solid-js/web'
 import { describe, expect, it, vi } from 'vitest'
 import { inRoot } from '~/test-support/async'
@@ -1120,6 +1120,78 @@ describe('useChatScroll a place that waits for its rows', () => {
 
       h.reachTarget()
       expect(h.div.getScrollTop()).toBe(2000)
+      h.dispose()
+    })
+
+    it('waits for the row of the last anchor at the show of a pane', async () => {
+      const { h } = mountWaiting()
+      await h.anchoredAt(2000)
+      h.div.setClientHeight(0)
+      await h.resizeFlush()
+      h.div.setScrollTop(0)
+
+      h.div.setClientHeight(500)
+      await h.resizeFlush()
+
+      // The row of the anchor can be staged since the hide, so the show asks for the place
+      // of the anchor and waits for its row, as the restore of a saved viewport does.
+      expect(h.requestedTargets().at(-1)).toEqual(rowTargetAt('r20', 0))
+
+      h.reachTarget()
+      expect(h.div.getScrollTop()).toBe(2000)
+      h.dispose()
+    })
+
+    it('keeps a wait for the top at the show of a pane whose saved viewport is older', async () => {
+      const jump = deferredJump()
+      const [saved, setSaved] = createSignal<ChatScrollState | undefined>()
+      const { h } = mountWaiting({
+        hookOptions: {
+          hasOlderMessages: () => true,
+          onJumpToOldest: jump.onJumpToOldest,
+          savedViewportScroll: saved,
+          onClearSavedViewportScroll: () => setSaved(undefined),
+        },
+      })
+      h.press('Home')
+      // A tab switch saves the viewport while the jump runs: the reader place is still the tail.
+      setSaved(h.hook.getScrollState())
+      h.div.setClientHeight(0)
+      await h.resizeFlush()
+      jump.resolve(true)
+      await settleJump(jump.promise)
+      expect(h.requestedTargets().at(-1)).toEqual({ kind: 'top' })
+
+      h.div.setClientHeight(500)
+      await h.resizeFlush()
+
+      // The wait for the top is newer than the saved viewport, so the show keeps it.
+      expect(h.requestedTargets().at(-1)).toEqual({ kind: 'top' })
+      expect(saved()).toBeUndefined()
+
+      h.reachTarget()
+      expect(h.div.getScrollTop()).toBe(0)
+      h.dispose()
+    })
+
+    it('reports the pane as hidden until the flush of its show, to a reader that subscribes', async () => {
+      const { h } = mountWaiting()
+      const seen: boolean[] = []
+      const disposeReader = createRoot((dispose) => {
+        createEffect(() => seen.push(h.hook.paneHidden()))
+        return dispose
+      })
+      h.div.setClientHeight(0)
+      await h.resizeFlush()
+
+      // The browser gives the pane its layout box one frame before the flush of the show.
+      h.div.setClientHeight(500)
+      triggerResizeObserversSync()
+      expect(h.hook.paneHidden()).toBe(true)
+
+      await h.frame()
+      expect(seen).toEqual([false, true, false])
+      disposeReader()
       h.dispose()
     })
 

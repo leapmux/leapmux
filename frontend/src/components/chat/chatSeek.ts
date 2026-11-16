@@ -67,7 +67,7 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
    * below the viewport top, once that row and the rows of its view are measured (see
    * ScrollContext.requestPlace). Instant, not animated. The resolved scroll coordinate counts the
    * inset of the spacer (see chatLayoutShift), so the row lands that far below the top of
-   * the visible area. The first row resolves to the top of the scroller (see
+   * the visible area. The first loaded row resolves to the top of the scroller (see
    * placementScrollTop), so a landing on it writes 0 and shows the inset above it. A list
    * shorter than the view cannot scroll, so a landing there writes 0. The layout shift
    * then holds the top edge of that row where it landed while the fresh rows around it
@@ -213,8 +213,9 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
     ctx.cancelScrollAnimation()
     // `top` is a content coordinate. The resolver converts it after the rebase of the
     // placement, which can leave a shift below one pixel in place. The ends of a scrub reach
-    // the ends of the scroller: the content top goes to the top of the scroller (see
-    // placementScrollTop), and the browser clamps a target past the bottom.
+    // the ends of the scroller: the content top goes to the top of the scroller while the
+    // first row of the list is the first loaded row (see placementScrollTop), and the
+    // browser clamps a target past the bottom.
     ctx.placeAt(() => ctx.virt.placementScrollTopOf(top))
   }
 

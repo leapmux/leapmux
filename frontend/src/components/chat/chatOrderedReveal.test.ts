@@ -1,7 +1,7 @@
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { createOrderedTailReveal } from './chatOrderedReveal'
-import { setup } from './useChatVirtualizer.testkit'
+import { createRowHeightCache } from './chatRowHeightCache'
 
 describe('chatOrderedReveal', () => {
   /**
@@ -33,14 +33,16 @@ describe('chatOrderedReveal', () => {
     createRoot((dispose) => {
       try {
         const items = ['empty', 'answer'].map(id => ({ id, hasSpanLines: false, heightKey: 'live' }))
-        const [empty] = items
+        const [empty, answer] = items
         // A row counts as loading here until the cache holds a height for it.
-        const { virt, cache } = setup(items, { measured: false })
+        const cache = createRowHeightCache({
+          loadedIds: () => items.map(item => item.id),
+        })
         const held = createOrderedTailReveal(
           () => items.map(item => item.id),
           id => !cache.isMeasured(items.find(item => item.id === id)!),
         )
-        virt.measure('answer', 40)
+        expect(cache.commit(answer!, 40, 'live', 'visible')).toBe('moved')
         expect([
           ...held(),
         ]).toEqual(['answer'])

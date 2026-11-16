@@ -4,12 +4,12 @@ import type { NativeScenarioContext } from './nativeScenario'
 import { Buffer } from 'node:buffer'
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { crc32, deflateSync } from 'node:zlib'
 import { expect } from '@playwright/test'
 import { FINISHED_TOOL_STATUSES } from '../../../src/components/chat/model/toolCallStatus'
 import { escapeRegExp } from '../../../src/lib/regexp'
 import { nativeTextStep } from './nativeScenario'
 import { runNativeToolTurn } from './nativeToolExecution'
+import { encodePng, PNG_SIGNATURE } from './png'
 import { answerControl, readAttached, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner } from './ui'
 
 /**
@@ -39,53 +39,24 @@ export function writeToolImage(workingDir: string, marker: string): string {
   return name
 }
 
-const PNG_SIGNATURE = Buffer.from([
-  0x89,
-  0x50,
-  0x4E,
-  0x47,
-  0x0D,
-  0x0A,
-  0x1A,
-  0x0A,
-])
-
-/** One chunk of a PNG: its length, its type, its data, and the checksum of the type and the data. */
-function pngChunk(type: string, data: Buffer): Buffer {
-  const body = Buffer.concat([
-    Buffer.from(type, 'latin1'),
-    data,
-  ])
-  const length = Buffer.alloc(4)
-  length.writeUInt32BE(data.length)
-  const checksum = Buffer.alloc(4)
-  checksum.writeUInt32BE(crc32(body))
-  return Buffer.concat([length, body, checksum])
-}
-
 /**
  * The bytes of a PNG of `width` by `height` pixels in one grey tone: a valid image that a browser decodes, for a
  * test that needs a picture of a stated size.
  */
 export function solidPngBytes(width: number, height: number): Buffer {
+  // Checked here as well as in encodePng, because the scanlines below need a valid size before the encoder runs.
   if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0)
     throw new Error('A PNG needs a width and a height that are positive integers.')
-  const header = Buffer.alloc(13)
-  header.writeUInt32BE(width, 0)
-  header.writeUInt32BE(height, 4)
-  // 8 bits for each sample, and one grey sample for each pixel.
-  header[8] = 8
-  header[9] = 0
-  // Each scanline: the filter type 0, then one byte for each pixel.
+  // Each scanline: the filter type 0, then one grey sample for each pixel.
   const scanlines = Buffer.alloc((width + 1) * height, 0x80)
   for (let row = 0; row < height; row++)
     scanlines[row * (width + 1)] = 0
-  return Buffer.concat([
-    PNG_SIGNATURE,
-    pngChunk('IHDR', header),
-    pngChunk('IDAT', deflateSync(scanlines)),
-    pngChunk('IEND', Buffer.alloc(0)),
-  ])
+  return encodePng({
+    width,
+    height,
+    colorType: 0,
+    scanlines,
+  })
 }
 
 /** Write a PNG of `width` by `height` pixels (see solidPngBytes) into `workingDir` as `fileName`. */

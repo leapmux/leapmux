@@ -107,6 +107,45 @@ describe('reportChatListSize', () => {
     ])
   })
 
+  it('gives the scroll container the client height of the reported size, before its observer runs', async () => {
+    const { container, scrollContainer } = containerWithList()
+    const seen: number[] = []
+    // The scroll hook reads the client height when its observer reports.
+    new ResizeObserver(() => seen.push(scrollContainer.clientHeight)).observe(scrollContainer)
+
+    await reportChatListSize({ container }, 640, 500)
+    await reportChatListSize({ container }, 640, 0)
+    await reportChatListSize({ container })
+
+    // The second report is a pane that lost its layout box.
+    expect(seen).toEqual([500, 0, 733])
+  })
+
+  it('keeps a client height that the test defined before the report', async () => {
+    const { container, scrollContainer } = containerWithList()
+    Object.defineProperty(scrollContainer, 'clientHeight', {
+      configurable: true,
+      get: () => 200,
+    })
+
+    await reportChatListSize({ container }, 640, 500)
+
+    expect(scrollContainer.clientHeight).toBe(200)
+  })
+
+  it('lets a test replace the client height after a report, and keeps the replacement at a later report', async () => {
+    const { container, scrollContainer } = containerWithList()
+    await reportChatListSize({ container }, 640, 500)
+
+    Object.defineProperty(scrollContainer, 'clientHeight', {
+      configurable: true,
+      get: () => 200,
+    })
+    await reportChatListSize({ container }, 640, 733)
+
+    expect(scrollContainer.clientHeight).toBe(200)
+  })
+
   it('leaves the hidden copies unmeasured', async () => {
     const { container, root } = containerWithList()
     const copy = root.firstElementChild!

@@ -207,8 +207,17 @@ export interface MessageBubbleHost {
   syntaxHighlightingPaused?: (() => boolean) | undefined
   /** True while the user has a live document selection inside the chat content. */
   textSelectionActive?: (() => boolean) | undefined
-  /** True while this row sits outside the near-viewport band. */
+  /**
+   * True while this row sits outside the near-viewport band. Not reactive to the scroll
+   * position: the worker dispatch reads it at each dispatch.
+   */
   rowOffscreen?: (() => boolean) | undefined
+  /**
+   * Whether this row is near the view, for the read of its file images. Reactive: the
+   * host runs the test again when the answer can differ, when a scroll ends and when the
+   * pane changes its height. A row whose host states none reads its images at once.
+   */
+  rowNearView?: (() => boolean) | undefined
 }
 
 interface MessageBubbleProps {
@@ -324,7 +333,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       return
     const endWait = relatedLookup.begin()
     // The effect runs again for a new message of the same bubble. Its cleanup ends the wait
-    // of the run before, so only the limit of the current request holds the row copy.
+    // of the run before, and the current message starts a limit of its own.
     onCleanup(endWait)
     void request
       .catch((error: unknown) => {
@@ -453,23 +462,12 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     openSubagent: item => props.host?.onOpenSubagent?.(item),
   })
   const images = imageActionsFrom({
-    fileImage: (filePath, options) => sources.fileImage(filePath, options),
-    cachedFileImage: filePath => sources.cachedFileImage(filePath),
-    fileImageSize: filePath => sources.fileImageSize(filePath),
-    cachedFileImageSize: filePath => sources.cachedFileImageSize(filePath),
-    // The scope of this row copy, fixed for the life of the bubble.
-    readiness: untrack(() => props.readiness),
-    deferLoad: () => {
-      if (props.premeasureMode === true)
-        return true
-      // The test for a row that is far from the view (`rowOffscreen`) reads the scroll
-      // position with no subscription. Nothing would run it again when the reader scrolls
-      // the row into the view and no height changes, so the image would wait forever. The
-      // scroll-activity window of the host closes when a scroll ends: the read of it here
-      // runs the test again for the position where the scroll stopped.
-      props.host?.syntaxHighlightingPaused?.()
-      return props.host?.rowOffscreen?.() === true
-    },
+    files: sources.fileImages,
+    // The read of an image whose size is known waits in a hidden copy, and in a row of the
+    // list that is far from the view (see ImageRenderActions.deferLoad). The host states
+    // whether the row is near the view, and runs its test again when the answer can differ
+    // (see MessageBubbleHost.rowNearView).
+    deferLoad: () => props.premeasureMode === true || props.host?.rowNearView?.() === false,
     premeasurePass: () => props.premeasureMode === true,
     ...(untrack(openImageHost) !== undefined
       ? { openImage }
@@ -496,9 +494,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     ...(subagents !== undefined
       ? { subagents }
       : {}),
-    ...(images !== undefined
-      ? { images }
-      : {}),
+    images,
     // A getter, so the control follows the host: the agent gains and loses the
     // capability as it starts and stops.
     get reviews() {

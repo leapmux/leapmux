@@ -1,5 +1,6 @@
 import type { ChatScrollState, ScrollContext } from './useChatScroll'
 import type { ScrollAnchor } from '~/stores/chatTypes'
+import { createSignal } from 'solid-js'
 
 /**
  * The hidden->visible context captured at the top of handleResize (before browser
@@ -45,11 +46,6 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
   clearSavedViewportScroll: () => void
   /** The persisted saved-viewport scroll for a hidden->visible restore. */
   savedViewportScroll: () => ChatScrollState | undefined
-  /**
-   * Place the view back at `anchor` for a reader who does not request the tail. Returns
-   * whether it placed the view.
-   */
-  restoreAnchor: (anchor: ScrollAnchor | null) => boolean
   /** The anchor of the reader's last position. */
   lastAnchor: () => ScrollAnchor | null
   /**
@@ -64,6 +60,9 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
   let prevClientHeight = 0
   // The pending resize-handling rAF, cancelled on the next resize and on dispose.
   let resizeRafId = 0
+  // Whether the pane counts as hidden (see `paneHidden` of the result). A signal, because
+  // the row admission reads it: it reaches no target while the pane counts as hidden.
+  const [paneHidden, setPaneHidden] = createSignal(true)
 
   // Strategy 2: no place resolved for a row anchor, but a raw scrollTop was saved (the
   // window was all-hidden at save -- no virtual spacer, so the offset was into non-virtual
@@ -174,14 +173,20 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
   // that wasn't at the bottom and had no saved non-bottom scroll). While the pane is
   // HIDDEN, a geometry change sets the layout shift to 0 and compensates nothing, so it
   // moves the content under the reader, and the browser can also move `scrollTop`. So a
-  // show puts the reader back at the anchor captured in the ResizeObserver callback. Then
-  // record the position as an own write: it re-seats the direction and velocity baselines
-  // (a viewport shrink clamps scrollTop with no write, and a stale baseline would read that
-  // clamp as the reader's move), runs the position check after the restore, and recomputes
-  // the rendered slice (a taller pane reveals rows below the old slice; safe to mount
-  // synchronously -- we're in a rAF, outside RO delivery). A restore that placed the view
-  // recorded its write and refreshed the slice itself, and a second record would end the
-  // anchor that `extras.restoreAnchor` holds for a row that does not show its height yet.
+  // show puts the reader back at the anchor captured in the ResizeObserver callback, for a
+  // reader who does not request the tail. It asks the hook for the place of that anchor, as
+  // the restore of a saved viewport does: the row of the anchor can be staged since the
+  // hide, and the view then waits for it. It reads the request, not follow mode: during a
+  // jump to the latest page the request stands, and this restore must not end it.
+  //
+  // Otherwise, and while that place waits, record the position as an own write: it
+  // re-seats the direction and velocity baselines (a viewport shrink clamps scrollTop with
+  // no write, and a stale baseline would read that clamp as the reader's move), runs the
+  // position check, and recomputes the rendered slice (a taller pane reveals rows below
+  // the old slice; safe to mount synchronously -- we're in a rAF, outside RO delivery). A
+  // place that showed recorded its write and refreshed the slice itself, and a second
+  // record would end the anchor that its placement holds for a row that does not show its
+  // height yet.
   //
   // A place that waits comes first. When it is reached, its placement puts the view there,
   // in place of the restore of the last anchor. While it still waits, the view stays, and
@@ -190,12 +195,14 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
     const shown = ctx.showWaitingPlace()
     if (shown === 'shown')
       return
-    if (shown === 'waiting') {
-      ctx.recordPosition()
-      return
+    if (shown === 'none' && rc.wasHidden && rc.anchor !== null && !ctx.followRequested()) {
+      const place = ctx.placeForAnchor(rc.anchor)
+      if (place !== undefined) {
+        void ctx.requestPlace(place)
+        if (ctx.showWaitingPlace() !== 'waiting')
+          return
+      }
     }
-    if (rc.wasHidden && extras.restoreAnchor(rc.anchor))
-      return
     ctx.recordPosition()
   }
 
@@ -241,9 +248,22 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
             ...rc,
             followRequested: ctx.followRequested(),
           }
-      // Three mutually-exclusive outcomes in priority order.
-      if (!tryRestoreHidden(outcome) && !tryStickOnShow(outcome))
+      // A place for a row or for the top that waits outranks a saved viewport: the reader
+      // asked for it after every save that can exist. A save that the hook makes during
+      // such a wait records the place of the wait, and an older save records the place of
+      // the reader before the command. So the show drops the save and keeps the wait.
+      if (outcome.wasHidden && ctx.positionPlaceWaits()) {
+        if (outcome.savedScroll)
+          extras.clearSavedViewportScroll()
         recheckOnResize(outcome)
+      }
+      // Otherwise, three mutually-exclusive outcomes in priority order.
+      else if (!tryRestoreHidden(outcome) && !tryStickOnShow(outcome)) {
+        recheckOnResize(outcome)
+      }
+      // The pane counts as shown from here on: the outcome is decided. The row admission
+      // reads this state, so a place that only waited for a view height is reached now.
+      setPaneHidden(ch === 0)
       // A place that was reached while the pane counted as hidden, and that no step above
       // replaced or showed, is shown now (see `paneHidden`).
       ctx.showWaitingPlace()
@@ -306,6 +326,7 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
     /** Seed prevClientHeight from the freshly-measured viewport on mount. */
     initClientHeight() {
       prevClientHeight = ctx.getEl()?.clientHeight ?? 0
+      setPaneHidden(prevClientHeight === 0)
     },
     /**
      * Whether the pane counts as hidden: the height that the mount, or the last flush of a
@@ -315,8 +336,13 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
      * flush holds the state from before the show (a saved viewport, the request for the
      * tail, the last anchor). A flush that waits for a scroll animation records no height
      * yet, so the pane counts as hidden until the flush runs its steps.
+     *
+     * Reactive. The flush writes it after it decided its outcome. The row admission reads
+     * it: while the pane counts as hidden, the admission gets a view height of 0, so it
+     * reaches no target and keeps its rows. Otherwise the list would show the rows of a
+     * target for one frame at the old position, before the flush places the view.
      */
-    paneHidden: (): boolean => prevClientHeight === 0,
+    paneHidden,
     /** Cancel any pending resize rAF (on cleanup). */
     cancelPendingResize() {
       cancelAnimationFrame(resizeRafId)

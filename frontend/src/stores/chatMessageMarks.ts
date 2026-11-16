@@ -25,8 +25,8 @@ export interface SeqMark {
 }
 
 /**
- * The reactive scroll-rail data an agent exposes to the chat view: the marked seqs, the
- * effective whole-history seq range the rail's track spans, and the loaded window's bounds.
+ * The reactive scroll-rail data an agent exposes to the chat view: the marked seqs and the
+ * effective whole-history seq range the rail's track spans.
  * One named shape shared by the store's `getRailData` return and `ChatViewProps.rail`, so
  * the two can't drift. The range (minSeq/maxSeq) is already window-aware -- the store
  * resolves it via {@link resolveRailRange}, so the view passes it straight through.
@@ -40,15 +40,6 @@ export interface ChatRailData {
   maxSeq: bigint
   /** The marked seqs (teal jump dots). */
   marks: readonly SeqMark[]
-  /**
-   * The first and last persisted sequence of the window that the rail scrolls live, or
-   * undefined for an empty window. The store gives the loaded window. ChatView replaces
-   * it with the rows that its list holds (see ChatView.railProps): a loaded row that
-   * the list does not hold yet has no place to scroll to. The rail's thumb-drag uses
-   * these to control in-window live-scrolling; a drag mapping outside them only previews.
-   */
-  windowFirstSeq: bigint | undefined
-  windowLastSeq: bigint | undefined
 }
 
 /** Inputs to {@link resolveRailRange}: the seeded range, the live tail, and the loaded window. */

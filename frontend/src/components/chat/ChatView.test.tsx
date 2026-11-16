@@ -2,15 +2,16 @@ import type { ChatDomPremeasureCandidate, PremeasureMeasureHandler } from './cha
 import type { ChatPremeasureBandsDeps } from './chatPremeasureBands'
 import type { PersistableRowHeight, RowHeightCache } from './chatRowHeightCache'
 import type { RowHeightPersistenceDeps } from './chatRowHeightPersistence'
+import type { ChatRowItem } from './chatRowItem'
 import type { ChatScrollRail } from './ChatScrollRail'
 import type { RowContentReadiness } from './createRowMeasurer'
 import type { MessageBubbleHost } from './MessageBubble'
 import type { UseChatScrollOptions } from './useChatScroll'
-import type { ChatVirtualizerRange, UseChatVirtualizerResult, VirtualItem } from './useChatVirtualizer'
+import type { ChatVirtualizerRange, UseChatVirtualizerResult } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
-import { batch, createEffect, createSignal, For } from 'solid-js'
+import { batch, createEffect, createRenderEffect, createRoot, createSignal, For } from 'solid-js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { COPILOT_EVENT, COPILOT_TOOL } from '~/generated/contracts/copilot-protocol'
@@ -37,7 +38,6 @@ import { computeOverscanPx } from './chatViewportGeometry'
 import { bandRow, bleedRow } from './messageStyles.css'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
 import { createRenderReadinessScope } from './renderReadiness'
-import { sameVirtualItems } from './useChatVirtualizer'
 import { ROW_BLEED_LEFT_VAR, rowBleedLeftStyle } from './widgets/SpanLines.geometry'
 
 const A_TXT_RE = /a\.txt/
@@ -67,8 +67,12 @@ const mockState = vi.hoisted(() => ({
   scrollOpts: undefined as undefined | UseChatScrollOptions,
   /** The stub that `useChatScroll` returned last, so a test can assert that nothing called it. */
   scrollStub: undefined as undefined | Record<string, unknown>,
-  /** Set what the stub scroll hook reports: follow mode, and the two staged edges. */
+  /**
+   * Set what the stub scroll hook reports: follow mode, whether it counts the pane as
+   * hidden, and the two staged edges.
+   */
   setIsFollowing: undefined as undefined | ((following: boolean) => void),
+  setPaneHidden: undefined as undefined | ((hidden: boolean) => void),
   setAtStagedTopEdge: undefined as undefined | ((atEdge: boolean) => void),
   setAtStagedBottomEdge: undefined as undefined | ((atEdge: boolean) => void),
 }))
@@ -82,7 +86,9 @@ const virtualizerState = vi.hoisted(() => ({
    */
   heightCaches: [] as RowHeightCache[],
   /** The `items` option that ChatView handed the stub virtualizer last: the admitted rows. */
-  items: undefined as undefined | (() => readonly VirtualItem[]),
+  items: undefined as undefined | (() => readonly ChatRowItem[]),
+  /** The `listStartsAtLoadedTop` option that ChatView handed the stub virtualizer last. */
+  listStartsAtLoadedTop: undefined as undefined | (() => boolean),
   setRange: undefined as undefined | ((range: ChatVirtualizerRange) => void),
   attachedIds: [] as string[],
   currentHeightKeys: new Map<string, string | undefined>(),
@@ -327,11 +333,13 @@ vi.mock('./chatViewportGeometry', async () => {
 
 vi.mock('./useChatScroll', async () => {
   const actual = await vi.importActual<typeof import('./useChatScroll')>('./useChatScroll')
-  const { createSignal } = await import('solid-js')
+  const { createSignal, untrack } = await import('solid-js')
   const [isFollowing, setIsFollowing] = createSignal(true)
+  const [paneHidden, setPaneHidden] = createSignal(false)
   const [atStagedTopEdge, setAtStagedTopEdge] = createSignal(false)
   const [atStagedBottomEdge, setAtStagedBottomEdge] = createSignal(false)
   mockState.setIsFollowing = setIsFollowing
+  mockState.setPaneHidden = setPaneHidden
   mockState.setAtStagedTopEdge = setAtStagedTopEdge
   mockState.setAtStagedBottomEdge = setAtStagedBottomEdge
   return {
@@ -360,7 +368,11 @@ vi.mock('./useChatScroll', async () => {
           onPointerCancel: vi.fn(),
         },
         atBottom: () => true,
-        isFollowing,
+        // As the real hook does: `isFollowing` gives its caller no dependency on follow
+        // mode, and only the tracked accessor runs a memo again.
+        isFollowing: () => untrack(isFollowing),
+        isFollowingTracked: isFollowing,
+        paneHidden,
         stalledOlder: () => false,
         stalledNewer: () => false,
         atStagedTopEdge,
@@ -404,6 +416,7 @@ vi.mock('./useChatVirtualizer', async () => {
       }
       const items = args[0].items
       virtualizerState.items = items
+      virtualizerState.listStartsAtLoadedTop = args[0].listStartsAtLoadedTop
       // The stub lays out the items that it gets, the admitted rows: row `i` of them is 100px
       // tall at 100·i. A row that is not among them has no index and no offset.
       const indexOfId = (id: string): number => items().findIndex(item => item.id === id)
@@ -422,7 +435,7 @@ vi.mock('./useChatVirtualizer', async () => {
         spacerHeight: () => totalHeight + virtualizerState.layoutShift,
         contentTopOf: (scrollTop: number) => scrollTop - virtualizerState.layoutShift,
         scrollTopOf: (contentTop: number) => contentTop + virtualizerState.layoutShift,
-        placementScrollTopOf: (contentTop: number) => placementScrollTop(contentTop, top => top + virtualizerState.layoutShift),
+        placementScrollTopOf: (contentTop: number) => placementScrollTop(contentTop, top => top + virtualizerState.layoutShift, true),
         attachSpacer: (element: HTMLElement | undefined) => {
           virtualizerState.layoutAttachments.push({ slot: 'spacer', element })
         },
@@ -616,6 +629,19 @@ function stubScrollMetrics(list: HTMLElement, metrics: ScrollMetrics): void {
     configurable: true,
     get: () => metrics.clientHeight,
   })
+}
+
+/**
+ * Move the view of `list` up to `top`, as a reader who leaves the live tail does. The
+ * scroll hook first sees the view at the bottom of the content, where the first view of a
+ * shown pane puts it, and then at `top`. Only a move up ends follow mode, and jsdom leaves
+ * `scrollTop` at 0, from where no move goes up.
+ */
+function scrollReaderUpTo(list: HTMLElement, metrics: ScrollMetrics, top: number): void {
+  metrics.scrollTop = metrics.scrollHeight - metrics.clientHeight
+  fireEvent.scroll(list)
+  metrics.scrollTop = top
+  fireEvent.scroll(list)
 }
 
 /** The two computed values of the chat scroll container that make the inset of its spacer. */
@@ -992,54 +1018,6 @@ describe('computeOverscanPx', () => {
   })
 })
 
-describe('sameVirtualItems', () => {
-  const item = (id: string, hasSpanLines = false, heightKey?: string): VirtualItem => ({
-    id,
-    hasSpanLines,
-    // Omitted (not undefined) when the row states no height key.
-    ...(heightKey !== undefined
-      ? { heightKey }
-      : {}),
-  })
-
-  it('is true for the same reference and for a geometry-equivalent rebuild', () => {
-    const a = [
-      item('m1', false, '1'),
-      item('m2', true, '2'),
-    ]
-    expect(sameVirtualItems(a, a)).toBe(true)
-    // A fresh array (a streaming/command-stream delta re-walk) with identical
-    // id/hasSpanLines/heightKey is geometry-equivalent -> keep the prior, no churn.
-    const b = [
-      item('m1', false, '1'),
-      item('m2', true, '2'),
-    ]
-    expect(sameVirtualItems(a, b)).toBe(true)
-  })
-
-  it('is false when a content version, span-line flag, id, or length changes', () => {
-    const base = [
-      item('m1', false, '1'),
-      item('m2', true, '2'),
-    ]
-    expect(sameVirtualItems(base, [
-      item('m1', false, '1'),
-      item('m2', true, '3'),
-    ])).toBe(false) // heightKey bumped
-    expect(sameVirtualItems(base, [
-      item('m1', true, '1'),
-      item('m2', true, '2'),
-    ])).toBe(false) // hasSpanLines flipped
-    expect(sameVirtualItems(base, [
-      item('mX', false, '1'),
-      item('m2', true, '2'),
-    ])).toBe(false) // id changed (reorder/insert)
-    expect(sameVirtualItems(base, [
-      item('m1', false, '1'),
-    ])).toBe(false) // a row appeared/left
-  })
-})
-
 describe('ChatView', () => {
   it('draws the live compaction while the agent is idle', async () => {
     const messages = [
@@ -1276,7 +1254,7 @@ describe('ChatView', () => {
       const virt = virtualizerState.realInstances.at(-1)!
       const heightCache = viewHeightCache()
       // The rows of this mount have the keys of the first one: the same content and width.
-      const rowOf = (height: PersistableRowHeight): VirtualItem => ({
+      const rowOf = (height: PersistableRowHeight): ChatRowItem => ({
         id: height.id,
         hasSpanLines: false,
         ...(height.heightKey !== undefined
@@ -2144,8 +2122,7 @@ describe('ChatView', () => {
     setMessages([...initialMessages])
     await flushAnimationFrame()
 
-    metrics.scrollTop = 50
-    fireEvent.scroll(messageList)
+    scrollReaderUpTo(messageList, metrics, 50)
 
     metrics.scrollHeight = 2600
     setMessages([
@@ -2625,8 +2602,7 @@ describe('ChatView', () => {
     setMessages([...initialMessages])
     await flushAnimationFrame()
 
-    metrics.scrollTop = 50
-    fireEvent.scroll(messageList)
+    scrollReaderUpTo(messageList, metrics, 50)
 
     metrics.scrollHeight = 2700
     setMessages([
@@ -2693,8 +2669,7 @@ describe('ChatView', () => {
     setMessages([...initialMessages])
     await flushAnimationFrame()
 
-    metrics.scrollTop = 50
-    fireEvent.scroll(messageList)
+    scrollReaderUpTo(messageList, metrics, 50)
     setFetchingOlder(true)
 
     metrics.scrollHeight = 2600
@@ -2814,6 +2789,9 @@ describe('ChatView', () => {
       configurable: true,
       get: () => 200,
     })
+    // The buffer fill of the shown pane asked for older pages already: the first page is
+    // shorter than the view. Only the load of the wheel counts here.
+    onLoadOlderMessages.mockClear()
 
     fireEvent.wheel(messageList, { deltaY: -20 })
     expect(onLoadOlderMessages).toHaveBeenCalledTimes(1)
@@ -2851,6 +2829,9 @@ describe('ChatView', () => {
       configurable: true,
       get: () => 200,
     })
+    // The buffer fill of the shown pane asked for older pages already: the first page is
+    // shorter than the view. Only the load of the key counts here.
+    onLoadOlderMessages.mockClear()
 
     // ArrowUp is the explicit upward-intent key (Home jumps to the first
     // message and PageUp pages, so neither directly triggers older-loading).
@@ -2984,6 +2965,9 @@ describe('ChatView', () => {
       configurable: true,
       get: () => 200,
     })
+    // The buffer fill of the shown pane asked for older pages already: the first page is
+    // shorter than the view. Only the loads of the two gestures count here.
+    onLoadOlderMessages.mockClear()
 
     fireEvent.touchStart(messageList, {
       touches: [
@@ -3698,6 +3682,7 @@ describe('chat view virtualized with stubbed deps', () => {
     virtualizerState.attachedReadiness = new Map()
     // The signals of the scroll stub are module-scoped also.
     mockState.setIsFollowing?.(true)
+    mockState.setPaneHidden?.(false)
     mockState.setAtStagedTopEdge?.(false)
     mockState.setAtStagedBottomEdge?.(false)
   })
@@ -4492,8 +4477,6 @@ describe('chat view virtualized with stubbed deps', () => {
       minSeq: 1n,
       maxSeq: 5n,
       marks: [],
-      windowFirstSeq: 1n,
-      windowLastSeq: 5n,
     }
 
     /**
@@ -4587,6 +4570,18 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(far!.rowOffscreen?.()).toBe(true)
     })
 
+    it('tells the virtualizer whether the first row of the list is the first loaded row', () => {
+      render(() => <ChatView messages={fiveMessages()} />)
+      admitLastTwo()
+      // Three loaded rows wait above the list: a placement on its first row converts exactly.
+      expect(virtualizerState.listStartsAtLoadedTop!()).toBe(false)
+
+      admitRows()
+
+      expect(virtualizerState.items!().map(item => item.id)).toEqual(['m0', 'm1', 'm2', 'm3', 'm4'])
+      expect(virtualizerState.listStartsAtLoadedTop!()).toBe(true)
+    })
+
     it('gives the height persistence the loaded rows, staged rows included', () => {
       render(() => <ChatView messages={fiveMessages()} />)
       admitLastTwo()
@@ -4600,15 +4595,15 @@ describe('chat view virtualized with stubbed deps', () => {
       admitLastTwo()
 
       const rail = wiringState.railProps!
-      expect(rail.rail.windowFirstSeq).toBe(4n)
-      expect(rail.rail.windowLastSeq).toBe(5n)
-      // The other rail data passes through.
+      // The rail takes the window that it scrolls live from these rows.
+      expect(rail.items.map(item => item.seq)).toEqual([4n, 5n])
+      // The rail data of the host passes through.
       expect(rail.rail.minSeq).toBe(1n)
       expect(rail.hasMoreOlder).toBe(true)
       expect(rail.hasMoreNewer).toBe(false)
     })
 
-    it('keeps the rail data object while its values and the window ends do not change', () => {
+    it('keeps the rail data object across an admission change and an equal rebuild of the host', () => {
       const [rail, setRail] = createSignal(railBase)
       render(() => <ChatView messages={fiveMessages()} rail={rail()} />)
       admitLastTwo()
@@ -4619,15 +4614,14 @@ describe('chat view virtualized with stubbed deps', () => {
       setRail({ ...railBase })
       expect(wiringState.railProps!.rail).toBe(before)
 
-      // A row joins above: the window starts at another seq, so the rail gets new data.
+      // A row joins above: the rows of the rail change, and the rail data does not.
       measureStagedRow('m2', 400)
-      expect(wiringState.railProps!.rail).not.toBe(before)
-      expect(wiringState.railProps!.rail.windowFirstSeq).toBe(3n)
+      expect(wiringState.railProps!.items.map(item => item.seq)).toEqual([3n, 4n, 5n])
+      expect(wiringState.railProps!.rail).toBe(before)
 
-      // A new mark is new data also.
-      const withWindow = wiringState.railProps!.rail
+      // A new mark is new data.
       setRail({ ...railBase, marks: [] })
-      expect(wiringState.railProps!.rail).not.toBe(withWindow)
+      expect(wiringState.railProps!.rail).not.toBe(before)
     })
 
     it('hides the rail before the first view of a mount, and shows it when rows join', () => {
@@ -4683,6 +4677,55 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(wiringState.railProps!.hasMoreNewer).toBe(true)
     })
 
+    it('tells a rail that tracks its props when the reader starts or stops to follow over a message staged below', () => {
+      const [messages, setMessages] = createSignal(fiveMessages())
+      render(() => <ChatView messages={messages()} rail={railBase} />)
+      admitRows()
+      mockState.setIsFollowing!(false)
+      setMessages([
+        ...fiveMessages(),
+        message('m5', 6),
+      ])
+      // The rail reads its props in tracked scopes, as this effect does.
+      const seen: boolean[] = []
+      const dispose = createRoot((dispose) => {
+        createRenderEffect(() => {
+          seen.push(wiringState.railProps!.hasMoreNewer)
+        })
+        return dispose
+      })
+      expect(seen).toEqual([true])
+
+      // The reader enters the tail. No row and no staged state changes with it.
+      mockState.setIsFollowing!(true)
+      expect(seen).toEqual([true, false])
+
+      mockState.setIsFollowing!(false)
+      expect(seen).toEqual([true, false, true])
+      dispose()
+    })
+
+    it('lets no target reach its rows while the scroll hook counts the pane as hidden', () => {
+      render(() => <ChatView messages={fiveMessages()} />)
+      admitLastTwo()
+      // The pane has its height again (733px), but the hook did not flush its show yet.
+      mockState.setPaneHidden!(true)
+      const request = mockState.scrollOpts!.admission.request({ kind: 'top' })
+      measureStagedRow('m0', 400)
+      measureStagedRow('m1', 400)
+
+      // The rows of the target fill the view. The hook shows a place only in the flush of
+      // the show, so a range that changed to these rows now would paint them at the scroll
+      // position of the rows before.
+      expect(request.state()).toBe('waiting')
+      expect(virtualizerState.items!().map(item => item.id)).toEqual(['m3', 'm4'])
+
+      mockState.setPaneHidden!(false)
+
+      expect(request.state()).toBe('reached')
+      expect(virtualizerState.items!().map(item => item.id)).toEqual(['m0', 'm1'])
+    })
+
     it('holds the idle warm-up until the first view', () => {
       render(() => <ChatView messages={fiveMessages()} />)
       // With no row in the list, the warm-up would measure the oldest rows while the first
@@ -4694,6 +4737,8 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(wiringState.bandsDeps!.warmupEnabled()).toBe(true)
     })
 
+    // The rules of the width and its settle time have their own tests (see
+    // chatRowWidth.test.ts). The cases here prove that staging follows them.
     describe('staging and the row width', () => {
       /** The ids of each `candidates` value that the mock got from `from` on. */
       const logFrom = (from: number): string[][] => hiddenPremeasureState.candidateLog.slice(from)
@@ -4716,19 +4761,7 @@ describe('chat view virtualized with stubbed deps', () => {
         expect(hiddenPremeasureState.contentWidthPx).toBe(380)
       })
 
-      it('does not pause staging for the first row width', () => {
-        vi.useFakeTimers()
-        viewportSizeObserverState.width = 0
-        render(() => <ChatView messages={fiveMessages()} />)
-        expect(hiddenPremeasureState.candidates).toEqual([])
-
-        viewportSizeObserverState.onWidth!(372)
-
-        // The first width above 0 does not delay the first view.
-        expect(hiddenPremeasureState.candidates.length).toBeGreaterThan(0)
-      })
-
-      it('does not pause staging for a pane that loses its layout box and gets it back at the same width', () => {
+      it('renders no hidden copy while the pane has no layout box, and renders the copies again at once at the same width', () => {
         vi.useFakeTimers()
         render(() => <ChatView messages={fiveMessages()} />)
         expect(hiddenPremeasureState.candidates.length).toBeGreaterThan(0)
@@ -4737,21 +4770,6 @@ describe('chat view virtualized with stubbed deps', () => {
         expect(hiddenPremeasureState.candidates).toEqual([])
 
         viewportSizeObserverState.onWidth!(640)
-        expect(hiddenPremeasureState.candidates.length).toBeGreaterThan(0)
-      })
-
-      it('pauses staging for a new row width after the pane had no layout box', () => {
-        vi.useFakeTimers()
-        render(() => <ChatView messages={fiveMessages()} />)
-        viewportSizeObserverState.onWidth!(0)
-
-        const from = hiddenPremeasureState.candidateLog.length
-        viewportSizeObserverState.onWidth!(380)
-        vi.advanceTimersByTime(STAGING_WIDTH_SETTLE_MS - 1)
-        expect(logFrom(from).every(ids => ids.length === 0)).toBe(true)
-        expect(hiddenPremeasureState.candidates).toEqual([])
-
-        vi.advanceTimersByTime(1)
         expect(hiddenPremeasureState.candidates.length).toBeGreaterThan(0)
       })
     })
@@ -4935,6 +4953,66 @@ describe('chat view virtualized with stubbed deps', () => {
       expect(bubbleHostState.byId.get('m30')!.rowOffscreen?.()).toBe(true)
     })
 
+    describe('the near-view test that a row reads for its file image', () => {
+      /**
+       * Mount 40 rows of 100px, row `i` at content 100·i, in a view at the scroll position
+       * `scrollTop()` with the client height `clientHeight()`. Collect each answer of the
+       * near-view test of `rowId` in a tracked scope, as the image view reads it.
+       */
+      async function watchNearView(rowId: string, scrollTop: () => number, clientHeight: () => number) {
+        virtualizerState.setRange?.({ start: 0, end: 40 })
+        const messages = Array.from({ length: 40 }, (_, index) => message(`m${index}`, index + 1))
+        const { container } = render(() => <ChatView messages={messages} />)
+        admitRows()
+        const list = container.querySelector('[data-chat-scroll-container]') as HTMLDivElement
+        Object.defineProperty(list, 'scrollTop', { configurable: true, get: scrollTop })
+        Object.defineProperty(list, 'clientHeight', { configurable: true, get: clientHeight })
+        await waitFor(() => expect(bubbleHostState.byId.get(rowId)).toBeDefined())
+        const seen: boolean[] = []
+        const dispose = createRoot((dispose) => {
+          createRenderEffect(() => {
+            seen.push(bubbleHostState.byId.get(rowId)!.rowNearView!())
+          })
+          return dispose
+        })
+        return { list, seen, dispose }
+      }
+
+      it('runs again when the pane changes its height, with no scroll', async () => {
+        let clientHeight = 500
+        const { seen, dispose } = await watchNearView('m12', () => 0, () => clientHeight)
+        // Row 12 spans content 1200 to 1300. The view of 500px and its slack end at 750.
+        expect(seen).toEqual([false])
+
+        // The pane grows to 1400px: the view and its slack now end at 2100.
+        clientHeight = 1400
+        viewportSizeObserverState.onHeight!(1400)
+
+        expect(seen).toEqual([false, true])
+        dispose()
+      })
+
+      it('runs again when a scroll ends', async () => {
+        vi.useFakeTimers({
+          toFake: ['performance', 'setTimeout', 'clearTimeout'],
+        })
+        let scrollTop = 0
+        const { list, seen, dispose } = await watchNearView('m12', () => scrollTop, () => 500)
+        expect(seen).toEqual([false])
+
+        // The reader scrolls row 12 into the view. The test does not run during the scroll,
+        // so a fling starts no image read for the rows that it passes.
+        fireEvent.wheel(list, { deltaY: 40 })
+        scrollTop = 1000
+        expect(seen.at(-1)).toBe(false)
+
+        vi.advanceTimersByTime(SYNTAX_HIGHLIGHT_SCROLL_IDLE_MS)
+
+        expect(seen.at(-1)).toBe(true)
+        dispose()
+      })
+    })
+
     it('attaches the spacer and the layer of rows to the virtualizer, and detaches each one when it unmounts', () => {
       // A rebase writes the height of the spacer and the transform of the layer. Each one
       // must reach the slot that writes its own property, and leave it when it unmounts.
@@ -5090,8 +5168,6 @@ describe('chat view virtualized with stubbed deps', () => {
       minSeq: 1n,
       maxSeq: 10n,
       marks: [],
-      windowFirstSeq: 1n,
-      windowLastSeq: 5n,
     }
     const scroller = (container: HTMLElement) => container.querySelector('[data-chat-scroll-container]') as HTMLElement
 
@@ -5110,7 +5186,7 @@ describe('chat view virtualized with stubbed deps', () => {
 
     it('hides the native scrollbar for an empty seeded rail because there is no native overflow to preserve', () => {
       const { container } = render(() => (
-        <ChatView messages={[]} rail={{ ...railBase, windowFirstSeq: undefined, windowLastSeq: undefined }} />
+        <ChatView messages={[]} rail={railBase} />
       ))
       expect(scroller(container).className).toContain(messageListRailActive)
     })
@@ -5147,8 +5223,6 @@ describe('chat view virtualized with stubbed deps', () => {
             ...railBase,
             minSeq: unsafe,
             maxSeq: unsafe,
-            windowFirstSeq: unsafe,
-            windowLastSeq: unsafe,
           }}
         />
       ))
@@ -5168,8 +5242,6 @@ describe('chat view virtualized with stubbed deps', () => {
       minSeq: 1n,
       maxSeq: 10n,
       marks: [],
-      windowFirstSeq: 1n,
-      windowLastSeq: 5n,
     }
     const renderWithRail = () => {
       const view = render(() => (

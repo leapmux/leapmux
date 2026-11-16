@@ -6,6 +6,7 @@ import { crc32, inflateSync } from 'node:zlib'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fakeLocator } from '~/test-support/fakeLocator'
 import { expectAttachmentOutcome, selectAttachmentFixture, sendWithAttachment, writeAttachmentFixture, writeAudioAttachmentFixture, writeVideoAttachmentFixture } from './attachments'
+import { readPngChunks } from './png'
 
 let runDir: string
 vi.mock('./server', () => ({
@@ -91,24 +92,14 @@ describe('writeAttachmentFixture', () => {
   })
 
   it('writes a PNG with valid chunk checksums', () => {
-    const bytes = readFileSync(writeAttachmentFixture('image', 'checked.png'))
-    let offset = 8
-    let sawEnd = false
-    while (offset + 12 <= bytes.length) {
-      const length = bytes.readUInt32BE(offset)
-      const end = offset + 12 + length
-      expect(end).toBeLessThanOrEqual(bytes.length)
-      const type = bytes.toString('ascii', offset + 4, offset + 8)
-      const actual = crc32(bytes.subarray(offset + 4, offset + 8 + length))
-      expect(actual, `${type} checksum`).toBe(bytes.readUInt32BE(offset + 8 + length))
-      offset = end
-      if (type === 'IEND') {
-        sawEnd = true
-        break
-      }
+    const chunks = readPngChunks(readFileSync(writeAttachmentFixture('image', 'checked.png')))
+    expect(chunks.map(chunk => chunk.type)).toEqual(['IHDR', 'IDAT', 'IEND'])
+    for (const { type, data, checksum } of chunks) {
+      expect(crc32(Buffer.concat([
+        Buffer.from(type, 'latin1'),
+        data,
+      ])), `${type} checksum`).toBe(checksum)
     }
-    expect(sawEnd).toBe(true)
-    expect(offset).toBe(bytes.length)
   })
 
   it('writes distinct colors into all four PNG quadrants', () => {
@@ -117,14 +108,7 @@ describe('writeAttachmentFixture', () => {
     expect(bytes.readUInt32BE(20)).toBe(16)
     expect(bytes[25]).toBe(2)
 
-    const compressed: Buffer[] = []
-    for (let offset = 8; offset + 12 <= bytes.length;) {
-      const length = bytes.readUInt32BE(offset)
-      const kind = bytes.toString('ascii', offset + 4, offset + 8)
-      if (kind === 'IDAT')
-        compressed.push(bytes.subarray(offset + 8, offset + 8 + length))
-      offset += 12 + length
-    }
+    const compressed = readPngChunks(bytes).filter(chunk => chunk.type === 'IDAT').map(chunk => chunk.data)
     const pixels = inflateSync(Buffer.concat(compressed))
     const rowLength = 1 + 16 * 3
     expect(pixels).toHaveLength(16 * rowLength)

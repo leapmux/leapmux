@@ -195,10 +195,10 @@ describe('createChatTailFollower', () => {
     // The hook ends the request for the tail of a pending jump to the latest page when a
     // new history jump begins. The jump that begins must not count as that pending jump,
     // and neither must the jump that it replaces.
-    const pendingAtBegin: Array<number | null> = []
+    const pendingAtBegin: Array<AbortSignal | null> = []
     // The follower needs the context, and the context reads the follower: the read
     // goes through this function, which the follower replaces once it exists.
-    let pendingJump: () => number | null = () => null
+    let pendingJump: () => AbortSignal | null = () => null
     const ctx = makeScrollContext({
       hasNewerMessages: () => true,
       beginHistoryJump: vi.fn(() => {
@@ -216,7 +216,7 @@ describe('createChatTailFollower', () => {
     follower.forceScrollToBottom()
 
     expect(pendingAtBegin).toEqual([null, null])
-    expect(follower.pendingJump()).toEqual(expect.any(Number))
+    expect(follower.pendingJump()).toBeInstanceOf(AbortSignal)
   })
 
   it('asks for no tail when a later history jump replaced the jump to the latest page', async () => {
@@ -351,7 +351,7 @@ describe('createChatTailFollower', () => {
     it('reports the pending jump until it resolves', async () => {
       const harness = setup({ hasNewer: true })
       harness.follower.forceScrollToBottom()
-      expect(harness.follower.pendingJump()).toEqual(expect.any(Number))
+      expect(harness.follower.pendingJump()).toBeInstanceOf(AbortSignal)
       harness.jump.resolve(true)
       await settleJump(harness.jump.promise)
       expect(harness.follower.pendingJump()).toBeNull()
@@ -385,7 +385,7 @@ describe('createChatTailFollower', () => {
       follower.forceScrollToBottom()
       const secondJump = follower.pendingJump()
       expect(secondJump).not.toBe(firstJump)
-      expect(secondJump).toEqual(expect.any(Number))
+      expect(secondJump).toBeInstanceOf(AbortSignal)
 
       first.resolve(true)
       await settleJump(first.promise)

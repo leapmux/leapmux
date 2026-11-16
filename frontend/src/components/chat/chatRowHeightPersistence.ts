@@ -1,6 +1,6 @@
 import type { Accessor } from 'solid-js'
 import type { RowHeightCache, RowHeightCommitEntry } from './chatRowHeightCache'
-import type { VirtualItem } from './useChatVirtualizer'
+import type { ChatRowItem } from './chatRowItem'
 import type { AsyncLocalKey } from '~/lib/browserStorage'
 import { createEffect, onCleanup, untrack } from 'solid-js'
 import { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
@@ -89,7 +89,7 @@ export interface RowHeightPersistenceDeps {
    */
   storageId: () => string | undefined
   /** The items of the loaded rows: a stored height can admit a row that no hidden copy rendered. */
-  loadedItems: Accessor<VirtualItem[]>
+  loadedItems: Accessor<ChatRowItem[]>
   heights: Pick<RowHeightCache, 'commitAll' | 'snapshot' | 'version' | 'isMeasured'>
 }
 
@@ -129,7 +129,7 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
 
   const storageKey = (id: string): AsyncLocalKey => `${PREFIX_CHAT_ROW_HEIGHTS}${id}`
 
-  const tryAdopt = (items: readonly VirtualItem[]): void => {
+  const tryAdopt = (items: readonly ChatRowItem[]): void => {
     if (pending.size === 0)
       return
     const adoptable: RowHeightCommitEntry[] = []

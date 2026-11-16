@@ -1,6 +1,7 @@
 import type { Accessor } from 'solid-js'
 import { batch, createComputed, createMemo, createSignal, onCleanup, untrack } from 'solid-js'
 import { FONT_LOAD_MAX_RETRIES, fontLoadRetryDelayMs, fontVariantAvailable, fontVariantSpecs, tryLoadFontVariant } from '~/lib/fontFaces'
+import { createOwnedTimers } from '~/lib/ownedTimers'
 
 /**
  * The longest time that staging waits for the chat fonts. After it, the rows measure
@@ -45,16 +46,11 @@ export function createChatFonts(families: Accessor<readonly string[]>): ChatFont
   // The number of the current run. A load or a timer of an earlier run compares its own
   // number with this one, and changes nothing when they differ.
   let run = 0
-  const timers = new Set<ReturnType<typeof setTimeout>>()
-  const clearTimers = () => {
-    for (const timer of timers)
-      clearTimeout(timer)
-    timers.clear()
-  }
+  const timers = createOwnedTimers()
 
   const start = (list: readonly string[]) => {
     const current = ++run
-    clearTimers()
+    timers.clear()
     const specs = list.flatMap(family => fontVariantSpecs(family, FONT_SPEC_SIZE))
     if (typeof document === 'undefined' || !document.fonts || specs.every(fontVariantAvailable)) {
       batch(() => {
@@ -70,12 +66,10 @@ export function createChatFonts(families: Accessor<readonly string[]>): ChatFont
 
     const isCurrent = () => current === run
     const later = (delayMs: number, callback: () => void) => {
-      const timer = setTimeout(() => {
-        timers.delete(timer)
+      timers.after(delayMs, () => {
         if (isCurrent())
           callback()
-      }, delayMs)
-      timers.add(timer)
+      })
     }
 
     let firstTriesPending = specs.length
@@ -111,9 +105,10 @@ export function createChatFonts(families: Accessor<readonly string[]>): ChatFont
     untrack(() => start(list))
   })
 
+  // `createOwnedTimers` clears the timers when the owner is disposed. A load that settles
+  // after that finds a later run number, and changes nothing.
   onCleanup(() => {
     run++
-    clearTimers()
   })
 
   return { ready, loaded }

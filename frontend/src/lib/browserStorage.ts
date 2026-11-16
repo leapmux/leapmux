@@ -863,8 +863,11 @@ function resolveLocalKey(name: string, access: KeyAccess): { key: string, ttl: n
  * the sweep judges a key by its name and scope, and which account owns it is
  * deliberately not part of that decision. A truncated segment, or one carrying a
  * malformed escape, returns null and the sweep treats the key as unknown.
+ *
+ * Exported for the tests and the E2E helpers, which select stored keys by their
+ * logical name without restating the layout of a stored key.
  */
-function parseStoredKey(stored: string): { scope: StorageScope, name: string } | null {
+export function parseStoredKey(stored: string): { scope: StorageScope, name: string } | null {
   if (!stored.startsWith(NAMESPACE))
     return null
   const rest = stored.slice(NAMESPACE.length)

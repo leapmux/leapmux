@@ -1,7 +1,7 @@
 import type { ClassifiedEntry } from './chatEntryCache'
+import type { ChatRowItem } from './chatRowItem'
 import type { MessageCategory } from './messageClassifier'
 import type { RenderReadiness } from './renderReadiness'
-import type { VirtualItem } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { cleanup, render, screen } from '@solidjs/testing-library'
 import { createSignal, Show } from 'solid-js'
@@ -64,7 +64,7 @@ function renderPremeasureRow(
   lineCount = 0,
 ): { row: HTMLElement, column: HTMLElement, unmount: () => void } {
   const entry = entryWithSpanLines(lineCount, kind, source)
-  const item: VirtualItem = { id: 'm1', hasSpanLines: lineCount > 0, heightKey: 'k1' }
+  const item: ChatRowItem = { id: 'm1', hasSpanLines: lineCount > 0, heightKey: 'k1' }
   const { unmount } = render(() => (
     <ChatHiddenPremeasure
       candidates={[
@@ -487,7 +487,7 @@ describe('chat hidden premeasure rendering', () => {
       const onMeasure = vi.fn()
       let height = 10
       const entry = entryWithSpanLines(0)
-      const item: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1' }
+      const item: ChatRowItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1' }
       const { container } = render(() => (
         <ChatHiddenPremeasure
           candidates={[
@@ -524,7 +524,7 @@ describe('chat hidden premeasure rendering', () => {
     withFrameQueue((frames) => {
       const onMeasure = vi.fn()
       const entry = entryWithSpanLines(0)
-      const item: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1' }
+      const item: ChatRowItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1' }
       const { container } = render(() => (
         <ChatHiddenPremeasure
           candidates={[
@@ -576,14 +576,14 @@ describe('chat hidden premeasure rendering', () => {
       const candidates = [
         {
           entry: entryWithSpanLines(0),
-          item: { id: 'm1', hasSpanLines: false, heightKey: 'k1' } as VirtualItem,
+          item: { id: 'm1', hasSpanLines: false, heightKey: 'k1' } as ChatRowItem,
         },
         {
           entry: {
             ...entryWithSpanLines(0),
             message: { id: 'm2', seq: 2n, spanId: 'span-2' } as AgentChatMessage,
           } as ClassifiedEntry,
-          item: { id: 'm2', hasSpanLines: false, heightKey: 'k2' } as VirtualItem,
+          item: { id: 'm2', hasSpanLines: false, heightKey: 'k2' } as ChatRowItem,
         },
       ]
       const { container } = render(() => (
@@ -625,7 +625,7 @@ describe('chat hidden premeasure rendering', () => {
         const onMeasure = vi.fn()
         let height = 12
         const entry = entryWithSpanLines(0)
-        const item: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1' }
+        const item: ChatRowItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1' }
         const rendered = render(() => (
           <ChatHiddenPremeasure
             candidates={[
@@ -681,7 +681,7 @@ describe('chat hidden premeasure rendering', () => {
     let unmount: (() => void) | undefined
     try {
       const entry = entryWithSpanLines(0, 'assistant_text')
-      const item: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'same-native-key' }
+      const item: ChatRowItem = { id: 'm1', hasSpanLines: false, heightKey: 'same-native-key' }
       const [candidates, setCandidates] = createSignal([
         { entry, item },
       ])
@@ -768,7 +768,7 @@ describe('chat hidden premeasure rendering', () => {
       const onMeasure = vi.fn()
       const entry = entryWithSpanLines(0)
       const [heightKey, setHeightKey] = createSignal('k1')
-      // One candidate object for each key, as the premeasure queue keeps them.
+      // One candidate object for each key, as the staging bands keep them.
       const candidates = () => [
         {
           entry,
@@ -776,7 +776,7 @@ describe('chat hidden premeasure rendering', () => {
             id: 'm1',
             hasSpanLines: false,
             heightKey: heightKey(),
-          } as VirtualItem,
+          } as ChatRowItem,
         },
       ]
       // Every row and image of this mount: no row has a rect before its first frame.
@@ -841,6 +841,71 @@ describe('chat hidden premeasure rendering', () => {
       })
     })
 
+    it('gives an image that mounts after the earlier images settled a wait of its own', () => {
+      vi.useFakeTimers()
+      withFrameQueue((frames) => {
+        const [pending, setPending] = createSignal(true)
+        const [showSecond, setShowSecond] = createSignal(false)
+        let firstComplete = false
+        const onMeasure = vi.fn()
+        vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 400, 30))
+        vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockImplementation(function (this: HTMLImageElement) {
+          return this.alt === 'first'
+            ? firstComplete
+            : false
+        })
+        const rendered = render(() => (
+          <ChatHiddenPremeasure
+            candidates={[
+              {
+                entry: entryWithSpanLines(0, 'assistant_text'),
+                item: { id: 'm1', hasSpanLines: false, heightKey: 'k1' },
+              },
+            ]}
+            contentWidthPx={400}
+            renderBubble={(_entry, readiness) => {
+              readiness.track(pending)
+              return (
+                <>
+                  <img alt="first" />
+                  <Show when={showSecond()}>
+                    <img alt="second" />
+                  </Show>
+                </>
+              )
+            }}
+            onMeasure={onMeasure}
+          />
+        ))
+        const runFrames = () => {
+          while (frames.length > 0)
+            frames.shift()?.(0)
+        }
+
+        // The first image loads while the body still waits for its worker.
+        runFrames()
+        firstComplete = true
+        rendered.container.querySelector('img[alt="first"]')!.dispatchEvent(new Event('load'))
+        runFrames()
+        // The limit of the wait for the first image passes.
+        vi.advanceTimersByTime(PREMEASURE_IMAGE_SETTLE_LIMIT_MS)
+        runFrames()
+
+        // The body arrives with a second image, which still loads. It can change the height
+        // of the row, so the copy reports nothing yet.
+        setShowSecond(true)
+        setPending(false)
+        runFrames()
+        expect(onMeasure).not.toHaveBeenCalled()
+
+        // The second image never settles, and the limit of its own wait passes.
+        vi.advanceTimersByTime(PREMEASURE_IMAGE_SETTLE_LIMIT_MS)
+        runFrames()
+        expect(onMeasure).toHaveBeenCalledOnce()
+        expect(onMeasure).toHaveBeenCalledWith('m1', 30, 'k1', expect.any(Number))
+      })
+    })
+
     it('clears the limit timer when the copy unmounts', () => {
       vi.useFakeTimers()
       withFrameQueue((frames) => {
@@ -869,14 +934,14 @@ describe('chat hidden premeasure rendering', () => {
       const onMeasure = vi.fn()
       const first = {
         entry: entryWithSpanLines(0),
-        item: { id: 'm1', hasSpanLines: false, heightKey: 'k1' } as VirtualItem,
+        item: { id: 'm1', hasSpanLines: false, heightKey: 'k1' } as ChatRowItem,
       }
       const second = {
         entry: {
           ...entryWithSpanLines(0),
           message: { id: 'm2', seq: 2n, spanId: 'span-2' } as AgentChatMessage,
         } as ClassifiedEntry,
-        item: { id: 'm2', hasSpanLines: false, heightKey: 'k2' } as VirtualItem,
+        item: { id: 'm2', hasSpanLines: false, heightKey: 'k2' } as ChatRowItem,
       }
       const [candidates, setCandidates] = createSignal([first])
       render(() => (

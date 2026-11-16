@@ -1,10 +1,10 @@
-import type { VirtualItem } from './useChatVirtualizer'
+import type { ChatRowItem } from './chatRowItem'
 import { createMemo, createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { createRowHeightCache, HEIGHT_CACHE_EVICTION_BATCH, HEIGHT_CACHE_MAX } from './chatRowHeightCache'
 
 /** A row with the height key `key`. */
-function row(id: string, key = 'a'): VirtualItem {
+function row(id: string, key = 'a'): ChatRowItem {
   return {
     id,
     hasSpanLines: false,

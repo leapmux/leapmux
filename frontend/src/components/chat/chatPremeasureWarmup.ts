@@ -1,7 +1,7 @@
 import type { Accessor } from 'solid-js'
-import type { ClassifiedEntry } from './chatEntryCache'
 import type { ChatDomPremeasureCandidate } from './chatHiddenPremeasure'
-import type { ChatVirtualizerRange, VirtualItem } from './useChatVirtualizer'
+import type { ChatRowItem } from './chatRowItem'
+import type { ChatVirtualizerRange } from './useChatVirtualizer'
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { cancelIdle, requestIdle } from '~/lib/idleCallback'
 
@@ -45,18 +45,16 @@ export interface PremeasureWarmupDeps {
    * While false the band is empty and the ticker is parked.
    */
   enabled: Accessor<boolean>
-  /** The entries and the items of the loaded rows, index-aligned. */
-  visibleEntries: Accessor<readonly ClassifiedEntry[]>
-  loadedItems: Accessor<readonly VirtualItem[]>
-  /** The rendered range, as indexes of the loaded rows. */
-  range: Accessor<ChatVirtualizerRange>
-  /** Whether the row is measured (see RowHeightCache.isMeasured). */
-  isMeasured: (item: VirtualItem) => boolean
+  /** The loaded rows in display order, each entry with its item (see createChatPremeasureBands). */
+  rows: Accessor<readonly ChatDomPremeasureCandidate[]>
   /**
-   * Half-width (rows) of the band the look-ahead premeasure already covers
-   * around the range — warm-up starts beyond it (LOOKAHEAD_PREMEASURE_ROWS).
+   * The loaded rows that the warm-up skips: the rendered range and the
+   * look-ahead band around it. The warm-up starts beyond them. Indexes of
+   * `rows`, inside `[0, rows().length]`.
    */
-  excludedBandRows: number
+  skip: Accessor<ChatVirtualizerRange>
+  /** Whether the row is measured (see RowHeightCache.isMeasured). */
+  isMeasured: (item: ChatRowItem) => boolean
 }
 
 const EMPTY: ChatDomPremeasureCandidate[] = []
@@ -82,23 +80,19 @@ export function createPremeasureWarmup(deps: PremeasureWarmupDeps) {
    * scroll directions warm evenly, nearest-first.
    */
   const computeNextBatch = (): ChatDomPremeasureCandidate[] => {
-    const all = deps.visibleEntries()
-    const items = deps.loadedItems()
-    const len = Math.min(all.length, items.length)
+    const rows = deps.rows()
+    const len = rows.length
     if (len === 0)
       return EMPTY
-    const r = deps.range()
-    const bandLo = Math.max(0, r.start - deps.excludedBandRows)
-    const bandHi = Math.min(len, r.end + deps.excludedBandRows)
+    const skip = deps.skip()
     const out: ChatDomPremeasureCandidate[] = []
     const maybePush = (index: number): void => {
-      const entry = all[index]
-      const item = items[index]
-      if (entry && item && !deps.isMeasured(item))
-        out.push({ entry, item })
+      const row = rows[index]
+      if (row !== undefined && !deps.isMeasured(row.item))
+        out.push(row)
     }
-    let above = bandLo - 1
-    let below = bandHi
+    let above = skip.start - 1
+    let below = skip.end
     while (out.length < WARMUP_BATCH_ROWS && (above >= 0 || below < len)) {
       if (above >= 0) {
         maybePush(above)
@@ -134,7 +128,7 @@ export function createPremeasureWarmup(deps: PremeasureWarmupDeps) {
     const next = untrack(computeNextBatch)
     if (next.length === 0) {
       // Nothing left to measure: park until the arming effect re-fires
-      // (items change, re-enable).
+      // (the loaded rows change, re-enable).
       setWarmupCandidates(prev => (prev.length === 0
         ? prev
         : EMPTY))
@@ -162,10 +156,10 @@ export function createPremeasureWarmup(deps: PremeasureWarmupDeps) {
       setWarmupCandidates(EMPTY)
       return
     }
-    // Track the item list so newly loaded (paginated/streamed) rows restart
-    // a parked ticker; read length only — the arming decision doesn't care
-    // about content.
-    deps.loadedItems()
+    // Track the loaded rows, so newly loaded (paginated/streamed) rows restart
+    // a parked ticker. A row that gets a new object (a new entry or a new
+    // height key) restarts the ticker too.
+    deps.rows()
     scheduleTick(WARMUP_IDLE_DELAY_MS)
   })
 

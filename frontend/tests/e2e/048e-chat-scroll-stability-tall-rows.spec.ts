@@ -40,6 +40,12 @@ import { chatDistanceFromBottom, chatScrollContainer, waitForAgentStarted } from
  * Each test seeds the chat on a wide screen and reads it on a narrow one, as a reader does who opens on a phone a chat
  * that was written elsewhere. No row has a measured height at the new width, so the tall row above the view takes its
  * height from its hidden copy.
+ *
+ * No test here reaches the branches of the layout-shift rule (chatLayoutShift.ts) for a row whose first read in the
+ * list differs from the height of its hidden copy. Such a row needs a request to the Worker (the read of an image
+ * file, or the lookup of the other half of a tool call) that outlasts READINESS_REQUEST_LIMIT_MS (renderReadiness.ts)
+ * and ends before the row mounts. No seam of this suite can delay one such request, so chatLayoutShift.test.ts and
+ * useChatVirtualizer.geometry.test.ts cover those branches.
  */
 
 const VIEW_HEIGHT = 600

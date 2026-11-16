@@ -16,11 +16,12 @@ export interface ChatPaginationPolicyDeps {
   onLoadNewer: () => void
   isAtBottom: () => boolean
   /**
-   * Follow mode (see ScrollContext.isFollowing). It reads the reader place of the hook
-   * untracked, so a memo that reads it depends on `geomVersion`, which the hook changes
-   * with each change of the reader place.
+   * Follow mode (see ScrollContext.isFollowing). Reactive: the hook passes the accessor
+   * that reads the reader place and the pending history jump tracked, so a memo that reads
+   * it runs again when follow mode starts or ends. A function that an effect calls reads
+   * it untracked (see suppressOlderPrefetchAtLiveTail).
    */
-  isFollowing: () => boolean
+  isFollowing: Accessor<boolean>
   anchorAtViewportTop: () => ScrollAnchor | null
   bufferScreens: number
   /**
@@ -104,7 +105,9 @@ export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
       return false
     if (!deps.hasNewer() && deps.isAtBottom())
       return true
-    return deps.isFollowing() && untrack(deps.anchorAtViewportTop) !== null
+    // Untracked: the effect of the buffer filler calls this function, and a change of
+    // follow mode must not run a fill. The filler fills for a move of the view.
+    return untrack(deps.isFollowing) && untrack(deps.anchorAtViewportTop) !== null
   }
 
   return {

@@ -1,4 +1,4 @@
-import { batch } from 'solid-js'
+import { batch, createMemo, createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { deferredJump, innerScrollerTarget, installScrollTestEnv, mountScrollHarness, mountWithPendingJump, settleJump } from './useChatScroll.testkit'
 
@@ -418,6 +418,77 @@ describe('useChatScroll follow mode', () => {
     h.div.setScrollHeight(5100)
     h.hook.restickIfAtBottom()
     expect(h.div.getScrollTop()).toBe(4000)
+    h.dispose()
+  })
+})
+
+describe('useChatScroll isFollowingTracked', () => {
+  /** A memo over the tracked accessor, as the rail owner of ChatView is, with its run count. */
+  function trackedFollowMemo(hook: { isFollowingTracked: () => boolean }) {
+    let runs = 0
+    const { following, dispose } = createRoot((dispose) => {
+      const following = createMemo(() => {
+        runs++
+        return hook.isFollowingTracked()
+      })
+      return { following, dispose }
+    })
+    return {
+      following,
+      runs: () => runs,
+      dispose,
+    }
+  }
+
+  it('runs a memo again when the reader leaves the tail and when the reader enters it', () => {
+    const h = mountScrollHarness()
+    const memo = trackedFollowMemo(h.hook)
+    expect(memo.following()).toBe(true)
+
+    h.scrollTo(4000)
+    expect(memo.following()).toBe(false)
+
+    h.scrollTo(4500)
+    expect(memo.following()).toBe(true)
+    expect(memo.runs()).toBe(3)
+    memo.dispose()
+    h.dispose()
+  })
+
+  it('runs a memo again when the jump to the latest page settles under a reader place that stays the tail', async () => {
+    const { h, jump } = await mountWithPendingJump(mountScrollHarness)
+    const memo = trackedFollowMemo(h.hook)
+    // The reader place is the tail already, and the jump did not settle.
+    expect(memo.following()).toBe(false)
+    h.setHasNewer(false)
+    expect(memo.following()).toBe(false)
+
+    jump.resolve(true)
+    await settleJump(jump.promise)
+
+    expect(memo.following()).toBe(true)
+    expect(h.hook.isFollowing()).toBe(true)
+    memo.dispose()
+    h.dispose()
+  })
+
+  it('gives a computation that reads isFollowing no dependency on the reader place', () => {
+    const h = mountScrollHarness()
+    let runs = 0
+    const dispose = createRoot((dispose) => {
+      createMemo(() => {
+        runs++
+        return h.hook.isFollowing()
+      })
+      return dispose
+    })
+    expect(runs).toBe(1)
+
+    h.scrollTo(4000)
+    expect(h.hook.isFollowing()).toBe(false)
+
+    expect(runs).toBe(1)
+    dispose()
     h.dispose()
   })
 })

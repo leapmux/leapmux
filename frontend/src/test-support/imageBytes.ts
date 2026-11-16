@@ -24,6 +24,24 @@ export function u32be(v: number): number[] {
   ]
 }
 
+/** The signature and the IHDR chunk of a PNG of `width` by `height`: the first 24 bytes. */
+export function pngBytes(width: number, height: number): number[] {
+  return [
+    0x89,
+    0x50,
+    0x4E,
+    0x47,
+    0x0D,
+    0x0A,
+    0x1A,
+    0x0A, // signature
+    ...u32be(13),
+    ...chars('IHDR'),
+    ...u32be(width),
+    ...u32be(height),
+  ]
+}
+
 /** SOI + optional leading segments + SOF0 carrying the coded dimensions. */
 export function jpegBytes(width: number, height: number, leading: number[] = []): number[] {
   return [

@@ -1,14 +1,13 @@
 import type { MessageCategory } from '../messageClassifier'
 import type { MessageContentRenderContext } from '../messageContentRenderer'
-import type { ImageRenderActions } from '../renderContext'
 import { render, waitFor } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { testImageActions } from '~/test-support/imageActions'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { pngBase64 } from '~/test-support/pngFixture'
 import { providerRowImages, providerToolMeta } from '~/test-support/toolCallFixture'
-import { imageActionsFrom } from '../renderContext'
 import { toolUseHeader } from '../toolStyles.css'
 import { resolveMessageForRendering } from './registry'
 import './claude/plugin'
@@ -39,13 +38,6 @@ function renderToolResult(provider: AgentProvider, payload: unknown, context?: M
 function renderToolUse(provider: AgentProvider, toolUse: Record<string, unknown>, toolName: string, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_use' }
   return render(() => renderMessageContent(toolUse, context, category, provider))
-}
-
-function imageActions(openImage: ImageRenderActions['openImage']): ImageRenderActions {
-  const actions = imageActionsFrom({ openImage })
-  if (actions === undefined)
-    throw new Error('The image test needs image actions')
-  return actions
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +219,10 @@ describe('codex image items', () => {
       threadId: 't1',
     }, AgentProvider.CODEX)
     const fileImage = vi.fn(async () => ({ filePath: '/repo/shot.png', mimeType: 'image/png', data: PNG }))
+    // One actions object serves both rows: it closes over `fileImage` alone.
+    const images = testImageActions({
+      files: { load: fileImage },
+    })
     const sources = (role: 'request' | 'result') => testMessageSources({
       current: () => role === 'request'
         ? request
@@ -235,23 +231,17 @@ describe('codex image items', () => {
       result: () => result,
       role: () => role,
       visibleRows: () => ({ request: true, result: true }),
-      fileImage,
+      fileImages: images.files,
     })
     const category: MessageCategory = { kind: 'tool_use' }
-    // One actions object serves both rows: it closes over `fileImage` alone.
-    const images = imageActionsFrom({ fileImage })
     const { container } = render(() => [
       renderMessageContent(request.parentObject, {
         sources: sources('request'),
-        ...(images
-          ? { images }
-          : {}),
+        images,
       }, category, AgentProvider.CODEX),
       renderMessageContent(result.parentObject, {
         sources: sources('result'),
-        ...(images
-          ? { images }
-          : {}),
+        images,
       }, category, AgentProvider.CODEX),
     ])
     await waitFor(() => expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL))
@@ -705,7 +695,7 @@ describe('opening a tool-result image', () => {
       { type: 'image', data: PNG, mimeType: 'image/png' },
     ]), {
       spanType: 'mcp__playwright__screenshot',
-      images: imageActions(onOpenImage),
+      images: testImageActions({ openImage: onOpenImage }),
     })
 
     const buttons = [
@@ -714,6 +704,20 @@ describe('opening a tool-result image', () => {
     expect(buttons).toHaveLength(2)
     buttons[1]?.click()
     expect(onOpenImage).toHaveBeenCalledWith(expect.objectContaining({ index: 1 }))
+  })
+
+  it('draws the image with no button when the host has no open handler', () => {
+    const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult([
+      { type: 'image', data: PNG, mimeType: 'image/png' },
+    ]), {
+      spanType: 'mcp__playwright__screenshot',
+      images: testImageActions(),
+    })
+
+    // A button that does nothing would still take a tab stop.
+    expect(container.querySelector('img')).not.toBeNull()
+    expect(container.querySelector('button img')).toBeNull()
+    expect(container.querySelector('[aria-label="Open image"]')).toBeNull()
   })
 
   it('reports the file path when the provider stated one, so the file itself opens', () => {
@@ -725,7 +729,7 @@ describe('opening a tool-result image', () => {
       ]),
       {
         spanType: 'Read',
-        images: imageActions(onOpenImage),
+        images: testImageActions({ openImage: onOpenImage }),
         sources: testMessageSources({
           request: () => (parsed({
             type: 'assistant',
@@ -759,7 +763,7 @@ describe('opening a tool-result image', () => {
       ]),
       {
         spanType: 'mcp__playwright__screenshot',
-        images: imageActions(onOpenImage),
+        images: testImageActions({ openImage: onOpenImage }),
       },
     )
     container.querySelector('button')?.click()
@@ -784,7 +788,7 @@ describe('opening a tool-result image', () => {
       ],
     }
     const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read', {
-      images: imageActions(onOpenImage),
+      images: testImageActions({ openImage: onOpenImage }),
     })
     const imageButton = [
       ...container.querySelectorAll('button'),
@@ -806,7 +810,7 @@ describe('opening a tool-result image', () => {
       ]),
       {
         spanType: 'Bash',
-        images: imageActions(onOpenImage),
+        images: testImageActions({ openImage: onOpenImage }),
       },
     )
     container.querySelector('button')?.click()
@@ -855,7 +859,7 @@ describe('opening a tool-result image', () => {
       ],
     }
     const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read', {
-      images: imageActions(onOpenImage),
+      images: testImageActions({ openImage: onOpenImage }),
     })
     // Scoped to the buttons that WRAP an image: the row also carries an
     // expand toggle, and picking by position would silently start asserting

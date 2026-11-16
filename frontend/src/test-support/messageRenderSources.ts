@@ -1,4 +1,5 @@
 import type { MessageRenderSources } from '~/components/chat/messageContextResolver'
+import { NO_FILE_IMAGES } from '~/components/chat/fileImageResolver'
 
 /** Supply only the related or live data that a renderer test needs. */
 export function testMessageSources(overrides: Partial<MessageRenderSources> = {}): MessageRenderSources {
@@ -8,10 +9,7 @@ export function testMessageSources(overrides: Partial<MessageRenderSources> = {}
     result: () => undefined,
     role: () => 'other',
     visibleRows: () => ({ request: false, result: false }),
-    fileImage: async () => { throw new Error('The image source is unavailable') },
-    cachedFileImage: () => undefined,
-    fileImageSize: async () => undefined,
-    cachedFileImageSize: () => null,
+    fileImages: NO_FILE_IMAGES,
     backgroundTask: () => undefined,
     progress: () => undefined,
     ...overrides,

@@ -1,5 +1,5 @@
+import type { ChatRowItem } from './chatRowItem'
 import type { PreparedGeometry, SeqSpaceGeometry } from './chatScrollRailGeometry'
-import type { VirtualItem } from './useChatVirtualizer'
 import { describe, expect, it } from 'vitest'
 // dotFraction lives in chatRailPolicy (rail decision), but it's tested here alongside its
 // geometry siblings fractionToSeq / railYToSeq because they share the seq-range fail-closed
@@ -25,7 +25,7 @@ import {
 
 /** Build raw geometry with uniform-height rows for the given sequences. */
 function geoOf(seqs: bigint[], rowPx = 100): SeqSpaceGeometry {
-  const items: VirtualItem[] = seqs.map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
+  const items: ChatRowItem[] = seqs.map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
   return {
     items,
     offsetOfIndex: i => i * rowPx,

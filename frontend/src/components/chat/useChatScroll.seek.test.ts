@@ -25,7 +25,7 @@ function seekVirt(spacerInsetPx = 0): ChatScrollVirtualizer {
     ...virtualizerNoOps(),
     contentTopOf: scrollTop => scrollTop - spacerInsetPx,
     scrollTopOf: contentTop => contentTop + spacerInsetPx,
-    placementScrollTopOf: contentTop => placementScrollTop(contentTop, top => top + spacerInsetPx),
+    placementScrollTopOf: contentTop => placementScrollTop(contentTop, top => top + spacerInsetPx, true),
     totalHeight: () => 5000,
     geometryVersion: () => 0,
     updateViewport: () => {},

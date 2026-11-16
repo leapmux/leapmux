@@ -7,6 +7,7 @@ import { createEffect, createMemo, createSignal, For, onCleanup, onMount, untrac
 import { BackgroundTaskPanel } from '~/components/backgroundtasks/BackgroundTaskPanel'
 import { DropdownMenu } from '~/components/common/DropdownMenu'
 import { GoalsAndTodos } from '~/components/todo/GoalsAndTodos'
+import { createOwnedTimers } from '~/lib/ownedTimers'
 import { pluralize } from '~/lib/plural'
 import { todoProgress } from '~/models/todo'
 import { countActiveBackgroundTasks } from '~/stores/chatBackgroundTasks'
@@ -85,11 +86,11 @@ export interface ThinkingIndicatorProps {
 // How often the verb rotates while the indicator is visible (and not
 // paused). Long enough that any individual verb gets noticed but short
 // enough that a multi-minute turn surfaces several.
-const ROTATION_INTERVAL_MS = 60_000
+export const ROTATION_INTERVAL_MS = 60_000
 // CSS opacity transition duration for the verb spans and wrapper fade. Kept in
 // lockstep with --transition (mirrored by motion.medium) because
 // rotation/collapse logic uses the value to clear faded-out content.
-const ROTATION_FADE_MS = motion.medium
+export const ROTATION_FADE_MS = motion.medium
 const ROW_FADE_MS = motion.medium
 // Collapsing also delays the `grid-template-rows` transition by ROW_FADE_MS, so
 // the wrapper must remain in flow for both phases. After that, `display: none`
@@ -281,7 +282,7 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   let rotateIntervalId: ReturnType<typeof setInterval> | undefined
   let presenceVersion = 0
   let presenceTimer: ReturnType<typeof setTimeout> | undefined
-  const pendingClearTimers = new Set<ReturnType<typeof setTimeout>>()
+  const fadeTimers = createOwnedTimers()
   let wasVisible = initiallyVisible
 
   const clearPresenceTimer = () => {
@@ -384,25 +385,23 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     if (next === current)
       return
 
+    // Each timer callback reads the slot that is active when the fade ends. A timer
+    // callback has no tracking scope, so the read is a plain one.
     if (activeIsA()) {
       setVerbB(next)
       setActiveIsA(false)
-      const t = setTimeout(() => {
-        pendingClearTimers.delete(t)
-        if (!activeIsA())
+      fadeTimers.after(ROTATION_FADE_MS, () => {
+        if (!untrack(activeIsA))
           setVerbA('')
-      }, ROTATION_FADE_MS)
-      pendingClearTimers.add(t)
+      })
     }
     else {
       setVerbA(next)
       setActiveIsA(true)
-      const t = setTimeout(() => {
-        pendingClearTimers.delete(t)
-        if (activeIsA())
+      fadeTimers.after(ROTATION_FADE_MS, () => {
+        if (untrack(activeIsA))
           setVerbB('')
-      }, ROTATION_FADE_MS)
-      pendingClearTimers.add(t)
+      })
     }
 
     // Updates only the verb field of the snapshot, leaving angleRad
@@ -486,9 +485,6 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
       clearInterval(rotateIntervalId)
       rotateIntervalId = undefined
     }
-    for (const t of pendingClearTimers)
-      clearTimeout(t)
-    pendingClearTimers.clear()
     clearPresenceTimer()
   })
 

@@ -30,6 +30,61 @@ export interface FileImageLoadOptions {
 }
 
 /**
+ * What is known of the size of an image file, after a read settled:
+ * - `none`: the header of the file gives no size, so only the image gives its height.
+ * - `known`: the size of the image, from the header of the file or from the image.
+ */
+export type SettledFileImageSize
+  = | { kind: 'none' }
+    | { kind: 'known', size: ImageDimensions }
+
+/**
+ * What a host holds for the size of an image file: a settled answer (SettledFileImageSize),
+ * or `unknown` when it holds none. A host holds none before a read settled, after a read
+ * that failed, and after it dropped the answer at its limit or at a clear.
+ */
+export type FileImageSizeAnswer
+  = | { kind: 'unknown' }
+    | SettledFileImageSize
+
+/** The settled answer for the size that a read gave: `undefined` is a header with no size. */
+export function settledFileImageSize(size: ImageDimensions | undefined): SettledFileImageSize {
+  return size === undefined
+    ? { kind: 'none' }
+    : { kind: 'known', size }
+}
+
+/**
+ * The image files of one chat row: the reads of an image and of its size, and what the
+ * host holds of each. The four members travel together, so no host can supply a part.
+ */
+export interface FileImageSource {
+  /** Read an image file. `refresh` reads it again past the cache. Rejects for a read that failed. */
+  load: (path: string, options?: { refresh?: boolean }) => Promise<ImageResultSource>
+  /** The image that the host holds for `path`, when it holds one. Reactive. */
+  peek: (path: string) => ImageResultSource | undefined
+  /**
+   * Read the size of an image file from its first bytes. Never rejects: a file whose
+   * header gives no size, and a failed read, give `undefined`.
+   */
+  loadSize: (path: string) => Promise<ImageDimensions | undefined>
+  /** What the host holds for the size of the image file (see FileImageSizeAnswer). Not reactive. */
+  peekSize: (path: string) => FileImageSizeAnswer
+}
+
+/**
+ * The image files of a row whose host has no source, such as a row with no resolver. A
+ * read of an image fails, and no read can give a size: the size answer is "no size" at
+ * once, so no view waits for a read.
+ */
+export const NO_FILE_IMAGES: FileImageSource = {
+  load: () => Promise.reject(new Error('The image source is unavailable')),
+  peek: () => undefined,
+  loadSize: async () => undefined,
+  peekSize: () => ({ kind: 'none' }),
+}
+
+/**
  * The most image sizes that a resolver keeps, and the most refusals. It is above the
  * largest loaded window of a chat (MAX_LOADED_CHAT_MESSAGES_CEILING, which the test of
  * this module compares it with), so a window whose rows hold one image each keeps the
@@ -46,6 +101,43 @@ function fileImageKey(path: string, reference = ''): string {
 }
 
 /**
+ * The requests that run, one for each key. Every caller of a key shares the request that
+ * runs for it. A request that `abortAll` replaced records nothing: its answer can be
+ * stale. The image reads and the size reads of createFileImageResolver each keep one.
+ */
+function createKeyedRequests<T>() {
+  const pending = new Map<string, { controller: AbortController, promise: Promise<T> }>()
+  return {
+    /**
+     * The request of `key`: the one that runs, or a new one that `start` makes. `isCurrent`
+     * answers false once `abortAll` replaced the request, which then must record nothing.
+     */
+    run(key: string, start: (signal: AbortSignal, isCurrent: () => boolean) => Promise<T>): Promise<T> {
+      const existing = pending.get(key)
+      if (existing)
+        return existing.promise
+      const controller = new AbortController()
+      const isCurrent = (): boolean => pending.get(key)?.controller === controller
+      // The request starts in the next microtask, after it is registered.
+      const promise = Promise.resolve()
+        .then(() => start(controller.signal, isCurrent))
+        .finally(() => {
+          if (isCurrent())
+            pending.delete(key)
+        })
+      pending.set(key, { controller, promise })
+      return promise
+    },
+    /** Abort every request that runs, and forget it. */
+    abortAll(): void {
+      for (const entry of pending.values())
+        entry.controller.abort()
+      pending.clear()
+    },
+  }
+}
+
+/**
  * Share reads across visible rows, measurement rows, and image tabs without retaining unlimited image bytes.
  *
  * The resolver also keeps the size of the image files that rows asked for, so a row can
@@ -59,7 +151,7 @@ function fileImageKey(path: string, reference = ''): string {
  */
 export function createFileImageResolver(read: FileImageReader, readSize: FileImageSizeReader, maxChars = 2 * MAX_INLINE_IMAGE_BASE64_LEN) {
   const cache = new Map<string, ImageResultSource>()
-  const pending = new Map<string, { controller: AbortController, promise: Promise<ImageResultSource> }>()
+  const requests = createKeyedRequests<ImageResultSource>()
   const [version, setVersion] = createSignal(0)
   let chars = 0
   const cost = (source: ImageResultSource) => source.data?.length ?? source.url?.length ?? 0
@@ -67,38 +159,34 @@ export function createFileImageResolver(read: FileImageReader, readSize: FileIma
   // image of a row, as a size is, so the refusals take the limit of the sizes.
   const refusals = new Map<string, FileImageRefusedError>()
   // The size of each image file that the resolver knows: the answer of a size read that
-  // settled, or the size that an image stated when the resolver read it. `null` for a
-  // file whose read gave no size or failed. In LRU order, the least recently asked size
-  // first.
-  const sizes = new Map<string, ImageDimensions | null>()
-  const pendingSizes = new Map<string, { controller: AbortController, promise: Promise<ImageDimensions | undefined> }>()
+  // settled, or the size that an image stated when the resolver read it. A failed read
+  // records nothing. In LRU order, the least recently asked size first.
+  const sizes = new Map<string, SettledFileImageSize>()
+  const sizeRequests = createKeyedRequests<ImageDimensions | undefined>()
 
   function clear(): void {
-    for (const entry of pending.values())
-      entry.controller.abort()
-    pending.clear()
+    requests.abortAll()
     cache.clear()
     chars = 0
     refusals.clear()
     setVersion(value => value + 1)
-    for (const entry of pendingSizes.values())
-      entry.controller.abort()
-    pendingSizes.clear()
+    sizeRequests.abortAll()
     sizes.clear()
   }
 
-  /** Keep `size` as the answer for `key`, as the size that a caller asked for last. */
-  function keepSize(key: string, size: ImageDimensions | null): void {
+  /** Keep `answer` for `key`, as the size that a caller asked for last. */
+  function keepSize(key: string, answer: SettledFileImageSize): void {
     // The limit drops a size with no notice. No reader depends on a size that it lost: a
     // view keeps the size that it showed (see ImageResultView), and any other caller asks
     // again.
-    lruSet(sizes, key, size, FILE_IMAGE_SIZE_CACHE_MAX)
+    lruSet(sizes, key, answer, FILE_IMAGE_SIZE_CACHE_MAX)
   }
 
   /**
    * Read the size of the image file at `path`. One request serves every caller of a key,
    * and the resolver keeps the answer up to its limit. Never rejects: a failed read gives
-   * `undefined`.
+   * `undefined` and records nothing, so the next ask reads again. A read that gave no size,
+   * or failed, gives the size that an image stated while the read ran (see load).
    *
    * A call for a size that the resolver holds sends no request. It still counts as an ask:
    * the resolver drops the sizes that no caller asked for the longest.
@@ -106,36 +194,48 @@ export function createFileImageResolver(read: FileImageReader, readSize: FileIma
   function loadSize(path: string, options?: { reference?: string }): Promise<ImageDimensions | undefined> {
     return untrack(() => {
       const key = fileImageKey(path, options?.reference)
-      if (sizes.has(key))
-        return Promise.resolve(lruGet(sizes, key) ?? undefined)
+      const kept = lruGet(sizes, key)
+      if (kept !== undefined) {
+        return Promise.resolve(kept.kind === 'known'
+          ? kept.size
+          : undefined)
+      }
       // An image that the resolver holds states its size, so its header needs no read.
       const held = cache.get(key)
       if (held) {
-        keepSize(key, held.dimensions ?? null)
+        keepSize(key, settledFileImageSize(held.dimensions))
         return Promise.resolve(held.dimensions)
       }
-      const existing = pendingSizes.get(key)
-      if (existing)
-        return existing.promise
-      const controller = new AbortController()
-      const promise = Promise.resolve()
-        .then(() => readSize(path, controller.signal))
-        .catch(() => undefined)
-        .then((size) => {
-          // A request that `clear` replaced records nothing: its answer can be stale.
-          if (pendingSizes.get(key)?.controller !== controller)
+      return sizeRequests.run(key, async (signal, isCurrent) => {
+        // The size that an image stated while the read ran (see load), if any.
+        const stated = (): ImageDimensions | undefined => {
+          const answer = isCurrent()
+            ? sizes.get(key)
+            : undefined
+          return answer?.kind === 'known'
+            ? answer.size
+            : undefined
+        }
+        try {
+          const size = await readSize(path, signal)
+          if (size !== undefined) {
+            if (isCurrent())
+              keepSize(key, { kind: 'known', size })
             return size
-          pendingSizes.delete(key)
+          }
           // A read that gave no size replaces no size that an image stated meanwhile: the
-          // image states its size with more authority (see load).
-          const stated = sizes.get(key)
-          if (size === undefined && stated != null)
-            return stated
-          keepSize(key, size ?? null)
-          return size
-        })
-      pendingSizes.set(key, { controller, promise })
-      return promise
+          // image states its size with more authority.
+          const known = stated()
+          if (known === undefined && isCurrent())
+            keepSize(key, { kind: 'none' })
+          return known
+        }
+        catch {
+          // A failed read records nothing, so the next ask reads again: the failure can end
+          // by itself, as for a Worker that did not answer.
+          return stated()
+        }
+      })
     })
   }
 
@@ -163,16 +263,10 @@ export function createFileImageResolver(read: FileImageReader, readSize: FileIma
       const refusal = refusals.get(key)
       if (refusal)
         return Promise.reject(refusal)
-      const existing = pending.get(key)
-      if (existing)
-        return existing.promise
-      const controller = new AbortController()
-      // A request that `clear` replaced records nothing: its answer can be stale.
-      const isCurrent = (): boolean => pending.get(key)?.controller === controller
-      const request = async (): Promise<ImageResultSource> => {
+      return requests.run(key, async (signal, isCurrent) => {
         try {
-          const source = await read(path, controller.signal)
-          if (controller.signal.aborted || !isCurrent())
+          const source = await read(path, signal)
+          if (signal.aborted || !isCurrent())
             throw new DOMException('The image request is no longer active', 'AbortError')
           if (!imageRenderInfo(source).src)
             throw new FileImageRefusedError('The image file cannot be displayed')
@@ -191,7 +285,7 @@ export function createFileImageResolver(read: FileImageReader, readSize: FileIma
           // that read can fail, and the file can differ since. A row that asks for the
           // size later then reserves the box of this image.
           if (source.dimensions !== undefined)
-            keepSize(key, source.dimensions)
+            keepSize(key, { kind: 'known', size: source.dimensions })
           return source
         }
         catch (error) {
@@ -199,15 +293,7 @@ export function createFileImageResolver(read: FileImageReader, readSize: FileIma
             lruSet(refusals, key, error, FILE_IMAGE_SIZE_CACHE_MAX)
           throw error
         }
-        finally {
-          if (isCurrent())
-            pending.delete(key)
-        }
-      }
-      // The read starts in the next microtask, after the request is registered.
-      const promise = Promise.resolve().then(request)
-      pending.set(key, { controller, promise })
-      return promise
+      })
     })
   }
 
@@ -220,14 +306,13 @@ export function createFileImageResolver(read: FileImageReader, readSize: FileIma
       return cache.get(fileImageKey(path, reference))
     },
     /**
-     * The size of the image file that the resolver knows: `undefined` before a read
-     * settled, and `null` for a file whose read gave no size or failed. Not reactive: a
-     * caller that needs a later answer asks `loadSize`.
+     * What the resolver holds for the size of the image file (see FileImageSizeAnswer).
+     * Not reactive: a caller that needs a later answer asks `loadSize`.
      *
-     * It answers `undefined` again for a size that the limit of the resolver dropped, or
+     * It answers `unknown` again for a size that the limit of the resolver dropped, or
      * that `clear` dropped. A caller that must keep a size keeps its own copy.
      */
-    peekSize: (path: string, reference = ''): ImageDimensions | null | undefined =>
-      sizes.get(fileImageKey(path, reference)),
+    peekSize: (path: string, reference = ''): FileImageSizeAnswer =>
+      sizes.get(fileImageKey(path, reference)) ?? { kind: 'unknown' },
   }
 }

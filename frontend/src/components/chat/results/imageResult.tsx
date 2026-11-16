@@ -1,13 +1,14 @@
 import type { JSX } from 'solid-js'
 import type { ImageRenderActions } from '../renderContext'
+import type { RenderReadiness } from '../renderReadiness'
 import type { ImageResultSource, ImageSkipReason } from '~/lib/imageBlocks'
-import type { ImageDimensions } from '~/lib/imageDimensions'
-import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, Show, Switch, untrack } from 'solid-js'
+import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, Show, Switch } from 'solid-js'
 import { imageRenderInfo, imageSkipPlaceholder } from '~/lib/imageBlocks'
 import { sniffImageDimensionsFromDataUrl } from '~/lib/imageDimensions'
 import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
 import { useRequestReadiness } from '../renderReadiness'
 import { TOOL_IMAGE_MAX_HEIGHT_PX, toolImage, toolImageBox, toolImageBoxFailed, toolImageButton, toolImageRow, toolInputSummary } from '../toolStyles.css'
+import { createFileImageHeaderSize } from './fileImageHeaderSize'
 
 interface FileImageDisplay {
   path: string | undefined
@@ -62,8 +63,8 @@ export function imageReservationMatchesDecoded(
 /**
  * One image: the `<img>` when it is renderable, else the placeholder.
  *
- * When the render context supplies `onOpenImage`, the image is wrapped in a
- * button that opens it in its own tab. Without the callback it renders as a
+ * When the image actions hold an open handler (`actions.openImage`), the image is
+ * wrapped in a button that opens it in its own tab. Without the handler it renders as a
  * bare `<img>` -- a button that does nothing is worse than no button, and it
  * would take a tab stop.
  */
@@ -86,6 +87,14 @@ export function ImageResultView(props: {
    * must not replace the shown picture mid-pass. Absent means never hold.
    */
   holdDisplay?: () => boolean
+  /**
+   * The readiness scope of the row copy that draws the image, from its render context.
+   * The view reports there while it does not know the height of its picture: while its
+   * size read runs, and while it reads an image whose size no source gives. So no reader
+   * measures the copy before the box is reserved, or before that image shows. Undefined
+   * outside a chat row.
+   */
+  readiness?: RenderReadiness | undefined
 }): JSX.Element {
   const [loaded, setLoaded] = createSignal<ImageResultSource>()
   const [loading, setLoading] = createSignal(false)
@@ -97,29 +106,13 @@ export function ImageResultView(props: {
     ? props.source.filePath
     : undefined
 
-  // The size of a file image, from the first bytes of its file. The view asks for it
-  // whatever `deferLoad` says, so it can reserve the image box before it reads the
-  // image: a hidden premeasure copy then measures the height that the row keeps.
-  const [sizeRead, setSizeRead] = createSignal<{ path: string, size: ImageDimensions | null }>()
-  /**
-   * The size that the header of the file gave: `undefined` while no answer exists (and
-   * for an image with no file path), and `null` for a file whose read gave no size or
-   * failed.
-   *
-   * The answer of the view's own ask comes first, and the view keeps it. Before that
-   * answer arrives, the size cache answers, with no subscription: a size that the cache
-   * holds shows in the first render. So nothing that the resolver learns or drops later
-   * changes what a mounted view decided, in particular whether it reads its image.
-   */
-  const headerSize = (): ImageDimensions | null | undefined => {
-    const path = filePath()
-    if (!path)
-      return undefined
-    const read = sizeRead()
-    return read?.path === path
-      ? read.size
-      : untrack(() => props.actions?.cachedFileImageSize(path))
-  }
+  // The size that the header of the file gives (see createFileImageHeaderSize). The wait
+  // for it is `heightUnknown` below. It is created before `canLoad`, which reads it.
+  const headerSize = createFileImageHeaderSize({
+    path: filePath,
+    stated: () => props.source.dimensions !== undefined,
+    files: () => props.actions?.files,
+  })
   /**
    * Whether only the image itself gives the height of this view: neither the source nor
    * the header of the file states a size.
@@ -131,7 +124,7 @@ export function ImageResultView(props: {
    * and the row would change its height when the reader reaches it.
    */
   const needsImageForHeight = (): boolean =>
-    props.source.dimensions === undefined && headerSize() === null
+    props.source.dimensions === undefined && headerSize().kind === 'none'
   /**
    * Whether a read of the file can start at all.
    *
@@ -149,13 +142,13 @@ export function ImageResultView(props: {
   // again at each geometry change and at each end of a scroll, and the effect below starts
   // the read again each time it runs.
   const canLoad = createMemo((): boolean => Boolean(filePath())
-    && !!props.actions?.loadFileImage
+    && props.actions !== undefined
     && (!props.actions.deferLoad() || needsImageForHeight()))
   let generation = 0
   const loadFile = (refresh = false): void => {
     const path = filePath()
-    const read = props.actions?.loadFileImage
-    if (!canLoad() || !path || !read)
+    const files = props.actions?.files
+    if (!canLoad() || !path || !files)
       return
     const current = ++generation
     // One update: a reader of these signals must never see a retry as a first read.
@@ -169,8 +162,8 @@ export function ImageResultView(props: {
       setLoadError('')
     })
     void (refresh
-      ? read(path, { refresh: true })
-      : read(path)).then((source) => {
+      ? files.load(path, { refresh: true })
+      : files.load(path)).then((source) => {
       if (current === generation)
         setLoaded(source)
     }).catch((error: unknown) => {
@@ -187,7 +180,7 @@ export function ImageResultView(props: {
   createEffect(on(
     () => [
       filePath(),
-      props.actions?.loadFileImage,
+      props.actions?.files,
       canLoad(),
     ] as const,
     () => {
@@ -209,7 +202,7 @@ export function ImageResultView(props: {
     if (path && paused && previous?.path === path)
       return previous
     const resolved = loaded() ?? (path
-      ? props.actions?.cachedFileImage(path)
+      ? props.actions?.files.peek(path)
       : undefined)
     const error = loadError()
     // The resolved copy's description fills an absent one; absent stays absent
@@ -245,9 +238,14 @@ export function ImageResultView(props: {
     const sniffed = src
       ? sniffImageDimensionsFromDataUrl(src)
       : null
+    if (sniffed)
+      return sniffed
     // Last, the size from the header of the file: it is all that a view knows before
     // it read the image.
-    return sniffed ?? headerSize() ?? null
+    const header = headerSize()
+    return header.kind === 'known'
+      ? header.size
+      : null
   })
   // Flips when the decoded image disagrees with the sniffed dimensions
   // (sniffer bug / exotic file): the reservation is dropped and layout falls
@@ -279,38 +277,6 @@ export function ImageResultView(props: {
       setReservationBroken(true)
   }
 
-  // The size read of a file image. The wait for it is `heightUnknown` below.
-  createEffect(on(
-    () => [
-      filePath(),
-      props.actions?.loadFileImageSize,
-      props.source.dimensions !== undefined,
-    ] as const,
-    ([path, readSize, stated]) => {
-      // A size that the source states never yields to the header, so the header needs no read.
-      if (!path || stated)
-        return
-      // The view keeps its own copy of a size that the cache holds: the cache can drop the
-      // size later (its limit, a clear), and the box of a row that shows must stay.
-      const cached = untrack(() => props.actions?.cachedFileImageSize(path))
-      if (cached !== undefined)
-        setSizeRead({ path, size: cached })
-      if (!readSize)
-        return
-      let current = true
-      onCleanup(() => {
-        current = false
-      })
-      const settle = (size: ImageDimensions | undefined): void => {
-        if (current)
-          setSizeRead({ path, size: size ?? null })
-      }
-      // The view asks for a size that the cache holds also. The resolver answers such an
-      // ask with no request, and counts it: it drops the sizes that no view asked for the
-      // longest. The read never rejects by its contract. A rejection still counts as no size.
-      void readSize(path).then(settle, () => settle(undefined))
-    },
-  ))
   /**
    * Whether the view does not know the height of its picture yet:
    *
@@ -330,15 +296,15 @@ export function ImageResultView(props: {
   const heightUnknown = createMemo((): boolean => {
     if (!filePath() || dims() !== null)
       return false
-    if (headerSize() === undefined)
-      return props.actions?.loadFileImageSize !== undefined
+    if (headerSize().kind === 'unknown')
+      return props.actions !== undefined
     return display().loading && !retrying()
   })
   // The wait that this view reports to the readiness scope of its row copy: no reader
   // measures the copy while the view does not know the height of its picture. One wait
   // covers the size read and the read of the whole image that follows it, so both end at
   // one limit (see useRequestReadiness).
-  const requests = useRequestReadiness(() => props.actions)
+  const requests = useRequestReadiness(() => props)
   createEffect(on(
     () => [
       filePath(),
@@ -485,6 +451,8 @@ export function ImageResultList(props: {
   title?: string
   actions?: ImageRenderActions
   holdDisplay?: () => boolean
+  /** See {@link ImageResultView}'s own `readiness`. */
+  readiness?: RenderReadiness | undefined
 }): JSX.Element {
   return (
     <For each={props.sources}>
@@ -501,6 +469,7 @@ export function ImageResultList(props: {
           {...(props.holdDisplay !== undefined
             ? { holdDisplay: props.holdDisplay }
             : {})}
+          readiness={props.readiness}
         />
       )}
     </For>

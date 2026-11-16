@@ -19,7 +19,7 @@ import { createBackgroundTaskStore } from './chatBackgroundTaskStore'
 import { createLiveCompactionStore } from './chatCompaction'
 import { createContentVersionStore } from './chatContentVersions'
 import { createGoalStore } from './chatGoalStore'
-import { createHistoryPaginator, linkWatchSignal } from './chatHistoryPaginator'
+import { createHistoryFetchRunner, createHistoryPaginator } from './chatHistoryPaginator'
 import { createLiveTailTracker } from './chatLiveTail'
 import { createMessageMarksStore, resolveRailRange } from './chatMessageMarks'
 import { createMessageMarkSeeder } from './chatMessageMarkSeeder'
@@ -184,13 +184,6 @@ export function createChatStore() {
    * reindexSpans keeps that non-reactive index consistent with the loaded window.
    */
   const spanIdx = createSpanIndex()
-  /**
-   * Retain one controller for each agent's active history fetch.
-   * A new fetch aborts the previous controller so a delayed request cannot prevent further pagination.
-   * The remote procedure call can still finish. Its caller checks signal.aborted after awaiting the result and discards a superseded response.
-   */
-  const fetchAbort = new Map<string, AbortController>()
-  const fetchWatchCleanup = new Map<string, () => void>()
 
   /**
    * Retain a separate controller for the background catchUpToTail loop.
@@ -198,71 +191,10 @@ export function createChatStore() {
    * A background loop must not abort an unrelated initial or user fetch, so it does not change fetchAbort.
    */
   const catchUpAbort = new Map<string, AbortController>()
+  // Run each history fetch of an agent under one controller, which a newer fetch supersedes.
+  // createHistoryFetchRunner owns fetchAbort, beginHistoryFetch, and runHistoryFetch.
+  const historyFetches = createHistoryFetchRunner({ setState, catchUpAbort })
 
-  /**
-   * Start a new history fetch for agentId.
-   * Abort the previous history fetch and background catch-up loop.
-   * Install a new controller and reset both fetch-direction flags. The caller then sets its own flag.
-   * Return the new signal. The caller must discard a result after that signal aborts.
-   * runHistoryFetch clears the flag only while its controller still owns the fetch.
-   *
-   * An optional abortSignal ends this fetch from outside. It has two sources:
-   * - The current WatchEvents subscription, for the reconciliation request for the latest page.
-   *   A workspace switch or worker change then aborts that request.
-   * - A history jump of the reader (End, Home, a seek, a send). The scroll hook aborts it
-   *   when the reader gives another command or takes control of the view.
-   * A fetch that pagination starts passes none, because its active tab already supplies its scope.
-   */
-  function beginHistoryFetch(agentId: string, abortSignal?: AbortSignal): AbortSignal {
-    fetchAbort.get(agentId)?.abort()
-    fetchWatchCleanup.get(agentId)?.()
-    fetchWatchCleanup.delete(agentId)
-    // A user fetch supersedes background catch-up.
-    // Abort its pending request before the user's jump or scroll changes the window.
-    catchUpAbort.get(agentId)?.abort()
-    const controller = new AbortController()
-    fetchAbort.set(agentId, controller)
-    fetchWatchCleanup.set(agentId, linkWatchSignal(controller, abortSignal))
-    setState('fetchingOlder', agentId, false)
-    setState('fetchingNewer', agentId, false)
-    // A user fetch clears any deferred automatic fill.
-    // Its result selects the window, or the user scrolls away from the tail.
-    // forwardFillToLiveTail sets the deferral again only if its own fill reaches the maximum attempt count while still advancing.
-    setState('tailFillDeferred', agentId, false)
-    return controller.signal
-  }
-
-  /**
-   * Run a new history fetch for agentId and set its direction flag.
-   * Pass the new signal to body. The body must discard a result after signal.aborted becomes true.
-   * In finally, clear the flag only while this controller still owns the fetch.
-   * A superseding fetch owns its own flags.
-   * Resolve what body resolved.
-   */
-  async function runHistoryFetch<T>(
-    agentId: string,
-    flag: 'fetchingOlder' | 'fetchingNewer',
-    body: (signal: AbortSignal) => Promise<T>,
-    abortSignal?: AbortSignal,
-  ): Promise<T> {
-    const signal = beginHistoryFetch(agentId, abortSignal)
-    setState(flag, agentId, true)
-    try {
-      return await body(signal)
-    }
-    finally {
-      // Clear the flag only while this controller still owns the fetch.
-      // A newer fetch installs another controller and resets both flags, so this request must leave those newer flags unchanged.
-      // An aborted abortSignal can end a fetch without starting another fetch.
-      // This controller still owns the flag in that case, so clear it.
-      // Otherwise, fetchingNewer could remain true and prevent all newer pagination until another user fetch resets it.
-      if (fetchAbort.get(agentId)?.signal === signal) {
-        setState(flag, agentId, false)
-        fetchWatchCleanup.get(agentId)?.()
-        fetchWatchCleanup.delete(agentId)
-      }
-    }
-  }
   /**
    * Rebuild the span index from the current loaded window.
    * Rebuild after each change that removes or reorders rows:
@@ -309,10 +241,7 @@ export function createChatStore() {
     messageObservers.delete(agentId)
     // Abort history fetches and background catch-up, then remove their controllers.
     // A delayed response must not change the removed window.
-    fetchAbort.get(agentId)?.abort()
-    fetchAbort.delete(agentId)
-    fetchWatchCleanup.get(agentId)?.()
-    fetchWatchCleanup.delete(agentId)
+    historyFetches.forget(agentId)
     catchUpAbort.get(agentId)?.abort()
     catchUpAbort.delete(agentId)
     // Remove the agent's row state:
@@ -973,7 +902,7 @@ export function createChatStore() {
     state,
     setState,
     catchUpAbort,
-    runHistoryFetch,
+    runHistoryFetch: historyFetches.runHistoryFetch,
     mergeFetchedMessages,
     applyMessages,
     liveTail,
@@ -1009,7 +938,6 @@ export function createChatStore() {
      * Return reactive scroll-rail data for this agent:
      * - The marked sequences.
      * - The complete history range for the current window.
-     * - The loaded window's first and last sequences.
      * resolveRailRange owns the pure range rule. This selector supplies its reactive inputs.
      * Read it inside a memo or JSX to track every supplied input.
      */
@@ -1031,8 +959,6 @@ export function createChatStore() {
         minSeq,
         maxSeq,
         marks: marks.marks,
-        windowFirstSeq,
-        windowLastSeq,
       }
     },
     /**

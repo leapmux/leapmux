@@ -2,7 +2,9 @@ import type { Locator, Page } from '@playwright/test'
 import type { ModelScript } from './modelScriptFixture'
 import type { ScriptedTurn } from './scriptedTurn'
 import { expect } from '@playwright/test'
+import { parseStoredKey, PREFIX_CHAT_ROW_HEIGHTS } from '../../../src/lib/browserStorage'
 import { escapeRegExp } from '../../../src/lib/regexp'
+import { deleteEntries, storageKeys } from './storage'
 import { assistantBubbles, CHAT_SCROLL_CONTAINER, chatDistanceFromBottom, chatScrollContainer, sendMessage, waitForAgentIdle } from './ui'
 
 /**
@@ -146,6 +148,28 @@ export async function requireTopRow(page: Page): Promise<RowDistance> {
   const row = await readTopRow(page)
   expect(row, 'a row is at the top of the view').not.toBeNull()
   return row!
+}
+
+/**
+ * Resolve when the page drew `count` animation frames from now, and at least one. Runs in the browser.
+ */
+export function framesPassIn(count: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let seen = 0
+    const tick = () => {
+      seen++
+      if (seen >= count)
+        resolve()
+      else
+        requestAnimationFrame(tick)
+    }
+    requestAnimationFrame(tick)
+  })
+}
+
+/** Wait until the page drew `frames` animation frames (see framesPassIn). */
+export function framesPass(page: Page, frames: number): Promise<void> {
+  return page.evaluate(framesPassIn, frames)
 }
 
 /** Wait until the chat stops scrolling: two reads of `scrollTop`, one frame apart, are equal. */
@@ -716,74 +740,20 @@ export function clearStoredRenders(page: Page): Promise<void> {
   return page.evaluate(clearObjectStoreIn, STORED_RENDERS)
 }
 
-/**
- * The database and the object store in which the app keeps its browser storage entries (DB_NAME and TABLE of
- * browserStorageDb.ts in the app). The key of an entry is its stored key: `leapmux:<name>` for an entry of the
- * device, and `leapmux:u:<account>:<name>` for an entry of an account.
- */
-const BROWSER_STORAGE = { database: 'leapmux-kv', store: 'entries' } as const
-
-/**
- * The logical name prefix of the row heights that the app stores for each chat (PREFIX_CHAT_ROW_HEIGHTS of
- * browserStorage.ts in the app, which the test of this file compares it with).
- */
-export const STORED_ROW_HEIGHTS_NAME_PREFIX = 'chat-row-heights:'
-
 /** The path of the empty page on which `clearStoredRowHeights` leaves the browser. */
 const BLANK_PAGE_PATH = '/__e2e-blank'
 
 /**
- * Delete each entry of the object store `store` of the IndexedDB database `database` whose logical name starts
- * with `namePrefix`, and keep every other entry. The logical name is the stored key without `leapmux:` and without
- * the account segment `u:<account>:`. Resolves the number of deleted entries. Rejects when the database has no such
- * store, so a renamed store fails the caller. Runs in the browser.
+ * Whether the stored key `storedKey` holds the row heights of a chat. The app's own parser reads the logical name of
+ * the key, so this check follows each change of the key layout.
  */
-export function deleteStoredNamesIn({ database, store, namePrefix }: { database: string, store: string, namePrefix: string }): Promise<number> {
-  return new Promise<number>((resolve, reject) => {
-    const open = indexedDB.open(database)
-    open.onerror = () => reject(open.error ?? new Error(`cannot open the database ${database}`))
-    open.onsuccess = () => {
-      const db = open.result
-      if (!db.objectStoreNames.contains(store)) {
-        db.close()
-        reject(new Error(`the database ${database} has no object store ${store}`))
-        return
-      }
-      let deleted = 0
-      const transaction = db.transaction(store, 'readwrite')
-      const entries = transaction.objectStore(store)
-      const cursor = entries.openKeyCursor()
-      cursor.onsuccess = () => {
-        const at = cursor.result
-        if (at === null)
-          return
-        const key = at.primaryKey
-        if (typeof key === 'string' && key.startsWith('leapmux:')) {
-          const scoped = key.slice('leapmux:'.length)
-          // An account entry holds `u:<account>:` before its name.
-          const accountEnd = scoped.startsWith('u:')
-            ? scoped.indexOf(':', 2)
-            : -1
-          const name = accountEnd < 0
-            ? scoped
-            : scoped.slice(accountEnd + 1)
-          if (name.startsWith(namePrefix)) {
-            entries.delete(key)
-            deleted++
-          }
-        }
-        at.continue()
-      }
-      transaction.oncomplete = () => {
-        db.close()
-        resolve(deleted)
-      }
-      transaction.onerror = () => {
-        db.close()
-        reject(transaction.error ?? new Error(`cannot delete from the object store ${store}`))
-      }
-    }
-  })
+function holdsRowHeights(storedKey: string): boolean {
+  return parseStoredKey(storedKey)?.name.startsWith(PREFIX_CHAT_ROW_HEIGHTS) === true
+}
+
+/** The stored keys that hold the row heights of a chat. */
+async function rowHeightKeys(page: Page): Promise<string[]> {
+  return (await storageKeys(page)).filter(holdsRowHeights)
 }
 
 /**
@@ -793,8 +763,16 @@ export function deleteStoredNamesIn({ database, store, namePrefix }: { database:
  * The app writes the heights that it still owes when its page goes away (`pagehide`), and that write would follow a
  * delete that runs inside the app. So this helper leaves the app first: it goes to an empty page of the same origin,
  * and deletes the entries there. It deletes no other entry.
+ *
+ * The helper fails when it deletes no entry, because a broken match of the stored keys also deletes none. The app
+ * saves the heights one second after the last height that it measured (ROW_HEIGHT_SAVE_DEBOUNCE_MS in
+ * chatRowHeightPersistence.ts), and it drops a save that still waits when its page goes away. So the helper first
+ * waits until the app saved the heights.
  */
 export async function clearStoredRowHeights(page: Page): Promise<void> {
+  await expect.poll(async () => (await rowHeightKeys(page)).length, {
+    message: 'the app stores the row heights of the chat',
+  }).toBeGreaterThan(0)
   const blank = new URL(BLANK_PAGE_PATH, page.url()).toString()
   await page.route(blank, route => route.fulfill({ status: 200, contentType: 'text/html', body: '' }))
   try {
@@ -803,5 +781,5 @@ export async function clearStoredRowHeights(page: Page): Promise<void> {
   finally {
     await page.unroute(blank)
   }
-  await page.evaluate(deleteStoredNamesIn, { ...BROWSER_STORAGE, namePrefix: STORED_ROW_HEIGHTS_NAME_PREFIX })
+  expect(await deleteEntries(page, await rowHeightKeys(page)), 'the helper deletes the stored row heights').toBeGreaterThan(0)
 }

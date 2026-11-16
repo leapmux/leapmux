@@ -5,12 +5,11 @@
 // MessageBubble supplies reactive members as getters or functions. Spreading that
 // assembly would freeze one pass, so a streaming row would draw stale output.
 
+import type { FileImageSource } from './fileImageResolver'
 import type { MessageRenderCache } from './messageRenderCache'
 import type { MessageUiKey } from './messageUiKeys'
 import type { RenderReadiness } from './renderReadiness'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
-import type { ImageResultSource } from '~/lib/imageBlocks'
-import type { ImageDimensions } from '~/lib/imageDimensions'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 
@@ -43,6 +42,9 @@ export interface MarkdownRenderContext {
    *   worker, and its word highlights follow, so it does not wait for the worker.
    * - A diff view (DiffView) until the last of its lines mounts, because it
    *   mounts them in slices of main-thread work.
+   * - A file image (ImageResultView) while it does not know the height of its
+   *   picture: while its size read runs, and while it reads an image whose size no
+   *   source gives.
    *
    * A diff view that switches between unified and split reports here too, as
    * replacing its content (see RenderReadiness.trackReplacing): the copy keeps
@@ -114,30 +116,13 @@ export interface PathRenderContext {
  * the image gives the height of its row, so every copy of the row reads it at once.
  */
 export interface ImageRenderActions {
-  /** Read a file-backed image's bytes; `refresh` re-reads past the cache. */
-  loadFileImage: (filePath: string, options?: { refresh?: boolean }) => Promise<ImageResultSource | undefined>
-  /** The already-read copy of a file-backed image, when one is held. */
-  cachedFileImage: (filePath: string) => ImageResultSource | undefined
+  /** The file-backed images of the row: their reads, and what the host holds of them. */
+  files: FileImageSource
   /**
-   * Read the size of a file-backed image from the first bytes of its file. Never
-   * rejects: a file whose header gives no size, and a failed read, give `undefined`.
+   * Open one image this row drew in its own tab. Absent when the host has no handler:
+   * the image view then draws the image with no button (see ImageResultView).
    */
-  loadFileImageSize: (filePath: string) => Promise<ImageDimensions | undefined>
-  /**
-   * The size of the image file that the host knows: `undefined` before a read settled,
-   * and `null` for a file whose read gave no size or failed.
-   */
-  cachedFileImageSize: (filePath: string) => ImageDimensions | null | undefined
-  /**
-   * The readiness scope of the row copy that draws the image. The image view reports
-   * there while it does not know the height of its picture: while its size read runs,
-   * and while it reads an image whose size no source gives. So no reader measures the
-   * copy before the box is reserved, or before that image shows. Undefined outside a
-   * chat row.
-   */
-  readiness: RenderReadiness | undefined
-  /** Open one image this row drew in its own tab. */
-  openImage: (image: { index: number, filePath?: string, title?: string }) => void
+  openImage?: (image: { index: number, filePath?: string, title?: string }) => void
   /**
    * True while the read of an image whose size is known must wait: in a hidden
    * premeasure pass, and in a row far from the view.
@@ -280,43 +265,28 @@ export function subagentsFrom(host: {
 }
 
 /**
- * Assemble {@link ImageRenderActions} from the file-image channel, the open
+ * Assemble {@link ImageRenderActions} from the image files of the row, the open
  * handler and the two load gates. THE one assembly, for the reason
  * {@link subagentsFrom} gives.
+ *
+ * Every member that a row always has is required, so a host cannot leave out a part
+ * and lose the box of its images with no error. A test takes the members that it does
+ * not set from `testImageActions` (`~/test-support/imageActions`).
  */
 export function imageActionsFrom(host: {
-  fileImage?: (filePath: string, options?: { refresh?: boolean }) => Promise<ImageResultSource | undefined>
-  cachedFileImage?: (filePath: string) => ImageResultSource | undefined
-  fileImageSize?: (filePath: string) => Promise<ImageDimensions | undefined>
-  cachedFileImageSize?: (filePath: string) => ImageDimensions | null | undefined
-  /** The readiness scope of the row copy (see ImageRenderActions.readiness). */
-  readiness?: RenderReadiness | undefined
+  files: FileImageSource
   openImage?: (image: { index: number, filePath?: string, title?: string }) => void
   /** See ImageRenderActions.deferLoad. */
-  deferLoad?: () => boolean
-  /** True while the pass is a hidden measurement. */
-  premeasurePass?: () => boolean
-} | undefined): ImageRenderActions | undefined {
-  const load = host?.fileImage
-  const cached = host?.cachedFileImage
-  const loadSize = host?.fileImageSize
-  const cachedSize = host?.cachedFileImageSize
-  const open = host?.openImage
-  const premeasure = host?.premeasurePass
-  if (load === undefined && cached === undefined && loadSize === undefined && cachedSize === undefined && open === undefined && premeasure === undefined)
-    return undefined
+  deferLoad: () => boolean
+  /** See ImageRenderActions.premeasurePass. */
+  premeasurePass: () => boolean
+}): ImageRenderActions {
   return {
-    loadFileImage: load ?? (async () => undefined),
-    cachedFileImage: cached ?? (() => undefined),
-    loadFileImageSize: loadSize ?? (async () => undefined),
-    // With no size reader, no read can give a size: the cache answers as for a read that
-    // gave none. With a reader and no cache, no read settled yet: a view asks the reader.
-    cachedFileImageSize: cachedSize ?? (loadSize === undefined
-      ? () => null
-      : () => undefined),
-    readiness: host?.readiness,
-    openImage: open ?? (() => {}),
-    deferLoad: () => host?.deferLoad?.() === true,
-    premeasurePass: () => host?.premeasurePass?.() === true,
+    files: host.files,
+    ...(host.openImage !== undefined
+      ? { openImage: host.openImage }
+      : {}),
+    deferLoad: host.deferLoad,
+    premeasurePass: host.premeasurePass,
   }
 }

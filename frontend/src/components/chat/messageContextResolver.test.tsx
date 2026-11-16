@@ -10,6 +10,7 @@ import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSourc
 import { createChatStore } from '~/stores/chat.store'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
 import { createMessageContextResolver, createMessageRenderSources } from './messageContextResolver'
+import './providers/codex/plugin'
 import './providers/opencode/plugin'
 
 // Supply an explicit no-side role without a provider wire format.
@@ -63,11 +64,13 @@ function noSideMessage(id: string, seq: bigint, extra: MessageInitShape<typeof A
   })
 }
 
-function fixture(
-  initial: AgentChatMessage[] = [],
-  spanMessage?: MessageContextSources['spanMessage'],
-  fetchFileImageSize: MessageContextSources['fetchFileImageSize'] = async () => undefined,
-) {
+/**
+ * The sources that a case sets in place of the defaults of `fixture`. By default the
+ * window does not hold the live tail, so the resolver fetches a missing half.
+ */
+type FixtureSources = Partial<Pick<MessageContextSources, 'spanMessage' | 'holdsLiveTail' | 'fetchFileImage' | 'fetchFileImageSize'>>
+
+function fixture(initial: AgentChatMessage[] = [], sources: FixtureSources = {}) {
   return createRoot((dispose) => {
     cleanups.push(dispose)
     const [messages, setMessages] = createSignal(initial)
@@ -82,14 +85,15 @@ function fixture(
       messages,
       messageVersion: version,
       contentVersion: () => 0,
-      spanMessage: spanMessage ?? ((spanId, side) => side === 'request'
+      spanMessage: sources.spanMessage ?? ((spanId, side) => side === 'request'
         ? index.getRequestMessage('agent', spanId)
         : index.getResultMessage('agent', spanId)),
       messageBySeq: seq => messages().find(message => message.seq === seq),
+      holdsLiveTail: sources.holdsLiveTail ?? (() => false),
       fetchSpan,
       fetchMessage,
-      fetchFileImage: async () => { throw new Error('The image source is unavailable') },
-      fetchFileImageSize,
+      fetchFileImage: sources.fetchFileImage ?? (async () => { throw new Error('The image source is unavailable') }),
+      fetchFileImageSize: sources.fetchFileImageSize ?? (async () => undefined),
       subscribe: (observer) => {
         observers.add(observer)
         return () => observers.delete(observer)
@@ -249,6 +253,131 @@ describe('message context resolver', () => {
 
       expect(resolver.loadRelated(result)).toBeUndefined()
       expect(fetchSpan).not.toHaveBeenCalled()
+    })
+
+    describe('on the live tail', () => {
+      const identity = { spanId: 'span', agentSessionId: '' }
+      const liveTail = {
+        holdsLiveTail: () => true,
+      }
+
+      /** A running call that relates its result: a read whose request states no path. */
+      function runningCall(id: string, seq: bigint): AgentChatMessage {
+        return toolMessage(id, seq, 'request', {
+          content: new TextEncoder().encode(JSON.stringify({
+            sessionUpdate: 'tool_call',
+            toolCallId: 'span',
+            status: 'pending',
+            kind: 'read',
+            rawInput: {},
+          })),
+        })
+      }
+
+      it('returns no request for a running call whose result can only arrive live', () => {
+        const request = runningCall('request', 1n)
+        const { resolver, fetchSpan } = fixture([request], liveTail)
+
+        // The window holds every later message, so a fetch cannot return the result.
+        expect(resolver.loadRelated(request)).toBeUndefined()
+        expect(resolver.loadRelated(request)).toBeUndefined()
+        expect(fetchSpan).not.toHaveBeenCalled()
+      })
+
+      it('shows the result when it arrives in the window', () => {
+        const request = runningCall('request', 1n)
+        const result = toolMessage('result', 2n, 'result')
+        const { resolver, emit, replaceMessages } = fixture([request], liveTail)
+        expect(resolver.loadRelated(request)).toBeUndefined()
+
+        emit(result)
+        replaceMessages([request, result])
+
+        expect(resolver.result(identity)?.message.id).toBe('result')
+      })
+
+      it('keeps a result that the store notifies and then drops from the window', () => {
+        const request = runningCall('request', 1n)
+        const { resolver, fetchSpan, emit, replaceMessages } = fixture([request], liveTail)
+        const release = resolver.retainRenderSpan(identity)
+        expect(resolver.loadRelated(request)).toBeUndefined()
+        // The reader loaded older history, and the store trimmed the newest rows.
+        replaceMessages([])
+
+        // The store notifies each new message before it decides to drop it.
+        emit(toolMessage('result', 2n, 'result'))
+
+        expect(resolver.result(identity)?.message.id).toBe('result')
+        expect(fetchSpan).not.toHaveBeenCalled()
+        release()
+      })
+
+      it('fetches when the window does not hold the live tail', async () => {
+        const request = runningCall('request', 1n)
+        const { resolver, fetchSpan } = fixture([request], {
+          holdsLiveTail: () => false,
+        })
+
+        const lookup = resolver.loadRelated(request)
+
+        expect(lookup).toBeInstanceOf(Promise)
+        await lookup
+        expect(fetchSpan).toHaveBeenCalledOnce()
+      })
+
+      it('fetches for a running call that the window does not hold', async () => {
+        // A row that the resolver fetched, outside the loaded window.
+        const request = runningCall('request', 1n)
+        const { resolver, fetchSpan } = fixture([], liveTail)
+
+        const lookup = resolver.loadRelated(request)
+
+        expect(lookup).toBeInstanceOf(Promise)
+        await lookup
+        expect(fetchSpan).toHaveBeenCalledOnce()
+      })
+
+      it('fetches for a result whose request is missing', async () => {
+        const result = toolMessage('result', 2n, 'result')
+        const { resolver, fetchSpan } = fixture([result], liveTail)
+
+        const lookup = resolver.loadRelated(result)
+
+        expect(lookup).toBeInstanceOf(Promise)
+        await lookup
+        expect(fetchSpan).toHaveBeenCalledOnce()
+      })
+
+      it('fetches for a row that misses its request and its result', async () => {
+        // A Codex image view relates both halves. The index knows neither of them here.
+        const viewed = create(AgentChatMessageSchema, {
+          id: 'view',
+          seq: 1n,
+          spanId: 'span',
+          agentProvider: AgentProvider.CODEX,
+          source: MessageSource.AGENT,
+          content: new TextEncoder().encode(JSON.stringify({
+            item: {
+              type: 'imageView',
+              id: 'span',
+              path: '/repo/shot.png',
+              status: 'completed',
+            },
+            threadId: 't1',
+          })),
+          contentCompression: ContentCompression.NONE,
+        })
+        const { resolver, fetchSpan } = fixture([viewed], {
+          ...liveTail,
+          spanMessage: () => undefined,
+        })
+
+        const lookup = resolver.loadRelated(viewed)
+
+        expect(lookup).toBeInstanceOf(Promise)
+        await lookup
+        expect(fetchSpan).toHaveBeenCalledOnce()
+      })
     })
   })
 
@@ -540,6 +669,7 @@ describe('message context resolver', () => {
         contentVersion: store.getMessageContentVersion,
         spanMessage: (identity, side) => store.getSpanMessage(agentId, identity, side),
         messageBySeq: seq => store.getLoadedMessageBySeq(agentId, seq),
+        holdsLiveTail: () => !store.hasNewerMessages(agentId),
         fetchSpan: async () => [],
         fetchMessage: async () => undefined,
         fetchFileImage: async () => { throw new Error('The image source is unavailable') },
@@ -572,39 +702,69 @@ describe('createMessageRenderSources', () => {
   it('reads the size of an image for its own row, and keeps it for that row only', async () => {
     const row = toolMessage('row', 1n, 'request')
     const fetchSize = vi.fn<MessageContextSources['fetchFileImageSize']>(async () => SIZE)
-    const { resolver } = fixture([row], undefined, fetchSize)
+    const { resolver } = fixture([row], { fetchFileImageSize: fetchSize })
     const sources = createMessageRenderSources(() => resolver, () => row, () => resolver.resolvedMessage(row).resolved)
-    expect(sources.cachedFileImageSize('/a.png')).toBeUndefined()
+    expect(sources.fileImages.peekSize('/a.png')).toEqual({ kind: 'unknown' })
 
-    await expect(sources.fileImageSize('/a.png')).resolves.toEqual(SIZE)
+    await expect(sources.fileImages.loadSize('/a.png')).resolves.toEqual(SIZE)
 
     expect(fetchSize).toHaveBeenCalledExactlyOnceWith('/a.png', expect.any(AbortSignal))
-    expect(sources.cachedFileImageSize('/a.png')).toEqual(SIZE)
+    expect(sources.fileImages.peekSize('/a.png')).toEqual({ kind: 'known', size: SIZE })
     // The file can differ at the time of another tool call, so another row reads its own size.
-    expect(resolver.cachedFileImageSize('/a.png')).toBeUndefined()
-    expect(resolver.cachedFileImageSize('/a.png', 'other-row')).toBeUndefined()
-    expect(resolver.cachedFileImageSize('/a.png', row.id)).toEqual(SIZE)
+    expect(resolver.cachedFileImageSize('/a.png')).toEqual({ kind: 'unknown' })
+    expect(resolver.cachedFileImageSize('/a.png', 'other-row')).toEqual({ kind: 'unknown' })
+    expect(resolver.cachedFileImageSize('/a.png', row.id)).toEqual({ kind: 'known', size: SIZE })
   })
 
-  it('answers "no size" with no resolver, so that a view waits for no read', async () => {
+  it('reads an image for its own row, and holds it for that row only', async () => {
+    const row = toolMessage('row', 1n, 'request')
+    const image = { data: 'AAAA', mimeType: 'image/png' }
+    const fetchImage = vi.fn<MessageContextSources['fetchFileImage']>(async () => image)
+    const { resolver } = fixture([row], { fetchFileImage: fetchImage })
+    const sources = createMessageRenderSources(() => resolver, () => row, () => resolver.resolvedMessage(row).resolved)
+    expect(sources.fileImages.peek('/a.png')).toBeUndefined()
+
+    await expect(sources.fileImages.load('/a.png')).resolves.toEqual(image)
+
+    expect(fetchImage).toHaveBeenCalledExactlyOnceWith('/a.png', expect.any(AbortSignal))
+    expect(sources.fileImages.peek('/a.png')).toEqual(image)
+    expect(resolver.cachedFileImage('/a.png')).toBeUndefined()
+    expect(resolver.cachedFileImage('/a.png', row.id)).toEqual(image)
+  })
+
+  it('reads the image again past the cache for a refresh', async () => {
+    const row = toolMessage('row', 1n, 'request')
+    const fetchImage = vi.fn<MessageContextSources['fetchFileImage']>(async () => ({ data: 'AAAA', mimeType: 'image/png' }))
+    const { resolver } = fixture([row], { fetchFileImage: fetchImage })
+    const sources = createMessageRenderSources(() => resolver, () => row, () => resolver.resolvedMessage(row).resolved)
+    await sources.fileImages.load('/a.png')
+
+    await sources.fileImages.load('/a.png', { refresh: true })
+
+    expect(fetchImage).toHaveBeenCalledTimes(2)
+  })
+
+  it('answers as NO_FILE_IMAGES with no resolver, so that a view waits for no read', async () => {
     const row = toolMessage('row', 1n, 'request')
     const sources = createMessageRenderSources(() => undefined, () => row, () => undefined as never)
 
-    await expect(sources.fileImageSize('/a.png')).resolves.toBeUndefined()
-    expect(sources.cachedFileImageSize('/a.png')).toBeNull()
+    await expect(sources.fileImages.loadSize('/a.png')).resolves.toBeUndefined()
+    expect(sources.fileImages.peekSize('/a.png')).toEqual({ kind: 'none' })
+    expect(sources.fileImages.peek('/a.png')).toBeUndefined()
+    await expect(sources.fileImages.load('/a.png')).rejects.toThrow('The image source is unavailable')
   })
 
   it('reads no size after the resolver is disposed', async () => {
     const row = toolMessage('row', 1n, 'request')
     const fetchSize = vi.fn<MessageContextSources['fetchFileImageSize']>(async () => SIZE)
-    const { resolver, dispose } = fixture([row], undefined, fetchSize)
+    const { resolver, dispose } = fixture([row], { fetchFileImageSize: fetchSize })
     await resolver.fileImageSize('/a.png')
     fetchSize.mockClear()
 
     dispose()
 
     // The sizes go with the resolver, and it starts no read for a view that still asks.
-    expect(resolver.cachedFileImageSize('/a.png')).toBeUndefined()
+    expect(resolver.cachedFileImageSize('/a.png')).toEqual({ kind: 'unknown' })
     await expect(resolver.fileImageSize('/b.png')).resolves.toBeUndefined()
     expect(fetchSize).not.toHaveBeenCalled()
   })
@@ -634,9 +794,11 @@ describe('explicit no-side message context', () => {
 
   it.each(['request', 'result'] as const)('refuses a stale %s slot that contains a no-side record', (side) => {
     const progress = noSideMessage('window', 2n)
-    const { resolver } = fixture([progress], (_identity, requestedSide) => requestedSide === side
-      ? progress
-      : undefined)
+    const { resolver } = fixture([progress], {
+      spanMessage: (_identity, requestedSide) => requestedSide === side
+        ? progress
+        : undefined,
+    })
     expect(resolver.role(progress)).toBe('none')
     expect(resolver.request(identity)).toBeUndefined()
     expect(resolver.result(identity)).toBeUndefined()
@@ -659,9 +821,11 @@ describe('explicit no-side message context', () => {
   it('keeps a genuine fetched result when a newer resident slot contains no-side progress', async () => {
     const result = toolMessage('result', 2n, 'result')
     const progress = noSideMessage('window', 3n)
-    const { resolver, fetchSpan } = fixture([progress], (_identity, side) => side === 'result'
-      ? progress
-      : undefined)
+    const { resolver, fetchSpan } = fixture([progress], {
+      spanMessage: (_identity, side) => side === 'result'
+        ? progress
+        : undefined,
+    })
     fetchSpan.mockResolvedValueOnce([result])
     const release = resolver.retainSpan(identity)
     await resolver.loadSpan(identity)
@@ -676,9 +840,11 @@ describe('explicit no-side message context', () => {
     const second = noSideMessage('second-window', 2n)
     const request = toolMessage('request', 3n, 'request')
     const result = toolMessage('result', 4n, 'result')
-    const { resolver, fetchSpan } = fixture([first, second], (_identity, side) => side === 'request'
-      ? first
-      : second)
+    const { resolver, fetchSpan } = fixture([first, second], {
+      spanMessage: (_identity, side) => side === 'request'
+        ? first
+        : second,
+    })
     fetchSpan.mockResolvedValueOnce([request, result])
     const release = resolver.retainSpan(identity)
     await resolver.loadSpan(identity)

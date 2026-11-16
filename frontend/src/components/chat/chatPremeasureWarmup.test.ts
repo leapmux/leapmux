@@ -1,6 +1,7 @@
 import type { Accessor } from 'solid-js'
 import type { ClassifiedEntry } from './chatEntryCache'
-import type { ChatVirtualizerRange, VirtualItem } from './useChatVirtualizer'
+import type { ChatDomPremeasureCandidate } from './chatHiddenPremeasure'
+import type { ChatVirtualizerRange } from './useChatVirtualizer'
 import { createComputed, createMemo, createRoot, createSignal, mapArray, onCleanup } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPremeasureQueue } from './chatPremeasureQueue'
@@ -47,22 +48,33 @@ describe('chatPremeasureWarmup', () => {
     vi.unstubAllGlobals()
   })
 
+  /** The loaded rows `m0` to `m<count - 1>`, each with the height key `k-<id>`. */
+  function loadedRows(count: number): ChatDomPremeasureCandidate[] {
+    return Array.from({ length: count }, (_, i) => {
+      const id = `m${i}`
+      return {
+        entry: {
+          message: { id },
+        } as ClassifiedEntry,
+        item: { id, hasSpanLines: false, heightKey: `k-${id}` },
+      }
+    })
+  }
+
+  /**
+   * The warm-up over `count` loaded rows, which skips the rows of `skip`: the rows
+   * that the look-ahead band covers. No row is measured at the start, and
+   * `measureBatch` measures each row of the current batch.
+   */
   function makeHarness(opts: {
     count: number
-    range: ChatVirtualizerRange
-    excludedBandRows?: number
+    skip: ChatVirtualizerRange
     enabled?: boolean
   }) {
-    const ids = Array.from({ length: opts.count }, (_, i) => `m${i}`)
-    const entries = ids.map(id => ({
-      message: { id },
-    } as ClassifiedEntry))
-    const items = ids.map(id => ({ id, hasSpanLines: false, heightKey: `k-${id}` } as VirtualItem))
     const measured = new Set<string>()
     const [enabled, setEnabled] = createSignal(opts.enabled ?? true)
-    const [entriesSig, setEntriesSig] = createSignal<readonly ClassifiedEntry[]>(entries)
-    const [itemsSig, setItemsSig] = createSignal<readonly VirtualItem[]>(items)
-    const [range, setRange] = createSignal(opts.range)
+    const [rows, setRows] = createSignal<readonly ChatDomPremeasureCandidate[]>(loadedRows(opts.count))
+    const [skip, setSkip] = createSignal(opts.skip)
     let warmup!: ReturnType<typeof createPremeasureWarmup>
     let dispose!: () => void
     // The length of each batch that the band published, in order.
@@ -71,11 +83,9 @@ describe('chatPremeasureWarmup', () => {
       dispose = d
       warmup = createPremeasureWarmup({
         enabled,
-        visibleEntries: entriesSig,
-        loadedItems: itemsSig,
-        range,
+        rows,
+        skip,
         isMeasured: item => measured.has(item.id),
-        excludedBandRows: opts.excludedBandRows ?? 2,
       })
       createComputed(() => published.push(warmup.warmupCandidates().length))
     })
@@ -91,55 +101,46 @@ describe('chatPremeasureWarmup', () => {
       measureBatch,
       measured,
       setEnabled,
-      setRange,
-      setEntriesSig,
-      setItemsSig,
+      setSkip,
+      setRows,
       dispose,
     }
   }
 
   /**
-   * The warm-up band of 20 rows (range [8, 10), covered band [6, 12)) behind the
-   * real premeasure queue. A keyed row list stands in for ChatHiddenPremeasure's
+   * The warm-up band of 20 rows, which skips the look-ahead band [6, 12), behind
+   * the real premeasure queue. A keyed row list stands in for ChatHiddenPremeasure's
    * `<For>`: like the `<For>`, it mounts one row for each candidate object.
    */
   function makeQueuedHarness() {
-    const ids = Array.from({ length: 20 }, (_, i) => `m${i}`)
-    const entries = ids.map(id => ({
-      message: { id },
-    } as ClassifiedEntry))
-    const items = ids.map(id => ({ id, hasSpanLines: false, heightKey: `k-${id}` } as VirtualItem))
-    const entryById = new Map(entries.map(entry => [entry.message.id, entry]))
-    const itemById = new Map(items.map(item => [item.id, item]))
+    const rows = loadedRows(20)
+    const rowById = new Map(rows.map(row => [row.item.id, row]))
     const heights = createRowHeightCache({
-      loadedIds: () => ids,
+      loadedIds: () => rowById.keys(),
     })
     const mounts: string[] = []
     const disposes: string[] = []
     const [enabled, setEnabled] = createSignal(true)
     let warmup!: ReturnType<typeof createPremeasureWarmup>
     let queue!: ReturnType<typeof createPremeasureQueue>
-    let rows!: Accessor<string[]>
+    let mounted!: Accessor<string[]>
     const dispose = createRoot((disposeRoot) => {
       warmup = createPremeasureWarmup({
         enabled,
-        visibleEntries: () => entries,
-        loadedItems: () => items,
-        range: () => ({ start: 8, end: 10 }),
+        rows: () => rows,
+        skip: () => ({ start: 6, end: 12 }),
         isMeasured: heights.isMeasured,
-        excludedBandRows: 2,
       })
       queue = createPremeasureQueue({
         heights,
         stagingEnabled: () => true,
-        visibleEntryById: () => entryById,
-        loadedItemById: () => itemById,
-        loadedItems: () => items,
+        rows: () => rows,
+        rowById: () => rowById,
         targetCandidates: () => [],
         lookAheadCandidates: () => [],
         warmupCandidates: warmup.warmupCandidates,
       })
-      rows = createMemo(mapArray(queue.premeasureCandidates, (candidate) => {
+      mounted = createMemo(mapArray(queue.premeasureCandidates, (candidate) => {
         mounts.push(candidate.item.id)
         onCleanup(() => disposes.push(candidate.item.id))
         return candidate.item.id
@@ -150,7 +151,7 @@ describe('chatPremeasureWarmup', () => {
       mounts,
       disposes,
       setEnabled,
-      mountedIds: () => rows(),
+      mountedIds: () => mounted(),
       warmupIds: () => warmup.warmupCandidates().map(c => c.item.id),
       measure: (id: string) => {
         queue.onMeasure(id, 10, `k-${id}`, 0)
@@ -160,10 +161,10 @@ describe('chatPremeasureWarmup', () => {
   }
 
   it('emits nothing until the idle delay, then the nearest rows outside the covered band', () => {
-    // 20 rows, range [8, 10), band half-width 2 -> covered [6, 12).
+    // 20 rows, and the look-ahead band covers [6, 12).
     const h = makeHarness({
       count: 20,
-      range: { start: 8, end: 10 },
+      skip: { start: 6, end: 12 },
     })
     expect(h.currentIds()).toEqual([])
     vi.advanceTimersByTime(FIRST_TICK_MS - 1)
@@ -188,8 +189,7 @@ describe('chatPremeasureWarmup', () => {
   it('skips measured rows and drains outward over ticks until the window is dry', () => {
     const h = makeHarness({
       count: 12,
-      range: { start: 4, end: 6 },
-      excludedBandRows: 2,
+      skip: { start: 2, end: 8 },
     })
     // Covered band [2, 8); outside rows: 1,0 above and 8..11 below = 6 rows.
     vi.advanceTimersByTime(FIRST_TICK_MS)
@@ -207,8 +207,7 @@ describe('chatPremeasureWarmup', () => {
   it('clears the band immediately when disabled and resumes after the idle delay', () => {
     const h = makeHarness({
       count: 10,
-      range: { start: 0, end: 2 },
-      excludedBandRows: 1,
+      skip: { start: 0, end: 3 },
     })
     vi.advanceTimersByTime(FIRST_TICK_MS)
     expect(h.currentIds()).not.toEqual([])
@@ -229,17 +228,14 @@ describe('chatPremeasureWarmup', () => {
   it('re-arms a parked ticker when new rows arrive', () => {
     const h = makeHarness({
       count: 4,
-      range: { start: 0, end: 4 },
-      excludedBandRows: 2,
+      skip: { start: 0, end: 4 },
     })
     vi.advanceTimersByTime(FIRST_TICK_MS + NEXT_TICK_MS)
     expect(h.currentIds()).toEqual([]) // whole window covered by the band
 
-    const moreIds = Array.from({ length: 12 }, (_, i) => `m${i}`)
-    h.setEntriesSig(moreIds.map(id => ({
-      message: { id },
-    } as ClassifiedEntry)))
-    h.setItemsSig(moreIds.map(id => ({ id, hasSpanLines: false, heightKey: `k-${id}` } as VirtualItem)))
+    // The look-ahead band grows with the rows, as the bands compute it.
+    h.setSkip({ start: 0, end: 6 })
+    h.setRows(loadedRows(12))
     vi.advanceTimersByTime(FIRST_TICK_MS)
     expect(h.currentIds()).toEqual(['m6', 'm7', 'm8', 'm9', 'm10', 'm11'])
     h.dispose()
@@ -248,13 +244,13 @@ describe('chatPremeasureWarmup', () => {
   it('keeps one scheduled tick when new rows arrive before the tick runs', () => {
     const h = makeHarness({
       count: 20,
-      range: { start: 8, end: 10 },
+      skip: { start: 6, end: 12 },
     })
     vi.advanceTimersByTime(WARMUP_IDLE_DELAY_MS - 100)
     expect(vi.getTimerCount()).toBe(1)
 
     // The arming effect re-fires, and its new delay replaces the old one.
-    h.setItemsSig(prev => [...prev])
+    h.setRows(prev => [...prev])
     expect(vi.getTimerCount()).toBe(1)
     vi.advanceTimersByTime(FIRST_TICK_MS - 1)
     expect(h.currentIds()).toEqual([])
@@ -270,7 +266,7 @@ describe('chatPremeasureWarmup', () => {
     it('is cancelled when the band is disabled', () => {
       const h = makeHarness({
         count: 20,
-        range: { start: 8, end: 10 },
+        skip: { start: 6, end: 12 },
       })
       vi.advanceTimersByTime(WARMUP_IDLE_DELAY_MS)
       // The delay ran out: only the idle request waits now.
@@ -287,7 +283,7 @@ describe('chatPremeasureWarmup', () => {
     it('is cancelled on dispose', () => {
       const h = makeHarness({
         count: 20,
-        range: { start: 8, end: 10 },
+        skip: { start: 6, end: 12 },
       })
       vi.advanceTimersByTime(WARMUP_IDLE_DELAY_MS)
       expect(vi.getTimerCount()).toBe(1)
@@ -300,11 +296,11 @@ describe('chatPremeasureWarmup', () => {
     it('gives way to the tick that new rows schedule, so one tick waits', () => {
       const h = makeHarness({
         count: 20,
-        range: { start: 8, end: 10 },
+        skip: { start: 6, end: 12 },
       })
       vi.advanceTimersByTime(WARMUP_IDLE_DELAY_MS)
 
-      h.setItemsSig(prev => [...prev])
+      h.setRows(prev => [...prev])
 
       expect(vi.getTimerCount()).toBe(1)
       // The new tick waits for the whole delay again.
@@ -317,10 +313,22 @@ describe('chatPremeasureWarmup', () => {
     })
   })
 
+  it('starts at the place of an empty skipped band, and alternates both ways', () => {
+    // No row is rendered, so the look-ahead band covers no row, at index 3.
+    const h = makeHarness({
+      count: 6,
+      skip: { start: 3, end: 3 },
+    })
+    vi.advanceTimersByTime(FIRST_TICK_MS)
+
+    expect(h.currentIds()).toEqual(['m2', 'm3', 'm1', 'm4', 'm0', 'm5'])
+    h.dispose()
+  })
+
   it('emits nothing for an empty window and parks the ticker', () => {
     const h = makeHarness({
       count: 0,
-      range: { start: 0, end: 0 },
+      skip: { start: 0, end: 0 },
     })
     vi.advanceTimersByTime(WARMUP_IDLE_DELAY_MS + 10 * WARMUP_TICK_MS)
     expect(h.currentIds()).toEqual([])
@@ -331,7 +339,7 @@ describe('chatPremeasureWarmup', () => {
   it('stops all timers on dispose', () => {
     const h = makeHarness({
       count: 20,
-      range: { start: 8, end: 10 },
+      skip: { start: 6, end: 12 },
     })
     vi.advanceTimersByTime(FIRST_TICK_MS)
     expect(h.currentIds()).not.toEqual([])
@@ -344,7 +352,7 @@ describe('chatPremeasureWarmup', () => {
       idle.remaining = [3, 0]
       const h = makeHarness({
         count: 20,
-        range: { start: 8, end: 10 },
+        skip: { start: 6, end: 12 },
       })
       vi.advanceTimersByTime(FIRST_TICK_MS)
 
@@ -358,7 +366,7 @@ describe('chatPremeasureWarmup', () => {
       idle.remaining = [0]
       const h = makeHarness({
         count: 20,
-        range: { start: 8, end: 10 },
+        skip: { start: 6, end: 12 },
       })
       vi.advanceTimersByTime(FIRST_TICK_MS)
 
@@ -452,7 +460,7 @@ describe('chatPremeasureWarmup', () => {
     it('waits for the next idle period after the tick delay', () => {
       const h = makeHarness({
         count: 20,
-        range: { start: 8, end: 10 },
+        skip: { start: 6, end: 12 },
       })
       vi.advanceTimersByTime(FIRST_TICK_MS)
       h.measureBatch()

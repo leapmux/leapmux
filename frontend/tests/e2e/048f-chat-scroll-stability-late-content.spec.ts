@@ -12,6 +12,7 @@ import {
   expectAtBottom,
   expectRowHeld,
   expectTailFartherBy,
+  framesPass,
   holdRenderRepliesWith,
   largeBodyFiller,
   loadingIndicator,
@@ -55,6 +56,13 @@ import { assistantBubbles, chatDistanceFromBottom, chatScrollContainer, chatScro
  * The source of the tall row ends with a large link definition that draws nothing (see largeBodyFiller). The app then
  * renders the row in a worker of its own and waits about 40 seconds for it, where it waits 10 seconds for a row of
  * ordinary size (see holdRenderRepliesWith). So the hold outlasts the scroll of the test, also under load.
+ *
+ * No test here reaches the branches of the layout-shift rule (chatLayoutShift.ts) for a row whose first read in the
+ * list differs from the height of its hidden copy. Such a row needs a request to the Worker (the read of an image
+ * file, or the lookup of the other half of a tool call) that outlasts READINESS_REQUEST_LIMIT_MS (renderReadiness.ts)
+ * and ends before the row mounts. The hold above delays a reply of a render worker in the browser, and no seam of this
+ * suite can delay one request to the Worker, so chatLayoutShift.test.ts and useChatVirtualizer.geometry.test.ts cover
+ * those branches.
  */
 
 const VIEW_HEIGHT = 600
@@ -267,21 +275,6 @@ function expectRowsHeld(before: RowState[], after: RowState[], which: string): v
     expect(now, `${which}: the row of seq ${row.seq} is still mounted`).toBeDefined()
     expect(Math.abs(now!.distance - row.distance), `${which}: the row of seq ${row.seq} stays in place, within 1px (it moved from ${row.distance}px to ${now!.distance}px)`).toBeLessThanOrEqual(1)
   }
-}
-
-/** Wait until the page drew `frames` animation frames. */
-function framesPass(page: Page, frames: number): Promise<void> {
-  return page.evaluate(count => new Promise<void>((resolve) => {
-    let seen = 0
-    const tick = () => {
-      seen++
-      if (seen >= count)
-        resolve()
-      else
-        requestAnimationFrame(tick)
-    }
-    requestAnimationFrame(tick)
-  }), frames)
 }
 
 /**

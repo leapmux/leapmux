@@ -2543,6 +2543,24 @@ describe('the other half of a tool call in a hidden copy', () => {
     await expectReleasedAtRequestLimit(scope)
   })
 
+  it('starts a new limit when a new message of the same span joins a running lookup', async () => {
+    vi.useFakeTimers()
+    // The resolver gives every message of a span the one request that runs.
+    const running = new Promise<void>(() => {})
+    const loadRelated = vi.fn(() => running)
+    const { scope, setMessage } = mountCopy(toolRequest('toolu_a'), loadRelated)
+    await vi.advanceTimersByTimeAsync(6000)
+
+    setMessage(toolRequest('toolu_a', 2n))
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(loadRelated).toHaveBeenCalledTimes(2)
+
+    // 10 s after the first message: its limit ended with its wait, so the copy still waits.
+    expect(scope.measurable()).toBe(false)
+
+    await expectReleasedAtRequestLimit(scope, 4000)
+  })
+
   it('ends the wait when a new message of the bubble needs no request', async () => {
     const pending = new Promise<void>(() => {})
     const loadRelated = vi.fn<MessageContextResolver['loadRelated']>(message => (message.seq === 1n
@@ -2558,11 +2576,13 @@ describe('the other half of a tool call in a hidden copy', () => {
   })
 })
 
-// A row reads its file image only near the view. The test for that reads the scroll
-// position with no subscription, so the end of a scroll must run it again: with every
-// row measured before it mounts, no height change does.
-describe('a file image in a row that scrolls into the view', () => {
-  it('reads the image when a scroll ends with the row near the view', async () => {
+// A row reads its file image only near the view. The host states whether the row is near
+// the view, and it runs that test again when the answer can differ (see
+// MessageBubbleHost.rowNearView): with every row measured before it mounts, no height
+// change does.
+describe('a file image in a row that comes near the view', () => {
+  /** A Codex row that views the image file `/repo/shot.png`, and a resolver that counts its reads. */
+  function viewedImageRow() {
     const viewed = makeMsg({
       id: 'view-row',
       agentProvider: AgentProvider.CODEX,
@@ -2588,16 +2608,19 @@ describe('a file image in a row that scrolls into the view', () => {
       fetchFileImage,
       fetchFileImageSize: async () => ({ width: 12, height: 8 }),
     })
-    let offscreen = true
-    const [scrolling, setScrolling] = createSignal(false)
+    return { viewed, resolver, fetchFileImage }
+  }
+
+  it('reads the image when the host reports the row near the view', async () => {
+    const { viewed, resolver, fetchFileImage } = viewedImageRow()
+    const [nearView, setNearView] = createSignal(false)
     const { container } = render(() => (
       <PreferencesProvider>
         <MessageBubble
           message={viewed}
           host={{
             messages: resolver,
-            rowOffscreen: () => offscreen,
-            syntaxHighlightingPaused: scrolling,
+            rowNearView: nearView,
           }}
         />
       </PreferencesProvider>
@@ -2605,11 +2628,20 @@ describe('a file image in a row that scrolls into the view', () => {
     await settleWorkerReplies()
     expect(fetchFileImage).not.toHaveBeenCalled()
 
-    // The reader scrolls the row into the view. No height changes on the way.
-    setScrolling(true)
-    offscreen = false
-    await Promise.resolve()
-    setScrolling(false)
+    // The row comes near the view: the end of a scroll, or a pane that grew taller.
+    setNearView(true)
+
+    await waitFor(() => expect(fetchFileImage).toHaveBeenCalledOnce())
+    await waitFor(() => expect(container.querySelector('img')).not.toBeNull())
+  })
+
+  it('reads the image at once for a host that states no near view', async () => {
+    const { viewed, resolver, fetchFileImage } = viewedImageRow()
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={viewed} host={{ messages: resolver }} />
+      </PreferencesProvider>
+    ))
 
     await waitFor(() => expect(fetchFileImage).toHaveBeenCalledOnce())
     await waitFor(() => expect(container.querySelector('img')).not.toBeNull())

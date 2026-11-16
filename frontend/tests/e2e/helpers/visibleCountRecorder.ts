@@ -65,37 +65,28 @@ export function installVisibleCountRecorder(scope: VisibleCountScope, key: strin
  * number of visible `scope.item` elements that one `scope.container` element held at any moment of the new document
  * until `navigate` returned.
  *
- * The recorder is an init script that the helper adds through the DevTools protocol and removes again after
- * `navigate`, also after a failure.
+ * The recorder is an init script that the helper adds with `page.addInitScript` and disposes again after `navigate`,
+ * also after a failure, so that the page that the next tests share keeps no recorder.
  */
 export async function maxVisibleCountDuring(page: Page, scope: VisibleCountScope, navigate: () => Promise<void>): Promise<number> {
   if (scope.container.trim() === '' || scope.item.trim() === '')
     throw new Error('A visible count needs a container selector and an item selector.')
   const key = `__e2eVisibleCount_${uniqueMarker()}`
   const source = `(${installVisibleCountRecorder.toString()})(${JSON.stringify(scope)}, ${JSON.stringify(key)})`
-  const cdp = await page.context().newCDPSession(page)
+  const recorder = await page.addInitScript({ content: source })
   try {
-    // Chromium runs a script that a session adds only when that session enabled its Page domain. A new session starts
-    // with the domain off, so without this call the reload runs no recorder.
-    await cdp.send('Page.enable')
-    const { identifier } = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source })
-    try {
-      await navigate()
-      return await page.evaluate((name) => {
-        const record: unknown = Reflect.get(window, name)
-        const max: unknown = typeof record === 'object' && record !== null
-          ? Reflect.get(record, 'max')
-          : undefined
-        if (typeof max !== 'number')
-          throw new TypeError('The page holds no visible count: the navigation did not start a new document after the recorder was added.')
-        return max
-      }, key)
-    }
-    finally {
-      await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier })
-    }
+    await navigate()
+    return await page.evaluate((name) => {
+      const record: unknown = Reflect.get(window, name)
+      const max: unknown = typeof record === 'object' && record !== null
+        ? Reflect.get(record, 'max')
+        : undefined
+      if (typeof max !== 'number')
+        throw new TypeError('The page holds no visible count: the navigation did not start a new document after the recorder was added.')
+      return max
+    }, key)
   }
   finally {
-    await cdp.detach()
+    await recorder.dispose()
   }
 }

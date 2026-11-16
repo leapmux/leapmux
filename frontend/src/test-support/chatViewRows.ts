@@ -57,10 +57,36 @@ export async function measureHiddenCopies(
     throw new Error(`${remaining} hidden copies report no height after ${MEASURE_ROUNDS_MAX} rounds, so their rows cannot join the list`)
 }
 
+/** The client height that reportChatListSize gave each scroll container last. */
+const reportedClientHeights = new WeakMap<HTMLElement, number>()
+
+/**
+ * Give `scrollContainer` a client height of `height`, as a pane with a layout box has.
+ * jsdom computes no layout, so the height would read as 0, and the scroll hook counts a
+ * pane of that height as hidden: it shows no place, and ChatView admits no row for a
+ * target (see ViewportRestore.paneHidden).
+ *
+ * A container whose test defined a `clientHeight` of its own keeps that one.
+ */
+function giveClientHeight(scrollContainer: HTMLElement, height: number): void {
+  const givenBefore = reportedClientHeights.has(scrollContainer)
+  if (!givenBefore && Object.hasOwn(scrollContainer, 'clientHeight'))
+    return
+  reportedClientHeights.set(scrollContainer, height)
+  if (givenBefore)
+    return
+  Object.defineProperty(scrollContainer, 'clientHeight', {
+    configurable: true,
+    get: () => reportedClientHeights.get(scrollContainer),
+  })
+}
+
 /**
  * Report the size of the scroll container of `view` to ChatView through its
- * ResizeObserver, and return the container. It leaves the hidden copies unmeasured, so no
- * row joins the list yet (see reportChatViewportSize).
+ * ResizeObserver, and return the container. The container gets the client height of that
+ * size (see giveClientHeight), so the scroll hook reads the pane as shown in the frame of
+ * the report. It leaves the hidden copies unmeasured, so no row joins the list yet (see
+ * reportChatViewportSize).
  */
 export async function reportChatListSize(view: { container: HTMLElement }, width = 800, height = 733): Promise<HTMLElement> {
   const scrollContainer = view.container.querySelector('[data-chat-scroll-container]') as HTMLElement | null
@@ -69,6 +95,7 @@ export async function reportChatListSize(view: { container: HTMLElement }, width
     width,
     height,
   }) as DOMRect)
+  giveClientHeight(scrollContainer!, height)
   await triggerResizeObserverFor(scrollContainer!)
   return scrollContainer!
 }

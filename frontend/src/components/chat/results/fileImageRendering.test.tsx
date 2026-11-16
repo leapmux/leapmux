@@ -1,12 +1,15 @@
+import type { FileImageSizeAnswer } from '../fileImageResolver'
 import type { ImageRenderActions } from '../renderContext'
 import type { RenderReadinessScope } from '../renderReadiness'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ImageDimensions } from '~/lib/imageDimensions'
+import type { TestImageActionsHost } from '~/test-support/imageActions'
 import { fireEvent, render, waitFor, within } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { deferred } from '~/test-support/async'
 import { classSelector } from '~/test-support/composedClass'
+import { testImageActions } from '~/test-support/imageActions'
 import { expectReleasedAtRequestLimit } from '~/test-support/renderReadiness'
 import { createFileImageResolver, FILE_IMAGE_SIZE_CACHE_MAX, FileImageRefusedError } from '../fileImageResolver'
 import { createRenderReadinessScope, READINESS_REQUEST_LIMIT_MS } from '../renderReadiness'
@@ -16,24 +19,31 @@ import { imageReservationStyle, ImageResultView } from './imageResult'
 const image = { data: 'iVBORw0KGgo=', mimeType: 'image/png' }
 const SIZE: ImageDimensions = { width: 400, height: 200 }
 
+/** What a size cache holds, for each answer that a case stubs. */
+const KNOWN_SIZE: FileImageSizeAnswer = { kind: 'known', size: SIZE }
+const NO_SIZE: FileImageSizeAnswer = { kind: 'none' }
+const UNKNOWN_SIZE: FileImageSizeAnswer = { kind: 'unknown' }
+
 /**
  * The actions of an image view, for a row in the list near the view: no read is
  * deferred, and no image and no size is known. An ask for the size answers what the size
  * cache of the case holds, as the resolver does: with no cache, the size read gives none.
  */
-function imageActions(overrides: Partial<ImageRenderActions> = {}): ImageRenderActions {
-  const cachedFileImageSize = overrides.cachedFileImageSize ?? (() => undefined)
-  return {
-    loadFileImage: async () => undefined,
-    cachedFileImage: () => undefined,
-    loadFileImageSize: async path => cachedFileImageSize(path) ?? undefined,
-    cachedFileImageSize,
-    readiness: undefined,
-    openImage: () => {},
-    deferLoad: () => false,
-    premeasurePass: () => false,
+function imageActions(overrides: TestImageActionsHost = {}): ImageRenderActions {
+  const peekSize = overrides.files?.peekSize ?? (() => UNKNOWN_SIZE)
+  return testImageActions({
     ...overrides,
-  }
+    files: {
+      loadSize: async (path) => {
+        const answer = peekSize(path)
+        return answer.kind === 'known'
+          ? answer.size
+          : undefined
+      },
+      peekSize,
+      ...overrides.files,
+    },
+  })
 }
 
 /** The inline style that `element` carries, as the properties that a reservation sets. */
@@ -66,16 +76,16 @@ const FILE_IMAGE: ImageResultSource = { filePath: '/image.png' }
  * Mount a view of `source` with `actions` over the defaults of `imageActions`. A case whose
  * source changes renders the view itself, so that the view reads the source reactively.
  */
-function mountImage(actions: Partial<ImageRenderActions> = {}, source: ImageResultSource = FILE_IMAGE) {
+function mountImage(actions: TestImageActionsHost = {}, source: ImageResultSource = FILE_IMAGE) {
   return render(() => <ImageResultView source={source} actions={imageActions(actions)} />)
 }
 
 /** Mount a view with a readiness scope, as a row copy gives it. */
-function mountWithScope(actions: Partial<ImageRenderActions>, source: ImageResultSource = FILE_IMAGE) {
+function mountWithScope(actions: TestImageActionsHost, source: ImageResultSource = FILE_IMAGE) {
   let scope!: RenderReadinessScope
   const view = render(() => {
     scope = createRenderReadinessScope()
-    return <ImageResultView source={source} actions={imageActions({ ...actions, readiness: scope })} />
+    return <ImageResultView source={source} actions={imageActions(actions)} readiness={scope} />
   })
   return { ...view, scope }
 }
@@ -87,7 +97,9 @@ describe('file image rendering', () => {
     const { container } = render(() => (
       <ImageResultView
         source={{ filePath: '/image.png' }}
-        actions={imageActions({ loadFileImage: read })}
+        actions={imageActions({
+          files: { load: read },
+        })}
         holdDisplay={() => paused()}
       />
     ))
@@ -102,10 +114,12 @@ describe('file image rendering', () => {
   it('shows a cached image in the first render of a hidden copy, and asks for it once', async () => {
     const read = vi.fn(async () => image)
     const { container } = mountImage({
-      loadFileImage: read,
-      cachedFileImage: () => image,
-      // The header of the file gave no size, so only the image gives the height.
-      cachedFileImageSize: () => null,
+      files: {
+        load: read,
+        peek: () => image,
+        // The header of the file gave no size, so only the image gives the height.
+        peekSize: () => NO_SIZE,
+      },
       deferLoad: () => true,
       premeasurePass: () => true,
     })
@@ -132,7 +146,9 @@ describe('file image rendering', () => {
         source={{
           filePath: path(),
         }}
-        actions={imageActions({ loadFileImage: read })}
+        actions={imageActions({
+          files: { load: read },
+        })}
       />
     ))
     await waitFor(() => expect(read).toHaveBeenCalledOnce())
@@ -152,8 +168,10 @@ describe('a file image the row cannot read yet', () => {
   it('claims no read during a premeasure pass of an image whose size is known', async () => {
     const read = vi.fn(async () => image)
     const { container } = mountImage({
-      loadFileImage: read,
-      cachedFileImageSize: () => SIZE,
+      files: {
+        load: read,
+        peekSize: () => KNOWN_SIZE,
+      },
       deferLoad: () => true,
       premeasurePass: () => true,
     })
@@ -166,8 +184,10 @@ describe('a file image the row cannot read yet', () => {
     const [offscreen, setOffscreen] = createSignal(true)
     const read = vi.fn(async () => image)
     const { container } = mountImage({
-      loadFileImage: read,
-      cachedFileImageSize: () => SIZE,
+      files: {
+        load: read,
+        peekSize: () => KNOWN_SIZE,
+      },
       deferLoad: offscreen,
     })
     await Promise.resolve()
@@ -187,8 +207,10 @@ describe('a file image the row cannot read yet', () => {
     const [scrollActivity, setScrollActivity] = createSignal(0)
     const read = vi.fn(async () => image)
     mountImage({
-      loadFileImage: read,
-      cachedFileImageSize: () => SIZE,
+      files: {
+        load: read,
+        peekSize: () => KNOWN_SIZE,
+      },
       deferLoad: () => {
         scrollActivity()
         return offscreen
@@ -214,7 +236,9 @@ describe('a file image the row cannot read yet', () => {
 
   it('still claims a read that is genuinely in flight', async () => {
     const read = vi.fn(() => new Promise<typeof image>(() => {}))
-    const { container } = mountImage({ loadFileImage: read })
+    const { container } = mountImage({
+      files: { load: read },
+    })
     await waitFor(() => expect(read).toHaveBeenCalledOnce())
     expect(container.textContent).toContain('Loading image')
   })
@@ -229,8 +253,10 @@ describe('a file image whose size is known before the image', () => {
     const read = vi.fn(async () => image)
     const readSize = vi.fn(async () => SIZE)
     const { container } = mountImage({
-      loadFileImage: read,
-      loadFileImageSize: readSize,
+      files: {
+        load: read,
+        loadSize: readSize,
+      },
       deferLoad: () => true,
     })
     await waitFor(() => expect(box(container)).not.toBeNull())
@@ -246,8 +272,10 @@ describe('a file image whose size is known before the image', () => {
     const [offscreen, setOffscreen] = createSignal(true)
     const readSize = vi.fn(async () => SIZE)
     const { container } = mountImage({
-      loadFileImage: () => new Promise<undefined>(() => {}),
-      loadFileImageSize: readSize,
+      files: {
+        load: () => new Promise<ImageResultSource>(() => {}),
+        loadSize: readSize,
+      },
       deferLoad: offscreen,
     })
     await waitFor(() => expect(box(container)).not.toBeNull())
@@ -259,7 +287,9 @@ describe('a file image whose size is known before the image', () => {
 
   it('reads no size for an image that has no file path', async () => {
     const readSize = vi.fn(async () => SIZE)
-    mountImage({ loadFileImageSize: readSize }, image)
+    mountImage({
+      files: { loadSize: readSize },
+    }, image)
     await Promise.resolve()
     expect(readSize).not.toHaveBeenCalled()
   })
@@ -268,8 +298,10 @@ describe('a file image whose size is known before the image', () => {
     const [offscreen, setOffscreen] = createSignal(true)
     const read = vi.fn(async () => ({ ...image, dimensions: SIZE }))
     const { container } = mountImage({
-      loadFileImage: read,
-      loadFileImageSize: async () => SIZE,
+      files: {
+        load: read,
+        loadSize: async () => SIZE,
+      },
       deferLoad: offscreen,
     })
     await waitFor(() => expect(box(container)).not.toBeNull())
@@ -283,12 +315,14 @@ describe('a file image whose size is known before the image', () => {
   })
 
   it('keeps the box, with the error and a retry, when the read of the image fails', async () => {
-    const read = vi.fn(async (): Promise<undefined> => {
+    const read = vi.fn(async (): Promise<ImageResultSource> => {
       throw new Error('The image file is empty')
     })
     const { container, getByRole } = mountImage({
-      loadFileImage: read,
-      cachedFileImageSize: () => SIZE,
+      files: {
+        load: read,
+        peekSize: () => KNOWN_SIZE,
+      },
     })
     await waitFor(() => expect(container.textContent).toContain('The image file is empty'))
 
@@ -298,12 +332,17 @@ describe('a file image whose size is known before the image', () => {
   })
 
   it('lets the box grow to its error and its retry when the read of the image fails', async () => {
-    const read = vi.fn(async (): Promise<undefined> => {
+    const read = vi.fn(async (): Promise<ImageResultSource> => {
       throw new Error('The image file is empty')
     })
     const { container } = mountImage({
-      loadFileImage: read,
-      cachedFileImageSize: () => ({ width: 16, height: 16 }),
+      files: {
+        load: read,
+        peekSize: () => ({
+          kind: 'known',
+          size: { width: 16, height: 16 },
+        }),
+      },
     })
     // While the read runs, the box has the size of the image, and cuts its text.
     expect(box(container)?.matches(classSelector(toolImageBoxFailed))).toBe(false)
@@ -316,7 +355,9 @@ describe('a file image whose size is known before the image', () => {
 
   it('states the image as the content of a box that shows no status', () => {
     const { container } = mountImage({
-      cachedFileImageSize: () => SIZE,
+      files: {
+        peekSize: () => KNOWN_SIZE,
+      },
       deferLoad: () => true,
     }, { filePath: '/image.png', description: 'A chart' })
 
@@ -325,12 +366,14 @@ describe('a file image whose size is known before the image', () => {
   })
 
   it('gives a box that shows its status no image role, so the retry stays reachable', async () => {
-    const read = vi.fn(async (): Promise<undefined> => {
+    const read = vi.fn(async (): Promise<ImageResultSource> => {
       throw new Error('The image file is empty')
     })
     const { container, getByRole } = mountImage({
-      loadFileImage: read,
-      cachedFileImageSize: () => SIZE,
+      files: {
+        load: read,
+        peekSize: () => KNOWN_SIZE,
+      },
     })
     await waitFor(() => expect(container.textContent).toContain('The image file is empty'))
 
@@ -345,8 +388,10 @@ describe('a file image whose size is known before the image', () => {
       await images.loadSize(`/other-${i}.png`)
     // The cache is full, and `/a.png` is its oldest size. A view finds it there.
     mountImage({
-      loadFileImageSize: path => images.loadSize(path),
-      cachedFileImageSize: path => images.peekSize(path),
+      files: {
+        loadSize: path => images.loadSize(path),
+        peekSize: path => images.peekSize(path),
+      },
       deferLoad: () => true,
     }, { filePath: '/a.png' })
     await Promise.resolve()
@@ -354,15 +399,17 @@ describe('a file image whose size is known before the image', () => {
     await images.loadSize('/one-more.png')
 
     // The resolver drops the size that no caller asked for the longest: not this one.
-    expect(images.peekSize('/a.png')).toEqual(SIZE)
-    expect(images.peekSize('/other-1.png')).toBeUndefined()
+    expect(images.peekSize('/a.png')).toEqual(KNOWN_SIZE)
+    expect(images.peekSize('/other-1.png')).toEqual(UNKNOWN_SIZE)
   })
 
   it('shows the box in the first render for a size that the cache holds', () => {
     const readSize = vi.fn(async () => SIZE)
     const { scope, container } = mountWithScope({
-      loadFileImageSize: readSize,
-      cachedFileImageSize: () => SIZE,
+      files: {
+        loadSize: readSize,
+        peekSize: () => KNOWN_SIZE,
+      },
       deferLoad: () => true,
     })
 
@@ -377,16 +424,18 @@ describe('a file image whose size is known before the image', () => {
   it('keeps the box when the cache drops the size that the view found there', async () => {
     // The resolver drops its least recently used sizes at its limit, and every size at a
     // clear. The row shows the box, and its height must not change for that.
-    const [cached, setCached] = createSignal<ImageDimensions | undefined>(SIZE)
+    const [cached, setCached] = createSignal<FileImageSizeAnswer>(KNOWN_SIZE)
     const readSize = vi.fn(async () => SIZE)
     const { container } = mountImage({
-      loadFileImageSize: readSize,
-      cachedFileImageSize: cached,
+      files: {
+        loadSize: readSize,
+        peekSize: cached,
+      },
       deferLoad: () => true,
     })
     expect(reservation(box(container))).toEqual(reservationFor(SIZE))
 
-    setCached(undefined)
+    setCached(UNKNOWN_SIZE)
 
     expect(reservation(box(container))).toEqual(reservationFor(SIZE))
     await Promise.resolve()
@@ -397,7 +446,7 @@ describe('a file image whose size is known before the image', () => {
   })
 
   it('reads the size again for a new path after the cache dropped the size of the old one', async () => {
-    const [cached, setCached] = createSignal<ImageDimensions | undefined>(SIZE)
+    const [cached, setCached] = createSignal<FileImageSizeAnswer>(KNOWN_SIZE)
     const [path, setPath] = createSignal('/first.png')
     const readSize = vi.fn(async (file: string) => file === '/first.png'
       ? SIZE
@@ -408,13 +457,15 @@ describe('a file image whose size is known before the image', () => {
           filePath: path(),
         }}
         actions={imageActions({
-          loadFileImageSize: readSize,
-          cachedFileImageSize: cached,
+          files: {
+            loadSize: readSize,
+            peekSize: cached,
+          },
           deferLoad: () => true,
         })}
       />
     ))
-    setCached(undefined)
+    setCached(UNKNOWN_SIZE)
 
     setPath('/second.png')
 
@@ -428,7 +479,9 @@ describe('a file image whose size is known before the image', () => {
 
   it('keeps the description below the box, as below the image', async () => {
     const { container } = mountImage({
-      cachedFileImageSize: () => SIZE,
+      files: {
+        peekSize: () => KNOWN_SIZE,
+      },
       deferLoad: () => true,
     }, { filePath: '/image.png', description: 'A screenshot' })
 
@@ -464,22 +517,26 @@ describe('an image with a stated size that cannot show', () => {
 describe('the copies of one file image', () => {
   // A hidden copy measures the row, and the row in the list then draws the same image.
   // Both must draw the same content, or the row takes another height than its measure.
-  const fail = async (): Promise<undefined> => {
+  const fail = async (): Promise<ImageResultSource> => {
     throw new Error('The file does not exist')
   }
 
   it('draws the failed read of an image with no size in a row far from the view as in its hidden copy', async () => {
     const copy = mountImage({
-      loadFileImage: fail,
-      cachedFileImageSize: () => null,
+      files: {
+        load: fail,
+        peekSize: () => NO_SIZE,
+      },
       deferLoad: () => true,
       premeasurePass: () => true,
     }, { filePath: '/gone.png' })
     await waitFor(() => expect(copy.container.textContent).toContain('Retry image'))
 
     const row = mountImage({
-      loadFileImage: fail,
-      cachedFileImageSize: () => null,
+      files: {
+        load: fail,
+        peekSize: () => NO_SIZE,
+      },
       deferLoad: () => true,
     }, { filePath: '/gone.png' })
 
@@ -490,9 +547,11 @@ describe('the copies of one file image', () => {
     const read = vi.fn(async () => image)
     // The hidden copy read the image, and the resolver dropped it at its limit since.
     const row = mountImage({
-      loadFileImage: read,
-      cachedFileImage: () => undefined,
-      cachedFileImageSize: () => null,
+      files: {
+        load: read,
+        peek: () => undefined,
+        peekSize: () => NO_SIZE,
+      },
       deferLoad: () => true,
     }, { filePath: '/image.svg' })
 
@@ -502,12 +561,14 @@ describe('the copies of one file image', () => {
   })
 
   /** The actions of an image view over a real resolver, as a chat row assembles them. */
-  function resolverActions(images: ReturnType<typeof createFileImageResolver>, overrides: Partial<ImageRenderActions>): ImageRenderActions {
+  function resolverActions(images: ReturnType<typeof createFileImageResolver>, overrides: TestImageActionsHost): ImageRenderActions {
     return imageActions({
-      loadFileImage: (path, options) => images.load(path, options),
-      cachedFileImage: path => images.peek(path),
-      loadFileImageSize: path => images.loadSize(path),
-      cachedFileImageSize: path => images.peekSize(path),
+      files: {
+        load: (path, options) => images.load(path, options),
+        peek: path => images.peek(path),
+        loadSize: path => images.loadSize(path),
+        peekSize: path => images.peekSize(path),
+      },
       ...overrides,
     })
   }
@@ -618,9 +679,11 @@ describe('the copies of one file image', () => {
       return image
     })
     const { container } = mountImage({
-      loadFileImage: read,
-      cachedFileImage: () => cached(),
-      cachedFileImageSize: () => null,
+      files: {
+        load: read,
+        peek: () => cached(),
+        peekSize: () => NO_SIZE,
+      },
       deferLoad: () => true,
       premeasurePass: () => true,
     }, { filePath: '/image.svg' })
@@ -643,8 +706,10 @@ describe('a file image whose header gives no size', () => {
   ])('reads the whole image in %s', async (_copy, premeasure) => {
     const read = vi.fn(async () => image)
     const { container } = mountImage({
-      loadFileImage: read,
-      loadFileImageSize: async () => undefined,
+      files: {
+        load: read,
+        loadSize: async () => undefined,
+      },
       deferLoad: () => true,
       premeasurePass: () => premeasure,
     })
@@ -661,8 +726,10 @@ describe('a file image whose header gives no size', () => {
     const size = deferred<ImageDimensions | undefined>()
     const read = vi.fn(async () => image)
     const { container } = mountImage({
-      loadFileImage: read,
-      loadFileImageSize: () => size.promise,
+      files: {
+        load: read,
+        loadSize: () => size.promise,
+      },
       deferLoad: () => true,
       premeasurePass: () => true,
     })
@@ -679,8 +746,10 @@ describe('a file image whose header gives no size', () => {
   it('reads nothing in a hidden copy whose source states the size', async () => {
     const read = vi.fn(async () => image)
     const { container } = mountImage({
-      loadFileImage: read,
-      cachedFileImageSize: () => null,
+      files: {
+        load: read,
+        peekSize: () => NO_SIZE,
+      },
       deferLoad: () => true,
       premeasurePass: () => true,
     }, { filePath: '/image.png', dimensions: SIZE })
@@ -699,8 +768,10 @@ describe('the readiness that a file image reports', () => {
 
   it('holds a row in the list while its read of an image with no size runs', async () => {
     const { scope, container } = mountWithScope({
-      loadFileImageSize: async () => undefined,
-      loadFileImage: () => new Promise(() => {}),
+      files: {
+        loadSize: async () => undefined,
+        load: () => new Promise(() => {}),
+      },
       deferLoad: () => false,
     })
     await waitFor(() => expect(container.textContent).toContain('Loading image'))
@@ -715,7 +786,7 @@ describe('the readiness that a file image reports', () => {
   ])('holds nothing for %s whose source states the size, and reads no size', async (_copy, premeasure) => {
     const readSize = vi.fn(() => new Promise<ImageDimensions | undefined>(() => {}))
     const { scope, container } = mountWithScope({
-      loadFileImageSize: readSize,
+      files: { loadSize: readSize },
       deferLoad: () => true,
       premeasurePass: () => premeasure,
     }, { filePath: '/image.png', dimensions: SIZE })
@@ -730,7 +801,9 @@ describe('the readiness that a file image reports', () => {
   it('holds the copy while the size read runs', async () => {
     const size = deferred<ImageDimensions | undefined>()
     const { scope, container } = mountWithScope({
-      loadFileImageSize: () => size.promise,
+      files: {
+        loadSize: () => size.promise,
+      },
       deferLoad: () => true,
     })
     await Promise.resolve()
@@ -744,8 +817,10 @@ describe('the readiness that a file image reports', () => {
   it('releases the copy when the size read rejects and its read of the image settles', async () => {
     const size = deferred<ImageDimensions | undefined>()
     const { scope, container } = mountWithScope({
-      loadFileImage: async () => image,
-      loadFileImageSize: () => size.promise,
+      files: {
+        load: async () => image,
+        loadSize: () => size.promise,
+      },
       deferLoad: () => true,
     })
     await Promise.resolve()
@@ -761,7 +836,9 @@ describe('the readiness that a file image reports', () => {
     vi.useFakeTimers()
     const size = deferred<ImageDimensions | undefined>()
     const { scope, container } = mountWithScope({
-      loadFileImageSize: () => size.promise,
+      files: {
+        loadSize: () => size.promise,
+      },
       deferLoad: () => true,
     })
     await vi.advanceTimersByTimeAsync(0)
@@ -781,10 +858,12 @@ describe('the readiness that a file image reports', () => {
   it('counts the size read and the read of the image in a hidden copy as one wait', async () => {
     vi.useFakeTimers()
     const size = deferred<ImageDimensions | undefined>()
-    const read = vi.fn(() => new Promise<undefined>(() => {}))
+    const read = vi.fn(() => new Promise<ImageResultSource>(() => {}))
     const { scope } = mountWithScope({
-      loadFileImage: read,
-      loadFileImageSize: () => size.promise,
+      files: {
+        load: read,
+        loadSize: () => size.promise,
+      },
       deferLoad: () => true,
       premeasurePass: () => true,
     })
@@ -801,7 +880,7 @@ describe('the readiness that a file image reports', () => {
   })
 
   /** Where a copy of a row can be, as the actions of its image view state it. */
-  const COPIES: [string, Partial<ImageRenderActions>][] = [
+  const COPIES: [string, TestImageActionsHost][] = [
     [
       'a hidden copy',
       {
@@ -826,8 +905,10 @@ describe('the readiness that a file image reports', () => {
   it.each(COPIES)('releases %s when its read of the image settles', async (_copy, place) => {
     const whole = deferred<typeof image>()
     const { scope, container } = mountWithScope({
-      loadFileImage: () => whole.promise,
-      loadFileImageSize: async () => undefined,
+      files: {
+        load: () => whole.promise,
+        loadSize: async () => undefined,
+      },
       ...place,
     })
     await waitFor(() => expect(container.textContent).toContain('Loading image'))
@@ -841,8 +922,10 @@ describe('the readiness that a file image reports', () => {
   it.each(COPIES)('releases %s when its read of the image fails', async (_copy, place) => {
     const whole = deferred<typeof image>()
     const { scope, container } = mountWithScope({
-      loadFileImage: () => whole.promise,
-      loadFileImageSize: async () => undefined,
+      files: {
+        load: () => whole.promise,
+        loadSize: async () => undefined,
+      },
       ...place,
     })
     await waitFor(() => expect(container.textContent).toContain('Loading image'))
@@ -859,8 +942,10 @@ describe('the readiness that a file image reports', () => {
   it.each(COPIES)('holds %s for its read of the image when the cache holds no size for the file', async (_copy, place) => {
     const whole = deferred<typeof image>()
     const { scope, container } = mountWithScope({
-      loadFileImage: () => whole.promise,
-      cachedFileImageSize: () => null,
+      files: {
+        load: () => whole.promise,
+        peekSize: () => NO_SIZE,
+      },
       ...place,
     })
     await waitFor(() => expect(container.textContent).toContain('Loading image'))
@@ -878,8 +963,10 @@ describe('the readiness that a file image reports', () => {
     ]
     let asked = 0
     const { scope, container } = mountWithScope({
-      loadFileImage: () => reads[asked++]!.promise,
-      cachedFileImageSize: () => null,
+      files: {
+        load: () => reads[asked++]!.promise,
+        peekSize: () => NO_SIZE,
+      },
     })
     reads[0]!.reject(new Error('The worker did not answer'))
     await waitFor(() => expect(scope.measurable()).toBe(true))
@@ -899,8 +986,10 @@ describe('the readiness that a file image reports', () => {
   it('releases that hidden copy at the limit when its read of the image does not settle', async () => {
     vi.useFakeTimers()
     const { scope } = mountWithScope({
-      loadFileImage: () => new Promise<undefined>(() => {}),
-      cachedFileImageSize: () => null,
+      files: {
+        load: () => new Promise<ImageResultSource>(() => {}),
+        peekSize: () => NO_SIZE,
+      },
       deferLoad: () => true,
       premeasurePass: () => true,
     })
@@ -913,9 +1002,11 @@ describe('the readiness that a file image reports', () => {
   it.each(COPIES)('holds nothing for %s with no size when the cache holds the image', async (_copy, place) => {
     const whole = deferred<typeof image>()
     const { scope } = mountWithScope({
-      loadFileImage: () => whole.promise,
-      cachedFileImage: () => image,
-      cachedFileImageSize: () => null,
+      files: {
+        load: () => whole.promise,
+        peek: () => image,
+        peekSize: () => NO_SIZE,
+      },
       ...place,
     })
 
@@ -942,10 +1033,12 @@ describe('the readiness that a file image reports', () => {
             filePath: path(),
           }}
           actions={imageActions({
-            loadFileImageSize: () => new Promise<undefined>(() => {}),
+            files: {
+              loadSize: () => new Promise<undefined>(() => {}),
+            },
             deferLoad: () => true,
-            readiness: scope,
           })}
+          readiness={scope}
         />
       )
     })

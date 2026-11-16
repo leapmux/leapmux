@@ -18,6 +18,7 @@ import { stepRequest } from './mockModelScript'
 import { requestRows, rowContent } from './modelRequestBody'
 import { sendNativeAnswer } from './nativeConversation'
 import { nativeTextBlocks, nativeTextStep } from './nativeScenario'
+import { PNG_SIGNATURE } from './png'
 import { assistantBubbles, composerEditor, sendMessage, userBubbles, waitForAgentIdle } from './ui'
 
 const CHANNEL_TOLERANCE = 48
@@ -589,17 +590,6 @@ function fileTypeExpectation(mediaType: DeclaredMediaType): FileTypeExpectation 
     accepts: declared => declared !== undefined && mediaType.test(declared),
   }
 }
-
-const PNG_SIGNATURE = Buffer.from([
-  0x89,
-  0x50,
-  0x4E,
-  0x47,
-  0x0D,
-  0x0A,
-  0x1A,
-  0x0A,
-])
 
 /** Identify the image format of encoded bytes by the signature at their start. */
 function encodedImageType(bytes: Buffer): ImageMediaType | undefined {

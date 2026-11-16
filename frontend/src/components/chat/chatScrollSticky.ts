@@ -33,9 +33,11 @@ export function createStickyBottom(ctx: ScrollContext) {
    * scrollbar drag whose first `scroll` event is late), so it writes nothing then. The event
    * of the move then ends the request for the tail (see ScrollContext.isFollowing).
    *
-   * It does not refresh the rendered rows: a ResizeObserver delivery can call it, and a
-   * row that mounts there re-enters the delivery. The `scroll` event of the write, or the
-   * deferred refresh of the geometry effect, refreshes them.
+   * It does not refresh the rendered rows: the `scroll` event of the write, or the
+   * deferred refresh of the geometry effect, refreshes them. The geometry effect calls it
+   * inside the flush of the row measurer, where a refresh would also be safe: the
+   * measurer observes a row that mounts during its flush in the next frame (see
+   * RowMeasurer.attachRow).
    */
   const restickIfAtBottom = (): void => {
     const el = ctx.getVisibleEl()

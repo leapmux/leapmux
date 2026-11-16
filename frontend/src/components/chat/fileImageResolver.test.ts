@@ -3,13 +3,16 @@ import type { ImageDimensions } from '~/lib/imageDimensions'
 import { describe, expect, it, vi } from 'vitest'
 import { MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
 import { deferred } from '~/test-support/async'
-import { createFileImageResolver, FILE_IMAGE_SIZE_CACHE_MAX, FileImageRefusedError } from './fileImageResolver'
+import { createFileImageResolver, FILE_IMAGE_SIZE_CACHE_MAX, FileImageRefusedError, NO_FILE_IMAGES, settledFileImageSize } from './fileImageResolver'
 
 /** A size reader for the cases whose subject is the image itself: the header gives no size. */
 const noSize: FileImageSizeReader = async () => undefined
 
 /** An image reader for the cases whose subject is the size. */
 const anImage = async () => ({ data: 'AAAA', mimeType: 'image/png' })
+
+/** A size read that the case ends. */
+type SizeRead = ReturnType<typeof deferred<ImageDimensions | undefined>>
 
 describe('file image resolution', () => {
   it('reads the file again for a different tool call', async () => {
@@ -204,16 +207,28 @@ describe('file image resolution', () => {
     }
     const images = createFileImageResolver(async () => sized, noSize)
     await images.loadSize('/image.png')
-    expect(images.peekSize('/image.png')).toBeNull()
+    expect(images.peekSize('/image.png')).toEqual({ kind: 'none' })
 
     await images.load('/image.png')
 
     // A row that asks for the size later reserves the box of the image that draws.
-    expect(images.peekSize('/image.png')).toEqual({ width: 30, height: 40 })
+    expect(images.peekSize('/image.png')).toEqual({
+      kind: 'known',
+      size: { width: 30, height: 40 },
+    })
     await expect(images.loadSize('/image.png')).resolves.toEqual({ width: 30, height: 40 })
   })
 
-  it('keeps the size that an image stated when a size read that gave none settles afterwards', async () => {
+  it.each([
+    [
+      'gave no size',
+      (size: SizeRead) => size.resolve(undefined),
+    ],
+    [
+      'failed',
+      (size: SizeRead) => size.reject(new Error('the worker is unavailable')),
+    ],
+  ])('keeps the size that an image stated when a size read that %s settles afterwards', async (_end, end) => {
     const size = deferred<ImageDimensions | undefined>()
     const sized = {
       data: 'AAAA',
@@ -223,14 +238,20 @@ describe('file image resolution', () => {
     const images = createFileImageResolver(async () => sized, () => size.promise)
     const asked = images.loadSize('/image.png')
     await images.load('/image.png')
-    expect(images.peekSize('/image.png')).toEqual({ width: 30, height: 40 })
+    expect(images.peekSize('/image.png')).toEqual({
+      kind: 'known',
+      size: { width: 30, height: 40 },
+    })
 
-    // The size read ends late, with a failure.
-    size.reject(new Error('the worker is unavailable'))
+    // The size read ends late.
+    end(size)
 
     // The image states its size with more authority than a read that gave none.
     await expect(asked).resolves.toEqual({ width: 30, height: 40 })
-    expect(images.peekSize('/image.png')).toEqual({ width: 30, height: 40 })
+    expect(images.peekSize('/image.png')).toEqual({
+      kind: 'known',
+      size: { width: 30, height: 40 },
+    })
   })
 
   it('keeps the answer of the size read for an image that states no size', async () => {
@@ -239,7 +260,10 @@ describe('file image resolution', () => {
 
     await images.load('/image.png')
 
-    expect(images.peekSize('/image.png')).toEqual({ width: 400, height: 200 })
+    expect(images.peekSize('/image.png')).toEqual({
+      kind: 'known',
+      size: { width: 400, height: 200 },
+    })
   })
 
   it.each([
@@ -247,13 +271,16 @@ describe('file image resolution', () => {
       'the size that the image states',
       { width: 30, height: 40 },
       { width: 30, height: 40 },
-      { width: 30, height: 40 },
+      {
+        kind: 'known',
+        size: { width: 30, height: 40 },
+      },
     ],
     [
       'no size for an image that states none',
       undefined,
       undefined,
-      null,
+      { kind: 'none' },
     ],
   ])('answers %s from an image that it holds, with no size read', async (_answer, dimensions, asked, kept) => {
     const readSize = vi.fn(noSize)
@@ -280,12 +307,15 @@ describe('file image resolution', () => {
     const second = images.loadSize('/image.png')
     await Promise.resolve()
     // Before the read settles, the cache has no answer.
-    expect(images.peekSize('/image.png')).toBeUndefined()
+    expect(images.peekSize('/image.png')).toEqual({ kind: 'unknown' })
     size.resolve({ width: 400, height: 200 })
 
     expect(await first).toEqual({ width: 400, height: 200 })
     expect(await second).toEqual({ width: 400, height: 200 })
-    expect(images.peekSize('/image.png')).toEqual({ width: 400, height: 200 })
+    expect(images.peekSize('/image.png')).toEqual({
+      kind: 'known',
+      size: { width: 400, height: 200 },
+    })
     expect(await images.loadSize('/image.png')).toEqual({ width: 400, height: 200 })
     expect(readSize).toHaveBeenCalledTimes(1)
   })
@@ -299,24 +329,37 @@ describe('file image resolution', () => {
     await images.loadSize('/image.png', { reference: 'first-call' })
 
     expect(readSize).toHaveBeenCalledTimes(2)
-    expect(images.peekSize('/image.png', 'first-call')).toEqual({ width: 400, height: 200 })
-    expect(images.peekSize('/image.png')).toBeUndefined()
+    expect(images.peekSize('/image.png', 'first-call')).toEqual({
+      kind: 'known',
+      size: { width: 400, height: 200 },
+    })
+    expect(images.peekSize('/image.png')).toEqual({ kind: 'unknown' })
   })
 
-  it('answers no size for a read that gave none, and for a read that failed', async () => {
-    const readSize = vi.fn()
-      .mockResolvedValueOnce(undefined)
-      .mockRejectedValueOnce(new Error('File unavailable'))
+  it('keeps the answer of a read that gave no size', async () => {
+    const readSize = vi.fn<FileImageSizeReader>(async () => undefined)
     const images = createFileImageResolver(anImage, readSize)
 
     await expect(images.loadSize('no-header')).resolves.toBeUndefined()
-    await expect(images.loadSize('unreadable')).resolves.toBeUndefined()
 
-    expect(images.peekSize('no-header')).toBeNull()
-    expect(images.peekSize('unreadable')).toBeNull()
-    // Each answer is kept: a second call reads nothing.
+    expect(images.peekSize('no-header')).toEqual({ kind: 'none' })
+    // The answer is kept: a second call reads nothing.
     await images.loadSize('no-header')
-    await images.loadSize('unreadable')
+    expect(readSize).toHaveBeenCalledOnce()
+  })
+
+  it('reads the size again after a read that failed', async () => {
+    // Such a failure can end by itself: the Worker did not answer, or the channel dropped.
+    const readSize = vi.fn<FileImageSizeReader>()
+      .mockRejectedValueOnce(new Error('the worker is unavailable'))
+      .mockResolvedValue({ width: 400, height: 200 })
+    const images = createFileImageResolver(anImage, readSize)
+
+    await expect(images.loadSize('/image.png')).resolves.toBeUndefined()
+    // A failed read records nothing.
+    expect(images.peekSize('/image.png')).toEqual({ kind: 'unknown' })
+
+    await expect(images.loadSize('/image.png')).resolves.toEqual({ width: 400, height: 200 })
     expect(readSize).toHaveBeenCalledTimes(2)
   })
 
@@ -327,7 +370,7 @@ describe('file image resolution', () => {
 
     images.clear()
 
-    expect(images.peekSize('/image.png')).toBeUndefined()
+    expect(images.peekSize('/image.png')).toEqual({ kind: 'unknown' })
     await images.loadSize('/image.png')
     expect(readSize).toHaveBeenCalledTimes(2)
   })
@@ -348,7 +391,7 @@ describe('file image resolution', () => {
     await pending
 
     // The answer of the old scope must not serve the new one.
-    expect(images.peekSize('/image.png')).toBeUndefined()
+    expect(images.peekSize('/image.png')).toEqual({ kind: 'unknown' })
   })
 
   it('charges a size nothing against the image cache limit', async () => {
@@ -361,7 +404,10 @@ describe('file image resolution', () => {
 
     // The cache holds 4 characters, which the one image fills. No size evicted it.
     expect(images.peek('cached')).toBeDefined()
-    expect(images.peekSize('image-0')).toEqual({ width: 400, height: 200 })
+    expect(images.peekSize('image-0')).toEqual({
+      kind: 'known',
+      size: { width: 400, height: 200 },
+    })
   })
 
   it('drops the least recently asked size past the limit, and reads it again when a caller asks', async () => {
@@ -370,9 +416,15 @@ describe('file image resolution', () => {
     for (let i = 0; i <= FILE_IMAGE_SIZE_CACHE_MAX; i++)
       await images.loadSize(`image-${i}`)
 
-    expect(images.peekSize('image-0')).toBeUndefined()
-    expect(images.peekSize('image-1')).toEqual({ width: 400, height: 200 })
-    expect(images.peekSize(`image-${FILE_IMAGE_SIZE_CACHE_MAX}`)).toEqual({ width: 400, height: 200 })
+    expect(images.peekSize('image-0')).toEqual({ kind: 'unknown' })
+    expect(images.peekSize('image-1')).toEqual({
+      kind: 'known',
+      size: { width: 400, height: 200 },
+    })
+    expect(images.peekSize(`image-${FILE_IMAGE_SIZE_CACHE_MAX}`)).toEqual({
+      kind: 'known',
+      size: { width: 400, height: 200 },
+    })
 
     readSize.mockClear()
     await expect(images.loadSize('image-0')).resolves.toEqual({ width: 400, height: 200 })
@@ -391,8 +443,11 @@ describe('file image resolution', () => {
     expect(readSize).not.toHaveBeenCalled()
     await images.loadSize('one-more')
 
-    expect(images.peekSize('image-0')).toEqual({ width: 400, height: 200 })
-    expect(images.peekSize('image-1')).toBeUndefined()
+    expect(images.peekSize('image-0')).toEqual({
+      kind: 'known',
+      size: { width: 400, height: 200 },
+    })
+    expect(images.peekSize('image-1')).toEqual({ kind: 'unknown' })
   })
 
   it('counts a file with no size against the limit like any other answer', async () => {
@@ -400,12 +455,37 @@ describe('file image resolution', () => {
     for (let i = 0; i <= FILE_IMAGE_SIZE_CACHE_MAX; i++)
       await images.loadSize(`image-${i}`)
 
-    expect(images.peekSize('image-0')).toBeUndefined()
-    expect(images.peekSize('image-1')).toBeNull()
+    expect(images.peekSize('image-0')).toEqual({ kind: 'unknown' })
+    expect(images.peekSize('image-1')).toEqual({ kind: 'none' })
   })
 
   it('keeps more sizes than the largest loaded window has rows', () => {
     // Otherwise a window of image rows would drop the size of a row that is still loaded.
     expect(FILE_IMAGE_SIZE_CACHE_MAX).toBeGreaterThan(MAX_LOADED_CHAT_MESSAGES_CEILING)
+  })
+})
+
+describe('NO_FILE_IMAGES', () => {
+  it('fails the read of an image, and holds no image', async () => {
+    await expect(NO_FILE_IMAGES.load('/image.png')).rejects.toThrow('The image source is unavailable')
+    await expect(NO_FILE_IMAGES.load('/image.png', { refresh: true })).rejects.toThrow('The image source is unavailable')
+    expect(NO_FILE_IMAGES.peek('/image.png')).toBeUndefined()
+  })
+
+  it('answers "no size" at once, so that a view waits for no read', async () => {
+    expect(NO_FILE_IMAGES.peekSize('/image.png')).toEqual({ kind: 'none' })
+    await expect(NO_FILE_IMAGES.loadSize('/image.png')).resolves.toBeUndefined()
+  })
+})
+
+describe('settledFileImageSize', () => {
+  it('answers "no size" for a read that gave none', () => {
+    expect(settledFileImageSize(undefined)).toEqual({ kind: 'none' })
+  })
+
+  it('answers the size that a read gave', () => {
+    const size = { width: 400, height: 200 }
+
+    expect(settledFileImageSize(size)).toEqual({ kind: 'known', size })
   })
 })

@@ -1,5 +1,7 @@
-import type { UseChatVirtualizerOptions, VirtualItem } from './useChatVirtualizer'
+import type { ChatRowItem } from './chatRowItem'
+import type { UseChatVirtualizerOptions } from './useChatVirtualizer'
 import { createSignal, onCleanup } from 'solid-js'
+import { onTestFinished, vi } from 'vitest'
 import { createRowHeightCache } from './chatRowHeightCache'
 import { useChatVirtualizer } from './useChatVirtualizer'
 
@@ -10,7 +12,7 @@ import { useChatVirtualizer } from './useChatVirtualizer'
  * split imports.
  */
 
-export function makeItems(specs: Array<{ seq: number, span?: boolean, kind?: string }>): VirtualItem[] {
+export function makeItems(specs: Array<{ seq: number, span?: boolean, kind?: string }>): ChatRowItem[] {
   // `seq` is only a convenient way to derive a unique row id in these specs; the
   // virtualizer itself keys everything by `id`. `kind` is omitted unless a spec
   // sets it.
@@ -23,7 +25,7 @@ export function makeItems(specs: Array<{ seq: number, span?: boolean, kind?: str
   }))
 }
 
-export function plainItems(count: number, startSeq = 1): VirtualItem[] {
+export function plainItems(count: number, startSeq = 1): ChatRowItem[] {
   return makeItems(Array.from({ length: count }, (_, i) => ({ seq: startSeq + i })))
 }
 
@@ -43,11 +45,34 @@ export function noLayoutRow(): HTMLElement {
   return el
 }
 
-export interface VirtualizerSetupOptions extends Pick<UseChatVirtualizerOptions, 'scrollElement' | 'pinBottom' | 'spacerInsetPx' | 'overscanPx'> {
+/** The report of a row of the list with no height. The first group is the row id. */
+const UNMEASURED_ROW_REPORT = /^useChatVirtualizer: the row (.+) is in the list with no measured height\./
+
+/**
+ * Spy on `console.error`, where a development build of the virtualizer reports a row of the
+ * list with no height. The app never lists such a row, so a test that lists one on purpose
+ * expects the report. The spy keeps the reports out of the test output, and ends with the
+ * test. `reportedIds` gives the row id of each report, in order. For any other error, it
+ * gives the whole message, so that an unexpected error fails the comparison.
+ */
+export function spyOnUnmeasuredRowReports(): { reportedIds: () => string[] } {
+  const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+  onTestFinished(() => spy.mockRestore())
+  return {
+    reportedIds: () => spy.mock.calls.map(([message]) => {
+      const text = String(message)
+      return UNMEASURED_ROW_REPORT.exec(text)?.[1] ?? text
+    }),
+  }
+}
+
+export interface VirtualizerSetupOptions extends Pick<UseChatVirtualizerOptions, 'scrollElement' | 'pinBottom' | 'spacerInsetPx' | 'overscanPx' | 'listStartsAtLoadedTop'> {
   /**
    * The height (px) that the kit commits for every row at the start, as a hidden copy
    * does, and for each row that `setList` adds. Default: 100, so the rows are 100px tall
-   * and row `i` starts at 120·i with the gap of 20. `false`: no row has a height.
+   * and row `i` starts at 120·i with the gap of 20. `false`: the kit commits no height. A
+   * test then commits each height through the cache before the row enters the list, or
+   * expects the report of a row with no height (see spyOnUnmeasuredRowReports).
    */
   measured?: number | false
 }
@@ -60,16 +85,16 @@ export interface VirtualizerSetupOptions extends Pick<UseChatVirtualizerOptions,
  * It also sets the overscan (px) of the rendered slice. Default: 0, so the slice holds
  * the view alone.
  */
-export function setup(items: VirtualItem[], opts: VirtualizerSetupOptions = {}) {
+export function setup(items: ChatRowItem[], opts: VirtualizerSetupOptions = {}) {
   const { measured = 100, ...virtualizerOptions } = opts
-  // The kit protects no row as loaded: an eviction test fills the cache with rows of the
-  // list, and expects the eviction to drop the oldest of them.
+  // The kit protects no row as loaded: an eviction test expects the eviction to drop the
+  // oldest heights, also the height of a row of the list.
   const cache = createRowHeightCache({
     loadedIds: () => [],
   })
   // Commit the height for each row that the cache does not know yet. A row that the cache
   // knows keeps its entry, also under another key, so a test of a key change sees it.
-  const measureUnknown = (rows: readonly VirtualItem[]): void => {
+  const measureUnknown = (rows: readonly ChatRowItem[]): void => {
     if (measured === false)
       return
     cache.commitAll(rows
@@ -78,7 +103,7 @@ export function setup(items: VirtualItem[], opts: VirtualizerSetupOptions = {}) 
   }
   measureUnknown(items)
   const [list, setListSignal] = createSignal(items)
-  const setList = (next: VirtualItem[]): void => {
+  const setList = (next: ChatRowItem[]): void => {
     measureUnknown(next)
     setListSignal(next)
   }

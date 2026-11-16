@@ -1,5 +1,6 @@
 import type { RenderReadinessScope } from './renderReadiness'
 import { batch } from 'solid-js'
+import { createRafCoalescer } from '~/lib/rafCoalesce'
 import { rowLayoutMeasurement } from './rowLayoutMeasurement'
 
 // Row measurement for the virtualizer.
@@ -13,7 +14,13 @@ import { rowLayoutMeasurement } from './rowLayoutMeasurement'
 // A microtask runs after a resize handler and before paint. A row that grows
 // therefore updates its offsets and the layout shift in the same frame.
 // A requestAnimationFrame handler would paint stale sibling offsets first.
-// Tests inject the observer and scheduler to control these transitions.
+//
+// That microtask runs inside the ResizeObserver delivery that queued it. A commit of the
+// flush can mount rows, for example through a placement that the new heights allow. The
+// measurer observes such a row in the next animation frame (see attachRow): an observe
+// inside the delivery makes the browser skip the first notification of the row and report
+// "ResizeObserver loop completed with undelivered notifications".
+// Tests inject the observer, the scheduler, and the frames to control these transitions.
 
 /** The subset of ResizeObserver the measurer uses (so a test can inject a fake). */
 export interface ResizeObserverLike {
@@ -30,7 +37,9 @@ export type RowContentReadiness = Pick<RenderReadinessScope, 'measurable' | 'onM
 
 export interface RowMeasurer {
   /**
-   * Observe a freshly-mounted row and take its immediate measurement.
+   * Observe a freshly-mounted row and take its immediate measurement. A row that attaches
+   * during a flush of the measurer is observed in the next animation frame, outside the
+   * ResizeObserver delivery that runs the flush. Its immediate measurement still runs.
    *
    * `readiness` is the readiness of this row copy. While it is not measurable, the
    * copy waits for content (a Markdown body or an edit diff that a worker still
@@ -69,9 +78,10 @@ export interface RowMeasurer {
    * question with the read rule of the flush itself, so the two cannot disagree.
    */
   hasUncommittedHeight: (id: string) => boolean
-  /** Flush any pending measurements synchronously (teardown / tests). */
-  flushNow: () => void
-  /** Disconnect the observer and drop the pending set (on cleanup). */
+  /**
+   * Disconnect the observer, cancel the frame that observes the rows that attached during
+   * a flush, and drop the pending set (on cleanup).
+   */
   dispose: () => void
 }
 
@@ -109,6 +119,14 @@ export interface RowMeasurerDeps {
    * while scrolling. Injected for tests.
    */
   scheduleMicrotask?: (cb: () => void) => void
+  /**
+   * Request the animation frame that observes the rows that attached during a flush (see
+   * RowMeasurer.attachRow). Default: `requestFrame` of `~/lib/animationFrame`. Injected
+   * for tests.
+   */
+  requestFrame?: (cb: () => void) => number
+  /** Cancel that frame at `dispose`. Default: `cancelFrame` of `~/lib/animationFrame`. */
+  cancelFrame?: (handle: number) => void
   /**
    * Build the ResizeObserver from a targets callback. Default: the global
    * ResizeObserver (undefined in a non-DOM env, where attach still measures
@@ -174,6 +192,12 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
   const pending = new Set<Element>()
   const imageListeners = new Map<HTMLElement, EventListener>()
   let flushScheduled = false
+  // True while a flush commits its reads, inside the ResizeObserver delivery that queued
+  // the flush. A row that attaches then waits for the next frame to be observed.
+  let flushing = false
+  // The elements that attached during a flush, for the next frame to observe. An element
+  // leaves the set at its detach.
+  const observeLater = new Set<HTMLElement>()
   let ro: ResizeObserverLike | undefined
   const schedule = deps.scheduleMicrotask ?? queueMicrotask
 
@@ -247,7 +271,17 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
     // transforms, and the layout shift update once. readMeasurement already
     // dropped the unready reads, so none reaches the height cache: a row copy that
     // is not measurable (see attachRow), and a row whose layout check fails.
-    stats.committed = commitReads(reads)
+    // The effects of the commit run inside the batch, so a row that they mount attaches
+    // while `flushing` holds. A flush that a synchronous scheduler runs inside this one
+    // restores the flag to true.
+    const flushingBefore = flushing
+    flushing = true
+    try {
+      stats.committed = commitReads(reads)
+    }
+    finally {
+      flushing = flushingBefore
+    }
     deps.onFlush?.(stats)
   }
 
@@ -269,6 +303,37 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
       pending.add(t)
     scheduleFlush()
   })
+
+  // Observe the elements that attached during a flush, outside the delivery of that flush.
+  // An element that a newer element of its row replaced has nothing left to observe. An
+  // element outside the document is observed, as at an attach outside a flush: the
+  // ResizeObserver reports it once it lays out.
+  const observeFrame = createRafCoalescer<void>(() => {
+    for (const el of observeLater) {
+      const id = elToId.get(el)
+      if (id !== undefined && idToEl.get(id) === el)
+        ro?.observe(el)
+    }
+    observeLater.clear()
+  }, {
+    requestFrame: deps.requestFrame,
+    cancelFrame: deps.cancelFrame,
+  })
+
+  /** Observe a row element now, or in the next frame when it attaches during a flush. */
+  const observeRow = (el: HTMLElement) => {
+    if (ro === undefined)
+      return
+    if (flushing) {
+      observeLater.add(el)
+      observeFrame.push()
+      return
+    }
+    // A later attach of the element outside a flush observes it now, so the frame has
+    // nothing left to observe for it.
+    observeLater.delete(el)
+    ro.observe(el)
+  }
 
   const observeImages = (el: HTMLElement) => {
     if (imageListeners.has(el))
@@ -324,12 +389,13 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
     const read = readMeasurement(el)
     if (read)
       commitReads([read])
-    ro?.observe(el)
+    observeRow(el)
   }
 
   const detachRow = (el: HTMLElement) => {
     unobserveImages(el)
     ro?.unobserve(el)
+    observeLater.delete(el)
     pending.delete(el)
     readinessByEl.delete(el)
     const id = elToId.get(el)
@@ -360,6 +426,8 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
   const dispose = () => {
     for (const el of imageListeners.keys())
       unobserveImages(el)
+    observeFrame.abort()
+    observeLater.clear()
     ro?.disconnect()
     ro = undefined
     idToEl.clear()
@@ -382,7 +450,6 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
     measureAgain,
     elementOf,
     hasUncommittedHeight,
-    flushNow: flush,
     dispose,
   }
 }

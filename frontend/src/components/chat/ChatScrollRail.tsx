@@ -1,6 +1,7 @@
 import type { DotCluster } from './chatRailPolicy'
+import type { ChatRowItem } from './chatRowItem'
 import type { PreparedGeometry } from './chatScrollRailGeometry'
-import type { UseChatVirtualizerResult, VirtualItem } from './useChatVirtualizer'
+import type { UseChatVirtualizerResult } from './useChatVirtualizer'
 import type { ChatRailData } from '~/stores/chatMessageMarks'
 import { createEffect, createMemo, createSignal, For, onCleanup, Show } from 'solid-js'
 import { cardLaneFor, createDotPreview } from './chatDotPreview'
@@ -51,8 +52,14 @@ const THUMB_HEIGHT_PX = 24
 export interface ChatScrollRailProps {
   /** The chat scroll container (the element the native scrollbar was hidden on). */
   scrollEl: HTMLDivElement | undefined
-  /** Visible virtual rows in ascending sequence order. */
-  items: readonly VirtualItem[]
+  /**
+   * The rows of the chat list, in ascending sequence order. They are the window that the
+   * rail scrolls live: a drag of the thumb that maps inside their first and last persisted
+   * sequence scrolls the list in each frame, and a drag that maps outside them only
+   * previews, and seeks when the thumb rests. A loaded row that the list does not hold yet
+   * has no place to scroll to, so it is outside the window.
+   */
+  items: readonly ChatRowItem[]
   /**
    * The virtualizer members that place the thumb: the row offsets and the total height of the
    * loaded rows, and the conversion of a scroll coordinate of `scrollEl` to their content
@@ -67,12 +74,10 @@ export interface ChatScrollRailProps {
    */
   railRowSeqs: number[] | null
   /**
-   * The seq-space rail data (loaded flag, whole-history min/max seq range, marked seqs, and the
-   * first/last server seq of the window that the rail scrolls live) as the SINGLE
-   * {@link ChatRailData} shape the store's getRailData produces -- rather than re-flattening
-   * those six fields, which the view would then have to keep in hand-sync (the exact drift
-   * ChatRailData exists to prevent). ChatView gives the rows of its list as that window, in
-   * place of the loaded window of the store (see ChatView.railProps).
+   * The seq-space rail data (loaded flag, whole-history min/max seq range, and marked seqs)
+   * as the SINGLE {@link ChatRailData} shape the store's getRailData produces -- rather than
+   * re-flattening those four fields, which the view would then have to keep in hand-sync
+   * (the exact drift ChatRailData exists to prevent).
    */
   rail: ChatRailData
   /**
@@ -439,8 +444,9 @@ export function ChatScrollRail(props: ChatScrollRailProps) {
       engageSlopPx: opts.engageSlopPx,
       minSeq: () => props.rail.minSeq,
       maxSeq: () => props.rail.maxSeq,
-      windowFirstSeq: () => props.rail.windowFirstSeq,
-      windowLastSeq: () => props.rail.windowLastSeq,
+      // The window that a drag scrolls live is the rows of the list (see `items`).
+      windowFirstSeq: () => props.items[0]?.seq,
+      windowLastSeq: () => props.items.at(-1)?.seq,
       // `prepared` / `thumbHeightNow` are zero-arg memo accessors -- pass them directly rather
       // than re-wrapping. (`minSeq` etc. must stay wrapped: they read reactive props lazily.)
       prepared,

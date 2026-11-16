@@ -58,7 +58,7 @@ export function capInsertionOrder<V>(map: Map<string, V>, protect?: ReadonlySet<
  * before never-touched newer rows. Deleting first re-inserts it as newest, making
  * the cap a true recency-aware LRU. Mutates and returns the same Map.
  */
-function touchAndCap<V>(map: Map<string, V>, key: string, value: V, protect?: ReadonlySet<string>): Map<string, V> {
+function touchAndCap<V>(map: Map<string, V>, key: string, value: V, protect: ReadonlySet<string>): Map<string, V> {
   map.delete(key)
   map.set(key, value)
   return capInsertionOrder(map, protect)
@@ -86,9 +86,9 @@ export interface CreateMessageUiStateOptions {
   /**
    * The currently-rendered row ids the cap must never evict, read at eviction time
    * (so it tracks the live mounted set). Wired to `RowHeightCache.mountedIds` in
-   * ChatView. Omitted -> no protection (the prior behavior), for standalone tests.
+   * ChatView.
    */
-  protectedIds?: () => ReadonlySet<string>
+  protectedIds: () => ReadonlySet<string>
 }
 
 /**
@@ -96,7 +96,7 @@ export interface CreateMessageUiStateOptions {
  * (it allocates signals); the returned accessors are stable for the component's
  * lifetime.
  */
-export function createMessageUiState(opts: CreateMessageUiStateOptions = {}): MessageUiState {
+export function createMessageUiState(opts: CreateMessageUiStateOptions): MessageUiState {
   const [diffViewOverrides, setDiffViewOverrides] = createSignal<Map<string, 'unified' | 'split'>>(new Map())
   const [messageUiState, setMessageUiState] = createSignal<Map<string, Map<string, boolean>>>(new Map())
   // Per-id change counter (see getUiVersion). Capped + protected like the state maps
@@ -107,7 +107,7 @@ export function createMessageUiState(opts: CreateMessageUiStateOptions = {}): Me
 
   // Resolved at each cap (eviction time), so it reflects the rows mounted right now
   // rather than a snapshot from store-creation time.
-  const protect = () => opts.protectedIds?.()
+  const protect = () => opts.protectedIds()
 
   const bumpUiVersion = (messageId: string) => {
     setUiVersions((prev) => {

@@ -4,10 +4,10 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { testImageActions } from '~/test-support/imageActions'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { pngBase64 } from '~/test-support/pngFixture'
 import { providerRowImages } from '~/test-support/toolCallFixture'
-import { imageActionsFrom } from '../../renderContext'
 import { toolOutcomeLabel } from '../../results/toolOutcomeLabel'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
@@ -223,8 +223,7 @@ describe('zcode result display hints', () => {
 
   it('keeps image indices when computer-use media omits the first image data', async () => {
     const onOpenImage = vi.fn()
-    // `openImage` is set, so the assembled actions are never undefined.
-    const images = imageActionsFrom({ openImage: onOpenImage })
+    const images = testImageActions({ openImage: onOpenImage })
     const { container, parsed } = renderDisplay({
       kind: 'cua',
       toolName: 'screenshot',
@@ -234,10 +233,7 @@ describe('zcode result display hints', () => {
         { mimeType: 'image/png', artifactUri: 'artifact://first' },
         { mimeType: 'image/png', data: PNG },
       ],
-    // `openImage` is set, so the assembled actions are never undefined.
-    }, images
-      ? { images }
-      : {})
+    }, { images })
     await settleWorkerReplies()
     expect(container.querySelectorAll('img')).toHaveLength(1)
     const button = container.querySelector('[aria-label="Open image"]')

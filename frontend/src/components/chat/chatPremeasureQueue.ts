@@ -1,8 +1,6 @@
 import type { Accessor } from 'solid-js'
-import type { ClassifiedEntry } from './chatEntryCache'
 import type { ChatDomPremeasureCandidate, PremeasureMeasureHandler } from './chatHiddenPremeasure'
 import type { RowHeightCache } from './chatRowHeightCache'
-import type { VirtualItem } from './useChatVirtualizer'
 import { createMemo, untrack } from 'solid-js'
 import { emitDevEvent } from '~/lib/devInstrument'
 import { shallowEqualSets } from '~/lib/shallowEqual'
@@ -22,8 +20,8 @@ import { warnSlowScrollPhase } from './chatScrollGeometry'
 // It keeps the pending set, and a new copy of each pending row mounts when staging is
 // enabled again.
 //
-// Owns no DOM: the staging bands supply the candidates and the lookup memos, and
-// ChatView renders ChatHiddenPremeasure from the returned accessor.
+// Owns no DOM: the staging bands supply the loaded rows, their lookup by id, and the
+// candidates, and ChatView renders ChatHiddenPremeasure from the returned accessor.
 // ---------------------------------------------------------------------------
 
 export interface PremeasureQueueDeps {
@@ -31,21 +29,19 @@ export interface PremeasureQueueDeps {
   heights: Pick<RowHeightCache, 'isMeasured' | 'commit'>
   /** Whether a hidden copy may render (see ChatPremeasureBandsDeps.stagingEnabled). */
   stagingEnabled: Accessor<boolean>
-  /** Entry lookup over the loaded rows (a hidden copy renders the entry). */
-  visibleEntryById: Accessor<ReadonlyMap<string, ClassifiedEntry>>
-  /** Item lookup over the loaded rows (heightKey / kind reads). */
-  loadedItemById: Accessor<ReadonlyMap<string, VirtualItem>>
-  /** The loaded items in display order (candidate assembly preserves it). */
-  loadedItems: Accessor<readonly VirtualItem[]>
+  /**
+   * The loaded rows in display order, each entry with its item. A row keeps its object
+   * while its entry and its height key stay the same (see createChatPremeasureBands).
+   */
+  rows: Accessor<readonly ChatDomPremeasureCandidate[]>
+  /** id -> row over `rows`. */
+  rowById: Accessor<ReadonlyMap<string, ChatDomPremeasureCandidate>>
   /** The unmeasured rows that a waiting target needs. */
   targetCandidates: Accessor<readonly ChatDomPremeasureCandidate[]>
   /** The unmeasured rows just outside the rendered range. */
   lookAheadCandidates: Accessor<readonly ChatDomPremeasureCandidate[]>
-  /**
-   * Idle warm-up rows from deeper in the window (see createPremeasureWarmup).
-   * Optional so tests and non-warming callers can omit the band.
-   */
-  warmupCandidates?: Accessor<readonly ChatDomPremeasureCandidate[]>
+  /** Idle warm-up rows from deeper in the loaded rows (see createPremeasureWarmup). */
+  warmupCandidates: Accessor<readonly ChatDomPremeasureCandidate[]>
 }
 
 const NO_CANDIDATES: readonly ChatDomPremeasureCandidate[] = []
@@ -66,52 +62,37 @@ export function createPremeasureQueue(deps: PremeasureQueueDeps) {
   // `version` only when an element of it mounts, and a pending row never mounts: it is not
   // measured, and the admission admits only measured rows (see chatRowAdmission).
   const pendingPremeasureIds = createMemo<ReadonlySet<string>>((previous) => {
-    const entries = deps.visibleEntryById()
-    const items = deps.loadedItemById()
+    const rowById = deps.rowById()
     const next = new Set(previous)
     for (const candidate of deps.targetCandidates())
       next.add(candidate.item.id)
     for (const candidate of deps.lookAheadCandidates())
       next.add(candidate.item.id)
-    for (const candidate of deps.warmupCandidates?.() ?? [])
+    for (const candidate of deps.warmupCandidates())
       next.add(candidate.item.id)
     for (const id of [...next]) {
-      const item = items.get(id)
-      if (!entries.has(id) || item === undefined || isMeasured(item))
+      const row = rowById.get(id)
+      if (row === undefined || isMeasured(row.item))
         next.delete(id)
     }
     return next
   }, new Set<string>(), { equals: shallowEqualSets })
 
-  // ChatHiddenPremeasure's <For> keys its rows by object identity, so a new object
-  // for an unchanged row disposes its hidden copy and mounts it again. The memo
-  // therefore reuses a row's previous object while the row's entry and height key
-  // stay the same: the copy renders the entry, and its measure commits under the
-  // height key. A change to the pending set then mounts only the rows it adds.
+  // The pending rows in display order. ChatHiddenPremeasure's <For> keys its copies by
+  // object identity, so the memo gives each row object of `rows` as it is: the object stays
+  // while the entry and the height key of the row stay the same (see
+  // createChatPremeasureBands). A change to the pending set then mounts only the rows that
+  // it adds.
   //
   // While staging is not enabled, the memo gives no candidate, and <For> then disposes
-  // every copy. So the memo keeps no object across such a pause: each pending row gets a
-  // new copy afterwards, whatever object the memo gives.
-  const premeasureCandidates = createMemo<readonly ChatDomPremeasureCandidate[]>((previous) => {
+  // every copy. Each pending row gets a new copy afterwards, although its object is the
+  // same.
+  const premeasureCandidates = createMemo<readonly ChatDomPremeasureCandidate[]>(() => {
     const ids = pendingPremeasureIds()
     if (!deps.stagingEnabled() || ids.size === 0)
       return NO_CANDIDATES
-    const previousById = new Map(previous.map(candidate => [candidate.item.id, candidate]))
-    const entries = deps.visibleEntryById()
-    const candidates: ChatDomPremeasureCandidate[] = []
-    for (const item of deps.loadedItems()) {
-      if (!ids.has(item.id))
-        continue
-      const entry = entries.get(item.id)
-      if (!entry)
-        continue
-      const kept = previousById.get(item.id)
-      candidates.push(kept !== undefined && kept.entry === entry && kept.item.heightKey === item.heightKey
-        ? kept
-        : { entry, item })
-    }
-    return candidates
-  }, NO_CANDIDATES)
+    return deps.rows().filter(row => ids.has(row.item.id))
+  })
 
   const onMeasure: PremeasureMeasureHandler = (id, height, heightKey, measureDurationMs) => {
     // Forced-layout cost of premeasuring this row. When a batch of look-ahead rows
@@ -119,8 +100,9 @@ export function createPremeasureQueue(deps: PremeasureQueueDeps) {
     // (expensive) and the rest are cheap -- so a slow duration here localizes a
     // premeasure-driven main-thread stall (a stalled scroll delivers its moves as one
     // batched catch-up delta). Only a slow measure logs (see warnSlowScrollPhase).
-    // The current item of the row. A row that left the loaded rows commits nothing.
-    const item = untrack(deps.loadedItemById).get(id)
+    // The current row. A row that left the loaded rows commits nothing.
+    const row = untrack(deps.rowById).get(id)
+    const item = row?.item
     warnSlowScrollPhase('premeasure', measureDurationMs, { id, kind: item?.kind })
     // The cache refuses a height of another key, and a hidden-layout read for a mounted
     // row that has a height (see RowHeightCache.commit).
@@ -132,7 +114,7 @@ export function createPremeasureQueue(deps: PremeasureQueueDeps) {
     emitDevEvent('leapmux:chat-premeasure', () => ({
       phase: 'commit',
       id,
-      seq: untrack(deps.visibleEntryById).get(id)?.message.seq?.toString() ?? null,
+      seq: row?.entry.message.seq?.toString() ?? null,
       height: Number.isFinite(height)
         ? height
         : String(height),

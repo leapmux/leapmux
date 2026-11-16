@@ -1,9 +1,8 @@
 import { createMemoryHistory, MemoryRouter, Route } from '@solidjs/router'
 /// <reference types="vitest/globals" />
 import { fireEvent, render, screen } from '@solidjs/testing-library'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { settle } from '~/test-support/async'
 import { SignupPage } from './SignupPage'
 
 const mockSignUp = vi.fn()
@@ -56,14 +55,6 @@ vi.mock('~/context/AuthContext', () => ({
   }),
   AuthProvider: (props: { children: unknown }) => <>{props.children}</>,
 }))
-
-// A navigation of the memory router starts a 0 ms timer that scrolls the window
-// (`createMemoryHistory` of @solidjs/router). A test that ends right after a navigation
-// leaves that timer pending. When the timer fires after vitest removed the test
-// environment, it fails with "window is not defined", and vitest fails the whole run for
-// the unhandled error. Timers of one delay fire in the order of their start, so the timer
-// of `settle` fires after the timer of the router.
-afterEach(settle)
 
 function renderSignupPage() {
   return render(() => (

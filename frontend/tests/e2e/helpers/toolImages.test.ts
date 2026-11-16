@@ -9,6 +9,7 @@ import { inflateSync } from 'node:zlib'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { sniffImageDimensionsFromBytes } from '../../../src/lib/imageDimensions'
+import { readPngChunks } from './png'
 import { expectImageDataUriInRequest, expectPngInRequest, PNG_BASE64_PREFIX, runToolImageTurn, solidPngBytes, writeSolidPng, writeToolImage } from './toolImages'
 
 /** The browser operations of the mocked UI helpers, in call order. */
@@ -110,27 +111,12 @@ describe('writeToolImage', () => {
 })
 
 describe('solidPngBytes', () => {
-  /** The chunks of a PNG after its signature: the type and the data of each, in order. */
-  function chunksOf(png: Buffer): { type: string, data: Buffer }[] {
-    const chunks: { type: string, data: Buffer }[] = []
-    for (let offset = 8; offset < png.length;) {
-      const length = png.readUInt32BE(offset)
-      chunks.push({
-        type: png.toString('latin1', offset + 4, offset + 8),
-        data: png.subarray(offset + 8, offset + 8 + length),
-      })
-      // The length, the type, the data, and the checksum.
-      offset += 12 + length
-    }
-    return chunks
-  }
-
   it('states its size in a header that the app reads', () => {
     expect(sniffImageDimensionsFromBytes(solidPngBytes(800, 600))).toEqual({ width: 800, height: 600 })
   })
 
   it('holds one scanline for each row, with one byte for each pixel after the filter type', () => {
-    const chunks = chunksOf(solidPngBytes(5, 3))
+    const chunks = readPngChunks(solidPngBytes(5, 3))
     expect(chunks.map(chunk => chunk.type)).toEqual(['IHDR', 'IDAT', 'IEND'])
     const scanlines = inflateSync(chunks[1]!.data)
     expect(scanlines).toHaveLength((5 + 1) * 3)

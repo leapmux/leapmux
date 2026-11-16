@@ -1,12 +1,12 @@
 import type { AdmissionTarget, AdmissionViewAnchor, AdmittedRangeInput } from './chatRowAdmission'
-import type { VirtualItem } from './useChatVirtualizer'
+import type { ChatRowItem } from './chatRowItem'
 import { batch, createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { createRowAdmission, nextAdmittedRange, rowsWantedForTarget, TARGET_STAGING_ROWS } from './chatRowAdmission'
 import { createRowHeightCache } from './chatRowHeightCache'
 
 /** The row at index `i` of a list: its id is `r<i>`, and its height key is `key`. */
-function row(i: number, key = 'a'): VirtualItem {
+function row(i: number, key = 'a'): ChatRowItem {
   return {
     id: `r${i}`,
     hasSpanLines: false,
@@ -15,7 +15,7 @@ function row(i: number, key = 'a'): VirtualItem {
 }
 
 /** `count` rows, from index `first` on. */
-function rowsFrom(first: number, count: number, key = 'a'): VirtualItem[] {
+function rowsFrom(first: number, count: number, key = 'a'): ChatRowItem[] {
   return Array.from({ length: count }, (_, i) => row(first + i, key))
 }
 
@@ -42,8 +42,8 @@ function rowTargetAt(id: string, offset = 0, basisHeight?: number): AdmissionTar
 const rowTarget = (i: number, offset = 0, basisHeight?: number): AdmissionTarget => rowTargetAt(`r${i}`, offset, basisHeight)
 
 /** `count` rows that replace the rows of a list: their ids are `n0`, `n1`, and so on. */
-function replacementRows(count = 20): VirtualItem[] {
-  return Array.from({ length: count }, (_, i): VirtualItem => ({ id: `n${i}`, hasSpanLines: false, heightKey: 'a' }))
+function replacementRows(count = 20): ChatRowItem[] {
+  return Array.from({ length: count }, (_, i): ChatRowItem => ({ id: `n${i}`, hasSpanLines: false, heightKey: 'a' }))
 }
 
 describe('nextAdmittedRange', () => {
@@ -55,7 +55,7 @@ describe('nextAdmittedRange', () => {
    * in place of it. No row is mounted, and no view anchor is set, unless stated.
    */
   function input(opts: {
-    rows?: VirtualItem[]
+    rows?: ChatRowItem[]
     measured?: readonly number[]
     heights?: Record<number, number>
     previous?: [start: number, end: number]
@@ -562,7 +562,7 @@ describe('createRowAdmission', () => {
    * and `setKeys` gives every row a new height key, as a width change does.
    */
   function mount(opts: { count?: number, tailLoaded?: boolean } = {}) {
-    const [rows, setRows] = createSignal<VirtualItem[]>(rowsFrom(0, opts.count ?? 20))
+    const [rows, setRows] = createSignal<ChatRowItem[]>(rowsFrom(0, opts.count ?? 20))
     const [viewHeight, setViewHeight] = createSignal(500)
     const [tailLoaded, setTailLoaded] = createSignal(opts.tailLoaded ?? true)
     const heights = createRowHeightCache({
@@ -607,7 +607,7 @@ describe('createRowAdmission', () => {
           heights.noteMounted(rows()[i]!.id)
       },
       /** Add `items` below the loaded rows. */
-      append: (...items: VirtualItem[]) => setRows([
+      append: (...items: ChatRowItem[]) => setRows([
         ...rows(),
         ...items,
       ]),

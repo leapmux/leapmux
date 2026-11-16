@@ -67,7 +67,7 @@ export function virtualizerNoOps(): Omit<
     rebase: () => 0,
     contentTopOf: scrollTop => scrollTop,
     scrollTopOf: contentTop => contentTop,
-    placementScrollTopOf: contentTop => placementScrollTop(contentTop, top => top),
+    placementScrollTopOf: contentTop => placementScrollTop(contentTop, top => top, true),
   }
 }
 
@@ -193,6 +193,7 @@ export function makeScrollContext(overrides: Partial<ScrollContext> = {}): Scrol
     showWaitingPlace: vi.fn((): 'shown' | 'waiting' | 'none' => 'none'),
     // It reads `ctx.loadedRows` at the call, so an override of the loaded rows applies.
     placeForAnchor: vi.fn((anchor: ScrollAnchor) => placeForAnchor(ctx.loadedRows, anchor)),
+    positionPlaceWaits: () => false,
     loadedRows: {
       has: vi.fn(() => false),
       nearestId: vi.fn(() => undefined),
@@ -471,7 +472,7 @@ export function makeShiftVirtualizer(heights: number[], div: FakeScrollDiv, deps
   const geometry = () => rowAnchorGeometry(rows(), 'r')
   const contentTopOf = (scrollTop: number) => scrollTop - shift()
   const scrollTopOf = (contentTop: number) => contentTop + shift()
-  const placementScrollTopOf = (contentTop: number) => placementScrollTop(contentTop, scrollTopOf)
+  const placementScrollTopOf = (contentTop: number) => placementScrollTop(contentTop, scrollTopOf, true)
   const toScroll = (contentTop: number | null) => contentTop === null
     ? null
     : placementScrollTopOf(contentTop)

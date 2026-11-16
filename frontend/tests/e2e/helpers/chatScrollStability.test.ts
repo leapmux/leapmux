@@ -1,12 +1,13 @@
+import type { Page } from '@playwright/test'
 import { IDBFactory } from 'fake-indexeddb'
-import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
-import { PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { LARGE_MARKDOWN_BODY_CHARS } from '~/lib/markdownWorkerClient'
 import { createManualFrames } from '~/test-support/manualFrames'
 import {
   clearObjectStoreIn,
+  clearStoredRowHeights,
   contentBoxWidthIn,
-  deleteStoredNamesIn,
+  framesPassIn,
   heldReplyCountIn,
   installReplyHoldIn,
   LARGE_BODY_FILLER_CHARS,
@@ -24,11 +25,20 @@ import {
   startPremeasureRecordIn,
   startRowWatchIn,
   stopRowWatchIn,
-  STORED_ROW_HEIGHTS_NAME_PREFIX,
   topParagraphIn,
   topRowIn,
   widthSensitiveParagraphs,
 } from './chatScrollStability'
+import { deleteEntries, storageKeys, writeEntry } from './storage'
+
+// Run the real poll of a Page helper with a short unit-test deadline.
+vi.mock('@playwright/test', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@playwright/test')>()
+  return {
+    ...actual,
+    expect: actual.expect.configure({ timeout: 500 }),
+  }
+})
 
 /** Give `element` a box whose top is `top` and whose height is `height`. */
 function placeAt<E extends Element>(element: E, top: number, height: number): E {
@@ -506,6 +516,55 @@ describe('stopRowWatchIn', () => {
   })
 })
 
+describe('framesPassIn', () => {
+  /** Install manual frames as the frames of the page, and remove them after the test. */
+  function installFrames() {
+    const frames = createManualFrames()
+    vi.stubGlobal('requestAnimationFrame', frames.requestFrame)
+    onTestFinished(() => {
+      vi.unstubAllGlobals()
+    })
+    return frames
+  }
+
+  /** Whether `wait` resolved, read after the microtasks that follow its last frame. */
+  async function resolved(wait: Promise<void>): Promise<boolean> {
+    let done = false
+    void wait.then(() => {
+      done = true
+    })
+    await Promise.resolve()
+    return done
+  }
+
+  it('resolves after the stated number of frames, and not one frame before', async () => {
+    const frames = installFrames()
+    const wait = framesPassIn(3)
+
+    frames.runFrames()
+    frames.runFrames()
+    expect(await resolved(wait)).toBe(false)
+
+    frames.runFrames()
+    expect(await resolved(wait)).toBe(true)
+    // It asks for no frame after the last one.
+    expect(frames.pendingFrames()).toBe(0)
+  })
+
+  it.each([
+    0,
+    -2,
+  ])('waits for one frame when the count is %s', async (count) => {
+    const frames = installFrames()
+    const wait = framesPassIn(count)
+    expect(await resolved(wait)).toBe(false)
+
+    frames.runFrames()
+
+    expect(await resolved(wait)).toBe(true)
+  })
+})
+
 describe('rowStatesIn', () => {
   it('returns the distance and the height of each row, in document order', () => {
     const container = containerWith([
@@ -712,11 +771,8 @@ describe('largeBodyFiller', () => {
   })
 })
 
-/**
- * A fresh IndexedDB as the global one, with the database `name` and its object stores `stores`. Each store takes
- * `options`, such as the key path of its entries.
- */
-async function databaseWith(name: string, stores: readonly string[], options?: IDBObjectStoreParameters): Promise<void> {
+/** A fresh IndexedDB as the global one, with the database `name` and its object stores `stores`. */
+async function databaseWith(name: string, stores: readonly string[]): Promise<void> {
   vi.stubGlobal('indexedDB', new IDBFactory())
   onTestFinished(() => {
     vi.unstubAllGlobals()
@@ -725,7 +781,7 @@ async function databaseWith(name: string, stores: readonly string[], options?: I
     const open = indexedDB.open(name, 1)
     open.onupgradeneeded = () => {
       for (const store of stores)
-        open.result.createObjectStore(store, options)
+        open.result.createObjectStore(store)
     }
     open.onerror = () => reject(open.error)
     open.onsuccess = () => {
@@ -780,72 +836,137 @@ describe('clearObjectStoreIn', () => {
   })
 })
 
-describe('deleteStoredNamesIn', () => {
-  /**
-   * A fresh IndexedDB as the global one, with the object store `entries` of the database `kv`, keyed by `k`, and one
-   * entry for each key of `rows`.
-   */
-  async function storageWith(rows: readonly string[]): Promise<void> {
-    await databaseWith('kv', ['entries'], { keyPath: 'k' })
-    for (const k of rows)
-      await inStore('kv', 'entries', 'readwrite', store => store.put({ k, v: 'value', e: 0 }))
-  }
+describe('clearStoredRowHeights', () => {
+  const heights = 'leapmux:u:alice:chat-row-heights:agent-1'
+  const otherAccountHeights = 'leapmux:u:bob:chat-row-heights:agent-3'
+  const deviceHeights = 'leapmux:chat-row-heights:agent-2'
+  const draft = 'leapmux:u:alice:editor-draft:agent-1'
+  const blank = 'http://127.0.0.1:4321/__e2e-blank'
 
-  /** The keys that the object store `entries` holds, in order. */
-  async function storedKeys(): Promise<string[]> {
-    return (await inStore('kv', 'entries', 'readonly', store => store.getAllKeys())).map(String)
-  }
+  /** A page whose `evaluate` runs the function here, against the fake IndexedDB of the test. */
+  const direct = {
+    evaluate: async (body: (arg: unknown) => unknown, arg: unknown) => body(arg),
+  } as unknown as Page
 
-  it('deletes each entry whose logical name starts with the prefix, for an account and for the device', async () => {
-    await storageWith([
-      'leapmux:u:alice:chat-row-heights:agent-1',
-      'leapmux:u:bob:chat-row-heights:agent-2',
-      'leapmux:chat-row-heights:agent-3',
-    ])
-
-    await expect(deleteStoredNamesIn({ database: 'kv', store: 'entries', namePrefix: 'chat-row-heights:' })).resolves.toBe(3)
-
-    expect(await storedKeys()).toEqual([])
+  beforeEach(() => {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
-  it('keeps every other entry', async () => {
-    const kept = [
-      // Another name of the same account.
-      'leapmux:u:alice:browser-prefs',
+  /** Store one row at each key of `keys`. */
+  async function storeRows(keys: readonly string[]): Promise<void> {
+    for (const key of keys)
+      await writeEntry(direct, key, 'value', Number.MAX_SAFE_INTEGER)
+  }
+
+  /**
+   * A page of the app that records each `evaluate`, route, and navigation in `events`. It runs `afterFirstEvaluate`
+   * after its first `evaluate`, and `onGoto` when the helper leaves the app.
+   */
+  function appPage(hooks: { afterFirstEvaluate?: () => Promise<void>, onGoto?: () => Promise<void> } = {}) {
+    const events: string[] = []
+    const page = {
+      url: () => 'http://127.0.0.1:4321/workspace/agent-1',
+      route: async (url: string) => {
+        events.push(`route ${url}`)
+      },
+      unroute: async (url: string) => {
+        events.push(`unroute ${url}`)
+      },
+      goto: async (url: string) => {
+        events.push(`goto ${url}`)
+        await hooks.onGoto?.()
+      },
+      evaluate: async (body: (arg: unknown) => unknown, arg: unknown) => {
+        const result = await body(arg)
+        events.push('evaluate')
+        if (events.filter(event => event === 'evaluate').length === 1)
+          await hooks.afterFirstEvaluate?.()
+        return result
+      },
+    } as unknown as Page
+    return { page, events }
+  }
+
+  it('deletes the row heights of each account and of the device on an empty page, and keeps every other entry', async () => {
+    await storeRows([
+      heights,
+      otherAccountHeights,
+      deviceHeights,
+      draft,
+    ])
+    let storedWhenLeaving: string[] = []
+    const { page, events } = appPage({
+      onGoto: async () => {
+        storedWhenLeaving = await storageKeys(direct)
+      },
+    })
+
+    await clearStoredRowHeights(page)
+
+    expect(events).toEqual([
+      'evaluate',
+      `route ${blank}`,
+      `goto ${blank}`,
+      `unroute ${blank}`,
+      'evaluate',
+      'evaluate',
+    ])
+    // The app writes the heights that it still owes when it leaves, so the helper deletes nothing before that.
+    expect(storedWhenLeaving).toEqual([
+      heights,
+      otherAccountHeights,
+      deviceHeights,
+      draft,
+    ].sort())
+    expect(await storageKeys(direct)).toEqual([draft])
+  })
+
+  it('waits until the app saved the row heights before it leaves the app', async () => {
+    await storeRows([draft])
+    const { page, events } = appPage({
+      afterFirstEvaluate: () => storeRows([heights]),
+    })
+
+    await clearStoredRowHeights(page)
+
+    expect(events.slice(0, 3)).toEqual([
+      'evaluate',
+      'evaluate',
+      `route ${blank}`,
+    ])
+    expect(await storageKeys(direct)).toEqual([draft])
+  })
+
+  it('fails in the app when no stored key holds row heights by the layout of the app', async () => {
+    const others = [
+      draft,
+      // An account whose id is the prefix of the row heights.
+      'leapmux:u:chat-row-heights:browser-prefs',
       // A name that holds the prefix, but does not start with it.
       'leapmux:u:alice:draft:chat-row-heights:agent-1',
-      // An account whose id is the prefix is no name.
-      'leapmux:u:chat-row-heights:browser-prefs',
       // A key of another family.
       'other:chat-row-heights:agent-1',
     ]
-    await storageWith([
-      ...kept,
-      'leapmux:u:alice:chat-row-heights:agent-1',
-    ])
+    await storeRows(others)
+    const { page, events } = appPage()
 
-    await expect(deleteStoredNamesIn({ database: 'kv', store: 'entries', namePrefix: 'chat-row-heights:' })).resolves.toBe(1)
+    await expect(clearStoredRowHeights(page)).rejects.toThrow('the app stores the row heights of the chat')
 
-    expect(await storedKeys()).toEqual([...kept].sort())
+    expect(events.filter(event => event !== 'evaluate')).toEqual([])
+    expect(await storageKeys(direct)).toEqual([...others].sort())
   })
 
-  it('resolves 0 for a store with no entry', async () => {
-    await storageWith([])
+  it('fails when it deletes no entry on the empty page', async () => {
+    await storeRows([heights, draft])
+    const { page } = appPage({
+      onGoto: async () => {
+        await deleteEntries(direct, [heights])
+      },
+    })
 
-    await expect(deleteStoredNamesIn({ database: 'kv', store: 'entries', namePrefix: 'chat-row-heights:' })).resolves.toBe(0)
-  })
-
-  it('rejects when the database has no such store', async () => {
-    await storageWith([])
-
-    await expect(deleteStoredNamesIn({ database: 'kv', store: 'renamed', namePrefix: 'chat-row-heights:' }))
-      .rejects
-      .toThrow('the database kv has no object store renamed')
-  })
-})
-
-describe('STORED_ROW_HEIGHTS_NAME_PREFIX', () => {
-  it('equals the prefix under which the app stores the row heights', () => {
-    expect(STORED_ROW_HEIGHTS_NAME_PREFIX).toBe(PREFIX_CHAT_ROW_HEIGHTS)
+    await expect(clearStoredRowHeights(page)).rejects.toThrow('the helper deletes the stored row heights')
   })
 })

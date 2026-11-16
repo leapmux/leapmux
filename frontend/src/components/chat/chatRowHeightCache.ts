@@ -1,5 +1,5 @@
 import type { Accessor } from 'solid-js'
-import type { VirtualItem } from './useChatVirtualizer'
+import type { ChatRowItem } from './chatRowItem'
 import { createSignal } from 'solid-js'
 import { capMapInsertionOrder } from '~/lib/mapLru'
 import { MEASURE_EPSILON_PX } from './createRowMeasurer'
@@ -7,7 +7,7 @@ import { MEASURE_EPSILON_PX } from './createRowMeasurer'
 /**
  * A row as the cache identifies it: its id, and its current height key.
  */
-export type HeightKeyedRow = Pick<VirtualItem, 'id' | 'heightKey'>
+export type HeightKeyedRow = Pick<ChatRowItem, 'id' | 'heightKey'>
 
 /**
  * One measured row height in transportable form, with no live row: what `snapshot`
@@ -96,7 +96,7 @@ export interface CachedMeasuredHeight {
  * with the digest of the stored key.
  */
 export interface RowHeightCommitEntry {
-  row: VirtualItem
+  row: ChatRowItem
   height: number
 }
 
@@ -166,7 +166,7 @@ export interface RowHeightCache {
    * also refuses a mounted row that has a height. The commit replaces the entry of the
    * row, with `measuredKey` as its key.
    */
-  commit: (row: VirtualItem, height: number, measuredKey: string | undefined, source: RowHeightSource) => HeightCommitResult
+  commit: (row: ChatRowItem, height: number, measuredKey: string | undefined, source: RowHeightSource) => HeightCommitResult
   /**
    * Commit several premeasured heights, each under the current key of its row, with one
    * `version` change. Returns the number adopted.
@@ -322,7 +322,7 @@ export function createRowHeightCache(options: RowHeightCacheOptions): RowHeightC
    * Returns what the commit changed (the caller owes a `version` change for any change).
    */
   const applyHeightCommit = (
-    row: VirtualItem,
+    row: ChatRowItem,
     height: number,
     measuredKey: string | undefined,
     source: RowHeightSource,
@@ -387,11 +387,11 @@ export function createRowHeightCache(options: RowHeightCacheOptions): RowHeightC
   // Once a visible row has committed a measurement, the live DOM is the authoritative
   // geometry. A hidden premeasure queued before mount can finish later; it must not
   // replace the visible height with its hidden-layout read.
-  const refusesPremeasure = (row: VirtualItem): boolean =>
+  const refusesPremeasure = (row: ChatRowItem): boolean =>
     isMounted(row.id) && cachedMeasuredHeight(row) !== undefined
 
   const commit = (
-    row: VirtualItem,
+    row: ChatRowItem,
     height: number,
     measuredKey: string | undefined,
     source: RowHeightSource,

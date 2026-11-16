@@ -45,7 +45,8 @@ export interface LayoutShiftSurface {
   scrollTopOf: (contentTop: number) => number
   /**
    * The scroll coordinate of a placement at the content coordinate `contentTop` (see
-   * placementScrollTop): the top of the scroller for a target at or above the content top.
+   * placementScrollTop): the top of the scroller for a target at or above the content top,
+   * while the first row of the list is the first loaded row.
    */
   placementScrollTopOf: (contentTop: number) => number
   /** The spacer that `rebase` writes. Pass `undefined` on unmount. */
@@ -89,6 +90,12 @@ export interface LayoutShiftDeps {
   spacerInsetPx: Accessor<number>
   /** Keep the bottom of the content in place: the reader follows the tail. */
   pinBottom: () => boolean
+  /**
+   * The first row of the list is the first loaded row: no loaded row waits above the list
+   * for its measure. A placement at the content top then goes to the top of the scroller
+   * (see placementScrollTop).
+   */
+  listStartsAtLoadedTop: Accessor<boolean>
   /** True during a fast scroll (see LayoutPivotDeps.isSuspended). */
   isSuspended: Accessor<boolean>
   /** The mounted rows, in which the pivot element is recorded. */
@@ -153,7 +160,8 @@ export function applyRebaseWrite(el: HTMLElement, shift: number, writeLayout: (s
 
 /**
  * The scroll coordinate of a placement at the content coordinate `contentTop`:
- * `scrollTopOf(contentTop)`, or 0 for a target at or above the content top.
+ * `scrollTopOf(contentTop)`, or 0 for a target at or above the content top while the first
+ * row of the list is the first loaded row (`listStartsAtLoadedTop`).
  *
  * The inset of the spacer (the list's top padding and row gap) lies above content 0, so no
  * content coordinate places the view inside it, and anchorAtOffset floors a position inside
@@ -161,9 +169,18 @@ export function applyRebaseWrite(el: HTMLElement, shift: number, writeLayout: (s
  * of the scroller and shows the inset, as the browser's clamp shows the space below the
  * last row. A reader at the top of the history comes back to it, and a seek or a scrub to
  * the first row reaches the top of the scroller.
+ *
+ * While loaded rows wait above the list for their measure, content 0 is the top of the
+ * first row of the list, and not the top of the loaded rows. A placement there converts
+ * exactly, as for every other row: the row stays in its place when the rows above it join,
+ * because the layout shift holds its top edge.
  */
-export function placementScrollTop(contentTop: number, scrollTopOf: (contentTop: number) => number): number {
-  return contentTop <= 0
+export function placementScrollTop(
+  contentTop: number,
+  scrollTopOf: (contentTop: number) => number,
+  listStartsAtLoadedTop: boolean,
+): number {
+  return contentTop <= 0 && listStartsAtLoadedTop
     ? 0
     : scrollTopOf(contentTop)
 }
@@ -175,7 +192,8 @@ export function createLayoutShift(deps: LayoutShiftDeps): LayoutShiftController 
   const [layoutShift, setLayoutShift] = createSignal(0)
   const contentTopOf = (scrollTop: number): number => scrollTop - layoutShift() - deps.spacerInsetPx()
   const scrollTopOf = (contentTop: number): number => contentTop + layoutShift() + deps.spacerInsetPx()
-  const placementScrollTopOf = (contentTop: number): number => placementScrollTop(contentTop, scrollTopOf)
+  const placementScrollTopOf = (contentTop: number): number =>
+    placementScrollTop(contentTop, scrollTopOf, deps.listStartsAtLoadedTop())
   // The spacer height for a shift. The style binding of ChatView and `rebase` both use it.
   const spacerHeightFor = (shift: number): number => Math.max(0, deps.totalHeight() + shift)
   const spacerHeight = (): number => spacerHeightFor(layoutShift())

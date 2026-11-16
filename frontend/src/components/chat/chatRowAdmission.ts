@@ -1,6 +1,6 @@
 import type { Accessor } from 'solid-js'
 import type { RowHeightCache } from './chatRowHeightCache'
-import type { VirtualItem } from './useChatVirtualizer'
+import type { ChatRowItem } from './chatRowItem'
 import type { ScrollAnchor } from '~/stores/chatTypes'
 import { createMemo, createSignal, untrack } from 'solid-js'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
@@ -90,12 +90,12 @@ export const TARGET_STAGING_ROWS = 12
 
 export interface AdmittedRangeInput {
   /** The loaded rows, in order. */
-  rows: readonly VirtualItem[]
+  rows: readonly ChatRowItem[]
   /**
    * The height that the height cache answers for the row, or `undefined` for a row that
    * is not measured (see RowHeightCache.heightOf).
    */
-  heightOf: (row: VirtualItem) => number | undefined
+  heightOf: (row: ChatRowItem) => number | undefined
   /** The ids of the rows of the previous range, or `undefined` for an empty one. */
   previous: ReadonlySet<string> | undefined
   /**
@@ -112,8 +112,8 @@ export interface AdmittedRangeInput {
 }
 
 export interface WantedRowsInput {
-  rows: readonly VirtualItem[]
-  isMeasured: (row: VirtualItem) => boolean
+  rows: readonly ChatRowItem[]
+  isMeasured: (row: ChatRowItem) => boolean
   /** The pending target, and its state from `nextAdmittedRange`. Only a waiting target wants rows. */
   target: AdmissionTarget | undefined
   targetState: AdmissionTargetState
@@ -122,7 +122,7 @@ export interface WantedRowsInput {
 const EMPTY_RANGE: AdmittedRange = { start: 0, end: 0 }
 
 /** The largest run of measured rows that contains the measured row at `index`. */
-function measuredRunAround(rows: readonly VirtualItem[], isMeasured: (row: VirtualItem) => boolean, index: number): AdmittedRange {
+function measuredRunAround(rows: readonly ChatRowItem[], isMeasured: (row: ChatRowItem) => boolean, index: number): AdmittedRange {
   let start = index
   while (start > 0 && isMeasured(rows[start - 1]!))
     start--
@@ -133,7 +133,7 @@ function measuredRunAround(rows: readonly VirtualItem[], isMeasured: (row: Virtu
 }
 
 /** The index of the row with `id` in `rows`, or -1. */
-function indexOfRow(rows: readonly VirtualItem[], id: string): number {
+function indexOfRow(rows: readonly ChatRowItem[], id: string): number {
   return rows.findIndex(row => row.id === id)
 }
 
@@ -143,7 +143,7 @@ function indexOfRow(rows: readonly VirtualItem[], id: string): number {
  * A row of the range that left the rows, or that moved, cannot move the span past the
  * rows that are left: a row that arrived outside them is no row of the range.
  */
-function previousSpan(rows: readonly VirtualItem[], previous: AdmittedRangeInput['previous']): { first: number, last: number } | undefined {
+function previousSpan(rows: readonly ChatRowItem[], previous: AdmittedRangeInput['previous']): { first: number, last: number } | undefined {
   if (previous === undefined)
     return undefined
   let first = -1
@@ -164,7 +164,7 @@ function previousSpan(rows: readonly VirtualItem[], previous: AdmittedRangeInput
  * The range that continues the previous one: the largest run of measured rows around
  * the row that holds the view. Empty when no row of the previous range is measured.
  */
-function continuedRange(input: AdmittedRangeInput, isMeasured: (row: VirtualItem) => boolean): AdmittedRange {
+function continuedRange(input: AdmittedRangeInput, isMeasured: (row: ChatRowItem) => boolean): AdmittedRange {
   const { rows, viewAnchor } = input
   const span = previousSpan(rows, input.previous)
   if (span === undefined)
@@ -263,7 +263,7 @@ function targetFills(input: AdmittedRangeInput, target: AdmissionTarget, t: numb
 }
 
 /** The index of the row of `target`, or -1 for a row target whose row is not loaded. */
-function targetRowIndex(rows: readonly VirtualItem[], target: AdmissionTarget): number {
+function targetRowIndex(rows: readonly ChatRowItem[], target: AdmissionTarget): number {
   switch (target.kind) {
     case 'tail': return rows.length - 1
     case 'top': return 0
@@ -277,7 +277,7 @@ function targetRowIndex(rows: readonly VirtualItem[], target: AdmissionTarget): 
  */
 export function nextAdmittedRange(input: AdmittedRangeInput): AdmittedRange & { targetState: AdmissionTargetState } {
   const { rows, target } = input
-  const isMeasured = (row: VirtualItem): boolean => input.heightOf(row) !== undefined
+  const isMeasured = (row: ChatRowItem): boolean => input.heightOf(row) !== undefined
   const continued = continuedRange(input, isMeasured)
   if (target === undefined)
     return { ...continued, targetState: 'none' }
@@ -339,7 +339,7 @@ export function rowsWantedForTarget(input: WantedRowsInput): number[] {
 /** The result of one run of the admission, with the state that the next run continues. */
 interface AdmissionComputation {
   /** The loaded rows of the run. */
-  rows: readonly VirtualItem[]
+  rows: readonly ChatRowItem[]
   start: number
   end: number
   targetState: AdmissionTargetState
@@ -352,7 +352,7 @@ interface AdmissionComputation {
 }
 
 /** The ids of the rows of `range`, or `undefined` for an empty range. */
-function admittedIdsOf(rows: readonly VirtualItem[], range: AdmittedRange): ReadonlySet<string> | undefined {
+function admittedIdsOf(rows: readonly ChatRowItem[], range: AdmittedRange): ReadonlySet<string> | undefined {
   if (range.end <= range.start)
     return undefined
   const ids = new Set<string>()
@@ -365,7 +365,7 @@ function admittedIdsOf(rows: readonly VirtualItem[], range: AdmittedRange): Read
  * Whether the admitted rows of `range` hold the tail (see RowAdmission.holdsTail).
  * `keptRowId` is the kept row, or `undefined`.
  */
-function rangeHoldsTail(rows: readonly VirtualItem[], range: AdmittedRange, keptRowId: string | undefined): boolean {
+function rangeHoldsTail(rows: readonly ChatRowItem[], range: AdmittedRange, keptRowId: string | undefined): boolean {
   if (rows.length === 0)
     return true
   if (range.end <= range.start)
@@ -434,7 +434,7 @@ export interface RowAdmission {
  */
 export function createRowAdmission(deps: {
   /** The loaded rows. */
-  rows: Accessor<readonly VirtualItem[]>
+  rows: Accessor<readonly ChatRowItem[]>
   heights: Pick<RowHeightCache, 'heightOf' | 'isMeasured' | 'isMounted' | 'version'>
   /** The height of the viewport in pixels. */
   viewHeight: Accessor<number>
