@@ -1,10 +1,24 @@
 import type { ImageResultSource } from '~/lib/imageBlocks'
+import type { ImageDimensions } from '~/lib/imageDimensions'
 import { uint8ArrayToBase64 } from '~/lib/base64'
 import { getImageMimeType } from '~/lib/fileType'
 import { MAX_FILE_IMAGE_BYTES, RENDERABLE_IMAGE_MIME_TYPES } from '~/lib/imageBlocks'
-import { sniffImageDimensionsFromBase64 } from '~/lib/imageDimensions'
+import { sniffImageDimensionsFromBase64, sniffImageDimensionsFromBytes } from '~/lib/imageDimensions'
 import { fileUriToPath, isAbsolute, join } from '~/lib/paths'
-import { readWorkerFile } from '~/lib/readWorkerFile'
+import { readWorkerFile, readWorkerFileHead } from '~/lib/readWorkerFile'
+
+/**
+ * The bytes of the first read for the size of a file image. The size of a PNG,
+ * a GIF, and a WebP lies at a fixed place in the first bytes, and most JPEG and
+ * AVIF headers end inside this read.
+ */
+export const FILE_IMAGE_HEADER_BYTES = 4096
+/**
+ * The bytes of the second read, for a JPEG or an AVIF whose header is longer
+ * than the first read. It equals the scan budget of the sniffer for a JPEG
+ * (see `~/lib/imageDimensions`): a larger read finds nothing more.
+ */
+export const FILE_IMAGE_HEADER_MAX_BYTES = 256 * 1024
 
 /** Recognize common image signatures when the file has no useful extension. */
 function fileImageMime(path: string, bytes: Uint8Array): string {
@@ -22,20 +36,61 @@ function fileImageMime(path: string, bytes: Uint8Array): string {
   return getImageMimeType(path)
 }
 
-/** Read a local image through the worker's existing encrypted file API. */
-export async function readWorkerImage(workerId: string, path: string, workingDir: string | undefined, signal: AbortSignal): Promise<ImageResultSource> {
+/**
+ * The absolute path on the worker of the image that a chat row gives as `path`:
+ * a path, or a `file:` URI. A relative path resolves against `workingDir`.
+ */
+function workerImagePath(workerId: string, path: string, workingDir: string | undefined): string {
   if (!workerId || !path)
     throw new Error('The image file is unavailable')
-  let filePath = path.startsWith('file:')
+  const filePath = path.startsWith('file:')
     ? fileUriToPath(path)
     : path
   if (!filePath || (/^[a-z][a-z\d+.-]*:\/\//i.test(filePath) && !/^[a-z]:/i.test(filePath)))
     throw new Error('The image does not have a local file path')
-  if (!isAbsolute(filePath)) {
-    if (!workingDir)
-      throw new Error('The image working directory is unavailable')
-    filePath = join([workingDir, filePath])
-  }
+  if (isAbsolute(filePath))
+    return filePath
+  if (!workingDir)
+    throw new Error('The image working directory is unavailable')
+  return join([workingDir, filePath])
+}
+
+/**
+ * Read the size of a local image from the first bytes of its file, so that a
+ * chat row can reserve the image box before it reads the image. Resolves
+ * `undefined` when the header gives no size. A failed read rejects.
+ *
+ * At most two requests: FILE_IMAGE_HEADER_BYTES, and for a JPEG or an AVIF with
+ * a longer header, FILE_IMAGE_HEADER_MAX_BYTES once.
+ */
+export async function readWorkerImageSize(workerId: string, path: string, workingDir: string | undefined, signal: AbortSignal): Promise<ImageDimensions | undefined> {
+  const filePath = workerImagePath(workerId, path, workingDir)
+  const head = await readWorkerFileHead({
+    workerId,
+    path: filePath,
+    bytes: FILE_IMAGE_HEADER_BYTES,
+    signal,
+  })
+  const size = sniffImageDimensionsFromBytes(head.content)
+  if (size)
+    return size
+  // Only these two formats keep their size behind a header of no fixed length.
+  const mimeType = fileImageMime(filePath, head.content)
+  const headerCanBeLonger = mimeType === 'image/jpeg' || mimeType === 'image/avif'
+  if (!headerCanBeLonger || head.totalSize <= BigInt(head.content.length))
+    return undefined
+  const longer = await readWorkerFileHead({
+    workerId,
+    path: filePath,
+    bytes: FILE_IMAGE_HEADER_MAX_BYTES,
+    signal,
+  })
+  return sniffImageDimensionsFromBytes(longer.content) ?? undefined
+}
+
+/** Read a local image through the worker's existing encrypted file API. */
+export async function readWorkerImage(workerId: string, path: string, workingDir: string | undefined, signal: AbortSignal): Promise<ImageResultSource> {
+  const filePath = workerImagePath(workerId, path, workingDir)
   const response = await readWorkerFile({
     workerId,
     path: filePath,

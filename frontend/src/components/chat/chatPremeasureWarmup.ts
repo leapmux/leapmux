@@ -8,15 +8,14 @@ import { cancelIdle, requestIdle } from '~/lib/idleCallback'
 /**
  * Idle-time premeasure warm-up.
  *
- * The ranged and look-ahead premeasure bands only cover rows near the
- * viewport, so a long fling still outruns them into estimated (unmeasured)
- * territory — the estimate->real corrections there are what shift the
- * offset map mid-scroll. This unit drains the REST of the window during
- * idle: while the user isn't scrolling (and the pane is visible, sized, and
- * no syntax-highlight work is active), it feeds small batches of unmeasured rows — nearest to
- * the viewport first — into the premeasure queue as a third candidate band.
- * After a few idle seconds every loaded row has real geometry and scrolling
- * anywhere in the window is measurement-free.
+ * The target and look-ahead staging bands only cover rows near the view and
+ * near a place that waits, so a long fling still outruns them: it reaches the
+ * end of the measured rows and waits there. This unit drains the REST of the
+ * loaded rows during idle: while the user isn't scrolling (and the pane is
+ * visible, sized, and no syntax-highlight work is active), it feeds small
+ * batches of unmeasured rows — nearest to the rendered rows first — into the
+ * premeasure queue as a third candidate band. After a few idle seconds every
+ * loaded row is measured, and a scroll anywhere in the window waits for nothing.
  *
  * Yielding model: each tick runs in an idle period of the browser, and mounts
  * its rows one at a time while the period lasts, so a batch of heavy rows does
@@ -45,10 +44,13 @@ export interface PremeasureWarmupDeps {
    * While false the band is empty and the ticker is parked.
    */
   enabled: Accessor<boolean>
+  /** The entries and the items of the loaded rows, index-aligned. */
   visibleEntries: Accessor<readonly ClassifiedEntry[]>
   virtualItems: Accessor<readonly VirtualItem[]>
+  /** The rendered range, as indexes of the loaded rows. */
   range: Accessor<ChatVirtualizerRange>
-  hasMeasuredHeight: (id: string) => boolean
+  /** Whether the height cache holds a height for the row. */
+  isMeasured: (item: VirtualItem) => boolean
   /**
    * Half-width (rows) of the band the look-ahead premeasure already covers
    * around the range — warm-up starts beyond it (LOOKAHEAD_PREMEASURE_ROWS).
@@ -60,9 +62,7 @@ const EMPTY: ChatDomPremeasureCandidate[] = []
 
 /**
  * Create the warm-up ticker. Call within a reactive owner. The returned
- * accessor is wired into the premeasure queue's `warmupCandidates` band
- * (pending-only — warm-up rows are never in the main <For>, so they need no
- * collapse entry, exactly like look-ahead rows).
+ * accessor is wired into the premeasure queue's `warmupCandidates` band.
  */
 export function createPremeasureWarmup(deps: PremeasureWarmupDeps) {
   const [warmupCandidates, setWarmupCandidates] = createSignal<readonly ChatDomPremeasureCandidate[]>(EMPTY)
@@ -93,7 +93,7 @@ export function createPremeasureWarmup(deps: PremeasureWarmupDeps) {
     const maybePush = (index: number): void => {
       const entry = all[index]
       const item = items[index]
-      if (entry && item && !deps.hasMeasuredHeight(item.id))
+      if (entry && item && !deps.isMeasured(item))
         out.push({ entry, item })
     }
     let above = bandLo - 1

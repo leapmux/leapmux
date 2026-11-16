@@ -1,6 +1,6 @@
 import { createComputed, createRoot, createSignal, untrack } from 'solid-js'
-import { describe, expect, it, vi } from 'vitest'
-import { createRenderReadinessScope, createRowReadinessRegistry, useRenderReadiness, useReplacingReadiness } from './renderReadiness'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createRenderReadinessScope, createRequestReadiness, createRowReadinessRegistry, READINESS_REQUEST_LIMIT_MS, useRenderReadiness, useReplacingReadiness } from './renderReadiness'
 
 describe('createRenderReadinessScope', () => {
   it('is ready with no tracked body', () => {
@@ -502,6 +502,146 @@ describe('createRowReadinessRegistry', () => {
       setPending(true)
       // Read synchronously after the write: a computed already propagated it.
       expect(registry.isReady('m1')).toBe(false)
+      dispose()
+    })
+  })
+})
+
+describe('createRequestReadiness', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('reports nothing before a request begins', () => {
+    createRoot((dispose) => {
+      expect(createRequestReadiness().pending()).toBe(false)
+      dispose()
+    })
+  })
+
+  it('reports a request as pending until its end function runs', () => {
+    createRoot((dispose) => {
+      const requests = createRequestReadiness()
+
+      const end = requests.begin()
+      expect(requests.pending()).toBe(true)
+
+      end()
+      expect(requests.pending()).toBe(false)
+      dispose()
+    })
+  })
+
+  it('stays pending until the last of two requests ends', () => {
+    createRoot((dispose) => {
+      const requests = createRequestReadiness()
+      const endFirst = requests.begin()
+      const endSecond = requests.begin()
+
+      endFirst()
+      expect(requests.pending()).toBe(true)
+
+      endSecond()
+      expect(requests.pending()).toBe(false)
+      dispose()
+    })
+  })
+
+  it('stops counting a request that does not end within the limit', () => {
+    vi.useFakeTimers()
+    createRoot((dispose) => {
+      const requests = createRequestReadiness()
+      const end = requests.begin()
+
+      vi.advanceTimersByTime(READINESS_REQUEST_LIMIT_MS - 1)
+      expect(requests.pending()).toBe(true)
+      vi.advanceTimersByTime(1)
+      expect(requests.pending()).toBe(false)
+
+      // The request ended at the limit, so its end function changes nothing: it must not
+      // end another request in its place.
+      const endOther = requests.begin()
+      end()
+      expect(requests.pending()).toBe(true)
+      endOther()
+      expect(requests.pending()).toBe(false)
+      dispose()
+    })
+  })
+
+  it('counts each request against its own limit', () => {
+    vi.useFakeTimers()
+    createRoot((dispose) => {
+      const requests = createRequestReadiness()
+      requests.begin()
+      vi.advanceTimersByTime(4000)
+      requests.begin()
+
+      vi.advanceTimersByTime(READINESS_REQUEST_LIMIT_MS - 4000)
+      // The limit of the first request passed. The second one has 4 seconds left.
+      expect(requests.pending()).toBe(true)
+      vi.advanceTimersByTime(4000)
+      expect(requests.pending()).toBe(false)
+      dispose()
+    })
+  })
+
+  it('ends a request once when its end function runs twice', () => {
+    createRoot((dispose) => {
+      const requests = createRequestReadiness()
+      const endFirst = requests.begin()
+      requests.begin()
+
+      endFirst()
+      endFirst()
+
+      expect(requests.pending()).toBe(true)
+      dispose()
+    })
+  })
+
+  it('clears the limit timer of a request that ended', () => {
+    vi.useFakeTimers()
+    createRoot((dispose) => {
+      const requests = createRequestReadiness()
+      const end = requests.begin()
+      expect(vi.getTimerCount()).toBe(1)
+
+      end()
+
+      expect(vi.getTimerCount()).toBe(0)
+      dispose()
+    })
+  })
+
+  it('clears each limit timer when its owner is disposed', () => {
+    vi.useFakeTimers()
+    const requests = createRoot((dispose) => {
+      const created = createRequestReadiness()
+      created.begin()
+      created.begin()
+      dispose()
+      return created
+    })
+
+    expect(vi.getTimerCount()).toBe(0)
+    vi.advanceTimersByTime(READINESS_REQUEST_LIMIT_MS)
+    // No timer fired, so the state of the disposed owner did not change.
+    expect(requests.pending()).toBe(true)
+  })
+
+  it('holds a readiness scope while a request is pending', () => {
+    createRoot((dispose) => {
+      const scope = createRenderReadinessScope()
+      const requests = createRequestReadiness()
+      scope.track(requests.pending)
+      expect(scope.measurable()).toBe(true)
+
+      const end = requests.begin()
+      expect(scope.measurable()).toBe(false)
+
+      end()
+      expect(scope.measurable()).toBe(true)
       dispose()
     })
   })

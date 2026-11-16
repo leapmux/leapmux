@@ -85,6 +85,7 @@ function fixture(initial: AgentChatMessage[] = [], spanMessage?: MessageContextS
       fetchSpan,
       fetchMessage,
       fetchFileImage: async () => { throw new Error('The image source is unavailable') },
+      fetchFileImageSize: async () => undefined,
       subscribe: (observer) => {
         observers.add(observer)
         return () => observers.delete(observer)
@@ -163,7 +164,7 @@ describe('message context resolver', () => {
         calls.push(method === 'span'
           ? f.resolver.loadSpan({ spanId: 'span', agentSessionId: '' })
           : method === 'related'
-            ? f.resolver.loadRelated(result)
+            ? Promise.resolve(f.resolver.loadRelated(result))
             : f.resolver.message(2n))
       })
     })
@@ -171,6 +172,80 @@ describe('message context resolver', () => {
     f.replaceMessages([request, result])
     await Promise.all(calls)
     expect(calls).toHaveLength(1)
+  })
+
+  describe('loadRelated', () => {
+    it('returns no request when the browser holds the other half', () => {
+      const request = toolMessage('request', 1n, 'request')
+      const result = toolMessage('result', 2n, 'result')
+      const { resolver, fetchSpan } = fixture([request, result])
+
+      expect(resolver.loadRelated(result)).toBeUndefined()
+      expect(fetchSpan).not.toHaveBeenCalled()
+    })
+
+    it('returns the request for a missing other half in the same task, and shares it with a second caller', async () => {
+      const request = toolMessage('request', 1n, 'request')
+      const result = toolMessage('result', 2n, 'result')
+      const { resolver, fetchSpan } = fixture([result])
+      let finish!: (messages: AgentChatMessage[]) => void
+      fetchSpan.mockImplementationOnce(() => new Promise(resolve => finish = resolve))
+
+      const first = resolver.loadRelated(result)
+      const second = resolver.loadRelated(result)
+
+      expect(first).toBeInstanceOf(Promise)
+      expect(second).toBeInstanceOf(Promise)
+      expect(fetchSpan).toHaveBeenCalledTimes(1)
+      finish([request, result])
+      await Promise.all([first, second])
+      expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.message.id).toBe('request')
+      // The other half arrived, so the row needs no further request.
+      expect(resolver.loadRelated(result)).toBeUndefined()
+      expect(fetchSpan).toHaveBeenCalledTimes(1)
+    })
+
+    it('returns no request once a fetch of the span settled without the other half', async () => {
+      const result = toolMessage('result', 2n, 'result')
+      const { resolver, fetchSpan } = fixture([result])
+      // The worker holds no request for the span, as for a request that a history trim removed.
+      fetchSpan.mockResolvedValueOnce([result])
+
+      await resolver.loadRelated(result)
+
+      expect(resolver.request({ spanId: 'span', agentSessionId: '' })).toBeUndefined()
+      expect(resolver.loadRelated(result)).toBeUndefined()
+      expect(fetchSpan).toHaveBeenCalledTimes(1)
+    })
+
+    it('returns no request for a row that needs no related message', () => {
+      const lone = noSideMessage('progress', 1n)
+      const { resolver, fetchSpan } = fixture([lone])
+
+      expect(resolver.loadRelated(lone)).toBeUndefined()
+      expect(fetchSpan).not.toHaveBeenCalled()
+    })
+
+    it('rejects the request when the fetch fails, and makes a new request at the next call', async () => {
+      const result = toolMessage('result', 2n, 'result')
+      const { resolver, fetchSpan } = fixture([result])
+      fetchSpan.mockRejectedValueOnce(new Error('offline'))
+
+      await expect(resolver.loadRelated(result)).rejects.toThrow('offline')
+
+      // A failed fetch settled nothing, so the next call asks again.
+      expect(resolver.loadRelated(result)).toBeInstanceOf(Promise)
+      expect(fetchSpan).toHaveBeenCalledTimes(2)
+    })
+
+    it('returns no request after the resolver is disposed', () => {
+      const result = toolMessage('result', 2n, 'result')
+      const { resolver, fetchSpan, dispose } = fixture([result])
+      dispose()
+
+      expect(resolver.loadRelated(result)).toBeUndefined()
+      expect(fetchSpan).not.toHaveBeenCalled()
+    })
   })
 
   it('distinguishes an absent message from a failed lookup and permits a retry', async () => {
@@ -464,6 +539,7 @@ describe('message context resolver', () => {
         fetchSpan: async () => [],
         fetchMessage: async () => undefined,
         fetchFileImage: async () => { throw new Error('The image source is unavailable') },
+        fetchFileImageSize: async () => undefined,
         subscribe: observer => store.subscribeMessages(agentId, observer),
         backgroundTask: () => undefined,
         progress: () => undefined,

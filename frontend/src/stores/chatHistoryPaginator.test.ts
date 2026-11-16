@@ -108,7 +108,7 @@ function harness(init: {
       const cleanupWatchSignal = linkWatchSignal(controller, watchSignal)
       setState(flag, agentId, true)
       try {
-        await body(controller.signal)
+        return (await body(controller.signal)) === true
       }
       finally {
         cleanupWatchSignal()
@@ -410,7 +410,8 @@ describe('chatHistoryPaginator', () => {
         ], false),
       )
 
-      await h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n)
+      // The jump reports that its page replaced the window.
+      await expect(h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n)).resolves.toBe(true)
 
       // Cursor values: BEFORE is exclusive at seq+1 (includes the target), AFTER at seq.
       expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({ anchor: MessagePageAnchor.BEFORE, cursorSeq: 6n }), expect.anything())
@@ -541,7 +542,7 @@ describe('chatHistoryPaginator', () => {
       expect(signals.every((sig?: AbortSignal) => sig?.aborted === true)).toBe(true)
 
       releaseBefore?.()
-      await jump
+      await expect(jump).resolves.toBe(false)
       expect(h.applyMessages).not.toHaveBeenCalled() // and nothing swaps the window afterwards
     })
 
@@ -560,7 +561,7 @@ describe('chatHistoryPaginator', () => {
         throw new DOMException('aborted', 'AbortError')
       })
 
-      await expect(h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n, watch.signal)).resolves.toBeUndefined()
+      await expect(h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n, watch.signal)).resolves.toBe(false)
       expect(h.applyMessages).not.toHaveBeenCalled()
     })
 
@@ -573,7 +574,8 @@ describe('chatHistoryPaginator', () => {
       })
       routeByAnchor(page([], false), page([], false))
 
-      await h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n)
+      // The empty window replaced the window also, so the jump reports it as applied.
+      await expect(h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n)).resolves.toBe(true)
 
       expect(h.applyMessages).toHaveBeenCalledWith('a', [], false)
       expect(h.resetToEmptyIfStale).toHaveBeenCalledWith('a', expect.anything())

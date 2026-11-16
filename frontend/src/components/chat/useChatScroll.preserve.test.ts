@@ -1,7 +1,7 @@
 import type { ScrollHarnessOptions } from './useChatScroll.testkit'
 import { afterEach, describe, expect, it } from 'vitest'
 import { withChatScrollPreserved } from './chatScrollPreserve'
-import { installScrollTestEnv, mountScrollHarness, mountWithPendingJump, settleJump } from './useChatScroll.testkit'
+import { installScrollTestEnv, mountScrollHarness, mountWithPendingJump, rowMessages, settleJump } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -117,7 +117,7 @@ describe('useChatScroll scroll controller', () => {
 
     h.changeBelow(300)
     h.setHasNewer(false)
-    jump.resolve()
+    jump.resolve(true)
     await settleJump(jump.promise)
 
     // A restore that drops the request leaves 2060.
@@ -237,6 +237,45 @@ describe('useChatScroll scroll controller', () => {
 
     expect(h.div.scrollTopWrites()).toBe(writes)
     expect(h.hook.isFollowing()).toBe(true)
+    h.dispose()
+  })
+})
+
+// The row of a place can be staged after a heavy re-render: loaded, and not measured yet.
+describe('useChatScroll scroll controller with staged rows', () => {
+  it('leaves a place that waits to its own placement', async () => {
+    const h = mountChat({
+      messages: rowMessages(1),
+      holdTargets: true,
+    })
+    let outcome: boolean | undefined
+    void h.hook.jumpToSeq(21n).then((moved) => {
+      outcome = moved
+    })
+
+    await h.preserved(h.reset)
+    await h.restoreFrames()
+
+    // A repair is no command of the reader: it replaces no wait, and it places nothing.
+    expect(h.div.getScrollTop()).toBe(0)
+    expect(outcome).toBeUndefined()
+
+    h.reachTarget()
+    expect(h.div.getScrollTop()).toBe(1992)
+    h.dispose()
+  })
+
+  it('waits for the row of its anchor', async () => {
+    const h = mountChat({ holdTargets: true })
+    await h.anchoredAt(2000)
+
+    await h.preserved(h.reset)
+    await h.restoreFrames()
+    expect(h.div.getScrollTop()).toBe(0)
+    expect(h.requestedTargets().at(-1)).toEqual({ kind: 'row', id: 'r20', offset: 0 })
+
+    h.reachTarget()
+    expect(h.div.getScrollTop()).toBe(2000)
     h.dispose()
   })
 })

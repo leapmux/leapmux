@@ -1,6 +1,6 @@
 /**
  * Pure viewport / layout geometry for the chat message list: design-token probing,
- * width bucketing, and the overscan-band policy. Extracted from ChatView so the
+ * the size observer, and the overscan-band policy. Extracted from ChatView so the
  * math is coupling-free (no component, no reactive read) and testable at its
  * boundaries, mirroring the other chat leaves (chatHeightShared, chatRowGeometry).
  */
@@ -21,19 +21,6 @@ export function measureSpaceToken(varName: string, fallback: number): number {
   return h > 0
     ? h
     : fallback
-}
-
-/**
- * Bucket a measured content width to the nearest 8px so scrollbar/sub-pixel jitter
- * doesn't storm the geom recompute (only unmeasured/off-screen rows need their
- * cached DOM height invalidated on a width change, but every 1px wobble would
- * still churn the memo).
- *
- * The result is a step for the key of a cached height, never a width to lay out at: it
- * lies up to 4px from the width of the rows, and text wraps differently at it.
- */
-export function bucketWidth(w: number): number {
-  return Math.round(w / 8) * 8
 }
 
 /**
@@ -109,10 +96,9 @@ const OVERSCAN_VIEWPORT_RATIO = 1.5
 const OVERSCAN_CEIL_PX = 2400
 
 /**
- * Fallback wrap width (px) for the pre-measurement frame, before the content
- * ResizeObserver has reported the real list width (contentWidth() is 0). It only
- * needs to be a sane non-zero so the estimator's prose-wrap math never divides by
- * ~0 and inflates a row to a near-infinite line count; the first measured width
+ * Fallback row width (px) for the height key and for the hidden premeasure copies,
+ * before the size observer reported the first width of the list above 0. No copy
+ * measures at it: staging waits for a width above 0. The first reported width
  * replaces it. Unrelated to the 800px overscan floor above -- same number,
  * different purpose.
  */

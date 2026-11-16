@@ -1,5 +1,6 @@
 import type { UseChatVirtualizerOptions, VirtualItem } from './useChatVirtualizer'
 import { createSignal, onCleanup } from 'solid-js'
+import { createRowHeightCache } from './chatRowHeightCache'
 import { useChatVirtualizer } from './useChatVirtualizer'
 
 /**
@@ -12,7 +13,7 @@ import { useChatVirtualizer } from './useChatVirtualizer'
 export function makeItems(specs: Array<{ seq: number, span?: boolean, kind?: string }>): VirtualItem[] {
   // `seq` is only a convenient way to derive a unique row id in these specs; the
   // virtualizer itself keys everything by `id`. `kind` is omitted unless a spec
-  // sets it, so the rows that don't care keep the shared estimate bucket.
+  // sets it.
   return specs.map(s => ({
     id: `m${s.seq}`,
     hasSpanLines: !!s.span,
@@ -35,19 +36,46 @@ export function fakeRow(h: number): HTMLElement {
   return el
 }
 
+export interface VirtualizerSetupOptions extends Pick<UseChatVirtualizerOptions, 'scrollElement' | 'pinBottom' | 'spacerInsetPx'> {
+  /**
+   * The height (px) that the kit commits for every row at the start, as a hidden copy
+   * does, and for each row that `setList` adds. Default: 100, so the rows are 100px tall
+   * and row `i` starts at 120·i with the gap of 20. `false`: no row has a height.
+   */
+  measured?: number | false
+}
+
 /**
- * Build a virtualizer with deterministic geometry for math assertions. `opts` passes a
- * scroll element, a bottom pin, and the inset of the spacer on, for the layout-shift tests.
+ * Build a virtualizer with deterministic geometry for math assertions, over a height cache
+ * of its own, which it returns. The list holds measured rows only in the app, so the kit
+ * measures every row (see VirtualizerSetupOptions.measured). `opts` passes a scroll
+ * element, a bottom pin, and the inset of the spacer on, for the layout-shift tests.
  */
-export function setup(items: VirtualItem[], opts: Pick<UseChatVirtualizerOptions, 'scrollElement' | 'pinBottom' | 'spacerInsetPx'> = {}) {
-  const [list, setList] = createSignal(items)
+export function setup(items: VirtualItem[], opts: VirtualizerSetupOptions = {}) {
+  const { measured = 100, ...virtualizerOptions } = opts
+  const cache = createRowHeightCache()
+  // Commit the height for each row that the cache does not know yet. A row that the cache
+  // knows keeps its entry, also under another key, so a test of a key change sees it.
+  const measureUnknown = (rows: readonly VirtualItem[]): void => {
+    if (measured === false)
+      return
+    cache.commitAll(rows
+      .filter(row => cache.debugEntry(row.id) === undefined)
+      .map(row => ({ row, height: measured, measuredKey: row.heightKey })))
+  }
+  measureUnknown(items)
+  const [list, setListSignal] = createSignal(items)
+  const setList = (next: VirtualItem[]): void => {
+    measureUnknown(next)
+    setListSignal(next)
+  }
   const virt = useChatVirtualizer({
     items: list,
+    heightCache: cache,
     overscanPx: 0,
-    estimateHeight: 100,
     gapSmallPx: 10,
     gapLargePx: 20,
-    ...opts,
+    ...virtualizerOptions,
   })
-  return { virt, setList }
+  return { virt, setList, cache }
 }

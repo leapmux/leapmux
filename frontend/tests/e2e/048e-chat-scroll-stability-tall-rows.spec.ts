@@ -7,11 +7,10 @@ import {
   dragChatUp,
   expectAtBottom,
   pointAtChat,
-  readContentBoxWidth,
   readRowBox,
-  readRowHeights,
   readRowSeqWithText,
   recordPremeasureCommits,
+  resizeRowsTo,
   sendLongTurn,
   waitForScrollRest,
   widthSensitiveParagraphs,
@@ -26,9 +25,9 @@ import { chatDistanceFromBottom, chatScrollContainer, waitForAgentStarted } from
  * The app measures a row that is not on screen in a hidden copy, and it holds that height until the row itself mounts
  * and measures. That moment moves nothing under the reader only while two things hold:
  *
- * - The hidden copy is exactly as wide as the row. A copy that is as wide as the list rounded to 8px is up to 4px
- *   wider or narrower. Its text then wraps differently, and the height of a row of many lines is wrong by every line
- *   that wraps differently.
+ * - The hidden copy is exactly as wide as the row, and its height counts only at that width. In a copy that is a few
+ *   pixels wider or narrower, the text wraps differently, and the height of a row of many lines is wrong by every
+ *   line that wraps differently.
  * - A row that measures for the first time with the viewport top inside it keeps its bottom edge in place, so it
  *   grows above the view. A row that keeps its distance from its top edge grows at its bottom, and moves everything
  *   below the top of the view.
@@ -48,17 +47,17 @@ const SEED_WIDTH = 1024
 
 /**
  * The first narrow width of the viewport. From here on, the page has the layout of a narrow screen, where the chat
- * takes the whole width less a fixed inset. Its rows are in another 8px step than each row width below, so each
- * later width change drops the height of every row that is not mounted.
+ * takes the whole width less a fixed inset. Its rows are wider than each row width below, so each later width
+ * change drops the height of every row that is not mounted.
  */
 const NARROW_WIDTH = 440
 
-/** A width of the rows that is 4px below its 8px step, 376: the largest distance between the two. */
+/** A width of the rows that is no multiple of 8px: a hidden copy that rounded its width would be 4px wider. */
 const UNEVEN_ROW_WIDTH = 372
 
-/** Two widths of the rows in one 8px step, 376, which holds the widths from 372 up to 380. */
-const STEP_WIDE_ROW_WIDTH = 379
-const STEP_NARROW_ROW_WIDTH = 372
+/** Two widths of the rows that differ by a few pixels. A height of the one is a guess at the other. */
+const CLOSE_WIDE_ROW_WIDTH = 379
+const CLOSE_NARROW_ROW_WIDTH = 372
 
 /** The short turns above the tall row. */
 const TURNS_ABOVE = 2
@@ -132,21 +131,9 @@ async function seedTallRow(page: Page, script: ModelScript): Promise<SeededChat>
   return { tallSeq: tallSeq!, premeasured, narrowCommit: (await premeasured.commitOf(tallSeq!))! }
 }
 
-/** Change the width of the viewport so that each row of the chat is `rowWidth` wide, and wait for a follower at the bottom. */
-async function resizeRowsTo(page: Page, rowWidth: number): Promise<void> {
-  const viewport = page.viewportSize()
-  expect(viewport, 'the page has a viewport').not.toBeNull()
-  // The chat takes the whole width in the layout of a narrow screen, less a fixed inset.
-  const inset = viewport!.width - await readContentBoxWidth(page)
-  await page.setViewportSize({ width: rowWidth + inset, height: VIEW_HEIGHT })
-  await expect.poll(() => readContentBoxWidth(page), { message: `each row is ${rowWidth}px wide` }).toBe(rowWidth)
-  await expectAtBottom(page, `at a row width of ${rowWidth}px`)
-}
-
 /**
  * Wait until the hidden copy of the tall row committed a height under another height key than `previous`: the width
- * changed to another 8px step since. Then expect that the row is not mounted: it is far above the view. Returns the
- * new commit.
+ * changed since. Then expect that the row is not mounted: it is far above the view. Returns the new commit.
  */
 async function expectTallRowPremeasuredAgain(page: Page, chat: SeededChat, previous: PremeasureCommit): Promise<PremeasureCommit> {
   await expect.poll(async () => (await chat.premeasured.commitOf(chat.tallSeq))?.heightKey, {
@@ -212,7 +199,8 @@ async function watchRowPlaceholder(page: Page, seq: string): Promise<() => Promi
 test.describe('chat scroll stability while the reader scrolls up into a very tall row', () => {
   test('keeps the rows below a very tall row in place when one scroll step ends inside the row', async ({ page, authenticatedWorkspace, modelScript }) => {
     const chat = await seedTallRow(page, modelScript)
-    await resizeRowsTo(page, UNEVEN_ROW_WIDTH)
+    await resizeRowsTo(page, UNEVEN_ROW_WIDTH, VIEW_HEIGHT)
+    await expectAtBottom(page, `at a row width of ${UNEVEN_ROW_WIDTH}px`)
     const premeasured = await expectTallRowPremeasuredAgain(page, chat, chat.narrowCommit)
 
     const before = await chatDistanceFromBottom(page)
@@ -226,7 +214,8 @@ test.describe('chat scroll stability while the reader scrolls up into a very tal
 
   test('keeps the rows below a very tall row in place when a fast scroll ends inside the row', async ({ page, authenticatedWorkspace, modelScript }) => {
     const chat = await seedTallRow(page, modelScript)
-    await resizeRowsTo(page, UNEVEN_ROW_WIDTH)
+    await resizeRowsTo(page, UNEVEN_ROW_WIDTH, VIEW_HEIGHT)
+    await expectAtBottom(page, `at a row width of ${UNEVEN_ROW_WIDTH}px`)
     const premeasured = await expectTallRowPremeasuredAgain(page, chat, chat.narrowCommit)
 
     const before = await chatDistanceFromBottom(page)
@@ -247,31 +236,22 @@ test.describe('chat scroll stability while the reader scrolls up into a very tal
     await expectScrolledUpBy(page, before, SCROLL_UP_PX)
   })
 
-  test('keeps the rows below a very tall row in place when the row corrects a height from another width', async ({ page, authenticatedWorkspace, modelScript }) => {
+  test('measures a very tall row again when the width changes by a few pixels', async ({ page, authenticatedWorkspace, modelScript }) => {
     const chat = await seedTallRow(page, modelScript)
-    await resizeRowsTo(page, STEP_WIDE_ROW_WIDTH)
-    const premeasured = await expectTallRowPremeasuredAgain(page, chat, chat.narrowCommit)
-    // The two widths are in one 8px step, so the height of the hidden copy stays in use for the narrower rows.
-    const heightsAtWideStep = await readRowHeights(page)
-    await resizeRowsTo(page, STEP_NARROW_ROW_WIDTH)
-    expect(await readRowBox(page, chat.tallSeq), 'the tall row is still not mounted').toBeNull()
-    expect(await chat.premeasured.commitOf(chat.tallSeq), 'no hidden copy measured the tall row again').toEqual(premeasured)
-    // Each short row keeps its height between the two widths, so the tall row alone holds a height from the other
-    // width. A short row that changed its height would correct it below the reader at its mount, and move the tail.
-    const heightsAtNarrowStep = await readRowHeights(page)
-    for (const [seq, height] of Object.entries(heightsAtWideStep)) {
-      const narrow = heightsAtNarrowStep[seq]
-      if (narrow !== undefined)
-        expect(Math.abs(narrow - height), `the row of seq ${seq} keeps its height between the two widths`).toBeLessThanOrEqual(0.5)
-    }
+    await resizeRowsTo(page, CLOSE_WIDE_ROW_WIDTH, VIEW_HEIGHT)
+    await expectAtBottom(page, `at a row width of ${CLOSE_WIDE_ROW_WIDTH}px`)
+    const atWideWidth = await expectTallRowPremeasuredAgain(page, chat, chat.narrowCommit)
+    // The narrower row wraps more lines. A height from the wider rows would be wrong by each of them, so the hidden
+    // copy measures the row again under the key of the new width.
+    await resizeRowsTo(page, CLOSE_NARROW_ROW_WIDTH, VIEW_HEIGHT)
+    await expectAtBottom(page, `at a row width of ${CLOSE_NARROW_ROW_WIDTH}px`)
+    const premeasured = await expectTallRowPremeasuredAgain(page, chat, atWideWidth)
 
     const before = await chatDistanceFromBottom(page)
     await dragChatUp(page, SCROLL_UP_PX)
 
     const height = await expectViewInsideTallRow(page, chat.tallSeq)
-    // The narrower row wraps more lines, so the row corrects its height when it mounts. The test needs that
-    // correction: without it, the row keeps its height and nothing can move.
-    expect(Math.abs(height - premeasured.height), `the tall row corrected the height from the other width (${premeasured.height}px to ${height}px)`).toBeGreaterThan(1)
+    expect(Math.abs(height - premeasured.height), `the hidden copy measured the height of the row, within 1px (${premeasured.height}px for ${height}px)`).toBeLessThanOrEqual(1)
     await expectScrolledUpBy(page, before, SCROLL_UP_PX)
   })
 })

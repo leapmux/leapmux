@@ -1,7 +1,8 @@
 import type { VirtualItem } from './useChatVirtualizer'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { HEIGHT_CACHE_MAX, useChatVirtualizer } from './useChatVirtualizer'
+import { createRowHeightCache, HEIGHT_CACHE_MAX } from './chatRowHeightCache'
+import { useChatVirtualizer } from './useChatVirtualizer'
 import { fakeRow, makeItems, plainItems, setup } from './useChatVirtualizer.testkit'
 
 describe('useChatVirtualizer geometry', () => {
@@ -51,22 +52,15 @@ describe('useChatVirtualizer geometry', () => {
     })
   })
 
-  it('resolves an OVER-estimated row PROPORTIONALLY so a measure-smaller keeps the fraction (no yank to the bottom)', () => {
+  it('resolves a row at a height that the reader did not see PROPORTIONALLY so a measure-smaller keeps the fraction (no yank to the bottom)', () => {
     createRoot((dispose) => {
-      // Row 'a' starts with a tall fallback before it mounts.
+      // A hidden copy measured row 'a' at 400px before the row mounts.
       const items: VirtualItem[] = [
         { id: 'a', hasSpanLines: false },
         { id: 'b', hasSpanLines: false },
       ]
-      const [list] = createSignal(items)
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 400,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-      })
-      // Anchor at 90% into the over-estimated row 'a' (scrollTop 360 / 400 = 0.9).
+      const { virt } = setup(items, { measured: 400 })
+      // Anchor at 90% into row 'a' (scrollTop 360 / 400 = 0.9).
       const anchor = virt.anchorAt(360)
       expect(anchor).toEqual({
         id: 'a',
@@ -125,7 +119,7 @@ describe('useChatVirtualizer geometry', () => {
       expect(virt.heightOfId('m12')).toBe(225)
       expect(virt.indexOfId('m999')).toBe(-1)
       expect(virt.offsetOfId('m999')).toBeUndefined()
-      expect(virt.heightOfId('m999')).toBe(225) // absent rows use the current fallback estimate.
+      expect(virt.heightOfId('m999')).toBe(0) // a row outside the list has no height.
       dispose()
     })
   })
@@ -179,14 +173,17 @@ describe('useChatVirtualizer geometry', () => {
 
   it('evicts the least-recently-measured height once over the cap', () => {
     createRoot((dispose) => {
-      const { virt } = setup(plainItems(1))
+      // One row more than the cap, and no row mounted or protected as loaded.
+      const { virt } = setup(plainItems(HEIGHT_CACHE_MAX + 1), { measured: false })
       // Measured first -> the LRU tail and first eviction target.
-      virt.measure('outlier', 500)
-      // HEIGHT_CACHE_MAX more distinct rows pushes the cache one past the cap, so
-      // 'outlier' is evicted and its 500px is removed from the median histogram.
-      for (let i = 0; i < HEIGHT_CACHE_MAX; i++)
-        virt.measure(`x${i}`, 100)
-      expect(virt.estimateHeight()).toBe(100)
+      virt.measure('m1', 500)
+      expect(virt.heightOfId('m1')).toBe(500)
+      // HEIGHT_CACHE_MAX more distinct rows push the cache one past the cap, so the
+      // height of m1 is evicted, and the row has no height again.
+      for (let i = 2; i <= HEIGHT_CACHE_MAX + 1; i++)
+        virt.measure(`m${i}`, 100)
+      expect(virt.heightOfId('m1')).toBe(0)
+      expect(virt.heightOfId('m2')).toBe(100)
       dispose()
     })
   })
@@ -194,17 +191,18 @@ describe('useChatVirtualizer geometry', () => {
   it('never evicts a MOUNTED row, even when it is the oldest measured', () => {
     createRoot((dispose) => {
       try {
-        const { virt } = setup(plainItems(1)) // item m1 at index 0
+        const { virt } = setup(plainItems(HEIGHT_CACHE_MAX + 2), { measured: false }) // item m1 at index 0
         // Mounting a keyed row attaches its element, joining the protected set and
         // measuring it (333). Attached FIRST, so m1 is the oldest insertion ->
         // normally the first eviction target once the cache crosses its cap.
         virt.attachRow('m1', fakeRow(333))
-        // Flood the height cache past the cap (HEIGHT_CACHE_MAX) with other, UNMOUNTED
+        // Flood the height cache past the cap (HEIGHT_CACHE_MAX) with the other, UNMOUNTED
         // rows. Without the mounted-row protection m1 (oldest) would be evicted and
-        // fall back to the median estimate; mounted, it keeps its 333px.
-        for (let i = 0; i <= HEIGHT_CACHE_MAX; i++)
-          virt.measure(`x${i}`, 100)
+        // lose its height; mounted, it keeps its 333px, and the oldest unmounted row goes.
+        for (let i = 2; i <= HEIGHT_CACHE_MAX + 2; i++)
+          virt.measure(`m${i}`, 100)
         expect(virt.heightOfIndex(0)).toBe(333)
+        expect(virt.heightOfId('m2')).toBe(0)
         // Unmount m1 -> it leaves the protected set but keeps its cached height
         // (flash-free re-entry); a further over-cap flood may now evict it.
       }
@@ -252,7 +250,7 @@ describe('useChatVirtualizer geometry', () => {
         { seq: 3 },
       ]))
       expect(virt.indexOfId('m2')).toBe(-1)
-      // ...then re-fetched. Its cached height is reused (no flash to estimate).
+      // ...then re-fetched. Its cached height is reused: no hidden copy measures it again.
       setList(plainItems(3))
       expect(virt.heightOfIndex(1)).toBe(300)
       dispose()
@@ -292,11 +290,14 @@ describe('useChatVirtualizer geometry', () => {
 
   it('keeps adjacent rows mounted when one row is taller than the pixel overscan band', () => {
     createRoot((dispose) => {
-      const [list] = createSignal(plainItems(5))
+      const items = plainItems(5)
+      const [list] = createSignal(items)
+      const heightCache = createRowHeightCache()
+      heightCache.commitAll(items.map(row => ({ row, height: 100, measuredKey: row.heightKey })))
       const virt = useChatVirtualizer({
         items: list,
+        heightCache,
         overscanPx: 1200,
-        estimateHeight: 100,
         gapSmallPx: 10,
         gapLargePx: 20,
       })
@@ -311,32 +312,6 @@ describe('useChatVirtualizer geometry', () => {
       // Offsets: m1 [0,100), gap, m2 [120,5120). At scrollTop 2500, the 1200px
       // overscan band [1300,4200] sits wholly inside m2.
       expect(virt.computeRange(2500, 500)).toEqual({ start: 0, end: 3 })
-      dispose()
-    })
-  })
-
-  it('updates fallback contribution when an epsilon re-measure crosses the outlier threshold', () => {
-    createRoot((dispose) => {
-      const [list] = createSignal(plainItems(2))
-      const virt = useChatVirtualizer({
-        items: list,
-        overscanPx: 0,
-        estimateHeight: 100,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-      })
-
-      expect(virt.measure('m1', 1200.2)).toBe(true)
-      expect(virt.estimateHeight()).toBe(100)
-      expect(virt.totalHeight()).toBeCloseTo(1320.2)
-
-      expect(virt.measure('m1', 1199.9)).toBe(true)
-      expect(virt.estimateHeight()).toBe(1199.9)
-      expect(virt.totalHeight()).toBeCloseTo(2419.8)
-
-      expect(virt.measure('m1', 1200.2)).toBe(true)
-      expect(virt.estimateHeight()).toBe(100)
-      expect(virt.totalHeight()).toBeCloseTo(1320.2)
       dispose()
     })
   })

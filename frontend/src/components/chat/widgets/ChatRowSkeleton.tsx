@@ -100,8 +100,8 @@ export function SkeletonLines(props: { height: number, seed: string, testId: str
 
 /**
  * The skeleton body that a row shows while its real content is not ready. It fills the
- * height of its slot: the element around it carries the reserved height of the row
- * (measured or estimated) as its own height.
+ * height of its slot: the element around it carries the reserved height of the row,
+ * which is its measured height, as its own height.
  *
  * The slot can draw the chrome of the row, as a band row draws a border above and below.
  * The reserved height counts that chrome, because a measure reads the whole row. A

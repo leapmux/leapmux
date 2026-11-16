@@ -38,6 +38,7 @@ import { bubbleRunsToRightEdge, isMirroredMessageRow, messageBubbleClass, messag
 import * as chatStyles from './messageStyles.css'
 import { expandedUiKeyFor, MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 import { imageActionsFrom, reviewActionsFrom, subagentsFrom } from './renderContext'
+import { createRequestReadiness } from './renderReadiness'
 import { quotableTextForRow } from './results/rowText'
 import { toolCallMeta } from './results/tools/meta'
 import { extractedRow } from './rowExtraction'
@@ -289,18 +290,51 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     return prettifyJson(rawJson())
   })
 
+  // The request for the other half of a tool call, as the bubble reports it to the
+  // readiness scope of its row copy.
+  //
+  // - A hidden premeasure copy must not report a height before it shows what the row in
+  //   the list will show: a height without the other half is wrong, and the row would
+  //   change it in the list when the other half arrives.
+  // - The row in the list must not show before it has the other half either: it would
+  //   draw again when the other half arrives, and change its height in view. That is
+  //   rare. The hidden copy of the row fetched the span before in the usual case. A row
+  //   that a stored height admitted had no hidden copy in this session.
+  //
+  // The bubble reports only a request that the resolver really makes (see
+  // MessageContextResolver.loadRelated). With no request, the row shows what it will
+  // show, so it waits for nothing and shows at once.
+  //
+  // The report ends when the request settled, or at the limit of createRequestReadiness,
+  // which aborts no request: the lookup goes on, and the row draws again when the other
+  // half arrives.
+  const relatedLookup = createRequestReadiness()
+  // Once, while the bubble sets up: the scope of a row copy is fixed for its life.
+  untrack(() => props.readiness)?.track(relatedLookup.pending)
+
   createEffect(() => {
     const resolver = props.host?.messages
     const spanId = props.message.spanId
     const kind = category().kind
-    if (!resolver || !spanId || props.premeasureMode || (kind !== 'tool_use' && kind !== 'tool_result'))
+    if (!resolver || !spanId || (kind !== 'tool_use' && kind !== 'tool_result'))
       return
+    // The resolver counts its leases, so a hidden copy and the row can hold one span together.
     const release = resolver.retainRenderSpan({ spanId, agentSessionId: props.message.agentSessionId })
     onCleanup(release)
-    void resolver.loadRelated(props.message, parsed()).catch((error: unknown) => {
-      if (!(error instanceof DOMException && error.name === 'AbortError'))
-        console.warn('Cannot load related tool messages', { spanId, error })
-    })
+    const request = resolver.loadRelated(props.message, parsed())
+    if (request === undefined)
+      return
+    const endWait = relatedLookup.begin()
+    // The effect runs again for a new message of the same bubble. Its cleanup ends the wait
+    // of the run before, so only the limit of the current request holds the row copy.
+    onCleanup(endWait)
+    void request
+      .catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === 'AbortError'))
+          console.warn('Cannot load related tool messages', { spanId, error })
+      })
+      // A failure settles the request also: the row copy then shows what it has.
+      .finally(endWait)
   })
 
   // The three fields reading a row needs, built before the render context that
@@ -423,7 +457,21 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const images = imageActionsFrom({
     fileImage: (filePath, options) => sources.fileImage(filePath, options),
     cachedFileImage: filePath => sources.cachedFileImage(filePath),
-    deferLoad: () => props.premeasureMode === true || props.host?.rowOffscreen?.() === true,
+    fileImageSize: filePath => sources.fileImageSize(filePath),
+    cachedFileImageSize: filePath => sources.cachedFileImageSize(filePath),
+    // The scope of this row copy, fixed for the life of the bubble.
+    readiness: untrack(() => props.readiness),
+    deferLoad: () => {
+      if (props.premeasureMode === true)
+        return true
+      // The test for a row that is far from the view (`rowOffscreen`) reads the scroll
+      // position with no subscription. Nothing would run it again when the reader scrolls
+      // the row into the view and no height changes, so the image would wait forever. The
+      // scroll-activity window of the host closes when a scroll ends: the read of it here
+      // runs the test again for the position where the scroll stopped.
+      props.host?.syntaxHighlightingPaused?.()
+      return props.host?.rowOffscreen?.() === true
+    },
     premeasurePass: () => props.premeasureMode === true,
     ...(untrack(openImageHost) !== undefined
       ? { openImage }

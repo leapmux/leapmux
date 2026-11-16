@@ -17,6 +17,7 @@ import { DEFAULT_THEME_ID, MATCH_UI, paletteColorToHex, resolveThemeSelection, r
 import { scrollbarWidthPx } from '~/styles/tokens'
 import { loadBrowserPrefs } from './browserPreferences'
 import { copyTextToClipboard } from './clipboard'
+import { FONT_LOAD_MAX_RETRIES, FONT_LOAD_RETRY_BASE_MS, fontVariantSpecs, tryLoadFontVariant } from './fontFaces'
 import { DEFAULT_MONO_FONT_FAMILY } from './fontStack'
 import { createLogger } from './logger'
 import { sleep } from './sleep'
@@ -636,42 +637,6 @@ export function detachWebgl(instance: TerminalInstance): void {
   }
 }
 
-// xterm rasterizes a separate glyph for each (weight, style) combination,
-// so we have to trigger fetches for all four variants — not just the
-// regular face the renderer happens to paint first.
-const FONT_VARIANTS: ReadonlyArray<{ weight: string, style: string }> = [
-  { weight: 'normal', style: 'normal' },
-  { weight: 'bold', style: 'normal' },
-  { weight: 'normal', style: 'italic' },
-  { weight: 'bold', style: 'italic' },
-]
-
-// Cold-start font fetches can fail transiently -- e.g. Tauri's static-file
-// server is briefly unavailable right after launch. Retry a failed variant a
-// bounded number of times with exponential backoff, then give up so a
-// genuinely-missing font doesn't spin forever.
-const FONT_LOAD_MAX_RETRIES = 4
-const FONT_LOAD_RETRY_BASE_MS = 300
-
-/** Load one font variant, resolving to whether it settled without a fetch error. */
-function tryLoadFontVariant(spec: string): Promise<boolean> {
-  // A resolve (even with zero matched faces, e.g. a pure system-font family)
-  // means "nothing failed"; only a reject signals a matched @font-face whose
-  // fetch failed and is worth retrying.
-  //
-  // `document.fonts.load` throws a SyntaxError *synchronously* when `spec` is
-  // not a parseable CSS font shorthand (e.g. a malformed custom family from a
-  // corrupted preference). Catch it so a bad spec degrades to a failed variant
-  // rather than rejecting `fontsReady` -- which would throw into the pool's
-  // attach and, at construction, out of createTerminalInstance itself.
-  try {
-    return document.fonts.load(spec).then(() => true, () => false)
-  }
-  catch {
-    return Promise.resolve(false)
-  }
-}
-
 /**
  * Fetch every (weight, style) variant xterm rasterizes into its glyph atlas
  * and keep `terminal`'s atlas honest across cold-start fetch failures.
@@ -694,7 +659,10 @@ function tryLoadFontVariant(spec: string): Promise<boolean> {
 export function loadTerminalFonts(terminal: Terminal, fontFamily: string, fontSize: number): Promise<void> {
   if (typeof document === 'undefined' || !document.fonts?.load)
     return Promise.resolve()
-  const specs = FONT_VARIANTS.map(({ weight, style }) => `${style} ${weight} ${fontSize}px ${fontFamily}`)
+  // xterm rasterizes a separate glyph for each (weight, style) combination, so
+  // this fetches all four variants -- not just the regular face that the
+  // renderer happens to paint first.
+  const specs = fontVariantSpecs(fontFamily, `${fontSize}px`)
   return Promise.all(specs.map(tryLoadFontVariant)).then((settled) => {
     const failed = specs.filter((_, i) => !settled[i])
     if (failed.length > 0)

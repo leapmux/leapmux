@@ -4,7 +4,7 @@ import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeStubVirtualizer, virtualizerNoOps } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeStubVirtualizer, staticScrollAdmission, virtualizerNoOps } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -27,9 +27,11 @@ describe('useChatScroll stall indicators', () => {
     const [messages] = createSignal<AgentChatMessage[]>([])
     const [fetchingOlder, setFetchingOlder] = createSignal(opts.fetchingOlder ?? false)
     const [fetchingNewer, setFetchingNewer] = createSignal(opts.fetchingNewer ?? false)
+    const virt = makeStubVirtualizer()
     const hook = useChatScroll({
-      virtualizer: makeStubVirtualizer(),
+      virtualizer: virt,
       messages,
+      ...staticScrollAdmission(virt, messages),
       hasOlderMessages: () => opts.hasOlder ?? true,
       hasNewerMessages: () => opts.hasNewer ?? true,
       fetchingOlder,
@@ -153,7 +155,11 @@ describe('useChatScroll slow scroll phase', () => {
             ...makeStubVirtualizer(),
             updateViewport: () => { clock += 60 },
           }
-          const hook = useChatScroll({ virtualizer: virt, messages })
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            ...staticScrollAdmission(virt, messages),
+          })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -200,7 +206,11 @@ describe('useChatScroll slow scroll phase', () => {
             ...makeStubVirtualizer(),
             updateViewport: () => { clock += 10 },
           }
-          const hook = useChatScroll({ virtualizer: virt, messages })
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            ...staticScrollAdmission(virt, messages),
+          })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()

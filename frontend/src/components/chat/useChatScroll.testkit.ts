@@ -1,15 +1,18 @@
+import type { Accessor } from 'solid-js'
 import type { LayoutSnapshot } from './chatLayoutShift'
+import type { AdmissionTarget, AdmissionTargetState } from './chatRowAdmission'
 import type { AnchorOffsetGeometry } from './chatScrollAnchor'
-import type { ChatScrollVirtualizer, ScrollContext, UseChatScrollOptions } from './useChatScroll'
+import type { ChatLoadedRows, ChatScrollAdmission, ChatScrollVirtualizer, RequestedPlace, ScrollContext, UseChatScrollOptions } from './useChatScroll'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ScrollAnchor } from '~/stores/chatTypes'
 import { batch, createRoot, createSignal, untrack } from 'solid-js'
 import { afterEach, beforeAll, onTestFinished, vi } from 'vitest'
+import { MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { largestIndexWhere } from '~/lib/binarySearch'
 import { deferred, flush } from '~/test-support/async'
 import { installControllableResizeObserver, triggerResizeObserversSync } from '~/test-support/resizeObserverStub'
 import { nextLayoutShift } from './chatLayoutShift'
-import { anchorAtOffset, resolveAnchorScrollTop, resolveNearestAnchorScrollTop } from './chatScrollAnchor'
+import { anchorAtOffset, nearestServerRowIndexBySeq, resolveAnchorScrollTop, resolveNearestAnchorScrollTop } from './chatScrollAnchor'
 import { readLogicalScrollTop } from './chatScrollGeometry'
 import { SCROLL_REST_QUIET_MS } from './chatScrollRest'
 import { applyRebaseWrite, placementScrollTop } from './createLayoutShift'
@@ -98,10 +101,28 @@ export function makeStubVirtualizer(): ChatScrollVirtualizer {
  * A fully-stubbed ScrollContext (the scroll primitives of useChatScroll and the hook
  * actions that its helpers share). Pass overrides for the fields a test wires to its
  * element or asserts on. Every other member defaults to a no-op, or to false for a
- * predicate, except three that act as the hook's do: `getVisibleEl`, `placeAtAnchor`, and
- * `writeOwnScrollTop`.
+ * predicate, except these that act as the hook's do: `getVisibleEl`, `placeAtAnchor`,
+ * `writeOwnScrollTop`, the two functions of the pending history jump, which share one
+ * real AbortController and are spies, and the members of the requested place, which are
+ * spies also:
+ *
+ * - `requestPlace` shows its place at once, as the hook does for a place whose rows are in
+ *   the list: it runs the `show` of its call and resolves `true`. With no `show`, it runs
+ *   the placement of the kind through this context: `placeAt(() => 0)` for the top,
+ *   `placeAtAnchor(anchor, true)` for a row, and nothing for the tail.
+ * - `showWaitingPlace` returns `'none'`: no place waits.
+ * - `placeForAnchor` answers from the virtualizer of this context: a row place when the
+ *   anchor resolves, or when it has a seq and its nearest row resolves.
+ * - `loadedRows` holds no row, `stagedBelow` gives 0, and `awaitingFirstView` gives false.
  */
 export function makeScrollContext(overrides: Partial<ScrollContext> = {}): ScrollContext {
+  // The pending history jump, as the hook keeps it: one controller that the next jump and
+  // each abandon abort.
+  let historyJump: AbortController | null = null
+  const abortHistoryJump = () => {
+    historyJump?.abort()
+    historyJump = null
+  }
   const ctx: ScrollContext = {
     getEl: () => undefined,
     // The element of this context's `getEl` while it has a height, as the hook defines it.
@@ -126,7 +147,7 @@ export function makeScrollContext(overrides: Partial<ScrollContext> = {}): Scrol
     rebase: () => {},
     placeAt: () => null,
     // Places through the `placeAt` and the virtualizer of this context, as the hook does,
-    // without the hold of an anchor whose row has an estimated height.
+    // without the hold of an anchor whose row does not show its height yet.
     placeAtAnchor: (anchor, nearest) => ctx.placeAt(() => nearest
       ? ctx.virt.scrollTopNearAnchor(anchor)
       : ctx.virt.scrollTopForAnchor(anchor)),
@@ -138,9 +159,91 @@ export function makeScrollContext(overrides: Partial<ScrollContext> = {}): Scrol
         el.scrollTop = top
     },
     recordPosition: () => {},
+    beginHistoryJump: vi.fn(() => {
+      abortHistoryJump()
+      historyJump = new AbortController()
+      return historyJump.signal
+    }),
+    abandonHistoryJump: vi.fn(abortHistoryJump),
+    requestPlace: vi.fn((place: RequestedPlace, show?: () => void) => {
+      if (show !== undefined)
+        show()
+      else if (place.kind === 'top')
+        ctx.placeAt(() => 0)
+      else if (place.kind === 'row')
+        ctx.placeAtAnchor(place.anchor, true)
+      return Promise.resolve(true)
+    }),
+    showWaitingPlace: vi.fn((): 'shown' | 'waiting' | 'none' => 'none'),
+    placeForAnchor: vi.fn((anchor: ScrollAnchor): RequestedPlace | undefined => {
+      const resolves = ctx.virt.scrollTopForAnchor(anchor) !== null
+        || (anchor.seq !== undefined && ctx.virt.scrollTopNearAnchor(anchor) !== null)
+      return resolves
+        ? { kind: 'row', anchor }
+        : undefined
+    }),
+    loadedRows: {
+      has: vi.fn(() => false),
+      nearestId: vi.fn(() => undefined),
+      firstId: vi.fn(() => undefined),
+    },
+    stagedBelow: vi.fn(() => 0),
+    awaitingFirstView: vi.fn(() => false),
     ...overrides,
   }
   return ctx
+}
+
+/**
+ * The loaded visible rows of a hook test, over the stub virtualizer and the messages of
+ * the test. Each member reads untracked, as the members that ChatView passes do.
+ *
+ * - `has(id)`: the stub resolves the row, as a restore asked the virtualizer before the
+ *   rows of the list became a part of the loaded rows.
+ * - `nearestId(seq)`: the id of the message nearest `seq`, as a seek asked the messages.
+ *   With no such message: the row that the stub resolves nearest `seq`.
+ * - `firstId()`: the id of the first message, else the id of the first row of the stub.
+ */
+function staticLoadedRows(virt: ChatScrollVirtualizer, messages: Accessor<readonly AgentChatMessage[]>): ChatLoadedRows {
+  return {
+    has: id => untrack(() => virt.contentTopForAnchor({ id, offsetWithinRow: 0 }) !== null),
+    nearestId: seq => untrack(() => {
+      const msgs = messages()
+      const index = nearestServerRowIndexBySeq(msgs, seq)
+      if (index >= 0)
+        return msgs[index]?.id
+      const top = virt.scrollTopNearAnchor({ id: '', offsetWithinRow: 0, seq })
+      return top === null
+        ? undefined
+        : virt.anchorAt(top)?.id
+    }),
+    firstId: () => untrack(() => messages()[0]?.id ?? virt.anchorAtContent(0)?.id),
+  }
+}
+
+/**
+ * The `admission` and `loadedRows` options of useChatScroll for a test with no staged row:
+ * every row is loaded and in the list. Nothing is staged, the first view never waits, the
+ * rows of the list hold the tail, and the state of each request is `'reached'`, so the hook
+ * shows each requested place at once. `loadedRows` is that of staticLoadedRows.
+ */
+export function staticScrollAdmission(
+  virt: ChatScrollVirtualizer,
+  messages: Accessor<readonly AgentChatMessage[]>,
+): Pick<UseChatScrollOptions, 'admission' | 'loadedRows'> {
+  return {
+    admission: {
+      stagedAbove: () => 0,
+      stagedBelow: () => 0,
+      awaitingFirstView: () => false,
+      holdsTail: () => true,
+      request: () => ({
+        state: () => 'reached',
+        end: () => {},
+      }),
+    },
+    loadedRows: staticLoadedRows(virt, messages),
+  }
 }
 
 /**
@@ -173,8 +276,8 @@ function totalRowHeight(heights: readonly number[]): number {
  * tests therefore exercise the production capture and resolve, and not a second
  * implementation that can drift from it. A zero-height row shares the offset of its
  * successor, so these tests also exercise the shared-offset tie-break of the anchor math.
- * The production virtualizer reserves a positive estimate for every row, but a caller can
- * still produce a run of zero-height rows.
+ * A row of the production list can measure 0 (an empty row), so a run of zero-height rows
+ * is a state that the anchor math must handle.
  */
 function rowAnchorGeometry(heights: readonly number[], idPrefix: string): AnchorOffsetGeometry {
   // Length n + 1: offsets[i] is the top of row i, and offsets[n] is the total height.
@@ -217,7 +320,7 @@ function rowAnchorGeometry(heights: readonly number[], idPrefix: string): Anchor
  * like the production virtualizer. Row ids are `g${gen}_${index}`; `seq` is the
  * index plus one. `setRowHeight` mutates one row and bumps `geometryVersion`,
  * reproducing a DOM measurement landing after the row mounted (a freshly-mounted
- * row settling from its estimate to its real height once the pipeline measures it).
+ * row whose first read differs from the height that its hidden copy measured).
  * `replaceWindow` swaps in a fresh row set under a NEW generation
  * -- so every prior anchor id stops resolving -- modeling jumpToOldest/jumpToLatest
  * replacing the loaded window (`chatHistoryPaginator`), which is what leaves the
@@ -267,20 +370,14 @@ export function makeRowVirtualizer(initialHeights: number[]) {
   }
 }
 
-/**
- * The layout snapshot of the anchor geometry `g`, as the shift rule reads it. Every row
- * counts as measured, except the rows at the indexes in `estimated`.
- */
-function layoutSnapshotOf(g: AnchorOffsetGeometry, estimated: ReadonlySet<number>): LayoutSnapshot {
+/** The layout snapshot of the anchor geometry `g`, as the shift rule reads it. */
+function layoutSnapshotOf(g: AnchorOffsetGeometry): LayoutSnapshot {
   const n = g.list.length
   return {
     list: g.list,
     indexById: new Map(g.list.map((row, i) => [row.id, i])),
     offsets: Float64Array.from({ length: n + 1 }, (_, i) => g.offsetOfIndex(i)),
     heights: Float64Array.from({ length: n }, (_, i) => g.heightOfIndex(i)),
-    measured: Uint8Array.from({ length: n }, (_, i) => estimated.has(i)
-      ? 0
-      : 1),
     n,
   }
 }
@@ -292,12 +389,6 @@ export interface ShiftVirtualizerDeps {
    * does.
    */
   pinBottom: () => boolean
-  /**
-   * The indexes of the rows whose height is an estimate, as a row that has not measured yet.
-   * `showsHeight` reports such a row as not shown, and a change of such a row measures it.
-   * Default: none, every row is measured.
-   */
-  estimatedRows?: readonly number[]
   /**
    * The indexes of the rows with a measured height that the reader did not see, as a row
    * that a hidden copy measured and whose mounted copy no read measured yet. `showsHeight`
@@ -316,9 +407,8 @@ export interface ShiftVirtualizerDeps {
  * (placementScrollTop). Its content-coordinate resolvers convert nothing.
  *
  * Each change function computes the next shift as the computation of the real layout shift
- * does: nextLayoutShift over a snapshot of the rows before and after the change, with every
- * row measured except `deps.estimatedRows` (a change of such a row measures it), each
- * measured height one that the reader saw except those of `deps.unseenRows` (a change of
+ * does: nextLayoutShift over a snapshot of the rows before and after the change, with each
+ * height one that the reader saw except those of `deps.unseenRows` (a change of
  * such a row is the first read of its copy), no move inside a row (`intraRowShift` 0), no
  * row that came into the view over the top edge (`enteredFromAbove` false), and
  * `deps.pinBottom()` read before
@@ -345,12 +435,10 @@ export function makeShiftVirtualizer(heights: number[], div: FakeScrollDiv, deps
   const [rows, setRows] = createSignal<number[]>([...heights])
   const [shift, setShift] = createSignal(0)
   const [geometryVersion, setGeometryVersion] = createSignal(0)
-  // The rows whose height is still an estimate.
-  const estimated = new Set(deps.estimatedRows ?? [])
   // The rows whose measured height the reader did not see yet.
   const unseen = new Set(deps.unseenRows ?? [])
   // The snapshot that the current shift applies to.
-  let shiftedSnapshot = layoutSnapshotOf(rowAnchorGeometry(heights, 'r'), estimated)
+  let shiftedSnapshot = layoutSnapshotOf(rowAnchorGeometry(heights, 'r'))
   let rebases = 0
   const total = () => totalRowHeight(rows())
   const spacerHeightFor = (totalHeight: number, layoutShift: number) => Math.max(0, totalHeight + layoutShift)
@@ -367,11 +455,11 @@ export function makeShiftVirtualizer(heights: number[], div: FakeScrollDiv, deps
   const contentTopForAnchor = (anchor: ScrollAnchor): number | null => resolveAnchorScrollTop(geometry(), anchor)
   const virt: ChatScrollVirtualizer = {
     ...virtualizerNoOps(),
-    // As the real virtualizer: false for a row with an estimated height, for a row whose
-    // measured height the reader did not see, and for an id that is not in the list.
+    // As the real virtualizer: false for a row whose measured height the reader did not
+    // see, and for an id that is not in the list.
     showsHeight: (id: string) => {
       const index = geometry().indexOfId(id)
-      return index >= 0 && !estimated.has(index) && !unseen.has(index)
+      return index >= 0 && !unseen.has(index)
     },
     totalHeight: total,
     geometryVersion: () => geometryVersion(),
@@ -409,13 +497,11 @@ export function makeShiftVirtualizer(heights: number[], div: FakeScrollDiv, deps
     for (const [index, px] of changes) {
       const i = index(nextRows)
       nextRows[i] = (nextRows[i] ?? 0) + px
-      // The change is the measure of a row with an estimated height.
-      estimated.delete(i)
       if (unseen.delete(i))
         firstReads.add(i)
     }
     const nextGeometry = rowAnchorGeometry(nextRows, 'r')
-    const next = layoutSnapshotOf(nextGeometry, estimated)
+    const next = layoutSnapshotOf(nextGeometry)
     const previousShift = untrack(shift)
     const nextShift = div.el.clientHeight === 0
       ? 0
@@ -570,19 +656,35 @@ export function innerScrollerTarget(parent: HTMLElement, opts: { scrollTop: numb
   return target
 }
 
-/** A latest-page jump that the test settles: `onJumpToLatest` returns its promise. */
+/**
+ * A latest-page jump that the test settles: `onJumpToLatest` returns its promise. The test
+ * resolves it with `true` for a page that replaced the window, and with `false` for a jump
+ * that another history fetch replaced.
+ */
 export function deferredJump() {
-  const jump = deferred<void>()
+  const jump = deferred<boolean>()
   return {
     ...jump,
-    onJumpToLatest: vi.fn(() => jump.promise),
+    onJumpToLatest: vi.fn((_signal?: AbortSignal) => jump.promise),
   }
 }
 
 /** Let the branches of a settled jump run: its `then` or its `catch`, and what they start. */
-export async function settleJump(promise: Promise<void>): Promise<void> {
+export async function settleJump(promise: Promise<unknown>): Promise<void> {
   await promise.catch(() => undefined)
   await flush()
+}
+
+/**
+ * One message for each row of mountScrollHarness, with the ids of the rows: row `i` has the
+ * id `r${i}` and the seq `firstSeq + i`.
+ */
+export function rowMessages(firstSeq: number): AgentChatMessage[] {
+  return Array.from({ length: 50 }, (_, i) => ({
+    id: `r${i}`,
+    seq: BigInt(firstSeq + i),
+    source: MessageSource.USER,
+  } as AgentChatMessage))
 }
 
 /** The time between two scroll events of a harness, as a steady scroll delivers them. */
@@ -599,13 +701,27 @@ export interface ScrollHarnessOptions {
   clientHeight?: number
   /** The `scrollHeight` of the element. Default: the sum of `heights`. */
   scrollHeight?: number
-  /** The indexes of the rows whose height is an estimate (see ShiftVirtualizerDeps). */
-  estimatedRows?: readonly number[]
   /** The indexes of the rows with a measured height that the reader did not see (see ShiftVirtualizerDeps). */
   unseenRows?: readonly number[]
   messages?: AgentChatMessage[]
   /** More options of the hook: callbacks and accessors that a test asserts on. */
-  hookOptions?: Partial<UseChatScrollOptions>
+  hookOptions?: Partial<Omit<UseChatScrollOptions, 'admission' | 'loadedRows'>>
+  /** The number of loaded rows above the rows of the list at the mount. Default: 0. */
+  stagedAbove?: number
+  /** The number of loaded rows below the rows of the list at the mount. Default: 0. */
+  stagedBelow?: number
+  /** Whether loaded rows exist and none is in the list at the mount. Default: false. */
+  awaitingFirstView?: boolean
+  /** Whether the rows of the list hold the tail at the mount. Default: true. */
+  holdsTail?: boolean
+  /**
+   * Whether the target of each request waits until the test calls `reachTarget` or
+   * `loseTarget`. Default: false, the state of each request is `'reached'`, so the hook
+   * shows each requested place at once.
+   */
+  holdTargets?: boolean
+  /** Members that replace those of the loaded rows of the harness (see staticScrollAdmission). */
+  loadedRows?: Partial<ChatLoadedRows>
 }
 
 /**
@@ -613,6 +729,18 @@ export interface ScrollHarnessOptions {
  * makeShiftVirtualizer over it whose rule holds the bottom while the hook follows the tail,
  * fake timers, and a mounted hook. The test continues outside the reactive root, so a
  * signal write runs its effects at once, as a browser event does.
+ *
+ * The harness gives the hook an admission that the test controls. Every row of the stub
+ * virtualizer is in the list, and the options `stagedAbove`, `stagedBelow`,
+ * `awaitingFirstView`, and `holdsTail` state what the admission reports beside it. Each has
+ * a setter (`setStagedAbove`, ...). The loaded rows are those of staticScrollAdmission over
+ * the virtualizer and the messages, with the members of the `loadedRows` option in place
+ * of theirs.
+ *
+ * - `reachTarget()`: the state of the current request turns `'reached'`, and
+ *   `awaitingFirstView` turns false, as the admission does when a first range forms.
+ * - `loseTarget()`: the state of the current request turns `'gone'`.
+ * - `requestedTargets()`: the target of each request so far, in order.
  *
  * - `scrollTo(x)`: the reader scrolls to `x`, 10ms after the previous event.
  * - `anchoredAt(x)`: `scrollTo(x)`, then the quiet time and one frame, so that the
@@ -644,9 +772,6 @@ export function mountScrollHarness(opts: ScrollHarnessOptions = {}) {
   let isFollowingTail: () => boolean = () => true
   const shift = makeShiftVirtualizer(heights, div, {
     pinBottom: () => isFollowingTail(),
-    ...(opts.estimatedRows === undefined
-      ? {}
-      : { estimatedRows: opts.estimatedRows }),
     ...(opts.unseenRows === undefined
       ? {}
       : { unseenRows: opts.unseenRows }),
@@ -663,6 +788,39 @@ export function mountScrollHarness(opts: ScrollHarnessOptions = {}) {
   const [hasNewer, setHasNewer] = createSignal(opts.hasNewer ?? false)
   const [messages, setMessages] = createSignal<AgentChatMessage[]>(opts.messages ?? [])
   const onMomentumScroll = vi.fn()
+  // The admission that the test controls.
+  const [stagedAbove, setStagedAbove] = createSignal(opts.stagedAbove ?? 0)
+  const [stagedBelow, setStagedBelow] = createSignal(opts.stagedBelow ?? 0)
+  const [awaitingFirstView, setAwaitingFirstView] = createSignal(opts.awaitingFirstView ?? false)
+  const [holdsTail, setHoldsTail] = createSignal(opts.holdsTail ?? true)
+  const requestedTargets: AdmissionTarget[] = []
+  // The setter of the state of the current request, or undefined after it ended.
+  let setCurrentTargetState: ((state: AdmissionTargetState) => void) | undefined
+  const admission: ChatScrollAdmission = {
+    stagedAbove,
+    stagedBelow,
+    awaitingFirstView,
+    holdsTail,
+    request: (target) => {
+      requestedTargets.push(target)
+      const [state, setState] = createSignal<AdmissionTargetState>(opts.holdTargets === true
+        ? 'waiting'
+        : 'reached')
+      setCurrentTargetState = setState
+      return {
+        state,
+        end: () => {
+          // A request that a newer one replaced changes nothing when it ends.
+          if (setCurrentTargetState === setState)
+            setCurrentTargetState = undefined
+        },
+      }
+    },
+  }
+  const loadedRows: ChatLoadedRows = {
+    ...staticScrollAdmission(virt, messages).loadedRows,
+    ...opts.loadedRows,
+  }
   let dispose!: () => void
   const hook = createRoot((d) => {
     dispose = d
@@ -672,6 +830,8 @@ export function mountScrollHarness(opts: ScrollHarnessOptions = {}) {
       hasNewerMessages: hasNewer,
       onMomentumScroll,
       ...opts.hookOptions,
+      admission,
+      loadedRows,
     })
     isFollowingTail = mounted.isFollowing
     mounted.attachListRef(div.el)
@@ -713,6 +873,16 @@ export function mountScrollHarness(opts: ScrollHarnessOptions = {}) {
     virt,
     setHasNewer,
     setMessages,
+    setStagedAbove,
+    setStagedBelow,
+    setAwaitingFirstView,
+    setHoldsTail,
+    reachTarget: () => batch(() => {
+      setCurrentTargetState?.('reached')
+      setAwaitingFirstView(false)
+    }),
+    loseTarget: () => setCurrentTargetState?.('gone'),
+    requestedTargets: (): readonly AdmissionTarget[] => requestedTargets,
     onMomentumScroll,
     setFastScrollActive,
     updateViewport,

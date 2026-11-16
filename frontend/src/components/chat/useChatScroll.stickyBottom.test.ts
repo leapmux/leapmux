@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { distFromBottom, FOLLOW_TOLERANCE_PX } from './chatScrollGeometry'
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeStubVirtualizer, mountScrollHarness } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeStubVirtualizer, mountScrollHarness, staticScrollAdmission } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -24,9 +24,11 @@ describe('useChatScroll auto-scroll signature', () => {
           const [agentWorking] = createSignal<boolean | undefined>(false)
           const [agentStatus, setAgentStatus] = createSignal<AgentStatus | undefined>(AgentStatus.ACTIVE)
 
+          const virt = makeStubVirtualizer()
           const hook = useChatScroll({
-            virtualizer: makeStubVirtualizer(),
+            virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             agentWorking,
             agentStatus,
           })
@@ -69,9 +71,11 @@ describe('useChatScroll auto-scroll signature', () => {
       div.setScrollHeight(500)
       div.setClientHeight(500) // content fits -> at the bottom
       const [messages] = createSignal<AgentChatMessage[]>([])
+      const virt = makeStubVirtualizer()
       const hook = useChatScroll({
-        virtualizer: makeStubVirtualizer(),
+        virtualizer: virt,
         messages,
+        ...staticScrollAdmission(virt, messages),
       })
       hook.attachListRef(div.el)
       hook.handlers.onScroll()
@@ -95,9 +99,11 @@ describe('useChatScroll scroll-to-bottom animation', () => {
           div.setScrollHeight(scrollHeight)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
+          const virt = makeStubVirtualizer()
           const hook = useChatScroll({
-            virtualizer: makeStubVirtualizer(),
+            virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
           })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -147,9 +153,11 @@ describe('useChatScroll scroll-to-bottom animation', () => {
           div.setScrollHeight(10000)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
+          const virt = makeStubVirtualizer()
           const hook = useChatScroll({
-            virtualizer: makeStubVirtualizer(),
+            virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
           })
           hook.attachListRef(div.el)
           await Promise.resolve()
@@ -201,6 +209,7 @@ describe('useChatScroll tail growth', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
           })
           hook.attachListRef(div.el)
           await Promise.resolve()

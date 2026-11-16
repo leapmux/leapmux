@@ -1,14 +1,14 @@
 import type { ChatScrollState } from './useChatScroll'
 import type { ScrollHarnessOptions } from './useChatScroll.testkit'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import { createRoot, createSignal, onCleanup } from 'solid-js'
+import { batch, createRoot, createSignal, onCleanup } from 'solid-js'
 import { insert } from 'solid-js/web'
 import { describe, expect, it, vi } from 'vitest'
 import {
   triggerResizeObserversSync,
 } from '~/test-support/resizeObserverStub'
 import { useChatScroll } from './useChatScroll'
-import { deferredJump, installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer, mountScrollHarness, settleJump, virtualizerNoOps, withContentAnchors } from './useChatScroll.testkit'
+import { deferredJump, installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer, mountScrollHarness, rowMessages, settleJump, staticScrollAdmission, virtualizerNoOps, withContentAnchors } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -33,13 +33,16 @@ describe('useChatScroll viewport restore', () => {
           let cleared = false
           const onJumpToLatest = () => {
             jumped = true
+            return Promise.resolve(true)
           }
           const onClearSavedViewportScroll = () => {
             cleared = true
           }
+          const virt = makeStubVirtualizer()
           const hook = useChatScroll({
-            virtualizer: makeStubVirtualizer(),
+            virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasNewerMessages: () => true,
             onJumpToLatest,
             savedViewportScroll: saved,
@@ -88,11 +91,16 @@ describe('useChatScroll viewport restore', () => {
           })
           let jumped = false
           let cleared = false
+          const virt = makeStubVirtualizer()
           const hook = useChatScroll({
-            virtualizer: makeStubVirtualizer(),
+            virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasNewerMessages: () => true,
-            onJumpToLatest: () => { jumped = true },
+            onJumpToLatest: () => {
+              jumped = true
+              return Promise.resolve(true)
+            },
             savedViewportScroll: saved,
             onClearSavedViewportScroll: () => { cleared = true },
           })
@@ -136,10 +144,12 @@ describe('useChatScroll viewport restore', () => {
             atBottom: false,
             hasMoreNewer: false,
           })
+          const virt = makeStubVirtualizer()
           const hook = useChatScroll({
             // anchorAt / scrollTopForAnchor return null -> the anchor never resolves.
-            virtualizer: makeStubVirtualizer(),
+            virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             savedViewportScroll: saved,
             onClearSavedViewportScroll: () => {},
           })
@@ -196,6 +206,7 @@ describe('useChatScroll viewport restore', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             savedViewportScroll: saved,
             onClearSavedViewportScroll: () => {},
             hasOlderMessages: () => true,
@@ -361,11 +372,13 @@ describe('useChatScroll restore inside a row', () => {
   })
 })
 
-// Row 0 has only an estimate of 1000px, and the 40 rows below it measure 100px each. A
-// restore places a reader halfway into row 0, at 500. Row 0 then measures 600px, and the rule
-// holds the bottom edge of a row with an estimated height: the view shows row 0 at 100px.
-// The hold places the view on the anchor again, halfway into the measured row: at 300.
-describe('useChatScroll restore onto a row with an estimated height', () => {
+// Row 0 has a measured height of 1000px that no read of its mounted copy confirmed: a
+// hidden copy measured it, or a fling skeleton stands in for the row. The 40 rows below it
+// measure 100px each. A restore places a reader halfway into row 0, at 500. The first read
+// of row 0 then gives 600px, and the rule holds the bottom edge of a row whose height the
+// reader did not see: the view shows row 0 at 100px. The hold places the view on the anchor
+// again, halfway into the row: at 300.
+describe('useChatScroll restore onto a row that does not show its height yet', () => {
   const heights = [
     1000,
     ...Array.from<number>({ length: 40 }).fill(100),
@@ -375,7 +388,7 @@ describe('useChatScroll restore onto a row with an estimated height', () => {
   async function restoredHalfwayIntoRow0(opts: ScrollHarnessOptions = {}) {
     const h = mountScrollHarness({
       heights,
-      estimatedRows: [0],
+      unseenRows: [0],
       ...opts,
     })
     await h.anchoredAt(500)
@@ -384,7 +397,7 @@ describe('useChatScroll restore onto a row with an estimated height', () => {
     return h
   }
 
-  it('lands again on the anchor when its row measures after a show', async () => {
+  it('lands again on the anchor at the first read of its row after a show', async () => {
     const h = await restoredHalfwayIntoRow0()
 
     h.changeAbove(-400)
@@ -394,10 +407,10 @@ describe('useChatScroll restore onto a row with an estimated height', () => {
     h.dispose()
   })
 
-  it('lands again on a saved anchor when its row measures after a mount', () => {
+  it('lands again on a saved anchor at the first read of its row after a mount', () => {
     const h = mountScrollHarness({
       heights,
-      estimatedRows: [0],
+      unseenRows: [0],
       hookOptions: {
         savedViewportScroll: () => ({
           anchor: {
@@ -419,50 +432,13 @@ describe('useChatScroll restore onto a row with an estimated height', () => {
     h.dispose()
   })
 
-  it('lands again on the anchor when its row corrects a measured height that the reader did not see', async () => {
-    // Row 0 has a measured height of 1000px that no read of its mounted copy confirmed: a
-    // hidden copy measured it, or a fling skeleton stands in for the row. Its first read
-    // gives 600px. The rule holds the bottom edge of the row, as for an estimate, and the
-    // hold places the view on the anchor again, halfway into the row: at 300.
-    const h = mountScrollHarness({
-      heights,
-      unseenRows: [0],
-    })
-    await h.anchoredAt(500)
-    await h.hideThenShow()
-    expect(h.div.getScrollTop()).toBe(500)
-
-    h.changeAbove(-400)
-
-    expect(h.div.getScrollTop()).toBe(300)
-    expect(h.virt.layoutShift()).toBe(0)
-    h.dispose()
-  })
-
   it('keeps the hold while another row changes, and the row that the reader did not see keeps its height', async () => {
-    const h = mountScrollHarness({
-      heights,
-      unseenRows: [0],
-    })
-    await h.anchoredAt(500)
-    await h.hideThenShow()
+    const h = await restoredHalfwayIntoRow0()
 
     // The last row grows below the reader. Row 0 has no read yet, so the hold stays, and
     // its first read then lands the view on the anchor.
     h.changeBelow(50)
     expect(h.div.getScrollTop()).toBe(500)
-    h.changeAbove(-400)
-
-    expect(h.div.getScrollTop()).toBe(300)
-    h.dispose()
-  })
-
-  it('keeps the hold while its row has only an estimated height', async () => {
-    const h = await restoredHalfwayIntoRow0()
-    // The last row measures, and row 0 keeps its estimate.
-    h.changeBelow(50)
-    expect(h.div.getScrollTop()).toBe(500)
-
     h.changeAbove(-400)
 
     expect(h.div.getScrollTop()).toBe(300)
@@ -544,7 +520,7 @@ describe('useChatScroll restore onto a row with an estimated height', () => {
     h.hook.forceScrollToBottom()
     h.changeAbove(-400)
     h.setHasNewer(false)
-    jump.resolve()
+    jump.resolve(true)
     await settleJump(jump.promise)
 
     // A placement on the anchor would end the request, and the view would stay in row 0.
@@ -618,6 +594,7 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
           const hookA = useChatScroll({
             virtualizer: virtA,
             messages,
+            ...staticScrollAdmission(virtA, messages),
             onSaveViewportScroll: (state) => { savedState = state },
           })
           hookA.attachListRef(divA.el)
@@ -656,6 +633,7 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
             const hookB = useChatScroll({
               virtualizer: virtB,
               messages: messagesB,
+              ...staticScrollAdmission(virtB, messagesB),
               savedViewportScroll: () => savedState,
               onClearSavedViewportScroll: () => { cleared = true },
             })
@@ -689,9 +667,11 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
           div.setScrollHeight(3000)
           const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
           let saves = 0
+          const virt = makeStubVirtualizer()
           const hook = useChatScroll({
-            virtualizer: makeStubVirtualizer(),
+            virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             onSaveViewportScroll: () => { saves++ },
           })
           hook.attachListRef(div.el)
@@ -724,9 +704,11 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
 
     createRoot((dispose) => {
       disposeRoot = dispose
+      const virt = makeStubVirtualizer()
       const hook = useChatScroll({
-        virtualizer: makeStubVirtualizer(),
+        virtualizer: virt,
         messages,
+        ...staticScrollAdmission(virt, messages),
         hasNewerMessages: () => {
           if (disposalStarted && !reentered) {
             reentered = true
@@ -760,6 +742,7 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             savedViewportScroll: saved,
             onClearSavedViewportScroll: () => { cleared = true },
           })
@@ -798,8 +781,12 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasNewerMessages: () => true,
-            onJumpToLatest: () => { jumped = true },
+            onJumpToLatest: () => {
+              jumped = true
+              return Promise.resolve(true)
+            },
             savedViewportScroll: saved,
             onClearSavedViewportScroll: () => { cleared = true },
           })
@@ -842,6 +829,7 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             savedViewportScroll: saved,
             onClearSavedViewportScroll: () => { cleared = true },
           })
@@ -902,5 +890,389 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
     finally {
       host.remove()
     }
+  })
+})
+
+// The rows of a place can be staged: loaded, and not measured yet. A restore, the first
+// view, and a command then wait, and the view moves once, when the rows are reached.
+describe('useChatScroll a place that waits for its rows', () => {
+  // The harness: 50 rows of 100px in a 500px view, so the bottom is at 4500, and row `r20`
+  // starts at 2000. The target of each request waits until the test reaches it.
+  const SAVED_AT_R20: ChatScrollState = {
+    anchor: { id: 'r20', offsetWithinRow: 0 },
+    atBottom: false,
+    hasMoreNewer: false,
+  }
+  const maxScrollTop = (h: ReturnType<typeof mountScrollHarness>) => h.div.el.scrollHeight - h.div.el.clientHeight
+  const press = (h: ReturnType<typeof mountScrollHarness>, key: string) => {
+    h.hook.handlers.onKeyDown(new KeyboardEvent('keydown', { key, cancelable: true }))
+  }
+
+  /** A mount whose targets wait, with a spy on the save of the unmount, and a saved state when `saved` gives one. */
+  function mountWaiting(opts: ScrollHarnessOptions & { saved?: ChatScrollState } = {}) {
+    const { saved, ...harnessOptions } = opts
+    const onSaveViewportScroll = vi.fn()
+    const onClearSavedViewportScroll = vi.fn()
+    const h = mountScrollHarness({
+      holdTargets: true,
+      ...harnessOptions,
+      hookOptions: {
+        onSaveViewportScroll,
+        onClearSavedViewportScroll,
+        ...(saved === undefined
+          ? {}
+          : {
+              savedViewportScroll: () => saved,
+            }),
+        ...harnessOptions.hookOptions,
+      },
+    })
+    /** The state that the unmount saved. */
+    const savedAtUnmount = (): ChatScrollState => {
+      expect(onSaveViewportScroll).toHaveBeenCalledOnce()
+      return onSaveViewportScroll.mock.calls[0]![0] as ChatScrollState
+    }
+    return { h, onClearSavedViewportScroll, savedAtUnmount }
+  }
+
+  describe('a restore of a saved viewport', () => {
+    it('keeps the view until the row of the saved anchor is reached', () => {
+      const { h } = mountWaiting({ saved: SAVED_AT_R20 })
+
+      expect(h.div.getScrollTop()).toBe(0)
+      expect(h.hook.isFollowing()).toBe(false)
+      expect(h.requestedTargets()).toEqual([
+        { kind: 'row', id: 'r20', offset: 0 },
+      ])
+
+      h.reachTarget()
+      expect(h.div.getScrollTop()).toBe(2000)
+      h.dispose()
+    })
+
+    it('saves the saved anchor again at an unmount during the wait', () => {
+      const { h, savedAtUnmount } = mountWaiting({ saved: SAVED_AT_R20 })
+
+      h.dispose()
+
+      const saved = savedAtUnmount()
+      expect(saved).toMatchObject({
+        anchor: { id: 'r20', offsetWithinRow: 0 },
+        atBottom: false,
+      })
+      // The view shows no position of its own, so no raw position is saved.
+      expect(saved).not.toHaveProperty('rawScrollTop')
+    })
+
+    it('asks for the row of a saved anchor in a window with newer pages, and starts no jump', () => {
+      const jump = deferredJump()
+      const { h } = mountWaiting({
+        hasNewer: true,
+        saved: {
+          anchor: { id: 'r0', offsetWithinRow: 0 },
+          atBottom: false,
+          hasMoreNewer: true,
+        },
+        hookOptions: { onJumpToLatest: jump.onJumpToLatest },
+      })
+
+      expect(h.requestedTargets()).toEqual([
+        { kind: 'row', id: 'r0', offset: 0 },
+      ])
+      expect(jump.onJumpToLatest).not.toHaveBeenCalled()
+      h.dispose()
+    })
+  })
+
+  describe('an unmount during the wait of a command', () => {
+    it('saves the row of a seek', () => {
+      const { h, savedAtUnmount } = mountWaiting({
+        messages: rowMessages(1),
+      })
+      void h.hook.jumpToSeq(21n)
+
+      h.dispose()
+
+      expect(savedAtUnmount()).toMatchObject({
+        anchor: { id: 'r20', seq: 21n, offsetWithinRow: 0 },
+        atBottom: false,
+      })
+    })
+
+    it('saves the request for the tail of End', async () => {
+      const { h, savedAtUnmount } = mountWaiting({ stagedBelow: 2 })
+      await h.anchoredAt(2000)
+      press(h, 'End')
+
+      h.dispose()
+
+      expect(savedAtUnmount()).toMatchObject({ atBottom: true })
+    })
+
+    it('saves the first row for Home', () => {
+      const { h, savedAtUnmount } = mountWaiting()
+      press(h, 'Home')
+
+      h.dispose()
+
+      expect(savedAtUnmount()).toMatchObject({
+        anchor: { id: 'r0', offsetWithinRow: 0 },
+        atBottom: false,
+      })
+    })
+  })
+
+  describe('the first view', () => {
+    it('asks for the tail for a follower, and sticks nothing before the rows are reached', () => {
+      const { h } = mountWaiting({ awaitingFirstView: true })
+
+      expect(h.requestedTargets()).toEqual([
+        { kind: 'tail' },
+      ])
+      expect(h.div.getScrollTop()).toBe(0)
+
+      h.reachTarget()
+      expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+      expect(h.hook.isFollowing()).toBe(true)
+      h.dispose()
+    })
+
+    it('asks for no second place beside the restore of a saved anchor', () => {
+      const { h } = mountWaiting({
+        awaitingFirstView: true,
+        saved: {
+          ...SAVED_AT_R20,
+          anchor: { id: 'r20', offsetWithinRow: 30 },
+        },
+      })
+
+      expect(h.requestedTargets()).toEqual([
+        { kind: 'row', id: 'r20', offset: 30 },
+      ])
+      h.dispose()
+    })
+
+    it('asks for the tail once for a saved state at the bottom', () => {
+      const { h, onClearSavedViewportScroll } = mountWaiting({
+        awaitingFirstView: true,
+        saved: { atBottom: true, hasMoreNewer: false },
+      })
+
+      expect(h.requestedTargets()).toEqual([
+        { kind: 'tail' },
+      ])
+      expect(onClearSavedViewportScroll).toHaveBeenCalledOnce()
+
+      h.reachTarget()
+      expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+      expect(h.hook.isFollowing()).toBe(true)
+      h.dispose()
+    })
+
+    it('asks for the top in a window with newer pages and no saved state', () => {
+      // The reader requests no tail there, and no anchor exists.
+      const { h } = mountWaiting({ awaitingFirstView: true, hasNewer: true })
+
+      expect(h.requestedTargets()).toEqual([
+        { kind: 'top' },
+      ])
+      h.dispose()
+    })
+
+    it('asks for nothing while the jump to the latest page of the mount is pending, and for the tail when it settled', async () => {
+      const jump = deferredJump()
+      const { h } = mountWaiting({
+        awaitingFirstView: true,
+        hasNewer: true,
+        saved: { atBottom: true, hasMoreNewer: true },
+        hookOptions: { onJumpToLatest: jump.onJumpToLatest },
+      })
+      // The page of the jump replaces the rows, so their bottom is no first view.
+      expect(jump.onJumpToLatest).toHaveBeenCalledOnce()
+      expect(h.requestedTargets()).toEqual([])
+
+      h.setHasNewer(false)
+      jump.resolve(true)
+      await settleJump(jump.promise)
+      expect(h.requestedTargets()).toEqual([
+        { kind: 'tail' },
+      ])
+
+      h.reachTarget()
+      expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+      expect(h.hook.isFollowing()).toBe(true)
+      h.dispose()
+    })
+
+    it('asks for the loaded row nearest the last anchor when every row is replaced under a reader who scrolled up', async () => {
+      const { h } = mountWaiting({
+        // The row of the last anchor left the loaded rows, and `r3` is the nearest one.
+        loadedRows: {
+          has: id => id !== 'r20',
+          nearestId: () => 'r3',
+        },
+      })
+      await h.anchoredAt(2000)
+
+      h.setAwaitingFirstView(true)
+
+      expect(h.requestedTargets().at(-1)).toEqual({ kind: 'row', id: 'r3', offset: 0 })
+      h.reachTarget()
+      expect(h.div.getScrollTop()).toBe(300)
+      h.dispose()
+    })
+
+    it('records no position while loaded rows exist and none is in the list', async () => {
+      const { h } = mountWaiting()
+      await h.anchoredAt(2000)
+
+      // One update: the rows are replaced, and the browser moves the view of the empty list.
+      batch(() => {
+        h.setAwaitingFirstView(true)
+        h.scrollTo(3000)
+      })
+
+      // The place is the row of the last anchor, not the row at the position of the event.
+      expect(h.requestedTargets().at(-1)).toEqual({ kind: 'row', id: 'r20', offset: 0 })
+      h.dispose()
+    })
+  })
+
+  describe('a row place that waits at the bottom', () => {
+    it('follows no tail, and saves the anchor at an unmount', () => {
+      const { h, savedAtUnmount } = mountWaiting({
+        scrollTopBeforeMount: 4500,
+        awaitingFirstView: true,
+        saved: SAVED_AT_R20,
+      })
+
+      h.changeBelow(300)
+      expect(h.hook.isFollowing()).toBe(false)
+
+      h.dispose()
+      expect(savedAtUnmount()).toMatchObject({
+        anchor: { id: 'r20', offsetWithinRow: 0 },
+        atBottom: false,
+      })
+    })
+
+    it('follows no tail when the newer pages end during the wait', () => {
+      const { h, savedAtUnmount } = mountWaiting({
+        scrollTopBeforeMount: 4500,
+        awaitingFirstView: true,
+        hasNewer: true,
+        saved: SAVED_AT_R20,
+      })
+      h.hook.handlers.onScroll()
+      expect(h.hook.atBottom()).toBe(true)
+
+      h.setHasNewer(false)
+
+      expect(h.hook.isFollowing()).toBe(false)
+      h.dispose()
+      expect(savedAtUnmount()).toMatchObject({
+        anchor: { id: 'r20', offsetWithinRow: 0 },
+        atBottom: false,
+      })
+    })
+  })
+
+  describe('a pane with no layout box', () => {
+    it('asks for the tail again at the show of a pane whose tail was reached while it was hidden', async () => {
+      const { h } = mountWaiting({ awaitingFirstView: true })
+      h.div.setClientHeight(0)
+      await h.resizeFlush()
+
+      const writes = h.div.scrollTopWrites()
+      h.reachTarget()
+      expect(h.div.scrollTopWrites()).toBe(writes)
+
+      h.div.setClientHeight(500)
+      await h.resizeFlush()
+      // The show asks for the tail again: rows that arrived meanwhile are staged.
+      expect(h.requestedTargets()).toEqual([
+        { kind: 'tail' },
+        { kind: 'tail' },
+      ])
+
+      h.reachTarget()
+      expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+      expect(h.hook.isFollowing()).toBe(true)
+      h.dispose()
+    })
+
+    it('restores the saved anchor of a hidden mount when a tail was reached before the flush of the show', async () => {
+      const { h } = mountWaiting({
+        clientHeight: 0,
+        awaitingFirstView: true,
+        saved: SAVED_AT_R20,
+      })
+      // A hidden mount restores nothing, so the first-view rule asked for the tail.
+      expect(h.requestedTargets()).toEqual([
+        { kind: 'tail' },
+      ])
+
+      // The browser gives the pane its layout box one frame before the flush of the show.
+      h.div.setClientHeight(500)
+      triggerResizeObserversSync()
+      const writes = h.div.scrollTopWrites()
+      h.reachTarget()
+      // No stick: the flush holds the saved viewport, and it decides first.
+      expect(h.div.scrollTopWrites()).toBe(writes)
+
+      await h.frame()
+      expect(h.requestedTargets().at(-1)).toEqual({ kind: 'row', id: 'r20', offset: 0 })
+
+      h.reachTarget()
+      expect(h.div.getScrollTop()).toBe(2000)
+      h.dispose()
+    })
+
+    it('asks for the tail at the show of a follower whose new rows are staged', async () => {
+      const { h } = mountWaiting()
+      expect(h.hook.isFollowing()).toBe(true)
+      h.div.setClientHeight(0)
+      await h.resizeFlush()
+      h.setStagedBelow(3)
+
+      h.div.setClientHeight(500)
+      await h.resizeFlush()
+      expect(h.requestedTargets().at(-1)).toEqual({ kind: 'tail' })
+      expect(h.hook.isFollowing()).toBe(false)
+
+      h.reachTarget()
+      expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+      expect(h.hook.isFollowing()).toBe(true)
+      h.dispose()
+    })
+  })
+
+  describe('viewAnchor', () => {
+    it('gives the tail for a follower, and the row of the last anchor for a reader who scrolled up, also during a wait', async () => {
+      const { h } = mountWaiting({
+        messages: rowMessages(1),
+      })
+      expect(h.hook.viewAnchor()).toEqual({ kind: 'tail' })
+
+      await h.anchoredAt(2000)
+      expect(h.hook.viewAnchor()).toEqual({ kind: 'row', id: 'r20' })
+
+      // The view still shows row 20 while the seek waits for row 30.
+      void h.hook.jumpToSeq(31n)
+      expect(h.hook.viewAnchor()).toEqual({ kind: 'row', id: 'r20' })
+      h.dispose()
+    })
+
+    it('gives the row at the top of the view for a follower who seeks', () => {
+      const { h } = mountWaiting({
+        messages: rowMessages(1),
+      })
+
+      void h.hook.jumpToSeq(21n)
+
+      // The reader follows no tail during the wait, and the view shows the rows from row 45.
+      expect(h.hook.viewAnchor()).toEqual({ kind: 'row', id: 'r45' })
+      h.dispose()
+    })
   })
 })

@@ -1,3 +1,4 @@
+import type { ChatPaginationPolicyDeps } from './chatScrollPaginationPolicy'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { createChatPaginationPolicy } from './chatScrollPaginationPolicy'
@@ -30,6 +31,9 @@ describe('createChatPaginationPolicy', () => {
         isFollowing: () => false,
         anchorAtViewportTop: () => null,
         bufferScreens: 3,
+        stagedOlder: () => false,
+        stagedNewer: () => false,
+        awaitingFirstView: () => false,
       })
 
       // Away from the top edge, the intent loads nothing, although older history exists.
@@ -62,6 +66,9 @@ describe('createChatPaginationPolicy', () => {
         isFollowing: () => false,
         anchorAtViewportTop: () => null,
         bufferScreens: 3,
+        stagedOlder: () => false,
+        stagedNewer: () => false,
+        awaitingFirstView: () => false,
       })
 
       expect(policy.tryLoadOlderOnExplicitTopIntent()).toBe(false)
@@ -91,6 +98,9 @@ describe('createChatPaginationPolicy', () => {
         isFollowing: () => false,
         anchorAtViewportTop: () => null,
         bufferScreens: 3,
+        stagedOlder: () => false,
+        stagedNewer: () => false,
+        awaitingFirstView: () => false,
       })
 
       // Away from the bottom edge, the intent loads nothing, although newer history exists.
@@ -125,6 +135,9 @@ describe('createChatPaginationPolicy', () => {
         isFollowing: () => false,
         anchorAtViewportTop: () => null,
         bufferScreens: 3,
+        stagedOlder: () => false,
+        stagedNewer: () => false,
+        awaitingFirstView: () => false,
       })
 
       expect(policy.stalledOlder()).toBe(false)
@@ -155,6 +168,9 @@ describe('createChatPaginationPolicy', () => {
         isFollowing: () => true,
         anchorAtViewportTop: () => ({ id: 'm1', offsetWithinRow: 0 }),
         bufferScreens: 3,
+        stagedOlder: () => false,
+        stagedNewer: () => false,
+        awaitingFirstView: () => false,
       })
 
       expect(policy.suppressOlderPrefetchAtLiveTail()).toBe(true)
@@ -182,9 +198,149 @@ describe('createChatPaginationPolicy', () => {
         isFollowing: () => true,
         anchorAtViewportTop: () => ({ id: 'm1', offsetWithinRow: 0 }),
         bufferScreens: 3,
+        stagedOlder: () => false,
+        stagedNewer: () => false,
+        awaitingFirstView: () => false,
       })
 
       expect(policy.suppressOlderPrefetchAtLiveTail()).toBe(true)
+      dispose()
+    })
+  })
+
+  /**
+   * A policy for the cases of staged rows: both sides have more history, no fetch runs, and
+   * the view is at both edges. `overrides` replace single deps.
+   */
+  function stagedPolicy(overrides: Partial<ChatPaginationPolicyDeps> = {}) {
+    const loadOlder = vi.fn()
+    const loadNewer = vi.fn()
+    const policy = createChatPaginationPolicy({
+      getEl: () => scrollElement(),
+      hasOlder: () => true,
+      fetchingOlder: () => false,
+      hasNewer: () => true,
+      fetchingNewer: () => false,
+      geomVersion: () => 0,
+      isAtTopEdge: () => true,
+      isAtBottomEdge: () => true,
+      onLoadOlder: loadOlder,
+      onLoadNewer: loadNewer,
+      isAtBottom: () => false,
+      isFollowing: () => false,
+      anchorAtViewportTop: () => null,
+      bufferScreens: 3,
+      stagedOlder: () => false,
+      stagedNewer: () => false,
+      awaitingFirstView: () => false,
+      ...overrides,
+    })
+    return { policy, loadOlder, loadNewer }
+  }
+
+  it('loads no older page while rows are staged above', () => {
+    createRoot((dispose) => {
+      let staged = true
+      const { policy, loadOlder } = stagedPolicy({
+        stagedOlder: () => staged,
+      })
+
+      expect(policy.loadOlderMessages()).toBe(false)
+      expect(policy.tryLoadOlderOnExplicitTopIntent()).toBe(false)
+      expect(loadOlder).not.toHaveBeenCalled()
+
+      staged = false
+      expect(policy.loadOlderMessages()).toBe(true)
+      expect(loadOlder).toHaveBeenCalledOnce()
+      dispose()
+    })
+  })
+
+  it('reports the staged top edge, and no stall, while rows are staged above a view at the top', () => {
+    createRoot((dispose) => {
+      const { policy } = stagedPolicy({
+        stagedOlder: () => true,
+      })
+
+      expect(policy.atStagedTopEdge()).toBe(true)
+      expect(policy.stalledOlder()).toBe(false)
+      dispose()
+    })
+  })
+
+  it('reports no staged top edge while no row is in the list', () => {
+    createRoot((dispose) => {
+      const { policy } = stagedPolicy({
+        stagedOlder: () => true,
+        awaitingFirstView: () => true,
+      })
+
+      expect(policy.atStagedTopEdge()).toBe(false)
+      dispose()
+    })
+  })
+
+  it('reports no staged top edge while the view is away from the top', () => {
+    createRoot((dispose) => {
+      const { policy } = stagedPolicy({
+        stagedOlder: () => true,
+        isAtTopEdge: () => false,
+      })
+
+      expect(policy.atStagedTopEdge()).toBe(false)
+      dispose()
+    })
+  })
+
+  it('reports the staged bottom edge, and loads no newer page, while rows are staged below', () => {
+    createRoot((dispose) => {
+      const { policy, loadNewer } = stagedPolicy({
+        stagedNewer: () => true,
+      })
+
+      expect(policy.atStagedBottomEdge()).toBe(true)
+      expect(policy.stalledNewer()).toBe(false)
+      expect(policy.loadNewerMessages()).toBe(false)
+      expect(policy.tryLoadNewerOnExplicitBottomIntent()).toBe(false)
+      expect(loadNewer).not.toHaveBeenCalled()
+      dispose()
+    })
+  })
+
+  it('reports no staged bottom edge for a follower', () => {
+    createRoot((dispose) => {
+      const { policy } = stagedPolicy({
+        stagedNewer: () => true,
+        isFollowing: () => true,
+      })
+
+      expect(policy.atStagedBottomEdge()).toBe(false)
+      dispose()
+    })
+  })
+
+  it('ends the staged top edge when the staged rows join, with no scroll event', () => {
+    createRoot((dispose) => {
+      const [staged, setStaged] = createSignal(true)
+      const { policy } = stagedPolicy({ stagedOlder: staged })
+      expect(policy.atStagedTopEdge()).toBe(true)
+
+      // No change of the geometry version: the staged state alone runs the memo again.
+      setStaged(false)
+
+      expect(policy.atStagedTopEdge()).toBe(false)
+      dispose()
+    })
+  })
+
+  it('reports a stall for a fetch at the edge with no staged row', () => {
+    createRoot((dispose) => {
+      const { policy } = stagedPolicy({
+        fetchingOlder: () => true,
+      })
+
+      expect(policy.stalledOlder()).toBe(true)
+      expect(policy.atStagedTopEdge()).toBe(false)
       dispose()
     })
   })

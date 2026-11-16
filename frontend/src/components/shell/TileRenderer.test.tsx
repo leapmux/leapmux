@@ -5,7 +5,7 @@ import { create } from '@bufbuild/protobuf'
 import { fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library'
 import { DragDropProvider } from '@thisbeyond/solid-dnd'
 import { createRoot, createSignal, Show } from 'solid-js'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createAgentComposerActionStateStore } from '~/components/chat/agentComposerActionState'
 import { AgentInputProcessRecoverySchema, AgentInputQueueSnapshotSchema, AgentInputRecoveryTargetSchema, AgentProvider, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
@@ -24,9 +24,11 @@ import { tabKey } from '~/stores/tab.helpers'
 import { emitAddTab, emitRemoveTab } from '~/stores/tabOps'
 import { createWorkerOnlineStore } from '~/stores/workerOnline.store'
 import { deferred } from '~/test-support/async'
+import { reportChatViewportSize } from '~/test-support/chatViewRows'
 import { installTestBridge, seedWorkspace } from '~/test-support/crdtBridge'
 import { makeMessage, wrapContent } from '~/test-support/messageFactory'
 import { useTestStorage } from '~/test-support/persistentStorage'
+import { installControllableResizeObserver } from '~/test-support/resizeObserverStub'
 import { createTestFloatingWindowStore, createTestTabStores } from '~/test-support/tabStores'
 import { createMobileOverlayState } from './MobileLayout'
 import { mruAgentEditorDeps } from './mruAgentEditorDeps'
@@ -35,6 +37,13 @@ import { createTileRenderer } from './TileRenderer'
 // The composer loads its DRAFT from the unmirrored storage tier, so these cases
 // need a database for the write to land in and be read back from.
 useTestStorage()
+
+// A chat row joins the list after a hidden copy measured it, and jsdom computes no layout.
+// The controllable ResizeObserver lets a test give the copies a layout box (see
+// reportChatViewportSize).
+beforeAll(() => {
+  installControllableResizeObserver()
+})
 const setupCleanups: Array<() => void> = []
 
 vi.mock('~/context/PreferencesContext', () => ({
@@ -45,6 +54,9 @@ vi.mock('~/context/PreferencesContext', () => ({
     setShowHiddenMessages: () => {},
     // A transcript row reads the diff layout.
     diffView: () => 'unified',
+    // The chat list holds both font families in the key of each row height.
+    uiFontFamily: () => undefined,
+    monoFontFamily: () => 'monospace',
     // The composer reads these four. Its `[+]` menu offers both as toggles,
     // and the editor reads the Enter mode on every keystroke.
     enterKeyMode: () => 'cmd-enter-sends',
@@ -53,6 +65,22 @@ vi.mock('~/context/PreferencesContext', () => ({
     setShowComposerStatusBar: () => {},
   }),
 }))
+
+/** The props of the chat view that mounted last, so a test can call what the renderer handed it. */
+const chatViewState = vi.hoisted(() => ({
+  props: undefined as undefined | Parameters<typeof import('~/components/chat/ChatView').ChatView>[0],
+}))
+vi.mock('~/components/chat/ChatView', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('~/components/chat/ChatView')>()
+  return {
+    ...actual,
+    // The real view, with a record of its props.
+    ChatView: (props: Parameters<typeof actual.ChatView>[0]) => {
+      chatViewState.props = props
+      return actual.ChatView(props)
+    },
+  }
+})
 
 vi.mock('~/components/fileviewer/FileViewer', () => ({
   FileViewer: (props: { rootPath?: string, homeDir?: string }) => (
@@ -801,6 +829,33 @@ describe('TileRenderer composer send', () => {
   })
 })
 
+describe('TileRenderer history jumps', () => {
+  it('passes the signal of a history jump to the store, and the result back', async () => {
+    const s = createSetup()
+    const tileId = s.layoutStore.focusedTileId()!
+    s.addAgent('a1', tileId)
+    const chatStore = createChatStore()
+    const jumpToOldest = vi.spyOn(chatStore, 'jumpToOldestMessages').mockResolvedValue(true)
+    const jumpToLatest = vi.spyOn(chatStore, 'jumpToLatestMessages').mockResolvedValue(true)
+    const jumpAroundSeq = vi.spyOn(chatStore, 'jumpToMessagesAroundSeq').mockResolvedValue(false)
+    chatViewState.props = undefined
+    renderRenderer(s, tileId, { chatStore })
+    await waitFor(() => expect(chatViewState.props?.pagination).toBeDefined())
+    const pagination = chatViewState.props!.pagination!
+    const signal = new AbortController().signal
+
+    // The scroll hook aborts this signal when a later command of the reader replaces the
+    // jump, and only the store can end the fetch, so the signal must reach it.
+    await expect(pagination.onJumpToOldest!(signal)).resolves.toBe(true)
+    await expect(pagination.onJumpToLatest!(signal)).resolves.toBe(true)
+    await expect(pagination.onJumpToSeq!(5n, signal)).resolves.toBe(false)
+
+    expect(jumpToOldest).toHaveBeenCalledWith('worker-1', 'a1', signal)
+    expect(jumpToLatest).toHaveBeenCalledWith('worker-1', 'a1', signal)
+    expect(jumpAroundSeq).toHaveBeenCalledWith('worker-1', 'a1', 5n, signal)
+  })
+})
+
 /**
  * The approval of a denied auto-review reaches only a running root agent. A
  * stopped agent has no process to record it, and Codex refuses it for a
@@ -824,7 +879,7 @@ describe('TileRenderer auto-review approval', () => {
     },
   }
 
-  function renderDeniedReview(meta: Record<string, unknown> = {}) {
+  async function renderDeniedReview(meta: Record<string, unknown> = {}) {
     const s = createSetup()
     const tileId = s.layoutStore.focusedTileId()!
     s.addAgent('a1', tileId)
@@ -838,7 +893,9 @@ describe('TileRenderer auto-review approval', () => {
       }),
     ])
     const handleApproveAutoReviewDenial = vi.fn(async (_agentId: string, _messageId: string, _reviewId: string) => {})
-    renderRenderer(s, tileId, { chatStore, handleApproveAutoReviewDenial })
+    const view = renderRenderer(s, tileId, { chatStore, handleApproveAutoReviewDenial })
+    // The review row joins the chat list once its hidden copy is measured.
+    await reportChatViewportSize(view)
     return { s, handleApproveAutoReviewDenial }
   }
 
@@ -848,14 +905,14 @@ describe('TileRenderer auto-review approval', () => {
   }
 
   it('approves through the agent operation for a running root agent', async () => {
-    const { handleApproveAutoReviewDenial } = renderDeniedReview()
+    const { handleApproveAutoReviewDenial } = await renderDeniedReview()
     await waitFor(() => expect(approveButton()).not.toBeNull())
     fireEvent.click(approveButton()!)
     expect(handleApproveAutoReviewDenial).toHaveBeenCalledWith('a1', 'm-review', 'r1')
   })
 
   it('withdraws the control while the agent is not running', async () => {
-    const { s } = renderDeniedReview()
+    const { s } = await renderDeniedReview()
     await waitFor(() => expect(approveButton()).not.toBeNull())
     s.metadata.patch('a1', { agentStatus: AgentStatus.INACTIVE })
     await waitFor(() => expect(approveButton()).toBeNull())
@@ -864,7 +921,7 @@ describe('TileRenderer auto-review approval', () => {
   })
 
   it('offers no control in a subagent tab', async () => {
-    renderDeniedReview({ parentAgentId: 'root-agent' })
+    await renderDeniedReview({ parentAgentId: 'root-agent' })
     await waitFor(() => expect(screen.queryAllByTestId('auto-review')).not.toHaveLength(0))
     expect(approveButton()).toBeNull()
   })

@@ -87,13 +87,15 @@ export interface HistoryPaginatorDeps {
    * Run a body under the supersession machinery, toggling the fetching flag.
    * `watchSignal` ties the fetch to the WatchEvents subscription (see the store's
    * beginHistoryFetch); a reconcile-driven fetch passes it, a user fetch omits it.
+   * Resolves `true` only when the body resolved `true`: a jump returns that when it
+   * replaced the window with its page.
    */
   runHistoryFetch: (
     agentId: string,
     flag: 'fetchingOlder' | 'fetchingNewer',
-    body: (signal: AbortSignal) => Promise<void>,
+    body: (signal: AbortSignal) => Promise<boolean | void>,
     watchSignal?: AbortSignal,
-  ) => Promise<void>
+  ) => Promise<boolean>
   mergeFetchedMessages: (agentId: string, fetched: AgentChatMessage[], side: 'older' | 'newer') => void
   applyMessages: (agentId: string, messages: AgentChatMessage[], hasMore: boolean) => void
   /** The live-tail tracker: recorded-tail reads + the settle/empty-reset clamps. */
@@ -627,15 +629,18 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
    * AND we have caught up to the highest live seq observed (latestLiveSeq),
    * so a live message that arrives mid-fetch is never lost. Used by the
    * scroll-to-bottom button and send-while-scrolled-away.
+   *
+   * Resolves `true` when it replaced the window with the latest page. Resolves `false`
+   * when its signal aborted before that, or when another history fetch replaced it.
    */
-  async function jumpToLatestMessages(workerId: string, agentId: string, watchSignal?: AbortSignal): Promise<void> {
+  async function jumpToLatestMessages(workerId: string, agentId: string, watchSignal?: AbortSignal): Promise<boolean> {
     // A jump supersedes any in-flight fetch (scroll-load or a prior jump) so
     // a stuck request can't block it -- runHistoryFetch aborts the prior one.
     // `watchSignal` ties the reconcile-driven empty-window re-anchor to the
     // WatchEvents subscription so a workspace switch can't leak this fetch (and
     // its forwardFillToLiveTail loop) against a navigated-away worker -- the same
     // teardown guarantee catchUpToTail / resumeDeferredTailFill already carry.
-    await deps.runHistoryFetch(agentId, 'fetchingNewer', async (signal) => {
+    return deps.runHistoryFetch(agentId, 'fetchingNewer', async (signal) => {
       // Snapshot the recorded live tail BEFORE re-anchoring. The terminal clamp
       // settles latestLiveSeq down to the window tail, but a message broadcast
       // DURING this jump raises latestLiveSeq above the snapshot -- a genuinely
@@ -658,6 +663,8 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       // the page we just fetched (race), forward-fill to the live tail and
       // settle through the shared gap-free completion path.
       await forwardFillToLiveTail(workerId, agentId, signal, liveSeqAtEntry)
+      // The latest page replaced the window, whatever the fill added after it.
+      return true
     }, watchSignal)
   }
 
@@ -666,10 +673,27 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
    * the window with the earliest page in a single fetch (anchor OLDEST), so
    * hasMoreOlder becomes false (we are at the start) and hasMoreNewer reflects
    * whether more exist beyond it. Supersedes any in-flight fetch.
+   *
+   * `watchSignal` abandons the fetch: the reader gave another command, or took control
+   * of the view, so the page must not arrive and replace the window. Resolves `true`
+   * when it replaced the window with the oldest page, and `false` when its signal
+   * aborted or another history fetch replaced it.
    */
-  async function jumpToOldestMessages(workerId: string, agentId: string): Promise<void> {
-    await deps.runHistoryFetch(agentId, 'fetchingOlder', async (signal) => {
-      const oldest = await workerAgent.listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT })
+  async function jumpToOldestMessages(workerId: string, agentId: string, watchSignal?: AbortSignal): Promise<boolean> {
+    return deps.runHistoryFetch(agentId, 'fetchingOlder', async (signal) => {
+      let oldest
+      try {
+        // The request carries `signal`, so an abort ends it at the transport rather than
+        // only discarding what it returns.
+        oldest = await workerAgent.listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT }, { signal })
+      }
+      catch (err) {
+        // An abort is how this fetch is designed to end early, so it is no failure to
+        // report. Leave the window as it is.
+        if (signal.aborted)
+          return
+        throw err
+      }
       if (signal.aborted)
         return
       // applyMessages sets hasMoreOlder from its `hasMore` argument and
@@ -677,7 +701,8 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       // beyond the earliest page.
       deps.applyMessages(agentId, oldest.messages, false)
       setState('hasMoreNewer', agentId, oldest.hasMore)
-    })
+      return true
+    }, watchSignal)
   }
 
   /**
@@ -695,9 +720,13 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
    * `seq` falls into a deleted prefix/suffix, one page is empty and the window snaps to
    * the surviving oldest/newest rows. Both empty means the history genuinely vanished
    * (mirrors jumpToLatestMessages' authoritative-empty reset).
+   *
+   * Resolves `true` when it replaced the window with its page, also with the empty
+   * window. Resolves `false` when its signal aborted, or when another history fetch
+   * replaced it.
    */
-  async function jumpToMessagesAroundSeq(workerId: string, agentId: string, seq: bigint, watchSignal?: AbortSignal): Promise<void> {
-    await deps.runHistoryFetch(agentId, 'fetchingNewer', async (signal) => {
+  async function jumpToMessagesAroundSeq(workerId: string, agentId: string, seq: bigint, watchSignal?: AbortSignal): Promise<boolean> {
+    return deps.runHistoryFetch(agentId, 'fetchingNewer', async (signal) => {
       // Snapshot the recorded live tail before the swap: a message broadcast DURING the
       // fetch raises it past this, and hasMoreNewer/resetToEmptyIfStale must respect that.
       const liveSeqAtEntry = deps.liveTail.get(agentId)
@@ -745,7 +774,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
         // broadcast raised a genuinely-reachable seq -- forward-fill will pull it).
         deps.applyMessages(agentId, [], false)
         deps.liveTail.resetToEmptyIfStale(agentId, liveSeqAtEntry)
-        return
+        return true
       }
       // One window swap. applyMessages sets hasMoreOlder from before.hasMore (more
       // history exists below the loaded page) and defaults hasMoreNewer=false.
@@ -754,6 +783,7 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       // !caughtUpToLiveTail term (mirroring loadNewerPage) covers a live message that
       // bumped the recorded tail during the fetch, so the window can't claim the tail.
       setState('hasMoreNewer', agentId, after.hasMore || !deps.caughtUpToLiveTail(agentId))
+      return true
     }, watchSignal)
   }
 

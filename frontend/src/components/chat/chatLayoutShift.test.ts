@@ -5,8 +5,6 @@ import { nextLayoutShift, ROW_ALIGN_OFFSET_PX, rowCutAt, TOP_EDGE_SLACK_PX } fro
 interface RowSpec {
   id: string
   height: number
-  /** False for a row whose height is an estimate. Default: true. */
-  measured?: boolean
 }
 
 /** A snapshot of `rows` with `gap` px between two adjacent rows, as the virtualizer builds it. */
@@ -14,13 +12,9 @@ function snapshot(rows: readonly RowSpec[], gap = 0): LayoutSnapshot {
   const n = rows.length
   const offsets = new Float64Array(n + 1)
   const heights = new Float64Array(n)
-  const measured = new Uint8Array(n)
   const indexById = new Map<string, number>()
   rows.forEach((row, i) => {
     heights[i] = row.height
-    measured[i] = row.measured === false
-      ? 0
-      : 1
     indexById.set(row.id, i)
     const gapBelow = i < n - 1
       ? gap
@@ -32,7 +26,6 @@ function snapshot(rows: readonly RowSpec[], gap = 0): LayoutSnapshot {
     indexById,
     offsets,
     heights,
-    measured,
     n,
   }
 }
@@ -43,9 +36,9 @@ function rows(count = 10, height = 100): RowSpec[] {
 }
 
 /** `list` with the height of row `id` replaced. */
-function withHeight(list: readonly RowSpec[], id: string, height: number, measured = true): RowSpec[] {
+function withHeight(list: readonly RowSpec[], id: string, height: number): RowSpec[] {
   return list.map(row => (row.id === id
-    ? { id, height, measured }
+    ? { id, height }
     : row))
 }
 
@@ -206,16 +199,6 @@ describe('nextLayoutShift', () => {
       .toMatchObject({ shift: 50, calls: 0 })
   })
 
-  it('holds the bottom edge of an unmeasured row', () => {
-    const previous = withHeight(rows(), 'r2', 100, false)
-    expect(shiftFor({
-      previous,
-      next: withHeight(rows(), 'r2', 180),
-      c: 230,
-    }))
-      .toMatchObject({ shift: -40 - 80, calls: 0 })
-  })
-
   it('holds the bottom edge of a measured row that changes a height the reader did not see', () => {
     // Row 2 spans 200 to 300, with a cached height that its mounted copy never showed: a
     // fling skeleton stood in for it. The first read of the copy gives 180px, and the rows
@@ -279,17 +262,6 @@ describe('nextLayoutShift', () => {
       sawHeight: false,
     }))
       .toMatchObject({ shift: -40 - 60 - 30, calls: 0, sawCalls: 1 })
-  })
-
-  it('holds the bottom edge of an unmeasured row without asking whether the reader saw it', () => {
-    const previous = withHeight(rows(), 'r2', 100, false)
-    expect(shiftFor({
-      previous,
-      next: withHeight(rows(), 'r2', 180),
-      c: 230,
-      sawHeight: true,
-    }))
-      .toMatchObject({ shift: -40 - 80, calls: 0, sawCalls: 0 })
   })
 
   it('reads the pivot element, and not the edge rule, for a row at a height the reader saw', () => {
@@ -473,7 +445,7 @@ describe('nextLayoutShift', () => {
 describe('nextLayoutShift with a late row inside the view', () => {
   it('holds the bottom edge of a late row when more of the view lies below it than above it', () => {
     // The view is [230, 730]: 70px of it above r3, and 330px below r3.
-    const before = withHeight(rows(), 'r3', 100, false)
+    const before = rows()
     const after = withHeight(rows(), 'r3', 1000)
 
     const result = shiftFor({
@@ -481,6 +453,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
       next: after,
       c: 230,
       enteredFromAbove: ['r3'],
+      sawHeight: false,
     })
 
     // The bottom edge of r3 moves from 400 to 1300 in the content, and stays on screen.
@@ -488,15 +461,20 @@ describe('nextLayoutShift with a late row inside the view', () => {
   })
 
   it('holds the viewport top for a row that did not come into the view over the top edge', () => {
-    const before = withHeight(rows(), 'r3', 100, false)
+    const before = rows()
     const after = withHeight(rows(), 'r3', 1000)
 
-    expect(shiftFor({ previous: before, next: after, c: 230 }).shift).toBe(-40)
+    expect(shiftFor({
+      previous: before,
+      next: after,
+      c: 230,
+      sawHeight: false,
+    }).shift).toBe(-40)
   })
 
   it('holds the viewport top when more of the view lies above the late row than below it', () => {
     // 370px of the view above r6, and 30px below it.
-    const before = withHeight(rows(), 'r6', 100, false)
+    const before = rows()
     const after = withHeight(rows(), 'r6', 1000)
 
     expect(shiftFor({
@@ -504,12 +482,13 @@ describe('nextLayoutShift with a late row inside the view', () => {
       next: after,
       c: 230,
       enteredFromAbove: ['r6'],
+      sawHeight: false,
     }).shift).toBe(-40)
   })
 
   it('holds the viewport top when as much of the view lies above the late row as below it', () => {
     // The view is [250, 650]: 150px above r4, and 150px below it.
-    const before = withHeight(rows(), 'r4', 100, false)
+    const before = rows()
     const after = withHeight(rows(), 'r4', 1000)
 
     expect(shiftFor({
@@ -518,6 +497,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
       c: 250,
       viewHeight: 400,
       enteredFromAbove: ['r4'],
+      sawHeight: false,
     }).shift).toBe(-40)
   })
 
@@ -570,7 +550,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
 
   it('holds the bottom edge of a late row at the viewport top', () => {
     // The viewport top is at the top edge of r3, so nothing of the view lies above r3.
-    const before = withHeight(rows(), 'r3', 100, false)
+    const before = rows()
     const after = withHeight(rows(), 'r3', 1000)
 
     expect(shiftFor({
@@ -578,11 +558,12 @@ describe('nextLayoutShift with a late row inside the view', () => {
       next: after,
       c: 300,
       enteredFromAbove: ['r3'],
+      sawHeight: false,
     }).shift).toBe(-940)
   })
 
   it('holds the bottom edge of a late row whose top edge lies just below the viewport top', () => {
-    const before = withHeight(rows(), 'r3', 100, false)
+    const before = rows()
     const after = withHeight(rows(), 'r3', 1000)
 
     const result = shiftFor({
@@ -590,6 +571,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
       next: after,
       c: 300 - ROW_ALIGN_OFFSET_PX,
       enteredFromAbove: ['r3'],
+      sawHeight: false,
     })
 
     expect(result.shift).toBe(-940)
@@ -597,7 +579,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
 
   it('holds the bottom edge of the late row above the largest block between two late rows', () => {
     // The view is [230, 730]: 70px above r3, 200px between r3 and r6, and 30px below r6.
-    const before = withHeight(withHeight(rows(), 'r3', 100, false), 'r6', 100, false)
+    const before = rows()
     const after = withHeight(withHeight(rows(), 'r3', 1000), 'r6', 600)
 
     const result = shiftFor({
@@ -605,6 +587,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
       next: after,
       c: 230,
       enteredFromAbove: ['r3', 'r6'],
+      sawHeight: false,
     })
 
     // r3 grows above itself, and r6 grows at its bottom.
@@ -613,7 +596,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
 
   it('holds the bottom edge of the lower one of two adjacent late rows', () => {
     // 70px above r3, nothing between r3 and r4, and 230px below r4.
-    const before = withHeight(withHeight(rows(), 'r3', 100, false), 'r4', 100, false)
+    const before = rows()
     const after = withHeight(withHeight(rows(), 'r3', 1000), 'r4', 600)
 
     const result = shiftFor({
@@ -621,6 +604,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
       next: after,
       c: 230,
       enteredFromAbove: ['r3', 'r4'],
+      sawHeight: false,
     })
 
     // The bottom edge of r4 moves from 500 to 1900 in the content.
@@ -630,7 +614,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
   it('does not count a row that did not come over the top edge as a late row', () => {
     // r3 is late. r6 corrects a guess too, but the reader did not reach it from below, so it
     // divides no block: 70px lie above r3, and 330px below it.
-    const before = withHeight(withHeight(rows(), 'r3', 100, false), 'r6', 100, false)
+    const before = rows()
     const after = withHeight(withHeight(rows(), 'r3', 1000), 'r6', 600)
 
     expect(shiftFor({
@@ -638,13 +622,14 @@ describe('nextLayoutShift with a late row inside the view', () => {
       next: after,
       c: 230,
       enteredFromAbove: ['r3'],
+      sawHeight: false,
     }).shift).toBe(-940)
   })
 
   it('holds the bottom edge of the row at the viewport top when the block below it is the largest', () => {
-    // The viewport top is inside r2, whose height is an estimate. r5 is late: 270px of the
+    // The viewport top is inside r2, whose height the reader did not see. r5 is late: 270px of the
     // view lie above it, and 130px below it.
-    const before = withHeight(withHeight(rows(), 'r2', 100, false), 'r5', 100, false)
+    const before = rows()
     const after = withHeight(withHeight(rows(), 'r2', 300), 'r5', 1000)
 
     const result = shiftFor({
@@ -652,6 +637,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
       next: after,
       c: 230,
       enteredFromAbove: ['r5'],
+      sawHeight: false,
     })
 
     // The bottom edge of r2 moves from 300 to 500 in the content.
@@ -659,9 +645,9 @@ describe('nextLayoutShift with a late row inside the view', () => {
   })
 
   it('holds the bottom edge of a late row below a row at the viewport top that changes too', () => {
-    // The viewport top is inside r2, whose height is an estimate. r3 is late: 70px of the
+    // The viewport top is inside r2, whose height the reader did not see. r3 is late: 70px of the
     // view lie above it, and 330px below it.
-    const before = withHeight(withHeight(rows(), 'r2', 100, false), 'r3', 100, false)
+    const before = rows()
     const after = withHeight(withHeight(rows(), 'r2', 300), 'r3', 1000)
 
     const result = shiftFor({
@@ -669,6 +655,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
       next: after,
       c: 230,
       enteredFromAbove: ['r3'],
+      sawHeight: false,
     })
 
     // The bottom edge of r3 moves from 400 to 1500 in the content.
@@ -677,7 +664,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
 
   it('holds the viewport top for a late row whose top edge is at the bottom of the view', () => {
     // The view is [230, 700], and r7 starts at 700.
-    const before = withHeight(rows(), 'r7', 100, false)
+    const before = rows()
     const after = withHeight(rows(), 'r7', 1000)
 
     const result = shiftFor({
@@ -686,6 +673,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
       c: 230,
       viewHeight: 470,
       enteredFromAbove: ['r7'],
+      sawHeight: false,
     })
 
     expect(result.shift).toBe(-40)
@@ -694,7 +682,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
 
   it('holds the viewport top for a late row that the bottom of the view cuts', () => {
     // r7 is [700, 800], and the view ends at 730: nothing of the view lies below r7.
-    const before = withHeight(rows(), 'r7', 100, false)
+    const before = rows()
     const after = withHeight(rows(), 'r7', 1000)
 
     expect(shiftFor({
@@ -702,13 +690,14 @@ describe('nextLayoutShift with a late row inside the view', () => {
       next: after,
       c: 230,
       enteredFromAbove: ['r7'],
+      sawHeight: false,
     }).shift).toBe(-40)
   })
 
   it('holds the viewport top for a late row above the view', () => {
     // The viewport top is inside r4, so r3 lies above the view: its correction moves no row
     // of the view either way, and the rule for the row at the viewport top applies.
-    const before = withHeight(rows(), 'r3', 100, false)
+    const before = rows()
     const after = withHeight(rows(), 'r3', 1000)
 
     const result = shiftFor({
@@ -716,6 +705,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
       next: after,
       c: 430,
       enteredFromAbove: ['r3'],
+      sawHeight: false,
     })
 
     // The offset inside r4 holds: r4 moves from 400 to 1300 in the content.
@@ -724,7 +714,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
   })
 
   it('holds the viewport top in a view with no height', () => {
-    const before = withHeight(rows(), 'r3', 100, false)
+    const before = rows()
     const after = withHeight(rows(), 'r3', 1000)
 
     expect(shiftFor({
@@ -733,6 +723,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
       c: 230,
       viewHeight: 0,
       enteredFromAbove: ['r3'],
+      sawHeight: false,
     }).shift).toBe(-40)
   })
 
@@ -749,20 +740,8 @@ describe('nextLayoutShift with a late row inside the view', () => {
     expect(result.enteredFromAbove).not.toHaveBeenCalled()
   })
 
-  it('does not ask whether the reader saw an unmeasured late row', () => {
-    const before = withHeight(rows(), 'r3', 100, false)
-    const after = withHeight(rows(), 'r3', 1000)
-
-    expect(shiftFor({
-      previous: before,
-      next: after,
-      c: 230,
-      enteredFromAbove: ['r3'],
-    }).sawCalls).toBe(0)
-  })
-
   it('holds the viewport top for a late row that left the list', () => {
-    const before = withHeight(rows(), 'r3', 100, false)
+    const before = rows()
     const after = rows().filter(row => row.id !== 'r3')
 
     // r2, the row at the viewport top, keeps its place.
@@ -771,11 +750,12 @@ describe('nextLayoutShift with a late row inside the view', () => {
       next: after,
       c: 230,
       enteredFromAbove: ['r3'],
+      sawHeight: false,
     }).shift).toBe(-40)
   })
 
   it('keeps the content bottom while pinned, also with a late row in the view', () => {
-    const before = withHeight(rows(), 'r3', 100, false)
+    const before = rows()
     const after = withHeight(rows(), 'r3', 1000)
 
     const result = shiftFor({
@@ -784,6 +764,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
       c: 230,
       pinBottom: true,
       enteredFromAbove: ['r3'],
+      sawHeight: false,
     })
 
     // The content grows by 900, and its bottom stays.
@@ -793,7 +774,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
 
   it('keeps the spacer height at 0 or more when it holds the bottom edge of a late row', () => {
     // A shift below the negative total would give a spacer below 0.
-    const before = withHeight(rows(3), 'r1', 100, false)
+    const before = rows(3)
     const after = withHeight(rows(3), 'r1', 1000)
 
     const result = shiftFor({
@@ -802,6 +783,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
       c: 50,
       p: -500,
       enteredFromAbove: ['r1'],
+      sawHeight: false,
     })
 
     // The bottom edge of r1 would need a shift of -1400, and the content is 1200 tall.
@@ -872,17 +854,6 @@ describe('rowCutAt', () => {
       index: 1,
       top: 99,
       bottom: 199,
-    })
-  })
-
-  it('returns the bottom edge anywhere below the slack in a row whose height is an estimate', () => {
-    const list = withHeight(rows(3), 'r1', 100, false)
-    expect(cutAt(120, list).kind).toBe('top-edge')
-    expect(cutAt(170, list)).toEqual({
-      kind: 'bottom-edge',
-      index: 1,
-      top: 120,
-      bottom: 220,
     })
   })
 

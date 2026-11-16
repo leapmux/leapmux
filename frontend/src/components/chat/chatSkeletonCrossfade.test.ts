@@ -332,10 +332,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        phase = createRowUpgradePhase({
-          fastScrollActive: fast,
-          hasMeasuredHeight: () => true,
-        }, 'a', 1000)
+        phase = createRowUpgradePhase({ fastScrollActive: fast }, 1000)
       })
       expect(phase()).toBe('real')
       dispose()
@@ -347,10 +344,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        phase = createRowUpgradePhase({
-          fastScrollActive: fast,
-          hasMeasuredHeight: () => true,
-        }, 'a', 1000)
+        phase = createRowUpgradePhase({ fastScrollActive: fast }, 1000)
       })
       expect(phase()).toBe('skeleton')
       setFast(false) // scroll settled
@@ -369,10 +363,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        phase = createRowUpgradePhase({
-          fastScrollActive: fast,
-          hasMeasuredHeight: () => true,
-        }, 'a', 1000)
+        phase = createRowUpgradePhase({ fastScrollActive: fast }, 1000)
       })
       expect(phase()).toBe('skeleton')
       setFast(false) // scroll settled -> crossfade begins
@@ -383,31 +374,13 @@ describe('chatSkeletonCrossfade', () => {
       dispose()
     })
 
-    it('mounts real for an UNMEASURED row even mid-fling', () => {
-      const [fast] = createSignal(true)
-      let phase!: () => string
-      let dispose!: () => void
-      createRoot((d) => {
-        dispose = d
-        phase = createRowUpgradePhase({
-          fastScrollActive: fast,
-          hasMeasuredHeight: () => false,
-        }, 'a', 1000)
-      })
-      expect(phase()).toBe('real')
-      dispose()
-    })
-
     it('never downgrades once real: a fling starting AFTER mount does not re-skeleton', () => {
       const [fast, setFast] = createSignal(false)
       let phase!: () => string
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        phase = createRowUpgradePhase({
-          fastScrollActive: fast,
-          hasMeasuredHeight: () => true,
-        }, 'a', 1000)
+        phase = createRowUpgradePhase({ fastScrollActive: fast }, 1000)
       })
       expect(phase()).toBe('real')
       setFast(true) // a later fling must not tear a real row back to a skeleton
@@ -417,16 +390,15 @@ describe('chatSkeletonCrossfade', () => {
   })
 
   describe('createFlingSkeletonRegistry', () => {
-    const measuredVirt = (fast: () => boolean, measured: (id: string) => boolean = () => true) =>
-      ({ fastScrollActive: fast, hasMeasuredHeight: measured })
+    const flingVirt = (fast: () => boolean) => ({ fastScrollActive: fast })
 
-    it('adds a measured row that mounts mid-fling, and drops it once the scroll settles', () => {
+    it('adds a row that mounts mid-fling, and drops it once the scroll settles', () => {
       const [fast, setFast] = createSignal(true)
       let registry!: FlingSkeletonRegistry
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        registry = createFlingSkeletonRegistry(measuredVirt(fast), 1000)
+        registry = createFlingSkeletonRegistry(flingVirt(fast), 1000)
         registry.trackRow('a')
       })
       expect([
@@ -445,7 +417,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        registry = createFlingSkeletonRegistry(measuredVirt(fast), 1000)
+        registry = createFlingSkeletonRegistry(flingVirt(fast), 1000)
         registry.trackRow('a')
       })
       expect([
@@ -471,7 +443,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        registry = createFlingSkeletonRegistry(measuredVirt(fast), 1000)
+        registry = createFlingSkeletonRegistry(flingVirt(fast), 1000)
         registry.trackRow('a')
       })
       expect([
@@ -486,7 +458,7 @@ describe('chatSkeletonCrossfade', () => {
       let disposeRegistry!: () => void
       createRoot((d) => {
         disposeRegistry = d
-        registry = createFlingSkeletonRegistry(measuredVirt(fast), 1000)
+        registry = createFlingSkeletonRegistry(flingVirt(fast), 1000)
       })
       const unmountRow = createRoot((d) => {
         registry.trackRow('a')
@@ -500,28 +472,13 @@ describe('chatSkeletonCrossfade', () => {
       disposeRegistry()
     })
 
-    it('does not add an unmeasured row (it mounts real, never a skeleton)', () => {
-      const [fast] = createSignal(true)
-      let registry!: FlingSkeletonRegistry
-      let dispose!: () => void
-      createRoot((d) => {
-        dispose = d
-        registry = createFlingSkeletonRegistry(measuredVirt(fast, () => false), 1000)
-        registry.trackRow('a')
-      })
-      expect([
-        ...registry.skeletonIds(),
-      ]).toEqual([])
-      dispose()
-    })
-
     it('does not add a row that mounts while not fast-scrolling, even if a fling starts later', () => {
       const [fast, setFast] = createSignal(false)
       let registry!: FlingSkeletonRegistry
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        registry = createFlingSkeletonRegistry(measuredVirt(fast), 1000)
+        registry = createFlingSkeletonRegistry(flingVirt(fast), 1000)
         registry.trackRow('a')
       })
       expect([
@@ -541,7 +498,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        registry = createFlingSkeletonRegistry(measuredVirt(fast), 1000)
+        registry = createFlingSkeletonRegistry(flingVirt(fast), 1000)
         // A nested root models one row's lifetime, disposable independently.
         createRoot((dRow) => {
           disposeRow = dRow
@@ -558,17 +515,17 @@ describe('chatSkeletonCrossfade', () => {
       dispose()
     })
 
-    it('tracks several rows independently, keeping only the measured skeletons', () => {
-      const [fast, setFast] = createSignal(true)
-      const measured = new Set(['a', 'b'])
+    it('tracks several rows independently', () => {
+      const [fast, setFast] = createSignal(false)
       let registry!: FlingSkeletonRegistry
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        registry = createFlingSkeletonRegistry(measuredVirt(fast, id => measured.has(id)), 1000)
+        registry = createFlingSkeletonRegistry(flingVirt(fast), 1000)
+        registry.trackRow('c') // mounts before the fling -> real, never enters the set
+        setFast(true)
         registry.trackRow('a')
         registry.trackRow('b')
-        registry.trackRow('c') // unmeasured -> mounts real, never enters the set
       })
       expect([
         ...registry.skeletonIds(),

@@ -34,13 +34,8 @@ export interface LayoutSnapshot {
   indexById: ReadonlyMap<string, number>
   /** Length `n + 1`: the content top of each row, and the total height at index `n`. */
   offsets: Float64Array
-  /** Length `n`: the resolved height of each row, without the gap below it. */
+  /** Length `n`: the measured height of each row, without the gap below it. */
   heights: Float64Array
-  /**
-   * Length `n`: 1 when the row had a cached height under its current key, a
-   * provisional one included, and 0 when its height was an estimate.
-   */
-  measured: Uint8Array
   n: number
 }
 
@@ -62,7 +57,7 @@ export interface LayoutShiftInput {
   /**
    * How far the pivot element moved inside the row `rowId` since the last read (see
    * `createLayoutPivot`). The rule calls it once, and only when the viewport top cuts
-   * the body of a measured row whose previous height the reader saw.
+   * the body of a row whose previous height the reader saw.
    */
   intraRowShift: (rowId: string) => number
   /**
@@ -72,7 +67,7 @@ export interface LayoutShiftInput {
    * reader no content at that height: a hidden copy or an earlier session measured it, or
    * an earlier copy of the row did, and a placeholder stood in for the row since.
    *
-   * The rule calls it only for a measured row whose height differs in `next`: at most once
+   * The rule calls it only for a row whose height differs in `next`: at most once
    * for the row whose body the viewport top cuts, and at most once for each row that
    * `enteredFromAbove` and whose top edge is in the view.
    */
@@ -119,9 +114,8 @@ export const ROW_ALIGN_OFFSET_PX = 8
  * - `top-edge`: at most TOP_EDGE_SLACK_PX below the top edge of the row, above the first
  *   row, or at most ROW_ALIGN_OFFSET_PX + TOP_EDGE_SLACK_PX above the top edge of the
  *   next row (where a seek leaves the viewport top). The last case gives the next row.
- * - `bottom-edge`: in the gap below the row, or anywhere in a row whose height is an
- *   estimate.
- * - `body`: inside the measured body of the row. Only this kind reads a pivot element. The
+ * - `bottom-edge`: in the gap below the row.
+ * - `body`: inside the body of the row. Only this kind reads a pivot element. The
  *   shift rule holds the bottom edge for it too when the row changes a height that the
  *   reader did not see (see nextLayoutShift).
  *
@@ -155,7 +149,7 @@ export function rowCutAt(s: LayoutSnapshot, contentTop: number): RowCut {
   const bottom = rowBottom(s, index)
   const kind = contentTop - top <= TOP_EDGE_SLACK_PX
     ? 'top-edge'
-    : contentTop >= bottom || s.measured[index] !== 1
+    : contentTop >= bottom
       ? 'bottom-edge'
       : 'body'
   return { kind, index, top, bottom }
@@ -185,10 +179,10 @@ function rowBottom(s: LayoutSnapshot, i: number): number {
  *   - the top edge of `R` when the viewport top is at that edge, or a seek placed the top
  *     edge of the next row just below the viewport top (then `R` is that next row);
  *   - the bottom edge of `R` when the viewport top is in the gap below `R`, or the reader
- *     did not see `R` at its previous height. That height was a guess: an estimate, or a
- *     measured height that the mounted copy of `R` never showed and now changes
- *     (`sawHeight`), as when a fling skeleton or a copy that waited for its content gives
- *     way to the row. A read that corrects a guess then moves no row below `R`, which
+ *     did not see `R` at its previous height: a height that the mounted copy of `R` never
+ *     showed and now changes (`sawHeight`), as when a fling skeleton or a copy that waited
+ *     for its content gives way to the row. A hidden copy, the storage, or an earlier
+ *     mount measured that height. A read that corrects it then moves no row below `R`, which
  *     keeps an upward scroll through history stable: the reader came into `R` from below,
  *     so the correction goes above the viewport top;
  *   - otherwise the same distance below the top edge of `R`, plus the distance that the
@@ -196,7 +190,7 @@ function rowBottom(s: LayoutSnapshot, i: number): number {
  *     new height of `R`. This is correct for a row that grows at its bottom, as a
  *     streamed answer does.
  *
- *   The rule holds the bottom edge of a guess whatever the direction of the reader. A
+ *   The rule holds the bottom edge of such a row whatever the direction of the reader. A
  *   reader who scrolls down past the top edge of such a row before its first read then
  *   keeps the distance to its bottom edge, so a row that grows hides its growth above the
  *   viewport top. That case is rare: a row below the view mounts and measures while the
@@ -248,13 +242,12 @@ interface RowInBoth {
  *   below it, and above the bottom of the view.
  * - It came into the view over the top edge (`enteredFromAbove`), so the reader reached
  *   it from below.
- * - This step corrects its height, and that height was a guess: an estimate, or a
- *   measured height that the reader did not see (`sawHeight`).
+ * - This step corrects its height, and the reader did not see that height (`sawHeight`).
  *
- * Such a row waited for its content behind a placeholder of the guessed height while the
- * reader scrolled up to it, as a long report does while its worker renders it. An
- * estimate is the usual height of a short row, so the row can take a height of several
- * views in that step. Wherever the row grows, a part of the view moves: the part above it
+ * Such a row waited for its content behind a placeholder of the height that a hidden copy
+ * or the storage gave, while the reader scrolled up to it, as a long report does while
+ * its worker renders it. The first read of the row can differ from that height by more
+ * than a view. Wherever the row grows, a part of the view moves: the part above it
  * or the part below it.
  *
  * The late rows divide the view into blocks that no late row touches: from the viewport
@@ -291,7 +284,7 @@ function lateRowAboveLargestBlock(
       return undefined
     if ((next.heights[nextIndex] ?? 0) === (previous.heights[i] ?? 0) || !enteredFromAbove(id))
       return undefined
-    return previous.measured[i] !== 1 || !sawHeight(id)
+    return !sawHeight(id)
       ? nextIndex
       : undefined
   }
@@ -349,9 +342,9 @@ function heldPoint(
     // A row that keeps its height gives the same point for each edge, so only a row that
     // changes its height needs the answer. A mounted row changes its height only through a
     // read of its copy, so the answer is about that read.
-    const correctsGuess = cut.kind === 'bottom-edge'
+    const holdsBottomEdge = cut.kind === 'bottom-edge'
       || (nextHeight !== (previous.heights[r] ?? 0) && !sawHeight(rowId))
-    if (correctsGuess)
+    if (holdsBottomEdge)
       return nextTop + nextHeight + (c - cut.bottom)
     return nextTop + clamp(c - cut.top + intraRowShift(rowId), 0, nextHeight)
   }

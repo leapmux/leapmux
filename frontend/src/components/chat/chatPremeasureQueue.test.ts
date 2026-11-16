@@ -3,51 +3,16 @@ import type { ChatDomPremeasureCandidate } from './chatHiddenPremeasure'
 import type { VirtualItem } from './useChatVirtualizer'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
-import { createOrderedTailReveal } from './chatOrderedReveal'
 import { createPremeasureQueue } from './chatPremeasureQueue'
-import { setup } from './useChatVirtualizer.testkit'
+import { createRowHeightCache } from './chatRowHeightCache'
 
 describe('chatPremeasureQueue', () => {
-  it('settles an empty measured row and releases the later appended row', () => {
-    createRoot((dispose) => {
-      const items: VirtualItem[] = [
-        { id: 'empty', hasSpanLines: false, heightKey: 'empty-key' },
-        { id: 'answer', hasSpanLines: false, heightKey: 'answer-key' },
-      ]
-      const entries = new Map(items.map(item => [
-        item.id,
-        {
-          message: { id: item.id },
-        } as ClassifiedEntry,
-      ]))
-      const { virt } = setup(items)
-      const candidates = () => items.filter(item => !virt.hasMeasuredHeight(item.id)).map(item => ({
-        entry: entries.get(item.id)!,
-        item,
-      }))
-      const queue = createPremeasureQueue({
-        virt,
-        visibleEntryById: () => entries,
-        virtualItemById: () => new Map(items.map(item => [item.id, item])),
-        virtualItems: () => items,
-        rangedCandidates: candidates,
-        lookAheadCandidates: () => [],
-      })
-      const held = createOrderedTailReveal(() => items.map(item => item.id), id => !virt.hasMeasuredHeight(id) && queue.collapsedPremeasureIds().has(id))
-      queue.onMeasure('answer', 40, 'answer-key', 0, true)
-      expect(held().has('answer')).toBe(true)
-
-      expect(queue.onMeasure('empty', 0, 'empty-key', 0, true)).toBe(true)
-
-      expect(virt.hasMeasuredHeight('empty')).toBe(true)
-      expect(queue.collapsedPremeasureIds().has('empty')).toBe(false)
-      expect(queue.premeasureCandidates()).toEqual([])
-      expect(held().has('answer')).toBe(false)
-      dispose()
-    })
-  })
+  /**
+   * A queue over the loaded rows `ids` (height key `k-${id}`), with a real height cache.
+   * No row is measured at the start, and staging is enabled.
+   */
   function makeHarness(ids: string[]) {
-    const measured = new Set<string>()
+    const heights = createRowHeightCache()
     const items = ids.map(id => ({ id, hasSpanLines: false, heightKey: `k-${id}` } as VirtualItem))
     const entries = new Map(ids.map(id => [
       id,
@@ -60,60 +25,68 @@ describe('chatPremeasureQueue', () => {
       entry: entries.get(id)!,
       item: itemById.get(id)!,
     })
-    const [ranged, setRanged] = createSignal<ChatDomPremeasureCandidate[]>([])
+    const [target, setTarget] = createSignal<ChatDomPremeasureCandidate[]>([])
     const [lookAhead, setLookAhead] = createSignal<ChatDomPremeasureCandidate[]>([])
     const [warmup, setWarmup] = createSignal<ChatDomPremeasureCandidate[]>([])
+    const [stagingEnabled, setStagingEnabled] = createSignal(true)
     const queue = createPremeasureQueue({
-      virt: {
-        hasMeasuredHeight: id => measured.has(id),
-        primeHeight: (id) => {
-          measured.add(id)
-          return true
-        },
-      },
+      heights,
+      stagingEnabled,
       visibleEntryById: () => entries,
       virtualItemById: () => itemById,
       virtualItems: () => items,
-      rangedCandidates: ranged,
+      targetCandidates: target,
       lookAheadCandidates: lookAhead,
       warmupCandidates: warmup,
     })
     return {
       queue,
+      heights,
       candidate,
-      setRanged,
+      setTarget,
       setLookAhead,
       setWarmup,
+      setStagingEnabled,
       itemById,
-      measured,
     }
   }
 
-  it('queues ranged candidates as pending+collapsed (live tail included) and look-ahead as pending only', () => {
+  it('settles a row that measures at a height of 0', () => {
+    createRoot((dispose) => {
+      const h = makeHarness(['empty', 'answer'])
+      h.setTarget([
+        h.candidate('empty'),
+        h.candidate('answer'),
+      ])
+      h.queue.onMeasure('answer', 40, 'k-answer', 0)
+
+      // A valid empty row has a height of 0, and it counts as measured.
+      expect(h.queue.onMeasure('empty', 0, 'k-empty', 0)).toBe(true)
+
+      expect(h.heights.heightOf(h.itemById.get('empty')!)).toBe(0)
+      expect(h.queue.premeasureCandidates()).toEqual([])
+      dispose()
+    })
+  })
+
+  it('queues the target rows and the look-ahead rows as pending', () => {
     createRoot((dispose) => {
       const h = makeHarness(['a', 'b', 'c'])
-      h.setRanged([
-        h.candidate('a'),
+      h.setTarget([
         h.candidate('c'),
+        h.candidate('a'),
       ])
       h.setLookAhead([
         h.candidate('b'),
       ])
 
-      // All three owed a premeasure render, in display order.
+      // All three owed a hidden copy, in display order, whatever the order of a band.
       expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['a', 'b', 'c'])
-      // Every in-range ranged row is collapsed -- the live tail 'c' included, so its
-      // unmeasured content can't overflow onto the trailing in-flow tail UI and it
-      // reveals in order with its siblings. The look-ahead row 'b' is not in the main
-      // <For>, so it is never collapsed.
-      expect([
-        ...h.queue.collapsedPremeasureIds(),
-      ].sort()).toEqual(['a', 'c'])
       dispose()
     })
   })
 
-  it('queues warm-up candidates as pending-only, like look-ahead rows', () => {
+  it('queues warm-up candidates as pending, like look-ahead rows', () => {
     createRoot((dispose) => {
       const h = makeHarness(['a', 'b'])
       h.setWarmup([
@@ -121,57 +94,86 @@ describe('chatPremeasureQueue', () => {
       ])
 
       expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['b'])
-      // Warm-up rows are not in the main <For>, so they must never collapse.
-      expect([
-        ...h.queue.collapsedPremeasureIds(),
-      ]).toEqual([])
 
-      // A settled measurement retires the warm-up row like any other.
-      expect(h.queue.onMeasure('b', 60, 'k-b', 0, true)).toBe(true)
+      // A measurement retires the warm-up row like any other.
+      expect(h.queue.onMeasure('b', 60, 'k-b', 0)).toBe(true)
       expect(h.queue.premeasureCandidates()).toEqual([])
       dispose()
     })
   })
 
-  it('a settled measurement retires the row from pending and collapse', () => {
+  it('commits the height of a staged row to the cache, and retires the row', () => {
     createRoot((dispose) => {
       const h = makeHarness(['a', 'b'])
-      h.setRanged([
+      h.setTarget([
         h.candidate('a'),
         h.candidate('b'),
       ])
 
-      expect(h.queue.onMeasure('a', 120, 'k-a', 0, true)).toBe(true)
+      expect(h.queue.onMeasure('a', 120, 'k-a', 0)).toBe(true)
+
+      expect(h.heights.heightOf(h.itemById.get('a')!)).toBe(120)
       expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['b'])
-      // The next band recompute (the committed height drops it from the candidates)
-      // clears the collapse now that the row has real geometry.
-      h.setRanged([
+      // The row stays retired when its band still lists it: the cache holds its height.
+      h.setTarget([
+        h.candidate('a'),
         h.candidate('b'),
       ])
-      expect([
-        ...h.queue.collapsedPremeasureIds(),
-      ]).toEqual(['b'])
+      expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['b'])
       dispose()
     })
   })
 
-  it('an unsettled measurement keeps the row mounted for a re-measure under the same heightKey', () => {
+  it('commits nothing for a row that left the loaded rows', () => {
     createRoot((dispose) => {
       const h = makeHarness(['a'])
-      h.setRanged([
+      h.setTarget([
         h.candidate('a'),
       ])
 
-      // Accepted but images still loading: the height committed (hasMeasuredHeight is
-      // now true), yet the row must KEEP its premeasure mount so the image-settle
-      // re-measure can land -- the unsettled key is what exempts it from "done".
-      expect(h.queue.onMeasure('a', 80, 'k-a', 0, false)).toBe(true)
-      expect(h.measured.has('a')).toBe(true)
-      expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['a'])
+      expect(h.queue.onMeasure('gone', 120, 'k-gone', 0)).toBe(false)
 
-      // The settle re-measure retires it.
-      expect(h.queue.onMeasure('a', 100, 'k-a', 0, true)).toBe(true)
+      expect(h.heights.debugEntry('gone')).toBeUndefined()
+      expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['a'])
+      dispose()
+    })
+  })
+
+  it('refuses a height that a copy measured under another key', () => {
+    createRoot((dispose) => {
+      const h = makeHarness(['a'])
+      h.setTarget([
+        h.candidate('a'),
+      ])
+
+      expect(h.queue.onMeasure('a', 120, 'k-old', 0)).toBe(false)
+
+      expect(h.heights.heightOf(h.itemById.get('a')!)).toBeUndefined()
+      expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['a'])
+      dispose()
+    })
+  })
+
+  it('gives no candidate while staging is not enabled, and the same objects afterwards', () => {
+    createRoot((dispose) => {
+      const h = makeHarness(['a', 'b'])
+      h.setTarget([
+        h.candidate('a'),
+        h.candidate('b'),
+      ])
+      const [first, second] = h.queue.premeasureCandidates()
+
+      // The bands are empty while staging is not enabled, and the pending rows stay.
+      h.setStagingEnabled(false)
+      h.setTarget([])
       expect(h.queue.premeasureCandidates()).toEqual([])
+
+      h.setStagingEnabled(true)
+      const resumed = h.queue.premeasureCandidates()
+      expect(resumed.map(c => c.item.id)).toEqual(['a', 'b'])
+      // The same objects, so the hidden copies mount once, and not once more for each pause.
+      expect(resumed[0]).toBe(first)
+      expect(resumed[1]).toBe(second)
       dispose()
     })
   })
@@ -181,7 +183,7 @@ describe('chatPremeasureQueue', () => {
     // for an unchanged row remounts its whole hidden bubble.
     createRoot((dispose) => {
       const h = makeHarness(['a', 'b', 'c'])
-      h.setRanged([
+      h.setTarget([
         h.candidate('a'),
         h.candidate('b'),
       ])
@@ -195,8 +197,8 @@ describe('chatPremeasureQueue', () => {
       expect(grown[0]).toBe(first)
       expect(grown[1]).toBe(second)
 
-      // A settled measure retires its own row and leaves the others mounted.
-      h.queue.onMeasure('a', 10, 'k-a', 0, true)
+      // A measure retires its own row and leaves the others mounted.
+      h.queue.onMeasure('a', 10, 'k-a', 0)
       const shrunk = h.queue.premeasureCandidates()
       expect(shrunk.map(c => c.item.id)).toEqual(['b', 'c'])
       expect(shrunk[0]).toBe(second)
@@ -218,14 +220,12 @@ describe('chatPremeasureQueue', () => {
         { id: 'b', hasSpanLines: false, heightKey: 'k-b' },
       ])
       const queue = createPremeasureQueue({
-        virt: {
-          hasMeasuredHeight: () => false,
-          primeHeight: () => true,
-        },
+        heights: createRowHeightCache(),
+        stagingEnabled: () => true,
         visibleEntryById: entries,
         virtualItemById: () => new Map(items().map(item => [item.id, item])),
         virtualItems: items,
-        rangedCandidates: () => items().map(item => ({
+        targetCandidates: () => items().map(item => ({
           entry: entries().get(item.id)!,
           item,
         })),
@@ -256,7 +256,7 @@ describe('chatPremeasureQueue', () => {
     })
   })
 
-  it('records actual virtualizer acceptance and stale-key refusal only in development', () => {
+  it('records the acceptance of the cache and the refusal of a stale key only in development', () => {
     const events: unknown[] = []
     const record = (event: Event) => {
       if (event instanceof CustomEvent)
@@ -270,20 +270,9 @@ describe('chatPremeasureQueue', () => {
           const h = makeHarness(['a'])
           const candidate = h.candidate('a')
           candidate.entry.message.seq = 6n
-          const { virt } = setup([candidate.item])
-          const queue = createPremeasureQueue({
-            virt,
-            visibleEntryById: () => new Map([
-              ['a', candidate.entry],
-            ]),
-            virtualItemById: () => new Map([
-              ['a', candidate.item],
-            ]),
-            virtualItems: () => [candidate.item],
-            rangedCandidates: () => [candidate],
-            lookAheadCandidates: () => [],
-          })
-          expect(queue.onMeasure('a', 88, 'old-key', 0, true)).toBe(false)
+          h.setTarget([candidate])
+          const { queue } = h
+          expect(queue.onMeasure('a', 88, 'old-key', 0)).toBe(false)
           expect(events).toContainEqual({
             phase: 'commit',
             id: 'a',
@@ -293,11 +282,9 @@ describe('chatPremeasureQueue', () => {
             currentHeightKey: 'k-a',
             accepted: false,
             hasMeasured: false,
-            settled: true,
             candidatePending: true,
-            collapsed: true,
           })
-          expect(queue.onMeasure('a', 88, 'k-a', 0, true)).toBe(true)
+          expect(queue.onMeasure('a', 88, 'k-a', 0)).toBe(true)
           expect(events).toContainEqual({
             phase: 'commit',
             id: 'a',
@@ -307,13 +294,11 @@ describe('chatPremeasureQueue', () => {
             currentHeightKey: 'k-a',
             accepted: true,
             hasMeasured: true,
-            settled: true,
             candidatePending: false,
-            collapsed: false,
           })
           const count = events.length
           vi.stubEnv('LEAPMUX_DEV', undefined)
-          queue.onMeasure('a', 101, 'k-a', 0, true)
+          queue.onMeasure('a', 101, 'k-a', 0)
           expect(events).toHaveLength(count)
         }
         finally {

@@ -3,7 +3,7 @@ import { workerFile } from '~/api/workerRpc'
 import { base64ToUint8Array } from '~/lib/base64'
 import { MAX_FILE_IMAGE_BYTES } from '~/lib/imageBlocks'
 import { pngBase64 } from '~/test-support/pngFixture'
-import { readWorkerImage } from './readWorkerImage'
+import { FILE_IMAGE_HEADER_BYTES, FILE_IMAGE_HEADER_MAX_BYTES, readWorkerImage, readWorkerImageSize } from './readWorkerImage'
 
 vi.mock('~/api/workerRpc', () => ({
   workerFile: {
@@ -110,5 +110,136 @@ describe('worker image reads', () => {
   it('preserves cancellation', async () => {
     read.mockRejectedValue(new DOMException('Stopped', 'AbortError'))
     await expect(readWorkerImage('worker', '/image.png', undefined, signal)).rejects.toMatchObject({ name: 'AbortError' })
+  })
+})
+
+describe('readWorkerImageSize', () => {
+  /**
+   * A JPEG whose frame header lies behind a metadata segment of `metadataBytes`: the
+   * shape of a photograph with a large EXIF or ICC block.
+   */
+  function jpegWithLongHeader(width: number, height: number, metadataBytes: number): Uint8Array {
+    const segmentLength = metadataBytes + 2
+    return Uint8Array.from([
+      0xFF,
+      0xD8, // start of image
+      0xFF,
+      0xE2, // an application segment that is no EXIF block
+      (segmentLength >>> 8) & 0xFF,
+      segmentLength & 0xFF,
+      ...Array.from<number>({ length: metadataBytes }).fill(0),
+      0xFF,
+      0xC0, // the frame header
+      0x00,
+      0x11,
+      0x08,
+      (height >>> 8) & 0xFF,
+      height & 0xFF,
+      (width >>> 8) & 0xFF,
+      width & 0xFF,
+      0x03,
+      0x01,
+      0x11,
+      0x00,
+      0x02,
+      0x11,
+      0x01,
+      0x03,
+      0x11,
+      0x01,
+    ])
+  }
+
+  it('reads the size of a PNG from the first bytes of its file, in one request', async () => {
+    read.mockResolvedValue(response(content, 500_000n))
+
+    await expect(readWorkerImageSize('worker', '/image.png', undefined, signal)).resolves.toEqual({ width: 12, height: 8 })
+
+    expect(read).toHaveBeenCalledOnce()
+    // No `metaOnlyIfTruncated`: the size lies in the head of a file of any length.
+    expect(read).toHaveBeenCalledWith('worker', {
+      path: '/image.png',
+      limit: BigInt(FILE_IMAGE_HEADER_BYTES),
+    }, { signal })
+  })
+
+  it('reads a longer head once for a JPEG whose header is longer than the first read', async () => {
+    const jpeg = jpegWithLongHeader(640, 480, 6000)
+    read
+      .mockResolvedValueOnce(response(jpeg.slice(0, FILE_IMAGE_HEADER_BYTES), BigInt(jpeg.length)))
+      .mockResolvedValueOnce(response(jpeg, BigInt(jpeg.length)))
+
+    await expect(readWorkerImageSize('worker', '/photo', undefined, signal)).resolves.toEqual({ width: 640, height: 480 })
+
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(read.mock.calls[1]![1]).toEqual({
+      path: '/photo',
+      limit: BigInt(FILE_IMAGE_HEADER_MAX_BYTES),
+    })
+  })
+
+  it('gives no size for a JPEG whose longer head holds no frame header either', async () => {
+    const jpeg = jpegWithLongHeader(640, 480, 6000)
+    // Both reads end inside the metadata segment.
+    read.mockResolvedValue(response(jpeg.slice(0, FILE_IMAGE_HEADER_BYTES), BigInt(jpeg.length)))
+
+    await expect(readWorkerImageSize('worker', '/photo.jpg', undefined, signal)).resolves.toBeUndefined()
+
+    expect(read).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads no longer head for a JPEG whose first read held the whole file', async () => {
+    const truncated = jpegWithLongHeader(640, 480, 100).slice(0, 50)
+    read.mockResolvedValue(response(truncated, BigInt(truncated.length)))
+
+    await expect(readWorkerImageSize('worker', '/photo.jpg', undefined, signal)).resolves.toBeUndefined()
+
+    expect(read).toHaveBeenCalledOnce()
+  })
+
+  it('gives no size, in one request, for a PNG with no readable header', async () => {
+    const head = new Uint8Array(FILE_IMAGE_HEADER_BYTES)
+    // The signature of a PNG, and no IHDR chunk after it.
+    head.set(content.slice(0, 8))
+    read.mockResolvedValue(response(head, 500_000n))
+
+    await expect(readWorkerImageSize('worker', '/image.png', undefined, signal)).resolves.toBeUndefined()
+
+    // Only a JPEG and an AVIF keep their size behind a header of no fixed length.
+    expect(read).toHaveBeenCalledOnce()
+  })
+
+  it('gives no size for an empty file', async () => {
+    read.mockResolvedValue(response(new Uint8Array(), 0n))
+
+    await expect(readWorkerImageSize('worker', '/image.png', undefined, signal)).resolves.toBeUndefined()
+
+    expect(read).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['file:///repo/a%20b.png', undefined, '/repo/a b.png'],
+    ['a.png', '/w', '/w/a.png'],
+  ])('resolves the worker path %s as the image read does', async (path, cwd, expected) => {
+    read.mockResolvedValue(response(content, 500_000n))
+
+    await readWorkerImageSize('worker', path, cwd, signal)
+
+    expect(read).toHaveBeenCalledWith('worker', expect.objectContaining({ path: expected }), { signal })
+  })
+
+  it.each([
+    ['https://example.com/image.png', 'The image does not have a local file path'],
+    ['relative.png', 'The image working directory is unavailable'],
+    ['', 'The image file is unavailable'],
+  ])('rejects a path without a usable local target (%s)', async (path, reason) => {
+    await expect(readWorkerImageSize('worker', path, undefined, signal)).rejects.toThrow(reason)
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it('rejects when the read fails', async () => {
+    read.mockRejectedValue(new Error('the worker is unavailable'))
+
+    await expect(readWorkerImageSize('worker', '/image.png', undefined, signal)).rejects.toThrow('the worker is unavailable')
   })
 })

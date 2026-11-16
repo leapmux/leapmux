@@ -11,11 +11,10 @@ import { setWith, setWithout } from '~/lib/immutableCollections'
 // loose (timer maps, diffing effects, per-row state machines) in the ~1100-line
 // component:
 //
-//  - createLingerSet: the PREMEASURE-hidden crossfade. When a row leaves
-//    awaiting-measurement (its height committed, the real row fades in) its
-//    loading-skeleton overlay lingers one beat in a fading-out wrapper instead
-//    of popping away.
-//  - createRowUpgradePhase: the FLING upgrade. A measured row entering during a
+//  - createLingerSet: the crossfade of a row whose content was pending. When its
+//    content arrives (the real row fades in) its loading-skeleton overlay lingers
+//    one beat in a fading-out wrapper instead of popping away.
+//  - createRowUpgradePhase: the FLING upgrade. A row entering during a
 //    fast scroll mounts as an in-row skeleton, then upgrades skeleton ->
 //    crossfade -> real once the scroll settles.
 //
@@ -27,9 +26,9 @@ import { setWith, setWithout } from '~/lib/immutableCollections'
  * A reactive set of ids that LINGER for `lingerMs` after they leave `activeIds`,
  * then drop out; an id re-entering `activeIds` cancels its linger immediately.
  *
- * This is the state machine behind the loading-skeleton crossfade: a row leaving
- * awaiting-measurement keeps its skeleton for one fade-out beat, and a row that
- * re-enters awaiting (heightKey churn) cancels the linger because the live
+ * This is the state machine behind the loading-skeleton crossfade: a row whose
+ * pending content arrived keeps its skeleton for one fade-out beat, and a row
+ * whose content is pending again (new content) cancels the linger because the live
  * overlay covers it again. The timer bookkeeping -- start-on-leave,
  * cancel-on-re-enter, clear-all-on-cleanup -- lives here rather than in the
  * component so it can be tested in isolation.
@@ -91,17 +90,18 @@ export function createLingerSet(
  * leaves after appearing drops immediately.
  *
  * The mirror image of createLingerSet -- that delays a DROP; this delays an APPEARANCE.
- * It gates the loading skeleton: a row hidden pending measurement enters `activeIds`
+ * It delays the loading skeleton: a row hidden for its pending content enters `activeIds`
  * immediately (so it can't overflow its slot), but its skeleton is painted only once the
- * wait exceeds `delayMs`. A fast premeasure (a tail append) reveals with a plain fade-in
+ * wait exceeds `delayMs`. A fast load (a tail append) reveals with a plain fade-in
  * and no distracting shimmer, while a slow one still gets a skeleton as a loading
- * affordance.
+ * affordance. ChatView delays its indicators for staged rows and for the first view the
+ * same way.
  *
  * `showImmediately` (optional, reactive) skips the delay for each active id for which it
  * returns true: that id appears at once. The caller composes every reason to skip the delay
  * into this one predicate. ChatView's reasons:
- *  - A fling: a fast scroll into unmeasured history must never flash blank gaps, so those
- *    rows skeletonise immediately.
+ *  - A fling: a fast scroll into rows whose content is pending must never flash blank
+ *    gaps, so those rows skeletonise immediately.
  *  - A row that already showed a skeleton of its own: a fling skeleton upgrading into a row
  *    whose content is still rendering must not give way to a blank gap for the length of
  *    the delay.
@@ -188,15 +188,14 @@ export function createDelayedSet(
 export type RowUpgradePhase = 'skeleton' | 'crossfade' | 'real'
 
 /**
- * Per-row fling-skeleton upgrade phase. A MEASURED row entering the window
+ * Per-row fling-skeleton upgrade phase. A row entering the window
  * during a fast user scroll (momentum fling or a fast scrollbar/touch drag)
  * mounts as a skeleton instead of paying full bubble construction on the
- * scroll-critical path, then upgrades in place once the scroll settles.
+ * scroll-critical path, then upgrades in place once the scroll settles. Every row
+ * of the list is measured, so the skeleton has the height of its row.
  *
  * The initial phase is decided ONCE at row creation -- an already-real row never
- * downgrades (that would tear its DOM down mid-scroll), and only a measured row
- * can start as a skeleton (an unmeasured row must mount for real so measurement
- * / hide-until-measured proceed). The upgrade passes through a one-way
+ * downgrades (that would tear its DOM down mid-scroll). The upgrade passes through a one-way
  * 'crossfade' beat (skeleton -> crossfade -> real): the real bubble mounts
  * beneath a fading-out skeleton copy so the swap never pops.
  *
@@ -204,11 +203,10 @@ export type RowUpgradePhase = 'skeleton' | 'crossfade' | 'real'
  * signal, a one-shot effect, and an onCleanup for the crossfade timer.
  */
 export function createRowUpgradePhase(
-  virt: Pick<UseChatVirtualizerResult, 'fastScrollActive' | 'hasMeasuredHeight'>,
-  id: string,
+  virt: Pick<UseChatVirtualizerResult, 'fastScrollActive'>,
   crossfadeMs: number,
 ): Accessor<RowUpgradePhase> {
-  const skeletonAtMount = untrack(() => virt.fastScrollActive() && virt.hasMeasuredHeight(id))
+  const skeletonAtMount = untrack(virt.fastScrollActive)
   const [phase, setPhase] = createSignal<RowUpgradePhase>(skeletonAtMount ? 'skeleton' : 'real')
   if (skeletonAtMount) {
     // The crossfade -> real timer lives at the ROW-OWNER scope, not inside the effect's
@@ -268,7 +266,7 @@ export interface FlingSkeletonRegistry {
  * crossfade duration); call `trackRow` per rendered row.
  */
 export function createFlingSkeletonRegistry(
-  virt: Pick<UseChatVirtualizerResult, 'fastScrollActive' | 'hasMeasuredHeight'>,
+  virt: Pick<UseChatVirtualizerResult, 'fastScrollActive'>,
   crossfadeMs: number,
 ): FlingSkeletonRegistry {
   const [skeletonIds, setSkeletonIds] = createSignal<ReadonlySet<string>>(new Set())
@@ -285,7 +283,7 @@ export function createFlingSkeletonRegistry(
       : setWithout(prev, id)))
   }
   const trackRow = (id: string): Accessor<RowUpgradePhase> => {
-    const phase = createRowUpgradePhase(virt, id, crossfadeMs)
+    const phase = createRowUpgradePhase(virt, crossfadeMs)
     createEffect(() => setMembership(setSkeletonIds, id, phase() === 'skeleton'))
     createEffect(() => setMembership(setUpgradingIds, id, phase() !== 'real'))
     onCleanup(() => {

@@ -234,17 +234,18 @@ export function createChatStore() {
    * Pass the new signal to body. The body must discard a result after signal.aborted becomes true.
    * In finally, clear the flag only while this controller still owns the fetch.
    * A superseding fetch owns its own flags.
+   * Resolve true only when body resolved true. A jump resolves true when it replaced the window with its page.
    */
   async function runHistoryFetch(
     agentId: string,
     flag: 'fetchingOlder' | 'fetchingNewer',
-    body: (signal: AbortSignal) => Promise<void>,
+    body: (signal: AbortSignal) => Promise<boolean | void>,
     watchSignal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const signal = beginHistoryFetch(agentId, watchSignal)
     setState(flag, agentId, true)
     try {
-      await body(signal)
+      return (await body(signal)) === true
     }
     finally {
       // Clear the flag only while this controller still owns the fetch.

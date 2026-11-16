@@ -5,7 +5,7 @@ import { MAX_LOADED_CHAT_MESSAGES } from '~/stores/chat.store'
 
 import { VELOCITY_IDLE_MS } from './chatScrollVelocity'
 import { FLING_OVERSCAN_HARD_CAP_PX, flingOverscanCapPx, useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, mountScrollHarness, virtualizerNoOps, withContentAnchors } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, mountScrollHarness, staticScrollAdmission, virtualizerNoOps, withContentAnchors } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -51,7 +51,11 @@ describe('useChatScroll render-ahead overscan', () => {
             scrollTopNearAnchor: () => null,
             scrollTopForAnchor: () => null,
           })
-          const hook = useChatScroll({ virtualizer: virt, messages })
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            ...staticScrollAdmission(virt, messages),
+          })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -111,7 +115,11 @@ describe('useChatScroll render-ahead overscan', () => {
             scrollTopNearAnchor: () => null,
             scrollTopForAnchor: () => null,
           })
-          const hook = useChatScroll({ virtualizer: virt, messages })
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            ...staticScrollAdmission(virt, messages),
+          })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -171,7 +179,11 @@ describe('useChatScroll render-ahead overscan', () => {
             scrollTopNearAnchor: () => null,
             scrollTopForAnchor: () => null,
           })
-          const hook = useChatScroll({ virtualizer: virt, messages })
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            ...staticScrollAdmission(virt, messages),
+          })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -230,6 +242,7 @@ describe('useChatScroll windowing trim', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             onTrimOldMessages: (k) => {
               trims++
               lastKeep = k
@@ -291,6 +304,7 @@ describe('useChatScroll windowing trim', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             // Still AT the live tail (no newer history unloaded), so live messages
             // append to the tail rather than being dropped by the beyond-window guard.
             hasNewerMessages: () => false,
@@ -351,6 +365,7 @@ describe('useChatScroll windowing trim', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasNewerMessages: () => false,
             onTrimOldMessages: () => { trims++ },
           })
@@ -406,6 +421,7 @@ describe('useChatScroll windowing trim', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasNewerMessages: () => false,
             onTrimOldMessages: (k) => { lastKeep = k },
           })
@@ -467,6 +483,7 @@ describe('useChatScroll windowing trim', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasNewerMessages: () => false,
             onTrimOldMessages: (k) => { lastKeep = k },
           })
@@ -530,6 +547,7 @@ describe('useChatScroll windowing trim', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasNewerMessages: () => false,
             onTrimOldMessages: (k) => { lastKeep = k },
           })
@@ -598,6 +616,7 @@ describe('useChatScroll windowing trim', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasNewerMessages: () => false,
             onTrimOldMessages: (k) => { lastKeep = k },
           })

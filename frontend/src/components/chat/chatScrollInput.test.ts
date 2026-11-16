@@ -24,7 +24,7 @@ function setup(opts: {
   scrollHeight?: number
   hasOlder?: boolean
   hasNewer?: boolean
-  onJumpToOldest?: () => Promise<void>
+  onJumpToOldest?: (signal?: AbortSignal) => Promise<boolean>
 } = {}) {
   const div = makeFakeScrollDiv()
   div.setClientHeight(opts.clientHeight ?? 500)
@@ -100,23 +100,23 @@ describe('createScrollInput', () => {
   })
 
   it('jumps to the oldest page before it places the view at the top', async () => {
-    let resolveJump!: () => void
-    const onJumpToOldest = vi.fn(() => new Promise<void>((resolve) => {
-      resolveJump = resolve
-    }))
-    const { input, placeAt } = setup({ hasOlder: true, onJumpToOldest })
+    const jump = deferred<boolean>()
+    const onJumpToOldest = vi.fn((_signal?: AbortSignal) => jump.promise)
+    const { input, placeAt, ctx } = setup({ hasOlder: true, onJumpToOldest })
     input.handleKeyDown(key('Home'))
     expect(onJumpToOldest).toHaveBeenCalledOnce()
+    // The fetch is the pending history jump of the hook, so a later command can end it.
+    expect(ctx.beginHistoryJump).toHaveBeenCalledOnce()
+    expect(onJumpToOldest.mock.calls[0]![0]).toBe(vi.mocked(ctx.beginHistoryJump).mock.results[0]!.value)
     expect(placeAt).not.toHaveBeenCalled()
-    resolveJump()
-    await Promise.resolve()
-    await Promise.resolve()
+    jump.resolve(true)
+    await settle()
     expect(placeAt).toHaveBeenCalledOnce()
     expect(placeAt.mock.calls[0]![0]()).toBe(0)
   })
 
   it('re-checks the position and places nothing when the jump to the oldest page fails', async () => {
-    const jump = deferred<void>()
+    const jump = deferred<boolean>()
     const onJumpToOldest = vi.fn(() => jump.promise)
     const { input, calls, placeAt } = setup({ hasOlder: true, onJumpToOldest })
     input.handleKeyDown(key('Home'))
@@ -126,6 +126,77 @@ describe('createScrollInput', () => {
 
     expect(placeAt).not.toHaveBeenCalled()
     expect(calls).toContain('checkPosition')
+  })
+
+  it('re-checks the position and places nothing when another fetch replaced the page of Home', async () => {
+    const jump = deferred<boolean>()
+    const { input, calls, placeAt } = setup({
+      hasOlder: true,
+      onJumpToOldest: () => jump.promise,
+    })
+    input.handleKeyDown(key('Home'))
+
+    jump.resolve(false)
+    await settle()
+
+    expect(placeAt).not.toHaveBeenCalled()
+    expect(calls.filter(call => call === 'checkPosition')).toHaveLength(1)
+  })
+
+  it('does nothing when the jump to the oldest page settles after it was abandoned', async () => {
+    const jump = deferred<boolean>()
+    const { input, calls, placeAt, ctx } = setup({
+      hasOlder: true,
+      onJumpToOldest: () => jump.promise,
+    })
+    input.handleKeyDown(key('Home'))
+
+    ctx.abandonHistoryJump()
+    jump.resolve(true)
+    await settle()
+
+    expect(placeAt).not.toHaveBeenCalled()
+    expect(calls).not.toContain('checkPosition')
+  })
+
+  it('does nothing when the jump to the oldest page fails after it was abandoned', async () => {
+    const jump = deferred<boolean>()
+    const { input, calls, placeAt, ctx } = setup({
+      hasOlder: true,
+      onJumpToOldest: () => jump.promise,
+    })
+    input.handleKeyDown(key('Home'))
+
+    ctx.abandonHistoryJump()
+    jump.reject(new Error('aborted'))
+    await settle()
+
+    expect(placeAt).not.toHaveBeenCalled()
+    expect(calls).not.toContain('checkPosition')
+  })
+
+  it('re-checks the position for Home with older history and no handler', async () => {
+    const { input, calls, placeAt } = setup({ hasOlder: true })
+    input.handleKeyDown(key('Home'))
+    await settle()
+
+    // No handler replaced the window, so the top of the loaded rows is not the first message.
+    expect(placeAt).not.toHaveBeenCalled()
+    expect(calls).toContain('checkPosition')
+  })
+
+  it('abandons the pending history jump for Home with no older history', () => {
+    const { input, placeAt, ctx } = setup()
+    input.handleKeyDown(key('Home'))
+    expect(ctx.abandonHistoryJump).toHaveBeenCalledOnce()
+    expect(ctx.beginHistoryJump).not.toHaveBeenCalled()
+    expect(placeAt).toHaveBeenCalledOnce()
+  })
+
+  it('abandons the pending history jump for a page', () => {
+    const { input, ctx } = setup({ scrollTop: 2000 })
+    input.pageScroll(1)
+    expect(ctx.abandonHistoryJump).toHaveBeenCalledOnce()
   })
 
   it('rebases, writes, and retakes control for a page that moves', () => {
@@ -451,6 +522,57 @@ describe('createScrollInput', () => {
     input.handleWheel(wheel(-80, 3))
     expect(extras.setLastScrollDir).toHaveBeenCalledWith('older')
     expect(extras.tryLoadOlderOnExplicitTopIntent).toHaveBeenCalledOnce()
+  })
+
+  it('asks for the top for Home with no older history', () => {
+    const { input, ctx } = setup()
+
+    input.handleKeyDown(key('Home'))
+
+    // No `show`: the hook places the top, once the first rows are measured.
+    expect(vi.mocked(ctx.requestPlace).mock.calls).toEqual([
+      [
+        { kind: 'top' },
+      ],
+    ])
+  })
+
+  it('asks for no place when the jump to the oldest page fails', async () => {
+    const jump = deferred<boolean>()
+    const { input, ctx } = setup({
+      hasOlder: true,
+      onJumpToOldest: () => jump.promise,
+    })
+    input.handleKeyDown(key('Home'))
+
+    jump.reject(new Error('the oldest page did not load'))
+    await settle()
+
+    expect(ctx.requestPlace).not.toHaveBeenCalled()
+  })
+
+  it('pages the view, and ends nothing, while loaded rows exist and none is in the list', () => {
+    const { input, ctx, div, calls } = setup({ scrollTop: 2000 })
+    vi.mocked(ctx.awaitingFirstView).mockReturnValue(true)
+
+    input.pageScroll(-1)
+
+    // The content outside the rows still scrolls. No row shows a position, so the page is
+    // no input that takes control.
+    expect(div.getScrollTop()).toBe(1548)
+    expect(ctx.abandonHistoryJump).not.toHaveBeenCalled()
+    expect(calls).not.toContain('leaveFollow')
+  })
+
+  it('ends no follow mode for an upward wheel while loaded rows exist and none is in the list', () => {
+    const { input, ctx, extras, calls } = setup({ scrollTop: 2000 })
+    vi.mocked(ctx.awaitingFirstView).mockReturnValue(true)
+
+    input.handleWheel(wheel(-40))
+
+    expect(calls).not.toContain('leaveFollow')
+    // The input still reaches the hook, which decides there whether it counts.
+    expect(extras.cancelPendingSeek).toHaveBeenCalledOnce()
   })
 })
 

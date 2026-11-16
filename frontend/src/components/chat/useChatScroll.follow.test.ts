@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { batch } from 'solid-js'
+import { describe, expect, it, vi } from 'vitest'
 import { deferredJump, innerScrollerTarget, installScrollTestEnv, mountScrollHarness, mountWithPendingJump, settleJump } from './useChatScroll.testkit'
 
 installScrollTestEnv()
@@ -438,7 +439,7 @@ describe('useChatScroll forceScrollToBottom', () => {
     expect(jump.onJumpToLatest).toHaveBeenCalledOnce()
 
     h.setHasNewer(false)
-    jump.resolve()
+    jump.resolve(true)
     await settleJump(jump.promise)
 
     expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
@@ -463,7 +464,7 @@ describe('useChatScroll forceScrollToBottom', () => {
     h.changeAbove(60)
 
     h.setHasNewer(false)
-    jump.resolve()
+    jump.resolve(true)
     await settleJump(jump.promise)
 
     expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
@@ -479,7 +480,7 @@ describe('useChatScroll forceScrollToBottom', () => {
     h.hook.handlers.onScroll()
 
     h.setHasNewer(false)
-    jump.resolve()
+    jump.resolve(true)
     await settleJump(jump.promise)
 
     // The event moved nothing, so it ends no request, although the view sits above the bottom.
@@ -493,7 +494,7 @@ describe('useChatScroll forceScrollToBottom', () => {
     h.scrollTo(1000)
 
     h.setHasNewer(false)
-    jump.resolve()
+    jump.resolve(true)
     await settleJump(jump.promise)
 
     expect(h.div.getScrollTop()).toBe(1000)
@@ -506,7 +507,7 @@ describe('useChatScroll forceScrollToBottom', () => {
     h.scrollTo(2300)
 
     h.setHasNewer(false)
-    jump.resolve()
+    jump.resolve(true)
     await settleJump(jump.promise)
 
     expect(h.div.getScrollTop()).toBe(2300)
@@ -521,7 +522,7 @@ describe('useChatScroll forceScrollToBottom', () => {
     expect(h.div.getScrollTop()).toBe(2452)
 
     h.setHasNewer(false)
-    jump.resolve()
+    jump.resolve(true)
     await settleJump(jump.promise)
 
     expect(h.div.getScrollTop()).toBe(2452)
@@ -535,7 +536,7 @@ describe('useChatScroll forceScrollToBottom', () => {
     await h.hideThenShow()
 
     h.setHasNewer(false)
-    jump.resolve()
+    jump.resolve(true)
     await settleJump(jump.promise)
 
     // The show sticks to the loaded bottom, because the resize holds the request.
@@ -583,7 +584,7 @@ describe('useChatScroll forceScrollToBottom', () => {
   it('re-checks the bottom when newer messages remain after the jump', async () => {
     const { h, jump } = await mountWithPendingJump(mountScrollHarness)
 
-    jump.resolve()
+    jump.resolve(true)
     await settleJump(jump.promise)
 
     expect(h.div.getScrollTop()).toBe(2000)
@@ -613,6 +614,133 @@ describe('useChatScroll forceScrollToBottom', () => {
 
     expect(live.onJumpToLatest).not.toHaveBeenCalled()
     expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    h.dispose()
+  })
+})
+
+// Staged rows are loaded rows that the list does not hold yet: a hidden copy still
+// measures them. The harness states what the admission reports beside the rows of its
+// virtualizer (see mountScrollHarness).
+describe('useChatScroll follow mode with staged rows', () => {
+  it('does not follow at the bottom of the list while rows that it showed before are staged below', async () => {
+    // After a width change, the rows below the list were in the list before. A reader at
+    // the bottom end of the measured rows did not ask for the tail.
+    const h = mountScrollHarness({ stagedBelow: 2, holdsTail: false })
+    await h.anchoredAt(2000)
+
+    h.scrollTo(4500)
+
+    expect(h.hook.atBottom()).toBe(true)
+    expect(h.hook.isFollowing()).toBe(false)
+    h.dispose()
+  })
+
+  it('follows at the bottom once the rows that were staged below joined', async () => {
+    const h = mountScrollHarness({ stagedBelow: 2, holdsTail: false })
+    await h.anchoredAt(2000)
+    h.scrollTo(4500)
+    expect(h.hook.isFollowing()).toBe(false)
+
+    h.setStagedBelow(0)
+    h.setHoldsTail(true)
+    h.hook.handlers.onScroll()
+
+    expect(h.hook.isFollowing()).toBe(true)
+    h.dispose()
+  })
+
+  it('follows when the reader reaches the bottom while a new message is staged', async () => {
+    // Only a new message is staged below, so the rows of the list still hold the tail.
+    const h = mountScrollHarness({ stagedBelow: 1 })
+    await h.anchoredAt(2000)
+
+    h.scrollTo(4500)
+    expect(h.hook.isFollowing()).toBe(true)
+
+    // The message joins: the list grows below, with no scroll event.
+    h.setStagedBelow(0)
+    h.changeBelow(300)
+    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    h.dispose()
+  })
+
+  it('does not follow when a newer page arrives under a reader at the loaded bottom', async () => {
+    const h = mountScrollHarness({ hasNewer: true })
+    await h.anchoredAt(4000)
+    h.scrollTo(4500)
+
+    // The page arrives: its rows are staged, and they are no new messages.
+    batch(() => {
+      h.setStagedBelow(5)
+      h.setHoldsTail(false)
+      h.setHasNewer(false)
+    })
+
+    expect(h.hook.isFollowing()).toBe(false)
+    expect(h.div.getScrollTop()).toBe(4500)
+    h.dispose()
+  })
+
+  it('keeps a follower in follow mode while a new message is staged', () => {
+    const h = mountScrollHarness()
+    expect(h.hook.isFollowing()).toBe(true)
+
+    h.setStagedBelow(1)
+    h.changeBelow(300)
+
+    expect(h.hook.isFollowing()).toBe(true)
+    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    h.dispose()
+  })
+
+  it('asks for the top when a jump to the latest page fails during the first view', async () => {
+    const jump = deferredJump()
+    const h = mountScrollHarness({
+      hasNewer: true,
+      awaitingFirstView: true,
+      holdTargets: true,
+      hookOptions: {
+        savedViewportScroll: () => ({ atBottom: true, hasMoreNewer: true }),
+        onClearSavedViewportScroll: vi.fn(),
+        onJumpToLatest: jump.onJumpToLatest,
+      },
+    })
+    // The mount starts the jump, and asks for no place while it is pending.
+    expect(jump.onJumpToLatest).toHaveBeenCalledOnce()
+    expect(h.requestedTargets()).toEqual([])
+
+    jump.reject(new Error('the latest page did not load'))
+    await settleJump(jump.promise)
+
+    // The request for the tail ended with its fetch, also during the first view.
+    expect(h.hook.getScrollState()).toMatchObject({ atBottom: false })
+    expect(h.requestedTargets().at(-1)).toEqual({ kind: 'top' })
+
+    h.reachTarget()
+    expect(h.div.getScrollTop()).toBe(0)
+    expect(h.hook.isFollowing()).toBe(false)
+    h.dispose()
+  })
+
+  it('waits for the rows of the latest page when the jump of End arrives on staged rows', async () => {
+    const { h, jump } = await mountWithPendingJump(opts => mountScrollHarness({ ...opts, holdTargets: true }))
+
+    // The store clears its newer-pages flag when the page arrives, before the landing of
+    // the jump runs. The rows of the page are staged then.
+    h.setStagedBelow(2)
+    h.setHasNewer(false)
+    h.changeBelow(300)
+    expect(h.div.getScrollTop()).toBe(2000)
+    expect(h.hook.isFollowing()).toBe(false)
+
+    jump.resolve(true)
+    await settleJump(jump.promise)
+    expect(h.div.getScrollTop()).toBe(2000)
+    expect(h.requestedTargets().at(-1)).toEqual({ kind: 'tail' })
+
+    h.reachTarget()
+    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    expect(h.hook.isFollowing()).toBe(true)
     h.dispose()
   })
 })

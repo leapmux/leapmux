@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { sniffImageDimensionsFromBase64, sniffImageDimensionsFromDataUrl } from './imageDimensions'
+import { sniffImageDimensionsFromBase64, sniffImageDimensionsFromBytes, sniffImageDimensionsFromDataUrl } from './imageDimensions'
 
 function b64(bytes: number[]): string {
   return btoa(String.fromCharCode(...bytes))
@@ -445,5 +445,93 @@ describe('sniffimagedimensions', () => {
       .toEqual({ width: 12, height: 34 })
     expect(sniffImageDimensionsFromDataUrl('data:image/png,rawpayload')).toBeNull()
     expect(sniffImageDimensionsFromDataUrl('https://example.com/a.png')).toBeNull()
+  })
+})
+
+describe('sniffImageDimensionsFromBytes', () => {
+  // Each fixture of the base64 cases above, with the size that those cases expect.
+  const avif = avifBytes({
+    pitm: 1,
+    ipco: [
+      ispeBox(100, 100),
+      ispeBox(800, 600),
+    ],
+    associations: [2],
+  })
+  const fixtures: [name: string, bytes: number[], width: number, height: number][] = [
+    [
+      'PNG',
+      pngBytes(640, 480),
+      640,
+      480,
+    ],
+    [
+      'GIF',
+      gifBytes(320, 200),
+      320,
+      200,
+    ],
+    [
+      'lossy WebP',
+      webpLossyBytes(550, 368),
+      550,
+      368,
+    ],
+    [
+      'lossless WebP',
+      webpLosslessBytes(800, 600),
+      800,
+      600,
+    ],
+    [
+      'extended WebP',
+      webpExtendedBytes(1024, 768),
+      1024,
+      768,
+    ],
+    [
+      'JPEG',
+      jpegBytes(320, 240),
+      320,
+      240,
+    ],
+    // EXIF orientation 6 rotates the picture, so the axes swap.
+    [
+      'rotated JPEG',
+      jpegBytes(200, 100, exifApp1Segment(6)),
+      100,
+      200,
+    ],
+    ['AVIF', avif, 800, 600],
+  ]
+
+  it.each(fixtures)('reads the size of a %s from its bytes, as the base64 entry point does', (_name, bytes, width, height) => {
+    expect(sniffImageDimensionsFromBytes(Uint8Array.from(bytes))).toEqual({ width, height })
+    expect(sniffImageDimensionsFromBase64(b64(bytes))).toEqual({ width, height })
+  })
+
+  it('reads the size from a head that holds more bytes than the header', () => {
+    const head = Uint8Array.from([
+      ...pngBytes(640, 480),
+      ...Array.from<number>({ length: 4096 }).fill(0),
+    ])
+    expect(sniffImageDimensionsFromBytes(head)).toEqual({ width: 640, height: 480 })
+  })
+
+  it('returns null for too few bytes', () => {
+    expect(sniffImageDimensionsFromBytes(Uint8Array.from(pngBytes(640, 480).slice(0, 8)))).toBeNull()
+    expect(sniffImageDimensionsFromBytes(new Uint8Array())).toBeNull()
+  })
+
+  it('returns null for a JPEG whose frame header lies past the bytes', () => {
+    // A long EXIF segment pushes the frame header out of a short head.
+    const jpeg = jpegBytes(320, 240, exifApp1Segment(1))
+    expect(sniffImageDimensionsFromBytes(Uint8Array.from(jpeg.slice(0, 16)))).toBeNull()
+    expect(sniffImageDimensionsFromBytes(Uint8Array.from(jpeg))).toEqual({ width: 320, height: 240 })
+  })
+
+  it('returns null for bytes of an unsupported format, and for a corrupt size', () => {
+    expect(sniffImageDimensionsFromBytes(Uint8Array.from(chars('BM12345678')))).toBeNull()
+    expect(sniffImageDimensionsFromBytes(Uint8Array.from(pngBytes(0, 480)))).toBeNull()
   })
 })

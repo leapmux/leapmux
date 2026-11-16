@@ -1,15 +1,19 @@
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
 import { LARGE_MARKDOWN_BODY_CHARS } from '~/lib/markdownWorkerClient'
 import { createManualFrames } from '~/test-support/manualFrames'
 import {
   clearObjectStoreIn,
   contentBoxWidthIn,
+  deleteStoredNamesIn,
   heldReplyCountIn,
   installReplyHoldIn,
   LARGE_BODY_FILLER_CHARS,
   largeBodyFiller,
+  loadingIndicatorIn,
   markedParagraphs,
+  mountedRowSeqsIn,
   paragraphMarker,
   premeasureCommitIn,
   releaseHeldRepliesIn,
@@ -21,6 +25,7 @@ import {
   startPremeasureRecordIn,
   startRowWatchIn,
   stopRowWatchIn,
+  STORED_ROW_HEIGHTS_NAME_PREFIX,
   topParagraphIn,
   topRowIn,
   widthSensitiveParagraphs,
@@ -527,6 +532,123 @@ describe('rowStatesIn', () => {
   })
 })
 
+describe('mountedRowSeqsIn', () => {
+  it('returns the sequence numbers of the mounted rows in document order, without the rows of a hidden copy', () => {
+    const container = containerWith([
+      { seq: '7', top: 100, height: 40 },
+      { seq: '8', top: 150, height: 40 },
+      { seq: '9', top: 200, height: 40 },
+    ])
+    const premeasureRoot = document.createElement('div')
+    premeasureRoot.dataset.chatPremeasureRoot = 'true'
+    const copy = document.createElement('div')
+    copy.dataset.seq = '3'
+    premeasureRoot.append(copy)
+    container.prepend(premeasureRoot)
+
+    expect(mountedRowSeqsIn(container)).toEqual([7, 8, 9])
+  })
+
+  it('keeps the document order when the sequence numbers are not ascending', () => {
+    const container = containerWith([
+      { seq: '12', top: 100, height: 40 },
+      { seq: '4', top: 150, height: 40 },
+    ])
+
+    expect(mountedRowSeqsIn(container)).toEqual([12, 4])
+  })
+
+  it('returns no sequence number for a container with no row', () => {
+    expect(mountedRowSeqsIn(containerWith([]))).toEqual([])
+  })
+})
+
+describe('loadingIndicatorIn', () => {
+  const OLDER = 'Loading older messages...'
+
+  /**
+   * A chat container with a scroll container, which holds one row for each text of `rowTexts`. An indicator is an
+   * overlay beside the scroll container, as the app draws it: an icon and its text.
+   */
+  function chatWith(rowTexts: string[]): { root: HTMLElement, addIndicator: (text: string) => HTMLElement } {
+    const root = document.createElement('div')
+    const scroller = document.createElement('div')
+    for (const text of rowTexts) {
+      const row = document.createElement('div')
+      const bubble = document.createElement('p')
+      bubble.textContent = text
+      row.append(bubble)
+      scroller.append(row)
+    }
+    root.append(scroller)
+    document.body.append(root)
+    return {
+      root,
+      addIndicator: (text) => {
+        const indicator = document.createElement('div')
+        indicator.append(document.createElement('svg'), `\n  ${text}\n`)
+        root.append(indicator)
+        return indicator
+      },
+    }
+  }
+
+  it('finds an overlay beside the scroll container', () => {
+    const chat = chatWith(['Turn 1.', 'Answer 1.'])
+    const indicator = chat.addIndicator(OLDER)
+
+    expect(loadingIndicatorIn(chat.root, OLDER)).toBe(indicator)
+  })
+
+  it('returns null for a chat with rows only', () => {
+    const chat = chatWith(['Turn 1.', 'Answer 1.'])
+
+    expect(loadingIndicatorIn(chat.root, OLDER)).toBeNull()
+  })
+
+  it('returns null for a row that quotes the text inside a longer one', () => {
+    const chat = chatWith([`${OLDER} please wait`])
+
+    expect(loadingIndicatorIn(chat.root, OLDER)).toBeNull()
+  })
+
+  it('returns null for an indicator with another text', () => {
+    const chat = chatWith(['Turn 1.'])
+    chat.addIndicator('Loading newer messages...')
+
+    expect(loadingIndicatorIn(chat.root, OLDER)).toBeNull()
+  })
+
+  it('returns the element that holds the text, not an ancestor of it', () => {
+    const chat = chatWith([])
+    const wrapper = document.createElement('div')
+    const label = document.createElement('span')
+    label.textContent = OLDER
+    wrapper.append(label)
+    chat.root.append(wrapper)
+
+    expect(loadingIndicatorIn(chat.root, OLDER)).toBe(label)
+  })
+
+  it('does not join two runs of text that a child element separates', () => {
+    const chat = chatWith([])
+    const split = document.createElement('div')
+    split.append('Loading older', document.createElement('br'), ' messages...')
+    chat.root.append(split)
+
+    expect(loadingIndicatorIn(chat.root, OLDER)).toBeNull()
+  })
+
+  it('counts a run of white space inside the text as one space', () => {
+    const chat = chatWith([])
+    const indicator = document.createElement('div')
+    indicator.textContent = 'Loading  older\n messages...'
+    chat.root.append(indicator)
+
+    expect(loadingIndicatorIn(chat.root, OLDER)).toBe(indicator)
+  })
+})
+
 describe('installReplyHoldIn', () => {
   const KEY = '__testReplyHold'
 
@@ -752,5 +874,95 @@ describe('clearObjectStoreIn', () => {
     await expect(clearObjectStoreIn({ database: 'renders', store: 'artifacts' }))
       .rejects
       .toThrow('the database renders has no object store artifacts')
+  })
+})
+
+describe('deleteStoredNamesIn', () => {
+  /** A fresh IndexedDB as the global one, with the object store `entries` of the database `kv`, keyed by `k`. */
+  async function storageWith(rows: readonly string[]): Promise<void> {
+    vi.stubGlobal('indexedDB', new IDBFactory())
+    onTestFinished(() => {
+      vi.unstubAllGlobals()
+    })
+    await new Promise<void>((resolve, reject) => {
+      const open = indexedDB.open('kv', 1)
+      open.onupgradeneeded = () => {
+        const entries = open.result.createObjectStore('entries', { keyPath: 'k' })
+        for (const k of rows)
+          entries.put({ k, v: 'value', e: 0 })
+      }
+      open.onerror = () => reject(open.error)
+      open.onsuccess = () => {
+        open.result.close()
+        resolve()
+      }
+    })
+  }
+
+  /** The keys that the object store `entries` holds, in order. */
+  function storedKeys(): Promise<string[]> {
+    return new Promise<string[]>((resolve, reject) => {
+      const open = indexedDB.open('kv')
+      open.onerror = () => reject(open.error)
+      open.onsuccess = () => {
+        const request = open.result.transaction('entries', 'readonly').objectStore('entries').getAllKeys()
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          open.result.close()
+          resolve(request.result.map(String))
+        }
+      }
+    })
+  }
+
+  it('deletes each entry whose logical name starts with the prefix, for an account and for the device', async () => {
+    await storageWith([
+      'leapmux:u:alice:chat-row-heights:agent-1',
+      'leapmux:u:bob:chat-row-heights:agent-2',
+      'leapmux:chat-row-heights:agent-3',
+    ])
+
+    await expect(deleteStoredNamesIn({ database: 'kv', store: 'entries', namePrefix: 'chat-row-heights:' })).resolves.toBe(3)
+
+    expect(await storedKeys()).toEqual([])
+  })
+
+  it('keeps every other entry', async () => {
+    const kept = [
+      // Another name of the same account.
+      'leapmux:u:alice:browser-prefs',
+      // A name that holds the prefix, but does not start with it.
+      'leapmux:u:alice:draft:chat-row-heights:agent-1',
+      // An account whose id is the prefix is no name.
+      'leapmux:u:chat-row-heights:browser-prefs',
+      // A key of another family.
+      'other:chat-row-heights:agent-1',
+    ]
+    await storageWith([
+      ...kept,
+      'leapmux:u:alice:chat-row-heights:agent-1',
+    ])
+
+    await expect(deleteStoredNamesIn({ database: 'kv', store: 'entries', namePrefix: 'chat-row-heights:' })).resolves.toBe(1)
+
+    expect(await storedKeys()).toEqual([...kept].sort())
+  })
+
+  it('resolves 0 for a store with no entry', async () => {
+    await storageWith([])
+
+    await expect(deleteStoredNamesIn({ database: 'kv', store: 'entries', namePrefix: 'chat-row-heights:' })).resolves.toBe(0)
+  })
+
+  it('rejects when the database has no such store', async () => {
+    await storageWith([])
+
+    await expect(deleteStoredNamesIn({ database: 'kv', store: 'renamed', namePrefix: 'chat-row-heights:' }))
+      .rejects
+      .toThrow('the database kv has no object store renamed')
+  })
+
+  it('names the prefix under which the app stores the row heights', () => {
+    expect(STORED_ROW_HEIGHTS_NAME_PREFIX).toBe(PREFIX_CHAT_ROW_HEIGHTS)
   })
 })

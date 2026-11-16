@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { FOLLOW_TOLERANCE_PX, maxScrollTopOf } from './chatScrollGeometry'
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeRowVirtualizer, makeStubVirtualizer, mountScrollHarness, virtualizerNoOps, withContentAnchors } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeRowVirtualizer, makeStubVirtualizer, mountScrollHarness, rowMessages, staticScrollAdmission, virtualizerNoOps, withContentAnchors } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -148,9 +148,11 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           div.setScrollHeight(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
           let olderLoads = 0
+          const virt = makeStubVirtualizer()
           const hook = useChatScroll({
-            virtualizer: makeStubVirtualizer(),
+            virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true,
             onLoadOlderMessages: () => { olderLoads++ },
           })
@@ -179,9 +181,11 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           div.setScrollHeight(0) // content fits the viewport -> non-scrollable
           const [messages] = createSignal<AgentChatMessage[]>([])
           const loadOrder: string[] = []
+          const virt = makeStubVirtualizer()
           const hook = useChatScroll({
-            virtualizer: makeStubVirtualizer(),
+            virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true,
             hasNewerMessages: () => true,
             onLoadOlderMessages: () => loadOrder.push('older'),
@@ -217,9 +221,11 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           div.setScrollHeight(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
           let loads = 0
+          const virt = makeStubVirtualizer()
           const hook = useChatScroll({
-            virtualizer: makeStubVirtualizer(),
+            virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => false,
             hasNewerMessages: () => false,
             onLoadOlderMessages: () => { loads++ },
@@ -255,6 +261,7 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true,
             hasNewerMessages: () => true,
             onLoadOlderMessages: () => loadOrder.push('older'),
@@ -297,9 +304,11 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
           const [fetchingOlder, setFetchingOlder] = createSignal(false)
           let olderLoads = 0
+          const virt = makeStubVirtualizer()
           const hook = useChatScroll({
-            virtualizer: makeStubVirtualizer(),
+            virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => remaining > 0,
             fetchingOlder,
             onLoadOlderMessages: () => {
@@ -343,9 +352,11 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           const [messages, setMessages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
           const [fetchingOlder, setFetchingOlder] = createSignal(false)
           let olderLoads = 0
+          const virt = makeStubVirtualizer()
           const hook = useChatScroll({
-            virtualizer: makeStubVirtualizer(),
+            virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => remaining > 0,
             fetchingOlder,
             onLoadOlderMessages: () => {
@@ -405,6 +416,7 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true,
             fetchingOlder,
             onLoadOlderMessages: () => {
@@ -479,6 +491,7 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true, // history exists AND the above-buffer (500px) is
             hasNewerMessages: () => false, // deficient (< 1250) -- the OLD code would page it
             fetchingOlder,
@@ -543,6 +556,7 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true, // unbounded history: any stop is the scrollable
             hasNewerMessages: () => false, // gate, not exhaustion
             fetchingOlder,
@@ -612,6 +626,7 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true,
             hasNewerMessages: () => false,
             fetchingOlder,
@@ -676,6 +691,7 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true,
             hasNewerMessages: () => true, // windowed away from the live tail
             fetchingOlder,
@@ -729,6 +745,7 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true,
             onLoadOlderMessages: () => { olderLoads++ },
           })
@@ -778,6 +795,7 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasNewerMessages: () => true,
             fetchingNewer,
             onLoadNewerMessages: () => {
@@ -844,6 +862,7 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => remaining > 0,
             fetchingOlder,
             onLoadOlderMessages: () => {
@@ -903,6 +922,7 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true,
             fetchingOlder,
             onLoadOlderMessages: () => {
@@ -965,6 +985,7 @@ describe('useChatScroll auto-load through hidden-only window pages', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true,
             hasNewerMessages: () => false, // forceScrollToBottom just sticks (no jump)
             onLoadOlderMessages: () => { olderLoads++ },
@@ -1027,6 +1048,7 @@ describe('useChatScroll fresh-mount placement vs older prefetch', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true,
             hasNewerMessages: () => false,
             onLoadOlderMessages: () => { olderLoads++ },
@@ -1069,6 +1091,7 @@ describe('useChatScroll fresh-mount placement vs older prefetch', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => hasOlder(),
             hasNewerMessages: () => false,
             fetchingOlder,
@@ -1137,6 +1160,7 @@ describe('useChatScroll fresh-mount placement vs older prefetch', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true,
             hasNewerMessages: () => true,
             onLoadOlderMessages: () => { olderLoads++ },
@@ -1181,6 +1205,7 @@ describe('useChatScroll fresh-mount placement vs older prefetch', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true,
             hasNewerMessages: () => false,
             onLoadOlderMessages: () => { olderLoads++ },
@@ -1222,6 +1247,7 @@ describe('useChatScroll fresh-mount placement vs older prefetch', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => hasOlder(),
             hasNewerMessages: () => false,
             onLoadOlderMessages: () => { olderLoads++ },
@@ -1268,9 +1294,11 @@ describe('useChatScroll scroll pagination dispatch', () => {
       const [messages] = createSignal<AgentChatMessage[]>([])
       let olderLoads = 0
       let newerLoads = 0
+      const virt = makeStubVirtualizer()
       const hook = useChatScroll({
-        virtualizer: makeStubVirtualizer(),
+        virtualizer: virt,
         messages,
+        ...staticScrollAdmission(virt, messages),
         hasOlderMessages: () => true,
         hasNewerMessages: () => true,
         onLoadOlderMessages: () => { olderLoads++ },
@@ -1296,9 +1324,11 @@ describe('useChatScroll scroll pagination dispatch', () => {
       const [messages] = createSignal<AgentChatMessage[]>([])
       let olderLoads = 0
       let newerLoads = 0
+      const virt = makeStubVirtualizer()
       const hook = useChatScroll({
-        virtualizer: makeStubVirtualizer(),
+        virtualizer: virt,
         messages,
+        ...staticScrollAdmission(virt, messages),
         hasOlderMessages: () => true,
         hasNewerMessages: () => true,
         onLoadOlderMessages: () => { olderLoads++ },
@@ -1413,6 +1443,160 @@ describe('useChatScroll buffer fill under a layout shift', () => {
 
     h.hook.pageScroll(-1)
     h.hook.handlers.onScroll()
+    h.dispose()
+  })
+})
+
+// Staged rows are loaded content that has no pixels yet, and a place that waits is about
+// to replace the position of the view. Neither state fetches a page.
+describe('useChatScroll pagination with staged rows', () => {
+  // The harness: 50 rows of 100px in a 500px view, so the bottom is at 4500. The buffer
+  // target is three views (1500px), and a side loads below 1250px of content.
+  const press = (h: ReturnType<typeof mountScrollHarness>, key: string) => {
+    h.hook.handlers.onKeyDown(new KeyboardEvent('keydown', { key, cancelable: true }))
+  }
+
+  it('fetches no page while the first view waits, and fills once the rows joined', () => {
+    const onLoadOlderMessages = vi.fn()
+    const onLoadNewerMessages = vi.fn()
+    // No row is in the list: the empty list reads as a deficit on both sides.
+    const h = mountScrollHarness({
+      heights: [],
+      hasNewer: true,
+      awaitingFirstView: true,
+      holdTargets: true,
+      hookOptions: {
+        hasOlderMessages: () => true,
+        onLoadOlderMessages,
+        onLoadNewerMessages,
+      },
+    })
+    const loads = () => onLoadOlderMessages.mock.calls.length + onLoadNewerMessages.mock.calls.length
+
+    h.hook.handlers.onWheel(new WheelEvent('wheel', { deltaY: -100 }))
+    h.hook.handlers.onWheel(new WheelEvent('wheel', { deltaY: 100 }))
+    h.hook.handlers.onScroll()
+    expect(loads()).toBe(0)
+
+    // The first rows join the list, and the place of the first view is shown.
+    h.reachTarget()
+    expect(loads()).toBeGreaterThan(0)
+    h.dispose()
+  })
+
+  /** A reader at 2000 with rows staged below, who pressed End: the tail waits. The view then moves to 100 with no input. */
+  async function endPressedThenMovedTo100() {
+    const onLoadOlderMessages = vi.fn()
+    const h = mountScrollHarness({
+      stagedBelow: 2,
+      holdTargets: true,
+      hookOptions: {
+        hasOlderMessages: () => true,
+        onLoadOlderMessages,
+      },
+    })
+    await h.anchoredAt(2000)
+    press(h, 'End')
+    h.scrollTo(100)
+    return { h, onLoadOlderMessages }
+  }
+
+  it('fetches no page while a place waits', async () => {
+    const { h, onLoadOlderMessages } = await endPressedThenMovedTo100()
+
+    // The buffers describe the position that the reader is about to leave.
+    expect(onLoadOlderMessages).not.toHaveBeenCalled()
+    h.dispose()
+  })
+
+  it('runs the fill that the wait skipped when an input ends the wait', async () => {
+    const { h, onLoadOlderMessages } = await endPressedThenMovedTo100()
+
+    h.hook.handlers.onWheel(new WheelEvent('wheel', { deltaY: -100 }))
+    expect(onLoadOlderMessages).not.toHaveBeenCalled()
+
+    await Promise.resolve()
+    expect(onLoadOlderMessages).toHaveBeenCalledOnce()
+    h.dispose()
+  })
+
+  it('fills nothing for the old position when a command follows the wait', async () => {
+    const { h, onLoadOlderMessages } = await endPressedThenMovedTo100()
+
+    // End again: the command ends the wait, and asks for its own place in the same task.
+    press(h, 'End')
+    await Promise.resolve()
+    expect(onLoadOlderMessages).not.toHaveBeenCalled()
+
+    h.reachTarget()
+    expect(h.div.getScrollTop()).toBe(h.div.el.scrollHeight - h.div.el.clientHeight)
+    expect(onLoadOlderMessages).not.toHaveBeenCalled()
+    h.dispose()
+  })
+
+  /** A follower at 4500 whose seek to the row at 100 waits. */
+  function seekToRowOneWaits() {
+    const onLoadOlderMessages = vi.fn()
+    const h = mountScrollHarness({
+      messages: rowMessages(1),
+      holdTargets: true,
+      hookOptions: {
+        hasOlderMessages: () => true,
+        onLoadOlderMessages,
+      },
+    })
+    void h.hook.jumpToSeq(2n)
+    return { h, onLoadOlderMessages }
+  }
+
+  it('runs a skipped fill after the place is shown', () => {
+    const { h, onLoadOlderMessages } = seekToRowOneWaits()
+    // A scroll event with no input: its fill is skipped during the wait.
+    h.hook.handlers.onScroll()
+    expect(onLoadOlderMessages).not.toHaveBeenCalled()
+
+    h.reachTarget()
+
+    expect(h.div.getScrollTop()).toBe(92)
+    expect(onLoadOlderMessages).toHaveBeenCalledOnce()
+    h.dispose()
+  })
+
+  it('fetches nothing after a show that skipped no fill', () => {
+    const { h, onLoadOlderMessages } = seekToRowOneWaits()
+
+    h.reachTarget()
+
+    // As a placement with no wait: the scroll event of the placement fills.
+    expect(h.div.getScrollTop()).toBe(92)
+    expect(onLoadOlderMessages).not.toHaveBeenCalled()
+    h.dispose()
+  })
+
+  it('fills when staged rows join after a wait, with no scroll event', async () => {
+    const onLoadOlderMessages = vi.fn()
+    const h = mountScrollHarness({
+      messages: rowMessages(1),
+      stagedAbove: 2,
+      holdTargets: true,
+      hookOptions: {
+        hasOlderMessages: () => true,
+        onLoadOlderMessages,
+      },
+    })
+    await h.anchoredAt(2000)
+    void h.hook.jumpToSeq(11n)
+    // The staged rows change during the wait: the run of the filler for it returns early.
+    h.setStagedBelow(1)
+    h.reachTarget()
+    expect(h.div.getScrollTop()).toBe(992)
+    // Rows are staged above, so the older side loads nothing yet.
+    expect(onLoadOlderMessages).not.toHaveBeenCalled()
+
+    h.setStagedAbove(0)
+
+    // The view at 992 has less than one buffer above it.
+    expect(onLoadOlderMessages).toHaveBeenCalledOnce()
     h.dispose()
   })
 })

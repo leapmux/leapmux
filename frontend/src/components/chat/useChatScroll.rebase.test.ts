@@ -336,19 +336,20 @@ describe('useChatScroll rebase', () => {
     h.dispose()
   })
 
-  it('rebases at once in the geometry effect when an estimated first row shrinks under the viewport top', () => {
-    // Row 0 has only an estimate of 1000px, and the reader scrolled to 10px into it.
+  it('rebases at once in the geometry effect when a first row that the reader did not see shrinks under the viewport top', () => {
+    // Row 0 has a height of 1000px that no read of its mounted copy confirmed, and the
+    // reader scrolled to 10px into it.
     const h = mountScrollHarness({
       heights: [
         1000,
         ...Array.from<number>({ length: 40 }).fill(100),
       ],
-      estimatedRows: [0],
+      unseenRows: [0],
     })
     h.scrollTo(10)
     expect(h.rebaseCount()).toBe(0)
 
-    // Row 0 measures 100px. The rule holds the bottom edge of a row with an estimated height,
+    // The first read of row 0 gives 100px. The rule holds the bottom edge of such a row,
     // so the viewport top lands 890px above the first row, in the blank band of a positive
     // shift. The geometry effect rebases at once, although the scroller does not rest.
     h.changeAbove(-900)

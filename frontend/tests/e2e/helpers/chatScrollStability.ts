@@ -1,4 +1,4 @@
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import type { ModelScript } from './modelScriptFixture'
 import { expect } from '@playwright/test'
 import { assistantBubbles, CHAT_SCROLL_CONTAINER, chatDistanceFromBottom, chatScrollContainer, sendMessage, waitForAgentIdle } from './ui'
@@ -256,6 +256,20 @@ export async function expectAtBottom(page: Page, when: string): Promise<void> {
   await expect.poll(() => chatDistanceFromBottom(page), { message: `${when}: the view is at the bottom` }).toBeLessThanOrEqual(2)
 }
 
+/**
+ * Change the width of the viewport so that each row of the chat is `rowWidth` wide, and wait until the chat has that
+ * width. The viewport keeps the height `viewHeight`.
+ *
+ * The page must have the layout of a narrow screen, where the chat takes the whole width less a fixed inset.
+ */
+export async function resizeRowsTo(page: Page, rowWidth: number, viewHeight: number): Promise<void> {
+  const viewport = page.viewportSize()
+  expect(viewport, 'the page has a viewport').not.toBeNull()
+  const inset = viewport!.width - await readContentBoxWidth(page)
+  await page.setViewportSize({ width: rowWidth + inset, height: viewHeight })
+  await expect.poll(() => readContentBoxWidth(page), { message: `each row is ${rowWidth}px wide` }).toBe(rowWidth)
+}
+
 /** What a watch of one row saw over the frames that it ran. */
 export interface RowWatchResult {
   /** The animation frames that the watch sampled. */
@@ -439,6 +453,21 @@ export async function recordPremeasureCommits(page: Page): Promise<PremeasureCom
 }
 
 /**
+ * Record the height that the hidden premeasure copy of each row commits, from the next load of the page on (see
+ * startPremeasureRecordIn). Use it for a commit that can come before a call in the loaded page could start the
+ * record, as right after the chat opens.
+ *
+ * It adds an init script to the page, which no API removes again, so a spec that calls it runs in a context of its
+ * own (ISOLATED_CONTEXT_SPECS in fixtures.ts).
+ */
+export async function recordPremeasureCommitsFromNextLoad(page: Page): Promise<PremeasureCommits> {
+  await page.addInitScript(startPremeasureRecordIn, PREMEASURE_COMMITS_KEY)
+  return {
+    commitOf: seq => page.evaluate(premeasureCommitIn, { key: PREMEASURE_COMMITS_KEY, seq }),
+  }
+}
+
+/**
  * Send `prompt`, whose scripted answer is `answer`, and wait until the turn ends with the paragraph of `lastMarker` in
  * an assistant bubble. A multi-paragraph answer does not match `sendScriptedTurn`, which looks for the whole answer
  * as one text. Returns the step index of the answer.
@@ -480,6 +509,65 @@ export function rowStatesIn(container: Element): RowState[] {
 /** Read the state of each mounted row (see rowStatesIn). */
 export function readRowStates(page: Page): Promise<RowState[]> {
   return chatScrollContainer(page).evaluate(rowStatesIn)
+}
+
+/**
+ * The sequence numbers of the mounted rows of `container`, in document order. The hidden copy in which the app
+ * measures a row is no mounted row, so a row under a premeasure root does not count. Runs in the browser.
+ */
+export function mountedRowSeqsIn(container: Element): number[] {
+  const seqs: number[] = []
+  for (const row of Array.from(container.querySelectorAll<HTMLElement>('[data-seq]'))) {
+    if (row.dataset.seq !== undefined && row.closest('[data-chat-premeasure-root]') === null)
+      seqs.push(Number(row.dataset.seq))
+  }
+  return seqs
+}
+
+/** Read the sequence numbers of the mounted rows, in order (see mountedRowSeqsIn). */
+export function readMountedRowSeqs(page: Page): Promise<number[]> {
+  return chatScrollContainer(page).evaluate(mountedRowSeqsIn)
+}
+
+/**
+ * The first element under `root`, in document order, whose own text is exactly `text`, or null when none is.
+ *
+ * The own text of an element is a run of its text nodes with no child element between them. The comparison ignores
+ * the white space at both ends of the run, and it counts each other run of white space as one space. So the element
+ * that holds an icon and the text matches. A row that quotes the text inside a longer one does not match, and neither
+ * does an ancestor of the match. This is the rule of an exact text locator of Playwright, which `loadingIndicator`
+ * uses. Runs in the browser.
+ */
+export function loadingIndicatorIn(root: Element, text: string): Element | null {
+  for (const element of Array.from(root.querySelectorAll('*'))) {
+    let run = ''
+    const runs: string[] = []
+    for (const node of Array.from(element.childNodes)) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        run += node.nodeValue ?? ''
+      }
+      else if (node.nodeType === Node.ELEMENT_NODE) {
+        runs.push(run)
+        run = ''
+      }
+    }
+    runs.push(run)
+    if (runs.some(own => own.trim().replace(/\s+/g, ' ') === text))
+      return element
+  }
+  return null
+}
+
+/** The container of the one chat on screen. The shell hides the chat of an inactive tab, and that chat does not match. */
+const VISIBLE_CHAT_CONTAINER = '[data-testid="chat-container"]:visible'
+
+/**
+ * The loading indicator of the chat on screen whose text is exactly `text`, such as "Loading older messages..." (see
+ * loadingIndicatorIn for the rule). The indicators are overlays beside the scroll container, not inside it, so the
+ * locator starts at the container of the chat.
+ */
+export function loadingIndicator(page: Page, text: string): Locator {
+  return page.locator(VISIBLE_CHAT_CONTAINER).getByText(text, { exact: true })
 }
 
 /** The hold that `installReplyHoldIn` keeps on `window`. */
@@ -641,4 +729,94 @@ export function clearObjectStoreIn({ database, store }: { database: string, stor
  */
 export function clearStoredRenders(page: Page): Promise<void> {
   return page.evaluate(clearObjectStoreIn, STORED_RENDERS)
+}
+
+/**
+ * The database and the object store in which the app keeps its browser storage entries (DB_NAME and TABLE of
+ * browserStorageDb.ts in the app). The key of an entry is its stored key: `leapmux:<name>` for an entry of the
+ * device, and `leapmux:u:<account>:<name>` for an entry of an account.
+ */
+const BROWSER_STORAGE = { database: 'leapmux-kv', store: 'entries' } as const
+
+/**
+ * The logical name prefix of the row heights that the app stores for each chat (PREFIX_CHAT_ROW_HEIGHTS of
+ * browserStorage.ts in the app, which the test of this file compares it with).
+ */
+export const STORED_ROW_HEIGHTS_NAME_PREFIX = 'chat-row-heights:'
+
+/** The path of the empty page on which `clearStoredRowHeights` leaves the browser. */
+const BLANK_PAGE_PATH = '/__e2e-blank'
+
+/**
+ * Delete each entry of the object store `store` of the IndexedDB database `database` whose logical name starts
+ * with `namePrefix`, and keep every other entry. The logical name is the stored key without `leapmux:` and without
+ * the account segment `u:<account>:`. Resolves the number of deleted entries. Rejects when the database has no such
+ * store, so a renamed store fails the caller. Runs in the browser.
+ */
+export function deleteStoredNamesIn({ database, store, namePrefix }: { database: string, store: string, namePrefix: string }): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const open = indexedDB.open(database)
+    open.onerror = () => reject(open.error ?? new Error(`cannot open the database ${database}`))
+    open.onsuccess = () => {
+      const db = open.result
+      if (!db.objectStoreNames.contains(store)) {
+        db.close()
+        reject(new Error(`the database ${database} has no object store ${store}`))
+        return
+      }
+      let deleted = 0
+      const transaction = db.transaction(store, 'readwrite')
+      const entries = transaction.objectStore(store)
+      const cursor = entries.openKeyCursor()
+      cursor.onsuccess = () => {
+        const at = cursor.result
+        if (at === null)
+          return
+        const key = at.primaryKey
+        if (typeof key === 'string' && key.startsWith('leapmux:')) {
+          const scoped = key.slice('leapmux:'.length)
+          // An account entry holds `u:<account>:` before its name.
+          const accountEnd = scoped.startsWith('u:')
+            ? scoped.indexOf(':', 2)
+            : -1
+          const name = accountEnd < 0
+            ? scoped
+            : scoped.slice(accountEnd + 1)
+          if (name.startsWith(namePrefix)) {
+            entries.delete(key)
+            deleted++
+          }
+        }
+        at.continue()
+      }
+      transaction.oncomplete = () => {
+        db.close()
+        resolve(deleted)
+      }
+      transaction.onerror = () => {
+        db.close()
+        reject(transaction.error ?? new Error(`cannot delete from the object store ${store}`))
+      }
+    }
+  })
+}
+
+/**
+ * Delete the row heights that the app stores for each chat, and leave the browser on an empty page. The caller
+ * opens the chat again. No row then has a stored height, as in a browser that shows the chat for the first time.
+ *
+ * The app writes the heights that it still owes when its page goes away (`pagehide`), and that write would follow a
+ * delete that runs inside the app. So this helper leaves the app first: it goes to an empty page of the same origin,
+ * and deletes the entries there. It deletes no other entry.
+ */
+export async function clearStoredRowHeights(page: Page): Promise<void> {
+  const blank = new URL(BLANK_PAGE_PATH, page.url()).toString()
+  await page.route(blank, route => route.fulfill({ status: 200, contentType: 'text/html', body: '' }))
+  try {
+    await page.goto(blank)
+  }
+  finally {
+    await page.unroute(blank)
+  }
+  await page.evaluate(deleteStoredNamesIn, { ...BROWSER_STORAGE, namePrefix: STORED_ROW_HEIGHTS_NAME_PREFIX })
 }

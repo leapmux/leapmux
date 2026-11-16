@@ -160,8 +160,9 @@ export function renderRowContent(
  * Tool requests and prompts delivered into child transcripts use this same view.
  */
 export function AgentPromptView(props: { prompt: AgentPrompt, context?: ExpandableToolLayoutContext }): JSX.Element {
-  // Key from the shared classification mapper (context.expandUiKey) so it matches
-  // the estimator's pre-mount assumption; the literal is the context-less fallback.
+  // Key from the shared classification mapper (context.expandUiKey), so that the
+  // measurement and the display of the row use the same expansion state (see
+  // expandedUiKeyFor); the literal is the context-less fallback.
   // untrack: the key is stable for a row (kind+provider don't change), so read it
   // once -- mirrors ThinkingBubble's `untrack(() => props.stateKey)`.
   const stateKey = untrack(() => props.context?.expandUiKey ?? MESSAGE_UI_KEY.AGENT_PROMPT)

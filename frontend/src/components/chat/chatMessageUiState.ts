@@ -123,8 +123,9 @@ export function createMessageUiState(opts: CreateMessageUiStateOptions = {}): Me
    * `buildValue` result at the MRU end + cap, and bump the UI version exactly once.
    * Centralizing it keeps the two setters from drifting on the no-op-skip OR the
    * version bump -- both load-bearing reactive correctness (a missed skip notifies
-   * consumers on a no-op; a missed bump leaves an off-screen row's cached estimate
-   * stale). Closes over `protect` and `bumpUiVersion`.
+   * consumers on a no-op; a missed bump leaves the height key of an off-screen row as
+   * it is, so the row keeps the height that it had before the change). Closes over
+   * `protect` and `bumpUiVersion`.
    */
   const setIfChanged = <V>(
     setSignal: Setter<Map<string, V>>,

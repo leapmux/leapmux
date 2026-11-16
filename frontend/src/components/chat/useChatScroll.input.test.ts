@@ -1,10 +1,11 @@
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createRenderEffect, createRoot, createSignal } from 'solid-js'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { deferred } from '~/test-support/async'
 
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer, virtualizerNoOps, withContentAnchors } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer, mountScrollHarness, mountWithPendingJump, rowMessages, settleJump, staticScrollAdmission, virtualizerNoOps, withContentAnchors } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -24,9 +25,11 @@ describe('useChatScroll non-wheel scroll direction', () => {
     const [messages] = createSignal<AgentChatMessage[]>([])
     let olderLoads = 0
     let newerLoads = 0
+    const virt = makeStubVirtualizer()
     const hook = useChatScroll({
-      virtualizer: makeStubVirtualizer(),
+      virtualizer: virt,
       messages,
+      ...staticScrollAdmission(virt, messages),
       hasOlderMessages: () => true,
       hasNewerMessages: () => true,
       onLoadOlderMessages: () => { olderLoads++ },
@@ -72,8 +75,8 @@ describe('useChatScroll keyboard navigation', () => {
   function setupHook(opts: {
     hasNewer?: boolean
     hasOlder?: boolean
-    onJumpToLatest?: () => void
-    onJumpToOldest?: () => void
+    onJumpToLatest?: (signal?: AbortSignal) => Promise<boolean>
+    onJumpToOldest?: (signal?: AbortSignal) => Promise<boolean>
     onLoadOlderMessages?: () => void
     onLoadNewerMessages?: () => void
   }) {
@@ -82,9 +85,11 @@ describe('useChatScroll keyboard navigation', () => {
     div.setClientHeight(500)
     div.setScrollTop(1000)
     const [messages] = createSignal<AgentChatMessage[]>([])
+    const virt = makeStubVirtualizer()
     const hook = useChatScroll({
-      virtualizer: makeStubVirtualizer(),
+      virtualizer: virt,
       messages,
+      ...staticScrollAdmission(virt, messages),
       hasNewerMessages: () => opts.hasNewer ?? false,
       hasOlderMessages: () => opts.hasOlder ?? false,
       // Each callback is omitted (not undefined) when the case states none.
@@ -116,6 +121,7 @@ describe('useChatScroll keyboard navigation', () => {
       let jumped = false
       const onJumpToLatest = () => {
         jumped = true
+        return Promise.resolve(true)
       }
       const { hook } = setupHook({ hasNewer: true, onJumpToLatest })
       const ev = press(hook, 'End')
@@ -129,6 +135,7 @@ describe('useChatScroll keyboard navigation', () => {
       let jumped = false
       const onJumpToOldest = () => {
         jumped = true
+        return Promise.resolve(true)
       }
       const { hook } = setupHook({ hasOlder: true, onJumpToOldest })
       const ev = press(hook, 'Home')
@@ -154,6 +161,7 @@ describe('useChatScroll keyboard navigation', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasNewerMessages: () => false,
             hasOlderMessages: () => false,
           })
@@ -203,6 +211,7 @@ describe('useChatScroll keyboard navigation', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasNewerMessages: () => false,
             hasOlderMessages: () => false,
           })
@@ -250,6 +259,7 @@ describe('useChatScroll keyboard navigation', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasNewerMessages: () => true,
             hasOlderMessages: () => false,
           })
@@ -294,8 +304,8 @@ describe('useChatScroll keyboard navigation', () => {
       createRoot(async (dispose) => {
         try {
           const div = makeFakeScrollDiv()
-          // Freshly-loaded page: the visible top rows are collapsed-until-measured
-          // (height 0) and stack at offset 0; only the rows below carry an estimate.
+          // The top rows have a height of 0 (empty rows) and stack at offset 0; only
+          // the rows below have a height.
           const { virt, setRowHeight, total } = makeRowVirtualizer([
             0,
             0,
@@ -311,6 +321,7 @@ describe('useChatScroll keyboard navigation', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasNewerMessages: () => false,
             hasOlderMessages: () => false,
           })
@@ -477,7 +488,11 @@ describe('useChatScroll down-jump on a small scroll-down', () => {
           div.setScrollHeight(600)
           const ctrl = makeAnchorVirt(0, 600)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const hook = useChatScroll({ virtualizer: ctrl.virt, messages })
+          const hook = useChatScroll({
+            virtualizer: ctrl.virt,
+            messages,
+            ...staticScrollAdmission(ctrl.virt, messages),
+          })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -543,6 +558,7 @@ describe('useChatScroll down-jump on a small scroll-down', () => {
           const hook = useChatScroll({
             virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             agentStatus,
             hasNewerMessages: hasNewer,
           })
@@ -601,9 +617,11 @@ describe('useChatScroll momentum reporting', () => {
     div.setScrollTop(0)
     const [messages] = createSignal<AgentChatMessage[]>([])
     let momentumReports = 0
+    const virt = makeStubVirtualizer()
     const hook = useChatScroll({
-      virtualizer: makeStubVirtualizer(),
+      virtualizer: virt,
       messages,
+      ...staticScrollAdmission(virt, messages),
       onMomentumScroll: () => { momentumReports++ },
     })
     hook.attachListRef(div.el)
@@ -652,23 +670,37 @@ describe('useChatScroll momentum reporting', () => {
       dispose()
     }))
 
-  it('reports nothing for its own write echoing back', () =>
-    createRoot((dispose) => {
-      const { div, hook, reports } = setupMomentum()
+  it('reports nothing for its own write echoing back', async () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const { div, hook, reports } = setupMomentum()
+          // The command runs outside the update of the root, as a key press does. Inside the
+          // update, the hook shows the place only when the update completes.
+          await Promise.resolve()
 
-      // The stick-to-bottom's write, then the native scroll event it causes.
-      hook.forceScrollToBottom()
-      hook.handlers.onScroll()
+          // The stick-to-bottom's write, then the native scroll event it causes.
+          hook.forceScrollToBottom()
+          hook.handlers.onScroll()
 
-      expect(reports()).toBe(0)
+          expect(reports()).toBe(0)
 
-      // A reader-driven move away from that landing IS reported, so the silence
-      // above was the own-write rule and not a harness that reports nothing at all.
-      div.setScrollTop(div.getScrollTop() - 400)
-      hook.handlers.onScroll()
+          // A reader-driven move away from that landing IS reported, so the silence
+          // above was the own-write rule and not a harness that reports nothing at all.
+          div.setScrollTop(div.getScrollTop() - 400)
+          hook.handlers.onScroll()
 
-      expect(reports()).toBe(1)
-      dispose()
+          expect(reports()).toBe(1)
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
+        }
+      })
     }))
 
   it('does not count the position at the mount as a move', () =>
@@ -680,9 +712,11 @@ describe('useChatScroll momentum reporting', () => {
       div.setScrollTop(1000)
       const [messages] = createSignal<AgentChatMessage[]>([])
       let momentumReports = 0
+      const virt = makeStubVirtualizer()
       const hook = useChatScroll({
-        virtualizer: makeStubVirtualizer(),
+        virtualizer: virt,
         messages,
+        ...staticScrollAdmission(virt, messages),
         hasNewerMessages: () => true,
         onMomentumScroll: () => { momentumReports++ },
       })
@@ -695,4 +729,342 @@ describe('useChatScroll momentum reporting', () => {
       expect(momentumReports).toBe(0)
       dispose()
     }))
+})
+
+describe('useChatScroll one pending history jump', () => {
+  // The hook owns one pending history jump: the latest command of the reader stops each
+  // earlier fetch, and so does each input by which the reader takes control. Without that,
+  // the page of Home arrives after a later command and replaces the window under it, and
+  // the landing of Home moves the view to the top.
+
+  const press = (h: { hook: { handlers: { onKeyDown: (event: KeyboardEvent) => void } } }, key: string) =>
+    h.hook.handlers.onKeyDown(new KeyboardEvent('keydown', { key, cancelable: true }))
+
+  /** Let a scroll-to-bottom animation run to its end. */
+  async function finishAnimation(h: { frame: () => Promise<void> }): Promise<void> {
+    for (let i = 0; i < 80; i++)
+      await h.frame()
+  }
+
+  /**
+   * A reader at 2000 in a window with older history, who pressed Home: the jump to the
+   * oldest page stays pending until the test settles `jump`. `signal` is the signal that
+   * Home passed to the store. Row `i` has the seq `i + 1`.
+   */
+  async function homePressed() {
+    const jump = deferred<boolean>()
+    const onJumpToOldest = vi.fn((_signal?: AbortSignal) => jump.promise)
+    const h = mountScrollHarness({
+      messages: rowMessages(1),
+      hookOptions: {
+        hasOlderMessages: () => true,
+        onJumpToOldest,
+      },
+    })
+    await h.anchoredAt(2000)
+    press(h, 'Home')
+    expect(onJumpToOldest).toHaveBeenCalledOnce()
+    const signal = onJumpToOldest.mock.calls[0]![0]!
+    expect(signal.aborted).toBe(false)
+    return { h, jump, signal }
+  }
+
+  it('lands at the top when the page of Home arrives', async () => {
+    const { h, jump } = await homePressed()
+
+    jump.resolve(true)
+    await settleJump(jump.promise)
+
+    expect(h.div.getScrollTop()).toBe(0)
+    h.dispose()
+  })
+
+  it('stops the fetch of Home for the scroll-to-bottom button with no newer page', async () => {
+    const { h, jump, signal } = await homePressed()
+
+    h.hook.scrollToBottom()
+    expect(signal.aborted).toBe(true)
+    jump.resolve(true)
+    await settleJump(jump.promise)
+    await finishAnimation(h)
+
+    expect(h.div.getScrollTop()).toBe(4500)
+    h.dispose()
+  })
+
+  it('stops the fetch of Home for a send', async () => {
+    const { h, jump, signal } = await homePressed()
+
+    h.hook.forceScrollToBottom()
+    expect(signal.aborted).toBe(true)
+    jump.resolve(true)
+    await settleJump(jump.promise)
+
+    expect(h.div.getScrollTop()).toBe(4500)
+    h.dispose()
+  })
+
+  it('stops the fetch of Home for the End key', async () => {
+    const { h, jump, signal } = await homePressed()
+
+    press(h, 'End')
+    expect(signal.aborted).toBe(true)
+    jump.resolve(true)
+    await settleJump(jump.promise)
+
+    expect(h.div.getScrollTop()).toBe(4500)
+    h.dispose()
+  })
+
+  it('stops the fetch of Home for a seek inside the window', async () => {
+    const { h, jump, signal } = await homePressed()
+
+    // Row 30 has seq 31, and its top is at 3000. The landing keeps 8px above it.
+    const landing = h.hook.jumpToSeq(31n)
+    expect(signal.aborted).toBe(true)
+    jump.resolve(true)
+    await settleJump(jump.promise)
+
+    expect(await landing).toBe(true)
+    expect(h.div.getScrollTop()).toBe(2992)
+    h.dispose()
+  })
+
+  it('stops the fetch of Home when the reader wheels', async () => {
+    const { h, jump, signal } = await homePressed()
+    h.notePlacement.mockClear()
+
+    h.hook.handlers.onWheel(new WheelEvent('wheel', { deltaY: 100 }))
+    expect(signal.aborted).toBe(true)
+    jump.resolve(true)
+    await settleJump(jump.promise)
+
+    expect(h.notePlacement).not.toHaveBeenCalled()
+    expect(h.div.getScrollTop()).toBe(2000)
+    h.dispose()
+  })
+
+  it('keeps the fetch of Home through a momentum scroll with no input', async () => {
+    const { h, jump, signal } = await homePressed()
+
+    h.scrollTo(1900)
+    expect(signal.aborted).toBe(false)
+    jump.resolve(true)
+    await settleJump(jump.promise)
+
+    expect(h.div.getScrollTop()).toBe(0)
+    h.dispose()
+  })
+
+  it('places nothing when another fetch replaced the page of Home', async () => {
+    const { h, jump } = await homePressed()
+    h.notePlacement.mockClear()
+    // The browser moved the view to the bottom with no scroll event, so only a position
+    // check can publish that the view is at the bottom.
+    h.div.setScrollTop(4500)
+    expect(h.hook.atBottom()).toBe(false)
+
+    jump.resolve(false)
+    await settleJump(jump.promise)
+
+    // The window is not the oldest page, so its top is not the first message.
+    expect(h.notePlacement).not.toHaveBeenCalled()
+    expect(h.div.getScrollTop()).toBe(4500)
+    // The landing checked the position instead.
+    expect(h.hook.atBottom()).toBe(true)
+    h.dispose()
+  })
+
+  it('stops the fetch of Home when the hook unmounts', async () => {
+    const { h, jump, signal } = await homePressed()
+    const writes = h.div.scrollTopWrites()
+
+    h.dispose()
+    expect(signal.aborted).toBe(true)
+    jump.resolve(true)
+    await settleJump(jump.promise)
+
+    expect(h.div.scrollTopWrites()).toBe(writes)
+    expect(h.div.getScrollTop()).toBe(2000)
+  })
+
+  it('ends the request for the tail when an input stops a jump to the latest page', async () => {
+    const { h, jump } = await mountWithPendingJump(mountScrollHarness)
+    const signal = jump.onJumpToLatest.mock.calls[0]![0]!
+    expect(h.hook.getScrollState()).toMatchObject({ atBottom: true })
+
+    // A wheel with no scroll event: the list cannot move, but the reader took control.
+    h.hook.handlers.onWheel(new WheelEvent('wheel', { deltaY: 100 }))
+    expect(signal.aborted).toBe(true)
+    // The request has no fetch left. A save must not record it, or the next mount runs
+    // the jump that the reader stopped.
+    expect(h.hook.getScrollState()).toMatchObject({ atBottom: false })
+
+    h.setHasNewer(false)
+    jump.resolve(true)
+    await settleJump(jump.promise)
+
+    expect(h.hook.getScrollState()).toMatchObject({ atBottom: false })
+    expect(h.div.getScrollTop()).toBe(2000)
+    h.dispose()
+  })
+})
+
+// The rows of the place that a command goes to can be staged: loaded, and not measured
+// yet. The command then waits, and the view moves once, when the rows are reached.
+describe('useChatScroll a command that waits for its rows', () => {
+  // The harness: 50 rows of 100px in a 500px view, so the bottom is at 4500. The target of
+  // each request waits until the test reaches it.
+  const press = (h: ReturnType<typeof mountScrollHarness>, key: string) => {
+    h.hook.handlers.onKeyDown(new KeyboardEvent('keydown', { key, cancelable: true }))
+  }
+  const maxScrollTop = (h: ReturnType<typeof mountScrollHarness>) => h.div.el.scrollHeight - h.div.el.clientHeight
+
+  it('keeps the view for Home until the first rows are reached', () => {
+    const h = mountScrollHarness({ holdTargets: true })
+    expect(h.div.getScrollTop()).toBe(4500)
+
+    press(h, 'Home')
+    expect(h.div.getScrollTop()).toBe(4500)
+    expect(h.requestedTargets()).toEqual([
+      { kind: 'top' },
+    ])
+
+    h.reachTarget()
+    expect(h.div.getScrollTop()).toBe(0)
+    h.dispose()
+  })
+
+  it('keeps the view for End with rows staged below, and follows the tail once they are reached', async () => {
+    const h = mountScrollHarness({ holdTargets: true, stagedBelow: 2 })
+    await h.anchoredAt(2000)
+
+    press(h, 'End')
+    // The list grows while the tail waits. A stick here would put the view at the bottom
+    // of the measured rows, and the wait would move it again.
+    h.changeBelow(300)
+    expect(h.hook.isFollowing()).toBe(false)
+    expect(h.div.getScrollTop()).toBe(2000)
+
+    h.reachTarget()
+    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    expect(h.hook.isFollowing()).toBe(true)
+    h.dispose()
+  })
+
+  it('ends follow mode for Home at the bottom of the list, and saves the top as the place of the reader', () => {
+    const onSaveViewportScroll = vi.fn()
+    const h = mountScrollHarness({
+      holdTargets: true,
+      hookOptions: { onSaveViewportScroll },
+    })
+
+    press(h, 'Home')
+    h.changeBelow(300)
+    expect(h.hook.isFollowing()).toBe(false)
+    expect(h.div.getScrollTop()).toBe(4500)
+
+    // An unmount during the wait keeps the place that the reader asked for.
+    h.dispose()
+    expect(onSaveViewportScroll).toHaveBeenCalledOnce()
+    const saved = onSaveViewportScroll.mock.calls[0]![0]
+    expect(saved).toMatchObject({
+      anchor: { id: 'r0', offsetWithinRow: 0 },
+      atBottom: false,
+    })
+    expect(saved).not.toHaveProperty('rawScrollTop')
+  })
+
+  it('ends a wait for the tail for an input of the reader', async () => {
+    const h = mountScrollHarness({ holdTargets: true, stagedBelow: 2 })
+    await h.anchoredAt(2000)
+    press(h, 'End')
+
+    h.hook.handlers.onWheel(new WheelEvent('wheel', { deltaY: 100 }))
+    h.scrollTo(2100)
+    h.changeBelow(300)
+    h.reachTarget()
+
+    expect(h.div.getScrollTop()).toBe(2100)
+    expect(h.hook.isFollowing()).toBe(false)
+    expect(h.hook.getScrollState()).toMatchObject({ atBottom: false })
+    h.dispose()
+  })
+
+  it('changes nothing for an input while loaded rows exist and none is in the list', () => {
+    const h = mountScrollHarness({ holdTargets: true, awaitingFirstView: true })
+    // The first-view rule asked for the tail.
+    expect(h.requestedTargets()).toEqual([
+      { kind: 'tail' },
+    ])
+
+    // The reader cannot take control of a view that shows no row.
+    h.hook.handlers.onWheel(new WheelEvent('wheel', { deltaY: -100 }))
+    h.hook.pageScroll(1)
+    expect(h.requestedTargets()).toEqual([
+      { kind: 'tail' },
+    ])
+
+    h.reachTarget()
+    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    expect(h.hook.isFollowing()).toBe(true)
+    h.dispose()
+  })
+
+  /** A mount on a window with newer pages whose saved state asks for the tail: the mount starts the jump to the latest page, which stays pending. */
+  function mountedWithPendingLatestJump() {
+    const jump = deferred<boolean>()
+    const onJumpToLatest = vi.fn((_signal?: AbortSignal) => jump.promise)
+    const h = mountScrollHarness({
+      holdTargets: true,
+      hasNewer: true,
+      awaitingFirstView: true,
+      hookOptions: {
+        savedViewportScroll: () => ({ atBottom: true, hasMoreNewer: true }),
+        onClearSavedViewportScroll: vi.fn(),
+        onJumpToLatest,
+      },
+    })
+    expect(onJumpToLatest).toHaveBeenCalledOnce()
+    const signal = onJumpToLatest.mock.calls[0]![0]!
+    return { h, jump, signal }
+  }
+
+  it('keeps a jump to the latest page through each input during the first view', async () => {
+    const { h, jump, signal } = mountedWithPendingLatestJump()
+
+    h.hook.handlers.onWheel(new WheelEvent('wheel', { deltaY: 100 }))
+    h.hook.pageScroll(1)
+    h.hook.handlers.onWheel(new WheelEvent('wheel', { deltaY: -100 }))
+
+    // No input aborts the jump, and none ends its request for the tail.
+    expect(signal.aborted).toBe(false)
+    expect(h.hook.getScrollState()).toMatchObject({ atBottom: true })
+
+    h.setHasNewer(false)
+    jump.resolve(true)
+    await settleJump(jump.promise)
+    h.reachTarget()
+
+    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    expect(h.hook.isFollowing()).toBe(true)
+    h.dispose()
+  })
+
+  it('asks for the tail once for End during the first view of a pending jump', () => {
+    const { h, signal } = mountedWithPendingLatestJump()
+    // The mount asks for no place while its jump is pending.
+    expect(h.requestedTargets()).toEqual([])
+    h.setHasNewer(false)
+
+    press(h, 'End')
+
+    // The command ends the jump before it, and its own request is the only one: the
+    // first-view rule sees one update, and asks for nothing between its steps.
+    expect(signal.aborted).toBe(true)
+    expect(h.requestedTargets()).toEqual([
+      { kind: 'tail' },
+    ])
+    h.dispose()
+  })
 })

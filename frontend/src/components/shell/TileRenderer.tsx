@@ -44,7 +44,7 @@ import { getCachedMarkPreview, warmMarkPreview } from '~/components/chat/chatMar
 import { ChatView } from '~/components/chat/ChatView'
 import { createMessageContextResolver } from '~/components/chat/messageContextResolver'
 import { pluginFor } from '~/components/chat/providers/registry'
-import { readWorkerImage } from '~/components/chat/readWorkerImage'
+import { readWorkerImage, readWorkerImageSize } from '~/components/chat/readWorkerImage'
 import { agentProviderLabel } from '~/components/common/AgentProviderIcon'
 import { ConfirmDialog } from '~/components/common/ConfirmDialog'
 import { showWarnToast } from '~/components/common/Toast'
@@ -670,6 +670,7 @@ export function createTileRenderer(opts: TileRendererOpts) {
         return (await workerAgent.getAgentMessage(workerId, { agentId, seq }, { signal })).message
       },
       fetchFileImage: (path, signal) => readWorkerImage(workerId, path, view.getAgentTab(agentId)?.workingDir, signal),
+      fetchFileImageSize: (path, signal) => readWorkerImageSize(workerId, path, view.getAgentTab(agentId)?.workingDir, signal),
       subscribe: observer => chatStore.subscribeMessages(agentId, observer),
       backgroundTask: rowKey => backgroundRows().get(rowKey),
       progress: identity => chatStore.getToolProgress(agentId, identity),
@@ -1131,8 +1132,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
                       fetchingNewer: chatStore.isFetchingNewer(agentId),
                       atWindowCeiling: chatStore.atWindowCeiling(agentId),
                       onLoadNewerMessages: () => chatStore.loadNewerPage(agent()?.workerId ?? '', agentId),
-                      onJumpToLatest: () => chatStore.jumpToLatestMessages(agent()?.workerId ?? '', agentId),
-                      onJumpToOldest: () => chatStore.jumpToOldestMessages(agent()?.workerId ?? '', agentId),
+                      onJumpToLatest: signal => chatStore.jumpToLatestMessages(agent()?.workerId ?? '', agentId, signal),
+                      onJumpToOldest: signal => chatStore.jumpToOldestMessages(agent()?.workerId ?? '', agentId, signal),
                       onJumpToSeq: (seq, signal) => chatStore.jumpToMessagesAroundSeq(agent()?.workerId ?? '', agentId, seq, signal),
                     }}
                     rail={railProps()}

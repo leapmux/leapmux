@@ -25,6 +25,36 @@ const PAGE_BYTES = FILE_READ_LIMIT_BYTES
  */
 const PAGE_CONCURRENCY = 4
 
+/**
+ * Read the first `bytes` of a file, in one request. The response holds at most
+ * `bytes` of content, and the `totalSize` of the whole file. The content can be
+ * shorter than `bytes` for a file that is longer: ReadFile caps its limit at
+ * the payload budget of the channel.
+ */
+export async function readWorkerFileHead(options: {
+  workerId: string
+  path: string
+  bytes: number
+  signal?: AbortSignal
+}): Promise<ReadFileResponse> {
+  const { workerId, path, bytes, signal } = options
+  if (!Number.isSafeInteger(bytes) || bytes <= 0)
+    throw new Error('The file read limit is invalid')
+  signal?.throwIfAborted()
+  const response = await workerFile.readFile(workerId, {
+    path,
+    limit: BigInt(bytes),
+  }, signal
+    ? { signal }
+    : undefined)
+  signal?.throwIfAborted()
+  if (response.totalSize < 0n || BigInt(response.content.length) > response.totalSize)
+    throw new Error('The file has an invalid size')
+  if (response.content.length > bytes)
+    throw new Error('The file could not be read completely')
+  return response
+}
+
 /** Read a file within the preview limit. Return metadata only when the file exceeds that limit. */
 export async function readWorkerFile(options: {
   workerId: string

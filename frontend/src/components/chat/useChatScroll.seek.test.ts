@@ -5,10 +5,11 @@ import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { PRESS_SLOP_PX } from '~/components/common/contextMenuGesture'
 import { MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
-import { deferred } from '~/test-support/async'
+import { deferred, flush } from '~/test-support/async'
+import { triggerResizeObserversSync } from '~/test-support/resizeObserverStub'
 import { placementScrollTop } from './createLayoutShift'
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, mountScrollHarness, virtualizerNoOps, withContentAnchors } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, mountScrollHarness, rowMessages, staticScrollAdmission, virtualizerNoOps, withContentAnchors } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -16,18 +17,6 @@ function mkMsgs(seqs: number[]): AgentChatMessage[] {
   return seqs.map(s => ({
     id: `m${s}`,
     seq: BigInt(s),
-    source: MessageSource.USER,
-  } as AgentChatMessage))
-}
-
-/**
- * One message for each row of mountScrollHarness, with the ids of the rows: row `i` has the
- * id `r${i}` and the seq `firstSeq + i`.
- */
-function rowMessages(firstSeq: number): AgentChatMessage[] {
-  return Array.from({ length: 50 }, (_, i) => ({
-    id: `r${i}`,
-    seq: BigInt(firstSeq + i),
     source: MessageSource.USER,
   } as AgentChatMessage))
 }
@@ -57,30 +46,46 @@ function seekVirt(spacerInsetPx = 0): ChatScrollVirtualizer {
 }
 
 describe('useChatScroll jump to seq', () => {
-  it('lands on an in-window seq: writes the resolved row top minus the align offset', () =>
-    createRoot((dispose) => {
-      const div = makeFakeScrollDiv()
-      div.setScrollHeight(5000)
-      div.setClientHeight(500)
-      div.setScrollTop(0)
-      const [messages] = createSignal(mkMsgs([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]))
-      const onJumpToSeq = vi.fn()
-      const hook = useChatScroll({
-        virtualizer: seekVirt(),
-        messages,
-        hasOlderMessages: () => false,
-        hasNewerMessages: () => false,
-        onJumpToSeq,
+  it('lands on an in-window seq: writes the resolved row top minus the align offset', async () =>
+    new Promise<void>((resolve, reject) => {
+      createRoot(async (dispose) => {
+        try {
+          const div = makeFakeScrollDiv()
+          div.setScrollHeight(5000)
+          div.setClientHeight(500)
+          div.setScrollTop(0)
+          const [messages] = createSignal(mkMsgs([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]))
+          const onJumpToSeq = vi.fn()
+          const virt = seekVirt()
+          const hook = useChatScroll({
+            virtualizer: virt,
+            messages,
+            ...staticScrollAdmission(virt, messages),
+            hasOlderMessages: () => false,
+            hasNewerMessages: () => false,
+            onJumpToSeq,
+          })
+          hook.attachListRef(div.el)
+          // The seek runs outside the update of the root, as a click on the rail does. Inside
+          // the update, the hook shows the place only when the update completes.
+          await Promise.resolve()
+
+          void hook.jumpToSeq(5n)
+
+          // scrollTopForAnchor(seq 5) = 1000; landing subtracts the 8px align offset.
+          expect(div.getScrollTop()).toBe(992)
+          // In-window: no fetch.
+          expect(onJumpToSeq).not.toHaveBeenCalled()
+          dispose()
+          resolve()
+        }
+        catch (e) {
+          dispose()
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
+        }
       })
-      hook.attachListRef(div.el)
-
-      hook.jumpToSeq(5n)
-
-      // scrollTopForAnchor(seq 5) = 1000; landing subtracts the 8px align offset.
-      expect(div.getScrollTop()).toBe(992)
-      // In-window: no fetch.
-      expect(onJumpToSeq).not.toHaveBeenCalled()
-      dispose()
     }))
 
   it('resolves to whether the landing moved the view (the contract the rail drag-release hold relies on)', async () =>
@@ -92,9 +97,11 @@ describe('useChatScroll jump to seq', () => {
           div.setClientHeight(500)
           div.setScrollTop(0)
           const [messages] = createSignal(mkMsgs([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]))
+          const virt = seekVirt()
           const hook = useChatScroll({
-            virtualizer: seekVirt(),
+            virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => false,
             hasNewerMessages: () => false,
           })
@@ -133,10 +140,13 @@ describe('useChatScroll jump to seq', () => {
           const onJumpToSeq = vi.fn(async (_seq: bigint) => {
             // The paginator swaps the window to a page around the target.
             setMessages(mkMsgs([3, 4, 5, 6, 7]))
+            return true
           })
+          const virt = seekVirt()
           const hook = useChatScroll({
-            virtualizer: seekVirt(),
+            virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true,
             hasNewerMessages: () => false,
             onJumpToSeq,
@@ -173,13 +183,15 @@ describe('useChatScroll jump to seq', () => {
           div.setClientHeight(500)
           div.setScrollTop(2500)
           const [messages, setMessages] = createSignal(mkMsgs([100, 101, 102, 103, 104]))
-          let releaseFetch: (() => void) | undefined
-          const onJumpToSeq = vi.fn(() => new Promise<void>((r) => {
+          let releaseFetch: ((applied: boolean) => void) | undefined
+          const onJumpToSeq = vi.fn(() => new Promise<boolean>((r) => {
             releaseFetch = r
           }))
+          const virt = seekVirt()
           const hook = useChatScroll({
-            virtualizer: seekVirt(),
+            virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true,
             hasNewerMessages: () => false,
             onJumpToSeq,
@@ -195,7 +207,7 @@ describe('useChatScroll jump to seq', () => {
 
           // The fetch resolves and swaps the window -- but the landing must be cancelled.
           setMessages(mkMsgs([3, 4, 5, 6, 7]))
-          releaseFetch?.()
+          releaseFetch?.(true)
           await Promise.resolve()
           await Promise.resolve()
 
@@ -222,13 +234,15 @@ describe('useChatScroll jump to seq', () => {
           div.setClientHeight(500)
           div.setScrollTop(2500)
           const [messages, setMessages] = createSignal(mkMsgs([100, 101, 102, 103, 104]))
-          let releaseFetch: (() => void) | undefined
-          const onJumpToSeq = vi.fn(() => new Promise<void>((r) => {
+          let releaseFetch: ((applied: boolean) => void) | undefined
+          const onJumpToSeq = vi.fn(() => new Promise<boolean>((r) => {
             releaseFetch = r
           }))
+          const virt = seekVirt()
           const hook = useChatScroll({
-            virtualizer: seekVirt(),
+            virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true,
             hasNewerMessages: () => false,
             onJumpToSeq,
@@ -242,7 +256,7 @@ describe('useChatScroll jump to seq', () => {
           hook.handlers.onScroll()
 
           setMessages(mkMsgs([3, 4, 5, 6, 7]))
-          releaseFetch?.()
+          releaseFetch?.(true)
           await Promise.resolve()
           await Promise.resolve()
 
@@ -268,13 +282,15 @@ describe('useChatScroll jump to seq', () => {
           div.setClientHeight(500)
           div.setScrollTop(2500)
           const [messages, setMessages] = createSignal(mkMsgs([100, 101, 102, 103, 104]))
-          let releaseFetch: (() => void) | undefined
-          const onJumpToSeq = vi.fn(() => new Promise<void>((r) => {
+          let releaseFetch: ((applied: boolean) => void) | undefined
+          const onJumpToSeq = vi.fn(() => new Promise<boolean>((r) => {
             releaseFetch = r
           }))
+          const virt = seekVirt()
           const hook = useChatScroll({
-            virtualizer: seekVirt(),
+            virtualizer: virt,
             messages,
+            ...staticScrollAdmission(virt, messages),
             hasOlderMessages: () => true,
             hasNewerMessages: () => false,
             onJumpToSeq,
@@ -289,7 +305,7 @@ describe('useChatScroll jump to seq', () => {
 
           // The fetch resolves and swaps the window, but the abandoned seek must NOT land.
           setMessages(mkMsgs([3, 4, 5, 6, 7]))
-          releaseFetch?.()
+          releaseFetch?.(true)
           await Promise.resolve()
           await Promise.resolve()
 
@@ -324,16 +340,18 @@ describe('useChatScroll jump to seq', () => {
       div.setScrollTop(2500)
       const [messages] = createSignal(mkMsgs([100, 101, 102, 103, 104]))
       const signals: (AbortSignal | undefined)[] = []
-      const releases: (() => void)[] = []
+      const releases: ((applied: boolean) => void)[] = []
       const onJumpToSeq = vi.fn((_seq: bigint, signal?: AbortSignal) => {
         signals.push(signal)
-        return new Promise<void>((resolve) => {
+        return new Promise<boolean>((resolve) => {
           releases.push(resolve)
         })
       })
+      const virt = seekVirt()
       const hook = useChatScroll({
-        virtualizer: seekVirt(),
+        virtualizer: virt,
         messages,
+        ...staticScrollAdmission(virt, messages),
         hasOlderMessages: () => true,
         hasNewerMessages: () => false,
         onJumpToSeq,
@@ -342,7 +360,7 @@ describe('useChatScroll jump to seq', () => {
       /** Complete every held fetch, as a fetch that the abort reaches too late does. */
       const releaseFetch = () => {
         for (const release of releases.splice(0))
-          release()
+          release(true)
       }
       return { hook, signals, div, releaseFetch }
     }
@@ -451,9 +469,11 @@ describe('useChatScroll jump to seq', () => {
       div.setClientHeight(500)
       div.setScrollTop(0)
       const [messages] = createSignal(mkMsgs([1, 2, 3]))
+      const virt = seekVirt()
       const hook = useChatScroll({
-        virtualizer: seekVirt(),
+        virtualizer: virt,
         messages,
+        ...staticScrollAdmission(virt, messages),
       })
       hook.attachListRef(div.el)
 
@@ -487,9 +507,11 @@ describe('useChatScroll jump to seq', () => {
       div.setClientHeight(500)
       div.setScrollTop(2000)
       const [messages] = createSignal(mkMsgs([1, 2, 3]))
+      const virt = seekVirt(insetPx)
       const hook = useChatScroll({
-        virtualizer: seekVirt(insetPx),
+        virtualizer: virt,
         messages,
+        ...staticScrollAdmission(virt, messages),
       })
       hook.attachListRef(div.el)
 
@@ -514,7 +536,7 @@ describe('useChatScroll jump to seq', () => {
 
     /** A harness over the loaded window whose seek fetch stays pending until `fetch` settles. */
     function seekFromTheBottom(hasNewer: boolean) {
-      const fetch = deferred<void>()
+      const fetch = deferred<boolean>()
       const onJumpToSeq = vi.fn(() => fetch.promise)
       const h = mountScrollHarness({
         hasNewer,
@@ -536,7 +558,7 @@ describe('useChatScroll jump to seq', () => {
       expect(h.hook.atBottom()).toBe(true)
 
       h.setMessages(pageAroundTarget)
-      fetch.resolve()
+      fetch.resolve(true)
       expect(await landing).toBe(true)
 
       expect(h.div.getScrollTop()).toBe(1992)
@@ -557,7 +579,7 @@ describe('useChatScroll jump to seq', () => {
       h.setHasNewer(false)
       expect(h.hook.isFollowing()).toBe(true)
       // The landing is a placement, which ends follow mode.
-      fetch.resolve()
+      fetch.resolve(true)
       expect(await landing).toBe(true)
 
       expect(h.div.getScrollTop()).toBe(1992)
@@ -579,6 +601,83 @@ describe('useChatScroll jump to seq', () => {
       expect(h.div.getScrollTop()).toBe(4500)
       expect(h.hook.isFollowing()).toBe(true)
       expect(h.hook.atBottom()).toBe(true)
+      h.dispose()
+    })
+  })
+
+  describe('a command of the reader during an out-of-window seek', () => {
+    // The loaded window holds seqs 101..150 on the rows of the harness, so seq 21 is out of
+    // it. Each case starts at 2000, where the seek would land at 1992.
+
+    /** A reader at 2000 whose seek to seq 21 waits for its fetch. */
+    async function seekFrom2000() {
+      const fetch = deferred<boolean>()
+      const h = mountScrollHarness({
+        messages: rowMessages(101),
+        hookOptions: {
+          onJumpToSeq: () => fetch.promise,
+        },
+      })
+      await h.anchoredAt(2000)
+      const landing = h.hook.jumpToSeq(21n)
+      /** The page of the seek arrives, after the command of the case. */
+      const deliverPage = () => {
+        h.setMessages(rowMessages(1))
+        fetch.resolve(true)
+      }
+      return { h, landing, deliverPage }
+    }
+
+    /** Let the scroll-to-bottom animation run to its end. */
+    async function finishAnimation(h: { frame: () => Promise<void> }): Promise<void> {
+      for (let i = 0; i < 80; i++)
+        await h.frame()
+    }
+
+    it('ends the seek for a page through pageScroll', async () => {
+      const { h, landing, deliverPage } = await seekFrom2000()
+
+      // The application shortcut calls pageScroll with no key event of the list.
+      h.hook.pageScroll(1)
+      deliverPage()
+
+      expect(await landing).toBe(false)
+      // One page of 500 - 48 = 452px below the start, and no landing at 1992.
+      expect(h.div.getScrollTop()).toBe(2452)
+      h.dispose()
+    })
+
+    it('ends the seek for the scroll-to-bottom button', async () => {
+      const { h, landing, deliverPage } = await seekFrom2000()
+
+      h.hook.scrollToBottom()
+      deliverPage()
+
+      expect(await landing).toBe(false)
+      await finishAnimation(h)
+      expect(h.div.getScrollTop()).toBe(4500)
+      h.dispose()
+    })
+
+    it('ends the seek for a send', async () => {
+      const { h, landing, deliverPage } = await seekFrom2000()
+
+      h.hook.forceScrollToBottom()
+      deliverPage()
+
+      expect(await landing).toBe(false)
+      expect(h.div.getScrollTop()).toBe(4500)
+      h.dispose()
+    })
+
+    it('ends the seek for the End key', async () => {
+      const { h, landing, deliverPage } = await seekFrom2000()
+
+      h.hook.handlers.onKeyDown(new KeyboardEvent('keydown', { key: 'End', cancelable: true }))
+      deliverPage()
+
+      expect(await landing).toBe(false)
+      expect(h.div.getScrollTop()).toBe(4500)
       h.dispose()
     })
   })
@@ -630,6 +729,218 @@ describe('useChatScroll jump to seq', () => {
     expect(h.virt.layoutShift()).toBe(0)
     // The top of row 20 is 2300 after the change, and the landing keeps 8px above it.
     expect(h.div.getScrollTop()).toBe(2292)
+    h.dispose()
+  })
+})
+
+// The row of a seek can be staged: loaded, and not measured yet. The seek then waits, and
+// the view moves once, when the admission reports the row as reached.
+describe('useChatScroll a seek that waits for its row', () => {
+  // The harness: 50 rows of 100px in a 500px view, with the seqs 1 to 50, so the mount
+  // follows the tail at 4500, and seq 21 is the row at 2000. The landing of a seek to
+  // seq 21 is at 1992. The target of each request waits until the test reaches it.
+
+  /** A follower at 4500 whose seek to seq 21 waits. `outcome()` is the result of the seek, or `undefined` while it is pending. */
+  function waitingSeek(opts: Parameters<typeof mountScrollHarness>[0] = {}) {
+    const h = mountScrollHarness({
+      messages: rowMessages(1),
+      holdTargets: true,
+      ...opts,
+    })
+    let result: boolean | undefined
+    const seek = (seq: bigint) => {
+      let own: boolean | undefined
+      void h.hook.jumpToSeq(seq).then((moved) => {
+        own = moved
+      })
+      return () => own
+    }
+    void h.hook.jumpToSeq(21n).then((moved) => {
+      result = moved
+    })
+    return {
+      h,
+      outcome: () => result,
+      seek,
+    }
+  }
+
+  it('keeps the view until the row is reached, then lands', async () => {
+    const { h, outcome } = waitingSeek()
+    await flush()
+
+    expect(h.div.getScrollTop()).toBe(4500)
+    expect(outcome()).toBeUndefined()
+    // The reader asked for another place, so the view follows no tail meanwhile.
+    expect(h.hook.isFollowing()).toBe(false)
+
+    h.reachTarget()
+    await flush()
+    expect(h.div.getScrollTop()).toBe(1992)
+    expect(outcome()).toBe(true)
+    h.dispose()
+  })
+
+  it('ends the wait for a wheel of the reader', async () => {
+    const { h, outcome } = waitingSeek()
+
+    h.hook.handlers.onWheel(new WheelEvent('wheel', { deltaY: 100 }))
+    await flush()
+    expect(outcome()).toBe(false)
+
+    const writes = h.div.scrollTopWrites()
+    h.reachTarget()
+    expect(h.div.scrollTopWrites()).toBe(writes)
+    // The view is still at the bottom of the live tail, so the reader follows again.
+    expect(h.hook.isFollowing()).toBe(true)
+    h.dispose()
+  })
+
+  it('ends the wait for a drag of the reader', async () => {
+    const { h, outcome } = waitingSeek()
+
+    h.hook.handlers.onPointerDown(new PointerEvent('pointerdown', { pointerId: 1, isPrimary: true }))
+    h.scrollTo(4000)
+    await flush()
+    expect(outcome()).toBe(false)
+
+    h.reachTarget()
+    expect(h.div.getScrollTop()).toBe(4000)
+    h.dispose()
+  })
+
+  it('keeps the wait through a scroll event with no input of the reader', async () => {
+    // The momentum of a fling before the command, or the move of a pane that the browser
+    // shows again: the browser fires such an event with no input.
+    const { h, outcome } = waitingSeek()
+
+    h.scrollTo(4000)
+    await flush()
+    expect(outcome()).toBeUndefined()
+
+    h.reachTarget()
+    await flush()
+    expect(h.div.getScrollTop()).toBe(1992)
+    expect(outcome()).toBe(true)
+    h.dispose()
+  })
+
+  it('replaces the wait when a newer seek inside the window starts', async () => {
+    const { h, outcome, seek } = waitingSeek()
+
+    const newer = seek(31n)
+    await flush()
+    expect(outcome()).toBe(false)
+    expect(newer()).toBeUndefined()
+
+    h.reachTarget()
+    await flush()
+    expect(h.div.getScrollTop()).toBe(2992)
+    expect(newer()).toBe(true)
+    h.dispose()
+  })
+
+  it('ends the wait at once when a seek outside the window starts', async () => {
+    const fetch = deferred<boolean>()
+    const { h, outcome, seek } = waitingSeek({
+      hookOptions: {
+        onJumpToSeq: () => fetch.promise,
+      },
+    })
+
+    seek(500n)
+    await flush()
+
+    // Before the fetch of the newer seek settles.
+    expect(outcome()).toBe(false)
+    h.dispose()
+  })
+
+  it('ends the wait when the row leaves the loaded rows', async () => {
+    const { h, outcome } = waitingSeek()
+
+    h.loseTarget()
+    await flush()
+
+    expect(outcome()).toBe(false)
+    expect(h.div.getScrollTop()).toBe(4500)
+    expect(h.hook.isFollowing()).toBe(true)
+    h.dispose()
+  })
+
+  it('ends the wait when the hook unmounts', async () => {
+    const { h, outcome } = waitingSeek()
+
+    h.dispose()
+    await flush()
+
+    expect(outcome()).toBe(false)
+  })
+
+  it('shows a place that was reached with no layout box when the pane is shown', async () => {
+    const { h, outcome } = waitingSeek()
+    h.div.setClientHeight(0)
+    await h.resizeFlush()
+
+    const writes = h.div.scrollTopWrites()
+    h.reachTarget()
+    await flush()
+    expect(h.div.scrollTopWrites()).toBe(writes)
+    expect(outcome()).toBeUndefined()
+
+    h.div.setClientHeight(500)
+    await h.resizeFlush()
+    await flush()
+    expect(h.div.getScrollTop()).toBe(1992)
+    expect(outcome()).toBe(true)
+    h.dispose()
+  })
+
+  it('keeps the wait through the scroll event of a browser that moves a pane at its show', async () => {
+    const { h, outcome } = waitingSeek()
+    h.div.setClientHeight(0)
+    await h.resizeFlush()
+    h.reachTarget()
+
+    // The show: the resize callback, then a move of the browser, then the frame.
+    h.div.setClientHeight(500)
+    triggerResizeObserversSync()
+    h.div.setScrollTop(100)
+    h.hook.handlers.onScroll()
+    await h.frame()
+    await flush()
+
+    expect(h.div.getScrollTop()).toBe(1992)
+    expect(outcome()).toBe(true)
+    h.dispose()
+  })
+
+  it('shows a place that is reached between the resize callback of a show and its flush, in place of the last anchor', async () => {
+    const h = mountScrollHarness({
+      messages: rowMessages(1),
+      holdTargets: true,
+    })
+    await h.anchoredAt(3000)
+    let outcome: boolean | undefined
+    void h.hook.jumpToSeq(21n).then((moved) => {
+      outcome = moved
+    })
+    h.div.setClientHeight(0)
+    await h.resizeFlush()
+
+    // The browser gives the pane its layout box one frame before the flush of the show,
+    // and the rows of the place measure in that frame. The pane still counts as hidden.
+    h.div.setClientHeight(500)
+    triggerResizeObserversSync()
+    const writes = h.div.scrollTopWrites()
+    h.reachTarget()
+    expect(h.div.scrollTopWrites()).toBe(writes)
+
+    await h.frame()
+    await flush()
+    // The flush shows the place. A restore of the last anchor would put the view at 3000.
+    expect(h.div.getScrollTop()).toBe(1992)
+    expect(outcome).toBe(true)
     h.dispose()
   })
 })

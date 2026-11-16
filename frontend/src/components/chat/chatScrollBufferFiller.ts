@@ -44,10 +44,16 @@ const LOAD_PROGRESS_MIN_PX = 1
  *
  * Driven from BOTH a reactive effect and handleScroll (the viewport moving toward an edge
  * shrinks that side's buffer). The effect runs fill() again when the window content
- * changes (a page landed) and when a signal that fill() reads changes: the fetch flags,
- * the history flags, the ceiling, and the suppression of the older side. The caller gives
- * `viewportContentTop` untracked, so a change of the layout shift alone does not run it.
- * A self-contained unit.
+ * changes (a page landed), when the staged rows of a side change, and when a signal that
+ * fill() reads changes: the fetch flags, the history flags, the ceiling, and the
+ * suppression of the older side. The caller gives `viewportContentTop` untracked, so a
+ * change of the layout shift alone does not run it. A self-contained unit.
+ *
+ * Staged rows (loaded rows that wait for their measure, see chatRowAdmission) are loaded
+ * content that has no pixels yet. So a side with staged rows is in no deficit, and the
+ * filler judges no progress of a load on it. While a place of the reader waits, the
+ * filler fetches nothing: its buffers describe the position that the reader is about to
+ * leave (see `placeWaits`).
  *
  * This is mechanism #2 of the NO-SKIP INVARIANT (see FLING_OVERSCAN_LOOKAHEAD_MS):
  * growing the loaded window ahead of the viewport is what lets a fast fling keep
@@ -108,6 +114,20 @@ export function createScrollBufferFiller(deps: {
   // re-fetchable). The one-page margin (see chat.store.atWindowCeiling) keeps the last
   // allowed fetch from crossing the ceiling and dropping the live tail.
   atCeiling: () => boolean
+  /**
+   * Loaded rows wait above the rows of the list for their measure, or no row is in the
+   * list yet (an empty list reads as a deficit on both sides). Reactive.
+   */
+  stagedOlder: () => boolean
+  /** The same for the rows below the rows of the list. Reactive. */
+  stagedNewer: () => boolean
+  /**
+   * A place that the reader asked for waits for its rows (see RequestedPlace). A fill
+   * during the wait would judge the buffers of the view before its placement, and fetch an
+   * older page against an unplaced view. Not reactive: the hook calls `resumeAfterWait`
+   * when the wait ended.
+   */
+  placeWaits: () => boolean
 }) {
   // Which side the last load paged, the captured reference row, and that side's content
   // measure at the moment of the load (older -> content ABOVE the ref, newer -> content
@@ -121,6 +141,8 @@ export function createScrollBufferFiller(deps: {
   // deprioritized once stuck so an all-hidden run on ONE side can't starve a still-
   // productive other side. Cleared when that side makes progress or on re-arm.
   const stuck: Record<'older' | 'newer', boolean> = { older: false, newer: false }
+  // Whether a fill returned at once because a place waited (see `placeWaits`).
+  let skippedFillDuringWait = false
 
   // Reset per-window side-selection state once buffers are satisfied or a jump replaces
   // the message window.
@@ -152,10 +174,16 @@ export function createScrollBufferFiller(deps: {
     const target = deps.bufferTargetPx()
     const triggerPx = Math.max(0, target - el.clientHeight * BUFFER_REFILL_HYSTERESIS_SCREENS)
     return {
-      older: ceilingAllowed('older') && deps.viewportContentTop() < triggerPx && deps.hasOlder() && !deps.suppressOlder(),
-      newer: ceilingAllowed('newer') && distFromBottom(el) < triggerPx && deps.hasNewer(),
+      older: !deps.stagedOlder() && ceilingAllowed('older') && deps.viewportContentTop() < triggerPx && deps.hasOlder() && !deps.suppressOlder(),
+      newer: !deps.stagedNewer() && ceilingAllowed('newer') && distFromBottom(el) < triggerPx && deps.hasNewer(),
     }
   }
+
+  // Whether rows are staged on the side of the last load: the rows of that page have no
+  // pixels yet, so its progress cannot be judged.
+  const lastLoadStaged = (): boolean => lastLoadedSide !== null && (lastLoadedSide === 'older'
+    ? deps.stagedOlder()
+    : deps.stagedNewer())
 
   // The content measure for a side: how much content sits on THAT side of the captured
   // ref row (older -> ABOVE, newer -> BELOW), read from the geometry offset map. Both are
@@ -179,8 +207,11 @@ export function createScrollBufferFiller(deps: {
   // resolved to null, the ref row was TRIMMED out of the window: a trim only fires
   // because the loaded side grew enough to force the opposite-end cap-trim, so the load
   // DID surface content -- unmeasurable PROGRESS, not a stall.
+  //
+  // A load whose rows are still staged is not judged: the caller keeps its baseline, and
+  // the first fill after the rows joined judges it.
   const attributeLastLoadProgress = () => {
-    if (!lastLoadedSide)
+    if (!lastLoadedSide || lastLoadStaged())
       return
     const now = sideContent(lastLoadedSide)
     const refTrimmed = lastRefAnchor !== null && now === null
@@ -212,6 +243,11 @@ export function createScrollBufferFiller(deps: {
   }
 
   const fill = () => {
+    // No fetch while a place waits. The record lets the hook run this fill after the wait.
+    if (deps.placeWaits()) {
+      skippedFillDuringWait = true
+      return
+    }
     const el = deps.getEl()
     // No fetch for a hidden/inactive tab (clientHeight 0), while one is in flight
     // (let it land and re-run the fill before deciding the next), or while paused by
@@ -223,7 +259,9 @@ export function createScrollBufferFiller(deps: {
     if (!older && !newer) {
       // Genuinely satisfied / nothing to load, OR blocked at the ceiling. Reset side
       // selection state either way because no load is happening in this window state.
-      rearm()
+      // The baseline of a load whose rows are still staged stays, for its judgment.
+      if (!lastLoadStaged())
+        rearm()
       return
     }
     // guard -> attribute -> select -> fire. Only ONE side is paged per fill; the two are
@@ -243,10 +281,25 @@ export function createScrollBufferFiller(deps: {
       deps.onLoadNewer()
   }
 
+  /**
+   * Run the fill that a wait skipped, if one was skipped. A wait that skipped no fill ends
+   * with no fetch, as a placement with no wait does.
+   */
+  const resumeAfterWait = (): void => {
+    if (!skippedFillDuringWait)
+      return
+    skippedFillDuringWait = false
+    fill()
+  }
+
   createEffect(() => {
     deps.messages() // re-run as the window content changes (a page landed)
+    // Read here, not only in deficits(): a run of fill() that returns early reads neither,
+    // and the effect would then not run again when staged rows join.
+    deps.stagedOlder()
+    deps.stagedNewer()
     fill()
   })
 
-  return { fill, rearm }
+  return { fill, rearm, resumeAfterWait }
 }

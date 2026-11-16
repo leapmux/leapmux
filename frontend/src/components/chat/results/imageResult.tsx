@@ -1,11 +1,13 @@
 import type { JSX } from 'solid-js'
 import type { ImageRenderActions } from '../renderContext'
 import type { ImageResultSource, ImageSkipReason } from '~/lib/imageBlocks'
-import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from 'solid-js'
+import type { ImageDimensions } from '~/lib/imageDimensions'
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, untrack } from 'solid-js'
 import { imageRenderInfo, imageSkipPlaceholder } from '~/lib/imageBlocks'
 import { sniffImageDimensionsFromDataUrl } from '~/lib/imageDimensions'
 import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
-import { TOOL_IMAGE_MAX_HEIGHT_PX, toolImage, toolImageButton, toolImageRow, toolInputSummary } from '../toolStyles.css'
+import { createRequestReadiness } from '../renderReadiness'
+import { TOOL_IMAGE_MAX_HEIGHT_PX, toolImage, toolImageBox, toolImageButton, toolImageRow, toolInputSummary } from '../toolStyles.css'
 
 interface FileImageDisplay {
   path: string | undefined
@@ -92,6 +94,44 @@ export function ImageResultView(props: {
   const filePath = () => !props.source.data && !props.source.url
     ? props.source.filePath
     : undefined
+
+  // The size of a file image, from the first bytes of its file. The view asks for it
+  // whatever `deferLoad` says, so it can reserve the image box before it reads the
+  // image: a hidden premeasure copy then measures the height that the row keeps.
+  const [sizeRead, setSizeRead] = createSignal<{ path: string, size: ImageDimensions | null }>()
+  /**
+   * The size that the header of the file gave: `undefined` while no read settled (and
+   * for an image with no file path), and `null` for a file whose read gave no size or
+   * failed.
+   */
+  const headerSize = (): ImageDimensions | null | undefined => {
+    const path = filePath()
+    if (!path)
+      return undefined
+    const cached = props.actions?.cachedFileImageSize(path)
+    if (cached !== undefined)
+      return cached
+    const read = sizeRead()
+    return read?.path === path
+      ? read.size
+      : undefined
+  }
+  /**
+   * Whether this pass is a hidden premeasure copy whose image gave no size: neither
+   * the source nor the header of the file states one. Such a copy reads the whole
+   * image before it reports a height, as the row in the list does near the view.
+   * Otherwise it would measure a one-line placeholder, and the row would grow when
+   * the image arrives.
+   */
+  const premeasuresWithoutSize = (): boolean => {
+    const path = filePath()
+    return path !== undefined
+      && props.actions?.premeasurePass() === true
+      && props.source.dimensions === undefined
+      && headerSize() === null
+      // A copy that the resolver already holds shows with no read.
+      && props.actions.cachedFileImage(path) === undefined
+  }
   /**
    * Whether a read of the file can start at all.
    *
@@ -101,9 +141,12 @@ export function ImageResultView(props: {
    * said "Loading image..." for a read nobody started, and Retry stays hidden
    * for as long as `loading` holds -- so the row offered no way out.
    */
-  const canLoad = (): boolean => Boolean(filePath())
+  // A memo, so that its readers run again only when the answer changes. `deferLoad` runs
+  // again at each geometry change and at each end of a scroll, and the effect below starts
+  // the read again each time it runs.
+  const canLoad = createMemo((): boolean => Boolean(filePath())
     && !!props.actions?.loadFileImage
-    && !props.actions.deferLoad()
+    && (!props.actions.deferLoad() || premeasuresWithoutSize()))
   let generation = 0
   const loadFile = (refresh = false): void => {
     const path = filePath()
@@ -137,7 +180,7 @@ export function ImageResultView(props: {
     () => [
       filePath(),
       props.actions?.loadFileImage,
-      props.actions?.deferLoad(),
+      canLoad(),
     ] as const,
     () => {
       generation++
@@ -189,9 +232,12 @@ export function ImageResultView(props: {
     if (stated)
       return stated
     const src = info().src
-    return src
+    const sniffed = src
       ? sniffImageDimensionsFromDataUrl(src)
       : null
+    // Last, the size from the header of the file: it is all that a view knows before
+    // it read the image.
+    return sniffed ?? headerSize() ?? null
   })
   // Flips when the decoded image disagrees with the sniffed dimensions
   // (sniffer bug / exotic file): the reservation is dropped and layout falls
@@ -222,6 +268,80 @@ export function ImageResultView(props: {
     if (nw > 0 && nh > 0 && !imageReservationMatchesDecoded(d, { naturalWidth: nw, naturalHeight: nh }))
       setReservationBroken(true)
   }
+
+  // The size read of a file image. The wait for it is `heightUnknown` below.
+  createEffect(on(
+    () => [
+      filePath(),
+      props.actions?.loadFileImageSize,
+    ] as const,
+    ([path, readSize]) => {
+      if (!path)
+        return
+      // A size that the cache holds needs no read. The view keeps its own copy of it: the
+      // cache can drop the size later (its limit, a clear), and the box of a row that shows
+      // must stay.
+      const cached = untrack(() => props.actions?.cachedFileImageSize(path))
+      if (cached !== undefined) {
+        setSizeRead({ path, size: cached })
+        return
+      }
+      if (!readSize)
+        return
+      let current = true
+      onCleanup(() => {
+        current = false
+      })
+      const settle = (size: ImageDimensions | undefined): void => {
+        if (current)
+          setSizeRead({ path, size: size ?? null })
+      }
+      // The read never rejects by its contract. A rejection still counts as no size.
+      void readSize(path).then(settle, () => settle(undefined))
+    },
+  ))
+  /**
+   * Whether the view does not know the height of its picture yet:
+   *
+   * - Its size read runs: no answer exists for the path, and a reader exists to give one.
+   * - It is a premeasure copy with no size, and its read of the whole image runs. That
+   *   holds also when the cache gave the "no size" answer, so that no size read ran.
+   *
+   * The second state follows the first one with no gap for a size read that gives no
+   * size, because `display().loading` is true from the update that settles the size.
+   */
+  const heightUnknown = createMemo((): boolean => {
+    if (!filePath())
+      return false
+    if (headerSize() === undefined)
+      return props.actions?.loadFileImageSize !== undefined
+    return props.actions?.premeasurePass() === true && display().loading
+  })
+  // The wait that this view reports to the readiness scope of its row copy: no reader
+  // measures the copy while the view does not know the height of its picture. One wait
+  // covers the size read and the read of the whole image that follows it, so both end at
+  // one limit (see createRequestReadiness).
+  const requests = createRequestReadiness()
+  // Once, while the view sets up: the scope of a row copy is fixed for its life.
+  untrack(() => props.actions?.readiness)?.track(requests.pending)
+  let endWait: (() => void) | undefined
+  const finishWait = (): void => {
+    endWait?.()
+    endWait = undefined
+  }
+  createEffect(on(
+    () => [
+      filePath(),
+      heightUnknown(),
+    ] as const,
+    ([, unknown]) => {
+      // Each path has its own wait, with its own limit.
+      finishWait()
+      if (unknown)
+        endWait = requests.begin()
+    },
+  ))
+  onCleanup(finishWait)
 
   const open = () => {
     const opener = props.actions?.openImage
@@ -262,29 +382,55 @@ export function ImageResultView(props: {
     />
   )
 
+  // What the view says in place of an image that does not show: that its read runs, or
+  // why it failed, with a way to try again. Nothing while the image only waits for its
+  // row to come near the view.
+  const hasStatus = () => Boolean(display().loading || display().error || display().decodeError)
+  const status = () => (
+    <>
+      <div class={toolInputSummary}>
+        {display().loading
+          ? 'Loading image…'
+          : display().error || 'The image could not be decoded'}
+      </div>
+      <Show when={filePath() && (display().error || display().decodeError) && !display().loading}>
+        <div><button type="button" class="small outline" onClick={() => loadFile(true)}>Retry image</button></div>
+      </Show>
+    </>
+  )
+
   return (
     <Show
       when={info().src && !display().decodeError}
       fallback={(
         <Show
-          when={display().loading || display().error || display().decodeError}
+          when={reserved()}
           fallback={(
-            <ImageResultPlaceholder
-              source={source()}
-              {...(info().reason !== undefined
-                ? { reason: info().reason }
-                : {})}
-            />
+            <Show
+              when={hasStatus()}
+              fallback={(
+                <ImageResultPlaceholder
+                  source={source()}
+                  {...(info().reason !== undefined
+                    ? { reason: info().reason }
+                    : {})}
+                />
+              )}
+            >
+              <div class={toolImageRow}>{status()}</div>
+            </Show>
           )}
         >
+          {/* The size of the image is known, so the row holds its box in every state:
+              while the image waits, while it loads, and when its read failed. The image
+              then replaces the box, and the row keeps its height. The description sits
+              below the box as it sits below the image, for the same reason. */}
           <div class={toolImageRow}>
-            <div class={toolInputSummary}>
-              {display().loading
-                ? 'Loading image…'
-                : display().error || 'The image could not be decoded'}
+            <div class={toolImageBox} style={sizeStyle()} data-size-reserved="1">
+              <Show when={hasStatus()}>{status()}</Show>
             </div>
-            <Show when={filePath() && (display().error || display().decodeError) && !display().loading}>
-              <div><button type="button" class="small outline" onClick={() => loadFile(true)}>Retry image</button></div>
+            <Show when={props.source.description}>
+              <div class={toolInputSummary}>{props.source.description}</div>
             </Show>
           </div>
         </Show>

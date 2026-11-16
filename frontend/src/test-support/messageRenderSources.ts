@@ -10,6 +10,8 @@ export function testMessageSources(overrides: Partial<MessageRenderSources> = {}
     visibleRows: () => ({ request: false, result: false }),
     fileImage: async () => { throw new Error('The image source is unavailable') },
     cachedFileImage: () => undefined,
+    fileImageSize: async () => undefined,
+    cachedFileImageSize: () => null,
     backgroundTask: () => undefined,
     progress: () => undefined,
     ...overrides,

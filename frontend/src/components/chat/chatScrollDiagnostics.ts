@@ -1,5 +1,5 @@
 import type { ContentMovedInfo } from './chatLayoutPivot'
-import type { MeasurementCommitInfo } from './useChatVirtualizer'
+import type { MeasurementCommitInfo } from './chatRowHeightCache'
 import { createLogger } from '~/lib/logger'
 import { monotonicNow } from '~/lib/monotonicNow'
 

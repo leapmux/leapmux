@@ -1,16 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bucketWidth, computeOverscanPx, createViewportSizeObserver, measureSpaceToken } from './chatViewportGeometry'
-
-describe('chatViewportGeometry bucketWidth', () => {
-  it('rounds a measured width to the nearest 8px bucket', () => {
-    expect(bucketWidth(0)).toBe(0)
-    expect(bucketWidth(8)).toBe(8)
-    expect(bucketWidth(11)).toBe(8) // 11/8 = 1.375 -> rounds to 1 -> 8
-    expect(bucketWidth(12)).toBe(16) // 12/8 = 1.5 -> rounds to 2 -> 16
-    expect(bucketWidth(801)).toBe(800) // sub-bucket jitter collapses to the same bucket
-    expect(bucketWidth(804)).toBe(808)
-  })
-})
+import { computeOverscanPx, createViewportSizeObserver, measureSpaceToken } from './chatViewportGeometry'
 
 describe('chatViewportGeometry computeOverscanPx', () => {
   it('floors short panes, scales mid panes, and caps tall ones', () => {

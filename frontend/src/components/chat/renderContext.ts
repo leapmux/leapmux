@@ -10,6 +10,7 @@ import type { MessageUiKey } from './messageUiKeys'
 import type { RenderReadiness } from './renderReadiness'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { ImageResultSource } from '~/lib/imageBlocks'
+import type { ImageDimensions } from '~/lib/imageDimensions'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 
@@ -105,14 +106,32 @@ export interface PathRenderContext {
  * Loading and opening the images one row drew.
  *
  * Assembled where the message and the agent are both in scope, so a renderer only
- * states WHICH image. `deferLoad` gates the read itself: a hidden premeasure pass
- * and an offscreen row both hold the file read until the row is real.
+ * states WHICH image. `deferLoad` holds the read of the image itself: a hidden
+ * premeasure pass and an offscreen row both wait until the row is real. The read of
+ * the image SIZE is never deferred: the row reserves the image box from it, so the
+ * hidden copy measures the height that the row keeps.
  */
 export interface ImageRenderActions {
   /** Read a file-backed image's bytes; `refresh` re-reads past the cache. */
   loadFileImage: (filePath: string, options?: { refresh?: boolean }) => Promise<ImageResultSource | undefined>
   /** The already-read copy of a file-backed image, when one is held. */
   cachedFileImage: (filePath: string) => ImageResultSource | undefined
+  /**
+   * Read the size of a file-backed image from the first bytes of its file. Never
+   * rejects: a file whose header gives no size, and a failed read, give `undefined`.
+   */
+  loadFileImageSize: (filePath: string) => Promise<ImageDimensions | undefined>
+  /**
+   * The size that `loadFileImageSize` gave: `undefined` before a read settled, and
+   * `null` for a file whose read gave no size or failed.
+   */
+  cachedFileImageSize: (filePath: string) => ImageDimensions | null | undefined
+  /**
+   * The readiness scope of the row copy that draws the image. The image view reports
+   * its size read there, so no reader measures the copy before the box is reserved.
+   * Undefined outside a chat row.
+   */
+  readiness: RenderReadiness | undefined
   /** Open one image this row drew in its own tab. */
   openImage: (image: { index: number, filePath?: string, title?: string }) => void
   /** True while the read must wait (hidden premeasure, offscreen row). */
@@ -261,6 +280,10 @@ export function subagentsFrom(host: {
 export function imageActionsFrom(host: {
   fileImage?: (filePath: string, options?: { refresh?: boolean }) => Promise<ImageResultSource | undefined>
   cachedFileImage?: (filePath: string) => ImageResultSource | undefined
+  fileImageSize?: (filePath: string) => Promise<ImageDimensions | undefined>
+  cachedFileImageSize?: (filePath: string) => ImageDimensions | null | undefined
+  /** The readiness scope of the row copy (see ImageRenderActions.readiness). */
+  readiness?: RenderReadiness | undefined
   openImage?: (image: { index: number, filePath?: string, title?: string }) => void
   /** True while the read must wait: hidden premeasure pass or offscreen row. */
   deferLoad?: () => boolean
@@ -269,13 +292,19 @@ export function imageActionsFrom(host: {
 } | undefined): ImageRenderActions | undefined {
   const load = host?.fileImage
   const cached = host?.cachedFileImage
+  const loadSize = host?.fileImageSize
+  const cachedSize = host?.cachedFileImageSize
   const open = host?.openImage
   const premeasure = host?.premeasurePass
-  if (load === undefined && cached === undefined && open === undefined && premeasure === undefined)
+  if (load === undefined && cached === undefined && loadSize === undefined && cachedSize === undefined && open === undefined && premeasure === undefined)
     return undefined
   return {
     loadFileImage: load ?? (async () => undefined),
     cachedFileImage: cached ?? (() => undefined),
+    // With no source, no read can give a size: the cache answers as for a read that gave none.
+    loadFileImageSize: loadSize ?? (async () => undefined),
+    cachedFileImageSize: cachedSize ?? (() => null),
+    readiness: host?.readiness,
     openImage: open ?? (() => {}),
     deferLoad: () => host?.deferLoad?.() === true,
     premeasurePass: () => host?.premeasurePass?.() === true,

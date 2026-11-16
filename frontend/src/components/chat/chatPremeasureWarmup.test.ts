@@ -10,6 +10,7 @@ import {
   WARMUP_IDLE_DELAY_MS,
   WARMUP_TICK_MS,
 } from './chatPremeasureWarmup'
+import { createRowHeightCache } from './chatRowHeightCache'
 
 describe('chatPremeasureWarmup', () => {
   /**
@@ -73,7 +74,7 @@ describe('chatPremeasureWarmup', () => {
         visibleEntries: entriesSig,
         virtualItems: itemsSig,
         range,
-        hasMeasuredHeight: id => measured.has(id),
+        isMeasured: item => measured.has(item.id),
         excludedBandRows: opts.excludedBandRows ?? 2,
       })
       createComputed(() => published.push(warmup.warmupCandidates().length))
@@ -110,7 +111,7 @@ describe('chatPremeasureWarmup', () => {
     const items = ids.map(id => ({ id, hasSpanLines: false, heightKey: `k-${id}` } as VirtualItem))
     const entryById = new Map(entries.map(entry => [entry.message.id, entry]))
     const itemById = new Map(items.map(item => [item.id, item]))
-    const measured = new Set<string>()
+    const heights = createRowHeightCache()
     const mounts: string[] = []
     const disposes: string[] = []
     const [enabled, setEnabled] = createSignal(true)
@@ -123,21 +124,16 @@ describe('chatPremeasureWarmup', () => {
         visibleEntries: () => entries,
         virtualItems: () => items,
         range: () => ({ start: 8, end: 10 }),
-        hasMeasuredHeight: id => measured.has(id),
+        isMeasured: item => heights.heightOf(item) !== undefined,
         excludedBandRows: 2,
       })
       queue = createPremeasureQueue({
-        virt: {
-          hasMeasuredHeight: id => measured.has(id),
-          primeHeight: (id) => {
-            measured.add(id)
-            return true
-          },
-        },
+        heights,
+        stagingEnabled: () => true,
         visibleEntryById: () => entryById,
         virtualItemById: () => itemById,
         virtualItems: () => items,
-        rangedCandidates: () => [],
+        targetCandidates: () => [],
         lookAheadCandidates: () => [],
         warmupCandidates: warmup.warmupCandidates,
       })
@@ -155,7 +151,7 @@ describe('chatPremeasureWarmup', () => {
       mountedIds: () => rows(),
       warmupIds: () => warmup.warmupCandidates().map(c => c.item.id),
       measure: (id: string) => {
-        queue.onMeasure(id, 10, `k-${id}`, 0, true)
+        queue.onMeasure(id, 10, `k-${id}`, 0)
       },
       dispose,
     }

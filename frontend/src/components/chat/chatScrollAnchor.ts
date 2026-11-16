@@ -30,7 +30,7 @@ export interface AnchorOffsetGeometry {
   indexOfId: (id: string) => number
   /** Cumulative offset (top, px) of the row at `index`. */
   offsetOfIndex: (index: number) => number
-  /** Measured-or-estimated height (px) of the row at `index` (excludes the gap). */
+  /** The height (px) of the row at `index` (excludes the gap). */
   heightOfIndex: (index: number) => number
   /** Inter-row gap (px) below the row at `index` (0 for the last row). */
   gapAfter: (index: number) => number
@@ -66,7 +66,7 @@ export function anchorAtOffset(geo: AnchorOffsetGeometry, contentTop: number): S
   // floors to row 0, yielding a negative `within` that would store a negative offset and
   // restore above the top.
   const within = Math.max(0, contentTop - geo.offsetOfIndex(idx))
-  // Clamp `within` to the row's height (measured or estimated) and record that
+  // Clamp `within` to the row's height and record that
   // height as the basis. Clamping restricts the stored fraction (within / basisHeight)
   // to [0, 1], so scrollTopForAnchor's proportional resolve can never overshoot the
   // row body.

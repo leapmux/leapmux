@@ -66,6 +66,8 @@ const ISOLATED_CONTEXT_SPECS = new Set([
   '047b-chat-scroll-rail-autohide.spec.ts',
   // This adds an init script to its page, which no API removes again (see holdRenderRepliesWith).
   '048f-chat-scroll-stability-late-content.spec.ts',
+  // This adds an init script to its page also (see recordPremeasureCommitsFromNextLoad).
+  'codex/chat-scroll-stability-file-image.spec.ts',
 ])
 
 /**

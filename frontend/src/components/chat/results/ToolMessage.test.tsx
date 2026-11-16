@@ -355,6 +355,9 @@ async function drawToolImages(row: ReturnType<typeof toolRow>): Promise<{ contai
     images: {
       loadFileImage: () => Promise.resolve(undefined),
       cachedFileImage: () => undefined,
+      loadFileImageSize: () => Promise.resolve(undefined),
+      cachedFileImageSize: () => null,
+      readiness: undefined,
       openImage: request => opened.push(request.index),
       deferLoad: () => false,
       premeasurePass: () => false,
@@ -695,6 +698,9 @@ describe('a held display in a tool row (ToolMessage)', () => {
         images: {
           loadFileImage: read,
           cachedFileImage: () => undefined,
+          loadFileImageSize: () => Promise.resolve(undefined),
+          cachedFileImageSize: () => null,
+          readiness: undefined,
           openImage: () => {},
           deferLoad: () => false,
           premeasurePass: () => false,

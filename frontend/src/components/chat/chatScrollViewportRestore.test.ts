@@ -1,4 +1,4 @@
-import type { ChatScrollState, ChatScrollVirtualizer } from './useChatScroll'
+import type { ChatScrollState, ChatScrollVirtualizer, RequestedPlace, ScrollContext } from './useChatScroll'
 import type { ScrollAnchor } from '~/stores/chatTypes'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createViewportRestore } from './chatScrollViewportRestore'
@@ -54,7 +54,10 @@ function stubVirt(opts: { totalHeight: number, forAnchor: number | null, nearAnc
 
 /**
  * A viewport restore over stubbed deps. `placed` records what each `placeAt` resolver
- * returned, in order: a `null` is a strategy whose anchor did not resolve.
+ * returned, in order: a `null` is a placement whose anchor did not resolve. The context
+ * shows each requested place at once (see makeScrollContext), so a restore that asks for
+ * a place records its placement in `placed` also. `context` replaces members of the
+ * context.
  */
 function harness(opts: {
   saved?: ChatScrollState | undefined
@@ -65,6 +68,7 @@ function harness(opts: {
   lastAnchor?: () => ScrollAnchor | null
   /** Whether the hook's restoreAnchor placed the view. Default: false. */
   anchorRestored?: boolean
+  context?: Partial<ScrollContext>
 } = {}) {
   const el = { scrollTop: 0, scrollHeight: 5000, clientHeight: 500 } as HTMLDivElement
   // `followRequested` is the request for the tail; a test changes it between the
@@ -88,28 +92,28 @@ function harness(opts: {
     lastAnchor: vi.fn(opts.lastAnchor ?? (() => null)),
     onGeometrySettled: vi.fn(),
   }
-  const restore = createViewportRestore(
-    makeScrollContext({
-      getEl: () => el,
-      virt: stubVirt({
-        totalHeight: opts.totalHeight ?? 5000,
-        forAnchor: opts.forAnchor === undefined
-          ? 1200
-          : opts.forAnchor,
-        nearAnchor: opts.nearAnchor === undefined
-          ? 1200
-          : opts.nearAnchor,
-      }),
-      isAnimating: () => state.animating,
-      followRequested: () => state.followRequested,
-      placeAt,
-      recordPosition,
+  const ctx = makeScrollContext({
+    getEl: () => el,
+    virt: stubVirt({
+      totalHeight: opts.totalHeight ?? 5000,
+      forAnchor: opts.forAnchor === undefined
+        ? 1200
+        : opts.forAnchor,
+      nearAnchor: opts.nearAnchor === undefined
+        ? 1200
+        : opts.nearAnchor,
     }),
-    extras,
-  )
+    isAnimating: () => state.animating,
+    followRequested: () => state.followRequested,
+    placeAt,
+    recordPosition,
+    ...opts.context,
+  })
+  const restore = createViewportRestore(ctx, extras)
   // prevClientHeight defaults to 0 (hidden); el.clientHeight is 500 -> wasHidden.
   return {
     restore,
+    ctx,
     state,
     placed,
     placeAt,
@@ -193,7 +197,7 @@ describe('chatScrollViewportRestore handleResize', () => {
     const raf = installRaf()
     try {
       // A restore that placed the view recorded its own write. A second record would end
-      // the anchor that the hook holds for a row with an estimated height.
+      // the anchor that the hook holds for a row that does not show its height yet.
       const anchor: ScrollAnchor = { id: 'a', offsetWithinRow: 1 }
       const { restore, extras, recordPosition } = harness({
         saved: undefined,
@@ -350,7 +354,8 @@ describe('chatScrollViewportRestore restore priority', () => {
       })
       restore.handleResize()
       raf.flush()
-      expect(placed).toEqual([null, 250])
+      // One step resolves the anchor to its place, the nearest survivor, and places it.
+      expect(placed).toEqual([250])
       expect(extras.forceScrollToBottom).not.toHaveBeenCalled()
     }
     finally {
@@ -370,7 +375,8 @@ describe('chatScrollViewportRestore restore priority', () => {
       restore.handleResize()
       raf.flush()
       expect(extras.forceScrollToBottom).toHaveBeenCalled()
-      expect(placed).toEqual([null, null])
+      // The anchor gives no place, so nothing asks for a placement.
+      expect(placed).toEqual([])
     }
     finally {
       raf.restore()
@@ -385,6 +391,302 @@ describe('chatScrollViewportRestore restore priority', () => {
       raf.flush()
       expect(placed).toEqual([0])
       expect(extras.forceScrollToBottom).not.toHaveBeenCalled()
+    }
+    finally {
+      raf.restore()
+    }
+  })
+})
+
+describe('chatScrollViewportRestore requested places', () => {
+  /** The place and the `show` argument of each `requestPlace` call of the context, in order. */
+  const requests = (ctx: ScrollContext): [RequestedPlace, (() => void) | undefined][] =>
+    vi.mocked(ctx.requestPlace).mock.calls.map(([place, show]) => [place, show])
+
+  it('asks for the place of a saved anchor whose row is loaded, and clears the saved state', () => {
+    const raf = installRaf()
+    try {
+      const place: RequestedPlace = {
+        kind: 'row',
+        anchor: { id: 'r1', offsetWithinRow: 10 },
+      }
+      const { restore, ctx, extras } = harness({
+        saved: SAVED_ANCHOR,
+        context: {
+          placeForAnchor: vi.fn(() => place),
+        },
+      })
+      restore.handleResize()
+      raf.flush()
+      expect(ctx.placeForAnchor).toHaveBeenCalledWith(SAVED_ANCHOR.anchor)
+      expect(extras.clearSavedViewportScroll).toHaveBeenCalledOnce()
+      // No `show`: the hook places a row place at its anchor.
+      expect(requests(ctx)).toEqual([
+        [place, undefined],
+      ])
+    }
+    finally {
+      raf.restore()
+    }
+  })
+
+  it('jumps to the latest page for a saved anchor with no place in a window with newer pages', () => {
+    const raf = installRaf()
+    try {
+      const { restore, ctx, extras } = harness({
+        saved: { ...SAVED_ANCHOR, hasMoreNewer: true },
+        context: {
+          placeForAnchor: vi.fn(() => undefined),
+        },
+      })
+      restore.handleResize()
+      raf.flush()
+      expect(extras.forceScrollToBottom).toHaveBeenCalledOnce()
+      expect(ctx.requestPlace).not.toHaveBeenCalled()
+      expect(extras.clearSavedViewportScroll).toHaveBeenCalledOnce()
+    }
+    finally {
+      raf.restore()
+    }
+  })
+
+  it('restores no raw position while loaded rows exist and none is in the list', () => {
+    const raf = installRaf()
+    try {
+      // The total height is 0 only because no row joined the list yet.
+      const { restore, ctx, placed } = harness({
+        saved: { atBottom: false, hasMoreNewer: false, rawScrollTop: 40 },
+        totalHeight: 0,
+        context: {
+          awaitingFirstView: vi.fn(() => true),
+        },
+      })
+      restore.handleResize()
+      raf.flush()
+      expect(placed).not.toContain(40)
+      expect(requests(ctx)).toEqual([
+        [
+          { kind: 'top' },
+          undefined,
+        ],
+      ])
+    }
+    finally {
+      raf.restore()
+    }
+  })
+
+  it('restores a raw position in a window with no visible row', () => {
+    const raf = installRaf()
+    try {
+      const { restore, ctx, placed } = harness({
+        saved: { atBottom: false, hasMoreNewer: false, rawScrollTop: 40 },
+        totalHeight: 0,
+      })
+      restore.handleResize()
+      raf.flush()
+      expect(placed).toEqual([40])
+      expect(ctx.requestPlace).not.toHaveBeenCalled()
+    }
+    finally {
+      raf.restore()
+    }
+  })
+
+  it('asks for the top when the saved state gives no anchor, no raw position, and no newer page', () => {
+    const raf = installRaf()
+    try {
+      const { restore, ctx } = harness({
+        saved: { atBottom: false, hasMoreNewer: false },
+      })
+      restore.handleResize()
+      raf.flush()
+      expect(requests(ctx)).toEqual([
+        [
+          { kind: 'top' },
+          undefined,
+        ],
+      ])
+    }
+    finally {
+      raf.restore()
+    }
+  })
+
+  it('asks for the tail when a pane of a reader who requests the tail is shown', () => {
+    const raf = installRaf()
+    try {
+      const { restore, ctx, extras } = harness({ saved: undefined, followRequested: true })
+      restore.handleResize()
+      raf.flush()
+      const [request] = requests(ctx)
+      expect(requests(ctx)).toHaveLength(1)
+      expect(request?.[0]).toEqual({ kind: 'tail' })
+      // The placement of the request is the stick, which the context ran once.
+      expect(request?.[1]).toBeTypeOf('function')
+      expect(extras.stickToBottom).toHaveBeenCalledOnce()
+    }
+    finally {
+      raf.restore()
+    }
+  })
+
+  it('asks for the tail at a mount with a saved state at the bottom, and clears the saved state', () => {
+    const { restore, ctx, extras } = harness({
+      saved: { atBottom: true, hasMoreNewer: false },
+    })
+    restore.restoreOnMount()
+    expect(requests(ctx).map(([place]) => place)).toEqual([
+      { kind: 'tail' },
+    ])
+    expect(extras.clearSavedViewportScroll).toHaveBeenCalledOnce()
+    expect(extras.forceScrollToBottom).not.toHaveBeenCalled()
+  })
+
+  it('writes no stick on a resize of a visible pane while a tail waits', () => {
+    const raf = installRaf()
+    try {
+      const { restore, ctx, extras, recordPosition } = harness({
+        saved: undefined,
+        followRequested: true,
+        context: {
+          showWaitingPlace: vi.fn((): 'waiting' => 'waiting'),
+        },
+      })
+      restore.initClientHeight() // prevClientHeight = 500 -> the resize is of a visible pane
+      restore.handleResize()
+      raf.flush()
+      // A stick would put the view at the bottom of the measured rows, and the wait would
+      // move it again.
+      expect(extras.stickToBottom).not.toHaveBeenCalled()
+      expect(ctx.requestPlace).not.toHaveBeenCalled()
+      expect(recordPosition).toHaveBeenCalledOnce()
+    }
+    finally {
+      raf.restore()
+    }
+  })
+
+  it('restores no anchor at a show while a place waits', () => {
+    const raf = installRaf()
+    try {
+      const { restore, extras, recordPosition } = harness({
+        saved: undefined,
+        lastAnchor: () => ({ id: 'r3', offsetWithinRow: 4 }),
+        anchorRestored: true,
+        context: {
+          showWaitingPlace: vi.fn((): 'waiting' => 'waiting'),
+        },
+      })
+      restore.handleResize()
+      raf.flush()
+      expect(extras.restoreAnchor).not.toHaveBeenCalled()
+      expect(recordPosition).toHaveBeenCalledOnce()
+    }
+    finally {
+      raf.restore()
+    }
+  })
+
+  it('restores no anchor and records nothing at a show that showed the place that waited', () => {
+    const raf = installRaf()
+    try {
+      const { restore, extras, recordPosition } = harness({
+        saved: undefined,
+        lastAnchor: () => ({ id: 'r3', offsetWithinRow: 4 }),
+        anchorRestored: true,
+        context: {
+          showWaitingPlace: vi.fn((): 'shown' => 'shown'),
+        },
+      })
+      restore.handleResize()
+      raf.flush()
+      expect(extras.restoreAnchor).not.toHaveBeenCalled()
+      expect(recordPosition).not.toHaveBeenCalled()
+    }
+    finally {
+      raf.restore()
+    }
+  })
+
+  it('shows a place that no step of the flush showed, after the steps', () => {
+    const raf = installRaf()
+    try {
+      const { restore, ctx, placeAt, placed } = harness({
+        saved: { atBottom: false, hasMoreNewer: false, rawScrollTop: 40 },
+        totalHeight: 0,
+      })
+      restore.handleResize()
+      raf.flush()
+      expect(placed).toEqual([40])
+      expect(ctx.showWaitingPlace).toHaveBeenCalledOnce()
+      expect(vi.mocked(ctx.showWaitingPlace).mock.invocationCallOrder[0])
+        .toBeGreaterThan(placeAt.mock.invocationCallOrder[0]!)
+    }
+    finally {
+      raf.restore()
+    }
+  })
+})
+
+describe('chatScrollViewportRestore paneHidden', () => {
+  /** Set the height that the element of the harness reports. */
+  const setClientHeight = (el: HTMLDivElement, height: number): void => {
+    (el as { clientHeight: number }).clientHeight = height
+  }
+
+  it('counts the pane as hidden from a flush at a height of 0 until the flush of the show', () => {
+    const raf = installRaf()
+    try {
+      const { restore, el } = harness({ saved: undefined })
+      restore.initClientHeight()
+      expect(restore.paneHidden()).toBe(false)
+
+      setClientHeight(el, 0)
+      restore.handleResize()
+      raf.flush()
+      expect(restore.paneHidden()).toBe(true)
+
+      // The browser gives the pane its layout box one frame before the flush of the show.
+      setClientHeight(el, 500)
+      restore.handleResize()
+      expect(restore.paneHidden()).toBe(true)
+
+      raf.flush()
+      expect(restore.paneHidden()).toBe(false)
+    }
+    finally {
+      raf.restore()
+    }
+  })
+
+  it('counts a pane that mounts with a height as shown', () => {
+    const { restore } = harness({ saved: undefined })
+    restore.initClientHeight()
+    expect(restore.paneHidden()).toBe(false)
+  })
+
+  it('counts a pane that mounts with no height as hidden', () => {
+    const { restore, el } = harness({ saved: undefined })
+    setClientHeight(el, 0)
+    restore.initClientHeight()
+    expect(restore.paneHidden()).toBe(true)
+  })
+
+  it('counts the pane as hidden while the flush of a show waits for a scroll animation', () => {
+    const raf = installRaf()
+    try {
+      const { restore, state } = harness({ saved: undefined })
+      state.animating = true
+      restore.handleResize()
+
+      // The flush takes another frame: it recorded no height yet.
+      raf.flush()
+      expect(restore.paneHidden()).toBe(true)
+
+      state.animating = false
+      raf.flush()
+      expect(restore.paneHidden()).toBe(false)
     }
     finally {
       raf.restore()

@@ -1,9 +1,10 @@
-import type { FileImageLoadOptions, FileImageReader } from './fileImageResolver'
+import type { FileImageLoadOptions, FileImageReader, FileImageSizeReader } from './fileImageResolver'
 import type { ToolSpanRowPresence } from './model/row'
 import type {} from './providers/registry'
 import type { ResolvedMessageContent } from './rowExtractionTypes'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
+import type { ImageDimensions } from '~/lib/imageDimensions'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { MessageRevision, MessageSpanIdentity, ToolSpanRole, ToolSpanSide } from '~/lib/messageSpan'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
@@ -49,6 +50,8 @@ export interface MessageContextSources {
   fetchSpan: (identity: MessageSpanIdentity, signal: AbortSignal) => Promise<AgentChatMessage[]>
   fetchMessage: (seq: bigint, signal: AbortSignal) => Promise<AgentChatMessage | undefined>
   fetchFileImage: FileImageReader
+  /** Read the size of an image file from its first bytes (see FileImageSizeReader). */
+  fetchFileImageSize: FileImageSizeReader
   subscribe: (observer: (message: AgentChatMessage) => void) => () => void
   backgroundTask: (rowKey: string) => BackgroundTaskItem | undefined
   progress: (identity: MessageSpanIdentity) => ToolProgressEntry | undefined
@@ -62,7 +65,17 @@ export interface MessageContextResolver {
   request: (identity: MessageSpanIdentity) => ResolvedMessage | undefined
   result: (identity: MessageSpanIdentity) => ResolvedMessage | undefined
   loadSpan: (identity: MessageSpanIdentity) => Promise<void>
-  loadRelated: (message: AgentChatMessage, parsed?: ParsedMessageContent) => Promise<void>
+  /**
+   * Load the related messages that the row of `message` needs and the browser does not
+   * hold (see `relatedMessages` of the provider plugin).
+   *
+   * Returns `undefined` when no request is needed: the row needs no related message, the
+   * browser holds each of them, or the span has nothing left to fetch. A caller can then
+   * tell at once that the row shows what it will show. Otherwise it returns the promise of
+   * the request, which every caller of the span shares. That promise rejects when the
+   * request failed.
+   */
+  loadRelated: (message: AgentChatMessage, parsed?: ParsedMessageContent) => Promise<void> | undefined
   retainSpan: (identity: MessageSpanIdentity) => () => void
   /** Retain a rendered row's span across a keyed component remount. */
   retainRenderSpan: (identity: MessageSpanIdentity) => () => void
@@ -74,6 +87,10 @@ export interface MessageContextResolver {
   contentVersion: (messageId: string) => number
   fileImage: (path: string, options?: FileImageLoadOptions) => Promise<ImageResultSource>
   cachedFileImage: (path: string, reference?: string) => ImageResultSource | undefined
+  /** The size of an image file, from its first bytes. Never rejects: no size gives `undefined`. */
+  fileImageSize: (path: string, options?: { reference?: string }) => Promise<ImageDimensions | undefined>
+  /** The size that `fileImageSize` gave: `undefined` before a read settled, `null` for no size. */
+  cachedFileImageSize: (path: string, reference?: string) => ImageDimensions | null | undefined
 }
 
 /** Reactive sources for one rendered row. Only the consuming component subscribes. */
@@ -85,6 +102,10 @@ export interface MessageRenderSources {
   visibleRows: () => ToolSpanRowPresence
   fileImage: MessageContextResolver['fileImage']
   cachedFileImage: MessageContextResolver['cachedFileImage']
+  /** `MessageContextResolver.fileImageSize` for an image of this row. */
+  fileImageSize: (path: string) => Promise<ImageDimensions | undefined>
+  /** `MessageContextResolver.cachedFileImageSize` for an image of this row. */
+  cachedFileImageSize: (path: string) => ImageDimensions | null | undefined
   backgroundTask: MessageContextResolver['backgroundTask']
   progress: () => ToolProgressEntry | undefined
 }
@@ -102,6 +123,15 @@ export function createMessageRenderSources(resolver: () => MessageContextResolve
     visibleRows: () => resolver()?.visibleRows(span()) ?? { request: false, result: false },
     fileImage: (path, options) => resolver()?.fileImage(path, { ...options, reference: message().id }) ?? Promise.reject(new Error('The image source is unavailable')),
     cachedFileImage: path => resolver()?.cachedFileImage(path, message().id),
+    // With no resolver, no read can give a size: the load resolves none, and the cache
+    // answers `null`, as for a read that gave no size.
+    fileImageSize: path => resolver()?.fileImageSize(path, { reference: message().id }) ?? Promise.resolve(undefined),
+    cachedFileImageSize: (path) => {
+      const active = resolver()
+      return active === undefined
+        ? null
+        : active.cachedFileImageSize(path, message().id)
+    },
     backgroundTask: rowKey => resolver()?.backgroundTask(rowKey),
     progress: () => resolver()?.progress(messageSpanIdentity(message())),
   }
@@ -126,7 +156,7 @@ function newestRelatedMessage(first: AgentChatMessage | undefined, second: Agent
 }
 
 export function createMessageContextResolver(source: MessageContextSources): MessageContextResolver {
-  const fileImages = createFileImageResolver(source.fetchFileImage)
+  const fileImages = createFileImageResolver(source.fetchFileImage, source.fetchFileImageSize)
   const fetched = new Map<string, AgentChatMessage>()
   const resolved = new Map<string, ResolvedCacheEntry>()
   const loadedSpans = new Set<string>()
@@ -383,13 +413,23 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     clear()
   })
 
+  /**
+   * Whether the span of `identity` has nothing left to fetch: it has no id, the resolver
+   * is disposed, a fetch of the span settled before, or the browser holds both sides.
+   * Reads the caches, so a caller that must not subscribe to them calls it untracked.
+   */
+  function spanNeedsNoFetch(identity: MessageSpanIdentity): boolean {
+    return !identity.spanId
+      || disposed
+      || loadedSpans.has(messageSpanKey(identity))
+      || (related(identity, 'request') !== undefined && related(identity, 'result') !== undefined)
+  }
+
   function loadSpan(identity: MessageSpanIdentity): Promise<void> {
     const spanId = messageSpanKey(identity)
     // Fetching must not subscribe the caller to cache changes that the fetch causes.
     return untrack(async () => {
-      if (!identity.spanId || disposed || loadedSpans.has(spanId))
-        return Promise.resolve()
-      if (related(identity, 'request') && related(identity, 'result'))
+      if (spanNeedsNoFetch(identity))
         return Promise.resolve()
       const key = `span:${spanId}`
       const running = inflight.get(key)
@@ -495,14 +535,28 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       ? Promise.reject(new DOMException('The image resolver is no longer active', 'AbortError'))
       : fileImages.load(path, options),
     cachedFileImage: fileImages.peek,
+    fileImageSize: (path, options) => disposed
+      ? Promise.resolve(undefined)
+      : fileImages.loadSize(path, options),
+    cachedFileImageSize: fileImages.peekSize,
     request: identity => related(identity, 'request'),
     result: identity => related(identity, 'result'),
     loadSpan,
-    loadRelated: (message, parsed) => untrack(async () => {
-      const resolved = current(message, parsed)
-      const sides = pluginFor(message.agentProvider)?.transcript.relatedMessages?.(resolved.resolved) ?? []
-      if (sides.some(side => related(messageSpanIdentity(message), side) === undefined))
-        await loadSpan(messageSpanIdentity(message))
+    // Not an async function: the caller must learn in the same task whether a request is
+    // needed (see MessageContextResolver.loadRelated).
+    loadRelated: (message, parsed) => untrack(() => {
+      try {
+        const identity = messageSpanIdentity(message)
+        const resolved = current(message, parsed)
+        const sides = pluginFor(message.agentProvider)?.transcript.relatedMessages?.(resolved.resolved) ?? []
+        if (sides.every(side => related(identity, side) !== undefined) || spanNeedsNoFetch(identity))
+          return undefined
+        return loadSpan(identity)
+      }
+      catch (error) {
+        // A failure to read the row is a failed lookup, as it was a rejection before.
+        return Promise.reject(error)
+      }
     }),
     retainSpan: (identity) => {
       if (!identity.spanId || disposed)

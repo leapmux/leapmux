@@ -74,7 +74,7 @@ export interface RowMeasurer {
 }
 
 export interface RowMeasurerDeps {
-  /** Commit one row height to the virtualizer's cache and estimate. */
+  /** Commit one row height to the height cache of the virtualizer. */
   measure: (id: string, height: number) => boolean
   /**
    * Current measurement key for a mounted row. Used only for the DOM-read de-dupe:

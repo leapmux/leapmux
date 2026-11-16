@@ -219,14 +219,15 @@ export const messageListRailActive = style({
 hideNativeScrollbar(messageListRailActive)
 
 /**
- * Shared look of the "Loading older/newer messages..." indicators. Each is an absolute
+ * Shared look of the loading indicators of the chat list ("Loading older messages...",
+ * "Loading newer messages...", "Loading messages..."). Each is an absolute
  * OVERLAY pill (a sibling of the scroll container, inside the relative wrapper), NOT in
  * the scroll flow. An in-flow indicator would shift the virtualized content by its
  * height when fetching toggles -- and that shift is invisible to the layout shift
  * (which follows only the virtual rows), so the view bounces by the
  * indicator's height each load cycle and a scrolled reader gets stuck re-triggering the
  * load. As an overlay it never moves the content. pointer-events: none so it can't
- * swallow a scroll/click landing on it. The top/bottom edge is set by each variant.
+ * swallow a scroll/click landing on it. Each variant sets its vertical place.
  */
 const loadingIndicatorBase = style({
   position: 'absolute',
@@ -257,11 +258,23 @@ export const loadingOlderIndicator = style([
 /**
  * "Loading newer messages..." overlay, pinned bottom-center. It takes the scroll-to-bottom
  * button's exact slot (same bottom-center anchor); ChatView hides that button while this is
- * shown (scroll.stalledNewer()) so the two never overlap.
+ * shown so the two never overlap.
  */
 export const loadingNewerIndicator = style([
   loadingIndicatorBase,
   { bottom: 'var(--space-3)' },
+])
+
+/**
+ * "Loading messages..." overlay, centred in the list area. ChatView shows it while loaded
+ * rows exist and none is in the list yet, because a row of the first view is not measured.
+ */
+export const loadingFirstViewIndicator = style([
+  loadingIndicatorBase,
+  {
+    top: '50%',
+    transform: 'translate(-50%, -50%)',
+  },
 ])
 
 export const inputArea = style({

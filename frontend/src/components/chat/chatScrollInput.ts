@@ -1,4 +1,5 @@
 import type { ScrollContext } from './useChatScroll'
+import { batch } from 'solid-js'
 import { isMac } from '~/lib/shortcuts/platform'
 import { distFromBottom, EDGE_INTENT_TOLERANCE_PX, FOLLOW_TOLERANCE_PX, hasScrollRoom } from './chatScrollGeometry'
 
@@ -78,17 +79,24 @@ export function createScrollInput(ctx: ScrollContext, extras: {
   // The hook actions that only this layer calls.
   forceScrollToBottom: () => void
   cancelPendingScroll: () => void
-  /** Abandon an in-flight out-of-window seek: the reader took control. */
+  /** Abandon the pending history jump: the reader took control. */
   cancelPendingSeek: () => void
   tryLoadOlderOnExplicitTopIntent: () => void
   tryLoadNewerOnExplicitBottomIntent: () => void
   setLastScrollDir: (dir: 'older' | 'newer') => void
   hasOlderMessages: () => boolean
-  onJumpToOldest: (() => void | Promise<void>) | undefined
+  /**
+   * Replace the window with the oldest page. Resolves `true` only when that page replaced
+   * the window (see PaginationCallbacks.onJumpToLatest).
+   */
+  onJumpToOldest: ((signal?: AbortSignal) => Promise<boolean> | undefined) | undefined
 }) {
-  /** Place the view at the very top of the loaded rows. */
+  /**
+   * Ask for the very top of the loaded rows. The first rows can be staged, so the view
+   * moves when they are measured (see ScrollContext.requestPlace).
+   */
   const scrollToTopPosition = () => {
-    ctx.placeAt(() => 0)
+    void ctx.requestPlace({ kind: 'top' })
   }
 
   /**
@@ -96,19 +104,50 @@ export function createScrollInput(ctx: ScrollContext, extras: {
    * beyond the window, re-fetch the earliest page first (jumpToOldest replaces
    * the window), then place at the top; otherwise just place at the top of the
    * already-loaded window.
+   *
+   * The fetch is the pending history jump of the hook. Its landing runs only while its
+   * signal is not aborted: a later command or an input of the reader stops it. It places
+   * at the top only when its page replaced the window. When another history fetch of the
+   * store replaced the jump, the window is not the oldest page, so the landing only
+   * checks the position.
+   *
+   * The synchronous part runs in one batch, so the hook sees only the place that the
+   * command leaves (see ScrollContext.requestPlace).
    */
   const jumpToTop = () => {
     ctx.cancelScrollAnimation()
-    if (extras.hasOlderMessages()) {
-      void Promise.resolve(extras.onJumpToOldest?.())
-        .then(() => scrollToTopPosition())
-        .catch(() => ctx.checkPosition())
-      return
-    }
-    scrollToTopPosition()
+    batch(() => {
+      if (extras.hasOlderMessages()) {
+        const signal = ctx.beginHistoryJump()
+        void Promise.resolve(extras.onJumpToOldest?.(signal))
+          .then((applied) => {
+            if (signal.aborted)
+              return
+            if (applied === true)
+              scrollToTopPosition()
+            else
+              ctx.checkPosition()
+          })
+          .catch(() => {
+            if (!signal.aborted)
+              ctx.checkPosition()
+          })
+        return
+      }
+      // This command starts no fetch, but it still ends one that runs.
+      ctx.abandonHistoryJump()
+      scrollToTopPosition()
+    })
   }
 
   const pageScroll = (direction: -1 | 1) => {
+    // A page is an input of the reader, like a wheel: it stops the pending history jump.
+    // The page key of the list reaches here through takeIntent, which abandons the jump
+    // already, but the application shortcut calls pageScroll directly. While loaded rows
+    // exist and none is in the list, an input changes nothing: no row shows a position.
+    const inputCounts = !ctx.awaitingFirstView()
+    if (inputCounts)
+      ctx.abandonHistoryJump()
     // A 0-height container (hidden/collapsed pane, or the cold-start frame before
     // measurement) can't scroll: clientHeight is 0, so the delta below is 0, and a
     // no-move would then fire a spurious edge pagination on every key press.
@@ -134,7 +173,7 @@ export function createScrollInput(ctx: ScrollContext, extras: {
       // The rule of the scroll handler for a move of the reader: a page up ends the request
       // for the tail, and so does a page down while newer messages exist, when it leaves the
       // view more than FOLLOW_TOLERANCE_PX above the loaded bottom.
-      if (direction === -1 || (ctx.hasNewerMessages() && distFromBottom(el) > FOLLOW_TOLERANCE_PX))
+      if (inputCounts && (direction === -1 || (ctx.hasNewerMessages() && distFromBottom(el) > FOLLOW_TOLERANCE_PX)))
         ctx.leaveFollow()
       return
     }
@@ -151,8 +190,10 @@ export function createScrollInput(ctx: ScrollContext, extras: {
   }
 
   /**
-   * An input that states a direction: it abandons the pending seek, because the reader
-   * takes control, and it records the direction for the pagination.
+   * An input that states a direction: it abandons the pending history jump, because the
+   * reader takes control, and it records the direction for the pagination. The hook
+   * decides in `cancelPendingSeek` whether the input counts: it changes nothing while
+   * loaded rows exist and none is in the list.
    */
   const takeIntent = (dir: 'older' | 'newer') => {
     extras.cancelPendingSeek()
@@ -165,14 +206,15 @@ export function createScrollInput(ctx: ScrollContext, extras: {
    * that can move up takes the step, so the step is no input of the list and does
    * nothing here. Otherwise it states the direction. When the list can move, it ends
    * follow mode at once, before its `scroll` event, so no growth in between pulls the
-   * reader back down. At the top edge, it loads older messages.
+   * reader back down. At the top edge, it loads older messages. While loaded rows exist
+   * and none is in the list, it ends no follow mode: no row shows a position.
    */
   const stepOlder = (target: EventTarget | null) => {
     const el = ctx.getEl()
     if (el && innerScrollerTakes(target, el, -1))
       return
     takeIntent('older')
-    if (el && hasScrollRoom(el, -1))
+    if (el && hasScrollRoom(el, -1) && !ctx.awaitingFirstView())
       ctx.leaveFollow()
     extras.tryLoadOlderOnExplicitTopIntent()
   }

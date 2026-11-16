@@ -63,6 +63,55 @@ export function useRenderReadiness(
 }
 
 /**
+ * The longest time that a body reports one request to its readiness scope as pending.
+ *
+ * A body can wait for a Worker request before it draws its final content: the read of
+ * an image file, or the lookup of the other half of a tool call. Such a request ends
+ * only when the Worker answers or the transport gives up, which can take a minute. The
+ * limit keeps one slow request from holding its row out of the list for that long: the
+ * row then takes the height that it has, and it draws again when the content arrives.
+ */
+export const READINESS_REQUEST_LIMIT_MS = 10_000
+
+/**
+ * The pending state of the requests of one body, for `RenderReadiness.track`.
+ * `begin()` marks one request as pending, and returns the function that ends it.
+ * A request that did not end within READINESS_REQUEST_LIMIT_MS stops counting.
+ * The limit ends only the report: it aborts no request.
+ * Call within the reactive owner of the body: its cleanup clears each timer.
+ */
+export function createRequestReadiness(): { pending: Accessor<boolean>, begin: () => () => void } {
+  const [pendingCount, setPendingCount] = createSignal(0)
+  const limitTimers = new Set<ReturnType<typeof setTimeout>>()
+  onCleanup(() => {
+    for (const timer of limitTimers)
+      clearTimeout(timer)
+    limitTimers.clear()
+  })
+  const begin = (): (() => void) => {
+    // The timer of the limit while the request counts, and undefined once it ended.
+    let limitTimer: ReturnType<typeof setTimeout> | undefined
+    // Ends the request once: by its caller, or by the limit, whichever comes first.
+    const end = (): void => {
+      if (limitTimer === undefined)
+        return
+      clearTimeout(limitTimer)
+      limitTimers.delete(limitTimer)
+      limitTimer = undefined
+      setPendingCount(count => count - 1)
+    }
+    limitTimer = setTimeout(end, READINESS_REQUEST_LIMIT_MS)
+    limitTimers.add(limitTimer)
+    setPendingCount(count => count + 1)
+    return end
+  }
+  return {
+    pending: () => pendingCount() > 0,
+    begin,
+  }
+}
+
+/**
  * Report to the readiness scope that a body's render context carries while the
  * body replaces the content that it shows (see RenderReadiness.trackReplacing).
  * Call it once, while the body sets up. Outside a readiness scope it reports
