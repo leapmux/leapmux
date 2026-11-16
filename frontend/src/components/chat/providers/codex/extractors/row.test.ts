@@ -14,9 +14,8 @@ import '~/components/chat/providers'
 
 const NO_SIDES: ToolSpanContext = {
   request: undefined,
-  result: undefined,
   role: 'other',
-  visibleRows: { request: false, result: false },
+  visibleRows: { request: false },
 }
 
 function parsedItem(item: Record<string, unknown>, completion?: MessageCompletion) {
@@ -156,28 +155,18 @@ describe('codex fileChange results', () => {
     diff: '@@ -1,1 +1,1 @@\n-old\n+new',
   }
 
-  function pairedRequestRow(resultFields: Record<string, unknown>): ToolCallRow | null {
-    const request = parsedItem({
-      type: CODEX_ITEM.FileChange,
-      id: 'change-1',
-      status: CODEX_STATUS.IN_PROGRESS,
-      changes: [change],
-    })
-    const result = parsedItem({
-      type: CODEX_ITEM.FileChange,
-      id: 'change-1',
-      status: CODEX_STATUS.COMPLETED,
-      changes: [change],
-      ...resultFields,
-    })
+  /** One row of a change span, with the span's request beside it and the role the index resolved. */
+  function spanRow(item: Record<string, unknown>, role: 'request' | 'result', request = parsedItem(item)): ToolCallRow | null {
+    const resolved = parsedItem(item)
     const row = codexExtractRow({
-      resolved: request,
+      resolved,
       category: { kind: 'tool_use' },
       span: {
-        request,
-        result,
-        role: 'request',
-        visibleRows: { request: true, result: true },
+        request: role === 'request'
+          ? resolved
+          : request,
+        role,
+        visibleRows: { request: true },
       },
     } as never)
     return row?.kind === 'tool'
@@ -185,27 +174,73 @@ describe('codex fileChange results', () => {
       : null
   }
 
-  it('uses a matching completed sibling as the merged call result', () => {
-    const row = pairedRequestRow({})
-    expect(row?.call.status).toBe('completed')
-    expect(row?.call.result).toMatchObject({
-      changes: [
-        { filePath: 'src/a.ts' },
-      ],
-    })
+  // Codex sends the started item with an empty `changes` list. A running file change
+  // may state no file yet, so the row keeps the edit kind, with no title and no result.
+  it('draws a running change that lists no file yet as an edit, with no title and no result', () => {
+    const row = spanRow({
+      type: CODEX_ITEM.FileChange,
+      id: 'change-1',
+      status: CODEX_STATUS.IN_PROGRESS,
+      changes: [],
+    }, 'request')
+    expect(row?.role).toBe('request')
+    expect(row?.call).toMatchObject({ kind: 'edit', label: 'File Change', status: 'in_progress' })
+    expect(row?.call.degradation).toBeUndefined()
+    expect(row?.call.title).toBeUndefined()
+    expect(row?.call.kind === 'edit' && row.call.request.changes).toEqual([])
+    expect(row?.call.result).toBeUndefined()
   })
 
-  it.each([
-    [
-      'another item id',
-      { id: 'change-2' },
-    ],
-    [
-      'another item type',
-      { type: CODEX_ITEM.CommandExecution },
-    ],
-  ])('does not merge a completed sibling for %s', (_name, fields) => {
-    expect(pairedRequestRow(fields)?.call.result).toBeUndefined()
+  it('draws a running change from its own item, with no result', () => {
+    const row = spanRow({
+      type: CODEX_ITEM.FileChange,
+      id: 'change-1',
+      status: CODEX_STATUS.IN_PROGRESS,
+      changes: [change],
+    }, 'request')
+    expect(row?.call).toMatchObject({ kind: 'edit', title: 'src/a.ts', status: 'in_progress' })
+    expect(row?.call.kind === 'edit' && row.call.request.changes).toMatchObject([
+      { filePath: 'src/a.ts' },
+    ])
+    expect(row?.call.result).toBeUndefined()
+  })
+
+  // The closing item is the one that lists the files, so the result row carries the
+  // kind, the title and the changes that the request row cannot state.
+  it('carries the kind, the title and the changes of a change on its result row', () => {
+    const request = parsedItem({
+      type: CODEX_ITEM.FileChange,
+      id: 'change-1',
+      status: CODEX_STATUS.IN_PROGRESS,
+      changes: [],
+    })
+    const row = spanRow({
+      type: CODEX_ITEM.FileChange,
+      id: 'change-1',
+      status: CODEX_STATUS.COMPLETED,
+      changes: [
+        {
+          path: 'src/new.ts',
+          kind: { type: 'add' },
+          diff: 'hello\n',
+        },
+      ],
+    }, 'result', request)
+    expect(row).toMatchObject({ role: 'result', hasRequestRow: true })
+    expect(row?.call).toMatchObject({
+      kind: 'write',
+      label: 'File Change',
+      title: 'src/new.ts',
+      status: 'completed',
+    })
+    expect(row?.call.kind === 'write' && row.call.request.changes).toMatchObject([
+      { filePath: 'src/new.ts', operation: 'add' },
+    ])
+    expect(row?.call.result).toMatchObject({
+      changes: [
+        { filePath: 'src/new.ts' },
+      ],
+    })
   })
 
   it('draws the diff of a change that landed', () => {
@@ -329,9 +364,8 @@ describe('codex imageView paths', () => {
       // column and no status word on the item.
       span: {
         request: undefined,
-        result: parsed,
         role: 'result',
-        visibleRows: { request: false, result: true },
+        visibleRows: { request: false },
       },
     } as never)
     const call = row?.kind === 'tool'
@@ -1123,6 +1157,139 @@ describe('CODEX_TOOL_READERS', () => {
       content: [
         { type: 'text', text: 'the reason' },
       ],
+    })
+  })
+})
+
+/**
+ * A request row reads its own item alone, and no later message of its span. Its call
+ * states what the item asks for, with no result, and the status its own item states.
+ */
+describe('codex request rows', () => {
+  function requestRow(item: Record<string, unknown>): ToolCallRow | null {
+    const resolved = parsedItem(item)
+    const row = codexExtractRow({
+      resolved,
+      category: { kind: 'tool_use' },
+      span: {
+        request: resolved,
+        role: 'request',
+        visibleRows: { request: false },
+      },
+    } as never)
+    return row?.kind === 'tool'
+      ? row
+      : null
+  }
+
+  // A running server call holds no content yet. An empty result on a running call is
+  // a draft that the validating builder refuses, so the row would degrade.
+  it('draws a running server call with its arguments and no result', () => {
+    const row = requestRow({
+      type: CODEX_ITEM.McpToolCall,
+      id: 'mcp-1',
+      status: CODEX_STATUS.IN_PROGRESS,
+      server: 'srv',
+      tool: 'do',
+      arguments: { a: 1 },
+    })
+    expect(row?.role).toBe('request')
+    expect(row?.call).toMatchObject({
+      kind: 'mcp',
+      status: 'in_progress',
+      request: {
+        server: 'srv',
+        tool: 'do',
+        args: { a: 1 },
+      },
+    })
+    expect(row?.call.result).toBeUndefined()
+    expect(row?.call.degradation).toBeUndefined()
+  })
+
+  it('draws a running command with no output', () => {
+    const row = requestRow({
+      type: CODEX_ITEM.CommandExecution,
+      id: 'cmd-1',
+      status: CODEX_STATUS.IN_PROGRESS,
+      command: 'ls',
+      aggregatedOutput: 'partial',
+    })
+    expect(row?.call).toMatchObject({
+      kind: 'execute',
+      status: 'in_progress',
+      request: { command: 'ls' },
+    })
+    expect(row?.call.result).toBeUndefined()
+  })
+
+  // The prompt, the model and the target that the running item states stay on the
+  // request, because another layer draws them as the preview of the running call.
+  it('draws a running spawn with the prompt, the model and the target its own item states', () => {
+    const row = requestRow({
+      type: CODEX_ITEM.CollabAgentToolCall,
+      id: 'spawn-1',
+      status: CODEX_STATUS.IN_PROGRESS,
+      tool: 'spawnAgent',
+      prompt: 'Inspect the code.',
+      model: 'gpt-x',
+      receiverThreadIds: ['child-1'],
+    })
+    expect(row?.call).toMatchObject({
+      kind: 'agent',
+      status: 'in_progress',
+      title: 'Subagent',
+      request: {
+        prompt: 'Inspect the code.',
+        registryKey: 'child-1',
+        metadata: [
+          { label: 'Agent ID', value: 'child-1' },
+          { label: 'Model', value: 'gpt-x' },
+        ],
+      },
+    })
+    expect(row?.call.result).toBeUndefined()
+  })
+
+  // A finished call reads the request of its span for the fields its own item left
+  // empty, and its own item for the status and the runs.
+  it('fills the empty fields of a finished spawn from its request', () => {
+    const request = parsedItem({
+      type: CODEX_ITEM.CollabAgentToolCall,
+      id: 'spawn-1',
+      status: CODEX_STATUS.IN_PROGRESS,
+      tool: 'spawnAgent',
+      prompt: 'Inspect the code.',
+    })
+    const resolved = parsedItem({
+      type: CODEX_ITEM.CollabAgentToolCall,
+      id: 'spawn-1',
+      status: CODEX_STATUS.COMPLETED,
+      tool: 'spawnAgent',
+      prompt: '',
+      receiverThreadIds: ['child-1'],
+      agentsStates: {
+        'child-1': { status: 'completed', message: 'Done.' },
+      },
+    })
+    const row = codexExtractRow({
+      resolved,
+      category: { kind: 'tool_use' },
+      span: {
+        request,
+        role: 'result',
+        visibleRows: { request: true },
+      },
+    } as never)
+    expect(row?.kind === 'tool' && row.call).toMatchObject({
+      kind: 'agent',
+      status: 'completed',
+      request: { prompt: 'Inspect the code.', registryKey: 'child-1' },
+      result: {
+        agents: [
+          { agentId: 'child-1', outcome: 'completed', body: 'Done.' },
+        ],
+      },
     })
   })
 })

@@ -36,9 +36,8 @@ function extract(frame: Record<string, unknown>, role: ToolSpanRole) {
     category: classifyDeepseekHarnessMessage(resolved),
     span: {
       request: input(request, null, provider),
-      result: undefined,
       role,
-      visibleRows: { request: false, result: false },
+      visibleRows: { request: false },
     },
   })
 }

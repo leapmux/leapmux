@@ -281,12 +281,14 @@ describe('copilotToolCall shell results', () => {
     expect(call).not.toBeNull()
     if (!call)
       throw new Error('The native Copilot completion requires its registered tool call.')
-    expect(call.metadata).toEqual([
+    // The `shell_exit` block of the result states these, so they are facts of the result.
+    expect(call.resultMetadata).toEqual([
       { label: 'Shell ID', value: '7' },
       { label: 'Directory', value: '/project' },
     ])
+    expect(call.metadata).toBeUndefined()
     expect(call.outputFilePaths).toEqual(['/project/.tmp/out.log'])
-    // The shell block supplies metadata, so extra content contains no raw JSON.
+    // The shell block supplies the result facts, so extra content contains no raw JSON.
     expect(call.extraContent).toBeUndefined()
     expect(call.kind === 'execute' && call.result && 'commands' in call.result
       ? call.result.commands[0]?.exitCode
@@ -308,9 +310,10 @@ describe('copilotToolCall shell results', () => {
     expect(call.kind === 'execute' && call.result && 'commands' in call.result
       ? call.result.commands[0]?.exitCode
       : undefined).toBe(3)
-    expect(call.metadata).toEqual([
+    expect(call.resultMetadata).toEqual([
       { label: 'Shell ID', value: '0' },
     ])
+    expect(call.metadata).toBeUndefined()
   })
 
   it('drops a content block that repeats a text field the row already shows', () => {
@@ -658,10 +661,11 @@ describe('copilot background shells', () => {
       : undefined
     expect(source?.output).toBe('partial output')
     expect(source?.outcome).toBe('failed')
-    expect(call.metadata).toEqual([
+    expect(call.resultMetadata).toEqual([
       { label: 'Shell ID', value: '7' },
       { label: 'Directory', value: '/p' },
     ])
+    expect(call.metadata).toBeUndefined()
     expect(call.outputFilePaths).toEqual(['/p/out.log'])
     expect(providerToolMeta(AgentProvider.GITHUB_COPILOT, native, options)?.copyableContent()).toBe('partial output')
     expect(JSON.stringify({ native, request })).toBe(before)
@@ -785,7 +789,7 @@ describe('copilot rich content', () => {
     const row = toolCallRow(copilotToolCall(resultRow(toolName, args, {
       success: false,
       error: { message: 'it broke', contents },
-    })), 'result', { request: false, result: false })
+    })), 'result', { request: false })
     expect(imagesForRow(row)).toHaveLength(1)
   })
 

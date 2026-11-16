@@ -56,7 +56,7 @@ export interface PrepareMessageOptions extends ClassificationContext {
 /** Supply additional data that row extraction requires. */
 export interface PreparedRowOptions {
   /**
-   * The request and result of this row's tool span, already resolved.
+   * The request of this row's tool span, already resolved.
    *
    * This value is absent when a reader resolved no sibling. In that case,
    * {@link soleSpan} derives the role and visible rows from this message.
@@ -74,9 +74,8 @@ function soleSpan(prepared: PreparedMessage): ToolSpanContext {
   const role = resolvedSpanRole(prepared.resolved, prepared.message.agentProvider)
   return {
     request: undefined,
-    result: undefined,
     role,
-    visibleRows: { request: role === 'request', result: role === 'result' },
+    visibleRows: { request: role === 'request' },
   }
 }
 

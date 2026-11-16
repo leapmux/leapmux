@@ -323,9 +323,8 @@ describe('extractPreparedRow', () => {
     const withRequest = extractedRow(extractPreparedRow(prepared, {
       span: {
         request: request.resolved,
-        result: prepared.resolved,
         role: 'result',
-        visibleRows: { request: true, result: true },
+        visibleRows: { request: true },
       },
     }))
     expect(withRequest?.kind === 'tool'
@@ -354,9 +353,8 @@ describe('extractPreparedRow', () => {
     const row = extractedRow(extractPreparedRow(prepared, {
       span: {
         request: request.resolved,
-        result: prepared.resolved,
         role: 'result',
-        visibleRows: { request: false, result: true },
+        visibleRows: { request: false },
       },
     }))
     expect(row?.kind === 'tool'

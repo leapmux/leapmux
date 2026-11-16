@@ -19,7 +19,7 @@ function resultCall(name: string, args: Record<string, unknown>, output: unknown
 
 describe('kimiToolRow', () => {
   it('reads a start as a request of its call', () => {
-    const row = kimiToolRow(kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'ls' }, { kind: 'command' }), undefined, undefined, undefined, undefined)
+    const row = kimiToolRow(kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'ls' }, { kind: 'command' }), undefined, undefined, undefined)
     expect(row).toMatchObject({
       toolCallId: CALL,
       toolName: KIMI_TOOL.Bash,
@@ -31,7 +31,7 @@ describe('kimiToolRow', () => {
   })
 
   it('reads a result with the name and the arguments of its start', () => {
-    const row = kimiToolRow(kimiToolResult(CALL, 'a.go'), KIMI_TOOL.Glob, kimiToolStart(CALL, KIMI_TOOL.Glob, { pattern: '*' }), undefined, undefined)
+    const row = kimiToolRow(kimiToolResult(CALL, 'a.go'), KIMI_TOOL.Glob, kimiToolStart(CALL, KIMI_TOOL.Glob, { pattern: '*' }), undefined)
     expect(row).toMatchObject({
       toolName: KIMI_TOOL.Glob,
       args: { pattern: '*' },
@@ -41,7 +41,7 @@ describe('kimiToolRow', () => {
   })
 
   it('reads a result whose start is out of the window by its span type', () => {
-    const row = kimiToolRow(kimiToolResult(CALL, 'ok'), KIMI_TOOL.Read, undefined, undefined, undefined)
+    const row = kimiToolRow(kimiToolResult(CALL, 'ok'), KIMI_TOOL.Read, undefined, undefined)
     expect(row).toMatchObject({
       toolCallId: CALL,
       toolName: KIMI_TOOL.Read,
@@ -53,32 +53,32 @@ describe('kimiToolRow', () => {
   })
 
   it('reads a result that states no tool and has no span type with no name', () => {
-    expect(kimiToolRow(kimiToolResult(CALL, 'ok'), undefined, undefined, undefined, undefined)?.toolName).toBe('')
+    expect(kimiToolRow(kimiToolResult(CALL, 'ok'), undefined, undefined, undefined)?.toolName).toBe('')
   })
 
   it('reads a start with no completion, or an unstated one, as a request', () => {
     const start = kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'ls' })
     for (const completion of [undefined, MessageCompletion.UNSPECIFIED]) {
-      const row = kimiToolRow(start, undefined, undefined, undefined, completion)
+      const row = kimiToolRow(start, undefined, undefined, completion)
       expect(row, String(completion)).toMatchObject({ finished: false, retained: false, result: null })
       expect(row?.lifecycle, String(completion)).toMatchObject({ retainedOutcome: null, rowFinal: false, resultFrameLanded: false })
     }
   })
 
   it('states the failed outcome of a result frame that reports an error', () => {
-    const row = kimiToolRow(kimiToolResult(CALL, 'boom', { isError: true }), KIMI_TOOL.Bash, undefined, undefined, undefined)
+    const row = kimiToolRow(kimiToolResult(CALL, 'boom', { isError: true }), KIMI_TOOL.Bash, undefined, undefined)
     expect(row?.lifecycle).toMatchObject({ providerOutcome: 'failed', rowFinal: true, resultFrameLanded: true })
-    expect(kimiToolRow(kimiToolResult(CALL, 'ok'), KIMI_TOOL.Bash, undefined, undefined, undefined)?.lifecycle.providerOutcome).toBeNull()
+    expect(kimiToolRow(kimiToolResult(CALL, 'ok'), KIMI_TOOL.Bash, undefined, undefined)?.lifecycle.providerOutcome).toBeNull()
   })
 
   it('reads the outcome of each way a turn can end around a retained start', () => {
     const start = kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'sleep 9' })
     const completed = providerToolCall(AgentProvider.KIMI_CODE, start, { spanType: KIMI_TOOL.Bash, completion: MessageCompletion.COMPLETE })
-    expect(kimiToolRow(start, undefined, undefined, undefined, MessageCompletion.COMPLETE)?.lifecycle.retainedOutcome).toBe('succeeded')
+    expect(kimiToolRow(start, undefined, undefined, MessageCompletion.COMPLETE)?.lifecycle.retainedOutcome).toBe('succeeded')
     // The turn ended although the call printed nothing, so the call answers nothing.
     expect(completed?.status).toBe('incomplete')
     expect(completed?.result).toBeUndefined()
-    expect(kimiToolRow(start, undefined, undefined, undefined, MessageCompletion.ERROR)?.lifecycle.retainedOutcome).toBe('failed')
+    expect(kimiToolRow(start, undefined, undefined, MessageCompletion.ERROR)?.lifecycle.retainedOutcome).toBe('failed')
     expect(providerToolCall(AgentProvider.KIMI_CODE, start, { spanType: KIMI_TOOL.Bash, completion: MessageCompletion.ERROR })?.status).toBe('failed')
   })
 
@@ -89,7 +89,7 @@ describe('kimiToolRow', () => {
         { type: 'text', text: '1\tpackage a' },
       ],
     }
-    const row = kimiToolRow(start, undefined, undefined, undefined, MessageCompletion.ERROR)
+    const row = kimiToolRow(start, undefined, undefined, MessageCompletion.ERROR)
     expect(row?.result).toBe(start)
     expect(row?.lifecycle.resultFrameLanded).toBe(true)
     const call = providerToolCall(AgentProvider.KIMI_CODE, start, { spanType: KIMI_TOOL.Read, completion: MessageCompletion.ERROR })
@@ -111,12 +111,12 @@ describe('kimiToolRow', () => {
         ...kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'x' }),
         output,
       }
-      expect(kimiToolRow(start, undefined, undefined, undefined, MessageCompletion.INTERRUPTED)?.result, JSON.stringify(output)).toBeNull()
+      expect(kimiToolRow(start, undefined, undefined, MessageCompletion.INTERRUPTED)?.result, JSON.stringify(output)).toBeNull()
     }
   })
 
   it('reads a retained start as the finished call, with how its turn ended', () => {
-    const row = kimiToolRow(kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'sleep 9' }), undefined, undefined, kimiToolResult(CALL, 'late'), MessageCompletion.INTERRUPTED)
+    const row = kimiToolRow(kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'sleep 9' }), undefined, undefined, MessageCompletion.INTERRUPTED)
     expect(row?.finished).toBe(true)
     expect(row?.retained).toBe(true)
     expect(row?.result).toBeNull()
@@ -139,7 +139,7 @@ describe('kimiToolRow', () => {
   })
 
   it('reads no row that is not a tool event', () => {
-    expect(kimiToolRow({ type: 'turn.ended' }, undefined, undefined, undefined, undefined)).toBeNull()
+    expect(kimiToolRow({ type: 'turn.ended' }, undefined, undefined, undefined)).toBeNull()
   })
 })
 

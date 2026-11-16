@@ -66,50 +66,27 @@ function acpPlanRow(update: Record<string, unknown>): ChatRow | null {
       result: { items: todos },
     },
   )
-  return toolCallRow(call, 'result', { request: false, result: false })
+  return toolCallRow(call, 'result', { request: false })
 }
 
-/** The span id one side's frame carries, or null when the frame states none. */
-function acpSideCallId(side: ParsedMessageContent | undefined): string | null {
-  return pickString(side?.parentObject, 'toolCallId') || null
-}
-
-/** The span row a provider on the new path emits: ONE call, plus the row facts. */
-function acpToolCallSpanRow(tool: Record<string, unknown>, current: ParsedMessageContent, span: ToolSpanContext, callAdapter: ACPToolCallAdapter | undefined): ToolCallRow {
-  // Each side is built from its OWN parsed message, with the request merged in where
-  // a later frame omitted a field; which frame ARRIVED decides the row's place.
-  // A side from ANOTHER call is no side of this one: `resolveACPToolCall` refuses
-  // a mismatched request, and the row flags must refuse it the same way.
-  const own = current
-  const callId = pickString(tool, 'toolCallId') || ''
-  const requestSide = acpSideCallId(span.request) === callId
-    ? span.request
+/**
+ * The span row a provider on the new path emits: ONE call, plus the row facts.
+ *
+ * A row reads its OWN frame. A FINISHED row also reads the span's request, because
+ * the update that closes a call often omits the fields that the request stated: the
+ * kind, the title, the arguments and the locations. An unfinished row reads its own
+ * frame alone. A request row is that frame, and an update row (a Goose subagent
+ * request) states its whole call in its own frame.
+ */
+function acpToolCallSpanRow(tool: Record<string, unknown>, own: ParsedMessageContent, span: ToolSpanContext, callAdapter: ACPToolCallAdapter | undefined): ToolCallRow {
+  // The role reads the OWN frame, not the merged call: the request merges the kind and
+  // the arguments into a result row, and a frame's own status decides its place.
+  const finished = acpToolFinished(tool, own.completion)
+  // `resolveACPToolCall` refuses a request of ANOTHER call, which is no side of this one.
+  const requestFrame = finished
+    ? span.request?.parentObject
     : undefined
-  const resultSide = acpSideCallId(span.result) === callId
-    ? span.result
-    : undefined
-  // ONE call from every side: the request identifies the arguments, the result the
-  // payload. Whichever frame this row is, the merged object carries both.
-  const requestFrame = requestSide?.parentObject
-  const resultFrame = resultSide?.parentObject
-  // The role reads the OWN frame, not the merged call: the merge folds the result
-  // into a request row, and a request row that then read as a result row would
-  // drop its own header and draw a body the frame never carried.
-  const finished = acpToolFinished(tool, own?.completion)
-  // A row that has not finished renders the span's EARLIER frame, so its call
-  // folds the result side in; a finished row IS the result side -- the resolver
-  // may hand back a re-parse of that same message, so object identity cannot
-  // tell the two apart, and the finished flag must.
-  const resolved = !finished && resultFrame
-    ? resolveACPToolCall(resultFrame, tool)
-    : resolveACPToolCall(tool, requestFrame)
-  const call: ToolCall = acpToolCall(resolved, callAdapter, (resultSide ?? own).supplementalContent, own.completion, {
-    role: span.role,
-    hasResult: !!resultSide,
-    ...(own.agentSessionId === undefined
-      ? {}
-      : { agentSessionId: own.agentSessionId }),
-  })
+  const call: ToolCall = acpToolCall(resolveACPToolCall(tool, requestFrame), callAdapter, own.supplementalContent, own.completion, own.agentSessionId)
   const role: ToolSpanRowRole = finished
     ? 'result'
     : pickString(tool, ACP_SUPPLEMENT_IDENTITY.SessionUpdate) === ACP_SESSION_UPDATE.TOOL_CALL

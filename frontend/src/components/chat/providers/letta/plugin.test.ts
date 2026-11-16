@@ -9,6 +9,7 @@ import { prepareChatRow } from '../../rowPreparation'
 import { OPTION_ID_PERMISSION_MODE } from '../../settingsGroups'
 import { pluginFor } from '../registry'
 import { input } from '../testUtils'
+import { lettaNeedsRequest } from './spanRole'
 import './plugin'
 
 describe('lettaPlugin', () => {
@@ -27,6 +28,65 @@ describe('lettaPlugin', () => {
     // The status bar draws a mode chip ONLY for the axis the plugin declares.
     // Omitting it hid the mode the session was running behind the group label.
     expect(plugin?.configuration?.triggerModeGroupKey).toBe(OPTION_ID_PERMISSION_MODE)
+  })
+})
+
+describe('lettaNeedsRequest', () => {
+  it('is the registered hook', () => {
+    expect(pluginFor(AgentProvider.LETTA)?.transcript.needsRequest).toBe(lettaNeedsRequest)
+  })
+
+  it.each([
+    [
+      'a client tool start',
+      {
+        message_type: 'client_tool_start',
+        tool_call_id: 'call',
+        tool_name: 'Bash',
+        tool_args: '{}',
+      },
+      false,
+    ],
+    [
+      'a tool call message',
+      {
+        message_type: 'tool_call_message',
+        tool_call: { tool_call_id: 'call', name: 'Read', arguments: '{}' },
+      },
+      false,
+    ],
+    [
+      'a native answer',
+      {
+        message_type: 'tool_return_message',
+        tool_call_id: 'call',
+        status: 'success',
+        tool_return: 'done',
+      },
+      true,
+    ],
+    [
+      'a client tool end with returned data',
+      { message_type: 'client_tool_end', tool_call_id: 'call', tool_return: '' },
+      true,
+    ],
+    [
+      'an empty client tool end',
+      { message_type: 'client_tool_end', tool_call_id: 'call' },
+      false,
+    ],
+    [
+      'a current-window snapshot',
+      {
+        message_type: 'tool_return_message',
+        id: 'synthetic-tool-return-stream-call',
+        tool_call_id: 'call',
+        tool_return: 'partial',
+      },
+      false,
+    ],
+  ])('answers for %s', (_case, frame, expected) => {
+    expect(lettaNeedsRequest(input(frame, null, AgentProvider.LETTA))).toBe(expected)
   })
 })
 

@@ -50,10 +50,10 @@ function codexRawExecItem(payload: Record<string, unknown> | undefined): Record<
   return pickObject(codexRawExecParameters(payload), CODEX_RAW_FIELD.Item) ?? extractItem(payload)
 }
 
-/** Accept the counterpart only when its native call and available owner identities match. */
-function matchingRawExecSide(payload: Record<string, unknown>, side: ParsedMessageContent | undefined, role: CodexRawExecRole): Record<string, unknown> | undefined {
-  const candidate = side?.parentObject
-  if (!candidate || codexRawExecRole(candidate) !== role)
+/** Accept the request only when its native call and available owner identities match. */
+function matchingRawExecRequest(payload: Record<string, unknown>, request: ParsedMessageContent | undefined): Record<string, unknown> | undefined {
+  const candidate = request?.parentObject
+  if (!candidate || codexRawExecRole(candidate) !== 'request')
     return undefined
   const own = codexRawExecItem(payload)
   const item = codexRawExecItem(candidate)
@@ -242,7 +242,12 @@ function codexRawExecOutput(item: Record<string, unknown>): CodexRawExecOutput |
   }
 }
 
-/** Build one native JavaScript execution through the existing neutral execute model. */
+/**
+ * Build one native JavaScript execution through the existing neutral execute model.
+ *
+ * A request row reads its own call alone. An output row reads its own output and the
+ * script source of the matching request, because the output states no source.
+ */
 export function codexRawExecCall(payload: Record<string, unknown>, sides: ToolSpanContext, completion?: MessageCompletion): { call: ToolCall<'execute'>, role: CodexRawExecRole } | null {
   const ownRole = codexRawExecRole(payload)
   const own = codexRawExecItem(payload)
@@ -250,10 +255,10 @@ export function codexRawExecCall(payload: Record<string, unknown>, sides: ToolSp
     return null
   const request = ownRole === 'request'
     ? own
-    : matchingRawExecSide(payload, sides.request, 'request')
+    : matchingRawExecRequest(payload, sides.request)
   const result = ownRole === 'result'
     ? own
-    : matchingRawExecSide(payload, sides.result, 'result')
+    : undefined
   const output = result
     ? codexRawExecOutput(result)
     : null

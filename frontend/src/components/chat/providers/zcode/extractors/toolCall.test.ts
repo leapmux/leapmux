@@ -7,7 +7,7 @@ import { Buffer } from 'node:buffer'
 import { describe, expect, it } from 'vitest'
 import { ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { providerToolCall, providerToolMeta, todoTitleOf } from '~/test-support/toolCallFixture'
+import { providerRow, providerToolCall, providerToolMeta, todoTitleOf } from '~/test-support/toolCallFixture'
 import { toolCallRow } from '../../../model/row'
 import { isUnparsedToolResult, typedResult } from '../../../model/toolCall'
 import { TOOL_KINDS } from '../../../model/toolKind'
@@ -192,7 +192,7 @@ describe('zcodeToolCall bodies', () => {
 
   it('copies a numbered read without the native line-number prefixes', () => {
     const call = presentationOf(ZCODE_TOOL.Read, { file_path: '/project/a.ts' }, { success: true, content: '1\tfirst\n2\tsecond' })
-    const meta = toolCallMeta(toolCallRow(call, 'result', { request: false, result: false }))
+    const meta = toolCallMeta(toolCallRow(call, 'result', { request: false }))
     expect(meta.copyableContent()).toBe('first' + '\n' + 'second')
   })
 
@@ -1361,5 +1361,97 @@ describe('native ZCode serialization paths', () => {
     expect(copied).toBe(preview)
     expect(copied).not.toContain('computed77')
     expect(JSON.stringify({ native, request, supplementalContent })).toBe(before)
+  })
+})
+
+/**
+ * A request row reads its own `scheduled` frame alone, and a result row reads its own
+ * frame and the `scheduled` frame before it. A `scheduled` frame that omitted its input
+ * states no file, so only the result row recovers the file from its own stored record.
+ */
+describe('registered ZCode rows of one span', () => {
+  const scheduled = event(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.Read, inputOmitted: true })
+  const completed = event(ZCODE_TOOL_KIND.Result, {
+    result: { success: true, content: '1\tfirst' },
+  })
+  const supplement = {
+    type: 'tool.updated',
+    payload: { kind: ZCODE_TOOL_KIND.Result, toolCallId: 'call' },
+    nativeTool: {
+      id: 'part',
+      sessionId: 'session',
+      messageId: 'message',
+      data: {
+        type: 'tool',
+        callID: 'call',
+        tool: ZCODE_TOOL.Read,
+        state: {
+          status: 'completed',
+          input: { file_path: '/project/recovered.ts' },
+        },
+      },
+    },
+  }
+
+  it('builds a request row from its own frame, with no result and no finished status', () => {
+    const row = providerRow(AgentProvider.ZCODE, scheduled, {
+      request: input(scheduled),
+      role: 'request',
+      spanType: ZCODE_TOOL.Read,
+    })
+    if (row?.kind !== 'tool')
+      throw new Error('The ZCode scheduled frame drew no tool row.')
+    expect(row.role).toBe('request')
+    expect(row).not.toHaveProperty('restatesRequest')
+    expect(row.call.status).toBe('unstated')
+    expect(row.call.result).toBeUndefined()
+    expect(row.call.kind === 'read' && row.call.request.path).toBe('')
+  })
+
+  // The request row beside it states no file, and a result row beside its request row
+  // draws no request summary. So the result row restates the request side itself, while
+  // it still states that its request row is beside it, so it draws no second header.
+  it('recovers the omitted input on the result row, which draws the request side', () => {
+    const row = providerRow(AgentProvider.ZCODE, completed, {
+      request: input(scheduled),
+      role: 'result',
+      spanType: ZCODE_TOOL.Read,
+      supplementalContent: supplement,
+    })
+    if (row?.kind !== 'tool')
+      throw new Error('The ZCode result frame drew no tool row.')
+    expect(row).toMatchObject({ role: 'result', hasRequestRow: true, restatesRequest: true })
+    expect(row.call.status).toBe('completed')
+    expect(row.call.kind === 'read' && row.call.request.path).toBe('/project/recovered.ts')
+  })
+
+  it('keeps the request row beside a result whose request states its input', () => {
+    const stated = event(ZCODE_TOOL_KIND.Scheduled, {
+      toolName: ZCODE_TOOL.Read,
+      input: { file_path: '/project/stated.ts' },
+    })
+    const row = providerRow(AgentProvider.ZCODE, completed, {
+      request: input(stated),
+      role: 'result',
+      spanType: ZCODE_TOOL.Read,
+      supplementalContent: supplement,
+    })
+    expect(row).toMatchObject({ role: 'result', hasRequestRow: true })
+    expect(row).not.toHaveProperty('restatesRequest')
+  })
+
+  // With no request row beside it, the result row draws its own header and request side,
+  // so it restates nothing that another row draws.
+  it('restates nothing on a result row with no request row beside it', () => {
+    const row = providerRow(AgentProvider.ZCODE, completed, {
+      role: 'result',
+      spanType: ZCODE_TOOL.Read,
+      supplementalContent: supplement,
+    })
+    if (row?.kind !== 'tool')
+      throw new Error('The ZCode result frame drew no tool row.')
+    expect(row).toMatchObject({ role: 'result', hasRequestRow: false })
+    expect(row).not.toHaveProperty('restatesRequest')
+    expect(row.call.kind === 'read' && row.call.request.path).toBe('/project/recovered.ts')
   })
 })

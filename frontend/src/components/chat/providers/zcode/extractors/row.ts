@@ -7,7 +7,7 @@ import { toolCallRow } from '../../../model/row'
 import { zcodeAssistantText } from '../messageContent'
 import { zcodePlanText } from './plan'
 import { zcodeToolCall } from './toolCall'
-import { zcodeExtractTool, zcodeRow, zcodeToolSpanRole } from './toolCommon'
+import { zcodeExtractTool, zcodeInputFromNativeRecordAlone, zcodeRow, zcodeToolSpanRole } from './toolCommon'
 
 /**
  * Read one ZCode row into the shared row model.
@@ -49,11 +49,12 @@ export function zcodeExtractRow(input: RowExtractionInput): ChatRow | null {
 }
 
 /**
- * Resolve the current row and its paired rows into one ZCode tool call.
+ * Resolve the current row and the span's request into one ZCode tool call.
  *
  * A SCHEDULED row IS the request of its own span, and the store resolves no separate
  * one for it -- so the row itself stands in, which is what lets a still-open call
- * carry the input the `model.streaming` fragments delivered before it.
+ * carry the input the `model.streaming` fragments delivered before it. A request row
+ * reads no result, so it states the call as its own frame states it.
  */
 function zcodeToolSpanRow(input: RowExtractionInput): ChatRow | null {
   const { resolved: parsed, span, spanType } = input
@@ -64,13 +65,8 @@ function zcodeToolSpanRow(input: RowExtractionInput): ChatRow | null {
     ?? (zcodeExtractTool(parsed.parentObject)?.kind === ZCODE_TOOL_KIND.Scheduled
       ? parsed
       : undefined)
-  const own = zcodeRow(parsed.parentObject, spanType, spanRequest, parsed.supplementalContent)
-  const call: ToolCall | null = zcodeToolCall({
-    ...own,
-    ...(span.result !== undefined
-      ? { result: span.result }
-      : {}),
-  }, parsed)
+  const row = zcodeRow(parsed.parentObject, spanType, spanRequest, parsed.supplementalContent)
+  const call: ToolCall | null = zcodeToolCall(row, parsed)
   if (!call)
     return null
   const update = zcodeExtractTool(parsed.parentObject)
@@ -79,5 +75,13 @@ function zcodeToolSpanRow(input: RowExtractionInput): ChatRow | null {
     : update?.kind === ZCODE_TOOL_KIND.Scheduled
       ? 'request'
       : 'update'
-  return toolCallRow(call, role, span.visibleRows)
+  const built = toolCallRow(call, role, span.visibleRows)
+  // A result row whose input comes from its own native record alone: the body of the
+  // request row beside it states no input -- no command, no file -- and a result row
+  // beside its request row draws no request side. So this row restates the request side
+  // itself, under the request row's header, which reads the newest call and so states
+  // the file (see ToolSpanRowPosition.restatesRequest).
+  return built.role === 'result' && built.hasRequestRow && zcodeInputFromNativeRecordAlone(row)
+    ? { ...built, restatesRequest: true }
+    : built
 }

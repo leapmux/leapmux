@@ -8,6 +8,7 @@ import type { RenderReadiness } from './renderReadiness'
 import type { ChatLoadedRows, ChatScrollState, PaginationCallbacks, UseChatScrollResult } from './useChatScroll'
 import type { ChatVirtualizerRange } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { MessageSpanIdentity } from '~/lib/messageSpan'
 import type { TodoItem } from '~/models/todo'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { LiveCompaction } from '~/stores/chatCompaction'
@@ -22,18 +23,21 @@ import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { messageSpanIdentity, messageSpanKey } from '~/lib/messageSpan'
 import { formatChatQuote } from '~/lib/quoteUtils'
-import { shallowEqual } from '~/lib/shallowEqual'
+import { shallowEqual, shallowEqualSets } from '~/lib/shallowEqual'
 import { onSyntaxThemeChange } from '~/lib/syntaxThemeStore'
 import { motion } from '~/styles/tokens'
 import { AgentStartupBanner } from './AgentStartupBanner'
-import { createClassifiedEntryCache, heightKeyForEntry, renderKeyForEntry } from './chatEntryCache'
+import { createClassifiedEntryCache, heightKeyForEntry, listedRequestSpanKeys, renderKeyForEntry } from './chatEntryCache'
 import { createChatFonts } from './chatFonts'
 import { ChatHiddenPremeasure } from './chatHiddenPremeasure'
 import { createMessageUiState } from './chatMessageUiState'
 import { createOrderedTailReveal } from './chatOrderedReveal'
+import { createPendingRows, isPendingRowId, messageIdOfRow } from './chatPendingRows'
 import { createChatPremeasureBands } from './chatPremeasureBands'
 import { resolveScrollbarOwner } from './chatRailPolicy'
+import { revisionKeyMember } from './chatRevisionKey'
 import { createRowAdmission } from './chatRowAdmission'
 import { kindScopedLayoutKey } from './chatRowGeometry'
 import { createRowHeightCache } from './chatRowHeightCache'
@@ -54,6 +58,7 @@ import { createMessageRenderCacheStore } from './messageRenderCache'
 import { messageRowChrome } from './messageRowLayout'
 import { expandedUiKeyFor, messageUiDefault } from './messageUiKeys'
 import { createRowReadinessRegistry, useReplacingReadiness } from './renderReadiness'
+import { REQUEST_ROW_EXPAND_KEYS } from './results/toolRowState'
 import { useChatScroll } from './useChatScroll'
 import { useChatVirtualizer } from './useChatVirtualizer'
 import { ChatRowSkeleton } from './widgets/ChatRowSkeleton'
@@ -313,7 +318,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const entries = createClassifiedEntryCache({
     messages: () => props.messages,
     requestRevision: identity => props.messageContext?.request(identity)?.revision,
-    resultRevision: identity => props.messageContext?.result(identity)?.revision,
     contentVersionById: id => props.messageContext?.contentVersion(id) ?? 0,
     // The shared resolver's merged payload, so the entry the list MEASURES, the bubble
     // that draws it and the toolbar beside it all read one object for one row.
@@ -324,21 +328,20 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   })
   const visibleEntries = entries.visibleEntries
   const hasVisibleEntries = entries.hasVisibleEntries
-
-  // Lookup over the loaded rows, shared by the height cache, the scroll hook, and the
-  // crossfade slice.
-  const visibleEntryById = createMemo(() => {
-    const result = new Map<string, ClassifiedEntry>()
-    for (const entry of visibleEntries())
-      result.set(entry.message.id, entry)
-    return result
-  })
+  // The spans whose REQUEST row the list draws, from the entries that it lists (see
+  // listedRequestSpanKeys). A row of the span reads it as `visibleRows.request`, and the
+  // height key of a tool row holds it (see requestRowKey). One decision, by the list that
+  // draws the rows: no second walk of the window classifies the messages again.
+  const listedRequestSpans = createMemo(() => listedRequestSpanKeys(visibleEntries()), new Set<string>(), { equals: shallowEqualSets })
+  const requestRowListed = (identity: MessageSpanIdentity): boolean => listedRequestSpans().has(messageSpanKey(identity))
 
   // The measured heights of the rows. ChatView owns the cache, because the admission, the
   // virtualizer, the staging bands, and the persistence all read it. Its eviction keeps the
   // heights of the loaded rows: a loaded row that lost its height would leave the list.
+  // The cache asks for the loaded rows only when it evicts, after the setup below (see
+  // loadedRowIds).
   const heightCache = createRowHeightCache({
-    loadedIds: () => untrack(visibleEntryById).keys(),
+    loadedIds: loadedRowIds,
   })
 
   // Lifted per-message UI state (diff-view override + boolean flag map), keyed by
@@ -346,9 +349,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // createMessageUiState (its own tested unit); see that module for why it
   // deliberately outlives the windowed list and is cap-bounded instead of pruned.
   // The cap protects the currently-rendered rows (the mounted rows of the height cache)
-  // so an on-screen row's choice is never the eviction target.
+  // so an on-screen row's choice is never the eviction target. The state is keyed by the
+  // message, and a pending row draws its request's message and reads its state.
   const { getLocalDiffView, setLocalDiffView, getMessageUiBool, setMessageUiBool, getUiVersion } = createMessageUiState({
-    protectedIds: () => heightCache.mountedIds,
+    protectedIds: () => new Set(Array.from(heightCache.mountedIds, messageIdOfRow)),
   })
   const renderCacheStore = createMessageRenderCacheStore()
   // A syntax theme change invalidates every cached body at once: they all carry
@@ -466,23 +470,52 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // override ALSO bumps that row's uiVersion, so it re-keys the row either way; reading the
   // override HERE is what lets a GLOBAL toggle leave an already-overridden row untouched.)
   const effectiveDiffView = (id: string): string => getLocalDiffView(id) ?? prefs.diffView()
-  // The row's EFFECTIVE thinking-expand state (its per-message override, else the global
-  // expandAgentThoughts default). Uses the SAME key + default resolvers the renderers use
-  // (expandedUiKeyFor / messageUiDefault), so the cache key can't disagree with the render.
-  const effectiveThinkingExpanded = (entry: ClassifiedEntry): boolean => {
-    const key = expandedUiKeyFor(entry.category.kind)
-    return getMessageUiBool(entry.message.id, key) ?? messageUiDefault(key, {
+  // Whether the row of a message reads as expanded for `key`, as the row itself reads it:
+  // its own state, else the shared default. Uses the SAME default resolver the renderers
+  // use (messageUiDefault), so the cache key can't disagree with the render.
+  const messageExpanded = (messageId: string, key: MessageUiKey): boolean =>
+    getMessageUiBool(messageId, key) ?? messageUiDefault(key, {
       expandAgentThoughts: prefs.expandAgentThoughts(),
     })
+  // The row's EFFECTIVE thinking-expand state (its per-message override, else the global
+  // expandAgentThoughts default), under the key the renderers use (expandedUiKeyFor).
+  const effectiveThinkingExpanded = (entry: ClassifiedEntry): boolean =>
+    messageExpanded(entry.message.id, expandedUiKeyFor(entry.category.kind))
+
+  // The revision of the call that heads an EXPANDED request row: the result of its span,
+  // when the browser holds one. A collapsed header is one line, so the newer call changes
+  // its words and never the height of the row (see ToolMessage). An expanded header wraps,
+  // so its height follows the words, and its height key must change when they do.
+  const expandedHeaderKey = (entry: ClassifiedEntry): string => {
+    if (entry.category.kind !== 'tool_use' || entry.message.spanId === '')
+      return ''
+    if (!REQUEST_ROW_EXPAND_KEYS.some(key => messageExpanded(entry.message.id, key)))
+      return ''
+    const revision = props.messageContext?.result(messageSpanIdentity(entry.message))?.revision
+    return revision === undefined
+      ? ''
+      : `|${revisionKeyMember('header', revision)}`
   }
 
-  // Minimal per-row descriptors of the LOADED rows: the rows of the loaded window that are
-  // not hidden, index-aligned with visibleEntries(). The row admission selects the rows of
-  // the virtualizer from them (see `virtualItems` below).
-  const loadedItems = createMemo<ChatRowItem[]>(
+  // Whether the REQUEST row of a tool row's span is in the list. A result row beside its
+  // request row draws no header and no request side, so its height follows this fact,
+  // and the window decides it: an older page can bring the request row in, or a trim can
+  // take it out, while the result row stays mounted.
+  const requestRowKey = (entry: ClassifiedEntry): string => {
+    if ((entry.category.kind !== 'tool_use' && entry.category.kind !== 'tool_result') || entry.message.spanId === '')
+      return ''
+    return requestRowListed(messageSpanIdentity(entry.message))
+      ? '|request-row'
+      : ''
+  }
+
+  // Minimal per-row descriptors of the rows of the loaded MESSAGES: the rows of the loaded
+  // window that are not hidden, index-aligned with visibleEntries(). The pending rows join
+  // them below (see `loadedItems`).
+  const messageItems = createMemo<ChatRowItem[]>(
     () =>
       visibleEntries().map(e => ({
-        id: e.message.id,
+        id: e.rowId,
         // Recorded onto a captured anchor so a trimmed-away row can be ordered against
         // the survivors for the nearest-survivor restore (scrollTopNearAnchor).
         seq: e.message.seq,
@@ -503,13 +536,45 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           e.category.kind,
           () => effectiveDiffView(e.message.id),
           () => effectiveThinkingExpanded(e),
-        )}`,
+        )}${expandedHeaderKey(e)}${requestRowKey(e)}`,
       })),
     [],
     // Suppress the recompute of every reader when a recompute leaves the rows identical
-    // (same id/hasSpanLines/heightKey sequence) -- see sameChatRowItems.
+    // (same geometry fields at every index) -- see sameChatRowItems.
     { equals: sameChatRowItems },
   )
+
+  // The LOADED rows: the rows of the loaded messages, and the pending row of each tool
+  // call that still runs, right after its request row (see chatPendingRows). The row
+  // admission selects the rows of the virtualizer from them (see `virtualItems` below).
+  const pendingRows = createPendingRows({
+    entries: visibleEntries,
+    items: messageItems,
+    tailLoaded: () => !props.pagination?.hasNewerMessages,
+    resultOf: identity => props.messageContext?.result(identity)?.message,
+    // Without the message resolver, the list cannot tell a call that runs from one that
+    // ended: no row is a request, so no pending row opens.
+    role: entry => props.messageContext?.role(entry.message) ?? 'other',
+    isMeasured: item => heightCache.isMeasured(item),
+  })
+  const loadedEntries = pendingRows.entries
+  const loadedItems = pendingRows.items
+
+  // Lookup over the loaded rows by row id, shared by the height cache, the scroll hook,
+  // and the crossfade slice.
+  const visibleEntryById = createMemo(() => {
+    const result = new Map<string, ClassifiedEntry>()
+    for (const entry of loadedEntries())
+      result.set(entry.rowId, entry)
+    return result
+  })
+  // The ids of the loaded rows, for the eviction of the height cache. The cache is
+  // created before the loaded rows, because the pending rows read it (see `isMeasured`
+  // above), so this is a hoisted function. The cache calls it only when it evicts, after
+  // the setup.
+  function loadedRowIds(): Iterable<string> {
+    return untrack(visibleEntryById).keys()
+  }
 
   // The scroll hook, for the admission and the virtualizer. Assigned once the hook is
   // created below: both must exist before the hook, so a lazy-wired `let` stands in, with
@@ -545,7 +610,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // The admitted rows: the entries and the items of the virtualizer, index-aligned.
   const admittedEntries = createMemo(() => {
     const { start, end } = admission.range()
-    return visibleEntries().slice(start, end)
+    return loadedEntries().slice(start, end)
   })
   const virtualItems = createMemo<ChatRowItem[]>(
     () => {
@@ -554,7 +619,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     },
     [],
     // Suppress the geom rebuild + layout-shift pass when a recompute leaves the offset
-    // map identical (same id/hasSpanLines/heightKey sequence) -- see sameChatRowItems.
+    // map identical (same geometry fields at every index) -- see sameChatRowItems.
     { equals: sameChatRowItems },
   )
 
@@ -584,12 +649,14 @@ export const ChatView: Component<ChatViewProps> = (props) => {
 
   // Reload warm-start: hydrate persisted measured heights (keyed by height-
   // key digest, so content/width changes self-invalidate) and keep the
-  // stored snapshot fresh. It reads the LOADED rows, so a stored height admits a row
-  // that no hidden copy rendered. See chatRowHeightPersistence for the model.
+  // stored snapshot fresh. It reads the rows of the loaded MESSAGES, so a stored height
+  // admits a row that no hidden copy rendered. A pending row lives only while its call
+  // runs, so no stored height serves it. See chatRowHeightPersistence for the model.
   createRowHeightPersistence({
     storageId: () => props.agentId,
-    loadedItems,
+    loadedItems: messageItems,
     heights: heightCache,
+    storesRow: rowId => !isPendingRowId(rowId),
   })
 
   createEffect(() => {
@@ -634,7 +701,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // the rendered range is empty at index 0, and the warm-up would measure the oldest rows
   // while the first view waits for the newest, so it waits for the first view.
   const premeasure = createChatPremeasureBands({
-    visibleEntries,
+    visibleEntries: loadedEntries,
     loadedItems,
     heights: heightCache,
     // The rendered range of the virtualizer, moved to the indexes of the loaded rows.
@@ -693,7 +760,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     // row, cloned on write, so an eager read here subscribed every consumer of
     // `props.host` to it. Toggling one row's diff view then re-ran the span-retaining
     // effect in EVERY mounted bubble, each disposing its lease, re-taking it and
-    // re-issuing `loadRelated`.
+    // re-issuing `loadRequest`.
     get localDiffView() {
       return getLocalDiffView(entry.message.id)
     },
@@ -715,7 +782,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       return (key: MessageUiKey, value: boolean) => setMessageUiBool(entry.message.id, key, value)
     },
     get getHeightDebug() {
-      return () => virt.heightDebugOfId(entry.message.id)
+      return () => virt.heightDebugOfId(entry.rowId)
     },
     // A GETTER, because `host={buildMessageHost(entry)}` is a call expression in a
     // prop: Solid compiles that to a getter, so this object literal is rebuilt on
@@ -726,13 +793,17 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     get renderCache() {
       return renderCacheStore.forRow(renderKeyForEntry(entry))
     },
-    // These two are agent-scoped accessors that already exist, so reading them costs
+    // These three are agent-scoped accessors that already exist, so reading them costs
     // nothing and they stay plain fields. `rowOffscreen` and `rowNearView` close over the
     // row, so they are getters like the five above.
     syntaxHighlightingPaused,
     textSelectionActive,
+    requestRowListed,
     get rowOffscreen() {
-      return () => !isRowNearViewport(entry.message.id)
+      return () => !isRowNearViewport(entry.rowId)
+    },
+    get pendingRowOpen() {
+      return () => pendingRows.isOpen(entry.message.id)
     },
     // isRowNearViewport reads the scroll position and the height of the pane with no
     // subscription. The two reads before it run the test again when its answer can differ
@@ -743,7 +814,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       return () => {
         syntaxHighlightingPaused()
         viewportHeight()
-        return isRowNearViewport(entry.message.id)
+        return isRowNearViewport(entry.rowId)
       }
     },
   })
@@ -767,7 +838,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // first. Scoped to the tail cohort (see createOrderedTailReveal), so scrolling
   // back through already-loaded history is left untouched.
   const orderedRevealHeld = createOrderedTailReveal(
-    () => visibleSlice().map(entry => entry.message.id),
+    () => visibleSlice().map(entry => entry.rowId),
     rowLoading,
   )
 
@@ -812,6 +883,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         ? { onReply: props.onReply }
         : {})}
       premeasureMode={premeasureMode}
+      pending={entry.pending}
       readiness={readiness}
     />
   )
@@ -824,7 +896,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // rowLoading), but the row <For> mounts it later in the same update: during a
   // fling, the overlay would build its skeleton at once and discard it in that update.
   const pendingRevealSlice = createMemo(() =>
-    visibleSlice().filter(entry => rowReadiness.isMounted(entry.message.id) && rowHiddenPendingReveal(entry.message.id)))
+    visibleSlice().filter(entry => rowReadiness.isMounted(entry.rowId) && rowHiddenPendingReveal(entry.rowId)))
 
   // Only rows still hidden after SKELETON_SHOW_DELAY_MS actually paint a skeleton (see
   // createDelayedSet): a fast load (a tail append) reveals with a plain fade-in
@@ -832,7 +904,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // affordance. The row itself is hidden immediately regardless (rowHiddenPendingReveal)
   // so it can never overflow its slot.
   const { delayedIds: skeletonIds } = createDelayedSet(
-    () => pendingRevealSlice().map(entry => entry.message.id),
+    () => pendingRevealSlice().map(entry => entry.rowId),
     SKELETON_SHOW_DELAY_MS,
     // The overlay skeleton skips the delay in two cases:
     //  - A fling is in progress.
@@ -850,7 +922,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // shown mid-fling stays shown when the fling settles before its delay would have fired,
   // instead of flickering skeleton -> blank -> skeleton.
   const skeletonSlice = createMemo(() =>
-    pendingRevealSlice().filter(entry => skeletonIds().has(entry.message.id)))
+    pendingRevealSlice().filter(entry => skeletonIds().has(entry.rowId)))
 
   // Crossfade for the SHOWN skeletons: when a row leaves the skeleton set (its content
   // arrived, or the ordered reveal released it, and the real row starts its opacity
@@ -861,7 +933,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // createLingerSet. Only rows that actually showed a skeleton linger; a fast reveal
   // (never skeletonised) just fades in with nothing to fade out.
   const { lingeringIds: lingeringSkeletonIds } = createLingerSet(
-    () => skeletonSlice().map(entry => entry.message.id),
+    () => skeletonSlice().map(entry => entry.rowId),
     SKELETON_CROSSFADE_MS,
   )
   // Lingering ids resolved back to entries (stable references, so the fade-out
@@ -1192,11 +1264,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         ? `${styles.virtualRow} ${styles.rowSkeletonClosing}`
         : messageRowChrome(styles.virtualRow, entry.category.kind, entry.message.source).class}
       style={{
-        transform: `translateY(${virt.offsetOfId(entry.message.id) ?? 0}px)`,
-        height: `${virt.heightOfId(entry.message.id)}px`,
+        transform: `translateY(${virt.offsetOfId(entry.rowId) ?? 0}px)`,
+        height: `${virt.heightOfId(entry.rowId)}px`,
       }}
     >
-      <ChatRowSkeleton seed={entry.message.id} />
+      <ChatRowSkeleton seed={entry.rowId} />
     </div>
   )
 
@@ -1328,12 +1400,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                       </For>
                       <For each={visibleSlice()}>
                         {(entry) => {
-                          const { message, parsedSpanLines } = entry
+                          const { message, parsedSpanLines, rowId } = entry
                           // Offset is resolved by the row's own id, not by
                           // range().start + localIndex(): the id is the stable,
                           // unique key into the offset map, so it cannot disagree with
                           // the slice bounds during a scroll/measure flush.
-                          const top = () => virt.offsetOfId(message.id) ?? 0
+                          const top = () => virt.offsetOfId(rowId) ?? 0
                           // Fling skeleton: a MEASURED row entering the window
                           // during a FAST user scroll mounts as line placeholders at
                           // its known height instead of paying full bubble
@@ -1348,7 +1420,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                           // the crossfade copy). trackRow also registers this row's phase
                           // in flingSkeletons.skeletonIds so the gap-bridge overlay hides
                           // this row's bridge while the skeleton shows.
-                          const upgradePhase = flingSkeletons.trackRow(message.id)
+                          const upgradePhase = flingSkeletons.trackRow(rowId)
                           // This copy's asynchronous bodies (Markdown, an edit diff)
                           // report here while their worker result is pending. The row
                           // stays hidden meanwhile (see rowLoading). A diff view that
@@ -1357,7 +1429,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                           // same scope: the measurer reads nothing from the copy while
                           // it is pending or replacing, and measures it again once it
                           // is measurable.
-                          const readiness = rowReadiness.trackRow(message.id)
+                          const readiness = rowReadiness.trackRow(rowId)
                           // A fling skeleton stands in for the bubble until the row
                           // upgrades, and draws the height that the virtualizer holds
                           // for the row. A read of it would confirm that height under a
@@ -1384,25 +1456,31 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                                 // Absolute rows do not reserve flow height for
                                 // siblings — see rowHiddenPendingReveal for why a
                                 // row whose content is pending stays invisible.
-                                visibility: rowHiddenPendingReveal(message.id)
+                                visibility: rowHiddenPendingReveal(rowId)
                                   ? 'hidden'
                                   : undefined,
-                                opacity: rowHiddenPendingReveal(message.id)
+                                opacity: rowHiddenPendingReveal(rowId)
                                   ? '0'
                                   : '1',
                                 height: upgradePhase() === 'skeleton'
-                                  ? `${virt.heightOfId(message.id)}px`
+                                  ? `${virt.heightOfId(rowId)}px`
                                   : undefined,
                               }}
-                              data-seq={message.seq.toString()}
+                              // A pending row draws no message of its own, so its element
+                              // carries no sequence: a reader that finds a row element by
+                              // its sequence finds the request row. Its list item shares
+                              // the request's sequence (see chatPendingRows).
+                              data-seq={entry.pending
+                                ? undefined
+                                : message.seq.toString()}
                               ref={(el) => {
-                                virt.attachRow(message.id, el, readiness)
+                                virt.attachRow(rowId, el, readiness)
                                 onCleanup(() => virt.detachRow(el))
                               }}
                             >
                               <Show
                                 when={upgradePhase() !== 'skeleton'}
-                                fallback={<ChatRowSkeleton seed={message.id} />}
+                                fallback={<ChatRowSkeleton seed={rowId} />}
                               >
                                 {(() => {
                                   // Constructed lazily: while the skeleton shows,
@@ -1447,7 +1525,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                                       </Show>
                                       <Show when={upgradePhase() === 'crossfade'}>
                                         <div class={`${styles.rowSkeletonUpgradeOverlay} ${styles.rowSkeletonClosing}`}>
-                                          <ChatRowSkeleton seed={message.id} />
+                                          <ChatRowSkeleton seed={rowId} />
                                         </div>
                                       </Show>
                                     </>

@@ -67,9 +67,12 @@ describe('claudeSwitchModeSpec', () => {
     const payload = claudeSwitchModeSpec({}, row(CLAUDE_TOOL_NAMES.EXIT_PLAN_MODE), approved(CLAUDE_TOOL_NAMES.EXIT_PLAN_MODE, { filePath: '/repo/.plans/one.md' }))
     expect(payload.request.declinedTitle).toBeUndefined()
     expect(payload.title).toBe('Plan approved')
-    expect(payload.metadata).toEqual([
+    // Only the RESULT states the plan file, so it rides the result's facts and never the
+    // request's: the request row never reads its result.
+    expect(payload.resultMetadata).toEqual([
       { label: 'Plan file', value: '/repo/.plans/one.md' },
     ])
+    expect(payload.metadata).toBeUndefined()
   })
 
   it('words no refusal while the call runs', () => {

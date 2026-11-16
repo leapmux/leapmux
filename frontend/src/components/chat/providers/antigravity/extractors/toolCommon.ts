@@ -1,5 +1,7 @@
+import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { ANTIGRAVITY_STEP_STATUS, ANTIGRAVITY_STEP_TYPE, ANTIGRAVITY_TOOL } from '~/generated/contracts/antigravity-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { retainedRowIsFinal } from '../../registry'
 
 export interface AntigravityStep {
   type: string
@@ -62,6 +64,15 @@ const OPEN_STATUSES = new Set<string>([
 
 export function antigravityStepOpen(step: Pick<AntigravityStep, 'status'>): boolean {
   return OPEN_STATUSES.has(step.status)
+}
+
+/**
+ * Whether one stored step is an OPEN row of its call: the step is open, and LeapMux
+ * stored it with no completion. When a turn ends while a step runs, the Worker stores the
+ * open step again with a completion, as the closing row, and that copy is final.
+ */
+export function antigravityRowOpen(step: Pick<AntigravityStep, 'status'>, completion: MessageCompletion | undefined): boolean {
+  return antigravityStepOpen(step) && !retainedRowIsFinal(completion)
 }
 
 export function antigravityStepFailed(step: AntigravityStep): boolean {

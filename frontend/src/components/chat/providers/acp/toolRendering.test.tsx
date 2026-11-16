@@ -1,15 +1,16 @@
-import type { MessageContentRenderContext } from '../../messageContentRenderer'
+import type { ToolCall } from '../../model/toolCall'
+import type { MessageContentRenderContext } from '~/test-support/messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { renderListedMessageContent, renderMessageContent } from '~/test-support/messageContentRenderer'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { providerToolMeta } from '~/test-support/toolCallFixture'
+import { providerToolCall, providerToolMeta } from '~/test-support/toolCallFixture'
 import { MessageBubble } from '../../MessageBubble'
-import { renderMessageContent } from '../../messageContentRenderer'
 import { toolBodyBorder, toolUseHeader } from '../../toolStyles.css'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
@@ -25,7 +26,7 @@ import '~/components/chat/providers'
 function renderTool(tool: Record<string, unknown>, context?: MessageContentRenderContext) {
   const plugin = providerFor(AgentProvider.OPENCODE)!
   const category = plugin?.transcript.classify(input(tool))
-  return render(() => renderMessageContent(tool, context, category, AgentProvider.OPENCODE))
+  return render(() => renderListedMessageContent(tool, context, category, AgentProvider.OPENCODE))
 }
 
 describe('acp tool rendering', () => {
@@ -195,11 +196,9 @@ describe('acp tool rendering', () => {
     const { container } = renderTool(request, {
       premeasureMode: true,
       workingDir: '/project',
-      sources: testMessageSources({
-        result: () => input(result),
-      }),
     })
     expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toBe('created.txt (2 lines)')
+    expect(providerFor(AgentProvider.OPENCODE)!.transcript.needsRequest?.(input(result))).toBe(true)
   })
 
   it('uses the common file search title without quoting the glob pattern', () => {
@@ -228,11 +227,9 @@ describe('acp tool rendering', () => {
     const { container } = renderTool(request, {
       premeasureMode: true,
       workingDir: '/project',
-      sources: testMessageSources({
-        result: () => input(result),
-      }),
     })
     expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toBe('*.ts src')
+    expect(providerFor(AgentProvider.OPENCODE)!.transcript.needsRequest?.(input(result))).toBe(true)
   })
 
   it('puts the content search path below the pattern', () => {
@@ -313,7 +310,7 @@ describe('acp tool rendering', () => {
       sources: testMessageSources({
         request: () => input(request),
         role: () => 'result',
-        visibleRows: () => ({ request: true, result: true }),
+        visibleRows: () => ({ request: true }),
       }),
     }, plugin?.transcript.classify(input(result)), provider))
     expect(container.textContent).toContain('File content')
@@ -358,31 +355,31 @@ describe('acp tool rendering', () => {
     expect(container.textContent).toContain('File content')
   })
 
-  // Which related half an Agent Client Protocol row wants, per provider rather than
-  // for the shared path once: a request with an empty rawInput draws its body from the
-  // result, and a result draws its name from the request.
+  // Which row of an Agent Client Protocol call needs its request, per provider rather
+  // than for the shared path once: a result draws its name from the request, and a
+  // request draws from its own frame alone, also with an empty rawInput.
   it.each([
     AgentProvider.OPENCODE,
     AgentProvider.KILO,
     AgentProvider.GOOSE,
     AgentProvider.REASONIX,
     AgentProvider.CURSOR,
-  ])('declares the related half per provider (%s)', (provider) => {
+  ])('declares that only the result row needs its request (%s)', (provider) => {
     const plugin = providerFor(provider)!
-    expect(plugin?.transcript.relatedMessages?.(input({
+    expect(plugin?.transcript.needsRequest?.(input({
       sessionUpdate: 'tool_call',
       toolCallId: 'read',
       kind: 'read',
       title: 'read',
       status: 'pending',
       rawInput: {},
-    }))).toEqual(['result'])
-    expect(plugin?.transcript.relatedMessages?.(input({
+    }))).toBe(false)
+    expect(plugin?.transcript.needsRequest?.(input({
       sessionUpdate: 'tool_call_update',
       toolCallId: 'read',
       status: 'completed',
       content: [],
-    }))).toEqual(['request'])
+    }))).toBe(true)
   })
 
   // The completion that names NO tool of its own. With no request beside it and no
@@ -449,30 +446,33 @@ describe('acp tool rendering', () => {
         },
       },
     }
-    const { container } = renderTool(request, {
+    // The request row reads its own frame, which states no file. Its header states the
+    // newest call of its span -- the result row's call, which recovered the file from the
+    // result's metadata -- once the browser holds the result (see ToolMessage).
+    const context = (toolHeader?: ToolCall) => ({
       premeasureMode: true,
       workingDir: '/project',
+      ...(toolHeader !== undefined
+        ? { toolHeader }
+        : {}),
       sources: testMessageSources({
-        result: () => input(result),
         role: () => 'request',
-        visibleRows: () => ({ request: true, result: true }),
+        visibleRows: () => ({ request: true }),
       }),
     })
+    const running = renderTool(request, context())
+    expect(running.container.querySelector(`.${toolUseHeader}`)?.textContent).toBe('read')
+    running.unmount()
+    const header = providerToolCall(AgentProvider.OPENCODE, result, {
+      request: input(request),
+      role: 'result',
+    })
+    expect(header).not.toBeNull()
+    const { container } = renderTool(request, context(header!))
     expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toBe('README.md')
     expect(container.textContent).not.toContain('File content')
-    expect(providerFor(AgentProvider.OPENCODE)!.transcript.relatedMessages?.(input(request))).toEqual(['result'])
-  })
-
-  it('loads result metadata when partial read input has no file path', () => {
-    const request = {
-      sessionUpdate: 'tool_call',
-      toolCallId: 'read',
-      kind: 'read',
-      title: 'read',
-      status: 'pending',
-      rawInput: { offset: 7, limit: 2 },
-    }
-    expect(providerFor(AgentProvider.OPENCODE)!.transcript.relatedMessages?.(input(request))).toEqual(['result'])
+    expect(providerFor(AgentProvider.OPENCODE)!.transcript.needsRequest?.(input(request))).toBe(false)
+    expect(providerFor(AgentProvider.OPENCODE)!.transcript.needsRequest?.(input(result))).toBe(true)
   })
 
   it('uses a protocol file location without a related-message request', () => {
@@ -489,32 +489,7 @@ describe('acp tool rendering', () => {
     }
     const { container } = renderTool(request, { premeasureMode: true, workingDir: '/project' })
     expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toBe('sample.ts (Line 7–)')
-    expect(providerFor(AgentProvider.OPENCODE)!.transcript.relatedMessages?.(input(request))).toEqual([])
-  })
-
-  it('does not use another call to supply a request header', () => {
-    const request = {
-      sessionUpdate: 'tool_call',
-      toolCallId: 'read',
-      kind: 'read',
-      title: 'Read File',
-      status: 'pending',
-      rawInput: {},
-    }
-    const result = {
-      sessionUpdate: 'tool_call_update',
-      toolCallId: 'other',
-      status: 'completed',
-      rawInput: { filePath: '/project/unrelated.md' },
-    }
-    const { container } = renderTool(request, {
-      premeasureMode: true,
-      sources: testMessageSources({
-        result: () => input(result),
-      }),
-    })
-    expect(container.textContent).toContain('Read File')
-    expect(container.textContent).not.toContain('unrelated.md')
+    expect(providerFor(AgentProvider.OPENCODE)!.transcript.needsRequest?.(input(request))).toBe(false)
   })
 
   it('shows statistics from the applied diff instead of a single replacement fragment', async () => {

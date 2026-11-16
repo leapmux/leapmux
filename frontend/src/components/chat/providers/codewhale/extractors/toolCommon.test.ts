@@ -371,9 +371,11 @@ describe('codewhaleChildBlock', () => {
 describe('codewhaleFrameDrawsNothing', () => {
   const frame = (row: Record<string, unknown>) => codewhaleToolFrame(row)!
 
-  it('hides the result of a deferred tool\'s first call, however it ended', () => {
-    expect(codewhaleFrameDrawsNothing(frame(toolEnd(CODEWHALE_EVENT.ItemCompleted, { deferred_tool_loaded: true })))).toBe(true)
-    expect(codewhaleFrameDrawsNothing(frame(toolEnd(CODEWHALE_EVENT.ItemFailed, { deferred_tool_loaded: true })))).toBe(true)
+  // Only the result of a deferred tool's first call states the runtime's words, so
+  // its row draws.
+  it('keeps the result of a deferred tool\'s first call, however it ended', () => {
+    expect(codewhaleFrameDrawsNothing(frame(toolEnd(CODEWHALE_EVENT.ItemCompleted, { deferred_tool_loaded: true })))).toBe(false)
+    expect(codewhaleFrameDrawsNothing(frame(toolEnd(CODEWHALE_EVENT.ItemFailed, { deferred_tool_loaded: true })))).toBe(false)
   })
 
   it('hides the completed result of a question whose answers the runtime redacted', () => {

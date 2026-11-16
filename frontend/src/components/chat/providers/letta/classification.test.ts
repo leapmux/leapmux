@@ -1,10 +1,10 @@
 import type { NotificationEntry } from '../../model/notification'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { LETTA_MODEL_ERROR_MARKER, lettaLoopError, lettaMixedErrorThread, lettaSubagentSnapshot } from '~/test-support/lettaFixtures'
 import { input } from '../testUtils'
 import { classifyLettaMessage } from './classification'
-import { lettaRelatedMessages, lettaSpanRole } from './spanRole'
+import { lettaNeedsRequest, lettaSpanRole } from './spanRole'
 
 describe('classifyLettaMessage', () => {
   it('recognizes a native child tool_call_message as a request', () => {
@@ -19,6 +19,52 @@ describe('classifyLettaMessage', () => {
 
     expect(classifyLettaMessage(resolved)).toEqual({ kind: 'tool_use' })
     expect(lettaSpanRole(resolved)).toBe('request')
+  })
+
+  // The Worker stores the opening frame of a call again, with a completion, when the
+  // turn or the process ends before Letta Code answers the call. That copy is the
+  // call's result.
+  it.each([
+    MessageCompletion.INTERRUPTED,
+    MessageCompletion.ERROR,
+    MessageCompletion.COMPLETE,
+  ].map(completion => [MessageCompletion[completion], completion] as const))('reads a retained start frame and native call frame as a result: %s', (_name, completion) => {
+    const start = {
+      id: 'letta-msg-1',
+      message_type: 'client_tool_start',
+      tool_call_id: 'call-1',
+      run_id: 'run-1',
+      tool_name: 'Bash',
+      tool_args: '{"command":"ls"}',
+    }
+    const call = {
+      type: 'message',
+      message_type: 'tool_call_message',
+      tool_calls: [
+        { tool_call_id: 'call-1', name: 'Read', arguments: '{"file_path":"note.txt"}' },
+      ],
+    }
+    for (const frame of [start, call]) {
+      expect(classifyLettaMessage(input(frame, undefined, AgentProvider.LETTA))).toEqual({ kind: 'tool_use' })
+      expect(classifyLettaMessage({
+        ...input(frame, undefined, AgentProvider.LETTA),
+        completion,
+      })).toEqual({ kind: 'tool_result' })
+    }
+  })
+
+  it('keeps a retained native call frame that states no call unknown', () => {
+    const frame = {
+      type: 'message',
+      message_type: 'tool_call_message',
+      tool_calls: [
+        { name: 'Read' },
+      ],
+    }
+    expect(classifyLettaMessage({
+      ...input(frame, undefined, AgentProvider.LETTA),
+      completion: MessageCompletion.INTERRUPTED,
+    })).toEqual({ kind: 'unknown' })
   })
 })
 
@@ -44,7 +90,7 @@ describe('letta native tool phases', () => {
     const parsed = input(frame, undefined, AgentProvider.LETTA)
     expect(classifyLettaMessage(parsed)).toEqual({ kind: 'hidden' })
     expect(lettaSpanRole(parsed)).toBe('none')
-    expect(lettaRelatedMessages(parsed)).toEqual([])
+    expect(lettaNeedsRequest(parsed)).toBe(false)
   })
 
   it('keeps an empty lifecycle end out of the result side', () => {
@@ -57,7 +103,7 @@ describe('letta native tool phases', () => {
     }, undefined, AgentProvider.LETTA)
     expect(classifyLettaMessage(parsed)).toEqual({ kind: 'hidden' })
     expect(lettaSpanRole(parsed)).toBe('none')
-    expect(lettaRelatedMessages(parsed)).toEqual([])
+    expect(lettaNeedsRequest(parsed)).toBe(false)
   })
 
   it.each(['', 0, false, null])('retains real client end data without a falsy fallback: %j', (tool_return) => {
@@ -105,7 +151,7 @@ describe('letta native tool phases', () => {
     }, undefined, AgentProvider.LETTA)
     expect(classifyLettaMessage(parsed)).toEqual({ kind: 'tool_result' })
     expect(lettaSpanRole(parsed)).toBe('result')
-    expect(lettaRelatedMessages(parsed)).toEqual(['request'])
+    expect(lettaNeedsRequest(parsed)).toBe(true)
   })
 
   it.each(['', 0, false, null])('keeps error result data on the result side without a falsy fallback: %j', (tool_return) => {
@@ -119,7 +165,7 @@ describe('letta native tool phases', () => {
     }, undefined, AgentProvider.LETTA)
     expect(classifyLettaMessage(parsed)).toEqual({ kind: 'tool_result' })
     expect(lettaSpanRole(parsed)).toBe('result')
-    expect(lettaRelatedMessages(parsed)).toEqual(['request'])
+    expect(lettaNeedsRequest(parsed)).toBe(true)
   })
 
   it('keeps an error lifecycle without returned data outside the pair', () => {
@@ -132,7 +178,7 @@ describe('letta native tool phases', () => {
     }, undefined, AgentProvider.LETTA)
     expect(classifyLettaMessage(parsed)).toEqual({ kind: 'hidden' })
     expect(lettaSpanRole(parsed)).toBe('none')
-    expect(lettaRelatedMessages(parsed)).toEqual([])
+    expect(lettaNeedsRequest(parsed)).toBe(false)
   })
 
   it('keeps unknown native records on the unknown-role fallback', () => {

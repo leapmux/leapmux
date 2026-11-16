@@ -10,7 +10,7 @@ import { piControls } from './pluginControls'
 import { resolvePiMessage } from './resolveMessage'
 import { piValidateResumeHandle } from './resumeHandle'
 import { piContextUsageFromMessage } from './sessionMetadata'
-import { piRelatedMessages, piSpanRole } from './spanRole'
+import { piNeedsRequest, piSpanRole } from './spanRole'
 
 const piPlugin: ProviderPlugin = {
   transcript: {
@@ -18,7 +18,7 @@ const piPlugin: ProviderPlugin = {
     outputFilePaths: piOutputFilePaths,
     resolveMessage: resolvePiMessage,
     spanRole: piSpanRole,
-    relatedMessages: piRelatedMessages,
+    needsRequest: piNeedsRequest,
     classify: classifyPiMessage,
     extractRow: piExtractRow,
     // The sole Pi notification seam: consulted by the shared thread reader for each

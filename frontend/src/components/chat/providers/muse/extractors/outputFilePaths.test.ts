@@ -4,13 +4,13 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { input } from '../../testUtils'
 import { museOutputFilePaths } from './outputFilePaths'
 
-function frame(path: unknown, sessionId = 'session', itemId = 'item') {
+function frame(path: unknown) {
   return {
     method: 'item/completed',
     params: {
-      sessionId,
+      sessionId: 'session',
       item: {
-        itemId,
+        itemId: 'item',
         kind: 'toolCall',
         turnId: 'turn',
         callId: 'call',
@@ -29,17 +29,14 @@ function frame(path: unknown, sessionId = 'session', itemId = 'item') {
   }
 }
 
-function extraction(own: Record<string, unknown>, result?: Record<string, unknown>): RowExtractionInput {
+function extraction(own: Record<string, unknown>): RowExtractionInput {
   return {
     resolved: input(own, undefined, AgentProvider.MUSE_CODE),
     category: { kind: 'tool_result' },
     span: {
       request: undefined,
-      result: result
-        ? input(result, undefined, AgentProvider.MUSE_CODE)
-        : undefined,
       role: 'result',
-      visibleRows: { request: false, result: true },
+      visibleRows: { request: false },
     },
   }
 }
@@ -60,17 +57,5 @@ describe('museOutputFilePaths', () => {
     const own = frame(undefined)
     own.params.item.outputRef = { ...own.params.item.outputRef, id: 'opaque-id', uri: 'native://opaque-id' }
     expect(museOutputFilePaths(extraction(own))).toEqual([])
-  })
-
-  it('uses the matching result path after the request row', () => {
-    expect(museOutputFilePaths(extraction(frame('/request.txt'), frame('/result.txt')))).toEqual(['/result.txt'])
-  })
-
-  it('rejects a sibling result that belongs to another item', () => {
-    expect(museOutputFilePaths(extraction(frame('/request.txt'), frame('/foreign.txt', 'session', 'foreign-item')))).toEqual(['/request.txt'])
-  })
-
-  it('rejects a sibling result that belongs to another native session', () => {
-    expect(museOutputFilePaths(extraction(frame('/request.txt'), frame('/foreign.txt', 'foreign-session')))).toEqual(['/request.txt'])
   })
 })

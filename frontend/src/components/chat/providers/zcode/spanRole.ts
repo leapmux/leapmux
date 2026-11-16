@@ -1,22 +1,10 @@
 import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import type {} from '../registry'
 import type { ToolSpanRole } from '~/lib/messageSpan'
-import { ZCODE_EVENT, ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
+import { ZCODE_EVENT } from '~/generated/contracts/zcode-protocol'
 import { pickString } from '~/lib/jsonPick'
 import { zcodeControlPlanText } from './extractors/plan'
 import { zcodeEnvelope, zcodeExtractTool, zcodeToolSpanRole } from './extractors/toolCommon'
-
-const ZCODE_REQUESTS_WITH_TITLES = new Set<string>([
-  ZCODE_TOOL.Bash,
-  ZCODE_TOOL.Read,
-  ZCODE_TOOL.Write,
-  ZCODE_TOOL.Edit,
-  ZCODE_TOOL.Glob,
-  ZCODE_TOOL.Grep,
-  ZCODE_TOOL.TodoWrite,
-  ZCODE_TOOL.Agent,
-  ZCODE_TOOL.WebFetch,
-])
 
 /**
  * ZCode span role. The `tool.updated` KIND discriminates the request from the result,
@@ -32,14 +20,19 @@ export function zcodeSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
   return zcodeToolSpanRole(pickString(envelope.payload, 'kind'), parsed)
 }
 
-export function zcodeRelatedMessages(parsed: ResolvedMessageContent) {
-  if (zcodeControlPlanText(parsed.parentObject) !== null)
-    return []
-  const role = zcodeSpanRole(parsed)
-  if (role === 'result')
-    return ['request'] as const
+/**
+ * Whether one row draws from its span's request.
+ *
+ * A `result`, `error` or `batch` frame states no tool name and no input, so its row
+ * reads them from the paired `scheduled` frame. A retained `started` or `progress`
+ * frame states no input either. A retained `scheduled` frame states its own, unless
+ * ZCode omitted the input from the frame. A request row never needs anything beside
+ * itself, and neither does a frame that states no call, such as a `batch` frame that
+ * lists several calls: its row draws no call to complete.
+ */
+export function zcodeNeedsRequest(parsed: ResolvedMessageContent): boolean {
+  if (zcodeSpanRole(parsed) !== 'result')
+    return false
   const tool = zcodeExtractTool(parsed.parentObject)
-  return role === 'request' && (tool?.toolName === ZCODE_TOOL.Agent || tool?.toolName === ZCODE_TOOL.TodoWrite || Object.keys(tool?.input ?? {}).length === 0 || !ZCODE_REQUESTS_WITH_TITLES.has(tool?.toolName ?? ''))
-    ? ['result'] as const
-    : []
+  return tool !== null && (!tool.toolName || Object.keys(tool.input).length === 0)
 }

@@ -19,9 +19,8 @@ const REASON = 'File does not exist.'
 /** The span sides an isolated extraction resolves to nothing. */
 const NO_SIDES: ToolSpanContext = {
   request: undefined,
-  result: undefined,
   role: 'other',
-  visibleRows: { request: false, result: false },
+  visibleRows: { request: false },
 }
 
 /** One Claude REQUEST row: the tool's name and the arguments it sent. */
@@ -158,11 +157,7 @@ describe('claudeSpec', () => {
     const payload = claudeSpec(
       requestRow(CLAUDE_TOOL_NAMES.TASK_CREATE, { subject: 'Write the parser' }),
       undefined,
-      {
-        pairedResult: {
-          task: { task_id: 'task-7', subject: 'Write the parser' },
-        },
-      },
+      {},
     )
     expect(payload.kind).toBe('todo')
     expect(payload.title).toBe('Task created')

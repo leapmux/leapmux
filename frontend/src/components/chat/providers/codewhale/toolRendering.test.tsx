@@ -1,11 +1,11 @@
-import type { MessageContentRenderContext } from '../../messageContentRenderer'
+import type { MessageContentRenderContext } from '~/test-support/messageContentRenderer'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { CODEWHALE_TOOL } from '~/generated/contracts/codewhale-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { testImageActions } from '~/test-support/imageActions'
+import { renderMessageContent } from '~/test-support/messageContentRenderer'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { renderMessageContent } from '../../messageContentRenderer'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import { MEDIA_DATA_URI, MEDIA_DESCRIPTOR, MEDIA_OUTPUT_FILE_ID, requestSide, toolCompleted, toolStarted } from './toolResults.fixtures'
@@ -147,7 +147,7 @@ describe('codewhale tool rendering', () => {
     const end = toolCompleted(CODEWHALE_TOOL.RequestUserInput, args, 'User input submitted')
     const startParsed = input(start, undefined, AgentProvider.CODEWHALE)
     const endParsed = input(end, undefined, AgentProvider.CODEWHALE)
-    const both = { request: true, result: true }
+    const both = { request: true }
     const request = render(() => renderMessageContent(start, {
       workingDir: '/project',
       spanType: CODEWHALE_TOOL.RequestUserInput,
@@ -155,7 +155,6 @@ describe('codewhale tool rendering', () => {
       getMessageUiState: () => true,
       sources: testMessageSources({
         current: () => startParsed,
-        result: () => endParsed,
         role: () => 'request',
         visibleRows: () => both,
       }),

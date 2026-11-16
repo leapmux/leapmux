@@ -181,29 +181,16 @@ describe('mimoToolCall', () => {
       })
     })
 
-    // Only the row that the worker ended states the partial output. The opening row
-    // of a call that still runs states none, although a later update is its result.
-    it('states no partial output on an opening row', () => {
-      const later = parsedFrame(toolFrame(MIMO_TOOL.Bash, {
+    // Only the row that the worker ended states the partial output. A running frame
+    // that the worker did not end states none, although its metadata holds some.
+    it('states no partial output on a running row', () => {
+      const call = providerToolCall(AgentProvider.MIMO_CODE, toolFrame(MIMO_TOOL.Bash, {
         status: MIMO_TOOL_STATUS.Running,
         input,
         metadata: { output: 'partial\n' },
-      }))
-      const call = running(MIMO_TOOL.Bash, input, { result: later })
-      expect(call.status).toBe('in_progress')
-      expect(call.result).toBeUndefined()
-    })
-
-    // The opening row reads the call's final frame when the span holds it, so its
-    // header states the outcome rather than a call still in flight.
-    it('reads the final frame on the opening row', () => {
-      const result = parsedFrame(toolFrame(MIMO_TOOL.Bash, {
-        input,
-        output: 'hi\n',
-        metadata: { output: 'hi\n', exit: 0 },
-      }))
-      const call = running(MIMO_TOOL.Bash, input, { result })
-      expect(call.status).toBe('completed')
+      }), { spanType: MIMO_TOOL.Bash, role: 'request' })
+      expect(call?.status).toBe('in_progress')
+      expect(call?.result).toBeUndefined()
     })
   })
 

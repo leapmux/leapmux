@@ -1,6 +1,6 @@
 import type { JSX } from 'solid-js'
 import type { AgentRequest } from '../../model/tools/agent'
-import type { ParsedCall, ResolvedCall, ToolKindMeta, ToolKindRenderer, ToolRowView } from './renderer'
+import type { RequestSideCall, ResolvedCall, ToolKindMeta, ToolKindRenderer, ToolRowView } from './renderer'
 import Bot from 'lucide-solid/icons/bot'
 import { For, Show } from 'solid-js'
 import { MarkdownPrefetch } from '../../MarkdownText'
@@ -42,29 +42,25 @@ export function renderAgentTitle(description: string, subagentType?: string): JS
   return <span class={toolInputText}>{title}</span>
 }
 
-/** The prompt half of an agent launch, drawn while the subagent runs. */
-function AgentPromptBody(props: { request: AgentRequest, view: ToolRowView, hasResult: boolean }): JSX.Element {
+/**
+ * The prompt half of an agent launch: its metadata and the prompt it sent.
+ *
+ * `clip` clips a long prompt to its first lines, as the pending row draws it while the
+ * subagent runs. The request row draws it whole, when the reader expands the row.
+ */
+function AgentPromptBody(props: { request: AgentRequest, view: ToolRowView, clip: boolean }): JSX.Element {
   const promptLabel = () => props.request.promptLabel || 'Prompt'
-  const hasPrompt = () => props.request.prompt.trim() !== ''
-  const longPrompt = () => textNeedsCollapse(props.request.prompt)
-  const markdownPrompt = () => props.request.promptFormat !== 'pre'
-  const expanded = (): boolean => props.view.expanded()
   return (
     <>
-      <Show when={!props.hasResult || expanded()}><ToolMetadata items={props.request.metadata} /></Show>
-      <Show
-        when={hasPrompt() && (!props.hasResult || expanded())}
-        fallback={hasPrompt() && markdownPrompt()
-          ? <MarkdownPrefetch text={props.request.prompt} context={props.view.context} />
-          : null}
-      >
+      <ToolMetadata items={props.request.metadata} />
+      <Show when={agentHasPrompt(props.request)}>
         <div class={toolResultPrompt}>{promptLabel()}</div>
         <CollapsibleContent
-          kind={markdownPrompt()
+          kind={agentPromptIsMarkdown(props.request)
             ? 'markdown-tool-result'
             : 'pre'}
           text={props.request.prompt}
-          isCollapsed={!expanded() && longPrompt()}
+          isCollapsed={props.clip && textNeedsCollapse(props.request.prompt)}
           {...(props.view.context !== undefined
             ? { context: props.view.context }
             : {})}
@@ -72,6 +68,21 @@ function AgentPromptBody(props: { request: AgentRequest, view: ToolRowView, hasR
       </Show>
     </>
   )
+}
+
+/** Whether an agent launch states a prompt to draw. */
+function agentHasPrompt(request: AgentRequest): boolean {
+  return request.prompt.trim() !== ''
+}
+
+/** Whether an agent launch's prompt reads as Markdown, rather than as preformatted text. */
+function agentPromptIsMarkdown(request: AgentRequest): boolean {
+  return request.promptFormat !== 'pre'
+}
+
+/** Whether an agent launch states a prompt or metadata to draw. */
+function hasPromptOrMetadata(request: AgentRequest): boolean {
+  return agentHasPrompt(request) || (request.metadata?.length ?? 0) > 0
 }
 
 /** Whether a successful agent result needs one shared status instead of per-agent cards. */
@@ -109,13 +120,35 @@ export const agentRenderer: ToolKindRenderer<'agent'> = {
       ?? call.title
       ?? 'Task'
   },
+  // The request row draws the prompt only when the reader expands it. It draws the
+  // same whether or not the subagent still runs, because it never reads its result.
+  // While the subagent runs, the pending row below it shows the prompt instead.
   request(call, view) {
     return (
       <Show when={view.role !== 'result'}>
-        <AgentPromptBody request={call.request} view={view} hasResult={view.hasResultRow ?? false} />
+        <Show
+          when={view.expanded()}
+          fallback={agentHasPrompt(call.request) && agentPromptIsMarkdown(call.request)
+            ? <MarkdownPrefetch text={call.request.prompt} context={view.context} />
+            : null}
+        >
+          <AgentPromptBody request={call.request} view={view} clip={false} />
+        </Show>
       </Show>
     )
   },
+  // While the subagent runs, the pending row states what it was asked. An expanded
+  // request row already draws the whole prompt, so the pending row then draws none.
+  pending(call, view) {
+    return (
+      <Show when={!view.expanded() && hasPromptOrMetadata(call.request)}>
+        <AgentPromptBody request={call.request} view={view} clip />
+      </Show>
+    )
+  },
+  // The row that ended a call with no result restates no prompt: the request row of the
+  // call offers the whole prompt on Expand, in every state of the call.
+  withoutTypedResult: () => null,
   result(call: ResolvedCall<'agent'>, view) {
     return (
       <Show
@@ -137,13 +170,13 @@ export const agentRenderer: ToolKindRenderer<'agent'> = {
       </Show>
     )
   },
-  requestMeta(call: ParsedCall<'agent'>, hasResult: boolean): Partial<ToolKindMeta> {
-    const hasPrompt = call.request.prompt.trim() !== ''
+  requestMeta(call: RequestSideCall<'agent'>): Partial<ToolKindMeta> {
+    const hasPrompt = agentHasPrompt(call.request)
     const promptLabel = (call.request.promptLabel || 'Prompt').toLowerCase()
-    const hasPromptOrMeta = hasPrompt || (call.request.metadata?.length ?? 0) > 0
-    const longPrompt = textNeedsCollapse(call.request.prompt)
     return {
-      collapsible: hasPromptOrMeta && (hasResult || longPrompt),
+      // The request row draws the prompt only on Expand, so a launch that states one
+      // always offers it.
+      collapsible: hasPromptOrMetadata(call.request),
       // A launch with no prompt still offers its metadata, and "details" is the
       // word for that: "Show prompt" would promise words it does not carry.
       expandLabel: hasPrompt

@@ -1,18 +1,19 @@
 import type { MessageCategory } from '../messageClassifier'
-import type { MessageContentRenderContext } from '../messageContentRenderer'
+import type { MessageContentRenderContext } from '~/test-support/messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageSources } from '~/test-support/messageRenderSources'
+import { toolOutcomeLabel } from '../results/toolOutcomeLabel'
 import { resolveMessageForRendering } from './registry'
 import './claude/plugin'
 import './codex/plugin'
 import './opencode/plugin'
 import '~/components/chat/providers'
 
-const { renderMessageContent } = await import('../messageContentRenderer')
+const { renderMessageContent, renderPendingMessageContent } = await import('~/test-support/messageContentRenderer')
 const { classifyMessage } = await import('../messageClassifier')
 
 interface ToolUsePayload extends Record<string, unknown> {
@@ -42,6 +43,55 @@ function renderClaudeToolUse(name: string, input: Record<string, unknown>, conte
   const category = { kind: 'tool_use' } as MessageCategory
   const result = renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE)
   return render(() => result)
+}
+
+/** The PENDING row of a running Claude call: the preview of what it asked. */
+function renderClaudePending(name: string, input: Record<string, unknown>) {
+  const parsed = makeClaudeToolUseMessage(name, input)
+  const category = { kind: 'tool_use' } as MessageCategory
+  return render(() => renderPendingMessageContent(parsed, undefined, category, AgentProvider.CLAUDE_CODE))
+}
+
+/**
+ * The RESULT row of a Claude call, with its request beside it. `metadata` is the message
+ * metadata the worker stores on the result, such as the TaskUpdate snapshot.
+ */
+function renderClaudeResult(name: string, input: Record<string, unknown>, toolUseResult: Record<string, unknown>, metadata?: Record<string, unknown>) {
+  const request = makeClaudeToolUseMessage(name, input)
+  const parentObject = {
+    type: 'user',
+    message: {
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: `toolu_${name}_1`, content: 'ok' },
+      ],
+    },
+    tool_use_result: toolUseResult,
+  }
+  const resolved = resolveMessageForRendering({
+    rawText: '',
+    topLevel: parentObject,
+    parentObject,
+    wrapper: null,
+    messageMetadata: metadata ?? {},
+  }, AgentProvider.CLAUDE_CODE)
+  const requestResolved = resolveMessageForRendering({
+    rawText: '',
+    topLevel: request,
+    parentObject: request,
+    wrapper: null,
+  }, AgentProvider.CLAUDE_CODE)
+  const context: MessageContentRenderContext = {
+    spanType: name,
+    sources: testMessageSources({
+      current: () => resolved,
+      request: () => requestResolved,
+      role: () => 'result',
+      visibleRows: () => ({ request: true }),
+    }),
+  }
+  const category = { kind: 'tool_result' } as MessageCategory
+  return render(() => renderMessageContent(parentObject, context, category, AgentProvider.CLAUDE_CODE))
 }
 
 function taskUpdateContext(
@@ -105,34 +155,39 @@ function renderOpenCodePlan(toolUse: Record<string, unknown>, context?: MessageC
 // ---------------------------------------------------------------------------
 
 describe('claude TodoWrite renders via the shared TodoListBody', () => {
-  it('renders the pluralized title and todo content', () => {
-    const { container } = renderClaudeToolUse('TodoWrite', {
-      todos: [
-        {
-          rowKey: 'first task',
-          content: 'first task',
-          status: 'pending',
-          activeForm: 'doing first',
-        },
-        {
-          rowKey: 'second task',
-          content: 'second task',
-          status: 'in_progress',
-          activeForm: 'doing second',
-        },
-      ],
-    })
-    const text = container.textContent ?? ''
-    expect(text).toContain('2 tasks')
+  const todos = [
+    {
+      rowKey: 'first task',
+      content: 'first task',
+      status: 'pending',
+      activeForm: 'doing first',
+    },
+    {
+      rowKey: 'second task',
+      content: 'second task',
+      status: 'in_progress',
+      activeForm: 'doing second',
+    },
+  ]
+
+  // The request row heads the call with its size; the pending row below it states the
+  // list the call carries while it runs.
+  it('renders the pluralized title on the request row and the list on the pending row', () => {
+    const request = renderClaudeToolUse('TodoWrite', { todos })
+    expect(request.container.textContent ?? '').toContain('2 tasks')
+    expect(request.container.textContent ?? '').not.toContain('first task')
+    const pending = renderClaudePending('TodoWrite', { todos })
+    const text = pending.container.textContent ?? ''
     expect(text).toContain('first task')
     // in_progress entries render their activeForm.
     expect(text).toContain('doing second')
   })
 
-  it('renders the cleared placeholder for an empty todos list', () => {
-    const { container } = renderClaudeToolUse('TodoWrite', { todos: [] })
-    const text = container.textContent ?? ''
-    expect(text).toContain('To-do list cleared')
+  // Only the result can say that the call cleared the list: the result row states it.
+  it('renders the cleared placeholder for an empty list on the result row', () => {
+    const { container } = renderClaudeResult('TodoWrite', { todos: [] }, { newTodos: [] })
+    expect(container.textContent ?? '').toContain('To-do list cleared')
+    expect(renderClaudePending('TodoWrite', { todos: [] }).container.textContent ?? '').toBe('')
   })
 })
 
@@ -141,8 +196,8 @@ describe('claude TodoWrite renders via the shared TodoListBody', () => {
 // ---------------------------------------------------------------------------
 
 describe('claude TaskCreate renders a single-row card', () => {
-  it('renders the subject as the title and the description as the summary', async () => {
-    const { container } = renderClaudeToolUse('TaskCreate', {
+  it('renders the subject and the description on the pending row while the call runs', async () => {
+    const { container } = renderClaudePending('TaskCreate', {
       subject: 'Add proto messages',
       description: 'Edit proto/agent.proto',
       activeForm: 'Adding proto',
@@ -155,43 +210,78 @@ describe('claude TaskCreate renders a single-row card', () => {
   })
 
   it('renders without a summary line when no description is provided', () => {
-    const { container } = renderClaudeToolUse('TaskCreate', { subject: 'Bare task' })
+    const { container } = renderClaudePending('TaskCreate', { subject: 'Bare task' })
     expect(container.textContent ?? '').toContain('Bare task')
     expect(container.querySelector('[data-task-checkbox="pending"]')).toBeTruthy()
   })
 
   it('falls back to "New task" when the input has no subject', () => {
-    const { container } = renderClaudeToolUse('TaskCreate', {})
+    const { container } = renderClaudePending('TaskCreate', {})
     expect(container.textContent ?? '').toContain('New task')
+  })
+
+  it('renders the created task on the result row', async () => {
+    const { container } = renderClaudeResult('TaskCreate', { subject: 'Add proto messages' }, {
+      task: { id: '3', subject: 'Add proto messages' },
+    })
+    await settleWorkerReplies()
+    expect(container.textContent ?? '').toContain('Add proto messages')
+    expect(container.querySelector('[data-task-checkbox="pending"]')).toBeTruthy()
   })
 })
 
 describe('claude TaskUpdate renders a single-row card', () => {
-  it('renders a diagnostic and warns once when the required snapshot is absent', () => {
+  // The worker stores the post-update snapshot on the RESULT message, so the result row
+  // states a missing one, and the request row asks for none.
+  it('renders a diagnostic on the result row and warns once when the required snapshot is absent', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const { container } = renderClaudeToolUse('TaskUpdate', {
-      taskId: '1',
-      status: 'in_progress',
-    })
-    const text = container.textContent ?? ''
-    expect(text).toContain('TaskUpdate metadata is missing todo_snapshot')
-    renderClaudeToolUse('TaskUpdate', { taskId: '1', status: 'in_progress' })
+    const { container } = renderClaudeResult('TaskUpdate', { taskId: '1', status: 'in_progress' }, { success: true, taskId: '1' })
+    expect(container.textContent ?? '').toContain('TaskUpdate metadata is missing todo_snapshot')
+    renderClaudeResult('TaskUpdate', { taskId: '1', status: 'in_progress' }, { success: true, taskId: '1' })
     expect(warn.mock.calls.filter(call => call[0] === '[claudeTaskUpdate]')).toHaveLength(1)
     warn.mockRestore()
   })
 
-  it('renders the persisted snapshot on a status-only patch', async () => {
-    const input = {
-      taskId: '42',
-      status: 'completed',
-    }
-    const { container } = renderClaudeToolUse('TaskUpdate', input, taskUpdateContext(input, {
-      id: '42',
-      content: 'Persisted subject',
-      status: 'TODO_STATUS_COMPLETED',
-      activeForm: '',
-      description: 'Persisted description',
-    }))
+  // The Worker stores a snapshot only for an update that succeeded and identifies its task. A
+  // failed update states its own error, and it misses no snapshot.
+  it('states the error of a failed update, and no snapshot diagnostic', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { container } = renderClaudeResult('TaskUpdate', { taskId: '3', status: 'in_progress' }, { success: false, taskId: '3', error: 'Task #3 not found' })
+    const text = container.textContent ?? ''
+    expect(text).toContain('Task #3 not found')
+    expect(text).toContain(toolOutcomeLabel('failed'))
+    expect(text).not.toContain('todo_snapshot')
+    expect(warn.mock.calls.filter(call => call[0] === '[claudeTaskUpdate]')).toHaveLength(0)
+    warn.mockRestore()
+  })
+
+  // A failure that states no words of its own falls back to the text of the tool result.
+  it('states the result text of a failed update that states no error', () => {
+    const { container } = renderClaudeResult('TaskUpdate', { taskId: '4', status: 'in_progress' }, { success: false, taskId: '4' })
+    const text = container.textContent ?? ''
+    expect(text).toContain('ok')
+    expect(text).toContain(toolOutcomeLabel('failed'))
+    expect(text).not.toContain('todo_snapshot')
+  })
+
+  it('states no diagnostic on the request row, which never reads the snapshot', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { container } = renderClaudeToolUse('TaskUpdate', { taskId: '1', status: 'in_progress' })
+    expect(container.textContent ?? '').not.toContain('todo_snapshot')
+    expect(warn.mock.calls.filter(call => call[0] === '[claudeTaskUpdate]')).toHaveLength(0)
+    warn.mockRestore()
+  })
+
+  it('renders the persisted snapshot of a status-only patch on the result row', async () => {
+    const { container } = renderClaudeResult('TaskUpdate', { taskId: '42', status: 'completed' }, { success: true, taskId: '42' }, {
+      [MESSAGE_METADATA_FIELD.TodoSnapshot]: {
+        id: '42',
+        content: 'Persisted subject',
+        status: 'TODO_STATUS_COMPLETED',
+        activeForm: '',
+        description: 'Persisted description',
+      },
+    })
     await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text).toContain('Persisted subject')
@@ -204,53 +294,29 @@ describe('claude TaskUpdate renders a single-row card', () => {
       taskId: '7',
       status: 'in_progress',
     }
-    const { container } = renderClaudeToolUse('TaskUpdate', input, taskUpdateContext(input, {
-      id: '7',
-      content: 'Persisted subject',
-      status: 'TODO_STATUS_IN_PROGRESS',
-      activeForm: 'Persisted active form',
-    }))
+    const { container } = renderClaudeResult('TaskUpdate', input, { success: true, taskId: '7' }, {
+      [MESSAGE_METADATA_FIELD.TodoSnapshot]: {
+        id: '7',
+        content: 'Persisted subject',
+        status: 'TODO_STATUS_IN_PROGRESS',
+        activeForm: 'Persisted active form',
+      },
+    })
     const text = container.textContent ?? ''
     expect(text).toContain('Persisted active form')
     expect('todo' in (taskUpdateContext(input, undefined).sources ?? {})).toBe(false)
   })
 })
 
-describe('claude TaskGet renders a single-row card from the paired tool_result', () => {
-  /**
-   * The result side of a `TaskGet` span, in the shape Claude sends it.
-   *
-   * The `tool_result` block and its `tool_use_id` are not decoration: a sibling
-   * belongs to THIS call only when its id says so, and the row reads the paired
-   * payload through that test. A fixture that carried `tool_use_result` alone stated
-   * a side no envelope of Claude's ever has.
-   */
-  function taskResult(name: string, task: Record<string, unknown>): Record<string, unknown> {
-    return {
-      parentObject: {
-        type: 'user',
-        message: {
-          role: 'user',
-          content: [
-            { type: 'tool_result', tool_use_id: `toolu_${name}_1`, content: 'ok' },
-          ],
-        },
-        tool_use_result: { task },
-      },
-    }
-  }
-
+describe('claude TaskGet renders a single-row card on its result row', () => {
   it('renders subject + description from tool_use_result.task', async () => {
-    const result = taskResult('TaskGet', {
-      id: '9',
-      subject: 'Get me',
-      description: 'A long task',
-      status: 'completed',
-    })
-    const { container } = renderClaudeToolUse('TaskGet', {}, {
-      sources: testMessageSources({
-        result: () => (result as never),
-      }),
+    const { container } = renderClaudeResult('TaskGet', {}, {
+      task: {
+        id: '9',
+        subject: 'Get me',
+        description: 'A long task',
+        status: 'completed',
+      },
     })
     await settleWorkerReplies()
     const text = container.textContent ?? ''
@@ -260,22 +326,20 @@ describe('claude TaskGet renders a single-row card from the paired tool_result',
   })
 
   it('renders the deleted checkbox when the looked-up task is a tombstone', () => {
-    const result = taskResult('TaskGet', { id: '11', subject: 'Already gone', status: 'deleted' })
-    const { container } = renderClaudeToolUse('TaskGet', {}, {
-      sources: testMessageSources({
-        result: () => (result as never),
-      }),
+    const { container } = renderClaudeResult('TaskGet', {}, {
+      task: { id: '11', subject: 'Already gone', status: 'deleted' },
     })
     expect(container.textContent ?? '').toContain('Already gone')
     expect(container.querySelector('[data-task-checkbox="deleted"]')).toBeTruthy()
   })
 
-  // `TaskGet` carries no input of its own, so an unresolved one has nothing to draw.
-  // Its empty checklist drew the to-do body's "To-do list cleared" under a bare
-  // "Task" header -- a sentence about a list the call never touched.
-  it('draws nothing at all before its result lands', () => {
+  // `TaskGet` carries no input of its own. Its request row draws its header at once, and
+  // previews nothing: no row says "To-do list cleared" about a list the call never touched.
+  it('draws its header at once and previews nothing before its result lands', () => {
     const { container } = renderClaudeToolUse('TaskGet', {})
-    expect(container.textContent ?? '').toBe('')
+    expect(container.textContent ?? '').toContain('Task')
+    expect(container.textContent ?? '').not.toContain('cleared')
+    expect(renderClaudePending('TaskGet', {}).container.textContent ?? '').toBe('')
   })
 })
 
@@ -372,39 +436,40 @@ describe('codex plan item renders proposed plan markdown', () => {
 // OpenCode plan
 // ---------------------------------------------------------------------------
 
-describe('claude classifies Task* tool_result messages as hidden', () => {
-  const taskTools = [
-    'TaskCreate',
-    'TaskUpdate',
-    'TaskGet',
-    'TaskList',
-  ] as const
-  for (const tool of taskTools) {
-    it(`hides the ${tool} tool_result`, () => {
-      const category = classifyMessage({
-        ...resolveMessageForRendering({
-          rawText: '',
-          topLevel: null,
-          parentObject: {
-            type: 'user',
-            message: {
-              content: [
-                { type: 'tool_result', tool_use_id: 'x', content: '' },
-              ],
-            },
+describe('claude classifies Task* tool_result messages', () => {
+  function classifyResult(tool: string) {
+    return classifyMessage({
+      ...resolveMessageForRendering({
+        rawText: '',
+        topLevel: null,
+        parentObject: {
+          type: 'user',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'x', content: '' },
+            ],
           },
-          wrapper: null,
-        }, AgentProvider.CLAUDE_CODE),
-        agentProvider: AgentProvider.CLAUDE_CODE,
-        spanId: 'span',
-        spanType: tool,
-        parentSpanId: '',
-        seq: 0n,
-        createdAt: '',
-      })
-      expect(category.kind).toBe('hidden')
+        },
+        wrapper: null,
+      }, AgentProvider.CLAUDE_CODE),
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      spanId: 'span',
+      spanType: tool,
+      parentSpanId: '',
+      seq: 0n,
+      createdAt: '',
     })
   }
+
+  // A request row never reads its result, so the result row of these three is the one
+  // that states the task the answer carries.
+  it.each(['TaskCreate', 'TaskUpdate', 'TaskGet'])('draws the %s tool_result as a row of its own', (tool) => {
+    expect(classifyResult(tool).kind).toBe('tool_result')
+  })
+
+  it('hides the TaskList tool_result: the to-do sidebar already shows the list', () => {
+    expect(classifyResult('TaskList').kind).toBe('hidden')
+  })
 })
 
 describe('opencode plan renders via the shared TodoListBody', () => {

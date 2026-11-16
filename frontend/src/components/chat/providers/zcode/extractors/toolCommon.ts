@@ -201,8 +201,6 @@ export interface ZCodeRow {
   parsed: unknown
   /** Supplemental native records remain separate from the provider event. */
   supplemental: unknown
-  /** The matching result can supply arguments that the scheduled event omitted. */
-  result?: ParsedMessageContent
   /** The worker's record of the tool name, set on every span row. */
   spanType: string | undefined
   /** The paired scheduled request from the shared message resolver. */
@@ -267,29 +265,42 @@ export function zcodePairedRequest(parsed: unknown, request: ParsedMessageConten
  * A result row never carries the input, and the input is what a title needs (the
  * command that ran, the file that was read). The shared resolver combines the
  * original request with its supplemental stream arguments before this lookup.
+ *
+ * The last source is the native record of the row's OWN frame. A finished frame's
+ * record states the input that ZCode omitted from its `scheduled` frame. A request
+ * row reads no later frame of its span, so a `scheduled` frame that omitted its input
+ * states none until its result row draws the call.
  */
 export function zcodeToolInput(row: ZCodeRow): Record<string, unknown> {
+  return zcodeToolInputSource(row).input
+}
+
+/**
+ * Whether the input of a row comes from the native record of its own frame alone: its
+ * frame and the paired `scheduled` frame state none. ZCode omitted the input from the
+ * `scheduled` frame, and no stream or control request recovered it, so the request row
+ * of the call states no input either (see zcodeToolInput).
+ */
+export function zcodeInputFromNativeRecordAlone(row: ZCodeRow): boolean {
+  return zcodeToolInputSource(row).source === 'native'
+}
+
+/**
+ * The input of a row, and the source that states it (see zcodeToolInput). The one place
+ * that orders the sources, so the input and the fact of where it came from can never
+ * disagree. A source states the input only when it holds at least one field.
+ */
+function zcodeToolInputSource(row: ZCodeRow): { source: 'own' | 'request' | 'native' | 'none', input: Record<string, unknown> } {
   const own = zcodeExtractTool(row.parsed)?.input
   if (own && Object.keys(own).length > 0)
-    return own
+    return { source: 'own', input: own }
   const request = zcodePairedRequest(row.parsed, row.toolUseParsed)?.input
   if (request && Object.keys(request).length > 0)
-    return request
-  const stored = pickObject(zcodeNativeTool(row)?.state, 'input')
-  // EMPTY is not an answer, exactly as it is not one for the two lookups above. An
-  // empty record short-circuited the result-row lookup that exists for this case, so
-  // a Bash row drew `command: ''` and a Read row `path: ''` while the arguments sat
-  // in the store the next lookup reads.
-  if (stored && Object.keys(stored).length > 0)
-    return stored
-  const current = zcodeExtractTool(row.parsed)
-  const result = zcodeExtractTool(row.result?.parentObject)
-  if (current?.kind === ZCODE_TOOL_KIND.Scheduled && current.toolCallId
-    && current.toolCallId === result?.toolCallId) {
-    const completed = zcodeRow(row.result?.parentObject, row.spanType, row.toolUseParsed, row.result?.supplementalContent)
-    return pickObject(zcodeNativeTool(completed)?.state, 'input') ?? {}
-  }
-  return {}
+    return { source: 'request', input: request }
+  const native = pickObject(zcodeNativeTool(row)?.state, 'input')
+  return native && Object.keys(native).length > 0
+    ? { source: 'native', input: native }
+    : { source: 'none', input: native ?? {} }
 }
 
 /**

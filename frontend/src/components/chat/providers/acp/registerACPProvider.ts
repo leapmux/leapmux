@@ -18,7 +18,7 @@ import { acpDividerReader } from './extractors/resultDivider'
 import { createACPRowExtractor } from './extractors/row'
 import { resolveACPMessage } from './extractors/toolCall'
 import { createACPCompactionBoundaryReader } from './notification'
-import { acpSpanRole, createACPRelatedMessagesReader } from './spanRole'
+import { acpNeedsRequest, acpSpanRole } from './spanRole'
 
 /**
  * Per-provider settings configuration for an ACP provider. The discriminator
@@ -241,7 +241,7 @@ export function createACPProvider(opts: Omit<ACPProviderOptions, 'provider'>): P
           : {}),
       }),
       spanRole: acpSpanRole,
-      relatedMessages: createACPRelatedMessagesReader(opts.toolCallAdapter),
+      needsRequest: acpNeedsRequest,
       extractRow: createACPRowExtractor(opts.toolCallAdapter),
       extractDivider: acpDividerReader(opts.agentTurnEnd),
       ...(opts.nativeNotifications

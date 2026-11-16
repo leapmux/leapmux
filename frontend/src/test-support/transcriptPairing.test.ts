@@ -1,5 +1,6 @@
 import type { TranscriptFrame } from '~/test-support/messageFactory'
 import { describe, expect, it } from 'vitest'
+import { isFinishedToolCallStatus } from '~/components/chat/model/toolCallStatus'
 import { MIMO_TOOL, MIMO_TOOL_STATUS } from '~/generated/contracts/mimo-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
@@ -58,12 +59,6 @@ interface PairCase {
   kind: string
   /** The status the protocol's own outcome words must derive on the result side. */
   status: 'completed' | 'failed' | 'cancelled' | 'declined'
-  /**
-   * The status the REQUEST row's merged call derives, when the protocol promotes
-   * a landed result onto the request frame. Absent states the request keeps its
-   * own unfinished word, which most protocols do.
-   */
-  requestStatus?: 'completed' | 'failed' | 'cancelled' | 'declined' | 'incomplete'
 }
 
 const CASES: PairCase[] = [
@@ -154,9 +149,6 @@ const CASES: PairCase[] = [
     // The item's own status word: 'completed' with an aggregated output is a
     // finished call, and the request's 'inProgress' frame must not outvote it.
     status: 'completed',
-    // The request frame carries no output of its own. The landed sibling makes the
-    // row final, but it does not let this frame invent the sibling's result body.
-    requestStatus: 'incomplete',
   },
   {
     label: 'Copilot',
@@ -230,9 +222,6 @@ const CASES: PairCase[] = [
     },
     kind: 'read',
     status: 'completed',
-    // The start row reads the result the landed end frame states, so a running
-    // call's card and a finished call's card state one answer.
-    requestStatus: 'completed',
   },
   {
     label: 'Amp',
@@ -363,10 +352,8 @@ const CASES: PairCase[] = [
       },
     },
     kind: 'execute',
-    // The `item.failed` event is the failure, and the request row draws the landed
-    // result too, so both rows state it.
+    // The `item.failed` event is the failure, which the result row states.
     status: 'failed',
-    requestStatus: 'failed',
   },
   {
     label: 'Kimi Code',
@@ -394,9 +381,6 @@ const CASES: PairCase[] = [
     // `error` is the final status word of the tool part, over the output the same
     // frame carries.
     status: 'failed',
-    // Every MiMo frame states the whole call, so the request row reads the landed
-    // final frame and states its status.
-    requestStatus: 'failed',
   },
 ]
 
@@ -413,7 +397,8 @@ describe('one request/result pair per protocol', () => {
       const resultRow = scenario.toolRow('result')
       expect(requestRow.role, 'the request frame files as the span\'s request side').toBe('request')
       expect(resultRow.role, 'the closing frame files as the span\'s result side').toBe('result')
-      expect(requestRow.hasResultRow).toBe(true)
+      // A request row knows nothing about its result row; the result row knows its request row.
+      expect(Object.keys(requestRow)).not.toContain('hasResultRow')
       expect(resultRow.hasRequestRow).toBe(true)
       // No degradation: the degrade answers the generic row, so a typed kind on
       // both sides states the draft held every invariant -- and the metadata a
@@ -422,11 +407,12 @@ describe('one request/result pair per protocol', () => {
       expect(resultRow.call.kind, `the result call keeps the ${testCase.kind} kind`).toBe(testCase.kind)
       expect(requestRow.call.degradation).toBeUndefined()
       expect(resultRow.call.degradation).toBeUndefined()
-      // The merged call reads every side the span resolved, so both rows carry
-      // the one status the protocol's own outcome words derive.
+      // The result row reads its own frame and the request, so it carries the one status
+      // the protocol's own outcome words derive. The request row never reads its
+      // result: it states no result and no outcome, whatever the result says.
       expect(resultRow.call.status, `the protocol's own status words derive ${testCase.status}`).toBe(testCase.status)
-      if (testCase.requestStatus !== undefined)
-        expect(requestRow.call.status, 'the request row carries the landed result\'s status too').toBe(testCase.requestStatus)
+      expect(requestRow.call.result, 'the request row reads no result').toBeUndefined()
+      expect(isFinishedToolCallStatus(requestRow.call.status), 'the request row states no outcome').toBe(false)
     })
   }
 })

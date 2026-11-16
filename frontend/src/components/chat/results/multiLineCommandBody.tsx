@@ -1,12 +1,12 @@
 import type { JSX } from 'solid-js'
 import type { CommandLanguage } from '../model/tools/execute'
 import type { ToolResultRenderContext } from '../renderContext'
-import { createEffect, createMemo, createSignal, onCleanup } from 'solid-js'
+import { createMemo, onCleanup } from 'solid-js'
 import { joinClassNames } from '~/lib/classNames'
-import { createRafResizeObserver } from '~/lib/resizeObserver'
 import { COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT } from '../chatHeightShared'
 import { CommandHighlightHtml } from '../syntaxHighlight'
 import { commandInputCollapsed, commandInputCollapsedFade, toolInputSummary, toolResultContentAnsi } from '../toolStyles.css'
+import { useCollapsedOverflow } from '../widgets/collapsedOverflow'
 
 function commandInputOverflowsCollapsedRows(el: HTMLElement): boolean {
   return el.scrollHeight > el.clientHeight + 1
@@ -25,7 +25,14 @@ function scheduleOverflowMeasure(measure: () => void): () => void {
   return () => clearTimeout(timeout)
 }
 
-/** Measure a summary only while it uses the shared collapsed-row limit. */
+/**
+ * Measure a summary only while it uses the shared collapsed-row limit (see
+ * useCollapsedOverflow for the rules that it shares with the header title).
+ *
+ * It measures again when the box resizes, and one frame after its content or its forced
+ * answer changes: the frame read measures the completed layout after tokenization or
+ * list rendering changes the child nodes.
+ */
 export function useCollapsedSummaryOverflow(props: {
   collapsed: () => boolean
   content: () => unknown
@@ -35,59 +42,17 @@ export function useCollapsedSummaryOverflow(props: {
   overflowing: () => boolean
   elementRef: (element: HTMLElement) => void
 } {
-  let element: HTMLElement | undefined
-  const [overflowing, setOverflowing] = createSignal(false)
-
-  // The functional setter reads the previous value without tracking it. A
-  // measurement inside a reactive scope does not make that scope depend on the
-  // signal that it writes.
-  const setOverflowingState = (next: boolean): void => {
-    setOverflowing((previous) => {
-      if (previous !== next)
-        props.onOverflowChange?.(next)
-      return next
-    })
-  }
-
-  /**
-   * Measure the collapsed summary only.
-   *
-   * An expanded summary has no clip to measure. Reporting `false` during expansion
-   * removes the fact that made the row expandable, so the control disappears while
-   * the row stays expanded. Keep the last collapsed result until the row collapses.
-   */
-  const measureOverflow = (): void => {
-    if (!element || !props.collapsed())
-      return
-    setOverflowingState((props.forcedOverflow?.() ?? false) || commandInputOverflowsCollapsedRows(element))
-  }
-
-  createEffect(() => {
-    // Track the content and collapsed state. The frame read measures the completed
-    // layout after tokenization or list rendering changes the child nodes.
-    props.content()
-    props.forcedOverflow?.()
-    if (!props.collapsed())
-      return
-    const cancel = scheduleOverflowMeasure(measureOverflow)
-    onCleanup(cancel)
-  })
-
-  createEffect(() => {
-    if (!element || !props.collapsed() || typeof ResizeObserver === 'undefined')
-      return
-    const observer = createRafResizeObserver(() => measureOverflow())
-    observer?.observe(element)
-    onCleanup(() => observer?.disconnect())
-  })
-
-  return {
-    overflowing,
-    elementRef: (next) => {
-      element = next
-      measureOverflow()
+  const overflow = useCollapsedOverflow({
+    collapsed: () => props.collapsed(),
+    clips: element => (props.forcedOverflow?.() ?? false) || commandInputOverflowsCollapsedRows(element),
+    watch: (_element, measure) => {
+      props.content()
+      props.forcedOverflow?.()
+      onCleanup(scheduleOverflowMeasure(measure))
     },
-  }
+    onOverflowChange: next => props.onOverflowChange?.(next),
+  })
+  return { overflowing: overflow.overflowing, elementRef: overflow.ref }
 }
 
 /** Collapsed command summary: full text, clipped to three visual rows. */

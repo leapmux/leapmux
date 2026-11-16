@@ -17,7 +17,8 @@ import { EDGE_INTENT_TOLERANCE_PX } from './chatScrollGeometry'
 //   1. content-Y: pixels within the virtual spacer, [0, totalHeight].
 //   2. seq: bigint message seqs. Each row occupies one seq unit; seq gaps (deletes,
 //      hidden rows excluded from the virtual list) absorb linearly into the pixel
-//      span between adjacent visible rows.
+//      span between adjacent visible rows. Rows that share a seq (a pending row and
+//      its request row) split that one unit (see rowStartSeqs).
 //   3. fraction: [0,1] over [minSeq..maxSeq], what the rail renders against.
 //
 // bigint -> number conversions cross an explicit exact-integer boundary. Per-agent seqs are
@@ -87,9 +88,13 @@ export interface SeqThumbInputs {
 
 /**
  * The absolute seq (as a number) at the START of each row's coverage, plus a terminal
- * boundary. `out[i]` is where row i begins in seq space; `out[n]` = `out[n-1] + 1` so
- * the last row occupies one sequence unit. Returns null when the window is empty
- * or contains an invalid sequence.
+ * boundary. `out[i]` is where row i begins in seq space; `out[n]` is one past the last
+ * row's seq, so the last row occupies one sequence unit. Returns null when the window is
+ * empty or contains an invalid sequence.
+ *
+ * Adjacent rows that share one sequence -- a pending row shares the sequence of its
+ * request row (see chatPendingRows) -- split its one unit evenly. The map then stays
+ * strictly increasing, and the sequence maps to the top of the FIRST of those rows.
  *
  * Derived purely from `items`, and the internal primitive of {@link prepareGeometry} --
  * callers hold a {@link PreparedGeometry} (which memoizes this once) rather than calling
@@ -101,22 +106,27 @@ export function rowStartSeqs(items: readonly ChatRowItem[]): number[] | null {
   if (n === 0)
     return null
   const out = Array.from<number>({ length: n + 1 })
-  for (let i = 0; i < n; i++) {
-    const item = items[i]
-    if (item === undefined)
-      return null
-    const s = item.seq
+  let lastSeq = 0
+  let start = 0
+  while (start < n) {
+    const s = items[start]?.seq
     if (s === undefined || s <= 0n)
       return null
     const safe = safeSeqNumber(s)
     if (safe === null)
       return null
-    out[i] = safe
+    let end = start + 1
+    while (end < n && items[end]?.seq === s)
+      end++
+    const share = end - start
+    for (let i = start; i < end; i++)
+      out[i] = safe + (i - start) / share
+    lastSeq = safe
+    start = end
   }
-  const last = out[n - 1]
-  if (last === undefined || last >= Number.MAX_SAFE_INTEGER)
+  if (lastSeq >= Number.MAX_SAFE_INTEGER)
     return null
-  out[n] = last + 1
+  out[n] = lastSeq + 1
   return out
 }
 

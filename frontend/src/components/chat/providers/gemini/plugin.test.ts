@@ -2,7 +2,7 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerToolCall } from '~/test-support/toolCallFixture'
-import { acpTextContent, describeACPProviderBasics, renderACPToolPair } from '../acp/testUtils'
+import { acpTextContent, describeACPCallRows, describeACPProviderBasics, renderACPToolPair } from '../acp/testUtils'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 
@@ -195,4 +195,65 @@ describe('gemini refused file tools', () => {
     expect(container.textContent).not.toContain('proposedAfter')
     expect(container.textContent).not.toContain('Error')
   })
+})
+
+// Gemini CLI writes a finished call to its session file, and the worker stores that
+// record beside the result. Only the record reads a complete_task as a report, so the
+// request row draws the generic card of the call, and the result row the report with
+// the answer of Gemini CLI.
+describe('gemini call rows', () => {
+  describeACPCallRows(AgentProvider.GEMINI_CLI, [
+    {
+      name: 'a complete_task that the stored record reads as a report',
+      request: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'complete_task__live',
+        kind: 'other',
+        title: 'complete_task',
+        status: 'pending',
+        rawInput: {
+          result: { response: 'Findings.' },
+        },
+      },
+      result: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'complete_task__live',
+        status: 'completed',
+        content: acpTextContent('Output submitted and task completed.'),
+      },
+      resultSupplement: {
+        rawOutput: {
+          geminiToolRecord: {
+            id: 'complete_task__live',
+            name: 'complete_task',
+            status: 'success',
+            args: {
+              result: { response: 'Findings.' },
+            },
+            result: [
+              {
+                functionResponse: {
+                  response: { output: 'Output submitted and task completed.' },
+                },
+              },
+            ],
+          },
+        },
+      },
+      requestCall: {
+        kind: 'mcp',
+        name: 'complete_task',
+        status: 'pending',
+      },
+      resultCall: {
+        kind: 'report',
+        name: 'complete_task',
+        status: 'completed',
+        result: { text: 'Findings.' },
+        resultMetadata: [
+          { label: 'Native result', value: 'Output submitted and task completed.' },
+        ],
+      },
+    },
+  ])
 })

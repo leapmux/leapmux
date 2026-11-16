@@ -8,13 +8,12 @@ import { mimoResultDivider } from './extractors/resultDivider'
 import { mimoExtractRow } from './extractors/row'
 import { mimoConfiguration } from './pluginConfiguration'
 import { mimoControls } from './pluginControls'
-import { mimoRelatedMessages, mimoSpanRole } from './spanRole'
+import { mimoSpanRole } from './spanRole'
 
 const mimoPlugin: ProviderPlugin = {
   transcript: {
     outputFilePaths: mimoOutputFilePaths,
     spanRole: mimoSpanRole,
-    relatedMessages: mimoRelatedMessages,
     classify: classifyMiMoMessage,
     extractRow: mimoExtractRow,
     notificationEntry: mimoNotificationEntry,

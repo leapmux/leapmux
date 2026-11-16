@@ -12,11 +12,9 @@ import { claudeImagesFromToolResult } from './image'
 
 /** Everything one Claude call reads beyond its own bytes. */
 export interface ClaudeRowContext {
-  /** The paired result's `tool_use_result`, which the three `Task*` rows read. */
-  pairedResult?: Record<string, unknown>
-  /** The immutable post-update task stored on a TaskUpdate message. */
+  /** The immutable post-update task that the worker stores on a TaskUpdate RESULT message. */
   todoSnapshot?: TodoItem
-  /** Why a required TaskUpdate snapshot could not be read. */
+  /** Why a TaskUpdate result row could not read its required snapshot. */
   todoSnapshotDiagnostic?: string
   /** LeapMux's own reading of how the row ended, which a provider frame can contradict. */
   completion?: MessageCompletion

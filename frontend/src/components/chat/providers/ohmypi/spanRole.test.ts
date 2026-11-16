@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { input } from '../testUtils'
-import { ohMyPiRelatedMessages, ohMyPiSpanRole } from './spanRole'
+import { ohMyPiNeedsRequest, ohMyPiSpanRole } from './spanRole'
 
 function frame(type: string, completion?: MessageCompletion) {
   return {
@@ -38,14 +38,23 @@ describe('ohMyPiSpanRole', () => {
   })
 })
 
-describe('ohMyPiRelatedMessages', () => {
-  it('asks for the other side of the span', () => {
-    expect(ohMyPiRelatedMessages(frame('tool_execution_start'))).toEqual(['result'])
-    expect(ohMyPiRelatedMessages(frame('tool_execution_end'))).toEqual(['request'])
-    expect(ohMyPiRelatedMessages(frame('agent_end'))).toEqual([])
+// An end frame states no arguments and no intent, so its row reads them from the start
+// frame. A start frame never waits for its end.
+describe('ohMyPiNeedsRequest', () => {
+  it('answers false for a start frame', () => {
+    expect(ohMyPiNeedsRequest(frame('tool_execution_start'))).toBe(false)
   })
 
-  it('asks a retained start frame for its request, because it is the result', () => {
-    expect(ohMyPiRelatedMessages(frame('tool_execution_start', MessageCompletion.INTERRUPTED))).toEqual(['request'])
+  it('answers true for an end frame', () => {
+    expect(ohMyPiNeedsRequest(frame('tool_execution_end'))).toBe(true)
+  })
+
+  // A stopped turn stores the start frame again as the closing row, with its own arguments.
+  it('answers false for a retained start frame', () => {
+    expect(ohMyPiNeedsRequest(frame('tool_execution_start', MessageCompletion.INTERRUPTED))).toBe(false)
+  })
+
+  it('answers false for a frame outside a tool span', () => {
+    expect(ohMyPiNeedsRequest(frame('agent_end'))).toBe(false)
   })
 })

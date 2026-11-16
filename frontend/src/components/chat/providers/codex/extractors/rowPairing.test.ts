@@ -62,11 +62,13 @@ describe('codex native exec pairing', () => {
         makeTranscriptMessage(nativeExecFrame('native-result', true), 2n),
       ],
     })
+    // The request row reads its own call alone, so the output does not change it.
     expect(scenario.toolRow('native-request')).toMatchObject({
       role: 'request',
-      hasResultRow: true,
-      call: { id: 'native-exec-call', kind: 'execute', status: 'completed' },
+      call: { id: 'native-exec-call', kind: 'execute', status: 'in_progress' },
     })
+    expect(scenario.toolRow('native-request').call.result).toBeUndefined()
+    expect(scenario.toolRow('native-request').call.images).toEqual([])
     expect(scenario.toolRow('native-result')).toMatchObject({
       role: 'result',
       hasRequestRow: true,
@@ -115,11 +117,8 @@ function collabFrame(id: string, item: Record<string, unknown>, completion?: Mes
  * resolution, classification, pairing, cache and extraction paths -- the same
  * route a mounted row takes, on the transcript scenario.
  *
- * A request row whose result side has landed carries it, so its own `inProgress`
- * word must not keep the envelope in progress: the validating builder refuses an
- * in-progress envelope over a result, and the degrade traded the typed agent card
- * for the generic one -- the request drew its prompt as raw JSON and the result
- * stood alone, which the e2e suite saw as a missing "Show prompt" button.
+ * Both rows keep the typed agent card. A degrade to the generic card draws the
+ * prompt as raw JSON, and the e2e suite then finds no "Show prompt" button.
  */
 describe('codex tool span pairing', () => {
   it('keeps both sides of a paired spawnAgent call at the agent kind, whatever the request frame still says', () => {
@@ -144,14 +143,36 @@ describe('codex tool span pairing', () => {
         }), 2n),
       ],
     })
-    // The request row keeps the agent kind and the landed result side.
+    // The request row keeps the agent kind and reads its own item alone: it states no
+    // run and no target, because its own item lists no receiver yet.
     expect(scenario.toolRow('request')).toMatchObject({
-      call: { kind: 'agent' },
+      call: {
+        kind: 'agent',
+        status: 'in_progress',
+        request: { description: 'Subagent', prompt, metadata: [] },
+      },
       role: 'request',
-      hasResultRow: true,
     })
+    expect(scenario.toolRow('request').call.result).toBeUndefined()
+    expect(scenario.toolRow('request').call.request).not.toHaveProperty('registryKey')
+    // The result row carries the target that only the closing item states.
     expect(scenario.toolRow('result')).toMatchObject({
-      call: { kind: 'agent' },
+      call: {
+        kind: 'agent',
+        status: 'completed',
+        request: {
+          prompt,
+          metadata: [
+            { label: 'Agent ID', value: 'child' },
+          ],
+          registryKey: 'child',
+        },
+        result: {
+          agents: [
+            { agentId: 'child', outcome: 'completed', body: report },
+          ],
+        },
+      },
       role: 'result',
       hasRequestRow: true,
     })

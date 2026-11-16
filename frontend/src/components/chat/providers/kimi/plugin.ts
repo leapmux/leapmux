@@ -8,7 +8,7 @@ import { kimiResultDivider } from './extractors/resultDivider'
 import { kimiExtractRow } from './extractors/row'
 import { kimiConfiguration } from './pluginConfiguration'
 import { kimiControls } from './pluginControls'
-import { kimiRelatedMessages, kimiSpanRole } from './spanRole'
+import { kimiNeedsRequest, kimiSpanRole } from './spanRole'
 
 const kimiPlugin: ProviderPlugin = {
   transcript: {
@@ -16,7 +16,7 @@ const kimiPlugin: ProviderPlugin = {
     classify: classifyKimiMessage,
     extractRow: kimiExtractRow,
     spanRole: kimiSpanRole,
-    relatedMessages: kimiRelatedMessages,
+    needsRequest: kimiNeedsRequest,
     extractDivider: kimiResultDivider,
     notificationEntry: kimiNotificationEntry,
     compactionStart: kimiCompactionStart,

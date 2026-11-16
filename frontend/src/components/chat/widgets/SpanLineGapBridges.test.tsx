@@ -11,7 +11,8 @@ describe('SpanLineGapBridges', () => {
   // first (an 'active' line has both a vertical top and bottom with the same key), so its
   // gap bridge connects. The first row has nothing above it, so it never draws a bridge.
   const entry = (id: string): SpanBridgeEntry => ({
-    message: { id, spanId: 's1' },
+    rowId: id,
+    message: { spanId: 's1' },
     parsedSpanLines: [
       { type: 'active', span_id: 's1' },
     ],

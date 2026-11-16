@@ -653,8 +653,9 @@ function baseSpec(facts: ACPToolFacts, callKind: OpenCodeCallKind, metadata: Rec
     // at least have stated the file, so a finished edit rendered as an empty card.
     // And only a call that COMPLETED. A call the reader stopped applied nothing, so
     // the same list drawn as the RESULT states a change that never reached the file
-    // -- `FileChangesBody` draws whatever the result holds, where
-    // `RequestedChangesBody` refuses the request of an interrupted call.
+    // -- `FileChangesBody` draws whatever the result holds, where the result row of a
+    // call with no typed result draws no requested change of an interrupted call (see
+    // `withoutTypedResult` of the file change kinds).
     if (facts.status === 'completed' && request.changes.some(fileEditHasDiff)) {
       return {
         kind,

@@ -3,9 +3,12 @@ import type { ToolKind } from '~/components/chat/model/toolKind'
 import type { ToolRequestByKind, ToolResultByKind } from '~/components/chat/model/tools'
 import { render } from '@solidjs/testing-library'
 import { ToolMessage } from '~/components/chat/results/ToolMessage'
+import { ToolPendingMessage } from '~/components/chat/results/ToolPendingMessage'
 import { rendererFor } from '~/components/chat/results/tools/index'
 import { toolCallMeta } from '~/components/chat/results/tools/meta'
 import { parsedCall } from '~/components/chat/results/tools/renderer'
+import { toolPending } from '~/components/chat/toolStyles.css'
+import { classSelector } from '~/test-support/composedClass'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 
@@ -74,6 +77,31 @@ export function checkKindModule(check: KindModuleCheck): void {
     expect(container.querySelector('[data-tool-message]')).not.toBeNull()
     if (check.resultPart !== undefined)
       expect(container.textContent).toContain(check.resultPart)
+  })
+
+  // A pending row takes its top space only while it holds something (`toolPending` reads
+  // `:not(:empty)`), so a preview that draws nothing must leave no element behind, or the
+  // row takes space with nothing to read in it.
+  it.each([false, true])('leaves the pending row empty exactly when it draws no text, with expanded %s', async (expanded) => {
+    const calls = [
+      toolCallFixture(check.kind, { status: 'in_progress', request: check.request }),
+      toolCallFixture(check.kind, { status: 'in_progress' }),
+    ]
+    for (const call of calls) {
+      const { container, unmount } = render(() => (
+        <ToolPendingMessage
+          row={toolRow(call, 'request')}
+          context={{
+            getMessageUiState: () => expanded,
+          }}
+        />
+      ))
+      await settleWorkerReplies()
+      const root = container.querySelector('[data-testid="tool-pending"]')!
+      expect(root.matches(classSelector(toolPending))).toBe(true)
+      expect(root.matches(':empty'), root.innerHTML).toBe(root.textContent === '')
+      unmount()
+    }
   })
 
   it('answers meta for a short result', () => {

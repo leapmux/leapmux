@@ -1,14 +1,16 @@
 import type { ClassifiedEntryCacheDeps } from './chatEntryCache'
 import type { NotificationEntry } from './model/notification'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { ToolSpanRole } from '~/lib/messageSpan'
 import { create } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { ZCODE_EVENT, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
 import { AgentChatMessageSchema, AgentProvider, AvailableOptionGroupSchema, AvailableOptionSchema, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { invalidateMessageParseCache } from '~/lib/messageParser'
+import { messageSpanKey } from '~/lib/messageSpan'
 import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
-import { createClassifiedEntryCache, heightKeyForEntry, renderKeyForEntry } from './chatEntryCache'
+import { createClassifiedEntryCache, heightKeyForEntry, listedRequestSpanKeys, renderKeyForEntry } from './chatEntryCache'
 import { resolvedSpanRole } from './providers/registry'
 import { prepareMessage } from './rowPreparation'
 import * as rowPreparation from './rowPreparation'
@@ -670,73 +672,36 @@ describe('createClassifiedEntryCache', () => {
     })
   })
 
-  it('rebuilds a tool_use entry when its paired hidden result content version bumps', () => {
+  // A request row never reads its result: it shows, and reports its height, before the
+  // result exists. So neither its entry nor its height key changes when the result
+  // lands in the window or changes in place.
+  it('keeps a tool_use entry and its height key when its result lands or changes', () => {
     createRoot((dispose) => {
-      // Claude Task* tool_use rows render details from their hidden tool_result
-      // sibling. A same-seq result edit bumps the RESULT version while the request's
-      // seq/id/contentVersion stay put, so the request entry and height key must
-      // rebuild off the result version.
+      const request = claudeToolUse('tu1', 1n, 'span-1')
+      const result = claudeToolResult('tr1', 2n, 'span-1')
+      const [messages, setMessages] = createSignal([request])
       const [resultVersion, setResultVersion] = createSignal(0)
-      const messages = [
-        claudeToolUse('tu1', 2n, 'span-1'),
-      ]
       const cache = createTestClassifiedEntryCache({
-        messages: () => messages,
-        resultRevision: () => ({
-          id: 'result',
-          seq: 2n,
-          contentVersion: resultVersion(),
-          supplementalRevision: 0n,
-        }),
+        messages,
+        contentVersionById: id => id === 'tr1'
+          ? resultVersion()
+          : 0,
         showHiddenMessages: () => false,
       })
       cache.visibleEntries()
       const before = cache.getEntry('tu1')!
       expect(before.category.kind).toBe('tool_use')
-      expect(before.freshness.revisionKey).toMatch(/~result=\d+:result\|\d+\|0\|0$/)
+      expect(before.freshness.revisionKey).not.toContain('~result=')
       const beforeHeightKey = heightKeyForEntry(before, 0)
+
+      setMessages([request, result])
+      cache.visibleEntries()
+      expect(cache.getEntry('tu1')).toBe(before)
 
       setResultVersion(1)
       cache.visibleEntries()
-      const after = cache.getEntry('tu1')!
-      expect(after.freshness.revisionKey).toMatch(/~result=\d+:result\|\d+\|1\|0$/)
-      expect(after).not.toBe(before)
-      expect(heightKeyForEntry(after, 0)).not.toBe(beforeHeightKey)
-      dispose()
-    })
-  })
-
-  it('rebuilds a tool_use entry when its paired hidden result identity changes at the same content version', () => {
-    createRoot((dispose) => {
-      const [resultRevision, setResultRevision] = createSignal({
-        id: 'result-a',
-        seq: 5n,
-        contentVersion: 0,
-        supplementalRevision: 0n,
-      })
-      const messages = [
-        claudeToolUse('tu1', 2n, 'span-1'),
-      ]
-      const cache = createTestClassifiedEntryCache({
-        messages: () => messages,
-        resultRevision: () => resultRevision(),
-        showHiddenMessages: () => false,
-      })
-      cache.visibleEntries()
-      const before = cache.getEntry('tu1')!
-      const beforeHeightKey = heightKeyForEntry(before, 0)
-
-      setResultRevision({
-        id: 'result-b',
-        seq: 7n,
-        contentVersion: 0,
-        supplementalRevision: 0n,
-      })
-      cache.visibleEntries()
-      const after = cache.getEntry('tu1')!
-
-      expect(after).not.toBe(before)
-      expect(heightKeyForEntry(after, 0)).not.toBe(beforeHeightKey)
+      expect(cache.getEntry('tu1')).toBe(before)
+      expect(heightKeyForEntry(cache.getEntry('tu1')!, 0)).toBe(beforeHeightKey)
       dispose()
     })
   })
@@ -782,12 +747,6 @@ describe('createClassifiedEntryCache', () => {
           contentVersion: 0,
           supplementalRevision: 0n,
         }),
-        resultRevision: () => ({
-          id: 'selected-result',
-          seq: 3n,
-          contentVersion: 0,
-          supplementalRevision: 0n,
-        }),
         contentVersionById: () => ownVersion(),
         showHiddenMessages: () => false,
       })
@@ -799,75 +758,6 @@ describe('createClassifiedEntryCache', () => {
       const after = cache.getEntry('current-request')!
       expect(after).not.toBe(before)
       expect(after.freshness.revisionKey).toContain('own=15:current-request|2|1|0')
-      dispose()
-    })
-  })
-
-  // A result-side SUPPLEMENT is the one change that reaches the request row from
-  // the other side of the span: the merged result body can change what the
-  // request row renders, so the request's own row rebuilds off a revision it
-  // does not hold.
-  it('rebuilds a tool_use entry when its paired result\'s supplemental revision bumps', () => {
-    createRoot((dispose) => {
-      const [resultSupplement, setResultSupplement] = createSignal(0n)
-      const messages = [
-        claudeToolUse('tu1', 1n, 'span-1'),
-      ]
-      const cache = createTestClassifiedEntryCache({
-        messages: () => messages,
-        resultRevision: () => ({
-          id: 'result',
-          seq: 2n,
-          contentVersion: 0,
-          supplementalRevision: resultSupplement(),
-        }),
-        showHiddenMessages: () => false,
-      })
-      cache.visibleEntries()
-      const before = cache.getEntry('tu1')!
-      expect(before.freshness.revisionKey).toMatch(/~result=\d+:result\|2\|0\|0$/)
-      setResultSupplement(1n)
-      cache.visibleEntries()
-      const after = cache.getEntry('tu1')!
-      expect(after.freshness.revisionKey).toMatch(/~result=\d+:result\|2\|0\|1$/)
-      expect(after).not.toBe(before)
-      dispose()
-    })
-  })
-
-  it('rebuilds a tool_use entry and height key when its paired hidden result arrives', () => {
-    createRoot((dispose) => {
-      // Result arrival is distinct from result content changing: a Task* request may
-      // first classify with no hidden result and later gain one under the same id/seq.
-      // The result member's arrival must invalidate the cached request entry and height key.
-      const [hasResult, setHasResult] = createSignal(false)
-      const messages = [
-        claudeToolUse('tu1', 2n, 'span-1'),
-      ]
-      const cache = createTestClassifiedEntryCache({
-        messages: () => messages,
-        resultRevision: () => hasResult()
-          ? {
-              id: 'result',
-              seq: 2n,
-              contentVersion: 0,
-              supplementalRevision: 0n,
-            }
-          : undefined,
-        showHiddenMessages: () => false,
-      })
-      cache.visibleEntries()
-      const before = cache.getEntry('tu1')!
-      expect(before.category.kind).toBe('tool_use')
-      expect(before.freshness.revisionKey).not.toContain('~result=')
-      const beforeHeightKey = heightKeyForEntry(before, 0)
-
-      setHasResult(true)
-      cache.visibleEntries()
-      const after = cache.getEntry('tu1')!
-      expect(after.freshness.revisionKey).toContain('~result=')
-      expect(after).not.toBe(before)
-      expect(heightKeyForEntry(after, 0)).not.toBe(beforeHeightKey)
       dispose()
     })
   })
@@ -969,9 +859,7 @@ describe('createClassifiedEntryCache', () => {
       // An assistant_text row never sizes from a request, so its request-version
       // probe must be skipped entirely -- a bump there must NOT rebuild it.
       let requestProbeReads = 0
-      let resultProbeReads = 0
       const [requestVersion, setRequestVersion] = createSignal(0)
-      const [resultVersion, setResultVersion] = createSignal(0)
       const messages = [
         assistantText('a1', 1n, 'hi'),
       ]
@@ -986,31 +874,19 @@ describe('createClassifiedEntryCache', () => {
             supplementalRevision: 0n,
           }
         },
-        resultRevision: () => {
-          resultProbeReads++
-          return {
-            id: 'result',
-            seq: 2n,
-            contentVersion: resultVersion(),
-            supplementalRevision: 0n,
-          }
-        },
         showHiddenMessages: () => false,
       })
       cache.visibleEntries()
       const before = cache.getEntry('a1')!
       expect(before.freshness.revisionKey).not.toContain('~request=')
       const readsAfterFirst = requestProbeReads
-      const resultReadsAfterFirst = resultProbeReads
       setRequestVersion(1)
-      setResultVersion(1)
       cache.visibleEntries()
       const after = cache.getEntry('a1')!
       // Same reference: the assistant row never read the request version, so the
       // bump didn't wake/rebuild it. The probe count also never advanced.
       expect(after).toBe(before)
       expect(requestProbeReads).toBe(readsAfterFirst)
-      expect(resultProbeReads).toBe(resultReadsAfterFirst)
       dispose()
     })
   })
@@ -1398,5 +1274,124 @@ describe('renderKeyForEntry', () => {
   // notification consolidation -- so the row must be read again.
   it('answers a new key when the message seq moves', () => {
     expect(renderKeyForEntry(entryOf('m1', 2n, 'hello'))).not.toBe(renderKeyForEntry(entryOf('m1', 1n, 'hello')))
+  })
+})
+
+describe('listedRequestSpanKeys', () => {
+  /** A Claude tool row of span `spanId`: a `tool_use` request, or its `tool_result`. */
+  const claudeTool = (id: string, seq: bigint, spanId: string, side: 'request' | 'result', name = 'Bash') => create(AgentChatMessageSchema, {
+    id,
+    seq,
+    spanId,
+    spanType: name,
+    source: MessageSource.AGENT,
+    agentProvider: AgentProvider.CLAUDE_CODE,
+    contentCompression: ContentCompression.NONE,
+    content: new TextEncoder().encode(JSON.stringify(side === 'request'
+      ? {
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: spanId,
+                name,
+                input: { command: 'make' },
+              },
+            ],
+          },
+        }
+      : {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: spanId, content: 'done' },
+            ],
+          },
+        })),
+  })
+
+  /** The span keys that the list counts as request rows over `messages`. */
+  function listed(messages: AgentChatMessage[], showHiddenMessages = false): string[] {
+    return createRoot((dispose) => {
+      try {
+        const cache = createClassifiedEntryCache({
+          messages: () => messages,
+          role: message => message.spanId === ''
+            ? 'other'
+            : resolvedSpanRole(prepareMessage(message).resolved, message.agentProvider),
+          showHiddenMessages: () => showHiddenMessages,
+        })
+        return [
+          ...listedRequestSpanKeys(cache.visibleEntries()),
+        ]
+      }
+      finally {
+        dispose()
+      }
+    })
+  }
+
+  it('lists the span of a request row that the list draws', () => {
+    expect(listed([
+      claudeTool('req', 1n, 'span-1', 'request'),
+    ])).toEqual([
+      messageSpanKey({ spanId: 'span-1', agentSessionId: '' }),
+    ])
+  })
+
+  it('lists no span for a result row alone', () => {
+    expect(listed([
+      claudeTool('res', 1n, 'span-1', 'result'),
+    ])).toEqual([])
+  })
+
+  // A hidden request draws no request row, so the row of its result draws the request side
+  // itself. The debug preference lists the hidden request as its raw payload, which is no
+  // request row either.
+  it('lists no span for a request that the transcript hides, also under the debug preference', () => {
+    const hidden = claudeTool('req', 1n, 'span-1', 'request', 'ToolSearch')
+    expect(listed([hidden])).toEqual([])
+    expect(listed([hidden], true)).toEqual([])
+  })
+
+  it('lists no span for a message of no span', () => {
+    expect(listed([
+      claudeTool('req', 1n, '', 'request'),
+    ])).toEqual([])
+  })
+
+  // The span role of a message can change in place, as when a closing copy of the same
+  // frame lands. The cached entry holds the role, so the change must rebuild it.
+  it('follows a span role that changes in place', () => {
+    createRoot((dispose) => {
+      const [role, setRole] = createSignal<ToolSpanRole>('request')
+      const messages = [
+        claudeTool('req', 1n, 'span-1', 'request'),
+      ]
+      const cache = createClassifiedEntryCache({
+        messages: () => messages,
+        role: () => role(),
+        showHiddenMessages: () => false,
+      })
+      const before = cache.visibleEntries()[0]!
+      expect(before.freshness.role).toBe('request')
+      expect([
+        ...listedRequestSpanKeys(cache.visibleEntries()),
+      ]).toEqual([
+        messageSpanKey({ spanId: 'span-1', agentSessionId: '' }),
+      ])
+
+      setRole('result')
+      const after = cache.visibleEntries()[0]!
+      expect(after).not.toBe(before)
+      expect(after.freshness.role).toBe('result')
+      expect([
+        ...listedRequestSpanKeys(cache.visibleEntries()),
+      ]).toEqual([])
+      dispose()
+    })
   })
 })

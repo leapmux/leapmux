@@ -6,10 +6,10 @@ import { joinContentParagraphs } from '~/lib/contentBlocks'
 import { pickObject } from '~/lib/jsonPick'
 import { leapmuxPlanExecutionRow, leapmuxUserRow } from '../../../leapmuxRows'
 import { toolCallRow } from '../../../model/row'
+import { retainedRowIsFinal } from '../../registry'
 import { canonicalClaudeToolName, claudeToolRowHidden } from '../toolKinds'
 import { getMessageContentArray } from './assistantContent'
 import { claudePlanFromEnvelope } from './plan'
-import { claudeTaskGetUnresolved } from './todo'
 import { claudeToolCall } from './toolCall'
 import { claudeToolRow } from './toolCommon'
 
@@ -153,70 +153,55 @@ function claudeToolSpanRow(input: RowExtractionInput): ChatRow | null {
   if (claudeToolRowHidden(own.toolName, own.role))
     return { kind: 'hidden' }
 
-  // A RESULT row carries no arguments of its own, so the call reads the request
-  // beside it. When this row IS that request, it stands in for itself: without
-  // that, a result rendered before the store resolved the pair lost its subagent
-  // card, its diff and its file path all at once.
-  const spanSides = span.request
-    ? span
-    : {
-        ...span,
-        request: own.role === 'request'
-          ? parsed
-          : undefined,
-      }
   // The span's tool name is ONE fact, and either side may be the one that knows
   // it: a result row takes its tool name from the span column, and a row rendered
   // without one would otherwise report no tool at all.
-  // Canonicalized, because `claudeToolRowHidden` states "canonical names only"
-  // and the worker's `span_type` column carries the RAW name. No alias maps onto a
-  // hidden tool today, but one added later would make the two sides of a span
-  // disagree about whether the other draws, and the pair would render blank.
+  // Canonicalized as the row's own name is, because the worker's `span_type` column
+  // carries the RAW name: the request side then reads the same tool as this row.
   const spanTool = canonicalClaudeToolName(spanType || own.toolName)
   // A sibling belongs to THIS call only when its tool-use id says so: one turn
   // can carry several parallel calls, and a request with another id is not ours.
   const sideRow = (side: ParsedMessageContent | undefined): ClaudeToolRow | null => {
     const row = side
-      ? claudeToolRow(side, spanTool, spanSides)
+      ? claudeToolRow(side, spanTool, span)
       : null
     return row && row.id === own.id
       ? row
       : null
   }
-  // A side whose row is HIDDEN draws nothing beside this one, so it must not
-  // suppress this row's own header or request body -- and a side from ANOTHER
-  // call is no side of this one at all.
-  const requestSide = sideRow(spanSides.request)
-  const resultSide = sideRow(span.result)
+  // A RESULT row carries no arguments of its own, so the call reads them from the
+  // request of its span. A request from ANOTHER call is no side of this one at all.
+  const requestSide = sideRow(span.request)
   const argsRow = requestSide ?? own
-  const resultRow = resultSide ?? (own.role === 'result'
+  // Only a result row holds a result. A request row never reads its result: it shows
+  // and reports its height before the result exists (see ToolSpanContext).
+  const resultRow = own.role === 'result'
     ? own
-    : undefined)
+    : undefined
   const context: ClaudeRowContext = {
-    // The MATCHED side, not `sides.result`: the rule `sideRow` states applies here
-    // too, and reading the raw side skipped the tool-use id test. `claudeToolRow`
-    // also declines a block whose id is empty, which the raw read admitted. Each
-    // optional half rides only when this row carries it.
-    ...(resultSide?.toolUseResult !== undefined
-      ? { pairedResult: resultSide.toolUseResult }
-      : {}),
-    ...(input.todoSnapshot !== undefined
+    // The worker stores a TaskUpdate's post-update snapshot on the RESULT message, so
+    // only the result row carries it, and only the result row can miss it.
+    ...(resultRow !== undefined && input.todoSnapshot !== undefined
       ? { todoSnapshot: input.todoSnapshot }
       : {}),
-    ...(input.todoSnapshotDiagnostic !== undefined
+    ...(resultRow !== undefined && input.todoSnapshotDiagnostic !== undefined
       ? { todoSnapshotDiagnostic: input.todoSnapshotDiagnostic }
       : {}),
     ...(completion !== undefined
       ? { completion }
       : {}),
   }
-  if (claudeTaskGetUnresolved(argsRow, resultRow, context))
-    return { kind: 'hidden' }
   const call = claudeToolCall(argsRow, resultRow, context)
-  // A Claude tool whose own row the transcript HIDES states no sibling for that side,
-  // because the sibling the flag promises is never drawn.
-  return toolCallRow(call, own.role, {
-    request: span.visibleRows.request && !!requestSide && !claudeToolRowHidden(spanTool, 'request'),
-    result: span.visibleRows.result && !!resultSide && !claudeToolRowHidden(spanTool, 'result'),
+  // A turn that ended while the call ran stores the `tool_use` frame AGAIN as the closing
+  // row: that copy holds no result, and it is the span's result side, which states how
+  // the call ended (see claudeSpanRole).
+  const rowRole = own.role === 'request' && retainedRowIsFinal(completion)
+    ? 'result'
+    : own.role
+  // A request of another call is no request row of this one. The list counts no request
+  // row for a request that the transcript hides (see listedRequestSpanKeys in chatEntryCache),
+  // so this row then draws the request side itself.
+  return toolCallRow(call, rowRole, {
+    request: span.visibleRows.request && !!requestSide,
   })
 }

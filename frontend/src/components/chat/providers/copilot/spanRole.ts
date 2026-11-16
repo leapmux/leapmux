@@ -1,8 +1,7 @@
 import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import { COPILOT_EVENT } from '~/generated/contracts/copilot-protocol'
 import { retainedRowIsFinal } from '../registry'
-import { copilotToolRow } from './extractors/toolCall'
-import { copilotEvent } from './protocol'
+import { copilotEvent, copilotEventData } from './protocol'
 
 /**
  * The `tool.execution_start` row opens a span; its completion closes it.
@@ -24,14 +23,11 @@ export function copilotSpanRole(parsed: ResolvedMessageContent) {
   }
 }
 
-export function copilotRelatedMessages(parsed: ResolvedMessageContent) {
-  const role = copilotSpanRole(parsed)
-  if (role === 'result')
-    return ['request'] as const
-  if (role !== 'request')
-    return []
-  const row = copilotToolRow(parsed.parentObject)
-  return row && (row.kind === 'agent' || Object.keys(row.input).length === 0)
-    ? ['result'] as const
-    : []
+/**
+ * Whether one row draws from its span's request: a `tool.execution_complete` event
+ * states neither the tool's name nor its arguments, so it reads them off the start. A
+ * start row, also one that a stopped turn retained, reads its own event.
+ */
+export function copilotNeedsRequest(parsed: ResolvedMessageContent): boolean {
+  return copilotEventData(parsed.parentObject, COPILOT_EVENT.ToolCompleted) !== null
 }

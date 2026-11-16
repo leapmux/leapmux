@@ -1,9 +1,9 @@
 import type { JSX } from 'solid-js'
-import type { MessageContentRenderContext } from '../../messageContentRenderer'
+import type { MessageContentRenderContext } from '~/test-support/messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '~/lib/jsonPick'
-import { renderMessageContent } from '../../messageContentRenderer'
+import { renderListedMessageContent } from '~/test-support/messageContentRenderer'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 // Side-effect: the helper dispatches through the registry, so the plugin must be in it.
@@ -12,7 +12,7 @@ import './plugin'
 /**
  * One ZCode row, drawn through the dispatcher the way a mounted row is.
  *
- * Through `renderMessageContent`, not a provider component: the dispatcher is what
+ * Through `renderListedMessageContent`, not a provider component: the dispatcher is what
  * resolves the extraction and wraps it in the shared completion chrome, so a test that
  * reached past it could pass while the mounted row drew something else.
  *
@@ -33,7 +33,10 @@ export function ZCodeRowView(props: { parsed: unknown, context?: MessageContentR
         : {}),
     })
   }
-  return <>{renderMessageContent(props.parsed, props.context, category(), AgentProvider.ZCODE)}</>
+  // A row of a call that runs draws with the pending row below it, which states what the
+  // call asks until the result row takes its place, as the list draws them. A result
+  // row draws no pending row.
+  return <>{renderListedMessageContent(props.parsed, props.context, category(), AgentProvider.ZCODE)}</>
 }
 
 /** Render one ZCode row and return the testing-library handle. */

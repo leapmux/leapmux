@@ -4,11 +4,11 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { copilotToolComplete, copilotToolStart } from '~/test-support/copilotFixtures'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { renderMessageContent } from '~/test-support/messageContentRenderer'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
 import { pngBase64 } from '~/test-support/pngFixture'
 import { providerRowImages } from '~/test-support/toolCallFixture'
-import { renderMessageContent } from '../messageContentRenderer'
 import { providerFor } from './registry'
 import { input } from './testUtils'
 import './index'
@@ -307,7 +307,6 @@ describe.each([
       renderMessageContent(start.parentObject, {
         sources: testMessageSources({
           current: () => start,
-          result: () => parsed,
         }),
       }, plugin?.transcript.classify(start), provider),
       renderMessageContent(end, {
@@ -321,14 +320,15 @@ describe.each([
     expect(container.querySelector('strong')?.textContent).toBe('body')
     expect(container.textContent).toContain('native args')
     expect(container.querySelector('img')?.getAttribute('src')).toContain(imageData)
+    // The result row reads its own supplement, which carries the stored record.
     expect(providerRowImages(provider, end, {
       category,
       request: start,
+      supplementalContent: parsed.supplementalContent,
       span: {
         request: start,
-        result: parsed,
         role: 'result',
-        visibleRows: { request: true, result: true },
+        visibleRows: { request: true },
       },
     }).map(item => item.data)).toEqual([imageData])
     if (provider === AgentProvider.CURSOR)

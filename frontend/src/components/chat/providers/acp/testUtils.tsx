@@ -1,12 +1,17 @@
 import type { AttachmentCapabilities } from '../registry'
 import type { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { ParsedMessageContent } from '~/lib/messageParser'
 import { render } from '@solidjs/testing-library'
-import { expect, it } from 'vitest'
+import { describe, expect, it } from 'vitest'
+import { isFinishedToolCallStatus } from '~/components/chat/model/toolCallStatus'
+import { ACP_SUPPLEMENT_IDENTITY } from '~/generated/contracts/acp-protocol'
 import { assembledMessageRow } from '~/test-support/assembledMessages'
+import { renderMessageContent } from '~/test-support/messageContentRenderer'
 import { testMessageSources } from '~/test-support/messageRenderSources'
+import { providerToolCall } from '~/test-support/toolCallFixture'
 import { classifyMessage } from '../../messageClassifier'
-import { renderMessageContent } from '../../messageContentRenderer'
-import { providerFor } from '../registry'
+import { extractChatRow, extractedRow } from '../../rowExtraction'
+import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
 
 /** Verify the common Agent Client Protocol classification and attachment contract. */
@@ -32,9 +37,8 @@ export function describeACPProviderBasics(provider: AgentProvider, attachments: 
       category: { kind: expected },
       span: {
         request: undefined,
-        result: undefined,
         role: 'other',
-        visibleRows: { request: false, result: false },
+        visibleRows: { request: false },
       },
     })).toBeNull()
   })
@@ -78,16 +82,28 @@ export function renderACPToolPair(provider: AgentProvider, request: Record<strin
   // `fn` once and inserts the result, so a bare call freezes the row at its first
   // payload. The JSX compiler wraps an expression inside a fragment in a memo, which is
   // the reactive shape `MessageBubble` gives the dispatcher in production.
+  // The request row heads itself with the newest call of its span, the result row's call,
+  // as `MessageBubble` heads it (see ToolMessage). The rest of the row is its own frame.
+  const resultRow = extractedRow(extractChatRow(provider, parsed, plugin.transcript.classify(parsed), {
+    span: {
+      request: input(start),
+      role: 'result',
+      visibleRows: { request: hasRequestRow },
+    },
+  }))
+  const toolHeader = resultRow?.kind === 'tool' && resultRow.role === 'result'
+    ? resultRow.call
+    : undefined
   return render(() => [
     Object.keys(request).length > 0 && (
       <>
         {renderMessageContent(start, {
           premeasureMode: true,
+          toolHeader,
           sources: testMessageSources({
             current: () => input(start),
-            result: () => parsed,
             role: () => 'request',
-            visibleRows: () => ({ request: hasRequestRow, result: true }),
+            visibleRows: () => ({ request: hasRequestRow }),
           }),
         }, plugin?.transcript.classify(input(start)), provider)}
       </>
@@ -99,7 +115,7 @@ export function renderACPToolPair(provider: AgentProvider, request: Record<strin
           current: () => parsed,
           request: () => input(start),
           role: () => 'result',
-          visibleRows: () => ({ request: hasRequestRow, result: true }),
+          visibleRows: () => ({ request: hasRequestRow }),
         }),
       }, plugin?.transcript.classify(parsed), provider)}
     </>,
@@ -126,4 +142,96 @@ export function acpTextContent(text: string) {
       content: { type: 'text', text },
     },
   ]
+}
+
+/**
+ * One call whose RESULT states a fact that its request does not, read as the two rows
+ * that the transcript draws for it.
+ *
+ * Each supplement takes the identity of its own frame (the session update, the call id
+ * and the status), which the identity gate of a supplement requires.
+ */
+export interface ACPCallRowsCase {
+  /** What the case shows, for the test titles. */
+  name: string
+  /** The frame that opens the call. */
+  request: Record<string, unknown>
+  /** The supplement that the worker stored beside the request, if any. */
+  requestSupplement?: Record<string, unknown>
+  /** The frame that closes the call. */
+  result: Record<string, unknown>
+  /** The supplement that the worker stored beside the result, if any. */
+  resultSupplement?: Record<string, unknown>
+  /** What the request row's call states, from its own frame alone. */
+  requestCall: Record<string, unknown>
+  /** What the result row's call states, from its own frame plus the request. */
+  resultCall: Record<string, unknown>
+}
+
+/** One stored row of a case: the frame, plus its supplement under the frame's identity. */
+function storedACPRow(frame: Record<string, unknown>, supplement: Record<string, unknown> | undefined): ParsedMessageContent {
+  const identity = Object.fromEntries(Object.values(ACP_SUPPLEMENT_IDENTITY)
+    .filter(key => Object.hasOwn(frame, key))
+    .map(key => [key, frame[key]]))
+  return {
+    rawText: '',
+    topLevel: frame,
+    parentObject: frame,
+    wrapper: null,
+    ...(supplement === undefined
+      ? {}
+      : {
+          supplementalContent: {
+            ...identity,
+            ...supplement,
+          },
+        }),
+  }
+}
+
+/**
+ * Verify that one provider builds each row of a call from what the row may read.
+ *
+ * - The request row reads its own frame alone. Its call holds no result and no
+ *   finished status, and it needs no other message of its span.
+ * - The result row reads its own frame plus the request, so its call carries the whole
+ *   call, also each fact that only the result states.
+ */
+export function describeACPCallRows(provider: AgentProvider, cases: readonly ACPCallRowsCase[]): void {
+  describe('the request and result rows of one call', () => {
+    it.each(cases)('asks for the request on the result row alone: $name', (rows) => {
+      const plugin = providerFor(provider)!
+      const request = resolveMessageForRendering(storedACPRow(rows.request, rows.requestSupplement), provider)
+      const result = resolveMessageForRendering(storedACPRow(rows.result, rows.resultSupplement), provider)
+      expect(plugin.transcript.needsRequest?.(request)).toBe(false)
+      expect(plugin.transcript.needsRequest?.(result)).toBe(true)
+    })
+
+    it.each(cases)('builds the request row from its own frame, with no result: $name', (rows) => {
+      const stored = storedACPRow(rows.request, rows.requestSupplement)
+      const call = providerToolCall(provider, rows.request, {
+        role: 'request',
+        request: stored,
+        ...(stored.supplementalContent === undefined
+          ? {}
+          : { supplementalContent: stored.supplementalContent }),
+      })
+      expect(call).not.toBeNull()
+      expect(call?.result).toBeUndefined()
+      expect(call && isFinishedToolCallStatus(call.status)).toBe(false)
+      expect(call).toMatchObject(rows.requestCall)
+    })
+
+    it.each(cases)('builds the whole call on the result row: $name', (rows) => {
+      const stored = storedACPRow(rows.result, rows.resultSupplement)
+      const call = providerToolCall(provider, rows.result, {
+        role: 'result',
+        request: storedACPRow(rows.request, rows.requestSupplement),
+        ...(stored.supplementalContent === undefined
+          ? {}
+          : { supplementalContent: stored.supplementalContent }),
+      })
+      expect(call).toMatchObject(rows.resultCall)
+    })
+  })
 }

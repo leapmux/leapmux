@@ -1,7 +1,6 @@
 import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import type { ToolSpanRole } from '~/lib/messageSpan'
-import { KIMI_EVENT, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
-import { pickObject, pickString } from '~/lib/jsonPick'
+import { KIMI_EVENT } from '~/generated/contracts/kimi-protocol'
 import { retainedRowIsFinal } from '../registry'
 import { kimiEvent } from './protocol'
 
@@ -25,22 +24,10 @@ export function kimiSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
 }
 
 /**
- * The rows one tool row needs beside it.
- *
- * A result states no tool name and no arguments, so it needs its request. A subagent
- * launch needs its result, which carries the run the card reports, and so does a call
- * whose arguments state nothing to show.
+ * Whether one row draws from its span's request: a `tool.result` states no tool name,
+ * no arguments and no display, so it reads them from the paired `tool.call.started`. A
+ * start frame, also one that a stopped turn retained, states its own.
  */
-export function kimiRelatedMessages(parsed: ResolvedMessageContent) {
-  const role = kimiSpanRole(parsed)
-  if (role === 'result')
-    return ['request'] as const
-  if (role !== 'request')
-    return []
-  const start = kimiEvent(parsed.parentObject)?.data
-  const name = pickString(start, 'name')
-  const args = pickObject(start, 'args') ?? {}
-  return name === KIMI_TOOL.Agent || name === KIMI_TOOL.AgentSwarm || Object.keys(args).length === 0
-    ? ['result'] as const
-    : []
+export function kimiNeedsRequest(parsed: ResolvedMessageContent): boolean {
+  return kimiEvent(parsed.parentObject)?.type === KIMI_EVENT.ToolResult
 }

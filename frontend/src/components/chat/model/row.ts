@@ -14,41 +14,61 @@ export interface UserMessageAttachment {
 export type ToolSpanRowRole = 'request' | 'update' | 'result'
 
 /**
- * Where one row sits in its span, and which SIBLING rows the transcript draws beside it.
+ * Where one row sits in its span, and whether the transcript draws the span's REQUEST
+ * as a row beside it.
  *
- * A row is never its own sibling, so each role states only the siblings it can have:
- * the request is its own row, and the result is its own row. Writing the union
- * this way is what makes `{ role: 'request', hasRequestRow: true }` -- a row that
- * claims to sit beside itself -- impossible to spell. A reader still asks for either
+ * A row knows nothing about the rows that come AFTER it in its span. A request row
+ * never learns whether its result exists: its height must be final when it joins the
+ * list, and a result arrives later. So no role carries a flag about the result row.
+ *
+ * A row is never its own sibling, so the request role states no request flag. Writing
+ * the union this way makes `{ role: 'request', hasRequestRow: true }` -- a row that
+ * claims to sit beside itself -- impossible to spell. A reader still asks for the
  * flag on any row and gets `undefined`, which is falsy, where the role rules it out.
  */
 export type ToolSpanRowPosition
-  = | { role: 'request', hasRequestRow?: false, hasResultRow: boolean }
-    | { role: 'update', hasRequestRow: boolean, hasResultRow: boolean }
-    | { role: 'result', hasRequestRow: boolean, hasResultRow?: false }
+  = | { role: 'request', hasRequestRow?: false }
+    | { role: 'update', hasRequestRow: boolean }
+    | {
+      role: 'result'
+      hasRequestRow: boolean
+      /**
+       * The request row beside this one states no input -- its message omitted it --
+       * and only this row's own message recovers it. So this row draws the request side
+       * too, under the header of the request row beside it (see rowDrawsRequest).
+       */
+      restatesRequest?: boolean
+    }
 
-/** What the transcript draws for one tool SPAN, whichever row the extraction builds. */
+/**
+ * What the transcript draws for the REQUEST of one tool span, whichever row the
+ * extraction builds.
+ *
+ * It states nothing about the result. A row reads only its own message and the
+ * EARLIER request of its span (see ToolSpanContext).
+ */
 export interface ToolSpanRowPresence {
   /** The span states a request, and the transcript draws it as its own row. */
   request: boolean
-  /** The span states a result, and the transcript draws it as its own row. */
-  result: boolean
 }
 
-/** One tool row as ONE merged call, plus where this row sits in the span. */
+/** One tool row as ONE call, plus where this row sits in the span. */
 export type ToolCallRow = {
   kind: 'tool'
-  /** The call, built from every side the store resolved for this span. */
+  /**
+   * The call, built from this row's own message and the earlier request of its span.
+   * A request row's call holds no result: no input of the extraction carries one.
+   */
   call: ToolCall
 } & ToolSpanRowPosition
 
 /**
  * Build one tool row from what the SPAN holds.
  *
- * Six providers each restated `!!side && role !== 'request'` to fill the two flags.
- * The rule is one rule -- a row is never its own sibling -- so it belongs here: a
- * provider that restated it wrongly drew a result row with its own header suppressed
- * and no request row beside it to carry one, and nothing failed.
+ * Six providers each restated `!!side && role !== 'request'` to fill the flag. The
+ * rule is one rule -- a row is never its own sibling -- so it belongs here: a provider
+ * that restated it wrongly drew a result row with its own header suppressed and no
+ * request row beside it to carry one, and nothing failed.
  */
 export function toolCallRow(call: ToolCall, role: ToolSpanRowRole, span: ToolSpanRowPresence): ToolCallRow {
   switch (role) {
@@ -57,22 +77,14 @@ export function toolCallRow(call: ToolCall, role: ToolSpanRowRole, span: ToolSpa
         kind: 'tool',
         call,
         role,
-        hasResultRow: span.result,
       }
+    case 'update':
     case 'result':
       return {
         kind: 'tool',
         call,
         role,
         hasRequestRow: span.request,
-      }
-    default:
-      return {
-        kind: 'tool',
-        call,
-        role,
-        hasRequestRow: span.request,
-        hasResultRow: span.result,
       }
   }
 }

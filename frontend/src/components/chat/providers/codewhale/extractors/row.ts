@@ -38,7 +38,7 @@ export function codewhaleExtractRow(input: RowExtractionInput): ChatRow | null {
 }
 
 /**
- * Resolve the current row and its paired rows into one Codewhale tool call.
+ * Resolve the current row and the span's request into one Codewhale tool call.
  *
  * Every row that reaches here draws. The rows that draw nothing are the
  * classifier's to hide (see `codewhaleFrameDrawsNothing`), because an emptied row
@@ -54,7 +54,7 @@ function codewhaleToolSpanRow(input: RowExtractionInput): ChatRow | null {
   const parsed = input.completion !== undefined
     ? { ...resolved, completion: input.completion }
     : resolved
-  const call = codewhaleToolCall(own, { request: span.request, result: span.result }, parsed, spanType)
+  const call = codewhaleToolCall(own, span.request, parsed, spanType)
   const role: ToolSpanRowRole = codewhaleToolSpanRole(own, parsed) === 'result'
     ? 'result'
     : 'request'

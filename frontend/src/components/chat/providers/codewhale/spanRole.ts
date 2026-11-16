@@ -16,19 +16,18 @@ export function codewhaleSpanRole(parsed: ResolvedMessageContent): ToolSpanRole 
 }
 
 /**
- * The linked rows one tool row needs.
+ * Whether one row draws from its span's request.
  *
- * A result row needs its request, because a subagent's result block states neither
- * the tool nor its arguments. A request row needs its result for two reasons: the row
- * draws the whole call, and the FIRST call of a deferred tool is one the runtime never
- * ran. Only its result says so: the classifier hides that result row, and the request
- * row states the call with the runtime's own words.
+ * A subagent's result block states neither the tool nor its arguments, so its row
+ * reads them from the `tool_use` block. A final item states the tool, and it repeats
+ * the arguments as a JSON string, so its row needs the request only when that string
+ * states none. A request row never needs anything beside itself, and neither does an
+ * OPENING frame that a turn's end retained as the final row: its row reads its own
+ * frame as the request (see codewhaleToolFacts), also for a tool that takes no argument.
  */
-export function codewhaleRelatedMessages(parsed: ResolvedMessageContent) {
-  const role = codewhaleSpanRole(parsed)
-  if (role === 'result')
-    return ['request'] as const
-  return role === 'request'
-    ? ['result'] as const
-    : []
+export function codewhaleNeedsRequest(parsed: ResolvedMessageContent): boolean {
+  const frame = codewhaleToolFrame(parsed.parentObject)
+  if (!frame || frame.outcome === 'open' || codewhaleToolSpanRole(frame, parsed) !== 'result')
+    return false
+  return !frame.toolName || Object.keys(frame.input).length === 0
 }

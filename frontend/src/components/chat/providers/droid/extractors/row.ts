@@ -1,6 +1,9 @@
 import type { CommandResult } from '../../../model/commandResult'
 import type { McpContentItem } from '../../../model/mcpToolCall'
 import type { ChatRow } from '../../../model/row'
+import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { ToolKind } from '../../../model/toolKind'
+import type { ToolRequestByKind } from '../../../model/tools'
 import type { RowExtractionInput } from '~/components/chat/rowExtractionTypes'
 import { DROID_NOTIFICATION_FIELD } from '~/generated/contracts/droid-protocol'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
@@ -8,6 +11,7 @@ import { leapmuxUserRow } from '../../../leapmuxRows'
 import { createToolCall } from '../../../model/createToolCall'
 import { parseMcpContentItem } from '../../../model/mcpToolCall'
 import { toolCallRow } from '../../../model/row'
+import { failedResult, isGenericKind, unparsedResult } from '../../../model/toolCall'
 import { rawTodosToItems } from '../../../normalizers/todo'
 import { toolRequestFor } from '../../defaultToolRequests'
 import { retainedOutcome, retainedRowIsFinal } from '../../registry'
@@ -39,23 +43,33 @@ export function droidExtractRow(input: RowExtractionInput): ChatRow | null {
   }
 }
 
-/** The lifecycle every Droid tool row shares. */
+/**
+ * The lifecycle every Droid tool row shares. `rowFinal` states whether the row is the
+ * final row of its span (see droidToolRow).
+ */
 function droidLifecycle(
   completion: RowExtractionInput['resolved']['completion'],
   isError: boolean,
-  isResult: boolean,
+  rowFinal: boolean,
   hasResultContent: boolean,
 ) {
   return {
     frameStatus: 'unstated' as const,
     providerOutcome: isError ? ('failed' as const) : null,
     retainedOutcome: retainedOutcome(completion),
-    rowFinal: isResult || retainedRowIsFinal(completion),
+    rowFinal,
     resultFrameLanded: hasResultContent,
   }
 }
 
-/** The row one tool call becomes, with both span sides resolved. */
+/**
+ * The row one tool call becomes, from its own notification and the earlier request.
+ *
+ * A request row reads its own notification only. A result row reads the name and the
+ * arguments of its request when its own notification omits them. Both rows carry the
+ * kind that the tool declares and the request that its arguments state, so the header
+ * reads the same on both. Only the result row carries the result.
+ */
 function droidToolRow(
   payload: Record<string, unknown> | null | undefined,
   span: RowExtractionInput['span'],
@@ -84,84 +98,106 @@ function droidToolRow(
     : undefined) ?? {}
   const isError = Boolean(payload[DROID_NOTIFICATION_FIELD.IsError])
   const content = payload[DROID_NOTIFICATION_FIELD.Content]
-  const resultContent = droidResultContent(content)
+  // A request notification states no content, and a request row never carries a result.
+  // An empty content is still a result. A result with retained finality and no content
+  // has none.
+  const resultContent = isResult && content !== undefined
+    ? droidResultContent(content)
+    : undefined
 
+  // A call that states no arguments keeps the generic card: the declared kind has
+  // nothing to read.
   const declared = droidToolKind(name)
-  const kind = declared === 'unspecified'
+  const kind = declared === 'unspecified' || Object.keys(args).length === 0
     ? 'other'
     : declared
-  const lifecycle = droidLifecycle(completion, isError, isResult, content !== undefined)
-  const envelope = { id, name, lifecycle }
-  // The request row draws a file diff. The result row keeps its outcome as prose.
-  const hasInput = Object.keys(args).length > 0
+  // A `tool_call` notification that LeapMux stored with a completion is the final row
+  // of its span (see retainedRowIsFinal), as for every provider. The Droid Worker stores
+  // each `tool_call` once with no completion today; this keeps a stored completion from
+  // leaving an open request row with a pending row that never leaves.
+  const rowFinal = isResult || retainedRowIsFinal(completion)
+  const call = createToolCall({
+    id,
+    name,
+    lifecycle: droidLifecycle(completion, isError, rowFinal, resultContent !== undefined),
+  }, {
+    kind,
+    name,
+    request: droidRequest(kind, args),
+    ...(resultContent === undefined
+      ? {}
+      : droidResult(kind, resultContent, isError)),
+  })
+  return toolCallRow(call, rowFinal
+    ? 'result'
+    : 'request', span.visibleRows)
+}
 
-  // A file-change request with arguments draws its diff.
-  // createToolCall degrades a file-change call with an empty filePath, so that call draws no diff.
-  if ((kind === 'edit' || kind === 'write') && hasInput && !isResult) {
-    const change = {
-      filePath: (pickString(args, 'file_path') || pickString(args, 'path') || 'file').trim() || 'file',
-      oldStr: pickString(args, 'old_string') || pickString(args, 'old_str'),
-      newStr: pickString(args, 'new_string') || pickString(args, 'new_str') || pickString(args, 'content'),
-    }
-    const call = createToolCall(envelope, {
-      kind,
-      name,
-      request: {
-        changes: [change],
-      },
-      ...(content !== undefined
-        ? {
-            result: {
-              changes: [change],
-            },
-          }
-        : {}),
-    })
-    return toolCallRow(call, 'request', span.visibleRows)
+/** The request that a call's arguments state for its kind. */
+function droidRequest(kind: ToolKind, args: Record<string, unknown>): ToolRequestByKind[ToolKind] {
+  switch (kind) {
+    case 'edit':
+    case 'write':
+      // createToolCall degrades a file-change call with an empty filePath, so the
+      // change states a placeholder file when the arguments state none.
+      return {
+        changes: [
+          {
+            filePath: (pickString(args, 'file_path') || pickString(args, 'path') || 'file').trim() || 'file',
+            oldStr: pickString(args, 'old_string') || pickString(args, 'old_str'),
+            newStr: pickString(args, 'new_string') || pickString(args, 'new_str') || pickString(args, 'content'),
+          },
+        ],
+      }
+    case 'todo':
+      return {
+        items: rawTodosToItems(args.todos),
+      }
+    default:
+      return toolRequestFor(kind, args, {}, {})
   }
+}
 
-  // A command result states how the command ended, which only the command body draws.
-  const commandText = kind === 'execute' && hasInput && isResult && content !== undefined
-    ? droidCommandText(resultContent)
+/**
+ * The result of one call from the native content of its result notification.
+ *
+ * - A command whose content is text alone draws the command result: its output and
+ *   the code of its native trailer.
+ * - The generic card keeps the native content blocks as they are.
+ * - Every other kind keeps the native text as unparsed text. Content that holds any
+ *   block but text, such as a picture, stays in its native order beside the call.
+ */
+function droidResult(kind: ToolKind, content: McpContentItem[], isError: boolean): Pick<ToolCallSpecVariant<ToolKind>, 'result' | 'extraContent'> {
+  const commandText = kind === 'execute'
+    ? droidContentText(content)
     : undefined
   if (commandText !== undefined) {
-    const call = createToolCall(envelope, {
-      kind: 'execute',
-      name,
-      request: toolRequestFor('execute', args, {}, {}),
+    return {
       result: {
         commands: [
           droidCommandResult(commandText),
         ],
         unresolvedTerminals: [],
       },
-    })
-    return toolCallRow(call, 'result', span.visibleRows)
+    }
   }
-
-  // Other result rows keep the generic card because their request row already shows the typed input.
-  // A request row receives the typed request for its declared kind.
-  const requestKind = hasInput && !isResult
-    ? kind
-    : 'other'
-  const request = requestKind === 'todo'
-    ? {
-        items: rawTodosToItems(args.todos),
-      }
-    : toolRequestFor(requestKind, args, {}, {})
-  const call = createToolCall(envelope, {
-    kind: requestKind,
-    name,
-    request,
-    // Retained finality supplies no native result content.
-    // Keep an actual empty result, and keep absent content absent.
-    ...(content !== undefined
-      ? {
-          result: { content: resultContent },
-        }
+  if (isGenericKind(kind)) {
+    return {
+      result: { content },
+    }
+  }
+  const ordered = content.some(item => item.type !== 'text')
+  const text = ordered
+    ? ''
+    : droidContentText(content) ?? ''
+  return {
+    result: isError
+      ? failedResult(text)
+      : unparsedResult(text),
+    ...(ordered
+      ? { extraContent: content }
       : {}),
-  })
-  return toolCallRow(call, isResult ? 'result' : 'request', span.visibleRows)
+  }
 }
 
 /**
@@ -170,8 +206,8 @@ function droidToolRow(
  */
 const DROID_EXIT_TRAILER = /\[Process exited with code (-?\d+)\]\s*$/
 
-/** The text of a command result, or undefined for a result that holds anything but text. */
-function droidCommandText(content: readonly McpContentItem[]): string | undefined {
+/** The text of a result, or undefined for a result that holds anything but text. */
+function droidContentText(content: readonly McpContentItem[]): string | undefined {
   let text = ''
   for (const item of content) {
     if (item.type !== 'text')

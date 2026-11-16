@@ -6,10 +6,10 @@ import { MESSAGE_METADATA_FIELD, TOOL_OUTCOME } from '~/generated/contracts/work
 import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { renderListedMessageContent, renderMessageContent } from '~/test-support/messageContentRenderer'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { providerToolMeta } from '~/test-support/toolCallFixture'
 import { diffAdded } from '../../diff/diffStyles.css'
-import { renderMessageContent } from '../../messageContentRenderer'
 import { COLLAPSED_RESULT_ROWS } from '../../results/collapse'
 import { toolOutcomeLabel } from '../../results/toolOutcomeLabel'
 import { toolInputPath, toolResultCollapsed } from '../../toolStyles.css'
@@ -26,9 +26,10 @@ function event(kind: string, fields: Record<string, unknown>) {
   }
 }
 
+// The request row and, while the call runs, the pending row below it, as the list draws them.
 function renderRequest(toolName: string, args: Record<string, unknown>) {
   const request = event('scheduled', { toolName, input: args })
-  return render(() => renderMessageContent(request, { workingDir: '/project', premeasureMode: true }, provider().transcript.classify(input(request)), AgentProvider.ZCODE))
+  return render(() => renderListedMessageContent(request, { workingDir: '/project', premeasureMode: true }, provider().transcript.classify(input(request)), AgentProvider.ZCODE))
 }
 
 it('renders the ZCode plan in the transcript through the shared plan layout', async () => {

@@ -10,7 +10,7 @@ import { copilotExtractRow } from './extractors/row'
 import { copilotControls } from './pluginControls'
 import { resolveCopilotMessage } from './resolveMessage'
 import { copilotContextUsage } from './sessionMetadata'
-import { copilotRelatedMessages, copilotSpanRole } from './spanRole'
+import { copilotNeedsRequest, copilotSpanRole } from './spanRole'
 
 const copilotPlugin: ProviderPlugin = {
   transcript: {
@@ -19,7 +19,7 @@ const copilotPlugin: ProviderPlugin = {
     classify: classifyCopilotMessage,
     extractRow: copilotExtractRow,
     spanRole: copilotSpanRole,
-    relatedMessages: copilotRelatedMessages,
+    needsRequest: copilotNeedsRequest,
     extractDivider: copilotResultDivider,
     notificationEntry: copilotNotificationEntry,
     compactionStart: copilotCompactionStart,

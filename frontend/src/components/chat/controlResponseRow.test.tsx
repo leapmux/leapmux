@@ -4,7 +4,7 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
-import { renderMessageContent } from './messageContentRenderer'
+import { renderMessageContent } from '~/test-support/messageContentRenderer'
 import { renderControlResponseRow } from './messageRenderers'
 import { resolveControlResponseSummary } from './persistedControlResponse'
 // Register provider plugins so renderMessageContent can resolve a plugin's controlResponseDisplay.

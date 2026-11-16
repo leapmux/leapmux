@@ -36,17 +36,20 @@ export function codexSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
     : 'other'
 }
 
-export function codexRelatedMessages(parsed: ResolvedMessageContent) {
+/**
+ * Whether one row draws from its span's request. Two rows do:
+ * - The output of a native code cell states no script source, so it reads the source
+ *   from its request.
+ * - A finished collaboration call can state an empty tool, prompt, model, effort or
+ *   target list, so it reads them from its request.
+ *
+ * Every other row reads its own item: a typed item states its arguments in every frame
+ * of its span. A request row reads its own frame.
+ */
+export function codexNeedsRequest(parsed: ResolvedMessageContent): boolean {
   const executionRole = codexRawExecRole(parsed.parentObject)
-  if (executionRole) {
+  if (executionRole)
     return executionRole === 'result'
-      ? ['request'] as const
-      : ['result'] as const
-  }
-  const item = extractItem(parsed.parentObject)
-  if (item?.type === CODEX_ITEM.ImageView || item?.type === CODEX_ITEM.CollabAgentToolCall)
-    return ['request', 'result'] as const
-  return (item?.type === CODEX_ITEM.McpToolCall || item?.type === CODEX_ITEM.DynamicToolCall) && codexSpanRole(parsed) === 'result'
-    ? ['request'] as const
-    : []
+  return extractItem(parsed.parentObject)?.type === CODEX_ITEM.CollabAgentToolCall
+    && codexSpanRole(parsed) === 'result'
 }

@@ -256,7 +256,7 @@ export function cursorStoredRestore(facts: ACPToolFacts): CursorStoredRestore | 
   if (name === 'Task') {
     return {
       ...restore,
-      payload: cursorAgentCall(facts, args, native, output),
+      payload: cursorAgentCall(facts, args, { native, nativeReport: output }),
     }
   }
   if (name.startsWith('mcp_')) {

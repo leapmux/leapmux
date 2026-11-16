@@ -35,8 +35,7 @@ import { mimoToolFinished, mimoToolImages } from './toolCommon'
  * Everything one MiMo call states, collected once before any reader runs.
  *
  * MiMo writes the complete call state on each part update.
- * The row uses its paired final result when that result exists.
- * Otherwise, the row uses its own frame.
+ * The row uses its own frame alone, so an opening row states no answer.
  * The request uses the same frame because each frame states the input.
  */
 export interface MiMoToolFacts {
@@ -69,8 +68,6 @@ export interface MiMoToolRow {
   /** The row's own tool part. */
   own: MiMoToolPart
   registryKey?: string
-  /** The final frame of the same call, when the span holds one beside this row. */
-  result?: MiMoToolPart
   /** LeapMux's own reading of how the row ended. */
   completion?: MessageCompletion
   /** True when this row is the last one of its call. */
@@ -79,10 +76,8 @@ export interface MiMoToolRow {
 
 /** One MiMo tool call, as the kind-discriminated pair. */
 export function mimoToolCall(row: MiMoToolRow): ToolCall {
-  const part = row.result && mimoToolFinished(row.result)
-    ? row.result
-    : row.own
-  const facts = mimoToolFacts(part, part === row.own && retainedRowIsFinal(row.completion), row.registryKey)
+  const part = row.own
+  const facts = mimoToolFacts(part, retainedRowIsFinal(row.completion), row.registryKey)
   const envelope: ToolCallEnvelope = {
     id: part.partId,
     name: part.tool,

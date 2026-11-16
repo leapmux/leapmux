@@ -120,8 +120,13 @@ describe('goose native tools', () => {
     expect(container.textContent).not.toContain('exit')
   })
 
+  // The Worker stores each tool request of a subagent in the child transcript as a row of
+  // no span, and Goose ships no result for it. So the row is its whole call: no pending
+  // row follows it, and it draws the requested change itself.
   it('shows a subagent edit request without claiming an applied diff', async () => {
-    const { container } = renderACPToolPair(AgentProvider.GOOSE, {}, {
+    const request = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call',
       status: 'in_progress',
       _meta: {
         toolNotification: {
@@ -138,7 +143,18 @@ describe('goose native tools', () => {
           },
         },
       },
+    }
+    const scenario = createTranscriptScenario({
+      archive: [
+        makeTranscriptMessage({
+          id: 'subagent-edit-request',
+          provider: AgentProvider.GOOSE,
+          agentSessionId: 'child-session',
+          content: request,
+        }, 1n),
+      ],
     })
+    const { container } = scenario.renderBubble('subagent-edit-request')
     await settleWorkerReplies()
     expect(container.textContent).toContain('sample.ts')
     expect(container.textContent).toContain('Requested changes')

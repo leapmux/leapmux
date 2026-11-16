@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { input } from '../testUtils'
 import { classifyCodebuddyMessage } from './classification'
-import { codebuddyRelatedMessages, codebuddySpanRole } from './spanRole'
+import { codebuddyNeedsRequest, codebuddySpanRole } from './spanRole'
 
 describe('codebuddySpanRole', () => {
   it('requests the exact live user tool-result partner for a native REPL failure', () => {
@@ -40,7 +40,8 @@ describe('codebuddySpanRole', () => {
     }, undefined, AgentProvider.CODEBUDDY)
     expect(codebuddySpanRole(request)).toBe('request')
     expect(codebuddySpanRole(result)).toBe('result')
-    expect(codebuddyRelatedMessages(result)).toEqual(['request'])
+    expect(codebuddyNeedsRequest(request)).toBe(false)
+    expect(codebuddyNeedsRequest(result)).toBe(true)
   })
 
   it.each(['', ' '])('ignores a live result with an empty native call ID: %j', (toolUseId) => {
@@ -53,7 +54,7 @@ describe('codebuddySpanRole', () => {
       },
     }, undefined, AgentProvider.CODEBUDDY)
     expect(codebuddySpanRole(result)).toBe('other')
-    expect(codebuddyRelatedMessages(result)).toEqual([])
+    expect(codebuddyNeedsRequest(result)).toBe(false)
   })
 
   it('finds a live result after ordinary text blocks and rejects ordinary user text', () => {
@@ -66,11 +67,11 @@ describe('codebuddySpanRole', () => {
         ],
       },
     }, undefined, AgentProvider.CODEBUDDY)
-    expect(codebuddyRelatedMessages(result)).toEqual(['request'])
-    expect(codebuddyRelatedMessages(input({
+    expect(codebuddyNeedsRequest(result)).toBe(true)
+    expect(codebuddyNeedsRequest(input({
       type: 'user',
       message: { content: 'ordinary' },
-    }, undefined, AgentProvider.CODEBUDDY))).toEqual([])
+    }, undefined, AgentProvider.CODEBUDDY))).toBe(false)
   })
 
   it('pairs a stored Workflow child function call with its native result', () => {
@@ -100,9 +101,43 @@ describe('codebuddySpanRole', () => {
     expect(codebuddySpanRole(output)).toBe('result')
     expect(codebuddySpanRole(progress)).toBe('other')
     expect(codebuddySpanRole(resultAlias)).toBe('result')
-    expect(codebuddyRelatedMessages(output)).toEqual(['request'])
-    expect(codebuddyRelatedMessages(progress)).toEqual([])
+    expect(codebuddyNeedsRequest(request)).toBe(false)
+    expect(codebuddyNeedsRequest(output)).toBe(true)
+    expect(codebuddyNeedsRequest(progress)).toBe(false)
     const visible = [request, progress, output].filter(row => classifyCodebuddyMessage(row).kind !== 'hidden')
     expect(visible.map(codebuddySpanRole)).toEqual(['request', 'result'])
+  })
+
+  // A stored function call that LeapMux stored with a completion is the final row of its
+  // span, as the live `tool_use` frame is. It states its own arguments.
+  it('places a stored function call stored with a completion on the result side', () => {
+    const retained = {
+      ...input({
+        type: 'function_call',
+        callId: 'retained-call',
+        name: 'Read',
+        arguments: '{"file_path":"/work/native.txt"}',
+      }, undefined, AgentProvider.CODEBUDDY),
+      completion: MessageCompletion.INTERRUPTED,
+    }
+    expect(codebuddySpanRole(retained)).toBe('result')
+    expect(codebuddyNeedsRequest(retained)).toBe(false)
+  })
+
+  // A result frame states no tool name and no arguments, whatever completion LeapMux
+  // stored with it, so it always reads its request.
+  it('needs the request for a result frame stored with a completion', () => {
+    const result = {
+      ...input({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'call', content: 'output' },
+          ],
+        },
+      }, undefined, AgentProvider.CODEBUDDY),
+      completion: MessageCompletion.INTERRUPTED,
+    }
+    expect(codebuddyNeedsRequest(result)).toBe(true)
   })
 })

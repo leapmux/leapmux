@@ -1,7 +1,22 @@
+import type { JSX } from 'solid-js'
+import type { RequestSideCall, ToolRowView } from './renderer'
 import ClipboardList from 'lucide-solid/icons/clipboard-list'
 import { Show } from 'solid-js'
 import { proseResult } from '../../model/toolCall'
 import { proseRenderer, ProseResultBody } from './proseResult'
+import { previewWithoutResult } from './renderer'
+
+/**
+ * A proposal that has NOT drawn its answer yet.
+ *
+ * `request.proposal`, not `payload.plan`: layer 3 knows no provider and parses no
+ * provider's bytes (see `results/README.md`). Reaching into the untyped payload for a
+ * key one provider happens to send put a Cursor parser in the shared renderer, where no
+ * other provider could reach it.
+ */
+function reportPreview(call: RequestSideCall<'report'>, view: ToolRowView): JSX.Element {
+  return <Show when={call.request.proposal}>{text => <ProseResultBody result={proseResult(text(), 'markdown')} view={view} />}</Show>
+}
 
 export const reportRenderer = proseRenderer<'report'>({
   icon: ClipboardList,
@@ -9,18 +24,11 @@ export const reportRenderer = proseRenderer<'report'>({
   title(call) {
     return call.title ?? 'Report'
   },
-  request(call, view) {
-    // A proposal that has NOT drawn its answer yet. The proposing row states it while
-    // the approval is open; once the result exists, the same rule the edit family
-    // follows hands the drawing to the row that completed the call.
-    //
-    // `request.proposal`, not `payload.plan`: layer 3 knows no provider and parses no
-    // provider's bytes (see `results/README.md`). Reaching into the untyped payload
-    // for a key one provider happens to send put a Cursor parser in the shared
-    // renderer, where no other provider could reach it.
-    const proposal = view.drawsResult && call.result === undefined
-      ? call.request.proposal
-      : undefined
-    return <Show when={proposal}>{text => <ProseResultBody result={proseResult(text(), 'markdown')} view={view} />}</Show>
-  },
+  // The pending row states the proposal while the approval is open; once the result
+  // exists, the row that completed the call draws the answer, as the edit family does.
+  pending: reportPreview,
+  // A call that ended with NO result -- the turn stopped it -- leaves the proposal as the
+  // one thing to read, on the row that ended it. A result of any form answers for the
+  // call instead: a declined or failed proposal states its reason, never the plan.
+  withoutTypedResult: previewWithoutResult(reportPreview),
 })

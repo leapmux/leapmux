@@ -1,4 +1,4 @@
-import type { MessageContentRenderContext } from '../../messageContentRenderer'
+import type { MessageContentRenderContext } from '~/test-support/messageContentRenderer'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -7,7 +7,7 @@ import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testImageActions } from '~/test-support/imageActions'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { pngBase64 } from '~/test-support/pngFixture'
-import { providerRowImages } from '~/test-support/toolCallFixture'
+import { providerRowImages, providerToolCall } from '~/test-support/toolCallFixture'
 import { toolOutcomeLabel } from '../../results/toolOutcomeLabel'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
@@ -127,6 +127,14 @@ describe('zcode result display hints', () => {
       },
     }
     const requestParsed = input(request)
+    // The request row reads only its own frame, which omits the input. Its one-line header
+    // draws the NEWEST call of the span, which the result row extracts, as MessageBubble
+    // hands it over.
+    const toolHeader = providerToolCall(AgentProvider.ZCODE, parsed, {
+      spanType: context.spanType,
+      supplementalContent: current.supplementalContent,
+    })
+    expect(toolHeader).not.toBeNull()
     const header = render(() => (
       <ZCodeRowView
         parsed={request}
@@ -134,8 +142,10 @@ describe('zcode result display hints', () => {
           spanType: context.spanType,
           sources: testMessageSources({
             current: () => requestParsed,
-            result: () => current,
           }),
+          ...(toolHeader !== null
+            ? { toolHeader }
+            : {}),
         }}
       />
     ))
@@ -180,17 +190,20 @@ describe('zcode result display hints', () => {
         },
       },
     }
+    // The request row reads no result, so the RESULT row recovers the input from its own
+    // stored native record, and it needs the request beside it.
     const plugin = providerFor(AgentProvider.ZCODE)!
-    expect(plugin?.transcript.relatedMessages?.(requestParsed)).toEqual(['result'])
+    expect(plugin.transcript.needsRequest?.(requestParsed)).toBe(false)
+    expect(plugin.transcript.needsRequest?.(completed)).toBe(true)
     const { container } = render(() => (
       <ZCodeRowView
-        parsed={request}
+        parsed={completed.parentObject}
         context={{
           spanType: 'Read',
           sources: testMessageSources({
-            current: () => requestParsed,
+            current: () => completed,
             request: () => requestParsed,
-            result: () => completed,
+            role: () => 'result',
           }),
         }}
       />
@@ -273,7 +286,6 @@ describe('zcode result display hints', () => {
         context={{
           sources: testMessageSources({
             current: () => request,
-            result: () => input(parsed),
           }),
         }}
       />,

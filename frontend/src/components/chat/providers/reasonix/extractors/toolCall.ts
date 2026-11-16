@@ -208,8 +208,8 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
       kind: 'todo',
       name,
       // No title and a POPULATED request: `todoRenderer` composes the same words from
-      // the request, and its own guard (`role !== 'result' && !hasResultRow`) is what
-      // stops a double draw -- so emptying the list here only hid it while the call ran.
+      // the request, and the pending row draws the list while the call runs -- so
+      // emptying the list here only hid it.
       // The absent title is stated as an EXPLICIT undefined because the ACP wrapper
       // spreads this payload over its own frame-title default, and a key that is merely
       // omitted lets that default stand where the renderer should compose the count.
@@ -326,8 +326,9 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
     // The shared build's REQUEST stands: it states the file the removal asked for, and
     // the row composes its header from that list at every state of the call. An empty
     // list here takes the file out of the header and leaves the word "Delete" alone.
-    // `RequestedChangesBody` already keeps the two bodies apart, because it draws
-    // nothing once a result exists.
+    // The two bodies stay apart because they draw on two rows: the pending row draws
+    // the requested change while the call runs, and it leaves when the result row
+    // joins the list.
     if (patch) {
       return {
         ...acpSpecFor(remapFacts, REASONIX_TOOL_KINDS[name]),

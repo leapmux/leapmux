@@ -136,13 +136,14 @@ export function claudeFileChangeResult(args: ClaudeToolRow, result: ClaudeToolRo
  * which is why it takes the tool NAME beside the arguments: four tools share those two
  * kinds and each states its change in its own keys.
  *
- * The paired RESULT answers the no-sibling case. A `tool_use_result` that arrives with
+ * The RESULT row answers the no-sibling case. A `tool_use_result` that arrives with
  * no `tool_use` states the whole change on its own side -- the structured patch, or the
  * created file's whole body -- and the arguments state nothing. The row still heads
  * itself with the file that changed, so the result's diff fills the request's list when
  * the arguments name no file. Without it the change list was empty, the file-change
  * invariant (I7) refused the draft, and the row degraded to a generic card that showed
- * neither the diff nor the file.
+ * neither the diff nor the file. A request row has no result, so it takes the change
+ * list of its own arguments.
  */
 export function claudeFileEditChanges(input: Record<string, unknown>, toolName: string, result: ClaudeToolRow | undefined): FileEditDiff[] {
   const fromInput = claudeFileEditChangesFromInput(input, toolName)

@@ -14,6 +14,16 @@ function row(i: number, key = 'a'): ChatRowItem {
   }
 }
 
+/** The pending row that continues the row `r<i>` (see chatPendingRows). */
+function pendingRowOf(i: number): ChatRowItem {
+  return {
+    id: `r${i}#pending`,
+    hasSpanLines: false,
+    heightKey: 'a',
+    continuesPrevious: true,
+  }
+}
+
 /** `count` rows, from index `first` on. */
 function rowsFrom(first: number, count: number, key = 'a'): ChatRowItem[] {
   return Array.from({ length: count }, (_, i) => row(first + i, key))
@@ -700,6 +710,49 @@ describe('createRowAdmission', () => {
 
     expect(h.admission.range()).toEqual({ start: 0, end: 21 })
     expect(h.admission.stagedNewer()).toBe(true)
+    expect(h.admission.holdsTail()).toBe(true)
+    h.dispose()
+  })
+
+  // A pending row continues its request row (see chatPendingRows). It leaves the list when
+  // the result row of its call is measured, and a newer message can still be staged then.
+  it('keeps holding the tail when a row that continues the last row leaves', () => {
+    const h = mountAtTail()
+    h.append(pendingRowOf(19))
+    h.measure([20], 0)
+    expect(h.admission.range()).toEqual({ start: 0, end: 21 })
+    expect(h.admission.holdsTail()).toBe(true)
+
+    // The result row and a newer message load below, and both are staged.
+    h.append(row(20), row(21))
+    expect(h.admission.holdsTail()).toBe(true)
+
+    // The result row is measured first, and it replaces the pending row in one update.
+    batch(() => {
+      h.setRows(h.rows().filter(item => item.id !== 'r19#pending'))
+      h.measure([20])
+    })
+    expect(h.admission.range()).toEqual({ start: 0, end: 21 })
+    expect(h.admission.stagedNewer()).toBe(true)
+    expect(h.admission.holdsTail()).toBe(true)
+    h.dispose()
+  })
+
+  it('keeps holding the tail when the later of two running calls ends first', () => {
+    const h = mountAtTail()
+    h.append(row(20), pendingRowOf(20), row(21), pendingRowOf(21))
+    h.measure([20, 22])
+    h.measure([21, 23], 0)
+    expect(h.admission.holdsTail()).toBe(true)
+
+    // Both results load, and the result of the later call is measured first.
+    h.append(row(22), row(23))
+    batch(() => {
+      h.setRows(h.rows().filter(item => item.id !== 'r21#pending'))
+      h.measure([24])
+    })
+    // The result of the earlier call stays staged, so the admitted rows end at row 21.
+    expect(h.admission.range()).toEqual({ start: 0, end: 23 })
     expect(h.admission.holdsTail()).toBe(true)
     h.dispose()
   })

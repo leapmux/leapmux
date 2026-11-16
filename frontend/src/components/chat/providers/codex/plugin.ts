@@ -10,14 +10,14 @@ import { codexExtractRow } from './extractors/row'
 import { codexControls } from './pluginControls'
 import { resolveCodexMessage } from './resolveMessage'
 import { codexContextUsageFromNotification } from './sessionMetadata'
-import { codexRelatedMessages, codexSpanRole } from './spanRole'
+import { codexNeedsRequest, codexSpanRole } from './spanRole'
 
 const codexPlugin: ProviderPlugin = {
   transcript: {
     compactionStart: codexCompactionStart,
     resolveMessage: resolveCodexMessage,
     spanRole: codexSpanRole,
-    relatedMessages: codexRelatedMessages,
+    needsRequest: codexNeedsRequest,
     classify: classifyCodexMessage,
     extractRow: codexExtractRow,
     extractDivider: codexResultDivider,

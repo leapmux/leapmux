@@ -137,13 +137,6 @@ export function zcodeToolCall(row: ZCodeRow, parsed?: ParsedMessageContent): Too
   if (!update)
     return null
   const facts = zcodeToolFacts(row, update, parsed)
-  const pairedResult = zcodeExtractTool(row.result?.parentObject)
-  const resultFrameLanded = update.kind === ZCODE_TOOL_KIND.Result
-    || update.kind === ZCODE_TOOL_KIND.Error
-    || update.kind === ZCODE_TOOL_KIND.Batch
-    || pairedResult?.kind === ZCODE_TOOL_KIND.Result
-    || pairedResult?.kind === ZCODE_TOOL_KIND.Error
-    || pairedResult?.kind === ZCODE_TOOL_KIND.Batch
   const envelope: ToolCallEnvelope = {
     id: update.toolCallId,
     name: row.toolName,
@@ -152,7 +145,7 @@ export function zcodeToolCall(row: ZCodeRow, parsed?: ParsedMessageContent): Too
       providerOutcome: update.isError ? 'failed' : null,
       retainedOutcome: retainedOutcome(parsed?.completion),
       rowFinal: facts.finished,
-      resultFrameLanded,
+      resultFrameLanded: facts.resultFrameLanded,
     },
   }
   const spec = zcodeSpecFor(facts, facts.kind)
@@ -204,10 +197,6 @@ export function zcodeToolFacts(row: ZCodeRow, update: ZCodeToolUpdate, parsed: P
   const resultFrameLanded = update.kind === ZCODE_TOOL_KIND.Result
     || update.kind === ZCODE_TOOL_KIND.Error
     || update.kind === ZCODE_TOOL_KIND.Batch
-  const pairedResult = zcodeExtractTool(row.result?.parentObject)
-  const pairedResultFrameLanded = pairedResult?.kind === ZCODE_TOOL_KIND.Result
-    || pairedResult?.kind === ZCODE_TOOL_KIND.Error
-    || pairedResult?.kind === ZCODE_TOOL_KIND.Batch
   const classified: ZCodeToolFacts = {
     row,
     update,
@@ -230,7 +219,7 @@ export function zcodeToolFacts(row: ZCodeRow, update: ZCodeToolUpdate, parsed: P
       : (update.result?.content ?? progressText),
     finished,
     resultFrameLanded,
-    resultAvailable: resultFrameLanded || pairedResultFrameLanded || (finished && update.result !== null),
+    resultAvailable: resultFrameLanded || (finished && update.result !== null),
     failed: update.isError,
     truncated: rawDisplay?.truncated === true || update.result?.truncated === true,
     images,
@@ -691,10 +680,9 @@ export const ZCODE_TOOL_READERS: ToolCallSpecReaderTable<ZCodeToolFacts> = {
     // title falls back to the tool name -- which would sit above the command it ran.
     const request = zcodeRequestFor('execute', facts)
     // A call that has not ended carries NO result, whatever a PROGRESS frame's output
-    // tails hold. `ToolMessage` draws the live output the worker broadcasts only while
-    // the row states no result, so the tails here replaced a stream that is ahead of
-    // them with a card that never grows -- and the model refuses the pair outright, which
-    // sent the whole row to the uncategorized card. A RETAINED progress frame is
+    // tails hold. Its pending row draws the live output the worker broadcasts, which is
+    // ahead of these tails -- and the model refuses a result on a call that runs, which
+    // sends the whole row to the uncategorized card. A RETAINED progress frame is
     // finished, and its tails reach the row below as the words the call printed.
     if (!facts.resultAvailable)
       return { kind: 'execute', request }

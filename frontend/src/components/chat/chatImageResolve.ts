@@ -62,12 +62,12 @@ export function messageToolResultImages(message: AgentChatMessage, sources: Imag
     // resolver that runs outside the render tree must read the FINISHED side, or a
     // provider that requires a completed call before it states its picture (Codex
     // states no status on an `imageView` item) resolves every image tab to nothing.
+    // Only a result row draws pictures: a request row never reads its result.
     const extraction = extractPreparedRow(prepared, {
       span: {
         request: sources.request?.resolved,
-        result: prepared.resolved,
         role: 'result',
-        visibleRows: { request: false, result: true },
+        visibleRows: { request: false },
       },
     })
     return imagesForRow(extractedRow(extraction))
@@ -102,7 +102,7 @@ export async function resolveChatImage(
     try {
       if (spanId && !messages.request(identity)) {
         try {
-          await messages.loadRelated(resolved.message, resolved.original)
+          await messages.loadRequest(resolved.message, resolved.original)
         }
         catch (error) {
           // A request adds file metadata. An unavailable request must not hide an available image.

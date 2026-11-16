@@ -1,7 +1,8 @@
+import type { FastAgentArchiveSource } from '../../../src/components/chat/providers/fastagent/archiveSource'
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { readFileSync } from 'node:fs'
 import { expect } from '@playwright/test'
-import { fastAgentArchiveSource, sameFastAgentArchiveCall } from '../../../src/components/chat/providers/fastagent/archiveSource'
+import { fastAgentArchiveSource } from '../../../src/components/chat/providers/fastagent/archiveSource'
 import { FAST_AGENT_SHELL } from '../../../src/components/chat/providers/fastagent/protocol'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
 import { parseMessageContent } from '../../../src/lib/messageParser'
@@ -22,6 +23,19 @@ import { createToolOutputControl } from '../helpers/toolOutputControl'
 import { interruptButton, resumePausedQueue, sendMessage, userBubbles, waitForAgentIdle } from '../helpers/ui'
 import { fastAgentNativeOutput, fastAgentTerminalOutputFileLimit } from './nativeToolOutput'
 import { enableNativeCommands } from './scenarios'
+
+/**
+ * Whether two archive frames are the request and the result of ONE call: the same
+ * capture, session, actor, history file, call and span, and the same arguments.
+ */
+function sameFastAgentArchiveCall(left: FastAgentArchiveSource, right: FastAgentArchiveSource): boolean {
+  if ((left.kind !== 'request' && left.kind !== 'result') || (right.kind !== 'request' && right.kind !== 'result'))
+    return false
+  return left.captureId === right.captureId && left.sessionId === right.sessionId
+    && left.actor === right.actor && left.historyFile === right.historyFile
+    && left.callId === right.callId && left.spanId === right.spanId
+    && JSON.stringify(left.request.raw) === JSON.stringify(right.request.raw)
+}
 
 fastAgentTest('records the native client terminal output limit and retains its exact tail after reload', async ({ native }, testInfo) => {
   const output = computedNativeToolOutput({ lineCount: 6000, padding: 48 })

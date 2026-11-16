@@ -6,7 +6,7 @@ import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import './claude/plugin'
 import '~/components/chat/providers'
 
-const { renderMessageContent } = await import('../messageContentRenderer')
+const { renderMessageContent, renderPendingMessageContent } = await import('~/test-support/messageContentRenderer')
 
 /** Build a Claude-style Edit tool_use message. */
 function makeEditToolUse(input: Record<string, unknown>) {
@@ -25,11 +25,16 @@ function makeEditToolUse(input: Record<string, unknown>) {
   }
 }
 
+/** The request row of a running edit, and the pending row below it that states the change it asks for. */
 function renderEditToolUse(input: Record<string, unknown>) {
   const msg = makeEditToolUse(input)
   const category: MessageCategory = { kind: 'tool_use' }
-  const result = renderMessageContent(msg, undefined, category, AgentProvider.CLAUDE_CODE)
-  return render(() => result)
+  return render(() => (
+    <>
+      {renderMessageContent(msg, undefined, category, AgentProvider.CLAUDE_CODE)}
+      {renderPendingMessageContent(msg, undefined, category, AgentProvider.CLAUDE_CODE)}
+    </>
+  ))
 }
 
 describe('claude Edit tool_use rendering', () => {

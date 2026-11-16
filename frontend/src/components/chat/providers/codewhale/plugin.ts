@@ -8,13 +8,13 @@ import { codewhaleResultDivider } from './extractors/resultDivider'
 import { codewhaleExtractRow } from './extractors/row'
 import { codewhaleConfiguration } from './pluginConfiguration'
 import { codewhaleControls } from './pluginControls'
-import { codewhaleRelatedMessages, codewhaleSpanRole } from './spanRole'
+import { codewhaleNeedsRequest, codewhaleSpanRole } from './spanRole'
 
 const codewhalePlugin: ProviderPlugin = {
   transcript: {
     outputFilePaths: codewhaleOutputFilePaths,
     spanRole: codewhaleSpanRole,
-    relatedMessages: codewhaleRelatedMessages,
+    needsRequest: codewhaleNeedsRequest,
     classify: classifyCodewhaleMessage,
     extractRow: codewhaleExtractRow,
     notificationEntry: codewhaleNotificationEntry,

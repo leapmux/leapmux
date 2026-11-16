@@ -13,7 +13,7 @@ import { CODEWHALE_RESULT_FIELD, CODEWHALE_TOOL, CODEWHALE_WORKFLOW_STATUS } fro
 import { isObject, pickString } from '~/lib/jsonPick'
 import { createToolCall } from '../../../model/createToolCall'
 import { fileEditDrawsDiff } from '../../../model/fileEditDiff'
-import { failedResult, isGenericKind, proseResult, readToolCallSpec, unparsedResult } from '../../../model/toolCall'
+import { failedResult, isFileChangeKind, isGenericKind, proseResult, readToolCallSpec, unparsedResult } from '../../../model/toolCall'
 import { toolRequestFor } from '../../defaultToolRequests'
 import { retainedOutcome } from '../../registry'
 import { codewhaleQuestionsFromToolInput } from '../askUserQuestion'
@@ -83,8 +83,9 @@ const WORKFLOW_STATUS_OUTCOMES: ReadonlyMap<string, TaskStatus> = new Map<string
  * decision runs.
  *
  * A call's two halves arrive as separate rows -- the frame that opened it and the frame
- * that ended it -- and each row builds the WHOLE call from both, so the request row and
- * the result row draw one call.
+ * that ended it. The request row reads its own opening frame alone, so it draws the
+ * running call. The result row reads its own final frame and the opening frame before
+ * it, so it draws the WHOLE call.
  */
 export interface CodewhaleToolFacts {
   /** The resolved tool name. `''` when no source states one. */
@@ -113,12 +114,6 @@ export interface CodewhaleToolFacts {
   landedChanges: FileEditDiff[] | null
 }
 
-/** The two sides of one span, as the message store resolved them for a row. */
-export interface CodewhaleToolSides {
-  request: ParsedMessageContent | undefined
-  result: ParsedMessageContent | undefined
-}
-
 /** The first of these argument records that states anything. */
 function firstStated(...records: Array<Record<string, unknown> | undefined>): Record<string, unknown> {
   return records.find(record => record !== undefined && Object.keys(record).length > 0) ?? {}
@@ -130,22 +125,20 @@ function firstStated(...records: Array<Record<string, unknown> | undefined>): Re
  * The OPENING frame supplies the tool name and the arguments, and the FINAL frame the
  * answer. A final item repeats the arguments as a JSON string, so a result row whose
  * request the store did not resolve still states them. A subagent's result block
- * states neither, and the span's `span_type` column names the tool for it.
+ * states neither, and the span's `span_type` column states the tool for it. An opening
+ * frame reads no later frame of its span, so it states no answer.
+ *
+ * `request` is the span's request, which a request row receives as itself.
  */
-export function codewhaleToolFacts(own: CodewhaleToolFrame, sides: CodewhaleToolSides, spanType: string | undefined, parsed?: ParsedMessageContent): CodewhaleToolFacts {
+export function codewhaleToolFacts(own: CodewhaleToolFrame, request: ParsedMessageContent | undefined, spanType: string | undefined, parsed?: ParsedMessageContent): CodewhaleToolFacts {
   const requestFrame = own.outcome === 'open'
     ? own
-    : codewhalePairedFrame(own, sides.request)
-  const pairedResult = own.outcome === 'open'
-    ? codewhalePairedFrame(own, sides.result)
-    : null
-  const resultFrame = own.outcome !== 'open'
-    ? own
-    : pairedResult?.outcome !== 'open'
-      ? pairedResult
-      : null
-  const toolName = own.toolName || requestFrame?.toolName || resultFrame?.toolName || spanType || ''
-  const input = firstStated(own.input, requestFrame?.input, resultFrame?.input)
+    : codewhalePairedFrame(own, request)
+  const resultFrame = own.outcome === 'open'
+    ? null
+    : own
+  const toolName = own.toolName || requestFrame?.toolName || spanType || ''
+  const input = firstStated(own.input, requestFrame?.input)
   const metadata = resultFrame?.metadata ?? {}
   const facts: CodewhaleToolFacts = {
     toolName,
@@ -157,9 +150,7 @@ export function codewhaleToolFacts(own: CodewhaleToolFrame, sides: CodewhaleTool
     interrupted: resultFrame?.outcome === 'interrupted',
     text: resultFrame?.text ?? '',
     metadata,
-    images: codewhaleToolMediaImages(resultFrame, own.outcome === 'open'
-      ? sides.result?.supplementalContent
-      : parsed?.supplementalContent),
+    images: codewhaleToolMediaImages(resultFrame, parsed?.supplementalContent),
     requestedChanges: codewhaleRequestedChanges(toolName, input),
     landedChanges: codewhaleMutationChanges(metadata),
   }
@@ -204,11 +195,10 @@ function fileChanges(facts: CodewhaleToolFacts): FileEditDiff[] {
 /**
  * One Codewhale tool call, as the kind-discriminated pair.
  *
- * `own` is the row's own frame, and `sides` the span's other rows. Null only for a row
- * that is not a tool frame, which the caller checks first.
+ * `own` is the row's own frame, and `request` the span's request.
  */
-export function codewhaleToolCall(own: CodewhaleToolFrame, sides: CodewhaleToolSides, parsed: ParsedMessageContent | undefined, spanType: string | undefined): ToolCall {
-  const facts = codewhaleToolFacts(own, sides, spanType, parsed)
+export function codewhaleToolCall(own: CodewhaleToolFrame, request: ParsedMessageContent | undefined, parsed: ParsedMessageContent | undefined, spanType: string | undefined): ToolCall {
+  const facts = codewhaleToolFacts(own, request, spanType, parsed)
   const envelope: ToolCallEnvelope = {
     id: own.callId,
     name: facts.toolName,
@@ -225,7 +215,7 @@ export function codewhaleToolCall(own: CodewhaleToolFrame, sides: CodewhaleToolS
     },
   }
   const spec = facts.resultFrame?.deferredLoad
-    ? codewhaleSchemaLoadSpec(facts, facts.kind)
+    ? codewhaleSchemaLoadSpec(facts, codewhaleSchemaLoadKind(facts))
     : codewhaleSpecFor(facts, facts.kind)
   // The tool's OWN name, which the icon tooltip states. A row that states none falls
   // back to the kind's word, because a name invented here is not one the agent sent.
@@ -242,19 +232,39 @@ export function codewhaleToolCall(own: CodewhaleToolFrame, sides: CodewhaleToolS
 }
 
 /**
+ * The kind of a deferred tool's FIRST call: the kind of the tool, except for a file
+ * change that loaded its schema.
+ *
+ * The load ran nothing. A file change that ended with no changes of its own states the
+ * changes it asked for as the ones the file took (see `withoutTypedResult` of the file
+ * change kinds), so a load that ended takes the generic card, which states the runtime's
+ * words alone. A load that failed or that the turn cut short keeps its kind: a file
+ * change that did not apply states no requested change as taken.
+ */
+function codewhaleSchemaLoadKind(facts: CodewhaleToolFacts): ToolKind {
+  return isFileChangeKind(facts.kind) && !facts.failed && !facts.interrupted
+    ? 'other'
+    : facts.kind
+}
+
+/**
  * The call a deferred tool's FIRST call was: its arguments, and the runtime's own
  * words for what it did instead of running.
  *
  * The runtime loaded the tool's schema and ran nothing, and the model calls the tool
- * again. The result row hides (see `codewhaleFrameDrawsNothing`), so the request row
- * states the call whole. No reader of the kind can parse the words, which describe
- * a schema rather than a result, so they stay unparsed.
+ * again. Only the result row states those words, so the result row states the call
+ * whole. No reader of the kind can parse the words, which describe a schema rather
+ * than a result, so they stay unparsed. A load that failed or that the turn cut short
+ * states its words as the failure, because the model refuses an unparsed result on a
+ * failed call and degrades the call to the uncategorized row.
  */
 function codewhaleSchemaLoadSpec<K extends ToolKind>(facts: CodewhaleToolFacts, kind: K): ToolCallSpecVariant<K> {
   return {
     kind,
     request: codewhaleRequestFor(kind, facts),
-    result: unparsedResult(facts.text),
+    result: facts.failed || facts.interrupted
+      ? codewhaleFailure(facts)
+      : unparsedResult(facts.text),
   }
 }
 

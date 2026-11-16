@@ -8,9 +8,15 @@ import { messageCompletionFromProto } from '../../../assembledMessage'
 import { CODEX_STATUS } from '../itemVocabulary'
 import { extractItem } from './item'
 
-/** Only a matching call with the expected role can supply missing fields. */
-export function codexAgentCounterpart(item: Record<string, unknown>, parsed: ParsedMessageContent | undefined, role: 'request' | 'result'): Record<string, unknown> | null {
-  const candidate = extractItem(parsed?.parentObject)
+/**
+ * The request item of the same call, which can supply the fields a finished item left
+ * empty, or null.
+ *
+ * Only the running request of the same call qualifies. A row reads no later message
+ * of its span, so no result item can be a counterpart.
+ */
+export function codexAgentCounterpart(item: Record<string, unknown>, request: ParsedMessageContent | undefined): Record<string, unknown> | null {
+  const candidate = extractItem(request?.parentObject)
   const id = pickString(item, 'id')
   if (!id || candidate?.id !== id || candidate.type !== CODEX_ITEM.CollabAgentToolCall)
     return null
@@ -18,16 +24,15 @@ export function codexAgentCounterpart(item: Record<string, unknown>, parsed: Par
   const otherTool = pickString(candidate, 'tool')
   if (tool && otherTool && tool !== otherTool)
     return null
-  const finished = messageCompletionFromProto(parsed?.completion) !== null || Number.isFinite(parsed?.parentObject?.completedAtMs)
-    || ['completed', 'failed', 'interrupted'].includes(pickString(candidate, 'status'))
-  return (role === 'result'
-    ? finished
-    : !finished && candidate.status === CODEX_STATUS.IN_PROGRESS)
+  // A request that states a running status cannot state a finished one, so only the
+  // stored completion and the completion time of its frame can end it.
+  const finished = messageCompletionFromProto(request?.completion) !== null || Number.isFinite(request?.parentObject?.completedAtMs)
+  return !finished && candidate.status === CODEX_STATUS.IN_PROGRESS
     ? candidate
     : null
 }
 
-/** The current item owns status and reports. Its counterpart can supply omitted request fields. */
+/** The current item owns status and reports. Its request can supply omitted request fields. */
 export function resolveCodexAgentItem(item: Record<string, unknown>, counterpart: Record<string, unknown> | null): Record<string, unknown> {
   if (!counterpart)
     return item

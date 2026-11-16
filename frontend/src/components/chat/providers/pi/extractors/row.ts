@@ -82,7 +82,10 @@ function piSideIsMine(callId: string, side: ParsedMessageContent | undefined): b
 }
 
 /**
- * The row a Pi tool event becomes, with both span sides resolved.
+ * The row a Pi tool event becomes, from its own frame and the span's request.
+ *
+ * A request row reads only its own start frame. A result row reads its own frame and
+ * the paired start frame, which states the arguments that an end frame omits.
  *
  * A PLAN never reaches here: `plan_mode_complete` proposes one rather than returning
  * a tool result, and `classify` already routed that frame to `assistant_plan` or
@@ -99,17 +102,12 @@ function piToolSpanRow(
   const own = piExtractTool(payload)
   if (!own)
     return null
-  // ONE call from every side of THIS call the store resolved: the request names
-  // the arguments, the end event the payload. A sibling from another call is no
-  // side of this one at all -- one turn can run several calls at once.
-  const mine = (side: ParsedMessageContent | undefined) => !!side && piSideIsMine(own.toolCallId, side)
-  const request = mine(span.request)
+  // The request states the arguments, and this frame states the rest. A request from
+  // another call is no side of this one at all: one turn can run several calls at once.
+  const request = piSideIsMine(own.toolCallId, span.request)
     ? span.request
     : undefined
-  const result = mine(span.result)
-    ? span.result
-    : undefined
-  const row = piToolRow(payload, request, result, parsed.completion)
+  const row = piToolRow(payload, request, parsed.completion)
   if (!row)
     return null
   const call: ToolCall = piToolCall(row, parsed.completion)
@@ -147,7 +145,7 @@ function piResultRow(
         },
       },
     )
-    return toolCallRow(call, 'result', { request: false, result: false })
+    return toolCallRow(call, 'result', { request: false })
   }
   return piToolSpanRow(payload, parsed, span)
 }

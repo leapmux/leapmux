@@ -58,9 +58,11 @@ export function geminiStoredToolSpec(record: Record<string, unknown>, interrupte
       result: failed
         ? failedResult(text)
         : proseResult(submitted, 'markdown'),
+      // The words Gemini CLI answered the submission with. Only the result states
+      // them, so they are no fact of the request.
       ...(text
         ? {
-            metadata: [
+            resultMetadata: [
               { label: 'Native result', value: text },
             ],
           }

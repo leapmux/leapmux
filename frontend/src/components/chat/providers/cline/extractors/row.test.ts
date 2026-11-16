@@ -11,9 +11,8 @@ import '~/components/chat/providers'
 const provider = AgentProvider.CLINE
 const noSpan: ToolSpanContext = {
   request: undefined,
-  result: undefined,
   role: 'result',
-  visibleRows: { request: false, result: true },
+  visibleRows: { request: false },
 }
 
 function extract(parent: Record<string, unknown>, kind: MessageCategory['kind'], span: ToolSpanContext = noSpan, completion?: MessageCompletion) {
@@ -110,22 +109,59 @@ describe('clineExtractRow', () => {
       : null).toBe('execute')
   })
 
-  it('draws a running call as the request side, and its landed result on it', () => {
+  it('draws a start row from its own event, with no result', () => {
     const call = clineToolStartRow('run_commands', {
       commands: ['ls'],
     }, 'call_a')
-    const running = extract(call, 'tool_use', { ...noSpan, role: 'request' })
+    const running = extract(call, 'tool_use', {
+      ...noSpan,
+      request: input(call, undefined, provider),
+      role: 'request',
+    })
     expect(running).toMatchObject({ kind: 'tool', role: 'request' })
     expect(running?.kind === 'tool'
-      ? running.call.status
-      : null).toBe('unstated')
-    const landed = input(clineToolFinishRow('run_commands', [
+      ? [
+          running.call.kind,
+          running.call.label,
+          running.call.status,
+          running.call.result,
+        ]
+      : null).toEqual([
+      'execute',
+      'Commands',
+      'unstated',
+      undefined,
+    ])
+    expect(running?.kind === 'tool'
+      ? running.call.request
+      : null).toMatchObject({ command: 'ls' })
+  })
+
+  it('draws the whole call on its finish row', () => {
+    const request = input(clineToolStartRow('run_commands', {
+      commands: ['ls'],
+    }, 'call_a'), undefined, provider)
+    const answered = extract(clineToolFinishRow('run_commands', [
       { query: 'ls', result: 'x', success: true },
-    ], undefined, 'call_a'), undefined, provider)
-    const answered = extract(call, 'tool_use', { ...noSpan, role: 'request', result: landed })
+    ], undefined, 'call_a'), 'tool_result', {
+      request,
+      role: 'result',
+      visibleRows: { request: true },
+    })
+    expect(answered).toMatchObject({ kind: 'tool', role: 'result', hasRequestRow: true })
     expect(answered?.kind === 'tool'
-      ? answered.call.status
-      : null).toBe('completed')
+      ? [answered.call.kind, answered.call.label, answered.call.status]
+      : null).toEqual(['execute', 'Commands', 'completed'])
+    expect(answered?.kind === 'tool'
+      ? answered.call.request
+      : null).toMatchObject({ command: 'ls' })
+    expect(answered?.kind === 'tool'
+      ? answered.call.result
+      : null).toMatchObject({
+      commands: [
+        { output: 'x' },
+      ],
+    })
   })
 
   it('draws a start that the turn outlived as the call\'s end', () => {

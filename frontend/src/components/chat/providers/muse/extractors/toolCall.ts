@@ -6,21 +6,25 @@ import { createToolCall } from '../../../model/createToolCall'
 import { parseMcpToolName } from '../../../model/mcpToolCall'
 import { failedResult, unparsedResult } from '../../../model/toolCall'
 import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
-import { museItem, museSiblingItem } from '../protocol'
+import { museItem } from '../protocol'
 import { museNativeResult } from '../sourceData'
 import { MUSE_TOOL_KINDS } from '../toolKinds'
 import { museMcpSpec } from './mcp'
 import { museTodoSpec } from './todo'
 import { museItemLifecycle } from './toolCommon'
 
+/**
+ * One native tool item as a call.
+ *
+ * Every Muse item states its tool, its arguments and its status, so each row reads its
+ * own item only. An unfinished item is the request row: it states no result and no
+ * finished status. A finished item is the result row and builds the whole call.
+ */
 export function museToolCall(input: RowExtractionInput): ToolCall | null {
   const own = museItem(input.resolved.parentObject)
   if (!own)
     return null
   const id = pickString(own, 'itemId')
-  const sibling = museSiblingItem(input.resolved.parentObject, input.span.result?.parentObject)
-  const resultItem = sibling ?? own
-  const resultParse = sibling ? input.span.result : input.resolved
   const name = pickString(own, 'tool')
   const kind = MUSE_TOOL_KINDS.get(name) ?? 'other'
   let args: Record<string, unknown> = {}
@@ -32,7 +36,7 @@ export function museToolCall(input: RowExtractionInput): ToolCall | null {
   catch {
     args = {}
   }
-  const { nativeFinal, facts } = museItemLifecycle(resultItem.status, input.completion ?? input.resolved.completion)
+  const { nativeFinal, facts } = museItemLifecycle(own.status, input.completion ?? input.resolved.completion)
   const failed = facts.providerOutcome === 'failed'
   const declined = facts.providerOutcome === 'declined'
   const envelope: ToolCallEnvelope = {
@@ -40,7 +44,7 @@ export function museToolCall(input: RowExtractionInput): ToolCall | null {
     name,
     lifecycle: facts,
   }
-  const preview = pickString(resultItem, 'visibleOutput') || pickString(resultItem, 'failureReason')
+  const preview = pickString(own, 'visibleOutput') || pickString(own, 'failureReason')
   const mcp = parseMcpToolName(name)
   if (mcp) {
     return createToolCall(envelope, museMcpSpec({
@@ -48,16 +52,18 @@ export function museToolCall(input: RowExtractionInput): ToolCall | null {
       args,
       nativeFinal,
       facts,
-      status: pickString(resultItem, 'status'),
+      status: pickString(own, 'status'),
       output: preview,
     }))
   }
   if (nativeFinal && facts.providerOutcome === null) {
+    // Only the finished item states this status and this output, so they are facts of
+    // the result.
     return createToolCall(envelope, {
       kind: 'other',
       request: { args },
-      metadata: [
-        { label: 'Native status', value: pickString(resultItem, 'status') || 'Unspecified' },
+      resultMetadata: [
+        { label: 'Native status', value: pickString(own, 'status') || 'Unspecified' },
         ...(preview
           ? [
               { label: 'Native output', value: preview },
@@ -66,7 +72,7 @@ export function museToolCall(input: RowExtractionInput): ToolCall | null {
       ],
     })
   }
-  const native = museNativeResult(resultParse?.parentObject, resultParse?.supplementalContent)
+  const native = museNativeResult(input.resolved.parentObject, input.resolved.supplementalContent)
   if (kind === 'execute' && !declined) {
     const structured = native?.structured
     const output = typeof args.command === 'string' && typeof structured?.chunk_id === 'string' && structured.chunk_id.trim() !== ''

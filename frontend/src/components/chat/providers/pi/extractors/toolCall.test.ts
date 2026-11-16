@@ -42,11 +42,11 @@ function end(toolName: string, result: Record<string, unknown>, isError = false)
 }
 
 function resultRow(toolName: string, args: Record<string, unknown>, result: Record<string, unknown>, isError = false): PiToolRow {
-  return piToolRow(end(toolName, result, isError), input(start(toolName, args)), undefined)!
+  return piToolRow(end(toolName, result, isError), input(start(toolName, args)))!
 }
 
 function requestRow(toolName: string, args: Record<string, unknown> = {}): PiToolRow {
-  return piToolRow(start(toolName, args), undefined, undefined)!
+  return piToolRow(start(toolName, args), undefined)!
 }
 
 /**
@@ -74,12 +74,12 @@ function minimalRequestRow(toolName: string): PiToolRow {
 
 /** The mounted row one call sits in, so its toolbar derivation can be read. */
 function rowOf(call: ToolCall): ToolCallRow {
-  return toolCallRow(call, 'result', { request: false, result: false })
+  return toolCallRow(call, 'result', { request: false })
 }
 
 describe('piToolRow', () => {
   it('refuses a payload that is not a tool event', () => {
-    expect(piToolRow({ type: 'message_end' }, undefined, undefined)).toBeNull()
+    expect(piToolRow({ type: 'message_end' }, undefined)).toBeNull()
   })
 
   it('reads a completion event as the end of its call', () => {
@@ -91,7 +91,7 @@ describe('piToolRow', () => {
   // A turn that ended while the call ran stores the start frame again as the closing
   // row, with whatever partial result Pi did report beside it.
   it('reads a retained start frame as the end of its call', () => {
-    const row = piToolRow(start(PI_TOOL.Bash, { command: 'ls' }), undefined, undefined, MessageCompletion.INTERRUPTED)!
+    const row = piToolRow(start(PI_TOOL.Bash, { command: 'ls' }), undefined, MessageCompletion.INTERRUPTED)!
     expect(row.finished).toBe(true)
   })
 
@@ -371,7 +371,9 @@ describe('piToolCall result slots', () => {
       ],
       note: 'Read the entry points.',
     })
-    expect(call.metadata).toEqual([
+    // The snapshot states the task's facts, so they belong to the result.
+    expect(call.metadata).toBeUndefined()
+    expect(call.resultMetadata).toEqual([
       { label: 'Task ID', value: '1' },
     ])
   })
@@ -476,7 +478,7 @@ describe('piToolCall', () => {
   })
 
   it('reports an interrupted call from the completion LeapMux recorded', () => {
-    const row = piToolRow(start(PI_TOOL.Bash, { command: 'ls' }), undefined, undefined, MessageCompletion.INTERRUPTED)!
+    const row = piToolRow(start(PI_TOOL.Bash, { command: 'ls' }), undefined, MessageCompletion.INTERRUPTED)!
     expect(piToolCall(row, MessageCompletion.INTERRUPTED).status).toBe('cancelled')
   })
 })
@@ -1076,10 +1078,10 @@ describe('piReclassify', () => {
  */
 describe('piToolCall on a retained row the turn failed', () => {
   const retained = (toolName: string, args: Record<string, unknown>) =>
-    piToolCall(piToolRow(start(toolName, args), undefined, undefined, MessageCompletion.ERROR)!, MessageCompletion.ERROR)
+    piToolCall(piToolRow(start(toolName, args), undefined, MessageCompletion.ERROR)!, MessageCompletion.ERROR)
 
   it('words the row as failed while Pi flagged nothing', () => {
-    const row = piToolRow(start(PI_TOOL.Read, { path: '/project/a.ts' }), undefined, undefined, MessageCompletion.ERROR)!
+    const row = piToolRow(start(PI_TOOL.Read, { path: '/project/a.ts' }), undefined, MessageCompletion.ERROR)!
     expect(row.tool.isError).toBe(false)
     expect(row.isError).toBe(false)
     expect(row.finished).toBe(true)
@@ -1088,7 +1090,7 @@ describe('piToolCall on a retained row the turn failed', () => {
   })
 
   it('marks a retained start row incomplete after a successful turn', () => {
-    const row = piToolRow(start(PI_TOOL.Read, { path: '/project/a.ts' }), undefined, undefined, MessageCompletion.COMPLETE)!
+    const row = piToolRow(start(PI_TOOL.Read, { path: '/project/a.ts' }), undefined, MessageCompletion.COMPLETE)!
     const call = piToolCall(row, MessageCompletion.COMPLETE)
     expect(call.status).toBe('incomplete')
     expect(call.result).toBeUndefined()
@@ -1100,7 +1102,7 @@ describe('piToolCall on a retained row the turn failed', () => {
       toolCallId: 'call',
       toolName: PI_TOOL.Read,
       isError: false,
-    }, undefined, undefined)!
+    }, undefined)!
     const call = piToolCall(row)
     expect(call.status).toBe('incomplete')
     expect(call.result).toBeUndefined()
@@ -1161,9 +1163,9 @@ describe('piToolCall on a retained row the turn failed', () => {
 /**
  * A call that has NOT returned states no result at all.
  *
- * `ToolMessage` draws the live output the worker broadcasts only while the row is
- * UNFINISHED AND its result is absent, so a result attached to a running row replaces
- * the streaming tail with an empty card. The `mcp` entry is the one that pays for it:
+ * The pending row of the call draws the live output the worker broadcasts, and the
+ * model refuses a result on a call that runs, which would send the row to the
+ * uncategorized card. The `mcp` entry is the one that pays for it:
  * `piReclassify` routes every tool `PI_TOOL_KINDS` does not hold to that kind, so the
  * rule covers each Pi extension and each Model Context Protocol bridge.
  */
@@ -1257,5 +1259,89 @@ describe('registered Pi structured output ownership', () => {
       expect(row.call.result).not.toHaveProperty('structuredJsonRole')
       expect(toolCallMeta(row).copyableContent()).toBe('{"count": 0, "enabled": false, "nullable": null}\n')
     }
+  })
+})
+
+/**
+ * A request row reads its own start frame alone, and a result row reads its own end
+ * frame and the start frame before it. The result of a to-do call states the saved
+ * snapshot, so the result row states the task that the call changed, and the request row
+ * states only what its arguments say.
+ */
+describe('registered Pi rows of one span', () => {
+  const args = { action: 'update', id: 1, status: 'completed' }
+  const startFrame = start(PI_TOOL.Todo, args)
+  const endFrame = end(PI_TOOL.Todo, {
+    content: text('Updated #1'),
+    details: {
+      action: 'update',
+      params: args,
+      tasks: [
+        {
+          id: 1,
+          subject: 'Inspect sample',
+          status: 'completed',
+          owner: 'worker',
+        },
+      ],
+    },
+  })
+
+  it('builds a request row from its own frame, with no result and no finished status', () => {
+    const row = providerRow(AgentProvider.PI, startFrame, {
+      request: input(startFrame),
+      role: 'request',
+    })
+    if (row?.kind !== 'tool' || row.call.kind !== 'todo')
+      throw new Error('The registered Pi to-do start produced no to-do row.')
+    expect(row.role).toBe('request')
+    expect(row.call.status).toBe('unstated')
+    expect(row.call.result).toBeUndefined()
+    expect(row.call.images).toEqual([])
+    expect(row.call.title).toBe('Update task: Task #1')
+    expect(row.call.request.items).toEqual([])
+    expect(row.call.metadata).toBeUndefined()
+    expect(row.call.resultMetadata).toBeUndefined()
+  })
+
+  it('builds the full call on the result row', () => {
+    const row = providerRow(AgentProvider.PI, endFrame, {
+      request: input(startFrame),
+      role: 'result',
+    })
+    if (row?.kind !== 'tool' || row.call.kind !== 'todo')
+      throw new Error('The registered Pi to-do end produced no to-do row.')
+    expect(row).toMatchObject({ role: 'result', hasRequestRow: true })
+    expect(row.call.status).toBe('completed')
+    expect(row.call.title).toBe('Update task: Inspect sample')
+    expect(row.call.request.items.map(item => item.content)).toEqual(['Inspect sample'])
+    expect(row.call.resultMetadata).toEqual([
+      { label: 'Task ID', value: '1' },
+      { label: 'Owner', value: 'worker' },
+    ])
+  })
+
+  // The result alone states a Model Context Protocol (MCP) identity, so the request row
+  // keeps the native name, and the result row states the server and the tool.
+  it('states the MCP identity on the result row alone', () => {
+    const toolName = 'mcp__sample__lookup'
+    const opening = start(toolName, { query: 'marker' })
+    const request = providerRow(AgentProvider.PI, opening, {
+      request: input(opening),
+      role: 'request',
+    })
+    const result = providerRow(AgentProvider.PI, end(toolName, {
+      content: text('Found it'),
+      details: { server: 'sample', tool: 'lookup' },
+    }), {
+      request: input(opening),
+      role: 'result',
+    })
+    if (request?.kind !== 'tool' || result?.kind !== 'tool')
+      throw new Error('The registered Pi MCP fixture produced no tool row.')
+    expect(request.call.status).toBe('unstated')
+    expect(request.call.result).toBeUndefined()
+    expect(request.call.kind === 'mcp' && request.call.request).toMatchObject({ server: '', tool: toolName })
+    expect(toolCallDisplayName(result.call)).toBe('sample / lookup')
   })
 })

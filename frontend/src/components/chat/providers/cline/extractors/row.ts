@@ -61,22 +61,19 @@ function clineTextRow(payload: Record<string, unknown> | undefined): ChatRow {
 }
 
 /**
- * The row a Cline tool row becomes, with both span sides resolved.
+ * The row a Cline tool row becomes, from its own message and the span's request.
  *
- * Only a side of THIS call counts: one message can run several calls, and a sibling's
- * row is no side of this one.
+ * Only a request of THIS call counts: one message can run several calls, and a
+ * sibling's row is no side of this one.
  */
 function clineToolSpanRow(parsed: ParsedMessageContent, span: RowExtractionInput['span']): ChatRow | null {
   const payload = parsed.parentObject
   if (!isObject(payload))
     return null
-  const ownId = clineSideCallId(parsed)
-  const mine = (side: ParsedMessageContent | undefined) => side !== undefined && clineSideCallId(side) === ownId
-  const row = clineToolRow(payload, mine(span.request)
+  const request = span.request !== undefined && clineSideCallId(span.request) === clineSideCallId(parsed)
     ? span.request
-    : undefined, mine(span.result)
-    ? span.result
-    : undefined, parsed.completion)
+    : undefined
+  const row = clineToolRow(payload, request, parsed.completion)
   if (!row)
     return null
   return toolCallRow(clineToolCall(row, parsed.completion), clineToolSpanRowRole(row), span.visibleRows)

@@ -2,7 +2,7 @@ import type { AgentRequest, AgentRun } from '../../../model/tools/agent'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { prettifyArgsJson } from '~/lib/jsonFormat'
 import { pickString } from '~/lib/jsonPick'
-import { piExtractTool, piPairedRequest, piPairedResult } from './toolCommon'
+import { piExtractTool, piPairedRequest } from './toolCommon'
 
 /** The launch acknowledgement supplies the evaluated script title and generated script path. */
 function workflowLaunch(payload: Record<string, unknown>) {
@@ -21,9 +21,15 @@ function workflowLaunch(payload: Record<string, unknown>) {
   }
 }
 
-export function piWorkflowRequest(payload: Record<string, unknown>, request?: ParsedMessageContent, result?: ParsedMessageContent): AgentRequest {
+/**
+ * The workflow launch a call requests.
+ *
+ * The evaluated title comes from the launch acknowledgement, which only the end frame
+ * states. A start frame describes its launch from its arguments alone.
+ */
+export function piWorkflowRequest(payload: Record<string, unknown>, request?: ParsedMessageContent): AgentRequest {
   const args = piExtractTool(piPairedRequest(payload, request)?.parentObject)?.args ?? piExtractTool(payload)?.args ?? {}
-  const launch = workflowLaunch(piPairedResult(payload, result)?.parentObject ?? payload)
+  const launch = workflowLaunch(payload)
   const metadata: NonNullable<AgentRequest['metadata']> = []
   for (const [key, label] of [
     ['scriptPath', 'Script'],

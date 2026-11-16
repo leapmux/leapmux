@@ -21,12 +21,11 @@ export function ohMyPiSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
     : 'request'
 }
 
-/** The span side one row needs beside it: a request needs its result, and a result its request. */
-export function ohMyPiRelatedMessages(parsed: ResolvedMessageContent) {
-  const role = ohMyPiSpanRole(parsed)
-  return role === 'result'
-    ? ['request'] as const
-    : role === 'request'
-      ? ['result'] as const
-      : []
+/**
+ * Whether one row draws from its span's request: a `tool_execution_end` frame states no
+ * arguments and no intent, so it reads them from the paired start frame. A start frame,
+ * also one that a stopped turn retained, states its own.
+ */
+export function ohMyPiNeedsRequest(parsed: ResolvedMessageContent): boolean {
+  return pickString(parsed.parentObject, 'type') === OH_MY_PI_EVENT.ToolExecutionEnd
 }

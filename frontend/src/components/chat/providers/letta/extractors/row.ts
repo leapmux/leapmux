@@ -72,7 +72,14 @@ function lettaArguments(source: Record<string, unknown> | null): Record<string, 
     ?? lettaJsonObject(lettaNativeToolCall(source)?.[LETTA_DELTA_FIELD.Arguments])
 }
 
-/** The row one tool call becomes, with both span sides resolved. */
+/**
+ * The row one tool call becomes.
+ *
+ * A request row reads its own frame only, so it keeps the kind and the arguments that
+ * its frame states whatever the answer holds. A result row reads its own answer and
+ * the arguments of the earlier request, and builds the whole call: the kind, the
+ * request and the result.
+ */
 function lettaToolRow(
   input: RowExtractionInput,
   isResult: boolean,
@@ -98,11 +105,10 @@ function lettaToolRow(
     || pickString(requestCall, LETTA_DELTA_FIELD.Name)
     || 'Tool'
   const args = lettaArguments(source) ?? lettaArguments(requestSource) ?? {}
-  const candidateResult = isResult
+  // Only a result frame that states its native call ID carries an answer. A
+  // current-window snapshot is progress, not the answer.
+  const resultSource = isResult && id !== '' && !isLettaToolProgress(source)
     ? source
-    : lettaToolPayload(span.result?.parentObject)
-  const resultSource = lettaMatchingCall(source, candidateResult) && !isLettaToolProgress(candidateResult)
-    ? candidateResult
     : null
   const returned = lettaReturnedData(resultSource)
   const declared = lettaToolKind(name)
@@ -164,8 +170,9 @@ function lettaToolRow(
     resultText,
     failed,
   }
-  // A task call draws its checklist on both rows. The native answer is the saved
-  // task record, so the result row can read it without the paired request.
+  // Only the arguments of TaskCreate and UpdatePlan state a task, so a request row
+  // draws a checklist only for those two. The native answer is the saved task record
+  // and wins over the arguments, so the result row reads it without the paired request.
   if (kind === 'todo') {
     const lists = lettaTodoLists(name, args, returned.kind === 'present' && !failed
       ? returned.value
@@ -190,10 +197,9 @@ function lettaToolRow(
   // output, and the code of a command that failed.
   if (kind === 'execute' && hasInput && resultText !== undefined)
     return toolCallRow(lettaShellCall({ ...facts, resultText }), isResult ? 'result' : 'request', span.visibleRows)
-  // A result row, a call that states no input and a call whose declared kind has
-  // no reading here keep the generic result card. Native status remains
-  // independent of its text.
-  const call = isResult || !hasInput || kind === 'todo' || kind === 'edit' || kind === 'write' || isGenericKind(kind)
+  // A call that states no input and a call whose declared kind has no reading here
+  // keep the generic card. Native status remains independent of its text.
+  const call = !hasInput || kind === 'todo' || kind === 'edit' || kind === 'write' || isGenericKind(kind)
     ? lettaGenericCall(facts)
     : lettaDeclaredCall(kind, facts)
   return toolCallRow(call, isResult ? 'result' : 'request', span.visibleRows)

@@ -5,7 +5,7 @@ import { classifyFastAgentMessage } from './classification'
 import { fastAgentOutputFilePaths } from './extractors/outputFilePaths'
 import { fastAgentExtractRow } from './extractors/row'
 import { resolveFastAgentMessage } from './resolveMessage'
-import { fastAgentRelatedMessages, fastAgentSpanRole } from './spanRole'
+import { fastAgentNeedsRequest, fastAgentSpanRole } from './spanRole'
 
 registerProvider(AgentProvider.FAST_AGENT, {
   ...fastAgentACPPlugin,
@@ -14,7 +14,7 @@ registerProvider(AgentProvider.FAST_AGENT, {
     resolveMessage: resolveFastAgentMessage,
     classify: classifyFastAgentMessage,
     spanRole: fastAgentSpanRole,
-    relatedMessages: fastAgentRelatedMessages,
+    needsRequest: fastAgentNeedsRequest,
     extractRow: fastAgentExtractRow,
     outputFilePaths: fastAgentOutputFilePaths,
   },

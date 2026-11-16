@@ -87,10 +87,10 @@ export function clineErrorWords(error: string): string {
   return text.slice(0, -CLINE_REJECTION_SUFFIX.length).replace(/\s*--\s*$/, '').trim()
 }
 
-/** One Cline tool call, resolved from its row and the two rows that describe it. */
+/** One Cline tool call, resolved from its row and the request row before it. */
 export interface ClineToolRow {
   call: ClineToolStart
-  /** The call's result, from this row or from the paired result row. */
+  /** The call's result, which only a `tool.finished` row states. A start row holds none. */
   result: ClineToolFinish | undefined
   /** True when this row is the last one of its call. */
   finished: boolean
@@ -99,24 +99,22 @@ export interface ClineToolRow {
 /**
  * Build one tool row, or null for a row that is not a Cline tool row.
  *
- * Only a side of THIS call counts: one message can run several calls, and a sibling's
- * row is no side of this one. A result row whose request the store did not resolve
- * still draws, with the tool its own row states.
+ * A start row reads its own `tool.started` event alone. A result row reads its own
+ * `tool.finished` event and the start of its request. Only a request of THIS call
+ * counts: one message can run several calls, and a sibling's row is no side of this
+ * one. A result row whose request the store did not resolve still draws, with the
+ * tool its own row states.
  */
 export function clineToolRow(
   payload: Record<string, unknown> | undefined,
   request: ParsedMessageContent | undefined,
-  result: ParsedMessageContent | undefined,
   completion?: MessageCompletion,
 ): ClineToolRow | null {
   const ownCall = clineToolStart(payload)
   if (ownCall) {
-    const paired = clineToolFinish(result?.parentObject)
     return {
       call: ownCall,
-      result: paired?.id === ownCall.id
-        ? paired
-        : undefined,
+      result: undefined,
       // A retained start is the call's END: the turn stopped before its result.
       finished: retainedRowIsFinal(completion),
     }

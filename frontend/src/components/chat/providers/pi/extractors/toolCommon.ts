@@ -13,8 +13,8 @@ import { PI_TOOL_RESULT_FIELD } from '../protocol'
  *   update → { toolCallId, toolName, args, partialResult }
  *   end    → { toolCallId, toolName, result, isError }   // no args
  *
- * Callers that need both args and result on the end side reach back into
- * the matching start payload through `context.sources.request()`.
+ * A row of the end event reads the args from the matching start payload,
+ * which its extraction receives as `span.request` (see `piPairedRequest`).
  */
 export interface PiToolExecution {
   toolCallId: string
@@ -96,15 +96,5 @@ export function piPairedRequest(payload: Record<string, unknown> | null | undefi
   return current && paired && request?.parentObject?.type === PI_EVENT.ToolExecutionStart
     && paired.toolCallId === current.toolCallId && paired.toolName === current.toolName
     ? request
-    : undefined
-}
-
-/** Accept only the final event for this request and tool. */
-export function piPairedResult(payload: Record<string, unknown>, result?: ParsedMessageContent): ParsedMessageContent | undefined {
-  const current = piExtractTool(payload)
-  const paired = piExtractTool(result?.parentObject)
-  return current && paired && payload.type === PI_EVENT.ToolExecutionStart && result?.parentObject?.type === PI_EVENT.ToolExecutionEnd
-    && paired.toolCallId === current.toolCallId && paired.toolName === current.toolName
-    ? result
     : undefined
 }

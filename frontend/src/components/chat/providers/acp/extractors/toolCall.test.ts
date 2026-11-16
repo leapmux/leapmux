@@ -17,7 +17,7 @@ import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
 import { resolveMessageForRendering } from '../../registry'
 import { input } from '../../testUtils'
 import { classifyACPMessage } from '../classification'
-import { ACP_SPEC_READERS, ACP_TOOL_REQUEST_OVERRIDES, acpResultAvailable, acpResultStatesNothing, acpSpecFor, acpToolCall, acpToolCallNeedsResult, acpToolFacts, resolveACPMessage, resolveACPToolCall } from './toolCall'
+import { ACP_SPEC_READERS, ACP_TOOL_REQUEST_OVERRIDES, acpResultAvailable, acpResultStatesNothing, acpSpecFor, acpToolCall, acpToolFacts, resolveACPMessage, resolveACPToolCall } from './toolCall'
 
 /**
  * `typedResult` takes `{ kind, result }` with the result key omitted when the call
@@ -149,38 +149,6 @@ describe('an interrupted tool call (ACP)', () => {
   it('classifies the row as a tool use although its status is not final', () => {
     const parsed = parseMessageContent(message)
     expect(classifyACPMessage()(resolveMessageForRendering({ ...parsed, completion: message.completion }, AgentProvider.OPENCODE)).kind).toBe('tool_use')
-  })
-})
-
-// `acpToolCallNeedsResult` reads the TYPED request the adapter built, so a provider
-// that reclassifies a call changes what must be fetched for it.
-describe('acpToolCallNeedsResult', () => {
-  const execute = {
-    sessionUpdate: 'tool_call',
-    toolCallId: 'tc-1',
-    kind: 'execute',
-    status: 'pending',
-    rawInput: { command: 'ls -la' },
-  }
-
-  it('asks for the result when the target is still unknown', () => {
-    expect(acpToolCallNeedsResult({ ...execute, rawInput: {} }, undefined)).toBe(true)
-    expect(acpToolCallNeedsResult(execute, undefined)).toBe(false)
-  })
-
-  it('reads the KIND the adapter chose, not the one the call declared', () => {
-    // `agent` always asks for the result; `execute` with a command does not.
-    expect(acpToolCallNeedsResult(execute, () => ({
-      kind: 'agent',
-      request: { description: '', prompt: '' },
-    }))).toBe(true)
-  })
-
-  it('reads the typed request the adapter supplied', () => {
-    expect(acpToolCallNeedsResult({ ...execute, rawInput: {} }, () => ({
-      kind: 'execute',
-      request: { command: 'ls -la' },
-    }))).toBe(false)
   })
 })
 
@@ -857,21 +825,6 @@ describe('the file-change requests the arguments state', () => {
     expect(request('move', {})).toEqual([])
   })
 
-  // The result row exists to state the file. Once the request does, it is not needed.
-  it('stops asking for the result once the request states the file', () => {
-    const frame = {
-      sessionUpdate: 'tool_call',
-      toolCallId: 'tc-13',
-      kind: 'delete',
-      status: 'pending',
-    }
-    expect(acpToolCallNeedsResult({ ...frame, rawInput: {} }, undefined)).toBe(true)
-    expect(acpToolCallNeedsResult({
-      ...frame,
-      rawInput: { path: '/p/gone.ts' },
-    }, undefined)).toBe(false)
-  })
-
   // An edit that asks for several substitutions in one file states each of them. The
   // builder read one root pair alone, so a `multi_edit` opened with an empty list and
   // a header that could state no file at all.
@@ -1054,21 +1007,6 @@ describe('a file change that states its file alone', () => {
     expect(call.kind).toBe('edit')
     expect(fileChanges(call)).toStrictEqual(pathOnly('edit'))
     expect(call.result).toStrictEqual(unparsedResult('No change was needed.'))
-  })
-
-  // The request already states the file, so the result row is not necessary to state it.
-  it.each(['edit', 'write'])('stops asking for the result once the %s request states its file', (kind) => {
-    const frame = {
-      sessionUpdate: 'tool_call',
-      toolCallId: 'path-only',
-      kind,
-      status: 'pending',
-    }
-    expect(acpToolCallNeedsResult({ ...frame, rawInput: {} }, undefined)).toBe(true)
-    expect(acpToolCallNeedsResult({
-      ...frame,
-      rawInput: { path: '/p/file.ts' },
-    }, undefined)).toBe(false)
   })
 
   // The limit of the rule. A frame that identifies no ONE file still degrades, because

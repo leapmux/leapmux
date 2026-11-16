@@ -32,6 +32,53 @@ export const toolUseHeader = style({
   gap: 'var(--space-1)',
 })
 
+// The title box of a tool header: ONE line while the row is collapsed, whatever the
+// title holds. A request row draws its header from the newest call of its span, so
+// its title can gain words when the result lands. The height of one line is what
+// keeps that change from moving the row. The parts of the title stay flex items, as
+// they were in the header itself, so a long path still shrinks with an ellipsis while
+// the statistics beside it stay visible. A part that breaks onto a second line is cut
+// off; the row then offers Expand (see useHeaderTitleOverflow).
+export const toolUseTitle = style({
+  display: 'flex',
+  alignItems: 'baseline',
+  gap: 'var(--space-1)',
+  flex: '0 1 auto',
+  minWidth: 0,
+  height: '1lh',
+  overflow: 'clip',
+})
+
+// The pending row of a running call. Once it draws something, it takes the gap that the
+// list leaves above a row with span lines, which the list leaves out above a pending row
+// so that an empty one takes no space at all (see ChatRowItem.continuesPrevious). What the
+// row drew decides: a row that draws nothing holds no element and no text, so `:empty`
+// matches it (the empty text node that Solid leaves for a child that renders nothing does
+// not count). The value is the token that ChatView measures as the small gap of the list.
+export const toolPending = style({
+  selectors: {
+    '&:not(:empty)': {
+      paddingTop: 'var(--space-2)',
+    },
+  },
+})
+
+// An expanded row wraps its title instead of clipping it.
+export const toolUseTitleExpanded = style({
+  height: 'auto',
+  flexWrap: 'wrap',
+  overflow: 'visible',
+})
+
+// The parts of a title clip themselves (`clippedText`), so the expanded box lets
+// each part wrap as well. Two classes outrank the one class of `clippedText`.
+globalStyle(`${toolUseHeader} .${toolUseTitleExpanded} *`, {
+  whiteSpace: 'normal',
+  overflowWrap: 'anywhere',
+  overflow: 'visible',
+  textOverflow: 'clip',
+})
+
 // Icon styling — also used on the wrapper <span> so it acts as a line-height
 // box, keeping the icon vertically centred on the first text line. The box is
 // top-aligned by the globalStyle below, which reaches only the copy inside a

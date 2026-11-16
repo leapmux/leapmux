@@ -1,6 +1,6 @@
 import type { MessageCategory } from './messageClassifier'
-import type { MessageContentRenderContext } from './messageContentRenderer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { MessageContentRenderContext } from '~/test-support/messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider, ContentCompression, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -8,8 +8,8 @@ import { parseMessageContent } from '~/lib/messageParser'
 import { _resetMarkdownCache, getCachedMarkdownHtml } from '~/lib/renderMarkdown'
 import { assembledMessageRow } from '~/test-support/assembledMessages'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { renderMessageContent, renderPendingMessageContent } from '~/test-support/messageContentRenderer'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { renderMessageContent } from './messageContentRenderer'
 import { ThinkingMessage, UnrecognizedMessage } from './messageRenderers'
 import { MESSAGE_UI_KEY } from './messageUiKeys'
 import { resolveMessageForRendering } from './providers/registry'
@@ -131,25 +131,27 @@ function makeFakeMessage(content: Record<string, unknown>): AgentChatMessage {
   } as unknown as AgentChatMessage
 }
 
-// A pending write states the change it ASKS for, under the shared "Requested
-// changes" heading every provider draws for one. That claims nothing about the
-// file: the diff itself replaces it the moment the result lands, which is the
-// case below that pairs the two rows.
+// A running write states the change it ASKS for on its PENDING row, under the shared
+// "Requested changes" heading every provider draws for one. That claims nothing about
+// the file: the result row with the diff takes the pending row's place the moment the
+// result lands. The request row heads the call with the file and draws the same before
+// and after.
 describe('write/edit tool_use messages state the change they request', () => {
   const writeInput = { file_path: '/tmp/test.go', content: 'package main\n\nfunc main() {}\n' }
 
-  it('states a Write as a request while no result has landed', () => {
+  it('states a Write as a request on the pending row while no result has landed', () => {
     const category = { kind: 'tool_use' } as MessageCategory
-    const { container } = render(() =>
-      renderMessageContent(makeToolUseMessage('Write', writeInput), undefined, category, AgentProvider.CLAUDE_CODE),
-    )
-    expect(container.textContent).toContain('Requested changes')
-    expect(container.textContent).toContain('package main')
-    // The header still surfaces the file path.
-    expect(container.textContent).toContain('test.go')
+    const parsed = makeToolUseMessage('Write', writeInput)
+    const row = render(() => renderMessageContent(parsed, undefined, category, AgentProvider.CLAUDE_CODE))
+    const pending = render(() => renderPendingMessageContent(parsed, undefined, category, AgentProvider.CLAUDE_CODE))
+    // The header surfaces the file path, and the request row states no requested change.
+    expect(row.container.textContent).toContain('test.go')
+    expect(row.container.textContent).not.toContain('Requested changes')
+    expect(pending.container.textContent).toContain('Requested changes')
+    expect(pending.container.textContent).toContain('package main')
   })
 
-  it('drops the request once the paired tool_result lands', () => {
+  it('never states the requested change on the request row, also once the result lands', () => {
     const toolResultParsed = resolveMessageForRendering(parseMessageContent(makeFakeMessage({
       type: 'user',
       message: {
@@ -174,17 +176,24 @@ describe('write/edit tool_use messages state the change they request', () => {
     })), AgentProvider.CLAUDE_CODE)
     const context: MessageContentRenderContext = {
       sources: testMessageSources({
-        result: () => (toolResultParsed),
+        current: () => toolResultParsed,
+        request: () => resolveMessageForRendering(parseMessageContent(makeFakeMessage(makeToolUseMessage('Write', writeInput))), AgentProvider.CLAUDE_CODE),
+        role: () => 'result',
+        visibleRows: () => ({ request: true }),
       }),
     }
     const category = { kind: 'tool_use' } as MessageCategory
-    const { container } = render(() =>
-      renderMessageContent(makeToolUseMessage('Write', writeInput), context, category, AgentProvider.CLAUDE_CODE),
+    const request = render(() =>
+      renderMessageContent(makeToolUseMessage('Write', writeInput), undefined, category, AgentProvider.CLAUDE_CODE),
     )
-    // The result row draws the diff that landed, so the request must not repeat
-    // the content it asked for.
-    expect(container.textContent).not.toContain('Requested changes')
-    expect(container.textContent).not.toContain('package main')
+    const result = render(() =>
+      renderMessageContent(toolResultParsed.parentObject, context, { kind: 'tool_result' }, AgentProvider.CLAUDE_CODE),
+    )
+    // The result row draws the diff that landed, and the request row never repeats the
+    // content it asked for.
+    expect(request.container.textContent).not.toContain('Requested changes')
+    expect(request.container.textContent).not.toContain('package main')
+    expect(result.container.querySelector('[data-file-diff]')).not.toBeNull()
   })
 
   it('states an Edit as the substitution it requests', async () => {
@@ -194,15 +203,15 @@ describe('write/edit tool_use messages state the change they request', () => {
       new_string: 'afterMarkerXYZ',
     }
     const category = { kind: 'tool_use' } as MessageCategory
-    const { container } = render(() =>
-      renderMessageContent(makeToolUseMessage('Edit', editInput), undefined, category, AgentProvider.CLAUDE_CODE),
-    )
+    const parsed = makeToolUseMessage('Edit', editInput)
+    const row = render(() => renderMessageContent(parsed, undefined, category, AgentProvider.CLAUDE_CODE))
+    const { container } = render(() => renderPendingMessageContent(parsed, undefined, category, AgentProvider.CLAUDE_CODE))
     await settleWorkerReplies()
     expect(container.textContent).toContain('Requested changes')
     expect(container.textContent).toContain('beforeMarkerXYZ')
     expect(container.textContent).toContain('afterMarkerXYZ')
-    // Header still shows the file path.
-    expect(container.textContent).toContain('test.go')
+    // The request row's header shows the file path.
+    expect(row.container.textContent).toContain('test.go')
   })
 })
 

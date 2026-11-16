@@ -2,8 +2,8 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { todoList } from '~/components/todo/TodoList.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { renderMessageContent } from '~/test-support/messageContentRenderer'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { renderMessageContent } from '../messageContentRenderer'
 import { toolUseHeader } from '../toolStyles.css'
 import { providerFor } from './registry'
 import { input } from './testUtils'
@@ -64,9 +64,8 @@ describe.each([AgentProvider.CLAUDE_CODE, AgentProvider.ZCODE])('paired to-do la
     })
     const sources = (role: 'request' | 'result') => testMessageSources({
       request: () => parsed(request),
-      result: () => parsed(result),
       role: () => role,
-      visibleRows: () => ({ request: true, result: true }),
+      visibleRows: () => ({ request: true }),
     })
     const { container } = render(() => (
       <>

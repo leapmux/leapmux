@@ -6,7 +6,7 @@ import { isObject, pickObject } from '~/lib/jsonPick'
 import { createToolCall } from '../../../model/createToolCall'
 import { parseMcpContentItem } from '../../../model/mcpToolCall'
 import { retainedOutcome } from '../../registry'
-import { fastAgentArchiveSource, fastAgentNativeResultText, sameFastAgentArchiveCall } from '../archiveSource'
+import { fastAgentArchiveSource, fastAgentNativeResultText } from '../archiveSource'
 import { FAST_AGENT_SHELL } from '../protocol'
 
 function structuredExit(result: Record<string, unknown> | undefined): number | undefined {
@@ -28,20 +28,21 @@ function commandResult(output: string, code: number | undefined, failed: boolean
     return { output, failed: true }
   return { output }
 }
+/**
+ * The call of one archived tool row, from its own source alone.
+ *
+ * A request row states the call that the model asked for. A result row carries that
+ * request in its own provenance beside the answer, so it needs no other row either.
+ */
 export function fastAgentArchiveToolCall(input: RowExtractionInput): ToolCall | null {
   const own = fastAgentArchiveSource(input.resolved)
   if (!own || (own.kind !== 'request' && own.kind !== 'result'))
     return null
   if (input.spanId !== undefined && input.spanId !== own.spanId)
     return null
-  const sibling = input.span.result
-    ? fastAgentArchiveSource(input.span.result)
-    : undefined
   const resultSource = own.kind === 'result'
     ? own
-    : sibling?.kind === 'result' && sameFastAgentArchiveCall(own, sibling)
-      ? sibling
-      : undefined
+    : undefined
   const result = resultSource?.result
   const shellTool = own.request.name === FASTAGENT_TOOL.Bash || own.request.name === FASTAGENT_TOOL.Process
   const code = shellTool

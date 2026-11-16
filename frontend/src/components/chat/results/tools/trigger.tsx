@@ -1,6 +1,9 @@
+import type { JSX } from 'solid-js'
 import type { TriggerRequest } from '../../model/tools/trigger'
+import type { RequestSideCall } from './renderer'
 import CalendarClock from 'lucide-solid/icons/calendar-clock'
 import { proseRenderer, typedRequestLine } from './proseResult'
+import { previewWithoutResult } from './renderer'
 
 /** What one trigger action says it does, in the words the tool itself uses. */
 function triggerTitle(request: TriggerRequest): string {
@@ -48,13 +51,14 @@ export const triggerRenderer = proseRenderer<'trigger'>({
   // and every provider fills it -- so a row that never drew it left the reader with a
   // scheduled job and no answer to when it runs.
   //
-  // It draws while the call runs, which is the one state `typedRequestLine` is for and
-  // the rule `thinkRenderer` follows for its own line. A row that holds the answer
-  // draws that answer instead, so one span draws the line exactly once: a paired
-  // request carries no result, and the result row beside it carries one.
-  request(call) {
-    if (call.result !== undefined)
-      return null
-    return typedRequestLine([call.request.schedule])
-  },
+  // The pending row draws it while the call runs, which is the one state
+  // `typedRequestLine` is for and the rule `thinkRenderer` follows for its own line.
+  // The result row then draws the answer instead, so one span draws the line exactly
+  // once -- or the line again when the call ended with no answer.
+  pending: triggerPreview,
+  withoutTypedResult: previewWithoutResult(triggerPreview),
 })
+
+function triggerPreview(call: RequestSideCall<'trigger'>): JSX.Element | null {
+  return typedRequestLine([call.request.schedule])
+}

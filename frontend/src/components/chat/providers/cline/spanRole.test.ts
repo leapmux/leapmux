@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { resolveMessageForRendering } from '../registry'
-import { clineRelatedMessages, clineSpanRole } from './spanRole'
+import { clineNeedsRequest, clineSpanRole } from './spanRole'
 import { clineToolFinishRow, clineToolStartRow } from './toolResults.fixtures'
 import '~/components/chat/providers'
 
@@ -55,10 +55,22 @@ describe('clineSpanRole', () => {
   })
 })
 
-describe('clineRelatedMessages', () => {
-  it('pairs each side with the other', () => {
-    expect(clineRelatedMessages(resolved(clineToolStartRow('read_files', {})))).toEqual(['result'])
-    expect(clineRelatedMessages(resolved(clineToolFinishRow('read_files', [])))).toEqual(['request'])
-    expect(clineRelatedMessages(resolved({ content: 'hello' }))).toEqual([])
+describe('clineNeedsRequest', () => {
+  it('answers false for a start row, which states its own arguments', () => {
+    expect(clineNeedsRequest(resolved(clineToolStartRow('read_files', {})))).toBe(false)
+  })
+
+  it('answers true for a finish row, which states no arguments', () => {
+    expect(clineNeedsRequest(resolved(clineToolFinishRow('read_files', [])))).toBe(true)
+  })
+
+  // A stopped turn retains the start row as the span's result, and that row still
+  // holds its own arguments.
+  it('answers false for a retained start row', () => {
+    expect(clineNeedsRequest(resolved(clineToolStartRow('read_files', {}), MessageCompletion.INTERRUPTED))).toBe(false)
+  })
+
+  it('answers false for a row outside a tool span', () => {
+    expect(clineNeedsRequest(resolved({ content: 'hello' }))).toBe(false)
   })
 })

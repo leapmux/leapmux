@@ -914,7 +914,12 @@ describe('toolCallRow', () => {
     )
   })
 
-  it.each(['request', 'update', 'result'] as const)('selects the visible %s row of the call', (role) => {
+  it.each([
+    'request',
+    'update',
+    'result',
+    'pending',
+  ] as const)('selects the visible %s row of the call', (role) => {
     expect(toolCallRow(selectorPage(), 'call-1', role)).toBe(
       `[data-testid="message-bubble"][data-tool-call-id="call-1"][data-tool-row-role="${role}"]:visible`,
     )

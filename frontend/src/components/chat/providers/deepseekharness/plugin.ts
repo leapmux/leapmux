@@ -10,7 +10,7 @@ import { deepseekHarnessConfiguration } from './pluginConfiguration'
 import { deepseekHarnessControls } from './pluginControls'
 import { resolveDeepseekHarnessMessage } from './resolveMessage'
 import { deepseekHarnessContextUsage } from './sessionMetadata'
-import { deepseekHarnessRelatedMessages, deepseekHarnessSpanRole } from './spanRole'
+import { deepseekHarnessNeedsRequest, deepseekHarnessSpanRole } from './spanRole'
 
 const deepseekHarnessPlugin: ProviderPlugin = {
   transcript: {
@@ -18,7 +18,7 @@ const deepseekHarnessPlugin: ProviderPlugin = {
     resolveMessage: resolveDeepseekHarnessMessage,
     classify: classifyDeepseekHarnessMessage,
     spanRole: deepseekHarnessSpanRole,
-    relatedMessages: deepseekHarnessRelatedMessages,
+    needsRequest: deepseekHarnessNeedsRequest,
     extractRow: deepseekHarnessExtractRow,
     extractDivider: deepseekHarnessResultDivider,
     notificationEntry: deepseekHarnessNotificationEntry,

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { input } from '../../testUtils'
 import { piAgentRequest, piAgentResult } from './agent'
-import { piPairedResult } from './toolCommon'
 
 const request = {
   type: 'tool_execution_start',
@@ -185,25 +184,6 @@ describe('pi agent source', () => {
       isError: true,
     }).outcome).toBe('failed')
     expect(piAgentRequest({ type: 'tool_execution_start' }).prompt).toBe('')
-  })
-
-  it('accepts only the matching final result for a request', () => {
-    const complete = result({ status: 'completed' })
-    expect(piPairedResult(request, input(complete))?.parentObject).toEqual(complete)
-    for (const changes of [
-      { toolCallId: '' },
-      { toolCallId: 'foreign' },
-      { toolCallId: 1 },
-      { toolName: 'read' },
-      { type: 'tool_execution_update' },
-    ]) {
-      expect(piPairedResult(request, input({
-        ...complete,
-        ...changes,
-      }))).toBeUndefined()
-    }
-    expect(piPairedResult(complete, input(complete))).toBeUndefined()
-    expect(piPairedResult({ ...request, toolCallId: '' }, input(complete))).toBeUndefined()
   })
 
   it('rejects foreign request fields and leaves source messages unchanged', () => {

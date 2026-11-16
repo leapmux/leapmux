@@ -8,14 +8,14 @@ import { commandCodeResultDivider } from './extractors/resultDivider'
 import { commandCodeExtractRow } from './extractors/row'
 import { commandCodePermissionPresets } from './permissionPresets'
 import { commandCodeConfiguration } from './pluginConfiguration'
-import { commandCodeRelatedMessages, commandCodeSpanRole } from './spanRole'
+import { commandCodeNeedsRequest, commandCodeSpanRole } from './spanRole'
 
 const commandCodePlugin: ProviderPlugin = {
   transcript: {
     outputFilePaths: commandCodeOutputFilePaths,
     classify: classifyCommandCodeMessage,
     spanRole: commandCodeSpanRole,
-    relatedMessages: commandCodeRelatedMessages,
+    needsRequest: commandCodeNeedsRequest,
     extractRow: commandCodeExtractRow,
     extractDivider: commandCodeResultDivider,
     notificationEntry: commandCodeNotificationEntry,

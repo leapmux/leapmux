@@ -38,9 +38,10 @@ export function composeGeminiTranscript(base: ProviderTranscriptCapability): Pro
       : geminiNativeMessage(parsed)
         ? 'other'
         : base.spanRole(parsed),
-    relatedMessages: parsed => geminiNativeMessage(parsed) || geminiStoredToolRecord(parsed.parentObject)
-      ? []
-      : base.relatedMessages?.(parsed) ?? [],
+    // A native child record states its whole call, so it reads no request.
+    needsRequest: parsed => geminiNativeMessage(parsed) || geminiStoredToolRecord(parsed.parentObject)
+      ? false
+      : base.needsRequest?.(parsed) ?? false,
     extractRow: input => geminiNativeMessage(input.resolved) || geminiStoredToolRecord(input.resolved.parentObject)
       ? geminiNativeRow(input)
       : base.extractRow(input),

@@ -1,5 +1,5 @@
 import type { MessageCategory } from '../messageClassifier'
-import type { MessageContentRenderContext } from '../messageContentRenderer'
+import type { MessageContentRenderContext } from '~/test-support/messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -7,7 +7,7 @@ import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { providerToolMeta } from '~/test-support/toolCallFixture'
 import '~/components/chat/providers'
 
-const { renderMessageContent } = await import('../messageContentRenderer')
+const { renderMessageContent } = await import('~/test-support/messageContentRenderer')
 
 const LISTING = [
   '| Name | Kind | Status |',

@@ -9,6 +9,7 @@ import { createControlAnswerState } from '../../controls/types'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import { WORKSPACE_TRUST_OPTION } from '../workspaceTrust'
+import { copilotNeedsRequest } from './spanRole'
 
 import './plugin'
 
@@ -197,32 +198,52 @@ describe('a copilot tool row the turn interrupted', () => {
   })
 })
 
-// A result states no tool name and no arguments of its own, so it always wants its
-// request. A request wants its result only when the body comes from there: an agent
-// call, or a call whose arguments are empty.
-describe('copilot relatedMessages', () => {
+// A completion states no tool name and no arguments of its own, so it needs its
+// request. A start states both, so it needs nothing, also when its arguments are empty.
+describe('copilot needsRequest', () => {
   const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
 
-  it('a result wants its request', () => {
-    expect(plugin?.transcript.relatedMessages!(input(frame(COPILOT_EVENT.ToolCompleted, {
+  it('is the Copilot reader', () => {
+    expect(plugin.transcript.needsRequest).toBe(copilotNeedsRequest)
+  })
+
+  it('answers true for a completion', () => {
+    expect(copilotNeedsRequest(input(frame(COPILOT_EVENT.ToolCompleted, {
       toolCallId: 'call',
       success: true,
       result: { content: 'ok' },
-    })))).toEqual(['request'])
+    })))).toBe(true)
   })
 
-  it('a request wants its result only when the body comes from there', () => {
-    expect(plugin?.transcript.relatedMessages!(input(frame(COPILOT_EVENT.ToolStarted, { toolCallId: 'call', toolName: COPILOT_TOOL.Bash, arguments: {} })))).toEqual(['result'])
-    expect(plugin?.transcript.relatedMessages!(input(frame(COPILOT_EVENT.ToolStarted, {
+  it('answers false for every start, whatever its tool and arguments', () => {
+    expect(copilotNeedsRequest(input(frame(COPILOT_EVENT.ToolStarted, { toolCallId: 'call', toolName: COPILOT_TOOL.Bash, arguments: {} })))).toBe(false)
+    expect(copilotNeedsRequest(input(frame(COPILOT_EVENT.ToolStarted, {
       toolCallId: 'call',
       toolName: COPILOT_TOOL.Bash,
       arguments: { command: 'ls' },
-    })))).toEqual([])
-    expect(plugin?.transcript.relatedMessages!(input(frame(COPILOT_EVENT.ToolStarted, {
+    })))).toBe(false)
+    expect(copilotNeedsRequest(input(frame(COPILOT_EVENT.ToolStarted, {
       toolCallId: 'call',
       toolName: COPILOT_TOOL.Task,
       arguments: { prompt: 'x' },
-    })))).toEqual(['result'])
+    })))).toBe(false)
+  })
+
+  // A stopped turn retains the start as the span's result, and that row still states
+  // its own tool and arguments.
+  it('answers false for a retained start', () => {
+    expect(copilotNeedsRequest({
+      ...input(frame(COPILOT_EVENT.ToolStarted, {
+        toolCallId: 'call',
+        toolName: COPILOT_TOOL.Bash,
+        arguments: { command: 'ls' },
+      })),
+      completion: MessageCompletion.INTERRUPTED,
+    })).toBe(false)
+  })
+
+  it('answers false for a row outside a tool span', () => {
+    expect(copilotNeedsRequest(input(frame(COPILOT_EVENT.AssistantMessage, { content: 'hi' })))).toBe(false)
   })
 })
 

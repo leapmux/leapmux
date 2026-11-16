@@ -3,8 +3,8 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { CLINE_TOOL } from '~/generated/contracts/cline-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { renderMessageContent } from '~/test-support/messageContentRenderer'
 import { testMessageSources } from '~/test-support/messageRenderSources'
-import { renderMessageContent } from '../../messageContentRenderer'
 import { toolOutcomeLabel } from '../../results/toolOutcomeLabel'
 import { toolResultCollapsed } from '../../toolStyles.css'
 import { providerFor } from '../registry'
@@ -34,7 +34,7 @@ function renderResult(name: string, args: Record<string, unknown>, output: unkno
     current: () => parsed(row),
     request: () => parsed(request),
     role: () => 'result',
-    visibleRows: () => ({ request: true, result: true }),
+    visibleRows: () => ({ request: true }),
   })
   return render(() => renderMessageContent(row, { premeasureMode: true, spanType: name, sources }, category, AgentProvider.CLINE))
 }

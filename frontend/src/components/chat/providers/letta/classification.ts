@@ -4,6 +4,7 @@ import { LETTA_DELTA_FIELD, LETTA_DELTA_KIND, LETTA_MESSAGE } from '~/generated/
 import { ASSEMBLED_MESSAGE } from '~/generated/contracts/worker-vocab'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { notificationClassifierFor } from '../../notificationClassification'
+import { retainedRowIsFinal } from '../registry'
 import { lettaNotificationEntry } from './extractors/notification'
 import { isLettaToolProgress, lettaReturnedData, lettaToolPayload } from './toolOutput'
 
@@ -50,7 +51,7 @@ export function classifyLettaMessage(input: ClassificationInput): MessageCategor
     case LETTA_DELTA_KIND.ReasoningMessage:
       return { kind: 'assistant_thinking' }
     case LETTA_DELTA_KIND.ClientToolStart:
-      return { kind: 'tool_use' }
+      return lettaCallCategory(input)
     case LETTA_DELTA_KIND.ToolCallMessage: {
       const singular = pickObject(source, LETTA_DELTA_FIELD.ToolCall)
       const calls = source[LETTA_DELTA_FIELD.ToolCalls]
@@ -59,7 +60,7 @@ export function classifyLettaMessage(input: ClassificationInput): MessageCategor
         : null
       const call = singular ?? first
       return call && pickString(call, LETTA_DELTA_FIELD.ToolCallID) && pickString(call, LETTA_DELTA_FIELD.Name)
-        ? { kind: 'tool_use' }
+        ? lettaCallCategory(input)
         : { kind: 'unknown' }
     }
     case LETTA_DELTA_KIND.ToolReturnMessage:
@@ -81,4 +82,15 @@ export function classifyLettaMessage(input: ClassificationInput): MessageCategor
     return { kind: 'user_content' }
 
   return notification([parent])
+}
+
+/**
+ * The category of a frame that opens a call. The Worker stores that frame again, with
+ * a completion, as the closing row of a call that its turn or its process outlived, and
+ * that copy is the call's result (see lettaSpanRole).
+ */
+function lettaCallCategory(input: ClassificationInput): MessageCategory {
+  return retainedRowIsFinal(input.completion)
+    ? { kind: 'tool_result' }
+    : { kind: 'tool_use' }
 }

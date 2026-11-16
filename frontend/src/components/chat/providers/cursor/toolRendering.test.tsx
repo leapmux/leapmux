@@ -3,13 +3,13 @@ import { describe, expect, it } from 'vitest'
 import { CURSOR_METHOD, CURSOR_SUPPLEMENT } from '~/generated/contracts/cursor-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { renderListedMessageContent, renderMessageContent } from '~/test-support/messageContentRenderer'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { pngBase64 } from '~/test-support/pngFixture'
 import { providerRowImages, providerToolMeta } from '~/test-support/toolCallFixture'
 import { ChatImageViewer } from '../../ChatImageViewer'
-import { renderMessageContent } from '../../messageContentRenderer'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import './plugin'
@@ -34,7 +34,7 @@ function renderTool(fields: Record<string, unknown>, supplemental?: Record<strin
       : undefined,
   }
   const category = providerFor(AgentProvider.CURSOR)!.transcript.classify(parsed)
-  return render(() => renderMessageContent(tool, {
+  return render(() => renderListedMessageContent(tool, {
     premeasureMode: true,
     sources: testMessageSources({
       current: () => parsed,
@@ -116,20 +116,15 @@ describe('cursor native tool rendering', () => {
       }
     }
 
-    function renderRow(tool: Record<string, unknown>, role: 'request' | 'result', result?: Record<string, unknown>) {
+    function renderRow(tool: Record<string, unknown>, role: 'request' | 'result') {
       const parsed = parse(tool)
       const category = providerFor(AgentProvider.CURSOR)!.transcript.classify(parsed)
       const sources = testMessageSources({
         current: () => parsed,
         role: () => role,
-        visibleRows: () => ({ request: role === 'request', result: role === 'result' || result !== undefined }),
-        ...(result
-          ? {
-              result: () => parse(result),
-            }
-          : {}),
+        visibleRows: () => ({ request: role === 'request' }),
       })
-      return render(() => renderMessageContent(tool, { premeasureMode: true, sources }, category, AgentProvider.CURSOR))
+      return render(() => renderListedMessageContent(tool, { premeasureMode: true, sources }, category, AgentProvider.CURSOR))
     }
 
     // While the approval is open there is no completing row, so the proposing row is where
@@ -146,14 +141,24 @@ describe('cursor native tool rendering', () => {
     })
 
     // Once the call completes, the completing row draws the plan and the proposing row
-    // must not draw it as well.
+    // must not draw it as well: the proposing row draws no plan of its own, and the
+    // pending row that drew it leaves when the completing row joins the list.
     it('renders the plan on the row that completes the call', async () => {
       expect(renderRow(done, 'result').container.textContent).toContain('PLANMARKER-7')
       await settleWorkerReplies()
     })
 
-    it('does not repeat the plan on the proposing row once a result exists', () => {
-      const { container } = renderRow(call, 'request', done)
+    it('draws no plan on the proposing row itself', async () => {
+      const parsed = parse(call)
+      const category = providerFor(AgentProvider.CURSOR)!.transcript.classify(parsed)
+      const sources = testMessageSources({
+        current: () => parsed,
+        role: () => 'request',
+        visibleRows: () => ({ request: false }),
+      })
+      const { container } = render(() => renderMessageContent(call, { premeasureMode: true, sources }, category, AgentProvider.CURSOR))
+      await settleWorkerReplies()
+      expect(container.textContent).toContain('Add CHANGELOG.md')
       expect(container.textContent).not.toContain('PLANMARKER-7')
     })
 

@@ -10,9 +10,8 @@ function extraction(own: Record<string, unknown>): RowExtractionInput {
     category: { kind: 'tool_result' },
     span: {
       request: undefined,
-      result: undefined,
       role: 'result',
-      visibleRows: { request: false, result: true },
+      visibleRows: { request: false },
     },
   }
 }

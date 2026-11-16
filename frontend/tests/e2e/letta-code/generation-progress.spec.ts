@@ -55,7 +55,8 @@ lettaTest('replaces live native shell windows and retains one actual final resul
         }),
         contentType: 'application/json',
       })
-      const live = toolCallRow(native.page, PROGRESS_OUTPUT_CALL_ID, 'request')
+      // The pending row below the request row draws the live output while the call runs.
+      const live = toolCallRow(native.page, PROGRESS_OUTPUT_CALL_ID, 'pending')
       await expect(live).toHaveCount(1)
       await expect(live).toBeVisible()
       // The shared publisher sends only the last 2 KiB. Native markers remain in the retained records.

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { providerToolCall } from '~/test-support/toolCallFixture'
-import { describeACPProviderBasics } from '../acp/testUtils'
+import { providerRow, providerToolCall } from '~/test-support/toolCallFixture'
+import { acpTextContent, describeACPCallRows, describeACPProviderBasics } from '../acp/testUtils'
 import { providerFor } from '../registry'
+import { input } from '../testUtils'
 import './plugin'
 
 const MODE_AUTO = 'auto'
@@ -114,5 +115,112 @@ describe('native output without a filesystem pointer', () => {
     const registered = providerFor(AgentProvider.GOOSE)
     expect(registered).toBeDefined()
     expect(registered?.transcript.outputFilePaths).toBeTypeOf('function')
+  })
+})
+
+// A delegation reports its run in the answer alone. The request row draws the launch,
+// and the result row carries the report.
+describe('goose call rows', () => {
+  describeACPCallRows(AgentProvider.GOOSE, [
+    {
+      name: 'a delegation that reports its run',
+      request: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'goose-delegate',
+        kind: 'other',
+        title: 'delegate',
+        status: 'pending',
+        rawInput: { instructions: 'Inspect the parser' },
+        _meta: {
+          goose: {
+            toolCall: { toolName: 'summon__delegate' },
+          },
+        },
+      },
+      result: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'goose-delegate',
+        status: 'completed',
+        content: acpTextContent('The parser is fine.'),
+      },
+      requestCall: {
+        kind: 'agent',
+        status: 'pending',
+        request: { description: 'Inspect the parser', prompt: 'Inspect the parser' },
+      },
+      resultCall: {
+        kind: 'agent',
+        status: 'completed',
+        request: { description: 'Inspect the parser' },
+        result: {
+          agents: [
+            { outcome: 'completed', body: 'The parser is fine.' },
+          ],
+        },
+      },
+    },
+  ])
+})
+
+// A subagent's tool request rides an unfinished update of the delegation, and its row
+// draws as an update row. It states its whole call in its own frame, so it reads no
+// other message of its span: neither the delegation's request nor its result.
+describe('goose subagent tool request rows', () => {
+  const delegation = {
+    sessionUpdate: 'tool_call',
+    toolCallId: 'goose-delegate',
+    kind: 'other',
+    title: 'delegate',
+    status: 'pending',
+    rawInput: { instructions: 'Inspect the parser' },
+    _meta: {
+      goose: {
+        toolCall: { toolName: 'summon__delegate' },
+      },
+    },
+  }
+  const update = {
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'goose-delegate',
+    status: 'in_progress',
+    _meta: {
+      toolNotification: {
+        type: 'message',
+        params: {
+          data: {
+            type: 'subagent_tool_request',
+            subagent_id: 'child',
+            tool_call: {
+              name: 'developer__shell',
+              arguments: { command: 'ls' },
+            },
+          },
+        },
+      },
+    },
+  }
+
+  it('builds the update row from its own frame, with no result', () => {
+    const row = providerRow(AgentProvider.GOOSE, update, {
+      role: 'other',
+      request: input(delegation, null, AgentProvider.GOOSE),
+    })
+    expect(row).toMatchObject({
+      kind: 'tool',
+      role: 'update',
+      hasRequestRow: true,
+      call: {
+        kind: 'execute',
+        label: 'Tool request',
+        status: 'in_progress',
+        request: { command: 'ls' },
+      },
+    })
+    expect(row?.kind === 'tool' && row.call.result).toBeUndefined()
+    expect(JSON.stringify(row)).not.toContain('Inspect the parser')
+  })
+
+  it('needs no request for the update row', () => {
+    expect(providerFor(AgentProvider.GOOSE)!.transcript.needsRequest?.(input(update, null, AgentProvider.GOOSE))).toBe(false)
   })
 })

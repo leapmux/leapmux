@@ -27,34 +27,41 @@ import { useCollapsedItems } from './useCollapsedLines'
  *
  * The request states the first one, so listing it again in the body would repeat it.
  */
-export function extraQueries(request: Pick<WebSearchRequest, 'queries'> | undefined): string[] {
-  return request?.queries?.slice(1) ?? []
+export function extraQueries(request: Pick<WebSearchRequest, 'queries'>): string[] {
+  return request.queries?.slice(1) ?? []
 }
 
+/**
+ * The queries a search ran beyond the first, drawn on Expand.
+ *
+ * One search often runs several queries, and the row's TITLE states the first. The
+ * queries are arguments of the call, so the row that draws the REQUEST states them: it
+ * never waits for the result, and the result row draws only what the search found.
+ */
+export function WebSearchQueries(props: { request: WebSearchRequest, context?: ToolResultRenderContext }): JSX.Element {
+  const expanded = () => getToolResultExpanded(props.context)
+  return (
+    <Show when={expanded() && extraQueries(props.request).length > 0}>
+      <div class={toolMessage}>
+        <For each={extraQueries(props.request)}>
+          {query => <div class={toolInputSummary}>{renderQueryTitle(query) || query}</div>}
+        </For>
+      </div>
+    </Show>
+  )
+}
+
+/** What a search found: its links and its summary. */
 export function WebSearchResultsBody(props: {
   source: WebSearchResult
-  /**
-   * What the call asked for. The row's title states the action itself; this body
-   * reads it for the QUERIES the title has no room for.
-   */
-  request?: WebSearchRequest
   context?: ToolResultRenderContext
 }): JSX.Element {
   const expanded = () => getToolResultExpanded(props.context)
   const links = () => props.source.links
   const { isCollapsed, displayItems: displayLinks } = useCollapsedItems<WebSearchLink>({ items: links, expanded })
-  const queries = () => extraQueries(props.request)
 
   return (
     <div class={toolMessage}>
-      {/* One search often runs several queries, and the row's TITLE states the
-          first. The rest are what the expand control is for on a row that returned
-          no links of its own. */}
-      <Show when={expanded()}>
-        <For each={queries()}>
-          {query => <div class={toolInputSummary}>{renderQueryTitle(query) || query}</div>}
-        </For>
-      </Show>
       <Show when={links().length > 0}>
         <div class={toolResultPrompt}>
           {pluralize(links().length, 'result')}

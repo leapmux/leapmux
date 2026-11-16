@@ -178,7 +178,7 @@ func TestLettaStaleRunCannotEndAReusedCall(t *testing.T) {
 		assert.Equal(t, returned, rows[len(rows)-1].Content)
 	}
 	assert.Empty(t, sink.ClosedSpans())
-	assert.False(t, a.tools[lettaToolKey("", "reused")].executionEnded)
+	assert.False(t, a.tools[lettaToolKey("", "reused")].ended())
 	window, _ := lettaOutputFrame(t, "", lettaOutputWindow("reused", "new-run", "current new data"))
 	a.HandleOutput(window)
 	assert.Equal(t, []agent.ProgressUpdate{agent.ResetOutputProgress("letta-tool-reused"), agent.OutputTailProgress("letta-tool-reused", "current new data", false)}, sink.ProgressUpdates())
@@ -213,7 +213,7 @@ func TestLettaMalformedProgressAndLifecyclePreserveBytesWithoutChangingTheCall(t
 	}
 	assert.Empty(t, sink.ProgressUpdates())
 	assert.Empty(t, sink.ClosedSpans())
-	assert.False(t, a.tools[lettaToolKey("", "call")].executionEnded)
+	assert.False(t, a.tools[lettaToolKey("", "call")].ended())
 }
 
 func TestLettaNativeToolCallCarriesItsRunIntoLiveOutput(t *testing.T) {
@@ -258,4 +258,225 @@ func TestLettaConcurrentNativeDispatchKeepsIndependentLiveCalls(t *testing.T) {
 		call := "concurrent-" + strconv.Itoa(i)
 		assert.Contains(t, sink.ProgressUpdates(), agent.OutputTailProgress("letta-tool-"+call, call+" current window", false))
 	}
+}
+
+// lettaTurnEnd is a `turn_finished` frame with the given stop reason.
+func lettaTurnEnd(t *testing.T, stopReason string) []byte {
+	t.Helper()
+	frame, err := json.Marshal(map[string]any{"type": "turn_finished", "turn_id": "turn-" + stopReason, "stop_reason": stopReason})
+	require.NoError(t, err)
+	return frame
+}
+
+// lettaClosingRows returns the closing rows that copy an opening row: the rows
+// whose completion is set and that close a span.
+func lettaClosingRows(rows []agenttest.Message) []agenttest.Message {
+	var closing []agenttest.Message
+	for _, row := range rows {
+		if row.Closing && row.Completion != "" {
+			closing = append(closing, row)
+		}
+	}
+	return closing
+}
+
+func TestLettaTurnEndStoresTheStartOfEachCallItOutlivesAsItsClosingRow(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		endStatus  string
+		stopReason string
+		want       agent.MessageCompletion
+	}{
+		// `client_tool_end` states how the call ended, whatever the turn did.
+		{name: "an error end", endStatus: "error", stopReason: "end_turn", want: agent.MessageCompletionError},
+		{name: "a success end", endStatus: "success", stopReason: "cancelled", want: agent.MessageCompletionComplete},
+		// A call that never ended did not finish, also in a turn that ended normally.
+		{name: "no end in a turn that ended", stopReason: "end_turn", want: agent.MessageCompletionInterrupted},
+		{name: "no end in a cancelled turn", stopReason: "cancelled", want: agent.MessageCompletionInterrupted},
+		{name: "no end in a failed turn", stopReason: "error", want: agent.MessageCompletionError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink := newLettaChildTestAgent(t)
+			start, nativeStart := lettaOutputFrame(t, "", lettaOutputStart("call", "run"))
+			window, _ := lettaOutputFrame(t, "", lettaOutputWindow("call", "run", "actual live output"))
+			a.HandleOutput(start)
+			a.HandleOutput(window)
+			if tc.endStatus != "" {
+				end, _ := lettaOutputFrame(t, "", map[string]any{"message_type": "client_tool_end", "tool_call_id": "call", "run_id": "run", "status": tc.endStatus})
+				a.HandleOutput(end)
+			}
+			assert.Empty(t, sink.ClosedSpans())
+			assert.Empty(t, lettaClosingRows(sink.Messages()))
+
+			a.HandleOutput(lettaTurnEnd(t, tc.stopReason))
+			rows := sink.Messages()
+			require.GreaterOrEqual(t, len(rows), 2)
+			closing, turnEnd := rows[len(rows)-2], rows[len(rows)-1]
+			assert.Equal(t, nativeStart, closing.Content, "the closing row holds only the bytes that Letta Code sent")
+			assert.Equal(t, tc.want, closing.Completion)
+			assert.True(t, closing.Closing)
+			assert.Equal(t, "letta-tool-call", closing.SpanID)
+			assert.Equal(t, "Bash", closing.SpanType)
+			assert.Equal(t, "local-conv-1", closing.AgentSessionID)
+			assert.True(t, turnEnd.TurnEnd, "the closing row precedes the turn end")
+			assert.Len(t, lettaClosingRows(rows), 1)
+			assert.Equal(t, []string{"letta-tool-call"}, sink.ClosedSpans())
+			assert.Contains(t, sink.ProgressUpdates(), agent.CompleteOutputProgress("letta-tool-call"))
+			assert.Empty(t, a.tools)
+		})
+	}
+}
+
+func TestLettaTurnEndStoresNoClosingRowForACallWithItsNativeResult(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	start, _ := lettaOutputFrame(t, "", lettaOutputStart("call", "run"))
+	a.HandleOutput(start)
+	// Letta Code sends the result of a call that an interrupt stops before the turn end.
+	end, _ := lettaOutputFrame(t, "", map[string]any{"message_type": "client_tool_end", "tool_call_id": "call", "run_id": "run", "status": "error"})
+	a.HandleOutput(end)
+	final, native := lettaOutputFrame(t, "", map[string]any{"message_type": "tool_return_message", "id": "synthetic-interrupt-tool-return-1", "tool_call_id": "call", "run_id": "run", "status": "error", "tool_return": "User interrupted the stream"})
+	a.HandleOutput(final)
+	a.HandleOutput([]byte(lettaLiveTurnFinishedCancelled))
+	rows := sink.Messages()
+	require.Len(t, rows, 4)
+	assert.Equal(t, native, rows[2].Content)
+	assert.True(t, rows[2].Closing)
+	assert.Empty(t, lettaClosingRows(rows))
+	assert.True(t, rows[3].TurnEnd)
+	assert.Equal(t, []string{"letta-tool-call"}, sink.ClosedSpans())
+}
+
+func TestLettaTurnEndClosesTheCallsItOutlivesInTheOrderTheyOpened(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	var calls []string
+	var starts [][]byte
+	for i := range 8 {
+		call := "call-" + strconv.Itoa(7-i)
+		calls = append(calls, call)
+		start, native := lettaOutputFrame(t, "", lettaOutputStart(call, "run"))
+		starts = append(starts, native)
+		a.HandleOutput(start)
+	}
+	// One native message can open several calls. Each call keeps its own row.
+	multi, _ := lettaOutputFrame(t, "", map[string]any{"message_type": "tool_call_message", "run_id": "run", "tool_calls": []any{
+		map[string]any{"tool_call_id": "batch-a", "name": "Read", "arguments": `{"file_path":"a"}`},
+		map[string]any{"tool_call_id": "batch-b", "name": "Grep", "arguments": `{"pattern":"b"}`},
+	}})
+	a.HandleOutput(multi)
+	opened := sink.Messages()
+	require.Len(t, opened, 10)
+	calls = append(calls, "batch-a", "batch-b")
+	starts = append(starts, opened[8].Content, opened[9].Content)
+
+	a.HandleOutput([]byte(lettaLiveTurnFinishedCancelled))
+	closing := lettaClosingRows(sink.Messages())
+	require.Len(t, closing, len(calls))
+	var closedSpans []string
+	for i, row := range closing {
+		assert.Equal(t, "letta-tool-"+calls[i], row.SpanID)
+		assert.Equal(t, starts[i], row.Content)
+		assert.Equal(t, agent.MessageCompletionInterrupted, row.Completion)
+		closedSpans = append(closedSpans, "letta-tool-"+calls[i])
+	}
+	assert.Equal(t, "Grep", closing[len(closing)-1].SpanType)
+	assert.Equal(t, closedSpans, sink.ClosedSpans())
+	assert.Equal(t, []int{len(calls)}, agenttest.TurnToolUseCounts(t, sink.Messages()), "the turn counts each call that it outlived")
+}
+
+// A call ID that a new run starts again opens the call again: the newer start replaces
+// the older, so the turn end closes the call once, with the newer start.
+func TestLettaTurnEndClosesACallThatANewRunStartedAgainOnce(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	older, _ := lettaOutputFrame(t, "", lettaOutputStart("reused", "old-run"))
+	newerDelta := lettaOutputStart("reused", "new-run")
+	newerDelta["tool_args"] = `{"command":"newer native command"}`
+	newer, nativeNewer := lettaOutputFrame(t, "", newerDelta)
+	a.HandleOutput(older)
+	a.HandleOutput(newer)
+	a.HandleOutput([]byte(lettaLiveTurnFinishedCancelled))
+	closing := lettaClosingRows(sink.Messages())
+	require.Len(t, closing, 1)
+	assert.Equal(t, nativeNewer, closing[0].Content)
+	assert.Equal(t, agent.MessageCompletionInterrupted, closing[0].Completion)
+	assert.Equal(t, []string{"letta-tool-reused"}, sink.ClosedSpans())
+}
+
+func TestLettaTurnEndLeavesTheOpenCallsOfAChildToTheirLateNativeResult(t *testing.T) {
+	t.Parallel()
+	a, root := newLettaChildTestAgent(t)
+	a.HandleOutput(lettaOutputChildState(t, "child", "running"))
+	row, found := root.BackgroundTask("child")
+	require.True(t, found)
+	child := root.Child(row.ChildAgentID)
+	start, _ := lettaOutputFrame(t, "child", lettaOutputStart("child-call", "child-run"))
+	a.HandleOutput(start)
+	a.HandleOutput([]byte(lettaLiveTurnFinishedCancelled))
+	assert.Empty(t, lettaClosingRows(child.Messages()), "the turn of the parent does not end the call of a child")
+	assert.Contains(t, a.tools, lettaToolKey("child", "child-call"))
+
+	a.HandleOutput(lettaOutputChildState(t, "child", "completed"))
+	assert.Empty(t, lettaClosingRows(child.Messages()), "a native result of a child can follow the end of its task")
+	assert.Equal(t, []string{"letta-tool-child-call"}, child.ClosedSpans())
+	final, native := lettaOutputFrame(t, "child", map[string]any{"message_type": "tool_return_message", "id": "synthetic-tool-return-late", "tool_call_id": "child-call", "run_id": "child-run", "status": "success", "tool_return": "late child result"})
+	a.HandleOutput(final)
+	rows := child.Messages()
+	assert.Equal(t, native, rows[len(rows)-1].Content)
+	assert.True(t, rows[len(rows)-1].Closing)
+	assert.Empty(t, lettaClosingRows(rows), "the call has one result")
+}
+
+func TestLettaProcessExitStoresAClosingRowForEachOpenCallOfEachScope(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		completion agent.MessageCompletion
+		want       agent.MessageCompletion
+	}{
+		{name: "a stop", completion: agent.MessageCompletionInterrupted, want: agent.MessageCompletionInterrupted},
+		{name: "a crash", completion: agent.MessageCompletionError, want: agent.MessageCompletionError},
+		// The process ended cleanly, but the call never finished.
+		{name: "a clean exit", completion: agent.MessageCompletionComplete, want: agent.MessageCompletionInterrupted},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, root := newLettaChildTestAgent(t)
+			a.HandleOutput(lettaOutputChildState(t, "child", "running"))
+			row, found := root.BackgroundTask("child")
+			require.True(t, found)
+			child := root.Child(row.ChildAgentID)
+			for _, scope := range []string{"", "child"} {
+				start, _ := lettaOutputFrame(t, scope, lettaOutputStart("call", "run"))
+				a.HandleOutput(start)
+			}
+			a.finishOutputAfterExit(tc.completion)
+			for _, sink := range []*agenttest.Sink{root, child} {
+				closing := lettaClosingRows(sink.Messages())
+				require.Len(t, closing, 1)
+				assert.Equal(t, tc.want, closing[0].Completion)
+				assert.Equal(t, "letta-tool-call", closing[0].SpanID)
+				assert.Equal(t, []string{"letta-tool-call"}, sink.ClosedSpans())
+			}
+			assert.Empty(t, a.tools)
+		})
+	}
+}
+
+// handleFrame refuses a frame once the agent discards output, but DiscardOutput
+// can land while a frame is in dispatch, after that check.
+func TestLettaCloseToolScopeStoresNoClosingRowOnceOutputIsDiscarded(t *testing.T) {
+	t.Parallel()
+	a, sink := newLettaChildTestAgent(t)
+	start, _ := lettaOutputFrame(t, "", lettaOutputStart("call", "run"))
+	a.HandleOutput(start)
+	a.DiscardOutput()
+	a.closeToolScope("", a.sink, agent.MessageCompletionInterrupted)
+	assert.Empty(t, lettaClosingRows(sink.Messages()))
+	assert.Equal(t, []string{"letta-tool-call"}, sink.ClosedSpans(), "the call still ends")
+	assert.Contains(t, sink.ProgressUpdates(), agent.CompleteOutputProgress("letta-tool-call"))
+	assert.Empty(t, a.tools)
 }

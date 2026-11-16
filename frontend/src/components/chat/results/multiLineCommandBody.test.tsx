@@ -78,9 +78,14 @@ describe('CommandInputSummary', () => {
     restore()
   })
 
-  it('reports nothing for a summary that mounts expanded', () => {
-    const { reported, restore } = mountSummary({ scroll: 120, client: 40 }, false)
-    expect(reported).toEqual([])
+  // The expand state of a row outlives a remount. A summary that mounts expanded has no
+  // collapsed answer yet, and its clip can be the one reason that the row is expandable,
+  // so it keeps the control that collapses the row until the summary collapses again.
+  it('reports a clip for a summary that mounts expanded, until it collapses and measures', () => {
+    const { reported, setCollapsed, restore } = mountSummary({ scroll: 40, client: 40 }, false)
+    expect(reported).toEqual([true])
+    setCollapsed(true)
+    expect(reported).toEqual([true, false])
     restore()
   })
 })

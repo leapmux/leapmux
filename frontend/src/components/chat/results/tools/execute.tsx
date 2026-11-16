@@ -2,7 +2,7 @@ import type { JSX } from 'solid-js'
 import type { ToolMetadataEntry } from '../../model/toolMetadata'
 import type { CommandAction, CommandLanguage, ExecuteRequest } from '../../model/tools/execute'
 import type { ToolResultRenderContext } from '../../renderContext'
-import type { ParsedCall, ToolKindRenderer, ToolRowView } from './renderer'
+import type { RequestSideCall, ToolKindRenderer, ToolRowView } from './renderer'
 import Terminal from 'lucide-solid/icons/terminal'
 import { For, Show } from 'solid-js'
 import { Tooltip } from '~/components/common/Tooltip'
@@ -123,7 +123,7 @@ function commandActionEntry(action: CommandAction, language: CommandLanguage | u
 }
 
 /** A single semantic action that can replace the generic execute title. */
-function knownActionForTitle(call: ParsedCall<'execute'>): Exclude<CommandAction, { kind: 'unknown' }> | undefined {
+function knownActionForTitle(call: RequestSideCall<'execute'>): Exclude<CommandAction, { kind: 'unknown' }> | undefined {
   if (call.request.description || (call.title && call.title !== 'Run command'))
     return undefined
   const action = call.request.actions?.length === 1
@@ -259,12 +259,14 @@ export const executeRenderer: ToolKindRenderer<'execute'> = {
     // its request beside it draws only what the command answered -- the request
     // above states the command -- while a lone result row (a single-frame call)
     // is the only place the command is ever stated, so it keeps the summary. An
-    // UPDATE row keeps it too: it may be the only row the call has.
+    // UPDATE row keeps it too: it may be the only row the call has. So does a result
+    // row that restates its request, because the request row beside it states no
+    // command (see ToolSpanRowPosition.restatesRequest).
     // Expanding un-clips the SAME summary the collapsed row shows, the way a
     // result's expand un-clips its output: one area, clipped to three rows or
     // full height, never a second component swapped in beside it.
     return (
-      <Show when={!(view.role === 'result' && view.hasRequestRow)}>
+      <Show when={!(view.role === 'result' && view.hasRequestRow && view.restatesRequest !== true)}>
         <Show when={knownActionForTitle(call) === undefined}>
           <Show
             when={call.request.actions?.length ? call.request.actions : undefined}

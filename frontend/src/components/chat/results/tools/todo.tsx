@@ -1,4 +1,6 @@
-import type { ToolKindRenderer } from './renderer'
+import type { JSX } from 'solid-js'
+import type { ToolRequestByKind } from '../../model/tools'
+import type { RequestSideCall, ToolKindRenderer, ToolRowView } from './renderer'
 import type { TodoItem } from '~/models/todo'
 import ListTodo from 'lucide-solid/icons/list-todo'
 import { Show } from 'solid-js'
@@ -8,6 +10,7 @@ import { toolCallStatusOutcome } from '../../model/toolCallStatus'
 import { toolInputSummary } from '../../toolStyles.css'
 import { CollapsibleContent } from '../CollapsibleContent'
 import { TodoListBody } from '../todoListBody'
+import { previewWithoutResult } from './renderer'
 
 /**
  * What the row states over a checklist the turn cut short.
@@ -28,6 +31,40 @@ function todoCopyable(items: TodoItem[], note: string | undefined): string | nul
   ].filter(Boolean).join('\n\n') || null
 }
 
+/**
+ * Whether a call carries a list or a note to preview while it runs. An empty list
+ * previews nothing: only the result can say that the call cleared the list.
+ */
+function todoHasPending(request: ToolRequestByKind['todo']): boolean {
+  return request.items.length > 0 || !!request.note
+}
+
+/**
+ * The list and the note that a call CARRIED. An empty carried list draws nothing:
+ * "cleared" is what only a result can say.
+ */
+function todoPreview(call: RequestSideCall<'todo'>, view: ToolRowView): JSX.Element | null {
+  return (
+    <Show when={todoHasPending(call.request)}>
+      <Show when={call.request.items.length > 0}>
+        <TodoListBody todos={call.request.items} />
+      </Show>
+      <Show when={call.request.note}>
+        {note => (
+          <CollapsibleContent
+            kind="markdown-tool-result"
+            text={note()}
+            isCollapsed={false}
+            {...(view.context !== undefined
+              ? { context: view.context }
+              : {})}
+          />
+        )}
+      </Show>
+    </Show>
+  )
+}
+
 export const todoRenderer: ToolKindRenderer<'todo'> = {
   icon: ListTodo,
   label: 'Todo',
@@ -44,33 +81,11 @@ export const todoRenderer: ToolKindRenderer<'todo'> = {
       ? pluralize(items.length, 'task')
       : 'To-do list'
   },
-  request(call, view) {
-    // A result row draws the saved list in its own result slot; a request or
-    // update row states the list the call CARRIED, which is the newest fact the
-    // reader has.
-    //
-    // A row that reaches this guard has no result row beside it, so it DRAWS the
-    // result itself -- and `call.result === undefined` is what keeps the two apart. A
-    // Claude `Task*` call fills both slots from one payload, so the lone row drew the
-    // checklist and its note once here and once again in the result slot below.
-    return (
-      <Show when={view.role !== 'result' && !view.hasResultRow && call.result === undefined}>
-        <TodoListBody todos={call.request.items} />
-        <Show when={call.request.note}>
-          {note => (
-            <CollapsibleContent
-              kind="markdown-tool-result"
-              text={note()}
-              isCollapsed={false}
-              {...(view.context !== undefined
-                ? { context: view.context }
-                : {})}
-            />
-          )}
-        </Show>
-      </Show>
-    )
-  },
+  // While the call runs, the pending row states the list the call CARRIED, which is the
+  // newest fact the reader has. The result row then states the list the call saved, or
+  // the carried one again when the call ended with no answer.
+  pending: todoPreview,
+  withoutTypedResult: previewWithoutResult(todoPreview),
   result(call, view) {
     // The ROW's own status, and not a field of the list. The interruption is a fact
     // about the CALL, which every provider already folds into that one word, so the
@@ -103,20 +118,14 @@ export const todoRenderer: ToolKindRenderer<'todo'> = {
     )
   },
   /**
-   * The list the call CARRIED, offered while no result answers for it.
-   *
-   * A running `TodoWrite` is a whole row -- header, checklist, note -- with no result
-   * behind it, so `resultMeta` never runs and the row had NOTHING to copy and nothing
-   * to quote. `hasResult` is the same fact the body's own guard reads: once any result
-   * exists, the row draws the SAVED list instead and `resultMeta` states that one.
+   * The list the call CARRIED. The request row offers it whether or not the call still
+   * runs, because it never reads its result; the result row offers the list it saved.
    */
-  requestMeta(call, hasResult) {
+  requestMeta(call) {
     return {
       collapsible: false,
       hasDiff: false,
-      copyableContent: () => hasResult
-        ? null
-        : todoCopyable(call.request.items, call.request.note),
+      copyableContent: () => todoCopyable(call.request.items, call.request.note),
     }
   },
   resultMeta(call) {

@@ -148,7 +148,7 @@ describe('grokAgentRun', () => {
 })
 
 describe('grokWorkflowRequest', () => {
-  it('states the saved workflow, its script and its arguments', () => {
+  it('states the saved workflow and its arguments', () => {
     const facts = finished('started', {
       type: 'Workflow',
       name: 'review-changes',
@@ -165,7 +165,6 @@ describe('grokWorkflowRequest', () => {
       promptLabel: 'Script',
       promptFormat: 'pre',
       metadata: [
-        { label: 'Script', value: '/s/review.js' },
         { label: 'Arguments', value: '{"depth":2}' },
         { label: 'Validate only', value: 'Yes' },
       ],
@@ -199,6 +198,17 @@ describe('grokWorkflowRun', () => {
       ],
       body: 'Workflow review-changes started.',
     })
+  })
+
+  // The script file of a saved workflow is a fact of the answer, so the run states it
+  // and the request does not.
+  it('states the script file of a saved workflow on the run', () => {
+    const facts = finished('text', { type: 'Workflow', run_id: 'wf-1', script_path: '/s/review.js' })
+    expect(grokWorkflowRun(facts, request, {}).metadata).toEqual([
+      { label: 'Run ID', value: 'wf-1' },
+      { label: 'Script', value: '/s/review.js' },
+    ])
+    expect(grokWorkflowRequest({}, facts).metadata).toBeUndefined()
   })
 
   // A validation runs no subagent, so the call's end is the run's end.

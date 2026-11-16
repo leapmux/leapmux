@@ -25,19 +25,16 @@ function resolved(payload: Record<string, unknown>, completion?: MessageCompleti
 
 interface Sides {
   request?: Record<string, unknown>
-  result?: Record<string, unknown>
-  /** The span rows that the loaded window shows. Both default to the sides the test states. */
+  /** The span rows that the loaded window shows. It defaults to the side the test states. */
   visible?: Partial<ToolSpanContext['visibleRows']>
 }
 
 function extract(payload: Record<string, unknown>, category: MessageCategory, sides: Sides = {}, options: { completion?: MessageCompletion, rowCompletion?: MessageCompletion, spanType?: string } = {}): ChatRow | null {
   const span: ToolSpanContext = {
     request: sides.request && resolved(sides.request),
-    result: sides.result && resolved(sides.result),
     role: 'other',
     visibleRows: {
       request: sides.visible?.request ?? sides.request !== undefined,
-      result: sides.visible?.result ?? sides.result !== undefined,
     },
   }
   return kimiExtractRow({
@@ -93,81 +90,79 @@ describe('kimiExtractRow', () => {
     expect(extract(kimiFrame(KIMI_EVENT.TurnEnded, { reason: 'completed' }), { kind: 'tool_result' })).toBeNull()
   })
 
+  // A start row reads its own frame alone, so it states no result and no finished
+  // status. The result row reads its own frame and the start before it.
   it('reads a start and its result as one call, each in its own role', () => {
     const start = kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'ls' })
     const result = kimiToolResult(CALL, 'a.go\n')
 
-    const request = toolRow(extract(start, { kind: 'tool_use' }, { request: start, result }))
+    const request = toolRow(extract(start, { kind: 'tool_use' }, { request: start }))
     expect(request.role).toBe('request')
-    expect(request).toMatchObject({ hasResultRow: true })
-    // The request row reads the answer off its span's result.
-    expect(request.call.status).toBe('completed')
-    expect(request.call.result).toStrictEqual({
+    expect(request.call.status).toBe('unstated')
+    expect(request.call.result).toBeUndefined()
+    expect(request.call.request).toStrictEqual({ command: 'ls' })
+
+    const answer = toolRow(extract(result, { kind: 'tool_result' }, { request: start }, { spanType: KIMI_TOOL.Bash }))
+    expect(answer.role).toBe('result')
+    expect(answer).toMatchObject({ hasRequestRow: true })
+    expect(answer.call.status).toBe('completed')
+    expect(answer.call.request).toStrictEqual({ command: 'ls' })
+    expect(answer.call.result).toStrictEqual({
       commands: [
         { output: 'a.go\n', exitCode: 0 },
       ],
       unresolvedTerminals: [],
     })
-
-    const answer = toolRow(extract(result, { kind: 'tool_result' }, { request: start, result }, { spanType: KIMI_TOOL.Bash }))
-    expect(answer.role).toBe('result')
-    expect(answer).toMatchObject({ hasRequestRow: true })
-    expect(answer.call.request).toStrictEqual({ command: 'ls' })
   })
 
-  it('reads a start whose call still runs as a request with no result row', () => {
-    const start = kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'sleep 9' })
-    const request = toolRow(extract(start, { kind: 'tool_use' }, { request: start }))
-    expect(request.role).toBe('request')
-    expect(request).toMatchObject({ hasResultRow: false })
+  // Only the result reports the run of a subagent launch, so the start row states the
+  // launch it asked for, and the result row states the run.
+  it('states the run of a subagent launch on the result row alone', () => {
+    const start = kimiToolStart(CALL, KIMI_TOOL.Agent, { prompt: 'Read the code.', description: 'Survey' })
+    const result = kimiToolResult(CALL, 'agent_id: agent-0\nstatus: completed\n\n[summary]\nDone.')
+
+    const request = toolRow(extract(start, { kind: 'tool_use' }, { request: start }, { spanType: KIMI_TOOL.Agent }))
+    expect(request.call.kind).toBe('agent')
+    expect(request.call.status).toBe('unstated')
     expect(request.call.result).toBeUndefined()
+    expect(request.call.request).toMatchObject({ description: 'Survey', prompt: 'Read the code.' })
+
+    const answer = toolRow(extract(result, { kind: 'tool_result' }, { request: start }, { spanType: KIMI_TOOL.Agent }))
+    expect(answer.call.kind).toBe('agent')
+    expect(answer.call.status).toBe('completed')
+    expect(answer.call.request).toMatchObject({ description: 'Survey', prompt: 'Read the code.' })
+    expect(answer.call.result).toMatchObject({
+      agents: [
+        { agentId: 'agent-0', outcome: 'completed', body: 'Done.' },
+      ],
+    })
   })
 
-  // The span sides are rows of every kind, so a side counts as the row beside this
-  // one only when it is the expected event of THIS call.
-  it('counts no span side that is another row or another call as the row beside it', () => {
-    const start = kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'ls' })
+  // The span's request is a row of any kind, so it counts as the row beside this one
+  // only when it is the start of THIS call.
+  it('counts no span request that is another row or another call as the row beside it', () => {
     const notice = kimiFrame(KIMI_EVENT.Warning, { message: 'Low disk' })
-    expect(toolRow(extract(start, { kind: 'tool_use' }, { request: start, result: notice }))).toMatchObject({ role: 'request', hasResultRow: false })
-    expect(toolRow(extract(start, { kind: 'tool_use' }, {
-      request: start,
-      result: kimiToolResult('call_2', 'x'),
-    }))).toMatchObject({ role: 'request', hasResultRow: false })
-
     const result = kimiToolResult(CALL, 'a.go')
-    expect(toolRow(extract(result, { kind: 'tool_result' }, { request: notice, result }, { spanType: KIMI_TOOL.Bash }))).toMatchObject({ role: 'result', hasRequestRow: false })
+    expect(toolRow(extract(result, { kind: 'tool_result' }, { request: notice }, { spanType: KIMI_TOOL.Bash }))).toMatchObject({ role: 'result', hasRequestRow: false })
     expect(toolRow(extract(result, { kind: 'tool_result' }, {
       request: kimiToolStart('call_2', KIMI_TOOL.Bash, { command: 'ls' }),
-      result,
     }, { spanType: KIMI_TOOL.Bash })))
       .toMatchObject({ role: 'result', hasRequestRow: false })
   })
 
-  it('counts no span side that the loaded window does not show', () => {
+  it('counts no span request that the loaded window does not show', () => {
     const start = kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'ls' })
     const result = kimiToolResult(CALL, 'a.go')
-    expect(toolRow(extract(start, { kind: 'tool_use' }, {
-      request: start,
-      result,
-      visible: { result: false },
-    }))).toMatchObject({ role: 'request', hasResultRow: false })
     expect(toolRow(extract(result, { kind: 'tool_result' }, {
       request: start,
-      result,
       visible: { request: false },
     }, { spanType: KIMI_TOOL.Bash })))
       .toMatchObject({ role: 'result', hasRequestRow: false })
   })
 
-  // A turn that ended while the call ran stores the start AGAIN as the closing row.
-  it('pairs a request with the retained start that closes its call', () => {
-    const start = kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'sleep 9' })
-    expect(toolRow(extract(start, { kind: 'tool_use' }, { request: start, result: start }))).toMatchObject({ role: 'request', hasResultRow: true })
-  })
-
   it('reads a retained start as the result row of its call, with how the turn ended', () => {
     const start = kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'sleep 9' })
-    const row = toolRow(extract(start, { kind: 'tool_result' }, { request: start, result: start }, { completion: MessageCompletion.INTERRUPTED }))
+    const row = toolRow(extract(start, { kind: 'tool_result' }, { request: start }, { completion: MessageCompletion.INTERRUPTED }))
     expect(row).toMatchObject({ role: 'result', hasRequestRow: true })
     expect(row.call.status).toBe('cancelled')
   })

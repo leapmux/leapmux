@@ -4,7 +4,7 @@ import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/a
 import { kimiFrame, kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
 import { resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
-import { kimiRelatedMessages, kimiSpanRole } from './spanRole'
+import { kimiNeedsRequest, kimiSpanRole } from './spanRole'
 
 function resolved(parent: Record<string, unknown>, completion?: MessageCompletion) {
   return resolveMessageForRendering({
@@ -33,33 +33,27 @@ describe('kimiSpanRole', () => {
   })
 })
 
-describe('kimiRelatedMessages', () => {
-  it('pairs a result with its request', () => {
-    expect(kimiRelatedMessages(resolved(kimiToolResult('c', 'x')))).toStrictEqual(['request'])
+// A result states no tool name, no arguments and no display, so its row reads them from
+// the start. A start never waits for its result, also a subagent launch whose run only
+// the result reports.
+describe('kimiNeedsRequest', () => {
+  it('answers true for a result', () => {
+    expect(kimiNeedsRequest(resolved(kimiToolResult('c', 'x')))).toBe(true)
   })
 
-  it('pairs a launch and an empty call with their result', () => {
-    expect(kimiRelatedMessages(resolved(kimiToolStart('c', KIMI_TOOL.Agent, { prompt: 'p', description: 'd' })))).toStrictEqual(['result'])
-    expect(kimiRelatedMessages(resolved(kimiToolStart('c', KIMI_TOOL.AgentSwarm, { description: 'd' })))).toStrictEqual(['result'])
-    expect(kimiRelatedMessages(resolved(kimiToolStart('c', KIMI_TOOL.TaskList, {})))).toStrictEqual(['result'])
+  it('answers false for every start, also a launch and a call with empty arguments', () => {
+    expect(kimiNeedsRequest(resolved(kimiToolStart('c', KIMI_TOOL.Read, { path: 'a' })))).toBe(false)
+    expect(kimiNeedsRequest(resolved(kimiToolStart('c', KIMI_TOOL.Agent, { prompt: 'p', description: 'd' })))).toBe(false)
+    expect(kimiNeedsRequest(resolved(kimiToolStart('c', KIMI_TOOL.AgentSwarm, { description: 'd' })))).toBe(false)
+    expect(kimiNeedsRequest(resolved(kimiToolStart('c', KIMI_TOOL.TaskList, {})))).toBe(false)
   })
 
-  it('reads a start whose arguments are absent or not an object as an empty call', () => {
-    const { args: _args, ...noArgs } = kimiToolStart('c', KIMI_TOOL.TaskList, {})
-    expect(kimiRelatedMessages(resolved(noArgs))).toStrictEqual(['result'])
-    expect(kimiRelatedMessages(resolved({
-      ...kimiToolStart('c', KIMI_TOOL.Read, {}),
-      args: 'a.go',
-    }))).toStrictEqual(['result'])
+  // A retained start closes its call, but it states its own name and arguments.
+  it('answers false for a retained start', () => {
+    expect(kimiNeedsRequest(resolved(kimiToolStart('c', KIMI_TOOL.Agent, { prompt: 'p' }), MessageCompletion.INTERRUPTED))).toBe(false)
   })
 
-  // A retained start closes its call, so it needs the request the way a result does.
-  it('pairs a retained start with its request', () => {
-    expect(kimiRelatedMessages(resolved(kimiToolStart('c', KIMI_TOOL.Agent, { prompt: 'p' }), MessageCompletion.INTERRUPTED))).toStrictEqual(['request'])
-  })
-
-  it('needs nothing beside a request that states its own arguments', () => {
-    expect(kimiRelatedMessages(resolved(kimiToolStart('c', KIMI_TOOL.Read, { path: 'a' })))).toStrictEqual([])
-    expect(kimiRelatedMessages(resolved(kimiFrame(KIMI_EVENT.TurnEnded)))).toStrictEqual([])
+  it('answers false for a row outside a span', () => {
+    expect(kimiNeedsRequest(resolved(kimiFrame(KIMI_EVENT.TurnEnded)))).toBe(false)
   })
 })

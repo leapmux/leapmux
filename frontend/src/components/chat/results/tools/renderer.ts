@@ -13,6 +13,21 @@ export type ParsedCall<K extends ToolKind> = Omit<ToolCallVariant<K>, 'result'> 
 /** A call that carries the kind's own result. `result()` and `resultMeta()` take this alone. */
 export type ResolvedCall<K extends ToolKind> = Omit<ToolCallVariant<K>, 'result'> & { result: ToolResultByKind[K] }
 
+/**
+ * The call as a REQUEST-side hook reads it: what the call asked, and its identity.
+ *
+ * No member states the result or how the call ended. The request row draws these
+ * hooks, and a request row never reads its result: it shows, and reports its height,
+ * before the result exists. So a hook typed over this cannot change the request row
+ * when the result lands. A row that draws both sides (a result row with no request
+ * row beside it) passes its whole call, which this type accepts.
+ *
+ * The members are LISTED, not excluded: a member that a later change adds to the call
+ * reaches no request-side hook until someone lists it here and decides that the
+ * request states it.
+ */
+export type RequestSideCall<K extends ToolKind> = Pick<ToolCallVariant<K>, 'id' | 'name' | 'title' | 'label' | 'icon' | 'metadata' | 'kind' | 'request'>
+
 /** The call with its failed and unparsed results stripped, so a kind hook reads its own payload alone. */
 export function parsedCall<K extends ToolKind>(call: ToolCallVariant<K>): ParsedCall<K> {
   const { result, ...rest } = call
@@ -43,14 +58,16 @@ export function resolvedCall<K extends ToolKind>(call: ToolCallVariant<K>): Reso
 /**
  * What one mounted row hands each drawing hook.
  *
- * It carries {@link ToolSpanRowPosition} rather than a flat `role` plus two booleans, so
+ * It carries {@link ToolSpanRowPosition} rather than a flat `role` plus a boolean, so
  * the rule the row model states -- a row is never its own sibling -- reaches the shared
- * renderers that actually branch on it. Restating the three fields here let
+ * renderers that actually branch on it. Restating the fields here let
  * `{role: 'request', hasRequestRow: true}` back in one hop above every reader.
+ *
+ * It states nothing about the result row: a request row never learns whether its
+ * result exists.
  */
 export type ToolRowView = ToolSpanRowPosition & {
   context: ToolResultRenderContext | undefined
-  drawsResult: boolean
   expanded: Accessor<boolean>
   setExpanded: (value: boolean) => void
   /** How many images of this MESSAGE are numbered before the ones a result draws inline. Only the generic renderer reads it. */
@@ -126,13 +143,56 @@ export interface ToolKindRenderer<K extends ToolKind> {
    */
   title: (call: ParsedCall<K>, context: ToolResultRenderContext | undefined) => JSX.Element | string
   /** One-liners above the body border: the command line, extra search paths. */
-  summary?: (call: ParsedCall<K>, view: ToolRowView) => JSX.Element | null
-  /** Request-side body: the expanded command, the requested diff, the question options, the agent prompt. */
-  request?: (call: ParsedCall<K>, view: ToolRowView) => JSX.Element | null
+  summary?: (call: RequestSideCall<K>, view: ToolRowView) => JSX.Element | null
+  /**
+   * The request-side body that the row which draws the request ALWAYS draws, whether
+   * the call runs or has ended: the question options, the agent prompt that Expand
+   * shows. It reads no result, so it draws the same before and after the result lands.
+   */
+  request?: (call: RequestSideCall<K>, view: ToolRowView) => JSX.Element | null
+  /**
+   * The preview of a call that still runs: what it asked, until its result answers. The
+   * PENDING row draws it -- a row of its own that follows the request row while the call
+   * runs, and that leaves when the result row joins the list. The requested diff, the
+   * to-do list the call carries, the agent prompt, the generic arguments.
+   *
+   * Absent for a kind whose running call shows nothing beyond its request row.
+   */
+  pending?: (call: RequestSideCall<K>, view: ToolRowView) => JSX.Element | null
   /** The result body. Composes shared `results/*` components. */
   result: (call: ResolvedCall<K>, view: ToolRowView) => JSX.Element | null
+  /**
+   * What the row that draws the result shows above it when the result is NOT the kind's
+   * own payload: words the model could not read as that payload, a failure, or no result.
+   * `answered` is false for a call that carries no result at all: the turn stopped it, or
+   * it never answered. A file change that ended with no typed result and did not fail
+   * states the changes it asked for, under the heading of requested changes.
+   *
+   * A kind that previews a running call (`pending`) must declare it, even as a hook that
+   * draws nothing, because no pending row is left to show the preview once the call ended
+   * (results/tools/index.test.tsx enforces this). Absent for a kind with no preview that
+   * adds nothing.
+   */
+  withoutTypedResult?: (call: ParsedCall<K>, view: ToolRowView, answered: boolean) => JSX.Element | null
+  /** What the toolbar adds for {@link withoutTypedResult}. Absent means nothing. */
+  withoutTypedResultMeta?: (call: ParsedCall<K>) => Partial<ToolKindMeta>
   /** What the toolbar offers a row that shows the request alone. Absent means nothing. */
-  requestMeta?: (call: ParsedCall<K>, hasResult: boolean) => Partial<ToolKindMeta>
+  requestMeta?: (call: RequestSideCall<K>) => Partial<ToolKindMeta>
   /** What the toolbar offers a row that draws the result. */
   resultMeta: (call: ResolvedCall<K>) => ToolKindMeta
+}
+
+/**
+ * The `withoutTypedResult` hook of a kind whose pending row states what a call asked.
+ *
+ * A call that ended with NO result at all -- the turn stopped it, or it never answered --
+ * states that preview on the row that ended it, as its pending row did while it ran: the
+ * pending row has left, and a request row of a span never draws it (only a call with no
+ * span draws it inline, see ToolResultRenderContext.loneCall). A result of any form
+ * answers for the call instead.
+ */
+export function previewWithoutResult<K extends ToolKind>(pending: (call: RequestSideCall<K>, view: ToolRowView) => JSX.Element | null): NonNullable<ToolKindRenderer<K>['withoutTypedResult']> {
+  return (call, view, answered) => answered
+    ? null
+    : pending(call, view)
 }

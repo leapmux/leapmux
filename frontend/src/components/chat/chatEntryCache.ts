@@ -7,7 +7,7 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageRevision, MessageSpanIdentity, ToolSpanRole } from '~/lib/messageSpan'
 import type { SettingsLabelDependency } from '~/lib/settingsLabelCache'
 import { createMemo } from 'solid-js'
-import { messageSpanIdentity } from '~/lib/messageSpan'
+import { messageSpanIdentity, messageSpanKey } from '~/lib/messageSpan'
 import { collectSettingsLabelDependencies, settingsLabelCacheRevision, settingsLabelDependencyRevision } from '~/lib/settingsLabelCache'
 import { shallowEqual } from '~/lib/shallowEqual'
 import { rowRevisionKey } from './chatRevisionKey'
@@ -39,8 +39,10 @@ import { parseSpanLines } from './spanLinesParse'
  * - An in-place body replacement.
  * - A later supplement.
  *
- * It includes the request revision only for a result role and the result revision only for a request role.
- * An unrelated sibling revision changes no field and causes no rebuild.
+ * It includes the request revision only for a result role. A row never depends on a
+ * LATER message of its span, so no row includes the result revision: a request row
+ * reads only its own message (see ToolSpanContext). An unrelated sibling revision
+ * changes no field and causes no rebuild.
  */
 export interface EntryFreshness {
   /** The row's exact revision dependencies (see chatRevisionKey.ts). */
@@ -49,6 +51,11 @@ export interface EntryFreshness {
   isChildTranscript: boolean
   /** Revisions of the exact display-label groups that this row reads. */
   settingsLabelRevision: string
+  /**
+   * The span role of the row. It decides whether the list counts the row as the request
+   * row of its span (see listedRequestSpanKeys), so a change of it rebuilds the entry.
+   */
+  role: ToolSpanRole
 }
 
 /**
@@ -59,6 +66,17 @@ export interface EntryFreshness {
  * That could make the transcript classify raw bytes while extraction read merged content.
  */
 export type ClassifiedEntry = PreparedMessage & {
+  /**
+   * The id of the LIST row that this entry draws: the message id for the row of a
+   * message, and the id of the pending row for the pending row of a tool call that runs
+   * (see chatPendingRows). The height cache, the virtualizer, the readiness registry and
+   * the scroll anchor key a row by it. State that belongs to the MESSAGE -- its expand
+   * state, its diff view -- keys by `message.id`, so the request row and the pending row
+   * of one call share it.
+   */
+  rowId: string
+  /** True for the pending row of a tool call that runs (see chatPendingRows). */
+  pending: boolean
   parsedSpanLines: (SpanLine | null)[]
   /** The freshness value at preparation time. See EntryFreshness and isEntryFresh. */
   freshness: EntryFreshness
@@ -119,8 +137,6 @@ export interface ClassifiedEntryCacheDeps {
   messages: () => readonly AgentChatMessage[]
   /** The shared resolver's current request revision for this span. */
   requestRevision?: (identity: MessageSpanIdentity) => MessageRevision | undefined
-  /** The shared resolver's current result revision for this span. */
-  resultRevision?: (identity: MessageSpanIdentity) => MessageRevision | undefined
   /**
    * Read the row's content version through the store's getMessageContentVersion.
    * A same-sequence body replacement increments this version in place.
@@ -178,18 +194,14 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     }
     // Select a sibling by the resolved span role.
     // Some completed ACP updates use the tool_use category but hold the result role.
-    // A result draws its request input. A request can draw hidden result data.
+    // A result draws its request input. A request draws its own message alone.
     // No row records its own selected side twice.
     const selectedMessage = selected?.message ?? message
     const role = selectedMessage.spanId === ''
       ? 'other'
       : deps.role(selectedMessage)
-    const selectedIdentity = messageSpanIdentity(selectedMessage)
     const request = role === 'result'
-      ? deps.requestRevision?.(selectedIdentity)
-      : undefined
-    const result = role === 'request'
-      ? deps.resultRevision?.(selectedIdentity)
+      ? deps.requestRevision?.(messageSpanIdentity(selectedMessage))
       : undefined
     return {
       revisionKey: rowRevisionKey({
@@ -197,12 +209,10 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
         ...(request !== undefined
           ? { request }
           : {}),
-        ...(result !== undefined
-          ? { result }
-          : {}),
       }),
       isChildTranscript: deps.isChildTranscript?.() ?? false,
       settingsLabelRevision: settingsLabelDependencyRevision(labelDependencies),
+      role,
     }
   }
   /**
@@ -229,6 +239,8 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
       : parseSpanLines(selectedMessage.spanLines)
     return {
       ...prepared,
+      rowId: message.id,
+      pending: false,
       parsedSpanLines,
       freshness: freshnessOf(message, selected, collected.dependencies),
       spanLinesRef: selectedMessage.spanLines,
@@ -302,4 +314,22 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     hasVisibleEntries,
     getEntry: id => entryCache.get(id),
   }
+}
+
+/**
+ * The span keys of the request rows that the list draws, from the entries that it lists:
+ * an entry of a span whose span role is request and whose category the transcript draws
+ * as a row. A row of another span reads this as `ToolSpanRowPresence.request`: a result
+ * row beside its request row draws no header and no request side.
+ *
+ * A hidden request draws no request row, also while the debug preference lists it as its
+ * raw payload, so the row of its result then draws the request side itself.
+ */
+export function listedRequestSpanKeys(entries: readonly ClassifiedEntry[]): ReadonlySet<string> {
+  const keys = new Set<string>()
+  for (const entry of entries) {
+    if (entry.message.spanId !== '' && entry.freshness.role === 'request' && entry.category.kind !== 'hidden')
+      keys.add(messageSpanKey(entry.message))
+  }
+  return keys
 }

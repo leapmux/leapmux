@@ -20,12 +20,11 @@ export function ampSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
     : 'request'
 }
 
-/** The span side one row needs beside it: a request needs its result, and a result its request. */
-export function ampRelatedMessages(parsed: ResolvedMessageContent) {
-  const role = ampSpanRole(parsed)
-  return role === 'result'
-    ? ['request'] as const
-    : role === 'request'
-      ? ['result'] as const
-      : []
+/**
+ * Whether one row draws from its span's request: a `tool_result` row states neither the
+ * tool's name nor its arguments, so it reads them from the call. A call row, also one
+ * that a stopped turn retained, reads its own `tool_use` block.
+ */
+export function ampNeedsRequest(parsed: ResolvedMessageContent): boolean {
+  return ampToolResult(parsed.parentObject) !== null
 }

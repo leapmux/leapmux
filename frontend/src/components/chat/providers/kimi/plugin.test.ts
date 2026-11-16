@@ -28,7 +28,8 @@ describe('kimi plugin', () => {
       { kind: 'text', text: 'Warning: Low disk' },
     ])
     expect(plugin.transcript.spanRole(parsed(kimiToolResult('c', 'x')))).toBe('result')
-    expect(plugin.transcript.relatedMessages?.(parsed(start))).toStrictEqual(['result'])
+    expect(plugin.transcript.needsRequest?.(parsed(start))).toBe(false)
+    expect(plugin.transcript.needsRequest?.(parsed(kimiToolResult('c', 'x')))).toBe(true)
     expect(plugin.transcript.extractDivider?.(kimiFrame(KIMI_EVENT.TurnEnded, { reason: 'cancelled' }))).toStrictEqual({ label: 'Turn interrupted' })
     expect(plugin.session?.compactionBoundaryFromMessage?.(parsed(kimiFrame(KIMI_EVENT.CompactionCompleted, {
       result: { tokensBefore: 9, tokensAfter: 1 },

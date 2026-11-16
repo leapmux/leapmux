@@ -108,7 +108,8 @@ describe('classifyQoderMessage', () => {
     [
       { type: 'text', text: '' },
     ],
-  ])('hides an empty result body %j', (content) => {
+    '  \n',
+  ])('shows the empty result body %j of a call that printed nothing', (content) => {
     const frame = {
       type: 'user',
       message: {
@@ -118,7 +119,27 @@ describe('classifyQoderMessage', () => {
         ],
       },
     }
-    expect(classifyQoderMessage(input(frame, null, AgentProvider.QODER))).toEqual({ kind: 'hidden' })
+    expect(classifyQoderMessage(input(frame, null, AgentProvider.QODER))).toEqual({ kind: 'tool_result' })
+  })
+
+  it('keeps blank text beside an unreadable block on the raw-content card', () => {
+    const frame = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'read-1',
+            content: [
+              { type: 'text', text: '' },
+              { type: 'future_block' },
+            ],
+          },
+        ],
+      },
+    }
+    expect(classifyQoderMessage(input(frame, null, AgentProvider.QODER))).toEqual({ kind: 'unknown' })
   })
 
   it('shows a malformed result as raw content', () => {

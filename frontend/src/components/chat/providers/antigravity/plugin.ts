@@ -8,13 +8,12 @@ import { antigravityResultDivider } from './extractors/resultDivider'
 import { antigravityExtractRow } from './extractors/row'
 import { antigravityConfiguration } from './pluginConfiguration'
 import { antigravityControls } from './pluginControls'
-import { antigravityRelatedMessages, antigravitySpanRole } from './spanRole'
+import { antigravitySpanRole } from './spanRole'
 
 const antigravityPlugin: ProviderPlugin = {
   transcript: {
     outputFilePaths: antigravityOutputFilePaths,
     spanRole: antigravitySpanRole,
-    relatedMessages: antigravityRelatedMessages,
     classify: classifyAntigravityMessage,
     extractRow: antigravityExtractRow,
     notificationEntry: antigravityNotificationEntry,

@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolComplete, copilotToolStart } from '~/test-support/copilotFixtures'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { renderMessageContent } from '~/test-support/messageContentRenderer'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
-import { renderMessageContent } from '../messageContentRenderer'
 import { toolOutcomeLabel } from '../results/toolOutcomeLabel'
 import { toolUseHeader } from '../toolStyles.css'
 import { providerFor } from './registry'
@@ -197,9 +197,8 @@ describe.each([
     const sources = (current: Record<string, unknown>, role: 'request' | 'result') => testMessageSources({
       current: () => input(current),
       request: () => input(request),
-      result: () => input(result),
       role: () => role,
-      visibleRows: () => ({ request: true, result: true }),
+      visibleRows: () => ({ request: true }),
     })
     const { container } = render(() => [
       renderMessageContent(request, {
@@ -227,7 +226,9 @@ it('identifies Codex request and result roles before either counterpart loads', 
   const plugin = providerFor(AgentProvider.CODEX)!
   expect(plugin?.transcript.spanRole?.(input(request))).toBe('request')
   expect(plugin?.transcript.spanRole?.(input(result))).toBe('result')
-  expect(plugin?.transcript.relatedMessages?.(input(result))).toEqual(['request'])
+  // A Codex MCP item states its own server, tool and arguments, so its result row
+  // needs no request.
+  expect(plugin.transcript.needsRequest?.(input(result)) ?? false).toBe(false)
 })
 
 it('does not use arguments from a different Pi tool call', () => {

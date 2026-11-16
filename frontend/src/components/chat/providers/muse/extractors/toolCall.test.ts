@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { providerToolCall } from '~/test-support/toolCallFixture'
+import { providerRow, providerToolCall } from '~/test-support/toolCallFixture'
 import { typedResult } from '../../../model/toolCall'
 import { input } from '../../testUtils'
 import { MUSE_NATIVE_MCP_ITEM_FRAME, museToolResultSources } from '../toolResults.fixtures'
@@ -102,34 +102,59 @@ describe('museToolCall', () => {
     expect(frame).toEqual(original)
   })
 
-  it('rejects a sibling result from another native session', () => {
-    const request = {
+  describe('an unfinished item whose call is later declined', () => {
+    const item = {
+      itemId: 'tool',
+      kind: 'toolCall',
+      turnId: 'turn',
+      callId: 'call',
+      tool: 'bash',
+      args: '{"command":"printf native"}',
+    }
+    const started = {
       method: 'item/started',
       params: {
         sessionId: 'session',
-        item: {
-          itemId: 'tool',
-          kind: 'toolCall',
-          turnId: 'turn',
-          callId: 'call',
-          tool: 'bash',
-          args: '{"command":"printf native"}',
-          status: 'inProgress',
-        },
+        item: { ...item, status: 'inProgress' },
       },
     }
-    const result = {
+    const declined = {
       method: 'item/completed',
       params: {
-        sessionId: 'foreign-session',
-        item: { ...request.params.item, status: 'completed', visibleOutput: 'Foreign output' },
+        sessionId: 'session',
+        item: { ...item, status: 'rejected', failureReason: 'Native refusal.' },
       },
     }
-    const call = providerToolCall(AgentProvider.MUSE_CODE, request, {
-      result: input(result, undefined, AgentProvider.MUSE_CODE),
+
+    it('builds the request row from its own item, with no result and no finished status', () => {
+      const row = providerRow(AgentProvider.MUSE_CODE, started, {
+        request: input(started, undefined, AgentProvider.MUSE_CODE),
+        role: 'request',
+      })
+      if (row?.kind !== 'tool' || row.call.kind !== 'execute')
+        throw new Error('The unfinished native shell requires an execute row.')
+      expect(row.role).toBe('request')
+      expect(row.call.label).toBe('Shell')
+      expect(row.call.request).toEqual({ command: 'printf native' })
+      expect(row.call.status).toBe('in_progress')
+      expect(row.call).not.toHaveProperty('result')
     })
-    expect(call?.status).toBe('in_progress')
-    expect(call?.result).toBeUndefined()
+
+    it('draws the refusal on the result row from its own item', () => {
+      const row = providerRow(AgentProvider.MUSE_CODE, declined, {
+        request: input(started, undefined, AgentProvider.MUSE_CODE),
+        role: 'result',
+      })
+      if (row?.kind !== 'tool')
+        throw new Error('The declined native shell requires a tool row.')
+      expect(row.role).toBe('result')
+      expect(row.call).toMatchObject({
+        kind: 'execute',
+        status: 'declined',
+        request: { command: 'printf native' },
+        result: { failure: true, text: 'Native refusal.' },
+      })
+    })
   })
 
   it('keeps a retained unfinished tool final without an invented outcome', () => {
@@ -214,10 +239,11 @@ describe('museToolCall', () => {
       },
     })
     expect(call?.status).toBe('incomplete')
-    expect(call?.metadata).toEqual([
+    expect(call?.resultMetadata).toEqual([
       { label: 'Native status', value: 'futureFinal' },
       { label: 'Native output', value: 'native preview' },
     ])
+    expect(call?.metadata).toBeUndefined()
     expect(call?.result).toBeUndefined()
   })
 })

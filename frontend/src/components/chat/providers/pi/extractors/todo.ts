@@ -6,13 +6,14 @@ import { prettifyStructuredJson } from '~/lib/jsonFormat'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { pluralize } from '~/lib/plural'
 import { todoRowKey } from '~/models/todo'
-import { piExtractTool, piPairedRequest, piPairedResult } from './toolCommon'
+import { piExtractTool, piPairedRequest } from './toolCommon'
 
 export interface PiTodoSource {
   /** The checklist one Todo call states: its header words, its tasks, and what an empty one says. */
   list: { title: string, todos: TodoItem[], emptyText: string }
   description: string
-  metadata: ToolMetadataEntry[]
+  /** Facts of the task that the result's snapshot states. A start frame states none. */
+  resultMetadata: ToolMetadataEntry[]
   error?: string
 }
 
@@ -49,13 +50,17 @@ function todoItems(tasks: unknown): TodoItem[] | null {
   return items
 }
 
-/** Each rpiv-todo result carries the complete saved snapshot and its operation arguments. */
-export function piTodoSource(payload: Record<string, unknown>, request?: ParsedMessageContent, result?: ParsedMessageContent): PiTodoSource | null {
+/**
+ * Each rpiv-todo result carries the complete saved snapshot and its operation arguments.
+ *
+ * The snapshot is in the frame's own `result`, which an end frame carries. A start
+ * frame carries none, so its row states no task beyond what its arguments say.
+ */
+export function piTodoSource(payload: Record<string, unknown>, request?: ParsedMessageContent): PiTodoSource | null {
   const tool = piExtractTool(payload)
   if (tool?.toolName !== PI_TOOL.Todo)
     return null
-  const paired = piExtractTool(piPairedResult(payload, result)?.parentObject)
-  const output = paired?.result ?? tool.result
+  const output = tool.result
   const details = output?.details
   const args = piExtractTool(piPairedRequest(payload, request)?.parentObject)?.args ?? pickObject(details, 'params') ?? tool.args
   const action = pickString(args, 'action') || pickString(details, 'action')
@@ -72,7 +77,7 @@ export function piTodoSource(payload: Record<string, unknown>, request?: ParsedM
   const subject = task?.content || pickString(args, 'subject') || (id !== undefined
     ? `Task #${id}`
     : 'task')
-  const error = pickString(details, 'error') || (tool.isError || paired?.isError
+  const error = pickString(details, 'error') || (tool.isError
     ? output?.text || 'The to-do operation failed.'
     : '')
   let title: string
@@ -110,28 +115,28 @@ export function piTodoSource(payload: Record<string, unknown>, request?: ParsedM
         : tasks ?? []
   if (action === 'list' && tasks)
     title = pluralize(visible.length, 'task')
-  const metadata: ToolMetadataEntry[] = []
+  const resultMetadata: ToolMetadataEntry[] = []
   if (task) {
     const raw = Array.isArray(details?.tasks)
       ? details.tasks.find(value => isObject(value) && String(value.id) === task.id)
       : undefined
     if (isObject(raw)) {
-      metadata.push({ label: 'Task ID', value: task.id! })
+      resultMetadata.push({ label: 'Task ID', value: task.id! })
       if (pickString(raw, 'owner')) {
-        metadata.push({
+        resultMetadata.push({
           label: 'Owner',
           value: pickString(raw, 'owner'),
         })
       }
       if (Array.isArray(raw.blockedBy) && raw.blockedBy.every(taskId) && raw.blockedBy.length) {
-        metadata.push({
+        resultMetadata.push({
           label: 'Blocked by',
           value: raw.blockedBy.map(id => `#${id}`).join(', '),
         })
       }
       const extra = prettifyStructuredJson(raw.metadata)
       if (extra)
-        metadata.push({ label: 'Metadata', value: extra })
+        resultMetadata.push({ label: 'Metadata', value: extra })
     }
   }
   return {
@@ -145,7 +150,7 @@ export function piTodoSource(payload: Record<string, unknown>, request?: ParsedM
           : 'The provider did not supply the task.',
     },
     description: task?.description || pickString(args, 'description'),
-    metadata,
+    resultMetadata,
     ...(error
       ? { error }
       : {}),

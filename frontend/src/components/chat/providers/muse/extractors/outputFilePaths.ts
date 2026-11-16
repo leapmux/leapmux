@@ -1,13 +1,10 @@
 import type { RowExtractionInput } from '../../../rowExtractionTypes'
 import { pickObject, pickString } from '~/lib/jsonPick'
-import { museItem, museSiblingItem } from '../protocol'
+import { museItem } from '../protocol'
 
-/** Expose the native path without reading its output file. */
+/** Expose the native path of the row's own item without reading its output file. */
 export function museOutputFilePaths(input: RowExtractionInput): readonly string[] {
-  const own = museItem(input.resolved.parentObject)
-  const result = museSiblingItem(input.resolved.parentObject, input.span.result?.parentObject)
-  const item = result ?? own
-  const path = pickString(pickObject(item, 'outputRef'), 'path')
+  const path = pickString(pickObject(museItem(input.resolved.parentObject), 'outputRef'), 'path')
   return path
     ? [path]
     : []

@@ -22,14 +22,22 @@ const result = {
 }
 
 describe('pi workflow sources', () => {
+  // The end frame states the evaluated title, and the start frame states the script.
   it('uses the native workflow title and retains the exact script', () => {
-    expect(piWorkflowRequest(request, undefined, input(result))).toMatchObject({
+    expect(piWorkflowRequest(result, input(request))).toMatchObject({
       description: 'Probe',
       prompt: script,
       promptFormat: 'pre',
       promptLabel: 'Script',
     })
-    expect(piWorkflowRequest(request).description).toBe('Run workflow')
+  })
+
+  // A start frame states no acknowledgement, so its row cannot know the evaluated title.
+  it('describes a start frame from its arguments alone', () => {
+    expect(piWorkflowRequest(request)).toMatchObject({
+      description: 'Run workflow',
+      prompt: script,
+    })
   })
 
   it('does not evaluate the supplied script', () => {
@@ -71,7 +79,7 @@ describe('pi workflow sources', () => {
       },
     }
     expect(piWorkflowResult(foreign, input(request))).toMatchObject({ description: 'Run workflow', body: result.result.content[0]?.text })
-    expect(piWorkflowRequest({ ...request, toolCallId: 'other' }, undefined, input(result)).description).toBe('Run workflow')
+    expect(piWorkflowRequest(foreign, input(request)).description).toBe('Run workflow')
   })
 
   it('respects the script path precedence over ignored inline source', () => {

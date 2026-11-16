@@ -55,6 +55,13 @@ function textRow(
     : { kind: 'hidden' }
 }
 
+/**
+ * One tool row.
+ *
+ * A request row reads its own `tool_use` block only, so it states no result and no
+ * finished status. A result row reads its own `tool_result` block and the `tool_use`
+ * block of the earlier request, and builds the whole call.
+ */
 function toolSpanRow(
   payload: Record<string, unknown>,
   input: RowExtractionInput,
@@ -69,24 +76,21 @@ function toolSpanRow(
   if (!callId)
     return null
   const requestPayload = matchingSessionPayload(payload, span.request?.parentObject)
-  const resultPayload = ownResult
-    ? payload
-    : matchingSessionPayload(payload, span.result?.parentObject)
   const requestUse = requestPayload
     ? anthropicBlock(requestPayload, 'tool_use', callId)
     : undefined
-  const result = ownResult ?? (resultPayload
-    ? anthropicBlock(resultPayload, 'tool_result', callId)
-    : undefined)
+  const resultPayload = ownResult
+    ? payload
+    : undefined
   const toolName = String(use?.name ?? requestUse?.name ?? input.spanType ?? '')
   const nativeInput = use?.input ?? requestUse?.input
   const args = isObject(nativeInput)
     ? nativeInput
     : {}
-  const content = result
-    ? resultContent(result)
+  const content = ownResult
+    ? resultContent(ownResult)
     : { text: '', ordered: [] }
-  const isError = result?.is_error === true
+  const isError = ownResult?.is_error === true
 
   const role = span.role === 'result' || (span.role === 'other' && !use)
     ? 'result'
@@ -100,11 +104,11 @@ function toolSpanRow(
     isError,
     commandExit: qoderCommandExit(resultPayload, isError),
     lifecycle: {
-      frameStatus: result ? 'completed' : 'in_progress',
+      frameStatus: ownResult ? 'completed' : 'in_progress',
       providerOutcome: isError ? 'failed' : null,
       retainedOutcome: retainedOutcome(input.completion ?? input.resolved.completion),
-      rowFinal: result !== undefined,
-      resultFrameLanded: result !== undefined,
+      rowFinal: ownResult !== undefined,
+      resultFrameLanded: ownResult !== undefined,
     },
   })
   return toolCallRow(call, role, span.visibleRows)

@@ -15,18 +15,18 @@ import type { MessageRevision } from '~/lib/messageSpan'
 // ---------------------------------------------------------------------------
 
 /**
- * The revisions one row's caches depend on: always its own, plus a sibling's
- * when the row renders from that side.
+ * The revisions one row's caches depend on: always its own, plus its request's when
+ * the row renders from that side.
  *
- * `request` rides only on a RESULT row (the row that draws its request's input),
- * and `result` only on a TOOL-USE row (the row that may render from hidden
- * result data). An absent member states "this row does not depend on that side"
- * -- which is itself part of the key, so a member ARRIVING changes it.
+ * `request` rides only on a RESULT row (the row that draws its request's input). No
+ * row depends on a LATER message of its span, so no member exists for the result: a
+ * request row reads only its own message (see ToolSpanContext). An absent member
+ * states "this row does not depend on that side" -- which is itself part of the key,
+ * so a member ARRIVING changes it.
  */
 export interface RowRevisionDependencies {
   own: MessageRevision
   request?: MessageRevision
-  result?: MessageRevision
 }
 
 /** The key format version. Bump when the layout of the string changes. */
@@ -39,27 +39,25 @@ const ROW_REVISION_KEY_VERSION = 1
  * The LENGTH prefix keeps an id that contains the delimiter from forging a
  * different member's fields: the reader takes the id by count, not by scan.
  */
-function member(tag: string, revision: MessageRevision): string {
+export function revisionKeyMember(tag: string, revision: MessageRevision): string {
   return `${tag}=${revision.id.length}:${revision.id}|${revision.seq}|${revision.contentVersion}|${revision.supplementalRevision}`
 }
 
 /**
  * The exact dependency key of one row revision.
  *
- * Members appear in a FIXED order (own, request, result), each tagged, so two
- * different dependency sets never spell the same string and the same set always
- * spells the same one. Members are never sorted and the key is never hashed.
+ * Members appear in a FIXED order (own, request), each tagged, so two different
+ * dependency sets never spell the same string and the same set always spells the
+ * same one. Members are never sorted and the key is never hashed.
  */
 export function rowRevisionKey(
   dependencies: RowRevisionDependencies,
 ): string {
   const parts = [
     `v${ROW_REVISION_KEY_VERSION}`,
-    member('own', dependencies.own),
+    revisionKeyMember('own', dependencies.own),
   ]
   if (dependencies.request !== undefined)
-    parts.push(member('request', dependencies.request))
-  if (dependencies.result !== undefined)
-    parts.push(member('result', dependencies.result))
+    parts.push(revisionKeyMember('request', dependencies.request))
   return parts.join('~')
 }

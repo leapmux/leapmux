@@ -43,22 +43,19 @@ export function ampExtractRow(input: RowExtractionInput): ChatRow | null {
 }
 
 /**
- * The row an Amp tool row becomes, with both span sides resolved.
+ * The row an Amp tool row becomes, from its own message and the span's request.
  *
- * Only a side of THIS call counts: one message can run several calls, and a sibling's
- * row is no side of this one.
+ * Only a request of THIS call counts: one message can run several calls, and a
+ * sibling's row is no side of this one.
  */
 function ampToolSpanRow(parsed: ParsedMessageContent, span: RowExtractionInput['span']): ChatRow | null {
   const payload = parsed.parentObject
   if (!isObject(payload))
     return null
-  const ownId = ampSideCallId(parsed)
-  const mine = (side: ParsedMessageContent | undefined) => side !== undefined && ampSideCallId(side) === ownId
-  const row = ampToolRow(payload, mine(span.request)
+  const request = span.request !== undefined && ampSideCallId(span.request) === ampSideCallId(parsed)
     ? span.request
-    : undefined, mine(span.result)
-    ? span.result
-    : undefined, parsed.completion)
+    : undefined
+  const row = ampToolRow(payload, request, parsed.completion)
   if (!row)
     return null
   return toolCallRow(ampToolCall(row, parsed.completion), ampToolSpanRowRole(row), span.visibleRows)

@@ -16,7 +16,8 @@ droidTest('updates one tool card with the live output and stores one completed r
   await exerciseOutputByteProgress(native, {
     supported: true,
     afterOutputBoundary: async (boundary) => {
-      const live = toolCallRow(native.page, callID, 'request')
+      // The pending row below the request row draws the live output while the call runs.
+      const live = toolCallRow(native.page, callID, 'pending')
       await expect(live).toHaveCount(1)
       await expect(live).toContainText(boundary.phase === 'first'
         ? boundary.firstLiveTail

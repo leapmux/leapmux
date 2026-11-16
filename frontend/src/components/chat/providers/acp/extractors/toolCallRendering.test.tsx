@@ -18,7 +18,7 @@ import { acpToolCall } from './toolCall'
  * caught by a test that only built a completed call.
  */
 function renderCall(call: ToolCall) {
-  return render(() => <ToolMessage row={toolRow(call, 'request', { result: false })} />)
+  return render(() => <ToolMessage row={toolRow(call, 'request')} />)
 }
 
 describe('acp shared default request', () => {

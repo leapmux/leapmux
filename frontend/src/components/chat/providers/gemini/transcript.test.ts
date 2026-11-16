@@ -28,9 +28,8 @@ function native(frame: Record<string, unknown>, supplementalContent?: unknown, c
       completion,
       span: {
         request: undefined,
-        result: undefined,
         role: 'other',
-        visibleRows: { request: false, result: false },
+        visibleRows: { request: false },
       },
     }),
   }
@@ -48,7 +47,7 @@ describe('composeGeminiTranscript', () => {
     expect(prompt.category).toEqual({ kind: 'user_text' })
     expect(prompt.row).toEqual({ kind: 'user', text: 'Read the child file.', attachments: [] })
     expect(plugin.transcript.spanRole(prompt.resolved)).toBe('other')
-    expect(plugin.transcript.relatedMessages?.(prompt.resolved)).toEqual([])
+    expect(plugin.transcript.needsRequest?.(prompt.resolved)).toBe(false)
     const answer = native({
       id: 'native-model',
       type: 'gemini',
@@ -121,6 +120,8 @@ describe('composeGeminiTranscript', () => {
     const result = native(frame)
     expect(result.category).toEqual({ kind: 'tool_use' })
     expect(plugin.transcript.spanRole(result.resolved)).toBe('result')
+    // The record states its whole call, so its result row reads no request.
+    expect(plugin.transcript.needsRequest?.(result.resolved)).toBe(false)
     expect(result.row).toMatchObject({
       kind: 'tool',
       role: 'result',
@@ -150,6 +151,7 @@ describe('composeGeminiTranscript', () => {
       ],
     }, undefined, MessageCompletion.UNSPECIFIED)
     expect(result.category).toEqual({ kind: 'tool_use' })
+    expect(plugin.transcript.needsRequest?.(result.resolved)).toBe(false)
     expect(result.row).toMatchObject({
       kind: 'tool',
       role: 'request',
@@ -158,5 +160,15 @@ describe('composeGeminiTranscript', () => {
         request: { path: '/native/file.txt' },
       },
     })
+  })
+
+  it('asks the captured base whether an ordinary ACP result row needs its request', () => {
+    const result = native({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'read_file__native-tool',
+      status: 'completed',
+    }, undefined, MessageCompletion.UNSPECIFIED)
+    expect(plugin.transcript.spanRole(result.resolved)).toBe('result')
+    expect(plugin.transcript.needsRequest?.(result.resolved)).toBe(true)
   })
 })

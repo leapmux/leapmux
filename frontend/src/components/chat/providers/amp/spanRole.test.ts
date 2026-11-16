@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { input } from '../testUtils'
-import { ampRelatedMessages, ampSpanRole } from './spanRole'
+import { ampNeedsRequest, ampSpanRole } from './spanRole'
 import { ampToolResultRow, ampToolUseRow } from './toolResults.fixtures'
 
 function row(parent: Record<string, unknown>, completion?: MessageCompletion) {
@@ -52,10 +52,22 @@ describe('ampSpanRole', () => {
   })
 })
 
-describe('ampRelatedMessages', () => {
-  it('asks for the other side of the span', () => {
-    expect(ampRelatedMessages(row(ampToolUseRow('shell_command', {})))).toEqual(['result'])
-    expect(ampRelatedMessages(row(ampToolResultRow('ok')))).toEqual(['request'])
-    expect(ampRelatedMessages(row({ type: 'result' }))).toEqual([])
+describe('ampNeedsRequest', () => {
+  it('answers false for a call row, which states its own name and arguments', () => {
+    expect(ampNeedsRequest(row(ampToolUseRow('shell_command', { command: 'ls' })))).toBe(false)
+  })
+
+  it('answers true for a result row, which states no name and no arguments', () => {
+    expect(ampNeedsRequest(row(ampToolResultRow('ok')))).toBe(true)
+  })
+
+  // A stopped turn retains the call row as the span's result, and that row still
+  // holds its own `tool_use` block.
+  it('answers false for a retained call row', () => {
+    expect(ampNeedsRequest(row(ampToolUseRow('shell_command', {}), MessageCompletion.INTERRUPTED))).toBe(false)
+  })
+
+  it('answers false for a row outside a tool span', () => {
+    expect(ampNeedsRequest(row({ type: 'result' }))).toBe(false)
   })
 })

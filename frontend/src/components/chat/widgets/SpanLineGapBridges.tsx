@@ -11,7 +11,9 @@ import { LINE_THICKNESS, SPAN_BRIDGE_GAP_VAR, spanColumnCenterX } from './SpanLi
  * entry-cache module.
  */
 export interface SpanBridgeEntry {
-  message: { id: string, spanId?: string, spanColor?: number }
+  /** The id of the list row: the message id, or the id of a pending row (see chatPendingRows). */
+  rowId: string
+  message: { spanId?: string, spanColor?: number }
   parsedSpanLines: (SpanLine | null)[]
   category: { kind: string }
 }
@@ -77,15 +79,15 @@ export const SpanLineGapBridges: Component<SpanLineGapBridgesProps> = props => (
           <div
             class={spanGapBridgeRow}
             style={{
-              transform: `translateY(${props.topOf(entry.message.id)}px)`,
-              visibility: props.hiddenOf(entry.message.id)
+              transform: `translateY(${props.topOf(entry.rowId)}px)`,
+              visibility: props.hiddenOf(entry.rowId)
                 ? 'hidden'
                 : undefined,
               // Published once per ROW, not per column: every segment in this
               // anchor spans the same gap.
-              [SPAN_BRIDGE_GAP_VAR]: `${props.gapAboveOf(entry.message.id)}px`,
+              [SPAN_BRIDGE_GAP_VAR]: `${props.gapAboveOf(entry.rowId)}px`,
             }}
-            data-span-gap-bridges-for={entry.message.id}
+            data-span-gap-bridges-for={entry.rowId}
           >
             <Index each={connecting()}>
               {(isConnecting, col) => (

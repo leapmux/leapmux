@@ -4,7 +4,7 @@ import { ANTIGRAVITY_FRAME, ANTIGRAVITY_STEP_TYPE } from '~/generated/contracts/
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { notificationClassifierFor } from '../../notificationClassification'
 import { antigravityNotificationEntry } from './extractors/notification'
-import { antigravityMessageIsChildPrompt, antigravityStepHeader, antigravityStepOpen } from './extractors/toolCommon'
+import { antigravityMessageIsChildPrompt, antigravityRowOpen, antigravityStepHeader } from './extractors/toolCommon'
 
 export function classifyAntigravityMessage(input: ClassificationInput): MessageCategory {
   const parent = input.parentObject
@@ -46,7 +46,7 @@ export function classifyAntigravityMessage(input: ClassificationInput): MessageC
       case ANTIGRAVITY_STEP_TYPE.Checkpoint:
         return notification([parent], 'hidden')
       default:
-        return antigravityStepOpen(step)
+        return antigravityRowOpen(step, input.completion)
           ? { kind: 'tool_use' }
           : { kind: 'tool_result' }
     }

@@ -96,7 +96,8 @@ describe('SpanLines', () => {
     // continues, so exactly one bridge renders — at that column's center.
     const entries: SpanBridgeEntry[] = [
       {
-        message: { id: 'm1' },
+        rowId: 'm1',
+        message: {},
         category: { kind: 'assistant_text' },
         parsedSpanLines: [
           { span_id: 'span-A', color: 1, type: 'connector_end' },
@@ -109,7 +110,8 @@ describe('SpanLines', () => {
         ],
       },
       {
-        message: { id: 'm2' },
+        rowId: 'm2',
+        message: {},
         category: { kind: 'assistant_text' },
         parsedSpanLines: [
           null,
@@ -145,7 +147,8 @@ describe('SpanLines', () => {
     const lineB = { span_id: 'span-B', color: 2, type: 'active' } as const
     const entries: SpanBridgeEntry[] = [
       {
-        message: { id: 'm6' },
+        rowId: 'm6',
+        message: {},
         category: { kind: 'assistant_text' },
         parsedSpanLines: [lineA, lineB],
       },
@@ -154,7 +157,8 @@ describe('SpanLines', () => {
       <SpanLineGapBridges
         entries={entries}
         precedingEntry={{
-          message: { id: 'm5' },
+          rowId: 'm5',
+          message: {},
           category: { kind: 'assistant_text' },
           parsedSpanLines: [lineA, lineB],
         }}
@@ -174,7 +178,8 @@ describe('SpanLines', () => {
     const line = { span_id: 'span-A', color: 1, type: 'active' } as const
     const entries: SpanBridgeEntry[] = [
       {
-        message: { id: 'm3' },
+        rowId: 'm3',
+        message: {},
         category: { kind: 'assistant_text' },
         parsedSpanLines: [line],
       },
@@ -183,7 +188,8 @@ describe('SpanLines', () => {
       <SpanLineGapBridges
         entries={entries}
         precedingEntry={{
-          message: { id: 'm2' },
+          rowId: 'm2',
+          message: {},
           category: { kind: 'assistant_text' },
           parsedSpanLines: [line],
         }}
@@ -200,7 +206,8 @@ describe('SpanLines', () => {
   it('connects via the preceding tool body key even when that row has no matching column', () => {
     const entries: SpanBridgeEntry[] = [
       {
-        message: { id: 'm4' },
+        rowId: 'm4',
+        message: {},
         category: { kind: 'connector_end' },
         parsedSpanLines: [
           { span_id: 'span-tool', color: 3, type: 'connector_end' },
@@ -213,7 +220,8 @@ describe('SpanLines', () => {
         precedingEntry={{
           // A tool_use body: its bottom border is the span's rail, so the
           // closing row below connects via the body key, not a column match.
-          message: { id: 'm3', spanId: 'span-tool', spanColor: 3 },
+          rowId: 'm3',
+          message: { spanId: 'span-tool', spanColor: 3 },
           category: { kind: 'tool_use' },
           parsedSpanLines: [],
         }}

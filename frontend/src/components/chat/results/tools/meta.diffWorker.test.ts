@@ -70,7 +70,7 @@ describe('toolCallMeta', () => {
           },
         ],
       },
-    }), 'request', { result: true })
+    }), 'request')
 
     await createRoot(async (dispose) => {
       const meta = createMemo(() => toolCallMeta(requestRow))

@@ -84,14 +84,6 @@ export function ohMyPiExtractTool(payload: Record<string, unknown> | null | unde
     : null
 }
 
-/** The frame's `type`, when it is one of the three tool frames. */
-function toolFrameType(payload: Record<string, unknown> | null | undefined): string {
-  const type = pickString(payload, 'type')
-  return type === OH_MY_PI_EVENT.ToolExecutionStart || type === OH_MY_PI_EVENT.ToolExecutionEnd
-    ? type
-    : ''
-}
-
 /**
  * The paired start frame, when it is the start of THIS call: the same call id and the
  * same tool. A frame of another call is no side of this one, since one turn can run
@@ -100,18 +92,8 @@ function toolFrameType(payload: Record<string, unknown> | null | undefined): str
 export function ohMyPiPairedRequest(payload: Record<string, unknown> | null | undefined, request?: ParsedMessageContent): ParsedMessageContent | undefined {
   const current = ohMyPiExtractTool(payload)
   const paired = ohMyPiExtractTool(request?.parentObject)
-  return current && paired && toolFrameType(request?.parentObject) === OH_MY_PI_EVENT.ToolExecutionStart
+  return current && paired && pickString(request?.parentObject, 'type') === OH_MY_PI_EVENT.ToolExecutionStart
     && paired.toolCallId === current.toolCallId && paired.toolName === current.toolName
     ? request
-    : undefined
-}
-
-/** The paired end frame, when it is the end of THIS call. */
-export function ohMyPiPairedResult(payload: Record<string, unknown> | null | undefined, result?: ParsedMessageContent): ParsedMessageContent | undefined {
-  const current = ohMyPiExtractTool(payload)
-  const paired = ohMyPiExtractTool(result?.parentObject)
-  return current && paired && toolFrameType(result?.parentObject) === OH_MY_PI_EVENT.ToolExecutionEnd
-    && paired.toolCallId === current.toolCallId && paired.toolName === current.toolName
-    ? result
     : undefined
 }

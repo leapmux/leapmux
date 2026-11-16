@@ -1088,8 +1088,8 @@ export const COPILOT_TOOL_READERS: ToolCallSpecReaderTable<CopilotToolFacts> = {
       kind: 'task',
       request,
       title: facts.title,
-      ...(shell.metadata !== undefined
-        ? { metadata: shell.metadata }
+      ...(shell.resultMetadata !== undefined
+        ? { resultMetadata: shell.resultMetadata }
         : {}),
       // `copilotCommandParts` reads the same blocks the rich content does and drops
       // the two this row already draws: the exit block and any block that repeats the
@@ -1104,12 +1104,12 @@ export const COPILOT_TOOL_READERS: ToolCallSpecReaderTable<CopilotToolFacts> = {
     // `bash` above the very command it ran states nothing more.
     if (!facts.hasResult)
       return { kind: 'execute', request }
-    const { exitCode, text, extraContent, metadata } = copilotCommandParts(facts)
+    const { exitCode, text, extraContent, resultMetadata } = copilotCommandParts(facts)
     return {
       kind: 'execute',
       request,
-      ...(metadata !== undefined
-        ? { metadata }
+      ...(resultMetadata !== undefined
+        ? { resultMetadata }
         : {}),
       ...copilotExtraContent(extraContent),
       // The CODE is optional on the command: a shell that has not reported one states
@@ -1383,12 +1383,16 @@ export function copilotToolCall(row: CopilotToolRow): ToolCall {
   )
 }
 
-/** The exit code, the displayed text, and the content blocks of a shell result. */
+/**
+ * The exit code, the displayed text, the content blocks, and the shell facts of a shell
+ * result. The `shell_exit` block of the result states the shell and its directory, so
+ * they are facts of the result, not of the request.
+ */
 function copilotCommandParts(facts: CopilotToolFacts): {
   exitCode: number | undefined
   text: string
   extraContent: McpContentItem[] | undefined
-  metadata: ToolMetadataEntry[] | undefined
+  resultMetadata: ToolMetadataEntry[] | undefined
 } {
   const contents = facts.contents ?? []
   const exits = contents.filter(isObject).filter(item => item.type === 'shell_exit')
@@ -1428,7 +1432,7 @@ function copilotCommandParts(facts: CopilotToolFacts): {
   const extra = contents.filter(item => item !== exitBlock
     && (!isObject(item) || !(item.type === 'text' && shown.has(pickString(item, 'text')))))
   // Each entry is one LABEL/KEY pair, so the tuple states the shape the destructure reads.
-  const metadata = ([
+  const resultMetadata = ([
     ['Shell ID', 'shellId'],
     ['Directory', 'cwd'],
   ] as const)
@@ -1453,7 +1457,7 @@ function copilotCommandParts(facts: CopilotToolFacts): {
             : []),
         ]
       : undefined,
-    metadata: metadata.length ? metadata : undefined,
+    resultMetadata: resultMetadata.length ? resultMetadata : undefined,
   }
 }
 

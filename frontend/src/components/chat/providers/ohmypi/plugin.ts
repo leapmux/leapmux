@@ -9,13 +9,13 @@ import { ohMyPiControls } from './pluginControls'
 import { resolveOhMyPiMessage } from './resolveMessage'
 import { ohMyPiValidateResumeHandle } from './resumeHandle'
 import { ohMyPiContextUsageFromMessage } from './sessionMetadata'
-import { ohMyPiRelatedMessages, ohMyPiSpanRole } from './spanRole'
+import { ohMyPiNeedsRequest, ohMyPiSpanRole } from './spanRole'
 
 const ohMyPiPlugin: ProviderPlugin = {
   transcript: {
     resolveMessage: resolveOhMyPiMessage,
     spanRole: ohMyPiSpanRole,
-    relatedMessages: ohMyPiRelatedMessages,
+    needsRequest: ohMyPiNeedsRequest,
     classify: classifyOhMyPiMessage,
     extractRow: ohMyPiExtractRow,
     notificationEntry: ohMyPiNotificationEntry,

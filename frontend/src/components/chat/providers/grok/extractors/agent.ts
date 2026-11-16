@@ -144,15 +144,18 @@ export function grokAgentRun(facts: ACPToolFacts, request: AgentRequest): AgentR
   }
 }
 
-/** The launch of one `workflow` run: the script that it runs, or the saved workflow that it runs. */
+/**
+ * The launch of one `workflow` run: the script that it runs, or the saved workflow that
+ * it runs.
+ *
+ * The metadata states the arguments of the call alone. The script file of a saved
+ * workflow is a fact of the answer, so the run states it (see {@link grokWorkflowRun}).
+ * The answer also identifies the saved workflow, and that name titles the result row.
+ */
 export function grokWorkflowRequest(input: Record<string, unknown>, facts: ACPToolFacts): AgentRequest {
   const output = grokRawOutput(facts.tool, 'Workflow')
   const args = input.args
   const metadata = presentEntries([
-    [
-      'Script',
-      pickString(output, 'script_path'),
-    ],
     [
       'Arguments',
       args === undefined || args === null
@@ -208,6 +211,10 @@ export function grokWorkflowRun(facts: ACPToolFacts, request: AgentRequest, inpu
       : 'completed',
     metadata: presentEntries([
       ['Run ID', runId],
+      [
+        'Script',
+        pickString(output, 'script_path'),
+      ],
     ]),
     body: pickString(output, 'message') || facts.text,
   }

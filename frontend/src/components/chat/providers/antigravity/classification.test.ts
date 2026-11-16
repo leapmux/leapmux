@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ANTIGRAVITY_FRAME, ANTIGRAVITY_STEP_TYPE } from '~/generated/contracts/antigravity-protocol'
+import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { classifyAntigravityMessage } from './classification'
 import { antigravityExtractRow } from './extractors/row'
 import { antigravitySpanRole } from './spanRole'
@@ -28,6 +29,16 @@ describe('classifyAntigravityMessage', () => {
       },
     } as never).kind).toBe('notification')
     expect(classifyAntigravityMessage(input({ type: 'CORTEX_STEP_TYPE_FUTURE', status: 'CORTEX_STEP_STATUS_DONE' })).kind).toBe('tool_result')
+  })
+
+  // When a turn ends while a step runs, the Worker stores the open step again with a
+  // completion, as the closing row. That copy is the final row of its call.
+  it.each([MessageCompletion.COMPLETE, MessageCompletion.INTERRUPTED])('classifies the closing copy of an open step as a result, with completion %s', (completion) => {
+    expect(classifyAntigravityMessage({
+      parentObject: { type: ANTIGRAVITY_STEP_TYPE.RunCommand, status: 'CORTEX_STEP_STATUS_RUNNING' },
+      wrapper: undefined,
+      completion,
+    } as never).kind).toBe('tool_result')
   })
 })
 
@@ -60,6 +71,13 @@ describe('antigravitySpanRole', () => {
     } as never)).toBe('request')
     expect(antigravitySpanRole({
       parentObject: { type: ANTIGRAVITY_STEP_TYPE.PlannerResponse, status: 'CORTEX_STEP_STATUS_DONE' },
+    } as never)).toBe('result')
+  })
+
+  it('places the closing copy of an open step on the result side', () => {
+    expect(antigravitySpanRole({
+      parentObject: { type: ANTIGRAVITY_STEP_TYPE.RunCommand, status: 'CORTEX_STEP_STATUS_RUNNING' },
+      completion: MessageCompletion.COMPLETE,
     } as never)).toBe('result')
   })
 })

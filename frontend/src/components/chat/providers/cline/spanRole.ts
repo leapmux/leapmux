@@ -20,12 +20,11 @@ export function clineSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
     : 'request'
 }
 
-/** The span side one row needs beside it: a request needs its result, and a result its request. */
-export function clineRelatedMessages(parsed: ResolvedMessageContent) {
-  const role = clineSpanRole(parsed)
-  return role === 'result'
-    ? ['request'] as const
-    : role === 'request'
-      ? ['result'] as const
-      : []
+/**
+ * Whether one row draws from its span's request: a `tool.finished` row states the
+ * tool's name but not its arguments, so it reads them from the start. A start row,
+ * also one that a stopped turn retained, reads its own `tool.started` event.
+ */
+export function clineNeedsRequest(parsed: ResolvedMessageContent): boolean {
+  return clineToolFinish(parsed.parentObject) !== null
 }

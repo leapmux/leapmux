@@ -7,14 +7,14 @@ import { clineResultDivider } from './extractors/resultDivider'
 import { clineExtractRow } from './extractors/row'
 import { clineConfiguration } from './pluginConfiguration'
 import { clineControls } from './pluginControls'
-import { clineRelatedMessages, clineSpanRole } from './spanRole'
+import { clineNeedsRequest, clineSpanRole } from './spanRole'
 
 const clinePlugin: ProviderPlugin = {
   transcript: {
     classify: classifyClineMessage,
     extractRow: clineExtractRow,
     spanRole: clineSpanRole,
-    relatedMessages: clineRelatedMessages,
+    needsRequest: clineNeedsRequest,
     extractDivider: clineResultDivider,
     notificationEntry: clineNotificationEntry,
     compactionStart: clineCompactionStart,

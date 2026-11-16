@@ -299,6 +299,41 @@ describe('an observable degradation', () => {
     ],
   ]
 
+  // A request row reads only its own frame, and Codex sends a file change before its
+  // list of changes. A call that still runs keeps its kind with no file; only a FINISHED
+  // one must state the file it changed.
+  it.each(['unstated', 'pending', 'in_progress'] as const)('keeps the kind of a %s file change that states no file yet', (status) => {
+    const call = createToolCall({
+      id: 'f9',
+      name: 'Edit',
+      lifecycle: TEST_LIFECYCLE(status),
+    }, {
+      kind: 'edit',
+      request: { changes: [] },
+    })
+    expect(call.kind).toBe('edit')
+    expect(call.degradation).toBeUndefined()
+  })
+
+  // Only the EMPTY list is allowed while the call runs: a change that it lists still
+  // states its file, or the row would draw a change of no file.
+  it('degrades a running file change that lists a change of no file', () => {
+    const call = createToolCall({
+      id: 'f10',
+      name: 'Edit',
+      lifecycle: TEST_LIFECYCLE('in_progress'),
+    }, {
+      kind: 'edit',
+      request: {
+        changes: [
+          { filePath: '', oldStr: 'a', newStr: 'b' },
+        ],
+      },
+    })
+    expect(call.kind).toBe('other')
+    expect(call.degradation).toEqual({ fault: 'a-file-change-states-no-file', originalKind: 'edit' })
+  })
+
   it('preserves the fault and the original kind on the degraded call', () => {
     for (const [fault, [envelope, payload]] of FAULT_DRAFTS) {
       const call = createToolCall(envelope, payload)

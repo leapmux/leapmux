@@ -5,7 +5,7 @@ import { providerRow, providerToolCall } from '~/test-support/toolCallFixture'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import { FAST_AGENT_ARCHIVE_REQUEST, fastAgentArchiveFixture } from './archiveFixture.test-support'
-import { fastAgentArchiveSource, sameFastAgentArchiveCall } from './archiveSource'
+import { fastAgentArchiveSource } from './archiveSource'
 import './plugin'
 
 function archiveInput(raw: Record<string, unknown>, field: string, changes: Record<string, unknown> = {}) {
@@ -91,59 +91,51 @@ describe('fastAgentArchiveSource', () => {
     expect(providerFor(AgentProvider.FAST_AGENT)?.transcript.classify(parsed).kind).toBe('unknown')
   })
 
-  it('matches a request and result only within one captured native call', () => {
-    const opener = fastAgentArchiveSource(archiveInput(FAST_AGENT_ARCHIVE_REQUEST, FASTAGENT_ARCHIVE.ToolCalls))!
-    const result = {
-      content: [
-        { type: 'text', text: 'native result' },
-      ],
-      isError: false,
-    }
-    const closer = fastAgentArchiveSource(archiveInput(result, FASTAGENT_ARCHIVE.ToolResults))!
-    expect(sameFastAgentArchiveCall(opener, closer)).toBe(true)
-    for (const changes of [
-      { captureId: 'other' },
-      { actor: 'other' },
-      { historyFile: 'history_other.json' },
-      { callId: 'other' },
-      { spanId: 'other' },
-      {
-        request: {
-          ...FAST_AGENT_ARCHIVE_REQUEST,
-          params: {
-            ...FAST_AGENT_ARCHIVE_REQUEST.params,
-            arguments: { command: 'other' },
-          },
-        },
-      },
-    ]) {
-      const foreign = fastAgentArchiveSource(archiveInput(result, FASTAGENT_ARCHIVE.ToolResults, changes))!
-      expect(sameFastAgentArchiveCall(opener, foreign)).toBe(false)
-    }
+  // An archived request row reads its own source alone, so it draws the call that
+  // the model asked for and holds no answer. The result row carries the request in its
+  // own provenance, so it draws the whole call with no other row.
+  it('reads a request card from its own source, with no result', () => {
+    const options = fastAgentArchiveFixture(FASTAGENT_ARCHIVE.ToolCalls)
+    const call = providerToolCall(AgentProvider.FAST_AGENT, FAST_AGENT_ARCHIVE_REQUEST, { ...options, role: 'request' })
+    expect(call).toMatchObject({
+      kind: 'execute',
+      status: 'in_progress',
+      request: { command: 'printf native-output' },
+    })
+    expect(call?.result).toBeUndefined()
   })
 
-  it('resolves a request card through its native result sibling', () => {
+  it('reads a result card whole from its own source', () => {
     const result = {
       content: [
-        { type: 'text', text: 'complete sibling output' },
+        { type: 'text', text: 'complete native output' },
       ],
       isError: false,
     }
-    const parsedResult = archiveInput(result, FASTAGENT_ARCHIVE.ToolResults)
-    const options = fastAgentArchiveFixture(FASTAGENT_ARCHIVE.ToolCalls)
-    const call = providerToolCall(AgentProvider.FAST_AGENT, FAST_AGENT_ARCHIVE_REQUEST, { ...options, role: 'request', result: parsedResult })
+    const options = fastAgentArchiveFixture(FASTAGENT_ARCHIVE.ToolResults)
+    const call = providerToolCall(AgentProvider.FAST_AGENT, result, { ...options, role: 'result' })
     expect(call).toMatchObject({
       kind: 'execute',
       status: 'completed',
+      request: { command: 'printf native-output' },
       result: {
         commands: [
-          { output: 'complete sibling output' },
+          { output: 'complete native output' },
         ],
       },
     })
-    const foreign = archiveInput(result, FASTAGENT_ARCHIVE.ToolResults, { captureId: 'other' })
-    const unpaired = providerToolCall(AgentProvider.FAST_AGENT, FAST_AGENT_ARCHIVE_REQUEST, { ...options, role: 'request', result: foreign })
-    expect(unpaired?.status).toBe('in_progress')
+  })
+
+  it('needs no request for an archived row of either side', () => {
+    const plugin = providerFor(AgentProvider.FAST_AGENT)!
+    const result = {
+      content: [
+        { type: 'text', text: 'complete native output' },
+      ],
+      isError: false,
+    }
+    expect(plugin.transcript.needsRequest?.(archiveInput(FAST_AGENT_ARCHIVE_REQUEST, FASTAGENT_ARCHIVE.ToolCalls))).toBe(false)
+    expect(plugin.transcript.needsRequest?.(archiveInput(result, FASTAGENT_ARCHIVE.ToolResults))).toBe(false)
   })
 
   it('preserves rich generic results and their exact original objects', () => {

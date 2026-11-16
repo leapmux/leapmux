@@ -37,7 +37,7 @@ function result(id: string, content: unknown[] = [], fields: Record<string, unkn
   }
 }
 
-function row(payload: Record<string, unknown>, request?: Record<string, unknown>, reply?: Record<string, unknown>, completion?: MessageCompletion): RowExtractionInput {
+function row(payload: Record<string, unknown>, request?: Record<string, unknown>, completion?: MessageCompletion): RowExtractionInput {
   const resolved = {
     ...input(payload, null, provider),
     ...(completion !== undefined
@@ -51,11 +51,8 @@ function row(payload: Record<string, unknown>, request?: Record<string, unknown>
       request: request
         ? input(request, null, provider)
         : undefined,
-      result: reply
-        ? input(reply, null, provider)
-        : undefined,
       role: deepseekHarnessSpanRole(resolved),
-      visibleRows: { request: request !== undefined, result: reply !== undefined },
+      visibleRows: { request: request !== undefined },
     },
     ...(completion !== undefined
       ? { completion }
@@ -83,23 +80,106 @@ describe('deepseekHarnessToolCall', () => {
     })
   })
 
-  it('does not borrow arguments or output from another native call', () => {
-    const request = call('mine', 'bash', { command: 'printf mine', description: 'Print this call.' })
-    const foreign = result('other', [
-      { type: 'text', text: 'Foreign output' },
-    ])
-    expect(deepseekHarnessToolCall(row(request, undefined, foreign))).toMatchObject({
-      kind: 'execute',
-      status: 'in_progress',
-      request: { command: 'printf mine' },
-    })
-    expect(deepseekHarnessToolCall(row(request, undefined, foreign))).not.toHaveProperty('result')
+  it('does not borrow arguments from another native call', () => {
     const own = result('mine', [
       { type: 'text', text: 'Mine' },
     ])
     const other = call('other', 'bash', { command: 'dangerous command' })
     expect(deepseekHarnessToolCall(row(own, other))).not.toMatchObject({
       request: { command: 'dangerous command' },
+    })
+  })
+
+  describe('a call event whose result later fails', () => {
+    // Each call states its kind-specific request in its arguments. A failure replaces
+    // only the result, so both rows keep the same request.
+    const failingCalls: Array<[string, ReturnType<typeof call>, Record<string, unknown>]> = [
+      [
+        'a plan exit keeps its mode and icon',
+        call('plan', 'exit_plan_mode', { plan: 'Native plan.' }),
+        {
+          kind: 'switch_mode',
+          icon: 'plan-exit',
+          request: { mode: 'act' },
+        },
+      ],
+      [
+        'a question keeps its questions',
+        call('ask', 'ask_user_question', {
+          questions: [
+            {
+              id: 'q1',
+              question: 'Which file?',
+              options: [
+                { label: 'a.txt' },
+              ],
+            },
+          ],
+        }),
+        {
+          kind: 'question',
+          request: {
+            questions: [
+              {
+                id: 'q1',
+                question: 'Which file?',
+                options: [
+                  { label: 'a.txt', value: 'a.txt' },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+      [
+        'an edit keeps its requested change',
+        call('edit', 'edit', { file_path: '/work/a', old_string: 'old', new_string: 'new' }),
+        {
+          kind: 'edit',
+          request: {
+            changes: [
+              { filePath: '/work/a', oldStr: 'old', newStr: 'new' },
+            ],
+          },
+        },
+      ],
+    ]
+
+    it.each(failingCalls)('builds the request row from its own event: %s', (_case, request, expected) => {
+      const extracted = deepseekHarnessToolCall(row(request, request))
+      expect(extracted).toMatchObject({ ...expected, status: 'in_progress', images: [] })
+      expect(extracted).not.toHaveProperty('result')
+    })
+
+    it.each(failingCalls)('draws the failure on the result row and keeps the request: %s', (_case, request, expected) => {
+      const reply = result(request.data.callId, [
+        { type: 'text', text: 'Native failure.' },
+      ])
+      reply.data.message.isError = true
+      expect(deepseekHarnessToolCall(row(reply, request))).toMatchObject({
+        ...expected,
+        status: 'failed',
+        result: { failure: true, text: 'Native failure.' },
+      })
+    })
+
+    it('draws no picture for a failed read', () => {
+      const request = call('read', 'read', { file_path: '/work/shot.png' })
+      const reply = result('read', [
+        { type: 'text', text: 'Native failure.' },
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: 'aGVsbG8=' },
+        },
+      ])
+      reply.data.message.isError = true
+      expect(deepseekHarnessToolCall(row(reply, request))).toMatchObject({
+        kind: 'read',
+        status: 'failed',
+        request: { path: '/work/shot.png' },
+        result: { failure: true, text: 'Native failure.' },
+        images: [],
+      })
     })
   })
 
@@ -229,7 +309,7 @@ describe('deepseekHarnessToolCall', () => {
 
   it('keeps a retained call cancelled without a fabricated native result', () => {
     const request = call('interrupted-call', 'bash', { command: 'wait', description: 'Wait for cancellation.' })
-    const extracted = deepseekHarnessToolCall(row(request, undefined, undefined, MessageCompletion.INTERRUPTED))
+    const extracted = deepseekHarnessToolCall(row(request, undefined, MessageCompletion.INTERRUPTED))
     expect(extracted).toMatchObject({ kind: 'execute', status: 'cancelled' })
     expect(extracted).not.toHaveProperty('result')
   })

@@ -91,7 +91,9 @@ export function claudeTaskSpec(request: TaskRequest, args: ClaudeToolRow, result
     }
   }
   const taskType = pickString(result.toolUseResult, 'task_type')
-  const metadata: ToolMetadataEntry[] = taskType
+  // Only the RESULT states the type of the task it stopped, so the type is a fact of
+  // the result, which the row that draws the result shows.
+  const resultMetadata: ToolMetadataEntry[] = taskType
     ? [
         { label: 'Task type', value: taskType },
       ]
@@ -101,7 +103,9 @@ export function claudeTaskSpec(request: TaskRequest, args: ClaudeToolRow, result
     kind: 'task',
     request,
     title,
-    metadata,
+    ...(resultMetadata.length > 0
+      ? { resultMetadata }
+      : {}),
     result: {
       title: taskType
         ? `${message} (${taskType})`

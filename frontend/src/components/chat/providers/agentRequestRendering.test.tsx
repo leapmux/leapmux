@@ -3,9 +3,9 @@ import { describe, expect, it } from 'vitest'
 import { MIMO_ACTOR_ACTION, MIMO_TOOL } from '~/generated/contracts/mimo-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { renderMessageContent, renderPendingMessageContent } from '~/test-support/messageContentRenderer'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
-import { renderMessageContent } from '../messageContentRenderer'
 import { providerFor } from './registry'
 import { input } from './testUtils'
 import './index'
@@ -17,7 +17,7 @@ describe.each([
   AgentProvider.KILO,
   AgentProvider.MIMO_CODE,
 ])('shared agent request (%s)', (provider) => {
-  function renderRequest(completed: boolean) {
+  function launch() {
     const args = { description: 'Inspect project structure', subagent_type: 'explore', prompt: '**Instruction**\n\n1. Read the entry points.' }
     // MiMo's `actor` tool states the launch as one operation, and `run` waits for the
     // subagent's report.
@@ -95,33 +95,58 @@ describe.each([
             }
     const sources = testMessageSources({
       current: () => input(request),
-      result: () => completed
-        ? input(result)
-        : undefined,
       role: () => 'request',
-      visibleRows: () => ({ request: true, result: completed }),
+      visibleRows: () => ({ request: true }),
     })
+    const category = providerFor(provider)!.transcript.classify(input(request))
     return {
-      ...render(() => renderMessageContent(request, { premeasureMode: true, sources }, providerFor(provider)!.transcript.classify(input(request)), provider)),
       request,
+      result,
+      renderRow: () => render(() => renderMessageContent(request, { premeasureMode: true, sources }, category, provider)),
+      renderPending: () => render(() => renderPendingMessageContent(request, { premeasureMode: true, sources }, category, provider)),
+      renderResult: () => render(() => renderMessageContent(result, {
+        premeasureMode: true,
+        sources: testMessageSources({
+          current: () => input(result),
+          request: () => input(request),
+          role: () => 'result',
+          visibleRows: () => ({ request: true }),
+        }),
+      }, providerFor(provider)!.transcript.classify(input(result)), provider)),
     }
   }
 
-  it('shows the pending prompt as formatted Markdown', async () => {
-    const { container } = renderRequest(false)
+  // While the subagent runs, the PENDING row below the request row shows the prompt.
+  it('shows the pending prompt as formatted Markdown on the pending row', async () => {
+    const { renderRow, renderPending } = launch()
+    const row = renderRow()
+    const pending = renderPending()
     await settleWorkerReplies()
-    expect(container.textContent).toContain('Inspect project structure (explore)')
-    expect(container.querySelector('strong')?.textContent).toBe('Instruction')
-    expect(container.querySelector('ol li')?.textContent).toContain('Read the entry points.')
+    expect(row.container.textContent).toContain('Inspect project structure (explore)')
+    expect(pending.container.querySelector('strong')?.textContent).toBe('Instruction')
+    expect(pending.container.querySelector('ol li')?.textContent).toContain('Read the entry points.')
   })
 
-  it('requests the result even when all prompt arguments are available', () => {
-    const { request } = renderRequest(false)
-    expect(providerFor(provider)!.transcript.relatedMessages?.(input(request))).toContain('result')
+  // No row reads a later message of its span: the request row never waits for its result.
+  it('never asks for the result of a request row', () => {
+    const { request } = launch()
+    expect(providerFor(provider)!.transcript.needsRequest?.(input(request)) ?? false).toBe(false)
   })
 
-  it('keeps a completed request compact and lets the user open its prompt', async () => {
-    const { container, getByRole } = renderRequest(true)
+  // The result row draws what the subagent reported, and no prompt: the request row
+  // above it states the launch.
+  it('draws the report on the result row', async () => {
+    const { container } = launch().renderResult()
+    await settleWorkerReplies()
+    expect(container.textContent).toContain('Done')
+    expect(container.textContent).not.toContain('Instruction')
+  })
+
+  // The request row draws the same before and after the result lands, so it is compact,
+  // and the reader opens the prompt on it.
+  it('keeps the request row compact and lets the user open its prompt', async () => {
+    const { renderRow } = launch()
+    const { container, getByRole } = renderRow()
     await settleWorkerReplies()
     expect(container.textContent).not.toContain('Instruction')
     await fireEvent.click(getByRole('button', { name: 'Show prompt' }))

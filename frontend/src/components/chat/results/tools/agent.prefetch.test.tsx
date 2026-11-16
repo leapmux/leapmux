@@ -13,7 +13,7 @@ function renderCollapsedPrompt(context: ToolResultRenderContext) {
   const call = toolCallFixture('agent', {
     request: { description: 'Fix the build', prompt: PROMPT },
   })
-  return render(() => <ToolMessage row={toolRow(call, 'request', { result: true })} context={context} />)
+  return render(() => <ToolMessage row={toolRow(call, 'request')} context={context} />)
 }
 
 // The collapsed request renders no prompt, so only its prefetch puts the HTML of

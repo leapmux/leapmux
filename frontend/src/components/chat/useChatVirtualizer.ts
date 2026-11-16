@@ -419,6 +419,10 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     const next = list[i + 1]
     if (next === undefined)
       return 0
+    // A row that continues the row above it holds its own top space (see
+    // ChatRowItem.continuesPrevious).
+    if (next.continuesPrevious)
+      return 0
     const cur = list[i]
     if (cur !== undefined && messageBandKind(cur.kind ?? '') && messageBandKind(next.kind ?? ''))
       return -Math.min(BAND_BORDER_PX, resolvedHeight(cur), resolvedHeight(next))

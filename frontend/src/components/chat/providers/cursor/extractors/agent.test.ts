@@ -18,7 +18,14 @@ function facts(fields: Record<string, unknown>): ACPToolFacts {
 
 function agent(fields: Record<string, unknown>, native?: Record<string, unknown> | null, nativeReport?: string) {
   const model = facts(fields)
-  return cursorAgentCall(model, model.args, native, nativeReport)
+  return cursorAgentCall(model, model.args, {
+    ...(native === undefined
+      ? {}
+      : { native }),
+    ...(nativeReport === undefined
+      ? {}
+      : { nativeReport }),
+  })
 }
 
 function source(fields: Record<string, unknown>, extra: Record<string, unknown> = {}, nativeReport?: string) {
@@ -148,5 +155,46 @@ describe('cursor subagent card', () => {
     })
     expect(payload.title).toBe('Task')
     expect(payload.result).toBeUndefined()
+  })
+})
+
+describe('cursor task model', () => {
+  // The model that a call asked for is a fact of the request. The model that the
+  // extension frame reports is a fact of the run, so it reaches the run alone.
+  it('keeps the model that answered out of the request', () => {
+    const model = facts({})
+    const payload = cursorAgentCall(model, model.args, {
+      reported: { model: 'composer-2.5' },
+    })
+    expect(payload.request.metadata).toEqual([])
+    expect(typedResult(payload)?.agents[0]?.metadata).toContainEqual({ label: 'Model', value: 'composer-2.5' })
+  })
+
+  it('states the model that the call asked for on the request and the run', () => {
+    const model = facts({
+      rawInput: { _toolName: 'task', description: 'Inspect sample', model: 'asked-model' },
+    })
+    const payload = cursorAgentCall(model, model.args)
+    expect(payload.request.metadata).toEqual([
+      { label: 'Model', value: 'asked-model' },
+    ])
+    expect(typedResult(payload)?.agents[0]?.metadata).toContainEqual({ label: 'Model', value: 'asked-model' })
+  })
+
+  it('states the reported model on the run when the call asked for another one', () => {
+    const model = facts({
+      rawInput: { _toolName: 'task', description: 'Inspect sample', model: 'asked-model' },
+    })
+    const payload = cursorAgentCall(model, model.args, {
+      reported: { model: 'answered-model', agentId: 'a-1', durationMs: 1200 },
+    })
+    expect(payload.request.metadata).toEqual([
+      { label: 'Model', value: 'asked-model' },
+    ])
+    expect(typedResult(payload)?.agents[0]?.metadata).toEqual([
+      { label: 'Agent ID', value: 'a-1' },
+      { label: 'Model', value: 'answered-model' },
+      { label: 'Duration', value: '1.2s' },
+    ])
   })
 })

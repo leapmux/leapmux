@@ -130,8 +130,9 @@ export function claudeToolIcon(toolName: string): ToolIconHint | undefined {
  *
  * `ToolSearch` is a deferred-tool discovery probe with nothing for a reader.
  * `TaskList` reads back state that the persistent to-do sidebar already shows.
- * The three remaining `Task*` calls draw ONE row: the request states the task,
- * and it reads the result beside it, so the result row would repeat it.
+ * The three remaining `Task*` calls draw BOTH rows: the request row states what
+ * the call asked, and the result row states the task the answer carries. A request
+ * row never reads its result, so it cannot stand in for a hidden result row.
  */
 const HIDDEN_REQUEST_TOOLS: ReadonlySet<string> = new Set<string>([
   CLAUDE_TOOL_NAMES.TOOL_SEARCH,
@@ -141,9 +142,6 @@ const HIDDEN_REQUEST_TOOLS: ReadonlySet<string> = new Set<string>([
 const HIDDEN_RESULT_TOOLS: ReadonlySet<string> = new Set<string>([
   CLAUDE_TOOL_NAMES.TOOL_SEARCH,
   CLAUDE_TOOL_NAMES.TASK_LIST,
-  CLAUDE_TOOL_NAMES.TASK_CREATE,
-  CLAUDE_TOOL_NAMES.TASK_UPDATE,
-  CLAUDE_TOOL_NAMES.TASK_GET,
   // `EnterPlanMode` carries no `tool_result` block at all (plugin.ts), so its
   // result row would draw nothing regardless.
   CLAUDE_TOOL_NAMES.ENTER_PLAN_MODE,

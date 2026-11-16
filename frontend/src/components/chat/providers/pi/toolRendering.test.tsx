@@ -6,13 +6,13 @@ import { MESSAGE_SUPPLEMENT_FIELD } from '~/generated/contracts/worker-vocab'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { renderListedMessageContent, renderMessageContent } from '~/test-support/messageContentRenderer'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { pngBase64 } from '~/test-support/pngFixture'
 import { providerRowImages, providerToolMeta } from '~/test-support/toolCallFixture'
 import { messageToolResultImages } from '../../chatImageResolve'
 import { MessageBubble } from '../../MessageBubble'
-import { renderMessageContent } from '../../messageContentRenderer'
 import { toolUseHeader } from '../../toolStyles.css'
 import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
@@ -36,7 +36,7 @@ function renderTool(toolName: string, args: Record<string, unknown>, result?: Re
       }
     : start
   const category = providerFor(AgentProvider.PI)!.transcript.classify(input(payload))
-  return render(() => renderMessageContent(payload, {
+  return render(() => renderListedMessageContent(payload, {
     workingDir: '/project',
     premeasureMode: true,
     sources: testMessageSources({
@@ -637,10 +637,9 @@ describe('pi tool rendering', () => {
 /**
  * The output the worker broadcasts while a call runs.
  *
- * `ToolMessage` draws it only while the row is `in_progress` AND its result is absent,
- * so a result attached to a running row hides it. Every tool `PI_TOOL_KINDS` does not
- * hold reaches the `mcp` entry, so that entry decides this for each Pi extension and
- * each Model Context Protocol bridge.
+ * The pending row of the call draws it, below the request row, which states no result.
+ * Every tool `PI_TOOL_KINDS` does not hold reaches the `mcp` entry, so that entry decides
+ * this for each Pi extension and each Model Context Protocol bridge.
  */
 describe('a pi tool row that has not returned', () => {
   function renderRunning(toolName: string, args: Record<string, unknown>, outputTail: string) {
@@ -651,7 +650,7 @@ describe('a pi tool row that has not returned', () => {
       args,
     }
     const category = providerFor(AgentProvider.PI)!.transcript.classify(input(payload))
-    return render(() => renderMessageContent(payload, {
+    return render(() => renderListedMessageContent(payload, {
       premeasureMode: true,
       sources: testMessageSources({
         current: () => input(payload),
@@ -674,11 +673,16 @@ describe('a pi tool row that has not returned', () => {
 })
 
 describe('pi rows on the shared tool path', () => {
-  // The open request draws the list the call is about to save. The row used to draw
-  // its header alone, so the reader waited for the result to see what changed.
-  it('draws the checklist of an open to-do request', () => {
-    const { container } = renderTool('todo', { action: 'list' })
-    expect(container.textContent).toContain('To-do list')
+  // An open request states what it is about to save on its pending row, before the
+  // result lands: here the description of the task that it creates, and no claim that the
+  // list was cleared.
+  it('previews the task that an open to-do request creates', async () => {
+    const { container } = renderTool('todo', { action: 'create', subject: 'Write the parser', description: 'DESCRIPTION-MARKER' })
+    await settleWorkerReplies()
+    expect(container.textContent).toContain('Create task: Write the parser')
+    const pending = container.querySelector('[data-testid="tool-pending"]')
+    expect(pending?.textContent).toContain('DESCRIPTION-MARKER')
+    expect(pending?.textContent).not.toContain('cleared')
   })
 
   it('uses the shared grep icon and states the path below the pattern', () => {

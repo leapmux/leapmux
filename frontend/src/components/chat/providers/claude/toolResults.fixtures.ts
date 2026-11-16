@@ -173,6 +173,14 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
     },
   }),
   [CLAUDE_TOOL_NAMES.TASK_STOP]: fixture(CLAUDE_TOOL_NAMES.TASK_STOP, 'Stopped', { task_id: 't1' }, { message: 'Stopped the task', task_id: 't1', task_type: 'shell' }),
+  // The result row of a `Task*` call states the task its answer carries. Its request row
+  // states only what the arguments asked, because no row reads a later message.
+  [CLAUDE_TOOL_NAMES.TASK_CREATE]: fixture(CLAUDE_TOOL_NAMES.TASK_CREATE, 'Task #7 created successfully: Write the parser', { subject: 'Write the parser' }, {
+    task: { id: '7', subject: 'Write the parser' },
+  }),
+  [CLAUDE_TOOL_NAMES.TASK_GET]: fixture(CLAUDE_TOOL_NAMES.TASK_GET, 'Task #7: Write the parser', { taskId: '7' }, {
+    task: { id: '7', subject: 'Write the parser', status: 'pending' },
+  }),
   [CLAUDE_TOOL_NAMES.REMOTE_TRIGGER]: fixture(CLAUDE_TOOL_NAMES.REMOTE_TRIGGER, 'HTTP 200\n{}', { action: 'list' }, { status: 200, json: '{}' }),
   [CLAUDE_TOOL_NAMES.EXIT_PLAN_MODE]: proseFixture(CLAUDE_TOOL_NAMES.EXIT_PLAN_MODE, 'Approved', {}),
   [CLAUDE_TOOL_NAMES.ASK_USER_QUESTION]: fixture(CLAUDE_TOOL_NAMES.ASK_USER_QUESTION, 'answered', {
@@ -300,9 +308,7 @@ export const CLAUDE_TOOL_RESULTS: ToolResultCheck = {
     [CLAUDE_TOOL_NAMES.ENTER_PLAN_MODE]: 'Its result row is hidden: the approval itself draws as the control response.',
     [CLAUDE_TOOL_NAMES.TASK_LIST]: 'Its rows are hidden: the to-do sidebar already shows the list.',
     [CLAUDE_TOOL_NAMES.TOOL_SEARCH]: 'Its rows are hidden: a deferred-tool probe has nothing for a reader.',
-    [CLAUDE_TOOL_NAMES.TASK_CREATE]: 'Its result row is hidden: the request states the one task it created.',
-    [CLAUDE_TOOL_NAMES.TASK_UPDATE]: 'Its result row is hidden: the request states the one task it updated.',
-    [CLAUDE_TOOL_NAMES.TASK_GET]: 'Its result row is hidden: the request states the one task it read.',
+    [CLAUDE_TOOL_NAMES.TASK_UPDATE]: 'Its result row reads the post-update task from the snapshot that the worker stores in the message metadata, which a fixture frame does not carry.',
   },
   unparsed: {
     [CLAUDE_TOOL_NAMES.CRON_CREATE]: 'No reader exists for a Cron payload; only the RemoteTrigger shape parses.',
