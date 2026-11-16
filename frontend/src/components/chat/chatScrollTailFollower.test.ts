@@ -1,7 +1,17 @@
+import type { ScrollContext } from './useChatScroll'
 import { describe, expect, it, vi } from 'vitest'
 import { deferred } from '~/test-support/async'
 import { createChatTailFollower } from './chatScrollTailFollower'
 import { makeScrollContext, settleJump } from './useChatScroll.testkit'
+
+/**
+ * The arguments of each `requestPlace` call of the follower, in order. A request for the
+ * tail holds the place alone: the follower passes no placement, so the hook sticks.
+ */
+const placeRequests = (ctx: ScrollContext) => vi.mocked(ctx.requestPlace).mock.calls
+const TAIL_REQUEST = [
+  { kind: 'tail' },
+]
 
 /**
  * A follower over spies. The harness holds one value for the request for the tail: the
@@ -16,7 +26,6 @@ function setup(overrides: { hasNewer?: boolean } = {}) {
   const calls = {
     cancelScrollAnimation: vi.fn(),
     retakeScrollControl: vi.fn(),
-    rearmScrollBufferFiller: vi.fn(),
     followTail: vi.fn(() => {
       requested = true
     }),
@@ -24,14 +33,12 @@ function setup(overrides: { hasNewer?: boolean } = {}) {
       requested = false
     }),
     checkPosition: vi.fn(),
-    stickToBottom: vi.fn(),
     animateToBottom: vi.fn(),
   }
   const ctx = makeScrollContext({
     hasNewerMessages: () => hasNewer,
     cancelScrollAnimation: calls.cancelScrollAnimation,
     retakeScrollControl: calls.retakeScrollControl,
-    rearmScrollBufferFiller: calls.rearmScrollBufferFiller,
     followTail: calls.followTail,
     leaveFollow: calls.leaveFollow,
     followRequested: () => requested,
@@ -39,7 +46,6 @@ function setup(overrides: { hasNewer?: boolean } = {}) {
   })
   const follower = createChatTailFollower(ctx, {
     jumpToLatest,
-    stickToBottom: calls.stickToBottom,
     animateToBottom: calls.animateToBottom,
   })
   return {
@@ -58,28 +64,38 @@ function setup(overrides: { hasNewer?: boolean } = {}) {
 }
 
 describe('createChatTailFollower', () => {
-  it('sticks immediately when the live tail is already loaded', () => {
+  it('retakes control for the animated scroll of the button', () => {
     const { follower, calls } = setup()
+
+    follower.scrollToBottom()
+
+    expect(calls.animateToBottom).toHaveBeenCalledOnce()
+    // The button is a command of the reader, as End is: it ends the pause of the buffer fill.
+    expect(calls.retakeScrollControl).toHaveBeenCalledOnce()
+  })
+
+  it('asks for the tail at once when the live tail is already loaded', () => {
+    const { follower, ctx, calls } = setup()
 
     follower.forceScrollToBottom()
 
     expect(calls.cancelScrollAnimation).toHaveBeenCalledOnce()
     expect(calls.retakeScrollControl).toHaveBeenCalledOnce()
-    expect(calls.stickToBottom).toHaveBeenCalledOnce()
-    expect(calls.rearmScrollBufferFiller).not.toHaveBeenCalled()
+    expect(placeRequests(ctx)).toEqual([TAIL_REQUEST])
+    expect(ctx.beginHistoryJump).not.toHaveBeenCalled()
   })
 
-  it('jumps to the latest page and sticks after a successful catch-up', async () => {
+  it('jumps to the latest page and asks for the tail after a successful catch-up', async () => {
     const harness = setup({ hasNewer: true })
 
     harness.follower.forceScrollToBottom()
-    expect(harness.calls.rearmScrollBufferFiller).toHaveBeenCalledOnce()
+    expect(harness.ctx.beginHistoryJump).toHaveBeenCalledOnce()
     expect(harness.calls.followTail).toHaveBeenCalledOnce()
     harness.setHasNewer(false)
     harness.jump.resolve(true)
     await settleJump(harness.jump.promise)
 
-    expect(harness.calls.stickToBottom).toHaveBeenCalledOnce()
+    expect(placeRequests(harness.ctx)).toEqual([TAIL_REQUEST])
   })
 
   it('keeps the bottom affordance accurate when a successful jump still has newer rows', async () => {
@@ -90,7 +106,7 @@ describe('createChatTailFollower', () => {
     await settleJump(harness.jump.promise)
 
     expect(harness.calls.checkPosition).toHaveBeenCalledOnce()
-    expect(harness.calls.stickToBottom).not.toHaveBeenCalled()
+    expect(harness.ctx.requestPlace).not.toHaveBeenCalled()
   })
 
   it('keeps the position of a reader who scrolled during a successful jump', async () => {
@@ -102,7 +118,7 @@ describe('createChatTailFollower', () => {
     harness.jump.resolve(true)
     await settleJump(harness.jump.promise)
 
-    expect(harness.calls.stickToBottom).not.toHaveBeenCalled()
+    expect(harness.ctx.requestPlace).not.toHaveBeenCalled()
     expect(harness.calls.checkPosition).not.toHaveBeenCalled()
   })
 
@@ -151,7 +167,6 @@ describe('createChatTailFollower', () => {
       }),
       {
         jumpToLatest: () => jumps[jumpIndex++]!.promise,
-        stickToBottom: vi.fn(),
         animateToBottom: vi.fn(),
       },
     )
@@ -176,16 +191,35 @@ describe('createChatTailFollower', () => {
     expect(harness.jumpToLatest).toHaveBeenCalledWith(vi.mocked(harness.ctx.beginHistoryJump).mock.results[0]!.value)
   })
 
-  it('takes the signal before it requests the tail, so its own jump does not count as pending there', () => {
-    const harness = setup({ hasNewer: true })
+  it('takes the signal while no jump of its own counts as pending', () => {
+    // The hook ends the request for the tail of a pending jump to the latest page when a
+    // new history jump begins. The jump that begins must not count as that pending jump,
+    // and neither must the jump that it replaces.
+    const pendingAtBegin: Array<number | null> = []
+    // The follower needs the context, and the context reads the follower: the read
+    // goes through this function, which the follower replaces once it exists.
+    let pendingJump: () => number | null = () => null
+    const ctx = makeScrollContext({
+      hasNewerMessages: () => true,
+      beginHistoryJump: vi.fn(() => {
+        pendingAtBegin.push(pendingJump())
+        return new AbortController().signal
+      }),
+    })
+    const follower = createChatTailFollower(ctx, {
+      jumpToLatest: () => new Promise<boolean>(() => {}),
+      animateToBottom: vi.fn(),
+    })
+    pendingJump = follower.pendingJump
 
-    harness.follower.forceScrollToBottom()
+    follower.forceScrollToBottom()
+    follower.forceScrollToBottom()
 
-    expect(vi.mocked(harness.ctx.beginHistoryJump).mock.invocationCallOrder[0]!)
-      .toBeLessThan(harness.calls.followTail.mock.invocationCallOrder[0]!)
+    expect(pendingAtBegin).toEqual([null, null])
+    expect(follower.pendingJump()).toEqual(expect.any(Number))
   })
 
-  it('does not stick when a later history jump replaced the jump to the latest page', async () => {
+  it('asks for no tail when a later history jump replaced the jump to the latest page', async () => {
     const harness = setup({ hasNewer: true })
 
     harness.follower.forceScrollToBottom()
@@ -196,7 +230,7 @@ describe('createChatTailFollower', () => {
     harness.jump.resolve(true)
     await settleJump(harness.jump.promise)
 
-    expect(harness.calls.stickToBottom).not.toHaveBeenCalled()
+    expect(harness.ctx.requestPlace).not.toHaveBeenCalled()
     expect(harness.calls.checkPosition).not.toHaveBeenCalled()
     expect(harness.follower.pendingJump()).toBeNull()
   })
@@ -213,7 +247,7 @@ describe('createChatTailFollower', () => {
     expect(harness.calls.checkPosition).not.toHaveBeenCalled()
   })
 
-  it('sticks when another fetch delivered the tail', async () => {
+  it('asks for the tail when another fetch delivered the tail', async () => {
     const harness = setup({ hasNewer: true })
 
     harness.follower.forceScrollToBottom()
@@ -222,7 +256,7 @@ describe('createChatTailFollower', () => {
     harness.jump.resolve(false)
     await settleJump(harness.jump.promise)
 
-    expect(harness.calls.stickToBottom).toHaveBeenCalledOnce()
+    expect(placeRequests(harness.ctx)).toEqual([TAIL_REQUEST])
   })
 
   it('checks the position when another fetch replaced the jump and newer pages remain', async () => {
@@ -233,10 +267,10 @@ describe('createChatTailFollower', () => {
     await settleJump(harness.jump.promise)
 
     expect(harness.calls.checkPosition).toHaveBeenCalledOnce()
-    expect(harness.calls.stickToBottom).not.toHaveBeenCalled()
+    expect(harness.ctx.requestPlace).not.toHaveBeenCalled()
   })
 
-  it('abandons the pending history jump before it sticks with no newer page', () => {
+  it('abandons the pending history jump before it asks for the tail with no newer page', () => {
     const harness = setup()
 
     harness.follower.forceScrollToBottom()
@@ -244,7 +278,7 @@ describe('createChatTailFollower', () => {
     expect(harness.ctx.abandonHistoryJump).toHaveBeenCalledOnce()
     expect(harness.ctx.beginHistoryJump).not.toHaveBeenCalled()
     expect(vi.mocked(harness.ctx.abandonHistoryJump).mock.invocationCallOrder[0]!)
-      .toBeLessThan(harness.calls.stickToBottom.mock.invocationCallOrder[0]!)
+      .toBeLessThan(vi.mocked(harness.ctx.requestPlace).mock.invocationCallOrder[0]!)
   })
 
   it('abandons the pending history jump before the button animates with no newer page', () => {
@@ -264,60 +298,18 @@ describe('createChatTailFollower', () => {
 
     harness.setHasNewer(true)
     harness.follower.scrollToBottom()
-    expect(harness.calls.rearmScrollBufferFiller).toHaveBeenCalledOnce()
-  })
-
-  it('asks for the tail, with the stick as its placement, when the live tail is loaded', () => {
-    const { follower, ctx, calls } = setup()
-
-    follower.forceScrollToBottom()
-
-    expect(ctx.requestPlace).toHaveBeenCalledOnce()
-    const [place, show] = vi.mocked(ctx.requestPlace).mock.calls[0]!
-    expect(place).toEqual({ kind: 'tail' })
-    expect(show).toBeTypeOf('function')
-    // The context shows the place at once, so the stick ran.
-    expect(calls.stickToBottom).toHaveBeenCalledOnce()
-  })
-
-  it('does not stick while the tail waits for its rows', () => {
-    const { follower, ctx, calls } = setup()
-    // The rows of the tail are staged: the hook keeps the placement, and runs it later.
-    let kept: (() => void) | undefined
-    vi.mocked(ctx.requestPlace).mockImplementation((_place, show) => {
-      kept = show
-      return new Promise<boolean>(() => {})
-    })
-
-    follower.forceScrollToBottom()
-    expect(calls.stickToBottom).not.toHaveBeenCalled()
-
-    kept?.()
-    expect(calls.stickToBottom).toHaveBeenCalledOnce()
+    expect(harness.ctx.beginHistoryJump).toHaveBeenCalledOnce()
   })
 
   it('asks for the tail, and starts no animation, for the button with rows staged below', () => {
     const { follower, ctx, calls } = setup()
-    vi.mocked(ctx.stagedBelow).mockReturnValue(2)
+    // The last loaded row is not in the list: rows are staged below, or no row is in it.
+    vi.mocked(ctx.stagedNewer).mockReturnValue(true)
 
     follower.scrollToBottom()
 
     // The animation moves inside the rows of the list, whose bottom is not the tail.
-    expect(vi.mocked(ctx.requestPlace).mock.calls.map(([place]) => place)).toEqual([
-      { kind: 'tail' },
-    ])
-    expect(calls.animateToBottom).not.toHaveBeenCalled()
-  })
-
-  it('asks for the tail, and starts no animation, for the button while no row is in the list', () => {
-    const { follower, ctx, calls } = setup()
-    vi.mocked(ctx.awaitingFirstView).mockReturnValue(true)
-
-    follower.scrollToBottom()
-
-    expect(vi.mocked(ctx.requestPlace).mock.calls.map(([place]) => place)).toEqual([
-      { kind: 'tail' },
-    ])
+    expect(placeRequests(ctx)).toEqual([TAIL_REQUEST])
     expect(calls.animateToBottom).not.toHaveBeenCalled()
   })
 
@@ -332,9 +324,22 @@ describe('createChatTailFollower', () => {
     harness.jump.resolve(true)
     await settleJump(harness.jump.promise)
 
-    expect(vi.mocked(harness.ctx.requestPlace).mock.calls.map(([place]) => place)).toEqual([
-      { kind: 'tail' },
-    ])
+    expect(placeRequests(harness.ctx)).toEqual([TAIL_REQUEST])
+  })
+
+  it('ends the pending history jump of the hook when its jump settles', async () => {
+    const harness = setup({ hasNewer: true })
+    harness.follower.forceScrollToBottom()
+    const signal = vi.mocked(harness.ctx.beginHistoryJump).mock.results[0]!.value
+
+    harness.setHasNewer(false)
+    harness.jump.resolve(true)
+    await settleJump(harness.jump.promise)
+
+    expect(harness.ctx.settleHistoryJump).toHaveBeenCalledWith(signal)
+    // The hook learns of the end before the landing asks for the tail.
+    expect(vi.mocked(harness.ctx.settleHistoryJump).mock.invocationCallOrder[0]!)
+      .toBeLessThan(vi.mocked(harness.ctx.requestPlace).mock.invocationCallOrder[0]!)
   })
 
   describe('pendingJump', () => {
@@ -372,7 +377,6 @@ describe('createChatTailFollower', () => {
         }),
         {
           jumpToLatest: () => jumps[jumpIndex++]!.promise,
-          stickToBottom: vi.fn(),
           animateToBottom: vi.fn(),
         },
       )

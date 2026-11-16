@@ -1,6 +1,6 @@
 import { createComputed, createRoot, createSignal, untrack } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createRenderReadinessScope, createRequestReadiness, createRowReadinessRegistry, READINESS_REQUEST_LIMIT_MS, useRenderReadiness, useReplacingReadiness } from './renderReadiness'
+import { createRenderReadinessScope, createRowReadinessRegistry, READINESS_REQUEST_LIMIT_MS, useRenderReadiness, useReplacingReadiness, useRequestReadiness } from './renderReadiness'
 
 describe('createRenderReadinessScope', () => {
   it('is ready with no tracked body', () => {
@@ -507,21 +507,21 @@ describe('createRowReadinessRegistry', () => {
   })
 })
 
-describe('createRequestReadiness', () => {
+describe('useRequestReadiness', () => {
   afterEach(() => {
     vi.useRealTimers()
   })
 
   it('reports nothing before a request begins', () => {
     createRoot((dispose) => {
-      expect(createRequestReadiness().pending()).toBe(false)
+      expect(useRequestReadiness(() => undefined).pending()).toBe(false)
       dispose()
     })
   })
 
   it('reports a request as pending until its end function runs', () => {
     createRoot((dispose) => {
-      const requests = createRequestReadiness()
+      const requests = useRequestReadiness(() => undefined)
 
       const end = requests.begin()
       expect(requests.pending()).toBe(true)
@@ -534,7 +534,7 @@ describe('createRequestReadiness', () => {
 
   it('stays pending until the last of two requests ends', () => {
     createRoot((dispose) => {
-      const requests = createRequestReadiness()
+      const requests = useRequestReadiness(() => undefined)
       const endFirst = requests.begin()
       const endSecond = requests.begin()
 
@@ -550,7 +550,7 @@ describe('createRequestReadiness', () => {
   it('stops counting a request that does not end within the limit', () => {
     vi.useFakeTimers()
     createRoot((dispose) => {
-      const requests = createRequestReadiness()
+      const requests = useRequestReadiness(() => undefined)
       const end = requests.begin()
 
       vi.advanceTimersByTime(READINESS_REQUEST_LIMIT_MS - 1)
@@ -572,7 +572,7 @@ describe('createRequestReadiness', () => {
   it('counts each request against its own limit', () => {
     vi.useFakeTimers()
     createRoot((dispose) => {
-      const requests = createRequestReadiness()
+      const requests = useRequestReadiness(() => undefined)
       requests.begin()
       vi.advanceTimersByTime(4000)
       requests.begin()
@@ -588,7 +588,7 @@ describe('createRequestReadiness', () => {
 
   it('ends a request once when its end function runs twice', () => {
     createRoot((dispose) => {
-      const requests = createRequestReadiness()
+      const requests = useRequestReadiness(() => undefined)
       const endFirst = requests.begin()
       requests.begin()
 
@@ -603,7 +603,7 @@ describe('createRequestReadiness', () => {
   it('clears the limit timer of a request that ended', () => {
     vi.useFakeTimers()
     createRoot((dispose) => {
-      const requests = createRequestReadiness()
+      const requests = useRequestReadiness(() => undefined)
       const end = requests.begin()
       expect(vi.getTimerCount()).toBe(1)
 
@@ -617,7 +617,7 @@ describe('createRequestReadiness', () => {
   it('clears each limit timer when its owner is disposed', () => {
     vi.useFakeTimers()
     const requests = createRoot((dispose) => {
-      const created = createRequestReadiness()
+      const created = useRequestReadiness(() => undefined)
       created.begin()
       created.begin()
       dispose()
@@ -630,11 +630,10 @@ describe('createRequestReadiness', () => {
     expect(requests.pending()).toBe(true)
   })
 
-  it('holds a readiness scope while a request is pending', () => {
+  it('holds the readiness scope of its render context while a request is pending', () => {
     createRoot((dispose) => {
       const scope = createRenderReadinessScope()
-      const requests = createRequestReadiness()
-      scope.track(requests.pending)
+      const requests = useRequestReadiness(() => ({ readiness: scope }))
       expect(scope.measurable()).toBe(true)
 
       const end = requests.begin()

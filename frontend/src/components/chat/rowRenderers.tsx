@@ -1,12 +1,10 @@
 import type { JSX } from 'solid-js'
 import type { AssistantTextSegment } from './model/assistantText'
-import type { AgentPrompt } from './model/divider'
 import type { ChatRow } from './model/row'
-import type { ExpandableToolLayoutContext, RowRenderContext } from './renderContext'
+import type { RowRenderContext } from './renderContext'
 import type { ChatRowExtraction } from './rowExtraction'
 import CircleExclamationPoint from 'lucide-solid/icons/circle-exclamation-point'
-import MessageSquare from 'lucide-solid/icons/message-square'
-import { For, untrack } from 'solid-js'
+import { For } from 'solid-js'
 import { assertNever } from '~/lib/assertNever'
 import { completionMarker } from './assembledMessage'
 import { MarkdownText } from './MarkdownText'
@@ -16,33 +14,18 @@ import {
   ThinkingMessage,
   UnrecognizedMessage,
   UserContentMessage,
-  useSharedExpandedState,
 } from './messageRenderers'
-import { MESSAGE_UI_KEY } from './messageUiKeys'
 import { rowDrawsResult } from './model/derivations'
 import { flattenNotificationEntries } from './notificationEntries'
 import { renderNotificationBlocks } from './notificationRenderers'
 import { ResultDivider } from './resultDividerRenderers'
-import { CollapsibleContent } from './results/CollapsibleContent'
 import { SteerNoteMarker } from './results/SteerNoteMarker'
 import { ToolMessage } from './results/ToolMessage'
 import { toolOutcomeLabel } from './results/toolOutcomeLabel'
 import { ToolStatusHeader } from './results/ToolStatusHeader'
-import { textNeedsCollapse } from './results/useCollapsedLines'
 import { toolOutcomeNote } from './toolOutcome'
 import { MarkdownPlanLayout } from './widgets/MarkdownPlanLayout'
-import { ToolUseLayout } from './widgets/ToolUseLayout'
 
-/**
- * Draw one row from the shared model.
- *
- * Layer 3 of the render pipeline, and the ONE place a row kind becomes markup. It
- * branches on the kind and on nothing else -- no provider, no tool name, no wire
- * shape -- because layer 1 already answered those.
- *
- * EXHAUSTIVE: a new row kind is a compile error here rather than a row that silently
- * draws nothing.
- */
 /** Draw one assistant text that its provider split into segments. */
 function AssistantSegments(props: { segments: readonly AssistantTextSegment[], context?: RowRenderContext }) {
   return (
@@ -66,6 +49,16 @@ function AssistantSegments(props: { segments: readonly AssistantTextSegment[], c
   )
 }
 
+/**
+ * Draw one row from the shared model.
+ *
+ * Layer 3 of the render pipeline, and the ONE place a row kind becomes markup. It
+ * branches on the kind and on nothing else -- no provider, no tool name, no wire
+ * shape -- because layer 1 already answered those.
+ *
+ * EXHAUSTIVE: a new row kind is a compile error here rather than a row that silently
+ * draws nothing.
+ */
 export function renderRowContent(
   row: ChatRow,
   context: RowRenderContext | undefined,
@@ -152,50 +145,6 @@ export function renderRowContent(
     default:
       return assertNever(row)
   }
-}
-
-/**
- * The subagent prompt card, shared by every provider that sends one.
- *
- * Tool requests and prompts delivered into child transcripts use this same view.
- */
-export function AgentPromptView(props: { prompt: AgentPrompt, context?: ExpandableToolLayoutContext }): JSX.Element {
-  // Key from the shared classification mapper (context.expandUiKey), so that the
-  // measurement and the display of the row use the same expansion state (see
-  // expandedUiKeyFor); the literal is the context-less fallback.
-  // untrack: the key is stable for a row (kind+provider don't change), so read it
-  // once -- mirrors ThinkingBubble's `untrack(() => props.stateKey)`.
-  const stateKey = untrack(() => props.context?.expandUiKey ?? MESSAGE_UI_KEY.AGENT_PROMPT)
-  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, stateKey)
-  const text = () => props.prompt.prompt
-  const isCollapsed = () => !expanded() && textNeedsCollapse(text())
-  // The title states WHAT the subagent was asked to do when the provider said so.
-  // `Prompt` alone is what every provider fell back to, and it named nothing.
-  const title = () => [props.prompt.description, props.prompt.agentType].filter(Boolean).join(' · ') || 'Prompt'
-
-  return (
-    <ToolUseLayout
-      icon={MessageSquare}
-      toolName="Prompt"
-      title={title()}
-      expanded={expanded()}
-      onToggleExpand={() => setExpanded(v => !v)}
-      {...(props.context !== undefined
-        ? { context: props.context }
-        : {})}
-    >
-      <CollapsibleContent
-        kind={props.prompt.promptFormat === 'pre'
-          ? 'pre'
-          : 'markdown-tool-result'}
-        text={text()}
-        isCollapsed={isCollapsed()}
-        {...(props.context !== undefined
-          ? { context: props.context }
-          : {})}
-      />
-    </ToolUseLayout>
-  )
 }
 
 /**

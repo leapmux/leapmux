@@ -60,6 +60,17 @@ const LOAD_PROGRESS_MIN_PX = 1
  * moving. When a fling outruns it, the loaded-window scroll bound makes the view
  * STALL at the loading edge until the next page lands -- it never skips a message.
  */
+type LoadSide = 'older' | 'newer'
+const LOAD_SIDES: readonly LoadSide[] = ['older', 'newer']
+
+/** What a load is judged against (see `baselines` in createScrollBufferFiller). */
+interface LoadBaseline {
+  /** The row at the viewport top at the load, or `null` when the window gave no anchor. */
+  ref: ScrollAnchor | null
+  /** The content measure of the loaded side at the load. */
+  metric: number
+}
+
 export function createScrollBufferFiller(deps: {
   getEl: () => HTMLDivElement | undefined
   /**
@@ -100,7 +111,7 @@ export function createScrollBufferFiller(deps: {
   // load as no-progress; it also subsumes the old pendingFlingDrift correction (the
   // geometry offset reflects a prepend before any scroll write). Either
   // returns null when the ref row was trimmed / the
-  // virtualizer can't anchor -- which attributeLastLoadProgress reads as unmeasurable
+  // virtualizer can't anchor -- which attributeLoadProgress reads as unmeasurable
   // PROGRESS (a trim implies the window grew), distinct from a captured-but-flat measure.
   captureAnchor: () => ScrollAnchor | null
   contentAbove: (anchor: ScrollAnchor) => number | null
@@ -122,34 +133,33 @@ export function createScrollBufferFiller(deps: {
   /** The same for the rows below the rows of the list. Reactive. */
   stagedNewer: () => boolean
   /**
-   * A place that the reader asked for waits for its rows (see RequestedPlace). A fill
+   * A place that the reader asked for waits for its rows (see AdmissionTarget). A fill
    * during the wait would judge the buffers of the view before its placement, and fetch an
    * older page against an unplaced view. Not reactive: the hook calls `resumeAfterWait`
    * when the wait ended.
    */
   placeWaits: () => boolean
 }) {
-  // Which side the last load paged, the captured reference row, and that side's content
-  // measure at the moment of the load (older -> content ABOVE the ref, newer -> content
-  // BELOW it), so the next fill can tell whether the load grew THAT side's visible buffer
-  // (progress) or not (all hidden). `lastRefAnchor` is null when there was no last load.
-  let lastLoadedSide: 'older' | 'newer' | null = null
-  let lastLoadedMetric = 0
-  let lastRefAnchor: ScrollAnchor | null = null
+  // The baseline of the last load of each side that no fill judged yet: the captured
+  // reference row, and that side's content measure at the moment of the load (older ->
+  // content ABOVE the ref, newer -> content BELOW it). A later fill can then tell whether
+  // the load grew THAT side's visible buffer (progress) or not (all hidden). One baseline
+  // for each side, because the page of one side can wait for its rows while the other
+  // side loads. `null` for a side with no load to judge.
+  const baselines: Record<LoadSide, LoadBaseline | null> = { older: null, newer: null }
   // Per-side "this side is paging all-hidden content" flags, keyed by side so the
   // attribute/select logic indexes a side rather than branching on it. A side is
   // deprioritized once stuck so an all-hidden run on ONE side can't starve a still-
   // productive other side. Cleared when that side makes progress or on re-arm.
-  const stuck: Record<'older' | 'newer', boolean> = { older: false, newer: false }
+  const stuck: Record<LoadSide, boolean> = { older: false, newer: false }
   // Whether a fill returned at once because a place waited (see `placeWaits`).
   let skippedFillDuringWait = false
 
   // Reset per-window side-selection state once buffers are satisfied or a jump replaces
   // the message window.
   const rearm = () => {
-    lastLoadedSide = null
-    lastLoadedMetric = 0
-    lastRefAnchor = null
+    baselines.older = null
+    baselines.newer = null
     stuck.older = false
     stuck.newer = false
   }
@@ -160,7 +170,7 @@ export function createScrollBufferFiller(deps: {
   // drop is then re-fetchable history, not the pinned live tail. Below the ceiling both
   // sides are free. Expressed positively (allowed) to avoid a double-negative at the use
   // site, and parameterized on the side so the two directions can't drift.
-  const ceilingAllowed = (side: 'older' | 'newer') =>
+  const ceilingAllowed = (side: LoadSide) =>
     !deps.atCeiling() || (deps.hasNewer() && deps.lastScrollDir() === side)
 
   // Which sides are under the buffer target, have more to load, AND are allowed to
@@ -179,47 +189,49 @@ export function createScrollBufferFiller(deps: {
     }
   }
 
-  // Whether rows are staged on the side of the last load: the rows of that page have no
-  // pixels yet, so its progress cannot be judged.
-  const lastLoadStaged = (): boolean => lastLoadedSide !== null && (lastLoadedSide === 'older'
+  const stagedOn = (side: LoadSide): boolean => side === 'older'
     ? deps.stagedOlder()
-    : deps.stagedNewer())
+    : deps.stagedNewer()
 
-  // The content measure for a side: how much content sits on THAT side of the captured
-  // ref row (older -> ABOVE, newer -> BELOW), read from the geometry offset map. Both are
+  // Whether a load waits for its judgment because rows are staged on its side: the rows
+  // of that page have no pixels yet, so its progress cannot be judged.
+  const stagedLoadWaits = (): boolean =>
+    LOAD_SIDES.some(side => baselines[side] !== null && stagedOn(side))
+
+  // The content measure for a side: how much content sits on THAT side of the ref row
+  // `ref` (older -> ABOVE, newer -> BELOW), read from the geometry offset map. Both are
   // immune to user scroll (we track the ROW), the opposite side's load, and the far-end
   // trim. Null when the ref row was trimmed / the virtualizer can't anchor.
-  const sideContent = (side: 'older' | 'newer'): number | null =>
-    !lastRefAnchor
+  const sideContent = (side: LoadSide, ref: ScrollAnchor | null): number | null =>
+    !ref
       ? null
       : (side === 'older'
           ? deps.contentAbove
-          : deps.contentBelow)(lastRefAnchor)
+          : deps.contentBelow)(ref)
 
-  // Fold the LAST load's outcome into the per-side selection state, judged by THAT side's
-  // own visible-content growth: a flat signal means the page was all hidden (mark that
-  // side stuck so selection stops wasting loads on it while another side can make
-  // progress); growth means it surfaced content (unstick that side).
+  // Fold the outcome of each load that waits for its judgment into the per-side selection
+  // state, judged by THAT side's own visible-content growth: a flat signal means the page
+  // was all hidden (mark that side stuck so selection stops wasting loads on it while
+  // another side can make progress); growth means it surfaced content (unstick that side).
   //
-  // A null read splits two ways. When NO ref could be captured at the last load
-  // (`lastRefAnchor` null -- an empty/unanchorable window), treat it like a flat
-  // all-hidden load for side selection. But when a ref WAS captured and has since
-  // resolved to null, the ref row was TRIMMED out of the window: a trim only fires
-  // because the loaded side grew enough to force the opposite-end cap-trim, so the load
-  // DID surface content -- unmeasurable PROGRESS, not a stall.
+  // A null read splits two ways. When NO ref could be captured at the load (a `ref` of
+  // null -- an empty/unanchorable window), treat it like a flat all-hidden load for side
+  // selection. But when a ref WAS captured and has since resolved to null, the ref row
+  // was TRIMMED out of the window: a trim only fires because the loaded side grew enough
+  // to force the opposite-end cap-trim, so the load DID surface content -- unmeasurable
+  // PROGRESS, not a stall.
   //
-  // A load whose rows are still staged is not judged: the caller keeps its baseline, and
-  // the first fill after the rows joined judges it.
-  const attributeLastLoadProgress = () => {
-    if (!lastLoadedSide || lastLoadStaged())
-      return
-    const now = sideContent(lastLoadedSide)
-    const refTrimmed = lastRefAnchor !== null && now === null
-    if (refTrimmed || (now != null && now - lastLoadedMetric >= LOAD_PROGRESS_MIN_PX)) {
-      stuck[lastLoadedSide] = false
-    }
-    else {
-      stuck[lastLoadedSide] = true
+  // A load whose rows are still staged is not judged: its baseline stays, also when the
+  // other side loads meanwhile, and the first fill after the rows joined judges it.
+  const attributeLoadProgress = () => {
+    for (const side of LOAD_SIDES) {
+      const baseline = baselines[side]
+      if (baseline === null || stagedOn(side))
+        continue
+      baselines[side] = null
+      const now = sideContent(side, baseline.ref)
+      const refTrimmed = baseline.ref !== null && now === null
+      stuck[side] = !(refTrimmed || (now != null && now - baseline.metric >= LOAD_PROGRESS_MIN_PX))
     }
   }
 
@@ -229,7 +241,7 @@ export function createScrollBufferFiller(deps: {
   // that, honor the user's last scroll direction (a content-fits / all-hidden window
   // reads as deficient at both edges). If BOTH deficient sides are stuck, keep paging
   // the preferred one.
-  const selectSideToLoad = (older: boolean, newer: boolean): 'older' | 'newer' => {
+  const selectSideToLoad = (older: boolean, newer: boolean): LoadSide => {
     const olderEligible = older && !stuck.older
     const newerEligible = newer && !stuck.newer
     if (olderEligible || newerEligible) {
@@ -260,21 +272,20 @@ export function createScrollBufferFiller(deps: {
       // Genuinely satisfied / nothing to load, OR blocked at the ceiling. Reset side
       // selection state either way because no load is happening in this window state.
       // The baseline of a load whose rows are still staged stays, for its judgment.
-      if (!lastLoadStaged())
+      if (!stagedLoadWaits())
         rearm()
       return
     }
     // guard -> attribute -> select -> fire. Only ONE side is paged per fill; the two are
     // never raced together.
-    attributeLastLoadProgress()
+    attributeLoadProgress()
     const side = selectSideToLoad(older, newer)
-    lastLoadedSide = side
     // Anchor to the row at the viewport top and baseline this side's content measure
     // (older -> content ABOVE the ref, newer -> content BELOW it) from the geometry offset
-    // map, so the next fill's growth check is immune to user scroll, the opposite side's
-    // load, and the far-end trim.
-    lastRefAnchor = deps.captureAnchor()
-    lastLoadedMetric = sideContent(side) ?? 0
+    // map, so the growth check of a later fill is immune to user scroll, the opposite
+    // side's load, and the far-end trim.
+    const ref = deps.captureAnchor()
+    baselines[side] = { ref, metric: sideContent(side, ref) ?? 0 }
     if (side === 'older')
       deps.onLoadOlder()
     else
@@ -294,10 +305,19 @@ export function createScrollBufferFiller(deps: {
 
   createEffect(() => {
     deps.messages() // re-run as the window content changes (a page landed)
-    // Read here, not only in deficits(): a run of fill() that returns early reads neither,
-    // and the effect would then not run again when staged rows join.
+    // Read each signal that fill() depends on here, not only inside fill(): a run that
+    // returns early reads none of them (at a place that waits, it reads no signal at
+    // all), and an effect follows only what its last run read. The effect would then not
+    // run again when staged rows join, when a fetch ends with no page, or when history
+    // appears.
     deps.stagedOlder()
     deps.stagedNewer()
+    deps.hasOlder()
+    deps.hasNewer()
+    deps.fetchingOlder()
+    deps.fetchingNewer()
+    deps.atCeiling()
+    deps.suppressOlder()
     fill()
   })
 

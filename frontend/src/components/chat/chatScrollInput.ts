@@ -79,8 +79,14 @@ export function createScrollInput(ctx: ScrollContext, extras: {
   // The hook actions that only this layer calls.
   forceScrollToBottom: () => void
   cancelPendingScroll: () => void
-  /** Abandon the pending history jump: the reader took control. */
-  cancelPendingSeek: () => void
+  /** Take an input of the reader (see UseChatScrollResult.takeReaderInput). */
+  takeReaderInput: () => void
+  /**
+   * End the request for the tail for an input that moves the view away from the bottom
+   * (see the readerLeftBottom of the hook). It changes nothing while loaded rows exist and
+   * none is in the list.
+   */
+  readerLeftBottom: () => void
   tryLoadOlderOnExplicitTopIntent: () => void
   tryLoadNewerOnExplicitBottomIntent: () => void
   setLastScrollDir: (dir: 'older' | 'newer') => void
@@ -116,22 +122,27 @@ export function createScrollInput(ctx: ScrollContext, extras: {
    */
   const jumpToTop = () => {
     ctx.cancelScrollAnimation()
+    // A command of the reader, as End is: it ends the pause of the buffer fill that a
+    // forced stop started. Its `scroll` event is an own write, which never ends it.
+    ctx.retakeScrollControl()
     batch(() => {
       if (extras.hasOlderMessages()) {
         const signal = ctx.beginHistoryJump()
+        // Each branch of the landing runs in one batch: it ends the pending jump of the
+        // hook and asks for its place together (see ScrollContext.settleHistoryJump).
         void Promise.resolve(extras.onJumpToOldest?.(signal))
-          .then((applied) => {
-            if (signal.aborted)
+          .then(applied => batch(() => {
+            if (!ctx.settleHistoryJump(signal))
               return
             if (applied === true)
               scrollToTopPosition()
             else
               ctx.checkPosition()
-          })
-          .catch(() => {
-            if (!signal.aborted)
+          }))
+          .catch(() => batch(() => {
+            if (ctx.settleHistoryJump(signal))
               ctx.checkPosition()
-          })
+          }))
         return
       }
       // This command starts no fetch, but it still ends one that runs.
@@ -142,12 +153,9 @@ export function createScrollInput(ctx: ScrollContext, extras: {
 
   const pageScroll = (direction: -1 | 1) => {
     // A page is an input of the reader, like a wheel: it stops the pending history jump.
-    // The page key of the list reaches here through takeIntent, which abandons the jump
-    // already, but the application shortcut calls pageScroll directly. While loaded rows
-    // exist and none is in the list, an input changes nothing: no row shows a position.
-    const inputCounts = !ctx.awaitingFirstView()
-    if (inputCounts)
-      ctx.abandonHistoryJump()
+    // Both of its paths reach here: the page key of the list, and the application shortcut.
+    // The hook decides whether the input counts (see takeIntent).
+    extras.takeReaderInput()
     // A 0-height container (hidden/collapsed pane, or the cold-start frame before
     // measurement) can't scroll: clientHeight is 0, so the delta below is 0, and a
     // no-move would then fire a spurious edge pagination on every key press.
@@ -173,8 +181,8 @@ export function createScrollInput(ctx: ScrollContext, extras: {
       // The rule of the scroll handler for a move of the reader: a page up ends the request
       // for the tail, and so does a page down while newer messages exist, when it leaves the
       // view more than FOLLOW_TOLERANCE_PX above the loaded bottom.
-      if (inputCounts && (direction === -1 || (ctx.hasNewerMessages() && distFromBottom(el) > FOLLOW_TOLERANCE_PX)))
-        ctx.leaveFollow()
+      if (direction === -1 || (ctx.hasNewerMessages() && distFromBottom(el) > FOLLOW_TOLERANCE_PX))
+        extras.readerLeftBottom()
       return
     }
     // Already clamped at the edge: the page could not move. Route its direction
@@ -192,11 +200,11 @@ export function createScrollInput(ctx: ScrollContext, extras: {
   /**
    * An input that states a direction: it abandons the pending history jump, because the
    * reader takes control, and it records the direction for the pagination. The hook
-   * decides in `cancelPendingSeek` whether the input counts: it changes nothing while
+   * decides in `takeReaderInput` whether the input counts: it changes nothing while
    * loaded rows exist and none is in the list.
    */
   const takeIntent = (dir: 'older' | 'newer') => {
-    extras.cancelPendingSeek()
+    extras.takeReaderInput()
     extras.setLastScrollDir(dir)
   }
 
@@ -206,16 +214,16 @@ export function createScrollInput(ctx: ScrollContext, extras: {
    * that can move up takes the step, so the step is no input of the list and does
    * nothing here. Otherwise it states the direction. When the list can move, it ends
    * follow mode at once, before its `scroll` event, so no growth in between pulls the
-   * reader back down. At the top edge, it loads older messages. While loaded rows exist
-   * and none is in the list, it ends no follow mode: no row shows a position.
+   * reader back down. At the top edge, it loads older messages. The hook decides whether
+   * the step ends follow mode (see the readerLeftBottom of the hook).
    */
   const stepOlder = (target: EventTarget | null) => {
     const el = ctx.getEl()
     if (el && innerScrollerTakes(target, el, -1))
       return
     takeIntent('older')
-    if (el && hasScrollRoom(el, -1) && !ctx.awaitingFirstView())
-      ctx.leaveFollow()
+    if (el && hasScrollRoom(el, -1))
+      extras.readerLeftBottom()
     extras.tryLoadOlderOnExplicitTopIntent()
   }
 
@@ -282,14 +290,15 @@ export function createScrollInput(ctx: ScrollContext, extras: {
         takeIntent('newer')
         extras.forceScrollToBottom()
         break
+      // A page takes the input of the reader itself (see pageScroll).
       case 'PageUp':
         event.preventDefault()
-        takeIntent('older')
+        extras.setLastScrollDir('older')
         pageScroll(-1)
         break
       case 'PageDown':
         event.preventDefault()
-        takeIntent('newer')
+        extras.setLastScrollDir('newer')
         pageScroll(1)
         break
       // Arrow keys and Space keep the browser's native scroll; we only nudge

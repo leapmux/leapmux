@@ -4,7 +4,6 @@ import type { SavedViewportScroll, ScrollAnchor } from '~/stores/chatTypes'
 import { batch } from 'solid-js'
 import { firstMessageSeq, lastMessageSeq } from '~/stores/chatMessageOrder'
 import { ROW_ALIGN_OFFSET_PX } from './chatLayoutShift'
-import { nearestServerRowIndexBySeq } from './chatScrollAnchor'
 
 // ---------------------------------------------------------------------------
 // Scroll-rail seek (jumpToSeq / previewScrollTo)
@@ -64,22 +63,6 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
   // the same values for the in-window seek decision.
 
   /**
-   * The loaded server row nearest `seq` by absolute seq distance, via the same
-   * nearestServerRowIndexBySeq scan the trim-restore anchor recovery uses (scrollTopNearAnchor).
-   * Only for the handoff of a seek whose pane was hidden when its page arrived: that row can
-   * be a hidden message, and the restore of the saved viewport resolves it to the nearest
-   * visible row. A landing takes its row from `ctx.loadedRows`, the loaded visible rows.
-   */
-  const nearestRowIdBySeq = (seq: bigint): string | undefined => {
-    const msgs = extras.messages()
-    const idx = nearestServerRowIndexBySeq(msgs, seq)
-    // A matched index came from a scan over `msgs`, so it is in range; `?.` is the type-level guard alone.
-    return idx < 0
-      ? undefined
-      : msgs[idx]?.id
-  }
-
-  /**
    * Land the viewport on the loaded visible row nearest `seq`, its top ROW_ALIGN_OFFSET_PX
    * below the viewport top, once that row and the rows of its view are measured (see
    * ScrollContext.requestPlace). Instant, not animated. The resolved scroll coordinate counts the
@@ -92,13 +75,20 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
    * viewport top (see rowCutAt), also when the viewport top lies inside the row above it.
    *
    * Resolves to whether the landing actually MOVED the scroll position (i.e. a scroll event,
-   * and hence a settling metrics change, will follow). It resolves false -- no scroll -- when
-   * the container is detached/hidden, no target row resolves, the wait for the row ended
-   * without its placement (a later command, an input of the reader, a row that left the
-   * loaded rows), OR the target is already the current scrollTop; the rail's drag-release
-   * hold uses this to know whether to wait for a metrics settle or clear immediately, so it
-   * never sticks when the landing scrolls nowhere. The promise settles on every path,
-   * because that of requestPlace does.
+   * and hence a settling metrics change, will follow). It resolves false -- no scroll -- in
+   * each of these cases:
+   *
+   * - The container is detached or hidden.
+   * - No target row resolves.
+   * - The wait for the row ended without its placement:
+   *   - A later command replaced it.
+   *   - The reader took control with an input.
+   *   - The row left the loaded rows.
+   * - The target is already the current scrollTop.
+   *
+   * The rail's drag-release hold uses the result to know whether to wait for a metrics
+   * settle or to clear immediately, so it never sticks when the landing scrolls nowhere.
+   * The promise settles on every path, because that of requestPlace does.
    */
   const landOnSeq = (seq: bigint): Promise<boolean> => {
     if (!ctx.getVisibleEl())
@@ -169,7 +159,6 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
     const { signal, fetched } = batch(() => {
       ctx.cancelScrollAnimation()
       ctx.retakeScrollControl()
-      ctx.rearmScrollBufferFiller()
       ctx.leaveFollow()
       // Supersede any history jump already in flight -- abort its fetch, not just its
       // landing. The signal reaches the page fetch itself (onJumpToSeq passes it to the
@@ -181,23 +170,26 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
         fetched: extras.onJumpToSeq?.(seq, jumpSignal),
       }
     })
+    // Each branch of the landing runs in one batch: it ends the pending jump of the hook
+    // and asks for its place together (see ScrollContext.settleHistoryJump).
     return Promise.resolve(fetched)
-      .then((applied) => {
+      .then(applied => batch(() => {
         // Superseded by a newer jump, or abandoned by an input of the reader.
-        if (signal.aborted)
+        if (!ctx.settleHistoryJump(signal))
           return false
         // Another history fetch of the store replaced this one, or no handler exists: the
         // window does not hold the page of this seek, so nothing lands on it.
         if (applied !== true)
           return false
         if (ctx.getVisibleEl()) {
-          // Visible: applyMessages already swapped the window synchronously and the
-          // virtualizer memos are pull-based, so offsetOfId reflects the new window now.
+          // Visible: the store already swapped the window, so the loaded rows hold the
+          // page of the seek. The landing waits for the measure of its rows (see landOnSeq).
           return landOnSeq(seq)
         }
         // Hidden mid-jump (tab switched away): hand the target to the SavedViewportScroll
         // restore path so the seek lands when the tab returns, instead of snapping to tail.
-        const id = nearestRowIdBySeq(seq)
+        // The row is the one that a visible landing takes.
+        const id = ctx.loadedRows.nearestId(seq)
         if (id) {
           extras.onSaveViewportScroll?.({
             anchor: { id, offsetWithinRow: 0, seq },
@@ -206,11 +198,13 @@ export function createChatSeek(ctx: ScrollContext, extras: ChatSeekExtras): Chat
           })
         }
         return false
-      })
-      .catch(() => {
-        ctx.checkPosition()
+      }))
+      .catch(() => batch(() => {
+        // An aborted seek checks nothing: the reader, or a later command, has the view.
+        if (ctx.settleHistoryJump(signal))
+          ctx.checkPosition()
         return false
-      })
+      }))
   }
 
   const previewScrollTo = (top: number) => {

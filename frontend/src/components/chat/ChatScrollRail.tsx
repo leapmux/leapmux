@@ -68,9 +68,11 @@ export interface ChatScrollRailProps {
   railRowSeqs: number[] | null
   /**
    * The seq-space rail data (loaded flag, whole-history min/max seq range, marked seqs, and the
-   * loaded window's first/last server seq) as the SINGLE {@link ChatRailData} shape the store's
-   * getRailData produces -- rather than re-flattening those six fields, which the view would then
-   * have to keep in hand-sync (the exact drift ChatRailData exists to prevent).
+   * first/last server seq of the window that the rail scrolls live) as the SINGLE
+   * {@link ChatRailData} shape the store's getRailData produces -- rather than re-flattening
+   * those six fields, which the view would then have to keep in hand-sync (the exact drift
+   * ChatRailData exists to prevent). ChatView gives the rows of its list as that window, in
+   * place of the loaded window of the store (see ChatView.railProps).
    */
   rail: ChatRailData
   /**

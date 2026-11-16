@@ -7,6 +7,7 @@ import { cleanup, render, screen } from '@solidjs/testing-library'
 import { createSignal, Show } from 'solid-js'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
+import { createManualFrames } from '~/test-support/manualFrames'
 import { makeMessage } from '~/test-support/messageFactory'
 import { installControllableResizeObserver, triggerResizeObserverForSync } from '~/test-support/resizeObserverStub'
 import { ChatHiddenPremeasure, PREMEASURE_IMAGE_SETTLE_LIMIT_MS } from './chatHiddenPremeasure'
@@ -84,8 +85,9 @@ function renderPremeasureRow(
 
 /**
  * Queue each animation frame for the test to run by hand, run `body`, then
- * unmount everything it rendered and restore the globals. The unmount runs
- * first, so a row that cancels its frame on disposal still reaches the stub.
+ * unmount everything it rendered and restore the globals and the spies. The
+ * unmount runs first, so a row that cancels its frame on disposal still reaches
+ * the stub.
  */
 function withFrameQueue(body: (frames: FrameRequestCallback[]) => void): void {
   const frames: FrameRequestCallback[] = []
@@ -97,6 +99,7 @@ function withFrameQueue(body: (frames: FrameRequestCallback[]) => void): void {
   finally {
     cleanup()
     vi.unstubAllGlobals()
+    vi.restoreAllMocks()
   }
 }
 
@@ -105,7 +108,7 @@ describe('chat hidden premeasure rendering', () => {
     withFrameQueue((frames) => {
       installControllableResizeObserver()
       let complete = false
-      const onMeasure = vi.fn(() => true)
+      const onMeasure = vi.fn()
       const rendered = render(() => (
         <ChatHiddenPremeasure
           candidates={[
@@ -138,7 +141,7 @@ describe('chat hidden premeasure rendering', () => {
     withFrameQueue((frames) => {
       installControllableResizeObserver()
       const [pending, setPending] = createSignal(true)
-      const onMeasure = vi.fn(() => true)
+      const onMeasure = vi.fn()
       // eslint-disable-next-line solid/reactivity -- the scope reads the accessor inside its own memo
       const renderBubble = vi.fn((_entry: ClassifiedEntry, readiness: RenderReadiness) => {
         readiness.track(pending)
@@ -181,7 +184,7 @@ describe('chat hidden premeasure rendering', () => {
     withFrameQueue((frames) => {
       installControllableResizeObserver()
       const [replacing, setReplacing] = createSignal(true)
-      const onMeasure = vi.fn(() => true)
+      const onMeasure = vi.fn()
       render(() => (
         <ChatHiddenPremeasure
           candidates={[
@@ -216,7 +219,7 @@ describe('chat hidden premeasure rendering', () => {
   it('measures nothing again for a load event of an element that is not an image', () => {
     withFrameQueue((frames) => {
       installControllableResizeObserver()
-      const onMeasure = vi.fn(() => true)
+      const onMeasure = vi.fn()
       render(() => (
         <ChatHiddenPremeasure
           candidates={[
@@ -259,7 +262,7 @@ describe('chat hidden premeasure rendering', () => {
     withFrameQueue((frames) => {
       installControllableResizeObserver()
       const [pending, setPending] = createSignal(true)
-      const onMeasure = vi.fn(() => true)
+      const onMeasure = vi.fn()
       let height = 24
       const rendered = render(() => (
         <ChatHiddenPremeasure
@@ -338,7 +341,7 @@ describe('chat hidden premeasure rendering', () => {
   it('skips a hidden view and measures its empty row after layout returns', () => {
     withFrameQueue((frames) => {
       installControllableResizeObserver()
-      const onMeasure = vi.fn(() => true)
+      const onMeasure = vi.fn()
       const rendered = render(() => (
         <ChatHiddenPremeasure
           candidates={[
@@ -374,7 +377,7 @@ describe('chat hidden premeasure rendering', () => {
       const [candidates, setCandidates] = createSignal([
         { entry, item },
       ])
-      const onMeasure = vi.fn(() => true)
+      const onMeasure = vi.fn()
       const rendered = render(() => (
         <ChatHiddenPremeasure candidates={candidates()} contentWidthPx={400} renderBubble={() => null} onMeasure={onMeasure} />
       ))
@@ -480,15 +483,7 @@ describe('chat hidden premeasure rendering', () => {
   })
 
   it('reports no height while an image loads, and measures once when it loaded', () => {
-    const originalRaf = globalThis.requestAnimationFrame
-    const originalCancelRaf = globalThis.cancelAnimationFrame
-    const frames: FrameRequestCallback[] = []
-    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
-      frames.push(cb)
-      return frames.length
-    }) as typeof requestAnimationFrame
-    globalThis.cancelAnimationFrame = vi.fn() as typeof cancelAnimationFrame
-    try {
+    withFrameQueue((frames) => {
       const onMeasure = vi.fn()
       let height = 10
       const entry = entryWithSpanLines(0)
@@ -522,29 +517,11 @@ describe('chat hidden premeasure rendering', () => {
 
       expect(onMeasure).toHaveBeenCalledOnce()
       expect(onMeasure).toHaveBeenLastCalledWith('m1', 42, 'k1', expect.any(Number))
-    }
-    finally {
-      if (originalRaf)
-        globalThis.requestAnimationFrame = originalRaf
-      else
-        Reflect.deleteProperty(globalThis, 'requestAnimationFrame')
-      if (originalCancelRaf)
-        globalThis.cancelAnimationFrame = originalCancelRaf
-      else
-        Reflect.deleteProperty(globalThis, 'cancelAnimationFrame')
-    }
+    })
   })
 
   it('reports no height for a size-reserved image while it decodes', () => {
-    const originalRaf = globalThis.requestAnimationFrame
-    const originalCancelRaf = globalThis.cancelAnimationFrame
-    const frames: FrameRequestCallback[] = []
-    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
-      frames.push(cb)
-      return frames.length
-    }) as typeof requestAnimationFrame
-    globalThis.cancelAnimationFrame = vi.fn() as typeof cancelAnimationFrame
-    try {
+    withFrameQueue((frames) => {
       const onMeasure = vi.fn()
       const entry = entryWithSpanLines(0)
       const item: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1' }
@@ -580,29 +557,11 @@ describe('chat hidden premeasure rendering', () => {
       frames.shift()?.(16)
       expect(onMeasure).toHaveBeenCalledOnce()
       expect(onMeasure).toHaveBeenCalledWith('m1', 24, 'k1', expect.any(Number))
-    }
-    finally {
-      if (originalRaf)
-        globalThis.requestAnimationFrame = originalRaf
-      else
-        Reflect.deleteProperty(globalThis, 'requestAnimationFrame')
-      if (originalCancelRaf)
-        globalThis.cancelAnimationFrame = originalCancelRaf
-      else
-        Reflect.deleteProperty(globalThis, 'cancelAnimationFrame')
-    }
+    })
   })
 
   it('measures a whole band in ONE shared frame: all rect reads happen before any commit', () => {
-    const originalRaf = globalThis.requestAnimationFrame
-    const originalCancelRaf = globalThis.cancelAnimationFrame
-    const frames: FrameRequestCallback[] = []
-    globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => {
-      frames.push(cb)
-      return frames.length
-    }) as typeof requestAnimationFrame
-    globalThis.cancelAnimationFrame = vi.fn() as typeof cancelAnimationFrame
-    try {
+    withFrameQueue((frames) => {
       const height1 = 10
       let height2 = 20
       const calls: Array<[string, number]> = []
@@ -652,80 +611,51 @@ describe('chat hidden premeasure rendering', () => {
         ['m1', 10],
         ['m2', 20],
       ])
-    }
-    finally {
-      if (originalRaf)
-        globalThis.requestAnimationFrame = originalRaf
-      else
-        Reflect.deleteProperty(globalThis, 'requestAnimationFrame')
-      if (originalCancelRaf)
-        globalThis.cancelAnimationFrame = originalCancelRaf
-      else
-        Reflect.deleteProperty(globalThis, 'cancelAnimationFrame')
-    }
+    })
   })
 
   it('remeasures when hidden row layout changes after the first frame', () => {
-    const originalRaf = globalThis.requestAnimationFrame
-    const originalCancelRaf = globalThis.cancelAnimationFrame
     const originalResizeObserver = globalThis.ResizeObserver
-    const frames: FrameRequestCallback[] = []
-    globalThis.requestAnimationFrame = (cb: FrameRequestCallback) => {
-      frames.push(cb)
-      return frames.length
-    }
-    globalThis.cancelAnimationFrame = vi.fn<typeof cancelAnimationFrame>()
     installControllableResizeObserver()
+    // `withFrameQueue` restores the two spies.
     const observe = vi.spyOn(ResizeObserver.prototype, 'observe')
     const disconnect = vi.spyOn(ResizeObserver.prototype, 'disconnect')
-    let unmount: (() => void) | undefined
     try {
-      const onMeasure = vi.fn()
-      let height = 12
-      const entry = entryWithSpanLines(0)
-      const item: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1' }
-      const rendered = render(() => (
-        <ChatHiddenPremeasure
-          candidates={[
-            { entry, item },
-          ]}
-          contentWidthPx={400}
-          renderBubble={() => <div>row</div>}
-          onMeasure={onMeasure}
-        />
-      ))
-      unmount = rendered.unmount
-      const row = rendered.container.firstElementChild?.firstElementChild
-      if (!(row instanceof HTMLElement))
-        throw new TypeError('The resize premeasure row did not mount.')
-      vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 0, 400, height))
+      withFrameQueue((frames) => {
+        const onMeasure = vi.fn()
+        let height = 12
+        const entry = entryWithSpanLines(0)
+        const item: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1' }
+        const rendered = render(() => (
+          <ChatHiddenPremeasure
+            candidates={[
+              { entry, item },
+            ]}
+            contentWidthPx={400}
+            renderBubble={() => <div>row</div>}
+            onMeasure={onMeasure}
+          />
+        ))
+        const row = rendered.container.firstElementChild?.firstElementChild
+        if (!(row instanceof HTMLElement))
+          throw new TypeError('The resize premeasure row did not mount.')
+        vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 0, 400, height))
 
-      frames.shift()?.(0)
-      expect(onMeasure).toHaveBeenCalledWith('m1', 12, 'k1', expect.any(Number))
+        frames.shift()?.(0)
+        expect(onMeasure).toHaveBeenCalledWith('m1', 12, 'k1', expect.any(Number))
 
-      height = 36
-      expect(observe).toHaveBeenCalledWith(row)
-      triggerResizeObserverForSync(row)
-      frames.shift()?.(16)
+        height = 36
+        expect(observe).toHaveBeenCalledWith(row)
+        triggerResizeObserverForSync(row)
+        frames.shift()?.(16)
 
-      expect(onMeasure).toHaveBeenLastCalledWith('m1', 36, 'k1', expect.any(Number))
-      unmount()
-      unmount = undefined
-      expect(disconnect).toHaveBeenCalledTimes(1)
-      expect(disconnect.mock.contexts[0]).toBe(observe.mock.contexts[0])
+        expect(onMeasure).toHaveBeenLastCalledWith('m1', 36, 'k1', expect.any(Number))
+        rendered.unmount()
+        expect(disconnect).toHaveBeenCalledTimes(1)
+        expect(disconnect.mock.contexts[0]).toBe(observe.mock.contexts[0])
+      })
     }
     finally {
-      unmount?.()
-      observe.mockRestore()
-      disconnect.mockRestore()
-      if (originalRaf)
-        globalThis.requestAnimationFrame = originalRaf
-      else
-        Reflect.deleteProperty(globalThis, 'requestAnimationFrame')
-      if (originalCancelRaf)
-        globalThis.cancelAnimationFrame = originalCancelRaf
-      else
-        Reflect.deleteProperty(globalThis, 'cancelAnimationFrame')
       if (originalResizeObserver)
         globalThis.ResizeObserver = originalResizeObserver
       else
@@ -734,10 +664,9 @@ describe('chat hidden premeasure rendering', () => {
   })
 
   it('measures the current positive-height row after a same-key candidate replacement before its first frame', () => {
-    const originalRaf = globalThis.requestAnimationFrame
-    const originalCancelRaf = globalThis.cancelAnimationFrame
     const originalResizeObserver = globalThis.ResizeObserver
-    const frames = new Map<number, FrameRequestCallback>()
+    // Frames that a cancel removes, unlike the queue of `withFrameQueue`.
+    const frames = createManualFrames()
     const readEvents: unknown[] = []
     const recordRead = (event: Event) => {
       if (event instanceof CustomEvent)
@@ -745,15 +674,8 @@ describe('chat hidden premeasure rendering', () => {
     }
     window.addEventListener('leapmux:chat-premeasure', recordRead)
     vi.stubEnv('LEAPMUX_DEV', '1')
-    let nextFrameId = 0
-    globalThis.requestAnimationFrame = (handler: FrameRequestCallback): number => {
-      const id = ++nextFrameId
-      frames.set(id, handler)
-      return id
-    }
-    globalThis.cancelAnimationFrame = (id: number): void => {
-      frames.delete(id)
-    }
+    vi.stubGlobal('requestAnimationFrame', frames.requestFrame)
+    vi.stubGlobal('cancelAnimationFrame', frames.cancelFrame)
     installControllableResizeObserver()
     const observe = vi.spyOn(ResizeObserver.prototype, 'observe')
     let unmount: (() => void) | undefined
@@ -763,7 +685,7 @@ describe('chat hidden premeasure rendering', () => {
       const [candidates, setCandidates] = createSignal([
         { entry, item },
       ])
-      const onMeasure = vi.fn(() => true)
+      const onMeasure = vi.fn()
       const rendered = render(() => (
         <ChatHiddenPremeasure
           candidates={candidates()}
@@ -777,7 +699,7 @@ describe('chat hidden premeasure rendering', () => {
       if (!(oldRow instanceof HTMLElement))
         throw new TypeError('The first actual premeasure row did not mount.')
       vi.spyOn(oldRow, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 752, 11))
-      expect(frames.size).toBe(1)
+      expect(frames.pendingFrames()).toBe(1)
       expect(onMeasure).not.toHaveBeenCalled()
 
       setCandidates([
@@ -794,13 +716,8 @@ describe('chat hidden premeasure rendering', () => {
       expect(currentRow.isConnected).toBe(true)
       const currentRectangle = vi.spyOn(currentRow, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 752, 88))
       expect(observe).toHaveBeenCalledWith(currentRow)
-      expect(frames.size).toBe(1)
-      const pending = [
-        ...frames.values(),
-      ]
-      frames.clear()
-      for (const handler of pending)
-        handler(0)
+      expect(frames.pendingFrames()).toBe(1)
+      frames.runFrames()
 
       expect(onMeasure).toHaveBeenCalledTimes(1)
       expect(onMeasure).toHaveBeenCalledWith('m1', 88, 'same-native-key', expect.any(Number))
@@ -818,13 +735,8 @@ describe('chat hidden premeasure rendering', () => {
       ])
       currentRectangle.mockReturnValue(new DOMRect(0, 0, 752, 101))
       triggerResizeObserverForSync(currentRow)
-      expect(frames.size).toBe(1)
-      const resized = [
-        ...frames.values(),
-      ]
-      frames.clear()
-      for (const handler of resized)
-        handler(16)
+      expect(frames.pendingFrames()).toBe(1)
+      frames.runFrames()
       expect(onMeasure).toHaveBeenCalledTimes(2)
       expect(onMeasure).toHaveBeenLastCalledWith('m1', 101, 'same-native-key', expect.any(Number))
       expect(readEvents).toHaveLength(2)
@@ -834,14 +746,7 @@ describe('chat hidden premeasure rendering', () => {
       observe.mockRestore()
       window.removeEventListener('leapmux:chat-premeasure', recordRead)
       vi.unstubAllEnvs()
-      if (originalRaf)
-        globalThis.requestAnimationFrame = originalRaf
-      else
-        Reflect.deleteProperty(globalThis, 'requestAnimationFrame')
-      if (originalCancelRaf)
-        globalThis.cancelAnimationFrame = originalCancelRaf
-      else
-        Reflect.deleteProperty(globalThis, 'cancelAnimationFrame')
+      vi.unstubAllGlobals()
       if (originalResizeObserver)
         globalThis.ResizeObserver = originalResizeObserver
       else
@@ -855,13 +760,12 @@ describe('chat hidden premeasure rendering', () => {
 
     /**
      * Mount one copy whose content is an image that never loads, in a row of 30px, with
-     * frames that the test runs by hand. `setHeightKey` changes the key of the candidate.
+     * the frames of `withFrameQueue`, which the test runs by hand. `setHeightKey` changes
+     * the key of the candidate: the new key gives a new candidate object, so the copy of
+     * the key before is disposed, and a new copy mounts.
      */
-    function mountCopyWithStuckImage() {
-      const frames: FrameRequestCallback[] = []
-      vi.stubGlobal('requestAnimationFrame', (handler: FrameRequestCallback) => frames.push(handler))
-      vi.stubGlobal('cancelAnimationFrame', vi.fn())
-      const onMeasure = vi.fn(() => true)
+    function mountCopyWithStuckImage(frames: FrameRequestCallback[]) {
+      const onMeasure = vi.fn()
       const entry = entryWithSpanLines(0)
       const [heightKey, setHeightKey] = createSignal('k1')
       // One candidate object for each key, as the premeasure queue keeps them.
@@ -893,16 +797,10 @@ describe('chat hidden premeasure rendering', () => {
       return { onMeasure, runFrames, setHeightKey }
     }
 
-    function restore(): void {
-      cleanup()
-      vi.unstubAllGlobals()
-      vi.restoreAllMocks()
-    }
-
     it('reports the height that the copy has when an image never settles', () => {
       vi.useFakeTimers()
-      try {
-        const { onMeasure, runFrames } = mountCopyWithStuckImage()
+      withFrameQueue((frames) => {
+        const { onMeasure, runFrames } = mountCopyWithStuckImage(frames)
         runFrames()
         expect(onMeasure).not.toHaveBeenCalled()
 
@@ -915,41 +813,38 @@ describe('chat hidden premeasure rendering', () => {
         runFrames()
         expect(onMeasure).toHaveBeenCalledOnce()
         expect(onMeasure).toHaveBeenCalledWith('m1', 30, 'k1', expect.any(Number))
-      }
-      finally {
-        restore()
-      }
+      })
     })
 
-    it('starts the wait again for a new key, and reports nothing for the key before it', () => {
+    it('starts the wait again for the copy of a new key, and reports nothing for the key before it', () => {
       vi.useFakeTimers()
-      try {
-        const { onMeasure, runFrames, setHeightKey } = mountCopyWithStuckImage()
+      withFrameQueue((frames) => {
+        const { onMeasure, runFrames, setHeightKey } = mountCopyWithStuckImage(frames)
         runFrames()
+        expect(vi.getTimerCount()).toBe(1)
 
         vi.advanceTimersByTime(PREMEASURE_IMAGE_SETTLE_LIMIT_MS - 1000)
+        // The copy of the first key is disposed with its timer, and a new copy mounts.
         setHeightKey('k2')
+        expect(vi.getTimerCount()).toBe(0)
         runFrames()
         // The limit of the first key would pass here.
         vi.advanceTimersByTime(1000)
         runFrames()
         expect(onMeasure).not.toHaveBeenCalled()
 
-        // The limit of the second key started with its own first read.
+        // The limit of the new copy started with its own first read.
         vi.advanceTimersByTime(PREMEASURE_IMAGE_SETTLE_LIMIT_MS - 1000)
         runFrames()
         expect(onMeasure).toHaveBeenCalledOnce()
         expect(onMeasure).toHaveBeenCalledWith('m1', 30, 'k2', expect.any(Number))
-      }
-      finally {
-        restore()
-      }
+      })
     })
 
     it('clears the limit timer when the copy unmounts', () => {
       vi.useFakeTimers()
-      try {
-        const { onMeasure, runFrames } = mountCopyWithStuckImage()
+      withFrameQueue((frames) => {
+        const { onMeasure, runFrames } = mountCopyWithStuckImage(frames)
         runFrames()
         expect(vi.getTimerCount()).toBe(1)
 
@@ -957,10 +852,7 @@ describe('chat hidden premeasure rendering', () => {
 
         expect(vi.getTimerCount()).toBe(0)
         expect(onMeasure).not.toHaveBeenCalled()
-      }
-      finally {
-        restore()
-      }
+      })
     })
   })
 
@@ -974,7 +866,7 @@ describe('chat hidden premeasure rendering', () => {
     vi.stubGlobal('cancelAnimationFrame', vi.fn())
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 400, 30))
     try {
-      const onMeasure = vi.fn(() => true)
+      const onMeasure = vi.fn()
       const first = {
         entry: entryWithSpanLines(0),
         item: { id: 'm1', hasSpanLines: false, heightKey: 'k1' } as VirtualItem,

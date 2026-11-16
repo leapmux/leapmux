@@ -458,6 +458,7 @@ describe('nextLayoutShift with a late row inside the view', () => {
 
     // The bottom edge of r3 moves from 400 to 1300 in the content, and stays on screen.
     expect(result).toMatchObject({ shift: -940, calls: 0 })
+    expect(result.sawHeight).toHaveBeenCalledWith('r3')
   })
 
   it('holds the viewport top for a row that did not come into the view over the top edge', () => {
@@ -499,21 +500,6 @@ describe('nextLayoutShift with a late row inside the view', () => {
       enteredFromAbove: ['r4'],
       sawHeight: false,
     }).shift).toBe(-40)
-  })
-
-  it('holds the bottom edge of a late row with a measured height that the reader did not see', () => {
-    const after = withHeight(rows(), 'r3', 1000)
-
-    const result = shiftFor({
-      previous: rows(),
-      next: after,
-      c: 230,
-      sawHeight: false,
-      enteredFromAbove: ['r3'],
-    })
-
-    expect(result.shift).toBe(-940)
-    expect(result.sawHeight).toHaveBeenCalledWith('r3')
   })
 
   it('holds the viewport top for a row that changes a height the reader saw', () => {
@@ -612,8 +598,9 @@ describe('nextLayoutShift with a late row inside the view', () => {
   })
 
   it('does not count a row that did not come over the top edge as a late row', () => {
-    // r3 is late. r6 corrects a guess too, but the reader did not reach it from below, so it
-    // divides no block: 70px lie above r3, and 330px below it.
+    // r3 is late. r6 also changes a height that the reader did not see, but the reader did
+    // not reach it from below, so it divides no block: 70px lie above r3, and 330px below
+    // it.
     const before = rows()
     const after = withHeight(withHeight(rows(), 'r3', 1000), 'r6', 600)
 

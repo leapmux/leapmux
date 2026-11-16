@@ -89,7 +89,7 @@ export interface MessageContextResolver {
   cachedFileImage: (path: string, reference?: string) => ImageResultSource | undefined
   /** The size of an image file, from its first bytes. Never rejects: no size gives `undefined`. */
   fileImageSize: (path: string, options?: { reference?: string }) => Promise<ImageDimensions | undefined>
-  /** The size that `fileImageSize` gave: `undefined` before a read settled, `null` for no size. */
+  /** The size of the image file that the resolver knows: `undefined` before a read settled, `null` for no size. */
   cachedFileImageSize: (path: string, reference?: string) => ImageDimensions | null | undefined
 }
 

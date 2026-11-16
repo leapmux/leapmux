@@ -28,7 +28,11 @@ export interface SpanLineGapBridgesProps {
   precedingEntry: SpanBridgeEntry | undefined
   /** Live top offset of a row (the same offset map that places the rows). */
   topOf: (id: string) => number
-  /** Mirrors the row's hide-until-measured state so a bridge never paints for an invisible row. */
+  /**
+   * Whether the row is hidden: its content is pending, an earlier row of its append
+   * burst still loads, or a fling skeleton covers it. A bridge never paints for an
+   * invisible row.
+   */
   hiddenOf: (id: string) => boolean
   /**
    * The gap the offset map left above a row (`gapAboveOf` on the virtualizer).

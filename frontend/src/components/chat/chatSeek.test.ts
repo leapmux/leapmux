@@ -1,20 +1,9 @@
-import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ScrollAnchor } from '~/stores/chatTypes'
 import { describe, expect, it, vi } from 'vitest'
-import { MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { deferred } from '~/test-support/async'
 import { nearestServerRowIndexBySeq } from './chatScrollAnchor'
 import { createChatSeek } from './chatSeek'
-import { makeFakeScrollDiv, makeScrollContext, makeStubVirtualizer } from './useChatScroll.testkit'
-
-/** One message for each seq of `seqs`, with the id `m${seq}`. */
-function messagesAt(seqs: readonly number[]): AgentChatMessage[] {
-  return seqs.map(seq => ({
-    id: `m${seq}`,
-    seq: BigInt(seq),
-    source: MessageSource.USER,
-  } as AgentChatMessage))
-}
+import { makeFakeScrollDiv, makeScrollContext, makeStubVirtualizer, messagesAtSeqs } from './useChatScroll.testkit'
 
 /**
  * A seek over a fake element with `clientHeight` 500, and spies on the context primitives
@@ -50,7 +39,7 @@ function setup(opts: { hasNewer?: boolean } = {}) {
     return fetch.promise
   })
   const onSaveViewportScroll = vi.fn()
-  let messages = messagesAt([100, 101, 102, 103, 104])
+  let messages = messagesAtSeqs([100, 101, 102, 103, 104])
   const landings: ScrollAnchor[] = []
   const ctx = makeScrollContext({
     getEl: () => div.el,
@@ -64,7 +53,6 @@ function setup(opts: { hasNewer?: boolean } = {}) {
     hasNewerMessages: () => opts.hasNewer ?? false,
     cancelScrollAnimation: spy('cancelScrollAnimation'),
     retakeScrollControl: spy('retakeScrollControl'),
-    rearmScrollBufferFiller: spy('rearmScrollBufferFiller'),
     leaveFollow: spy('leaveFollow'),
     checkPosition: spy('checkPosition'),
     // A landing that moves the view.
@@ -81,7 +69,7 @@ function setup(opts: { hasNewer?: boolean } = {}) {
           ? undefined
           : messages[index]?.id
       }),
-      firstId: () => messages[0]?.id,
+      first: () => messages[0],
     },
   })
   const seek = createChatSeek(ctx, {
@@ -100,36 +88,38 @@ function setup(opts: { hasNewer?: boolean } = {}) {
     onSaveViewportScroll,
     seek,
     swapWindow: (seqs: readonly number[]) => {
-      messages = messagesAt(seqs)
+      messages = messagesAtSeqs(seqs)
     },
   }
 }
 
 describe('createChatSeek', () => {
   it('prepares the hook for the swap of the window before an out-of-window fetch', () => {
-    const { calls, seek } = setup()
+    const { calls, seek, ctx } = setup()
 
     void seek.jumpToSeq(5n)
 
-    // Each step comes before the fetch: no animation, pause, per-window state of the
-    // filler, or request for the tail outlasts the old window.
+    // Each step comes before the fetch: no animation, pause, or request for the tail
+    // outlasts the old window. The start of the history jump drops the per-window state of
+    // the filler (see ScrollContext.beginHistoryJump).
     expect(calls.at(-1)).toBe('onJumpToSeq')
     expect(calls.slice(0, -1).sort()).toEqual([
       'cancelScrollAnimation',
       'leaveFollow',
-      'rearmScrollBufferFiller',
       'retakeScrollControl',
     ])
+    expect(ctx.beginHistoryJump).toHaveBeenCalledOnce()
   })
 
   it('re-takes control, and keeps the per-window state of the filler, for an in-window seek', async () => {
-    const { calls, seek, onJumpToSeq } = setup()
+    const { calls, seek, ctx, onJumpToSeq } = setup()
 
     expect(await seek.jumpToSeq(102n)).toBe(true)
 
     expect(calls).toContain('retakeScrollControl')
     expect(calls).toContain('placeAt')
-    expect(calls).not.toContain('rearmScrollBufferFiller')
+    // No history jump starts, so the filler keeps its state of the window.
+    expect(ctx.beginHistoryJump).not.toHaveBeenCalled()
     expect(onJumpToSeq).not.toHaveBeenCalled()
   })
 
@@ -223,6 +213,17 @@ describe('createChatSeek', () => {
     expect(calls).toContain('checkPosition')
   })
 
+  it('checks no position when the fetch of an abandoned seek fails', async () => {
+    const { calls, fetch, seek, ctx } = setup()
+    const landing = seek.jumpToSeq(5n)
+
+    ctx.abandonHistoryJump()
+    fetch.reject(new Error('aborted'))
+
+    expect(await landing).toBe(false)
+    expect(calls).not.toContain('checkPosition')
+  })
+
   it('abandons the pending history jump for a seek inside the window', async () => {
     const { seek, ctx } = setup()
 
@@ -242,6 +243,52 @@ describe('createChatSeek', () => {
     expect(await landing).toBe(false)
 
     expect(onSaveViewportScroll).not.toHaveBeenCalled()
+  })
+
+  it('saves the loaded visible row nearest the seq when the pane is hidden at the landing', async () => {
+    const { div, ctx, fetch, seek, swapWindow, onSaveViewportScroll } = setup()
+    const landing = seek.jumpToSeq(5n)
+    swapWindow([3, 4, 5, 6, 7])
+    // The message of the seq is hidden, so the nearest visible row is another message:
+    // the row that a visible landing takes.
+    vi.mocked(ctx.loadedRows.nearestId).mockReturnValue('m7')
+    div.setClientHeight(0)
+    fetch.resolve(true)
+
+    expect(await landing).toBe(false)
+
+    expect(onSaveViewportScroll).toHaveBeenCalledWith({
+      anchor: { id: 'm7', offsetWithinRow: 0, seq: 5n },
+      atBottom: false,
+      hasMoreNewer: false,
+    })
+  })
+
+  it('saves nothing when the pane is hidden at the landing and no loaded visible row exists', async () => {
+    const { div, ctx, fetch, seek, swapWindow, onSaveViewportScroll } = setup()
+    const landing = seek.jumpToSeq(5n)
+    // Every message of the page is hidden.
+    swapWindow([3, 4, 5, 6, 7])
+    vi.mocked(ctx.loadedRows.nearestId).mockReturnValue(undefined)
+    div.setClientHeight(0)
+    fetch.resolve(true)
+
+    expect(await landing).toBe(false)
+
+    expect(onSaveViewportScroll).not.toHaveBeenCalled()
+  })
+
+  it('ends the pending history jump of the hook before the landing asks for its place', async () => {
+    const { ctx, fetch, seek, swapWindow } = setup()
+    const landing = seek.jumpToSeq(5n)
+    const signal = vi.mocked(ctx.beginHistoryJump).mock.results[0]!.value
+    swapWindow([3, 4, 5, 6, 7])
+    fetch.resolve(true)
+    await landing
+
+    expect(ctx.settleHistoryJump).toHaveBeenCalledWith(signal)
+    expect(vi.mocked(ctx.settleHistoryJump).mock.invocationCallOrder[0]!)
+      .toBeLessThan(vi.mocked(ctx.requestPlace).mock.invocationCallOrder[0]!)
   })
 
   it('asks for the place of the loaded visible row nearest the seq', async () => {

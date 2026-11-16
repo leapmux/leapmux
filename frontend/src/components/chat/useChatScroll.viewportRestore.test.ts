@@ -1,243 +1,185 @@
-import type { ChatScrollState } from './useChatScroll'
+import type { ChatScrollState, ChatScrollVirtualizer } from './useChatScroll'
 import type { ScrollHarnessOptions } from './useChatScroll.testkit'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { batch, createRoot, createSignal, onCleanup } from 'solid-js'
 import { insert } from 'solid-js/web'
 import { describe, expect, it, vi } from 'vitest'
+import { inRoot } from '~/test-support/async'
 import {
   triggerResizeObserversSync,
 } from '~/test-support/resizeObserverStub'
 import { useChatScroll } from './useChatScroll'
-import { deferredJump, installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer, mountScrollHarness, rowMessages, settleJump, staticScrollAdmission, virtualizerNoOps, withContentAnchors } from './useChatScroll.testkit'
+import { deferredJump, installScrollTestEnv, makeFakeScrollDiv, makeRowVirtualizer, makeStubVirtualizer, mountScrollHarness, rowMessages, rowTargetAt, settleJump, withStaticAdmission } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
 describe('useChatScroll viewport restore', () => {
   it('jumps to the live tail on restore when the saved anchor was trimmed away', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setScrollHeight(5000)
-          div.setClientHeight(0) // hidden tab
-          const [messages] = createSignal<AgentChatMessage[]>([])
-          // Saved while scrolled away from the tail; the anchored row (id m42)
-          // was trimmed out of the window while hidden, so the stub's
-          // scrollTopForAnchor returns null (the anchor no longer resolves).
-          const [saved] = createSignal<ChatScrollState | undefined>({
-            anchor: { id: 'm42', offsetWithinRow: 10 },
-            atBottom: false,
-            hasMoreNewer: true,
-          })
-          let jumped = false
-          let cleared = false
-          const onJumpToLatest = () => {
-            jumped = true
-            return Promise.resolve(true)
-          }
-          const onClearSavedViewportScroll = () => {
-            cleared = true
-          }
-          const virt = makeStubVirtualizer()
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            ...staticScrollAdmission(virt, messages),
-            hasNewerMessages: () => true,
-            onJumpToLatest,
-            savedViewportScroll: saved,
-            onClearSavedViewportScroll,
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-
-          // Tab becomes visible: the hidden->visible transition runs the
-          // restore path. The anchor can't resolve and we were windowed away,
-          // so it jumps to the live tail instead of clamping to the top.
-          div.setClientHeight(500)
-          triggerResizeObserversSync()
-          await Promise.resolve()
-          await Promise.resolve()
-
-          expect(jumped).toBe(true)
-          expect(cleared).toBe(true)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
+    inRoot(async () => {
+      const div = makeFakeScrollDiv()
+      div.setScrollHeight(5000)
+      div.setClientHeight(0) // hidden tab
+      const [messages] = createSignal<AgentChatMessage[]>([])
+      // Saved while scrolled away from the tail; the anchored row (id m42)
+      // was trimmed out of the window while hidden, so the stub's
+      // scrollTopForAnchor returns null (the anchor no longer resolves).
+      const [saved] = createSignal<ChatScrollState | undefined>({
+        anchor: { id: 'm42', offsetWithinRow: 10 },
+        atBottom: false,
+        hasMoreNewer: true,
       })
+      let jumped = false
+      let cleared = false
+      const onJumpToLatest = () => {
+        jumped = true
+        return Promise.resolve(true)
+      }
+      const onClearSavedViewportScroll = () => {
+        cleared = true
+      }
+      const hook = useChatScroll(withStaticAdmission({
+        virtualizer: makeStubVirtualizer(),
+        messages,
+        hasNewerMessages: () => true,
+        onJumpToLatest,
+        savedViewportScroll: saved,
+        onClearSavedViewportScroll,
+      }))
+      hook.attachListRef(div.el)
+      await Promise.resolve()
+      await Promise.resolve()
+
+      // Tab becomes visible: the hidden->visible transition runs the
+      // restore path. The anchor can't resolve and we were windowed away,
+      // so it jumps to the live tail instead of clamping to the top.
+      div.setClientHeight(500)
+      triggerResizeObserversSync()
+      await Promise.resolve()
+      await Promise.resolve()
+
+      expect(jumped).toBe(true)
+      expect(cleared).toBe(true)
     }))
 
   it('jumps to the live tail on restore when the saved at-bottom view was windowed away', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setScrollHeight(5000)
-          div.setClientHeight(0) // hidden tab
-          const [messages] = createSignal<AgentChatMessage[]>([])
-          // Saved at the IN-MEMORY bottom while still windowed away from the live
-          // tail (hasMoreNewer): the in-memory bottom is NOT the real bottom, so
-          // restore must re-fetch the tail rather than stick to the stale window.
-          const [saved] = createSignal<ChatScrollState | undefined>({
-            atBottom: true,
-            hasMoreNewer: true,
-          })
-          let jumped = false
-          let cleared = false
-          const virt = makeStubVirtualizer()
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            ...staticScrollAdmission(virt, messages),
-            hasNewerMessages: () => true,
-            onJumpToLatest: () => {
-              jumped = true
-              return Promise.resolve(true)
-            },
-            savedViewportScroll: saved,
-            onClearSavedViewportScroll: () => { cleared = true },
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-
-          // Tab becomes visible: the hidden->visible restore path runs.
-          div.setClientHeight(500)
-          triggerResizeObserversSync()
-          await Promise.resolve()
-          await Promise.resolve()
-
-          // forceScrollToBottom jumps to the live tail (not a plain stickToBottom).
-          expect(jumped).toBe(true)
-          expect(cleared).toBe(true)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
+    inRoot(async () => {
+      const div = makeFakeScrollDiv()
+      div.setScrollHeight(5000)
+      div.setClientHeight(0) // hidden tab
+      const [messages] = createSignal<AgentChatMessage[]>([])
+      // Saved at the IN-MEMORY bottom while still windowed away from the live
+      // tail (hasMoreNewer): the in-memory bottom is NOT the real bottom, so
+      // restore must re-fetch the tail rather than stick to the stale window.
+      const [saved] = createSignal<ChatScrollState | undefined>({
+        atBottom: true,
+        hasMoreNewer: true,
       })
+      let jumped = false
+      let cleared = false
+      const hook = useChatScroll(withStaticAdmission({
+        virtualizer: makeStubVirtualizer(),
+        messages,
+        hasNewerMessages: () => true,
+        onJumpToLatest: () => {
+          jumped = true
+          return Promise.resolve(true)
+        },
+        savedViewportScroll: saved,
+        onClearSavedViewportScroll: () => { cleared = true },
+      }))
+      hook.attachListRef(div.el)
+      await Promise.resolve()
+      await Promise.resolve()
+
+      // Tab becomes visible: the hidden->visible restore path runs.
+      div.setClientHeight(500)
+      triggerResizeObserversSync()
+      await Promise.resolve()
+      await Promise.resolve()
+
+      // forceScrollToBottom jumps to the live tail (not a plain stickToBottom).
+      expect(jumped).toBe(true)
+      expect(cleared).toBe(true)
     }))
 
   it('restores a saved raw scrollTop fallback when no row anchor resolves', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setScrollHeight(5000)
-          div.setClientHeight(0) // hidden tab
-          const [messages] = createSignal<AgentChatMessage[]>([])
-          // Saved while scrolled up in an all-hidden window: no anchor, but a raw
-          // scrollTop fallback (no virtual spacer there, so no drift to fear).
-          const [saved] = createSignal<ChatScrollState | undefined>({
-            rawScrollTop: 1200,
-            atBottom: false,
-            hasMoreNewer: false,
-          })
-          const virt = makeStubVirtualizer()
-          const hook = useChatScroll({
-            // anchorAt / scrollTopForAnchor return null -> the anchor never resolves.
-            virtualizer: virt,
-            messages,
-            ...staticScrollAdmission(virt, messages),
-            savedViewportScroll: saved,
-            onClearSavedViewportScroll: () => {},
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-
-          // Tab becomes visible: restore falls back to the raw scrollTop (clamped to
-          // scrollHeight - clientHeight = 4500), not a snap to the live tail.
-          div.setClientHeight(500)
-          triggerResizeObserversSync()
-          await Promise.resolve()
-          await Promise.resolve()
-          expect(div.getScrollTop()).toBe(1200)
-          expect(hook.atBottom()).toBe(false)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
+    inRoot(async () => {
+      const div = makeFakeScrollDiv()
+      div.setScrollHeight(5000)
+      div.setClientHeight(0) // hidden tab
+      const [messages] = createSignal<AgentChatMessage[]>([])
+      // Saved while scrolled up in an all-hidden window: no anchor, but a raw
+      // scrollTop fallback (no virtual spacer there, so no drift to fear).
+      const [saved] = createSignal<ChatScrollState | undefined>({
+        rawScrollTop: 1200,
+        atBottom: false,
+        hasMoreNewer: false,
       })
+      const hook = useChatScroll(withStaticAdmission({
+        // anchorAt / scrollTopForAnchor return null -> the anchor never resolves.
+        virtualizer: makeStubVirtualizer(),
+        messages,
+        savedViewportScroll: saved,
+        onClearSavedViewportScroll: () => {},
+      }))
+      hook.attachListRef(div.el)
+      await Promise.resolve()
+      await Promise.resolve()
+
+      // Tab becomes visible: restore falls back to the raw scrollTop (clamped to
+      // scrollHeight - clientHeight = 4500), not a snap to the live tail.
+      div.setClientHeight(500)
+      triggerResizeObserversSync()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(div.getScrollTop()).toBe(1200)
+      expect(hook.atBottom()).toBe(false)
     }))
 
   it('discards a stale raw scrollTop and clamps to the top when virtual rows appeared between save and restore', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setScrollHeight(5000)
-          div.setClientHeight(0) // hidden tab
-          const [messages] = createSignal<AgentChatMessage[]>([])
-          // Saved while all-hidden (raw fallback, no anchor). But by restore time
-          // the window has virtual content: totalHeight > 0 means a spacer now sits
-          // where the raw offset pointed, so 1200 no longer maps to that content.
-          const [saved] = createSignal<ChatScrollState | undefined>({
-            rawScrollTop: 1200,
-            atBottom: false,
-            hasMoreNewer: false,
-          })
-          let olderLoads = 0
-          const virt = withContentAnchors({
-            ...virtualizerNoOps(),
-            totalHeight: () => 3000, // virtual rows exist now
-            geometryVersion: () => 0,
-            updateViewport: () => {},
-            anchorAt: () => null, // the all-hidden save carried no anchor
-            scrollTopNearAnchor: () => null,
-            scrollTopForAnchor: () => null,
-          })
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            ...staticScrollAdmission(virt, messages),
-            savedViewportScroll: saved,
-            onClearSavedViewportScroll: () => {},
-            hasOlderMessages: () => true,
-            onLoadOlderMessages: () => { olderLoads++ },
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-
-          // Tab becomes visible: the stale raw 1200 is discarded; restore clamps to
-          // the top (best-effort, since there's no anchor to resolve) instead of
-          // landing on the wrong rows.
-          div.setClientHeight(500)
-          triggerResizeObserversSync()
-          await Promise.resolve()
-          await Promise.resolve()
-          expect(div.getScrollTop()).toBe(0)
-          expect(hook.atBottom()).toBe(false)
-          // The restore itself pages no older history: the buffer fill runs on a
-          // scroll event or a message change, and neither follows the restore here.
-          expect(olderLoads).toBe(0)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
+    inRoot(async () => {
+      const div = makeFakeScrollDiv()
+      div.setScrollHeight(5000)
+      div.setClientHeight(0) // hidden tab
+      const [messages] = createSignal<AgentChatMessage[]>([])
+      // Saved while all-hidden (raw fallback, no anchor). But by restore time
+      // the window has virtual content: totalHeight > 0 means a spacer now sits
+      // where the raw offset pointed, so 1200 no longer maps to that content.
+      const [saved] = createSignal<ChatScrollState | undefined>({
+        rawScrollTop: 1200,
+        atBottom: false,
+        hasMoreNewer: false,
       })
+      let olderLoads = 0
+      // The stub's anchorAt returns null: the all-hidden save carried no anchor.
+      const virt: ChatScrollVirtualizer = {
+        ...makeStubVirtualizer(),
+        totalHeight: () => 3000, // virtual rows exist now
+      }
+      const hook = useChatScroll(withStaticAdmission({
+        virtualizer: virt,
+        messages,
+        savedViewportScroll: saved,
+        onClearSavedViewportScroll: () => {},
+        hasOlderMessages: () => true,
+        onLoadOlderMessages: () => { olderLoads++ },
+      }))
+      hook.attachListRef(div.el)
+      await Promise.resolve()
+      await Promise.resolve()
+
+      // Tab becomes visible: the stale raw 1200 is discarded; restore clamps to
+      // the top (best-effort, since there's no anchor to resolve) instead of
+      // landing on the wrong rows.
+      div.setClientHeight(500)
+      triggerResizeObserversSync()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(div.getScrollTop()).toBe(0)
+      expect(hook.atBottom()).toBe(false)
+      // The restore itself pages no older history: the buffer fill runs on a
+      // scroll event or a message change, and neither follows the restore here.
+      expect(olderLoads).toBe(0)
     }))
 })
 
@@ -581,115 +523,80 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
   // (onSaveViewportScroll) and the fresh instance -- which mounts VISIBLE, so the
   // hidden->visible RO path can never fire -- restores it at mount (restoreOnMount),
   // beating the default tail-stick placement.
-  it('round-trips a scrolled-up reading position across unmount and visible remount', () =>
-    new Promise<void>((resolve, reject) => {
-      let savedState: ChatScrollState | undefined
-      createRoot(async (disposeA) => {
-        try {
-          const divA = makeFakeScrollDiv()
-          divA.setClientHeight(500)
-          divA.setScrollHeight(3000)
-          const { virt: virtA } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
-          const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-          const hookA = useChatScroll({
-            virtualizer: virtA,
-            messages,
-            ...staticScrollAdmission(virtA, messages),
-            onSaveViewportScroll: (state) => { savedState = state },
-          })
-          hookA.attachListRef(divA.el)
-          // Mount placement sticks the populated fresh mount to the tail...
-          await Promise.resolve()
-          expect(divA.getScrollTop()).toBe(2500)
-          // ...then the reader scrolls up into history (a genuine scroll event), to 250px
-          // inside row 2. A resolve by the seq alone loses that offset and lands at 1000.
-          divA.setScrollTop(1250)
-          hookA.handlers.onScroll()
-          disposeA()
+  it('round-trips a scrolled-up reading position across unmount and visible remount', async () => {
+    let savedState: ChatScrollState | undefined
+    await inRoot(async (disposeA) => {
+      const divA = makeFakeScrollDiv()
+      divA.setClientHeight(500)
+      divA.setScrollHeight(3000)
+      const { virt: virtA } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
+      const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+      const hookA = useChatScroll(withStaticAdmission({
+        virtualizer: virtA,
+        messages,
+        onSaveViewportScroll: (state) => { savedState = state },
+      }))
+      hookA.attachListRef(divA.el)
+      // Mount placement sticks the populated fresh mount to the tail...
+      await Promise.resolve()
+      expect(divA.getScrollTop()).toBe(2500)
+      // ...then the reader scrolls up into history (a genuine scroll event), to 250px
+      // inside row 2. A resolve by the seq alone loses that offset and lands at 1000.
+      divA.setScrollTop(1250)
+      hookA.handlers.onScroll()
+      disposeA()
 
-          // The unmount saved the final position, anchored to the viewport-top row.
-          expect(savedState).toBeDefined()
-          expect(savedState!.atBottom).toBe(false)
-          expect(savedState!.anchor?.id).toBe('g0_2')
-        }
-        catch (e) {
-          disposeA()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-          return
-        }
+      // The unmount saved the final position, anchored to the viewport-top row.
+      expect(savedState).toBeDefined()
+      expect(savedState!.atBottom).toBe(false)
+      expect(savedState!.anchor?.id).toBe('g0_2')
+    })
 
-        createRoot(async (disposeB) => {
-          try {
-            // The remount: a FRESH container at scrollTop 0 over the same window
-            // (same row ids -> the saved anchor resolves against the new offset map).
-            const divB = makeFakeScrollDiv()
-            divB.setClientHeight(500)
-            divB.setScrollHeight(3000)
-            const { virt: virtB } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
-            const [messagesB] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-            let cleared = false
-            const hookB = useChatScroll({
-              virtualizer: virtB,
-              messages: messagesB,
-              ...staticScrollAdmission(virtB, messagesB),
-              savedViewportScroll: () => savedState,
-              onClearSavedViewportScroll: () => { cleared = true },
-            })
-            hookB.attachListRef(divB.el)
-            await Promise.resolve()
-            await Promise.resolve()
+    await inRoot(async () => {
+      // The remount: a FRESH container at scrollTop 0 over the same window
+      // (same row ids -> the saved anchor resolves against the new offset map).
+      const divB = makeFakeScrollDiv()
+      divB.setClientHeight(500)
+      divB.setScrollHeight(3000)
+      const { virt: virtB } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
+      const [messagesB] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+      let cleared = false
+      const hookB = useChatScroll(withStaticAdmission({
+        virtualizer: virtB,
+        messages: messagesB,
+        savedViewportScroll: () => savedState,
+        onClearSavedViewportScroll: () => { cleared = true },
+      }))
+      hookB.attachListRef(divB.el)
+      await Promise.resolve()
+      await Promise.resolve()
 
-            // Restored to the saved row -- NOT the default tail stick -- and consumed.
-            expect(divB.getScrollTop()).toBe(1250)
-            expect(hookB.atBottom()).toBe(false)
-            expect(cleared).toBe(true)
-            disposeB()
-            resolve()
-          }
-          catch (e) {
-            disposeB()
-            reject(e instanceof Error
-              ? e
-              : new Error(String(e)))
-          }
-        })
-      })
-    }))
+      // Restored to the saved row -- NOT the default tail stick -- and consumed.
+      expect(divB.getScrollTop()).toBe(1250)
+      expect(hookB.atBottom()).toBe(false)
+      expect(cleared).toBe(true)
+    })
+  })
 
   it('does not save on unmount when the pane is hidden (a tab-switch save must survive)', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setClientHeight(0) // hidden tab
-          div.setScrollHeight(3000)
-          const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-          let saves = 0
-          const virt = makeStubVirtualizer()
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            ...staticScrollAdmission(virt, messages),
-            onSaveViewportScroll: () => { saves++ },
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          dispose()
+    inRoot(async (dispose) => {
+      const div = makeFakeScrollDiv()
+      div.setClientHeight(0) // hidden tab
+      div.setScrollHeight(3000)
+      const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+      let saves = 0
+      const hook = useChatScroll(withStaticAdmission({
+        virtualizer: makeStubVirtualizer(),
+        messages,
+        onSaveViewportScroll: () => { saves++ },
+      }))
+      hook.attachListRef(div.el)
+      await Promise.resolve()
+      dispose()
 
-          // An unmeasurable pane carries no position: the host's existing saved
-          // entry (written when the tab was switched away) must not be clobbered.
-          expect(saves).toBe(0)
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
-      })
+      // An unmeasurable pane carries no position: the host's existing saved
+      // entry (written when the tab was switched away) must not be clobbered.
+      expect(saves).toBe(0)
     }))
 
   it('does not read the host pagination accessor while its owner disposes', () => {
@@ -704,11 +611,9 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
 
     createRoot((dispose) => {
       disposeRoot = dispose
-      const virt = makeStubVirtualizer()
-      const hook = useChatScroll({
-        virtualizer: virt,
+      const hook = useChatScroll(withStaticAdmission({
+        virtualizer: makeStubVirtualizer(),
         messages,
-        ...staticScrollAdmission(virt, messages),
         hasNewerMessages: () => {
           if (disposalStarted && !reentered) {
             reentered = true
@@ -717,7 +622,7 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
           return true
         },
         onSaveViewportScroll: (state) => { savedState = state },
-      })
+      }))
       hook.attachListRef(div.el)
     })
 
@@ -729,128 +634,89 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
   })
 
   it('consumes an at-bottom save on a visible mount (stick + clear)', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setClientHeight(500)
-          div.setScrollHeight(3000)
-          const { virt } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
-          const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-          const [saved] = createSignal<ChatScrollState | undefined>({ atBottom: true, hasMoreNewer: false })
-          let cleared = false
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            ...staticScrollAdmission(virt, messages),
-            savedViewportScroll: saved,
-            onClearSavedViewportScroll: () => { cleared = true },
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
+    inRoot(async () => {
+      const div = makeFakeScrollDiv()
+      div.setClientHeight(500)
+      div.setScrollHeight(3000)
+      const { virt } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
+      const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+      const [saved] = createSignal<ChatScrollState | undefined>({ atBottom: true, hasMoreNewer: false })
+      let cleared = false
+      const hook = useChatScroll(withStaticAdmission({
+        virtualizer: virt,
+        messages,
+        savedViewportScroll: saved,
+        onClearSavedViewportScroll: () => { cleared = true },
+      }))
+      hook.attachListRef(div.el)
+      await Promise.resolve()
 
-          expect(div.getScrollTop()).toBe(2500)
-          expect(hook.atBottom()).toBe(true)
-          // The mount restore CONSUMED the save (vs the default placement, which
-          // would leave it lingering for a later hidden->visible to misapply).
-          expect(cleared).toBe(true)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
-      })
+      expect(div.getScrollTop()).toBe(2500)
+      expect(hook.atBottom()).toBe(true)
+      // The mount restore CONSUMED the save (vs the default placement, which
+      // would leave it lingering for a later hidden->visible to misapply).
+      expect(cleared).toBe(true)
     }))
 
   it('jumps to the live tail on a visible mount of an at-bottom save that was windowed away', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setClientHeight(500)
-          div.setScrollHeight(3000)
-          const { virt } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
-          const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-          const [saved] = createSignal<ChatScrollState | undefined>({ atBottom: true, hasMoreNewer: true })
-          let jumped = false
-          let cleared = false
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            ...staticScrollAdmission(virt, messages),
-            hasNewerMessages: () => true,
-            onJumpToLatest: () => {
-              jumped = true
-              return Promise.resolve(true)
-            },
-            savedViewportScroll: saved,
-            onClearSavedViewportScroll: () => { cleared = true },
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
+    inRoot(async () => {
+      const div = makeFakeScrollDiv()
+      div.setClientHeight(500)
+      div.setScrollHeight(3000)
+      const { virt } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
+      const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+      const [saved] = createSignal<ChatScrollState | undefined>({ atBottom: true, hasMoreNewer: true })
+      let jumped = false
+      let cleared = false
+      const hook = useChatScroll(withStaticAdmission({
+        virtualizer: virt,
+        messages,
+        hasNewerMessages: () => true,
+        onJumpToLatest: () => {
+          jumped = true
+          return Promise.resolve(true)
+        },
+        savedViewportScroll: saved,
+        onClearSavedViewportScroll: () => { cleared = true },
+      }))
+      hook.attachListRef(div.el)
+      await Promise.resolve()
+      await Promise.resolve()
 
-          // The saved in-memory bottom is NOT the live tail: re-fetch the tail
-          // (forceScrollToBottom jumps when hasNewerMessages) instead of sticking
-          // to the stale loaded bottom.
-          expect(jumped).toBe(true)
-          expect(cleared).toBe(true)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
-      })
+      // The saved in-memory bottom is NOT the live tail: re-fetch the tail
+      // (forceScrollToBottom jumps when hasNewerMessages) instead of sticking
+      // to the stale loaded bottom.
+      expect(jumped).toBe(true)
+      expect(cleared).toBe(true)
     }))
 
   it('leaves a saved state for the hidden->visible path when the mount is hidden', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setClientHeight(0) // hidden tab: the RO hidden->visible path owns the restore
-          div.setScrollHeight(3000)
-          const { virt } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
-          const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
-          const [saved] = createSignal<ChatScrollState | undefined>({
-            anchor: { id: 'g0_2', seq: 3n, offsetWithinRow: 0 },
-            atBottom: false,
-            hasMoreNewer: false,
-          })
-          let cleared = false
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            ...staticScrollAdmission(virt, messages),
-            savedViewportScroll: saved,
-            onClearSavedViewportScroll: () => { cleared = true },
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-
-          // Not consumed at mount; the tab-switch (hidden->visible) restore -- covered
-          // by the suite above -- picks it up when the pane becomes visible.
-          expect(cleared).toBe(false)
-          expect(div.getScrollTop()).toBe(0)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
+    inRoot(async () => {
+      const div = makeFakeScrollDiv()
+      div.setClientHeight(0) // hidden tab: the RO hidden->visible path owns the restore
+      div.setScrollHeight(3000)
+      const { virt } = makeRowVirtualizer([500, 500, 500, 500, 500, 500])
+      const [messages] = createSignal<AgentChatMessage[]>([{} as AgentChatMessage])
+      const [saved] = createSignal<ChatScrollState | undefined>({
+        anchor: { id: 'g0_2', seq: 3n, offsetWithinRow: 0 },
+        atBottom: false,
+        hasMoreNewer: false,
       })
+      let cleared = false
+      const hook = useChatScroll(withStaticAdmission({
+        virtualizer: virt,
+        messages,
+        savedViewportScroll: saved,
+        onClearSavedViewportScroll: () => { cleared = true },
+      }))
+      hook.attachListRef(div.el)
+      await Promise.resolve()
+      await Promise.resolve()
+
+      // Not consumed at mount; the tab-switch (hidden->visible) restore -- covered
+      // by the suite above -- picks it up when the pane becomes visible.
+      expect(cleared).toBe(false)
+      expect(div.getScrollTop()).toBe(0)
     }))
 
   it('framework contract: onCleanup runs while the unmounting DOM is still connected', () => {
@@ -903,10 +769,6 @@ describe('useChatScroll a place that waits for its rows', () => {
     atBottom: false,
     hasMoreNewer: false,
   }
-  const maxScrollTop = (h: ReturnType<typeof mountScrollHarness>) => h.div.el.scrollHeight - h.div.el.clientHeight
-  const press = (h: ReturnType<typeof mountScrollHarness>, key: string) => {
-    h.hook.handlers.onKeyDown(new KeyboardEvent('keydown', { key, cancelable: true }))
-  }
 
   /** A mount whose targets wait, with a spy on the save of the unmount, and a saved state when `saved` gives one. */
   function mountWaiting(opts: ScrollHarnessOptions & { saved?: ChatScrollState } = {}) {
@@ -936,13 +798,46 @@ describe('useChatScroll a place that waits for its rows', () => {
   }
 
   describe('a restore of a saved viewport', () => {
+    it('asks for the top of the loaded row nearest a saved anchor whose row left the loaded rows', () => {
+      const jump = deferredJump()
+      const { h } = mountWaiting({
+        hasNewer: true,
+        // The row of the saved anchor was trimmed away, and `r3` is the nearest loaded row.
+        loadedRows: {
+          has: id => id !== 'r20',
+          nearestId: () => 'r3',
+        },
+        saved: {
+          anchor: { id: 'r20', seq: 21n, offsetWithinRow: 40 },
+          atBottom: false,
+          hasMoreNewer: true,
+        },
+        hookOptions: { onJumpToLatest: jump.onJumpToLatest },
+      })
+
+      // The place keeps the seq of the saved anchor, and it takes no offset of the row that
+      // left: that offset means nothing inside another row.
+      expect(h.requestedTargets()).toEqual([
+        {
+          kind: 'row',
+          anchor: { id: 'r3', seq: 21n, offsetWithinRow: 0 },
+        },
+      ])
+      // The restore found a row, so it starts no jump to the live tail.
+      expect(jump.onJumpToLatest).not.toHaveBeenCalled()
+
+      h.reachTarget()
+      expect(h.div.getScrollTop()).toBe(300)
+      h.dispose()
+    })
+
     it('keeps the view until the row of the saved anchor is reached', () => {
       const { h } = mountWaiting({ saved: SAVED_AT_R20 })
 
       expect(h.div.getScrollTop()).toBe(0)
       expect(h.hook.isFollowing()).toBe(false)
       expect(h.requestedTargets()).toEqual([
-        { kind: 'row', id: 'r20', offset: 0 },
+        rowTargetAt('r20'),
       ])
 
       h.reachTarget()
@@ -977,7 +872,7 @@ describe('useChatScroll a place that waits for its rows', () => {
       })
 
       expect(h.requestedTargets()).toEqual([
-        { kind: 'row', id: 'r0', offset: 0 },
+        rowTargetAt('r0'),
       ])
       expect(jump.onJumpToLatest).not.toHaveBeenCalled()
       h.dispose()
@@ -1000,9 +895,9 @@ describe('useChatScroll a place that waits for its rows', () => {
     })
 
     it('saves the request for the tail of End', async () => {
-      const { h, savedAtUnmount } = mountWaiting({ stagedBelow: 2 })
+      const { h, savedAtUnmount } = mountWaiting({ stagedNewer: true })
       await h.anchoredAt(2000)
-      press(h, 'End')
+      h.press('End')
 
       h.dispose()
 
@@ -1011,7 +906,7 @@ describe('useChatScroll a place that waits for its rows', () => {
 
     it('saves the first row for Home', () => {
       const { h, savedAtUnmount } = mountWaiting()
-      press(h, 'Home')
+      h.press('Home')
 
       h.dispose()
 
@@ -1032,7 +927,7 @@ describe('useChatScroll a place that waits for its rows', () => {
       expect(h.div.getScrollTop()).toBe(0)
 
       h.reachTarget()
-      expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+      expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
       expect(h.hook.isFollowing()).toBe(true)
       h.dispose()
     })
@@ -1047,7 +942,7 @@ describe('useChatScroll a place that waits for its rows', () => {
       })
 
       expect(h.requestedTargets()).toEqual([
-        { kind: 'row', id: 'r20', offset: 30 },
+        rowTargetAt('r20', 30),
       ])
       h.dispose()
     })
@@ -1064,7 +959,7 @@ describe('useChatScroll a place that waits for its rows', () => {
       expect(onClearSavedViewportScroll).toHaveBeenCalledOnce()
 
       h.reachTarget()
-      expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+      expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
       expect(h.hook.isFollowing()).toBe(true)
       h.dispose()
     })
@@ -1099,7 +994,7 @@ describe('useChatScroll a place that waits for its rows', () => {
       ])
 
       h.reachTarget()
-      expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+      expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
       expect(h.hook.isFollowing()).toBe(true)
       h.dispose()
     })
@@ -1116,7 +1011,7 @@ describe('useChatScroll a place that waits for its rows', () => {
 
       h.setAwaitingFirstView(true)
 
-      expect(h.requestedTargets().at(-1)).toEqual({ kind: 'row', id: 'r3', offset: 0 })
+      expect(h.requestedTargets().at(-1)).toEqual(rowTargetAt('r3'))
       h.reachTarget()
       expect(h.div.getScrollTop()).toBe(300)
       h.dispose()
@@ -1133,7 +1028,7 @@ describe('useChatScroll a place that waits for its rows', () => {
       })
 
       // The place is the row of the last anchor, not the row at the position of the event.
-      expect(h.requestedTargets().at(-1)).toEqual({ kind: 'row', id: 'r20', offset: 0 })
+      expect(h.requestedTargets().at(-1)).toEqual(rowTargetAt('r20'))
       h.dispose()
     })
   })
@@ -1196,7 +1091,7 @@ describe('useChatScroll a place that waits for its rows', () => {
       ])
 
       h.reachTarget()
-      expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+      expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
       expect(h.hook.isFollowing()).toBe(true)
       h.dispose()
     })
@@ -1221,19 +1116,39 @@ describe('useChatScroll a place that waits for its rows', () => {
       expect(h.div.scrollTopWrites()).toBe(writes)
 
       await h.frame()
-      expect(h.requestedTargets().at(-1)).toEqual({ kind: 'row', id: 'r20', offset: 0 })
+      expect(h.requestedTargets().at(-1)).toEqual(rowTargetAt('r20'))
 
       h.reachTarget()
       expect(h.div.getScrollTop()).toBe(2000)
       h.dispose()
     })
 
-    it('asks for the tail at the show of a follower whose new rows are staged', async () => {
+    it('keeps a follower in follow mode at the show of a pane whose new messages are staged', async () => {
       const { h } = mountWaiting()
       expect(h.hook.isFollowing()).toBe(true)
       h.div.setClientHeight(0)
       await h.resizeFlush()
-      h.setStagedBelow(3)
+      h.setStagedNewer(true)
+
+      h.div.setClientHeight(500)
+      await h.resizeFlush()
+
+      // The reader has the tail already: only new messages are staged below. So nothing
+      // waits, and follow mode shows each message when it is measured.
+      expect(h.requestedTargets()).toEqual([])
+      expect(h.hook.isFollowing()).toBe(true)
+      expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
+      h.dispose()
+    })
+
+    it('asks for the tail at the show of a pane whose staged rows are no new messages', async () => {
+      const { h } = mountWaiting()
+      expect(h.hook.isFollowing()).toBe(true)
+      h.div.setClientHeight(0)
+      await h.resizeFlush()
+      // The width changed while the pane was hidden: the list showed these rows before.
+      h.setStagedNewer(true)
+      h.setHoldsTail(false)
 
       h.div.setClientHeight(500)
       await h.resizeFlush()
@@ -1241,7 +1156,7 @@ describe('useChatScroll a place that waits for its rows', () => {
       expect(h.hook.isFollowing()).toBe(false)
 
       h.reachTarget()
-      expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+      expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
       expect(h.hook.isFollowing()).toBe(true)
       h.dispose()
     })

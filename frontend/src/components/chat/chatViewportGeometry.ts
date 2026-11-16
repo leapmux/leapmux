@@ -81,11 +81,12 @@ export function createViewportSizeObserver(opts: {
 }
 
 /**
- * Viewport-relative overscan band: mount ~1.5 screenfuls of rows on EACH side of
- * the message-list viewport so a tall, never-measured row (e.g. a
- * syntax-highlighted diff) is mounted and measured BEFORE it scrolls into view --
- * shrinking the window where the generic fallback alone sizes the spacer, and
- * with it the first-encounter correction of the layout shift. Keyed off the LIST viewport height, NOT
+ * Viewport-relative overscan band: mount ~1.5 screenfuls of admitted rows on EACH side
+ * of the message-list viewport, so a scroll shows rendered rows, and each mounted row
+ * takes its first DOM read BEFORE it scrolls into view. That read can correct the
+ * height that a hidden copy measured for the row (the row stood behind a fling
+ * skeleton, or its copy waited for late content), and the layout shift then holds the
+ * view (see UseChatVirtualizerResult.showsHeight). Keyed off the LIST viewport height, NOT
  * window.innerHeight: ChatView renders inside tiles/splits, where the pane is
  * often a fraction of the window and a window-relative band would over-mount
  * badly. Floored for short panes and capped so a maximized pane can't mount an
@@ -94,15 +95,6 @@ export function createViewportSizeObserver(opts: {
 const OVERSCAN_FLOOR_PX = 800
 const OVERSCAN_VIEWPORT_RATIO = 1.5
 const OVERSCAN_CEIL_PX = 2400
-
-/**
- * Fallback row width (px) for the height key and for the hidden premeasure copies,
- * before the size observer reported the first width of the list above 0. No copy
- * measures at it: staging waits for a width above 0. The first reported width
- * replaces it. Unrelated to the 800px overscan floor above -- same number,
- * different purpose.
- */
-export const PRE_MEASURE_WIDTH_PX = 800
 
 /**
  * Viewport-relative overscan in px: a ratio of the live viewport height, floored

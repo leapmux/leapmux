@@ -6,7 +6,9 @@ import { rowLayoutMeasurement } from './rowLayoutMeasurement'
 //
 // This module owns the ResizeObserver, image event handlers, and measurement queue.
 // It keeps DOM reads and scheduling separate from the offset engine.
-// The virtualizer owns the height cache and the shared mountedIds set.
+// The height cache (see createRowHeightCache) owns the heights and the set of the mounted
+// rows. ChatView creates it, and the virtualizer connects this module to it through the
+// deps below.
 //
 // A microtask runs after a resize handler and before paint. A row that grows
 // therefore updates its offsets and the layout shift in the same frame.
@@ -57,10 +59,10 @@ export interface RowMeasurer {
   /** The element that currently owns the mounted row `id`, or `undefined`. */
   elementOf: (id: string) => Element | undefined
   /**
-   * Whether a flush would commit a new height for the row `id` now: its element is the
-   * connected owner of the id, it is measurable, and its height differs from the last
-   * height that the measurer accepted under the same key. False for an unknown id. It
-   * reads layout and changes no state.
+   * Whether a flush would pass a read of the row `id` to `measure` now: its element is the
+   * connected owner of the id, it is measurable, and the read rule does not drop its height
+   * (see MEASURE_EPSILON_PX). False for an unknown id. It reads layout and changes no
+   * state.
    *
    * An animation frame runs before the ResizeObserver delivery of the same rendering
    * update, so a frame can see a reflow that no flush committed yet. This answers that
@@ -74,7 +76,7 @@ export interface RowMeasurer {
 }
 
 export interface RowMeasurerDeps {
-  /** Commit one row height to the height cache of the virtualizer. */
+  /** Commit one row height through the virtualizer to the height cache. */
   measure: (id: string, height: number) => boolean
   /**
    * Current measurement key for a mounted row. Used only for the DOM-read de-dupe:
@@ -83,17 +85,21 @@ export interface RowMeasurerDeps {
    */
   currentMeasurementKey?: (id: string) => string | undefined
   /**
-   * The shared mounted-row set the measurer adds to on attach and removes from on
-   * detach. Read elsewhere (the height-cache eviction protect set, the UI-state cap),
-   * so it is owned by the virtualizer and threaded in rather than owned here.
+   * The height that the height cache holds for the row `id` under its current measurement
+   * key, or `undefined`. The read rule compares each read with it (see
+   * MEASURE_EPSILON_PX), so the measurer and the cache judge a read against one height.
    */
-  mountedIds: Set<string>
+  committedHeight: (id: string) => number | undefined
   /**
-   * Called when the last element of row `id` detaches, after the measurer removes
-   * the id from `mountedIds`. A detach of an element that a newer element of the
-   * same row replaced does not call it.
+   * Called at each attach of an element for row `id`. The height cache keeps the set of
+   * the mounted rows from this notice and the next one (see RowHeightCache.mountedIds).
    */
-  onRowUnmounted?: (id: string) => void
+  onRowMounted: (id: string) => void
+  /**
+   * Called when the last element of row `id` detaches. A detach of an element that a
+   * newer element of the same row replaced does not call it.
+   */
+  onRowUnmounted: (id: string) => void
   /**
    * Schedule `flush` to run before paint. Default: queueMicrotask -- a microtask
    * queued from a ResizeObserver callback runs after the callback but BEFORE paint, so
@@ -131,10 +137,13 @@ export interface RowMeasureFlushStats {
 
 /**
  * The sub-pixel jitter (px) of a row height that changes no geometry. A ResizeObserver
- * callback can fire for font or layout jitter while the user scrolls. The measurer drops a
- * read within this distance of the last accepted read of the element, before it calls into
- * the virtualizer, and the virtualizer keeps a cached height within this distance of a new
- * measure. So the DOM read and the offset map ignore the same jitter.
+ * callback can fire for font or layout jitter while the user scrolls. The height cache
+ * keeps a cached height within this distance of a new measure (see createRowHeightCache).
+ * The measurer drops a read within this distance of that cached height before it calls
+ * into the virtualizer, once the element gave a read under the same key. Both compare
+ * with the height of the cache, so the DOM read and the offset map ignore the same
+ * jitter, and a row that changes in steps below this distance cannot move away from its
+ * cached height by more than it.
  */
 export const MEASURE_EPSILON_PX = 0.5
 
@@ -147,12 +156,16 @@ interface MeasurementRead {
 
 export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
   const elToId = new WeakMap<Element, string>()
-  const lastMeasurementByEl = new WeakMap<Element, { id: string, height: number, key: string | undefined }>()
+  // The id and the key of the last read of each element that reached `measure`. The first
+  // read of an element under a key always reaches `measure`: it tells the virtualizer that
+  // the row shows its height (see UseChatVirtualizerResult.showsHeight), and it lets the
+  // cache confirm a height under a new key.
+  const lastReadByEl = new WeakMap<Element, { id: string, key: string | undefined }>()
   // The element that currently OWNS each mounted id. Under an attach-before-detach
   // remount (a row remounts under a new element before the old element's cleanup runs),
-  // two elements transiently map to the same id; detachRow must relinquish the id's
-  // mounted-protection only for the element that still owns it, or it would un-protect
-  // the freshly-mounted row from height-cache eviction.
+  // two elements transiently map to the same id; detachRow must report the unmount of
+  // the id only for the element that still owns it, or the row that just mounted would
+  // count as unmounted.
   const idToEl = new Map<string, Element>()
   // The readiness of each attached row copy that passed one. Keyed by ELEMENT, not by
   // id: under an attach-before-detach remount, two copies of one id coexist, and each
@@ -185,11 +198,14 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
     if (height === undefined)
       return undefined
     const key = deps.currentMeasurementKey?.(id)
-    const last = lastMeasurementByEl.get(el)
-    if (last !== undefined && last.id === id && last.key === key && (height === 0) === (last.height === 0) && Math.abs(height - last.height) < MEASURE_EPSILON_PX) {
-      if (stats)
-        stats.skippedUnchanged++
-      return undefined
+    const last = lastReadByEl.get(el)
+    if (last !== undefined && last.id === id && last.key === key) {
+      const committed = deps.committedHeight(id)
+      if (committed !== undefined && Math.abs(height - committed) < MEASURE_EPSILON_PX) {
+        if (stats)
+          stats.skippedUnchanged++
+        return undefined
+      }
     }
     return { id, el, height, key }
   }
@@ -202,7 +218,7 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
           continue
         if (deps.measure(id, height))
           committed++
-        lastMeasurementByEl.set(el, { id, height, key })
+        lastReadByEl.set(el, { id, key })
       }
     })
     return committed
@@ -242,6 +258,12 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
     schedule(flush)
   }
 
+  /** Read `el` at the next flush. */
+  const queueRead = (el: Element) => {
+    pending.add(el)
+    scheduleFlush()
+  }
+
   ro = (deps.createObserver ?? defaultCreateObserver)((targets) => {
     for (const t of targets)
       pending.add(t)
@@ -257,8 +279,7 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
       const id = elToId.get(el)
       if (!el.isConnected || id === undefined || idToEl.get(id) !== el)
         return
-      pending.add(el)
-      scheduleFlush()
+      queueRead(el)
     }
     imageListeners.set(el, onImageSettled)
     // Capture load and error because image events do not bubble.
@@ -279,9 +300,9 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
   const attachRow = (id: string, el: HTMLElement, readiness?: RowContentReadiness) => {
     elToId.set(el, id)
     idToEl.set(id, el)
-    deps.mountedIds.add(id)
+    deps.onRowMounted(id)
     // Each attach takes a fresh read even when the previous element was the same.
-    lastMeasurementByEl.delete(el)
+    lastReadByEl.delete(el)
     if (readiness !== undefined) {
       readinessByEl.set(el, readiness)
       // A copy need not resize when its content lands, or when a body shows the
@@ -291,8 +312,7 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
       readiness.onMeasurable(() => {
         if (idToEl.get(id) !== el || !el.isConnected)
           return
-        pending.add(el)
-        scheduleFlush()
+        queueRead(el)
       })
     }
     else {
@@ -313,31 +333,28 @@ export function createRowMeasurer(deps: RowMeasurerDeps): RowMeasurer {
     pending.delete(el)
     readinessByEl.delete(el)
     const id = elToId.get(el)
-    // Relinquish the id's mounted-protection only if THIS element still owns it. Under
-    // an attach-before-detach remount the id was already re-claimed by a new element, so
-    // deleting it here would un-protect the now-mounted row from height-cache eviction
-    // (a measure overflowing the cap could then evict its just-measured height, forcing a
-    // fallback height and a visible move of the rows). The newer element's later detach clears it.
+    // Report the unmount of the id only if THIS element still owns it. Under an
+    // attach-before-detach remount a new element already took the id over, so the row
+    // stays mounted. A row that wrongly counted as unmounted would lose the protection
+    // of its height from the eviction of the cache, and a provisional height: it would
+    // then be unmeasured, and leave the admitted rows. The later detach of the newer
+    // element reports the unmount.
     const unmounted = id !== undefined && idToEl.get(id) === el
-    if (unmounted) {
-      deps.mountedIds.delete(id)
+    if (unmounted)
       idToEl.delete(id)
-    }
     // Drop the el->id mapping so detach is a clean inverse of attach: an element
     // later re-attached under a DIFFERENT id can't have a stale entry resolve a
     // pending measurement to the wrong id. The cached HEIGHT (keyed by id in the
-    // virtualizer, not here) is untouched, so re-entering the row stays flash-free.
+    // height cache, not here) is untouched, so re-entering the row stays flash-free.
     elToId.delete(el)
     if (unmounted)
-      deps.onRowUnmounted?.(id)
+      deps.onRowUnmounted(id)
   }
 
   const measureAgain = (id: string) => {
     const el = idToEl.get(id)
-    if (el === undefined)
-      return
-    pending.add(el)
-    scheduleFlush()
+    if (el !== undefined)
+      queueRead(el)
   }
 
   const dispose = () => {

@@ -2,67 +2,54 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { inRoot } from '~/test-support/async'
 import { distFromBottom, FOLLOW_TOLERANCE_PX } from './chatScrollGeometry'
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeStubVirtualizer, mountScrollHarness, staticScrollAdmission } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeGrowableVirtualizer, makeStubVirtualizer, mountScrollHarness, withStaticAdmission } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
 describe('useChatScroll auto-scroll signature', () => {
   it('scrolls to bottom when agentStatus transitions from ACTIVE to STARTING', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          // Viewport: content is 1000px tall, viewport 500px, user is at the
-          // bottom (scrollTop = scrollHeight - clientHeight).
-          div.setScrollHeight(1000)
-          div.setClientHeight(500)
-          div.setScrollTop(500)
+    inRoot(async () => {
+      const div = makeFakeScrollDiv()
+      // Viewport: content is 1000px tall, viewport 500px, user is at the
+      // bottom (scrollTop = scrollHeight - clientHeight).
+      div.setScrollHeight(1000)
+      div.setClientHeight(500)
+      div.setScrollTop(500)
 
-          const [messages] = createSignal<AgentChatMessage[]>([])
-          const [agentWorking] = createSignal<boolean | undefined>(false)
-          const [agentStatus, setAgentStatus] = createSignal<AgentStatus | undefined>(AgentStatus.ACTIVE)
+      const [messages] = createSignal<AgentChatMessage[]>([])
+      const [agentWorking] = createSignal<boolean | undefined>(false)
+      const [agentStatus, setAgentStatus] = createSignal<AgentStatus | undefined>(AgentStatus.ACTIVE)
 
-          const virt = makeStubVirtualizer()
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            ...staticScrollAdmission(virt, messages),
-            agentWorking,
-            agentStatus,
-          })
-          hook.attachListRef(div.el)
+      const hook = useChatScroll(withStaticAdmission({
+        virtualizer: makeStubVirtualizer(),
+        messages,
+        agentWorking,
+        agentStatus,
+      }))
+      hook.attachListRef(div.el)
 
-          // Drain the initial createEffect run. The first run records the
-          // current scrollHeight as lastAutoScrollHeight, so subsequent runs
-          // only scroll when scrollHeight grows.
-          await Promise.resolve()
-          await Promise.resolve()
+      // Drain the initial createEffect run. The first run records the
+      // current scrollHeight as lastAutoScrollHeight, so subsequent runs
+      // only scroll when scrollHeight grows.
+      await Promise.resolve()
+      await Promise.resolve()
 
-          // Simulate the inline AgentStartupBanner appearing: scrollHeight
-          // grows because the banner is rendered after the message list.
-          // The auto-scroll effect must re-run because agentStatus changed,
-          // even though messages.length and messageVersion did not.
-          div.setScrollHeight(1100)
-          setAgentStatus(AgentStatus.STARTING)
-          await Promise.resolve()
-          await Promise.resolve()
+      // Simulate the inline AgentStartupBanner appearing: scrollHeight
+      // grows because the banner is rendered after the message list.
+      // The auto-scroll effect must re-run because agentStatus changed,
+      // even though messages.length and messageVersion did not.
+      div.setScrollHeight(1100)
+      setAgentStatus(AgentStatus.STARTING)
+      await Promise.resolve()
+      await Promise.resolve()
 
-          // Auto-scroll writes scrollTop = scrollHeight (1100); the fake div
-          // clamps to scrollHeight - clientHeight (600), matching the real
-          // browser behavior the hook relies on.
-          expect(div.getScrollTop()).toBe(600)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
-      })
+      // Auto-scroll writes scrollTop = scrollHeight (1100); the fake div
+      // clamps to scrollHeight - clientHeight (600), matching the real
+      // browser behavior the hook relies on.
+      expect(div.getScrollTop()).toBe(600)
     }))
 
   it('still saves the at-bottom state even without an anchor', () => {
@@ -71,12 +58,10 @@ describe('useChatScroll auto-scroll signature', () => {
       div.setScrollHeight(500)
       div.setClientHeight(500) // content fits -> at the bottom
       const [messages] = createSignal<AgentChatMessage[]>([])
-      const virt = makeStubVirtualizer()
-      const hook = useChatScroll({
-        virtualizer: virt,
+      const hook = useChatScroll(withStaticAdmission({
+        virtualizer: makeStubVirtualizer(),
         messages,
-        ...staticScrollAdmission(virt, messages),
-      })
+      }))
       hook.attachListRef(div.el)
       hook.handlers.onScroll()
       const state = hook.getScrollState()
@@ -90,150 +75,108 @@ describe('useChatScroll auto-scroll signature', () => {
 
 describe('useChatScroll scroll-to-bottom animation', () => {
   it('hands off to sticky-bottom instead of chasing a target that grows every frame', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setClientHeight(500)
-          let scrollHeight = 10000
-          div.setScrollHeight(scrollHeight)
-          div.setScrollTop(0)
-          const [messages] = createSignal<AgentChatMessage[]>([])
-          const virt = makeStubVirtualizer()
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            ...staticScrollAdmission(virt, messages),
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
+    inRoot(async () => {
+      const div = makeFakeScrollDiv()
+      div.setClientHeight(500)
+      let scrollHeight = 10000
+      div.setScrollHeight(scrollHeight)
+      div.setScrollTop(0)
+      const [messages] = createSignal<AgentChatMessage[]>([])
+      const hook = useChatScroll(withStaticAdmission({
+        virtualizer: makeStubVirtualizer(),
+        messages,
+      }))
+      hook.attachListRef(div.el)
+      await Promise.resolve()
+      await Promise.resolve()
 
-          hook.scrollToBottom()
-          // Grow the target far faster than the step can close it each frame, so the
-          // animation can only terminate via the frame cap -- never by reaching the
-          // bottom. stickToBottom jumps scrollTop to the absolute bottom; the chase
-          // (scrollTop += step) never lands there while the target keeps moving.
-          let frames = 0
-          let stuck = false
-          while (frames < 200) {
-            scrollHeight += 100000
-            div.setScrollHeight(scrollHeight)
-            await Promise.resolve() // run one animate frame against this height
-            frames++
-            if (div.getScrollTop() === scrollHeight - 500) {
-              stuck = true
-              break
-            }
-          }
-          expect(stuck).toBe(true)
-          // The frame cap is 60; the hand-off fires shortly after. An uncapped loop
-          // would chase all the way to the 200-frame safety bound.
-          expect(frames).toBeLessThanOrEqual(65)
-          expect(distFromBottom(div.el)).toBeLessThanOrEqual(FOLLOW_TOLERANCE_PX)
-
-          dispose()
-          resolve()
+      hook.scrollToBottom()
+      // Grow the target far faster than the step can close it each frame, so the
+      // animation can only terminate via the frame cap -- never by reaching the
+      // bottom. stickToBottom jumps scrollTop to the absolute bottom; the chase
+      // (scrollTop += step) never lands there while the target keeps moving.
+      let frames = 0
+      let stuck = false
+      while (frames < 200) {
+        scrollHeight += 100000
+        div.setScrollHeight(scrollHeight)
+        await Promise.resolve() // run one animate frame against this height
+        frames++
+        if (div.getScrollTop() === scrollHeight - 500) {
+          stuck = true
+          break
         }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
-      })
+      }
+      expect(stuck).toBe(true)
+      // The frame cap is 60; the hand-off fires shortly after. An uncapped loop
+      // would chase all the way to the 200-frame safety bound.
+      expect(frames).toBeLessThanOrEqual(65)
+      expect(distFromBottom(div.el)).toBeLessThanOrEqual(FOLLOW_TOLERANCE_PX)
     }))
 
   it('a tap (pointerdown) mid-animation stops the coasting scroll immediately', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setClientHeight(500)
-          div.setScrollHeight(10000)
-          div.setScrollTop(0)
-          const [messages] = createSignal<AgentChatMessage[]>([])
-          const virt = makeStubVirtualizer()
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            ...staticScrollAdmission(virt, messages),
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
+    inRoot(async () => {
+      const div = makeFakeScrollDiv()
+      div.setClientHeight(500)
+      div.setScrollHeight(10000)
+      div.setScrollTop(0)
+      const [messages] = createSignal<AgentChatMessage[]>([])
+      const hook = useChatScroll(withStaticAdmission({
+        virtualizer: makeStubVirtualizer(),
+        messages,
+      }))
+      hook.attachListRef(div.el)
+      await Promise.resolve()
+      await Promise.resolve()
 
-          // Park at the top AFTER the mount restick settles, so the animation genuinely
-          // has 9500px to travel.
-          div.setScrollTop(0)
-          hook.handlers.onScroll()
-          expect(div.getScrollTop()).toBe(0)
+      // Park at the top AFTER the mount restick settles, so the animation genuinely
+      // has 9500px to travel.
+      div.setScrollTop(0)
+      hook.handlers.onScroll()
+      expect(div.getScrollTop()).toBe(0)
 
-          // Start the animation and grab the surface BEFORE its first frame delivers
-          // (the testkit rAF fires on a microtask, so nothing has run yet). The grab's
-          // cancelPendingScroll must cancel that queued frame so the view never moves.
-          // (The testkit's rAF is cancelable for exactly this: with a no-op
-          // cancelAnimationFrame the "cancelled" frame still fired, kept writing
-          // scrollTop, and this regression was unobservable.)
-          hook.scrollToBottom()
-          hook.handlers.onPointerDown(new PointerEvent('pointerdown', { pointerId: 1, isPrimary: true }))
-          await Promise.resolve()
-          await Promise.resolve()
-          await Promise.resolve()
+      // Start the animation and grab the surface BEFORE its first frame delivers
+      // (the testkit rAF fires on a microtask, so nothing has run yet). The grab's
+      // cancelPendingScroll must cancel that queued frame so the view never moves.
+      // (The testkit's rAF is cancelable for exactly this: with a no-op
+      // cancelAnimationFrame the "cancelled" frame still fired, kept writing
+      // scrollTop, and this regression was unobservable.)
+      hook.scrollToBottom()
+      hook.handlers.onPointerDown(new PointerEvent('pointerdown', { pointerId: 1, isPrimary: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
 
-          expect(div.getScrollTop()).toBe(0) // the queued frame never ran
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
-      })
+      expect(div.getScrollTop()).toBe(0) // the queued frame never ran
     }))
 })
 
 describe('useChatScroll tail growth', () => {
   it('stays 20px above the tail when the tail grows', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        try {
-          const div = makeFakeScrollDiv()
-          div.setClientHeight(500)
-          div.setScrollHeight(2000)
-          const { virt, setTotal } = makeGrowableVirtualizer()
-          setTotal(2000)
-          const [messages] = createSignal<AgentChatMessage[]>([])
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            ...staticScrollAdmission(virt, messages),
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-          expect(div.getScrollTop()).toBe(1500)
+    inRoot(async () => {
+      const div = makeFakeScrollDiv()
+      div.setClientHeight(500)
+      div.setScrollHeight(2000)
+      const { virt, setTotal } = makeGrowableVirtualizer()
+      setTotal(2000)
+      const [messages] = createSignal<AgentChatMessage[]>([])
+      const hook = useChatScroll(withStaticAdmission({
+        virtualizer: virt,
+        messages,
+      }))
+      hook.attachListRef(div.el)
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(div.getScrollTop()).toBe(1500)
 
-          div.setScrollTop(1480)
-          hook.handlers.onScroll()
-          div.setScrollHeight(2100)
-          setTotal(2100)
-          await Promise.resolve()
-          await Promise.resolve()
+      div.setScrollTop(1480)
+      hook.handlers.onScroll()
+      div.setScrollHeight(2100)
+      setTotal(2100)
+      await Promise.resolve()
+      await Promise.resolve()
 
-          expect(div.getScrollTop()).toBe(1480)
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
-      })
+      expect(div.getScrollTop()).toBe(1480)
     }))
 })
 

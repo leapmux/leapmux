@@ -303,7 +303,7 @@ describe('readWorkerFileHead', () => {
   it('rejects a response that holds more bytes than it asked for', async () => {
     read.mockResolvedValue(response(fileBytes(32), 100n))
 
-    await expect(readWorkerFileHead({ workerId: 'worker', path: '/file.bin', bytes: 16 })).rejects.toThrow('could not be read completely')
+    await expect(readWorkerFileHead({ workerId: 'worker', path: '/file.bin', bytes: 16 })).rejects.toThrow('more bytes than')
   })
 
   it('rejects when the request fails', async () => {

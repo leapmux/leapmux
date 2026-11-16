@@ -57,7 +57,8 @@ export interface LayoutShiftInput {
   /**
    * How far the pivot element moved inside the row `rowId` since the last read (see
    * `createLayoutPivot`). The rule calls it once, and only when the viewport top cuts
-   * the body of a row whose previous height the reader saw.
+   * the body of a row that keeps its height, or of a row whose previous height the reader
+   * saw.
    */
   intraRowShift: (rowId: string) => number
   /**
@@ -163,6 +164,11 @@ function rowTop(s: LayoutSnapshot, i: number): number {
 /** The content bottom of row `i` of `s`, without the gap below it. */
 function rowBottom(s: LayoutSnapshot, i: number): number {
   return rowTop(s, i) + (s.heights[i] ?? 0)
+}
+
+/** Whether the row at `index` in `previous` has another height at `nextIndex` in `next`. */
+function heightChanged(previous: LayoutSnapshot, index: number, next: LayoutSnapshot, nextIndex: number): boolean {
+  return (next.heights[nextIndex] ?? 0) !== (previous.heights[index] ?? 0)
 }
 
 /**
@@ -276,17 +282,13 @@ function lateRowAboveLargestBlock(
   const viewBottom = c + viewHeight
   // The index in `next` of the row `i` when the row is late, or `undefined`.
   const lateNextIndex = (i: number): number | undefined => {
-    const id = previous.list[i]?.id
-    const nextIndex = id === undefined
-      ? undefined
-      : next.indexById.get(id)
-    if (id === undefined || nextIndex === undefined)
+    const row = surviving(previous, next, i)
+    if (row === undefined)
       return undefined
-    if ((next.heights[nextIndex] ?? 0) === (previous.heights[i] ?? 0) || !enteredFromAbove(id))
+    // In this order: the rule asks about the reader only for a row whose height changed.
+    if (!heightChanged(previous, i, next, row.nextIndex) || !enteredFromAbove(row.id) || sawHeight(row.id))
       return undefined
-    return !sawHeight(id)
-      ? nextIndex
-      : undefined
+    return row.nextIndex
   }
   // The largest block so far, with the late row above it: `undefined` for the block at the
   // viewport top. A later block replaces it only when it is larger.
@@ -330,11 +332,9 @@ function heldPoint(
   { intraRowShift, sawHeight }: Pick<LayoutShiftInput, 'intraRowShift' | 'sawHeight'>,
 ): number | undefined {
   const r = cut.index
-  const rowId = previous.list[r]?.id
-  const nextIndex = rowId === undefined
-    ? undefined
-    : next.indexById.get(rowId)
-  if (rowId !== undefined && nextIndex !== undefined) {
+  const held = surviving(previous, next, r)
+  if (held !== undefined) {
+    const { id: rowId, nextIndex } = held
     const nextTop = rowTop(next, nextIndex)
     if (cut.kind === 'top-edge')
       return nextTop + (c - cut.top)
@@ -343,7 +343,7 @@ function heldPoint(
     // changes its height needs the answer. A mounted row changes its height only through a
     // read of its copy, so the answer is about that read.
     const holdsBottomEdge = cut.kind === 'bottom-edge'
-      || (nextHeight !== (previous.heights[r] ?? 0) && !sawHeight(rowId))
+      || (heightChanged(previous, r, next, nextIndex) && !sawHeight(rowId))
     if (holdsBottomEdge)
       return nextTop + nextHeight + (c - cut.bottom)
     return nextTop + clamp(c - cut.top + intraRowShift(rowId), 0, nextHeight)
@@ -351,20 +351,29 @@ function heldPoint(
   for (let i = r + 1; i < previous.n; i++) {
     const below = surviving(previous, next, i)
     if (below !== undefined)
-      return rowTop(next, below) + (c - rowTop(previous, i))
+      return rowTop(next, below.nextIndex) + (c - rowTop(previous, i))
   }
   for (let i = r - 1; i >= 0; i--) {
     const above = surviving(previous, next, i)
     if (above !== undefined)
-      return rowBottom(next, above) + (c - rowBottom(previous, i))
+      return rowBottom(next, above.nextIndex) + (c - rowBottom(previous, i))
   }
   return undefined
 }
 
-/** The index in `next` of the row at `index` in `previous`, or `undefined` when it left the list. */
-function surviving(previous: LayoutSnapshot, next: LayoutSnapshot, index: number): number | undefined {
+/** A row of `previous` that is also in `next`: its id, and its index in `next`. */
+interface SurvivingRow {
+  id: string
+  nextIndex: number
+}
+
+/** The row at `index` in `previous` with its index in `next`, or `undefined` when it left the list. */
+function surviving(previous: LayoutSnapshot, next: LayoutSnapshot, index: number): SurvivingRow | undefined {
   const id = previous.list[index]?.id
-  return id === undefined
+  if (id === undefined)
+    return undefined
+  const nextIndex = next.indexById.get(id)
+  return nextIndex === undefined
     ? undefined
-    : next.indexById.get(id)
+    : { id, nextIndex }
 }

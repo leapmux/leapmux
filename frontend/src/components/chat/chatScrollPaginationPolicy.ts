@@ -55,11 +55,8 @@ export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
       : 0
   }
 
-  const canLoadOlderMessages = (): boolean =>
-    deps.getEl() !== undefined && deps.hasOlder() && !deps.fetchingOlder() && !deps.stagedOlder()
-
   const loadOlderMessages = (): boolean => {
-    if (!canLoadOlderMessages())
+    if (deps.getEl() === undefined || !deps.hasOlder() || deps.fetchingOlder() || deps.stagedOlder())
       return false
     // A prepend changes geometry above the viewport. The layout shift keeps the view in
     // place across it, so nothing needs to be held for it here.
@@ -70,11 +67,8 @@ export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
   const tryLoadOlderOnExplicitTopIntent = (): boolean =>
     deps.isAtTopEdge() && loadOlderMessages()
 
-  const canLoadNewerMessages = (): boolean =>
-    deps.getEl() !== undefined && deps.hasNewer() && !deps.fetchingNewer() && !deps.stagedNewer()
-
   const loadNewerMessages = (): boolean => {
-    if (!canLoadNewerMessages())
+    if (deps.getEl() === undefined || !deps.hasNewer() || deps.fetchingNewer() || deps.stagedNewer())
       return false
     deps.onLoadNewer()
     return true
@@ -115,10 +109,8 @@ export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
 
   return {
     bufferTargetPx,
-    canLoadOlderMessages,
     loadOlderMessages,
     tryLoadOlderOnExplicitTopIntent,
-    canLoadNewerMessages,
     loadNewerMessages,
     tryLoadNewerOnExplicitBottomIntent,
     stalledOlder,
@@ -128,5 +120,3 @@ export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
     suppressOlderPrefetchAtLiveTail,
   }
 }
-
-export type ChatPaginationPolicy = ReturnType<typeof createChatPaginationPolicy>

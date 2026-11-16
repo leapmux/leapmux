@@ -12,7 +12,9 @@ describe('chatPremeasureQueue', () => {
    * No row is measured at the start, and staging is enabled.
    */
   function makeHarness(ids: string[]) {
-    const heights = createRowHeightCache()
+    const heights = createRowHeightCache({
+      loadedIds: () => ids,
+    })
     const items = ids.map(id => ({ id, hasSpanLines: false, heightKey: `k-${id}` } as VirtualItem))
     const entries = new Map(ids.map(id => [
       id,
@@ -33,8 +35,8 @@ describe('chatPremeasureQueue', () => {
       heights,
       stagingEnabled,
       visibleEntryById: () => entries,
-      virtualItemById: () => itemById,
-      virtualItems: () => items,
+      loadedItemById: () => itemById,
+      loadedItems: () => items,
       targetCandidates: target,
       lookAheadCandidates: lookAhead,
       warmupCandidates: warmup,
@@ -61,10 +63,28 @@ describe('chatPremeasureQueue', () => {
       h.queue.onMeasure('answer', 40, 'k-answer', 0)
 
       // A valid empty row has a height of 0, and it counts as measured.
-      expect(h.queue.onMeasure('empty', 0, 'k-empty', 0)).toBe(true)
+      h.queue.onMeasure('empty', 0, 'k-empty', 0)
 
       expect(h.heights.heightOf(h.itemById.get('empty')!)).toBe(0)
       expect(h.queue.premeasureCandidates()).toEqual([])
+      dispose()
+    })
+  })
+
+  it('drops a pending row when a commit outside its copy measures it', () => {
+    createRoot((dispose) => {
+      const h = makeHarness(['a', 'b'])
+      h.setTarget([
+        h.candidate('a'),
+        h.candidate('b'),
+      ])
+      expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['a', 'b'])
+
+      // The row measures through another path than the callback of its copy, as a stored
+      // height does. The queue follows the cache, so the copy of the row ends.
+      h.heights.commit(h.itemById.get('a')!, 80, 'k-a', 'visible')
+
+      expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['b'])
       dispose()
     })
   })
@@ -96,7 +116,7 @@ describe('chatPremeasureQueue', () => {
       expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['b'])
 
       // A measurement retires the warm-up row like any other.
-      expect(h.queue.onMeasure('b', 60, 'k-b', 0)).toBe(true)
+      h.queue.onMeasure('b', 60, 'k-b', 0)
       expect(h.queue.premeasureCandidates()).toEqual([])
       dispose()
     })
@@ -110,7 +130,7 @@ describe('chatPremeasureQueue', () => {
         h.candidate('b'),
       ])
 
-      expect(h.queue.onMeasure('a', 120, 'k-a', 0)).toBe(true)
+      h.queue.onMeasure('a', 120, 'k-a', 0)
 
       expect(h.heights.heightOf(h.itemById.get('a')!)).toBe(120)
       expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['b'])
@@ -131,7 +151,7 @@ describe('chatPremeasureQueue', () => {
         h.candidate('a'),
       ])
 
-      expect(h.queue.onMeasure('gone', 120, 'k-gone', 0)).toBe(false)
+      h.queue.onMeasure('gone', 120, 'k-gone', 0)
 
       expect(h.heights.debugEntry('gone')).toBeUndefined()
       expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['a'])
@@ -146,7 +166,7 @@ describe('chatPremeasureQueue', () => {
         h.candidate('a'),
       ])
 
-      expect(h.queue.onMeasure('a', 120, 'k-old', 0)).toBe(false)
+      h.queue.onMeasure('a', 120, 'k-old', 0)
 
       expect(h.heights.heightOf(h.itemById.get('a')!)).toBeUndefined()
       expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['a'])
@@ -154,26 +174,46 @@ describe('chatPremeasureQueue', () => {
     })
   })
 
-  it('gives no candidate while staging is not enabled, and the same objects afterwards', () => {
+  it('gives no candidate while staging is not enabled, and each pending row again afterwards', () => {
     createRoot((dispose) => {
       const h = makeHarness(['a', 'b'])
       h.setTarget([
         h.candidate('a'),
         h.candidate('b'),
       ])
-      const [first, second] = h.queue.premeasureCandidates()
+      expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['a', 'b'])
 
       // The bands are empty while staging is not enabled, and the pending rows stay.
       h.setStagingEnabled(false)
       h.setTarget([])
-      expect(h.queue.premeasureCandidates()).toEqual([])
+      const paused = h.queue.premeasureCandidates()
+      expect(paused).toEqual([])
+      // A change of the pending rows during the pause gives the same empty list, so the
+      // hidden copies see no change.
+      h.setWarmup([])
+      expect(h.queue.premeasureCandidates()).toBe(paused)
 
+      // The pause disposed every hidden copy, so each pending row gets a new copy.
       h.setStagingEnabled(true)
-      const resumed = h.queue.premeasureCandidates()
-      expect(resumed.map(c => c.item.id)).toEqual(['a', 'b'])
-      // The same objects, so the hidden copies mount once, and not once more for each pause.
-      expect(resumed[0]).toBe(first)
-      expect(resumed[1]).toBe(second)
+      expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['a', 'b'])
+      dispose()
+    })
+  })
+
+  it('drops a row that was measured during a pause of the staging', () => {
+    createRoot((dispose) => {
+      const h = makeHarness(['a', 'b'])
+      h.setTarget([
+        h.candidate('a'),
+        h.candidate('b'),
+      ])
+      h.setStagingEnabled(false)
+
+      // A stored height arrives for row a while no hidden copy exists.
+      h.heights.commit(h.itemById.get('a')!, 80, 'k-a', 'premeasure')
+      h.setStagingEnabled(true)
+
+      expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['b'])
       dispose()
     })
   })
@@ -220,11 +260,13 @@ describe('chatPremeasureQueue', () => {
         { id: 'b', hasSpanLines: false, heightKey: 'k-b' },
       ])
       const queue = createPremeasureQueue({
-        heights: createRowHeightCache(),
+        heights: createRowHeightCache({
+          loadedIds: () => items().map(item => item.id),
+        }),
         stagingEnabled: () => true,
         visibleEntryById: entries,
-        virtualItemById: () => new Map(items().map(item => [item.id, item])),
-        virtualItems: items,
+        loadedItemById: () => new Map(items().map(item => [item.id, item])),
+        loadedItems: items,
         targetCandidates: () => items().map(item => ({
           entry: entries().get(item.id)!,
           item,
@@ -272,7 +314,7 @@ describe('chatPremeasureQueue', () => {
           candidate.entry.message.seq = 6n
           h.setTarget([candidate])
           const { queue } = h
-          expect(queue.onMeasure('a', 88, 'old-key', 0)).toBe(false)
+          queue.onMeasure('a', 88, 'old-key', 0)
           expect(events).toContainEqual({
             phase: 'commit',
             id: 'a',
@@ -284,7 +326,7 @@ describe('chatPremeasureQueue', () => {
             hasMeasured: false,
             candidatePending: true,
           })
-          expect(queue.onMeasure('a', 88, 'k-a', 0)).toBe(true)
+          queue.onMeasure('a', 88, 'k-a', 0)
           expect(events).toContainEqual({
             phase: 'commit',
             id: 'a',

@@ -6,12 +6,14 @@ import { test } from './fixtures'
 import {
   dragChatUp,
   expectAtBottom,
+  expectTailFartherBy,
   pointAtChat,
   readRowBox,
   readRowSeqWithText,
   recordPremeasureCommits,
-  resizeRowsTo,
+  resizeRowsAtBottom,
   sendLongTurn,
+  shortTurn,
   waitForScrollRest,
   widthSensitiveParagraphs,
 } from './helpers/chatScrollStability'
@@ -92,11 +94,6 @@ interface PlaceholderHeights {
   max: number
 }
 
-/** A short scripted turn. */
-function shortTurn(turn: number) {
-  return { prompt: `Turn ${turn}.`, answer: `Answer ${turn}.`, entry: 'insert' as const }
-}
-
 /** The tall row of a seeded chat, and the record of the heights that hidden copies commit. */
 interface SeededChat {
   /** The sequence number of the tall row. */
@@ -159,12 +156,6 @@ async function expectViewInsideTallRow(page: Page, tallSeq: string): Promise<num
   return box!.height
 }
 
-/** Expect that the tail of the chat is `pixels` farther below the view than `before`, within 1px. */
-async function expectScrolledUpBy(page: Page, before: number, pixels: number): Promise<void> {
-  const travelled = await chatDistanceFromBottom(page) - before
-  expect(Math.abs(travelled - pixels), `the tail is ${pixels}px farther below the view, within 1px (it is ${travelled}px farther)`).toBeLessThanOrEqual(1)
-}
-
 /**
  * Record, in every animation frame from now on, the height of the row of `seq` while the row shows a placeholder in
  * place of its content. Returns a read of the record. A navigation ends the record.
@@ -199,23 +190,21 @@ async function watchRowPlaceholder(page: Page, seq: string): Promise<() => Promi
 test.describe('chat scroll stability while the reader scrolls up into a very tall row', () => {
   test('keeps the rows below a very tall row in place when one scroll step ends inside the row', async ({ page, authenticatedWorkspace, modelScript }) => {
     const chat = await seedTallRow(page, modelScript)
-    await resizeRowsTo(page, UNEVEN_ROW_WIDTH, VIEW_HEIGHT)
-    await expectAtBottom(page, `at a row width of ${UNEVEN_ROW_WIDTH}px`)
+    await resizeRowsAtBottom(page, UNEVEN_ROW_WIDTH)
     const premeasured = await expectTallRowPremeasuredAgain(page, chat, chat.narrowCommit)
 
     const before = await chatDistanceFromBottom(page)
     await dragChatUp(page, SCROLL_UP_PX)
 
     const height = await expectViewInsideTallRow(page, chat.tallSeq)
-    await expectScrolledUpBy(page, before, SCROLL_UP_PX)
+    await expectTailFartherBy(page, before, SCROLL_UP_PX, 'after the scroll up')
     // The hidden copy is as wide as the row, so it measured the height that the row takes.
     expect(Math.abs(height - premeasured.height), `the hidden copy measured the height of the row, within 1px (${premeasured.height}px for ${height}px)`).toBeLessThanOrEqual(1)
   })
 
   test('keeps the rows below a very tall row in place when a fast scroll ends inside the row', async ({ page, authenticatedWorkspace, modelScript }) => {
     const chat = await seedTallRow(page, modelScript)
-    await resizeRowsTo(page, UNEVEN_ROW_WIDTH, VIEW_HEIGHT)
-    await expectAtBottom(page, `at a row width of ${UNEVEN_ROW_WIDTH}px`)
+    await resizeRowsAtBottom(page, UNEVEN_ROW_WIDTH)
     const premeasured = await expectTallRowPremeasuredAgain(page, chat, chat.narrowCommit)
 
     const before = await chatDistanceFromBottom(page)
@@ -233,18 +222,16 @@ test.describe('chat scroll stability while the reader scrolls up into a very tal
     // moves when the content replaces it.
     for (const height of [placeholder!.min, placeholder!.max])
       expect(Math.abs(height - premeasured.height), `the placeholder is as tall as its slot, within half a pixel (${height}px for ${premeasured.height}px)`).toBeLessThanOrEqual(0.5)
-    await expectScrolledUpBy(page, before, SCROLL_UP_PX)
+    await expectTailFartherBy(page, before, SCROLL_UP_PX, 'after the scroll up')
   })
 
   test('measures a very tall row again when the width changes by a few pixels', async ({ page, authenticatedWorkspace, modelScript }) => {
     const chat = await seedTallRow(page, modelScript)
-    await resizeRowsTo(page, CLOSE_WIDE_ROW_WIDTH, VIEW_HEIGHT)
-    await expectAtBottom(page, `at a row width of ${CLOSE_WIDE_ROW_WIDTH}px`)
+    await resizeRowsAtBottom(page, CLOSE_WIDE_ROW_WIDTH)
     const atWideWidth = await expectTallRowPremeasuredAgain(page, chat, chat.narrowCommit)
     // The narrower row wraps more lines. A height from the wider rows would be wrong by each of them, so the hidden
     // copy measures the row again under the key of the new width.
-    await resizeRowsTo(page, CLOSE_NARROW_ROW_WIDTH, VIEW_HEIGHT)
-    await expectAtBottom(page, `at a row width of ${CLOSE_NARROW_ROW_WIDTH}px`)
+    await resizeRowsAtBottom(page, CLOSE_NARROW_ROW_WIDTH)
     const premeasured = await expectTallRowPremeasuredAgain(page, chat, atWideWidth)
 
     const before = await chatDistanceFromBottom(page)
@@ -252,6 +239,6 @@ test.describe('chat scroll stability while the reader scrolls up into a very tal
 
     const height = await expectViewInsideTallRow(page, chat.tallSeq)
     expect(Math.abs(height - premeasured.height), `the hidden copy measured the height of the row, within 1px (${premeasured.height}px for ${height}px)`).toBeLessThanOrEqual(1)
-    await expectScrolledUpBy(page, before, SCROLL_UP_PX)
+    await expectTailFartherBy(page, before, SCROLL_UP_PX, 'after the scroll up')
   })
 })

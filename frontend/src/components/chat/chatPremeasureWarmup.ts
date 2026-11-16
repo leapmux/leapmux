@@ -11,8 +11,9 @@ import { cancelIdle, requestIdle } from '~/lib/idleCallback'
  * The target and look-ahead staging bands only cover rows near the view and
  * near a place that waits, so a long fling still outruns them: it reaches the
  * end of the measured rows and waits there. This unit drains the REST of the
- * loaded rows during idle: while the user isn't scrolling (and the pane is
- * visible, sized, and no syntax-highlight work is active), it feeds small
+ * loaded rows during idle: while the user isn't scrolling (the pane is visible
+ * and sized, and the pause that each scroll opens for the syntax highlighter is
+ * over), it feeds small
  * batches of unmeasured rows — nearest to the rendered rows first — into the
  * premeasure queue as a third candidate band. After a few idle seconds every
  * loaded row is measured, and a scroll anywhere in the window waits for nothing.
@@ -46,10 +47,10 @@ export interface PremeasureWarmupDeps {
   enabled: Accessor<boolean>
   /** The entries and the items of the loaded rows, index-aligned. */
   visibleEntries: Accessor<readonly ClassifiedEntry[]>
-  virtualItems: Accessor<readonly VirtualItem[]>
+  loadedItems: Accessor<readonly VirtualItem[]>
   /** The rendered range, as indexes of the loaded rows. */
   range: Accessor<ChatVirtualizerRange>
-  /** Whether the height cache holds a height for the row. */
+  /** Whether the row is measured (see RowHeightCache.isMeasured). */
   isMeasured: (item: VirtualItem) => boolean
   /**
    * Half-width (rows) of the band the look-ahead premeasure already covers
@@ -82,7 +83,7 @@ export function createPremeasureWarmup(deps: PremeasureWarmupDeps) {
    */
   const computeNextBatch = (): ChatDomPremeasureCandidate[] => {
     const all = deps.visibleEntries()
-    const items = deps.virtualItems()
+    const items = deps.loadedItems()
     const len = Math.min(all.length, items.length)
     if (len === 0)
       return EMPTY
@@ -164,7 +165,7 @@ export function createPremeasureWarmup(deps: PremeasureWarmupDeps) {
     // Track the item list so newly loaded (paginated/streamed) rows restart
     // a parked ticker; read length only — the arming decision doesn't care
     // about content.
-    deps.virtualItems()
+    deps.loadedItems()
     scheduleTick(WARMUP_IDLE_DELAY_MS)
   })
 

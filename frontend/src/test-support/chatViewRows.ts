@@ -43,8 +43,9 @@ export async function measureHiddenCopies(
     ]
     if (copies.length === 0)
       return
-    // Every copy of the round in one frame, as the shared premeasure frame of the app reads
-    // the copies of one band together.
+    // Each copy commits in a frame of its own here: the test setup runs a frame callback
+    // inline, so the report of one copy runs the shared premeasure frame before the loop
+    // reaches the next copy. In the app, one frame reads the copies of a band together.
     for (const copy of copies) {
       vi.spyOn(copy, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 0, 800, heightOf(copy)))
       triggerResizeObserverForSync(copy)
@@ -58,16 +59,30 @@ export async function measureHiddenCopies(
 
 /**
  * Report the size of the scroll container of `view` to ChatView through its
- * ResizeObserver, and then measure the hidden copies (see measureHiddenCopies), so the
- * rows of the first view join the list.
+ * ResizeObserver, and return the container. It leaves the hidden copies unmeasured, so no
+ * row joins the list yet (see reportChatViewportSize).
  */
-export async function reportChatViewportSize(view: { container: HTMLElement }, width = 800, height = 733): Promise<void> {
+export async function reportChatListSize(view: { container: HTMLElement }, width = 800, height = 733): Promise<HTMLElement> {
   const scrollContainer = view.container.querySelector('[data-chat-scroll-container]') as HTMLElement | null
-  expect(scrollContainer).not.toBeNull()
+  expect(scrollContainer, 'The view has no scroll container').not.toBeNull()
   vi.spyOn(scrollContainer!, 'getBoundingClientRect').mockImplementation(() => ({
     width,
     height,
   }) as DOMRect)
   await triggerResizeObserverFor(scrollContainer!)
+  return scrollContainer!
+}
+
+/**
+ * Report the size of the scroll container of `view` to ChatView (see reportChatListSize),
+ * and then measure the hidden copies (see measureHiddenCopies), so the rows of the first
+ * view join the list.
+ *
+ * It measures nothing after a change of the width: ChatView renders no hidden copy until
+ * the new width held for STAGING_WIDTH_SETTLE_MS. A test that needs the copies of a new
+ * width waits for that time first, and then calls measureHiddenCopies.
+ */
+export async function reportChatViewportSize(view: { container: HTMLElement }, width = 800, height = 733): Promise<void> {
+  await reportChatListSize(view, width, height)
   await measureHiddenCopies(view.container)
 }

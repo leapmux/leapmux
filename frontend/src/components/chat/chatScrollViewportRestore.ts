@@ -81,12 +81,6 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
     return true
   }
 
-  // Strategy 4: nothing to anchor to and no usable saved offset -- ask for the top as a
-  // best-effort fallback.
-  const restoreToTop = () => {
-    void ctx.requestPlace({ kind: 'top' })
-  }
-
   const restoreSavedViewport = (savedScroll: ChatScrollState) => {
     if (!ctx.getEl())
       return
@@ -122,11 +116,13 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
       extras.forceScrollToBottom()
       return
     }
-    restoreToTop()
+    // Strategy 4: nothing to anchor to and no usable saved offset -- ask for the top as a
+    // best-effort fallback.
+    void ctx.requestPlace({ kind: 'top' })
   }
 
-  // Hidden->visible with a saved NON-bottom scroll: restore by resolving the saved
-  // anchor against the offset map. Returns true when it owns the resize.
+  // Hidden->visible with a saved NON-bottom scroll: restore the saved viewport (see
+  // restoreSavedViewport). Returns true when it owns the resize.
   const tryRestoreHidden = (rc: ResizeContext): boolean => {
     if (!(rc.wasHidden && rc.savedScroll && !rc.savedScroll.atBottom))
       return false
@@ -159,7 +155,7 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
     if (rc.wasHidden) {
       // A request that stands (the reader place is the tail, or a tail that waits) is
       // replaced by an equal one.
-      void ctx.requestPlace({ kind: 'tail' }, () => extras.stickToBottom())
+      void ctx.requestPlace({ kind: 'tail' })
     }
     else if (ctx.showWaitingPlace() === 'none') {
       extras.stickToBottom()
@@ -185,7 +181,7 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
   // the rendered slice (a taller pane reveals rows below the old slice; safe to mount
   // synchronously -- we're in a rAF, outside RO delivery). A restore that placed the view
   // recorded its write and refreshed the slice itself, and a second record would end the
-  // anchor that it holds for a row that does not show its height yet (see ScrollContext.placeAtAnchor).
+  // anchor that `extras.restoreAnchor` holds for a row that does not show its height yet.
   //
   // A place that waits comes first. When it is reached, its placement puts the view there,
   // in place of the restore of the last anchor. While it still waits, the view stays, and
@@ -271,7 +267,7 @@ export function createViewportRestore(ctx: ScrollContext, extras: {
    * context, so the two restore entry points cannot drift. Every branch consumes
    * (clears) the saved state, and sets the reader place of the hook at its call, so the
    * first-view rule and the auto-scroll effect of the hook see the place of the restore.
-   * A HIDDEN mount (inactive tab, clientHeight 0) declines and leaves the saved state for
+   * A HIDDEN mount (a pane with no layout box, clientHeight 0) declines and leaves the saved state for
    * the RO path; with no saved state the default mount placement of the hook stands.
    */
   const restoreOnMount = () => {

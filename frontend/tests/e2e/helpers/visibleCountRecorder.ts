@@ -66,8 +66,7 @@ export function installVisibleCountRecorder(scope: VisibleCountScope, key: strin
  * until `navigate` returned.
  *
  * The recorder is an init script that the helper adds through the DevTools protocol and removes again after
- * `navigate`, also after a failure. `page.addInitScript` is not usable here: no API removes it, so it would stay on
- * the page that the next tests share.
+ * `navigate`, also after a failure.
  */
 export async function maxVisibleCountDuring(page: Page, scope: VisibleCountScope, navigate: () => Promise<void>): Promise<number> {
   if (scope.container.trim() === '' || scope.item.trim() === '')

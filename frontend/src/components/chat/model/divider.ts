@@ -1,4 +1,3 @@
-import type { PromptFormat } from './promptFormat'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { SESSION_INFO_KEY } from '~/generated/contracts/session-info'
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
@@ -72,17 +71,4 @@ export function dividerMetaFromMessage(parsed: ParsedMessageContent): TurnMetric
       ? { numToolUses }
       : {}),
   }
-}
-
-/**
- * A subagent prompt row: the instruction a parent sent to a child.
- *
- * Tool requests and prompts delivered into child transcripts use this model.
- * promptFormat selects Markdown or preformatted text for the body.
- */
-export interface AgentPrompt {
-  description?: string
-  agentType?: string
-  prompt: string
-  promptFormat?: PromptFormat
 }

@@ -1,5 +1,4 @@
 import type { Accessor } from 'solid-js'
-import type { UseChatVirtualizerResult } from './useChatVirtualizer'
 import { createComputed, createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { setWith, setWithout } from '~/lib/immutableCollections'
 
@@ -8,8 +7,7 @@ import { setWith, setWithout } from '~/lib/immutableCollections'
 //
 // Two independent skeleton lifecycles feed the chat's loading UI, extracted
 // here from ChatView so each has a named, unit-testable home instead of living
-// loose (timer maps, diffing effects, per-row state machines) in the ~1100-line
-// component:
+// loose (timer maps, diffing effects, per-row state machines) in the component:
 //
 //  - createLingerSet: the crossfade of a row whose content was pending. When its
 //    content arrives (the real row fades in) its loading-skeleton overlay lingers
@@ -112,27 +110,27 @@ export function createLingerSet(
  * Call within a reactive owner: it creates a computed, per-id timers, and an onCleanup
  * that clears them.
  */
-export function createDelayedSet(
-  activeIds: Accessor<Iterable<string>>,
+export function createDelayedSet<Id extends string>(
+  activeIds: Accessor<Iterable<Id>>,
   delayMs: number,
-  showImmediately?: (id: string) => boolean,
-): { delayedIds: Accessor<ReadonlySet<string>> } {
-  const [delayedIds, setDelayedIds] = createSignal<ReadonlySet<string>>(new Set())
-  const timers = new Map<string, ReturnType<typeof setTimeout>>()
+  showImmediately?: (id: Id) => boolean,
+): { delayedIds: Accessor<ReadonlySet<Id>> } {
+  const [delayedIds, setDelayedIds] = createSignal<ReadonlySet<Id>>(new Set())
+  const timers = new Map<Id, ReturnType<typeof setTimeout>>()
 
-  const clearTimer = (id: string): void => {
+  const clearTimer = (id: Id): void => {
     const timer = timers.get(id)
     if (timer === undefined)
       return
     clearTimeout(timer)
     timers.delete(id)
   }
-  const showNow = (id: string): void => {
+  const showNow = (id: Id): void => {
     clearTimer(id)
     setDelayedIds(prev => setWith(prev, id))
   }
 
-  let previous: ReadonlySet<string> = new Set()
+  let previous: ReadonlySet<Id> = new Set()
   // A createComputed (not createEffect): when `showImmediately` turns true, its promotions
   // must land in the SAME pass the consumer memo (ChatView's skeletonSlice) reads
   // `delayedIds`, so a fling shows every pending row's skeleton with no one-flush lag. An
@@ -203,10 +201,10 @@ export type RowUpgradePhase = 'skeleton' | 'crossfade' | 'real'
  * signal, a one-shot effect, and an onCleanup for the crossfade timer.
  */
 export function createRowUpgradePhase(
-  virt: Pick<UseChatVirtualizerResult, 'fastScrollActive'>,
+  fastScrollActive: Accessor<boolean>,
   crossfadeMs: number,
 ): Accessor<RowUpgradePhase> {
-  const skeletonAtMount = untrack(virt.fastScrollActive)
+  const skeletonAtMount = untrack(fastScrollActive)
   const [phase, setPhase] = createSignal<RowUpgradePhase>(skeletonAtMount ? 'skeleton' : 'real')
   if (skeletonAtMount) {
     // The crossfade -> real timer lives at the ROW-OWNER scope, not inside the effect's
@@ -221,7 +219,7 @@ export function createRowUpgradePhase(
     createEffect(() => {
       // One-way: skeleton -> crossfade -> real, never back. Once the crossfade begins the
       // phase leaves 'skeleton', so a re-run for a later fling is a no-op.
-      if (!virt.fastScrollActive() && untrack(phase) === 'skeleton') {
+      if (!fastScrollActive() && untrack(phase) === 'skeleton') {
         setPhase('crossfade')
         crossfadeTimer = setTimeout(setPhase, crossfadeMs, 'real')
       }
@@ -262,11 +260,11 @@ export interface FlingSkeletonRegistry {
  * A registry over the per-row fling-skeleton phases that also exposes, as one reactive set,
  * which rows are currently skeletons. Rows render their own phase in place, but the gap-bridge
  * overlay lives OUTSIDE the rows and can't see a row's local phase; this collects those phases
- * into `skeletonIds` so the overlay can react. Create once per list (closes over `virt` and the
- * crossfade duration); call `trackRow` per rendered row.
+ * into `skeletonIds` so the overlay can react. Create once per list (closes over the fast-scroll
+ * flag of the virtualizer and the crossfade duration); call `trackRow` per rendered row.
  */
 export function createFlingSkeletonRegistry(
-  virt: Pick<UseChatVirtualizerResult, 'fastScrollActive'>,
+  fastScrollActive: Accessor<boolean>,
   crossfadeMs: number,
 ): FlingSkeletonRegistry {
   const [skeletonIds, setSkeletonIds] = createSignal<ReadonlySet<string>>(new Set())
@@ -283,7 +281,7 @@ export function createFlingSkeletonRegistry(
       : setWithout(prev, id)))
   }
   const trackRow = (id: string): Accessor<RowUpgradePhase> => {
-    const phase = createRowUpgradePhase(virt, crossfadeMs)
+    const phase = createRowUpgradePhase(fastScrollActive, crossfadeMs)
     createEffect(() => setMembership(setSkeletonIds, id, phase() === 'skeleton'))
     createEffect(() => setMembership(setUpgradingIds, id, phase() !== 'real'))
     onCleanup(() => {

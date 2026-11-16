@@ -106,10 +106,12 @@ export interface PathRenderContext {
  * Loading and opening the images one row drew.
  *
  * Assembled where the message and the agent are both in scope, so a renderer only
- * states WHICH image. `deferLoad` holds the read of the image itself: a hidden
- * premeasure pass and an offscreen row both wait until the row is real. The read of
- * the image SIZE is never deferred: the row reserves the image box from it, so the
- * hidden copy measures the height that the row keeps.
+ * states WHICH image. `deferLoad` holds the read of an image whose size is known: a
+ * hidden premeasure pass and a row far from the view both draw the box of the image,
+ * and wait until the row is real. The read of the image SIZE is never deferred: the
+ * row reserves the image box from it, so the hidden copy measures the height that
+ * the row keeps. An image whose size no source gives is never deferred either: only
+ * the image gives the height of its row, so every copy of the row reads it at once.
  */
 export interface ImageRenderActions {
   /** Read a file-backed image's bytes; `refresh` re-reads past the cache. */
@@ -122,19 +124,24 @@ export interface ImageRenderActions {
    */
   loadFileImageSize: (filePath: string) => Promise<ImageDimensions | undefined>
   /**
-   * The size that `loadFileImageSize` gave: `undefined` before a read settled, and
-   * `null` for a file whose read gave no size or failed.
+   * The size of the image file that the host knows: `undefined` before a read settled,
+   * and `null` for a file whose read gave no size or failed.
    */
   cachedFileImageSize: (filePath: string) => ImageDimensions | null | undefined
   /**
    * The readiness scope of the row copy that draws the image. The image view reports
-   * its size read there, so no reader measures the copy before the box is reserved.
-   * Undefined outside a chat row.
+   * there while it does not know the height of its picture: while its size read runs,
+   * and while it reads an image whose size no source gives. So no reader measures the
+   * copy before the box is reserved, or before that image shows. Undefined outside a
+   * chat row.
    */
   readiness: RenderReadiness | undefined
   /** Open one image this row drew in its own tab. */
   openImage: (image: { index: number, filePath?: string, title?: string }) => void
-  /** True while the read must wait (hidden premeasure, offscreen row). */
+  /**
+   * True while the read of an image whose size is known must wait: in a hidden
+   * premeasure pass, and in a row far from the view.
+   */
   deferLoad: () => boolean
   /** True while the pass is a hidden measurement, which decodes inline data eagerly. */
   premeasurePass: () => boolean
@@ -285,7 +292,7 @@ export function imageActionsFrom(host: {
   /** The readiness scope of the row copy (see ImageRenderActions.readiness). */
   readiness?: RenderReadiness | undefined
   openImage?: (image: { index: number, filePath?: string, title?: string }) => void
-  /** True while the read must wait: hidden premeasure pass or offscreen row. */
+  /** See ImageRenderActions.deferLoad. */
   deferLoad?: () => boolean
   /** True while the pass is a hidden measurement. */
   premeasurePass?: () => boolean
@@ -301,9 +308,12 @@ export function imageActionsFrom(host: {
   return {
     loadFileImage: load ?? (async () => undefined),
     cachedFileImage: cached ?? (() => undefined),
-    // With no source, no read can give a size: the cache answers as for a read that gave none.
     loadFileImageSize: loadSize ?? (async () => undefined),
-    cachedFileImageSize: cachedSize ?? (() => null),
+    // With no size reader, no read can give a size: the cache answers as for a read that
+    // gave none. With a reader and no cache, no read settled yet: a view asks the reader.
+    cachedFileImageSize: cachedSize ?? (loadSize === undefined
+      ? () => null
+      : () => undefined),
     readiness: host?.readiness,
     openImage: open ?? (() => {}),
     deferLoad: () => host?.deferLoad?.() === true,

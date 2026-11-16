@@ -6,6 +6,7 @@ import { render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { failedResult } from '~/components/chat/model/toolCall'
+import { imageActionsFrom } from '~/components/chat/renderContext'
 import { imagesForRow } from '~/components/chat/results/rowImages'
 import { ToolMessage } from '~/components/chat/results/ToolMessage'
 import { settle } from '~/test-support/async'
@@ -352,16 +353,9 @@ const picture = (name: string): ImageResultSource => ({ mimeType: 'image/png', d
 async function drawToolImages(row: ReturnType<typeof toolRow>): Promise<{ container: HTMLElement, opened: number[], drawn: string[] }> {
   const opened: number[] = []
   const context: ToolResultRenderContext = {
-    images: {
-      loadFileImage: () => Promise.resolve(undefined),
-      cachedFileImage: () => undefined,
-      loadFileImageSize: () => Promise.resolve(undefined),
-      cachedFileImageSize: () => null,
-      readiness: undefined,
+    images: imageActionsFrom({
       openImage: request => opened.push(request.index),
-      deferLoad: () => false,
-      premeasurePass: () => false,
-    },
+    })!,
   }
   const { container } = render(() => <ToolMessage row={row} context={context} />)
   await settleWorkerReplies()
@@ -695,16 +689,7 @@ describe('a held display in a tool row (ToolMessage)', () => {
         ...(flag === 'syntaxHighlightingPaused'
           ? { syntaxHighlightingPaused: holding }
           : { textSelectionActive: holding }),
-        images: {
-          loadFileImage: read,
-          cachedFileImage: () => undefined,
-          loadFileImageSize: () => Promise.resolve(undefined),
-          cachedFileImageSize: () => null,
-          readiness: undefined,
-          openImage: () => {},
-          deferLoad: () => false,
-          premeasurePass: () => false,
-        },
+        images: imageActionsFrom({ fileImage: read })!,
       }
       const { container } = render(() => <ToolMessage row={toolRow(call)} context={context} />)
       await settleWorkerReplies()

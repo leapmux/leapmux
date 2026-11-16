@@ -2,12 +2,12 @@ import type { JSX } from 'solid-js'
 import type { ImageRenderActions } from '../renderContext'
 import type { ImageResultSource, ImageSkipReason } from '~/lib/imageBlocks'
 import type { ImageDimensions } from '~/lib/imageDimensions'
-import { createEffect, createMemo, createSignal, For, on, onCleanup, Show, untrack } from 'solid-js'
+import { batch, createEffect, createMemo, createSignal, For, Match, on, onCleanup, Show, Switch, untrack } from 'solid-js'
 import { imageRenderInfo, imageSkipPlaceholder } from '~/lib/imageBlocks'
 import { sniffImageDimensionsFromDataUrl } from '~/lib/imageDimensions'
 import { UNTRUSTED_LINK_ATTRIBUTE } from '~/lib/untrustedLinkClicks'
-import { createRequestReadiness } from '../renderReadiness'
-import { TOOL_IMAGE_MAX_HEIGHT_PX, toolImage, toolImageBox, toolImageButton, toolImageRow, toolInputSummary } from '../toolStyles.css'
+import { useRequestReadiness } from '../renderReadiness'
+import { TOOL_IMAGE_MAX_HEIGHT_PX, toolImage, toolImageBox, toolImageBoxFailed, toolImageButton, toolImageRow, toolInputSummary } from '../toolStyles.css'
 
 interface FileImageDisplay {
   path: string | undefined
@@ -91,6 +91,8 @@ export function ImageResultView(props: {
   const [loading, setLoading] = createSignal(false)
   const [loadError, setLoadError] = createSignal('')
   const [decodeError, setDecodeError] = createSignal(false)
+  // Whether the reader started the last read with the Retry button.
+  const [retrying, setRetrying] = createSignal(false)
   const filePath = () => !props.source.data && !props.source.url
     ? props.source.filePath
     : undefined
@@ -100,38 +102,36 @@ export function ImageResultView(props: {
   // image: a hidden premeasure copy then measures the height that the row keeps.
   const [sizeRead, setSizeRead] = createSignal<{ path: string, size: ImageDimensions | null }>()
   /**
-   * The size that the header of the file gave: `undefined` while no read settled (and
+   * The size that the header of the file gave: `undefined` while no answer exists (and
    * for an image with no file path), and `null` for a file whose read gave no size or
    * failed.
+   *
+   * The answer of the view's own ask comes first, and the view keeps it. Before that
+   * answer arrives, the size cache answers, with no subscription: a size that the cache
+   * holds shows in the first render. So nothing that the resolver learns or drops later
+   * changes what a mounted view decided, in particular whether it reads its image.
    */
   const headerSize = (): ImageDimensions | null | undefined => {
     const path = filePath()
     if (!path)
       return undefined
-    const cached = props.actions?.cachedFileImageSize(path)
-    if (cached !== undefined)
-      return cached
     const read = sizeRead()
     return read?.path === path
       ? read.size
-      : undefined
+      : untrack(() => props.actions?.cachedFileImageSize(path))
   }
   /**
-   * Whether this pass is a hidden premeasure copy whose image gave no size: neither
-   * the source nor the header of the file states one. Such a copy reads the whole
-   * image before it reports a height, as the row in the list does near the view.
-   * Otherwise it would measure a one-line placeholder, and the row would grow when
-   * the image arrives.
+   * Whether only the image itself gives the height of this view: neither the source nor
+   * the header of the file states a size.
+   *
+   * Every copy of the row then reads the whole image at once, whatever `deferLoad` says,
+   * and reports no height while that read runs (see `heightUnknown`). So each copy draws
+   * the same content: the image, or the error of its read. A copy that waited for its row
+   * to come near the view would draw one line where another copy measured that content,
+   * and the row would change its height when the reader reaches it.
    */
-  const premeasuresWithoutSize = (): boolean => {
-    const path = filePath()
-    return path !== undefined
-      && props.actions?.premeasurePass() === true
-      && props.source.dimensions === undefined
-      && headerSize() === null
-      // A copy that the resolver already holds shows with no read.
-      && props.actions.cachedFileImage(path) === undefined
-  }
+  const needsImageForHeight = (): boolean =>
+    props.source.dimensions === undefined && headerSize() === null
   /**
    * Whether a read of the file can start at all.
    *
@@ -140,13 +140,17 @@ export function ImageResultView(props: {
    * refuse the read, while the display still reported `loading`. The row then
    * said "Loading image..." for a read nobody started, and Retry stays hidden
    * for as long as `loading` holds -- so the row offered no way out.
+   *
+   * The answer does not depend on what the resolver holds. The view asks for an image
+   * that the resolver holds also: the resolver answers with no request, and the view
+   * then keeps the image when the resolver drops it at its limit.
    */
   // A memo, so that its readers run again only when the answer changes. `deferLoad` runs
   // again at each geometry change and at each end of a scroll, and the effect below starts
   // the read again each time it runs.
   const canLoad = createMemo((): boolean => Boolean(filePath())
     && !!props.actions?.loadFileImage
-    && (!props.actions.deferLoad() || premeasuresWithoutSize()))
+    && (!props.actions.deferLoad() || needsImageForHeight()))
   let generation = 0
   const loadFile = (refresh = false): void => {
     const path = filePath()
@@ -154,12 +158,16 @@ export function ImageResultView(props: {
     if (!canLoad() || !path || !read)
       return
     const current = ++generation
-    if (refresh) {
-      setLoaded(undefined)
-      setDecodeError(false)
-    }
-    setLoading(true)
-    setLoadError('')
+    // One update: a reader of these signals must never see a retry as a first read.
+    batch(() => {
+      if (refresh) {
+        setLoaded(undefined)
+        setDecodeError(false)
+      }
+      setRetrying(refresh)
+      setLoading(true)
+      setLoadError('')
+    })
     void (refresh
       ? read(path, { refresh: true })
       : read(path)).then((source) => {
@@ -187,6 +195,7 @@ export function ImageResultView(props: {
       setLoaded(undefined)
       setLoadError('')
       setLoading(false)
+      setRetrying(false)
       loadFile()
       onCleanup(() => {
         generation++
@@ -219,7 +228,8 @@ export function ImageResultView(props: {
               : {}),
           }
         : props.source,
-      loading: loading() || (canLoad() && !resolved && !error),
+      // The view has no image to show, and a read runs or starts in the effect above.
+      loading: !resolved && (loading() || (canLoad() && !error)),
       error,
       decodeError: decodeError(),
     }
@@ -274,18 +284,17 @@ export function ImageResultView(props: {
     () => [
       filePath(),
       props.actions?.loadFileImageSize,
+      props.source.dimensions !== undefined,
     ] as const,
-    ([path, readSize]) => {
-      if (!path)
+    ([path, readSize, stated]) => {
+      // A size that the source states never yields to the header, so the header needs no read.
+      if (!path || stated)
         return
-      // A size that the cache holds needs no read. The view keeps its own copy of it: the
-      // cache can drop the size later (its limit, a clear), and the box of a row that shows
-      // must stay.
+      // The view keeps its own copy of a size that the cache holds: the cache can drop the
+      // size later (its limit, a clear), and the box of a row that shows must stay.
       const cached = untrack(() => props.actions?.cachedFileImageSize(path))
-      if (cached !== undefined) {
+      if (cached !== undefined)
         setSizeRead({ path, size: cached })
-        return
-      }
       if (!readSize)
         return
       let current = true
@@ -296,52 +305,52 @@ export function ImageResultView(props: {
         if (current)
           setSizeRead({ path, size: size ?? null })
       }
-      // The read never rejects by its contract. A rejection still counts as no size.
+      // The view asks for a size that the cache holds also. The resolver answers such an
+      // ask with no request, and counts it: it drops the sizes that no view asked for the
+      // longest. The read never rejects by its contract. A rejection still counts as no size.
       void readSize(path).then(settle, () => settle(undefined))
     },
   ))
   /**
    * Whether the view does not know the height of its picture yet:
    *
-   * - Its size read runs: no answer exists for the path, and a reader exists to give one.
-   * - It is a premeasure copy with no size, and its read of the whole image runs. That
-   *   holds also when the cache gave the "no size" answer, so that no size read ran.
+   * - No source gives a size, and its size read runs: no answer exists for the path, and
+   *   a reader exists to give one.
+   * - Only the image gives the height (see `needsImageForHeight`), and the view has no
+   *   image to show while its first read runs. That holds also when the cache gave the
+   *   "no size" answer at once.
    *
    * The second state follows the first one with no gap for a size read that gives no
    * size, because `display().loading` is true from the update that settles the size.
+   *
+   * A read that the reader started with Retry is no such state. The row shows its status
+   * during that read, as it showed the error before: a row that reports a wait is hidden,
+   * and the press of a button must not hide the row that holds the button.
    */
   const heightUnknown = createMemo((): boolean => {
-    if (!filePath())
+    if (!filePath() || dims() !== null)
       return false
     if (headerSize() === undefined)
       return props.actions?.loadFileImageSize !== undefined
-    return props.actions?.premeasurePass() === true && display().loading
+    return display().loading && !retrying()
   })
   // The wait that this view reports to the readiness scope of its row copy: no reader
   // measures the copy while the view does not know the height of its picture. One wait
   // covers the size read and the read of the whole image that follows it, so both end at
-  // one limit (see createRequestReadiness).
-  const requests = createRequestReadiness()
-  // Once, while the view sets up: the scope of a row copy is fixed for its life.
-  untrack(() => props.actions?.readiness)?.track(requests.pending)
-  let endWait: (() => void) | undefined
-  const finishWait = (): void => {
-    endWait?.()
-    endWait = undefined
-  }
+  // one limit (see useRequestReadiness).
+  const requests = useRequestReadiness(() => props.actions)
   createEffect(on(
     () => [
       filePath(),
       heightUnknown(),
     ] as const,
     ([, unknown]) => {
-      // Each path has its own wait, with its own limit.
-      finishWait()
+      // Each path has its own wait, with its own limit. The cleanup ends the wait before
+      // the next run of this effect, and when the view unmounts.
       if (unknown)
-        endWait = requests.begin()
+        onCleanup(requests.begin())
     },
   ))
-  onCleanup(finishWait)
 
   const open = () => {
     const opener = props.actions?.openImage
@@ -360,12 +369,15 @@ export function ImageResultView(props: {
   }
   const openable = () => Boolean(props.actions?.openImage)
 
+  // What the image is, for a reader who cannot see it.
+  const imageLabel = () => source().description || source().mimeType || 'image'
+
   const image = () => (
     <img
       class={toolImage}
       style={sizeStyle()}
       src={info().src}
-      alt={source().description || source().mimeType || 'image'}
+      alt={imageLabel()}
       loading={props.actions?.premeasurePass()
         ? 'eager'
         : 'lazy'}
@@ -385,7 +397,8 @@ export function ImageResultView(props: {
   // What the view says in place of an image that does not show: that its read runs, or
   // why it failed, with a way to try again. Nothing while the image only waits for its
   // row to come near the view.
-  const hasStatus = () => Boolean(display().loading || display().error || display().decodeError)
+  const failed = () => !display().loading && Boolean(display().error || display().decodeError)
+  const hasStatus = () => display().loading || failed()
   const status = () => (
     <>
       <div class={toolInputSummary}>
@@ -393,60 +406,73 @@ export function ImageResultView(props: {
           ? 'Loading image…'
           : display().error || 'The image could not be decoded'}
       </div>
-      <Show when={filePath() && (display().error || display().decodeError) && !display().loading}>
+      <Show when={filePath() && failed()}>
         <div><button type="button" class="small outline" onClick={() => loadFile(true)}>Retry image</button></div>
       </Show>
     </>
   )
+  // The description sits below the box as it sits below the image, so the image replaces
+  // the box and the row keeps its height.
+  const description = () => (
+    <Show when={props.source.description}>
+      <div class={toolInputSummary}>{props.source.description}</div>
+    </Show>
+  )
 
   return (
-    <Show
-      when={info().src && !display().decodeError}
+    <Switch
       fallback={(
-        <Show
-          when={reserved()}
-          fallback={(
-            <Show
-              when={hasStatus()}
-              fallback={(
-                <ImageResultPlaceholder
-                  source={source()}
-                  {...(info().reason !== undefined
-                    ? { reason: info().reason }
-                    : {})}
-                />
-              )}
-            >
-              <div class={toolImageRow}>{status()}</div>
-            </Show>
-          )}
-        >
-          {/* The size of the image is known, so the row holds its box in every state:
-              while the image waits, while it loads, and when its read failed. The image
-              then replaces the box, and the row keeps its height. The description sits
-              below the box as it sits below the image, for the same reason. */}
-          <div class={toolImageRow}>
-            <div class={toolImageBox} style={sizeStyle()} data-size-reserved="1">
-              <Show when={hasStatus()}>{status()}</Show>
-            </div>
-            <Show when={props.source.description}>
-              <div class={toolInputSummary}>{props.source.description}</div>
-            </Show>
-          </div>
-        </Show>
+        <ImageResultPlaceholder
+          source={source()}
+          {...(info().reason !== undefined
+            ? { reason: info().reason }
+            : {})}
+        />
       )}
     >
-      <div class={toolImageRow}>
-        <Show when={openable()} fallback={image()}>
-          <button type="button" class={toolImageButton} onClick={open} aria-label="Open image">
-            {image()}
-          </button>
-        </Show>
-        <Show when={props.source.description}>
-          <div class={toolInputSummary}>{props.source.description}</div>
-        </Show>
-      </div>
-    </Show>
+      <Match when={info().src && !display().decodeError}>
+        <div class={toolImageRow}>
+          <Show when={openable()} fallback={image()}>
+            <button type="button" class={toolImageButton} onClick={open} aria-label="Open image">
+              {image()}
+            </button>
+          </Show>
+          {description()}
+        </div>
+      </Match>
+      {/* The size of a file image is known, so the row holds its box in every state:
+          while the image waits, while it loads, and when its read failed. The image
+          then replaces the box, and the row keeps its height. Only a file image takes
+          the box. No read gives an image with no file, so no image can replace its box:
+          such an image shows its label, and the link of an external image. */}
+      <Match when={filePath() && reserved()}>
+        <div class={toolImageRow}>
+          {/* A box with no status stands for the image, and states it to a reader who
+              cannot see it. A box with a status holds text and a button, which the
+              image role would hide from that reader. */}
+          <div
+            class={toolImageBox}
+            classList={{
+              [toolImageBoxFailed]: failed(),
+            }}
+            style={sizeStyle()}
+            data-size-reserved="1"
+            role={hasStatus()
+              ? undefined
+              : 'img'}
+            aria-label={hasStatus()
+              ? undefined
+              : imageLabel()}
+          >
+            <Show when={hasStatus()}>{status()}</Show>
+          </div>
+          {description()}
+        </div>
+      </Match>
+      <Match when={hasStatus()}>
+        <div class={toolImageRow}>{status()}</div>
+      </Match>
+    </Switch>
   )
 }
 

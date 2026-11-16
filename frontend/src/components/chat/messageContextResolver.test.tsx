@@ -9,7 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createChatStore } from '~/stores/chat.store'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
-import { createMessageContextResolver } from './messageContextResolver'
+import { createMessageContextResolver, createMessageRenderSources } from './messageContextResolver'
 import './providers/opencode/plugin'
 
 // Supply an explicit no-side role without a provider wire format.
@@ -63,7 +63,11 @@ function noSideMessage(id: string, seq: bigint, extra: MessageInitShape<typeof A
   })
 }
 
-function fixture(initial: AgentChatMessage[] = [], spanMessage?: MessageContextSources['spanMessage']) {
+function fixture(
+  initial: AgentChatMessage[] = [],
+  spanMessage?: MessageContextSources['spanMessage'],
+  fetchFileImageSize: MessageContextSources['fetchFileImageSize'] = async () => undefined,
+) {
   return createRoot((dispose) => {
     cleanups.push(dispose)
     const [messages, setMessages] = createSignal(initial)
@@ -85,7 +89,7 @@ function fixture(initial: AgentChatMessage[] = [], spanMessage?: MessageContextS
       fetchSpan,
       fetchMessage,
       fetchFileImage: async () => { throw new Error('The image source is unavailable') },
-      fetchFileImageSize: async () => undefined,
+      fetchFileImageSize,
       subscribe: (observer) => {
         observers.add(observer)
         return () => observers.delete(observer)
@@ -559,6 +563,50 @@ describe('message context resolver', () => {
     // A new row replaces the array, which is what prune must answer.
     expect(store.addMessage(agentId, toolMessage('result', 2n, 'result'))).toBe(true)
     expect(walks).toBe(initial + 1)
+  })
+})
+
+describe('createMessageRenderSources', () => {
+  const SIZE = { width: 400, height: 200 }
+
+  it('reads the size of an image for its own row, and keeps it for that row only', async () => {
+    const row = toolMessage('row', 1n, 'request')
+    const fetchSize = vi.fn<MessageContextSources['fetchFileImageSize']>(async () => SIZE)
+    const { resolver } = fixture([row], undefined, fetchSize)
+    const sources = createMessageRenderSources(() => resolver, () => row, () => resolver.resolvedMessage(row).resolved)
+    expect(sources.cachedFileImageSize('/a.png')).toBeUndefined()
+
+    await expect(sources.fileImageSize('/a.png')).resolves.toEqual(SIZE)
+
+    expect(fetchSize).toHaveBeenCalledExactlyOnceWith('/a.png', expect.any(AbortSignal))
+    expect(sources.cachedFileImageSize('/a.png')).toEqual(SIZE)
+    // The file can differ at the time of another tool call, so another row reads its own size.
+    expect(resolver.cachedFileImageSize('/a.png')).toBeUndefined()
+    expect(resolver.cachedFileImageSize('/a.png', 'other-row')).toBeUndefined()
+    expect(resolver.cachedFileImageSize('/a.png', row.id)).toEqual(SIZE)
+  })
+
+  it('answers "no size" with no resolver, so that a view waits for no read', async () => {
+    const row = toolMessage('row', 1n, 'request')
+    const sources = createMessageRenderSources(() => undefined, () => row, () => undefined as never)
+
+    await expect(sources.fileImageSize('/a.png')).resolves.toBeUndefined()
+    expect(sources.cachedFileImageSize('/a.png')).toBeNull()
+  })
+
+  it('reads no size after the resolver is disposed', async () => {
+    const row = toolMessage('row', 1n, 'request')
+    const fetchSize = vi.fn<MessageContextSources['fetchFileImageSize']>(async () => SIZE)
+    const { resolver, dispose } = fixture([row], undefined, fetchSize)
+    await resolver.fileImageSize('/a.png')
+    fetchSize.mockClear()
+
+    dispose()
+
+    // The sizes go with the resolver, and it starts no read for a view that still asks.
+    expect(resolver.cachedFileImageSize('/a.png')).toBeUndefined()
+    await expect(resolver.fileImageSize('/b.png')).resolves.toBeUndefined()
+    expect(fetchSize).not.toHaveBeenCalled()
   })
 })
 

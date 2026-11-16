@@ -332,7 +332,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        phase = createRowUpgradePhase({ fastScrollActive: fast }, 1000)
+        phase = createRowUpgradePhase(fast, 1000)
       })
       expect(phase()).toBe('real')
       dispose()
@@ -344,7 +344,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        phase = createRowUpgradePhase({ fastScrollActive: fast }, 1000)
+        phase = createRowUpgradePhase(fast, 1000)
       })
       expect(phase()).toBe('skeleton')
       setFast(false) // scroll settled
@@ -363,7 +363,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        phase = createRowUpgradePhase({ fastScrollActive: fast }, 1000)
+        phase = createRowUpgradePhase(fast, 1000)
       })
       expect(phase()).toBe('skeleton')
       setFast(false) // scroll settled -> crossfade begins
@@ -380,7 +380,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        phase = createRowUpgradePhase({ fastScrollActive: fast }, 1000)
+        phase = createRowUpgradePhase(fast, 1000)
       })
       expect(phase()).toBe('real')
       setFast(true) // a later fling must not tear a real row back to a skeleton
@@ -390,15 +390,13 @@ describe('chatSkeletonCrossfade', () => {
   })
 
   describe('createFlingSkeletonRegistry', () => {
-    const flingVirt = (fast: () => boolean) => ({ fastScrollActive: fast })
-
     it('adds a row that mounts mid-fling, and drops it once the scroll settles', () => {
       const [fast, setFast] = createSignal(true)
       let registry!: FlingSkeletonRegistry
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        registry = createFlingSkeletonRegistry(flingVirt(fast), 1000)
+        registry = createFlingSkeletonRegistry(fast, 1000)
         registry.trackRow('a')
       })
       expect([
@@ -417,7 +415,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        registry = createFlingSkeletonRegistry(flingVirt(fast), 1000)
+        registry = createFlingSkeletonRegistry(fast, 1000)
         registry.trackRow('a')
       })
       expect([
@@ -443,7 +441,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        registry = createFlingSkeletonRegistry(flingVirt(fast), 1000)
+        registry = createFlingSkeletonRegistry(fast, 1000)
         registry.trackRow('a')
       })
       expect([
@@ -458,7 +456,7 @@ describe('chatSkeletonCrossfade', () => {
       let disposeRegistry!: () => void
       createRoot((d) => {
         disposeRegistry = d
-        registry = createFlingSkeletonRegistry(flingVirt(fast), 1000)
+        registry = createFlingSkeletonRegistry(fast, 1000)
       })
       const unmountRow = createRoot((d) => {
         registry.trackRow('a')
@@ -478,7 +476,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        registry = createFlingSkeletonRegistry(flingVirt(fast), 1000)
+        registry = createFlingSkeletonRegistry(fast, 1000)
         registry.trackRow('a')
       })
       expect([
@@ -498,7 +496,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        registry = createFlingSkeletonRegistry(flingVirt(fast), 1000)
+        registry = createFlingSkeletonRegistry(fast, 1000)
         // A nested root models one row's lifetime, disposable independently.
         createRoot((dRow) => {
           disposeRow = dRow
@@ -521,7 +519,7 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        registry = createFlingSkeletonRegistry(flingVirt(fast), 1000)
+        registry = createFlingSkeletonRegistry(fast, 1000)
         registry.trackRow('c') // mounts before the fling -> real, never enters the set
         setFast(true)
         registry.trackRow('a')

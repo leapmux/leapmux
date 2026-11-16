@@ -1,7 +1,7 @@
 import type { ScrollHarnessOptions } from './useChatScroll.testkit'
 import { afterEach, describe, expect, it } from 'vitest'
 import { withChatScrollPreserved } from './chatScrollPreserve'
-import { installScrollTestEnv, mountScrollHarness, mountWithPendingJump, rowMessages, settleJump } from './useChatScroll.testkit'
+import { installScrollTestEnv, mountScrollHarness, mountWithPendingJump, rowMessages, rowTargetAt, settledValue, settleJump } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -248,20 +248,38 @@ describe('useChatScroll scroll controller with staged rows', () => {
       messages: rowMessages(1),
       holdTargets: true,
     })
-    let outcome: boolean | undefined
-    void h.hook.jumpToSeq(21n).then((moved) => {
-      outcome = moved
-    })
+    const outcome = settledValue(h.hook.jumpToSeq(21n))
 
     await h.preserved(h.reset)
     await h.restoreFrames()
 
     // A repair is no command of the reader: it replaces no wait, and it places nothing.
     expect(h.div.getScrollTop()).toBe(0)
-    expect(outcome).toBeUndefined()
+    expect(outcome()).toBeUndefined()
 
     h.reachTarget()
     expect(h.div.getScrollTop()).toBe(1992)
+    h.dispose()
+  })
+
+  it('places at once, and keeps the request for the tail, while a jump to the latest page is pending', async () => {
+    const { h, jump } = await mountWithPendingJump(opts => mountChat({ ...opts, holdTargets: true }))
+
+    await h.preserved(h.reset)
+    await h.restoreFrames()
+
+    // The reader place holds one request. A wait for the row of the anchor would end the
+    // request for the tail, so the repair places the view with no wait.
+    expect(h.div.getScrollTop()).toBe(2000)
+    expect(h.requestedTargets()).toEqual([])
+
+    // The request for the tail survived: the landing of the jump goes to the tail.
+    h.setHasNewer(false)
+    jump.resolve(true)
+    await settleJump(jump.promise)
+    h.reachTarget()
+    expect(h.div.getScrollTop()).toBe(4500)
+    expect(h.hook.isFollowing()).toBe(true)
     h.dispose()
   })
 
@@ -272,7 +290,7 @@ describe('useChatScroll scroll controller with staged rows', () => {
     await h.preserved(h.reset)
     await h.restoreFrames()
     expect(h.div.getScrollTop()).toBe(0)
-    expect(h.requestedTargets().at(-1)).toEqual({ kind: 'row', id: 'r20', offset: 0 })
+    expect(h.requestedTargets().at(-1)).toEqual(rowTargetAt('r20'))
 
     h.reachTarget()
     expect(h.div.getScrollTop()).toBe(2000)

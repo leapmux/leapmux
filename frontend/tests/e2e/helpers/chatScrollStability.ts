@@ -1,11 +1,13 @@
 import type { Locator, Page } from '@playwright/test'
 import type { ModelScript } from './modelScriptFixture'
+import type { ScriptedTurn } from './scriptedTurn'
 import { expect } from '@playwright/test'
+import { escapeRegExp } from '../../../src/lib/regexp'
 import { assistantBubbles, CHAT_SCROLL_CONTAINER, chatDistanceFromBottom, chatScrollContainer, sendMessage, waitForAgentIdle } from './ui'
 
 /**
  * Reads and actions for the specs that check that the chat view keeps what the reader sees in place
- * (`048*-chat-scroll-stability*.spec.ts`).
+ * (`048*-chat-scroll-stability*.spec.ts` and `codex/chat-scroll-stability-file-image.spec.ts`).
  *
  * Each read of a row runs in ONE `evaluate` on the scroll container, which the app never rebuilds. A read through a
  * chat locator could hold a row that ChatView replaced between the resolve and the read (see `readAttached`). The
@@ -71,16 +73,6 @@ export function rowBoxIn(container: Element, seq: string): RowBox | null {
   return { distance: rect.top - container.getBoundingClientRect().top, height: rect.height }
 }
 
-/** The height of each mounted row of `container`, by its sequence number. Runs in the browser. */
-export function rowHeightsIn(container: Element): Record<string, number> {
-  const heights: Record<string, number> = {}
-  for (const row of Array.from(container.querySelectorAll<HTMLElement>('[data-seq]'))) {
-    if (row.dataset.seq !== undefined)
-      heights[row.dataset.seq] = row.getBoundingClientRect().height
-  }
-  return heights
-}
-
 /**
  * The sequence number of the first mounted row of `container`, in document order, whose text contains `text`, or null
  * when no mounted row contains it. Runs in the browser.
@@ -132,11 +124,6 @@ export function readRowDistance(page: Page, seq: string): Promise<number | null>
 /** Read the box of the row of `seq` (see rowBoxIn). */
 export function readRowBox(page: Page, seq: string): Promise<RowBox | null> {
   return chatScrollContainer(page).evaluate(rowBoxIn, seq)
-}
-
-/** Read the height of each mounted row, by its sequence number (see rowHeightsIn). */
-export function readRowHeights(page: Page): Promise<Record<string, number>> {
-  return chatScrollContainer(page).evaluate(rowHeightsIn)
 }
 
 /** Read the sequence number of the mounted row whose text contains `text` (see rowSeqWithTextIn). */
@@ -257,17 +244,33 @@ export async function expectAtBottom(page: Page, when: string): Promise<void> {
 }
 
 /**
+ * Expect that the tail of the chat is `pixels` farther below the view than `before`, within 1px. `before` is a read of
+ * `chatDistanceFromBottom`. A scroll up by N pixels moves the tail N pixels farther below the view. A row that grows
+ * below the top of the view moves the tail farther still.
+ */
+export async function expectTailFartherBy(page: Page, before: number, pixels: number, when: string): Promise<void> {
+  const travelled = await chatDistanceFromBottom(page) - before
+  expect(Math.abs(travelled - pixels), `${when}: the tail is ${pixels}px farther below the view, within 1px (it is ${travelled}px farther)`).toBeLessThanOrEqual(1)
+}
+
+/**
  * Change the width of the viewport so that each row of the chat is `rowWidth` wide, and wait until the chat has that
- * width. The viewport keeps the height `viewHeight`.
+ * width. The viewport keeps its height.
  *
  * The page must have the layout of a narrow screen, where the chat takes the whole width less a fixed inset.
  */
-export async function resizeRowsTo(page: Page, rowWidth: number, viewHeight: number): Promise<void> {
+export async function resizeRowsTo(page: Page, rowWidth: number): Promise<void> {
   const viewport = page.viewportSize()
   expect(viewport, 'the page has a viewport').not.toBeNull()
   const inset = viewport!.width - await readContentBoxWidth(page)
-  await page.setViewportSize({ width: rowWidth + inset, height: viewHeight })
+  await page.setViewportSize({ width: rowWidth + inset, height: viewport!.height })
   await expect.poll(() => readContentBoxWidth(page), { message: `each row is ${rowWidth}px wide` }).toBe(rowWidth)
+}
+
+/** Resize the rows to `rowWidth` (see resizeRowsTo), then expect that the view rests at the bottom of the chat. */
+export async function resizeRowsAtBottom(page: Page, rowWidth: number): Promise<void> {
+  await resizeRowsTo(page, rowWidth)
+  await expectAtBottom(page, `at a row width of ${rowWidth}px`)
 }
 
 /** What a watch of one row saw over the frames that it ran. */
@@ -370,9 +373,12 @@ export function markedParagraphs(label: string, count: number, filler: string): 
   return Array.from({ length: count }, (_, i) => `${label}${i}: ${filler}`).join('\n\n')
 }
 
-/** The pattern that matches the marker at the start of a paragraph of `markedParagraphs(label, …)`. */
+/**
+ * The pattern that matches the marker at the start of a paragraph of `markedParagraphs(label, …)`. It matches each
+ * character of `label` literally, also a character with a meaning in a regular expression.
+ */
 export function paragraphMarker(label: string): RegExp {
-  return new RegExp(`^${label}\\d+:`)
+  return new RegExp(`^${escapeRegExp(label)}\\d+:`)
 }
 
 /** The characters of the unbroken texts of `widthSensitiveParagraphs`: glyphs of many widths in a proportional font. */
@@ -402,7 +408,9 @@ export function widthSensitiveParagraphs(label: string, count: number): string {
 /** The height that the hidden premeasure copy of a row committed, and the height key of the row at that commit. */
 export interface PremeasureCommit {
   height: number
-  /** The height key holds the 8px step of the row width, so a commit at another step has another key. */
+  /**
+   * The height key holds the exact row width and the fonts of the chat, so a commit at another width has another key.
+   */
   heightKey: string
 }
 
@@ -457,7 +465,8 @@ export async function recordPremeasureCommits(page: Page): Promise<PremeasureCom
  * startPremeasureRecordIn). Use it for a commit that can come before a call in the loaded page could start the
  * record, as right after the chat opens.
  *
- * It adds an init script to the page, which no API removes again, so a spec that calls it runs in a context of its
+ * It adds an init script to the page and hands its `Disposable` to no one. The reset of the shared page cannot
+ * dispose an init script whose `Disposable` it does not hold, so a spec that calls this helper runs in a context of its
  * own (ISOLATED_CONTEXT_SPECS in fixtures.ts).
  */
 export async function recordPremeasureCommitsFromNextLoad(page: Page): Promise<PremeasureCommits> {
@@ -465,6 +474,11 @@ export async function recordPremeasureCommitsFromNextLoad(page: Page): Promise<P
   return {
     commitOf: seq => page.evaluate(premeasureCommitIn, { key: PREMEASURE_COMMITS_KEY, seq }),
   }
+}
+
+/** A short scripted turn. */
+export function shortTurn(turn: number): ScriptedTurn {
+  return { prompt: `Turn ${turn}.`, answer: `Answer ${turn}.`, entry: 'insert' }
 }
 
 /**
@@ -488,8 +502,6 @@ export interface RowState {
   /** The distance from the top edge of the scroll container to the top edge of the row. */
   distance: number
   height: number
-  /** The app hides a row until the row measures its height, as while the row waits for its content. */
-  hidden: boolean
 }
 
 /** The state of each mounted row of `container`, in document order. Runs in the browser. */
@@ -501,7 +513,6 @@ export function rowStatesIn(container: Element): RowState[] {
       seq: row.dataset.seq ?? '',
       distance: rect.top - top,
       height: rect.height,
-      hidden: row.style.visibility === 'hidden',
     }
   })
 }
@@ -511,14 +522,11 @@ export function readRowStates(page: Page): Promise<RowState[]> {
   return chatScrollContainer(page).evaluate(rowStatesIn)
 }
 
-/**
- * The sequence numbers of the mounted rows of `container`, in document order. The hidden copy in which the app
- * measures a row is no mounted row, so a row under a premeasure root does not count. Runs in the browser.
- */
+/** The sequence numbers of the mounted rows of `container`, in document order. Runs in the browser. */
 export function mountedRowSeqsIn(container: Element): number[] {
   const seqs: number[] = []
   for (const row of Array.from(container.querySelectorAll<HTMLElement>('[data-seq]'))) {
-    if (row.dataset.seq !== undefined && row.closest('[data-chat-premeasure-root]') === null)
+    if (row.dataset.seq !== undefined)
       seqs.push(Number(row.dataset.seq))
   }
   return seqs
@@ -529,42 +537,18 @@ export function readMountedRowSeqs(page: Page): Promise<number[]> {
   return chatScrollContainer(page).evaluate(mountedRowSeqsIn)
 }
 
-/**
- * The first element under `root`, in document order, whose own text is exactly `text`, or null when none is.
- *
- * The own text of an element is a run of its text nodes with no child element between them. The comparison ignores
- * the white space at both ends of the run, and it counts each other run of white space as one space. So the element
- * that holds an icon and the text matches. A row that quotes the text inside a longer one does not match, and neither
- * does an ancestor of the match. This is the rule of an exact text locator of Playwright, which `loadingIndicator`
- * uses. Runs in the browser.
- */
-export function loadingIndicatorIn(root: Element, text: string): Element | null {
-  for (const element of Array.from(root.querySelectorAll('*'))) {
-    let run = ''
-    const runs: string[] = []
-    for (const node of Array.from(element.childNodes)) {
-      if (node.nodeType === Node.TEXT_NODE) {
-        run += node.nodeValue ?? ''
-      }
-      else if (node.nodeType === Node.ELEMENT_NODE) {
-        runs.push(run)
-        run = ''
-      }
-    }
-    runs.push(run)
-    if (runs.some(own => own.trim().replace(/\s+/g, ' ') === text))
-      return element
-  }
-  return null
-}
-
 /** The container of the one chat on screen. The shell hides the chat of an inactive tab, and that chat does not match. */
 const VISIBLE_CHAT_CONTAINER = '[data-testid="chat-container"]:visible'
 
 /**
- * The loading indicator of the chat on screen whose text is exactly `text`, such as "Loading older messages..." (see
- * loadingIndicatorIn for the rule). The indicators are overlays beside the scroll container, not inside it, so the
- * locator starts at the container of the chat.
+ * The loading indicator of the chat on screen whose text is exactly `text`, such as "Loading older messages...". The
+ * indicators are overlays beside the scroll container, not inside it, so the locator starts at the container of the
+ * chat.
+ *
+ * An element matches when its whole text equals `text`, and no child element of it matches too. The whole text holds
+ * the text of each descendant, and Playwright trims it and counts each run of white space in it as one space. The
+ * Spinner icon of an indicator has no text, so the `div` that holds the icon and the text matches. A row that quotes
+ * the text inside a longer one does not match.
  */
 export function loadingIndicator(page: Page, text: string): Locator {
   return page.locator(VISIBLE_CHAT_CONTAINER).getByText(text, { exact: true })
@@ -651,8 +635,9 @@ export interface HeldRenderReplies {
  * From the next navigation of `page` on, hold back each worker reply whose rendered HTML contains `marker` (see
  * installReplyHoldIn), until `release`.
  *
- * It adds an init script to the page, and no API removes an init script again. So only a spec with a page of its own
- * may call it: list the spec in ISOLATED_CONTEXT_SPECS (see fixtures.ts).
+ * It adds an init script to the page and hands its `Disposable` to no one. The reset of the shared page cannot
+ * dispose an init script whose `Disposable` it does not hold. So only a spec with a page of its own may call this
+ * helper: list the spec in ISOLATED_CONTEXT_SPECS (see fixtures.ts).
  *
  * The app ends a render that takes longer than its time budget, and then shows the source of the text. The budget
  * of a held reply runs from the moment its request is the oldest one of its worker without a reply:

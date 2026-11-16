@@ -47,11 +47,9 @@ function setup(opts: {
     getEl: () => div.el,
     hasNewerMessages: () => opts.hasNewer ?? false,
     followTail: spy('followTail'),
-    leaveFollow: spy('leaveFollow'),
     checkPosition: spy('checkPosition'),
     cancelScrollAnimation: spy('cancelScrollAnimation'),
     retakeScrollControl: spy('retakeScrollControl'),
-    rearmScrollBufferFiller: spy('rearmScrollBufferFiller'),
     rebase: spy('rebase'),
     placeAt,
     writeOwnScrollTop,
@@ -59,7 +57,8 @@ function setup(opts: {
   const extras = {
     forceScrollToBottom: spy('forceScrollToBottom'),
     cancelPendingScroll: spy('cancelPendingScroll'),
-    cancelPendingSeek: spy('cancelPendingSeek'),
+    takeReaderInput: spy('takeReaderInput'),
+    readerLeftBottom: spy('readerLeftBottom'),
     tryLoadOlderOnExplicitTopIntent: spy('tryLoadOlder'),
     tryLoadNewerOnExplicitBottomIntent: spy('tryLoadNewer'),
     setLastScrollDir: vi.fn(),
@@ -113,6 +112,39 @@ describe('createScrollInput', () => {
     await settle()
     expect(placeAt).toHaveBeenCalledOnce()
     expect(placeAt.mock.calls[0]![0]()).toBe(0)
+  })
+
+  it('ends the pending history jump of the hook before the landing of Home asks for the top', async () => {
+    const jump = deferred<boolean>()
+    const { input, ctx } = setup({
+      hasOlder: true,
+      onJumpToOldest: () => jump.promise,
+    })
+    input.handleKeyDown(key('Home'))
+    const signal = vi.mocked(ctx.beginHistoryJump).mock.results[0]!.value
+    expect(ctx.settleHistoryJump).not.toHaveBeenCalled()
+
+    jump.resolve(true)
+    await settle()
+
+    expect(ctx.settleHistoryJump).toHaveBeenCalledWith(signal)
+    expect(vi.mocked(ctx.settleHistoryJump).mock.invocationCallOrder[0]!)
+      .toBeLessThan(vi.mocked(ctx.requestPlace).mock.invocationCallOrder[0]!)
+  })
+
+  it('ends the pending history jump of the hook when the jump to the oldest page fails', async () => {
+    const jump = deferred<boolean>()
+    const { input, ctx } = setup({
+      hasOlder: true,
+      onJumpToOldest: () => jump.promise,
+    })
+    input.handleKeyDown(key('Home'))
+    const signal = vi.mocked(ctx.beginHistoryJump).mock.results[0]!.value
+
+    jump.reject(new Error('the oldest page did not load'))
+    await settle()
+
+    expect(ctx.settleHistoryJump).toHaveBeenCalledWith(signal)
   })
 
   it('re-checks the position and places nothing when the jump to the oldest page fails', async () => {
@@ -185,6 +217,23 @@ describe('createScrollInput', () => {
     expect(calls).toContain('checkPosition')
   })
 
+  it('retakes control for Home with no older history', () => {
+    const { input, calls } = setup()
+    input.handleKeyDown(key('Home'))
+    // Home is a command of the reader, as End is: it ends the pause of the buffer fill.
+    expect(calls).toContain('retakeScrollControl')
+  })
+
+  it('retakes control for Home before the jump to the oldest page', () => {
+    const { input, calls, ctx } = setup({
+      hasOlder: true,
+      onJumpToOldest: () => deferred<boolean>().promise,
+    })
+    input.handleKeyDown(key('Home'))
+    expect(calls).toContain('retakeScrollControl')
+    expect(ctx.beginHistoryJump).toHaveBeenCalledOnce()
+  })
+
   it('abandons the pending history jump for Home with no older history', () => {
     const { input, placeAt, ctx } = setup()
     input.handleKeyDown(key('Home'))
@@ -193,16 +242,21 @@ describe('createScrollInput', () => {
     expect(placeAt).toHaveBeenCalledOnce()
   })
 
-  it('abandons the pending history jump for a page', () => {
-    const { input, ctx } = setup({ scrollTop: 2000 })
+  it('takes an input of the reader for a page', () => {
+    const { input, extras } = setup({ scrollTop: 2000 })
     input.pageScroll(1)
-    expect(ctx.abandonHistoryJump).toHaveBeenCalledOnce()
+    expect(extras.takeReaderInput).toHaveBeenCalledOnce()
   })
 
   it('rebases, writes, and retakes control for a page that moves', () => {
     const { input, calls, div, writeOwnScrollTop } = setup({ scrollTop: 2000 })
     input.pageScroll(1)
-    expect(calls).toEqual(['rebase', 'writeOwnScrollTop', 'retakeScrollControl'])
+    expect(calls).toEqual([
+      'takeReaderInput',
+      'rebase',
+      'writeOwnScrollTop',
+      'retakeScrollControl',
+    ])
     // delta = max(500 - 48, 250) = 452.
     expect(writeOwnScrollTop).toHaveBeenCalledWith(2452, { refresh: true })
     expect(div.el.scrollTop).toBe(2452)
@@ -211,15 +265,15 @@ describe('createScrollInput', () => {
   it('leaves follow mode when PageUp moves the view', () => {
     const { input, calls } = setup({ scrollTop: 2000 })
     input.pageScroll(-1)
-    expect(calls.filter(call => call === 'leaveFollow')).toHaveLength(1)
+    expect(calls.filter(call => call === 'readerLeftBottom')).toHaveLength(1)
     // After the write, so the leave records the anchor of the new position.
-    expect(calls.indexOf('writeOwnScrollTop')).toBeLessThan(calls.indexOf('leaveFollow'))
+    expect(calls.indexOf('writeOwnScrollTop')).toBeLessThan(calls.indexOf('readerLeftBottom'))
   })
 
   it('keeps follow mode when PageUp cannot move', () => {
     const { input, calls } = setup({ scrollTop: 0 })
     input.pageScroll(-1)
-    expect(calls).not.toContain('leaveFollow')
+    expect(calls).not.toContain('readerLeftBottom')
     expect(calls).toContain('tryLoadOlder')
     expect(calls).not.toContain('retakeScrollControl')
   })
@@ -243,27 +297,27 @@ describe('createScrollInput', () => {
     // Half a pixel is no page: the view sits at the edge.
     expect(calls).toContain('tryLoadNewer')
     expect(calls).not.toContain('retakeScrollControl')
-    expect(calls).not.toContain('leaveFollow')
+    expect(calls).not.toContain('readerLeftBottom')
   })
 
   it('ends the request for the tail when PageDown leaves the view above the loaded bottom of a paged-away window', () => {
     const { input, calls, div } = setup({ scrollTop: 2000, hasNewer: true })
     input.pageScroll(1)
     expect(div.el.scrollTop).toBe(2452)
-    expect(calls.filter(call => call === 'leaveFollow')).toHaveLength(1)
+    expect(calls.filter(call => call === 'readerLeftBottom')).toHaveLength(1)
   })
 
   it('keeps the request for the tail when PageDown reaches the loaded bottom of a paged-away window', () => {
     const { input, calls, div } = setup({ scrollTop: 4200, hasNewer: true })
     input.pageScroll(1)
     expect(div.el.scrollTop).toBe(4500)
-    expect(calls).not.toContain('leaveFollow')
+    expect(calls).not.toContain('readerLeftBottom')
   })
 
-  it('does nothing for a hidden element', () => {
+  it('takes the input, and writes nothing, for a hidden element', () => {
     const { input, calls } = setup({ clientHeight: 0 })
     input.pageScroll(1)
-    expect(calls).toEqual([])
+    expect(calls).toEqual(['takeReaderInput'])
   })
 
   it('leaves follow mode on an upward wheel only with scroll room', () => {
@@ -271,13 +325,13 @@ describe('createScrollInput', () => {
     input.handleWheel(wheel(-10))
     div.setScrollTop(0)
     input.handleWheel(wheel(-10))
-    expect(calls.filter(call => call === 'leaveFollow')).toHaveLength(1)
+    expect(calls.filter(call => call === 'readerLeftBottom')).toHaveLength(1)
   })
 
   it('keeps follow mode on a downward wheel', () => {
     const { input, calls } = setup({ scrollTop: 2000 })
     input.handleWheel(wheel(10))
-    expect(calls).not.toContain('leaveFollow')
+    expect(calls).not.toContain('readerLeftBottom')
   })
 
   it('leaves follow mode on ArrowUp with scroll room', () => {
@@ -285,7 +339,7 @@ describe('createScrollInput', () => {
     input.handleKeyDown(key('ArrowUp'))
     div.setScrollTop(0)
     input.handleKeyDown(key('ArrowUp'))
-    expect(calls.filter(call => call === 'leaveFollow')).toHaveLength(1)
+    expect(calls.filter(call => call === 'readerLeftBottom')).toHaveLength(1)
   })
 
   it('ignores an upward wheel that a scroller inside the list takes', () => {
@@ -319,7 +373,7 @@ describe('createScrollInput', () => {
     // The inner scroller spans 1000px in a 300px box, so 700 is its bottom.
     const target = innerScrollerTarget(div.el, { scrollTop: 700 })
     dispatchInside(div, target, new WheelEvent('wheel', { deltaY: 10, bubbles: true }), input.handleWheel)
-    expect(calls).toEqual(['cancelPendingSeek', 'tryLoadNewer'])
+    expect(calls).toEqual(['takeReaderInput', 'tryLoadNewer'])
     expect(extras.setLastScrollDir).toHaveBeenCalledWith('newer')
   })
 
@@ -327,7 +381,7 @@ describe('createScrollInput', () => {
     const { input, div, calls } = setup({ scrollTop: 2000 })
     const target = innerScrollerTarget(div.el, { scrollTop: 0 })
     dispatchInside(div, target, new WheelEvent('wheel', { deltaY: -10, bubbles: true }), input.handleWheel)
-    expect(calls).toContain('leaveFollow')
+    expect(calls).toContain('readerLeftBottom')
   })
 
   it('leaves follow mode on an upward wheel inside an element that does not scroll', () => {
@@ -335,7 +389,7 @@ describe('createScrollInput', () => {
     // A position above 0 with `overflow-y: hidden`: the wheel cannot move that element.
     const target = innerScrollerTarget(div.el, { scrollTop: 200, overflowY: 'hidden' })
     dispatchInside(div, target, new WheelEvent('wheel', { deltaY: -10, bubbles: true }), input.handleWheel)
-    expect(calls).toContain('leaveFollow')
+    expect(calls).toContain('readerLeftBottom')
   })
 
   it('ignores a scroller outside the list', () => {
@@ -348,7 +402,7 @@ describe('createScrollInput', () => {
       ctrlKey: false,
       target: outside,
     } as unknown as WheelEvent)
-    expect(calls).toContain('leaveFollow')
+    expect(calls).toContain('readerLeftBottom')
   })
 
   it('ignores ArrowUp from inside a scroller that can move up', () => {
@@ -387,7 +441,7 @@ describe('createScrollInput', () => {
     input.handleKeyDown(event)
     div.setScrollTop(0)
     input.handleKeyDown(key(' ', { shiftKey: true }))
-    expect(calls.filter(call => call === 'leaveFollow')).toHaveLength(1)
+    expect(calls.filter(call => call === 'readerLeftBottom')).toHaveLength(1)
     expect(extras.setLastScrollDir).toHaveBeenCalledWith('older')
     expect(extras.tryLoadOlderOnExplicitTopIntent).toHaveBeenCalledTimes(2)
     // The browser scrolls the page.
@@ -398,7 +452,7 @@ describe('createScrollInput', () => {
     const { input, calls, extras } = setup({ scrollTop: 2000 })
     const event = key(' ')
     input.handleKeyDown(event)
-    expect(calls).toEqual(['cancelPendingSeek', 'tryLoadNewer'])
+    expect(calls).toEqual(['takeReaderInput', 'tryLoadNewer'])
     expect(extras.setLastScrollDir).toHaveBeenCalledWith('newer')
     // The browser scrolls the page.
     expect(event.defaultPrevented).toBe(false)
@@ -410,7 +464,7 @@ describe('createScrollInput', () => {
     const option = key('ArrowUp', { altKey: true })
     input.handleKeyDown(option)
     input.handleKeyDown(key('ArrowUp', { metaKey: true }))
-    expect(calls.filter(call => call === 'leaveFollow')).toHaveLength(2)
+    expect(calls.filter(call => call === 'readerLeftBottom')).toHaveLength(2)
     expect(extras.setLastScrollDir).toHaveBeenCalledWith('older')
     expect(option.defaultPrevented).toBe(false)
   })
@@ -421,9 +475,9 @@ describe('createScrollInput', () => {
     input.handleKeyDown(key('ArrowDown', { altKey: true }))
     input.handleKeyDown(key('ArrowDown', { metaKey: true }))
     expect(calls).toEqual([
-      'cancelPendingSeek',
+      'takeReaderInput',
       'tryLoadNewer',
-      'cancelPendingSeek',
+      'takeReaderInput',
       'tryLoadNewer',
     ])
     expect(extras.setLastScrollDir).toHaveBeenCalledWith('newer')
@@ -454,7 +508,7 @@ describe('createScrollInput', () => {
       ' ',
     ])
       input.handleKeyDown(key(k))
-    expect(extras.cancelPendingSeek).toHaveBeenCalledTimes(8)
+    expect(extras.takeReaderInput).toHaveBeenCalledTimes(8)
   })
 
   it('cancels nothing on a horizontal wheel', () => {
@@ -503,7 +557,7 @@ describe('createScrollInput', () => {
     const { input, extras } = setup()
     input.handleWheel(wheel(0, 0))
     expect(extras.cancelPendingScroll).toHaveBeenCalledOnce()
-    expect(extras.cancelPendingSeek).not.toHaveBeenCalled()
+    expect(extras.takeReaderInput).not.toHaveBeenCalled()
     expect(extras.setLastScrollDir).not.toHaveBeenCalled()
   })
 
@@ -549,30 +603,6 @@ describe('createScrollInput', () => {
     await settle()
 
     expect(ctx.requestPlace).not.toHaveBeenCalled()
-  })
-
-  it('pages the view, and ends nothing, while loaded rows exist and none is in the list', () => {
-    const { input, ctx, div, calls } = setup({ scrollTop: 2000 })
-    vi.mocked(ctx.awaitingFirstView).mockReturnValue(true)
-
-    input.pageScroll(-1)
-
-    // The content outside the rows still scrolls. No row shows a position, so the page is
-    // no input that takes control.
-    expect(div.getScrollTop()).toBe(1548)
-    expect(ctx.abandonHistoryJump).not.toHaveBeenCalled()
-    expect(calls).not.toContain('leaveFollow')
-  })
-
-  it('ends no follow mode for an upward wheel while loaded rows exist and none is in the list', () => {
-    const { input, ctx, extras, calls } = setup({ scrollTop: 2000 })
-    vi.mocked(ctx.awaitingFirstView).mockReturnValue(true)
-
-    input.handleWheel(wheel(-40))
-
-    expect(calls).not.toContain('leaveFollow')
-    // The input still reaches the hook, which decides there whether it counts.
-    expect(extras.cancelPendingSeek).toHaveBeenCalledOnce()
   })
 })
 

@@ -36,7 +36,14 @@ export function fakeRow(h: number): HTMLElement {
   return el
 }
 
-export interface VirtualizerSetupOptions extends Pick<UseChatVirtualizerOptions, 'scrollElement' | 'pinBottom' | 'spacerInsetPx'> {
+/** Mount a row with no layout yet: a read of it gives no height. */
+export function noLayoutRow(): HTMLElement {
+  const el = fakeRow(0)
+  el.getBoundingClientRect = () => new DOMRect(0, 0, 0, 0)
+  return el
+}
+
+export interface VirtualizerSetupOptions extends Pick<UseChatVirtualizerOptions, 'scrollElement' | 'pinBottom' | 'spacerInsetPx' | 'overscanPx'> {
   /**
    * The height (px) that the kit commits for every row at the start, as a hidden copy
    * does, and for each row that `setList` adds. Default: 100, so the rows are 100px tall
@@ -50,10 +57,16 @@ export interface VirtualizerSetupOptions extends Pick<UseChatVirtualizerOptions,
  * of its own, which it returns. The list holds measured rows only in the app, so the kit
  * measures every row (see VirtualizerSetupOptions.measured). `opts` passes a scroll
  * element, a bottom pin, and the inset of the spacer on, for the layout-shift tests.
+ * It also sets the overscan (px) of the rendered slice. Default: 0, so the slice holds
+ * the view alone.
  */
 export function setup(items: VirtualItem[], opts: VirtualizerSetupOptions = {}) {
   const { measured = 100, ...virtualizerOptions } = opts
-  const cache = createRowHeightCache()
+  // The kit protects no row as loaded: an eviction test fills the cache with rows of the
+  // list, and expects the eviction to drop the oldest of them.
+  const cache = createRowHeightCache({
+    loadedIds: () => [],
+  })
   // Commit the height for each row that the cache does not know yet. A row that the cache
   // knows keeps its entry, also under another key, so a test of a key change sees it.
   const measureUnknown = (rows: readonly VirtualItem[]): void => {
@@ -61,7 +74,7 @@ export function setup(items: VirtualItem[], opts: VirtualizerSetupOptions = {}) 
       return
     cache.commitAll(rows
       .filter(row => cache.debugEntry(row.id) === undefined)
-      .map(row => ({ row, height: measured, measuredKey: row.heightKey })))
+      .map(row => ({ row, height: measured })))
   }
   measureUnknown(items)
   const [list, setListSignal] = createSignal(items)

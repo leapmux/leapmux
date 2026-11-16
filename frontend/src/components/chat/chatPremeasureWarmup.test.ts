@@ -72,7 +72,7 @@ describe('chatPremeasureWarmup', () => {
       warmup = createPremeasureWarmup({
         enabled,
         visibleEntries: entriesSig,
-        virtualItems: itemsSig,
+        loadedItems: itemsSig,
         range,
         isMeasured: item => measured.has(item.id),
         excludedBandRows: opts.excludedBandRows ?? 2,
@@ -111,7 +111,9 @@ describe('chatPremeasureWarmup', () => {
     const items = ids.map(id => ({ id, hasSpanLines: false, heightKey: `k-${id}` } as VirtualItem))
     const entryById = new Map(entries.map(entry => [entry.message.id, entry]))
     const itemById = new Map(items.map(item => [item.id, item]))
-    const heights = createRowHeightCache()
+    const heights = createRowHeightCache({
+      loadedIds: () => ids,
+    })
     const mounts: string[] = []
     const disposes: string[] = []
     const [enabled, setEnabled] = createSignal(true)
@@ -122,17 +124,17 @@ describe('chatPremeasureWarmup', () => {
       warmup = createPremeasureWarmup({
         enabled,
         visibleEntries: () => entries,
-        virtualItems: () => items,
+        loadedItems: () => items,
         range: () => ({ start: 8, end: 10 }),
-        isMeasured: item => heights.heightOf(item) !== undefined,
+        isMeasured: heights.isMeasured,
         excludedBandRows: 2,
       })
       queue = createPremeasureQueue({
         heights,
         stagingEnabled: () => true,
         visibleEntryById: () => entryById,
-        virtualItemById: () => itemById,
-        virtualItems: () => items,
+        loadedItemById: () => itemById,
+        loadedItems: () => items,
         targetCandidates: () => [],
         lookAheadCandidates: () => [],
         warmupCandidates: warmup.warmupCandidates,

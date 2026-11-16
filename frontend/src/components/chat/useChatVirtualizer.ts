@@ -1,6 +1,6 @@
 import type { Accessor } from 'solid-js'
 import type { LayoutSnapshot } from './chatLayoutShift'
-import type { MeasurementCommitInfo, RowHeightCache } from './chatRowHeightCache'
+import type { RowHeightCache } from './chatRowHeightCache'
 import type { AnchorOffsetGeometry } from './chatScrollAnchor'
 import type { LayoutShiftSurface } from './createLayoutShift'
 import type { RowContentReadiness } from './createRowMeasurer'
@@ -309,8 +309,6 @@ export interface UseChatVirtualizerResult extends LayoutShiftSurface {
    * current key of the row, for the raw-JSON surface.
    */
   heightDebugOfId: (id: string) => { measured?: number }
-  /** Diagnostic: the most recent geometry-changing height commit, for WARN attribution. */
-  lastMeasurement: () => MeasurementCommitInfo | undefined
   /**
    * Compute (without committing) the visible slice for a given scroll coordinate.
    * `lead` extends the overscan in its `dir` (the fling direction) so a fast
@@ -341,7 +339,9 @@ export interface UseChatVirtualizerResult extends LayoutShiftSurface {
   /**
    * Whether the mounted row `id` shows the height that the offset map holds for it: a read
    * of the row gave or confirmed that height since the row mounted. False for a row that is
-   * not mounted, and for a mounted row that no read measured yet. The reader did not see
+   * not mounted, and for a mounted row that no read measured yet. A row whose last element
+   * detached counts as mounted until the microtask of that detach, because a new element
+   * can still take it over (see RowHeightCache.noteDetached). The reader did not see
    * the height of such a row: a hidden copy, the storage, or an earlier mount measured it,
    * and a fling skeleton or a copy that waits for its content can stand in for the row. The
    * first read of the row can change it, and the layout shift then holds the bottom edge
@@ -367,18 +367,25 @@ export interface UseChatVirtualizerResult extends LayoutShiftSurface {
   attachRow: (id: string, el: HTMLElement, readiness?: RowContentReadiness) => void
   /** Cleanup callback: stop observing a row element (keeps its cached height). */
   detachRow: (el: HTMLElement) => void
-  /**
-   * The ids of the rows currently MOUNTED in the DOM (the precise rendered set,
-   * maintained synchronously by attach/detach). A live, read-only view -- consumers
-   * read it at use time, never mutate it. The height-cache eviction protects these;
-   * exposed so a sibling cache (the per-message UI state) can protect the same set
-   * and never evict a visible row's choice.
-   */
-  mountedIds: ReadonlySet<string>
+}
+
+/** The rows of the list, with the index of each row by its id. */
+interface IndexedRows {
+  list: readonly VirtualItem[]
+  indexById: ReadonlyMap<string, number>
+}
+
+/** The item of row `id` in `rows`, or `undefined` for a row that is not in the list. */
+function itemOf(rows: IndexedRows, id: string): VirtualItem | undefined {
+  const index = rows.indexById.get(id)
+  return index === undefined
+    ? undefined
+    : rows.list[index]
 }
 
 /**
- * Geometry engine for the virtualized chat list. Owns the per-row height cache,
+ * Geometry engine for the virtualized chat list. Reads the height of each row from the
+ * RowHeightCache that the caller passes, and owns
  * the cumulative offset map, the visible-row slice, and, through createLayoutShift, the
  * layout shift that keeps the content under the reader in place across a geometry change
  * (see chatLayoutShift). It does not decide the scroll position: useChatScroll feeds
@@ -389,27 +396,18 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // which the admission and the premeasure queue also read.
   const cache = opts.heightCache
   // The ids of the rows currently MOUNTED in the DOM (see RowHeightCache.mountedIds). The
-  // row measurer maintains the set synchronously at attach and detach.
+  // cache keeps the set from the mount notices of the row measurer.
   const mountedIds = cache.mountedIds
   // Reactive "fast user scroll in flight" flag, set by the scroll hook for ANY
   // genuine user scroll at fling velocity — momentum flings AND direct drags
   // (scrollbar thumb, touch). Rows entering the window read it to decide
   // skeleton-vs-full mount (ChatView's fling skeletons).
   const [fastScrollActive, setFastScrollActive] = createSignal(false)
-  // The mounted rows whose height is of another key than their current one (a provisional
-  // height, see RowHeightCache.heightOf), found by the last run of `rowIndex`. An effect
-  // below asks the measurer to read each of them again.
-  const rekeyedMountedIds: string[] = []
-  // The key for which the virtualizer asked for such a read, by row id, so that it asks
-  // once for each key of a row. An entry leaves when the row unmounts, and when the cache
-  // holds a height of the current key again.
+  // The key for which the virtualizer asked the measurer to read a mounted row again, by
+  // row id, so that it asks once for each key of a row (see the effect below the
+  // measurer). An entry leaves when the row unmounts, and when the cache holds a height of
+  // the current key again.
   const rereadKeyById = new Map<string, string | undefined>()
-  // The row list of the last run of `rowIndex`, as plain state. The unmount of a row reads
-  // it: a cleanup must not read a memo of an owner that Solid can be disposing.
-  let latestRows: { list: VirtualItem[], indexById: ReadonlyMap<string, number> } = {
-    list: [],
-    indexById: new Map(),
-  }
 
   // A row's height: the height that the cache holds for it. Every row of the list has one
   // in the app, because the admission passes measured rows only. The fallback of 0 only
@@ -421,7 +419,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // row: a height from a hidden copy or from storage, or the height of an
   // earlier mount, under a fling skeleton or a copy that waited for its content. Each
   // later read changes a height that the reader saw (see sawHeight). A row that stays
-  // mounted while a new element takes it over keeps its count: the reader saw it.
+  // mounted while a new element takes it over keeps its count: the reader saw it. That
+  // holds for both orders of the takeover (see noteRowUnmounted).
   const readsSinceMount = new Map<string, number>()
   // See UseChatVirtualizerResult.showsHeight.
   const showsHeight = (id: string): boolean => (readsSinceMount.get(id) ?? 0) > 0
@@ -436,45 +435,33 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   const rowsAboveView = new Set<string>()
   const enteredFromAbove = (id: string): boolean => rowsAboveView.has(id)
 
-  // Set by the cleanup of the virtualizer: a microtask that an unmount queued does nothing
-  // after it.
-  let disposed = false
-  onCleanup(() => {
-    disposed = true
-  })
-
-  // The last element of the row detached: the next mount shows the reader no height yet.
+  // The last element of the row detached.
+  //
+  // The row is not unmounted yet. A row whose entry changes (new content under a new key)
+  // is replaced in one update of the row list: its old element detaches before its new
+  // element attaches. The cache counts the row as mounted for one microtask (see
+  // RowHeightCache.noteDetached), and between the two steps the row must still count as
+  // measured, in two ways:
+  //
+  // - The cache keeps its answer. A reader of the heights in that moment, such as
+  //   `attachRow` when it asks whether the row lies above the view, would otherwise
+  //   compute the offset map with a height of 0 for the row. Nothing would correct that
+  //   map: the row is mounted again, so no version changes.
+  // - The cache changes no version. The admission would otherwise take the row, and each
+  //   row on its far side, out of the list until a hidden copy measured it again: the
+  //   rows under the reader would vanish and return.
+  //
+  // The records of the mounted row stay for the same microtask: the reader saw the row
+  // that a new element takes over, whatever the order of the detach and the attach. That
+  // holds also when the new element waits for its content: the row then keeps the slot
+  // that the reader saw, and the read of the content changes a height that the reader
+  // saw. Only a row that no element took over drops its records: its next mount shows the
+  // reader no height yet.
   const noteRowUnmounted = (id: string): void => {
-    readsSinceMount.delete(id)
-    rowsAboveView.delete(id)
-    rereadKeyById.delete(id)
-    // A provisional height describes only the element that still showed it, so the cache
-    // stops answering for the row, and each reader of the heights must compute again.
-    //
-    // That waits for a microtask, and it does not happen for a row that is mounted again
-    // by then. A row whose entry changes (new content under a new key) is replaced in one
-    // update of the row list: its old element detaches before its new element attaches.
-    // Between the two steps the row must still count as measured, in two ways:
-    //
-    // - The cache keeps its answer (the hold below). A reader of the heights in that
-    //   moment, such as `attachRow` when it asks whether the row lies above the view,
-    //   would otherwise compute the offset map with a height of 0 for the row. Nothing
-    //   would correct that map: the row is mounted again, so no version changes.
-    // - The cache changes no version. The admission would otherwise take the row, and each
-    //   row on its far side, out of the list until a hidden copy measured it again: the
-    //   rows under the reader would vanish and return.
-    const endHold = cache.holdDetached(id)
-    queueMicrotask(() => {
-      endHold()
-      if (disposed || mountedIds.has(id))
-        return
-      // A row that left the list has no key to answer for.
-      const index = latestRows.indexById.get(id)
-      const item = index === undefined
-        ? undefined
-        : latestRows.list[index]
-      if (item !== undefined)
-        cache.noteUnmounted(item)
+    cache.noteDetached(id, () => {
+      readsSinceMount.delete(id)
+      rowsAboveView.delete(id)
+      rereadKeyById.delete(id)
     })
   }
 
@@ -507,11 +494,7 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // cache, which rebuilds the offsets below; re-running the n string-keyed
   // Map.set calls per commit rebuilt a map that could not have changed (dozens of
   // commits per fling through unmeasured history made that the dominant rebuild
-  // cost). The search for a mounted row whose key changed runs here for the same reason:
-  // a cached height goes stale only when its item's heightKey changes, which changes the
-  // list identity. The cache answers by key, so nothing has to drop a height here: a
-  // mounted row keeps the height of its old key provisionally (see RowHeightCache.heightOf),
-  // and the virtualizer asks for one read of its element under the new key.
+  // cost).
   const rowIndex = createMemo(() => {
     const list = opts.items()
     const n = list.length
@@ -520,26 +503,6 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       const item = list[i]
       if (item !== undefined)
         indexById.set(item.id, i)
-    }
-    latestRows = { list, indexById }
-    for (const id of mountedIds) {
-      const index = indexById.get(id)
-      const item = index === undefined
-        ? undefined
-        : list[index]
-      // No read for a row that left the list, and none for a mounted row with no height:
-      // the measurer reads that row at its attach.
-      if (item === undefined || cache.debugEntry(id) === undefined)
-        continue
-      if (cache.isCurrent(item)) {
-        rereadKeyById.delete(id)
-        continue
-      }
-      // One read for each key of a row: a list change that keeps the key asks for nothing.
-      if (rereadKeyById.has(id) && rereadKeyById.get(id) === item.heightKey)
-        continue
-      rereadKeyById.set(id, item.heightKey)
-      rekeyedMountedIds.push(id)
     }
     return { list, indexById, n }
   })
@@ -614,34 +577,19 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
       : 0
   }
 
-  // The height key of row `id` in the current list. It reads `rowIndex`, not `geom`: the
-  // measurer calls it for each read that it commits, and inside the batch of one flush a
-  // read of `geom` after a commit would rebuild the whole offset map once per commit.
-  const currentHeightKey = (id: string): string | undefined => {
-    const { list, indexById } = rowIndex()
-    const index = indexById.get(id)
-    const item = index === undefined
-      ? undefined
-      : list[index]
-    return item !== undefined
-      ? item.heightKey
-      : undefined
-  }
+  // The current item of row `id`, or `undefined` for a row that left the list. It reads
+  // `rowIndex`, not `geom`: the measurer asks for each read that it commits, and inside
+  // the batch of one flush a read of `geom` after a commit would rebuild the whole offset
+  // map once per commit.
+  const currentItem = (id: string): VirtualItem | undefined => itemOf(rowIndex(), id)
 
   // Debug-only: the measured height of a row, under its current key when the row is in
-  // the list.
+  // the list. It reads `geom`, so it follows the version of the cache.
   const heightDebugOfId = (id: string): { measured?: number } => {
-    const rawMeasured = cache.debugEntry(id)
-    const i = indexOfId(id)
-    if (i < 0) {
-      return rawMeasured !== undefined
-        ? { measured: rawMeasured.height }
-        : {}
-    }
-    const item = geom().list[i]
-    const measured = item !== undefined && rawMeasured !== undefined && rawMeasured.key === item.heightKey
-      ? rawMeasured.height
-      : undefined
+    const item = itemOf(geom(), id)
+    const measured = item === undefined
+      ? cache.debugEntry(id)?.height
+      : cache.heightUnderCurrentKey(item)
     return measured !== undefined
       ? { measured }
       : {}
@@ -757,15 +705,6 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     },
   )
 
-  // The current item of row `id`, or `undefined` for a row that left the list. It reads
-  // `rowIndex`, not `geom`, for the reason that `currentHeightKey` gives.
-  const currentItem = (id: string): VirtualItem | undefined => {
-    const { list, indexById } = rowIndex()
-    const index = indexById.get(id)
-    return index === undefined
-      ? undefined
-      : list[index]
-  }
   const measure = (id: string, height: number): boolean => {
     // Count the read before its commit: the layout shift of the commit asks sawHeight.
     readsSinceMount.set(id, (readsSinceMount.get(id) ?? 0) + 1)
@@ -774,25 +713,52 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     return item !== undefined && cache.commit(item, height, item.heightKey, 'visible') === 'moved'
   }
   // The ResizeObserver / batched-microtask-flush DOM glue lives in createRowMeasurer
-  // (its coupling here is `measure`, the height key and the shared mountedIds set),
-  // keeping this file the offset engine. The default
+  // (its coupling here is `measure`, the height key, the height under that key, and the
+  // mount notices for the cache), keeping this file the offset engine. The default
   // scheduler/observer are the production ones; a unit test injects fakes to drive
   // the flush timing deterministically.
   const measurer = createRowMeasurer({
     measure,
-    mountedIds,
+    currentMeasurementKey: id => currentItem(id)?.heightKey,
+    committedHeight: (id) => {
+      const item = currentItem(id)
+      return item === undefined
+        ? undefined
+        : cache.heightUnderCurrentKey(item)
+    },
+    onRowMounted: cache.noteMounted,
     onRowUnmounted: noteRowUnmounted,
-    currentMeasurementKey: currentHeightKey,
   })
   const { detachRow } = measurer
   onCleanup(measurer.dispose)
-  // Read each mounted row whose key changed again, at the measurer's next
-  // flush: a row whose new content keeps its height never resizes, and only a read of
-  // its element confirms the height under the new key.
+  // Read each mounted row whose key changed again, at the measurer's next flush. The cache
+  // answers by key, so nothing drops a height at a key change: a mounted row keeps the
+  // height of its old key provisionally (see RowHeightCache.heightOf). A row whose new
+  // content keeps its height never resizes, so only a read of its element confirms the
+  // height under the new key.
+  //
+  // The search follows the row list alone: a cached height goes out of date only when the
+  // heightKey of its item changes, which changes the identity of the list. The cache
+  // lookups below read no signal.
   createEffect(() => {
-    rowIndex()
-    for (const id of rekeyedMountedIds.splice(0))
+    const rows = rowIndex()
+    for (const id of mountedIds) {
+      const item = itemOf(rows, id)
+      // No read for a row that left the list.
+      if (item === undefined)
+        continue
+      // No read for a row whose height is of its current key, and none for a row with no
+      // height: the measurer reads that row at its attach.
+      if (!cache.hasProvisionalHeight(item)) {
+        rereadKeyById.delete(id)
+        continue
+      }
+      // One read for each key of a row: a list change that keeps the key asks for nothing.
+      if (rereadKeyById.has(id) && rereadKeyById.get(id) === item.heightKey)
+        continue
+      rereadKeyById.set(id, item.heightKey)
       measurer.measureAgain(id)
+    }
   })
 
   // The layout shift on top of the offset map (see createLayoutShift). It needs the row
@@ -832,8 +798,8 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   const attachRow = (id: string, el: HTMLElement, readiness?: RowContentReadiness): void => {
     // The record comes before the attach: the measurer reads the row at once, and the
     // layout shift of that read asks enteredFromAbove. A row that a new element takes over
-    // stays mounted, and keeps its record.
-    if (!mountedIds.has(id) && viewportScrollTop !== undefined && liesAboveView(id, viewportScrollTop))
+    // stays mounted, and keeps its record (see noteRowUnmounted).
+    if (!cache.isMounted(id) && viewportScrollTop !== undefined && liesAboveView(id, viewportScrollTop))
       rowsAboveView.add(id)
     measurer.attachRow(id, el, readiness)
   }
@@ -911,7 +877,6 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     heightOfId,
     gapAboveOf,
     heightDebugOfId,
-    lastMeasurement: cache.lastMeasurement,
     computeRange,
     updateViewport,
     notePlacement,
@@ -921,6 +886,5 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     setFastScrollActive,
     attachRow,
     detachRow,
-    mountedIds,
   }
 }

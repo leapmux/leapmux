@@ -1,8 +1,7 @@
 import type { VirtualItem } from './useChatVirtualizer'
-import { createRoot, createSignal } from 'solid-js'
+import { createRoot } from 'solid-js'
 import { describe, expect, it } from 'vitest'
-import { createRowHeightCache, HEIGHT_CACHE_MAX } from './chatRowHeightCache'
-import { useChatVirtualizer } from './useChatVirtualizer'
+import { HEIGHT_CACHE_EVICTION_BATCH, HEIGHT_CACHE_MAX } from './chatRowHeightCache'
 import { fakeRow, makeItems, plainItems, setup } from './useChatVirtualizer.testkit'
 
 describe('useChatVirtualizer geometry', () => {
@@ -171,7 +170,7 @@ describe('useChatVirtualizer geometry', () => {
     })
   })
 
-  it('evicts the least-recently-measured height once over the cap', () => {
+  it('evicts the least-recently-measured heights once over the cap', () => {
     createRoot((dispose) => {
       // One row more than the cap, and no row mounted or protected as loaded.
       const { virt } = setup(plainItems(HEIGHT_CACHE_MAX + 1), { measured: false })
@@ -179,11 +178,13 @@ describe('useChatVirtualizer geometry', () => {
       virt.measure('m1', 500)
       expect(virt.heightOfId('m1')).toBe(500)
       // HEIGHT_CACHE_MAX more distinct rows push the cache one past the cap, so the
-      // height of m1 is evicted, and the row has no height again.
+      // eviction drops the oldest heights, one batch below the cap: the height of m1 is
+      // evicted, and the row has no height again.
       for (let i = 2; i <= HEIGHT_CACHE_MAX + 1; i++)
         virt.measure(`m${i}`, 100)
       expect(virt.heightOfId('m1')).toBe(0)
-      expect(virt.heightOfId('m2')).toBe(100)
+      expect(virt.heightOfId(`m${HEIGHT_CACHE_EVICTION_BATCH + 1}`)).toBe(0)
+      expect(virt.heightOfId(`m${HEIGHT_CACHE_EVICTION_BATCH + 2}`)).toBe(100)
       dispose()
     })
   })
@@ -212,26 +213,26 @@ describe('useChatVirtualizer geometry', () => {
     })
   })
 
-  it('reflects mounted rows in mountedIds: attachRow adds an id, detachRow removes it', () => {
+  it('reflects mounted rows in the mounted set of the cache: attachRow adds an id, detachRow removes it', () => {
     createRoot((dispose) => {
       try {
-        const { virt } = setup(plainItems(3)) // m1, m2, m3
-        expect(virt.mountedIds.size).toBe(0)
+        const { virt, cache } = setup(plainItems(3)) // m1, m2, m3
+        expect(cache.mountedIds.size).toBe(0)
         // attachRow joins the protected set, keyed by the SAME element instance that
         // detachRow later resolves back to an id through the reverse elToId map.
         const r1 = fakeRow(100)
         const r2 = fakeRow(120)
         virt.attachRow('m1', r1)
         virt.attachRow('m2', r2)
-        expect(virt.mountedIds.has('m1')).toBe(true)
-        expect(virt.mountedIds.has('m2')).toBe(true)
-        expect(virt.mountedIds.size).toBe(2)
+        expect(cache.mountedIds.has('m1')).toBe(true)
+        expect(cache.mountedIds.has('m2')).toBe(true)
+        expect(cache.mountedIds.size).toBe(2)
         // Detaching one element drops only its id; the other stays mounted (and
         // protected). mountedIds is the live set, so the getter reflects the change.
         virt.detachRow(r1)
-        expect(virt.mountedIds.has('m1')).toBe(false)
-        expect(virt.mountedIds.has('m2')).toBe(true)
-        expect(virt.mountedIds.size).toBe(1)
+        expect(cache.mountedIds.has('m1')).toBe(false)
+        expect(cache.mountedIds.has('m2')).toBe(true)
+        expect(cache.mountedIds.size).toBe(1)
       }
       finally {
         dispose()
@@ -290,17 +291,7 @@ describe('useChatVirtualizer geometry', () => {
 
   it('keeps adjacent rows mounted when one row is taller than the pixel overscan band', () => {
     createRoot((dispose) => {
-      const items = plainItems(5)
-      const [list] = createSignal(items)
-      const heightCache = createRowHeightCache()
-      heightCache.commitAll(items.map(row => ({ row, height: 100, measuredKey: row.heightKey })))
-      const virt = useChatVirtualizer({
-        items: list,
-        heightCache,
-        overscanPx: 1200,
-        gapSmallPx: 10,
-        gapLargePx: 20,
-      })
+      const { virt } = setup(plainItems(5), { overscanPx: 1200 })
       // Row m2 is taller than viewport + top/bottom overscan, so the pure pixel
       // intersection in the middle of the row would collapse the slice to just m2.
       // Keep its immediate neighbors mounted anyway: crossing a tall-row boundary

@@ -1,5 +1,17 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { fontVariantAvailable, fontVariantSpecs } from './fontFaces'
+import { describe, expect, it } from 'vitest'
+import { stubDocumentFonts } from '~/test-support/documentFonts'
+import { fontLoadRetryDelayMs, fontVariantAvailable, fontVariantSpecs } from './fontFaces'
+
+describe('fontLoadRetryDelayMs', () => {
+  it.each([
+    [0, 300],
+    [1, 600],
+    [2, 1200],
+    [3, 2400],
+  ])('waits the base, doubled for each earlier retry (%i earlier gives %i ms)', (retriesUsed, delayMs) => {
+    expect(fontLoadRetryDelayMs(retriesUsed)).toBe(delayMs)
+  })
+})
 
 describe('fontVariantSpecs', () => {
   it('gives one shorthand for each of the four faces, with the size and the family', () => {
@@ -13,42 +25,26 @@ describe('fontVariantSpecs', () => {
 })
 
 describe('fontVariantAvailable', () => {
-  // jsdom implements no `document.fonts`, so each case installs the API that it needs.
-  let originalFonts: PropertyDescriptor | undefined
-
-  function installFonts(check: (spec: string) => boolean): void {
-    Object.defineProperty(document, 'fonts', {
-      configurable: true,
-      value: { check },
-    })
-  }
-
-  beforeEach(() => {
-    originalFonts = Object.getOwnPropertyDescriptor(document, 'fonts')
-  })
-
-  afterEach(() => {
-    if (originalFonts)
-      Object.defineProperty(document, 'fonts', originalFonts)
-    else
-      delete (document as { fonts?: unknown }).fonts
-  })
-
+  // jsdom implements no `document.fonts`, so each case stubs the API that it needs.
   it('answers what the font API answers', () => {
-    installFonts(spec => spec === 'normal normal 1em Loaded')
+    stubDocumentFonts({
+      check: spec => spec === 'normal normal 1em Loaded',
+    })
     expect(fontVariantAvailable('normal normal 1em Loaded')).toBe(true)
     expect(fontVariantAvailable('normal normal 1em Missing')).toBe(false)
   })
 
   it('answers false when the check throws', () => {
-    installFonts(() => {
-      throw new SyntaxError('unparseable font shorthand')
+    stubDocumentFonts({
+      check: () => {
+        throw new SyntaxError('unparseable font shorthand')
+      },
     })
     expect(fontVariantAvailable('not a valid family')).toBe(false)
   })
 
   it('answers false when the document has no font API', () => {
-    delete (document as { fonts?: unknown }).fonts
+    stubDocumentFonts(undefined)
     expect(fontVariantAvailable('normal normal 1em Mono')).toBe(false)
   })
 })

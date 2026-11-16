@@ -11,6 +11,7 @@ import {
   dragChatUp,
   expectAtBottom,
   expectRowHeld,
+  expectTailFartherBy,
   holdRenderRepliesWith,
   largeBodyFiller,
   loadingIndicator,
@@ -18,10 +19,13 @@ import {
   readRowBox,
   readRowSeqWithText,
   readRowStates,
+  readViewportHeight,
   recordPremeasureCommits,
   requireTopRow,
+  resizeRowsAtBottom,
   resizeRowsTo,
   sendLongTurn,
+  shortTurn,
   waitForScrollRest,
   watchRow,
   widthSensitiveParagraphs,
@@ -111,15 +115,12 @@ const ROW_SIZES = [
   { views: 10, paragraphs: 15 },
 ] as const
 
-/** A short scripted turn. */
-function shortTurn(turn: number) {
-  return { prompt: `Turn ${turn}.`, answer: `Answer ${turn}.`, entry: 'insert' as const }
-}
-
 /** A seeded chat whose tall row waits for its render. */
 interface LateChat {
   /** The sequence number of the tall row. */
   lateSeq: string
+  /** The sequence number of the row below the tall row in the list. */
+  rowAfterLateSeq: number
   /** The hold on the render of the tall row. */
   held: HeldRenderReplies
   /** The height of the view. */
@@ -166,6 +167,9 @@ async function seedChatWithLateRow(
   await sendLongTurn(page, script, 'Reply with a long report.', report, `${LATE_LABEL}${paragraphs - 1}:`)
   const lateSeq = await readRowSeqWithText(page, `${LATE_LABEL}0:`)
   expect(lateSeq, 'the tall row is mounted at the tail').not.toBeNull()
+  // Read the row below the tall row while the view is at the tail. After the short turns below, that row can be too
+  // far above the view to be mounted.
+  const rowAfterLateSeq = await readRowSeqAfter(page, Number(lateSeq))
   for (let i = 0; i < turnsBelow; i++)
     await sendScriptedTurn(page, script, shortTurn(++turn))
   await expectAtBottom(page, 'after the seed')
@@ -182,7 +186,7 @@ async function seedChatWithLateRow(
     await clearStoredRenders(page)
     await page.goto(chatUrl)
     await expect(chatScrollContainer(page), 'the chat opens again').toBeVisible()
-    await resizeRowsTo(page, ROW_WIDTH, VIEW_HEIGHT)
+    await resizeRowsTo(page, ROW_WIDTH)
     await expect(assistantBubbles(page), 'no answer shows while the first view waits').toHaveCount(0)
   }
   else {
@@ -191,12 +195,12 @@ async function seedChatWithLateRow(
     await expect(assistantBubbles(page).filter({ hasText: `Answer ${turn}.` }), 'the last answer shows after the reload').toHaveCount(1)
     await expectAtBottom(page, 'after the reload')
     // The tall row cannot measure at this width: its render is held, and no height of this width is stored.
-    await resizeRowsTo(page, ROW_WIDTH, VIEW_HEIGHT)
-    await expectAtBottom(page, `at a row width of ${ROW_WIDTH}px`)
+    await resizeRowsAtBottom(page, ROW_WIDTH)
   }
-  const viewHeight = await chatScrollContainer(page).evaluate(container => container.clientHeight)
+  const viewHeight = await readViewportHeight(page)
   return {
     lateSeq: lateSeq!,
+    rowAfterLateSeq,
     held,
     viewHeight,
     lateEndAboveBottom,
@@ -211,8 +215,22 @@ async function readRowEndAboveBottom(page: Page, seq: string): Promise<number | 
   const box = await readRowBox(page, seq)
   if (box === null)
     return null
-  const viewHeight = await chatScrollContainer(page).evaluate(container => container.clientHeight)
+  const viewHeight = await readViewportHeight(page)
   return viewHeight - (box.distance + box.height)
+}
+
+/**
+ * Read the sequence number of the first row below the row of `seq` in the list, once such a row is mounted. It is not
+ * always `seq + 1`: a message that the chat does not show, such as a hidden frame of the provider, takes a sequence
+ * number and draws no row.
+ */
+async function readRowSeqAfter(page: Page, seq: number): Promise<number> {
+  let after = Number.POSITIVE_INFINITY
+  await expect.poll(async () => {
+    after = Math.min(...(await readMountedRowSeqs(page)).filter(mounted => mounted > seq))
+    return after
+  }, { message: `a row below the row of seq ${seq} is in the list` }).toBeLessThan(Number.POSITIVE_INFINITY)
+  return after
 }
 
 /**
@@ -224,14 +242,13 @@ async function readRowEndAboveBottom(page: Page, seq: string): Promise<number | 
  * and the view can move up again.
  */
 async function scrollUpToMeasuredEnd(page: Page, chat: LateChat): Promise<void> {
-  const rowAfterLate = Number(chat.lateSeq) + 1
   for (let step = 0; ; step++) {
     expect(step, 'the reader reaches the end of the measured rows within the expected number of steps').toBeLessThan(STEPS_MAX)
     const before = await chatDistanceFromBottom(page)
     await dragChatUp(page, STEP_PX)
     if (await chatDistanceFromBottom(page) - before >= MOVED_PX)
       continue
-    if ((await readMountedRowSeqs(page))[0] === rowAfterLate)
+    if ((await readMountedRowSeqs(page))[0] === chat.rowAfterLateSeq)
       return
     await expect.poll(() => chatScrollTop(page), { message: 'the rows above join the list, so the view can move up again' }).toBeGreaterThan(0)
   }
@@ -252,12 +269,6 @@ function expectRowsHeld(before: RowState[], after: RowState[], which: string): v
   }
 }
 
-/** Expect that the tail of the chat is `pixels` farther below the view than `before`, within 1px. */
-async function expectTailFartherBy(page: Page, before: number, pixels: number, when: string): Promise<void> {
-  const travelled = await chatDistanceFromBottom(page) - before
-  expect(Math.abs(travelled - pixels), `${when}: the tail is ${pixels}px farther below the view, within 1px (it is ${travelled}px farther)`).toBeLessThanOrEqual(1)
-}
-
 /** Wait until the page drew `frames` animation frames. */
 function framesPass(page: Page, frames: number): Promise<void> {
   return page.evaluate(count => new Promise<void>((resolve) => {
@@ -276,11 +287,17 @@ function framesPass(page: Page, frames: number): Promise<void> {
 /**
  * The sequence number of the prompt of the tall row: of the rail marks, the last one before the tall row. The rail
  * draws one mark for each message of the user, also for a row that is not mounted.
+ *
+ * The app loads the marks in a request of their own, which can end after the rows show, and the rail draws no mark
+ * until then. So the read waits for the marks.
  */
 async function promptSeqOfLateRow(page: Page, chat: LateChat): Promise<string> {
-  const seqs = await page.locator(RAIL_DOT).evaluateAll(marks => marks.map(mark => Number((mark as HTMLElement).dataset.seq)))
-  const before = seqs.filter(seq => Number.isFinite(seq) && seq < Number(chat.lateSeq))
-  expect(before.length, 'the rail has a mark for the prompt of the tall row').toBeGreaterThan(0)
+  let before: number[] = []
+  await expect.poll(async () => {
+    const seqs = await page.locator(RAIL_DOT).evaluateAll(marks => marks.map(mark => Number((mark as HTMLElement).dataset.seq)))
+    before = seqs.filter(seq => Number.isFinite(seq) && seq < Number(chat.lateSeq))
+    return before.length
+  }, { message: 'the rail has a mark for the prompt of the tall row' }).toBeGreaterThan(0)
   return String(Math.max(...before))
 }
 
@@ -378,7 +395,7 @@ test.describe('chat scroll stability while the content of a tall row arrives lat
     const top = await requireTopRow(page)
     const tailBefore = await chatDistanceFromBottom(page)
 
-    await resizeRowsTo(page, ROW_WIDTH + WIDTH_CHANGE_PX, VIEW_HEIGHT)
+    await resizeRowsTo(page, ROW_WIDTH + WIDTH_CHANGE_PX)
     // The app measures again each row that is not on screen, and such a row is out of the list until then. So the
     // list ends above the tail for some frames, and the tail is as far below the view as before once the rows below
     // the view joined the list again. Each of them is one short line, which is as tall at the new width.

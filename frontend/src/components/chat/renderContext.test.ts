@@ -75,6 +75,59 @@ describe('imageActionsFrom', () => {
     expect(actions.deferLoad()).toBe(false)
   })
 
+  it('answers no cached size before a read when the host supplies a size reader', () => {
+    const actions = imageActionsFrom({
+      fileImageSize: async () => ({ width: 1, height: 1 }),
+    })!
+
+    // "No size" is the answer of a read. A view that got it here would never ask the reader.
+    expect(actions.cachedFileImageSize('/p.png')).toBeUndefined()
+  })
+
+  it('answers "no size" from the cache when the host supplies no size reader', async () => {
+    const actions = imageActionsFrom({
+      openImage: () => {},
+    })!
+
+    // No read can give a size, so a view must not wait for one.
+    expect(actions.cachedFileImageSize('/p.png')).toBeNull()
+    await expect(actions.loadFileImageSize('/p.png')).resolves.toBeUndefined()
+  })
+
+  it('passes the size channel and the readiness scope of the host through', async () => {
+    const size = { width: 400, height: 200 }
+    const readiness = {
+      track: () => {},
+      trackReplacing: () => {},
+    }
+    const actions = imageActionsFrom({
+      fileImageSize: async () => size,
+      cachedFileImageSize: () => size,
+      readiness,
+    })!
+
+    await expect(actions.loadFileImageSize('/p.png')).resolves.toBe(size)
+    expect(actions.cachedFileImageSize('/p.png')).toBe(size)
+    expect(actions.readiness).toBe(readiness)
+  })
+
+  it.each([
+    [
+      'a size reader',
+      {
+        fileImageSize: async () => undefined,
+      },
+    ],
+    [
+      'a cache of sizes',
+      {
+        cachedFileImageSize: () => null,
+      },
+    ],
+  ])('builds from %s alone', (_member, host) => {
+    expect(imageActionsFrom(host)).toBeDefined()
+  })
+
   // The premeasure-only case: a hidden measurement mount supplies no file channel
   // and no opener, and still needs the decode hint the pass requires.
   it('builds from a premeasure hint alone', () => {

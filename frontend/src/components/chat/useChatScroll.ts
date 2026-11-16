@@ -1,5 +1,6 @@
 import type { Accessor } from 'solid-js'
 import type { AdmissionRequest, AdmissionTarget, AdmissionViewAnchor, RowAdmission } from './chatRowAdmission'
+import type { AnchorRow } from './chatScrollAnchor'
 import type { ChatScrollController } from './chatScrollPreserve'
 import type { UseChatVirtualizerResult, ViewportLead } from './useChatVirtualizer'
 import type { AgentChatMessage, AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -52,37 +53,57 @@ export type ChatScrollVirtualizer = Pick<
  */
 export type ChatScrollAdmission = Pick<
   RowAdmission,
-  'stagedAbove' | 'stagedBelow' | 'awaitingFirstView' | 'holdsTail' | 'request'
+  'stagedOlder' | 'stagedNewer' | 'awaitingFirstView' | 'holdsTail' | 'request'
 >
 
 /**
- * The loaded visible rows: the rows of the loaded window that are not hidden, admitted or
- * staged. The virtualizer holds only the admitted rows, so the hook asks here for a row
- * that a place can wait for.
+ * The loaded visible rows: the rows of the loaded window that are not hidden, both the
+ * admitted and the staged rows. The virtualizer holds only the admitted rows, so the hook
+ * asks here for a row that a place can wait for.
  */
 export interface ChatLoadedRows {
   /** Whether `id` is a loaded visible row. */
   has: (id: string) => boolean
   /** The id of the loaded visible row nearest `seq`, or `undefined` with no such row. */
   nearestId: (seq: bigint) => string | undefined
-  /** The id of the first loaded visible row, or `undefined` with no row. */
-  firstId: () => string | undefined
+  /** The first loaded visible row, with its seq when it has one, or `undefined` with no row. */
+  first: () => AnchorRow | undefined
 }
 
-/** A place that a command of the reader asks the view to show. */
-export type RequestedPlace
-  = | { kind: 'tail' }
-    | { kind: 'top' }
-    | { kind: 'row', anchor: ScrollAnchor }
+/**
+ * The row place for `anchor` among the loaded visible rows `rows`: the anchor itself when
+ * its row is loaded, else the loaded row nearest its seq with an offset of 0, else
+ * `undefined`.
+ */
+export function placeForAnchor(rows: ChatLoadedRows, anchor: ScrollAnchor): AdmissionTarget | undefined {
+  if (rows.has(anchor.id))
+    return { kind: 'row', anchor }
+  if (anchor.seq === undefined)
+    return undefined
+  const id = rows.nearestId(anchor.seq)
+  return id === undefined
+    ? undefined
+    : {
+        kind: 'row',
+        anchor: { id, seq: anchor.seq, offsetWithinRow: 0 },
+      }
+}
 
 /**
- * The scroll primitives of useChatScroll, and the hook actions that two or more of its
- * extracted helpers call, as one value. The helpers are createStickyBottom,
- * createChatTailFollower, createScrollInput, createViewportRestore, and createChatSeek. The
- * hook builds the context ONCE and passes it to each helper. Each helper except
- * createStickyBottom also takes an `extras` object for the other deps that only it reads.
- * stickToBottom and forceScrollToBottom are not members: the hook builds them from this
- * context, so a helper that calls them takes them in its `extras` object.
+ * What the extracted helpers of useChatScroll share, as one value:
+ *
+ * - The scroll primitives: the element, the virtualizer, the own writes, and the rebase
+ * - The reader place: `requestPlace`, `showWaitingPlace`, `placeForAnchor`, the request
+ *   for the tail, and the pending history jump
+ * - The reads of the row admission: `loadedRows`, `stagedNewer`, and `awaitingFirstView`
+ * - The other hook actions that two or more helpers call
+ *
+ * The helpers are createStickyBottom, createChatTailFollower, createScrollInput,
+ * createViewportRestore, and createChatSeek. The hook builds the context ONCE and passes
+ * it to each helper. Each helper except createStickyBottom also takes an `extras` object
+ * for the other deps that only it reads. stickToBottom and forceScrollToBottom are not
+ * members: the hook builds them from this context, so a helper that calls them takes them
+ * in its `extras` object.
  */
 export interface ScrollContext {
   /** The list element while it is attached, shown or hidden. */
@@ -162,32 +183,23 @@ export interface ScrollContext {
    * a move of the reader ends the pause.
    */
   retakeScrollControl: () => void
-  /** Drop the per-window state of the buffer filler, for a jump that replaces the message window. */
-  rearmScrollBufferFiller: () => void
   /** Remove the layout shift with no visible change (see LayoutShiftSurface.rebase). */
   rebase: () => void
   /**
    * Place the view: rebase (a `scrollTop` write when the shift is SCROLL_ROUNDING_MAX_PX
    * or more), then call `resolve` for the scroll coordinate, then write it and record the
-   * write. A placement that writes is a command, so it ends the request for the tail.
+   * write. A placement that writes is a command, so it ends the request for the tail,
+   * except a tail that waits: the placement of that place writes after the place is shown.
    * Returns `null` when the element is absent or hidden (nothing is written) or when
    * `resolve` returned `null` (only the rebase wrote), and otherwise whether `scrollTop`
    * changed.
    */
   placeAt: (resolve: () => number | null) => boolean | null
   /**
-   * Place the view at `anchor` (see placeAt): at its row, or with `nearest`, at the nearest
-   * surviving row by seq when its row is gone. When the row does not show its height yet
-   * (no read of the mounted row confirmed the height that a hidden copy or the storage
-   * measured), the view lands again on the anchor at the first read of the row (see
-   * releaseAnchorHold).
-   */
-  placeAtAnchor: (anchor: ScrollAnchor, nearest: boolean) => boolean | null
-  /**
    * Write `top` to `scrollTop`, and record the position after the write, so the `scroll`
    * event of the write reads as no move, whatever distance it moved. Every own write goes
    * through it, except the rebase and the translation of a stale native event, which record
-   * their writes in their own way. The record also ends a held anchor (see placeAtAnchor)
+   * their writes in their own way. The record also ends a held anchor (see releaseAnchorHold)
    * and runs the position check. With `refresh`, it then refreshes the rendered rows. A
    * ResizeObserver delivery must not refresh them: a row that mounts there re-enters the
    * delivery. Does nothing for an absent or hidden element.
@@ -206,9 +218,22 @@ export interface ScrollContext {
    * (Home, End with newer pages, a seek outside the window). It aborts the pending jump
    * of any kind, and returns the signal of the new one, which the command passes to its
    * fetch. The hook owns one pending jump, so the latest command of the reader stops
-   * each earlier fetch.
+   * each earlier fetch. It also drops the per-window state of the buffer filler: the page
+   * of the jump replaces the message window.
+   *
+   * While the jump is pending, the first-view rule of the hook asks for no place: the page
+   * of the jump replaces the rows, and its landing asks for the place.
    */
   beginHistoryJump: () => AbortSignal
+  /**
+   * The fetch of the history jump with `signal` ended: the jump is pending no more.
+   * Returns whether its landing may run: `false` for a jump that a later command or an
+   * input of the reader aborted.
+   *
+   * A landing calls it first, in one batch with the request for its place. The first-view
+   * rule then sees the place of the landing, and not the moment between the two.
+   */
+  settleHistoryJump: (signal: AbortSignal) => boolean
   /**
    * Abort the pending history jump, so that its page cannot arrive and replace the
    * window, and its landing cannot move the view. Each input by which the reader takes
@@ -216,7 +241,7 @@ export interface ScrollContext {
    *
    * Like beginHistoryJump, it also ends the request for the tail of a jump to the latest
    * page that did not settle: that request has no fetch left. Both also end a place that
-   * waits, except while loaded rows exist and none is in the list (see requestPlace).
+   * waits, except while loaded rows exist and none is in the list (see readerTookControl).
    */
   abandonHistoryJump: () => void
   /**
@@ -231,11 +256,16 @@ export interface ScrollContext {
    * list is shown at once. For a call inside an update, it runs when the outermost update
    * completes, after the DOM bindings of the new rows.
    *
+   * A request for the tail by a reader whose place is the tail already, over rows that
+   * hold the live tail, waits for nothing: its placement runs at once. Only new messages
+   * can be staged below such a reader, and follow mode shows each of them when it is
+   * measured.
+   *
    * Resolves `true` when the placement ran, and `false` when the wait ended without it:
-   * another request replaced it, the reader took control, the row left the loaded rows, or
-   * the hook was disposed. Never rejects.
+   * another request replaced it, the reader took control, the row left the loaded rows,
+   * the placement threw, or the hook was disposed. Never rejects.
    */
-  requestPlace: (place: RequestedPlace, show?: () => void) => Promise<boolean>
+  requestPlace: (place: AdmissionTarget, show?: () => void) => Promise<boolean>
   /**
    * Show the place that waits, when its target is reached and the list has a layout box:
    * `'shown'`. `'waiting'` for a place that still waits, and `'none'` with no place. The
@@ -247,11 +277,14 @@ export interface ScrollContext {
    * The row place for `anchor`: the anchor itself when its row is a loaded visible row,
    * else the loaded visible row nearest its seq with an offset of 0, else `undefined`.
    */
-  placeForAnchor: (anchor: ScrollAnchor) => RequestedPlace | undefined
+  placeForAnchor: (anchor: ScrollAnchor) => AdmissionTarget | undefined
   /** The loaded visible rows (see ChatLoadedRows). */
   loadedRows: ChatLoadedRows
-  /** The number of loaded rows below the rows of the list (see RowAdmission.stagedBelow). */
-  stagedBelow: () => number
+  /**
+   * Whether the last loaded row is not in the list: loaded rows wait below the rows of the
+   * list, or no row is in the list (see RowAdmission.stagedNewer).
+   */
+  stagedNewer: () => boolean
   /** Whether loaded rows exist and none is in the list (see RowAdmission.awaitingFirstView). */
   awaitingFirstView: () => boolean
 }
@@ -302,11 +335,13 @@ const FAST_SCROLL_PX_PER_MS = 1
  *
  * NO-SKIP INVARIANT -- a fast fling STALLS, it never SKIPS a message. Three
  * mechanisms together guarantee every message in a fling's path is shown:
- *  1. The scrollable area IS the loaded window (the spacer is sized to the loaded
- *     rows), so the browser clamps scrollTop at the loaded edge -- a fling physically
- *     cannot scroll INTO not-yet-loaded history.
- *  2. The buffer filler (createScrollBufferFiller) grows that loaded window ahead
- *     of the viewport as it nears an edge, so the edge keeps moving outward.
+ *  1. The scrollable area IS the rows of the list (the spacer is sized to the admitted
+ *     rows, see chatRowAdmission), so the browser clamps scrollTop at the edge of the
+ *     list -- a fling physically cannot scroll INTO rows that are not measured, or into
+ *     not-yet-loaded history.
+ *  2. The admission adds the staged rows of the loaded window as they are measured, and
+ *     the buffer filler (createScrollBufferFiller) grows that loaded window ahead of the
+ *     viewport as it nears an edge, so the edge keeps moving outward.
  *  3. This render-ahead paints the loaded rows the fling is ABOUT to reach, so the
  *     1-frame compositor lag can't flash an unrendered (blank) loaded row.
  * Net: a fling that outruns the FETCH buffer stalls at the loading edge until the
@@ -405,8 +440,8 @@ export function computeBufferAwareKeepNewest(
   bufferTargetPx: number,
   anchorAt: (bufTop: number) => ScrollAnchor | null,
 ): number {
-  // Hidden/inactive tab: the viewport and buffer can't be measured. Apply the lean base
-  // cap (keepNewest 0); a later restore re-evaluates when the tab becomes visible.
+  // A pane with no layout box: the viewport and buffer can't be measured. Apply the lean
+  // base cap (keepNewest 0); a later restore re-evaluates when the pane gets a layout box.
   if (clientHeight === 0)
     return 0
   const bufTop = viewportContentTop - bufferTargetPx
@@ -525,7 +560,8 @@ export interface UseChatScrollResult {
   /** Whether the view is at the bottom of the content, as of the last position check. */
   atBottom: Accessor<boolean>
   /**
-   * Follow mode: the reader requested the tail, the tail is loaded, and the view did not
+   * Follow mode: the reader place is the tail (a tail that waits does not count), the tail
+   * is loaded, the jump to the latest page of the request settled, and the view did not
    * move up with no `scroll` event (see ScrollContext.isFollowing). ChatView passes it to
    * the virtualizer, whose layout shift holds the bottom of the content while it is true.
    */
@@ -582,12 +618,13 @@ export interface UseChatScrollResult {
    */
   previewScrollTo: (top: number) => void
   /**
-   * Abandon the pending history jump (a rail gesture that moved on): its fetch is
-   * aborted and its landing dropped, so neither the page nor the scroll can arrive after
-   * the reader took control (see ScrollContext.abandonHistoryJump). An input of the
-   * reader: it changes nothing while loaded rows exist and none is in the list.
+   * Take an input of the reader that the hook cannot see by itself, such as a rail gesture
+   * that moved on. The reader takes control: the pending history jump of any kind is
+   * aborted, so neither its page nor its landing can arrive afterwards (see
+   * ScrollContext.abandonHistoryJump), and a place that waits ends. It changes nothing
+   * while loaded rows exist and none is in the list.
    */
-  cancelPendingSeek: () => void
+  takeReaderInput: () => void
   /**
    * Re-stick to the bottom while follow mode applies and content below the viewport just
    * grew. For tail content that is NOT a virtualizer row -- the streaming-markdown block
@@ -622,7 +659,7 @@ export interface UseChatScrollResult {
 
 /** The wait for a place that the view does not show yet. */
 interface PlaceWait {
-  place: RequestedPlace
+  place: AdmissionTarget
   /** The placement that puts the view on the place. */
   show: () => void
   /** The request of the admission for the target of the place. */
@@ -729,7 +766,10 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // ref, so a memo that reads it can't react to it). The stall memos (stalledOlder /
   // stalledNewer) read the DOM fresh; this tick is the dependency that triggers that
   // re-read.
-  const [geomTick, bumpGeomTick] = createSignal(0)
+  const [geomTick, setGeomTick] = createSignal(0)
+  const bumpGeomTick = (): void => {
+    setGeomTick(tick => tick + 1)
+  }
 
   // The position that the scroll handler or an own write saw last (see
   // createSeenScrollPosition). An own write notes its position at once, so the `scroll`
@@ -769,9 +809,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // placement of a tail that waits reads it, and no place can show before then.
   let stickToBottomNow: () => void = () => {}
   // The controller of the pending history jump (see ScrollContext.beginHistoryJump), or
-  // null before the first jump. A jump that settled keeps its controller here until the
-  // next command or input aborts it, which then changes nothing.
-  let historyJumpController: AbortController | null = null
+  // null while no jump is pending. A signal, so that the first-view rule runs again when a
+  // jump begins and when it ends. Every other reader reads it untracked.
+  const [historyJump, setHistoryJump] = createSignal<AbortController | null>(null)
   // The jump to the latest page that did not settle (see ChatTailFollower.pendingJump),
   // assigned where the tail follower is created. No jump is pending before that.
   let pendingLatestJump: () => number | null = () => null
@@ -920,18 +960,30 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
         setAtBottom(atBottomNow)
         return
       }
-      // Only at the bottom of rows that hold the tail: a reader at the bottom end of
-      // measured rows with rows staged below that the list showed before did not ask for
-      // the tail (see RowAdmission.holdsTail). A place that waits stays as it is.
-      if (readerPlace().kind === 'position' && !hasNewerMessages() && atBottomNow && opts.admission.holdsTail())
-        setReaderPlace(TAIL_PLACE)
+      enterTailAtBottom(atBottomNow)
       setAtBottom(atBottomNow)
       // The second condition keeps the anchor of the reader while the browser moved
       // scrollTop and the handler did not see that move yet, as after a pane was hidden
       // and shown. While a place waits, the anchor is the position that the view shows.
       if (!isFollowing() && !seen.hasUnseenRawMove(el))
-        lastAnchor = anchorAtViewportTop()
+        recordViewAnchor()
     })
+  }
+
+  /**
+   * Make the tail the reader place for a reader who holds a position at the bottom of the
+   * live tail. Returns whether it did. `atBottomNow` is the result of a position check.
+   *
+   * Only at the bottom of rows that hold the tail (see RowAdmission.holdsTail). A reader
+   * at the bottom end of the rows of the list did not ask for the tail while other rows
+   * are staged below: rows that the list showed before a width change, or the rows of a
+   * newer page. A place that waits stays as it is.
+   */
+  function enterTailAtBottom(atBottomNow: boolean): boolean {
+    if (!atBottomNow || readerPlace().kind !== 'position' || untrack(hasNewerMessages) || !untrack(opts.admission.holdsTail))
+      return false
+    setReaderPlace(TAIL_PLACE)
+    return true
   }
 
   /**
@@ -946,7 +998,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     seen.note(el)
     velocity.syncToProgrammatic(seen.seenTop())
     checkPosition()
-    bumpGeomTick(t => t + 1)
+    bumpGeomTick()
   }
 
   /**
@@ -1108,7 +1160,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // The memos of the pagination policy read isFollowing(), which reads the place
     // untracked.
     if (previous.kind !== next.kind)
-      bumpGeomTick(t => t + 1)
+      bumpGeomTick()
     if (previous.kind !== 'waiting')
       return
     previous.wait.request.end()
@@ -1135,69 +1187,90 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     writeReaderPlace(wait.place.kind === 'tail'
       ? TAIL_PLACE
       : POSITION_PLACE)
-    bumpGeomTick(t => t + 1)
-    wait.show()
-    wait.request.end()
-    wait.settle(true)
-    resumeFillAfterWait()
+    bumpGeomTick()
+    // The wait ends also when its placement throws: the request of the admission must not
+    // stay as the current one, and the promise must settle.
+    let shown = false
+    try {
+      wait.show()
+      shown = true
+    }
+    finally {
+      wait.request.end()
+      wait.settle(shown)
+      resumeFillAfterWait()
+    }
     return 'shown'
   }
 
-  /** See ScrollContext.placeForAnchor. */
-  function placeForAnchor(anchor: ScrollAnchor): RequestedPlace | undefined {
-    if (opts.loadedRows.has(anchor.id))
-      return { kind: 'row', anchor }
-    if (anchor.seq === undefined)
-      return undefined
-    const id = opts.loadedRows.nearestId(anchor.seq)
-    return id === undefined
-      ? undefined
-      : {
-          kind: 'row',
-          anchor: { id, seq: anchor.seq, offsetWithinRow: 0 },
-        }
-  }
-
-  /** See ScrollContext.requestPlace. */
-  function requestPlace(place: RequestedPlace, show?: () => void): Promise<boolean> {
-    // The position that the view shows during the wait, also for a reader who followed the
-    // tail before: the admission keeps the rows of that position (see viewAnchor).
+  /**
+   * Record the position that the view shows as the last anchor of the reader. It records
+   * nothing for a hidden pane, which reads scrollTop as 0. It records nothing while loaded
+   * rows exist and none is in the list either: no row shows a position then, and the anchor
+   * that the first-view rule reads must stay.
+   */
+  function recordViewAnchor(): void {
     if (visibleListEl() && !awaitingFirstView())
       lastAnchor = anchorAtViewportTop()
-    const target: AdmissionTarget = place.kind === 'row'
-      ? { kind: 'row', id: place.anchor.id, offset: place.anchor.offsetWithinRow }
-      : { kind: place.kind }
+  }
+
+  /**
+   * Whether the reader has the tail already: the reader place is the tail, the loaded
+   * window holds the live tail, and the rows of the list hold its tail (see
+   * RowAdmission.holdsTail). A request for the tail then has nothing to wait for.
+   */
+  const tailShown = (): boolean =>
+    readerPlace().kind === 'tail' && !untrack(hasNewerMessages) && untrack(opts.admission.holdsTail)
+
+  /** See ScrollContext.requestPlace. */
+  function requestPlace(place: AdmissionTarget, show?: () => void): Promise<boolean> {
     let placement: () => void
     let anchor: ScrollAnchor | undefined
     switch (place.kind) {
       case 'tail':
         placement = show ?? (() => stickToBottomNow())
+        // A wait would end follow mode until the staged message is measured: the view
+        // would stop following, and the loaded bottom would count as loading.
+        if (tailShown()) {
+          placement()
+          return Promise.resolve(true)
+        }
         break
       case 'top': {
         placement = show ?? (() => {
           placeAt(() => 0)
         })
         // The reading position of a wait for the top: the first loaded row, at its top.
-        const firstId = opts.loadedRows.firstId()
-        anchor = firstId === undefined
+        // Its seq lets a restore find the nearest row when that row left the loaded rows.
+        const first = opts.loadedRows.first()
+        anchor = first === undefined
           ? undefined
-          : { id: firstId, offsetWithinRow: 0 }
+          : {
+              id: first.id,
+              offsetWithinRow: 0,
+              ...(first.seq !== undefined
+                ? { seq: first.seq }
+                : {}),
+            }
         break
       }
       case 'row': {
         const rowAnchor = place.anchor
         placement = show ?? (() => {
-          placeAtAnchor(rowAnchor, true)
+          placeAtAnchor(rowAnchor)
         })
         anchor = rowAnchor
         break
       }
     }
+    // The position that the view shows during the wait, also for a reader who followed the
+    // tail before: the admission keeps the rows of that position (see viewAnchor).
+    recordViewAnchor()
     return new Promise<boolean>((resolve) => {
       // One update: the new request replaces the old one before the old wait ends, and the
       // effect that shows a place sees only the new wait.
       batch(() => {
-        const request = opts.admission.request(target)
+        const request = opts.admission.request(place)
         setReaderPlace({
           kind: 'waiting',
           wait: {
@@ -1222,11 +1295,10 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     if (place.kind === 'waiting' && place.wait.place.kind !== 'tail')
       return
     setReaderPlace(POSITION_PLACE)
-    // No row shows a position while loaded rows exist and none is in the list, and the
-    // anchor that the first-view rule reads must stay. The function has no other test for
-    // that state: a command and a failed jump must end a request for the tail then also.
-    if (visibleListEl() && !awaitingFirstView())
-      lastAnchor = anchorAtViewportTop()
+    // The function has no test of its own for the state in which loaded rows exist and
+    // none is in the list: a command and a failed jump must end a request for the tail
+    // then also. Only the record of the anchor waits for a row (see recordViewAnchor).
+    recordViewAnchor()
   }
 
   /**
@@ -1234,10 +1306,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
    * stays where it is. beginHistoryJump and abandonHistoryJump call it, and no other code.
    *
    * While loaded rows exist and none is in the list, it keeps the wait on purpose. Only a
-   * command reaches it then (see readerInput). A command that asks for its place at once
-   * replaces the wait, and a command that starts a history jump has no place to show before
-   * its page arrives. Without the wait, the first-view rule would ask for a place of the old
-   * window between the command and its landing.
+   * command reaches it then (see takeReaderInput). A command that asks for its place at
+   * once replaces the wait. A command that starts a history jump has no place to show
+   * before its page arrives, and the wait still stands when that jump fails.
    */
   function readerTookControl(): void {
     if (readerPlace().kind !== 'waiting' || awaitingFirstView())
@@ -1256,8 +1327,8 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // Read before the abort: an aborted jump no longer counts as pending. Untracked: the
     // pending jump is a signal, and a caller inside an effect must not subscribe to it.
     const latestJumpWasPending = untrack(pendingLatestJump) !== null
-    historyJumpController?.abort()
-    historyJumpController = null
+    untrack(historyJump)?.abort()
+    setHistoryJump(null)
     if (latestJumpWasPending)
       leaveFollow()
   }
@@ -1266,8 +1337,21 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   function beginHistoryJump(): AbortSignal {
     readerTookControl()
     abortHistoryJump()
-    historyJumpController = new AbortController()
-    return historyJumpController.signal
+    rearmScrollBufferFiller()
+    const controller = new AbortController()
+    setHistoryJump(controller)
+    return controller.signal
+  }
+
+  /** See ScrollContext.settleHistoryJump. */
+  function settleHistoryJump(signal: AbortSignal): boolean {
+    // Each later jump and each abandon aborts the jump before it, so a signal that is not
+    // aborted is the signal of the pending jump.
+    if (signal.aborted)
+      return false
+    if (untrack(historyJump)?.signal === signal)
+      setHistoryJump(null)
+    return true
   }
 
   /** See ScrollContext.abandonHistoryJump. */
@@ -1282,10 +1366,20 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
    * rows exist and none is in the list, an input changes nothing: the reader cannot take
    * control of a view that shows no row.
    */
-  function readerInput(): void {
+  function takeReaderInput(): void {
     if (awaitingFirstView())
       return
     abandonHistoryJump()
+  }
+
+  /**
+   * An input of the reader that moves the view away from the bottom: it ends the request
+   * for the tail (see leaveFollow). Like takeReaderInput, it changes nothing while loaded
+   * rows exist and none is in the list: no row shows a position then.
+   */
+  function readerLeftBottom(): void {
+    if (!awaitingFirstView())
+      leaveFollow()
   }
 
   /** See ScrollContext.followTail. */
@@ -1304,14 +1398,18 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   function restoreAnchor(anchor: ScrollAnchor | null): boolean {
     if (followRequested() || anchor === null)
       return false
-    return placeAtAnchor(anchor, true) !== null
+    return placeAtAnchor(anchor) !== null
   }
 
-  /** See ScrollContext.placeAtAnchor. */
-  function placeAtAnchor(anchor: ScrollAnchor, nearest: boolean): boolean | null {
-    const placed = placeAt(() => nearest
-      ? virt.scrollTopNearAnchor(anchor)
-      : virt.scrollTopForAnchor(anchor))
+  /**
+   * Place the view at `anchor` (see ScrollContext.placeAt): at its row, or at the nearest
+   * surviving row by seq when its row is gone. When the row does not show its height yet
+   * (no read of the mounted row confirmed the height that a hidden copy or the storage
+   * measured), the view lands again on the anchor at the first read of the row (see
+   * releaseAnchorHold).
+   */
+  function placeAtAnchor(anchor: ScrollAnchor): boolean | null {
+    const placed = placeAt(() => virt.scrollTopNearAnchor(anchor))
     if (placed !== null && untrack(() => virt.scrollTopForAnchor(anchor) !== null && !virt.showsHeight(anchor.id)))
       heldAnchor = anchor
     return placed
@@ -1391,16 +1489,21 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   }
 
   /**
-   * Clear the "buffer filler paused / settling" flags -- a deliberate jump (to bottom, to a
-   * rail seq, a page) is the user re-taking control of position, exactly like a genuine
-   * scroll, but its `scroll` event is an own write that never clears them. Callers that
-   * REPLACE the window additionally rearmScrollBufferFiller() for the fresh window's
-   * per-window state.
+   * Clear the "buffer filler paused / settling" flags -- a deliberate jump (to the bottom,
+   * to the top, to a rail seq, a page) is the user re-taking control of position, exactly
+   * like a genuine scroll, but its `scroll` event is an own write that never clears them. A
+   * jump that replaces the window also drops the per-window state of the filler (see
+   * beginHistoryJump).
    */
   const retakeScrollControl = () => {
     bufferFillPaused = false
     hmrSettle.end()
   }
+
+  // Staged rows are loaded content that has no pixels yet, so no side loads a page while
+  // rows are staged on it. With no row in the list, both sides count as staged (see
+  // RowAdmission.stagedOlder).
+  const { stagedOlder, stagedNewer } = opts.admission
 
   // The state and the actions that the extracted scroll helpers share (see ScrollContext).
   const scrollCtx: ScrollContext = {
@@ -1417,20 +1520,18 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     checkPosition,
     cancelScrollAnimation,
     retakeScrollControl,
-    // A thunk: the buffer filler is created after the context, and it assigns the local.
-    rearmScrollBufferFiller: () => rearmScrollBufferFiller(),
     rebase,
     placeAt,
-    placeAtAnchor,
     writeOwnScrollTop,
     recordPosition,
     beginHistoryJump,
+    settleHistoryJump,
     abandonHistoryJump,
     requestPlace,
     showWaitingPlace,
-    placeForAnchor,
+    placeForAnchor: anchor => placeForAnchor(opts.loadedRows, anchor),
     loadedRows: opts.loadedRows,
-    stagedBelow: () => untrack(opts.admission.stagedBelow),
+    stagedNewer: () => untrack(stagedNewer),
     awaitingFirstView,
   }
 
@@ -1447,12 +1548,6 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // SCROLL_BUFFER_SCREENS screens of visible content on each side. loadOlderMessages /
   // loadNewerPage grow the window to the raw CEILING (chat.store), so the buffer actually
   // accumulates rather than sliding. createScrollBufferFiller owns the loop.
-  //
-  // Staged rows are loaded content that has no pixels yet, so no side loads a page while
-  // rows are staged on it. With no row in the list, the empty list reads as a deficit on
-  // both sides while `stagedBelow` is 0, so both sides count as staged then.
-  const stagedOlder = (): boolean => opts.admission.stagedAbove() > 0 || opts.admission.awaitingFirstView()
-  const stagedNewer = (): boolean => opts.admission.stagedBelow() > 0 || opts.admission.awaitingFirstView()
   const paginationPolicy = createChatPaginationPolicy({
     getEl: () => messageListRef,
     hasOlder: () => !!opts.hasOlderMessages?.(),
@@ -1517,7 +1612,6 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
 
   const tailFollower = createChatTailFollower(scrollCtx, {
     jumpToLatest: signal => opts.onJumpToLatest?.(signal),
-    stickToBottom,
     animateToBottom: scrollToBottomAnimated,
   })
   const { forceScrollToBottom, scrollToBottom } = tailFollower
@@ -1539,22 +1633,15 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   const { handleKeyDown, handleWheel, pageScroll } = createScrollInput(scrollCtx, {
     forceScrollToBottom,
     cancelPendingScroll,
-    cancelPendingSeek: readerInput,
+    takeReaderInput,
+    readerLeftBottom,
     tryLoadOlderOnExplicitTopIntent,
     tryLoadNewerOnExplicitBottomIntent,
     setLastScrollDir: (dir) => {
       lastScrollDir = dir
     },
     hasOlderMessages: () => !!opts.hasOlderMessages?.(),
-    // jump-to-oldest (Home) REPLACES the window with the earliest page; re-arm the
-    // buffer-filler side-selection state. Mirrors forceScrollToBottom's jump-to-latest
-    // handling.
-    onJumpToOldest: opts.onJumpToOldest
-      ? (signal) => {
-          rearmScrollBufferFiller()
-          return opts.onJumpToOldest!(signal)
-        }
-      : undefined,
+    onJumpToOldest: opts.onJumpToOldest,
   })
 
   // Saved-viewport restore + resize handling (createViewportRestore). It owns only the
@@ -1566,7 +1653,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     savedViewportScroll: () => opts.savedViewportScroll?.(),
     restoreAnchor,
     lastAnchor: () => lastAnchor,
-    onGeometrySettled: () => bumpGeomTick(t => t + 1),
+    onGeometrySettled: bumpGeomTick,
   })
 
   /**
@@ -1612,10 +1699,8 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     //    momentum of a fling before the command, the move of a pane that it shows again).
     //    While loaded rows exist and none is in the list, no row shows a position.
     const awayFromBottom = !isAtBottom()
-    if (readerPlace().kind === 'tail' && !awaitingFirstView() && awayFromBottom
-      && ((moved && hasNewerMessages()) || st < baseline)) {
-      leaveFollow()
-    }
+    if (readerPlace().kind === 'tail' && awayFromBottom && ((moved && hasNewerMessages()) || st < baseline))
+      readerLeftBottom()
     // 4. The scroller is not at rest.
     if (rawMoved)
       rest.noteScroll()
@@ -1649,7 +1734,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       // wheel, a key, and a touch move are inputs in their own handlers. Any other move
       // ends no wait.
       if (inputActivity.isActive())
-        readerInput()
+        takeReaderInput()
       else
         opts.onMomentumScroll?.()
     }
@@ -1666,7 +1751,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     warnSlowScrollPhase('refreshViewport', monotonicNow() - refreshStart, { rows: opts.messages().length })
     // 9. Re-arm the stall memos: this position move may have clamped the view against (or
     //    freed it from) a loaded edge, which is invisible to them otherwise.
-    bumpGeomTick(t => t + 1)
+    bumpGeomTick()
     // 10. Grow the scroll range near the reachable top, or close a blank band above the
     //     first row.
     if (needsRebaseDuringScroll())
@@ -1725,13 +1810,8 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // the resize flush of the show runs the check.
     if (!visibleListEl())
       return
-    // Only for a reader who holds a position at the bottom of rows that hold the tail: the
-    // rows of a newer page that are staged below are no tail yet (see RowAdmission.holdsTail),
-    // and a place that waits stays.
-    if (untrack(atBottom) && readerPlace().kind === 'position' && untrack(opts.admission.holdsTail)) {
-      setReaderPlace(TAIL_PLACE)
+    if (enterTailAtBottom(untrack(atBottom)))
       restickIfAtBottom()
-    }
     checkPosition()
   }, { defer: true }))
 
@@ -1845,9 +1925,12 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   // every loaded row was replaced. Every target of the admission comes from a request, so
   // without this rule no row would join.
   //
-  // It asks for nothing while a jump to the latest page is pending: the page of that jump
-  // replaces the rows, and its landing asks for the tail. Otherwise the bottom of the window
-  // that the jump replaces would show as a first view of its own.
+  // It asks for nothing while a history jump is pending (see ScrollContext.beginHistoryJump):
+  // the page of that jump replaces the rows, and its landing asks for its place. Otherwise
+  // a place of the window that the jump replaces would show as a first view of its own.
+  // The landing clears the pending jump and asks for its place in one update (see
+  // ScrollContext.settleHistoryJump). When the jump fails, or another fetch replaced its
+  // page, this rule asks for the place of the reader then.
   //
   // Its creation run is mount placement part 2 of 3: over a window with loaded rows, it
   // asks for the place of the mount, and the placement of that place moves a fresh
@@ -1859,7 +1942,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
   createEffect(() => {
     const awaiting = opts.admission.awaitingFirstView()
     const place = readerPlaceSignal()
-    const jumpPending = pendingLatestJump() !== null
+    const jumpPending = historyJump() !== null
     if (!awaiting || place.kind === 'waiting' || jumpPending)
       return
     untrack(() => {
@@ -1869,7 +1952,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       }
       const anchored = lastAnchor === null
         ? undefined
-        : placeForAnchor(lastAnchor)
+        : placeForAnchor(opts.loadedRows, lastAnchor)
       void requestPlace(anchored ?? { kind: 'top' })
     })
   })
@@ -1953,8 +2036,9 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       opts.onTrimOldMessages?.(keepNewest)
     }
     // Follow the tail: stick when content (a new row, the thinking indicator, a banner)
-    // left the view above the bottom. Skip a hidden pane (an inactive tab with
-    // display:none); the ResizeObserver sticks when the tab becomes visible. Stick
+    // left the view above the bottom. Skip a pane with no layout box (clientHeight 0); the
+    // ResizeObserver sticks when the pane gets one. An inactive tab is no such pane: the
+    // shell keeps it laid out, so the stick runs there also. Stick
     // synchronously (the DOM is already updated by SolidJS) so a deferral to rAF can't
     // paint one frame scrolled up before snapping to bottom. A shrink that clamped the view
     // to the bottom is recorded first, so it stays no move of the reader when the content
@@ -2018,8 +2102,8 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     }),
   })
   // The scroll handler tops up the buffer for the new scroll position through this ref;
-  // the jump paths (forceScrollToBottom, jump-to-oldest -- both declared before this unit)
-  // drop per-window filler state through the rearm ref.
+  // beginHistoryJump (declared before this unit) drops the per-window filler state
+  // through the rearm ref.
   fillScrollBuffer = bufferFiller.fill
   rearmScrollBufferFiller = bufferFiller.rearm
   resumeFillAfterWait = bufferFiller.resumeAfterWait
@@ -2054,7 +2138,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // Save the final reading position for the next mount of this agent (a tile
     // split/merge or workspace switch remounts ChatView over the same store; see
     // restoreOnMount). Owner cleanups run before the DOM detaches, so the geometry
-    // is still readable. An unmeasurable pane (hidden tab, clientHeight 0) yields
+    // is still readable. An unmeasurable pane (no layout box, clientHeight 0) yields
     // undefined and is skipped -- its tab-switch save must not be clobbered.
     const finalScrollState = captureScrollState(hasNewerMessagesSnapshot)
     if (finalScrollState)
@@ -2062,8 +2146,8 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
     // After the save: no page of a jump may arrive and replace the window of a hook that
     // is gone. Not abandonHistoryJump(), which can end the request for the tail that the
     // save just recorded, and which reads the position.
-    historyJumpController?.abort()
-    historyJumpController = null
+    untrack(historyJump)?.abort()
+    setHistoryJump(null)
     // A place that waits ends without its placement. Its promise settles here, and nothing
     // asks the admission: that reads accessors of the host, which Solid can already have
     // disposed (see hasNewerMessagesSnapshot).
@@ -2134,22 +2218,28 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
         return
       }
       const position = snapshot.position
-      const show = (): void => {
-        placeAt(() => 'anchor' in position
-          ? virt.scrollTopForAnchor(position.anchor)
-          : position.emptyWindowTop)
-      }
-      // The row of the anchor can be staged after the re-render, so the repair asks for its
-      // place and waits for the row. An anchor whose row is not loaded resolves to nothing,
-      // as before.
-      if ('anchor' in position && opts.loadedRows.has(position.anchor.id))
-        void requestPlace({ kind: 'row', anchor: position.anchor }, show)
-      else
-        show()
       // A restore is no command of the reader: a request whose jump is still pending
       // survives it. A request whose jump failed during the work stays ended, because no
       // fetch would fulfill it.
-      if (snapshot.requested && snapshot.jump !== null && untrack(tailFollower.pendingJump) === snapshot.jump)
+      const keepsTailRequest = snapshot.requested && snapshot.jump !== null
+        && untrack(tailFollower.pendingJump) === snapshot.jump
+      if (!('anchor' in position)) {
+        placeAt(() => position.emptyWindowTop)
+      }
+      // An anchor whose row is not loaded places nothing.
+      else if (opts.loadedRows.has(position.anchor.id)) {
+        // The reader place holds one request: a wait for the row would end the request for
+        // the tail, and that request would end the wait. So a repair that keeps the request
+        // places with no wait: at the row when the row is in the list, else at the nearest
+        // row of the list. The page of the pending jump replaces the view when it lands.
+        if (keepsTailRequest)
+          placeAtAnchor(position.anchor)
+        // The row of the anchor can be staged after the re-render, so the repair asks for
+        // its place and waits for the row.
+        else
+          void requestPlace({ kind: 'row', anchor: position.anchor })
+      }
+      if (keepsTailRequest)
         followTail()
     },
   }
@@ -2183,12 +2273,12 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
       // eagerly computed at hook-construction time while it was still undefined. Bump
       // the geometry tick so they re-evaluate now that the element exists (and again if
       // it detaches), instead of staying latched at their initial value.
-      bumpGeomTick(t => t + 1)
+      bumpGeomTick()
     },
     scrollToBottom,
     jumpToSeq: seq => chatSeek.jumpToSeq(seq),
     previewScrollTo: top => chatSeek.previewScrollTo(top),
-    cancelPendingSeek: readerInput,
+    takeReaderInput,
     restickIfAtBottom,
     getScrollState,
     forceScrollToBottom,
@@ -2209,7 +2299,7 @@ export function useChatScroll(opts: UseChatScrollOptions): UseChatScrollResult {
         // nothing in the list, and the history jump stays. A drag that does move the list
         // is also an input in the scroll handler.
         if (inputActivity.isVerticalDrag(event))
-          readerInput()
+          takeReaderInput()
         overscroll.onTouchMove(event)
       },
       onTouchEnd: (event) => {

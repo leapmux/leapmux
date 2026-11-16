@@ -38,7 +38,7 @@ import { bubbleRunsToRightEdge, isMirroredMessageRow, messageBubbleClass, messag
 import * as chatStyles from './messageStyles.css'
 import { expandedUiKeyFor, MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 import { imageActionsFrom, reviewActionsFrom, subagentsFrom } from './renderContext'
-import { createRequestReadiness } from './renderReadiness'
+import { useRequestReadiness } from './renderReadiness'
 import { quotableTextForRow } from './results/rowText'
 import { toolCallMeta } from './results/tools/meta'
 import { extractedRow } from './rowExtraction'
@@ -305,12 +305,10 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // MessageContextResolver.loadRelated). With no request, the row shows what it will
   // show, so it waits for nothing and shows at once.
   //
-  // The report ends when the request settled, or at the limit of createRequestReadiness,
+  // The report ends when the request settled, or at the limit of useRequestReadiness,
   // which aborts no request: the lookup goes on, and the row draws again when the other
   // half arrives.
-  const relatedLookup = createRequestReadiness()
-  // Once, while the bubble sets up: the scope of a row copy is fixed for its life.
-  untrack(() => props.readiness)?.track(relatedLookup.pending)
+  const relatedLookup = useRequestReadiness(() => props)
 
   createEffect(() => {
     const resolver = props.host?.messages

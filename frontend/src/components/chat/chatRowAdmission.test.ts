@@ -26,21 +26,40 @@ function span(from: number, to: number): number[] {
 
 const tail: AdmissionTarget = { kind: 'tail' }
 const top: AdmissionTarget = { kind: 'top' }
-const rowTarget = (i: number, offset = 0): AdmissionTarget => ({ kind: 'row', id: `r${i}`, offset })
+/** A row target for the row `id`: `offset` px into it, taken when the row was `basisHeight` tall. */
+function rowTargetAt(id: string, offset = 0, basisHeight?: number): AdmissionTarget {
+  return {
+    kind: 'row',
+    anchor: {
+      id,
+      offsetWithinRow: offset,
+      ...(basisHeight === undefined
+        ? {}
+        : { basisHeight }),
+    },
+  }
+}
+const rowTarget = (i: number, offset = 0, basisHeight?: number): AdmissionTarget => rowTargetAt(`r${i}`, offset, basisHeight)
+
+/** `count` rows that replace the rows of a list: their ids are `n0`, `n1`, and so on. */
+function replacementRows(count = 20): VirtualItem[] {
+  return Array.from({ length: count }, (_, i): VirtualItem => ({ id: `n${i}`, hasSpanLines: false, heightKey: 'a' }))
+}
 
 describe('nextAdmittedRange', () => {
   /**
    * The input of the rule for `rows` (20 rows of 100px by default), with a view of 500px.
    * Only the rows at the indexes of `measured` are measured: with a previous range and no
    * list, exactly the rows of that range. `previous` gives a range `a to b` that holds the
-   * rows `a` to `b - 1`. No row is mounted, and no view anchor is set, unless stated.
+   * rows `a` to `b - 1`, and `previousIds` gives the ids of the rows of a previous range
+   * in place of it. No row is mounted, and no view anchor is set, unless stated.
    */
   function input(opts: {
     rows?: VirtualItem[]
     measured?: readonly number[]
     heights?: Record<number, number>
     previous?: [start: number, end: number]
-    previousIds?: { firstId: string, lastId: string }
+    previousIds?: readonly string[]
     viewAnchor?: AdmissionViewAnchor
     mounted?: readonly number[]
     target?: AdmissionTarget
@@ -52,18 +71,19 @@ describe('nextAdmittedRange', () => {
       : [])
     const measured = new Set(measuredIndexes.map(i => `r${i}`))
     const mounted = new Set((opts.mounted ?? []).map(i => `r${i}`))
+    const previousIds = opts.previousIds ?? (opts.previous
+      ? span(opts.previous[0], opts.previous[1] - 1).map(i => `r${i}`)
+      : undefined)
     return {
       rows,
-      isMeasured: item => measured.has(item.id),
       heightOf: (item) => {
-        // The rule may ask for the height of a measured row only.
         if (!measured.has(item.id))
-          throw new Error(`the rule asked for the height of ${item.id}, which is not measured`)
+          return undefined
         return opts.heights?.[Number(item.id.slice(1))] ?? 100
       },
-      previous: opts.previousIds ?? (opts.previous
-        ? { firstId: `r${opts.previous[0]}`, lastId: `r${opts.previous[1] - 1}` }
-        : undefined),
+      previous: previousIds === undefined
+        ? undefined
+        : new Set(previousIds),
       viewAnchor: opts.viewAnchor,
       isMounted: id => mounted.has(id),
       target: opts.target,
@@ -215,7 +235,7 @@ describe('nextAdmittedRange', () => {
     const rows = rowsFrom(3, 17)
     const result = nextAdmittedRange(input({
       rows,
-      previousIds: { firstId: 'r0', lastId: 'r9' },
+      previousIds: span(0, 9).map(i => `r${i}`),
       measured: [3, 4, 5, 7, 8, 9],
       viewAnchor: { kind: 'row', id: 'r8' },
     }))
@@ -227,7 +247,7 @@ describe('nextAdmittedRange', () => {
     const rows = rowsFrom(0, 15)
     const result = nextAdmittedRange(input({
       rows,
-      previousIds: { firstId: 'r5', lastId: 'r19' },
+      previousIds: span(5, 19).map(i => `r${i}`),
       measured: span(5, 14).filter(i => i !== 9),
       mounted: [12],
     }))
@@ -236,7 +256,7 @@ describe('nextAdmittedRange', () => {
 
   it('forms the range of the target when both edge rows left the list', () => {
     const result = nextAdmittedRange(input({
-      previousIds: { firstId: 'gone-first', lastId: 'gone-last' },
+      previousIds: ['gone-first', 'gone-last'],
       measured: span(15, 19),
       target: tail,
     }))
@@ -245,10 +265,88 @@ describe('nextAdmittedRange', () => {
 
   it('gives an empty range when both edge rows left the list and no target is pending', () => {
     const result = nextAdmittedRange(input({
-      previousIds: { firstId: 'gone-first', lastId: 'gone-last' },
+      previousIds: ['gone-first', 'gone-last'],
       measured: span(15, 19),
     }))
     expect(result).toEqual({ start: 0, end: 0, targetState: 'none' })
+  })
+
+  it('keeps the rows that are left of the range of a follower whose last row left the list', () => {
+    // Row r9 left the list, and two rows arrived below it: r10 is not measured, r11 is.
+    const rows = [
+      ...rowsFrom(0, 9),
+      row(10),
+      row(11),
+    ]
+    expect(nextAdmittedRange(input({
+      rows,
+      previousIds: span(0, 9).map(i => `r${i}`),
+      measured: [
+        ...span(0, 8),
+        11,
+      ],
+      viewAnchor: { kind: 'tail' },
+    }))).toEqual({ start: 0, end: 9, targetState: 'none' })
+  })
+
+  it('keeps the rows that are left of the range when both of its edge rows left the list', () => {
+    const rows = [
+      ...rowsFrom(1, 8),
+      row(10),
+      row(11),
+    ]
+    expect(nextAdmittedRange(input({
+      rows,
+      previousIds: span(0, 9).map(i => `r${i}`),
+      measured: span(1, 8),
+      viewAnchor: { kind: 'row', id: 'r5' },
+    }))).toEqual({ start: 0, end: 8, targetState: 'none' })
+  })
+
+  it('keeps the range when its first row moved below its last row', () => {
+    // A row whose seq changed moves in the loaded rows, as after a consolidated notification.
+    expect(nextAdmittedRange(input({
+      rows: [1, 2, 3, 4, 5, 0].map(i => row(i)),
+      previousIds: span(0, 5).map(i => `r${i}`),
+      measured: span(0, 5),
+      viewAnchor: { kind: 'row', id: 'r3' },
+    }))).toEqual({ start: 0, end: 6, targetState: 'none' })
+  })
+
+  it('waits for the rows below a row target whose place lies deeper in the row than its offset, at another row height', () => {
+    // The anchor was taken 900px into the row when the row was 1000px tall. The row is
+    // 2000px tall now, so the placement puts the viewport top 1800px into it, and the view
+    // of 800px ends 600px below the row. The staged row r3 must fill that space first.
+    const waiting = {
+      rows: rowsFrom(0, 5),
+      heights: { 2: 2000 },
+      target: rowTarget(2, 900, 1000),
+      viewHeight: 800,
+    }
+    expect(nextAdmittedRange(input({
+      ...waiting,
+      measured: [0, 1, 2],
+    })))
+      .toEqual({ start: 0, end: 0, targetState: 'waiting' })
+    // The rows below end before the view is full, and they are the last rows: the browser
+    // then shows the bottom of the content, which the rows above the target fill.
+    expect(nextAdmittedRange(input({
+      ...waiting,
+      measured: span(0, 4),
+    })))
+      .toEqual({ start: 0, end: 5, targetState: 'reached' })
+  })
+
+  it('counts the offset of a row target with no basis up to the height of its row', () => {
+    // The placement clamps 900px to the 500px of the row, so the view needs 500px of the
+    // row and 800px below it: the 1500px from r2 to r12 are enough.
+    expect(nextAdmittedRange(input({
+      rows: rowsFrom(0, 14),
+      measured: span(0, 12),
+      heights: { 2: 500 },
+      target: rowTarget(2, 900),
+      viewHeight: 800,
+    }))).toEqual({ start: 0, end: 13, targetState: 'reached' })
   })
 
   it('changes to the rows of a row target that is measured and filled', () => {
@@ -305,15 +403,22 @@ describe('nextAdmittedRange', () => {
   })
 
   it('counts the offset of a row target', () => {
-    // 250px into row 3, the view needs 750px from the top edge of the row.
-    expect(nextAdmittedRange(input({
-      measured: span(3, 9),
+    // 250px into row 3, which is 400px tall, the view needs 750px from the top edge of
+    // the row: the 700px of the rows 3 to 6 are not enough.
+    const intoRow = {
+      heights: { 3: 400 },
       target: rowTarget(3, 250),
-    }))).toMatchObject({ targetState: 'waiting' })
+    }
     expect(nextAdmittedRange(input({
-      measured: span(3, 10),
-      target: rowTarget(3, 250),
-    }))).toEqual({ start: 3, end: 11, targetState: 'reached' })
+      ...intoRow,
+      measured: span(3, 6),
+    })))
+      .toMatchObject({ targetState: 'waiting' })
+    expect(nextAdmittedRange(input({
+      ...intoRow,
+      measured: span(3, 7),
+    })))
+      .toEqual({ start: 3, end: 8, targetState: 'reached' })
   })
 
   it('reaches a row target inside the previous range at once', () => {
@@ -326,7 +431,7 @@ describe('nextAdmittedRange', () => {
   it('reports a row target whose row left the list as gone, and keeps the range', () => {
     expect(nextAdmittedRange(input({
       previous: [15, 20],
-      target: { kind: 'row', id: 'left', offset: 0 },
+      target: rowTargetAt('left'),
     }))).toEqual({ start: 15, end: 20, targetState: 'gone' })
   })
 
@@ -441,12 +546,12 @@ describe('rowsWantedForTarget', () => {
 
   it('wants no row for a reached target, a gone target, and no target', () => {
     expect(wanted(30, tail, [], 'reached')).toEqual([])
-    expect(wanted(30, { kind: 'row', id: 'left', offset: 0 }, [], 'gone')).toEqual([])
+    expect(wanted(30, rowTargetAt('left'), [], 'gone')).toEqual([])
     expect(wanted(30, undefined, [], 'none')).toEqual([])
   })
 
   it('wants no row for a row target whose row is not loaded', () => {
-    expect(wanted(30, { kind: 'row', id: 'left', offset: 0 })).toEqual([])
+    expect(wanted(30, rowTargetAt('left'))).toEqual([])
   })
 })
 
@@ -460,7 +565,9 @@ describe('createRowAdmission', () => {
     const [rows, setRows] = createSignal<VirtualItem[]>(rowsFrom(0, opts.count ?? 20))
     const [viewHeight, setViewHeight] = createSignal(500)
     const [tailLoaded, setTailLoaded] = createSignal(opts.tailLoaded ?? true)
-    const heights = createRowHeightCache()
+    const heights = createRowHeightCache({
+      loadedIds: () => rows().map(item => item.id),
+    })
     let viewAnchor: AdmissionViewAnchor | undefined
     let viewAnchorReads = 0
     let dispose!: () => void
@@ -494,6 +601,16 @@ describe('createRowAdmission', () => {
       setViewHeight,
       setTailLoaded,
       measure,
+      /** Mount the rows at `indexes`, as the row measurer reports them to the cache. */
+      markMounted: (indexes: readonly number[]): void => {
+        for (const i of indexes)
+          heights.noteMounted(rows()[i]!.id)
+      },
+      /** Add `items` below the loaded rows. */
+      append: (...items: VirtualItem[]) => setRows([
+        ...rows(),
+        ...items,
+      ]),
       setKeys: (key: string) => setRows(rows().map(item => ({ ...item, heightKey: key }))),
       setViewAnchor: (anchor: AdmissionViewAnchor | undefined) => {
         viewAnchor = anchor
@@ -516,15 +633,16 @@ describe('createRowAdmission', () => {
     h.admission.request(tail)
     expect(h.admission.range()).toEqual({ start: 0, end: 0 })
     expect(h.admission.awaitingFirstView()).toBe(true)
-    expect(h.admission.stagedAbove()).toBe(20)
-    expect(h.admission.stagedBelow()).toBe(0)
+    // No row is admitted, so every loaded row waits, on both sides.
+    expect(h.admission.stagedOlder()).toBe(true)
+    expect(h.admission.stagedNewer()).toBe(true)
 
     h.measure(span(15, 19))
 
     expect(h.admission.range()).toEqual({ start: 15, end: 20 })
     expect(h.admission.awaitingFirstView()).toBe(false)
-    expect(h.admission.stagedAbove()).toBe(15)
-    expect(h.admission.stagedBelow()).toBe(0)
+    expect(h.admission.stagedOlder()).toBe(true)
+    expect(h.admission.stagedNewer()).toBe(false)
     h.dispose()
   })
 
@@ -564,15 +682,12 @@ describe('createRowAdmission', () => {
   it('keeps holding the tail while a new message is staged', () => {
     const h = mountAtTail()
 
-    h.setRows([
-      ...h.rows(),
-      row(20),
-    ])
-    expect(h.admission.stagedBelow()).toBe(1)
+    h.append(row(20))
+    expect(h.admission.stagedNewer()).toBe(true)
     expect(h.admission.holdsTail()).toBe(true)
 
     h.measure([20])
-    expect(h.admission.stagedBelow()).toBe(0)
+    expect(h.admission.stagedNewer()).toBe(false)
     expect(h.admission.holdsTail()).toBe(true)
     h.dispose()
   })
@@ -580,23 +695,18 @@ describe('createRowAdmission', () => {
   it('keeps holding the tail while a burst of new messages measures row by row', () => {
     const h = mountAtTail()
 
-    h.setRows([
-      ...h.rows(),
-      row(20),
-      row(21),
-    ])
+    h.append(row(20), row(21))
     h.measure([20])
 
     expect(h.admission.range()).toEqual({ start: 0, end: 21 })
-    expect(h.admission.stagedBelow()).toBe(1)
+    expect(h.admission.stagedNewer()).toBe(true)
     expect(h.admission.holdsTail()).toBe(true)
     h.dispose()
   })
 
   it('does not hold the tail while rows that were admitted before are staged below', () => {
     const h = mountAtTail()
-    for (const i of span(8, 12))
-      h.heights.mountedIds.add(`r${i}`)
+    h.markMounted(span(8, 12))
 
     // A width change: only the mounted rows keep a height.
     h.setKeys('b')
@@ -611,15 +721,10 @@ describe('createRowAdmission', () => {
 
   it('does not hold the tail while a new message that was admitted before is staged below', () => {
     const h = mountAtTail()
-    h.setRows([
-      ...h.rows(),
-      row(20),
-      row(21),
-    ])
+    h.append(row(20), row(21))
     h.measure([20])
     expect(h.admission.holdsTail()).toBe(true)
-    for (const i of span(8, 12))
-      h.heights.mountedIds.add(`r${i}`)
+    h.markMounted(span(8, 12))
 
     h.setKeys('b')
     h.measure(span(13, 19))
@@ -637,12 +742,9 @@ describe('createRowAdmission', () => {
     expect(h.admission.range()).toEqual({ start: 0, end: 20 })
 
     // A newer history page arrives. The store clears its newer-pages flag afterwards.
-    h.setRows([
-      ...h.rows(),
-      ...rowsFrom(20, 5),
-    ])
+    h.append(...rowsFrom(20, 5))
     h.setTailLoaded(true)
-    expect(h.admission.stagedBelow()).toBe(5)
+    expect(h.admission.stagedNewer()).toBe(true)
     expect(h.admission.holdsTail()).toBe(false)
 
     h.measure(span(20, 24))
@@ -657,10 +759,7 @@ describe('createRowAdmission', () => {
     // The window is paged away, and rows of a newer page join below the admitted rows.
     batch(() => {
       h.setTailLoaded(false)
-      h.setRows([
-        ...h.rows(),
-        row(20),
-      ])
+      h.append(row(20))
     })
     expect(h.admission.holdsTail()).toBe(false)
 
@@ -672,19 +771,14 @@ describe('createRowAdmission', () => {
 
   it('counts a kept row that left the loaded rows for nothing', () => {
     const h = mountAtTail()
-    h.setRows([
-      ...h.rows(),
-      row(20),
-    ])
+    h.append(row(20))
     expect(h.admission.holdsTail()).toBe(true)
 
     // Every row is replaced. The rows 5 to 9 of the new window are measured.
-    const replaced = Array.from({ length: 20 }, (_, i): VirtualItem => ({ id: `n${i}`, hasSpanLines: false, heightKey: 'a' }))
     batch(() => {
-      h.setRows(replaced)
-      for (const item of replaced.slice(5, 10))
-        h.heights.commit(item, 100, item.heightKey, 'premeasure')
-      h.admission.request({ kind: 'row', id: 'n5', offset: 0 })
+      h.setRows(replacementRows())
+      h.measure(span(5, 9))
+      h.admission.request(rowTargetAt('n5'))
     })
 
     expect(h.admission.range()).toEqual({ start: 5, end: 10 })
@@ -729,28 +823,46 @@ describe('createRowAdmission', () => {
 
   it('shrinks to the mounted rows when every height key changes', () => {
     const h = mountAtTail()
-    for (const i of span(8, 12))
-      h.heights.mountedIds.add(`r${i}`)
+    h.markMounted(span(8, 12))
 
     h.setKeys('b')
 
     expect(h.admission.range()).toEqual({ start: 8, end: 13 })
-    expect(h.admission.stagedAbove()).toBe(8)
-    expect(h.admission.stagedBelow()).toBe(7)
+    expect(h.admission.stagedOlder()).toBe(true)
+    expect(h.admission.stagedNewer()).toBe(true)
     h.dispose()
   })
 
-  it('drops a mounted row whose provisional height ends at its unmount', () => {
+  it('drops a mounted row whose provisional height ends at its unmount', async () => {
     const h = mountAtTail()
-    for (const i of span(8, 12))
-      h.heights.mountedIds.add(`r${i}`)
+    h.markMounted(span(8, 12))
     h.setKeys('b')
     expect(h.admission.range()).toEqual({ start: 8, end: 13 })
 
-    h.heights.mountedIds.delete('r8')
-    h.heights.noteUnmounted(h.rows()[8]!)
+    h.heights.noteDetached('r8')
+    // The row counts as mounted until the microtask of its detach.
+    expect(h.admission.range()).toEqual({ start: 8, end: 13 })
+    await Promise.resolve()
 
     expect(h.admission.range()).toEqual({ start: 9, end: 13 })
+    h.dispose()
+  })
+
+  it('keeps a row whose element is replaced in one update, also when the range computes between the detach and the attach', async () => {
+    const h = mountAtTail()
+    h.markMounted(span(8, 12))
+    h.setKeys('b')
+    expect(h.admission.range()).toEqual({ start: 8, end: 13 })
+
+    // The old element of row 8 detaches. Before the new one attaches, a commit makes the
+    // range compute again: row 8 must still count as mounted and as measured.
+    h.heights.noteDetached('r8')
+    h.measure([13])
+    expect(h.admission.range()).toEqual({ start: 8, end: 14 })
+    h.markMounted([8])
+    await Promise.resolve()
+
+    expect(h.admission.range()).toEqual({ start: 8, end: 14 })
     h.dispose()
   })
 
@@ -770,16 +882,12 @@ describe('createRowAdmission', () => {
     h.admission.request(tail).end()
     expect(h.admission.range()).toEqual({ start: 15, end: 20 })
 
-    const replaced = Array.from({ length: 20 }, (_, i): VirtualItem => ({ id: `n${i}`, hasSpanLines: false, heightKey: 'a' }))
-    h.setRows(replaced)
+    h.setRows(replacementRows())
     expect(h.admission.range()).toEqual({ start: 0, end: 0 })
     expect(h.admission.awaitingFirstView()).toBe(true)
 
     h.admission.request(tail)
-    batch(() => {
-      for (const item of replaced.slice(15))
-        h.heights.commit(item, 100, item.heightKey, 'premeasure')
-    })
+    h.measure(span(15, 19))
     expect(h.admission.range()).toEqual({ start: 15, end: 20 })
     expect(h.admission.awaitingFirstView()).toBe(false)
     h.dispose()
@@ -818,15 +926,38 @@ describe('createRowAdmission', () => {
     h.dispose()
   })
 
-  it('reports no staged row and no first view for a list with no row', () => {
+  it('reports no staged row, no first view, and a held tail for a list with no row', () => {
     const h = mount({ count: 0 })
     const request = h.admission.request(tail)
 
     expect(request.state()).toBe('reached')
     expect(h.admission.awaitingFirstView()).toBe(false)
-    expect(h.admission.stagedAbove()).toBe(0)
-    expect(h.admission.stagedBelow()).toBe(0)
+    expect(h.admission.stagedOlder()).toBe(false)
+    expect(h.admission.stagedNewer()).toBe(false)
+    // No row lies below the reader, so a reader at the bottom is at the end of the chat:
+    // the content outside the rows (a banner, a streaming block) still scrolls there.
+    expect(h.admission.holdsTail()).toBe(true)
+    h.dispose()
+  })
+
+  it('stops holding the tail when the first row of a list with no row arrives, until that row is admitted', () => {
+    const h = mount({ count: 0 })
+    expect(h.admission.holdsTail()).toBe(true)
+
+    h.setRows([
+      row(0),
+    ])
+    expect(h.admission.awaitingFirstView()).toBe(true)
     expect(h.admission.holdsTail()).toBe(false)
+
+    h.admission.request(tail)
+    h.measure([0])
+    expect(h.admission.range()).toEqual({ start: 0, end: 1 })
+    expect(h.admission.holdsTail()).toBe(true)
+
+    // The window with no row kept no row: the rows of a newer page are no new messages.
+    h.setRows([])
+    expect(h.admission.holdsTail()).toBe(true)
     h.dispose()
   })
 })

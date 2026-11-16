@@ -95,7 +95,9 @@ describe('chatRowHeightPersistence', () => {
     const [items, setItems] = createSignal<VirtualItem[]>(opts.items ?? [])
     const [extraVersion, setExtraVersion] = createSignal(0)
     const [storageId, setStorageId] = createSignal(opts.storageId)
-    const cache = createRowHeightCache()
+    const cache = createRowHeightCache({
+      loadedIds: () => items().map(item => item.id),
+    })
     for (const row of opts.measured ?? [])
       cache.commit(row, 50, row.heightKey, 'visible')
     const primed: PersistableRowHeight[][] = []
@@ -104,19 +106,19 @@ describe('chatRowHeightPersistence', () => {
       dispose = d
       createRowHeightPersistence({
         storageId,
-        virtualItems: items,
+        loadedItems: items,
         heights: {
           commitAll: (entries) => {
             primed.push(entries.map(entry => ({
               id: entry.row.id,
-              heightKey: entry.measuredKey,
+              heightKey: entry.row.heightKey,
               height: entry.height,
             })))
             return (opts.commitAll ?? cache.commitAll)(entries)
           },
           snapshot: cache.snapshot,
           version: () => cache.version() + extraVersion(),
-          heightOf: cache.heightOf,
+          isMeasured: cache.isMeasured,
         },
       })
     })

@@ -33,10 +33,9 @@ import { shallowEqualSets } from '~/lib/shallowEqual'
  * @param orderedIds the visible rows' ids in document order (the rendered slice).
  * @param isLoading  whether a row is still loading, and so hidden on its own
  *                   account. MUST read reactively -- the gate re-runs when a
- *                   row's loading state flips. ChatView counts three cases:
- *                   - A row that awaits its own measurement.
+ *                   row's loading state flips. ChatView counts two cases:
  *                   - A row whose asynchronous body (Markdown, an edit diff)
- *                     is still pending, even when its height is known.
+ *                     is still pending.
  *                   - A row that has not mounted yet. The row <For> mounts it
  *                     later in the same update, but until then the gate must
  *                     hold every later row behind it, because a release is

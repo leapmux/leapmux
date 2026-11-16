@@ -21,11 +21,11 @@ import { capMapInsertionOrder } from '~/lib/mapLru'
 // long session can't grow the maps without limit. A genuinely-deleted row's stale
 // entry is harmless (its row never renders) and ages out under the cap.
 //
-// The cap PROTECTS the currently-rendered rows (the virtualizer's mounted set,
-// passed in as `protectedIds`): an on-screen row toggled across a long session
-// must never be the eviction target, or its choice would silently revert WHILE
-// VISIBLE. This mirrors the virtualizer's height cache, which protects the same
-// set for the same reason; only off-screen rows are ever evicted.
+// The cap PROTECTS the currently-rendered rows (the mounted rows of the height
+// cache, passed in as `protectedIds`): an on-screen row toggled across a long
+// session must never be the eviction target, or its choice would silently revert
+// WHILE VISIBLE. The height cache protects the same set from its own eviction for
+// the same reason; only off-screen rows are ever evicted.
 // ---------------------------------------------------------------------------
 
 /**
@@ -85,7 +85,7 @@ export interface MessageUiState {
 export interface CreateMessageUiStateOptions {
   /**
    * The currently-rendered row ids the cap must never evict, read at eviction time
-   * (so it tracks the live mounted set). Wired to the virtualizer's `mountedIds` in
+   * (so it tracks the live mounted set). Wired to `RowHeightCache.mountedIds` in
    * ChatView. Omitted -> no protection (the prior behavior), for standalone tests.
    */
   protectedIds?: () => ReadonlySet<string>

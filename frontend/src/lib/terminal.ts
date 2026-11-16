@@ -17,7 +17,7 @@ import { DEFAULT_THEME_ID, MATCH_UI, paletteColorToHex, resolveThemeSelection, r
 import { scrollbarWidthPx } from '~/styles/tokens'
 import { loadBrowserPrefs } from './browserPreferences'
 import { copyTextToClipboard } from './clipboard'
-import { FONT_LOAD_MAX_RETRIES, FONT_LOAD_RETRY_BASE_MS, fontVariantSpecs, tryLoadFontVariant } from './fontFaces'
+import { FONT_LOAD_MAX_RETRIES, fontLoadRetryDelayMs, fontVariantSpecs, tryLoadFontVariant } from './fontFaces'
 import { DEFAULT_MONO_FONT_FAMILY } from './fontStack'
 import { createLogger } from './logger'
 import { sleep } from './sleep'
@@ -679,7 +679,7 @@ export function loadTerminalFonts(terminal: Terminal, fontFamily: string, fontSi
 async function retryFontVariants(terminal: Terminal, specs: string[]): Promise<void> {
   let pending = specs
   for (let attempt = 0; attempt < FONT_LOAD_MAX_RETRIES && pending.length > 0; attempt++) {
-    await sleep(FONT_LOAD_RETRY_BASE_MS * 2 ** attempt)
+    await sleep(fontLoadRetryDelayMs(attempt))
     // The document (and its FontFaceSet) can go away mid-retry during teardown;
     // stop rather than throw into this floating promise.
     if (typeof document === 'undefined' || !document.fonts?.load)

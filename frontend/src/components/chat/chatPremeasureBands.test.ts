@@ -2,7 +2,7 @@ import type { ClassifiedEntry } from './chatEntryCache'
 import type { ChatVirtualizerRange, VirtualItem } from './useChatVirtualizer'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { clampPremeasureRange, collectUnmeasuredCandidates, createChatPremeasureBands } from './chatPremeasureBands'
+import { clampPremeasureRange, collectUnmeasuredCandidates, createChatPremeasureBands, unmeasuredCandidateAt } from './chatPremeasureBands'
 import { WARMUP_IDLE_DELAY_MS } from './chatPremeasureWarmup'
 import { createRowHeightCache } from './chatRowHeightCache'
 
@@ -88,6 +88,27 @@ describe('chatPremeasureBands', () => {
     })
   })
 
+  describe('unmeasuredCandidateAt', () => {
+    const all = ['a', 'b'].map(entry)
+    const items = ['a', 'b'].map(item)
+
+    it('gives the entry and the item of an unmeasured row', () => {
+      expect(unmeasuredCandidateAt(all, items, () => false, 1)).toEqual({ entry: all[1], item: items[1] })
+    })
+
+    it('gives nothing for a measured row', () => {
+      expect(unmeasuredCandidateAt(all, items, row => row.id === 'b', 1)).toBeUndefined()
+    })
+
+    it.each([-1, 2])('gives nothing for the index %i, which holds no row', (index) => {
+      expect(unmeasuredCandidateAt(all, items, () => false, index)).toBeUndefined()
+    })
+
+    it('gives nothing for an index that only one of the two arrays holds', () => {
+      expect(unmeasuredCandidateAt(all, items.slice(0, 1), () => false, 1)).toBeUndefined()
+    })
+  })
+
   describe('createChatPremeasureBands', () => {
     /**
      * The bands over 30 loaded rows `r0` to `r29` with a real height cache. No row is
@@ -95,6 +116,15 @@ describe('chatPremeasureBands', () => {
      * warm-up is off, unless the test sets it. `measure` commits a height for the rows at
      * the given indexes.
      */
+    /** Every row index of the harness. */
+    const allRows = Array.from({ length: 30 }, (_, index) => index)
+    // With the rows 10 to 14 rendered, the look-ahead band holds r0 to r9 and r15 to r26:
+    // 12 rows on each side of the rendered range, and no row of the range.
+    const lookAheadIds = [
+      ...Array.from({ length: 10 }, (_, index) => `r${index}`),
+      ...Array.from({ length: 12 }, (_, index) => `r${15 + index}`),
+    ]
+
     function mountBands(options: { warmupEnabled?: boolean } = {}) {
       const ids = Array.from({ length: 30 }, (_, index) => `r${index}`)
       const rows: VirtualItem[] = ids.map(id => ({ id, hasSpanLines: false, heightKey: `k-${id}` }))
@@ -102,7 +132,9 @@ describe('chatPremeasureBands', () => {
         message: { id },
       } as ClassifiedEntry))
       const entryById = new Map(entries.map(entry => [entry.message.id, entry]))
-      const heights = createRowHeightCache()
+      const heights = createRowHeightCache({
+        loadedIds: () => ids,
+      })
       const [renderedRange, setRenderedRange] = createSignal<ChatVirtualizerRange>({ start: 0, end: 0 })
       const [wantedRows, setWantedRows] = createSignal<readonly number[]>([])
       const [stagingEnabled, setStagingEnabled] = createSignal(true)
@@ -111,7 +143,7 @@ describe('chatPremeasureBands', () => {
         dispose = disposeRoot
         return createChatPremeasureBands({
           visibleEntries: () => entries,
-          virtualItems: () => rows,
+          loadedItems: () => rows,
           heights,
           renderedRange,
           wantedRows,
@@ -148,6 +180,14 @@ describe('chatPremeasureBands', () => {
       h.dispose()
     })
 
+    it('skips a wanted index that lies past the loaded rows', () => {
+      const h = mountBands()
+      h.setWantedRows([29, 30, -1])
+
+      expect(h.priorityIds()).toEqual(['r29'])
+      h.dispose()
+    })
+
     it('stages no look-ahead row while no row is rendered', () => {
       const h = mountBands()
       h.setRenderedRange({ start: 0, end: 0 })
@@ -160,7 +200,7 @@ describe('chatPremeasureBands', () => {
     it('stages the unmeasured rows around the rendered range, in indexes of the loaded rows', () => {
       const h = mountBands()
       // Every row is measured except the two on each side of the rendered range.
-      h.measure(Array.from({ length: 30 }, (_, index) => index).filter(index => ![8, 9, 15, 16].includes(index)))
+      h.measure(allRows.filter(index => ![8, 9, 15, 16].includes(index)))
       h.setRenderedRange({ start: 10, end: 15 })
 
       expect(h.candidateIds()).toEqual(['r8', 'r9', 'r15', 'r16'])
@@ -171,11 +211,7 @@ describe('chatPremeasureBands', () => {
       const h = mountBands()
       h.setRenderedRange({ start: 10, end: 15 })
 
-      // 12 rows on each side of the rendered range, and no row of the range.
-      expect(h.candidateIds()).toEqual([
-        ...Array.from({ length: 10 }, (_, index) => `r${index}`),
-        ...Array.from({ length: 12 }, (_, index) => `r${15 + index}`),
-      ])
+      expect(h.candidateIds()).toEqual(lookAheadIds)
       h.dispose()
     })
 
@@ -197,7 +233,7 @@ describe('chatPremeasureBands', () => {
 
     it('lists the target rows and the look-ahead rows as priority rows', () => {
       const h = mountBands()
-      h.measure(Array.from({ length: 30 }, (_, index) => index).filter(index => index !== 3 && index !== 16))
+      h.measure(allRows.filter(index => index !== 3 && index !== 16))
       h.setRenderedRange({ start: 10, end: 15 })
       h.setWantedRows([3])
 
@@ -211,9 +247,6 @@ describe('chatPremeasureBands', () => {
       const IDLE_LATENCY_MS = 1
       /** The time from the start of a warm-up to its first batch. */
       const FIRST_BATCH_MS = WARMUP_IDLE_DELAY_MS + IDLE_LATENCY_MS
-      /** Every row index of the harness. */
-      const allRows = Array.from({ length: 30 }, (_, index) => index)
-
       beforeEach(() => {
         vi.useFakeTimers()
         vi.stubGlobal('requestIdleCallback', (callback: IdleRequestCallback) => setTimeout(() => callback({
@@ -247,12 +280,8 @@ describe('chatPremeasureBands', () => {
 
       it('runs no warm-up while staging is not enabled', () => {
         const h = mountBands({ warmupEnabled: true })
-        // With the rows 10 to 14 rendered, the look-ahead band holds r0 to r9 and r15 to
-        // r26, and the rows r27 to r29 are left for the warm-up.
-        const lookAheadIds = [
-          ...Array.from({ length: 10 }, (_, index) => `r${index}`),
-          ...Array.from({ length: 12 }, (_, index) => `r${15 + index}`),
-        ]
+        // With the rows 10 to 14 rendered, the rows r27 to r29 lie outside the look-ahead
+        // band, so they are left for the warm-up.
         h.setRenderedRange({ start: 10, end: 15 })
         h.setStagingEnabled(false)
         // Long enough for several batches of a warm-up that ran.

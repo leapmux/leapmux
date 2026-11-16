@@ -8,7 +8,6 @@ export interface ChatTailFollowerExtras {
    * pending history jump of the hook: an abort abandons the fetch.
    */
   jumpToLatest: (signal: AbortSignal) => Promise<boolean> | undefined
-  stickToBottom: () => void
   animateToBottom: () => void
 }
 
@@ -41,7 +40,8 @@ export function createChatTailFollower(ctx: ScrollContext, extras: ChatTailFollo
   let jumpRequestRevision = 0
   // Whether the jump of the current revision did not run its `then` or `catch` branch yet.
   // A jump of an older revision is never pending: the request that superseded it ended it.
-  // A signal, so that the first-view rule of the hook runs again when the jump settles.
+  // The first-view rule of the hook does not read this signal: it reads the pending history
+  // jump of the hook, and each reader of this value reads it untracked.
   const [jumpPending, setJumpPending] = createSignal(false)
   // The signal of the jump of the current revision, while that jump is pending.
   let jumpSignal: AbortSignal | undefined
@@ -53,9 +53,9 @@ export function createChatTailFollower(ctx: ScrollContext, extras: ChatTailFollo
     return ++jumpRequestRevision
   }
 
-  /** Ask the hook for the tail: the stick runs when the last rows are measured. */
+  /** Ask the hook for the tail: its stick runs when the last rows are measured. */
   const requestTail = (): void => {
-    void ctx.requestPlace({ kind: 'tail' }, () => extras.stickToBottom())
+    void ctx.requestPlace({ kind: 'tail' })
   }
 
   const forceScrollToBottom = (): void => batch(() => {
@@ -72,7 +72,6 @@ export function createChatTailFollower(ctx: ScrollContext, extras: ChatTailFollo
       return
     }
 
-    ctx.rearmScrollBufferFiller()
     // Before this jump counts as pending, and before the request for the tail:
     // beginHistoryJump ends the request of a jump to the latest page that is still pending,
     // and this jump must not count as one.
@@ -83,14 +82,14 @@ export function createChatTailFollower(ctx: ScrollContext, extras: ChatTailFollo
     setJumpPending(true)
     jumpSignal = signal
     // Whether this jump is still the current request, and nothing aborted it. A current
-    // jump then stops being pending.
+    // jump then stops being pending, here and in the hook.
     const settle = () => {
       const current = requestRevision === jumpRequestRevision
       if (current) {
         setJumpPending(false)
         jumpSignal = undefined
       }
-      return current && !signal.aborted
+      return ctx.settleHistoryJump(signal) && current
     }
     void Promise.resolve(extras.jumpToLatest(signal))
       .then(() => batch(() => {
@@ -116,7 +115,7 @@ export function createChatTailFollower(ctx: ScrollContext, extras: ChatTailFollo
     // The animation moves inside the rows of the list. With rows staged below, or with no
     // row in the list, the bottom of the list is not the tail, so the command asks for the
     // tail as End does.
-    if (ctx.hasNewerMessages() || ctx.stagedBelow() > 0 || ctx.awaitingFirstView()) {
+    if (ctx.hasNewerMessages() || ctx.stagedNewer()) {
       forceScrollToBottom()
       return
     }
@@ -124,6 +123,9 @@ export function createChatTailFollower(ctx: ScrollContext, extras: ChatTailFollo
       supersedeJump()
       // The button starts no fetch here, but it still ends one that runs.
       ctx.abandonHistoryJump()
+      // A command of the reader, as End is: it ends the pause of the buffer fill that a
+      // forced stop started. Its `scroll` events are own writes, which never end it.
+      ctx.retakeScrollControl()
       extras.animateToBottom()
     })
   }

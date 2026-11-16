@@ -1,8 +1,10 @@
 import type { Accessor } from 'solid-js'
 import type { RowHeightCache } from './chatRowHeightCache'
 import type { VirtualItem } from './useChatVirtualizer'
+import type { ScrollAnchor } from '~/stores/chatTypes'
 import { createMemo, createSignal, untrack } from 'solid-js'
 import { shallowEqualArrays } from '~/lib/shallowEqual'
+import { anchorOffsetInRow } from './chatScrollAnchor'
 
 // ---------------------------------------------------------------------------
 // Row admission
@@ -15,8 +17,9 @@ import { shallowEqualArrays } from '~/lib/shallowEqual'
 // This unit decides which loaded rows the virtualizer gets:
 //
 //  - Loaded rows: the rows of the loaded window that are not hidden.
-//  - Measured row: a loaded row for which the height cache answers under the current
-//    height key of the row.
+//  - Measured row: a loaded row for which the height cache answers (see
+//    RowHeightCache.isMeasured). A measure produced its height under the current height
+//    key of the row, or the row is mounted and still shows the height of another key.
 //  - Admitted rows: one contiguous range of the loaded rows, each of them measured.
 //    The virtualizer lays out exactly these rows.
 //  - Staged rows: the loaded rows outside the admitted range. Only hidden copies
@@ -35,8 +38,9 @@ import { shallowEqualArrays } from '~/lib/shallowEqual'
 //  5. Every target comes from a request of the scroll hook, which asks for the place
 //     that a command of the reader goes to. This unit forms no target of its own: it
 //     would admit a range that no placement puts the view on.
-//  6. The admitted rows hold the tail when their last row is the last loaded row, and
-//     also while only new messages are staged below them (see `holdsTail`).
+//  6. The admitted rows hold the tail of the loaded rows when their last row is the last
+//     loaded row, and also while only new messages are staged below them (see
+//     `holdsTail`).
 //
 // A reader who scrolls faster than the measurement reaches the end of the admitted
 // rows and waits there, as a reader waits for a page of older history.
@@ -48,9 +52,11 @@ export type AdmissionTarget
     | { kind: 'top' }
     | {
       kind: 'row'
-      id: string
-      /** px from the top edge of the row to the viewport top. */
-      offset: number
+      /**
+       * The row, and the place inside it that the viewport top goes to. The placement
+       * resolves it against the measured height of the row (see resolveAnchorScrollTop).
+       */
+      anchor: ScrollAnchor
     }
 
 /** The row that the range keeps when a row inside it stops being measured. */
@@ -85,12 +91,13 @@ export const TARGET_STAGING_ROWS = 12
 export interface AdmittedRangeInput {
   /** The loaded rows, in order. */
   rows: readonly VirtualItem[]
-  /** Whether the height cache answers for the row. */
-  isMeasured: (row: VirtualItem) => boolean
-  /** That height. The rule calls it only for a measured row. */
-  heightOf: (row: VirtualItem) => number
-  /** The ids of the first and the last row of the previous range, or `undefined` for an empty one. */
-  previous: { firstId: string, lastId: string } | undefined
+  /**
+   * The height that the height cache answers for the row, or `undefined` for a row that
+   * is not measured (see RowHeightCache.heightOf).
+   */
+  heightOf: (row: VirtualItem) => number | undefined
+  /** The ids of the rows of the previous range, or `undefined` for an empty one. */
+  previous: ReadonlySet<string> | undefined
   /**
    * What the view shows: the tail for a reader who follows it, else the row of the
    * last anchor that the scroll hook recorded for the reader, or `undefined`.
@@ -131,39 +138,47 @@ function indexOfRow(rows: readonly VirtualItem[], id: string): number {
 }
 
 /**
- * The rows that the previous range spanned, as inclusive indexes into the current rows,
- * or `undefined` when no row of it is left. When one of its two edge rows left the rows,
- * the span runs from the other edge to the end of the rows on the side of the row that
- * left: the rows in between took the place of the rows that left.
+ * The span of the previous range in the current rows, as inclusive indexes: from the
+ * first to the last row that is left of the range. `undefined` when no row of it is left.
+ * A row of the range that left the rows, or that moved, cannot move the span past the
+ * rows that are left: a row that arrived outside them is no row of the range.
  */
 function previousSpan(rows: readonly VirtualItem[], previous: AdmittedRangeInput['previous']): { first: number, last: number } | undefined {
   if (previous === undefined)
     return undefined
-  const first = indexOfRow(rows, previous.firstId)
-  const last = indexOfRow(rows, previous.lastId)
-  if (first < 0 && last < 0)
-    return undefined
-  return {
-    first: first < 0
-      ? 0
-      : first,
-    last: last < 0
-      ? rows.length - 1
-      : last,
+  let first = -1
+  let last = -1
+  for (let index = 0; index < rows.length; index++) {
+    if (!previous.has(rows[index]!.id))
+      continue
+    if (first < 0)
+      first = index
+    last = index
   }
+  return first < 0
+    ? undefined
+    : { first, last }
 }
 
 /**
  * The range that continues the previous one: the largest run of measured rows around
  * the row that holds the view. Empty when no row of the previous range is measured.
  */
-function continuedRange(input: AdmittedRangeInput): AdmittedRange {
-  const { rows, isMeasured, viewAnchor } = input
+function continuedRange(input: AdmittedRangeInput, isMeasured: (row: VirtualItem) => boolean): AdmittedRange {
+  const { rows, viewAnchor } = input
   const span = previousSpan(rows, input.previous)
   if (span === undefined)
     return EMPTY_RANGE
   const inSpan = (index: number): boolean => index >= span.first && index <= span.last
   const measuredAt = (index: number): boolean => isMeasured(rows[index]!)
+  /** The first index of the span that `accept` takes, or -1. */
+  const firstInSpan = (accept: (index: number) => boolean): number => {
+    for (let index = span.first; index <= span.last; index++) {
+      if (accept(index))
+        return index
+    }
+    return -1
+  }
   // The holder: the row that the range must keep, the first of these that exists.
   let holder = -1
   // 1. A follower sees the last row of the range.
@@ -176,41 +191,44 @@ function continuedRange(input: AdmittedRangeInput): AdmittedRange {
       holder = anchored
   }
   // 3. A mounted row is in or near the view.
-  if (holder < 0) {
-    for (let index = span.first; index <= span.last; index++) {
-      if (input.isMounted(rows[index]!.id) && measuredAt(index)) {
-        holder = index
-        break
-      }
-    }
-  }
+  if (holder < 0)
+    holder = firstInSpan(index => input.isMounted(rows[index]!.id) && measuredAt(index))
   // 4. Any measured row of the range.
-  if (holder < 0) {
-    for (let index = span.first; index <= span.last; index++) {
-      if (measuredAt(index)) {
-        holder = index
-        break
-      }
-    }
-  }
+  if (holder < 0)
+    holder = firstInSpan(measuredAt)
   return holder < 0
     ? EMPTY_RANGE
     : measuredRunAround(rows, isMeasured, holder)
 }
 
-/** The sum of the heights of the rows from `start` to `end` (excluded), up to `enough`. */
-function heightUpTo(input: AdmittedRangeInput, start: number, end: number, enough: number): number {
+/**
+ * The height of the row at `index`. The fill rule reads the rows of a measured run only,
+ * so a row with no height there is a defect of the rule.
+ */
+function measuredHeight(input: AdmittedRangeInput, index: number): number {
+  const row = input.rows[index]!
+  const height = input.heightOf(row)
+  if (height === undefined)
+    throw new Error(`The fill rule read the row ${row.id}, which has no measured height.`)
+  return height
+}
+
+/** Whether the heights of the rows from `start` to `end` (excluded) sum to `need` or more. */
+function heightReaches(input: AdmittedRangeInput, start: number, end: number, need: number): boolean {
   let sum = 0
-  for (let index = start; index < end && sum < enough; index++)
-    sum += input.heightOf(input.rows[index]!)
-  return sum
+  for (let index = start; index < end && sum < need; index++)
+    sum += measuredHeight(input, index)
+  return sum >= need
 }
 
 /**
  * The fill rule: whether the reader will see no empty space that a staged row still has
- * to fill, with the view on the target row `t` inside the measured run `run`. Heights
- * count without the gaps between rows, so the rule asks for a little more than the view
- * needs.
+ * to fill, with the view on the target row `t` inside the measured run `run`.
+ *
+ * Heights count without the gaps between rows. The gap is positive between most rows, so
+ * the rule then asks for a little more than the view needs. Two adjacent bands overlap by
+ * the width of one border (see BAND_BORDER_PX), so for a run of bands the rule asks for
+ * that width less at each pair.
  */
 function targetFills(input: AdmittedRangeInput, target: AdmissionTarget, t: number, run: AdmittedRange): boolean {
   const { viewHeight } = input
@@ -221,21 +239,25 @@ function targetFills(input: AdmittedRangeInput, target: AdmissionTarget, t: numb
     return false
   const atFirstRow = run.start === 0
   const atLastRow = run.end === input.rows.length
+  // A function, so that a run at the first or the last row sums nothing.
+  const runFillsView = (): boolean => heightReaches(input, run.start, run.end, viewHeight)
   switch (target.kind) {
     case 'tail':
       // The view shows the rows up from the tail.
-      return atFirstRow || heightUpTo(input, run.start, run.end, viewHeight) >= viewHeight
+      return atFirstRow || runFillsView()
     case 'top':
       // The view shows the rows down from the top.
-      return atLastRow || heightUpTo(input, run.start, run.end, viewHeight) >= viewHeight
+      return atLastRow || runFillsView()
     case 'row': {
-      // The view shows the rows down from the target row, `offset` into it.
-      const need = viewHeight + target.offset
-      if (heightUpTo(input, t, run.end, need) >= need)
+      // The view shows the rows down from the target row, from the place of the anchor
+      // inside it. The placement resolves that place against the measured height of the
+      // row, so this rule does the same.
+      const need = viewHeight + anchorOffsetInRow(target.anchor, measuredHeight(input, t))
+      if (heightReaches(input, t, run.end, need))
         return true
       // The rows below the target end before the view is full: the browser then shows
       // the bottom of the content, and the rows above the target fill the view.
-      return atLastRow && (atFirstRow || heightUpTo(input, run.start, run.end, viewHeight) >= viewHeight)
+      return atLastRow && (atFirstRow || runFillsView())
     }
   }
 }
@@ -245,7 +267,7 @@ function targetRowIndex(rows: readonly VirtualItem[], target: AdmissionTarget): 
   switch (target.kind) {
     case 'tail': return rows.length - 1
     case 'top': return 0
-    case 'row': return indexOfRow(rows, target.id)
+    case 'row': return indexOfRow(rows, target.anchor.id)
   }
 }
 
@@ -254,8 +276,9 @@ function targetRowIndex(rows: readonly VirtualItem[], target: AdmissionTarget): 
  * and the state of the pending target. Pure: it reads no clock and no DOM.
  */
 export function nextAdmittedRange(input: AdmittedRangeInput): AdmittedRange & { targetState: AdmissionTargetState } {
-  const { rows, isMeasured, target } = input
-  const continued = continuedRange(input)
+  const { rows, target } = input
+  const isMeasured = (row: VirtualItem): boolean => input.heightOf(row) !== undefined
+  const continued = continuedRange(input, isMeasured)
   if (target === undefined)
     return { ...continued, targetState: 'none' }
   if (rows.length === 0) {
@@ -313,6 +336,52 @@ export function rowsWantedForTarget(input: WantedRowsInput): number[] {
   return wanted
 }
 
+/** The result of one run of the admission, with the state that the next run continues. */
+interface AdmissionComputation {
+  /** The loaded rows of the run. */
+  rows: readonly VirtualItem[]
+  start: number
+  end: number
+  targetState: AdmissionTargetState
+  holdsTail: boolean
+  wanted: number[]
+  /** The ids of the admitted rows (see AdmittedRangeInput.previous). */
+  admittedIds: ReadonlySet<string> | undefined
+  /** The kept row (see RowAdmission.holdsTail). */
+  keptRowId: string | undefined
+}
+
+/** The ids of the rows of `range`, or `undefined` for an empty range. */
+function admittedIdsOf(rows: readonly VirtualItem[], range: AdmittedRange): ReadonlySet<string> | undefined {
+  if (range.end <= range.start)
+    return undefined
+  const ids = new Set<string>()
+  for (let index = range.start; index < range.end; index++)
+    ids.add(rows[index]!.id)
+  return ids
+}
+
+/**
+ * Whether the admitted rows of `range` hold the tail (see RowAdmission.holdsTail).
+ * `keptRowId` is the kept row, or `undefined`.
+ */
+function rangeHoldsTail(rows: readonly VirtualItem[], range: AdmittedRange, keptRowId: string | undefined): boolean {
+  if (rows.length === 0)
+    return true
+  if (range.end <= range.start)
+    return false
+  if (range.end === rows.length)
+    return true
+  if (keptRowId === undefined)
+    return false
+  const lastAdmitted = range.end - 1
+  if (rows[lastAdmitted]!.id === keptRowId)
+    return true
+  // A kept row that left the loaded rows counts for nothing.
+  const kept = indexOfRow(rows, keptRowId)
+  return kept >= 0 && lastAdmitted > kept
+}
+
 /** One request of the scroll hook for a target. */
 export interface AdmissionRequest {
   /** The state of the target. `none` once another request replaced this one, or it ended. */
@@ -324,15 +393,21 @@ export interface AdmissionRequest {
 export interface RowAdmission {
   /** The admitted rows, as indexes into the loaded rows. */
   range: Accessor<AdmittedRange>
-  /** The loaded rows above the admitted range. With no admitted row: every loaded row. */
-  stagedAbove: Accessor<number>
-  /** The loaded rows below the admitted range. With no admitted row: none. */
-  stagedBelow: Accessor<number>
+  /**
+   * Loaded rows wait above the admitted range for their measure. True also while loaded
+   * rows exist and none is admitted: every loaded row then waits, on both sides.
+   */
+  stagedOlder: Accessor<boolean>
+  /** The same for the loaded rows below the admitted range. */
+  stagedNewer: Accessor<boolean>
   /** Loaded rows exist and none is admitted. */
   awaitingFirstView: Accessor<boolean>
   /**
-   * The admitted rows hold the tail: a reader at their bottom is at the end of the chat.
-   * False with no admitted row.
+   * The admitted rows hold the tail of the loaded rows: a reader at their bottom has no
+   * loaded row below that the reader did not see yet, except a new message. That bottom
+   * is the end of the chat only while the loaded window holds the live tail, which the
+   * caller tests. True with no loaded row: no row lies below such a reader. False while
+   * loaded rows exist and none is admitted.
    *
    * They hold it when their last row is the last loaded row. They hold it also while only
    * new messages are staged below: the unit keeps the last admitted row of each state in
@@ -360,7 +435,7 @@ export interface RowAdmission {
 export function createRowAdmission(deps: {
   /** The loaded rows. */
   rows: Accessor<readonly VirtualItem[]>
-  heights: Pick<RowHeightCache, 'heightOf' | 'version' | 'mountedIds'>
+  heights: Pick<RowHeightCache, 'heightOf' | 'isMeasured' | 'isMounted' | 'version'>
   /** The height of the viewport in pixels. */
   viewHeight: Accessor<number>
   /**
@@ -376,34 +451,17 @@ export function createRowAdmission(deps: {
   // The one request, or `undefined`. Its identity tells a request that was replaced from
   // the current one.
   const [currentRequest, setCurrentRequest] = createSignal<{ target: AdmissionTarget }>()
-  // The ids of the edge rows of the last range, for the next run of the computation.
-  let previous: AdmittedRangeInput['previous']
-  // The kept row (see RowAdmission.holdsTail).
-  let keptRowId: string | undefined
-
-  const isMeasured = (row: VirtualItem): boolean => deps.heights.heightOf(row) !== undefined
-
-  /** Whether the admitted rows of `range` hold the tail (see RowAdmission.holdsTail). */
-  const rangeHoldsTail = (rows: readonly VirtualItem[], range: AdmittedRange): boolean => {
-    if (range.end <= range.start)
-      return false
-    if (range.end === rows.length)
-      return true
-    if (keptRowId === undefined)
-      return false
-    const lastAdmitted = range.end - 1
-    if (rows[lastAdmitted]!.id === keptRowId)
-      return true
-    // A kept row that left the loaded rows counts for nothing.
-    const kept = indexOfRow(rows, keptRowId)
-    return kept >= 0 && lastAdmitted > kept
-  }
+  const { isMeasured } = deps.heights
 
   // The one computation over the loaded rows, their heights, the target, and the view
-  // height. It carries the range from one run to the next through `previous`, so a second
-  // run with the same inputs gives the same result: the range that it kept is a largest run
-  // of measured rows, and continuing it gives that run again.
-  const computation = createMemo(() => {
+  // height. It carries the admitted rows and the kept row from one run to the next in its
+  // own previous value, so a run commits them together with its result. A second run with
+  // the same inputs gives the same result: the range that it kept is a largest run of
+  // measured rows, and continuing it gives that run again.
+  //
+  // The memo must take no `equals` option: a skipped commit would keep the carried state
+  // of the run before.
+  const computation = createMemo<AdmissionComputation>((before) => {
     const rows = deps.rows()
     // The mounted set is a plain Set, so the cache changes its version when the unmount of
     // a row changes an answer of `heightOf`.
@@ -412,24 +470,26 @@ export function createRowAdmission(deps: {
     const target = currentRequest()?.target
     const result = nextAdmittedRange({
       rows,
-      isMeasured,
-      heightOf: row => deps.heights.heightOf(row) ?? 0,
-      previous,
+      heightOf: deps.heights.heightOf,
+      previous: before?.admittedIds,
       viewAnchor: untrack(deps.viewAnchor),
-      isMounted: id => deps.heights.mountedIds.has(id),
+      isMounted: deps.heights.isMounted,
       target,
       viewHeight: deps.viewHeight(),
     })
-    previous = result.end > result.start
-      ? { firstId: rows[result.start]!.id, lastId: rows[result.end - 1]!.id }
+    const admitsRows = result.end > result.start
+    // The unit forgets the kept row while the loaded window does not hold the live tail.
+    const kept = tailLoaded
+      ? before?.keptRowId
       : undefined
-    if (!tailLoaded)
-      keptRowId = undefined
-    const holdsTail = rangeHoldsTail(rows, result)
-    if (tailLoaded && holdsTail)
-      keptRowId = rows[result.end - 1]!.id
+    const holdsTail = rangeHoldsTail(rows, result, kept)
+    // The ids change only with the rows or the range, so most runs build no set.
+    const sameAdmittedRows = before !== undefined
+      && before.rows === rows
+      && before.start === result.start
+      && before.end === result.end
     return {
-      rowCount: rows.length,
+      rows,
       start: result.start,
       end: result.end,
       targetState: result.targetState,
@@ -440,6 +500,12 @@ export function createRowAdmission(deps: {
         target,
         targetState: result.targetState,
       }),
+      admittedIds: sameAdmittedRows
+        ? before.admittedIds
+        : admittedIdsOf(rows, result),
+      keptRowId: tailLoaded && holdsTail && admitsRows
+        ? rows[result.end - 1]!.id
+        : kept,
     }
   })
 
@@ -460,17 +526,14 @@ export function createRowAdmission(deps: {
     const { start, end } = range()
     return end <= start
   }
-  const rowCount = createMemo(() => computation().rowCount)
+  const rowCount = createMemo(() => computation().rows.length)
+  const awaitingFirstView = createMemo(() => rowCount() > 0 && isEmpty())
 
   return {
     range,
-    stagedAbove: createMemo(() => (isEmpty()
-      ? rowCount()
-      : range().start)),
-    stagedBelow: createMemo(() => (isEmpty()
-      ? 0
-      : rowCount() - range().end)),
-    awaitingFirstView: createMemo(() => rowCount() > 0 && isEmpty()),
+    stagedOlder: createMemo(() => awaitingFirstView() || range().start > 0),
+    stagedNewer: createMemo(() => awaitingFirstView() || range().end < rowCount()),
+    awaitingFirstView,
     holdsTail,
     wantedRows,
     request: (target) => {

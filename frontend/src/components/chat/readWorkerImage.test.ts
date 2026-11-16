@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerFile } from '~/api/workerRpc'
 import { base64ToUint8Array } from '~/lib/base64'
 import { MAX_FILE_IMAGE_BYTES } from '~/lib/imageBlocks'
+import { box, chars, fullBox, ispeBox, jpegBytes, u16be, u32be } from '~/test-support/imageBytes'
 import { pngBase64 } from '~/test-support/pngFixture'
-import { FILE_IMAGE_HEADER_BYTES, FILE_IMAGE_HEADER_MAX_BYTES, readWorkerImage, readWorkerImageSize } from './readWorkerImage'
+import { FileImageRefusedError } from './fileImageResolver'
+import { FILE_IMAGE_HEADER_BYTES, readWorkerImage, readWorkerImageSize } from './readWorkerImage'
 
 vi.mock('~/api/workerRpc', () => ({
   workerFile: {
@@ -87,6 +89,38 @@ describe('worker image reads', () => {
     expect(read).toHaveBeenCalledOnce()
   })
 
+  it.each([
+    [
+      'a file that is larger than the limit',
+      response(new Uint8Array(), BigInt(MAX_FILE_IMAGE_BYTES + 1)),
+      '/image.png',
+    ],
+    [
+      'an empty file',
+      response(new Uint8Array(), 0n),
+      '/image.png',
+    ],
+    [
+      'a file of a format that the chat does not show',
+      response(Uint8Array.from([0x42, 0x4D, 0, 0]), 4n),
+      '/image.bmp',
+    ],
+  ])('refuses %s with the error that a new read cannot change', async (_file, value, path) => {
+    read.mockResolvedValue(value)
+
+    await expect(readWorkerImage('worker', path, undefined, signal)).rejects.toBeInstanceOf(FileImageRefusedError)
+  })
+
+  it('fails for a response of an invalid size with an error that is no refusal', async () => {
+    read.mockResolvedValue(response(content, -1n))
+
+    // The Worker answered wrongly, and it can answer correctly at the next read.
+    const failure = await readWorkerImage('worker', '/image.png', undefined, signal).catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(Error)
+    expect(failure).not.toBeInstanceOf(FileImageRefusedError)
+  })
+
   it('stops if the file changes between pages', async () => {
     read.mockResolvedValueOnce(response(new Uint8Array())).mockResolvedValueOnce(response(content, BigInt(content.length), '2026-09-11T00:00:01Z'))
     await expect(readWorkerImage('worker', '/image.png', undefined, signal)).rejects.toThrow('changed')
@@ -119,34 +153,24 @@ describe('readWorkerImageSize', () => {
    * shape of a photograph with a large EXIF or ICC block.
    */
   function jpegWithLongHeader(width: number, height: number, metadataBytes: number): Uint8Array {
-    const segmentLength = metadataBytes + 2
-    return Uint8Array.from([
-      0xFF,
-      0xD8, // start of image
+    return Uint8Array.from(jpegBytes(width, height, [
       0xFF,
       0xE2, // an application segment that is no EXIF block
-      (segmentLength >>> 8) & 0xFF,
-      segmentLength & 0xFF,
+      ...u16be(metadataBytes + 2),
       ...Array.from<number>({ length: metadataBytes }).fill(0),
-      0xFF,
-      0xC0, // the frame header
-      0x00,
-      0x11,
-      0x08,
-      (height >>> 8) & 0xFF,
-      height & 0xFF,
-      (width >>> 8) & 0xFF,
-      width & 0xFF,
-      0x03,
-      0x01,
-      0x11,
-      0x00,
-      0x02,
-      0x11,
-      0x01,
-      0x03,
-      0x11,
-      0x01,
+    ]))
+  }
+
+  /**
+   * An image file of the HEIF structure with the brand `brand`: `avif` for an AVIF, and
+   * `heic` for a HEIC. A box of `paddingBytes` lies before the box that holds its size, as
+   * the metadata of a photograph does.
+   */
+  function heifImage(brand: string, width: number, height: number, paddingBytes: number): Uint8Array {
+    return Uint8Array.from([
+      ...box('ftyp', chars(brand), u32be(0), chars(brand)),
+      ...box('free', Array.from<number>({ length: paddingBytes }).fill(0)),
+      ...fullBox('meta', 0, 0, box('iprp', box('ipco', ispeBox(width, height)))),
     ])
   }
 
@@ -172,10 +196,59 @@ describe('readWorkerImageSize', () => {
     await expect(readWorkerImageSize('worker', '/photo', undefined, signal)).resolves.toEqual({ width: 640, height: 480 })
 
     expect(read).toHaveBeenCalledTimes(2)
+    // The second read asks for what the sniffer scans of a JPEG: 256 KiB.
     expect(read.mock.calls[1]![1]).toEqual({
       path: '/photo',
-      limit: BigInt(FILE_IMAGE_HEADER_MAX_BYTES),
+      limit: 262144n,
     })
+  })
+
+  it('reads a longer head once for an AVIF whose header is longer than the first read', async () => {
+    const avif = heifImage('avif', 640, 480, 5000)
+    read
+      .mockResolvedValueOnce(response(avif.slice(0, FILE_IMAGE_HEADER_BYTES), BigInt(avif.length)))
+      .mockResolvedValueOnce(response(avif, BigInt(avif.length)))
+
+    await expect(readWorkerImageSize('worker', '/photo.avif', undefined, signal)).resolves.toEqual({ width: 640, height: 480 })
+
+    expect(read).toHaveBeenCalledTimes(2)
+    // The second read asks for what the sniffer scans of an AVIF: 64 KiB.
+    expect(read.mock.calls[1]![1]).toEqual({
+      path: '/photo.avif',
+      limit: 65536n,
+    })
+  })
+
+  it('reads no longer head for a file that only its name calls a JPEG', async () => {
+    const head = new Uint8Array(FILE_IMAGE_HEADER_BYTES)
+    read.mockResolvedValue(response(head, 500_000n))
+
+    await expect(readWorkerImageSize('worker', '/photo.jpg', undefined, signal)).resolves.toBeUndefined()
+
+    // The sniffer reads a JPEG by its signature, so more bytes of this file give it nothing.
+    expect(read).toHaveBeenCalledOnce()
+  })
+
+  it('gives no size for a file that is larger than the image read accepts', async () => {
+    read.mockResolvedValue(response(content, BigInt(MAX_FILE_IMAGE_BYTES + 1)))
+
+    // No image ever takes the box that a size reserves, so the row must reserve none.
+    await expect(readWorkerImageSize('worker', '/image.png', undefined, signal)).resolves.toBeUndefined()
+  })
+
+  it('gives no size for a file of a format that the chat does not show', async () => {
+    const heic = heifImage('heic', 640, 480, 0)
+    read.mockResolvedValue(response(heic, BigInt(heic.length)))
+
+    // The header states a size, and the read of the image refuses the format.
+    await expect(readWorkerImageSize('worker', '/photo.heic', undefined, signal)).resolves.toBeUndefined()
+    expect(read).toHaveBeenCalledOnce()
+  })
+
+  it('gives the size of a file of exactly the largest size that the image read accepts', async () => {
+    read.mockResolvedValue(response(content, BigInt(MAX_FILE_IMAGE_BYTES)))
+
+    await expect(readWorkerImageSize('worker', '/image.png', undefined, signal)).resolves.toEqual({ width: 12, height: 8 })
   })
 
   it('gives no size for a JPEG whose longer head holds no frame header either', async () => {

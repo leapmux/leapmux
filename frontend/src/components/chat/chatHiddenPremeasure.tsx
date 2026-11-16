@@ -2,12 +2,13 @@ import type { JSX } from 'solid-js'
 import type { ClassifiedEntry } from './chatEntryCache'
 import type { RenderReadiness } from './renderReadiness'
 import type { VirtualItem } from './useChatVirtualizer'
-import { batch, createEffect, createMemo, For, on, onCleanup, onMount } from 'solid-js'
+import { batch, createEffect, createMemo, For, onCleanup, onMount } from 'solid-js'
 import { emitDevEvent } from '~/lib/devInstrument'
 import { monotonicNow } from '~/lib/monotonicNow'
+import { createRafCoalescer } from '~/lib/rafCoalesce'
 import * as styles from './ChatView.css'
 import { messageRowChrome } from './messageRowLayout'
-import { createRenderReadinessScope } from './renderReadiness'
+import { createRenderReadinessScope, READINESS_REQUEST_LIMIT_MS } from './renderReadiness'
 import { rowLayoutMeasurement } from './rowLayoutMeasurement'
 import { reservedRowContentColumnStyle } from './widgets/SpanLines.geometry'
 
@@ -23,14 +24,14 @@ export interface ChatDomPremeasureCandidate {
  * time no longer holds the copy, so one slow image does not keep its row out of the
  * list. The row then joins with the height that the copy has, and it can change that
  * height once, when the image arrives.
+ *
+ * The user asked for one limit for both waits of a row, so this is the limit for a
+ * Worker request of a body.
  */
-export const PREMEASURE_IMAGE_SETTLE_LIMIT_MS = 10_000
+export const PREMEASURE_IMAGE_SETTLE_LIMIT_MS = READINESS_REQUEST_LIMIT_MS
 
-/**
- * Report the height that a hidden copy measured for row `id` under `heightKey`. Returns
- * whether the row has a height afterwards.
- */
-export type PremeasureMeasureHandler = (id: string, height: number, heightKey: string | undefined, measureDurationMs: number) => boolean
+/** Commit the height that a hidden copy measured for row `id` under `heightKey`. */
+export type PremeasureMeasureHandler = (id: string, height: number, heightKey: string | undefined, measureDurationMs: number) => void
 
 /**
  * Render the hidden copy of one row. `readiness` is the copy's own scope: its
@@ -49,21 +50,6 @@ export interface ChatDomPremeasureProps {
   contentWidthPx: number
   renderBubble: PremeasureBubbleRenderer
   onMeasure: PremeasureMeasureHandler
-}
-
-function scheduleFrame(cb: () => void): () => void {
-  if (typeof requestAnimationFrame === 'function') {
-    const frame = requestAnimationFrame(cb)
-    return () => cancelAnimationFrame(frame)
-  }
-  let cancelled = false
-  queueMicrotask(() => {
-    if (!cancelled)
-      cb()
-  })
-  return () => {
-    cancelled = true
-  }
 }
 
 interface PremeasureReadResult {
@@ -89,15 +75,10 @@ interface PremeasureTask {
  * layout shift) run once per frame instead of once per row.
  */
 function createSharedPremeasureFrame() {
-  const pending = new Map<string, PremeasureTask>()
-  // Whether a frame is scheduled and did not run yet. A flag of its own, apart from the
-  // cancel function: a frame callback can run inside `scheduleFrame`, before that call
-  // returns the cancel function.
-  let frameScheduled = false
-  let cancelFrame: (() => void) | undefined
+  // The pending measure of each row copy, by the task key of the copy: an object that the
+  // copy creates, so the task of one copy can never stand for another copy of the same row.
+  const pending = new Map<object, PremeasureTask>()
   const flush = () => {
-    frameScheduled = false
-    cancelFrame = undefined
     const tasks = [
       ...pending.values(),
     ]
@@ -113,38 +94,27 @@ function createSharedPremeasureFrame() {
       })
     })
   }
+  // One frame serves every pending task. The coalescer also handles a frame that runs
+  // inside its own request, and a task that a flush schedules gets a new frame.
+  const frame = createRafCoalescer<void>(flush)
   return {
     /** Queue (or replace) the pending measure for `key`; one frame serves all keys. */
-    schedule(key: string, task: PremeasureTask) {
+    schedule(key: object, task: PremeasureTask) {
       pending.set(key, task)
-      if (frameScheduled)
-        return
-      frameScheduled = true
-      const cancel = scheduleFrame(flush)
-      // Keep the cancel function only while the frame is still scheduled. A frame that
-      // ran inside the call above cleared the flag already, and a cancel function kept
-      // for it would block every later schedule: no later copy would ever be read.
-      if (frameScheduled)
-        cancelFrame = cancel
+      frame.push()
     },
     /** Drop a row's pending measure (its element is unmounting). */
-    cancel(key: string) {
+    cancel(key: object) {
       pending.delete(key)
     },
     dispose() {
-      cancelFrame?.()
-      cancelFrame = undefined
-      frameScheduled = false
+      frame.abort()
       pending.clear()
     },
   }
 }
 
 type SharedPremeasureFrame = ReturnType<typeof createSharedPremeasureFrame>
-
-function premeasureTaskKey(id: string, heightKey: string | undefined): string {
-  return `${id}\0${heightKey ?? ''}`
-}
 
 function PremeasureRow(props: {
   candidate: ChatDomPremeasureCandidate
@@ -153,11 +123,14 @@ function PremeasureRow(props: {
   frame: SharedPremeasureFrame
 }): JSX.Element {
   let rowEl: HTMLDivElement | undefined
-  let scheduledMeasureKey: string | undefined
+  // The key of this copy in the shared frame.
+  const taskKey = {}
   // The limit of the wait for the images of this copy (see PREMEASURE_IMAGE_SETTLE_LIMIT_MS):
-  // the key that its timer runs for, and whether the time passed. One timer for each key
-  // of the copy, started at the first read that finds an image still loading.
-  let imageLimit: { key: string, passed: boolean, timer: ReturnType<typeof setTimeout> } | undefined
+  // its timer, and whether the time passed. One timer for the copy, started at the first
+  // read that finds an image still loading. A copy keeps one candidate, and so one height
+  // key, for its life: a new key gives a new candidate object, and <For> then mounts a new
+  // copy (see createPremeasureQueue).
+  let imageLimit: { passed: boolean, timer: ReturnType<typeof setTimeout> } | undefined
   const clearImageLimit = (): void => {
     if (imageLimit !== undefined)
       clearTimeout(imageLimit.timer)
@@ -168,7 +141,6 @@ function PremeasureRow(props: {
   // height is wrong, and committing it would reveal the row at that height and move
   // every row below when the content lands.
   const readiness = createRenderReadinessScope()
-  const observationKey = () => premeasureTaskKey(props.candidate.item.id, props.candidate.item.heightKey)
   const hasPendingImages = (): boolean => {
     const root = rowEl
     if (!root)
@@ -180,17 +152,15 @@ function PremeasureRow(props: {
       .some(img => !img.complete)
   }
   /**
-   * Whether the images of the copy hold its measure under `key`: an image still loads,
-   * and the limit for that key did not pass. The first call that finds such an image
-   * starts the limit timer of the key, which measures the copy again when it fires.
+   * Whether the images of the copy hold its measure: an image still loads, and the limit
+   * of the copy did not pass. The first call that finds such an image starts the limit
+   * timer, which measures the copy again when it fires.
    */
-  const waitsForImages = (key: string, imagesPending: boolean): boolean => {
+  const waitsForImages = (imagesPending: boolean): boolean => {
     if (!imagesPending)
       return false
-    if (imageLimit?.key !== key) {
-      clearImageLimit()
+    if (imageLimit === undefined) {
       const limit = {
-        key,
         passed: false,
         timer: setTimeout(() => {
           limit.passed = true
@@ -209,14 +179,8 @@ function PremeasureRow(props: {
   function scheduleMeasure(): void {
     const { entry, item: { id, heightKey } } = props.candidate
     const onMeasure = props.onMeasure
-    const key = premeasureTaskKey(id, heightKey)
     const seq = entry.message.seq?.toString() ?? null
-    if (scheduledMeasureKey !== undefined && scheduledMeasureKey !== key)
-      props.frame.cancel(scheduledMeasureKey)
-    scheduledMeasureKey = key
-    // Keyed by row id + heightKey, so stale cleanup from an older row epoch
-    // cannot cancel a newer task for the same message under a different layout.
-    props.frame.schedule(key, {
+    props.frame.schedule(taskKey, {
       read: () => {
         const started = monotonicNow()
         const measurable = readiness.measurable()
@@ -226,7 +190,7 @@ function PremeasureRow(props: {
         const imagesPending = hasPendingImages()
         // An image that still loads can change the height of the row when it arrives, so
         // the copy reports nothing until each image loaded or failed, or the limit passed.
-        const held = waitsForImages(key, imagesPending)
+        const held = waitsForImages(imagesPending)
         emitDevEvent('leapmux:chat-premeasure', () => ({
           phase: 'read',
           id,
@@ -246,8 +210,6 @@ function PremeasureRow(props: {
       },
     })
   }
-  // A new key starts a new wait for the images: the limit of the key before it is gone.
-  createEffect(on(observationKey, clearImageLimit))
   onCleanup(clearImageLimit)
   createEffect(() => scheduleMeasure())
   // Measure again when the copy becomes measurable: its last pending body is
@@ -258,7 +220,6 @@ function PremeasureRow(props: {
   readiness.onMeasurable(scheduleMeasure)
   createEffect(() => {
     const root = rowEl
-    observationKey()
     if (!root || typeof ResizeObserver === 'undefined')
       return
     const observer = new ResizeObserver(() => scheduleMeasure())
@@ -285,10 +246,7 @@ function PremeasureRow(props: {
       root.removeEventListener('error', onImageSettled, true)
     })
   })
-  onCleanup(() => {
-    if (scheduledMeasureKey !== undefined)
-      props.frame.cancel(scheduledMeasureKey)
-  })
+  onCleanup(() => props.frame.cancel(taskKey))
 
   // Row chrome is part of the row's HEIGHT: a band's borders and vertical
   // padding add to it directly, and any bleed widens the row, which is what the

@@ -1,8 +1,9 @@
 import type { ChatFonts } from './chatFonts'
 import { createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { FONT_LOAD_MAX_RETRIES, FONT_LOAD_RETRY_BASE_MS } from '~/lib/fontFaces'
+import { FONT_LOAD_MAX_RETRIES, fontLoadRetryDelayMs } from '~/lib/fontFaces'
 import { deferred } from '~/test-support/async'
+import { stubDocumentFonts } from '~/test-support/documentFonts'
 import { CHAT_FONT_LOAD_LIMIT_MS, createChatFonts } from './chatFonts'
 
 /** The four shorthands that the unit loads for `family`. */
@@ -16,13 +17,8 @@ function specsOf(family: string): string[] {
 }
 
 describe('createChatFonts', () => {
-  // jsdom implements no `document.fonts`, so each case installs the API that it needs.
-  let originalFonts: PropertyDescriptor | undefined
+  // jsdom implements no `document.fonts`, so each case stubs the API that it needs.
   let disposeRoot: (() => void) | undefined
-
-  function installFonts(api: { check: (spec: string) => boolean, load: (spec: string) => Promise<unknown> }): void {
-    Object.defineProperty(document, 'fonts', { configurable: true, value: api })
-  }
 
   function mount(families: () => readonly string[]): ChatFonts {
     return createRoot((dispose) => {
@@ -38,21 +34,16 @@ describe('createChatFonts', () => {
 
   beforeEach(() => {
     vi.useFakeTimers()
-    originalFonts = Object.getOwnPropertyDescriptor(document, 'fonts')
   })
 
   afterEach(() => {
     disposeRoot?.()
     disposeRoot = undefined
     vi.useRealTimers()
-    if (originalFonts)
-      Object.defineProperty(document, 'fonts', originalFonts)
-    else
-      delete (document as { fonts?: unknown }).fonts
   })
 
   it('counts the fonts as ready and loaded when the document has no font API', () => {
-    delete (document as { fonts?: unknown }).fonts
+    stubDocumentFonts(undefined)
     const fonts = mount(() => ['Sans', 'Mono'])
     expect(fonts.ready()).toBe(true)
     expect(fonts.loaded()).toBe(true)
@@ -60,7 +51,7 @@ describe('createChatFonts', () => {
 
   it('loads nothing when every face is available', () => {
     const load = vi.fn(() => Promise.resolve())
-    installFonts({
+    stubDocumentFonts({
       check: () => true,
       load,
     })
@@ -77,7 +68,7 @@ describe('createChatFonts', () => {
       loads.set(spec, pending)
       return pending.promise
     })
-    installFonts({
+    stubDocumentFonts({
       check: () => false,
       load,
     })
@@ -110,7 +101,7 @@ describe('createChatFonts', () => {
     const load = vi.fn((spec: string) => (spec === failing
       ? Promise.reject(new Error('fetch failed'))
       : Promise.resolve()))
-    installFonts({
+    stubDocumentFonts({
       check: () => false,
       load,
     })
@@ -127,13 +118,13 @@ describe('createChatFonts', () => {
     expect(triesOf(specsOf('Mono')[0]!)).toBe(1)
 
     // The face used all its retries: no later timer tries it again.
-    await vi.advanceTimersByTimeAsync(FONT_LOAD_RETRY_BASE_MS * 2 ** (FONT_LOAD_MAX_RETRIES + 1))
+    await vi.advanceTimersByTimeAsync(fontLoadRetryDelayMs(FONT_LOAD_MAX_RETRIES + 1))
     expect(triesOf(failing)).toBe(1 + FONT_LOAD_MAX_RETRIES)
   })
 
   it('turns ready at the limit for slow fonts, and loaded when they arrive', async () => {
     const loads: ReturnType<typeof deferred<void>>[] = []
-    installFonts({
+    stubDocumentFonts({
       check: () => false,
       load: () => {
         const pending = deferred<void>()
@@ -158,7 +149,7 @@ describe('createChatFonts', () => {
 
   it('starts again when the families change, and ignores the loads of the run before', async () => {
     const loads = new Map<string, ReturnType<typeof deferred<void>>>()
-    installFonts({
+    stubDocumentFonts({
       check: () => false,
       load: (spec) => {
         const pending = deferred<void>()
@@ -177,8 +168,8 @@ describe('createChatFonts', () => {
     expect(fonts.ready()).toBe(false)
     expect(fonts.loaded()).toBe(false)
 
-    // The limit of the first run is cleared: the fonts turn ready only at the limit of
-    // the second run, or when its loads settle.
+    // The loads of the first run changed nothing. The fonts turn ready when the loads of
+    // the second run settle.
     for (const spec of specsOf('Second'))
       loads.get(spec)!.resolve()
     await flushLoads()
@@ -186,9 +177,31 @@ describe('createChatFonts', () => {
     expect(fonts.loaded()).toBe(true)
   })
 
+  it('ends the wait at the limit of the last run, and not at the limit of the run before', async () => {
+    stubDocumentFonts({
+      check: () => false,
+      load: () => new Promise<void>(() => {}),
+    })
+    const [families, setFamilies] = createSignal<readonly string[]>(['First'])
+    const fonts = mount(families)
+    const elapsedOfFirstRun = 2000
+    await vi.advanceTimersByTimeAsync(elapsedOfFirstRun)
+
+    setFamilies(['Second'])
+    // The limit of the first run would end here.
+    await vi.advanceTimersByTimeAsync(CHAT_FONT_LOAD_LIMIT_MS - elapsedOfFirstRun)
+    expect(fonts.ready()).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(elapsedOfFirstRun - 1)
+    expect(fonts.ready()).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(fonts.ready()).toBe(true)
+    expect(fonts.loaded()).toBe(false)
+  })
+
   it('keeps its states when the families change to an equal list', async () => {
     const load = vi.fn(() => new Promise<void>(() => {}))
-    installFonts({
+    stubDocumentFonts({
       check: () => false,
       load,
     })
@@ -203,7 +216,7 @@ describe('createChatFonts', () => {
 
   it('skips an empty family', () => {
     const load = vi.fn((_spec: string) => new Promise<void>(() => {}))
-    installFonts({
+    stubDocumentFonts({
       check: () => false,
       load,
     })
@@ -213,7 +226,7 @@ describe('createChatFonts', () => {
 
   it('counts the fonts as ready and loaded when every family is empty', () => {
     const load = vi.fn(() => Promise.resolve())
-    installFonts({
+    stubDocumentFonts({
       check: () => false,
       load,
     })
@@ -227,7 +240,7 @@ describe('createChatFonts', () => {
     const refuse = (): never => {
       throw new SyntaxError('unparseable font shorthand')
     }
-    installFonts({ check: refuse, load: refuse })
+    stubDocumentFonts({ check: refuse, load: refuse })
     let fonts: ChatFonts | undefined
     expect(() => {
       fonts = mount(() => ['not a valid family'])
@@ -243,7 +256,7 @@ describe('createChatFonts', () => {
   it('turns loaded when a face that failed once loads at its second try', async () => {
     const failing = specsOf('Mono')[2]!
     let failures = 0
-    installFonts({
+    stubDocumentFonts({
       check: () => false,
       load: (spec) => {
         if (spec === failing && failures++ === 0)
@@ -257,14 +270,14 @@ describe('createChatFonts', () => {
     expect(fonts.ready()).toBe(true)
     expect(fonts.loaded()).toBe(false)
 
-    await vi.advanceTimersByTimeAsync(FONT_LOAD_RETRY_BASE_MS - 1)
+    await vi.advanceTimersByTimeAsync(fontLoadRetryDelayMs(0) - 1)
     expect(fonts.loaded()).toBe(false)
     await vi.advanceTimersByTimeAsync(1)
     expect(fonts.loaded()).toBe(true)
   })
 
   it('clears its timers when its owner is disposed', async () => {
-    installFonts({
+    stubDocumentFonts({
       check: () => false,
       load: () => new Promise<void>(() => {}),
     })

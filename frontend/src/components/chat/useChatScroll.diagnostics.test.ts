@@ -2,9 +2,10 @@ import type { ChatScrollVirtualizer } from './useChatScroll'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { inRoot } from '~/test-support/async'
 
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeStubVirtualizer, staticScrollAdmission, virtualizerNoOps } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeStubVirtualizer, virtualizerNoOps, withStaticAdmission } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -27,18 +28,16 @@ describe('useChatScroll stall indicators', () => {
     const [messages] = createSignal<AgentChatMessage[]>([])
     const [fetchingOlder, setFetchingOlder] = createSignal(opts.fetchingOlder ?? false)
     const [fetchingNewer, setFetchingNewer] = createSignal(opts.fetchingNewer ?? false)
-    const virt = makeStubVirtualizer()
-    const hook = useChatScroll({
-      virtualizer: virt,
+    const hook = useChatScroll(withStaticAdmission({
+      virtualizer: makeStubVirtualizer(),
       messages,
-      ...staticScrollAdmission(virt, messages),
       hasOlderMessages: () => opts.hasOlder ?? true,
       hasNewerMessages: () => opts.hasNewer ?? true,
       fetchingOlder,
       fetchingNewer,
       onLoadOlderMessages: () => {},
       onLoadNewerMessages: () => {},
-    })
+    }))
     hook.attachListRef(div.el)
     return {
       hook,
@@ -134,108 +133,79 @@ describe('useChatScroll stall indicators', () => {
 
 describe('useChatScroll slow scroll phase', () => {
   it('warns "slow scroll phase" when a refreshViewport render cascade blows the frame budget', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        // A controllable clock so a stubbed updateViewport can "block the main thread" for a
-        // deterministic duration (monotonicNow reads performance.now).
-        let clock = 1000
-        const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock)
-        try {
-          const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-          const div = makeFakeScrollDiv()
-          div.setScrollHeight(5000)
-          div.setClientHeight(500)
-          div.setScrollTop(0)
-          const [messages] = createSignal<AgentChatMessage[]>([])
-          // The scroll-triggered render cascade stalls the main thread 60ms -- over the 50ms
-          // budget -- simulated by advancing the clock inside updateViewport (the synchronous
-          // mount of entering rows + the premeasure computed run here in the real code).
-          const virt: ChatScrollVirtualizer = {
-            ...virtualizerNoOps(),
-            ...makeStubVirtualizer(),
-            updateViewport: () => { clock += 60 },
-          }
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            ...staticScrollAdmission(virt, messages),
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-          warn.mockClear()
+    inRoot(async () => {
+      // A controllable clock so a stubbed updateViewport can "block the main thread" for a
+      // deterministic duration (monotonicNow reads performance.now). The afterEach of
+      // installScrollTestEnv restores the spy.
+      let clock = 1000
+      vi.spyOn(performance, 'now').mockImplementation(() => clock)
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const div = makeFakeScrollDiv()
+      div.setScrollHeight(5000)
+      div.setClientHeight(500)
+      div.setScrollTop(0)
+      const [messages] = createSignal<AgentChatMessage[]>([])
+      // The scroll-triggered render cascade stalls the main thread 60ms -- over the 50ms
+      // budget -- simulated by advancing the clock inside updateViewport (the synchronous
+      // mount of entering rows + the premeasure computed run here in the real code).
+      const virt: ChatScrollVirtualizer = {
+        ...virtualizerNoOps(),
+        ...makeStubVirtualizer(),
+        updateViewport: () => { clock += 60 },
+      }
+      const hook = useChatScroll(withStaticAdmission({
+        virtualizer: virt,
+        messages,
+      }))
+      hook.attachListRef(div.el)
+      await Promise.resolve()
+      await Promise.resolve()
+      warn.mockClear()
 
-          // A scroll of the reader: its refreshViewport runs the stalled render cascade.
-          div.setScrollTop(20)
-          hook.handlers.onScroll()
+      // A scroll of the reader: its refreshViewport runs the stalled render cascade.
+      div.setScrollTop(20)
+      hook.handlers.onScroll()
 
-          expect(warn).toHaveBeenCalledWith(
-            '[chatScroll]',
-            expect.stringContaining('slow scroll phase'),
-            expect.objectContaining({ phase: 'refreshViewport', ms: 60 }),
-          )
-          nowSpy.mockRestore()
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          nowSpy.mockRestore()
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
-      })
+      expect(warn).toHaveBeenCalledWith(
+        '[chatScroll]',
+        expect.stringContaining('slow scroll phase'),
+        expect.objectContaining({ phase: 'refreshViewport', ms: 60 }),
+      )
     }))
 
   it('does not WARN when a large scroll phase stays within budget', () =>
-    new Promise<void>((resolve, reject) => {
-      createRoot(async (dispose) => {
-        let clock = 1000
-        const nowSpy = vi.spyOn(performance, 'now').mockImplementation(() => clock)
-        try {
-          const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-          const div = makeFakeScrollDiv()
-          div.setScrollHeight(5000)
-          div.setClientHeight(500)
-          div.setScrollTop(0)
-          const [messages] = createSignal<AgentChatMessage[]>([])
-          // A normal (fast, sub-budget) render cascade: 10ms, under the 50ms threshold.
-          const virt: ChatScrollVirtualizer = {
-            ...virtualizerNoOps(),
-            ...makeStubVirtualizer(),
-            updateViewport: () => { clock += 10 },
-          }
-          const hook = useChatScroll({
-            virtualizer: virt,
-            messages,
-            ...staticScrollAdmission(virt, messages),
-          })
-          hook.attachListRef(div.el)
-          await Promise.resolve()
-          await Promise.resolve()
-          warn.mockClear()
+    inRoot(async () => {
+      let clock = 1000
+      vi.spyOn(performance, 'now').mockImplementation(() => clock)
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const div = makeFakeScrollDiv()
+      div.setScrollHeight(5000)
+      div.setClientHeight(500)
+      div.setScrollTop(0)
+      const [messages] = createSignal<AgentChatMessage[]>([])
+      // A normal (fast, sub-budget) render cascade: 10ms, under the 50ms threshold.
+      const virt: ChatScrollVirtualizer = {
+        ...virtualizerNoOps(),
+        ...makeStubVirtualizer(),
+        updateViewport: () => { clock += 10 },
+      }
+      const hook = useChatScroll(withStaticAdmission({
+        virtualizer: virt,
+        messages,
+      }))
+      hook.attachListRef(div.el)
+      await Promise.resolve()
+      await Promise.resolve()
+      warn.mockClear()
 
-          div.setScrollTop(20)
-          hook.handlers.onScroll()
+      div.setScrollTop(20)
+      hook.handlers.onScroll()
 
-          // Only the SLOW-PHASE warn is under test here.
-          expect(warn).not.toHaveBeenCalledWith(
-            '[chatScroll]',
-            expect.stringContaining('slow scroll phase'),
-            expect.anything(),
-          )
-          nowSpy.mockRestore()
-          dispose()
-          resolve()
-        }
-        catch (e) {
-          nowSpy.mockRestore()
-          dispose()
-          reject(e instanceof Error
-            ? e
-            : new Error(String(e)))
-        }
-      })
+      // Only the SLOW-PHASE warn is under test here.
+      expect(warn).not.toHaveBeenCalledWith(
+        '[chatScroll]',
+        expect.stringContaining('slow scroll phase'),
+        expect.anything(),
+      )
     }))
 })

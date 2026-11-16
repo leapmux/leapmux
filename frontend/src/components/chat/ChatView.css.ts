@@ -203,7 +203,7 @@ hideNativeScrollbar(messageList, '(pointer: coarse)')
 
 /**
  * Hides the native scrollbar so ONLY the seq-space ChatScrollRail overlay shows (the
- * browser thumb reflects just the loaded window, not the whole conversation). Applied to
+ * browser thumb reflects just the rows of the list, not the whole conversation). Applied to
  * `messageList` only while the rail is actually active (marks seeded); if the marks RPC
  * fails or lags, the native scrollbar stays visible rather than leaving a long
  * conversation with no scrollbar at all. Scoped here -- the app-wide thin scrollbar stays.
@@ -249,7 +249,10 @@ const loadingIndicatorBase = style({
   opacity: 0.95,
 })
 
-/** "Loading older messages..." overlay, pinned top-center while scrolled up against the loaded top edge. */
+/**
+ * "Loading older messages..." overlay, pinned top-center while the view waits at the top:
+ * against the loaded top edge for a fetch, or at the top edge of the list for staged rows.
+ */
 export const loadingOlderIndicator = style([
   loadingIndicatorBase,
   { top: 'var(--space-3)' },

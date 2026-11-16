@@ -108,7 +108,7 @@ function harness(init: {
       const cleanupWatchSignal = linkWatchSignal(controller, watchSignal)
       setState(flag, agentId, true)
       try {
-        return (await body(controller.signal)) === true
+        return await body(controller.signal)
       }
       finally {
         cleanupWatchSignal()

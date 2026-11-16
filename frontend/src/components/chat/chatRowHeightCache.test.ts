@@ -1,6 +1,7 @@
 import type { VirtualItem } from './useChatVirtualizer'
-import { describe, expect, it } from 'vitest'
-import { createRowHeightCache, HEIGHT_CACHE_MAX } from './chatRowHeightCache'
+import { createMemo, createRoot } from 'solid-js'
+import { describe, expect, it, vi } from 'vitest'
+import { createRowHeightCache, HEIGHT_CACHE_EVICTION_BATCH, HEIGHT_CACHE_MAX } from './chatRowHeightCache'
 
 /** A row with the height key `key`. */
 function row(id: string, key = 'a'): VirtualItem {
@@ -11,9 +12,19 @@ function row(id: string, key = 'a'): VirtualItem {
   }
 }
 
+/** A cache with no loaded row, so its eviction protects the mounted rows only. */
+function newCache() {
+  return createRowHeightCache({
+    loadedIds: () => [],
+  })
+}
+
+/** The microtask of an unmount notice (see RowHeightCache.noteDetached). */
+const unmountSettled = (): Promise<void> => Promise.resolve()
+
 describe('createRowHeightCache', () => {
   it('commits a height under the current key of the row', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     const before = cache.version()
 
     expect(cache.commit(row('m1'), 120, 'a', 'visible')).toBe('moved')
@@ -23,7 +34,7 @@ describe('createRowHeightCache', () => {
   })
 
   it('refuses a height that was measured under another key', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     const before = cache.version()
 
     expect(cache.commit(row('m1'), 120, 'other', 'visible')).toBe('none')
@@ -37,7 +48,7 @@ describe('createRowHeightCache', () => {
     -1,
     Number.POSITIVE_INFINITY,
   ])('refuses the height %s, which cannot enter the offset map', (height) => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
 
     expect(cache.commit(row('m1'), height, 'a', 'visible')).toBe('none')
 
@@ -45,7 +56,7 @@ describe('createRowHeightCache', () => {
   })
 
   it('commits a height of 0', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
 
     expect(cache.commit(row('m1'), 0, 'a', 'visible')).toBe('moved')
 
@@ -53,7 +64,7 @@ describe('createRowHeightCache', () => {
   })
 
   it('keeps the height for a second commit within the epsilon', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     cache.commit(row('m1'), 120, 'a', 'visible')
     const before = cache.version()
 
@@ -64,42 +75,65 @@ describe('createRowHeightCache', () => {
   })
 
   it('gives no height for a row that is not mounted when its key changes', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     cache.commit(row('m1', 'a'), 120, 'a', 'visible')
 
     expect(cache.heightOf(row('m1', 'b'))).toBeUndefined()
-    expect(cache.isCurrent(row('m1', 'b'))).toBe(false)
+    expect(cache.isMeasured(row('m1', 'b'))).toBe(false)
+    expect(cache.heightUnderCurrentKey(row('m1', 'b'))).toBeUndefined()
   })
 
   it('gives the height again when the row returns to the key of the measure', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     cache.commit(row('m1', 'a'), 120, 'a', 'visible')
     // The row took another key in between. Nothing dropped the height of the key `a`.
     expect(cache.heightOf(row('m1', 'b'))).toBeUndefined()
 
     expect(cache.heightOf(row('m1', 'a'))).toBe(120)
-    expect(cache.isCurrent(row('m1', 'a'))).toBe(true)
+    expect(cache.isMeasured(row('m1', 'a'))).toBe(true)
+    expect(cache.heightUnderCurrentKey(row('m1', 'a'))).toBe(120)
   })
 
   it('keeps the height of a mounted row provisionally when its key changes', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     cache.commit(row('m1', 'a'), 120, 'a', 'visible')
-    cache.mountedIds.add('m1')
+    cache.noteMounted('m1')
 
-    // The element of the row still shows that height, until its next read.
+    // The element of the row still shows that height, until its next read. The row
+    // counts as measured, although no measure produced a height under its current key.
     expect(cache.heightOf(row('m1', 'b'))).toBe(120)
-    expect(cache.isCurrent(row('m1', 'b'))).toBe(false)
+    expect(cache.isMeasured(row('m1', 'b'))).toBe(true)
+    expect(cache.heightUnderCurrentKey(row('m1', 'b'))).toBeUndefined()
+  })
+
+  it('makes a reactive reader of the measured test compute again at a commit', () => {
+    const cache = newCache()
+    createRoot((dispose) => {
+      let runs = 0
+      // A memo computes again only when a signal that it read changed.
+      const measured = createMemo(() => {
+        runs++
+        return cache.isMeasured(row('m1'))
+      })
+      expect(measured()).toBe(false)
+
+      cache.commit(row('m1'), 120, 'a', 'premeasure')
+
+      expect(measured()).toBe(true)
+      expect(runs).toBe(2)
+      dispose()
+    })
   })
 
   it('confirms a provisional height when a read gives the same height under the new key', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     cache.commit(row('m1', 'a'), 120, 'a', 'visible')
-    cache.mountedIds.add('m1')
+    cache.noteMounted('m1')
     const before = cache.version()
 
     expect(cache.commit(row('m1', 'b'), 120, 'b', 'visible')).toBe('confirmed')
 
-    expect(cache.isCurrent(row('m1', 'b'))).toBe(true)
+    expect(cache.heightUnderCurrentKey(row('m1', 'b'))).toBe(120)
     expect(cache.snapshot()).toEqual([
       { id: 'm1', heightKey: 'b', height: 120 },
     ])
@@ -108,115 +142,205 @@ describe('createRowHeightCache', () => {
   })
 
   it('corrects a provisional height when a read gives another height under the new key', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     cache.commit(row('m1', 'a'), 120, 'a', 'visible')
-    cache.mountedIds.add('m1')
+    cache.noteMounted('m1')
 
     expect(cache.commit(row('m1', 'b'), 180, 'b', 'visible')).toBe('moved')
 
     expect(cache.heightOf(row('m1', 'b'))).toBe(180)
   })
 
-  it('stops answering for a row with a provisional height when the row unmounts', () => {
-    const cache = createRowHeightCache()
-    cache.commit(row('m1', 'a'), 120, 'a', 'visible')
-    cache.mountedIds.add('m1')
-    expect(cache.heightOf(row('m1', 'b'))).toBe(120)
-    const before = cache.version()
+  describe('the mounted rows', () => {
+    it('lists a row from its mount notice to its detach notice', () => {
+      const cache = newCache()
 
-    cache.mountedIds.delete('m1')
-    cache.noteUnmounted(row('m1', 'b'))
+      cache.noteMounted('m1')
+      expect(cache.mountedIds.has('m1')).toBe(true)
+      expect(cache.isMounted('m1')).toBe(true)
 
-    expect(cache.version()).not.toBe(before)
-    expect(cache.heightOf(row('m1', 'b'))).toBeUndefined()
-    // It deleted nothing: the height counts again under its own key.
-    expect(cache.heightOf(row('m1', 'a'))).toBe(120)
-  })
+      cache.noteDetached('m1')
+      expect(cache.mountedIds.has('m1')).toBe(false)
+    })
 
-  it('answers for a row whose last element detached while its hold lasts, and changes no version', () => {
-    const cache = createRowHeightCache()
-    cache.commit(row('m1', 'a'), 120, 'a', 'visible')
-    cache.mountedIds.add('m1')
-    const before = cache.version()
+    it('counts a row whose last element detached as mounted for one microtask', async () => {
+      const cache = newCache()
+      cache.noteMounted('m1')
 
-    // The old element of the row detaches. A new element can still take the row over.
-    cache.mountedIds.delete('m1')
-    const endHold = cache.holdDetached('m1')
+      cache.noteDetached('m1')
+      expect(cache.isMounted('m1')).toBe(true)
 
-    expect(cache.heightOf(row('m1', 'b'))).toBe(120)
-    // The hidden copy of a row that an element can still take over is refused, as for a
-    // mounted row.
-    expect(cache.commit(row('m1', 'b'), 90, 'b', 'premeasure')).toBe('none')
+      await unmountSettled()
+      expect(cache.isMounted('m1')).toBe(false)
+    })
 
-    // A new element took the row over.
-    cache.mountedIds.add('m1')
-    endHold()
+    it('tells whether it answers a provisional height for a row, and records no answer', async () => {
+      const cache = newCache()
+      cache.commit(row('m1', 'a'), 120, 'a', 'premeasure')
+      cache.noteMounted('m1')
 
-    expect(cache.heightOf(row('m1', 'b'))).toBe(120)
-    expect(cache.version()).toBe(before)
-  })
+      // The height is of the current key, so it is no provisional height.
+      expect(cache.hasProvisionalHeight(row('m1', 'a'))).toBe(false)
+      expect(cache.hasProvisionalHeight(row('m1', 'b'))).toBe(true)
+      expect(cache.hasProvisionalHeight(row('absent', 'b'))).toBe(false)
 
-  it('stops answering for a row that no element took over when its hold ends and its unmount is noted', () => {
-    const cache = createRowHeightCache()
-    cache.commit(row('m1', 'a'), 120, 'a', 'visible')
-    cache.mountedIds.add('m1')
-    cache.mountedIds.delete('m1')
-    const endHold = cache.holdDetached('m1')
-    const before = cache.version()
+      const before = cache.version()
+      cache.noteDetached('m1')
+      // The row still counts as mounted for one microtask.
+      expect(cache.hasProvisionalHeight(row('m1', 'b'))).toBe(true)
+      await unmountSettled()
 
-    endHold()
-    cache.noteUnmounted(row('m1', 'b'))
+      expect(cache.hasProvisionalHeight(row('m1', 'b'))).toBe(false)
+      // The question recorded no answer, so the unmount changed no version.
+      expect(cache.version()).toBe(before)
+    })
 
-    expect(cache.heightOf(row('m1', 'b'))).toBeUndefined()
-    expect(cache.version()).not.toBe(before)
-  })
+    it('stops answering for a row with a provisional height when the row unmounts', async () => {
+      const cache = newCache()
+      cache.commit(row('m1', 'a'), 120, 'a', 'visible')
+      cache.noteMounted('m1')
+      expect(cache.heightOf(row('m1', 'b'))).toBe(120)
+      const before = cache.version()
 
-  it('keeps a row held until each hold on it ended, and ignores a second end of one hold', () => {
-    const cache = createRowHeightCache()
-    cache.commit(row('m1', 'a'), 120, 'a', 'visible')
-    const endFirst = cache.holdDetached('m1')
-    const endSecond = cache.holdDetached('m1')
+      cache.noteDetached('m1')
+      await unmountSettled()
 
-    endFirst()
-    endFirst()
-    expect(cache.heightOf(row('m1', 'b'))).toBe(120)
+      expect(cache.version()).not.toBe(before)
+      expect(cache.heightOf(row('m1', 'b'))).toBeUndefined()
+      // It deleted nothing: the height counts again under its own key.
+      expect(cache.heightOf(row('m1', 'a'))).toBe(120)
+    })
 
-    endSecond()
-    expect(cache.heightOf(row('m1', 'b'))).toBeUndefined()
-  })
+    it('answers for a row whose last element detached until a new element takes the row over, and changes no version', async () => {
+      const cache = newCache()
+      cache.commit(row('m1', 'a'), 120, 'a', 'visible')
+      cache.noteMounted('m1')
+      const before = cache.version()
+      const unmounted = vi.fn()
 
-  it('answers nothing for a held row that it holds no height for', () => {
-    const cache = createRowHeightCache()
-    const endHold = cache.holdDetached('m1')
+      // The old element of the row detaches. A new element can still take the row over.
+      cache.noteDetached('m1', unmounted)
 
-    expect(cache.heightOf(row('m1'))).toBeUndefined()
-    endHold()
-  })
+      expect(cache.heightOf(row('m1', 'b'))).toBe(120)
+      // The hidden copy of a row that an element can still take over is refused, as for a
+      // mounted row.
+      expect(cache.commit(row('m1', 'b'), 90, 'b', 'premeasure')).toBe('none')
 
-  it('keeps the version when a row with a current height unmounts', () => {
-    const cache = createRowHeightCache()
-    cache.commit(row('m1', 'a'), 120, 'a', 'visible')
-    cache.mountedIds.add('m1')
-    const before = cache.version()
+      // A new element took the row over.
+      cache.noteMounted('m1')
+      await unmountSettled()
 
-    cache.mountedIds.delete('m1')
-    cache.noteUnmounted(row('m1', 'a'))
+      expect(cache.heightOf(row('m1', 'b'))).toBe(120)
+      expect(cache.version()).toBe(before)
+      expect(unmounted).not.toHaveBeenCalled()
+    })
 
-    expect(cache.heightOf(row('m1', 'a'))).toBe(120)
-    expect(cache.version()).toBe(before)
-  })
+    it('tells the caller of the unmount of a row that no element took over, after the microtask', async () => {
+      const cache = newCache()
+      cache.noteMounted('m1')
+      const unmounted = vi.fn()
 
-  it('keeps the version when a row that it does not hold unmounts', () => {
-    const cache = createRowHeightCache()
-    const before = cache.version()
+      cache.noteDetached('m1', unmounted)
+      expect(unmounted).not.toHaveBeenCalled()
 
-    cache.noteUnmounted(row('absent'))
+      await unmountSettled()
+      expect(unmounted).toHaveBeenCalledTimes(1)
+    })
 
-    expect(cache.version()).toBe(before)
+    it('keeps a row mounted until the microtask of its last detach, and tells of one unmount', async () => {
+      const cache = newCache()
+      cache.commit(row('m1', 'a'), 120, 'a', 'visible')
+      const unmounted = vi.fn()
+      // Two elements took the row in turn, and both detached before a microtask ran.
+      cache.noteMounted('m1')
+      cache.noteDetached('m1', unmounted)
+      cache.noteMounted('m1')
+      cache.noteDetached('m1', unmounted)
+      const afterFirst = vi.fn(() => cache.heightOf(row('m1', 'b')))
+      // This microtask runs between the microtasks of the two detach notices.
+      const between = new Promise<void>((resolve) => {
+        queueMicrotask(() => {
+          afterFirst()
+          resolve()
+        })
+      })
+
+      expect(cache.heightOf(row('m1', 'b'))).toBe(120)
+      await between
+      await unmountSettled()
+
+      expect(cache.heightOf(row('m1', 'b'))).toBeUndefined()
+      expect(unmounted).toHaveBeenCalledTimes(1)
+    })
+
+    it('answers nothing for a detached row that it holds no height for', async () => {
+      const cache = newCache()
+      cache.noteMounted('m1')
+      const before = cache.version()
+
+      cache.noteDetached('m1')
+
+      expect(cache.heightOf(row('m1'))).toBeUndefined()
+      await unmountSettled()
+      expect(cache.version()).toBe(before)
+    })
+
+    it('keeps the version when a row with a current height unmounts', async () => {
+      const cache = newCache()
+      cache.commit(row('m1', 'a'), 120, 'a', 'visible')
+      cache.noteMounted('m1')
+      expect(cache.heightOf(row('m1', 'a'))).toBe(120)
+      const before = cache.version()
+
+      cache.noteDetached('m1')
+      await unmountSettled()
+
+      expect(cache.heightOf(row('m1', 'a'))).toBe(120)
+      expect(cache.version()).toBe(before)
+    })
+
+    it('keeps the version when a row whose provisional height no reader asked for unmounts', async () => {
+      const cache = newCache()
+      cache.commit(row('m1', 'a'), 120, 'a', 'visible')
+      cache.noteMounted('m1')
+      const before = cache.version()
+
+      // The key of the row changed, but nothing read its height under the new key.
+      cache.noteDetached('m1')
+      await unmountSettled()
+
+      expect(cache.version()).toBe(before)
+    })
+
+    it('keeps the version at the unmount of a row whose provisional height a commit replaced', async () => {
+      const cache = newCache()
+      cache.commit(row('m1', 'a'), 120, 'a', 'visible')
+      cache.noteMounted('m1')
+      expect(cache.heightOf(row('m1', 'b'))).toBe(120)
+      // The read of the row under its new key: no answer is provisional any more.
+      expect(cache.commit(row('m1', 'b'), 120, 'b', 'visible')).toBe('confirmed')
+      const before = cache.version()
+
+      cache.noteDetached('m1')
+      await unmountSettled()
+
+      expect(cache.heightOf(row('m1', 'b'))).toBe(120)
+      expect(cache.version()).toBe(before)
+    })
+
+    it('keeps the version when a row that it does not hold unmounts', async () => {
+      const cache = newCache()
+      const before = cache.version()
+
+      cache.noteDetached('absent')
+      await unmountSettled()
+
+      expect(cache.version()).toBe(before)
+    })
   })
 
   it('gives each entry of the snapshot with the key of its measure', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     cache.commit(row('m1', 'a'), 120, 'a', 'visible')
     // The list now holds the row under the key `b`. The entry keeps the key `a`.
     expect(cache.heightOf(row('m1', 'b'))).toBeUndefined()
@@ -227,7 +351,7 @@ describe('createRowHeightCache', () => {
   })
 
   it('gives the snapshot in LRU order, the least recently measured row first', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     cache.commit(row('m1'), 100, 'a', 'visible')
     cache.commit(row('m2'), 110, 'a', 'visible')
     // A new measure of m1 makes it the most recently measured row.
@@ -239,22 +363,41 @@ describe('createRowHeightCache', () => {
     ])
   })
 
-  it('leaves an evicted row out of the snapshot', () => {
-    const cache = createRowHeightCache()
+  it('leaves the evicted rows out of the snapshot', () => {
+    const cache = newCache()
     for (let i = 0; i <= HEIGHT_CACHE_MAX; i++)
       cache.commit(row(`m${i}`), 100, 'a', 'visible')
 
     const saved = cache.snapshot()
 
-    expect(saved).toHaveLength(HEIGHT_CACHE_MAX)
-    // The eviction dropped the least recently measured row, and the order holds.
-    expect(saved[0]).toEqual({ id: 'm1', heightKey: 'a', height: 100 })
+    // The commit past the cap evicted the least recently measured rows, down to one
+    // batch below the cap, and the order holds.
+    expect(saved).toHaveLength(HEIGHT_CACHE_MAX - HEIGHT_CACHE_EVICTION_BATCH)
+    expect(saved[0]).toEqual({ id: `m${HEIGHT_CACHE_EVICTION_BATCH + 1}`, heightKey: 'a', height: 100 })
     expect(saved.at(-1)).toEqual({ id: `m${HEIGHT_CACHE_MAX}`, heightKey: 'a', height: 100 })
   })
 
+  it('evicts once for a batch of commits past the cap', () => {
+    const loadedIds = vi.fn((): string[] => [])
+    const cache = createRowHeightCache({ loadedIds })
+    for (let i = 0; i <= HEIGHT_CACHE_MAX; i++)
+      cache.commit(row(`m${i}`), 100, 'a', 'visible')
+    // The eviction asks for the loaded rows, so the calls count the evictions.
+    expect(loadedIds).toHaveBeenCalledTimes(1)
+
+    // The next commits fill the room that the eviction freed.
+    for (let i = 1; i <= HEIGHT_CACHE_EVICTION_BATCH; i++)
+      cache.commit(row(`n${i}`), 100, 'a', 'visible')
+    expect(loadedIds).toHaveBeenCalledTimes(1)
+    expect(cache.snapshot()).toHaveLength(HEIGHT_CACHE_MAX)
+
+    cache.commit(row('past'), 100, 'a', 'visible')
+    expect(loadedIds).toHaveBeenCalledTimes(2)
+  })
+
   it('refuses the height of a hidden copy for a mounted row that has a height', () => {
-    const cache = createRowHeightCache()
-    cache.mountedIds.add('m1')
+    const cache = newCache()
+    cache.noteMounted('m1')
     cache.commit(row('m1'), 120, 'a', 'visible')
 
     expect(cache.commit(row('m1'), 90, 'a', 'premeasure')).toBe('none')
@@ -263,7 +406,7 @@ describe('createRowHeightCache', () => {
   })
 
   it('commits the height of a hidden copy for a row that is not mounted', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
 
     expect(cache.commit(row('m1'), 90, 'a', 'premeasure')).toBe('moved')
 
@@ -271,14 +414,14 @@ describe('createRowHeightCache', () => {
   })
 
   it('commits the height of a hidden copy for a mounted row that has no height', () => {
-    const cache = createRowHeightCache()
-    cache.mountedIds.add('m1')
+    const cache = newCache()
+    cache.noteMounted('m1')
 
     expect(cache.commit(row('m1'), 90, 'a', 'premeasure')).toBe('moved')
   })
 
   it('commits several heights with one version change', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     const versions: number[] = [
       cache.version(),
     ]
@@ -287,17 +430,15 @@ describe('createRowHeightCache', () => {
       {
         row: row('m1'),
         height: 100,
-        measuredKey: 'a',
       },
+      // A height that cannot enter the offset map.
       {
         row: row('m2'),
-        height: 110,
-        measuredKey: 'other',
+        height: Number.NaN,
       },
       {
         row: row('m3'),
         height: 120,
-        measuredKey: 'a',
       },
     ])
     versions.push(cache.version())
@@ -310,21 +451,19 @@ describe('createRowHeightCache', () => {
   })
 
   it('keeps the version when a batch adopts nothing', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     const before = cache.version()
 
     expect(cache.commitAll([])).toBe(0)
     expect(cache.commitAll([
+      // Two heights that cannot enter the offset map.
       {
         row: row('m1'),
-        height: 100,
-        measuredKey: 'other',
+        height: Number.NaN,
       },
-      // A height that cannot enter the offset map.
       {
         row: row('m2'),
         height: -1,
-        measuredKey: 'a',
       },
     ])).toBe(0)
 
@@ -334,8 +473,8 @@ describe('createRowHeightCache', () => {
   })
 
   it('refuses the height of a batch for a mounted row that has a height, and adopts the others', () => {
-    const cache = createRowHeightCache()
-    cache.mountedIds.add('m1')
+    const cache = newCache()
+    cache.noteMounted('m1')
     cache.commit(row('m1'), 150, 'a', 'visible')
 
     const adopted = cache.commitAll([
@@ -343,12 +482,10 @@ describe('createRowHeightCache', () => {
       {
         row: row('m1'),
         height: 999,
-        measuredKey: 'a',
       },
       {
         row: row('m2'),
         height: 110,
-        measuredKey: 'a',
       },
     ])
 
@@ -357,14 +494,17 @@ describe('createRowHeightCache', () => {
     expect(cache.heightOf(row('m2'))).toBe(110)
   })
 
-  it('evicts the oldest row past the cap, and keeps a mounted row', () => {
-    const cache = createRowHeightCache()
-    cache.mountedIds.add('m0')
+  it('evicts the oldest rows past the cap, and keeps a mounted row', () => {
+    const cache = newCache()
+    cache.noteMounted('m0')
     for (let i = 0; i <= HEIGHT_CACHE_MAX; i++)
       cache.commit(row(`m${i}`), 100, 'a', 'visible')
 
     expect(cache.heightOf(row('m0'))).toBe(100)
+    // The eviction passes over the mounted row, and drops the rows after it.
     expect(cache.heightOf(row('m1'))).toBeUndefined()
+    expect(cache.heightOf(row(`m${HEIGHT_CACHE_EVICTION_BATCH + 1}`))).toBeUndefined()
+    expect(cache.heightOf(row(`m${HEIGHT_CACHE_EVICTION_BATCH + 2}`))).toBe(100)
     expect(cache.heightOf(row(`m${HEIGHT_CACHE_MAX}`))).toBe(100)
   })
 
@@ -376,16 +516,18 @@ describe('createRowHeightCache', () => {
     for (let i = 0; i < HEIGHT_CACHE_MAX + 10; i++)
       cache.commit(row(`m${i}`), 100, 'a', 'visible')
 
-    // The 10 loaded rows are the oldest entries, and the eviction passes over them.
+    // The 10 loaded rows are the oldest entries, and the eviction passes over them. It
+    // drops the rows after them: one more than a batch, because the commit past the cap
+    // added one.
     for (const id of loaded)
       expect(cache.heightOf(row(id))).toBe(100)
-    for (let i = 10; i < 20; i++)
+    for (let i = 10; i <= 10 + HEIGHT_CACHE_EVICTION_BATCH; i++)
       expect(cache.heightOf(row(`m${i}`))).toBeUndefined()
-    expect(cache.heightOf(row('m20'))).toBe(100)
+    expect(cache.heightOf(row(`m${11 + HEIGHT_CACHE_EVICTION_BATCH}`))).toBe(100)
   })
 
   it('gives the cached height of a row for the debug view, whatever its key', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     cache.commit(row('m1', 'a'), 120, 'a', 'visible')
 
     // The list now holds the row under the key `b`.
@@ -395,7 +537,7 @@ describe('createRowHeightCache', () => {
   })
 
   it('records the last commit that changed a height', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     expect(cache.lastMeasurement()).toBeUndefined()
 
     cache.commit(row('m1'), 120, 'a', 'premeasure')
@@ -410,7 +552,7 @@ describe('createRowHeightCache', () => {
   })
 
   it('records the height before as the previous height of a later commit', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     cache.commit(row('m1'), 120, 'a', 'visible')
 
     cache.commit(row('m1'), 180, 'a', 'visible')
@@ -425,9 +567,9 @@ describe('createRowHeightCache', () => {
   })
 
   it('records the provisional height of a mounted row as the previous height', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     cache.commit(row('m1', 'a'), 120, 'a', 'visible')
-    cache.mountedIds.add('m1')
+    cache.noteMounted('m1')
 
     // The element showed 120px under the key `a`, and reads 180px under the key `b`.
     cache.commit(row('m1', 'b'), 180, 'b', 'visible')
@@ -436,7 +578,7 @@ describe('createRowHeightCache', () => {
   })
 
   it('records no previous height for a row that is not mounted and has a height of another key', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     cache.commit(row('m1', 'a'), 120, 'a', 'premeasure')
 
     // The cache answered no height for the row under the key `b`.
@@ -445,8 +587,23 @@ describe('createRowHeightCache', () => {
     expect(cache.lastMeasurement()).toMatchObject({ previousHeight: undefined, newHeight: 180 })
   })
 
+  it('records the commit of a row that is in no list, and no commit that only confirms a height', () => {
+    const cache = newCache()
+    // The cache holds no list: a hidden copy of a staged row commits as any other row.
+    cache.commit(row('staged', 'a'), 100, 'a', 'premeasure')
+    const recorded = cache.lastMeasurement()
+    expect(recorded).toMatchObject({ id: 'staged', source: 'premeasure' })
+
+    // The same height under a new key: the answer for the row changes, and no height does.
+    expect(cache.heightOf(row('staged', 'b'))).toBeUndefined()
+    expect(cache.commit(row('staged', 'b'), 100, 'b', 'premeasure')).toBe('confirmed')
+
+    expect(cache.heightOf(row('staged', 'b'))).toBe(100)
+    expect(cache.lastMeasurement()).toBe(recorded)
+  })
+
   it('keeps the record of the last commit when a commit changes no height', () => {
-    const cache = createRowHeightCache()
+    const cache = newCache()
     cache.commit(row('m1'), 120, 'a', 'visible')
     const recorded = cache.lastMeasurement()
 

@@ -1,6 +1,6 @@
 import type { Accessor } from 'solid-js'
 import { batch, createComputed, createMemo, createSignal, onCleanup, untrack } from 'solid-js'
-import { FONT_LOAD_MAX_RETRIES, FONT_LOAD_RETRY_BASE_MS, fontVariantAvailable, fontVariantSpecs, tryLoadFontVariant } from '~/lib/fontFaces'
+import { FONT_LOAD_MAX_RETRIES, fontLoadRetryDelayMs, fontVariantAvailable, fontVariantSpecs, tryLoadFontVariant } from '~/lib/fontFaces'
 
 /**
  * The longest time that staging waits for the chat fonts. After it, the rows measure
@@ -94,7 +94,7 @@ export function createChatFonts(families: Accessor<readonly string[]>): ChatFont
         // A face that used all its retries leaves `loaded` unset, so a font that never
         // loads changes no height key.
         if (!faceLoaded && retriesUsed < FONT_LOAD_MAX_RETRIES)
-          later(FONT_LOAD_RETRY_BASE_MS * 2 ** retriesUsed, () => tryLoad(spec, retriesUsed + 1))
+          later(fontLoadRetryDelayMs(retriesUsed), () => tryLoad(spec, retriesUsed + 1))
       })
     }
 

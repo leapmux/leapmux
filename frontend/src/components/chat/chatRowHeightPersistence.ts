@@ -1,5 +1,5 @@
 import type { Accessor } from 'solid-js'
-import type { RowHeightCache } from './chatRowHeightCache'
+import type { RowHeightCache, RowHeightCommitEntry } from './chatRowHeightCache'
 import type { VirtualItem } from './useChatVirtualizer'
 import type { AsyncLocalKey } from '~/lib/browserStorage'
 import { createEffect, onCleanup, untrack } from 'solid-js'
@@ -89,8 +89,8 @@ export interface RowHeightPersistenceDeps {
    */
   storageId: () => string | undefined
   /** The items of the loaded rows: a stored height can admit a row that no hidden copy rendered. */
-  virtualItems: Accessor<VirtualItem[]>
-  heights: Pick<RowHeightCache, 'commitAll' | 'snapshot' | 'version' | 'heightOf'>
+  loadedItems: Accessor<VirtualItem[]>
+  heights: Pick<RowHeightCache, 'commitAll' | 'snapshot' | 'version' | 'isMeasured'>
 }
 
 function parseStoredRows(raw: unknown): Map<string, { digest: string, height: number }> {
@@ -132,14 +132,14 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
   const tryAdopt = (items: readonly VirtualItem[]): void => {
     if (pending.size === 0)
       return
-    const adoptable: { row: VirtualItem, height: number, measuredKey: string | undefined }[] = []
+    const adoptable: RowHeightCommitEntry[] = []
     for (const item of items) {
       const entry = pending.get(item.id)
       if (entry === undefined)
         continue
       // A real measurement (visible or premeasure) supersedes the stored
       // warm-start value — retire the entry instead of re-priming.
-      if (deps.heights.heightOf(item) !== undefined) {
+      if (deps.heights.isMeasured(item)) {
         pending.delete(item.id)
         continue
       }
@@ -150,7 +150,6 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
       adoptable.push({
         row: item,
         height: entry.height,
-        measuredKey: item.heightKey,
       })
     }
     if (adoptable.length === 0)
@@ -160,7 +159,7 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
     for (const entry of adoptable) {
       // An entry that the cache did not adopt stays pending, and the next change
       // of the item list tries it again.
-      if (adopted === adoptable.length || deps.heights.heightOf(entry.row) !== undefined)
+      if (adopted === adoptable.length || deps.heights.isMeasured(entry.row))
         pending.delete(entry.row.id)
     }
   }
@@ -231,16 +230,16 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
         for (const [rowId, entry] of rows)
           pending.set(rowId, entry)
       }
-      tryAdopt(untrack(deps.virtualItems))
+      tryAdopt(untrack(deps.loadedItems))
     })
   })
 
   // Retry hydration whenever the item list changes (pagination brings older
   // rows in; the width settling rewrites every heightKey). Everything but
-  // the item read is untracked: heightOf would otherwise subscribe
+  // the item read is untracked: isMeasured would otherwise subscribe
   // this effect to every commit of a height.
   createEffect(() => {
-    const items = deps.virtualItems()
+    const items = deps.loadedItems()
     untrack(() => tryAdopt(items))
   })
 

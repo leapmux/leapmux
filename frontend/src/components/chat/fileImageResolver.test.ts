@@ -1,10 +1,9 @@
-import type { FileImageSizeReader } from './fileImageResolver'
+import type { FileImageReader, FileImageSizeReader } from './fileImageResolver'
 import type { ImageDimensions } from '~/lib/imageDimensions'
-import { createEffect, createRoot } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
 import { deferred } from '~/test-support/async'
-import { createFileImageResolver, FILE_IMAGE_SIZE_CACHE_MAX } from './fileImageResolver'
+import { createFileImageResolver, FILE_IMAGE_SIZE_CACHE_MAX, FileImageRefusedError } from './fileImageResolver'
 
 /** A size reader for the cases whose subject is the image itself: the header gives no size. */
 const noSize: FileImageSizeReader = async () => undefined
@@ -99,6 +98,179 @@ describe('file image resolution', () => {
     await expect(images.load('image')).rejects.toThrow('cannot be displayed')
     expect(images.peek('image')).toBeUndefined()
   })
+
+  it('keeps a refusal of the reader, and reads the file again only for a refresh', async () => {
+    const read = vi.fn<FileImageReader>()
+      .mockRejectedValueOnce(new FileImageRefusedError('The image file format is not supported'))
+      .mockResolvedValue({ data: 'AAAA', mimeType: 'image/png' })
+    const images = createFileImageResolver(read, noSize)
+    await expect(images.load('image')).rejects.toThrow('not supported')
+
+    // The same file gives the same refusal, so a second ask reads nothing.
+    await expect(images.load('image')).rejects.toThrow('not supported')
+    expect(read).toHaveBeenCalledOnce()
+
+    await expect(images.load('image', { refresh: true })).resolves.toMatchObject({ data: 'AAAA' })
+    expect(read).toHaveBeenCalledTimes(2)
+    // The refresh gave an image, so no refusal is left for the next ask.
+    await expect(images.load('image')).resolves.toMatchObject({ data: 'AAAA' })
+    expect(read).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps its own refusal of a response that cannot be displayed', async () => {
+    const read = vi.fn<FileImageReader>(async () => ({ url: 'https://example.com/image.png' }))
+    const images = createFileImageResolver(read, noSize)
+    await expect(images.load('image')).rejects.toBeInstanceOf(FileImageRefusedError)
+
+    await expect(images.load('image')).rejects.toThrow('cannot be displayed')
+    expect(read).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a refusal for the tool call that asked, and reads the file for another one', async () => {
+    const read = vi.fn<FileImageReader>(async () => {
+      throw new FileImageRefusedError('The image file is empty')
+    })
+    const images = createFileImageResolver(read, noSize)
+    await expect(images.load('image', { reference: 'first-call' })).rejects.toThrow('empty')
+
+    // The file can differ at the time of another tool call.
+    await expect(images.load('image', { reference: 'second-call' })).rejects.toThrow('empty')
+    expect(read).toHaveBeenCalledTimes(2)
+  })
+
+  it('drops the refusals when the scope clears', async () => {
+    const read = vi.fn<FileImageReader>(async () => {
+      throw new FileImageRefusedError('The image file is empty')
+    })
+    const images = createFileImageResolver(read, noSize)
+    await expect(images.load('image')).rejects.toThrow('empty')
+
+    images.clear()
+
+    await expect(images.load('image')).rejects.toThrow('empty')
+    expect(read).toHaveBeenCalledTimes(2)
+  })
+
+  it('records no refusal for a read that the scope cleared', async () => {
+    const first = deferred<{ data: string, mimeType: string }>()
+    const read = vi.fn<FileImageReader>()
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue({ data: 'AAAA', mimeType: 'image/png' })
+    const images = createFileImageResolver(read, noSize)
+    const stale = images.load('image')
+    const rejected = expect(stale).rejects.toThrow('empty')
+    await Promise.resolve()
+
+    images.clear()
+    first.reject(new FileImageRefusedError('The image file is empty'))
+    await rejected
+
+    // The refusal of the old scope must not serve the new one.
+    await expect(images.load('image')).resolves.toMatchObject({ data: 'AAAA' })
+    expect(read).toHaveBeenCalledTimes(2)
+  })
+
+  it('drops the oldest refusal past the limit, and reads that file again', async () => {
+    const read = vi.fn<FileImageReader>(async () => {
+      throw new FileImageRefusedError('The image file is empty')
+    })
+    const images = createFileImageResolver(read, noSize)
+    for (let i = 0; i <= FILE_IMAGE_SIZE_CACHE_MAX; i++)
+      await images.load(`image-${i}`).catch(() => {})
+    read.mockClear()
+
+    await images.load('image-1').catch(() => {})
+    expect(read).not.toHaveBeenCalled()
+    await images.load('image-0').catch(() => {})
+    expect(read).toHaveBeenCalledOnce()
+  })
+
+  it('reads again after a failure that is no refusal', async () => {
+    // Such a failure can end by itself: the Worker did not answer, or the channel dropped.
+    const read = vi.fn<FileImageReader>()
+      .mockRejectedValueOnce(new Error('the worker is unavailable'))
+      .mockResolvedValue({ data: 'AAAA', mimeType: 'image/png' })
+    const images = createFileImageResolver(read, noSize)
+    await expect(images.load('image')).rejects.toThrow('unavailable')
+
+    await expect(images.load('image')).resolves.toMatchObject({ data: 'AAAA' })
+  })
+
+  it('keeps the size of an image that it read, in place of a size read that gave none', async () => {
+    const sized = {
+      data: 'AAAA',
+      mimeType: 'image/png',
+      dimensions: { width: 30, height: 40 },
+    }
+    const images = createFileImageResolver(async () => sized, noSize)
+    await images.loadSize('/image.png')
+    expect(images.peekSize('/image.png')).toBeNull()
+
+    await images.load('/image.png')
+
+    // A row that asks for the size later reserves the box of the image that draws.
+    expect(images.peekSize('/image.png')).toEqual({ width: 30, height: 40 })
+    await expect(images.loadSize('/image.png')).resolves.toEqual({ width: 30, height: 40 })
+  })
+
+  it('keeps the size that an image stated when a size read that gave none settles afterwards', async () => {
+    const size = deferred<ImageDimensions | undefined>()
+    const sized = {
+      data: 'AAAA',
+      mimeType: 'image/png',
+      dimensions: { width: 30, height: 40 },
+    }
+    const images = createFileImageResolver(async () => sized, () => size.promise)
+    const asked = images.loadSize('/image.png')
+    await images.load('/image.png')
+    expect(images.peekSize('/image.png')).toEqual({ width: 30, height: 40 })
+
+    // The size read ends late, with a failure.
+    size.reject(new Error('the worker is unavailable'))
+
+    // The image states its size with more authority than a read that gave none.
+    await expect(asked).resolves.toEqual({ width: 30, height: 40 })
+    expect(images.peekSize('/image.png')).toEqual({ width: 30, height: 40 })
+  })
+
+  it('keeps the answer of the size read for an image that states no size', async () => {
+    const images = createFileImageResolver(anImage, async () => ({ width: 400, height: 200 }))
+    await images.loadSize('/image.png')
+
+    await images.load('/image.png')
+
+    expect(images.peekSize('/image.png')).toEqual({ width: 400, height: 200 })
+  })
+
+  it.each([
+    [
+      'the size that the image states',
+      { width: 30, height: 40 },
+      { width: 30, height: 40 },
+      { width: 30, height: 40 },
+    ],
+    [
+      'no size for an image that states none',
+      undefined,
+      undefined,
+      null,
+    ],
+  ])('answers %s from an image that it holds, with no size read', async (_answer, dimensions, asked, kept) => {
+    const readSize = vi.fn(noSize)
+    const images = createFileImageResolver(async () => ({
+      data: 'AAAA',
+      mimeType: 'image/png',
+      ...(dimensions !== undefined
+        ? { dimensions }
+        : {}),
+    }), readSize)
+    await images.load('/image.png', { reference: 'call' })
+
+    await expect(images.loadSize('/image.png', { reference: 'call' })).resolves.toEqual(asked)
+
+    expect(images.peekSize('/image.png', 'call')).toEqual(kept)
+    expect(readSize).not.toHaveBeenCalled()
+  })
   it('uses one size read for concurrent consumers, and keeps the answer', async () => {
     const size = deferred<ImageDimensions | undefined>()
     const readSize = vi.fn(() => size.promise)
@@ -146,49 +318,6 @@ describe('file image resolution', () => {
     await images.loadSize('no-header')
     await images.loadSize('unreadable')
     expect(readSize).toHaveBeenCalledTimes(2)
-  })
-
-  it('notifies a reader of a size when its read settles', async () => {
-    const size = deferred<ImageDimensions | undefined>()
-    const images = createFileImageResolver(anImage, () => size.promise)
-    const seen: (ImageDimensions | null | undefined)[] = []
-    const dispose = createRoot((disposeRoot) => {
-      // A reactive reader of the cache, as the size memo of an image view is. It runs
-      // again only when the resolver notifies it.
-      createEffect(() => seen.push(images.peekSize('/image.png')))
-      return disposeRoot
-    })
-    expect(seen).toEqual([undefined])
-
-    const pending = images.loadSize('/image.png')
-    // The start of a read changes no answer, so it notifies no reader.
-    expect(seen).toEqual([undefined])
-    size.resolve({ width: 10, height: 20 })
-    await pending
-
-    expect(seen).toEqual([
-      undefined,
-      { width: 10, height: 20 },
-    ])
-    dispose()
-  })
-
-  it('notifies a reader of a size when the scope clears', async () => {
-    const images = createFileImageResolver(anImage, async () => ({ width: 10, height: 20 }))
-    await images.loadSize('/image.png')
-    const seen: (ImageDimensions | null | undefined)[] = []
-    const dispose = createRoot((disposeRoot) => {
-      createEffect(() => seen.push(images.peekSize('/image.png')))
-      return disposeRoot
-    })
-
-    images.clear()
-
-    expect(seen).toEqual([
-      { width: 10, height: 20 },
-      undefined,
-    ])
-    dispose()
   })
 
   it('drops the sizes when the scope clears, and reads again afterwards', async () => {

@@ -23,6 +23,7 @@ import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent, wrapContent } from '~/test-support/messageFactory'
 import { toolFrame } from '~/test-support/mimoFixtures'
 import { pngBase64 } from '~/test-support/pngFixture'
+import { expectReleasedAtRequestLimit } from '~/test-support/renderReadiness'
 
 // jsdom does not provide ResizeObserver. The stand-in Worker of the jsdom setup
 // renders each Markdown body, so a test waits for the replies
@@ -2466,10 +2467,7 @@ describe('the other half of a tool call in a hidden copy', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(scope.measurable()).toBe(false)
 
-    await vi.advanceTimersByTimeAsync(READINESS_REQUEST_LIMIT_MS - 1)
-    expect(scope.measurable()).toBe(false)
-    await vi.advanceTimersByTimeAsync(1)
-    expect(scope.measurable()).toBe(true)
+    await expectReleasedAtRequestLimit(scope)
     // The limit ends only the wait of the copy: it starts no second lookup.
     expect(loadRelated).toHaveBeenCalledOnce()
   })
@@ -2542,10 +2540,7 @@ describe('the other half of a tool call in a hidden copy', () => {
     await vi.advanceTimersByTimeAsync(0)
     expect(scope.measurable()).toBe(false)
 
-    await vi.advanceTimersByTimeAsync(READINESS_REQUEST_LIMIT_MS - 1)
-    expect(scope.measurable()).toBe(false)
-    await vi.advanceTimersByTimeAsync(1)
-    expect(scope.measurable()).toBe(true)
+    await expectReleasedAtRequestLimit(scope)
   })
 
   it('ends the wait when a new message of the bubble needs no request', async () => {

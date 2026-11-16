@@ -106,7 +106,7 @@ export interface LayoutShiftDeps {
    * reader did not see.
    */
   enteredFromAbove: (rowId: string) => boolean
-  /** The last height commit that moved the offset map, for the report of a content move. */
+  /** The last commit that changed the height of a loaded row, for the report of a content move. */
   lastMeasurement: ContentMovedReporterDeps['lastMeasurement']
 }
 

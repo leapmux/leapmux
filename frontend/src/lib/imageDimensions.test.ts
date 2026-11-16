@@ -1,16 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { sniffImageDimensionsFromBase64, sniffImageDimensionsFromBytes, sniffImageDimensionsFromDataUrl } from './imageDimensions'
+import { box, chars, fullBox, ispeBox, jpegBytes, u16be, u32be } from '~/test-support/imageBytes'
+import { imageHeaderBytesNeeded, sniffImageDimensionsFromBase64, sniffImageDimensionsFromBytes, sniffImageDimensionsFromDataUrl } from './imageDimensions'
 
 function b64(bytes: number[]): string {
   return btoa(String.fromCharCode(...bytes))
-}
-
-function chars(s: string): number[] {
-  return [...s].map(c => c.charCodeAt(0))
-}
-
-function u16be(v: number): number[] {
-  return [(v >>> 8) & 0xFF, v & 0xFF]
 }
 
 function u16le(v: number): number[] {
@@ -23,15 +16,6 @@ function u32le(v: number): number[] {
     (v >>> 8) & 0xFF,
     (v >>> 16) & 0xFF,
     (v >>> 24) & 0xFF,
-  ]
-}
-
-function u32be(v: number): number[] {
-  return [
-    (v >>> 24) & 0xFF,
-    (v >>> 16) & 0xFF,
-    (v >>> 8) & 0xFF,
-    v & 0xFF,
   ]
 }
 
@@ -143,31 +127,6 @@ function webpExtendedBytes(width: number, height: number): number[] {
   ]
 }
 
-/** SOI + optional leading segments + SOF0 carrying the coded dimensions. */
-function jpegBytes(width: number, height: number, leading: number[] = []): number[] {
-  return [
-    0xFF,
-    0xD8,
-    ...leading,
-    0xFF,
-    0xC0,
-    ...u16be(17),
-    0x08,
-    ...u16be(height),
-    ...u16be(width),
-    0x03,
-    0x01,
-    0x11,
-    0x00,
-    0x02,
-    0x11,
-    0x01,
-    0x03,
-    0x11,
-    0x01,
-  ]
-}
-
 /** APP1 EXIF segment (big-endian TIFF) carrying just the Orientation tag. */
 function exifApp1Segment(orientation: number): number[] {
   const payload = [
@@ -191,28 +150,6 @@ function exifApp1Segment(orientation: number): number[] {
     ...u16be(payload.length + 2),
     ...payload,
   ]
-}
-
-function box(type: string, ...contents: number[][]): number[] {
-  const payload = contents.flat()
-  return [
-    ...u32be(8 + payload.length),
-    ...chars(type),
-    ...payload,
-  ]
-}
-
-function fullBox(type: string, version: number, flags: number, ...contents: number[][]): number[] {
-  return box(type, [
-    version,
-    (flags >>> 16) & 0xFF,
-    (flags >>> 8) & 0xFF,
-    flags & 0xFF,
-  ], ...contents)
-}
-
-function ispeBox(width: number, height: number): number[] {
-  return fullBox('ispe', 0, 0, u32be(width), u32be(height))
 }
 
 function avifBytes(opts: {
@@ -445,6 +382,59 @@ describe('sniffimagedimensions', () => {
       .toEqual({ width: 12, height: 34 })
     expect(sniffImageDimensionsFromDataUrl('data:image/png,rawpayload')).toBeNull()
     expect(sniffImageDimensionsFromDataUrl('https://example.com/a.png')).toBeNull()
+  })
+})
+
+describe('imageHeaderBytesNeeded', () => {
+  it.each([
+    [
+      'a JPEG',
+      jpegBytes(640, 480),
+      256 * 1024,
+    ],
+    [
+      'an AVIF',
+      avifBytes({
+        ipco: [
+          ispeBox(640, 480),
+        ],
+      }),
+      64 * 1024,
+    ],
+    // The first bytes of a JPEG state the format, whatever follows them.
+    [
+      'the two bytes of a JPEG signature',
+      [0xFF, 0xD8],
+      256 * 1024,
+    ],
+  ])('gives the bytes that the sniffer scans of %s', (_format, bytes, needed) => {
+    expect(imageHeaderBytesNeeded(Uint8Array.from(bytes))).toBe(needed)
+  })
+
+  it.each([
+    [
+      'a PNG',
+      pngBytes(640, 480),
+    ],
+    [
+      'a GIF',
+      gifBytes(320, 200),
+    ],
+    [
+      'a WebP',
+      webpLossyBytes(640, 480),
+    ],
+    [
+      'bytes of no image format',
+      chars('<svg xmlns="http://www.w3.org/2000/svg"/>'),
+    ],
+    [
+      'one byte of a JPEG signature',
+      [0xFF],
+    ],
+    ['no bytes', []],
+  ])('gives null for %s, whose size more bytes cannot give', (_format, bytes) => {
+    expect(imageHeaderBytesNeeded(Uint8Array.from(bytes))).toBeNull()
   })
 })
 

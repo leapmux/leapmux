@@ -70,17 +70,24 @@ export function useRenderReadiness(
  * only when the Worker answers or the transport gives up, which can take a minute. The
  * limit keeps one slow request from holding its row out of the list for that long: the
  * row then takes the height that it has, and it draws again when the content arrives.
+ *
+ * The user asked for one limit for both waits of a row, so the wait of a hidden copy for
+ * its images takes this value (see PREMEASURE_IMAGE_SETTLE_LIMIT_MS).
  */
 export const READINESS_REQUEST_LIMIT_MS = 10_000
 
 /**
- * The pending state of the requests of one body, for `RenderReadiness.track`.
+ * Report the pending state of the requests of one body to the readiness scope that its
+ * render context carries (see useRenderReadiness).
  * `begin()` marks one request as pending, and returns the function that ends it.
  * A request that did not end within READINESS_REQUEST_LIMIT_MS stops counting.
  * The limit ends only the report: it aborts no request.
- * Call within the reactive owner of the body: its cleanup clears each timer.
+ * Call it once, while the body sets up, within the reactive owner of the body: its
+ * cleanup clears each timer.
  */
-export function createRequestReadiness(): { pending: Accessor<boolean>, begin: () => () => void } {
+export function useRequestReadiness(
+  context: () => { readiness?: RenderReadiness | undefined } | undefined,
+): { pending: Accessor<boolean>, begin: () => () => void } {
   const [pendingCount, setPendingCount] = createSignal(0)
   const limitTimers = new Set<ReturnType<typeof setTimeout>>()
   onCleanup(() => {
@@ -105,10 +112,9 @@ export function createRequestReadiness(): { pending: Accessor<boolean>, begin: (
     setPendingCount(count => count + 1)
     return end
   }
-  return {
-    pending: () => pendingCount() > 0,
-    begin,
-  }
+  const pending = (): boolean => pendingCount() > 0
+  useRenderReadiness(context, pending)
+  return { pending, begin }
 }
 
 /**

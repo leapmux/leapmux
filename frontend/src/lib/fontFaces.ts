@@ -6,7 +6,7 @@
 // A renderer draws a separate glyph for each (weight, style) combination, so a
 // caller has to trigger fetches for all four variants -- not just the regular
 // face that it happens to paint first.
-export const FONT_VARIANTS: ReadonlyArray<{ weight: string, style: string }> = [
+const FONT_VARIANTS: ReadonlyArray<{ weight: string, style: string }> = [
   { weight: 'normal', style: 'normal' },
   { weight: 'bold', style: 'normal' },
   { weight: 'normal', style: 'italic' },
@@ -18,7 +18,15 @@ export const FONT_VARIANTS: ReadonlyArray<{ weight: string, style: string }> = [
 // bounded number of times with exponential backoff, then give up so a
 // genuinely-missing font doesn't spin forever.
 export const FONT_LOAD_MAX_RETRIES = 4
-export const FONT_LOAD_RETRY_BASE_MS = 300
+const FONT_LOAD_RETRY_BASE_MS = 300
+
+/**
+ * The wait before the retry of a font load that follows `retriesUsed` earlier retries:
+ * the base wait, doubled for each earlier retry.
+ */
+export function fontLoadRetryDelayMs(retriesUsed: number): number {
+  return FONT_LOAD_RETRY_BASE_MS * 2 ** retriesUsed
+}
 
 /** Load one font variant, resolving to whether it settled without a fetch error. */
 export function tryLoadFontVariant(spec: string): Promise<boolean> {

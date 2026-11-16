@@ -11,7 +11,6 @@ import {
   installReplyHoldIn,
   LARGE_BODY_FILLER_CHARS,
   largeBodyFiller,
-  loadingIndicatorIn,
   markedParagraphs,
   mountedRowSeqsIn,
   paragraphMarker,
@@ -19,9 +18,9 @@ import {
   releaseHeldRepliesIn,
   rowBoxIn,
   rowDistanceIn,
-  rowHeightsIn,
   rowSeqWithTextIn,
   rowStatesIn,
+  shortTurn,
   startPremeasureRecordIn,
   startRowWatchIn,
   stopRowWatchIn,
@@ -118,21 +117,6 @@ describe('rowBoxIn', () => {
     expect(rowBoxIn(containerWith([
       { seq: '7', top: 120, height: 40 },
     ]), '8')).toBeNull()
-  })
-})
-
-describe('rowHeightsIn', () => {
-  it('returns the height of each mounted row by its sequence number', () => {
-    const container = containerWith([
-      { seq: '7', top: 60, height: 152.5 },
-      { seq: '8', top: 232.5, height: 4000 },
-    ])
-
-    expect(rowHeightsIn(container)).toEqual({ 7: 152.5, 8: 4000 })
-  })
-
-  it('returns no height for a container with no row', () => {
-    expect(rowHeightsIn(containerWith([]))).toEqual({})
   })
 })
 
@@ -236,6 +220,18 @@ describe('topParagraphIn', () => {
     container.append(Object.assign(placeAt(document.createElement('p'), 120, 30), { textContent: 'P0: loose' }))
 
     expect(topParagraphIn(container, paragraphMarker('P').source)).toBeNull()
+  })
+})
+
+describe('shortTurn', () => {
+  it('gives the turn a prompt and an answer that hold its number, and inserts the prompt', () => {
+    expect(shortTurn(7)).toEqual({ prompt: 'Turn 7.', answer: 'Answer 7.', entry: 'insert' })
+  })
+
+  // A spec finds an answer with a text filter, which matches a part of a text.
+  it('gives no turn a text that contains the text of another turn', () => {
+    expect(shortTurn(11).answer).not.toContain(shortTurn(1).answer)
+    expect(shortTurn(10).prompt).not.toContain(shortTurn(1).prompt)
   })
 })
 
@@ -408,6 +404,13 @@ describe('paragraphMarker', () => {
     expect(marker.test('text S1P12:')).toBe(false)
     expect(marker.test('S2P12: text')).toBe(false)
   })
+
+  it('matches a label with a regular expression metacharacter literally', () => {
+    expect(paragraphMarker('a.b').test('aXb1:')).toBe(false)
+    expect(paragraphMarker('a.b').test('a.b1:')).toBe(true)
+    expect(paragraphMarker('C++').test('C++3:')).toBe(true)
+    expect(paragraphMarker('(P)').exec('(P)12: text')?.[0]).toBe('(P)12:')
+  })
 })
 
 describe('startRowWatchIn', () => {
@@ -504,26 +507,15 @@ describe('stopRowWatchIn', () => {
 })
 
 describe('rowStatesIn', () => {
-  it('returns the distance, the height, and the hidden state of each row, in document order', () => {
+  it('returns the distance and the height of each row, in document order', () => {
     const container = containerWith([
       { seq: '4', top: 60, height: 80 },
       { seq: '5', top: 160, height: 26 },
     ])
-    container.querySelector<HTMLElement>('[data-seq="5"]')!.style.visibility = 'hidden'
 
     expect(rowStatesIn(container)).toEqual([
-      {
-        seq: '4',
-        distance: -40,
-        height: 80,
-        hidden: false,
-      },
-      {
-        seq: '5',
-        distance: 60,
-        height: 26,
-        hidden: true,
-      },
+      { seq: '4', distance: -40, height: 80 },
+      { seq: '5', distance: 60, height: 26 },
     ])
   })
 
@@ -533,18 +525,12 @@ describe('rowStatesIn', () => {
 })
 
 describe('mountedRowSeqsIn', () => {
-  it('returns the sequence numbers of the mounted rows in document order, without the rows of a hidden copy', () => {
+  it('returns the sequence numbers of the mounted rows in document order', () => {
     const container = containerWith([
       { seq: '7', top: 100, height: 40 },
       { seq: '8', top: 150, height: 40 },
       { seq: '9', top: 200, height: 40 },
     ])
-    const premeasureRoot = document.createElement('div')
-    premeasureRoot.dataset.chatPremeasureRoot = 'true'
-    const copy = document.createElement('div')
-    copy.dataset.seq = '3'
-    premeasureRoot.append(copy)
-    container.prepend(premeasureRoot)
 
     expect(mountedRowSeqsIn(container)).toEqual([7, 8, 9])
   })
@@ -560,92 +546,6 @@ describe('mountedRowSeqsIn', () => {
 
   it('returns no sequence number for a container with no row', () => {
     expect(mountedRowSeqsIn(containerWith([]))).toEqual([])
-  })
-})
-
-describe('loadingIndicatorIn', () => {
-  const OLDER = 'Loading older messages...'
-
-  /**
-   * A chat container with a scroll container, which holds one row for each text of `rowTexts`. An indicator is an
-   * overlay beside the scroll container, as the app draws it: an icon and its text.
-   */
-  function chatWith(rowTexts: string[]): { root: HTMLElement, addIndicator: (text: string) => HTMLElement } {
-    const root = document.createElement('div')
-    const scroller = document.createElement('div')
-    for (const text of rowTexts) {
-      const row = document.createElement('div')
-      const bubble = document.createElement('p')
-      bubble.textContent = text
-      row.append(bubble)
-      scroller.append(row)
-    }
-    root.append(scroller)
-    document.body.append(root)
-    return {
-      root,
-      addIndicator: (text) => {
-        const indicator = document.createElement('div')
-        indicator.append(document.createElement('svg'), `\n  ${text}\n`)
-        root.append(indicator)
-        return indicator
-      },
-    }
-  }
-
-  it('finds an overlay beside the scroll container', () => {
-    const chat = chatWith(['Turn 1.', 'Answer 1.'])
-    const indicator = chat.addIndicator(OLDER)
-
-    expect(loadingIndicatorIn(chat.root, OLDER)).toBe(indicator)
-  })
-
-  it('returns null for a chat with rows only', () => {
-    const chat = chatWith(['Turn 1.', 'Answer 1.'])
-
-    expect(loadingIndicatorIn(chat.root, OLDER)).toBeNull()
-  })
-
-  it('returns null for a row that quotes the text inside a longer one', () => {
-    const chat = chatWith([`${OLDER} please wait`])
-
-    expect(loadingIndicatorIn(chat.root, OLDER)).toBeNull()
-  })
-
-  it('returns null for an indicator with another text', () => {
-    const chat = chatWith(['Turn 1.'])
-    chat.addIndicator('Loading newer messages...')
-
-    expect(loadingIndicatorIn(chat.root, OLDER)).toBeNull()
-  })
-
-  it('returns the element that holds the text, not an ancestor of it', () => {
-    const chat = chatWith([])
-    const wrapper = document.createElement('div')
-    const label = document.createElement('span')
-    label.textContent = OLDER
-    wrapper.append(label)
-    chat.root.append(wrapper)
-
-    expect(loadingIndicatorIn(chat.root, OLDER)).toBe(label)
-  })
-
-  it('does not join two runs of text that a child element separates', () => {
-    const chat = chatWith([])
-    const split = document.createElement('div')
-    split.append('Loading older', document.createElement('br'), ' messages...')
-    chat.root.append(split)
-
-    expect(loadingIndicatorIn(chat.root, OLDER)).toBeNull()
-  })
-
-  it('counts a run of white space inside the text as one space', () => {
-    const chat = chatWith([])
-    const indicator = document.createElement('div')
-    indicator.textContent = 'Loading  older\n messages...'
-    chat.root.append(indicator)
-
-    expect(loadingIndicatorIn(chat.root, OLDER)).toBe(indicator)
   })
 })
 
@@ -812,44 +712,47 @@ describe('largeBodyFiller', () => {
   })
 })
 
-describe('clearObjectStoreIn', () => {
-  /** A fresh IndexedDB as the global one, with the database `name` and its object stores `stores`. */
-  async function databaseWith(name: string, stores: readonly string[]): Promise<void> {
-    vi.stubGlobal('indexedDB', new IDBFactory())
-    onTestFinished(() => {
-      vi.unstubAllGlobals()
-    })
-    await new Promise<void>((resolve, reject) => {
-      const open = indexedDB.open(name, 1)
-      open.onupgradeneeded = () => {
-        for (const store of stores)
-          open.result.createObjectStore(store)
-      }
-      open.onerror = () => reject(open.error)
-      open.onsuccess = () => {
+/**
+ * A fresh IndexedDB as the global one, with the database `name` and its object stores `stores`. Each store takes
+ * `options`, such as the key path of its entries.
+ */
+async function databaseWith(name: string, stores: readonly string[], options?: IDBObjectStoreParameters): Promise<void> {
+  vi.stubGlobal('indexedDB', new IDBFactory())
+  onTestFinished(() => {
+    vi.unstubAllGlobals()
+  })
+  await new Promise<void>((resolve, reject) => {
+    const open = indexedDB.open(name, 1)
+    open.onupgradeneeded = () => {
+      for (const store of stores)
+        open.result.createObjectStore(store, options)
+    }
+    open.onerror = () => reject(open.error)
+    open.onsuccess = () => {
+      open.result.close()
+      resolve()
+    }
+  })
+}
+
+/** Run `work` in a transaction of `mode` on the store `store` of the database `name`, and return its result. */
+function inStore<T>(name: string, store: string, mode: IDBTransactionMode, work: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const open = indexedDB.open(name)
+    open.onerror = () => reject(open.error)
+    open.onsuccess = () => {
+      const transaction = open.result.transaction(store, mode)
+      const request = work(transaction.objectStore(store))
+      transaction.oncomplete = () => {
         open.result.close()
-        resolve()
+        resolve(request.result)
       }
-    })
-  }
+      transaction.onerror = () => reject(transaction.error)
+    }
+  })
+}
 
-  /** Run `work` in a transaction of `mode` on the store `store` of the database `name`, and return its result. */
-  function inStore<T>(name: string, store: string, mode: IDBTransactionMode, work: (store: IDBObjectStore) => IDBRequest<T>): Promise<T> {
-    return new Promise<T>((resolve, reject) => {
-      const open = indexedDB.open(name)
-      open.onerror = () => reject(open.error)
-      open.onsuccess = () => {
-        const transaction = open.result.transaction(store, mode)
-        const request = work(transaction.objectStore(store))
-        transaction.oncomplete = () => {
-          open.result.close()
-          resolve(request.result)
-        }
-        transaction.onerror = () => reject(transaction.error)
-      }
-    })
-  }
-
+describe('clearObjectStoreIn', () => {
   it('deletes every entry of the store, and keeps the entries of another store', async () => {
     await databaseWith('renders', ['artifacts', 'other'])
     await inStore('renders', 'artifacts', 'readwrite', store => store.put('<p>a</p>', 'md:a'))
@@ -878,41 +781,19 @@ describe('clearObjectStoreIn', () => {
 })
 
 describe('deleteStoredNamesIn', () => {
-  /** A fresh IndexedDB as the global one, with the object store `entries` of the database `kv`, keyed by `k`. */
+  /**
+   * A fresh IndexedDB as the global one, with the object store `entries` of the database `kv`, keyed by `k`, and one
+   * entry for each key of `rows`.
+   */
   async function storageWith(rows: readonly string[]): Promise<void> {
-    vi.stubGlobal('indexedDB', new IDBFactory())
-    onTestFinished(() => {
-      vi.unstubAllGlobals()
-    })
-    await new Promise<void>((resolve, reject) => {
-      const open = indexedDB.open('kv', 1)
-      open.onupgradeneeded = () => {
-        const entries = open.result.createObjectStore('entries', { keyPath: 'k' })
-        for (const k of rows)
-          entries.put({ k, v: 'value', e: 0 })
-      }
-      open.onerror = () => reject(open.error)
-      open.onsuccess = () => {
-        open.result.close()
-        resolve()
-      }
-    })
+    await databaseWith('kv', ['entries'], { keyPath: 'k' })
+    for (const k of rows)
+      await inStore('kv', 'entries', 'readwrite', store => store.put({ k, v: 'value', e: 0 }))
   }
 
   /** The keys that the object store `entries` holds, in order. */
-  function storedKeys(): Promise<string[]> {
-    return new Promise<string[]>((resolve, reject) => {
-      const open = indexedDB.open('kv')
-      open.onerror = () => reject(open.error)
-      open.onsuccess = () => {
-        const request = open.result.transaction('entries', 'readonly').objectStore('entries').getAllKeys()
-        request.onerror = () => reject(request.error)
-        request.onsuccess = () => {
-          open.result.close()
-          resolve(request.result.map(String))
-        }
-      }
-    })
+  async function storedKeys(): Promise<string[]> {
+    return (await inStore('kv', 'entries', 'readonly', store => store.getAllKeys())).map(String)
   }
 
   it('deletes each entry whose logical name starts with the prefix, for an account and for the device', async () => {
@@ -961,8 +842,10 @@ describe('deleteStoredNamesIn', () => {
       .rejects
       .toThrow('the database kv has no object store renamed')
   })
+})
 
-  it('names the prefix under which the app stores the row heights', () => {
+describe('STORED_ROW_HEIGHTS_NAME_PREFIX', () => {
+  it('equals the prefix under which the app stores the row heights', () => {
     expect(STORED_ROW_HEIGHTS_NAME_PREFIX).toBe(PREFIX_CHAT_ROW_HEIGHTS)
   })
 })

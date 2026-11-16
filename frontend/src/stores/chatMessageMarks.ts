@@ -41,9 +41,11 @@ export interface ChatRailData {
   /** The marked seqs (teal jump dots). */
   marks: readonly SeqMark[]
   /**
-   * The loaded window's first and last persisted sequence, or undefined for an empty
-   * window. The rail's thumb-drag uses these to control in-window
-   * live-scrolling; a drag mapping outside them only previews.
+   * The first and last persisted sequence of the window that the rail scrolls live, or
+   * undefined for an empty window. The store gives the loaded window. ChatView replaces
+   * it with the rows that its list holds (see ChatView.railProps): a loaded row that
+   * the list does not hold yet has no place to scroll to. The rail's thumb-drag uses
+   * these to control in-window live-scrolling; a drag mapping outside them only previews.
    */
   windowFirstSeq: bigint | undefined
   windowLastSeq: bigint | undefined

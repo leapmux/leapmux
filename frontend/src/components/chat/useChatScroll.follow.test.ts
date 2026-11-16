@@ -6,8 +6,6 @@ installScrollTestEnv()
 
 // The harness: 50 rows of 100px in a 500px view, so the bottom is at 4500.
 
-const maxScrollTop = (h: ReturnType<typeof mountScrollHarness>) => h.div.el.scrollHeight - h.div.el.clientHeight
-
 describe('useChatScroll follow mode', () => {
   it('follows at mount', () => {
     const h = mountScrollHarness()
@@ -20,7 +18,7 @@ describe('useChatScroll follow mode', () => {
   it('stays at the bottom when the tail grows', () => {
     const h = mountScrollHarness()
     h.changeBelow(200)
-    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
     expect(h.hook.isFollowing()).toBe(true)
     h.dispose()
   })
@@ -95,7 +93,7 @@ describe('useChatScroll follow mode', () => {
       expect(h.hook.isFollowing()).toBe(true)
       // The answer arrives, and the follower goes to the bottom with it.
       h.changeBelow(200)
-      expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+      expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
       h.dispose()
     })
 
@@ -199,7 +197,7 @@ describe('useChatScroll follow mode', () => {
     expect(h.hook.isFollowing()).toBe(true)
     expect(h.onMomentumScroll).not.toHaveBeenCalled()
     h.changeBelow(100)
-    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
     h.dispose()
   })
 
@@ -218,7 +216,7 @@ describe('useChatScroll follow mode', () => {
     expect(h.hook.isFollowing()).toBe(true)
     // The view stays at the bottom when new output arrives below.
     h.changeBelow(200)
-    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
     h.div.el.remove()
     h.dispose()
   })
@@ -281,7 +279,7 @@ describe('useChatScroll follow mode', () => {
     h.changeBelow(300)
     h.setHasNewer(false)
 
-    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
     expect(h.hook.isFollowing()).toBe(true)
     h.dispose()
   })
@@ -389,7 +387,7 @@ describe('useChatScroll follow mode', () => {
     // The rule holds the bottom of the content for a follower: the rows move up by the
     // growth, and the view stays at the bottom with no write while the scroller moves.
     expect(h.virt.layoutShift()).toBe(-300)
-    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
     // The rebase at rest moves the shift into the scroll position.
     await h.rest()
     expect(h.div.getScrollTop()).toBe(4800)
@@ -442,7 +440,7 @@ describe('useChatScroll forceScrollToBottom', () => {
     jump.resolve(true)
     await settleJump(jump.promise)
 
-    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
     expect(h.hook.isFollowing()).toBe(true)
     h.dispose()
   })
@@ -467,7 +465,7 @@ describe('useChatScroll forceScrollToBottom', () => {
     jump.resolve(true)
     await settleJump(jump.promise)
 
-    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
     expect(h.hook.isFollowing()).toBe(true)
     h.dispose()
   })
@@ -484,7 +482,7 @@ describe('useChatScroll forceScrollToBottom', () => {
     await settleJump(jump.promise)
 
     // The event moved nothing, so it ends no request, although the view sits above the bottom.
-    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
     expect(h.hook.isFollowing()).toBe(true)
     h.dispose()
   })
@@ -609,11 +607,11 @@ describe('useChatScroll forceScrollToBottom', () => {
     })
     await h.anchoredAt(2000)
     h.hook.scrollToBottom()
-    for (let frame = 0; frame < 80 && h.div.getScrollTop() < maxScrollTop(h); frame++)
+    for (let frame = 0; frame < 80 && h.div.getScrollTop() < h.maxScrollTop(); frame++)
       await h.frame()
 
     expect(live.onJumpToLatest).not.toHaveBeenCalled()
-    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
     h.dispose()
   })
 })
@@ -625,7 +623,7 @@ describe('useChatScroll follow mode with staged rows', () => {
   it('does not follow at the bottom of the list while rows that it showed before are staged below', async () => {
     // After a width change, the rows below the list were in the list before. A reader at
     // the bottom end of the measured rows did not ask for the tail.
-    const h = mountScrollHarness({ stagedBelow: 2, holdsTail: false })
+    const h = mountScrollHarness({ stagedNewer: true, holdsTail: false })
     await h.anchoredAt(2000)
 
     h.scrollTo(4500)
@@ -636,12 +634,12 @@ describe('useChatScroll follow mode with staged rows', () => {
   })
 
   it('follows at the bottom once the rows that were staged below joined', async () => {
-    const h = mountScrollHarness({ stagedBelow: 2, holdsTail: false })
+    const h = mountScrollHarness({ stagedNewer: true, holdsTail: false })
     await h.anchoredAt(2000)
     h.scrollTo(4500)
     expect(h.hook.isFollowing()).toBe(false)
 
-    h.setStagedBelow(0)
+    h.setStagedNewer(false)
     h.setHoldsTail(true)
     h.hook.handlers.onScroll()
 
@@ -651,16 +649,16 @@ describe('useChatScroll follow mode with staged rows', () => {
 
   it('follows when the reader reaches the bottom while a new message is staged', async () => {
     // Only a new message is staged below, so the rows of the list still hold the tail.
-    const h = mountScrollHarness({ stagedBelow: 1 })
+    const h = mountScrollHarness({ stagedNewer: true })
     await h.anchoredAt(2000)
 
     h.scrollTo(4500)
     expect(h.hook.isFollowing()).toBe(true)
 
     // The message joins: the list grows below, with no scroll event.
-    h.setStagedBelow(0)
+    h.setStagedNewer(false)
     h.changeBelow(300)
-    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
     h.dispose()
   })
 
@@ -671,7 +669,7 @@ describe('useChatScroll follow mode with staged rows', () => {
 
     // The page arrives: its rows are staged, and they are no new messages.
     batch(() => {
-      h.setStagedBelow(5)
+      h.setStagedNewer(true)
       h.setHoldsTail(false)
       h.setHasNewer(false)
     })
@@ -685,11 +683,97 @@ describe('useChatScroll follow mode with staged rows', () => {
     const h = mountScrollHarness()
     expect(h.hook.isFollowing()).toBe(true)
 
-    h.setStagedBelow(1)
+    h.setStagedNewer(true)
     h.changeBelow(300)
 
     expect(h.hook.isFollowing()).toBe(true)
-    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
+    h.dispose()
+  })
+
+  it('keeps a follower in follow mode for a forced scroll to the bottom while a new message is staged', () => {
+    // The target of a request would wait here: the new message is not measured yet.
+    const h = mountScrollHarness({ holdTargets: true })
+    expect(h.hook.isFollowing()).toBe(true)
+    h.setStagedNewer(true)
+
+    // A send and a control response force the scroll to the bottom.
+    h.hook.forceScrollToBottom()
+
+    // The reader has the tail already, so nothing waits: follow mode shows the message
+    // when it is measured, and no row of the loaded bottom counts as loading.
+    expect(h.hook.isFollowing()).toBe(true)
+    expect(h.hook.atStagedBottomEdge()).toBe(false)
+    expect(h.requestedTargets()).toEqual([])
+    expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
+    h.dispose()
+  })
+
+  it('waits for the tail at a forced scroll to the bottom when rows that the list showed before are staged below', () => {
+    const h = mountScrollHarness({ holdTargets: true })
+    // After a width change, the rows below the rows of the list are no new messages.
+    h.setStagedNewer(true)
+    h.setHoldsTail(false)
+
+    h.hook.forceScrollToBottom()
+
+    expect(h.requestedTargets()).toEqual([
+      { kind: 'tail' },
+    ])
+    expect(h.hook.isFollowing()).toBe(false)
+    h.reachTarget()
+    expect(h.hook.isFollowing()).toBe(true)
+    h.dispose()
+  })
+
+  it('waits for the tail, and sticks when it is reached, at a forced scroll to the bottom of a reader who scrolled up', async () => {
+    const h = mountScrollHarness({ holdTargets: true })
+    await h.anchoredAt(2000)
+    h.setStagedNewer(true)
+
+    h.hook.forceScrollToBottom()
+
+    // The reader has no tail yet, so the view stays until the last rows are measured.
+    expect(h.requestedTargets()).toEqual([
+      { kind: 'tail' },
+    ])
+    expect(h.div.getScrollTop()).toBe(2000)
+
+    h.reachTarget()
+    expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
+    expect(h.hook.isFollowing()).toBe(true)
+    h.dispose()
+  })
+
+  it('asks for the tail, and starts no animation, for the button while no row is in the list', async () => {
+    const h = mountScrollHarness({ awaitingFirstView: true, holdTargets: true })
+    const writes = h.div.scrollTopWrites()
+
+    h.hook.scrollToBottom()
+    await h.frame()
+    await h.frame()
+
+    // The first view asked for the tail, and the button asks again: no row of the list
+    // holds a bottom that an animation could move to.
+    expect(h.requestedTargets()).toEqual([
+      { kind: 'tail' },
+      { kind: 'tail' },
+    ])
+    expect(h.div.scrollTopWrites()).toBe(writes)
+    h.dispose()
+  })
+
+  it('enters follow mode again at the bottom of a window with no row', async () => {
+    // Content outside the rows makes the list scroll: a banner, or a streaming block.
+    // The admission reports a held tail for a window with no row.
+    const h = mountScrollHarness({ heights: [], scrollHeight: 5000 })
+    await h.anchoredAt(1000)
+    expect(h.hook.isFollowing()).toBe(false)
+
+    h.scrollTo(4500)
+
+    expect(h.hook.atBottom()).toBe(true)
+    expect(h.hook.isFollowing()).toBe(true)
     h.dispose()
   })
 
@@ -726,8 +810,10 @@ describe('useChatScroll follow mode with staged rows', () => {
     const { h, jump } = await mountWithPendingJump(opts => mountScrollHarness({ ...opts, holdTargets: true }))
 
     // The store clears its newer-pages flag when the page arrives, before the landing of
-    // the jump runs. The rows of the page are staged then.
-    h.setStagedBelow(2)
+    // the jump runs. The rows of the page are staged then, and they are no new messages,
+    // so the rows of the list do not hold the tail.
+    h.setStagedNewer(true)
+    h.setHoldsTail(false)
     h.setHasNewer(false)
     h.changeBelow(300)
     expect(h.div.getScrollTop()).toBe(2000)
@@ -739,7 +825,7 @@ describe('useChatScroll follow mode with staged rows', () => {
     expect(h.requestedTargets().at(-1)).toEqual({ kind: 'tail' })
 
     h.reachTarget()
-    expect(h.div.getScrollTop()).toBe(maxScrollTop(h))
+    expect(h.div.getScrollTop()).toBe(h.maxScrollTop())
     expect(h.hook.isFollowing()).toBe(true)
     h.dispose()
   })

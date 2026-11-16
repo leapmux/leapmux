@@ -8,10 +8,12 @@ import {
   clearStoredRowHeights,
   dragChatUp,
   expectAtBottom,
+  expectTailFartherBy,
   readRowBox,
   readRowStates,
   readViewportHeight,
   recordPremeasureCommitsFromNextLoad,
+  shortTurn,
   waitForScrollRest,
   watchRow,
 } from '../helpers/chatScrollStability'
@@ -19,7 +21,7 @@ import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { codexViewImageToolCall } from '../helpers/providerToolCalls'
 import { sendScriptedTurn } from '../helpers/scriptedTurn'
 import { writeSolidPng } from '../helpers/toolImages'
-import { assistantBubbles, chatDistanceFromBottom, chatScrollContainer, waitForAgentStarted } from '../helpers/ui'
+import { assistantBubbles, chatDistanceFromBottom, chatScrollContainer, chatScrollTop, waitForAgentStarted } from '../helpers/ui'
 
 /**
  * The chat view keeps the rows that the reader looks at in place when a tool row draws an image from a file.
@@ -53,13 +55,11 @@ const TURNS_BELOW = 8
 const STEP_PX = 150
 const STEPS_MAX = 80
 
+/** A step that changes the distance of the tail by less than this moved the view no farther. */
+const MOVED_PX = 1
+
 /** How far below the top of the view the image row starts once the reader reached it. */
 const IMAGE_TOP_IN_VIEW_PX = 100
-
-/** A short scripted turn. */
-function shortTurn(turn: number) {
-  return { prompt: `Turn ${turn}.`, answer: `Answer ${turn}.`, entry: 'insert' as const }
-}
 
 /** A seeded chat that was opened again, with the view at its bottom. */
 interface ImageChat {
@@ -138,8 +138,8 @@ async function seedChatWithFileImage(native: ManagedNativeScenarioContext, worki
 
 /**
  * Scroll up in steps until the image row is mounted and ends less than one view height above the view, and return
- * its box. A step that reaches the end of the measured rows moves nothing, and the next step moves again once more
- * rows are measured.
+ * its box. A step that reaches the end of the measured rows moves nothing. The walk then waits until more rows are
+ * measured and join the list above the view, so the view can move up again.
  *
  * A mounted row alone is not enough. A fast scroll also mounts the rows that it is about to reach, farther above the
  * view than the app keeps rows mounted at rest, and the app unmounts such a row at its next update of the mounted
@@ -152,7 +152,11 @@ async function scrollUpUntilImageRowMounts(page: Page, imageSeq: string): Promis
     if (box !== null && box.distance + box.height > -viewHeight)
       return box
     expect(step, 'the image row mounts near the view within the expected number of steps').toBeLessThan(STEPS_MAX)
+    const before = await chatDistanceFromBottom(page)
     await dragChatUp(page, STEP_PX)
+    if (await chatDistanceFromBottom(page) - before >= MOVED_PX)
+      continue
+    await expect.poll(() => chatScrollTop(page), { message: 'the rows above join the list, so the view can move up again' }).toBeGreaterThan(0)
   }
 }
 
@@ -174,10 +178,16 @@ codexTest.describe('chat scroll stability while a tool row loads an image from a
     expect(mounted.distance + mounted.height, 'the image row is above the view').toBeLessThan(0)
     const below = (await readRowStates(page)).find(row => Number(row.seq) > Number(chat.imageSeq))
     expect(below, 'a row below the image row is mounted').toBeDefined()
-    const tailBefore = await chatDistanceFromBottom(page)
 
-    // One step brings the image row into the view, where the app reads the image.
+    // One step brings the image row into the view, where the app reads the image. The step moves the view by its whole
+    // distance only when the list holds at least IMAGE_TOP_IN_VIEW_PX of rows above the image row. A row above it that
+    // a hidden copy still measures is not in the list yet, and the step would then stop at the top of the list.
     const distance = IMAGE_TOP_IN_VIEW_PX - mounted.distance
+    await expect.poll(() => chatScrollTop(page), {
+      message: `the list holds at least ${IMAGE_TOP_IN_VIEW_PX}px of rows above the image row, so a step of ${distance}px up does not stop at the top of the list`,
+    }).toBeGreaterThanOrEqual(distance)
+    await waitForScrollRest(page)
+    const tailBefore = await chatDistanceFromBottom(page)
     await chatScrollContainer(page).evaluate((container, pixels) => {
       container.scrollTop -= pixels
     }, distance)
@@ -190,8 +200,7 @@ codexTest.describe('chat scroll stability while a tool row loads an image from a
     expect(loaded, 'the image row is mounted').not.toBeNull()
     expect(Math.abs(loaded!.height - mounted.height), `the image row keeps its height when the image loads, within 1px (${mounted.height}px to ${loaded!.height}px)`).toBeLessThanOrEqual(1)
     // A row that grows below the top of the view pushes the tail farther away.
-    const travelled = await chatDistanceFromBottom(page) - tailBefore
-    expect(Math.abs(travelled - distance), `the tail is ${distance}px farther below the view, within 1px (it is ${travelled}px farther)`).toBeLessThanOrEqual(1)
+    await expectTailFartherBy(page, tailBefore, distance, 'after the image loads')
   })
 
   codexTest('measures a file image row at its final height before the reader reaches it', async ({ native, authenticatedCodexWorkspace }) => {

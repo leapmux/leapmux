@@ -38,7 +38,7 @@ describe('chatOrderedReveal', () => {
         const { virt, cache } = setup(items, { measured: false })
         const held = createOrderedTailReveal(
           () => items.map(item => item.id),
-          id => cache.heightOf(items.find(item => item.id === id)!) === undefined,
+          id => !cache.isMeasured(items.find(item => item.id === id)!),
         )
         virt.measure('answer', 40)
         expect([

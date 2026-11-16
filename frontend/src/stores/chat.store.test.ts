@@ -2915,6 +2915,54 @@ describe('createChatStore', () => {
     })
 
     describe('jumpToLatestMessages', () => {
+      it('ends its request and frees its fetch flag when the reader abandons the jump', async () => {
+        await createRoot(async (dispose) => {
+          mockListAgentMessages.mockClear()
+          const store = createChatStore()
+          store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))), true)
+          // A request that ends only when its signal aborts, as a request over a slow channel does.
+          mockListAgentMessages.mockImplementationOnce((_workerId: string, _request: unknown, options?: { signal?: AbortSignal }) =>
+            new Promise((_resolve, reject) => {
+              options?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+            }))
+          const reader = new AbortController()
+
+          const jump = store.jumpToLatestMessages('w1', 'a1', reader.signal)
+          expect(store.isFetchingNewer('a1')).toBe(true)
+          // The request carries the signal of the fetch, so an abort ends it at the transport.
+          expect(mockListAgentMessages).toHaveBeenCalledWith(
+            'w1',
+            { agentId: 'a1', anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_LIMIT },
+            {
+              signal: expect.any(AbortSignal),
+            },
+          )
+          reader.abort()
+
+          // An abort is how the jump ends early, so it reports no failure.
+          await expect(jump).resolves.toBe(false)
+          // The flag is free at once: otherwise the old window loads no newer page until
+          // the abandoned request returns.
+          expect(store.isFetchingNewer('a1')).toBe(false)
+          expect(store.getMessages('a1')).toHaveLength(50)
+          dispose()
+        })
+      })
+
+      it('rejects when its request fails with no abort', async () => {
+        await createRoot(async (dispose) => {
+          const store = createChatStore()
+          store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))), true)
+          mockListAgentMessages.mockRejectedValueOnce(new Error('the worker is unavailable'))
+
+          await expect(store.jumpToLatestMessages('w1', 'a1', new AbortController().signal)).rejects.toThrow('the worker is unavailable')
+
+          expect(store.getMessages('a1')).toHaveLength(50)
+          expect(store.isFetchingNewer('a1')).toBe(false)
+          dispose()
+        })
+      })
+
       it('snaps to the live tail and is gap-free across a mid-fetch live message', async () => {
         await createRoot(async (dispose) => {
           mockListAgentMessages.mockClear()

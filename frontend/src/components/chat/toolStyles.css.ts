@@ -336,7 +336,8 @@ export const toolImage = style({
 // runs, or that read failed. It composes toolImage, so it takes exactly the outer
 // size of the image for the same inline reservation style: the image replaces the
 // box, and the row keeps its height. Its text is centred, and text that does not fit
-// is cut, because a taller box would move the rows below when the image arrives.
+// is cut, because a taller box would move the rows below when the image arrives. One
+// state differs: toolImageBoxFailed below.
 export const toolImageBox = style([
   toolImage,
   {
@@ -349,6 +350,15 @@ export const toolImageBox = style([
     textAlign: 'center',
   },
 ])
+
+// The same box when the read of its image failed. No image replaces the box until the
+// reader tries again, and the reader must reach the error text and the Retry button. So a
+// box that is smaller than that content grows to hold it, and cuts nothing.
+export const toolImageBoxFailed = style({
+  minWidth: 'min-content',
+  minHeight: 'min-content',
+  overflow: 'visible',
+})
 
 // The click target that opens a tool-result image in its own tab.
 //

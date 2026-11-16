@@ -54,11 +54,28 @@ export function clampPremeasureRange(
 }
 
 /**
+ * The staging candidate for the loaded row at `index`, or `undefined` when the row is
+ * absent or measured. The single home of the "row is present AND still unmeasured" rule
+ * for the target band and the look-ahead band, so the two cannot differ on what counts
+ * as a row to stage. Pure given `all` / `items` / `isMeasured`.
+ */
+export function unmeasuredCandidateAt(
+  all: readonly ClassifiedEntry[],
+  items: readonly VirtualItem[],
+  isMeasured: (item: VirtualItem) => boolean,
+  index: number,
+): ChatDomPremeasureCandidate | undefined {
+  const entry = all[index]
+  const item = items[index]
+  return entry && item && !isMeasured(item)
+    ? { entry, item }
+    : undefined
+}
+
+/**
  * Collect the unmeasured staging candidates over the half-open index range `[from, to)`,
  * skipping the inner `[skipFrom, skipTo)` sub-range (the rows another band already covers;
- * default empty). The single home for the "row is present AND still unmeasured" predicate and
- * the collection loop, so the bands can't drift on what counts as a row to stage.
- * Pure given `all` / `items` / `isMeasured`.
+ * default empty). Pure given `all` / `items` / `isMeasured`.
  */
 export function collectUnmeasuredCandidates(
   all: readonly ClassifiedEntry[],
@@ -73,10 +90,9 @@ export function collectUnmeasuredCandidates(
   for (let index = from; index < to; index++) {
     if (index >= skipFrom && index < skipTo)
       continue
-    const entry = all[index]
-    const item = items[index]
-    if (entry && item && !isMeasured(item))
-      candidates.push({ entry, item })
+    const candidate = unmeasuredCandidateAt(all, items, isMeasured, index)
+    if (candidate !== undefined)
+      candidates.push(candidate)
   }
   return candidates
 }
@@ -85,9 +101,9 @@ export interface ChatPremeasureBandsDeps {
   /** The classified entries of the loaded rows (chatEntryCache walks the whole window). */
   visibleEntries: Accessor<readonly ClassifiedEntry[]>
   /** The items of the loaded rows, index-aligned with visibleEntries. */
-  virtualItems: Accessor<readonly VirtualItem[]>
+  loadedItems: Accessor<readonly VirtualItem[]>
   /** The height cache: the measured test of the bands, and the commit of the queue. */
-  heights: Pick<RowHeightCache, 'heightOf' | 'commit'>
+  heights: Pick<RowHeightCache, 'isMeasured' | 'commit'>
   /** The rendered range, as indexes of the loaded rows. Empty while no row is admitted. */
   renderedRange: Accessor<ChatVirtualizerRange>
   /** The indexes of the loaded rows that a waiting target needs measured next (see RowAdmission.wantedRows). */
@@ -99,12 +115,20 @@ export interface ChatPremeasureBandsDeps {
   stagingEnabled: Accessor<boolean>
   /** id -> entry for the loaded rows (built once in ChatView). */
   visibleEntryById: Accessor<ReadonlyMap<string, ClassifiedEntry>>
-  /** Whether the idle warm-up band may run (pane visible, sized, quiet -- policy owned by ChatView). */
+  /**
+   * Whether the idle warm-up band may run: the pane is visible and quiet, and the first
+   * view is shown (policy owned by ChatView). The bands add `stagingEnabled` to it.
+   */
   warmupEnabled: Accessor<boolean>
 }
 
 export interface ChatPremeasureBands {
-  /** Every candidate to hand ChatHiddenPremeasure this frame (target + look-ahead + warm-up, de-duped). */
+  /**
+   * The rows that ChatHiddenPremeasure holds a copy of, in display order: each row that a
+   * band added (target, look-ahead, warm-up) and that is not measured yet. A row that left
+   * every band stays until it is measured or leaves the loaded rows (see the premeasure
+   * queue). Empty while staging is not enabled.
+   */
   premeasureCandidates: Accessor<readonly ChatDomPremeasureCandidate[]>
   /**
    * The ids of the rows of the target band and of the look-ahead band: the staged rows that
@@ -123,7 +147,7 @@ const NO_CANDIDATES: ChatDomPremeasureCandidate[] = []
  * (ChatView's body): it creates the band memos, the warm-up unit, and the queue.
  */
 export function createChatPremeasureBands(deps: ChatPremeasureBandsDeps): ChatPremeasureBands {
-  const isMeasured = (item: VirtualItem): boolean => deps.heights.heightOf(item) !== undefined
+  const { isMeasured } = deps.heights
 
   // Target band: the rows that the waiting target needs, in the order of its scan (see
   // rowsWantedForTarget).
@@ -131,13 +155,12 @@ export function createChatPremeasureBands(deps: ChatPremeasureBandsDeps): ChatPr
     if (!deps.stagingEnabled())
       return NO_CANDIDATES
     const all = deps.visibleEntries()
-    const items = deps.virtualItems()
+    const items = deps.loadedItems()
     const candidates: ChatDomPremeasureCandidate[] = []
     for (const index of deps.wantedRows()) {
-      const entry = all[index]
-      const item = items[index]
-      if (entry && item && !isMeasured(item))
-        candidates.push({ entry, item })
+      const candidate = unmeasuredCandidateAt(all, items, isMeasured, index)
+      if (candidate !== undefined)
+        candidates.push(candidate)
     }
     return candidates
   })
@@ -148,7 +171,7 @@ export function createChatPremeasureBands(deps: ChatPremeasureBandsDeps): ChatPr
     if (!deps.stagingEnabled())
       return NO_CANDIDATES
     const all = deps.visibleEntries()
-    const items = deps.virtualItems()
+    const items = deps.loadedItems()
     const { len, start, end } = clampPremeasureRange(all.length, items.length, deps.renderedRange())
     if (end <= start)
       return NO_CANDIDATES
@@ -156,19 +179,20 @@ export function createChatPremeasureBands(deps: ChatPremeasureBandsDeps): ChatPr
     const bandEnd = Math.min(len, end + LOOKAHEAD_PREMEASURE_ROWS)
     return collectUnmeasuredCandidates(all, items, isMeasured, bandStart, bandEnd, start, end)
   })
-  const virtualItemById = createMemo(() => {
+  const loadedItemById = createMemo(() => {
     const result = new Map<string, VirtualItem>()
-    for (const item of deps.virtualItems())
+    for (const item of deps.loadedItems())
       result.set(item.id, item)
     return result
   })
 
-  // Idle warm-up: while the pane is visible, sized, and quiet, drain the other unmeasured
-  // loaded rows in small batches so a later fling anywhere lands on measured rows.
+  // Idle warm-up: while staging is enabled and the pane is visible and quiet, drain the
+  // other unmeasured loaded rows in small batches so a later fling anywhere lands on
+  // measured rows.
   const warmup = createPremeasureWarmup({
     enabled: () => deps.stagingEnabled() && deps.warmupEnabled(),
     visibleEntries: deps.visibleEntries,
-    virtualItems: deps.virtualItems,
+    loadedItems: deps.loadedItems,
     range: deps.renderedRange,
     isMeasured,
     excludedBandRows: LOOKAHEAD_PREMEASURE_ROWS,
@@ -178,8 +202,8 @@ export function createChatPremeasureBands(deps: ChatPremeasureBandsDeps): ChatPr
     heights: deps.heights,
     stagingEnabled: deps.stagingEnabled,
     visibleEntryById: deps.visibleEntryById,
-    virtualItemById,
-    virtualItems: deps.virtualItems,
+    loadedItemById,
+    loadedItems: deps.loadedItems,
     targetCandidates,
     lookAheadCandidates,
     warmupCandidates: warmup.warmupCandidates,
