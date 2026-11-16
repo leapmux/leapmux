@@ -277,7 +277,7 @@ export async function sendMessage(page: Page, text: string, entry: MessageEntry 
 
 /**
  * ChatView mounts hidden copies of rows whose heights remain unknown.
- * ChatHiddenPremeasure retains the same IDs, text, and classes. A visible-list row can also stay hidden until measurement completes.
+ * ChatHiddenPremeasure retains the same IDs, text, and classes. A row of the list can also stay hidden while its content is pending, or while an earlier row of its append burst still loads.
  * An unfiltered locator can therefore match multiple copies and fail Playwright strict mode.
  * A 20ms sample once found six bubbles for two messages, including four hidden copies. Higher load can lengthen that measurement period.
  * Apply :visible to the outermost chat locator. Descendants of a visible bubble need no extra filter.

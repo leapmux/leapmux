@@ -15,9 +15,24 @@ export interface ChatPaginationPolicyDeps {
   onLoadOlder: () => void
   onLoadNewer: () => void
   isAtBottom: () => boolean
-  isFollowing: () => boolean
+  /**
+   * Follow mode (see ScrollContext.isFollowing). Reactive: the hook passes the accessor
+   * that reads the reader place and the pending history jump tracked, so a memo that reads
+   * it runs again when follow mode starts or ends. A function that an effect calls reads
+   * it untracked (see suppressOlderPrefetchAtLiveTail).
+   */
+  isFollowing: Accessor<boolean>
   anchorAtViewportTop: () => ScrollAnchor | null
   bufferScreens: number
+  /**
+   * Loaded rows wait above the rows of the list for their measure (staged rows, see
+   * chatRowAdmission), or no row is in the list yet. Reactive.
+   */
+  stagedOlder: Accessor<boolean>
+  /** The same for the rows below the rows of the list. Reactive. */
+  stagedNewer: Accessor<boolean>
+  /** Loaded rows exist and none is in the list yet. Reactive. */
+  awaitingFirstView: Accessor<boolean>
 }
 
 /**
@@ -27,6 +42,11 @@ export interface ChatPaginationPolicyDeps {
  * more history, and a viewport clamped at the loaded edge. Live-tail suppression
  * applies only while the pane can scroll. A short hidden-heavy page must still fetch
  * older rows until it becomes scrollable.
+ *
+ * No side loads a page while rows are staged on it: staged rows are loaded content that
+ * has no pixels yet, so the edge of the list is not the edge of the loaded rows. Without
+ * this rule, a reader at the edge of the measured rows would fetch older pages up to the
+ * window ceiling while the hidden copies still measure the first page.
  */
 export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
   const bufferTargetPx = (): number => {
@@ -36,11 +56,8 @@ export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
       : 0
   }
 
-  const canLoadOlderMessages = (): boolean =>
-    deps.getEl() !== undefined && deps.hasOlder() && !deps.fetchingOlder()
-
   const loadOlderMessages = (): boolean => {
-    if (!canLoadOlderMessages())
+    if (deps.getEl() === undefined || !deps.hasOlder() || deps.fetchingOlder() || deps.stagedOlder())
       return false
     // A prepend changes geometry above the viewport. The layout shift keeps the view in
     // place across it, so nothing needs to be held for it here.
@@ -51,11 +68,8 @@ export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
   const tryLoadOlderOnExplicitTopIntent = (): boolean =>
     deps.isAtTopEdge() && loadOlderMessages()
 
-  const canLoadNewerMessages = (): boolean =>
-    deps.getEl() !== undefined && deps.hasNewer() && !deps.fetchingNewer()
-
   const loadNewerMessages = (): boolean => {
-    if (!canLoadNewerMessages())
+    if (deps.getEl() === undefined || !deps.hasNewer() || deps.fetchingNewer() || deps.stagedNewer())
       return false
     deps.onLoadNewer()
     return true
@@ -72,6 +86,18 @@ export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
     deps.geomVersion()
     return deps.fetchingNewer() && deps.hasNewer() && deps.isAtBottomEdge()
   })
+  // The reader waits at an edge of the list for staged rows: the view is at that edge, and
+  // loaded rows beyond it are not measured yet. Both are false while no row is in the list:
+  // the first view has an indicator of its own. A follower does not wait at the bottom: each
+  // live message is staged for a frame or more, and the view follows when it joins.
+  const atStagedTopEdge = createMemo(() => {
+    deps.geomVersion()
+    return !deps.awaitingFirstView() && deps.stagedOlder() && deps.isAtTopEdge()
+  })
+  const atStagedBottomEdge = createMemo(() => {
+    deps.geomVersion()
+    return !deps.awaitingFirstView() && deps.stagedNewer() && !deps.isFollowing() && deps.isAtBottomEdge()
+  })
 
   const suppressOlderPrefetchAtLiveTail = (): boolean => {
     const element = deps.getEl()
@@ -79,21 +105,21 @@ export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
       return false
     if (!deps.hasNewer() && deps.isAtBottom())
       return true
-    return deps.isFollowing() && untrack(deps.anchorAtViewportTop) !== null
+    // Untracked: the effect of the buffer filler calls this function, and a change of
+    // follow mode must not run a fill. The filler fills for a move of the view.
+    return untrack(deps.isFollowing) && untrack(deps.anchorAtViewportTop) !== null
   }
 
   return {
     bufferTargetPx,
-    canLoadOlderMessages,
     loadOlderMessages,
     tryLoadOlderOnExplicitTopIntent,
-    canLoadNewerMessages,
     loadNewerMessages,
     tryLoadNewerOnExplicitBottomIntent,
     stalledOlder,
     stalledNewer,
+    atStagedTopEdge,
+    atStagedBottomEdge,
     suppressOlderPrefetchAtLiveTail,
   }
 }
-
-export type ChatPaginationPolicy = ReturnType<typeof createChatPaginationPolicy>

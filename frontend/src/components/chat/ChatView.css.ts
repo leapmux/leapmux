@@ -203,7 +203,7 @@ hideNativeScrollbar(messageList, '(pointer: coarse)')
 
 /**
  * Hides the native scrollbar so ONLY the seq-space ChatScrollRail overlay shows (the
- * browser thumb reflects just the loaded window, not the whole conversation). Applied to
+ * browser thumb reflects just the rows of the list, not the whole conversation). Applied to
  * `messageList` only while the rail is actually active (marks seeded); if the marks RPC
  * fails or lags, the native scrollbar stays visible rather than leaving a long
  * conversation with no scrollbar at all. Scoped here -- the app-wide thin scrollbar stays.
@@ -219,14 +219,15 @@ export const messageListRailActive = style({
 hideNativeScrollbar(messageListRailActive)
 
 /**
- * Shared look of the "Loading older/newer messages..." indicators. Each is an absolute
+ * Shared look of the loading indicators of the chat list ("Loading older messages...",
+ * "Loading newer messages...", "Loading messages..."). Each is an absolute
  * OVERLAY pill (a sibling of the scroll container, inside the relative wrapper), NOT in
  * the scroll flow. An in-flow indicator would shift the virtualized content by its
  * height when fetching toggles -- and that shift is invisible to the layout shift
  * (which follows only the virtual rows), so the view bounces by the
  * indicator's height each load cycle and a scrolled reader gets stuck re-triggering the
  * load. As an overlay it never moves the content. pointer-events: none so it can't
- * swallow a scroll/click landing on it. The top/bottom edge is set by each variant.
+ * swallow a scroll/click landing on it. Each variant sets its vertical place.
  */
 const loadingIndicatorBase = style({
   position: 'absolute',
@@ -248,7 +249,10 @@ const loadingIndicatorBase = style({
   opacity: 0.95,
 })
 
-/** "Loading older messages..." overlay, pinned top-center while scrolled up against the loaded top edge. */
+/**
+ * "Loading older messages..." overlay, pinned top-center while the view waits at the top:
+ * against the loaded top edge for a fetch, or at the top edge of the list for staged rows.
+ */
 export const loadingOlderIndicator = style([
   loadingIndicatorBase,
   { top: 'var(--space-3)' },
@@ -257,11 +261,23 @@ export const loadingOlderIndicator = style([
 /**
  * "Loading newer messages..." overlay, pinned bottom-center. It takes the scroll-to-bottom
  * button's exact slot (same bottom-center anchor); ChatView hides that button while this is
- * shown (scroll.stalledNewer()) so the two never overlap.
+ * shown so the two never overlap.
  */
 export const loadingNewerIndicator = style([
   loadingIndicatorBase,
   { bottom: 'var(--space-3)' },
+])
+
+/**
+ * "Loading messages..." overlay, centred in the list area. ChatView shows it while loaded
+ * rows exist and none is in the list yet, because a row of the first view is not measured.
+ */
+export const loadingFirstViewIndicator = style([
+  loadingIndicatorBase,
+  {
+    top: '50%',
+    transform: 'translate(-50%, -50%)',
+  },
 ])
 
 export const inputArea = style({
@@ -555,13 +571,16 @@ export const rowSkeletonClosing = style({
 
 // The in-row crossfade copy: when a fling skeleton upgrades to the real
 // bubble, a fading-out skeleton copy sits absolutely on top of the fresh
-// content for one transition beat. Inert — it must never intercept clicks on
+// content for one transition beat. It covers the row from its top to its
+// bottom, and the skeleton fills it (see ChatRowSkeleton in
+// ./widgets/ChatRowSkeleton.tsx). Inert — it must never intercept clicks on
 // the content beneath.
 export const rowSkeletonUpgradeOverlay = style({
   position: 'absolute',
   top: 0,
   left: 0,
   right: 0,
+  bottom: 0,
   pointerEvents: 'none',
 })
 

@@ -1,6 +1,8 @@
 import type { ResizeObserverLike, RowMeasurer, RowMeasurerDeps } from './createRowMeasurer'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
+import { createManualFrames } from '~/test-support/manualFrames'
+import { createRowHeightCache } from './chatRowHeightCache'
 import { createRowMeasurer, MEASURE_EPSILON_PX } from './createRowMeasurer'
 import { createRenderReadinessScope } from './renderReadiness'
 
@@ -24,11 +26,16 @@ function fakeEl(height: number, connected = true) {
 /** A fake ResizeObserver whose callback the test fires deterministically. */
 function fakeObserver() {
   const observed = new Set<Element>()
+  // The target of each `observe` call, in order, so a test can count the calls for one element.
+  const observeCalls: Element[] = []
   let onResize: ((targets: Element[]) => void) | undefined
   const createObserver = (cb: (targets: Element[]) => void): ResizeObserverLike => {
     onResize = cb
     return {
-      observe: el => observed.add(el),
+      observe: (el) => {
+        observeCalls.push(el)
+        observed.add(el)
+      },
       unobserve: el => observed.delete(el),
       disconnect: () => observed.clear(),
     }
@@ -36,6 +43,7 @@ function fakeObserver() {
   return {
     createObserver,
     observed,
+    observeCalls,
     fire: (targets: Element[]) => onResize!(targets),
   }
 }
@@ -75,22 +83,41 @@ function manualScheduler() {
 }
 
 /**
- * A measurer over a `vi.fn(() => true)` measure, an empty `mountedIds`, a fake observer,
- * and a manual scheduler. `deps` overrides any of them, and `createObserver: () => undefined`
- * gives no observer.
+ * A measurer over a `measure` spy that takes every height, a fake observer, a manual
+ * scheduler, and manual animation frames. The harness stands in for the height cache:
+ * `committedHeight` answers the last height that `measure` took for the row, and `mounted`
+ * holds the rows that the mount notices of the measurer report. `deps` overrides any dep,
+ * and `createObserver: () => undefined` gives no observer.
  */
 function measurerHarness(deps: Partial<RowMeasurerDeps> = {}) {
-  const measure = vi.fn(() => true)
+  const committed = new Map<string, number>()
+  const measure = vi.fn((id: string, height: number) => {
+    committed.set(id, height)
+    return true
+  })
+  const mounted = new Set<string>()
   const obs = fakeObserver()
   const sched = manualScheduler()
+  const frames = createManualFrames()
   const m = createRowMeasurer({
     measure,
-    mountedIds: new Set(),
+    committedHeight: id => committed.get(id),
+    onRowMounted: id => mounted.add(id),
+    onRowUnmounted: id => mounted.delete(id),
     createObserver: obs.createObserver,
     scheduleMicrotask: sched.scheduleMicrotask,
+    requestFrame: frames.requestFrame,
+    cancelFrame: frames.cancelFrame,
     ...deps,
   })
-  return { m, measure, obs, sched }
+  return {
+    m,
+    measure,
+    mounted,
+    obs,
+    sched,
+    frames,
+  }
 }
 
 describe('createRowMeasurer', () => {
@@ -218,9 +245,7 @@ describe('createRowMeasurer', () => {
     replacement.getBoundingClientRect = () => new DOMRect(0, 0, 400, 0)
     document.body.append(replacement)
     const removeListener = vi.spyOn(element, 'removeEventListener')
-    const mountedIds = new Set<string>()
-    const { m: measurer, measure, sched: scheduler } = measurerHarness({
-      mountedIds,
+    const { m: measurer, measure, mounted, sched: scheduler } = measurerHarness({
       createObserver: () => undefined,
     })
     try {
@@ -245,7 +270,7 @@ describe('createRowMeasurer', () => {
       expect(removeListener).toHaveBeenCalledWith('load', expect.any(Function), true)
       expect(removeListener).toHaveBeenCalledWith('error', expect.any(Function), true)
       if (operation === 'remount') {
-        expect(mountedIds.has('row')).toBe(true)
+        expect(mounted.has('row')).toBe(true)
         replacement.getBoundingClientRect = () => new DOMRect(0, 0, 400, 20)
         replacementImage.dispatchEvent(new Event('load'))
         scheduler.run()
@@ -259,7 +284,7 @@ describe('createRowMeasurer', () => {
     }
   })
 
-  it('forwards zero on attach and preserves growth smaller than the jitter threshold', () => {
+  it('forwards zero on attach, and drops a change below the jitter threshold from the committed height, also from and to zero', () => {
     let height = 0
     const element = {
       ...fakeRowEvents(),
@@ -268,20 +293,69 @@ describe('createRowMeasurer', () => {
       querySelectorAll: () => [],
     } as unknown as HTMLElement
     const { m: measurer, measure, obs, sched: scheduler } = measurerHarness()
+    const resizeTo = (next: number): void => {
+      height = next
+      obs.fire([element])
+      scheduler.run()
+    }
     measurer.attachRow('empty', element)
     expect(measure).toHaveBeenLastCalledWith('empty', 0)
     measure.mockClear()
-    obs.fire([element])
-    scheduler.run()
+
+    // The height cache keeps a height within the threshold of a new read, whether or not
+    // one of the two is zero. So the measurer drops the same reads.
+    resizeTo(0)
+    resizeTo(0.2)
     expect(measure).not.toHaveBeenCalled()
-    height = 0.2
-    obs.fire([element])
-    scheduler.run()
-    expect(measure).toHaveBeenLastCalledWith('empty', 0.2)
-    height = 0
-    obs.fire([element])
-    scheduler.run()
+
+    resizeTo(0.6)
+    expect(measure).toHaveBeenLastCalledWith('empty', 0.6)
+    measure.mockClear()
+
+    resizeTo(0.3)
+    expect(measure).not.toHaveBeenCalled()
+
+    resizeTo(0)
     expect(measure).toHaveBeenLastCalledWith('empty', 0)
+    measurer.dispose()
+  })
+
+  it.each([
+    { cached: 0, firstRead: 0.3, secondRead: 0.7 },
+    { cached: 100, firstRead: 100.4, secondRead: 100.8 },
+  ])('commits a read that differs from the cached $cached by the jitter threshold after the cache kept its height at the read before', ({ cached, firstRead, secondRead }) => {
+    // The measurer and the cache must compare with the same height. The cache keeps its
+    // height at the first read, which lies inside the threshold. The second read lies
+    // outside the threshold of the cached height, so the cache must take it.
+    const row = { id: 'row', hasSpanLines: false, heightKey: 'k' }
+    const cache = createRowHeightCache({
+      loadedIds: () => [],
+    })
+    cache.commitAll([
+      { row, height: cached },
+    ])
+    let height = firstRead
+    const element = {
+      ...fakeRowEvents(),
+      isConnected: true,
+      getBoundingClientRect: () => new DOMRect(0, 0, 400, height),
+      querySelectorAll: () => [],
+    } as unknown as HTMLElement
+    const { m: measurer, obs, sched: scheduler } = measurerHarness({
+      measure: (_id, read) => cache.commit(row, read, 'k', 'visible') === 'moved',
+      committedHeight: () => cache.heightUnderCurrentKey(row),
+      onRowMounted: cache.noteMounted,
+      onRowUnmounted: id => cache.noteDetached(id),
+      currentMeasurementKey: () => 'k',
+    })
+
+    measurer.attachRow('row', element)
+    expect(cache.heightOf(row)).toBe(cached)
+    height = secondRead
+    obs.fire([element])
+    scheduler.run()
+
+    expect(cache.heightOf(row)).toBe(secondRead)
     measurer.dispose()
   })
 
@@ -455,13 +529,12 @@ describe('createRowMeasurer', () => {
     })
   })
 
-  it('measures and observes a freshly-mounted row, marking it mounted', () => {
-    const mountedIds = new Set<string>()
-    const { m, measure, obs } = measurerHarness({ mountedIds })
+  it('measures and observes a freshly-mounted row, and reports it mounted', () => {
+    const { m, measure, mounted, obs } = measurerHarness()
     const el = fakeEl(120)
     m.attachRow('r1', el)
     expect(measure).toHaveBeenCalledWith('r1', 120)
-    expect(mountedIds.has('r1')).toBe(true)
+    expect(mounted.has('r1')).toBe(true)
     expect(obs.observed.has(el)).toBe(true)
   })
 
@@ -698,16 +771,15 @@ describe('createRowMeasurer', () => {
     expect(measure).not.toHaveBeenCalledWith('b', 200)
   })
 
-  it('unobserves, unmounts, and drops a pending measurement when detachRow runs', () => {
-    const mountedIds = new Set<string>()
-    const { m, measure, obs, sched } = measurerHarness({ mountedIds })
+  it('unobserves, reports the unmount, and drops a pending measurement when detachRow runs', () => {
+    const { m, measure, mounted, obs, sched } = measurerHarness()
     const a = fakeEl(100)
     m.attachRow('a', a)
     obs.fire([a]) // a is now pending a measurement
     measure.mockClear()
 
     m.detachRow(a)
-    expect(mountedIds.has('a')).toBe(false)
+    expect(mounted.has('a')).toBe(false)
     expect(obs.observed.has(a)).toBe(false)
 
     sched.run() // the pending flush must not measure the detached row
@@ -730,46 +802,43 @@ describe('createRowMeasurer', () => {
   it('keeps an id mounted when a NEW element re-claims it before the old element detaches', () => {
     // Attach-before-detach remount: the row remounts under a new element (attachRow)
     // before the old element's cleanup runs (detachRow). The id must stay mounted --
-    // detaching the OLD element must not un-protect the freshly-mounted row.
-    const mountedIds = new Set<string>()
-    const { m, obs } = measurerHarness({ mountedIds })
+    // detaching the OLD element must not report the unmount of the freshly-mounted row.
+    const { m, mounted, obs } = measurerHarness()
     const oldEl = fakeEl(100)
     const newEl = fakeEl(120)
     m.attachRow('r1', oldEl)
     m.attachRow('r1', newEl) // new element claims r1 before oldEl's cleanup
     m.detachRow(oldEl) // oldEl's deferred cleanup -- must NOT unmount r1
-    expect(mountedIds.has('r1')).toBe(true)
+    expect(mounted.has('r1')).toBe(true)
     expect(obs.observed.has(newEl)).toBe(true)
     // The newer element's own detach finally relinquishes the id.
     m.detachRow(newEl)
-    expect(mountedIds.has('r1')).toBe(false)
+    expect(mounted.has('r1')).toBe(false)
   })
 
-  it('reports a row unmounted once its last element detaches, after it leaves the mounted set', () => {
-    const mountedIds = new Set<string>()
-    const unmounted: Array<{ id: string, mounted: boolean }> = []
-    const { m } = measurerHarness({
-      mountedIds,
-      onRowUnmounted: id => unmounted.push({
-        id,
-        mounted: mountedIds.has(id),
-      }),
-    })
+  it('reports each attach of a row, and its unmount once, when its last element detaches', () => {
+    const onRowMounted = vi.fn()
+    const onRowUnmounted = vi.fn()
+    const { m } = measurerHarness({ onRowMounted, onRowUnmounted })
     const oldEl = fakeEl(100)
     const newEl = fakeEl(120)
     m.attachRow('r1', oldEl)
     m.attachRow('r1', newEl)
+    expect(onRowMounted.mock.calls).toEqual([
+      ['r1'],
+      ['r1'],
+    ])
 
     m.detachRow(oldEl)
-    expect(unmounted).toEqual([])
+    expect(onRowUnmounted).not.toHaveBeenCalled()
 
     m.detachRow(newEl)
-    expect(unmounted).toEqual([
-      { id: 'r1', mounted: false },
+    expect(onRowUnmounted.mock.calls).toEqual([
+      ['r1'],
     ])
     // A second detach of the same element unmounts nothing more.
     m.detachRow(newEl)
-    expect(unmounted).toHaveLength(1)
+    expect(onRowUnmounted).toHaveBeenCalledTimes(1)
   })
 
   it('skips a pending resize from an old connected element after a new element claims the same id', () => {
@@ -810,6 +879,150 @@ describe('createRowMeasurer', () => {
     m.dispose() // must clear flushScheduled, else scheduleFlush can never re-arm
     obs.fire([a])
     expect(sched.calls).toBe(2)
+  })
+
+  // A flush runs inside the ResizeObserver delivery that queued it. A commit of the flush
+  // can place the view, and the placement mounts rows. An observe of such a row inside that
+  // delivery makes the browser skip its first notification and report a loop error.
+  describe('a row that attaches during a flush', () => {
+    /**
+     * A measurer with row `a` attached. Its `measure` attaches each row of `rows` when it
+     * takes a read of row `a`, as a placement that the commit causes mounts rows.
+     * `resizeAndFlush` resizes row `a`, and runs the flush of the resize.
+     */
+    function attachingFlush(rows: ReadonlyArray<readonly [string, HTMLElement]>) {
+      const harness = measurerHarness()
+      const rowA = { height: 100 }
+      const a = {
+        ...fakeRowEvents(),
+        isConnected: true,
+        getBoundingClientRect: () => ({ height: rowA.height }),
+      } as unknown as HTMLElement
+      harness.m.attachRow('a', a)
+      harness.measure.mockImplementation((id) => {
+        if (id === 'a') {
+          for (const [rowId, el] of rows)
+            harness.m.attachRow(rowId, el)
+        }
+        return true
+      })
+      const resizeAndFlush = (): void => {
+        rowA.height += 30
+        harness.obs.fire([a])
+        harness.sched.run()
+      }
+      return { ...harness, resizeAndFlush }
+    }
+
+    it('observes a row that attaches inside a flush only in the next frame', () => {
+      const b = fakeEl(80)
+      const { m, measure, obs, frames, resizeAndFlush } = attachingFlush([
+        ['b', b],
+      ])
+
+      resizeAndFlush()
+
+      // The attach reads the row at once. Only its observation waits.
+      expect(measure).toHaveBeenCalledWith('b', 80)
+      expect(obs.observed.has(b)).toBe(false)
+      frames.runFrames()
+      expect(obs.observed.has(b)).toBe(true)
+      m.dispose()
+    })
+
+    it('requests one frame for the rows that attach inside one flush', () => {
+      const b = fakeEl(80)
+      const c = fakeEl(90)
+      const { m, obs, frames, resizeAndFlush } = attachingFlush([
+        ['b', b],
+        ['c', c],
+      ])
+
+      resizeAndFlush()
+
+      expect(frames.requestFrame).toHaveBeenCalledOnce()
+      frames.runFrames()
+      expect(obs.observed.has(b)).toBe(true)
+      expect(obs.observed.has(c)).toBe(true)
+      m.dispose()
+    })
+
+    it('observes no row that detached before the frame', () => {
+      const b = fakeEl(80)
+      const { m, obs, frames, resizeAndFlush } = attachingFlush([
+        ['b', b],
+      ])
+      resizeAndFlush()
+
+      m.detachRow(b)
+      frames.runFrames()
+
+      expect(obs.observed.has(b)).toBe(false)
+      m.dispose()
+    })
+
+    it('observes no element that a newer element of its row replaced before the frame', () => {
+      const b = fakeEl(80)
+      const newB = fakeEl(80)
+      const { m, obs, frames, resizeAndFlush } = attachingFlush([
+        ['b', b],
+      ])
+      resizeAndFlush()
+
+      // The newer element attaches outside a flush, so the measurer observes it at once.
+      m.attachRow('b', newB)
+      expect(obs.observed.has(newB)).toBe(true)
+      frames.runFrames()
+
+      expect(obs.observed.has(b)).toBe(false)
+      m.dispose()
+    })
+
+    it('observes an element that is outside the document at the frame, as an attach outside a flush does', () => {
+      // The ResizeObserver reports such an element once it lays out. A row element that
+      // the frame skipped would never be observed.
+      const b = fakeEl(80)
+      const { m, obs, frames, resizeAndFlush } = attachingFlush([
+        ['b', b],
+      ])
+      resizeAndFlush()
+
+      b.isConnected = false
+      frames.runFrames()
+
+      expect(obs.observed.has(b)).toBe(true)
+      m.dispose()
+    })
+
+    it('observes an element once when it attaches again outside a flush before the frame', () => {
+      const b = fakeEl(80)
+      const { m, obs, frames, resizeAndFlush } = attachingFlush([
+        ['b', b],
+      ])
+      resizeAndFlush()
+      expect(obs.observeCalls).not.toContain(b)
+
+      // The attach outside a flush observes the element at once.
+      m.attachRow('b', b)
+      expect(obs.observeCalls.filter(el => el === b)).toHaveLength(1)
+      frames.runFrames()
+
+      expect(obs.observeCalls.filter(el => el === b)).toHaveLength(1)
+      m.dispose()
+    })
+
+    it('cancels the frame at dispose', () => {
+      const b = fakeEl(80)
+      const { m, obs, frames, resizeAndFlush } = attachingFlush([
+        ['b', b],
+      ])
+      resizeAndFlush()
+
+      m.dispose()
+
+      expect(frames.pendingFrames()).toBe(0)
+      expect(obs.observed.has(b)).toBe(false)
+    })
   })
 
   describe('elementOf and hasUncommittedHeight', () => {

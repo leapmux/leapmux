@@ -1,6 +1,9 @@
+import type { MessageContextResolver } from '~/components/chat/messageContextResolver'
+import type { RenderReadinessScope } from '~/components/chat/renderReadiness'
+import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerAgent } from '~/api/workerRpc'
 import { codeCopyHostClass } from '~/components/chat/markdownEditor/markdownContent.css'
 import { MessageBubble } from '~/components/chat/MessageBubble'
@@ -8,14 +11,19 @@ import { classifyAgentMessage } from '~/components/chat/messageClassifier'
 import { MessageContextMenuHostProvider } from '~/components/chat/MessageContextMenuHost'
 import { messageRowChromeClass } from '~/components/chat/messageRowLayout'
 import * as chatStyles from '~/components/chat/messageStyles.css'
+import { createRenderReadinessScope, READINESS_REQUEST_LIMIT_MS } from '~/components/chat/renderReadiness'
 import { toolBodyContent, toolHeaderTimestamp } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
+import { deferred } from '~/test-support/async'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent, wrapContent } from '~/test-support/messageFactory'
 import { toolFrame } from '~/test-support/mimoFixtures'
+import { pngBase64 } from '~/test-support/pngFixture'
+import { expectReleasedAtRequestLimit } from '~/test-support/renderReadiness'
 
 // jsdom does not provide ResizeObserver. The stand-in Worker of the jsdom setup
 // renders each Markdown body, so a test waits for the replies
@@ -2332,5 +2340,310 @@ describe('tool row quote', () => {
     expect(quoted[0]).toContain('> -const a = 1')
     expect(quoted[0]).toContain('> +const a = 2')
     expect(quoted[0]).not.toBe('> /src/app.ts\n\n')
+  })
+})
+
+// A hidden premeasure copy measures a tool row before the reader reaches it. The row
+// in the list draws the other half of its tool call, so a copy that measured without
+// it reported a height that the row changed in the list.
+describe('the other half of a tool call in a hidden copy', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /** A Claude tool request with the span id `spanId`. */
+  function toolRequest(spanId: string, seq = 1n): AgentChatMessage {
+    return makeMsg({
+      id: `request-${spanId}`,
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      source: MessageSource.AGENT,
+      seq,
+      spanId,
+      spanType: 'Read',
+      content: rawContent({
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: spanId,
+              name: 'Read',
+              input: { file_path: 'notes.txt' },
+            },
+          ],
+        },
+      }),
+    })
+  }
+
+  /**
+   * Mount a bubble with a readiness scope, as a row copy gives it, over a resolver whose
+   * lookup of the other half the test controls. `premeasureMode` is the hidden copy, and
+   * the row in the list otherwise.
+   */
+  function mountCopy(initial: AgentChatMessage, loadRelated: MessageContextResolver['loadRelated'], premeasureMode = true) {
+    const [message, setMessage] = createSignal(initial)
+    const resolver: MessageContextResolver = {
+      ...testMessageContext({
+        messages: () => [
+          message(),
+        ],
+      }),
+      loadRelated,
+    }
+    let scope!: RenderReadinessScope
+    render(() => {
+      scope = createRenderReadinessScope()
+      return (
+        <PreferencesProvider>
+          <MessageBubble
+            message={message()}
+            host={{ messages: resolver }}
+            premeasureMode={premeasureMode}
+            readiness={scope}
+          />
+        </PreferencesProvider>
+      )
+    })
+    return { scope, setMessage }
+  }
+
+  it('holds the copy until the lookup settles', async () => {
+    const lookup = deferred<void>()
+    const loadRelated = vi.fn(() => lookup.promise)
+    const { scope } = mountCopy(toolRequest('toolu_a'), loadRelated)
+
+    await waitFor(() => expect(loadRelated).toHaveBeenCalledOnce())
+    expect(scope.measurable()).toBe(false)
+
+    lookup.resolve()
+    await waitFor(() => expect(scope.measurable()).toBe(true))
+  })
+
+  it('releases the copy when the lookup fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const lookup = deferred<void>()
+      const loadRelated = vi.fn(() => lookup.promise)
+      const { scope } = mountCopy(toolRequest('toolu_a'), loadRelated)
+      await waitFor(() => expect(scope.measurable()).toBe(false))
+
+      lookup.reject(new Error('the worker is unavailable'))
+
+      // The copy then reports the height that it has.
+      await waitFor(() => expect(scope.measurable()).toBe(true))
+    }
+    finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('looks nothing up, and holds nothing, for a row that is no tool row', async () => {
+    const loadRelated = vi.fn(() => undefined)
+    const text = makeMsg({
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      source: MessageSource.AGENT,
+      seq: 1n,
+      content: rawContent({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'Done.' },
+          ],
+        },
+      }),
+    })
+    const { scope } = mountCopy(text, loadRelated)
+    await settleWorkerReplies()
+
+    expect(loadRelated).not.toHaveBeenCalled()
+    expect(scope.measurable()).toBe(true)
+  })
+
+  it('releases the copy at the limit when the other half does not arrive', async () => {
+    vi.useFakeTimers()
+    const loadRelated = vi.fn(() => new Promise<void>(() => {}))
+    const { scope } = mountCopy(toolRequest('toolu_a'), loadRelated)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(scope.measurable()).toBe(false)
+
+    await expectReleasedAtRequestLimit(scope)
+    // The limit ends only the wait of the copy: it starts no second lookup.
+    expect(loadRelated).toHaveBeenCalledOnce()
+  })
+
+  it('stays released when the other half arrives before the limit', async () => {
+    vi.useFakeTimers()
+    const lookup = deferred<void>()
+    const { scope } = mountCopy(toolRequest('toolu_a'), () => lookup.promise)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(scope.measurable()).toBe(false)
+
+    lookup.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(scope.measurable()).toBe(true)
+
+    await vi.advanceTimersByTimeAsync(READINESS_REQUEST_LIMIT_MS + 1)
+    expect(scope.measurable()).toBe(true)
+  })
+
+  it('starts the limit again for a new message of the same bubble', async () => {
+    vi.useFakeTimers()
+    const loadRelated = vi.fn(() => new Promise<void>(() => {}))
+    const { scope, setMessage } = mountCopy(toolRequest('toolu_a'), loadRelated)
+    await vi.advanceTimersByTimeAsync(4000)
+
+    setMessage(toolRequest('toolu_b', 2n))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(loadRelated).toHaveBeenCalledTimes(2)
+
+    // The rest of the limit of the first message. Its timer is cleared, so the copy
+    // still waits for the lookup of the second message.
+    await vi.advanceTimersByTimeAsync(READINESS_REQUEST_LIMIT_MS - 4000)
+    expect(scope.measurable()).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(scope.measurable()).toBe(true)
+  })
+
+  it.each([
+    ['the hidden copy', true],
+    ['the row in the list', false],
+  ] as const)('holds nothing for %s when the lookup needs no request', async (_copy, premeasureMode) => {
+    // The resolver answers at once that the browser holds the other half.
+    const loadRelated = vi.fn(() => undefined)
+    const { scope } = mountCopy(toolRequest('toolu_a'), loadRelated, premeasureMode)
+
+    await waitFor(() => expect(loadRelated).toHaveBeenCalledOnce())
+    // A wait would hide the row at each mount, and hold its first height read.
+    expect(scope.measurable()).toBe(true)
+  })
+
+  it('holds the row in the list until a request for its other half settles', async () => {
+    // A row that a stored height admitted had no hidden copy, so its other half can be
+    // missing at its mount. The row must not show before the other half arrived.
+    const lookup = deferred<void>()
+    const loadRelated = vi.fn(() => lookup.promise)
+    const { scope } = mountCopy(toolRequest('toolu_a'), loadRelated, false)
+
+    await waitFor(() => expect(loadRelated).toHaveBeenCalledOnce())
+    expect(scope.measurable()).toBe(false)
+
+    lookup.resolve()
+    await waitFor(() => expect(scope.measurable()).toBe(true))
+  })
+
+  it('releases the row in the list at the limit when the other half does not arrive', async () => {
+    vi.useFakeTimers()
+    const loadRelated = vi.fn(() => new Promise<void>(() => {}))
+    const { scope } = mountCopy(toolRequest('toolu_a'), loadRelated, false)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(scope.measurable()).toBe(false)
+
+    await expectReleasedAtRequestLimit(scope)
+  })
+
+  it('starts a new limit when a new message of the same span joins a running lookup', async () => {
+    vi.useFakeTimers()
+    // The resolver gives every message of a span the one request that runs.
+    const running = new Promise<void>(() => {})
+    const loadRelated = vi.fn(() => running)
+    const { scope, setMessage } = mountCopy(toolRequest('toolu_a'), loadRelated)
+    await vi.advanceTimersByTimeAsync(6000)
+
+    setMessage(toolRequest('toolu_a', 2n))
+    await vi.advanceTimersByTimeAsync(4000)
+    expect(loadRelated).toHaveBeenCalledTimes(2)
+
+    // 10 s after the first message: its limit ended with its wait, so the copy still waits.
+    expect(scope.measurable()).toBe(false)
+
+    await expectReleasedAtRequestLimit(scope, 4000)
+  })
+
+  it('ends the wait when a new message of the bubble needs no request', async () => {
+    const pending = new Promise<void>(() => {})
+    const loadRelated = vi.fn<MessageContextResolver['loadRelated']>(message => (message.seq === 1n
+      ? pending
+      : undefined))
+    const { scope, setMessage } = mountCopy(toolRequest('toolu_a'), loadRelated)
+    await waitFor(() => expect(scope.measurable()).toBe(false))
+
+    setMessage(toolRequest('toolu_b', 2n))
+
+    await waitFor(() => expect(loadRelated).toHaveBeenCalledTimes(2))
+    expect(scope.measurable()).toBe(true)
+  })
+})
+
+// A row reads its file image only near the view. The host states whether the row is near
+// the view, and it runs that test again when the answer can differ (see
+// MessageBubbleHost.rowNearView): with every row measured before it mounts, no height
+// change does.
+describe('a file image in a row that comes near the view', () => {
+  /** A Codex row that views the image file `/repo/shot.png`, and a resolver that counts its reads. */
+  function viewedImageRow() {
+    const viewed = makeMsg({
+      id: 'view-row',
+      agentProvider: AgentProvider.CODEX,
+      source: MessageSource.AGENT,
+      seq: 1n,
+      spanId: 'view-1',
+      content: rawContent({
+        item: {
+          type: 'imageView',
+          id: 'view-1',
+          path: '/repo/shot.png',
+          status: 'completed',
+        },
+        threadId: 't1',
+      }),
+    })
+    const fetchFileImage = vi.fn(async () => ({
+      mimeType: 'image/png',
+      data: pngBase64(12, 8),
+    }))
+    const resolver = testMessageContext({
+      messages: () => [viewed],
+      fetchFileImage,
+      fetchFileImageSize: async () => ({ width: 12, height: 8 }),
+    })
+    return { viewed, resolver, fetchFileImage }
+  }
+
+  it('reads the image when the host reports the row near the view', async () => {
+    const { viewed, resolver, fetchFileImage } = viewedImageRow()
+    const [nearView, setNearView] = createSignal(false)
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MessageBubble
+          message={viewed}
+          host={{
+            messages: resolver,
+            rowNearView: nearView,
+          }}
+        />
+      </PreferencesProvider>
+    ))
+    await settleWorkerReplies()
+    expect(fetchFileImage).not.toHaveBeenCalled()
+
+    // The row comes near the view: the end of a scroll, or a pane that grew taller.
+    setNearView(true)
+
+    await waitFor(() => expect(fetchFileImage).toHaveBeenCalledOnce())
+    await waitFor(() => expect(container.querySelector('img')).not.toBeNull())
+  })
+
+  it('reads the image at once for a host that states no near view', async () => {
+    const { viewed, resolver, fetchFileImage } = viewedImageRow()
+    const { container } = render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={viewed} host={{ messages: resolver }} />
+      </PreferencesProvider>
+    ))
+
+    await waitFor(() => expect(fetchFileImage).toHaveBeenCalledOnce())
+    await waitFor(() => expect(container.querySelector('img')).not.toBeNull())
   })
 })

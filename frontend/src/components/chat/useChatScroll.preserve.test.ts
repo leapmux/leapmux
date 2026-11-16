@@ -1,7 +1,7 @@
 import type { ScrollHarnessOptions } from './useChatScroll.testkit'
 import { afterEach, describe, expect, it } from 'vitest'
 import { withChatScrollPreserved } from './chatScrollPreserve'
-import { installScrollTestEnv, mountScrollHarness, mountWithPendingJump, settleJump } from './useChatScroll.testkit'
+import { installScrollTestEnv, mountScrollHarness, mountWithPendingJump, rowMessages, rowTargetAt, settledValue, settleJump } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -117,7 +117,7 @@ describe('useChatScroll scroll controller', () => {
 
     h.changeBelow(300)
     h.setHasNewer(false)
-    jump.resolve()
+    jump.resolve(true)
     await settleJump(jump.promise)
 
     // A restore that drops the request leaves 2060.
@@ -237,6 +237,63 @@ describe('useChatScroll scroll controller', () => {
 
     expect(h.div.scrollTopWrites()).toBe(writes)
     expect(h.hook.isFollowing()).toBe(true)
+    h.dispose()
+  })
+})
+
+// The row of a place can be staged after a heavy re-render: loaded, and not measured yet.
+describe('useChatScroll scroll controller with staged rows', () => {
+  it('leaves a place that waits to its own placement', async () => {
+    const h = mountChat({
+      messages: rowMessages(1),
+      holdTargets: true,
+    })
+    const outcome = settledValue(h.hook.jumpToSeq(21n))
+
+    await h.preserved(h.reset)
+    await h.restoreFrames()
+
+    // A repair is no command of the reader: it replaces no wait, and it places nothing.
+    expect(h.div.getScrollTop()).toBe(0)
+    expect(outcome()).toBeUndefined()
+
+    h.reachTarget()
+    expect(h.div.getScrollTop()).toBe(1992)
+    h.dispose()
+  })
+
+  it('places at once, and keeps the request for the tail, while a jump to the latest page is pending', async () => {
+    const { h, jump } = await mountWithPendingJump(opts => mountChat({ ...opts, holdTargets: true }))
+
+    await h.preserved(h.reset)
+    await h.restoreFrames()
+
+    // The reader place holds one request. A wait for the row of the anchor would end the
+    // request for the tail, so the repair places the view with no wait.
+    expect(h.div.getScrollTop()).toBe(2000)
+    expect(h.requestedTargets()).toEqual([])
+
+    // The request for the tail survived: the landing of the jump goes to the tail.
+    h.setHasNewer(false)
+    jump.resolve(true)
+    await settleJump(jump.promise)
+    h.reachTarget()
+    expect(h.div.getScrollTop()).toBe(4500)
+    expect(h.hook.isFollowing()).toBe(true)
+    h.dispose()
+  })
+
+  it('waits for the row of its anchor', async () => {
+    const h = mountChat({ holdTargets: true })
+    await h.anchoredAt(2000)
+
+    await h.preserved(h.reset)
+    await h.restoreFrames()
+    expect(h.div.getScrollTop()).toBe(0)
+    expect(h.requestedTargets().at(-1)).toEqual(rowTargetAt('r20'))
+
+    h.reachTarget()
+    expect(h.div.getScrollTop()).toBe(2000)
     h.dispose()
   })
 })

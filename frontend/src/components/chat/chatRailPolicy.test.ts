@@ -1,5 +1,5 @@
 import type { DotCluster } from './chatRailPolicy'
-import type { VirtualItem } from './useChatVirtualizer'
+import type { ChatRowItem } from './chatRowItem'
 import { describe, expect, it } from 'vitest'
 import { MarkType } from '~/generated/proto/leapmux/v1/agent_pb'
 import { canRenderSeqRailThumb, clusterMarks, dotClustersEqual, nearestDotWithin, resolveScrollbarOwner } from './chatRailPolicy'
@@ -206,7 +206,7 @@ describe('chatRailPolicy', () => {
   })
 
   describe('resolveScrollbarOwner', () => {
-    const items = (seqs: bigint[]): VirtualItem[] => seqs.map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
+    const items = (seqs: bigint[]): ChatRowItem[] => seqs.map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
     // The window-shape half of ScrollbarOwnerInputs (itemCount + precomputed rowSeqs), so a test
     // states a window as its seqs and mirrors how ChatView memoizes rowStartSeqs once per commit.
     const window = (seqs: bigint[]) => ({

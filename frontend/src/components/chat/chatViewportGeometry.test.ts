@@ -1,16 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { bucketWidth, computeOverscanPx, createViewportSizeObserver, measureSpaceToken } from './chatViewportGeometry'
-
-describe('chatViewportGeometry bucketWidth', () => {
-  it('rounds a measured width to the nearest 8px bucket', () => {
-    expect(bucketWidth(0)).toBe(0)
-    expect(bucketWidth(8)).toBe(8)
-    expect(bucketWidth(11)).toBe(8) // 11/8 = 1.375 -> rounds to 1 -> 8
-    expect(bucketWidth(12)).toBe(16) // 12/8 = 1.5 -> rounds to 2 -> 16
-    expect(bucketWidth(801)).toBe(800) // sub-bucket jitter collapses to the same bucket
-    expect(bucketWidth(804)).toBe(808)
-  })
-})
+import { computeOverscanPx, createViewportSizeObserver, measureSpaceToken } from './chatViewportGeometry'
 
 describe('chatViewportGeometry computeOverscanPx', () => {
   it('floors short panes, scales mid panes, and caps tall ones', () => {
@@ -70,7 +59,7 @@ describe('chatViewportGeometry createViewportSizeObserver', () => {
     }
   }
 
-  it('reports bucketed width + rounded height, deduped per axis, deferred to a microtask', async () => {
+  it('reports the exact width and the rounded height, deduped per axis, deferred to a microtask', async () => {
     let instance: FakeResizeObserver | undefined
     const real = globalThis.ResizeObserver
     globalThis.ResizeObserver = function (cb: ResizeObserverCallback) {
@@ -88,24 +77,28 @@ describe('chatViewportGeometry createViewportSizeObserver', () => {
       obs.observe(el)
       expect(instance!.observed).toContain(el)
 
-      instance!.emit(803, 599.6) // 803 -> bucket 800; 599.6 -> round 600
+      // The width is the width of each row, so it arrives as the browser lays it out:
+      // 803 is not rounded to its 8px step, 800. 599.6 rounds to 600.
+      instance!.emit(803, 599.6)
       await Promise.resolve()
-      expect(widths).toEqual([800])
+      expect(widths).toEqual([803])
       expect(heights).toEqual([600])
 
-      // A measure that leaves BOTH axes in the same bucket fires nothing.
-      instance!.emit(801, 600.2)
+      // A measure that changes neither value fires nothing.
+      instance!.emit(803, 600.2)
       await Promise.resolve()
-      expect(widths).toEqual([800])
+      expect(widths).toEqual([803])
       expect(heights).toEqual([600])
 
-      // A real change to one axis fires ONLY that axis.
-      instance!.emit(900, 600.4) // 900 -> bucket 904; 600.4 -> round 600 (unchanged)
+      // A change of one axis fires ONLY that axis, also a change inside one 8px step and
+      // a change of a fraction of a pixel.
+      instance!.emit(801, 600.4)
       await Promise.resolve()
-      expect(widths).toEqual([
-        800,
-        bucketWidth(900),
-      ])
+      expect(widths).toEqual([803, 801])
+      expect(heights).toEqual([600])
+      instance!.emit(801.5, 600.4)
+      await Promise.resolve()
+      expect(widths).toEqual([803, 801, 801.5])
       expect(heights).toEqual([600])
 
       obs.disconnect()
@@ -138,6 +131,43 @@ describe('chatViewportGeometry createViewportSizeObserver', () => {
       await Promise.resolve()
       expect(widths).toEqual([])
       expect(heights).toEqual([])
+    }
+    finally {
+      globalThis.ResizeObserver = real
+    }
+  })
+
+  it('reports a width and a height of 0 for an entry with no content rectangle, once', async () => {
+    let callback: ResizeObserverCallback | undefined
+    const real = globalThis.ResizeObserver
+    globalThis.ResizeObserver = function (cb: ResizeObserverCallback) {
+      callback = cb
+      return new FakeResizeObserver(cb)
+    } as unknown as typeof ResizeObserver
+    try {
+      const widths: number[] = []
+      const heights: number[] = []
+      const obs = createViewportSizeObserver({
+        onWidth: w => widths.push(w),
+        onHeight: h => heights.push(h),
+      })
+      obs.observe({} as HTMLElement)
+      const emitEmptyEntry = () => callback!([
+        {} as ResizeObserverEntry,
+      ], {} as ResizeObserver)
+
+      emitEmptyEntry()
+      await Promise.resolve()
+      expect(widths).toEqual([0])
+      expect(heights).toEqual([0])
+
+      // The second entry changes neither value. An empty list of entries reads as 0 too.
+      emitEmptyEntry()
+      callback!([], {} as ResizeObserver)
+      await Promise.resolve()
+      expect(widths).toEqual([0])
+      expect(heights).toEqual([0])
+      obs.disconnect()
     }
     finally {
       globalThis.ResizeObserver = real

@@ -16,6 +16,7 @@ import {
   wheelChatUp,
 } from './helpers/chatScrollStability'
 import { updateTodosToolCall } from './helpers/providerToolCalls'
+import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { chatScrollContainer, sendMessage, waitForAgentIdle, waitForAgentStarted } from './helpers/ui'
 
 /**
@@ -44,6 +45,12 @@ const TALL_ANSWER_MIN_PX = 1000
 
 /** The gate at which the mock model holds the answer of the current case. */
 const ANSWER_GATE = 'chat-scroll-stability-live-answer'
+
+/**
+ * The sends of the case that sends messages of several lines. The defect that it guards needed the composer to shrink
+ * and the thinking indicator to mount in one frame, which happened at about one send in three.
+ */
+const MULTI_LINE_SENDS = 6
 
 /** The scroll-to-bottom button, which shows while the view is above the bottom. */
 function scrollToBottomButton(page: Page) {
@@ -178,6 +185,23 @@ test.describe('chat scroll stability while the agent works', () => {
 
     await expectAtBottom(page, 'after the tall answer arrives')
     await expect(scrollToBottomButton(page)).toBeHidden()
+  })
+
+  test('keeps a follower at the bottom when the reader sends messages of several lines', async ({ page, authenticatedWorkspace, modelScript }) => {
+    await seedEarlierAnswer(page, modelScript)
+    // A message of several lines grows the composer, so the chat is shorter while the reader writes. The send
+    // shrinks the composer again: the chat grows taller, and the browser moves the position up to keep the bottom of
+    // the content at the bottom of the view. The thinking indicator mounts right after. That move is no move of the
+    // reader, so the view follows the message and its answer.
+    for (let send = 1; send <= MULTI_LINE_SENDS; send++) {
+      await sendScriptedTurn(page, modelScript, {
+        prompt: `Message ${send} has four lines.\nThis is its second line.\nThis is its third line.\nReply with its number.`,
+        answer: `Reply ${send}.`,
+        entry: 'insert',
+      })
+      await expectAtBottom(page, `after the answer to message ${send}`)
+      await expect(scrollToBottomButton(page), `the reader still follows the tail after message ${send}`).toBeHidden()
+    }
   })
 
   test('follows the tail again when the reader returns to the bottom before the answer arrives', async ({ page, authenticatedWorkspace, modelScript }) => {

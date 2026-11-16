@@ -1,6 +1,6 @@
+import type { ChatRowItem } from './chatRowItem'
 import type { ThumbDragDeps } from './chatScrollRailDrag'
 import type { PreparedGeometry } from './chatScrollRailGeometry'
-import type { VirtualItem } from './useChatVirtualizer'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SCRUB_WARM_DEBOUNCE_MS } from './chatDotPreview'
 import { createThumbDrag, SCRUB_SEEK_DEBOUNCE_MS } from './chatScrollRailDrag'
@@ -36,7 +36,7 @@ function flushRaf() {
 }
 
 function prepOf(seqs: bigint[], rowPx = 100): PreparedGeometry {
-  const items: VirtualItem[] = seqs.map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
+  const items: ChatRowItem[] = seqs.map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
   return prepareGeometry({
     items,
     offsetOfIndex: i => i * rowPx,

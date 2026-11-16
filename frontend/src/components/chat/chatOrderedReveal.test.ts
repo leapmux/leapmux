@@ -1,12 +1,12 @@
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { createOrderedTailReveal } from './chatOrderedReveal'
-import { setup } from './useChatVirtualizer.testkit'
+import { createRowHeightCache } from './chatRowHeightCache'
 
 describe('chatOrderedReveal', () => {
   /**
-   * Drive the gate from a plain reactive model: `ids` is the ordered slice and
-   * `loading` is the set of rows still awaiting their own measurement. Returns
+   * Drive the reveal from a plain reactive model: `ids` is the ordered slice and
+   * `loading` is the set of rows whose content is still pending. Returns
    * the held-set accessor plus mutators, all inside one reactive root.
    */
   function harness(initialIds: string[], initialLoading: string[] = []) {
@@ -29,21 +29,30 @@ describe('chatOrderedReveal', () => {
     }
   }
 
-  it('releases the measured tail only after an empty earlier row receives a valid measurement', () => {
+  it('releases the tail that loads first only after an empty earlier row loads', () => {
     createRoot((dispose) => {
       try {
         const items = ['empty', 'answer'].map(id => ({ id, hasSpanLines: false, heightKey: 'live' }))
-        const { virt } = setup(items)
-        const held = createOrderedTailReveal(() => items.map(item => item.id), id => !virt.hasMeasuredHeight(id))
-        virt.measure('answer', 40)
+        const [empty, answer] = items
+        // A row counts as loading here until the cache holds a height for it.
+        const cache = createRowHeightCache({
+          loadedIds: () => items.map(item => item.id),
+        })
+        const held = createOrderedTailReveal(
+          () => items.map(item => item.id),
+          id => !cache.isMeasured(items.find(item => item.id === id)!),
+        )
+        expect(cache.commit(answer!, 40, 'live', 'visible')).toBe('moved')
         expect([
           ...held(),
         ]).toEqual(['answer'])
-        expect(virt.primeHeight('empty', 0, 'stale')).toBe(false)
+        // A height of another key loads nothing.
+        expect(cache.commit(empty!, 0, 'stale', 'premeasure')).toBe('none')
         expect([
           ...held(),
         ]).toEqual(['answer'])
-        expect(virt.primeHeight('empty', 0, 'live')).toBe(true)
+        // A height of 0 is a valid height of an empty row.
+        expect(cache.commit(empty!, 0, 'live', 'premeasure')).toBe('moved')
         expect([
           ...held(),
         ]).toEqual([])

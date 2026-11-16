@@ -9,6 +9,7 @@ import { FINISHED_TOOL_STATUSES } from '../../../src/components/chat/model/toolC
 import { escapeRegExp } from '../../../src/lib/regexp'
 import { nativeTextStep } from './nativeScenario'
 import { runNativeToolTurn } from './nativeToolExecution'
+import { encodePng, PNG_SIGNATURE } from './png'
 import { answerControl, readAttached, sendMessage, toolRows, waitForAgentIdle, waitForControlBanner } from './ui'
 
 /**
@@ -39,6 +40,31 @@ export function writeToolImage(workingDir: string, marker: string): string {
 }
 
 /**
+ * The bytes of a PNG of `width` by `height` pixels in one grey tone: a valid image that a browser decodes, for a
+ * test that needs a picture of a stated size.
+ */
+export function solidPngBytes(width: number, height: number): Buffer {
+  // Checked here as well as in encodePng, because the scanlines below need a valid size before the encoder runs.
+  if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0)
+    throw new Error('A PNG needs a width and a height that are positive integers.')
+  // Each scanline: the filter type 0, then one grey sample for each pixel.
+  const scanlines = Buffer.alloc((width + 1) * height, 0x80)
+  for (let row = 0; row < height; row++)
+    scanlines[row * (width + 1)] = 0
+  return encodePng({
+    width,
+    height,
+    colorType: 0,
+    scanlines,
+  })
+}
+
+/** Write a PNG of `width` by `height` pixels (see solidPngBytes) into `workingDir` as `fileName`. */
+export function writeSolidPng(workingDir: string, fileName: string, size: { width: number, height: number }): void {
+  writeFileSync(join(workingDir, fileName), solidPngBytes(size.width, size.height))
+}
+
+/**
  * The base64 text that starts every PNG. Its 11 characters hold 66 bits: the 64 bits of the PNG signature, and
  * the first 2 bits of the IHDR length that follows the signature, which are zero in every PNG.
  * A request that holds it carries PNG bytes in base64. It does not identify one PNG.
@@ -56,17 +82,6 @@ export function expectPngInRequest(request: Pick<MockModelRequestRecord, 'body' 
 
 /** The media type of an image part that `expectImageDataUriInRequest` can identify by the signature of its bytes. */
 export type ToolImageMediaType = 'image/png' | 'image/webp'
-
-const PNG_SIGNATURE = Buffer.from([
-  0x89,
-  0x50,
-  0x4E,
-  0x47,
-  0x0D,
-  0x0A,
-  0x1A,
-  0x0A,
-])
 
 /** Whether `bytes` start with the signature of `mediaType`: the PNG signature, or a RIFF chunk of the WEBP form. */
 function hasImageSignature(bytes: Buffer, mediaType: ToolImageMediaType): boolean {

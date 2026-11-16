@@ -84,9 +84,9 @@ describe('chatScrollAnchor', () => {
 
   describe('zero-height run at the anchor offset (shared-offset tie-break)', () => {
     // A geometry over explicit per-row heights (gap 0), so a run of zero-height rows
-    // shares one cumulative offset. The production virtualizer now reserves a positive
-    // estimate for every row, so this exercises the pure anchor math's defensive tie-break
-    // for any caller (or geometry) that can still produce a shared-offset run.
+    // shares one cumulative offset. A row of the production list can measure 0 (an empty
+    // row), so a run of such rows is a state that the tie-break of the anchor math must
+    // handle.
     function varGeo(heights: number[]): AnchorOffsetGeometry {
       const offs = [0]
       for (const h of heights)

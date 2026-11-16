@@ -126,8 +126,8 @@ describe('stripLeadingBlankLines', () => {
 describe('normalizedCommandBody', () => {
   it('applies normalize THEN strip in order (a leading bare CR becomes a trimmed blank)', () => {
     // The order matters: normalizeProgressOutput turns the leading `\r` into a `\n`,
-    // which stripLeadingBlankLines then trims. Both the renderer (commandResult) and
-    // the height estimate (claudeBashHeightFields) route through this one helper.
+    // which stripLeadingBlankLines then trims. The renderer (commandResult) routes
+    // through this one helper.
     const body = normalizedCommandBody('\rfoo')
     expect(body.text).toBe('foo')
     expect(body.hadCarriageReturns).toBe(true)

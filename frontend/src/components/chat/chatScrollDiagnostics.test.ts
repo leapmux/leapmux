@@ -1,5 +1,5 @@
 import type { ContentMovedInfo } from './chatLayoutPivot'
-import type { MeasurementCommitInfo } from './useChatVirtualizer'
+import type { MeasurementCommitInfo } from './chatRowHeightCache'
 import type { LoggerCapture } from '~/test-support/loggerCapture'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { captureLoggerOutput } from '~/test-support/loggerCapture'
@@ -9,10 +9,8 @@ const MEASUREMENT: MeasurementCommitInfo = {
   id: 'r7',
   kind: 'agent_text',
   source: 'visible',
-  firstMeasure: false,
-  assumedHeight: 400,
+  previousHeight: 400,
   newHeight: 300,
-  delta: -100,
   commitSeq: 12,
 }
 

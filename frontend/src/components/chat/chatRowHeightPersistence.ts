@@ -1,5 +1,6 @@
 import type { Accessor } from 'solid-js'
-import type { PersistableRowHeight, UseChatVirtualizerResult, VirtualItem } from './useChatVirtualizer'
+import type { RowHeightCache, RowHeightCommitEntry } from './chatRowHeightCache'
+import type { ChatRowItem } from './chatRowItem'
 import type { AsyncLocalKey } from '~/lib/browserStorage'
 import { createEffect, onCleanup, untrack } from 'solid-js'
 import { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
@@ -8,28 +9,25 @@ import { fnv1a32Hex } from '~/lib/stringDigest'
 import { MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
 
 /**
- * Reload warm-start for the virtualizer's measured-height cache.
+ * Reload warm-start for the measured-height cache of the chat rows.
  *
- * Without persistence every reload reopens the chat with nothing but
- * per-kind estimates: the whole premeasure pipeline re-renders and
- * re-measures the window, and every estimate->real correction shifts the
- * offset map under the scroll anchor. Persisting (id, heightKey digest,
- * height) triples lets a reload adopt real geometry immediately, so the
- * premeasure churn only happens for rows whose content or layout actually
- * changed.
+ * Without persistence every reload reopens the chat with no measured row:
+ * a hidden copy has to render and measure each loaded row before the row
+ * can join the list (see chatRowAdmission). Persisting (id, heightKey digest,
+ * height) triples lets a reload adopt the heights at once, so a hidden copy
+ * renders only for a row whose content or layout really changed.
  *
  * Correctness model: heights are keyed by the row's full heightKey, which
- * already folds in the content width, layout-affecting preferences, and
- * content/UI versions (see ChatView's virtualItems). An entry hydrates only
- * when the digest of the row's LIVE key matches, so a stored height can
- * never be adopted for different content or a different pane width — a
- * mismatch just falls back to today's estimate behavior. Keys are long, so
- * only their fnv1a digest is stored; a (astronomically unlikely) collision
- * adopts a wrong warm-start height, which the row's real measurement then
- * corrects on mount — the same self-healing path premeasure already relies
- * on. Entries that don't match YET (e.g. the pane width hasn't settled, or
- * older history hasn't paginated in) stay pending and are retried whenever
- * the item list changes.
+ * already folds in the content width, the fonts, layout-affecting
+ * preferences, and content/UI versions (see ChatView's loadedItems). An
+ * entry hydrates only when the digest of the row's LIVE key matches, so a
+ * stored height can never be adopted for different content or a different
+ * pane width — a mismatch leaves the row unmeasured, and a hidden copy
+ * measures it. Keys are long, so only their fnv1a digest is stored; a
+ * (astronomically unlikely) collision adopts a wrong warm-start height,
+ * which the first read of the mounted row then corrects. Entries that don't
+ * match YET (e.g. the pane width hasn't settled, or older history hasn't
+ * paginated in) stay pending and are retried whenever the item list changes.
  */
 
 /** One stored row: [message id, heightKey digest, height (px, 2dp)]. */
@@ -49,8 +47,14 @@ type StoredRow = [id: string, digest: string, height: number]
  *    so every stored digest identifies a key format no code builds any more. The old
  *    payload is discarded on load, never retained as a pending digest a new key
  *    cannot match.
+ * 4: the hidden premeasure copy became as wide as the rows. Before, it was as wide as
+ *    the 8px step of that width, up to 4px wider or narrower, so a stored height that
+ *    it measured is wrong by each line that wrapped differently.
+ * 5: the height key holds the exact row width and the fonts of the chat, where it held
+ *    the 8px step of the width and no font. No stored digest of version 4 can match a
+ *    key again.
  */
-export const STORED_ROW_HEIGHTS_VERSION = 3
+export const STORED_ROW_HEIGHTS_VERSION = 5
 
 interface StoredRowHeights {
   v: typeof STORED_ROW_HEIGHTS_VERSION
@@ -84,8 +88,9 @@ export interface RowHeightPersistenceDeps {
    * own instance and disposes it rather than re-pointing it.
    */
   storageId: () => string | undefined
-  virtualItems: Accessor<VirtualItem[]>
-  virt: Pick<UseChatVirtualizerResult, 'primeHeights' | 'snapshotHeights' | 'geometryVersion' | 'hasMeasuredHeight'>
+  /** The items of the loaded rows: a stored height can admit a row that no hidden copy rendered. */
+  loadedItems: Accessor<ChatRowItem[]>
+  heights: Pick<RowHeightCache, 'commitAll' | 'snapshot' | 'version' | 'isMeasured'>
 }
 
 function parseStoredRows(raw: unknown): Map<string, { digest: string, height: number }> {
@@ -109,7 +114,7 @@ function parseStoredRows(raw: unknown): Map<string, { digest: string, height: nu
 }
 
 /**
- * Wire height persistence to a virtualizer. Must be called inside a
+ * Wire height persistence to a height cache. Must be called inside a
  * reactive root (it creates effects and an onCleanup). Loading, hydration
  * retries, and debounced saving all happen internally.
  */
@@ -124,17 +129,17 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
 
   const storageKey = (id: string): AsyncLocalKey => `${PREFIX_CHAT_ROW_HEIGHTS}${id}`
 
-  const tryAdopt = (items: readonly VirtualItem[]): void => {
+  const tryAdopt = (items: readonly ChatRowItem[]): void => {
     if (pending.size === 0)
       return
-    const adoptable: PersistableRowHeight[] = []
+    const adoptable: RowHeightCommitEntry[] = []
     for (const item of items) {
       const entry = pending.get(item.id)
       if (entry === undefined)
         continue
       // A real measurement (visible or premeasure) supersedes the stored
       // warm-start value — retire the entry instead of re-priming.
-      if (deps.virt.hasMeasuredHeight(item.id)) {
+      if (deps.heights.isMeasured(item)) {
         pending.delete(item.id)
         continue
       }
@@ -143,19 +148,19 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
       if (fnv1a32Hex(item.heightKey ?? '') !== entry.digest)
         continue
       adoptable.push({
-        id: item.id,
-        heightKey: item.heightKey,
+        row: item,
         height: entry.height,
       })
     }
     if (adoptable.length === 0)
       return
-    const adopted = deps.virt.primeHeights(adoptable)
+    // One version change for the whole batch: one offset-map rebuild instead of one per row.
+    const adopted = deps.heights.commitAll(adoptable)
     for (const entry of adoptable) {
-      // An entry that the virtualizer did not adopt stays pending, and the next change
+      // An entry that the cache did not adopt stays pending, and the next change
       // of the item list tries it again.
-      if (adopted === adoptable.length || deps.virt.hasMeasuredHeight(entry.id))
-        pending.delete(entry.id)
+      if (adopted === adoptable.length || deps.heights.isMeasured(entry.row))
+        pending.delete(entry.row.id)
     }
   }
 
@@ -167,7 +172,7 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
     const merged = new Map<string, StoredRow>()
     for (const [rowId, entry] of pending)
       merged.set(rowId, [rowId, entry.digest, entry.height])
-    for (const row of deps.virt.snapshotHeights()) {
+    for (const row of deps.heights.snapshot()) {
       // delete+set (not a bare set) so a row that is ALSO still pending moves to
       // the freshly-measured end: a bare set on an existing key keeps its early
       // pending insertion position, which the over-cap slice below would shed
@@ -183,7 +188,7 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
       return // never replace stored data with nothing
     // Pending entries were inserted first, so the shared insertion-order cap
     // (mapLru.capMapInsertionOrder) sheds them before it sheds freshly measured
-    // rows (snapshotHeights is LRU-ordered, oldest first), keeping the most recent
+    // rows (the snapshot is LRU-ordered, oldest first), keeping the most recent
     // measurements -- and the eviction limit matches the render and token caches.
     capMapInsertionOrder(merged, PERSISTED_ROW_HEIGHTS_MAX)
     localStorageStore(storageKey(id), {
@@ -225,22 +230,22 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
         for (const [rowId, entry] of rows)
           pending.set(rowId, entry)
       }
-      tryAdopt(untrack(deps.virtualItems))
+      tryAdopt(untrack(deps.loadedItems))
     })
   })
 
   // Retry hydration whenever the item list changes (pagination brings older
   // rows in; the width settling rewrites every heightKey). Everything but
-  // the item read is untracked: hasMeasuredHeight would otherwise subscribe
-  // this effect to every geometry bump.
+  // the item read is untracked: isMeasured would otherwise subscribe
+  // this effect to every commit of a height.
   createEffect(() => {
-    const items = deps.virtualItems()
+    const items = deps.loadedItems()
     untrack(() => tryAdopt(items))
   })
 
-  // Debounced save on geometry changes (measurement commits, hydrations).
+  // Debounced save on each change of the cache (measurement commits, hydrations).
   createEffect(() => {
-    deps.virt.geometryVersion()
+    deps.heights.version()
     const id = untrack(deps.storageId)
     if (id === undefined)
       return

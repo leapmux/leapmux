@@ -1,11 +1,12 @@
 import type { Component } from 'solid-js'
 import type { ClassifiedEntry } from './chatEntryCache'
+import type { ChatRowItem } from './chatRowItem'
 import type { MessageBubbleHost } from './MessageBubble'
 import type { MessageContextResolver } from './messageContextResolver'
 import type { MessageUiKey } from './messageUiKeys'
 import type { RenderReadiness } from './renderReadiness'
-import type { ChatScrollState, PaginationCallbacks } from './useChatScroll'
-import type { VirtualItem } from './useChatVirtualizer'
+import type { ChatLoadedRows, ChatScrollState, PaginationCallbacks, UseChatScrollResult } from './useChatScroll'
+import type { ChatVirtualizerRange } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TodoItem } from '~/models/todo'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
@@ -22,24 +23,31 @@ import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { formatChatQuote } from '~/lib/quoteUtils'
+import { shallowEqual } from '~/lib/shallowEqual'
 import { onSyntaxThemeChange } from '~/lib/syntaxThemeStore'
 import { motion } from '~/styles/tokens'
 import { AgentStartupBanner } from './AgentStartupBanner'
 import { createClassifiedEntryCache, heightKeyForEntry, renderKeyForEntry } from './chatEntryCache'
+import { createChatFonts } from './chatFonts'
 import { ChatHiddenPremeasure } from './chatHiddenPremeasure'
 import { createMessageUiState } from './chatMessageUiState'
 import { createOrderedTailReveal } from './chatOrderedReveal'
 import { createChatPremeasureBands } from './chatPremeasureBands'
 import { resolveScrollbarOwner } from './chatRailPolicy'
+import { createRowAdmission } from './chatRowAdmission'
 import { kindScopedLayoutKey } from './chatRowGeometry'
+import { createRowHeightCache } from './chatRowHeightCache'
 import { createRowHeightPersistence } from './chatRowHeightPersistence'
+import { sameChatRowItems } from './chatRowItem'
+import { createChatRowWidth } from './chatRowWidth'
 import { createScrollActivity } from './chatScrollActivity'
+import { nearestServerRowIndexBySeq } from './chatScrollAnchor'
 import { isListScrollKey } from './chatScrollInput'
 import { ChatScrollRail } from './ChatScrollRail'
 import { rowStartSeqs } from './chatScrollRailGeometry'
 import { createDelayedSet, createFlingSkeletonRegistry, createLingerSet } from './chatSkeletonCrossfade'
 import * as styles from './ChatView.css'
-import { computeOverscanPx, createViewportSizeObserver, measureSpaceToken, PRE_MEASURE_WIDTH_PX } from './chatViewportGeometry'
+import { computeOverscanPx, createViewportSizeObserver, measureSpaceToken } from './chatViewportGeometry'
 import { MessageBubble } from './MessageBubble'
 import { MessageContextMenuHostProvider } from './MessageContextMenuHost'
 import { createMessageRenderCacheStore } from './messageRenderCache'
@@ -47,7 +55,7 @@ import { messageRowChrome } from './messageRowLayout'
 import { expandedUiKeyFor, messageUiDefault } from './messageUiKeys'
 import { createRowReadinessRegistry, useReplacingReadiness } from './renderReadiness'
 import { useChatScroll } from './useChatScroll'
-import { sameVirtualItems, useChatVirtualizer } from './useChatVirtualizer'
+import { useChatVirtualizer } from './useChatVirtualizer'
 import { ChatRowSkeleton } from './widgets/ChatRowSkeleton'
 import { CompactionIndicator } from './widgets/CompactionIndicator'
 import { SpanLineGapBridges } from './widgets/SpanLineGapBridges'
@@ -95,14 +103,20 @@ export const RAIL_COAST_MAX_MS = 4000
 // pop. The shared motion token keeps this unmount timer and the CSS fade
 // duration in lockstep (see tokens.ts).
 export const SKELETON_CROSSFADE_MS = motion.medium
-// How long a row must stay hidden-pending-reveal before its loading skeleton is
-// painted. A fast premeasure (a freshly appended tail) settles well under this, so
-// the row just fades in with no distracting shimmer; only a genuinely slow wait
-// surfaces a skeleton as a loading affordance. See createDelayedSet. A mounted row
-// that an expand-collapse or a diff-view switch resizes does not hide at all: it
-// keeps its measured height until the next read of its element commits the new
-// one (see useChatVirtualizer's pruneStaleKeyedHeights).
+// How long a wait must last before its loading affordance is painted: the loading
+// skeleton of a row whose content is pending, and the indicators for staged rows and
+// for the first view. A fast wait (a freshly appended tail that measures in a frame)
+// settles well under this, so nothing flashes; only a genuinely slow wait surfaces an
+// affordance. See createDelayedSet. A mounted row that an expand-collapse or a
+// diff-view switch resizes does not hide at all: it keeps its measured height until
+// the next read of its element commits the new one (see RowHeightCache.heightOf).
 export const SKELETON_SHOW_DELAY_MS = 500
+/**
+ * How long the row width must hold before a hidden copy renders at it. A window resize
+ * reports a new width in each frame; without the wait, each frame would render a band of
+ * hidden copies at a width that the next frame drops.
+ */
+export const STAGING_WIDTH_SETTLE_MS = 150
 
 /**
  * The inset (px) of the virtual spacer in the scroll coordinates of the list element: the
@@ -271,30 +285,70 @@ interface ChatViewProps {
   agentLifecycle?: AgentLifecycleProps
 }
 
+/**
+ * A state in which the reader waits for staged rows: the first view, or an edge of the
+ * list with staged rows beyond it.
+ */
+type ChatListWait = 'first-view' | 'staged-top' | 'staged-bottom'
+
+/** One of the loading indicators that float over the chat list: a spinner and its label. */
+function ChatListLoadingIndicator(props: { when: boolean, class: string, label: string }) {
+  return (
+    <Show when={props.when}>
+      <div class={props.class}>
+        <Spinner />
+        {props.label}
+      </div>
+    </Show>
+  )
+}
+
 export const ChatView: Component<ChatViewProps> = (props) => {
   const prefs = usePreferences()
   const chatInstanceID = createUniqueId()
 
-  // The virtualizer's live mounted-row set, assigned once `virt` is created below.
-  // The UI-state cap reads it lazily (at toggle time, always after first render) to
-  // protect on-screen rows from eviction -- a lazy-wired `let`, so no forward reference
-  // to a not-yet-declared const.
-  let mountedRowIds: ReadonlySet<string> = new Set()
+  // Prepare + cache the window's messages by id so <For> receives stable object
+  // references for unchanged rows. createClassifiedEntryCache owns the cache, the
+  // freshness rule and the incremental prune.
+  const entries = createClassifiedEntryCache({
+    messages: () => props.messages,
+    requestRevision: identity => props.messageContext?.request(identity)?.revision,
+    resultRevision: identity => props.messageContext?.result(identity)?.revision,
+    contentVersionById: id => props.messageContext?.contentVersion(id) ?? 0,
+    // The shared resolver's merged payload, so the entry the list MEASURES, the bubble
+    // that draws it and the toolbar beside it all read one object for one row.
+    resolvedMessage: message => props.messageContext?.resolvedMessage(message),
+    role: message => props.messageContext?.role(message) ?? 'other',
+    isChildTranscript: () => !!props.isChildTranscript,
+    showHiddenMessages: () => prefs.showHiddenMessages(),
+  })
+  const visibleEntries = entries.visibleEntries
+  const hasVisibleEntries = entries.hasVisibleEntries
 
-  // Whether the reader follows the live tail: the virtualizer keeps the bottom of the
-  // content in place across a geometry change then. Assigned once the scroll hook (which
-  // owns follow mode) is created below -- the virtualizer must exist before the hook --
-  // with the same lazy-wire pattern as mountedRowIds. Until then a fresh list follows.
-  let isFollowingTail: () => boolean = () => true
+  // Lookup over the loaded rows, shared by the height cache, the scroll hook, and the
+  // crossfade slice.
+  const visibleEntryById = createMemo(() => {
+    const result = new Map<string, ClassifiedEntry>()
+    for (const entry of visibleEntries())
+      result.set(entry.message.id, entry)
+    return result
+  })
+
+  // The measured heights of the rows. ChatView owns the cache, because the admission, the
+  // virtualizer, the staging bands, and the persistence all read it. Its eviction keeps the
+  // heights of the loaded rows: a loaded row that lost its height would leave the list.
+  const heightCache = createRowHeightCache({
+    loadedIds: () => untrack(visibleEntryById).keys(),
+  })
 
   // Lifted per-message UI state (diff-view override + boolean flag map), keyed by
   // message id so a toggle survives <For> re-renders and a window trim. Owned by
   // createMessageUiState (its own tested unit); see that module for why it
   // deliberately outlives the windowed list and is cap-bounded instead of pruned.
-  // The cap protects the currently-rendered rows so an on-screen row's choice is
-  // never the eviction target.
+  // The cap protects the currently-rendered rows (the mounted rows of the height cache)
+  // so an on-screen row's choice is never the eviction target.
   const { getLocalDiffView, setLocalDiffView, getMessageUiBool, setMessageUiBool, getUiVersion } = createMessageUiState({
-    protectedIds: () => mountedRowIds,
+    protectedIds: () => heightCache.mountedIds,
   })
   const renderCacheStore = createMessageRenderCacheStore()
   // A syntax theme change invalidates every cached body at once: they all carry
@@ -328,24 +382,6 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // passive listener + ResizeObserver in a createEffect keyed on it).
   const [scrollEl, setScrollEl] = createSignal<HTMLDivElement | undefined>()
 
-  // Prepare + cache the window's messages by id so <For> receives stable object
-  // references for unchanged rows. createClassifiedEntryCache owns the cache, the
-  // freshness rule and the incremental prune.
-  const entries = createClassifiedEntryCache({
-    messages: () => props.messages,
-    requestRevision: identity => props.messageContext?.request(identity)?.revision,
-    resultRevision: identity => props.messageContext?.result(identity)?.revision,
-    contentVersionById: id => props.messageContext?.contentVersion(id) ?? 0,
-    // The shared resolver's merged payload, so the entry the list MEASURES, the bubble
-    // that draws it and the toolbar beside it all read one object for one row.
-    resolvedMessage: message => props.messageContext?.resolvedMessage(message),
-    role: message => props.messageContext?.role(message) ?? 'other',
-    isChildTranscript: () => !!props.isChildTranscript,
-    showHiddenMessages: () => prefs.showHiddenMessages(),
-  })
-  const visibleEntries = entries.visibleEntries
-  const hasVisibleEntries = entries.hasVisibleEntries
-
   // Inter-row gaps from the design tokens the non-virtual layout used, resolved
   // to pixels once mounted so the offset map keeps span-line bridges aligned (D6).
   const [gapSmallPx, setGapSmallPx] = createSignal(8)
@@ -355,9 +391,8 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     setGapLargePx(measureSpaceToken('--space-5', 20))
   })
 
-  // Inner content width of the message list. One signal for all rows, bucketed
-  // by the viewport observer so scrollbar/sub-pixel jitter doesn't storm the
-  // measured-height cache keys.
+  // Inner content width of the message list: the width of each row, as the browser lays
+  // it out. One signal for all rows. It is 0 while the list has no layout box.
   // We observe the SCROLL CONTAINER (messageList), NOT the inner content element.
   // "ResizeObserver loop completed with undelivered notifications" fires whenever
   // ANY observed element resizes DURING RO delivery -- the early-return in the
@@ -369,7 +404,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // grow), so it only resizes on a real viewport/sidebar change. Its content-box
   // width (padding excluded) IS the bubble wrap width. The write is still
   // deferred to a microtask as defense-in-depth.
-  const [contentWidth, setContentWidth] = createSignal(0)
+  //
+  // The row width: the one width of the height key and of the hidden premeasure copies,
+  // and whether a copy may measure at it (see createChatRowWidth). Before the first width
+  // above 0, `held` is `undefined`: the key then holds no width, so no stored height
+  // matches it, and no hidden copy renders.
+  const rowWidth = createChatRowWidth(STAGING_WIDTH_SETTLE_MS)
   // Message-list viewport height (the scroll container's content-box height),
   // tracked from the same observer. Drives the viewport-relative overscan below.
   const [viewportHeight, setViewportHeight] = createSignal(0)
@@ -383,7 +423,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   }
   const viewportSizeObserver = createViewportSizeObserver({
     onWidth: (width) => {
-      setContentWidth(width)
+      rowWidth.report(width)
       measureSpacerInset()
     },
     onHeight: (height) => {
@@ -392,21 +432,32 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     },
   })
   onCleanup(() => viewportSizeObserver.disconnect())
-  const effectiveContentWidth = createMemo(() => contentWidth() > 0
-    ? contentWidth()
-    : PRE_MEASURE_WIDTH_PX)
+  // The two font families of the chat. A row measures its text in them, so the height
+  // key holds both, and whether their faces are loaded (see createChatFonts). One list
+  // serves the loads and the key, so the two cannot differ.
+  const chatFontFamilies = (): readonly string[] => [
+    prefs.uiFontFamily() ?? '',
+    prefs.monoFontFamily(),
+  ]
+  const chatFonts = createChatFonts(chatFontFamilies)
+  // Whether a hidden copy may render: the rows have a width, that width is settled, and the
+  // fonts of the chat are ready. A copy that renders earlier measures a height that the
+  // row does not take.
+  const stagingEnabled = (): boolean => rowWidth.measurable() && chatFonts.ready()
 
   // DOM heights are width-sensitive, so the measured-height cache key folds the effective
-  // layout width into EVERY row -- width genuinely rewraps every kind. The width fallback
-  // must match hidden premeasure's fallback width: queued unsettled rows can remain mounted
-  // while the pane reports width 0. Kind-SPECIFIC height inputs (diffView, expandAgentThoughts)
+  // layout width into EVERY row -- width genuinely rewraps every kind. The fonts are in the
+  // key for the same reason: another family, and a font that arrives late, wrap the text of
+  // every row again. Kind-SPECIFIC height inputs (diffView, expandAgentThoughts)
   // are NOT folded in here -- a global toggle of one of those would needlessly re-measure the
   // whole viewport. They are scoped per row instead (see kindScopedLayoutKey below).
   const globalEpochKey = createMemo(() =>
     JSON.stringify([
-      effectiveContentWidth(),
+      rowWidth.held() ?? null,
       props.workingDir ?? '',
       props.homeDir ?? '',
+      ...chatFontFamilies(),
+      chatFonts.loaded(),
     ]),
   )
   // The row's EFFECTIVE diff-view (its per-message override, else the global default). Read
@@ -425,10 +476,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     })
   }
 
-  // Minimal per-row descriptors for the virtualizer. Unmeasured rows use only the
-  // virtualizer's per-kind median estimate (keyed by `kind` below) until visible or
-  // hidden DOM measurement commits a real height.
-  const virtualItems = createMemo<VirtualItem[]>(
+  // Minimal per-row descriptors of the LOADED rows: the rows of the loaded window that are
+  // not hidden, index-aligned with visibleEntries(). The row admission selects the rows of
+  // the virtualizer from them (see `virtualItems` below).
+  const loadedItems = createMemo<ChatRowItem[]>(
     () =>
       visibleEntries().map(e => ({
         id: e.message.id,
@@ -436,10 +487,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         // the survivors for the nearest-survivor restore (scrollTopNearAnchor).
         seq: e.message.seq,
         hasSpanLines: e.parsedSpanLines.length > 0,
-        // Buckets the unmeasured-row height estimate by rendering kind (per-kind median),
-        // so a short user row isn't over-estimated by a mean inflated with tall tool/code
-        // rows. Reuses this entry's EXISTING classification -- the same category the row
-        // renderer consumes below -- so the message is classified once, not twice.
+        // The rendering kind of the row. Two adjacent bands share one border (see the
+        // virtualizer's gapAfter). Reuses this entry's EXISTING classification -- the same
+        // category the row renderer consumes below -- so the message is classified once.
         kind: e.category.kind,
         // The per-row measured-height cache key. heightKeyForEntry (chatEntryCache)
         // reads height-affecting freshness signals off the entry's own signature,
@@ -456,110 +506,91 @@ export const ChatView: Component<ChatViewProps> = (props) => {
         )}`,
       })),
     [],
+    // Suppress the recompute of every reader when a recompute leaves the rows identical
+    // (same id/hasSpanLines/heightKey sequence) -- see sameChatRowItems.
+    { equals: sameChatRowItems },
+  )
+
+  // The scroll hook, for the admission and the virtualizer. Assigned once the hook is
+  // created below: both must exist before the hook, so a lazy-wired `let` stands in, with
+  // no forward reference to a const that is not declared yet.
+  let scrollHook: Pick<UseChatScrollResult, 'isFollowing' | 'viewAnchor' | 'paneHidden'> | undefined
+  // Whether the reader follows the live tail: the virtualizer keeps the bottom of the
+  // content in place across a geometry change then. Before the hook exists, a fresh list
+  // follows.
+  const isFollowingTail = (): boolean => scrollHook?.isFollowing() ?? true
+
+  // Which loaded rows the virtualizer gets: one contiguous range of measured rows (see
+  // chatRowAdmission). A loaded row outside it is staged: only a hidden copy renders it.
+  const admission = createRowAdmission({
+    rows: loadedItems,
+    heights: heightCache,
+    // No view height while the scroll hook counts the pane as hidden. The hook shows a
+    // place only in the flush of the show of the pane, and the size observer can report
+    // the height of the shown pane before that flush. A target that reached its rows in
+    // between would change the range, and the rows would paint at the scroll position of
+    // the rows before.
+    //
+    // The hook is created after this unit, so the first run reads no signal of it. That
+    // run has no target, and only a target reads the view height: the hook makes each
+    // request, and a request runs the computation again.
+    viewHeight: () => (scrollHook?.paneHidden()
+      ? 0
+      : viewportHeight()),
+    // Before the hook exists, the view shows no row, and the getter gives nothing.
+    viewAnchor: () => scrollHook?.viewAnchor(),
+    tailLoaded: () => !props.pagination?.hasNewerMessages,
+  })
+
+  // The admitted rows: the entries and the items of the virtualizer, index-aligned.
+  const admittedEntries = createMemo(() => {
+    const { start, end } = admission.range()
+    return visibleEntries().slice(start, end)
+  })
+  const virtualItems = createMemo<ChatRowItem[]>(
+    () => {
+      const { start, end } = admission.range()
+      return loadedItems().slice(start, end)
+    },
+    [],
     // Suppress the geom rebuild + layout-shift pass when a recompute leaves the offset
-    // map identical (same id/hasSpanLines/heightKey sequence) -- see sameVirtualItems.
-    { equals: sameVirtualItems },
+    // map identical (same id/hasSpanLines/heightKey sequence) -- see sameChatRowItems.
+    { equals: sameChatRowItems },
   )
 
   // Overscan scales with the live viewport height (clamped) -- see computeOverscanPx.
   const overscanPx = () => computeOverscanPx(viewportHeight())
 
-  // Which visible rows still wait for an asynchronous body: a Markdown body that the
+  // Which rows of the list still wait for an asynchronous body: a Markdown body that the
   // Markdown worker renders, or an edit diff over two texts whose hunks the diff
   // worker computes. Such a row stays hidden behind its loading skeleton, and the
-  // measurer reads no height from it, whether or not its height is already known:
-  // a reload hydrates persisted heights for rows whose content no cache holds yet.
+  // measurer reads no height from it. The height of the row is known: a reload hydrates
+  // persisted heights for rows whose content no cache holds yet.
   const rowReadiness = createRowReadinessRegistry()
 
   const virt = useChatVirtualizer({
     items: virtualItems,
+    heightCache,
     gapSmallPx,
     gapLargePx,
     overscanPx,
     scrollElement: () => listEl,
     spacerInsetPx,
     pinBottom: () => isFollowingTail(),
-  })
-  // Point the UI-state cap's protect set at the virtualizer's live mounted rows
-  // (a stable Set reference) now that `virt` exists.
-  mountedRowIds = virt.mountedIds
-
-  // Resolve which scrollbar owns the viewport ONCE, here -- ChatView holds the single
-  // viewport CONTENT-box height (viewportHeight(), the ResizeObserver's contentRect, the same
-  // coordinate space totalHeight lives in) plus the item list, range, and totalHeight -- and hands
-  // the result to BOTH the native-scrollbar hide below AND the rail (via its `hidden` prop). One
-  // resolution, one height source, is what makes "never zero or two scrollbars" STRUCTURAL: a
-  // shared function called twice with two height sources (the rail formerly read its own
-  // padding-box clientHeight) could hide both bars over content overflowing by the container's
-  // vertical padding. railRowSeqs is memoized on the item list so the O(n) row-seq scan reruns
-  // only when rows change, and not on every scroll or footer-height commit.
-  //
-  // Gate the scan on a STABLE presence boolean, NOT props.rail's object reference: the host
-  // rebuilds the rail prop object on every marks / live-tail / window change (TileRenderer's
-  // railProps memo), so a bare `props.rail ?` here would re-run the O(n) scan on each of those
-  // even when the row list is unchanged. railPresent flips only when the rail appears / disappears,
-  // so the scan reruns solely when virtualItems changes -- exactly as the note above promises.
-  //
-  // On COARSE pointers messageList additionally suppresses the native bar unconditionally, so a
-  // touch viewport that resolves to 'native' shows NEITHER bar. That is a deliberate exception,
-  // recorded on resolveScrollbarOwner and messageListRailActive; the resolution below is unchanged.
-  const railPresent = createMemo(() => props.rail !== undefined)
-  const railRowSeqs = createMemo(() => (railPresent()
-    ? rowStartSeqs(virtualItems())
-    : null))
-  const railOwner = createMemo(() => {
-    const rail = props.rail
-    if (!rail)
-      return null
-    return resolveScrollbarOwner({
-      loaded: rail.loaded,
-      itemCount: virtualItems().length,
-      rowSeqs: railRowSeqs(),
-      range: { minSeq: rail.minSeq, maxSeq: rail.maxSeq },
-      hasMoreOlder: !!props.pagination?.hasOlderMessages,
-      hasMoreNewer: !!props.pagination?.hasNewerMessages,
-      totalHeight: virt.totalHeight(),
-      viewportHeight: viewportHeight(),
-    })
-  })
-  // Hide the native scrollbar whenever the rail owns scrolling OR nothing needs a scrollbar -- i.e.
-  // every owner except 'native'. The exact complement of the rail's `hidden` prop (owner !==
-  // 'rail'), both derived from the SAME railOwner, so exactly one bar is ever shown.
-  const hideNativeScrollbar = createMemo(() => {
-    const owner = railOwner()
-    return owner !== null && owner !== 'native'
+    // False while loaded rows wait above the admitted rows: the top of the list is then not
+    // the top of the loaded rows, and a placement on its first row shows no inset above it.
+    listStartsAtLoadedTop: () => admission.range().start === 0,
   })
 
   // Reload warm-start: hydrate persisted measured heights (keyed by height-
   // key digest, so content/width changes self-invalidate) and keep the
-  // stored snapshot fresh. See chatRowHeightPersistence for the model.
+  // stored snapshot fresh. It reads the LOADED rows, so a stored height admits a row
+  // that no hidden copy rendered. See chatRowHeightPersistence for the model.
   createRowHeightPersistence({
     storageId: () => props.agentId,
-    virtualItems,
-    virt,
+    loadedItems,
+    heights: heightCache,
   })
-
-  /**
-   * Whether a row currently intersects the viewport plus half a screen of
-   * slack — the priority band for worker dispatch (`rowOffscreen` capability):
-   * rows outside it dispatch their markdown/highlight jobs at low priority.
-   * Deliberately non-reactive: the worker gate re-reads it at each dispatch
-   * opportunity, so it needs the CURRENT scroll position, not a subscription.
-   * The row offsets are content coordinates, so the viewport top converts to them.
-   */
-  const isRowNearViewport = (id: string): boolean => {
-    const el = listEl
-    if (!el)
-      return true // no DOM yet: don't deprioritize anything
-    const index = virt.indexOfId(id)
-    if (index < 0)
-      return false // windowed away: nothing to paint
-    const rowTop = virt.offsetOfIndex(index)
-    const rowBottom = rowTop + virt.heightOfIndex(index)
-    const slack = el.clientHeight / 2
-    const viewportTop = untrack(() => virt.contentTopOf(el.scrollTop))
-    return rowBottom >= viewportTop - slack && rowTop <= viewportTop + el.clientHeight + slack
-  }
 
   createEffect(() => {
     // `renderKeyForEntry`, which is the CONTENT key rather than the measurement one
@@ -590,6 +621,61 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     momentumGraceMs: RAIL_COAST_MAX_MS,
   })
   const syntaxHighlightingPaused = highlightActivity.active
+
+  // Staging bands: the loaded rows that get a hidden copy -- the rows that a waiting
+  // target needs, the rows just outside the rendered range, and an idle warm-up of the
+  // others (see createChatPremeasureBands). ChatView renders ChatHiddenPremeasure from
+  // premeasureCandidates.
+  // The warm-up enable policy stays here because it reads ChatView scroll state:
+  // while the pane is visible and quiet. The bands add the width, its settle, and the
+  // fonts through `stagingEnabled`. syntaxHighlightingPaused doubles as the
+  // "scroll recently active" condition -- see highlightActivity (createScrollActivity),
+  // which opens on EVERY scroll and closes after its idle window. With no row in the list,
+  // the rendered range is empty at index 0, and the warm-up would measure the oldest rows
+  // while the first view waits for the newest, so it waits for the first view.
+  const premeasure = createChatPremeasureBands({
+    visibleEntries,
+    loadedItems,
+    heights: heightCache,
+    // The rendered range of the virtualizer, moved to the indexes of the loaded rows.
+    renderedRange: (): ChatVirtualizerRange => {
+      const rendered = virt.range()
+      const offset = admission.range().start
+      return { start: rendered.start + offset, end: rendered.end + offset }
+    },
+    wantedRows: admission.wantedRows,
+    stagingEnabled,
+    warmupEnabled: () => (props.tabActive ?? true)
+      && !syntaxHighlightingPaused()
+      && !admission.awaitingFirstView(),
+  })
+  const { premeasureCandidates } = premeasure
+
+  /**
+   * Whether a row currently intersects the viewport plus half a screen of
+   * slack — the priority band for worker dispatch (`rowOffscreen` capability):
+   * rows outside it dispatch their markdown/highlight jobs at low priority.
+   * Deliberately non-reactive: the worker gate re-reads it at each dispatch
+   * opportunity, so it needs the CURRENT scroll position, not a subscription.
+   * The row offsets are content coordinates, so the viewport top converts to them.
+   *
+   * A staged row has no offset. It counts as near when the reader waits for it, or
+   * reaches it next: a row of the target band or of the look-ahead band. So its Markdown
+   * and its diff do not wait behind the rows of the warm-up band.
+   */
+  const isRowNearViewport = (id: string): boolean => {
+    const el = listEl
+    if (!el)
+      return true // no DOM yet: don't deprioritize anything
+    const index = virt.indexOfId(id)
+    if (index < 0)
+      return untrack(premeasure.priorityIds).has(id)
+    const rowTop = virt.offsetOfIndex(index)
+    const rowBottom = rowTop + virt.heightOfIndex(index)
+    const slack = el.clientHeight / 2
+    const viewportTop = untrack(() => virt.contentTopOf(el.scrollTop))
+    return rowBottom >= viewportTop - slack && rowTop <= viewportTop + el.clientHeight + slack
+  }
 
   /**
    * The per-row bindings a MessageBubble needs from ChatView, bundled into one
@@ -641,67 +727,39 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       return renderCacheStore.forRow(renderKeyForEntry(entry))
     },
     // These two are agent-scoped accessors that already exist, so reading them costs
-    // nothing and they stay plain fields. `rowOffscreen` closes over the row, so it is
-    // a getter like the five above.
+    // nothing and they stay plain fields. `rowOffscreen` and `rowNearView` close over the
+    // row, so they are getters like the five above.
     syntaxHighlightingPaused,
     textSelectionActive,
     get rowOffscreen() {
       return () => !isRowNearViewport(entry.message.id)
     },
+    // isRowNearViewport reads the scroll position and the height of the pane with no
+    // subscription. The two reads before it run the test again when its answer can differ
+    // with no change of the geometry: when a scroll ends, for the position where it
+    // stopped, and when the pane changes its height. The test does not run during a
+    // scroll, so a fling starts no image read for the rows that it passes.
+    get rowNearView() {
+      return () => {
+        syntaxHighlightingPaused()
+        viewportHeight()
+        return isRowNearViewport(entry.message.id)
+      }
+    },
   })
 
-  // Derived lookups over the visible window, shared by the premeasure facade
-  // and the hide-until-measured logic below.
-  const visibleEntryById = createMemo(() => {
-    const result = new Map<string, ClassifiedEntry>()
-    for (const entry of visibleEntries())
-      result.set(entry.message.id, entry)
-    return result
-  })
-  // Premeasure bands: hidden-DOM premeasure of the ranged + look-ahead + idle warm-up
-  // rows, fed into the coherence queue that de-dupes / collapses / settles them (see
-  // createChatPremeasureBands). ChatView renders ChatHiddenPremeasure from
-  // premeasureCandidates and hides in-range unmeasured rows via collapsedPremeasureIds.
-  // The warm-up enable policy stays here because it reads ChatView scroll state:
-  // while the pane is visible, sized, and quiet. syntaxHighlightingPaused doubles as the
-  // "scroll recently active" gate -- see highlightActivity (createScrollActivity), which
-  // opens on EVERY scroll and closes after its idle window.
-  const premeasure = createChatPremeasureBands({
-    visibleEntries,
-    virtualItems,
-    virt,
-    contentWidth,
-    visibleEntryById,
-    warmupEnabled: () => (props.tabActive ?? true)
-      && contentWidth() > 0
-      && !syntaxHighlightingPaused(),
-  })
-  const { premeasureCandidates, collapsedPremeasureIds } = premeasure
-
-  // The rendered window: only the rows in/near the viewport.
+  // The rendered window: only the admitted rows in/near the viewport.
   const visibleSlice = createMemo(() => {
-    const all = visibleEntries()
+    const all = admittedEntries()
     const r = virt.range()
     return all.slice(r.start, r.end)
   })
 
-  // An actively premeasured unknown-height row awaiting its OWN DOM height commit.
-  // While true the row renders INVISIBLE (see rowHiddenPendingReveal) and its
-  // reserved slot is painted by the loading-skeleton overlay instead of blank
-  // space. The live tail follows the same rule because its unmeasured content
-  // could overlap the thinking indicator.
-  const rowAwaitingMeasurement = (id: string): boolean => (
-    !virt.hasMeasuredHeight(id)
-    && collapsedPremeasureIds().has(id)
-  )
-
-  // A row still loading: awaiting its own measurement, or not ready -- not mounted
-  // yet, or holding an asynchronous body (Markdown, an edit diff) whose worker
-  // result has not landed. The second case covers a row whose height is already
-  // KNOWN (hydrated after a reload, or measured before its content left the cache):
-  // such a row skips premeasure, so only its own content can hold it.
-  const rowLoading = (id: string): boolean =>
-    rowAwaitingMeasurement(id) || !rowReadiness.isReady(id)
+  // A row still loading: not mounted yet, or holding an asynchronous body (Markdown, an
+  // edit diff) whose worker result has not landed. The height of such a row is KNOWN
+  // (every row of the list is measured): it was hydrated after a reload, or measured
+  // before its content left the cache.
+  const rowLoading = (id: string): boolean => !rowReadiness.isReady(id)
 
   // In-order reveal of an append burst: a ready tail row is held hidden until
   // every earlier still-loading row in its cohort has shown, so a later appended
@@ -716,19 +774,19 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // A row is hidden pending reveal when it is still loading OR being held so an
   // earlier appended sibling reveals first. The row hides immediately so
   // it cannot overflow its slot. Its loading skeleton is
-  // deferred separately (see skeletonSlice) so fast re-measures don't flash a shimmer.
+  // deferred separately (see skeletonSlice) so a fast load doesn't flash a shimmer.
   //
-  // Shared by the row itself and its gap-bridge overlay entry: a premeasure-hidden,
-  // content-pending, or order-held row stays invisible until it is ready to reveal,
-  // so a tall row can't paint beyond its estimated slot and overlap what follows (a
-  // later row, or the in-flow tail UI). Rows with no active premeasure and no pending
-  // content stay visible so a zero attach read cannot hide content forever.
+  // Shared by the row itself and its gap-bridge overlay entry: a content-pending or
+  // order-held row stays invisible until it is ready to reveal, so its pending content
+  // can't paint beyond its slot and overlap what follows (a later row, or the in-flow
+  // tail UI). Rows with no pending content stay visible so a zero attach read cannot
+  // hide content forever.
   const rowHiddenPendingReveal = (id: string): boolean =>
     rowLoading(id) || orderedRevealHeld().has(id)
 
   // Fling-skeleton phases for the rendered rows, collected into one reactive set so the
   // gap-bridge overlay (rendered outside the rows) can see which rows are skeletons.
-  const flingSkeletons = createFlingSkeletonRegistry(virt, SKELETON_CROSSFADE_MS)
+  const flingSkeletons = createFlingSkeletonRegistry(virt.fastScrollActive, SKELETON_CROSSFADE_MS)
   // Whether a row's span column is NOT currently painted, so its gap bridge must hide: a
   // row hidden pending reveal (rowHiddenPendingReveal) OR a fling skeleton, whose inline
   // placeholder renders no SpanLines. Otherwise the bridge dangles as a rail segment above
@@ -769,7 +827,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     visibleSlice().filter(entry => rowReadiness.isMounted(entry.message.id) && rowHiddenPendingReveal(entry.message.id)))
 
   // Only rows still hidden after SKELETON_SHOW_DELAY_MS actually paint a skeleton (see
-  // createDelayedSet): a fast premeasure (a tail append) reveals with a plain fade-in
+  // createDelayedSet): a fast load (a tail append) reveals with a plain fade-in
   // and no distracting shimmer; a slow wait still surfaces a skeleton as a loading
   // affordance. The row itself is hidden immediately regardless (rowHiddenPendingReveal)
   // so it can never overflow its slot.
@@ -785,17 +843,18 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   )
   // The rows currently PAINTING a skeleton overlay: the pending rows whose skeleton has
   // been shown -- either the wait exceeded SKELETON_SHOW_DELAY_MS, or a fast fling promoted
-  // it immediately (see createDelayedSet's showImmediately). Fast scrolling into unmeasured
-  // history skeletonises at once so it never flashes blank gaps; a quiet premeasure (a tail
-  // append) waits out the delay so it reveals with a plain fade-in and no distracting
+  // it immediately (see createDelayedSet's showImmediately). Fast scrolling into rows whose
+  // content is pending skeletonises at once so it never flashes blank gaps; a quiet load (a
+  // tail append) waits out the delay so it reveals with a plain fade-in and no distracting
   // shimmer. Because the fling promotes into this same set (not a separate bypass), a row
   // shown mid-fling stays shown when the fling settles before its delay would have fired,
   // instead of flickering skeleton -> blank -> skeleton.
   const skeletonSlice = createMemo(() =>
     pendingRevealSlice().filter(entry => skeletonIds().has(entry.message.id)))
 
-  // Crossfade for the SHOWN skeletons: when a row leaves the skeleton set (its height
-  // committed, the real row starts its opacity fade-in), its skeleton lingers for one
+  // Crossfade for the SHOWN skeletons: when a row leaves the skeleton set (its content
+  // arrived, or the ordered reveal released it, and the real row starts its opacity
+  // fade-in), its skeleton lingers for one
   // SKELETON_CROSSFADE_MS beat in a fading-out wrapper instead of popping away. A row
   // that re-enters cancels its linger — the live overlay covers it again. The linger
   // state machine (start-on-leave / cancel-on-re-enter / clear-on-cleanup) lives in
@@ -831,6 +890,21 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       railActivity.noteScroll()
   }
 
+  // The loaded visible rows, for the scroll hook: a place of the reader can wait for a row
+  // that is staged, which the virtualizer does not hold. Each member reads untracked: the
+  // hook asks at the time of a command.
+  const loadedRows: ChatLoadedRows = {
+    has: id => untrack(visibleEntryById).has(id),
+    nearestId: (seq) => {
+      const items = untrack(loadedItems)
+      const index = nearestServerRowIndexBySeq(items, seq)
+      return index < 0
+        ? undefined
+        : items[index]?.id
+    },
+    first: () => untrack(loadedItems)[0],
+  }
+
   // The unmount save runs while Solid disposes this owner. Capture the callback now,
   // so that cleanup does not resolve merged component props during that disposal.
   const saveViewportScrollOnCleanup = untrack(() => props.onSaveViewportScroll)
@@ -847,10 +921,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     fetchingNewer: () => props.pagination?.fetchingNewer,
     atWindowCeiling: () => props.pagination?.atWindowCeiling,
     onLoadNewerMessages: () => props.pagination?.onLoadNewerMessages?.(),
-    onJumpToLatest: () => props.pagination?.onJumpToLatest?.(),
-    onJumpToOldest: () => props.pagination?.onJumpToOldest?.(),
+    onJumpToLatest: signal => props.pagination?.onJumpToLatest?.(signal),
+    onJumpToOldest: signal => props.pagination?.onJumpToOldest?.(signal),
     onJumpToSeq: (seq, signal) => props.pagination?.onJumpToSeq?.(seq, signal),
     virtualizer: virt,
+    admission,
+    loadedRows,
     savedViewportScroll: () => props.savedViewportScroll,
     onClearSavedViewportScroll: () => props.onClearSavedViewportScroll?.(),
     ...(saveViewportScrollOnCleanup !== undefined
@@ -866,12 +942,105 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     onMomentumScroll: () => noteRailCoast(),
   })
   // Now that the scroll hook (which owns follow mode) exists, point the virtualizer's
-  // bottom pin at it (see the `let` declaration above).
-  isFollowingTail = scroll.isFollowing
+  // bottom pin and the getter of the admission at it (see `scrollHook` above).
+  scrollHook = scroll
 
-  // The rail's seq-space bounds (window-aware min/max) and loaded-window seqs are resolved
-  // once in the store's getRailData (see resolveRailRange), so ChatView passes props.rail
-  // straight through to ChatScrollRail rather than re-deriving the range in the view.
+  // Resolve which scrollbar owns the viewport ONCE, here -- ChatView holds the single
+  // viewport CONTENT-box height (viewportHeight(), the ResizeObserver's contentRect, the same
+  // coordinate space totalHeight lives in) plus the item list, range, and totalHeight -- and hands
+  // the result to BOTH the native-scrollbar hide below AND the rail (via its `hidden` prop). One
+  // resolution, one height source, is what makes "never zero or two scrollbars" STRUCTURAL: a
+  // shared function called twice with two height sources (the rail formerly read its own
+  // padding-box clientHeight) could hide both bars over content overflowing by the container's
+  // vertical padding. railRowSeqs is memoized on the item list so the O(n) row-seq scan reruns
+  // only when rows change, and not on every scroll or footer-height commit.
+  //
+  // Gate the scan on a STABLE presence boolean, NOT props.rail's object reference: the host
+  // rebuilds the rail prop object on every marks / live-tail / window change (TileRenderer's
+  // railProps memo), so a bare `props.rail ?` here would re-run the O(n) scan on each of those
+  // even when the row list is unchanged. railPresent flips only when the rail appears / disappears,
+  // so the scan reruns solely when virtualItems changes -- exactly as the note above promises.
+  //
+  // On COARSE pointers messageList additionally suppresses the native bar unconditionally, so a
+  // touch viewport that resolves to 'native' shows NEITHER bar. That is a deliberate exception,
+  // recorded on resolveScrollbarOwner and messageListRailActive; the resolution below is unchanged.
+  const railPresent = createMemo(() => props.rail !== undefined)
+  const railRowSeqs = createMemo(() => (railPresent()
+    ? rowStartSeqs(virtualItems())
+    : null))
+  //
+  // The rail reads the ADMITTED rows as its window: the loaded rows above and below them are
+  // staged, and they count as more history on their side. Rows that are staged below a
+  // follower do not: each live message is staged for a frame or more. While no row is
+  // admitted, neither value has an effect: the rail draws no thumb for a list with no row,
+  // and railOwner keeps or resolves its owner without them.
+  //
+  // Follow mode is the tracked read of the hook: railOwner and the rail read this value in
+  // tracked scopes, and the reader can start or stop to follow while the staged rows stay
+  // as they are. The untracked isFollowing would leave them the value of the last run.
+  const railHasMoreOlder = (): boolean => !!props.pagination?.hasOlderMessages || admission.stagedOlder()
+  const railHasMoreNewer = (): boolean => !!props.pagination?.hasNewerMessages
+    || (admission.stagedNewer() && !scroll.isFollowingTracked())
+  const railOwner = createMemo<ReturnType<typeof resolveScrollbarOwner> | null>((previous) => {
+    const rail = props.rail
+    if (!rail)
+      return null
+    // While loaded rows exist and none is in the list, keep the last owner, and resolve
+    // nothing new: the rail of a window that a jump replaced stays mounted while the first
+    // rows of the new window measure, and a drag on it lives on. At a mount no last owner
+    // exists, and the list with no row resolves as a window with no row does.
+    if (admission.awaitingFirstView() && previous !== null && previous !== undefined)
+      return previous
+    return resolveScrollbarOwner({
+      loaded: rail.loaded,
+      itemCount: virtualItems().length,
+      rowSeqs: railRowSeqs(),
+      range: { minSeq: rail.minSeq, maxSeq: rail.maxSeq },
+      hasMoreOlder: railHasMoreOlder(),
+      hasMoreNewer: railHasMoreNewer(),
+      totalHeight: virt.totalHeight(),
+      viewportHeight: viewportHeight(),
+    })
+  })
+  // The rail data of the host. The memo keeps its object while no field changes: the host
+  // builds the object again for each change of an input of the store, and the rail clusters
+  // its marks again for each new object. The rail takes its window from the admitted rows
+  // that it gets as `items`, so a scrub into the staged rows starts a seek, as a scrub above
+  // the loaded rows does.
+  const railData = createMemo(() => props.rail, undefined, { equals: shallowEqual })
+  // Hide the native scrollbar whenever the rail owns scrolling OR nothing needs a scrollbar -- i.e.
+  // every owner except 'native'. The exact complement of the rail's `hidden` prop (owner !==
+  // 'rail'), both derived from the SAME railOwner, so exactly one bar is ever shown.
+  const hideNativeScrollbar = createMemo(() => {
+    const owner = railOwner()
+    return owner !== null && owner !== 'native'
+  })
+
+  // The states in which the reader waits for staged rows, each as one fixed id while it
+  // holds. An id is in the delayed set once its state lasted SKELETON_SHOW_DELAY_MS: most
+  // staged rows measure within a few frames, so the delay keeps an indicator from flashing.
+  const { delayedIds: delayedWaits } = createDelayedSet(
+    () => {
+      const waits: ChatListWait[] = []
+      if (admission.awaitingFirstView())
+        waits.push('first-view')
+      if (scroll.atStagedTopEdge())
+        waits.push('staged-top')
+      if (scroll.atStagedBottomEdge())
+        waits.push('staged-bottom')
+      return waits
+    },
+    SKELETON_SHOW_DELAY_MS,
+  )
+  // "Loading older messages..." and "Loading newer messages...": the view is clamped against
+  // the loaded edge and waits for a fetch, or it is at an edge of the list and waits for
+  // staged rows there.
+  const loadingOlderShown = (): boolean => scroll.stalledOlder() || delayedWaits().has('staged-top')
+  const loadingNewerShown = (): boolean => scroll.stalledNewer() || delayedWaits().has('staged-bottom')
+
+  // The rail's seq-space limits (window-aware min/max) are resolved once in the store's
+  // getRailData (see resolveRailRange). The rail takes the window that it scrolls live from
+  // the admitted rows (see railData).
 
   /**
    * Wrap a genuine USER scroll input so BOTH activity windows see it. The `onScroll`
@@ -999,10 +1168,14 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     })
   })
 
-  // One positioned skeleton slot, shared by the awaiting-measurement band and
-  // the crossfade (lingering) band below -- they differ only by the closing
-  // class, so the translateY-offset / reserved-height / seed wiring lives in one
+  // One positioned skeleton slot, shared by the band of the rows whose content is
+  // pending and the crossfade (lingering) band below -- they differ only by the closing
+  // class, so the translateY-offset / height / seed wiring lives in one
   // place instead of two copies that could drift.
+  //
+  // The slot carries the measured height of the row, and the skeleton fills it (see
+  // ChatRowSkeleton). The border of a band row then lies inside that height, as
+  // it does in the row that the slot stands in for.
   const positionedRowSkeleton = (entry: ClassifiedEntry, closing = false) => (
     <div
       // A band row's decoration is the ROW's own background and border, and the row
@@ -1018,9 +1191,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       class={closing
         ? `${styles.virtualRow} ${styles.rowSkeletonClosing}`
         : messageRowChrome(styles.virtualRow, entry.category.kind, entry.message.source).class}
-      style={{ transform: `translateY(${virt.offsetOfId(entry.message.id) ?? 0}px)` }}
+      style={{
+        transform: `translateY(${virt.offsetOfId(entry.message.id) ?? 0}px)`,
+        height: `${virt.heightOfId(entry.message.id)}px`,
+      }}
     >
-      <ChatRowSkeleton height={virt.heightOfId(entry.message.id)} seed={entry.message.id} />
+      <ChatRowSkeleton seed={entry.message.id} />
     </div>
   )
 
@@ -1084,13 +1260,17 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                   {/*
                   Virtualized list: only rows in/near the viewport are mounted,
                   absolutely positioned by translateY inside a spacer sized to
-                  the whole window's height (so the native scrollbar is correct).
+                  the height of the rows of the list: the admitted rows (see
+                  chatRowAdmission).
 
-                  Sizing the spacer to ONLY the loaded window's height is mechanism
+                  Sizing the spacer to ONLY the height of those rows is mechanism
                   #1 of the NO-SKIP INVARIANT (see FLING_OVERSCAN_LOOKAHEAD_MS in
                   useChatScroll): the browser clamps scrollTop to this height, so a
-                  fast fling cannot scroll past the loaded edge into unloaded history
-                  -- it stalls there until the buffer filler loads more, never skips.
+                  fast fling cannot scroll past the edge of the list into rows that
+                  are not measured, or into unloaded history. It stalls there, and
+                  never skips: the admission adds the staged rows as they are
+                  measured, and with no staged row on that side, the buffer filler
+                  loads more.
 
                   The layer inside the spacer moves every row by the layout shift
                   (see chatLayoutShift), and the spacer height follows it, so a
@@ -1121,25 +1301,25 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                       recreating the overlay DOM. */}
                       <SpanLineGapBridges
                         entries={visibleSlice()}
-                        precedingEntry={visibleEntries()[virt.range().start - 1]}
+                        precedingEntry={admittedEntries()[virt.range().start - 1]}
                         topOf={id => virt.offsetOfId(id) ?? 0}
                         hiddenOf={rowSpanColumnHidden}
                         gapAboveOf={virt.gapAboveOf}
                       />
                       {/*
-                    Loading skeletons: a premeasure-hidden row whose wait has
-                    exceeded SKELETON_SHOW_DELAY_MS paints its reserved slot as
-                    shimmer lines instead of blank space (a fast re-measure never
+                    Loading skeletons: a row hidden for its pending content whose
+                    wait has exceeded SKELETON_SHOW_DELAY_MS paints its slot as
+                    shimmer lines instead of blank space (a fast load never
                     reaches here — it just fades in). Rendered OUTSIDE the rows — a
                     hidden row's opacity:0 would swallow any child — and positioned
                     by the same offsets, so they vanish seamlessly the moment the
-                    real row's measurement commits and it fades in.
+                    content of the real row arrives and it fades in.
                   */}
                       <For each={skeletonSlice()}>
                         {entry => positionedRowSkeleton(entry)}
                       </For>
                       {/*
-                    Crossfade tail: skeletons whose row just measured fade OUT
+                    Crossfade tail: skeletons whose row just became ready fade OUT
                     here while the real row's opacity fades in — the two
                     overlap for one beat, so the swap never pops.
                   */}
@@ -1159,7 +1339,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                           // its known height instead of paying full bubble
                           // construction on the scroll-critical path, then upgrades
                           // in place (skeleton -> crossfade -> real) once the scroll
-                          // settles. The per-row phase machine lives in
+                          // settles. While the skeleton shows, the row carries that
+                          // height itself, and the skeleton fills it, so the border of
+                          // a band row lies inside the height (see ChatRowSkeleton).
+                          // The row sizes to its content again when it upgrades.
+                          // The per-row phase machine lives in
                           // createRowUpgradePhase (see rowSkeletonUpgradeOverlay for
                           // the crossfade copy). trackRow also registers this row's phase
                           // in flingSkeletons.skeletonIds so the gap-bridge overlay hides
@@ -1198,14 +1382,17 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                               style={{
                                 transform: `translateY(${top()}px)`,
                                 // Absolute rows do not reserve flow height for
-                                // siblings — see rowHiddenPendingReveal for why an
-                                // unmeasured premeasuring row stays invisible.
+                                // siblings — see rowHiddenPendingReveal for why a
+                                // row whose content is pending stays invisible.
                                 visibility: rowHiddenPendingReveal(message.id)
                                   ? 'hidden'
                                   : undefined,
                                 opacity: rowHiddenPendingReveal(message.id)
                                   ? '0'
                                   : '1',
+                                height: upgradePhase() === 'skeleton'
+                                  ? `${virt.heightOfId(message.id)}px`
+                                  : undefined,
                               }}
                               data-seq={message.seq.toString()}
                               ref={(el) => {
@@ -1215,12 +1402,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                             >
                               <Show
                                 when={upgradePhase() !== 'skeleton'}
-                                fallback={(
-                                  <ChatRowSkeleton
-                                    height={virt.heightOfId(message.id)}
-                                    seed={message.id}
-                                  />
-                                )}
+                                fallback={<ChatRowSkeleton seed={message.id} />}
                               >
                                 {(() => {
                                   // Constructed lazily: while the skeleton shows,
@@ -1265,10 +1447,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                                       </Show>
                                       <Show when={upgradePhase() === 'crossfade'}>
                                         <div class={`${styles.rowSkeletonUpgradeOverlay} ${styles.rowSkeletonClosing}`}>
-                                          <ChatRowSkeleton
-                                            height={virt.heightOfId(message.id)}
-                                            seed={message.id}
-                                          />
+                                          <ChatRowSkeleton seed={message.id} />
                                         </div>
                                       </Show>
                                     </>
@@ -1343,28 +1522,37 @@ export const ChatView: Component<ChatViewProps> = (props) => {
           content by their height as fetching toggles -- a shift the layout shift can't
           see -- bouncing a scrolled reader and wedging the load. See loadingOlderIndicator.
 
-          Gated on scroll.stalledOlder() / stalledNewer(), not the raw fetching flags, so
-          they show ONLY when the view is clamped against the loaded edge waiting on the
-          fetch -- a background pre-fetch (the common case) stays silent.
+          They follow scroll.stalledOlder() / stalledNewer(), not the raw fetching flags, so
+          a fetch shows them ONLY when the view is clamped against the loaded edge waiting
+          on it -- a background pre-fetch (the common case) stays silent. They show also
+          while the reader waits at an edge of the list for staged rows (see
+          loadingOlderShown).
         */}
-          <Show when={scroll.stalledOlder()}>
-            <div class={styles.loadingOlderIndicator}>
-              <Spinner />
-              Loading older messages...
-            </div>
-          </Show>
-          <Show when={scroll.stalledNewer()}>
-            <div class={styles.loadingNewerIndicator}>
-              <Spinner />
-              Loading newer messages...
-            </div>
-          </Show>
+          <ChatListLoadingIndicator
+            when={loadingOlderShown()}
+            class={styles.loadingOlderIndicator}
+            label="Loading older messages..."
+          />
+          <ChatListLoadingIndicator
+            when={loadingNewerShown()}
+            class={styles.loadingNewerIndicator}
+            label="Loading newer messages..."
+          />
+          {/*
+          The first view: loaded rows exist, and none is in the list yet, because a row
+          of the view is not measured. The complete view then shows in one step.
+        */}
+          <ChatListLoadingIndicator
+            when={delayedWaits().has('first-view')}
+            class={styles.loadingFirstViewIndicator}
+            label="Loading messages..."
+          />
           {/*
           Hide the scroll-to-bottom button while the newer-loading indicator is up: both
-          float at bottom-center, so the indicator takes the slot for the brief stall and
-          the button reappears once the page lands (or the fetch times out).
+          float at bottom-center, so the indicator takes the slot for the brief wait and
+          the button reappears once the rows arrive (or the fetch times out).
         */}
-          <Show when={!scroll.stalledNewer() && (!scroll.atBottom() || props.pagination?.hasNewerMessages)}>
+          <Show when={!loadingNewerShown() && (!scroll.atBottom() || props.pagination?.hasNewerMessages)}>
             <Tooltip text="Scroll to bottom" ariaLabel>
               <button
                 type="button"
@@ -1383,11 +1571,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
               // The row-seq map the owner resolution above already computes (railRowSeqs), reused by
               // the rail's geometry so the O(n) scan runs once per item-list change, not twice.
               railRowSeqs={railRowSeqs()}
-              // ChatRailProps extends ChatRailData, so pass the whole object straight through as the
-              // rail's `rail` prop rather than re-flattening its six fields (which the view would then
-              // have to keep in hand-sync). previewFor/warmPreview are the orthogonal on-demand
-              // callbacks and stay separate.
-              rail={props.rail!}
+              // ChatRailProps extends ChatRailData, so pass the whole object as the rail's `rail`
+              // prop rather than re-flattening its four fields (which the view would then have to
+              // keep in hand-sync). The object is the one of railData.
+              // previewFor/warmPreview are the orthogonal on-demand callbacks and stay separate.
+              rail={railData()!}
               // Whether the rail hides itself, the exact complement of hideNativeScrollbar: both are
               // derived from ONE railOwner resolution (single viewport-height source), so the rail is
               // shown exactly when the native bar is hidden -- never zero, never two scrollbars.
@@ -1401,11 +1589,11 @@ export const ChatView: Component<ChatViewProps> = (props) => {
               // The rail's own interactions (grab, drag move, dot hover or focus) reopen the
               // window -- a captured thumb drag fires no events on the scroll container.
               onActivity={() => railActivity.noteInput()}
-              hasMoreOlder={!!props.pagination?.hasOlderMessages}
-              hasMoreNewer={!!props.pagination?.hasNewerMessages}
+              hasMoreOlder={railHasMoreOlder()}
+              hasMoreNewer={railHasMoreNewer()}
               onJumpToSeq={seq => scroll.jumpToSeq(seq)}
               previewScrollTo={top => scroll.previewScrollTo(top)}
-              onSeekInterrupt={() => scroll.cancelPendingSeek()}
+              onSeekInterrupt={() => scroll.takeReaderInput()}
               {...(props.rail!.previewFor !== undefined
                 ? { previewFor: props.rail!.previewFor }
                 : {})}
@@ -1415,12 +1603,17 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             />
           </Show>
         </div>
-        <ChatHiddenPremeasure
-          candidates={premeasureCandidates()}
-          contentWidthPx={effectiveContentWidth()}
-          renderBubble={(entry, readiness) => renderMessageBubble(entry, readiness, true)}
-          onMeasure={premeasure.onMeasure}
-        />
+        {/* No hidden copy renders before the rows have a width: a copy measures at the width of the rows. */}
+        <Show when={rowWidth.held()}>
+          {width => (
+            <ChatHiddenPremeasure
+              candidates={premeasureCandidates()}
+              contentWidthPx={width()}
+              renderBubble={(entry, readiness) => renderMessageBubble(entry, readiness, true)}
+              onMeasure={premeasure.onMeasure}
+            />
+          )}
+        </Show>
       </MessageContextMenuHostProvider>
     </div>
   )

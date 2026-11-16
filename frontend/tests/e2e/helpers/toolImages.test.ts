@@ -5,9 +5,12 @@ import type { NativeScenarioContext } from './nativeScenario'
 import { Buffer } from 'node:buffer'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { inflateSync } from 'node:zlib'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { expectImageDataUriInRequest, expectPngInRequest, PNG_BASE64_PREFIX, runToolImageTurn, writeToolImage } from './toolImages'
+import { sniffImageDimensionsFromBytes } from '../../../src/lib/imageDimensions'
+import { readPngChunks } from './png'
+import { expectImageDataUriInRequest, expectPngInRequest, PNG_BASE64_PREFIX, runToolImageTurn, solidPngBytes, writeSolidPng, writeToolImage } from './toolImages'
 
 /** The browser operations of the mocked UI helpers, in call order. */
 const browser = vi.hoisted(() => ({ events: [] as string[] }))
@@ -104,6 +107,37 @@ describe('writeToolImage', () => {
   it('keeps the marker in the file name so a tool row can name it', () => {
     expect(writeToolImage(workingDir, 'kimi-77')).toBe('tool-image-kimi-77.png')
     expect(writeToolImage(workingDir, 'codex-77')).toBe('tool-image-codex-77.png')
+  })
+})
+
+describe('solidPngBytes', () => {
+  it('states its size in a header that the app reads', () => {
+    expect(sniffImageDimensionsFromBytes(solidPngBytes(800, 600))).toEqual({ width: 800, height: 600 })
+  })
+
+  it('holds one scanline for each row, with one byte for each pixel after the filter type', () => {
+    const chunks = readPngChunks(solidPngBytes(5, 3))
+    expect(chunks.map(chunk => chunk.type)).toEqual(['IHDR', 'IDAT', 'IEND'])
+    const scanlines = inflateSync(chunks[1]!.data)
+    expect(scanlines).toHaveLength((5 + 1) * 3)
+    // Each scanline starts with the filter type 0.
+    expect([scanlines[0], scanlines[6], scanlines[12]]).toEqual([0, 0, 0])
+  })
+
+  it.each([
+    [0, 600],
+    [800, -1],
+    [1.5, 600],
+  ])('refuses the size %s by %s', (width, height) => {
+    expect(() => solidPngBytes(width, height)).toThrow('positive integers')
+  })
+})
+
+describe('writeSolidPng', () => {
+  it('writes the PNG under the working directory', () => {
+    writeSolidPng(workingDir, 'picture.png', { width: 40, height: 30 })
+
+    expect(sniffImageDimensionsFromBytes(readFileSync(join(workingDir, 'picture.png')))).toEqual({ width: 40, height: 30 })
   })
 })
 

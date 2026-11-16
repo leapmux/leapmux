@@ -1,7 +1,7 @@
 import type { AsyncLocalKey, SyncLocalKey } from '~/lib/browserStorage'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { batchBrowserPrefWrites, loadBrowserPrefs, updateBrowserPref } from '~/lib/browserPreferences'
-import { accountStorageKey, accountStorageKeyPrefix, flushStorageWrites, hasStorageAccount, KEY_BROWSER_PREFS, KEY_CHANNEL_RELAY_SEQ, KEY_CLIENT_ID, KEY_KEY_PINS, LOCAL_KEY_SPECS, localStorageDropPrefix, localStorageGet, localStorageLoad, localStorageRemove, localStorageSet, localStorageStore, mirrorEntryForTests, onStorageAccountChange, PREFIX_EDITOR_DRAFT, resetStorageAccountForTests, SESSION_KEY_SPECS, sessionStorageClearForTests, sessionStorageGet, sessionStorageHas, sessionStorageRemove, sessionStorageSet, setStorageAccountForTests, storedKeyFor } from '~/lib/browserStorage'
+import { accountStorageKey, accountStorageKeyPrefix, flushStorageWrites, hasStorageAccount, KEY_BROWSER_PREFS, KEY_CHANNEL_RELAY_SEQ, KEY_CLIENT_ID, KEY_KEY_PINS, LOCAL_KEY_SPECS, localStorageDropPrefix, localStorageGet, localStorageLoad, localStorageRemove, localStorageSet, localStorageStore, mirrorEntryForTests, onStorageAccountChange, parseStoredKey, PREFIX_EDITOR_DRAFT, resetStorageAccountForTests, SESSION_KEY_SPECS, sessionStorageClearForTests, sessionStorageGet, sessionStorageHas, sessionStorageRemove, sessionStorageSet, setStorageAccountForTests, storedKeyFor } from '~/lib/browserStorage'
 import { TEST_USER_ID } from '~/test-support/crdtBridge'
 import { useTestStorage } from '~/test-support/persistentStorage'
 
@@ -603,5 +603,25 @@ describe('localStorageDropPrefix', () => {
 
   it('accepts an empty matching family', async () => {
     await expect(localStorageDropPrefix(`${PREFIX_EDITOR_DRAFT}absent-`)).resolves.toBeUndefined()
+  })
+})
+
+describe('parseStoredKey', () => {
+  it('reads the logical name of a device key and of an account key', () => {
+    expect(parseStoredKey('leapmux:chat-row-heights:agent-3')).toEqual({ scope: 'device', name: 'chat-row-heights:agent-3' })
+    expect(parseStoredKey('leapmux:u:alice:chat-row-heights:agent-1')).toEqual({ scope: 'account', name: 'chat-row-heights:agent-1' })
+  })
+
+  it('keeps each colon after the account segment in the name', () => {
+    expect(parseStoredKey('leapmux:u:alice:draft:chat-row-heights:agent-1')).toEqual({ scope: 'account', name: 'draft:chat-row-heights:agent-1' })
+  })
+
+  it('reads no part of the account id as the name, also for an id that looks like a name', () => {
+    expect(parseStoredKey('leapmux:u:chat-row-heights:browser-prefs')).toEqual({ scope: 'account', name: 'browser-prefs' })
+    expect(parseStoredKey(accountStorageKey('has:colon', 'browser-prefs'))).toEqual({ scope: 'account', name: 'browser-prefs' })
+  })
+
+  it('returns null for a key of another family', () => {
+    expect(parseStoredKey('other:chat-row-heights:agent-1')).toBeNull()
   })
 })

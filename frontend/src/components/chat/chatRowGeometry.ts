@@ -1,9 +1,9 @@
 /**
  * Shared row-render geometry metadata used before a row mounts.
  *
- * Pixel height estimation is intentionally absent: row heights come from
- * visible/hidden DOM measurement plus the virtualizer's generic unknown-row
- * fallback. This module carries the identifiers that let caches know when a
+ * Pixel height estimation is intentionally absent: a row height comes from the
+ * DOM measurement of the row in the list or of its hidden copy, and a row joins
+ * the list only after it is measured. This module carries the identifiers that let caches know when a
  * previously measured DOM height is stale, plus the few fixed constants that
  * the offset map and the stylesheet must agree on.
  */

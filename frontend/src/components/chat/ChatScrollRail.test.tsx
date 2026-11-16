@@ -1,5 +1,5 @@
+import type { ChatRowItem } from './chatRowItem'
 import type { ChatScrollRailProps } from './ChatScrollRail'
-import type { VirtualItem } from './useChatVirtualizer'
 import type { ChatRailData } from '~/stores/chatMessageMarks'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
@@ -89,14 +89,14 @@ function railGeometry(overrides: Partial<ChatScrollRailProps['geometry']> = {}):
   }
 }
 
-// Accepts flat rail-field overrides (loaded/minSeq/maxSeq/marks/window*) for test convenience and
+// Accepts flat rail-field overrides (loaded/minSeq/maxSeq/marks) for test convenience and
 // assembles them into the single `rail: ChatRailData` prop, so existing `baseProps({ minSeq, maxSeq,
 // marks })` call sites keep working after the prop shape moved to a ChatRailData object.
 type BasePropsOverrides = Partial<Omit<ChatScrollRailProps, 'rail'>> & Partial<ChatRailData>
 
 function baseProps(overrides: BasePropsOverrides = {}): ChatScrollRailProps {
-  const items: VirtualItem[] = [1n, 2n, 3n, 4n, 5n].map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
-  const { loaded, minSeq, maxSeq, marks, windowFirstSeq, windowLastSeq, hidden, ...rest } = overrides
+  const items: ChatRowItem[] = [1n, 2n, 3n, 4n, 5n].map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
+  const { loaded, minSeq, maxSeq, marks, hidden, ...rest } = overrides
   const rail: ChatRailData = {
     loaded: loaded ?? true,
     minSeq: minSeq ?? 1n,
@@ -105,8 +105,6 @@ function baseProps(overrides: BasePropsOverrides = {}): ChatScrollRailProps {
       { seq: 2n, type: MarkType.USER_MESSAGE },
       { seq: 4n, type: MarkType.CONTROL_RESPONSE },
     ],
-    windowFirstSeq: windowFirstSeq ?? 1n,
-    windowLastSeq: windowLastSeq ?? 5n,
   }
   const geometry = rest.geometry ?? railGeometry()
   // `hidden` is now resolved by the host (ChatView), not the rail. Default it here the same way
@@ -753,8 +751,6 @@ describe('ChatScrollRail', () => {
         previewScrollTo,
         maxSeq: 100_000n,
         marks: [],
-        windowFirstSeq: 99_000n,
-        windowLastSeq: 100_000n,
         hasMoreOlder: true,
       })}
       />
@@ -895,14 +891,12 @@ describe('ChatScrollRail', () => {
     vi.useFakeTimers()
     installImmediateRaf()
     const onJumpToSeq = vi.fn()
-    // A long history whose loaded window holds only its tail (seqs 1..5 of 1..100000).
+    // A long history whose list holds only its first five rows (seqs 1..5 of 1..100000).
     const { container } = render(() => (
       <ChatScrollRail {...baseProps({
         onJumpToSeq,
         maxSeq: 100_000n,
         marks: [],
-        windowFirstSeq: 99_000n,
-        windowLastSeq: 100_000n,
         hasMoreOlder: true,
       })}
       />
@@ -1193,7 +1187,7 @@ describe('ChatScrollRail', () => {
 
   it('hides the rail when the whole conversation is loaded and fits (thumb would be full)', () => {
     // clientHeight (400) >= totalHeight requires content that fits; use a short total.
-    const items: VirtualItem[] = [1n, 2n].map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
+    const items: ChatRowItem[] = [1n, 2n].map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
     const { container } = render(() => (
       <ChatScrollRail
         {...baseProps({
@@ -1205,8 +1199,6 @@ describe('ChatScrollRail', () => {
           scrollEl: makeScrollEl(0, 400),
           minSeq: 1n,
           maxSeq: 2n,
-          windowFirstSeq: 1n,
-          windowLastSeq: 2n,
           hasMoreOlder: false,
           hasMoreNewer: false,
         })}
@@ -1222,7 +1214,7 @@ describe('ChatScrollRail', () => {
     // but the content overflows the viewport in PIXELS (2020px > 400px), so a scrollbar IS
     // needed. The rail must stay visible -- else, with the native scrollbar hidden by
     // hideNativeScrollbar, the viewport would have no usable scrollbar at all.
-    const items: VirtualItem[] = [1n, 1000n].map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
+    const items: ChatRowItem[] = [1n, 1000n].map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
     const { container } = render(() => (
       <ChatScrollRail
         {...baseProps({
@@ -1234,8 +1226,6 @@ describe('ChatScrollRail', () => {
           scrollEl: makeScrollEl(0, 2020),
           minSeq: 1n,
           maxSeq: 1000n,
-          windowFirstSeq: 1n,
-          windowLastSeq: 1000n,
           hasMoreOlder: false,
           hasMoreNewer: false,
         })}
@@ -1249,7 +1239,7 @@ describe('ChatScrollRail', () => {
     // (!hasMoreOlder && !hasMoreNewer). Here the loaded window fits the viewport in pixels
     // (200px < 400px) yet older history exists off-window, so the rail must stay visible --
     // it is the only way to jump into that unloaded history.
-    const items: VirtualItem[] = [10n, 11n, 12n, 13n, 14n].map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
+    const items: ChatRowItem[] = [10n, 11n, 12n, 13n, 14n].map((seq, i) => ({ id: `m${i}`, hasSpanLines: false, seq }))
     const { container } = render(() => (
       <ChatScrollRail
         {...baseProps({
@@ -1261,8 +1251,6 @@ describe('ChatScrollRail', () => {
           scrollEl: makeScrollEl(0, 400),
           minSeq: 1n, // whole-history floor is far below the loaded window
           maxSeq: 14n,
-          windowFirstSeq: 10n,
-          windowLastSeq: 14n,
           hasMoreOlder: true,
           hasMoreNewer: false,
         })}

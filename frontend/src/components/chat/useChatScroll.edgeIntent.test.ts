@@ -3,7 +3,7 @@ import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 
 import { useChatScroll } from './useChatScroll'
-import { installScrollTestEnv, makeFakeScrollDiv, makeStubVirtualizer } from './useChatScroll.testkit'
+import { installScrollTestEnv, makeFakeScrollDiv, makeStubVirtualizer, withStaticAdmission } from './useChatScroll.testkit'
 
 installScrollTestEnv()
 
@@ -16,14 +16,14 @@ describe('useChatScroll explicit edge-intent tolerance', () => {
     const [messages] = createSignal<AgentChatMessage[]>([])
     let olderLoads = 0
     let newerLoads = 0
-    const hook = useChatScroll({
+    const hook = useChatScroll(withStaticAdmission({
       virtualizer: makeStubVirtualizer(),
       messages,
       hasOlderMessages: () => true,
       hasNewerMessages: () => true,
       onLoadOlderMessages: () => { olderLoads++ },
       onLoadNewerMessages: () => { newerLoads++ },
-    })
+    }))
     hook.attachListRef(div.el)
     return {
       hook,
@@ -73,12 +73,12 @@ describe('useChatScroll overscroll-at-top drag', () => {
     div.setScrollTop(scrollTop)
     const [messages] = createSignal<AgentChatMessage[]>([])
     let olderLoads = 0
-    const hook = useChatScroll({
+    const hook = useChatScroll(withStaticAdmission({
       virtualizer: makeStubVirtualizer(),
       messages,
       hasOlderMessages: () => true,
       onLoadOlderMessages: () => { olderLoads++ },
-    })
+    }))
     hook.attachListRef(div.el)
     return {
       hook,

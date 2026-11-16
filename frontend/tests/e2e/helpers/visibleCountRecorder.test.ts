@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { installVisibleCountRecorder, maxVisibleCountDuring } from './visibleCountRecorder'
 
 const SCOPE = { container: '.list', item: '.leaf' }
@@ -99,31 +99,24 @@ describe('installVisibleCountRecorder', () => {
 })
 
 describe('maxVisibleCountDuring', () => {
-  /** A page and a DevTools session that record the order of the protocol calls and the navigation. */
-  function fakePage(options: { record?: unknown, navigate?: () => Promise<void> } = {}) {
+  /**
+   * A page that records the order of the init script calls, the navigation, and the read. With `addFailure`, the page
+   * refuses the init script.
+   */
+  function fakePage(options: { record?: unknown, navigate?: () => Promise<void>, addFailure?: Error } = {}) {
     const events: string[] = []
-    const cdp = {
-      send: vi.fn(async (method: string, params?: { source?: string, identifier?: string }) => {
-        events.push(method)
-        if (method === 'Page.enable') {
-          expect(params).toBeUndefined()
-          return {}
-        }
-        if (method === 'Page.addScriptToEvaluateOnNewDocument') {
-          expect(params?.source).toContain(JSON.stringify(SCOPE))
-          return { identifier: 'script-1' }
-        }
-        expect(params).toEqual({ identifier: 'script-1' })
-        return {}
-      }),
-      detach: vi.fn(async () => {
-        events.push('detach')
-      }),
-    }
     const page = {
-      context: () => ({
-        newCDPSession: async () => cdp,
-      }),
+      addInitScript: async (script: { content: string }) => {
+        events.push('addInitScript')
+        expect(script.content).toContain(JSON.stringify(SCOPE))
+        if (options.addFailure !== undefined)
+          throw options.addFailure
+        return {
+          dispose: async () => {
+            events.push('dispose')
+          },
+        }
+      },
       evaluate: async (read: (name: string) => number, name: string) => {
         events.push('read')
         Object.defineProperty(window, name, {
@@ -142,22 +135,18 @@ describe('maxVisibleCountDuring', () => {
     return { page, events, navigate }
   }
 
-  // Chromium runs a script that a session adds only when that session enabled its Page domain. A new session starts
-  // with the domain off, and Playwright enables it only on its own sessions.
-  it('enables the Page domain of its session, adds the recorder, navigates, reads the count, and removes the recorder', async () => {
+  it('adds the recorder, navigates, reads the count, and removes the recorder', async () => {
     const { page, events, navigate } = fakePage()
     expect(await maxVisibleCountDuring(page, SCOPE, navigate)).toBe(2)
     expect(events).toEqual([
-      'Page.enable',
-      'Page.addScriptToEvaluateOnNewDocument',
+      'addInitScript',
       'navigate',
       'read',
-      'Page.removeScriptToEvaluateOnNewDocument',
-      'detach',
+      'dispose',
     ])
   })
 
-  it('removes the recorder and detaches when the navigation fails', async () => {
+  it('removes the recorder when the navigation fails', async () => {
     const failure = new Error('the reload failed')
     const { page, events, navigate } = fakePage({
       navigate: async () => {
@@ -166,23 +155,34 @@ describe('maxVisibleCountDuring', () => {
     })
     await expect(maxVisibleCountDuring(page, SCOPE, navigate)).rejects.toBe(failure)
     expect(events).toEqual([
-      'Page.enable',
-      'Page.addScriptToEvaluateOnNewDocument',
+      'addInitScript',
       'navigate',
-      'Page.removeScriptToEvaluateOnNewDocument',
-      'detach',
+      'dispose',
     ])
   })
 
+  it('does not navigate when the page refuses the recorder', async () => {
+    const failure = new Error('the page is closed')
+    const { page, events, navigate } = fakePage({ addFailure: failure })
+    await expect(maxVisibleCountDuring(page, SCOPE, navigate)).rejects.toBe(failure)
+    expect(events).toEqual(['addInitScript'])
+  })
+
   it.each([undefined, null, {}])('fails when the page holds no count (%j), as when the navigation started no new document', async (record) => {
-    const { page, navigate } = fakePage({ record })
+    const { page, events, navigate } = fakePage({ record })
     await expect(maxVisibleCountDuring(page, SCOPE, navigate)).rejects.toThrow('did not start a new document')
+    expect(events).toEqual([
+      'addInitScript',
+      'navigate',
+      'read',
+      'dispose',
+    ])
   })
 
   it.each([
     { container: '', item: '.leaf' },
     { container: '.list', item: ' ' },
-  ])('refuses the scope %j before it opens a session', async (scope) => {
+  ])('refuses the scope %j before it adds the recorder', async (scope) => {
     const { page, events, navigate } = fakePage()
     await expect(maxVisibleCountDuring(page, scope, navigate)).rejects.toThrow('needs a container selector and an item selector')
     expect(events).toEqual([])

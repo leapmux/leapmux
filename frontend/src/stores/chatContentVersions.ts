@@ -9,7 +9,7 @@ import { clearStaleKeys } from './clearStaleKeys'
 // to (seq / id / spanId) untouched -- so the memo would NOT wake on its own. Reading
 // the version reactively per row is what makes the bump wake the memo to re-check
 // freshness (a tool_result also folds in its REQUEST's version, since a request body
-// replacement must bust the result's stale classification / estimate).
+// replacement must bust the result's stale classification, and the height key that holds it).
 //
 // Keyed by message id and written ONLY by that rare merge, so it stays tiny; an id-keyed
 // reactive map with bump + batched-guarded forget, the same per-id-side-state-reclaimed

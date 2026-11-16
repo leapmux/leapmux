@@ -67,35 +67,81 @@ export function sniffImageDimensionsFromDataUrl(dataUrl: string): ImageDimension
 
 /** Sniff intrinsic dimensions from a bare base64 payload. */
 export function sniffImageDimensionsFromBase64(base64: string): ImageDimensions | null {
-  // Cheap fixed-offset formats first; fall through to the JPEG scan only
-  // when the signature says JPEG (0xFF 0xD8), so non-JPEG payloads never
-  // pay the larger decode budget.
   const head = decodeBase64Prefix(base64, FIXED_HEADER_BUDGET_BYTES)
   if (!head)
     return null
+  return sniffImageDimensions(head, budgetBytes => decodeUpToBudget(base64, head, budgetBytes))
+}
+
+/**
+ * Sniff intrinsic dimensions from the first bytes of an image file. `bytes` need
+ * not hold the whole file: each parser returns null when the bytes end before
+ * the size. Gives the size that `sniffImageDimensionsFromBase64` gives for the
+ * same bytes.
+ */
+export function sniffImageDimensionsFromBytes(bytes: Uint8Array): ImageDimensions | null {
+  // The same budgets as the base64 entry point, so both read the same bytes.
+  return sniffImageDimensions(
+    bytes.subarray(0, FIXED_HEADER_BUDGET_BYTES),
+    budgetBytes => bytes.subarray(0, budgetBytes),
+  )
+}
+
+/**
+ * How many of the first bytes of an image the sniffer scans for its size, for a
+ * format whose size lies behind a header of no fixed length: a JPEG, an AVIF, or
+ * another HEIF file. `bytes` holds the start of the image. Null for every other
+ * format: its first FIXED_HEADER_BUDGET_BYTES give the size, or nothing does.
+ *
+ * A caller that holds fewer bytes of such an image than this number reads up to
+ * this number, and no more: the sniffer scans nothing beyond it.
+ */
+export function imageHeaderBytesNeeded(bytes: Uint8Array): number | null {
+  return scannedFormat(bytes.subarray(0, FIXED_HEADER_BUDGET_BYTES))?.budgetBytes ?? null
+}
+
+/** A format whose size lies behind a header of no fixed length. */
+interface ScannedFormat {
+  /** How many of the first bytes of the image `parse` scans. */
+  budgetBytes: number
+  parse: (bytes: Uint8Array) => ImageDimensions | null
+}
+
+/**
+ * The scanned format that the signature in `head` states. Null for a format with
+ * a fixed header, and for bytes that start no image that the sniffer reads.
+ */
+function scannedFormat(head: Uint8Array): ScannedFormat | null {
+  // JPEG: the start-of-image marker (0xFF 0xD8).
+  if (head.length >= 2 && head[0] === 0xFF && head[1] === 0xD8)
+    return { budgetBytes: JPEG_SCAN_BUDGET_BYTES, parse: parseJpeg }
+  // ISOBMFF (AVIF/HEIF): an `ftyp` box type at offset 4.
+  if (head.length >= 12 && head[4] === 0x66 && head[5] === 0x74 && head[6] === 0x79 && head[7] === 0x70)
+    return { budgetBytes: ISOBMFF_SCAN_BUDGET_BYTES, parse: parseIsobmff }
+  return null
+}
+
+/**
+ * Run the format parsers on `head`, the first FIXED_HEADER_BUDGET_BYTES of the
+ * image. `upTo` gives the first `budgetBytes` of the image for a format whose
+ * size lies behind a header of no fixed length, or null when it cannot.
+ */
+function sniffImageDimensions(head: Uint8Array, upTo: (budgetBytes: number) => Uint8Array | null): ImageDimensions | null {
+  // Cheap fixed-offset formats first. Only an image whose signature states a
+  // scanned format pays the larger budget of that format.
   const fixed = parsePng(head) ?? parseGif(head) ?? parseWebp(head)
   if (fixed)
     return sane(fixed)
-  if (head.length >= 2 && head[0] === 0xFF && head[1] === 0xD8) {
-    const jpegBytes = decodeUpToBudget(base64, head, JPEG_SCAN_BUDGET_BYTES)
-    if (!jpegBytes)
-      return null
-    const jpeg = parseJpeg(jpegBytes)
-    return jpeg
-      ? sane(jpeg)
-      : null
-  }
-  // ISOBMFF (AVIF/HEIF): an `ftyp` box type at offset 4.
-  if (head.length >= 12 && head[4] === 0x66 && head[5] === 0x74 && head[6] === 0x79 && head[7] === 0x70) {
-    const boxBytes = decodeUpToBudget(base64, head, ISOBMFF_SCAN_BUDGET_BYTES)
-    if (!boxBytes)
-      return null
-    const isobmff = parseIsobmff(boxBytes)
-    return isobmff
-      ? sane(isobmff)
-      : null
-  }
-  return null
+  const format = scannedFormat(head)
+  if (!format)
+    return null
+  const bytes = upTo(format.budgetBytes)
+  const scanned = bytes
+    ? format.parse(bytes)
+    : null
+  return scanned
+    ? sane(scanned)
+    : null
 }
 
 /** Re-decode with a larger budget, reusing the head when the payload is short. */

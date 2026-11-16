@@ -1,6 +1,7 @@
 import type { Accessor, Setter } from 'solid-js'
 import { createEffect, createMemo, createSignal, getListener, on, onCleanup, untrack } from 'solid-js'
 import { setWith, setWithout } from '~/lib/immutableCollections'
+import { createOwnedTimers } from '~/lib/ownedTimers'
 
 // ---------------------------------------------------------------------------
 // Render readiness
@@ -60,6 +61,59 @@ export function useRenderReadiness(
   const readiness = untrack(() => context()?.readiness)
   readiness?.track(pending)
   return readiness === undefined
+}
+
+/**
+ * The longest time that a body reports one request to its readiness scope as pending.
+ *
+ * A body can wait for a Worker request before it draws its final content: the read of
+ * an image file, or the lookup of the other half of a tool call. Such a request ends
+ * only when the Worker answers or the transport gives up, which can take a minute. After
+ * the limit, the row takes the height that it has, and it draws again when the content
+ * arrives.
+ *
+ * The limit counts for each wait of a copy: a new copy of the row, or a new message of the
+ * bubble, starts a new limit, also when it joins a request that still runs. A row whose
+ * content changes more often than the limit therefore waits until that request settles.
+ *
+ * The user asked for one limit for both waits of a row, so the wait of a hidden copy for
+ * its images takes this value (see PREMEASURE_IMAGE_SETTLE_LIMIT_MS).
+ */
+export const READINESS_REQUEST_LIMIT_MS = 10_000
+
+/**
+ * Report the pending state of the requests of one body to the readiness scope that its
+ * render context carries (see useRenderReadiness).
+ * `begin()` marks one request as pending, and returns the function that ends it.
+ * A request that did not end within READINESS_REQUEST_LIMIT_MS stops counting.
+ * The limit ends only the report: it aborts no request.
+ * Call it once, while the body sets up, within the reactive owner of the body: its
+ * cleanup clears each timer.
+ */
+export function useRequestReadiness(
+  context: () => { readiness?: RenderReadiness | undefined } | undefined,
+): { pending: Accessor<boolean>, begin: () => () => void } {
+  const [pendingCount, setPendingCount] = createSignal(0)
+  const limitTimers = createOwnedTimers()
+  const begin = (): (() => void) => {
+    // The function that cancels the timer of the limit while the request counts, and
+    // undefined once the request ended.
+    let cancelLimit: (() => void) | undefined
+    // Ends the request once: by its caller, or by the limit, whichever comes first.
+    const end = (): void => {
+      if (cancelLimit === undefined)
+        return
+      cancelLimit()
+      cancelLimit = undefined
+      setPendingCount(count => count - 1)
+    }
+    cancelLimit = limitTimers.after(READINESS_REQUEST_LIMIT_MS, end)
+    setPendingCount(count => count + 1)
+    return end
+  }
+  const pending = (): boolean => pendingCount() > 0
+  useRenderReadiness(context, pending)
+  return { pending, begin }
 }
 
 /**

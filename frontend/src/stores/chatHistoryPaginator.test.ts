@@ -15,7 +15,7 @@ vi.mock('~/api/workerRpc', () => ({
   },
 }))
 
-const { createHistoryPaginator, linkWatchSignal } = await import('./chatHistoryPaginator')
+const { createHistoryFetchRunner, createHistoryPaginator, linkWatchSignal } = await import('./chatHistoryPaginator')
 const { MessagePageAnchor, MessageSource } = await import('~/generated/proto/leapmux/v1/agent_pb')
 
 // The harness's cap/ceiling, distinct so an assertion can prove WHICH was used. The
@@ -97,25 +97,15 @@ function harness(init: {
   const markBackgroundTasksLoadFailed = vi.fn()
   const replaceGoal = vi.fn()
 
+  // The store's wiring: one runner and one catch-up map, which the runner and the
+  // paginator share.
+  const catchUpAbort = new Map<string, AbortController>()
+  const historyFetches = createHistoryFetchRunner({ setState, catchUpAbort })
   const paginator = createHistoryPaginator({
     state,
     setState,
-    catchUpAbort: new Map(),
-    // Mirror the store's beginHistoryFetch: a fresh controller per fetch, linked to
-    // the watch signal so a reconcile-driven fetch aborts on a workspace switch.
-    runHistoryFetch: async (agentId, flag, body, watchSignal) => {
-      const controller = new AbortController()
-      const cleanupWatchSignal = linkWatchSignal(controller, watchSignal)
-      setState(flag, agentId, true)
-      try {
-        await body(controller.signal)
-      }
-      finally {
-        cleanupWatchSignal()
-        if (!controller.signal.aborted)
-          setState(flag, agentId, false)
-      }
-    },
+    catchUpAbort,
+    runHistoryFetch: historyFetches.runHistoryFetch,
     mergeFetchedMessages,
     applyMessages,
     liveTail: {
@@ -144,6 +134,8 @@ function harness(init: {
   return {
     state,
     setState,
+    catchUpAbort,
+    historyFetches,
     paginator,
     trimNewestEnd,
     trimOldestEnd,
@@ -380,6 +372,32 @@ describe('chatHistoryPaginator', () => {
         makeMsg(10n),
       ], false)
     })
+
+    it('frees the fetch flag when its abort signal ends it with no superseding fetch', async () => {
+      // The reader abandons the jump, and no other history fetch starts. This fetch still
+      // owns the flag, so it must clear the flag. Otherwise loadNewerPage, which returns
+      // while the flag is set, loads no page until an unrelated history fetch resets it.
+      const h = harness({
+        messages: [
+          makeMsg(1n),
+        ],
+        caughtUp: () => true,
+      })
+      // A request that ends only when its signal aborts, as a request over a slow channel does.
+      listAgentMessages.mockImplementation((_w: string, _req: unknown, options?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          options?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+        }))
+      const reader = new AbortController()
+
+      const jump = h.paginator.jumpToLatestMessages('w', 'a', reader.signal)
+      expect(h.state.fetchingNewer.a).toBe(true)
+      reader.abort()
+
+      await expect(jump).resolves.toBe(false)
+      expect(h.state.fetchingNewer.a).toBe(false)
+      expect(h.applyMessages).not.toHaveBeenCalled()
+    })
   })
 
   describe('jumpToMessagesAroundSeq centers the window on a seq', () => {
@@ -410,7 +428,8 @@ describe('chatHistoryPaginator', () => {
         ], false),
       )
 
-      await h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n)
+      // The jump reports that its page replaced the window.
+      await expect(h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n)).resolves.toBe(true)
 
       // Cursor values: BEFORE is exclusive at seq+1 (includes the target), AFTER at seq.
       expect(listAgentMessages).toHaveBeenCalledWith('w', expect.objectContaining({ anchor: MessagePageAnchor.BEFORE, cursorSeq: 6n }), expect.anything())
@@ -541,7 +560,7 @@ describe('chatHistoryPaginator', () => {
       expect(signals.every((sig?: AbortSignal) => sig?.aborted === true)).toBe(true)
 
       releaseBefore?.()
-      await jump
+      await expect(jump).resolves.toBe(false)
       expect(h.applyMessages).not.toHaveBeenCalled() // and nothing swaps the window afterwards
     })
 
@@ -560,7 +579,7 @@ describe('chatHistoryPaginator', () => {
         throw new DOMException('aborted', 'AbortError')
       })
 
-      await expect(h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n, watch.signal)).resolves.toBeUndefined()
+      await expect(h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n, watch.signal)).resolves.toBe(false)
       expect(h.applyMessages).not.toHaveBeenCalled()
     })
 
@@ -573,7 +592,8 @@ describe('chatHistoryPaginator', () => {
       })
       routeByAnchor(page([], false), page([], false))
 
-      await h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n)
+      // The empty window replaced the window also, so the jump reports it as applied.
+      await expect(h.paginator.jumpToMessagesAroundSeq('w', 'a', 5n)).resolves.toBe(true)
 
       expect(h.applyMessages).toHaveBeenCalledWith('a', [], false)
       expect(h.resetToEmptyIfStale).toHaveBeenCalledWith('a', expect.anything())
@@ -826,6 +846,118 @@ describe('linkWatchSignal', () => {
     const controller = new AbortController()
     expect(() => linkWatchSignal(controller, undefined)).not.toThrow()
     expect(controller.signal.aborted).toBe(false)
+  })
+})
+
+describe('createHistoryFetchRunner', () => {
+  /** Start a history fetch whose body waits until the test releases it with `value`. */
+  function startHeldFetch<T>(
+    runner: ReturnType<typeof createHistoryFetchRunner>,
+    agentId: string,
+    flag: 'fetchingOlder' | 'fetchingNewer',
+    abortSignal?: AbortSignal,
+  ) {
+    let signal: AbortSignal | undefined
+    let release: (value: T) => void = () => {}
+    const done = runner.runHistoryFetch(agentId, flag, (bodySignal) => {
+      signal = bodySignal
+      return new Promise<T>((resolve) => {
+        release = resolve
+      })
+    }, abortSignal)
+    return {
+      done,
+      signal: () => signal,
+      release: (value: T) => release(value),
+    }
+  }
+
+  it('supersedes the previous fetch and the catch-up loop, and keeps the flag of the newest fetch', async () => {
+    const h = harness({
+      messages: [
+        makeMsg(1n),
+      ],
+    })
+    const catchUp = new AbortController()
+    h.catchUpAbort.set('a', catchUp)
+    h.setState('tailFillDeferred', 'a', true)
+
+    const older = startHeldFetch<string>(h.historyFetches, 'a', 'fetchingOlder')
+    // A user fetch ends the background catch-up and its deferred fill.
+    expect(catchUp.signal.aborted).toBe(true)
+    expect(h.state.tailFillDeferred.a).toBe(false)
+    expect(h.state.fetchingOlder.a).toBe(true)
+
+    // A fetch in the other direction aborts it and resets its flag.
+    const newer = startHeldFetch<string>(h.historyFetches, 'a', 'fetchingNewer')
+    expect(older.signal()?.aborted).toBe(true)
+    expect(h.state.fetchingOlder.a).toBe(false)
+    expect(h.state.fetchingNewer.a).toBe(true)
+
+    // A fetch in the same direction aborts it also. The superseded fetch settles first.
+    // It no longer owns the fetch, so it leaves the flag of the newest fetch set.
+    const newest = startHeldFetch<string>(h.historyFetches, 'a', 'fetchingNewer')
+    expect(newer.signal()?.aborted).toBe(true)
+    expect(newest.signal()?.aborted).toBe(false)
+    newer.release('newer')
+    await expect(newer.done).resolves.toBe('newer')
+    expect(h.state.fetchingNewer.a).toBe(true)
+
+    older.release('older')
+    await expect(older.done).resolves.toBe('older')
+    newest.release('newest')
+    await expect(newest.done).resolves.toBe('newest')
+    expect(h.state.fetchingOlder.a).toBe(false)
+    expect(h.state.fetchingNewer.a).toBe(false)
+  })
+
+  it('clears its flag and passes the rejection through when its body fails', async () => {
+    const h = harness({
+      messages: [
+        makeMsg(1n),
+      ],
+    })
+
+    await expect(h.historyFetches.runHistoryFetch('a', 'fetchingOlder', async () => {
+      throw new Error('the worker is unavailable')
+    })).rejects.toThrow('the worker is unavailable')
+
+    expect(h.state.fetchingOlder.a).toBe(false)
+  })
+
+  it('aborts the fetch of one agent and drops its link to the abort signal in forget', async () => {
+    const h = harness({
+      messages: [
+        makeMsg(1n),
+      ],
+    })
+    const reader = new AbortController()
+    const remove = vi.spyOn(reader.signal, 'removeEventListener')
+    const forgotten = startHeldFetch<void>(h.historyFetches, 'a', 'fetchingNewer', reader.signal)
+    const other = startHeldFetch<void>(h.historyFetches, 'b', 'fetchingNewer')
+
+    h.historyFetches.forget('a')
+
+    expect(forgotten.signal()?.aborted).toBe(true)
+    expect(remove).toHaveBeenCalledWith('abort', expect.any(Function))
+    expect(other.signal()?.aborted).toBe(false)
+
+    // The agent opens again with the same id. The forgotten fetch settles late, and
+    // it leaves the flag of the new fetch set.
+    const reopened = startHeldFetch<void>(h.historyFetches, 'a', 'fetchingNewer')
+    forgotten.release()
+    await forgotten.done
+    expect(reopened.signal()?.aborted).toBe(false)
+    expect(h.state.fetchingNewer.a).toBe(true)
+
+    reopened.release()
+    other.release()
+    await Promise.all([
+      reopened.done,
+      other.done,
+    ])
+    expect(h.state.fetchingNewer.a).toBe(false)
+    expect(h.state.fetchingNewer.b).toBe(false)
   })
 })
 

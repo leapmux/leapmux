@@ -5,11 +5,11 @@
 // MessageBubble supplies reactive members as getters or functions. Spreading that
 // assembly would freeze one pass, so a streaming row would draw stale output.
 
+import type { FileImageSource } from './fileImageResolver'
 import type { MessageRenderCache } from './messageRenderCache'
 import type { MessageUiKey } from './messageUiKeys'
 import type { RenderReadiness } from './renderReadiness'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
-import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
 
@@ -42,6 +42,9 @@ export interface MarkdownRenderContext {
    *   worker, and its word highlights follow, so it does not wait for the worker.
    * - A diff view (DiffView) until the last of its lines mounts, because it
    *   mounts them in slices of main-thread work.
+   * - A file image (ImageResultView) while it does not know the height of its
+   *   picture: while its size read runs, and while it reads an image whose size no
+   *   source gives.
    *
    * A diff view that switches between unified and split reports here too, as
    * replacing its content (see RenderReadiness.trackReplacing): the copy keeps
@@ -105,17 +108,25 @@ export interface PathRenderContext {
  * Loading and opening the images one row drew.
  *
  * Assembled where the message and the agent are both in scope, so a renderer only
- * states WHICH image. `deferLoad` gates the read itself: a hidden premeasure pass
- * and an offscreen row both hold the file read until the row is real.
+ * states WHICH image. `deferLoad` holds the read of an image whose size is known: a
+ * hidden premeasure pass and a row far from the view both draw the box of the image,
+ * and wait until the row is real. The read of the image SIZE is never deferred: the
+ * row reserves the image box from it, so the hidden copy measures the height that
+ * the row keeps. An image whose size no source gives is never deferred either: only
+ * the image gives the height of its row, so every copy of the row reads it at once.
  */
 export interface ImageRenderActions {
-  /** Read a file-backed image's bytes; `refresh` re-reads past the cache. */
-  loadFileImage: (filePath: string, options?: { refresh?: boolean }) => Promise<ImageResultSource | undefined>
-  /** The already-read copy of a file-backed image, when one is held. */
-  cachedFileImage: (filePath: string) => ImageResultSource | undefined
-  /** Open one image this row drew in its own tab. */
-  openImage: (image: { index: number, filePath?: string, title?: string }) => void
-  /** True while the read must wait (hidden premeasure, offscreen row). */
+  /** The file-backed images of the row: their reads, and what the host holds of them. */
+  files: FileImageSource
+  /**
+   * Open one image this row drew in its own tab. Absent when the host has no handler:
+   * the image view then draws the image with no button (see ImageResultView).
+   */
+  openImage?: (image: { index: number, filePath?: string, title?: string }) => void
+  /**
+   * True while the read of an image whose size is known must wait: in a hidden
+   * premeasure pass, and in a row far from the view.
+   */
   deferLoad: () => boolean
   /** True while the pass is a hidden measurement, which decodes inline data eagerly. */
   premeasurePass: () => boolean
@@ -254,30 +265,28 @@ export function subagentsFrom(host: {
 }
 
 /**
- * Assemble {@link ImageRenderActions} from the file-image channel, the open
+ * Assemble {@link ImageRenderActions} from the image files of the row, the open
  * handler and the two load gates. THE one assembly, for the reason
  * {@link subagentsFrom} gives.
+ *
+ * Every member that a row always has is required, so a host cannot leave out a part
+ * and lose the box of its images with no error. A test takes the members that it does
+ * not set from `testImageActions` (`~/test-support/imageActions`).
  */
 export function imageActionsFrom(host: {
-  fileImage?: (filePath: string, options?: { refresh?: boolean }) => Promise<ImageResultSource | undefined>
-  cachedFileImage?: (filePath: string) => ImageResultSource | undefined
+  files: FileImageSource
   openImage?: (image: { index: number, filePath?: string, title?: string }) => void
-  /** True while the read must wait: hidden premeasure pass or offscreen row. */
-  deferLoad?: () => boolean
-  /** True while the pass is a hidden measurement. */
-  premeasurePass?: () => boolean
-} | undefined): ImageRenderActions | undefined {
-  const load = host?.fileImage
-  const cached = host?.cachedFileImage
-  const open = host?.openImage
-  const premeasure = host?.premeasurePass
-  if (load === undefined && cached === undefined && open === undefined && premeasure === undefined)
-    return undefined
+  /** See ImageRenderActions.deferLoad. */
+  deferLoad: () => boolean
+  /** See ImageRenderActions.premeasurePass. */
+  premeasurePass: () => boolean
+}): ImageRenderActions {
   return {
-    loadFileImage: load ?? (async () => undefined),
-    cachedFileImage: cached ?? (() => undefined),
-    openImage: open ?? (() => {}),
-    deferLoad: () => host?.deferLoad?.() === true,
-    premeasurePass: () => host?.premeasurePass?.() === true,
+    files: host.files,
+    ...(host.openImage !== undefined
+      ? { openImage: host.openImage }
+      : {}),
+    deferLoad: host.deferLoad,
+    premeasurePass: host.premeasurePass,
   }
 }

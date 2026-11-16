@@ -190,9 +190,22 @@ describe('placementScrollTop', () => {
   ])('places the content coordinate %s, at or above the content top, at the top of the scroller', (contentTop) => {
     const scrollTopOf = insetOf28()
 
-    expect(placementScrollTop(contentTop, scrollTopOf)).toBe(0)
+    expect(placementScrollTop(contentTop, scrollTopOf, true)).toBe(0)
 
     expect(scrollTopOf).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [0, 28],
+    [-8, 20],
+  ])('converts the content coordinate %s exactly, to %s, while loaded rows wait above the list', (contentTop, expected) => {
+    const scrollTopOf = insetOf28()
+
+    // The top of the list is not the top of the loaded rows: the inset above it is not the
+    // top of the history, so the row goes to its own place.
+    expect(placementScrollTop(contentTop, scrollTopOf, false)).toBe(expected)
+
+    expect(scrollTopOf).toHaveBeenCalledExactlyOnceWith(contentTop)
   })
 
   it.each([
@@ -202,8 +215,10 @@ describe('placementScrollTop', () => {
   ])('converts the content coordinate %s, below the content top, to %s', (contentTop, expected) => {
     const scrollTopOf = insetOf28()
 
-    expect(placementScrollTop(contentTop, scrollTopOf)).toBeCloseTo(expected, 9)
+    expect(placementScrollTop(contentTop, scrollTopOf, true)).toBeCloseTo(expected, 9)
+    expect(placementScrollTop(contentTop, scrollTopOf, false)).toBeCloseTo(expected, 9)
 
-    expect(scrollTopOf).toHaveBeenCalledExactlyOnceWith(contentTop)
+    expect(scrollTopOf).toHaveBeenCalledTimes(2)
+    expect(scrollTopOf).toHaveBeenCalledWith(contentTop)
   })
 })

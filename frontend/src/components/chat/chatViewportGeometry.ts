@@ -1,6 +1,6 @@
 /**
  * Pure viewport / layout geometry for the chat message list: design-token probing,
- * width bucketing, and the overscan-band policy. Extracted from ChatView so the
+ * the size observer, and the overscan-band policy. Extracted from ChatView so the
  * math is coupling-free (no component, no reactive read) and testable at its
  * boundaries, mirroring the other chat leaves (chatHeightShared, chatRowGeometry).
  */
@@ -24,20 +24,10 @@ export function measureSpaceToken(varName: string, fallback: number): number {
 }
 
 /**
- * Bucket a measured content width to the nearest 8px so scrollbar/sub-pixel jitter
- * doesn't storm the geom recompute (only unmeasured/off-screen rows need their
- * cached DOM height invalidated on a width change, but every 1px wobble would
- * still churn the memo).
- */
-export function bucketWidth(w: number): number {
-  return Math.round(w / 8) * 8
-}
-
-/**
  * A ResizeObserver wrapper for the message-list scroll container that reports its
- * content-box WIDTH (bucketed to 8px -- the bubble wrap width) and HEIGHT (rounded
- * -- the overscan viewport) to two callbacks. Owns the change-detection (per-axis
- * last-value dedup, so a measure that left an axis unchanged fires nothing) and
+ * content-box WIDTH (exact, as the browser lays it out -- the width of each row) and
+ * HEIGHT (rounded -- the overscan viewport) to two callbacks. Owns the change-detection
+ * (per-axis last-value dedup, so a measure that left an axis unchanged fires nothing) and
  * defers each write to a microtask (defense-in-depth against a write-during-observe
  * layout thrash). `observe` is a no-op when ResizeObserver is unavailable
  * (jsdom / older Safari) so callers don't branch. Carries values out via callbacks
@@ -64,7 +54,7 @@ export function createViewportSizeObserver(opts: {
   const ro = new ResizeObserver((entries) => {
     // contentRect avoids a forced layout read; `?? 0` tolerates a stub entry.
     const rect = entries[entries.length - 1]?.contentRect
-    const w = bucketWidth(rect?.width ?? 0)
+    const w = rect?.width ?? 0
     if (w !== lastWidth) {
       lastWidth = w
       queueMicrotask(() => {
@@ -91,11 +81,12 @@ export function createViewportSizeObserver(opts: {
 }
 
 /**
- * Viewport-relative overscan band: mount ~1.5 screenfuls of rows on EACH side of
- * the message-list viewport so a tall, never-measured row (e.g. a
- * syntax-highlighted diff) is mounted and measured BEFORE it scrolls into view --
- * shrinking the window where the generic fallback alone sizes the spacer, and
- * with it the first-encounter correction of the layout shift. Keyed off the LIST viewport height, NOT
+ * Viewport-relative overscan band: mount ~1.5 screenfuls of admitted rows on EACH side
+ * of the message-list viewport, so a scroll shows rendered rows, and each mounted row
+ * takes its first DOM read BEFORE it scrolls into view. That read can correct the
+ * height that a hidden copy measured for the row (the row stood behind a fling
+ * skeleton, or its copy waited for late content), and the layout shift then holds the
+ * view (see UseChatVirtualizerResult.showsHeight). Keyed off the LIST viewport height, NOT
  * window.innerHeight: ChatView renders inside tiles/splits, where the pane is
  * often a fraction of the window and a window-relative band would over-mount
  * badly. Floored for short panes and capped so a maximized pane can't mount an
@@ -104,16 +95,6 @@ export function createViewportSizeObserver(opts: {
 const OVERSCAN_FLOOR_PX = 800
 const OVERSCAN_VIEWPORT_RATIO = 1.5
 const OVERSCAN_CEIL_PX = 2400
-
-/**
- * Fallback wrap width (px) for the pre-measurement frame, before the content
- * ResizeObserver has reported the real list width (contentWidth() is 0). It only
- * needs to be a sane non-zero so the estimator's prose-wrap math never divides by
- * ~0 and inflates a row to a near-infinite line count; the first measured width
- * replaces it. Unrelated to the 800px overscan floor above -- same number,
- * different purpose.
- */
-export const PRE_MEASURE_WIDTH_PX = 800
 
 /**
  * Viewport-relative overscan in px: a ratio of the live viewport height, floored

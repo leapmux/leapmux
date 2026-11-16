@@ -57,7 +57,7 @@ export function ReadFileResultBody(props: {
   return (
     <div class={`${toolMessage}${collapsedClass()}`}>
       {/* Reminder/tag alerts render only when expanded, so the collapsed default
-          stays the body-only height the off-screen estimator assumes. */}
+          shows the body alone. */}
       <Show when={expanded()}>
         <For each={props.source.leading ?? []}>
           {(r) => {

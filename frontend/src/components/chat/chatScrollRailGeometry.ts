@@ -1,4 +1,4 @@
-import type { VirtualItem } from './useChatVirtualizer'
+import type { ChatRowItem } from './chatRowItem'
 import { largestIndexWhere } from '~/lib/binarySearch'
 import { clamp } from '~/lib/clamp'
 import { EDGE_INTENT_TOLERANCE_PX } from './chatScrollGeometry'
@@ -46,7 +46,7 @@ export function safeSeqDeltaNumber(delta: bigint): number | null {
 
 export interface SeqSpaceGeometry {
   /** Visible rows in ascending sequence order. */
-  items: readonly VirtualItem[]
+  items: readonly ChatRowItem[]
   /** Content-Y of the top of row `i` (i in [0, items.length]; == totalHeight at the end). */
   offsetOfIndex: (index: number) => number
   /** Total virtual content height in px. */
@@ -96,7 +96,7 @@ export interface SeqThumbInputs {
  * seqAtContentY / contentYForSeq / computeSeqThumb with a raw geometry, so the (n+1)-length
  * array is scanned a single time per geometry, not re-derived on every scroll frame.
  */
-export function rowStartSeqs(items: readonly VirtualItem[]): number[] | null {
+export function rowStartSeqs(items: readonly ChatRowItem[]): number[] | null {
   const n = items.length
   if (n === 0)
     return null

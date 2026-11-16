@@ -1,9 +1,11 @@
-import type { PersistableRowHeight, VirtualItem } from './useChatVirtualizer'
-import { createRoot, createSignal } from 'solid-js'
+import type { PersistableRowHeight, RowHeightCache } from './chatRowHeightCache'
+import type { ChatRowItem } from './chatRowItem'
+import { batch, createRoot, createSignal } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { localStorageDrop, localStorageLoad, localStorageStore, PREFIX_CHAT_ROW_HEIGHTS } from '~/lib/browserStorage'
 import { fnv1a32Hex } from '~/lib/stringDigest'
 import { useTestStorage } from '~/test-support/persistentStorage'
+import { createRowHeightCache } from './chatRowHeightCache'
 import { createRowHeightPersistence, PERSISTED_ROW_HEIGHTS_MAX, ROW_HEIGHT_SAVE_DEBOUNCE_MS, STORED_ROW_HEIGHTS_VERSION } from './chatRowHeightPersistence'
 
 // Row heights are on the ASYNCHRONOUS storage tier -- a stored payload is tens
@@ -52,7 +54,7 @@ interface StoredShape {
   rows: [string, string, number][]
 }
 
-function item(id: string, heightKey: string): VirtualItem {
+function item(id: string, heightKey: string): ChatRowItem {
   return { id, hasSpanLines: false, heightKey }
 }
 
@@ -75,46 +77,58 @@ describe('chatRowHeightPersistence', () => {
     localStorageDrop(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`)
   })
 
+  /**
+   * The persistence over a real height cache.
+   *
+   * - `measured`: rows that the cache holds a height for at the start.
+   * - `commitAll`: replaces the bulk commit of the cache, for a cache that adopts nothing.
+   * - `primed`: the entries of each bulk commit that the persistence asked for.
+   * - `measure(id, heightKey, height)`: a read of the mounted row commits its height.
+   * - `noteChange()`: the cache reports a change with no new height.
+   */
   function makeHarness(opts: {
     storageId?: string
-    items?: VirtualItem[]
-    measured?: Set<string>
-    primeHeights?: (entries: readonly PersistableRowHeight[], measured: Set<string>) => number
+    items?: ChatRowItem[]
+    measured?: ChatRowItem[]
+    commitAll?: RowHeightCache['commitAll']
   } = {}) {
-    const [items, setItems] = createSignal<VirtualItem[]>(opts.items ?? [])
-    const [geomVersion, setGeomVersion] = createSignal(0)
+    const [items, setItems] = createSignal<ChatRowItem[]>(opts.items ?? [])
+    const [extraVersion, setExtraVersion] = createSignal(0)
     const [storageId, setStorageId] = createSignal(opts.storageId)
-    const measured = opts.measured ?? new Set<string>()
+    const cache = createRowHeightCache({
+      loadedIds: () => items().map(item => item.id),
+    })
+    for (const row of opts.measured ?? [])
+      cache.commit(row, 50, row.heightKey, 'visible')
     const primed: PersistableRowHeight[][] = []
-    const snapshot: PersistableRowHeight[] = []
     let dispose!: () => void
     createRoot((d) => {
       dispose = d
       createRowHeightPersistence({
         storageId,
-        virtualItems: items,
-        virt: {
-          primeHeights: (entries) => {
-            primed.push([...entries])
-            if (opts.primeHeights)
-              return opts.primeHeights(entries, measured)
-            for (const e of entries)
-              measured.add(e.id)
-            return entries.length
+        loadedItems: items,
+        heights: {
+          commitAll: (entries) => {
+            primed.push(entries.map(entry => ({
+              id: entry.row.id,
+              heightKey: entry.row.heightKey,
+              height: entry.height,
+            })))
+            return (opts.commitAll ?? cache.commitAll)(entries)
           },
-          snapshotHeights: () => [...snapshot],
-          geometryVersion: geomVersion,
-          hasMeasuredHeight: id => measured.has(id),
+          snapshot: cache.snapshot,
+          version: () => cache.version() + extraVersion(),
+          isMeasured: cache.isMeasured,
         },
       })
     })
     return {
       setItems,
-      setGeomVersion,
       setStorageId,
       primed,
-      snapshot,
-      measured,
+      measure: (id: string, heightKey: string, height: number) =>
+        cache.commit(item(id, heightKey), height, heightKey, 'visible'),
+      noteChange: () => setExtraVersion(v => v + 1),
       dispose,
     }
   }
@@ -123,9 +137,8 @@ describe('chatRowHeightPersistence', () => {
     const first = makeHarness({ storageId: 'agent-1' })
     try {
       await settle()
-      first.snapshot.push({ id: 'empty', heightKey: 'k-empty', height: 0 })
-      first.snapshot.push({ id: 'positive', heightKey: 'k-positive', height: 120 })
-      first.setGeomVersion(1)
+      first.measure('empty', 'k-empty', 0)
+      first.measure('positive', 'k-positive', 120)
       vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
       await settle()
       expect((await readStored())?.rows).toEqual([
@@ -222,7 +235,7 @@ describe('chatRowHeightPersistence', () => {
     h.dispose()
   })
 
-  it('tries a stored height again when the virtualizer did not adopt it', async () => {
+  it('tries a stored height again when the cache did not adopt it', async () => {
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
       rows: [
@@ -234,8 +247,8 @@ describe('chatRowHeightPersistence', () => {
       items: [
         item('a', 'k-a'),
       ],
-      // The virtualizer adopts nothing, and the row stays unmeasured.
-      primeHeights: () => 0,
+      // The cache adopts nothing, and the row stays unmeasured.
+      commitAll: () => 0,
     })
     await settle()
     expect(h.primed).toEqual([
@@ -267,13 +280,14 @@ describe('chatRowHeightPersistence', () => {
         storedRow('a', 'k-a', 120),
       ],
     })
-    const measured = new Set(['a'])
     const h = makeHarness({
       storageId: 'agent-1',
       items: [
         item('a', 'k-a'),
       ],
-      measured,
+      measured: [
+        item('a', 'k-a'),
+      ],
     })
     await settle()
     expect(h.primed).toEqual([])
@@ -291,8 +305,7 @@ describe('chatRowHeightPersistence', () => {
     })
     const h = makeHarness({ storageId: 'agent-1', items: [] })
     await settle()
-    h.snapshot.push({ id: 'a', heightKey: 'k-a', height: 120.256 })
-    h.setGeomVersion(1)
+    h.measure('a', 'k-a', 120.256)
     vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
     await settle()
 
@@ -315,11 +328,10 @@ describe('chatRowHeightPersistence', () => {
   it('coalesces a measurement burst into one save', async () => {
     const h = makeHarness({ storageId: 'agent-1', items: [] })
     await settle()
-    h.snapshot.push({ id: 'a', heightKey: 'k-a', height: 100 })
-    h.setGeomVersion(1)
+    h.measure('a', 'k-a', 100)
     vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS - 1)
     await settle()
-    h.setGeomVersion(2)
+    h.measure('a', 'k-a', 101)
     vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS - 1)
     await settle()
     expect(await readStored()).toBeUndefined()
@@ -337,7 +349,8 @@ describe('chatRowHeightPersistence', () => {
       ],
     })
     // Live key never matches (different width), so nothing adopts and the
-    // snapshot is empty — the stored rows must survive the save tick.
+    // snapshot is empty — the stored rows must survive the save tick of a change
+    // of the cache that added no height.
     const h = makeHarness({
       storageId: 'agent-1',
       items: [
@@ -345,7 +358,7 @@ describe('chatRowHeightPersistence', () => {
       ],
     })
     await settle()
-    h.setGeomVersion(1)
+    h.noteChange()
     vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
     await settle()
     expect((await readStored())?.rows)
@@ -358,8 +371,7 @@ describe('chatRowHeightPersistence', () => {
   it('flushes an owed save on cleanup', async () => {
     const h = makeHarness({ storageId: 'agent-1', items: [] })
     await settle()
-    h.snapshot.push({ id: 'a', heightKey: 'k-a', height: 100 })
-    h.setGeomVersion(1)
+    h.measure('a', 'k-a', 100)
     h.dispose() // debounce still pending — cleanup must write
     expect((await readStored())?.rows).toHaveLength(1)
   })
@@ -371,8 +383,7 @@ describe('chatRowHeightPersistence', () => {
       ],
     })
     await settle()
-    h.snapshot.push({ id: 'a', heightKey: 'k-a', height: 100 })
-    h.setGeomVersion(1)
+    h.measure('a', 'k-a', 100)
     vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
     await settle()
     expect(h.primed).toEqual([])
@@ -439,7 +450,7 @@ describe('chatRowHeightPersistence', () => {
     h.setStorageId('agent-2')
     await settle()
 
-    // The second chat's 999 never reaches the virtualizer, and no second prime
+    // The second chat's 999 never reaches the cache, and no second prime
     // happens at all.
     expect(h.primed).toEqual([
       [
@@ -467,9 +478,10 @@ describe('chatRowHeightPersistence', () => {
       ],
     })
     await settle()
-    for (let i = 0; i < PERSISTED_ROW_HEIGHTS_MAX; i++)
-      h.snapshot.push({ id: `r${i}`, heightKey: `k-${i}`, height: 10 + i })
-    h.setGeomVersion(1)
+    batch(() => {
+      for (let i = 0; i < PERSISTED_ROW_HEIGHTS_MAX; i++)
+        h.measure(`r${i}`, `k-${i}`, 10 + i)
+    })
     vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
     await settle()
 
@@ -499,10 +511,9 @@ describe('chatRowHeightPersistence', () => {
       ],
     })
     await settle()
-    // snapshotHeights is LRU-ordered oldest-first: 'z' measured before 'a'.
-    h.snapshot.push({ id: 'z', heightKey: 'k-z', height: 40 })
-    h.snapshot.push({ id: 'a', heightKey: 'k-a-new', height: 200 })
-    h.setGeomVersion(1)
+    // The snapshot is LRU-ordered oldest-first: 'z' measured before 'a'.
+    h.measure('z', 'k-z', 40)
+    h.measure('a', 'k-a-new', 200)
     vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
     await settle()
 

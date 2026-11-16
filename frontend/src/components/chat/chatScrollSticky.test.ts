@@ -66,8 +66,8 @@ describe('createStickyBottom', () => {
 
       restickIfAtBottom()
 
-      // A ResizeObserver delivery can call it, and a row that mounts there re-enters the
-      // delivery.
+      // The `scroll` event of the write, or the deferred refresh of the geometry effect,
+      // refreshes the rows.
       expect(calls).toEqual(['noteScrollRange', 'writeOwnScrollTop'])
       expect(writeOwnScrollTop).toHaveBeenCalledWith(5000, { refresh: false })
       expect(div.el.scrollTop).toBe(4500)

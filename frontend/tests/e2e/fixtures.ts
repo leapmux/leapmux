@@ -64,6 +64,11 @@ const ISOLATED_CONTEXT_SPECS = new Set([
   'codex/rate-limit-countdown.spec.ts',
   '047-chat-scroll-rail.spec.ts',
   '047b-chat-scroll-rail-autohide.spec.ts',
+  // This adds an init script to its page, and the reset of the shared page cannot dispose it (see
+  // holdRenderRepliesWith).
+  '048f-chat-scroll-stability-late-content.spec.ts',
+  // This adds an init script to its page also (see recordPremeasureCommitsFromNextLoad).
+  'codex/chat-scroll-stability-file-image.spec.ts',
 ])
 
 /**

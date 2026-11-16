@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { writeMcpNoArgumentToolServer } from './mcpNoArgumentToolServer'
+import { PNG_SIGNATURE } from './png'
 
 const directories: string[] = []
 
@@ -21,18 +22,10 @@ function scratchDirectory(): string {
   return directory
 }
 
-const PNG_BYTES = Buffer.from([
-  0x89,
-  0x50,
-  0x4E,
-  0x47,
-  0x0D,
-  0x0A,
-  0x1A,
-  0x0A,
-  1,
-  2,
-  3,
+/** A file that starts as a PNG file does. The server reads it as bytes, and decodes nothing. */
+const PNG_BYTES = Buffer.concat([
+  PNG_SIGNATURE,
+  Buffer.from([1, 2, 3]),
 ])
 
 /** Write the server with `tool` in a new directory, send it one request, and read its one reply. */

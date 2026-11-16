@@ -48,11 +48,12 @@ describe('ChatRowSkeleton', () => {
     expect(skeletonMaskSvg('m8')).not.toBe(uri)
   })
 
-  it('renders the container at the exact height with ONE masked Oat fill block', () => {
-    const { container } = render(() => <ChatRowSkeleton height={120} seed="m7" />)
+  it('fills the height of its slot with ONE masked Oat fill block', () => {
+    const { container } = render(() => <ChatRowSkeleton seed="m7" />)
     const root = container.querySelector('[data-testid="row-skeleton"]') as HTMLElement
     expect(root).toBeInTheDocument()
-    expect(root.style.height).toBe('120px')
+    // The slot around the skeleton carries the reserved height of the row.
+    expect(root.style.height).toBe('100%')
 
     // A single fill block covers ANY height (the mask tiles the bars), so a
     // very tall row has no line-count cliff below which it goes blank.
@@ -78,5 +79,11 @@ describe('SkeletonLines', () => {
     expect(root.style.height).toBe('48px')
     expect(root.querySelector('[role="status"].skeleton.line')).not.toBeNull()
     expect(container.querySelector('[data-testid="row-skeleton"]')).toBeNull()
+  })
+
+  it('renders a height of 0 as an empty block', () => {
+    const { container } = render(() => <SkeletonLines height={0} seed="empty" testId="empty-pending" />)
+
+    expect((container.querySelector('[data-testid="empty-pending"]') as HTMLElement).style.height).toBe('0px')
   })
 })

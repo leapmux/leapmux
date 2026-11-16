@@ -119,16 +119,60 @@ describe('message context rendering', () => {
     expect(fetchSpan).not.toHaveBeenCalled()
   })
 
-  it('does not fetch related history during hidden measurement', () => {
-    const message = resultMessage()
+  it('loads an edit request outside the visible history window in a hidden measurement copy', async () => {
+    // A copy that measured the result without its request reported a height that the
+    // row in the list changed when the request arrived.
+    const result = resultMessage()
+    const request = makeMessage({
+      id: 'request',
+      seq: 1n,
+      spanId: 'call',
+      agentProvider: AgentProvider.OPENCODE,
+      content: rawContent({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'call',
+        kind: 'edit',
+        rawInput: { filePath: '/project/example.ts', oldString: 'oldValue', newString: 'recoveredValue' },
+      }),
+    })
+    const fetchSpan = vi.fn(async () => [request, result])
+    const context = testMessageContext({
+      messages: () => [result],
+      fetchSpan,
+    })
+    const { container } = render(() => (
+      <PreferencesProvider><MessageBubble message={result} host={{ messages: context }} premeasureMode /></PreferencesProvider>
+    ))
+    await waitFor(() => expect(container.querySelector(`.${diffAdded}`)?.textContent).toContain('recoveredValue'))
+    expect(fetchSpan).toHaveBeenCalledOnce()
+  })
+
+  it('does not fetch related history for a self-contained Codex tool row in a hidden measurement copy', async () => {
+    const message = makeMessage({
+      id: 'command',
+      seq: 3n,
+      spanId: 'command',
+      agentProvider: AgentProvider.CODEX,
+      content: rawContent({
+        item: {
+          type: 'commandExecution',
+          id: 'command',
+          status: 'completed',
+          command: 'pwd',
+          aggregatedOutput: '/project',
+          exitCode: 0,
+        },
+      }),
+    })
     const fetchSpan = vi.fn(async () => [])
     const context = testMessageContext({
       messages: () => [message],
       fetchSpan,
     })
-    render(() => (
+    const { container } = render(() => (
       <PreferencesProvider><MessageBubble message={message} host={{ messages: context }} premeasureMode /></PreferencesProvider>
     ))
+    await waitFor(() => expect(container.textContent).toContain('/project'))
     expect(fetchSpan).not.toHaveBeenCalled()
   })
 })

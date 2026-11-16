@@ -1,15 +1,19 @@
 import type { ToolCall } from '~/components/chat/model/toolCall'
 import type { ToolResultRenderContext } from '~/components/chat/renderContext'
+import type { RenderReadinessScope } from '~/components/chat/renderReadiness'
 import type { ImageResultSource } from '~/lib/imageBlocks'
+import type { ImageDimensions } from '~/lib/imageDimensions'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
-import { render } from '@solidjs/testing-library'
+import { render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { failedResult } from '~/components/chat/model/toolCall'
+import { createRenderReadinessScope } from '~/components/chat/renderReadiness'
 import { imagesForRow } from '~/components/chat/results/rowImages'
 import { ToolMessage } from '~/components/chat/results/ToolMessage'
-import { settle } from '~/test-support/async'
+import { deferred, settle } from '~/test-support/async'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { testImageActions } from '~/test-support/imageActions'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { nativeOutputPathsPrecedePreview } from '../../../../tests/e2e/helpers/nativeToolOutputFilePaths'
 import { toolCallMeta } from './tools/meta'
@@ -352,13 +356,9 @@ const picture = (name: string): ImageResultSource => ({ mimeType: 'image/png', d
 async function drawToolImages(row: ReturnType<typeof toolRow>): Promise<{ container: HTMLElement, opened: number[], drawn: string[] }> {
   const opened: number[] = []
   const context: ToolResultRenderContext = {
-    images: {
-      loadFileImage: () => Promise.resolve(undefined),
-      cachedFileImage: () => undefined,
+    images: testImageActions({
       openImage: request => opened.push(request.index),
-      deferLoad: () => false,
-      premeasurePass: () => false,
-    },
+    }),
   }
   const { container } = render(() => <ToolMessage row={row} context={context} />)
   await settleWorkerReplies()
@@ -642,11 +642,15 @@ describe('ToolMessage output DOM ownership', () => {
 })
 
 /**
- * A held display keeps the picture that a row shows while the view scrolls or the reader
- * selects text, because a new picture changes the height of the row. ToolMessage draws a file
- * image at three places, and each one reads the hold from the row's context.
+ * ToolMessage draws a file image at three places, and each one reads two members of the
+ * row's context:
+ * - The hold of the display. A held display keeps the picture that a row shows while the
+ *   view scrolls or the reader selects text, because a new picture changes the height of
+ *   the row.
+ * - The readiness scope of the row copy. The image reports there while it does not know
+ *   the height of its picture, so no reader measures the copy before the box is reserved.
  */
-describe('a held display in a tool row (ToolMessage)', () => {
+describe('a file image in a tool row (ToolMessage)', () => {
   const file: ImageResultSource = { filePath: '/held.png' }
   const decoded: ImageResultSource = { mimeType: 'image/png', data: 'iVBORw0KGgo=' }
   const sites: [string, ToolCall][] = [
@@ -692,13 +696,9 @@ describe('a held display in a tool row (ToolMessage)', () => {
         ...(flag === 'syntaxHighlightingPaused'
           ? { syntaxHighlightingPaused: holding }
           : { textSelectionActive: holding }),
-        images: {
-          loadFileImage: read,
-          cachedFileImage: () => undefined,
-          openImage: () => {},
-          deferLoad: () => false,
-          premeasurePass: () => false,
-        },
+        images: testImageActions({
+          files: { load: read },
+        }),
       }
       const { container } = render(() => <ToolMessage row={toolRow(call)} context={context} />)
       await settleWorkerReplies()
@@ -711,4 +711,28 @@ describe('a held display in a tool row (ToolMessage)', () => {
       expect(container.querySelector('img')?.getAttribute('src')).toBe(`data:image/png;base64,${decoded.data}`)
     },
   )
+
+  it.each(sites)('holds the row copy while the size read of a file image in %s runs', async (_site, call) => {
+    const size = deferred<ImageDimensions | undefined>()
+    let scope!: RenderReadinessScope
+    render(() => {
+      scope = createRenderReadinessScope()
+      const context: ToolResultRenderContext = {
+        readiness: scope,
+        images: testImageActions({
+          files: {
+            loadSize: () => size.promise,
+            peekSize: () => ({ kind: 'unknown' }),
+          },
+        }),
+      }
+      return <ToolMessage row={toolRow(call)} context={context} />
+    })
+    await settleWorkerReplies()
+    expect(scope.measurable()).toBe(false)
+
+    size.resolve({ width: 400, height: 200 })
+
+    await waitFor(() => expect(scope.measurable()).toBe(true))
+  })
 })

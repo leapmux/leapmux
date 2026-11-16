@@ -1,185 +1,130 @@
 import type { Accessor } from 'solid-js'
-import type { ClassifiedEntry } from './chatEntryCache'
-import type { ChatDomPremeasureCandidate } from './chatHiddenPremeasure'
-import type { UseChatVirtualizerResult, VirtualItem } from './useChatVirtualizer'
-import { createComputed, createMemo, createSignal, untrack } from 'solid-js'
+import type { ChatDomPremeasureCandidate, PremeasureMeasureHandler } from './chatHiddenPremeasure'
+import type { RowHeightCache } from './chatRowHeightCache'
+import { createMemo, untrack } from 'solid-js'
 import { emitDevEvent } from '~/lib/devInstrument'
-import { mapWith, mapWithout, setWithout } from '~/lib/immutableCollections'
 import { shallowEqualSets } from '~/lib/shallowEqual'
 import { warnSlowScrollPhase } from './chatScrollGeometry'
 
 // ---------------------------------------------------------------------------
 // Hidden-premeasure queue
 //
-// The reconciler that keeps the three premeasure states coherent as the candidate
-// bands, the window, and the virtualizer's height caches change:
-//  - `pendingPremeasureIds`: the rows currently owed a hidden premeasure render.
-//  - `collapsedPremeasureIds`: the IN-RANGE unmeasured rows the visible list must keep
-//    collapsed until their height commits, so a tall unmeasured row can't paint past
-//    its estimated slot and overlap what follows. Look-ahead rows are never
-//    collapsed because they are not in the main <For>.
-//  - `unsettledPremeasureKeys`: rows whose ACCEPTED measurement is still settling
-//    (pending images), keyed by the heightKey it was measured under, so the row keeps
-//    its premeasure mount for a re-measure instead of being dropped as done.
+// The set of the loaded rows that are owed a hidden copy (`pendingPremeasureIds`), kept
+// coherent as the staging bands, the loaded rows, and the height cache change.
 //
-// Extracted from ChatView (where the three signals, the reconciler, and the measure
-// handler lived loose in an 1100-line component) so the coherence invariants have a
-// named, unit-testable home. Owns no DOM: ChatView supplies the candidate bands and
-// lookup memos and renders ChatHiddenPremeasure from the returned accessors.
+// A row stays pending until it is measured or leaves the loaded rows. A hidden copy
+// reports no height while one of its images still loads (see ChatHiddenPremeasure), so
+// the queue keeps no record of a measurement that still settles.
+//
+// While staging is not enabled, the queue gives no candidate, so no hidden copy exists.
+// It keeps the pending set, and a new copy of each pending row mounts when staging is
+// enabled again.
+//
+// Owns no DOM: the staging bands supply the loaded rows, their lookup by id, and the
+// candidates, and ChatView renders ChatHiddenPremeasure from the returned accessor.
 // ---------------------------------------------------------------------------
 
 export interface PremeasureQueueDeps {
-  /** The height-cache surface consulted for the done state, plus the commit. */
-  virt: Pick<UseChatVirtualizerResult, 'hasMeasuredHeight' | 'primeHeight'>
-  /** Entry lookup over the current window (premeasure renders need the entry). */
-  visibleEntryById: Accessor<ReadonlyMap<string, ClassifiedEntry>>
-  /** Item lookup over the current window (heightKey / kind reads). */
-  virtualItemById: Accessor<ReadonlyMap<string, VirtualItem>>
-  /** The current items in display order (candidate assembly preserves it). */
-  virtualItems: Accessor<readonly VirtualItem[]>
-  /** Unmeasured rows inside the rendered range (collapsed until they measure). */
-  rangedCandidates: Accessor<readonly ChatDomPremeasureCandidate[]>
-  /** Unmeasured rows just outside the range (premeasured, never collapsed). */
-  lookAheadCandidates: Accessor<readonly ChatDomPremeasureCandidate[]>
+  /** The height cache: the done test of a pending row, and the commit of a measure. */
+  heights: Pick<RowHeightCache, 'isMeasured' | 'commit'>
+  /** Whether a hidden copy may render (see ChatPremeasureBandsDeps.stagingEnabled). */
+  stagingEnabled: Accessor<boolean>
   /**
-   * Idle warm-up rows from deeper in the window (see createPremeasureWarmup).
-   * Treated exactly like look-ahead rows: premeasured, never collapsed.
-   * Optional so tests and non-warming callers can omit the band.
+   * The loaded rows in display order, each entry with its item. A row keeps its object
+   * while its entry and its height key stay the same (see createChatPremeasureBands).
    */
-  warmupCandidates?: Accessor<readonly ChatDomPremeasureCandidate[]>
+  rows: Accessor<readonly ChatDomPremeasureCandidate[]>
+  /** id -> row over `rows`. */
+  rowById: Accessor<ReadonlyMap<string, ChatDomPremeasureCandidate>>
+  /** The unmeasured rows that a waiting target needs. */
+  targetCandidates: Accessor<readonly ChatDomPremeasureCandidate[]>
+  /** The unmeasured rows just outside the rendered range. */
+  lookAheadCandidates: Accessor<readonly ChatDomPremeasureCandidate[]>
+  /** Idle warm-up rows from deeper in the loaded rows (see createPremeasureWarmup). */
+  warmupCandidates: Accessor<readonly ChatDomPremeasureCandidate[]>
 }
+
+const NO_CANDIDATES: readonly ChatDomPremeasureCandidate[] = []
 
 /**
  * Create the premeasure queue. Call within a component's reactive owner (it allocates
- * signals and a computed); the returned accessors are stable for the owner's lifetime.
- * `onMeasure` is the ChatHiddenPremeasure callback: it commits the height and settles
- * or re-arms the row's queue entries by the measurement's outcome.
+ * memos); the returned accessors are stable for the owner's lifetime.
+ * `onMeasure` is the ChatHiddenPremeasure callback: it commits the height, and a row
+ * with a committed height stops being pending.
  */
 export function createPremeasureQueue(deps: PremeasureQueueDeps) {
-  const [pendingPremeasureIds, setPendingPremeasureIds] = createSignal<ReadonlySet<string>>(new Set())
-  const [collapsedPremeasureIds, setCollapsedPremeasureIds] = createSignal<ReadonlySet<string>>(new Set())
-  const [unsettledPremeasureKeys, setUnsettledPremeasureKeys] = createSignal<ReadonlyMap<string, string | undefined>>(new Map())
+  // A row that the cache answers for is done (see RowHeightCache.isMeasured).
+  const { isMeasured } = deps.heights
 
-  createComputed(() => {
-    const entries = deps.visibleEntryById()
-    const items = deps.virtualItemById()
-    const unsettled = untrack(unsettledPremeasureKeys)
-    const nextPending = new Set(untrack(pendingPremeasureIds))
-    const nextCollapsed = new Set(untrack(collapsedPremeasureIds))
-    const nextUnsettled = new Map(unsettled)
-    // Every in-range unmeasured row is collapsed until its height commits -- the live
-    // tail included, so an unmeasured tall tail can't overflow its estimated slot onto
-    // the trailing thinking indicator, and appended rows reveal in
-    // order rather than the tail popping in ahead of a still-loading sibling.
-    for (const candidate of deps.rangedCandidates()) {
-      nextPending.add(candidate.item.id)
-      nextCollapsed.add(candidate.item.id)
-    }
-    // Look-ahead and warm-up band rows are premeasured (pending) but never marked
-    // invisible: they are not rendered in the main list, so they need no collapse entry.
+  // The pending rows: the set of the run before, with each row that a band gives, less
+  // each row that left the loaded rows or is measured. The measured test reads `version`,
+  // so the commit of a measure drops its row here. A row gains a height with no change of
+  // `version` only when an element of it mounts, and a pending row never mounts: it is not
+  // measured, and the admission admits only measured rows (see chatRowAdmission).
+  const pendingPremeasureIds = createMemo<ReadonlySet<string>>((previous) => {
+    const rowById = deps.rowById()
+    const next = new Set(previous)
+    for (const candidate of deps.targetCandidates())
+      next.add(candidate.item.id)
     for (const candidate of deps.lookAheadCandidates())
-      nextPending.add(candidate.item.id)
-    for (const candidate of deps.warmupCandidates?.() ?? [])
-      nextPending.add(candidate.item.id)
-    for (const id of [...nextPending]) {
-      const item = items.get(id)
-      if (!entries.has(id) || !item) {
-        nextPending.delete(id)
-        nextUnsettled.delete(id)
-        continue
-      }
-      const unsettledKeyMatches = nextUnsettled.has(id) && nextUnsettled.get(id) === item.heightKey
-      if (deps.virt.hasMeasuredHeight(id) && !unsettledKeyMatches)
-        nextPending.delete(id)
+      next.add(candidate.item.id)
+    for (const candidate of deps.warmupCandidates())
+      next.add(candidate.item.id)
+    for (const id of [...next]) {
+      const row = rowById.get(id)
+      if (row === undefined || isMeasured(row.item))
+        next.delete(id)
     }
-    for (const id of [...nextCollapsed]) {
-      if (!entries.has(id) || !items.has(id) || deps.virt.hasMeasuredHeight(id))
-        nextCollapsed.delete(id)
-    }
-    for (const [id, heightKey] of [...nextUnsettled]) {
-      const item = items.get(id)
-      if (!entries.has(id) || !item || item.heightKey !== heightKey)
-        nextUnsettled.delete(id)
-    }
+    return next
+  }, new Set<string>(), { equals: shallowEqualSets })
 
-    const prevPending = untrack(pendingPremeasureIds)
-    if (!shallowEqualSets(prevPending, nextPending))
-      setPendingPremeasureIds(nextPending)
-    const prevCollapsed = untrack(collapsedPremeasureIds)
-    if (!shallowEqualSets(prevCollapsed, nextCollapsed))
-      setCollapsedPremeasureIds(nextCollapsed)
-    const prevUnsettled = untrack(unsettledPremeasureKeys)
-    // nextUnsettled is a copy of prev with only DELETIONS above (never an add -- new
-    // unsettled keys enter solely via onMeasure's mapWith), so it is always either
-    // identical to prev (size ties, correctly skipped) or a strict subset (size shrinks,
-    // caught below). A constant-size key swap can't occur here, so scanning prev suffices.
-    if (prevUnsettled.size !== nextUnsettled.size || [...prevUnsettled].some(([id, heightKey]) => nextUnsettled.get(id) !== heightKey))
-      setUnsettledPremeasureKeys(nextUnsettled)
+  // The pending rows in display order. ChatHiddenPremeasure's <For> keys its copies by
+  // object identity, so the memo gives each row object of `rows` as it is: the object stays
+  // while the entry and the height key of the row stay the same (see
+  // createChatPremeasureBands). A change to the pending set then mounts only the rows that
+  // it adds.
+  //
+  // While staging is not enabled, the memo gives no candidate, and <For> then disposes
+  // every copy. Each pending row gets a new copy afterwards, although its object is the
+  // same.
+  const premeasureCandidates = createMemo<readonly ChatDomPremeasureCandidate[]>(() => {
+    const ids = pendingPremeasureIds()
+    if (!deps.stagingEnabled() || ids.size === 0)
+      return NO_CANDIDATES
+    return deps.rows().filter(row => ids.has(row.item.id))
   })
 
-  // ChatHiddenPremeasure's <For> keys its rows by object identity, so a new object
-  // for an unchanged row disposes its hidden copy and mounts it again. The memo
-  // therefore reuses a row's previous object while the row's entry and height key
-  // stay the same: the copy renders the entry, and its measure commits under the
-  // height key. A change to the pending set then mounts only the rows it adds.
-  const premeasureCandidates = createMemo<ChatDomPremeasureCandidate[]>((previous) => {
-    const ids = pendingPremeasureIds()
-    if (ids.size === 0)
-      return []
-    const previousById = new Map(previous.map(candidate => [candidate.item.id, candidate]))
-    const entries = deps.visibleEntryById()
-    const unsettled = unsettledPremeasureKeys()
-    const candidates: ChatDomPremeasureCandidate[] = []
-    for (const item of deps.virtualItems()) {
-      const unsettledKeyMatches = unsettled.has(item.id) && unsettled.get(item.id) === item.heightKey
-      if (!ids.has(item.id) || (deps.virt.hasMeasuredHeight(item.id) && !unsettledKeyMatches))
-        continue
-      const entry = entries.get(item.id)
-      if (!entry)
-        continue
-      const kept = previousById.get(item.id)
-      candidates.push(kept !== undefined && kept.entry === entry && kept.item.heightKey === item.heightKey
-        ? kept
-        : { entry, item })
-    }
-    return candidates
-  }, [])
-
-  const onMeasure = (id: string, height: number, heightKey: string | undefined, measureDurationMs: number, settled: boolean): boolean => {
+  const onMeasure: PremeasureMeasureHandler = (id, height, heightKey, measureDurationMs) => {
     // Forced-layout cost of premeasuring this row. When a batch of look-ahead rows
     // premeasures in one frame, the FIRST getBoundingClientRect reflows the dirty DOM
     // (expensive) and the rest are cheap -- so a slow duration here localizes a
     // premeasure-driven main-thread stall (a stalled scroll delivers its moves as one
     // batched catch-up delta). Only a slow measure logs (see warnSlowScrollPhase).
-    warnSlowScrollPhase('premeasure', measureDurationMs, { id, kind: deps.virtualItemById().get(id)?.kind })
-    const accepted = deps.virt.primeHeight(id, height, heightKey)
-    const hasCommittedHeight = accepted || deps.virt.hasMeasuredHeight(id)
-    if (settled && hasCommittedHeight) {
-      setPendingPremeasureIds(ids => setWithout(ids, id))
-      setUnsettledPremeasureKeys(keys => mapWithout(keys, id))
-    }
-    else if (!settled && hasCommittedHeight) {
-      // Keep the row's premeasure mount alive for a re-measure under the SAME heightKey
-      // (the copy-on-write short-circuit skips the reference churn when the key is unchanged).
-      setUnsettledPremeasureKeys(keys => mapWith(keys, id, heightKey))
-    }
+    // The current row. A row that left the loaded rows commits nothing.
+    const row = untrack(deps.rowById).get(id)
+    const item = row?.item
+    warnSlowScrollPhase('premeasure', measureDurationMs, { id, kind: item?.kind })
+    // The cache refuses a height of another key, and a hidden-layout read for a mounted
+    // row that has a height (see RowHeightCache.commit).
+    const accepted = item !== undefined && deps.heights.commit(item, height, heightKey, 'premeasure') !== 'none'
+    // Whether the cache answers for the row after the commit, for the dev event. The
+    // pending set drops a measured row by itself: a commit that changes an answer changes
+    // `version`.
+    const hasMeasured = item !== undefined && untrack(() => isMeasured(item))
     emitDevEvent('leapmux:chat-premeasure', () => ({
       phase: 'commit',
       id,
-      seq: deps.visibleEntryById().get(id)?.message.seq?.toString() ?? null,
+      seq: row?.entry.message.seq?.toString() ?? null,
       height: Number.isFinite(height)
         ? height
         : String(height),
       heightKey: heightKey ?? null,
-      currentHeightKey: deps.virtualItemById().get(id)?.heightKey ?? null,
+      currentHeightKey: item?.heightKey ?? null,
       accepted,
-      hasMeasured: deps.virt.hasMeasuredHeight(id),
-      settled,
+      hasMeasured,
       candidatePending: untrack(pendingPremeasureIds).has(id),
-      collapsed: untrack(collapsedPremeasureIds).has(id),
     }))
-    return hasCommittedHeight
   }
 
-  return { premeasureCandidates, collapsedPremeasureIds, onMeasure }
+  return { premeasureCandidates, onMeasure }
 }

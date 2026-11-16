@@ -47,7 +47,9 @@ describe('capInsertionOrder', () => {
 describe('createMessageUiState', () => {
   it('stores and reads a per-message diff-view override', () => {
     createRoot((dispose) => {
-      const ui = createMessageUiState()
+      const ui = createMessageUiState({
+        protectedIds: () => new Set(),
+      })
       expect(ui.getLocalDiffView('m1')).toBeUndefined()
       ui.setLocalDiffView('m1', 'split')
       expect(ui.getLocalDiffView('m1')).toBe('split')
@@ -58,7 +60,9 @@ describe('createMessageUiState', () => {
 
   it('stores and reads a per-message boolean flag, scoped by id and key', () => {
     createRoot((dispose) => {
-      const ui = createMessageUiState()
+      const ui = createMessageUiState({
+        protectedIds: () => new Set(),
+      })
       expect(ui.getMessageUiBool('m1', MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)).toBeUndefined()
       ui.setMessageUiBool('m1', MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED, true)
       expect(ui.getMessageUiBool('m1', MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)).toBe(true)
@@ -72,7 +76,9 @@ describe('createMessageUiState', () => {
 
   it('retains state across many distinct ids (survives a window trim) up to the cap', () => {
     createRoot((dispose) => {
-      const ui = createMessageUiState()
+      const ui = createMessageUiState({
+        protectedIds: () => new Set(),
+      })
       ui.setLocalDiffView('old', 'split')
       // Toggle a flag on many other ids, as if scrolling through a long history.
       for (let i = 0; i < 500; i++)
@@ -108,7 +114,9 @@ describe('createMessageUiState', () => {
 
   it('bumps getUiVersion on every real change but not on a no-op, scoped per id', () => {
     createRoot((dispose) => {
-      const ui = createMessageUiState()
+      const ui = createMessageUiState({
+        protectedIds: () => new Set(),
+      })
       expect(ui.getUiVersion('m1')).toBe(0) // untouched
       // A real bool toggle bumps the version.
       ui.setMessageUiBool('m1', MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED, true)
@@ -133,7 +141,9 @@ describe('createMessageUiState', () => {
 
   it('refreshes insertion-order recency on a re-toggle so an actively-used row survives the cap', () => {
     createRoot((dispose) => {
-      const ui = createMessageUiState() // no protected ids -> the cap is pure recency
+      const ui = createMessageUiState({
+        protectedIds: () => new Set(),
+      }) // no protected ids -> the cap is pure recency
       const KEY = MESSAGE_UI_KEY.THINKING
       // k0 is the oldest entry...
       ui.setMessageUiBool('k0', KEY, true)

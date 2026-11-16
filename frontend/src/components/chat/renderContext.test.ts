@@ -1,11 +1,13 @@
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { describe, expect, it, vi } from 'vitest'
+import { NO_FILE_IMAGES } from './fileImageResolver'
 import { imageActionsFrom, isDisplayHeld, reviewActionsFrom, shouldPauseSyntaxHighlighting, subagentsFrom } from './renderContext'
 
 // The three assemblies are the ONLY way the narrow capabilities are built, so their
-// edge answers are the ones every isolated mount inherits: a host that supplies
-// nothing gets no capability, and an optional member stays optional rather than
-// silently becoming a no-op.
+// edge answers are the ones every isolated mount inherits. For the subagent
+// navigation, a host that supplies nothing gets no capability, and an optional member
+// stays optional rather than silently becoming a no-op. The image actions require
+// each member that a row always has.
 
 describe('subagentsFrom', () => {
   it('answers undefined when the host supplies neither member', () => {
@@ -43,45 +45,56 @@ describe('subagentsFrom', () => {
 })
 
 describe('imageActionsFrom', () => {
-  it('answers undefined when the host supplies no member', () => {
-    expect(imageActionsFrom(undefined)).toBeUndefined()
-    expect(imageActionsFrom({})).toBeUndefined()
-  })
+  it('passes the image files and the load gates of the host through', () => {
+    const actions = imageActionsFrom({
+      files: NO_FILE_IMAGES,
+      deferLoad: () => true,
+      premeasurePass: () => true,
+    })
 
-  it('defaults the absent halves rather than dropping the capability', async () => {
-    const open = vi.fn()
-    const actions = imageActionsFrom({ openImage: open })!
-    expect(await actions.cachedFileImage('/p.png')).toBeUndefined()
-    expect(await actions.loadFileImage('/p.png')).toBeUndefined()
-    expect(actions.deferLoad()).toBe(false)
-    expect(actions.premeasurePass()).toBe(false)
-    actions.openImage({ index: 0 })
-    expect(open).toHaveBeenCalledWith({ index: 0 })
+    expect(actions.files).toBe(NO_FILE_IMAGES)
+    expect(actions.deferLoad()).toBe(true)
+    expect(actions.premeasurePass()).toBe(true)
   })
 
   it('reads the load gates through the host, lazily', () => {
-    // The gates alone are not a capability: a host with no channel and no opener
-    // has nothing to defer, and the adapter answers undefined for it.
-    expect(imageActionsFrom({
-      deferLoad: () => true,
-    })).toBeUndefined()
     let deferred = true
+    let premeasure = true
     const actions = imageActionsFrom({
-      openImage: () => {},
+      files: NO_FILE_IMAGES,
       deferLoad: () => deferred,
-    })!
+      premeasurePass: () => premeasure,
+    })
     expect(actions.deferLoad()).toBe(true)
+    expect(actions.premeasurePass()).toBe(true)
     deferred = false
+    premeasure = false
     expect(actions.deferLoad()).toBe(false)
+    expect(actions.premeasurePass()).toBe(false)
   })
 
-  // The premeasure-only case: a hidden measurement mount supplies no file channel
-  // and no opener, and still needs the decode hint the pass requires.
-  it('builds from a premeasure hint alone', () => {
+  it('opens an image through the open handler of the host', () => {
+    const open = vi.fn()
     const actions = imageActionsFrom({
-      premeasurePass: () => true,
+      files: NO_FILE_IMAGES,
+      openImage: open,
+      deferLoad: () => false,
+      premeasurePass: () => false,
     })
-    expect(actions?.premeasurePass()).toBe(true)
+
+    actions.openImage?.({ index: 2, filePath: '/p.png' })
+
+    expect(open).toHaveBeenCalledExactlyOnceWith({ index: 2, filePath: '/p.png' })
+  })
+
+  it('gives no open handler for a host that has none, so the image view draws no button', () => {
+    const actions = imageActionsFrom({
+      files: NO_FILE_IMAGES,
+      deferLoad: () => false,
+      premeasurePass: () => false,
+    })
+
+    expect(actions.openImage).toBeUndefined()
   })
 })
 

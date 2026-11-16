@@ -30,7 +30,7 @@ export interface AnchorOffsetGeometry {
   indexOfId: (id: string) => number
   /** Cumulative offset (top, px) of the row at `index`. */
   offsetOfIndex: (index: number) => number
-  /** Measured-or-estimated height (px) of the row at `index` (excludes the gap). */
+  /** The height (px) of the row at `index` (excludes the gap). */
   heightOfIndex: (index: number) => number
   /** Inter-row gap (px) below the row at `index` (0 for the last row). */
   gapAfter: (index: number) => number
@@ -66,7 +66,7 @@ export function anchorAtOffset(geo: AnchorOffsetGeometry, contentTop: number): S
   // floors to row 0, yielding a negative `within` that would store a negative offset and
   // restore above the top.
   const within = Math.max(0, contentTop - geo.offsetOfIndex(idx))
-  // Clamp `within` to the row's height (measured or estimated) and record that
+  // Clamp `within` to the row's height and record that
   // height as the basis. Clamping restricts the stored fraction (within / basisHeight)
   // to [0, 1], so scrollTopForAnchor's proportional resolve can never overshoot the
   // row body.
@@ -95,6 +95,26 @@ export function anchorAtOffset(geo: AnchorOffsetGeometry, contentTop: number): S
 }
 
 /**
+ * The distance (px) from the top edge of the row of `anchor` to the place of the anchor
+ * inside the row, for a row that is `rowHeight` tall now. `offsetWithinRow` is resolved
+ * PROPORTIONALLY against the current height, so a height change between capture and
+ * resolve scales the offset with the row. The in-gap fraction of the anchor is not part
+ * of it.
+ *
+ * The row admission asks with the same function how much of the row lies above the
+ * viewport top of a row target, so its fill rule and the placement agree.
+ */
+export function anchorOffsetInRow(anchor: Pick<ScrollAnchor, 'offsetWithinRow' | 'basisHeight'>, rowHeight: number): number {
+  // The fraction stays in [0, 1] by anchorAt's clamp, so the scaled offset stays
+  // inside the row. An anchor from old persistence carries no basisHeight; fall back to
+  // absolute clamping against the current height.
+  const within = anchor.basisHeight && anchor.basisHeight > 0
+    ? anchor.offsetWithinRow * (rowHeight / anchor.basisHeight)
+    : anchor.offsetWithinRow
+  return clamp(within, 0, rowHeight)
+}
+
+/**
  * Resolve an anchor back to a content coordinate (the coordinate of `offsetOfIndex`, which
  * the virtualizer converts to a `scrollTop` under a layout shift), or null when its row id
  * is no longer in the list. offsetWithinRow is resolved PROPORTIONALLY against the row's
@@ -106,14 +126,7 @@ export function resolveAnchorScrollTop(geo: AnchorOffsetGeometry, anchor: Scroll
   const idx = geo.indexOfId(anchor.id)
   if (idx < 0)
     return null
-  // The fraction stays in [0, 1] by anchorAt's clamp, so the scaled offset stays
-  // inside the row. An anchor from old persistence carries no basisHeight; fall back to
-  // absolute clamping against the current height.
-  const rowHeight = geo.heightOfIndex(idx)
-  const within = anchor.basisHeight && anchor.basisHeight > 0
-    ? anchor.offsetWithinRow * (rowHeight / anchor.basisHeight)
-    : anchor.offsetWithinRow
-  const top = geo.offsetOfIndex(idx) + clamp(within, 0, rowHeight)
+  const top = geo.offsetOfIndex(idx) + anchorOffsetInRow(anchor, geo.heightOfIndex(idx))
   // Re-add the in-gap fraction (the viewport top sat in the gap below the row at
   // capture), scaled to the CURRENT gap below the row so a gap-size change scales with
   // it. The within-body clamp lands `top` at the row bottom for such an anchor

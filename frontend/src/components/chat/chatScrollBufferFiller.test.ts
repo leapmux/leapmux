@@ -1,5 +1,6 @@
+import type { Accessor } from 'solid-js'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import { createRoot } from 'solid-js'
+import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { createScrollBufferFiller } from './chatScrollBufferFiller'
 
@@ -21,6 +22,14 @@ const HUGE_TARGET = 1e9
  * distBottom (user scroll) or the opposite side -- modeling the geometry-offset
  * measurement. scrollTop/distBottom drive only the buffer DEFICIT (kept < the huge target,
  * so both sides stay deficient). Returns hooks to drive + observe the filler.
+ *
+ * The messages and the two staged states are signals, because the effect of the filler
+ * reads them: a change of one runs fill(). No row is staged, no place waits, and the fill
+ * is not paused, unless the test sets it.
+ *
+ * The other flags are plain state, so a test sets one and then calls fill() itself.
+ * `hasOlder` and `fetchingOlder` give a signal in place of the plain flag of the older
+ * side, for a test of what the effect follows. `setHas` then sets the newer side only.
  */
 function harness(opts: {
   olderGrowsBy?: number
@@ -30,6 +39,8 @@ function harness(opts: {
   distBottom?: number
   /** The content above the viewport top. Default: `scrollTop`, as with no layout shift. */
   viewportContentTop?: number
+  hasOlder?: Accessor<boolean>
+  fetchingOlder?: Accessor<boolean>
 } = {}) {
   const olderGrowsBy = opts.olderGrowsBy ?? 0
   const newerGrowsBy = opts.newerGrowsBy ?? 0
@@ -56,6 +67,11 @@ function harness(opts: {
   // window).
   let refTrimmed = false
   let unanchorable = false
+  let paused = false
+  let placeWaits = false
+  const [messages, setMessages] = createSignal<AgentChatMessage[]>([])
+  const [stagedOlder, setStagedOlder] = createSignal(false)
+  const [stagedNewer, setStagedNewer] = createSignal(false)
 
   const getEl = (): HTMLDivElement | undefined =>
     enabled
@@ -67,11 +83,11 @@ function harness(opts: {
       createScrollBufferFiller({
         getEl,
         viewportContentTop: () => opts.viewportContentTop ?? scrollTop,
-        messages: () => [] as AgentChatMessage[],
+        messages,
         bufferTargetPx: () => bufferTargetPx,
-        hasOlder: () => hasOlder,
+        hasOlder: opts.hasOlder ?? (() => hasOlder),
         hasNewer: () => hasNewer,
-        fetchingOlder: () => false,
+        fetchingOlder: opts.fetchingOlder ?? (() => false),
         fetchingNewer: () => false,
         onLoadOlder: () => {
           olderLoads++
@@ -82,7 +98,7 @@ function harness(opts: {
           newerBelow += newerGrowsBy // a newer append grows the BELOW buffer (0 = all hidden)
         },
         lastScrollDir: () => lastScrollDir,
-        paused: () => false,
+        paused: () => paused,
         suppressOlder: () => suppressOlder,
         atCeiling: () => atCeiling,
         // A non-null ref token; the mock measures growth via the global olderAbove /
@@ -94,6 +110,9 @@ function harness(opts: {
           : ({ id: 'ref', offsetWithinRow: 0 }),
         contentAbove: () => refTrimmed ? null : olderAbove,
         contentBelow: () => refTrimmed ? null : newerBelow,
+        stagedOlder,
+        stagedNewer,
+        placeWaits: () => placeWaits,
       }),
       { dispose },
     ))
@@ -112,6 +131,14 @@ function harness(opts: {
     setSuppressOlder: (v: boolean) => { suppressOlder = v },
     setRefTrimmed: (v: boolean) => { refTrimmed = v },
     setUnanchorable: (v: boolean) => { unanchorable = v },
+    setPaused: (v: boolean) => { paused = v },
+    setPlaceWaits: (v: boolean) => { placeWaits = v },
+    setStagedOlder,
+    setStagedNewer,
+    // A change of the window content, which runs the effect of the filler.
+    changeMessages: () => setMessages([]),
+    // Staged rows above the ref row joined the list: the content above it grew.
+    growOlderAbove: (px: number) => { olderAbove += px },
     setOlderBuffer: (px: number) => { scrollTop = px },
     setNewerBuffer: (px: number) => { distBottom = px },
     // Simulate a live-tail append BETWEEN fills: it grows the BELOW buffer (content + DOM)
@@ -435,5 +462,189 @@ describe('chatScrollBufferFiller', () => {
     h.setHas(true, false)
     h.filler.fill()
     expect(h.counts().olderLoads).toBe(1)
+  })
+
+  describe('staged rows', () => {
+    it('loads no older page while rows are staged above', () => {
+      const h = harness()
+      h.enable()
+      h.setHas(true, false)
+      h.setStagedOlder(true)
+
+      h.filler.fill()
+
+      expect(h.counts().olderLoads).toBe(0)
+    })
+
+    it('loads no newer page while rows are staged below', () => {
+      const h = harness()
+      h.enable()
+      h.setHas(false, true)
+      h.setStagedNewer(true)
+
+      h.filler.fill()
+
+      expect(h.counts().newerLoads).toBe(0)
+    })
+
+    it('fills when the staged rows joined, with no scroll and no new message', () => {
+      const h = harness()
+      h.enable()
+      h.setHas(true, false)
+      h.setStagedOlder(true)
+      expect(h.counts().olderLoads).toBe(0)
+
+      // The effect of the filler reads the staged state, so the change alone runs fill().
+      h.setStagedOlder(false)
+
+      expect(h.counts().olderLoads).toBe(1)
+    })
+
+    it('loads no page on either side while no row is in the list', () => {
+      // The hook reports both sides as staged then: the empty list reads as a deficit on
+      // both sides.
+      const h = harness()
+      h.setHas(true, true)
+      h.setStagedOlder(true)
+      h.setStagedNewer(true)
+      h.enable()
+
+      h.filler.fill()
+
+      expect(h.counts()).toEqual({ olderLoads: 0, newerLoads: 0 })
+    })
+
+    it('marks no side as stuck for a page whose rows are still staged', () => {
+      // The older load adds no pixels while its rows are staged. A judgment at that time
+      // would mark the older side as stuck, and the filler would then prefer the newer side.
+      const h = harness({ olderGrowsBy: 0, newerGrowsBy: 50 })
+      h.enable()
+      h.setLastScrollDir('older')
+      h.filler.fill()
+      expect(h.counts()).toEqual({ olderLoads: 1, newerLoads: 0 })
+
+      // The rows of the older page are staged: the older side is in no deficit, and the
+      // newer side loads.
+      h.setStagedOlder(true)
+      expect(h.counts()).toEqual({ olderLoads: 1, newerLoads: 1 })
+
+      // The rows joined, and the content above grew. The older side loads again.
+      h.growOlderAbove(300)
+      h.setStagedOlder(false)
+      expect(h.counts()).toEqual({ olderLoads: 2, newerLoads: 1 })
+    })
+
+    it('judges a staged page when its rows join, also after the other side loaded in between', () => {
+      const h = harness({ olderGrowsBy: 50, newerGrowsBy: 0 })
+      h.enable()
+      h.setHas(false, true)
+      h.setLastScrollDir('newer')
+      h.filler.fill()
+      // This fill judges the first newer page: it added nothing, so the newer side is
+      // stuck. The fill loads the next newer page.
+      h.filler.fill()
+      expect(h.counts()).toEqual({ olderLoads: 0, newerLoads: 2 })
+
+      // The rows of that page are staged, and the older side loads meanwhile.
+      h.setStagedNewer(true)
+      h.setHas(true, true)
+      h.filler.fill()
+      expect(h.counts()).toEqual({ olderLoads: 1, newerLoads: 2 })
+
+      // The staged rows joined: 300px of content below the ref row. The newer page made
+      // progress, so the newer side loads again in the direction of the reader.
+      h.bumpTail(300)
+      h.setStagedNewer(false)
+
+      expect(h.counts().newerLoads).toBe(3)
+    })
+
+    it('fills when staged rows join after a run that returned early', () => {
+      const h = harness()
+      h.enable()
+      h.setHas(true, false)
+      h.setStagedOlder(true)
+      // The run of the effect for this change returns before it reads a deficit.
+      h.setPaused(true)
+      h.changeMessages()
+      expect(h.counts().olderLoads).toBe(0)
+
+      h.setPaused(false)
+      h.setStagedOlder(false)
+
+      expect(h.counts().olderLoads).toBe(1)
+    })
+  })
+
+  describe('a place that waits', () => {
+    it('skips a fill while a place waits, and runs it once after the wait', () => {
+      const h = harness()
+      h.enable()
+      h.setHas(true, false)
+      h.setPlaceWaits(true)
+
+      h.filler.fill()
+      expect(h.counts().olderLoads).toBe(0)
+
+      h.setPlaceWaits(false)
+      h.filler.resumeAfterWait()
+      expect(h.counts().olderLoads).toBe(1)
+
+      // The record of the skipped fill is gone.
+      h.filler.resumeAfterWait()
+      expect(h.counts().olderLoads).toBe(1)
+    })
+
+    /**
+     * Run the effect of the filler twice while a place waits, then end the wait: the last
+     * run of the effect returned at the wait, before `fill` read any flag.
+     */
+    function waitThroughTwoEffectRuns(h: ReturnType<typeof harness>): void {
+      h.setPlaceWaits(true)
+      h.setStagedNewer(true)
+      h.setStagedNewer(false)
+      h.setPlaceWaits(false)
+    }
+
+    it('fills when older history appears after a wait, with no change of the window', () => {
+      const [hasOlder, setHasOlder] = createSignal(false)
+      const h = harness({ hasOlder })
+      h.setHas(false, false)
+      h.enable()
+      waitThroughTwoEffectRuns(h)
+      // The fill after the wait finds no older history.
+      h.filler.resumeAfterWait()
+      expect(h.counts().olderLoads).toBe(0)
+
+      setHasOlder(true)
+
+      expect(h.counts().olderLoads).toBe(1)
+    })
+
+    it('fills when a fetch ends after a wait, with no change of the window', () => {
+      const [fetchingOlder, setFetchingOlder] = createSignal(true)
+      const h = harness({ fetchingOlder })
+      h.setHas(true, false)
+      h.enable()
+      waitThroughTwoEffectRuns(h)
+      // The fill after the wait finds a fetch in flight.
+      h.filler.resumeAfterWait()
+      expect(h.counts().olderLoads).toBe(0)
+
+      // The fetch ends with no page: a failure, or an empty page.
+      setFetchingOlder(false)
+
+      expect(h.counts().olderLoads).toBe(1)
+    })
+
+    it('fetches nothing after a wait that skipped no fill', () => {
+      const h = harness()
+      h.enable()
+      h.setHas(true, false)
+
+      h.filler.resumeAfterWait()
+
+      expect(h.counts().olderLoads).toBe(0)
+    })
   })
 })

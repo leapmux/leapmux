@@ -14,17 +14,13 @@
  * `max`, so the effective cap is normally just `max`; the floor only engages in the
  * pathological large-window case, and even then the map lands at exactly the effective
  * cap -- it is never returned above its own bound.
- *
- * `opts.onEvict` runs for each dropped key BEFORE its deletion (a measured-height
- * cache uses it to remove the evicted value from its median histogram). Deleting a
- * key mid-iteration is well-defined for a Map.
  */
 export function capMapInsertionOrder<K, V>(
   map: Map<K, V>,
   max: number,
-  opts?: { protect?: ReadonlySet<K>, onEvict?: (key: K) => void },
+  opts?: { protect?: ReadonlySet<K> },
 ): Map<K, V> {
-  const { protect, onEvict } = opts ?? {}
+  const protect = opts?.protect
   // Raise the cap to fit the un-evictable protected keys (see the doc above), so a
   // window rendering more rows than `max` doesn't leave the map stuck above its bound.
   const effectiveMax = protect
@@ -32,12 +28,12 @@ export function capMapInsertionOrder<K, V>(
     : max
   if (map.size <= effectiveMax)
     return map
+  // The loop deletes keys while it iterates them, which is well-defined for a Map.
   for (const key of map.keys()) {
     if (map.size <= effectiveMax)
       break
     if (protect?.has(key))
       continue
-    onEvict?.(key)
     map.delete(key)
   }
   return map
@@ -64,7 +60,7 @@ export function lruGet<K, V>(map: Map<K, V>, key: K): V | undefined {
 /**
  * LRU write: (re-)insert `key` at the most-recently-used end -- delete + set moves an
  * existing key there, so overwriting at capacity never drops an unrelated live entry --
- * then shed insertion-order-oldest entries past `max`. `opts` (protect / onEvict) is
+ * then shed insertion-order-oldest entries past `max`. `opts.protect` is
  * forwarded to `capMapInsertionOrder`. Mutates `map`.
  *
  * The single home for the "delete + set + cap" idiom the render/token/fragment/diff
@@ -75,7 +71,7 @@ export function lruSet<K, V>(
   key: K,
   value: V,
   max: number,
-  opts?: { protect?: ReadonlySet<K>, onEvict?: (key: K) => void },
+  opts?: { protect?: ReadonlySet<K> },
 ): void {
   map.delete(key)
   map.set(key, value)

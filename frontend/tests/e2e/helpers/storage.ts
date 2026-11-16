@@ -7,8 +7,9 @@ import { expect } from '@playwright/test'
  * The `leapmux:` key family lives in IndexedDB (see `~/lib/browserStorage`), so
  * a spec that seeds or asserts one talks to a database rather than to
  * localStorage. The functions here hold the ONLY `page.evaluate` bodies in the
- * suite that open a database of the app, so a change to a layout has one place
- * to land.
+ * suite that open the database of that family, so a change to its layout has
+ * one place to land. Another database of the app, the render cache, is not
+ * here: `clearStoredRenders` (chatScrollStability.ts) empties it.
  *
  * Every helper opens with NO VERSION. A versionless open attaches to whatever
  * version exists, so the harness can never trigger the app's own schema repair
@@ -123,6 +124,50 @@ export async function storageKeys(page: Page): Promise<string[]> {
       }
     }
   }), [DB_NAME, TABLE] as const)
+}
+
+/**
+ * Delete the row at each key of `storedKeys` in one transaction, and resolve the number of rows that it deleted. A
+ * key that holds no row deletes nothing and does not count.
+ *
+ * Rejects when the database holds no object store `entries`, also when the database did not exist and the open
+ * created it empty. `storageKeys` reads such a database as empty, so a caller that lists the keys and then deletes
+ * them would otherwise delete nothing and report no failure.
+ */
+export async function deleteEntries(page: Page, storedKeys: readonly string[]): Promise<number> {
+  return page.evaluate(([dbName, table, keys]) => new Promise<number>((resolve, reject) => {
+    const request = indexedDB.open(dbName)
+    request.onerror = () => reject(new Error(`could not open ${dbName}`))
+    request.onsuccess = () => {
+      const db = request.result
+      if (!db.objectStoreNames.contains(table)) {
+        db.close()
+        reject(new Error(`the database ${dbName} has no object store ${table}`))
+        return
+      }
+      let deleted = 0
+      const tx = db.transaction(table, 'readwrite')
+      const entries = tx.objectStore(table)
+      for (const key of keys) {
+        // The requests of one transaction run in order, so the count reads the row before the delete removes it.
+        const count = entries.count(key)
+        count.onsuccess = () => {
+          deleted += count.result
+        }
+        entries.delete(key)
+      }
+      tx.oncomplete = () => {
+        db.close()
+        resolve(deleted)
+      }
+      // A failed request aborts the transaction. So this handler covers a failed request, and also an abort that no
+      // request caused.
+      tx.onabort = () => {
+        db.close()
+        reject(new Error(`could not delete from ${table}`))
+      }
+    }
+  }), [DB_NAME, TABLE, storedKeys] as const)
 }
 
 /** Delete the whole database, so a spec can prove nothing in it holds a session. */

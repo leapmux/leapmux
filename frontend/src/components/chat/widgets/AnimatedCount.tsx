@@ -1,6 +1,7 @@
 import type { Component } from 'solid-js'
 import { createEffect, createMemo, For, Index, onCleanup, onMount, Show } from 'solid-js'
 import { createStore } from 'solid-js/store'
+import { createOwnedTimers } from '~/lib/ownedTimers'
 import { prefersReducedMotion } from '~/lib/prefersReducedMotion'
 import { srOnly } from '~/styles/shared.css'
 import * as styles from './AnimatedCount.css'
@@ -263,7 +264,7 @@ function useFadingSnapshots<T>(
 ): { id: number, value: T }[] {
   const [snapshots, setSnapshots] = createStore<{ id: number, value: T }[]>([])
   let nextId = 1
-  const timers = new Set<ReturnType<typeof setTimeout>>()
+  const timers = createOwnedTimers()
   let hasPrev = false
   let prev!: T
   createEffect(() => {
@@ -279,18 +280,10 @@ function useFadingSnapshots<T>(
         ...rows,
         { id, value: snapshot },
       ])
-      const timer = setTimeout(() => {
-        timers.delete(timer)
-        setSnapshots(rows => rows.filter(row => row.id !== id))
-      }, options.durationMs)
-      timers.add(timer)
+      timers.after(options.durationMs, () => setSnapshots(rows => rows.filter(row => row.id !== id)))
     }
     prev = next
     hasPrev = true
-  })
-  onCleanup(() => {
-    for (const timer of timers)
-      clearTimeout(timer)
   })
   return snapshots
 }

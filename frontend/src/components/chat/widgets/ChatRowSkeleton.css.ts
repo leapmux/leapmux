@@ -1,8 +1,9 @@
 import { style } from '@vanilla-extract/css'
 
-// The skeleton container: fills the row's EXACT reserved height (set inline),
-// clipping the fill block so the placeholder can never change the row's
-// geometry.
+// The skeleton container: it takes its height inline, a fixed height for an
+// asynchronous body, or the whole height of the slot of a row (see ChatRowSkeleton
+// in ./ChatRowSkeleton.tsx). It clips the fill block, so the placeholder can never
+// change the geometry of the row.
 export const rowSkeleton = style({
   overflow: 'hidden',
 })

@@ -1,22 +1,22 @@
 import type { Accessor } from 'solid-js'
-import type { ClassifiedEntry } from './chatEntryCache'
 import type { ChatDomPremeasureCandidate } from './chatHiddenPremeasure'
-import type { ChatVirtualizerRange, VirtualItem } from './useChatVirtualizer'
+import type { ChatRowItem } from './chatRowItem'
+import type { ChatVirtualizerRange } from './useChatVirtualizer'
 import { createEffect, createSignal, onCleanup, untrack } from 'solid-js'
 import { cancelIdle, requestIdle } from '~/lib/idleCallback'
 
 /**
  * Idle-time premeasure warm-up.
  *
- * The ranged and look-ahead premeasure bands only cover rows near the
- * viewport, so a long fling still outruns them into estimated (unmeasured)
- * territory — the estimate->real corrections there are what shift the
- * offset map mid-scroll. This unit drains the REST of the window during
- * idle: while the user isn't scrolling (and the pane is visible, sized, and
- * no syntax-highlight work is active), it feeds small batches of unmeasured rows — nearest to
- * the viewport first — into the premeasure queue as a third candidate band.
- * After a few idle seconds every loaded row has real geometry and scrolling
- * anywhere in the window is measurement-free.
+ * The target and look-ahead staging bands only cover rows near the view and
+ * near a place that waits, so a long fling still outruns them: it reaches the
+ * end of the measured rows and waits there. This unit drains the REST of the
+ * loaded rows during idle: while the user isn't scrolling (the pane is visible
+ * and sized, and the pause that each scroll opens for the syntax highlighter is
+ * over), it feeds small
+ * batches of unmeasured rows — nearest to the rendered rows first — into the
+ * premeasure queue as a third candidate band. After a few idle seconds every
+ * loaded row is measured, and a scroll anywhere in the window waits for nothing.
  *
  * Yielding model: each tick runs in an idle period of the browser, and mounts
  * its rows one at a time while the period lasts, so a batch of heavy rows does
@@ -45,24 +45,23 @@ export interface PremeasureWarmupDeps {
    * While false the band is empty and the ticker is parked.
    */
   enabled: Accessor<boolean>
-  visibleEntries: Accessor<readonly ClassifiedEntry[]>
-  virtualItems: Accessor<readonly VirtualItem[]>
-  range: Accessor<ChatVirtualizerRange>
-  hasMeasuredHeight: (id: string) => boolean
+  /** The loaded rows in display order, each entry with its item (see createChatPremeasureBands). */
+  rows: Accessor<readonly ChatDomPremeasureCandidate[]>
   /**
-   * Half-width (rows) of the band the look-ahead premeasure already covers
-   * around the range — warm-up starts beyond it (LOOKAHEAD_PREMEASURE_ROWS).
+   * The loaded rows that the warm-up skips: the rendered range and the
+   * look-ahead band around it. The warm-up starts beyond them. Indexes of
+   * `rows`, inside `[0, rows().length]`.
    */
-  excludedBandRows: number
+  skip: Accessor<ChatVirtualizerRange>
+  /** Whether the row is measured (see RowHeightCache.isMeasured). */
+  isMeasured: (item: ChatRowItem) => boolean
 }
 
 const EMPTY: ChatDomPremeasureCandidate[] = []
 
 /**
  * Create the warm-up ticker. Call within a reactive owner. The returned
- * accessor is wired into the premeasure queue's `warmupCandidates` band
- * (pending-only — warm-up rows are never in the main <For>, so they need no
- * collapse entry, exactly like look-ahead rows).
+ * accessor is wired into the premeasure queue's `warmupCandidates` band.
  */
 export function createPremeasureWarmup(deps: PremeasureWarmupDeps) {
   const [warmupCandidates, setWarmupCandidates] = createSignal<readonly ChatDomPremeasureCandidate[]>(EMPTY)
@@ -81,23 +80,19 @@ export function createPremeasureWarmup(deps: PremeasureWarmupDeps) {
    * scroll directions warm evenly, nearest-first.
    */
   const computeNextBatch = (): ChatDomPremeasureCandidate[] => {
-    const all = deps.visibleEntries()
-    const items = deps.virtualItems()
-    const len = Math.min(all.length, items.length)
+    const rows = deps.rows()
+    const len = rows.length
     if (len === 0)
       return EMPTY
-    const r = deps.range()
-    const bandLo = Math.max(0, r.start - deps.excludedBandRows)
-    const bandHi = Math.min(len, r.end + deps.excludedBandRows)
+    const skip = deps.skip()
     const out: ChatDomPremeasureCandidate[] = []
     const maybePush = (index: number): void => {
-      const entry = all[index]
-      const item = items[index]
-      if (entry && item && !deps.hasMeasuredHeight(item.id))
-        out.push({ entry, item })
+      const row = rows[index]
+      if (row !== undefined && !deps.isMeasured(row.item))
+        out.push(row)
     }
-    let above = bandLo - 1
-    let below = bandHi
+    let above = skip.start - 1
+    let below = skip.end
     while (out.length < WARMUP_BATCH_ROWS && (above >= 0 || below < len)) {
       if (above >= 0) {
         maybePush(above)
@@ -133,7 +128,7 @@ export function createPremeasureWarmup(deps: PremeasureWarmupDeps) {
     const next = untrack(computeNextBatch)
     if (next.length === 0) {
       // Nothing left to measure: park until the arming effect re-fires
-      // (items change, re-enable).
+      // (the loaded rows change, re-enable).
       setWarmupCandidates(prev => (prev.length === 0
         ? prev
         : EMPTY))
@@ -161,10 +156,10 @@ export function createPremeasureWarmup(deps: PremeasureWarmupDeps) {
       setWarmupCandidates(EMPTY)
       return
     }
-    // Track the item list so newly loaded (paginated/streamed) rows restart
-    // a parked ticker; read length only — the arming decision doesn't care
-    // about content.
-    deps.virtualItems()
+    // Track the loaded rows, so newly loaded (paginated/streamed) rows restart
+    // a parked ticker. A row that gets a new object (a new entry or a new
+    // height key) restarts the ticker too.
+    deps.rows()
     scheduleTick(WARMUP_IDLE_DELAY_MS)
   })
 

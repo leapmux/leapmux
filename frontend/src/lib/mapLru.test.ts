@@ -42,30 +42,6 @@ describe('capMapInsertionOrder', () => {
     expect(map.has('k5')).toBe(true)
   })
 
-  it('invokes onEvict for each dropped key before deleting it', () => {
-    const map = new Map<string, number>([
-      ['a', 1],
-      ['b', 2],
-      ['c', 3],
-    ])
-    const seen: Array<[string, number | undefined]> = []
-    capMapInsertionOrder(map, 1, {
-      onEvict: (key) => {
-        seen.push([
-          key,
-          map.get(key),
-        ])
-      }, // value still present at callback time
-    })
-    expect(seen).toEqual([
-      ['a', 1],
-      ['b', 2],
-    ])
-    expect([
-      ...map.keys(),
-    ]).toEqual(['c'])
-  })
-
   it('raises the cap to the protect-set size when every key is protected', () => {
     const map = new Map<string, number>([
       ['a', 1],
@@ -165,19 +141,16 @@ describe('lruSet', () => {
     ])
   })
 
-  it('forwards protect/onEvict to the cap', () => {
+  it('forwards protect to the cap', () => {
     const map = new Map<string, number>([
       ['a', 1],
       ['b', 2],
     ])
-    const evicted: string[] = []
     lruSet(map, 'c', 3, 2, {
       protect: new Set(['a']),
-      onEvict: k => evicted.push(k),
     })
     // After inserting 'c' (size 3) the cap (2) trims one: 'a' is protected and 'b' is
     // the oldest un-protected key, so 'b' is evicted while 'a' and the new 'c' survive.
-    expect(evicted).toEqual(['b'])
     expect([
       ...map.keys(),
     ]).toEqual(['a', 'c'])

@@ -1,16 +1,20 @@
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import type { ModelScript } from './modelScriptFixture'
+import type { ScriptedTurn } from './scriptedTurn'
 import { expect } from '@playwright/test'
+import { parseStoredKey, PREFIX_CHAT_ROW_HEIGHTS } from '../../../src/lib/browserStorage'
+import { escapeRegExp } from '../../../src/lib/regexp'
+import { deleteEntries, storageKeys } from './storage'
 import { assistantBubbles, CHAT_SCROLL_CONTAINER, chatDistanceFromBottom, chatScrollContainer, sendMessage, waitForAgentIdle } from './ui'
 
 /**
  * Reads and actions for the specs that check that the chat view keeps what the reader sees in place
- * (`048*-chat-scroll-stability*.spec.ts`).
+ * (`048*-chat-scroll-stability*.spec.ts` and `codex/chat-scroll-stability-file-image.spec.ts`).
  *
  * Each read of a row runs in ONE `evaluate` on the scroll container, which the app never rebuilds. A read through a
  * chat locator could hold a row that ChatView replaced between the resolve and the read (see `readAttached`). The
- * functions that run in the browser (`topRowIn`, `rowDistanceIn`, `topParagraphIn`) reference nothing outside their
- * own body, because Playwright sends only their source text to the page.
+ * functions that run in the browser (each one whose name ends in `In`) reference nothing outside their own body,
+ * because Playwright sends only their source text to the page.
  */
 
 /** A row of the chat, and the distance from the top edge of the scroll container to the top edge of the row. */
@@ -56,6 +60,39 @@ export function rowDistanceIn(container: Element, seq: string): number | null {
     : row.getBoundingClientRect().top - container.getBoundingClientRect().top
 }
 
+/** A row of the chat: the distance from the top edge of the scroll container to its top edge, and its height. */
+export interface RowBox {
+  distance: number
+  height: number
+}
+
+/** The box of the row of `seq` in `container`, or null when the row is not mounted. Runs in the browser. */
+export function rowBoxIn(container: Element, seq: string): RowBox | null {
+  const row = container.querySelector(`[data-seq="${seq}"]`)
+  if (row === null)
+    return null
+  const rect = row.getBoundingClientRect()
+  return { distance: rect.top - container.getBoundingClientRect().top, height: rect.height }
+}
+
+/**
+ * The sequence number of the first mounted row of `container`, in document order, whose text contains `text`, or null
+ * when no mounted row contains it. Runs in the browser.
+ */
+export function rowSeqWithTextIn(container: Element, text: string): string | null {
+  const row = Array.from(container.querySelectorAll<HTMLElement>('[data-seq]')).find(candidate => candidate.textContent?.includes(text))
+  return row?.dataset.seq ?? null
+}
+
+/**
+ * The width of the content box of `container`: its client width without its left and right padding. Each row of the
+ * chat is that wide. Runs in the browser.
+ */
+export function contentBoxWidthIn(container: Element): number {
+  const style = getComputedStyle(container)
+  return container.clientWidth - Number.parseFloat(style.paddingLeft) - Number.parseFloat(style.paddingRight)
+}
+
 /**
  * The first paragraph, in document order, whose text starts with a match of `markerSource` and whose top edge is at
  * or below the top edge of `container`. Null when no such paragraph exists or it has no row. Runs in the browser.
@@ -86,6 +123,21 @@ export function readRowDistance(page: Page, seq: string): Promise<number | null>
   return chatScrollContainer(page).evaluate(rowDistanceIn, seq)
 }
 
+/** Read the box of the row of `seq` (see rowBoxIn). */
+export function readRowBox(page: Page, seq: string): Promise<RowBox | null> {
+  return chatScrollContainer(page).evaluate(rowBoxIn, seq)
+}
+
+/** Read the sequence number of the mounted row whose text contains `text` (see rowSeqWithTextIn). */
+export function readRowSeqWithText(page: Page, text: string): Promise<string | null> {
+  return chatScrollContainer(page).evaluate(rowSeqWithTextIn, text)
+}
+
+/** Read the width of the content box of the chat, which is the width of each row (see contentBoxWidthIn). */
+export function readContentBoxWidth(page: Page): Promise<number> {
+  return chatScrollContainer(page).evaluate(contentBoxWidthIn)
+}
+
 /** Read the paragraph near the top of the chat whose text starts with a match of `marker` (see topParagraphIn). */
 export function readTopParagraph(page: Page, marker: RegExp): Promise<TopParagraph | null> {
   return chatScrollContainer(page).evaluate(topParagraphIn, marker.source)
@@ -96,6 +148,28 @@ export async function requireTopRow(page: Page): Promise<RowDistance> {
   const row = await readTopRow(page)
   expect(row, 'a row is at the top of the view').not.toBeNull()
   return row!
+}
+
+/**
+ * Resolve when the page drew `count` animation frames from now, and at least one. Runs in the browser.
+ */
+export function framesPassIn(count: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let seen = 0
+    const tick = () => {
+      seen++
+      if (seen >= count)
+        resolve()
+      else
+        requestAnimationFrame(tick)
+    }
+    requestAnimationFrame(tick)
+  })
+}
+
+/** Wait until the page drew `frames` animation frames (see framesPassIn). */
+export function framesPass(page: Page, frames: number): Promise<void> {
+  return page.evaluate(framesPassIn, frames)
 }
 
 /** Wait until the chat stops scrolling: two reads of `scrollTop`, one frame apart, are equal. */
@@ -141,6 +215,18 @@ export async function wheelChatUp(page: Page, pixels: number): Promise<void> {
   await waitForScrollRest(page)
 }
 
+/**
+ * Move the view up by `pixels` in one step, as one move of a drag of the scrollbar thumb does, then wait until the
+ * chat stops scrolling. The whole distance arrives in one `scroll` event, whatever the platform does with a wheel.
+ * A row that was not mounted before the step therefore mounts with the viewport already at its end position.
+ */
+export async function dragChatUp(page: Page, pixels: number): Promise<void> {
+  await chatScrollContainer(page).evaluate((container, distance) => {
+    container.scrollTop -= distance
+  }, pixels)
+  await waitForScrollRest(page)
+}
+
 /** Expect that the row of `before` is still mounted, at most 1px from its distance in `before`. */
 export async function expectRowHeld(page: Page, before: RowDistance, when: string): Promise<void> {
   await expectRowMoved(page, before, 0, when)
@@ -179,6 +265,36 @@ export function readViewportHeight(page: Page): Promise<number> {
 export async function expectAtBottom(page: Page, when: string): Promise<void> {
   await waitForScrollRest(page)
   await expect.poll(() => chatDistanceFromBottom(page), { message: `${when}: the view is at the bottom` }).toBeLessThanOrEqual(2)
+}
+
+/**
+ * Expect that the tail of the chat is `pixels` farther below the view than `before`, within 1px. `before` is a read of
+ * `chatDistanceFromBottom`. A scroll up by N pixels moves the tail N pixels farther below the view. A row that grows
+ * below the top of the view moves the tail farther still.
+ */
+export async function expectTailFartherBy(page: Page, before: number, pixels: number, when: string): Promise<void> {
+  const travelled = await chatDistanceFromBottom(page) - before
+  expect(Math.abs(travelled - pixels), `${when}: the tail is ${pixels}px farther below the view, within 1px (it is ${travelled}px farther)`).toBeLessThanOrEqual(1)
+}
+
+/**
+ * Change the width of the viewport so that each row of the chat is `rowWidth` wide, and wait until the chat has that
+ * width. The viewport keeps its height.
+ *
+ * The page must have the layout of a narrow screen, where the chat takes the whole width less a fixed inset.
+ */
+export async function resizeRowsTo(page: Page, rowWidth: number): Promise<void> {
+  const viewport = page.viewportSize()
+  expect(viewport, 'the page has a viewport').not.toBeNull()
+  const inset = viewport!.width - await readContentBoxWidth(page)
+  await page.setViewportSize({ width: rowWidth + inset, height: viewport!.height })
+  await expect.poll(() => readContentBoxWidth(page), { message: `each row is ${rowWidth}px wide` }).toBe(rowWidth)
+}
+
+/** Resize the rows to `rowWidth` (see resizeRowsTo), then expect that the view rests at the bottom of the chat. */
+export async function resizeRowsAtBottom(page: Page, rowWidth: number): Promise<void> {
+  await resizeRowsTo(page, rowWidth)
+  await expectAtBottom(page, `at a row width of ${rowWidth}px`)
 }
 
 /** What a watch of one row saw over the frames that it ran. */
@@ -281,9 +397,112 @@ export function markedParagraphs(label: string, count: number, filler: string): 
   return Array.from({ length: count }, (_, i) => `${label}${i}: ${filler}`).join('\n\n')
 }
 
-/** The pattern that matches the marker at the start of a paragraph of `markedParagraphs(label, …)`. */
+/**
+ * The pattern that matches the marker at the start of a paragraph of `markedParagraphs(label, …)`. It matches each
+ * character of `label` literally, also a character with a meaning in a regular expression.
+ */
 export function paragraphMarker(label: string): RegExp {
-  return new RegExp(`^${label}\\d+:`)
+  return new RegExp(`^${escapeRegExp(label)}\\d+:`)
+}
+
+/** The characters of the unbroken texts of `widthSensitiveParagraphs`: glyphs of many widths in a proportional font. */
+const UNBROKEN_TEXT_CHARACTERS = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+
+/**
+ * `count` paragraphs of the form `${label}${i}: ${text}`, with a blank line between two paragraphs. Each text is one
+ * unbroken run of 200 to 699 characters, with its own length and its own characters, as a long hash or an encoded
+ * value is.
+ *
+ * The chat breaks such a run at any character, so the run fills each line, and its number of lines is its width
+ * divided by the width of the line. A paragraph of ten lines therefore gains or loses a line for one width change in
+ * ten of 1%, which is 4px on a narrow screen. Among many paragraphs of different lengths, some change their number of
+ * lines for a change of the width by a few pixels, whatever the font is. Prose does not: a paragraph of words keeps
+ * its number of lines until a whole word fits on another line.
+ */
+export function widthSensitiveParagraphs(label: string, count: number): string {
+  return Array.from({ length: count }, (_, i) => {
+    const text = Array.from(
+      { length: 200 + (i * 37) % 500 },
+      (_, c) => UNBROKEN_TEXT_CHARACTERS[(i * 7 + c * (17 + (i % 3) * 4) + (c * c) % 7) % UNBROKEN_TEXT_CHARACTERS.length],
+    ).join('')
+    return `${label}${i}: ${text}`
+  }).join('\n\n')
+}
+
+/** The height that the hidden premeasure copy of a row committed, and the height key of the row at that commit. */
+export interface PremeasureCommit {
+  height: number
+  /**
+   * The height key holds the exact row width and the fonts of the chat, so a commit at another width has another key.
+   */
+  heightKey: string
+}
+
+/** The property of `window` that holds the commits that `recordPremeasureCommits` collects. */
+const PREMEASURE_COMMITS_KEY = '__chatScrollStabilityPremeasureCommits'
+
+/**
+ * Collect, on `window` under `key`, the last height that the hidden premeasure copy of each row commits, by the
+ * sequence number of the row. The app reports each commit as a `leapmux:chat-premeasure` event in a development
+ * build, which the E2E launcher builds. Runs in the browser.
+ */
+export function startPremeasureRecordIn(key: string): void {
+  const commits: Record<string, PremeasureCommit> = {}
+  Reflect.set(window, key, commits)
+  window.addEventListener('leapmux:chat-premeasure', (event) => {
+    const detail: unknown = event instanceof CustomEvent
+      ? event.detail
+      : undefined
+    if (typeof detail !== 'object' || detail === null)
+      return
+    const { phase, accepted, seq, height, heightKey } = detail as Record<string, unknown>
+    if (phase === 'commit' && accepted === true && typeof seq === 'string' && typeof height === 'number' && typeof heightKey === 'string')
+      commits[seq] = { height, heightKey }
+  })
+}
+
+/** The commit that the record under `key` holds for the row of `seq`, or null. Runs in the browser. */
+export function premeasureCommitIn({ key, seq }: { key: string, seq: string }): PremeasureCommit | null {
+  const commits = Reflect.get(window, key) as Record<string, PremeasureCommit> | undefined
+  return commits?.[seq] ?? null
+}
+
+/** The record that `recordPremeasureCommits` starts. */
+export interface PremeasureCommits {
+  /** The last commit of the hidden copy of the row of `seq` since the record started, or null. */
+  commitOf: (seq: string) => Promise<PremeasureCommit | null>
+}
+
+/**
+ * Record the height that the hidden premeasure copy of each row commits from now on (see startPremeasureRecordIn).
+ * A navigation ends the record, so the next test starts with none.
+ */
+export async function recordPremeasureCommits(page: Page): Promise<PremeasureCommits> {
+  await page.evaluate(startPremeasureRecordIn, PREMEASURE_COMMITS_KEY)
+  return {
+    commitOf: seq => page.evaluate(premeasureCommitIn, { key: PREMEASURE_COMMITS_KEY, seq }),
+  }
+}
+
+/**
+ * Record the height that the hidden premeasure copy of each row commits, from the next load of the page on (see
+ * startPremeasureRecordIn). Use it for a commit that can come before a call in the loaded page could start the
+ * record, as right after the chat opens.
+ *
+ * It adds an init script to the page and hands its `Disposable` to no one. The reset of the shared page cannot
+ * dispose an init script whose `Disposable` it does not hold, so a spec that calls this helper runs in a context of its
+ * own (ISOLATED_CONTEXT_SPECS in fixtures.ts).
+ */
+export async function recordPremeasureCommitsFromNextLoad(page: Page): Promise<PremeasureCommits> {
+  await page.addInitScript(startPremeasureRecordIn, PREMEASURE_COMMITS_KEY)
+  return {
+    commitOf: seq => page.evaluate(premeasureCommitIn, { key: PREMEASURE_COMMITS_KEY, seq }),
+  }
+}
+
+/** A short scripted turn. */
+export function shortTurn(turn: number): ScriptedTurn {
+  return { prompt: `Turn ${turn}.`, answer: `Answer ${turn}.`, entry: 'insert' }
 }
 
 /**
@@ -299,4 +518,268 @@ export async function sendLongTurn(page: Page, script: ModelScript, prompt: stri
   await waitForAgentIdle(page)
   await waitForScrollRest(page)
   return step
+}
+
+/** A mounted row of the chat, as `rowStatesIn` reads it. */
+export interface RowState {
+  seq: string
+  /** The distance from the top edge of the scroll container to the top edge of the row. */
+  distance: number
+  height: number
+}
+
+/** The state of each mounted row of `container`, in document order. Runs in the browser. */
+export function rowStatesIn(container: Element): RowState[] {
+  const top = container.getBoundingClientRect().top
+  return Array.from(container.querySelectorAll<HTMLElement>('[data-seq]')).map((row) => {
+    const rect = row.getBoundingClientRect()
+    return {
+      seq: row.dataset.seq ?? '',
+      distance: rect.top - top,
+      height: rect.height,
+    }
+  })
+}
+
+/** Read the state of each mounted row (see rowStatesIn). */
+export function readRowStates(page: Page): Promise<RowState[]> {
+  return chatScrollContainer(page).evaluate(rowStatesIn)
+}
+
+/** The sequence numbers of the mounted rows of `container`, in document order. Runs in the browser. */
+export function mountedRowSeqsIn(container: Element): number[] {
+  const seqs: number[] = []
+  for (const row of Array.from(container.querySelectorAll<HTMLElement>('[data-seq]'))) {
+    if (row.dataset.seq !== undefined)
+      seqs.push(Number(row.dataset.seq))
+  }
+  return seqs
+}
+
+/** Read the sequence numbers of the mounted rows, in order (see mountedRowSeqsIn). */
+export function readMountedRowSeqs(page: Page): Promise<number[]> {
+  return chatScrollContainer(page).evaluate(mountedRowSeqsIn)
+}
+
+/** The container of the one chat on screen. The shell hides the chat of an inactive tab, and that chat does not match. */
+const VISIBLE_CHAT_CONTAINER = '[data-testid="chat-container"]:visible'
+
+/**
+ * The loading indicator of the chat on screen whose text is exactly `text`, such as "Loading older messages...". The
+ * indicators are overlays beside the scroll container, not inside it, so the locator starts at the container of the
+ * chat.
+ *
+ * An element matches when its whole text equals `text`, and no child element of it matches too. The whole text holds
+ * the text of each descendant, and Playwright trims it and counts each run of white space in it as one space. The
+ * Spinner icon of an indicator has no text, so the `div` that holds the icon and the text matches. A row that quotes
+ * the text inside a longer one does not match.
+ */
+export function loadingIndicator(page: Page, text: string): Locator {
+  return page.locator(VISIBLE_CHAT_CONTAINER).getByText(text, { exact: true })
+}
+
+/** The hold that `installReplyHoldIn` keeps on `window`. */
+interface ReplyHold {
+  /** The text that marks a reply to hold, or null once the hold ended. */
+  marker: string | null
+  /** The deliveries of the held replies, in the order of their arrival. */
+  held: (() => void)[]
+}
+
+/**
+ * Hold back each worker reply whose rendered HTML contains `marker`, and keep the hold on `window` under `key`. A
+ * reply is a message with an `html` text, as the Markdown worker sends. The row of that text then stays behind its
+ * placeholder, as a long report does on a slow device.
+ *
+ * It replaces the `onmessage` accessor of `Worker.prototype`, so it holds only for a worker whose handler the page
+ * sets after this function runs. Run it before the scripts of the page. Runs in the browser.
+ */
+export function installReplyHoldIn({ key, marker }: { key: string, marker: string }): void {
+  const descriptor = Object.getOwnPropertyDescriptor(Worker.prototype, 'onmessage')
+  const get = descriptor?.get
+  const set = descriptor?.set
+  if (get === undefined || set === undefined)
+    throw new Error('Worker.prototype.onmessage is not an accessor')
+  const hold: ReplyHold = { marker, held: [] }
+  Reflect.set(window, key, hold)
+  Object.defineProperty(Worker.prototype, 'onmessage', {
+    configurable: true,
+    enumerable: descriptor?.enumerable ?? true,
+    get(this: Worker) {
+      return get.call(this)
+    },
+    set(this: Worker, handler: unknown) {
+      if (typeof handler !== 'function') {
+        set.call(this, handler)
+        return
+      }
+      set.call(this, (event: MessageEvent) => {
+        const html = (event.data as { html?: unknown } | null)?.html
+        if (hold.marker !== null && typeof html === 'string' && html.includes(hold.marker)) {
+          hold.held.push(() => handler.call(this, event))
+          return
+        }
+        handler.call(this, event)
+      })
+    },
+  })
+}
+
+/** The number of replies that the hold under `key` keeps back, or 0 when no hold exists. Runs in the browser. */
+export function heldReplyCountIn(key: string): number {
+  const hold = Reflect.get(window, key) as ReplyHold | undefined
+  return hold?.held.length ?? 0
+}
+
+/**
+ * Deliver the replies that the hold under `key` keeps back, in the order of their arrival, and end the hold, so it
+ * keeps back no later reply. Does nothing when no hold exists. Runs in the browser.
+ */
+export function releaseHeldRepliesIn(key: string): void {
+  const hold = Reflect.get(window, key) as ReplyHold | undefined
+  if (hold === undefined)
+    return
+  hold.marker = null
+  for (const deliver of hold.held.splice(0))
+    deliver()
+}
+
+/** The property of `window` that holds the hold of `holdRenderRepliesWith`. */
+const REPLY_HOLD_KEY = '__chatScrollStabilityReplyHold'
+
+/** The hold that `holdRenderRepliesWith` starts. */
+export interface HeldRenderReplies {
+  /** The number of replies that the hold keeps back now. */
+  heldCount: () => Promise<number>
+  /** Deliver the held replies and end the hold (see releaseHeldRepliesIn). */
+  release: () => Promise<void>
+}
+
+/**
+ * From the next navigation of `page` on, hold back each worker reply whose rendered HTML contains `marker` (see
+ * installReplyHoldIn), until `release`.
+ *
+ * It adds an init script to the page and hands its `Disposable` to no one. The reset of the shared page cannot
+ * dispose an init script whose `Disposable` it does not hold. So only a spec with a page of its own may call this
+ * helper: list the spec in ISOLATED_CONTEXT_SPECS (see fixtures.ts).
+ *
+ * The app ends a render that takes longer than its time budget, and then shows the source of the text. The budget
+ * of a held reply runs from the moment its request is the oldest one of its worker without a reply:
+ *
+ * - A body of ordinary size shares its worker with every other row, and its budget is about 10 seconds (see
+ *   markdownRenderBudgetMs). A test that scrolls for a few seconds under load does not finish in that time.
+ * - A body above 32 KiB renders in a worker of its own (see LARGE_MARKDOWN_BODY_CHARS). The held reply is then the
+ *   first answer that this worker owes, and the app waits 30 seconds longer for the first answer of a worker (see
+ *   WORKER_COLD_START_ALLOWANCE_MS). Give the held body that size with `largeBodyFiller`.
+ *
+ * Check that the row still waits right before the release.
+ */
+export async function holdRenderRepliesWith(page: Page, marker: string): Promise<HeldRenderReplies> {
+  await page.addInitScript(installReplyHoldIn, { key: REPLY_HOLD_KEY, marker })
+  return {
+    heldCount: () => page.evaluate(heldReplyCountIn, REPLY_HOLD_KEY),
+    release: () => page.evaluate(releaseHeldRepliesIn, REPLY_HOLD_KEY),
+  }
+}
+
+/**
+ * The length of the address in the link definition of `largeBodyFiller`: above the 32 KiB at which the app renders a
+ * Markdown body in a worker of its own (LARGE_MARKDOWN_BODY_CHARS, which the test of this file compares it with).
+ */
+export const LARGE_BODY_FILLER_CHARS = 40 * 1024
+
+/**
+ * A Markdown block that makes a body large and draws nothing: one link definition that no link uses, with an address
+ * of LARGE_BODY_FILLER_CHARS characters. Append it to a body after a blank line. The height of the row stays the
+ * height of the rest of the body.
+ */
+export function largeBodyFiller(): string {
+  return `[large-body-filler]: https://example.invalid/${'f'.repeat(LARGE_BODY_FILLER_CHARS)}`
+}
+
+/**
+ * The database in which the app keeps each rendered Markdown body and each highlighted code block for the next load
+ * of the page, and its object store (see renderArtifactStore.ts in the app).
+ */
+const STORED_RENDERS = { database: 'leapmux-render-cache', store: 'artifacts' } as const
+
+/**
+ * Delete every entry of the object store `store` of the IndexedDB database `database`. Rejects when the database
+ * has no such store, so a renamed store fails the caller. Runs in the browser.
+ */
+export function clearObjectStoreIn({ database, store }: { database: string, store: string }): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const open = indexedDB.open(database)
+    open.onerror = () => reject(open.error ?? new Error(`cannot open the database ${database}`))
+    open.onsuccess = () => {
+      const db = open.result
+      if (!db.objectStoreNames.contains(store)) {
+        db.close()
+        reject(new Error(`the database ${database} has no object store ${store}`))
+        return
+      }
+      const transaction = db.transaction(store, 'readwrite')
+      transaction.objectStore(store).clear()
+      transaction.oncomplete = () => {
+        db.close()
+        resolve()
+      }
+      transaction.onerror = () => {
+        db.close()
+        reject(transaction.error ?? new Error(`cannot clear the object store ${store}`))
+      }
+    }
+  })
+}
+
+/**
+ * Delete each render that the app keeps for the next load of the page. After a reload, the page then renders each
+ * row again in its worker, as a browser does that shows the chat for the first time.
+ */
+export function clearStoredRenders(page: Page): Promise<void> {
+  return page.evaluate(clearObjectStoreIn, STORED_RENDERS)
+}
+
+/** The path of the empty page on which `clearStoredRowHeights` leaves the browser. */
+const BLANK_PAGE_PATH = '/__e2e-blank'
+
+/**
+ * Whether the stored key `storedKey` holds the row heights of a chat. The app's own parser reads the logical name of
+ * the key, so this check follows each change of the key layout.
+ */
+function holdsRowHeights(storedKey: string): boolean {
+  return parseStoredKey(storedKey)?.name.startsWith(PREFIX_CHAT_ROW_HEIGHTS) === true
+}
+
+/** The stored keys that hold the row heights of a chat. */
+async function rowHeightKeys(page: Page): Promise<string[]> {
+  return (await storageKeys(page)).filter(holdsRowHeights)
+}
+
+/**
+ * Delete the row heights that the app stores for each chat, and leave the browser on an empty page. The caller
+ * opens the chat again. No row then has a stored height, as in a browser that shows the chat for the first time.
+ *
+ * The app writes the heights that it still owes when its page goes away (`pagehide`), and that write would follow a
+ * delete that runs inside the app. So this helper leaves the app first: it goes to an empty page of the same origin,
+ * and deletes the entries there. It deletes no other entry.
+ *
+ * The helper fails when it deletes no entry, because a broken match of the stored keys also deletes none. The app
+ * saves the heights one second after the last height that it measured (ROW_HEIGHT_SAVE_DEBOUNCE_MS in
+ * chatRowHeightPersistence.ts), and it drops a save that still waits when its page goes away. So the helper first
+ * waits until the app saved the heights.
+ */
+export async function clearStoredRowHeights(page: Page): Promise<void> {
+  await expect.poll(async () => (await rowHeightKeys(page)).length, {
+    message: 'the app stores the row heights of the chat',
+  }).toBeGreaterThan(0)
+  const blank = new URL(BLANK_PAGE_PATH, page.url()).toString()
+  await page.route(blank, route => route.fulfill({ status: 200, contentType: 'text/html', body: '' }))
+  try {
+    await page.goto(blank)
+  }
+  finally {
+    await page.unroute(blank)
+  }
+  expect(await deleteEntries(page, await rowHeightKeys(page)), 'the helper deletes the stored row heights').toBeGreaterThan(0)
 }

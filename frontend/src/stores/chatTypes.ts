@@ -23,12 +23,12 @@ export interface ScrollAnchor {
   id: string
   offsetWithinRow: number
   /**
-   * The row's height (measured or estimated) at capture time. scrollTopForAnchor
+   * The row's height at capture time. scrollTopForAnchor
    * resolves `offsetWithinRow` PROPORTIONALLY against this basis -- preserving the
    * fractional position into the row -- so a height change between capture and
-   * resolve (an estimate that shrinks/grows while unmeasured, or a measured row
-   * evicted back to an estimate) can neither truncate the offset (yanking the pin
-   * up) nor overshoot the row bottom. Optional: an anchor restored from old
+   * resolve (a row that the list measures again under another height key, or a
+   * mounted row whose new measure replaces its provisional height) can neither
+   * truncate the offset (yanking the pin up) nor overshoot the row bottom. Optional: an anchor restored from old
    * persistence without it falls back to absolute clamping.
    */
   basisHeight?: number
@@ -56,8 +56,8 @@ export interface ScrollAnchor {
  * Saved scroll position for tab-switch viewport restoration. Anchored to a
  * specific message (by row id) plus the pixel offset of the viewport top within
  * that row, rather than a raw distance-from-bottom — under virtualization the
- * scroll container's height is partly estimated, so a distance would resolve
- * to the wrong place. The row ID remains stable across sequence changes.
+ * scroll container's height changes as rows join the list and as the list
+ * measures a row again, so a distance would resolve to the wrong place. The row ID remains stable across sequence changes.
  * `atBottom` and `hasMoreNewer` let restore decide
  * whether to stick to the live tail or resolve the anchor.
  */
@@ -72,8 +72,8 @@ export interface SavedViewportScroll {
   /**
    * Fallback raw scrollTop, set ONLY when scrolled away from the bottom with no
    * resolvable row anchor -- a window momentarily composed of only hidden rows,
-   * where the virtual list is empty (totalHeight 0) so there is no estimated
-   * spacer for a pixel offset to drift against. Lets restore return to that
+   * where the virtual list is empty (totalHeight 0), so there is no spacer of
+   * rows for a pixel offset to drift against. Lets restore return to that
    * position instead of snapping to the live tail; ignored when `anchor` resolves.
    */
   rawScrollTop?: number

@@ -21,11 +21,11 @@ import { capMapInsertionOrder } from '~/lib/mapLru'
 // long session can't grow the maps without limit. A genuinely-deleted row's stale
 // entry is harmless (its row never renders) and ages out under the cap.
 //
-// The cap PROTECTS the currently-rendered rows (the virtualizer's mounted set,
-// passed in as `protectedIds`): an on-screen row toggled across a long session
-// must never be the eviction target, or its choice would silently revert WHILE
-// VISIBLE. This mirrors the virtualizer's height cache, which protects the same
-// set for the same reason; only off-screen rows are ever evicted.
+// The cap PROTECTS the currently-rendered rows (the mounted rows of the height
+// cache, passed in as `protectedIds`): an on-screen row toggled across a long
+// session must never be the eviction target, or its choice would silently revert
+// WHILE VISIBLE. The height cache protects the same set from its own eviction for
+// the same reason; only off-screen rows are ever evicted.
 // ---------------------------------------------------------------------------
 
 /**
@@ -58,7 +58,7 @@ export function capInsertionOrder<V>(map: Map<string, V>, protect?: ReadonlySet<
  * before never-touched newer rows. Deleting first re-inserts it as newest, making
  * the cap a true recency-aware LRU. Mutates and returns the same Map.
  */
-function touchAndCap<V>(map: Map<string, V>, key: string, value: V, protect?: ReadonlySet<string>): Map<string, V> {
+function touchAndCap<V>(map: Map<string, V>, key: string, value: V, protect: ReadonlySet<string>): Map<string, V> {
   map.delete(key)
   map.set(key, value)
   return capInsertionOrder(map, protect)
@@ -85,10 +85,10 @@ export interface MessageUiState {
 export interface CreateMessageUiStateOptions {
   /**
    * The currently-rendered row ids the cap must never evict, read at eviction time
-   * (so it tracks the live mounted set). Wired to the virtualizer's `mountedIds` in
-   * ChatView. Omitted -> no protection (the prior behavior), for standalone tests.
+   * (so it tracks the live mounted set). Wired to `RowHeightCache.mountedIds` in
+   * ChatView.
    */
-  protectedIds?: () => ReadonlySet<string>
+  protectedIds: () => ReadonlySet<string>
 }
 
 /**
@@ -96,7 +96,7 @@ export interface CreateMessageUiStateOptions {
  * (it allocates signals); the returned accessors are stable for the component's
  * lifetime.
  */
-export function createMessageUiState(opts: CreateMessageUiStateOptions = {}): MessageUiState {
+export function createMessageUiState(opts: CreateMessageUiStateOptions): MessageUiState {
   const [diffViewOverrides, setDiffViewOverrides] = createSignal<Map<string, 'unified' | 'split'>>(new Map())
   const [messageUiState, setMessageUiState] = createSignal<Map<string, Map<string, boolean>>>(new Map())
   // Per-id change counter (see getUiVersion). Capped + protected like the state maps
@@ -107,7 +107,7 @@ export function createMessageUiState(opts: CreateMessageUiStateOptions = {}): Me
 
   // Resolved at each cap (eviction time), so it reflects the rows mounted right now
   // rather than a snapshot from store-creation time.
-  const protect = () => opts.protectedIds?.()
+  const protect = () => opts.protectedIds()
 
   const bumpUiVersion = (messageId: string) => {
     setUiVersions((prev) => {
@@ -123,8 +123,9 @@ export function createMessageUiState(opts: CreateMessageUiStateOptions = {}): Me
    * `buildValue` result at the MRU end + cap, and bump the UI version exactly once.
    * Centralizing it keeps the two setters from drifting on the no-op-skip OR the
    * version bump -- both load-bearing reactive correctness (a missed skip notifies
-   * consumers on a no-op; a missed bump leaves an off-screen row's cached estimate
-   * stale). Closes over `protect` and `bumpUiVersion`.
+   * consumers on a no-op; a missed bump leaves the height key of an off-screen row as
+   * it is, so the row keeps the height that it had before the change). Closes over
+   * `protect` and `bumpUiVersion`.
    */
   const setIfChanged = <V>(
     setSignal: Setter<Map<string, V>>,

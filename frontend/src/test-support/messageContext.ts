@@ -11,7 +11,13 @@ import { createSpanIndex } from '~/stores/chatSpanIndex'
 export const cleanups: Array<() => void> = []
 afterEach(() => cleanups.splice(0).forEach(dispose => dispose()))
 
-/** Exercise the real resolver with controlled transcript and transport sources. */
+/**
+ * Exercise the real resolver with controlled transcript and transport sources.
+ *
+ * By default the window does not hold the live tail, so the resolver fetches a missing
+ * half from `fetchSpan`, as for a window that a page load moved away from the tail. A case
+ * that models the live tail sets `holdsLiveTail`.
+ */
 export function testMessageContext(overrides: Partial<MessageContextSources> = {}) {
   return createRoot((dispose) => {
     cleanups.push(dispose)
@@ -27,12 +33,14 @@ export function testMessageContext(overrides: Partial<MessageContextSources> = {
       messageVersion: () => 0,
       contentVersion: () => 0,
       messageBySeq: seq => messages().find(message => message.seq === seq),
+      holdsLiveTail: () => false,
       spanMessage: (spanId, side) => side === 'request'
         ? index().getRequestMessage('test', spanId)
         : index().getResultMessage('test', spanId),
       fetchMessage: async () => undefined,
       fetchSpan: async () => [],
       fetchFileImage: async () => { throw new Error('The image source is unavailable') },
+      fetchFileImageSize: async () => undefined,
       subscribe: () => () => undefined,
       backgroundTask: () => undefined,
       progress: () => undefined,
@@ -52,6 +60,7 @@ export interface MutableTranscriptOptions {
   /** Replaces the default archive-backed sequence fetch. */
   fetchMessage?: MessageContextSources['fetchMessage']
   fetchFileImage?: MessageContextSources['fetchFileImage']
+  fetchFileImageSize?: MessageContextSources['fetchFileImageSize']
   backgroundTask?: MessageContextSources['backgroundTask']
   progress?: MessageContextSources['progress']
 }
@@ -111,6 +120,18 @@ export function createMutableTranscript(archive: readonly AgentChatMessage[], op
     spans.reindex('test', messages())
     return spans
   })
+  // The window holds the live tail when no message of the archive that it lacks is newer
+  // than a message that it holds, as the store's contiguous window does at the tail.
+  const holdsLiveTail = (): boolean => {
+    const loaded = messages()
+    const oldest = loaded[0]
+    if (oldest === undefined)
+      return true
+    const ids = new Set(loaded.map(message => message.id))
+    return [
+      ...archiveById.values(),
+    ].every(message => ids.has(message.id) || message.seq < oldest.seq)
+  }
 
   function store(message: AgentChatMessage, broadcast: boolean): void {
     const known = archiveById.has(message.id)
@@ -138,6 +159,7 @@ export function createMutableTranscript(archive: readonly AgentChatMessage[], op
       // asynchronous fetch below, so an out-of-window sequence exercises the
       // same fetch and cache path as the application.
       messageBySeq: seq => messages().find(message => message.seq === seq),
+      holdsLiveTail,
       spanMessage: (identity, side) => side === 'request'
         ? index().getRequestMessage('test', identity)
         : index().getResultMessage('test', identity),
@@ -153,6 +175,7 @@ export function createMutableTranscript(archive: readonly AgentChatMessage[], op
           ...archiveById.values(),
         ].find(message => message.seq === seq)),
       fetchFileImage: options.fetchFileImage ?? (async () => { throw new Error('The image source is unavailable') }),
+      fetchFileImageSize: options.fetchFileImageSize ?? (async () => undefined),
       subscribe: (observer) => {
         observers.add(observer)
         return () => observers.delete(observer)

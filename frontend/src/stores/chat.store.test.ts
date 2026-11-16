@@ -2915,6 +2915,54 @@ describe('createChatStore', () => {
     })
 
     describe('jumpToLatestMessages', () => {
+      it('ends its request and frees its fetch flag when the reader abandons the jump', async () => {
+        await createRoot(async (dispose) => {
+          mockListAgentMessages.mockClear()
+          const store = createChatStore()
+          store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))), true)
+          // A request that ends only when its signal aborts, as a request over a slow channel does.
+          mockListAgentMessages.mockImplementationOnce((_workerId: string, _request: unknown, options?: { signal?: AbortSignal }) =>
+            new Promise((_resolve, reject) => {
+              options?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+            }))
+          const reader = new AbortController()
+
+          const jump = store.jumpToLatestMessages('w1', 'a1', reader.signal)
+          expect(store.isFetchingNewer('a1')).toBe(true)
+          // The request carries the signal of the fetch, so an abort ends it at the transport.
+          expect(mockListAgentMessages).toHaveBeenCalledWith(
+            'w1',
+            { agentId: 'a1', anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_LIMIT },
+            {
+              signal: expect.any(AbortSignal),
+            },
+          )
+          reader.abort()
+
+          // An abort is how the jump ends early, so it reports no failure.
+          await expect(jump).resolves.toBe(false)
+          // The flag is free at once: otherwise the old window loads no newer page until
+          // the abandoned request returns.
+          expect(store.isFetchingNewer('a1')).toBe(false)
+          expect(store.getMessages('a1')).toHaveLength(50)
+          dispose()
+        })
+      })
+
+      it('rejects when its request fails with no abort', async () => {
+        await createRoot(async (dispose) => {
+          const store = createChatStore()
+          store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))), true)
+          mockListAgentMessages.mockRejectedValueOnce(new Error('the worker is unavailable'))
+
+          await expect(store.jumpToLatestMessages('w1', 'a1', new AbortController().signal)).rejects.toThrow('the worker is unavailable')
+
+          expect(store.getMessages('a1')).toHaveLength(50)
+          expect(store.isFetchingNewer('a1')).toBe(false)
+          dispose()
+        })
+      })
+
       it('snaps to the live tail and is gap-free across a mid-fetch live message', async () => {
         await createRoot(async (dispose) => {
           mockListAgentMessages.mockClear()
@@ -2937,7 +2985,8 @@ describe('createChatStore', () => {
             hasMore: false,
           })
 
-          await store.jumpToLatestMessages('w1', 'a1')
+          // The jump reports that its page replaced the window.
+          await expect(store.jumpToLatestMessages('w1', 'a1')).resolves.toBe(true)
           const msgs = store.getMessages('a1')
           expect(msgs.at(-1)!.seq).toBe(60n) // reached the true tail
           // Contiguous, no gap and no duplicate.
@@ -3173,13 +3222,126 @@ describe('createChatStore', () => {
             hasMore: true,
           })
 
-          await store.jumpToOldestMessages('w1', 'a1')
+          // With no signal of the caller, the jump reports that its page replaced the window.
+          await expect(store.jumpToOldestMessages('w1', 'a1')).resolves.toBe(true)
           const msgs = store.getMessages('a1')
           expect(msgs[0]?.seq).toBe(1n)
           expect(msgs.at(-1)!.seq).toBe(50n)
           expect(store.hasOlderMessages('a1')).toBe(false) // at the very start
           expect(store.hasNewerMessages('a1')).toBe(true) // more exist beyond it
-          expect(mockListAgentMessages).toHaveBeenCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT })
+          // The request carries the signal of the fetch, so an abort ends it at the transport.
+          expect(mockListAgentMessages).toHaveBeenCalledWith(
+            'w1',
+            { agentId: 'a1', anchor: MessagePageAnchor.OLDEST, limit: MESSAGE_PAGE_LIMIT },
+            {
+              signal: expect.any(AbortSignal),
+            },
+          )
+          dispose()
+        })
+      })
+
+      /** A store whose window sits at the live tail (seq 151..200), with older history. */
+      function storeAtTheTail() {
+        const store = createChatStore()
+        store.setMessages('a1', Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 151))), true)
+        return store
+      }
+      const oldestPage = () => ({
+        messages: Array.from({ length: 50 }, (_, i) => makeMessage(`o${i}`, BigInt(i + 1))), // seq 1..50
+        hasMore: true,
+      })
+
+      it('leaves the window as it is when its signal aborts before the page arrives', async () => {
+        await createRoot(async (dispose) => {
+          const store = storeAtTheTail()
+          let deliver: (page: unknown) => void = () => {}
+          mockListAgentMessages.mockReturnValueOnce(new Promise((resolve) => {
+            deliver = resolve
+          }))
+          const reader = new AbortController()
+
+          const jump = store.jumpToOldestMessages('w1', 'a1', reader.signal)
+          expect(store.isFetchingOlder('a1')).toBe(true)
+          reader.abort()
+          deliver(oldestPage())
+
+          await expect(jump).resolves.toBe(false)
+          expect(store.getMessages('a1')[0]?.seq).toBe(151n)
+          expect(store.isFetchingOlder('a1')).toBe(false)
+          dispose()
+        })
+      })
+
+      it('leaves the window as it is for a signal that is aborted at the call', async () => {
+        await createRoot(async (dispose) => {
+          const store = storeAtTheTail()
+          mockListAgentMessages.mockResolvedValueOnce(oldestPage())
+          const reader = new AbortController()
+          reader.abort()
+
+          await expect(store.jumpToOldestMessages('w1', 'a1', reader.signal)).resolves.toBe(false)
+
+          expect(store.getMessages('a1')[0]?.seq).toBe(151n)
+          expect(store.isFetchingOlder('a1')).toBe(false)
+          dispose()
+        })
+      })
+
+      it('reports no failure when the request rejects after the abort', async () => {
+        await createRoot(async (dispose) => {
+          const store = storeAtTheTail()
+          let fail: (reason: unknown) => void = () => {}
+          mockListAgentMessages.mockReturnValueOnce(new Promise((_resolve, reject) => {
+            fail = reject
+          }))
+          const reader = new AbortController()
+
+          const jump = store.jumpToOldestMessages('w1', 'a1', reader.signal)
+          reader.abort()
+          fail(new Error('the transport ended the request'))
+
+          await expect(jump).resolves.toBe(false)
+          expect(store.getMessages('a1')[0]?.seq).toBe(151n)
+          expect(store.isFetchingOlder('a1')).toBe(false)
+          dispose()
+        })
+      })
+
+      it('rejects when the request fails with no abort', async () => {
+        await createRoot(async (dispose) => {
+          const store = storeAtTheTail()
+          mockListAgentMessages.mockRejectedValueOnce(new Error('the worker is unavailable'))
+
+          await expect(store.jumpToOldestMessages('w1', 'a1', new AbortController().signal)).rejects.toThrow('the worker is unavailable')
+
+          expect(store.getMessages('a1')[0]?.seq).toBe(151n)
+          expect(store.isFetchingOlder('a1')).toBe(false)
+          dispose()
+        })
+      })
+
+      it('reports that another history fetch replaced it', async () => {
+        await createRoot(async (dispose) => {
+          const store = storeAtTheTail()
+          let deliverOldest: (page: unknown) => void = () => {}
+          mockListAgentMessages.mockReturnValueOnce(new Promise((resolve) => {
+            deliverOldest = resolve
+          }))
+          const oldest = store.jumpToOldestMessages('w1', 'a1')
+
+          // A jump to the latest page starts before the first request settles.
+          mockListAgentMessages.mockResolvedValueOnce({
+            messages: Array.from({ length: 50 }, (_, i) => makeMessage(`l${i}`, BigInt(i + 201))), // seq 201..250
+            hasMore: true,
+          })
+          const latest = store.jumpToLatestMessages('w1', 'a1')
+          deliverOldest(oldestPage())
+
+          await expect(oldest).resolves.toBe(false)
+          await expect(latest).resolves.toBe(true)
+          expect(store.getMessages('a1')[0]?.seq).toBe(201n)
+          expect(store.getMessages('a1').at(-1)!.seq).toBe(250n)
           dispose()
         })
       })
@@ -3249,7 +3411,8 @@ describe('createChatStore', () => {
           watch.abort()
           // The hung RPC finally resolves; the body observes signal.aborted and bails.
           resolveHung({ messages: [], hasMore: false })
-          await jump
+          // The page never replaced the window, and the jump reports that.
+          await expect(jump).resolves.toBe(false)
 
           // The flag MUST be cleared: a watch-aborted fetch that wasn't superseded
           // otherwise stranded fetchingNewer=true, wedging loadNewerPage and the

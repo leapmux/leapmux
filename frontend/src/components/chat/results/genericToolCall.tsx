@@ -266,6 +266,7 @@ function McpContentItemView(props: { item: McpContentItem, imageIndex?: number, 
             {...(props.holdDisplay !== undefined
               ? { holdDisplay: props.holdDisplay }
               : {})}
+            readiness={props.context?.readiness}
           />
         )}
       </Match>

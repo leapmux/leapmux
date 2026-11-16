@@ -1,5 +1,5 @@
 import type { ContentMovedInfo } from './chatLayoutPivot'
-import type { MeasurementCommitInfo } from './useChatVirtualizer'
+import type { MeasurementCommitInfo } from './chatRowHeightCache'
 import { createLogger } from '~/lib/logger'
 import { monotonicNow } from '~/lib/monotonicNow'
 
@@ -28,7 +28,10 @@ const scrollLog = createLogger('chatScroll')
 export interface ContentMovedReporterDeps {
   /** The layout shift at the report. */
   layoutShift: () => number
-  /** The last height commit that moved the offset map: the likely cause of the move. */
+  /**
+   * The last commit that changed the height of a loaded row, in the list or staged: the
+   * likely cause of the move (see MeasurementCommitInfo).
+   */
   lastMeasurement: () => MeasurementCommitInfo | undefined
   /** Clock, injectable for tests. */
   now?: () => number

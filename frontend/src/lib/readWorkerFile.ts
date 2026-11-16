@@ -25,6 +25,51 @@ const PAGE_BYTES = FILE_READ_LIMIT_BYTES
  */
 const PAGE_CONCURRENCY = 4
 
+/**
+ * Send the first request of a file read, and check what the response to every such
+ * request must satisfy: the file has a valid size, and the response holds no more
+ * bytes than the file has. Rejects when `signal` is aborted before the request or
+ * during it.
+ */
+async function requestFileStart(
+  workerId: string,
+  request: { path: string, limit: bigint, metaOnlyIfTruncated?: boolean },
+  signal: AbortSignal | undefined,
+): Promise<ReadFileResponse> {
+  signal?.throwIfAborted()
+  const response = await workerFile.readFile(workerId, request, signal
+    ? { signal }
+    : undefined)
+  signal?.throwIfAborted()
+  if (response.totalSize < 0n || BigInt(response.content.length) > response.totalSize)
+    throw new Error('The file has an invalid size')
+  return response
+}
+
+/**
+ * Read the first `bytes` of a file, in one request. The response holds at most
+ * `bytes` of content, and the `totalSize` of the whole file. The content can be
+ * shorter than `bytes` for a file that is longer: ReadFile caps its limit at
+ * the payload budget of the channel.
+ */
+export async function readWorkerFileHead(options: {
+  workerId: string
+  path: string
+  bytes: number
+  signal?: AbortSignal
+}): Promise<ReadFileResponse> {
+  const { workerId, path, bytes, signal } = options
+  if (!Number.isSafeInteger(bytes) || bytes <= 0)
+    throw new Error('The file read limit is invalid')
+  const response = await requestFileStart(workerId, {
+    path,
+    limit: BigInt(bytes),
+  }, signal)
+  if (response.content.length > bytes)
+    throw new Error('The worker returned more bytes than the read asked for')
+  return response
+}
+
 /** Read a file within the preview limit. Return metadata only when the file exceeds that limit. */
 export async function readWorkerFile(options: {
   workerId: string
@@ -35,17 +80,11 @@ export async function readWorkerFile(options: {
   const { workerId, path, maxBytes, signal } = options
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0)
     throw new Error('The file preview limit is invalid')
-  signal?.throwIfAborted()
-  const response = await workerFile.readFile(workerId, {
+  const response = await requestFileStart(workerId, {
     path,
     limit: BigInt(maxBytes),
     metaOnlyIfTruncated: true,
-  }, signal
-    ? { signal }
-    : undefined)
-  signal?.throwIfAborted()
-  if (response.totalSize < 0n || BigInt(response.content.length) > response.totalSize)
-    throw new Error('The file has an invalid size')
+  }, signal)
   if (response.totalSize > BigInt(maxBytes)) {
     return {
       ...response,

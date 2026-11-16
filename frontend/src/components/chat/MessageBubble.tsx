@@ -38,6 +38,7 @@ import { bubbleRunsToRightEdge, isMirroredMessageRow, messageBubbleClass, messag
 import * as chatStyles from './messageStyles.css'
 import { expandedUiKeyFor, MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
 import { imageActionsFrom, reviewActionsFrom, subagentsFrom } from './renderContext'
+import { useRequestReadiness } from './renderReadiness'
 import { quotableTextForRow } from './results/rowText'
 import { toolCallMeta } from './results/tools/meta'
 import { extractedRow } from './rowExtraction'
@@ -206,8 +207,17 @@ export interface MessageBubbleHost {
   syntaxHighlightingPaused?: (() => boolean) | undefined
   /** True while the user has a live document selection inside the chat content. */
   textSelectionActive?: (() => boolean) | undefined
-  /** True while this row sits outside the near-viewport band. */
+  /**
+   * True while this row sits outside the near-viewport band. Not reactive to the scroll
+   * position: the worker dispatch reads it at each dispatch.
+   */
   rowOffscreen?: (() => boolean) | undefined
+  /**
+   * Whether this row is near the view, for the read of its file images. Reactive: the
+   * host runs the test again when the answer can differ, when a scroll ends and when the
+   * pane changes its height. A row whose host states none reads its images at once.
+   */
+  rowNearView?: (() => boolean) | undefined
 }
 
 interface MessageBubbleProps {
@@ -289,18 +299,49 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     return prettifyJson(rawJson())
   })
 
+  // The request for the other half of a tool call, as the bubble reports it to the
+  // readiness scope of its row copy.
+  //
+  // - A hidden premeasure copy must not report a height before it shows what the row in
+  //   the list will show: a height without the other half is wrong, and the row would
+  //   change it in the list when the other half arrives.
+  // - The row in the list must not show before it has the other half either: it would
+  //   draw again when the other half arrives, and change its height in view. That is
+  //   rare. The hidden copy of the row fetched the span before in the usual case. A row
+  //   that a stored height admitted had no hidden copy in this session.
+  //
+  // The bubble reports only a request that the resolver really makes (see
+  // MessageContextResolver.loadRelated). With no request, the row shows what it will
+  // show, so it waits for nothing and shows at once.
+  //
+  // The report ends when the request settled, or at the limit of useRequestReadiness,
+  // which aborts no request: the lookup goes on, and the row draws again when the other
+  // half arrives.
+  const relatedLookup = useRequestReadiness(() => props)
+
   createEffect(() => {
     const resolver = props.host?.messages
     const spanId = props.message.spanId
     const kind = category().kind
-    if (!resolver || !spanId || props.premeasureMode || (kind !== 'tool_use' && kind !== 'tool_result'))
+    if (!resolver || !spanId || (kind !== 'tool_use' && kind !== 'tool_result'))
       return
+    // The resolver counts its leases, so a hidden copy and the row can hold one span together.
     const release = resolver.retainRenderSpan({ spanId, agentSessionId: props.message.agentSessionId })
     onCleanup(release)
-    void resolver.loadRelated(props.message, parsed()).catch((error: unknown) => {
-      if (!(error instanceof DOMException && error.name === 'AbortError'))
-        console.warn('Cannot load related tool messages', { spanId, error })
-    })
+    const request = resolver.loadRelated(props.message, parsed())
+    if (request === undefined)
+      return
+    const endWait = relatedLookup.begin()
+    // The effect runs again for a new message of the same bubble. Its cleanup ends the wait
+    // of the run before, and the current message starts a limit of its own.
+    onCleanup(endWait)
+    void request
+      .catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === 'AbortError'))
+          console.warn('Cannot load related tool messages', { spanId, error })
+      })
+      // A failure settles the request also: the row copy then shows what it has.
+      .finally(endWait)
   })
 
   // The three fields reading a row needs, built before the render context that
@@ -421,9 +462,12 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     openSubagent: item => props.host?.onOpenSubagent?.(item),
   })
   const images = imageActionsFrom({
-    fileImage: (filePath, options) => sources.fileImage(filePath, options),
-    cachedFileImage: filePath => sources.cachedFileImage(filePath),
-    deferLoad: () => props.premeasureMode === true || props.host?.rowOffscreen?.() === true,
+    files: sources.fileImages,
+    // The read of an image whose size is known waits in a hidden copy, and in a row of the
+    // list that is far from the view (see ImageRenderActions.deferLoad). The host states
+    // whether the row is near the view, and runs its test again when the answer can differ
+    // (see MessageBubbleHost.rowNearView).
+    deferLoad: () => props.premeasureMode === true || props.host?.rowNearView?.() === false,
     premeasurePass: () => props.premeasureMode === true,
     ...(untrack(openImageHost) !== undefined
       ? { openImage }
@@ -450,9 +494,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     ...(subagents !== undefined
       ? { subagents }
       : {}),
-    ...(images !== undefined
-      ? { images }
-      : {}),
+    images,
     // A getter, so the control follows the host: the agent gains and loses the
     // capability as it starts and stops.
     get reviews() {

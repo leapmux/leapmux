@@ -5,12 +5,12 @@ import type { GoalAction, GoalProgress, SessionGoal } from '~/stores/chatGoal'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentGoalSchema, AgentGoalStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { protoGoalToStore } from '~/stores/chatGoal'
 import { motion } from '~/styles/tokens'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
-import { ThinkingIndicator } from './ThinkingIndicator'
+import { ROTATION_FADE_MS, ROTATION_INTERVAL_MS, ThinkingIndicator } from './ThinkingIndicator'
 
 // The token count requires a positive estimate and a visible indicator.
 //
@@ -708,5 +708,66 @@ describe('thinking indicator chips', () => {
       backgroundTasks: running(2),
     })
     expect(getByTestId('thinking-indicator').textContent).not.toContain('\u00B7')
+  })
+})
+
+describe('thinking indicator verb rotation', () => {
+  const realRaf = globalThis.requestAnimationFrame
+
+  // A visible indicator that is not paused, so the compass simulation and the verb
+  // rotation run. The expansion loop gets a no-op requestAnimationFrame, as in
+  // renderVisible.
+  function renderRunning() {
+    globalThis.requestAnimationFrame = (() => 0) as typeof globalThis.requestAnimationFrame
+    try {
+      const rendered = render(() => <ThinkingIndicator visible={true} />)
+      // The first child of the verb stack is the baseline strut. Slot A and slot B follow.
+      const verbSlots = () => {
+        const [, slotA, slotB] = rendered.getByTestId('thinking-verb').children
+        return [slotA?.textContent, slotB?.textContent]
+      }
+      return { ...rendered, verbSlots }
+    }
+    finally {
+      globalThis.requestAnimationFrame = realRaf
+    }
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('clears the slot of the old verb when the rotation fade ends', () => {
+    vi.useFakeTimers()
+    const { verbSlots } = renderRunning()
+    // A slot that holds a verb shows it with a trailing ellipsis.
+    const [first, empty] = verbSlots()
+    expect(first).toMatch(/.\.{3}$/)
+    expect(empty).toBe('')
+
+    vi.advanceTimersByTime(ROTATION_INTERVAL_MS)
+    // Both slots hold a verb while they crossfade.
+    const [old, next] = verbSlots()
+    expect(old).toBe(first)
+    expect(next).toMatch(/.\.{3}$/)
+    expect(next).not.toBe(first)
+
+    vi.advanceTimersByTime(ROTATION_FADE_MS - 1)
+    expect(verbSlots()).toEqual([first, next])
+    vi.advanceTimersByTime(1)
+    expect(verbSlots()).toEqual(['', next])
+  })
+
+  it('clears the timer of the rotation fade when it unmounts', () => {
+    vi.useFakeTimers()
+    const { verbSlots, unmount } = renderRunning()
+    vi.advanceTimersByTime(ROTATION_INTERVAL_MS)
+    // The fade runs: both slots hold a verb until its timer fires.
+    for (const verb of verbSlots())
+      expect(verb).toMatch(/.\.{3}$/)
+
+    unmount()
+
+    expect(vi.getTimerCount()).toBe(0)
   })
 })

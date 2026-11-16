@@ -233,7 +233,7 @@ export function ToolMessage(props: { row: ToolCallRow, context?: ToolResultRende
           />
         </Show>
         <Show when={call().images.length > 0}>
-          <ImageResultList sources={call().images} indexOffset={extraImages(call()).length + resultImages(call()).length} {...imageOptions()} holdDisplay={() => isDisplayHeld(props.context)} />
+          <ImageResultList sources={call().images} indexOffset={extraImages(call()).length + resultImages(call()).length} {...imageOptions()} holdDisplay={() => isDisplayHeld(props.context)} readiness={props.context?.readiness} />
         </Show>
         <ToolOutcomeHeader
           when={statusOutcome() !== null && !bodyStatesOutcome()}

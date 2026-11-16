@@ -5,8 +5,8 @@ import { createSignal, untrack } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { testImageActions } from '~/test-support/imageActions'
 import { pngBase64 } from '~/test-support/pngFixture'
-import { imageActionsFrom } from '../renderContext'
 import { toolOutcomeLabel } from '../results/toolOutcomeLabel'
 import { toolResultCollapsed } from '../toolStyles.css'
 import './claude/plugin'
@@ -109,16 +109,13 @@ describe('claude MCP tool_result rendering', () => {
     const parsed = makeMcpToolResult([
       { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' },
     ])
-    // `premeasurePass` is set, so the assembled actions are never undefined.
-    const images = imageActionsFrom({
+    const images = testImageActions({
       premeasurePass: () => true,
     })
     const { container } = renderClaudeToolResult(parsed, {
       spanType: 'mcp__playwright__screenshot',
       premeasureMode: true,
-      ...(images
-        ? { images }
-        : {}),
+      images,
     })
     const img = container.querySelector('img')
     expect(img).not.toBeNull()

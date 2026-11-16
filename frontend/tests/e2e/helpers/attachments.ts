@@ -3,10 +3,10 @@ import type { AttachmentKind } from '../../../src/generated/contracts/attachment
 import { Buffer } from 'node:buffer'
 import { writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
-import { crc32, deflateSync } from 'node:zlib'
 import { expect } from '@playwright/test'
 import flacAudio from '../../../../testdata/flac-audio.json' with { type: 'json' }
 import shortVideo from '../../../../testdata/short-video.json' with { type: 'json' }
+import { encodePng } from './png'
 import { createTestDirectory, isFileNameComponent } from './runDirectory'
 import { expectToastRecorded } from './toast'
 import { sendMessage, waitForNativeSettingsHydrated } from './ui'
@@ -24,24 +24,8 @@ const IMAGE_SIZE = 16
 /** The text that the PDF fixture draws on its page. A model request that holds it carries the page text, not the PDF. */
 export const PDF_PAGE_MARKER = 'LEAPMUX_PDF_PAGE_49'
 
-function pngChunk(type: string, data: Buffer): Buffer {
-  const kind = Buffer.from(type, 'ascii')
-  const chunk = Buffer.alloc(12 + data.length)
-  chunk.writeUInt32BE(data.length, 0)
-  kind.copy(chunk, 4)
-  data.copy(chunk, 8)
-  chunk.writeUInt32BE(crc32(Buffer.concat([kind, data])), 8 + data.length)
-  return chunk
-}
-
 /** Four large colors survive a format change and expose header-only copies. */
 function quadrantPng(): Buffer {
-  const header = Buffer.alloc(13)
-  header.writeUInt32BE(IMAGE_SIZE, 0)
-  header.writeUInt32BE(IMAGE_SIZE, 4)
-  header[8] = 8 // channel depth
-  header[9] = 2 // RGB
-
   const rowLength = 1 + IMAGE_SIZE * 3
   const pixels = Buffer.alloc(IMAGE_SIZE * rowLength)
   const colors = [
@@ -70,21 +54,12 @@ function quadrantPng(): Buffer {
     }
   }
 
-  return Buffer.concat([
-    Buffer.from([
-      0x89,
-      0x50,
-      0x4E,
-      0x47,
-      0x0D,
-      0x0A,
-      0x1A,
-      0x0A,
-    ]),
-    pngChunk('IHDR', header),
-    pngChunk('IDAT', deflateSync(pixels)),
-    pngChunk('IEND', Buffer.alloc(0)),
-  ])
+  return encodePng({
+    width: IMAGE_SIZE,
+    height: IMAGE_SIZE,
+    colorType: 2,
+    scanlines: pixels,
+  })
 }
 
 /** Write one PDF page with text and four color blocks. */

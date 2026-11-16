@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { workerFile } from '~/api/workerRpc'
 import { FILE_READ_LIMIT_BYTES } from '~/generated/contracts/file-read'
 import { MAX_CHUNK_SIZE } from '~/generated/contracts/wire'
-import { readWorkerFile } from './readWorkerFile'
+import { readWorkerFile, readWorkerFileHead } from './readWorkerFile'
 
 vi.mock('~/api/workerRpc', () => ({
   workerFile: {
@@ -212,5 +212,103 @@ describe('readWorkerFile', () => {
     })
     await expect(readAll(bytes, controller.signal)).rejects.toMatchObject({ name: 'AbortError' })
     expect(read.mock.calls.length).toBeLessThan(11)
+  })
+})
+
+describe('readWorkerFileHead', () => {
+  it('reads the first bytes of a longer file in one request', async () => {
+    const head = fileBytes(16)
+    read.mockResolvedValue(response(head, 100n))
+
+    const result = await readWorkerFileHead({ workerId: 'worker', path: '/file.bin', bytes: 16 })
+
+    expect(result.content).toEqual(head)
+    expect(result.totalSize).toBe(100n)
+    expect(read).toHaveBeenCalledOnce()
+    // No `metaOnlyIfTruncated`: the worker must send the head of a file above the limit.
+    expect(read).toHaveBeenCalledWith('worker', { path: '/file.bin', limit: 16n }, undefined)
+  })
+
+  it('returns a whole file that is shorter than the head', async () => {
+    const whole = fileBytes(5)
+    read.mockResolvedValue(response(whole, 5n))
+
+    const result = await readWorkerFileHead({ workerId: 'worker', path: '/file.bin', bytes: 16 })
+
+    expect(result.content).toEqual(whole)
+    expect(result.totalSize).toBe(5n)
+  })
+
+  it('accepts a head that the channel cut short', async () => {
+    // ReadFile caps its limit at the payload budget of the channel.
+    read.mockResolvedValue(response(fileBytes(8), 100n))
+
+    const result = await readWorkerFileHead({ workerId: 'worker', path: '/file.bin', bytes: 16 })
+
+    expect(result.content).toHaveLength(8)
+  })
+
+  it('rejects a limit that is not a positive safe integer, and sends no request', async () => {
+    for (const bytes of [
+      0,
+      -1,
+      1.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+    ]) {
+      await expect(readWorkerFileHead({ workerId: 'worker', path: '/file.bin', bytes })).rejects.toThrow('read limit is invalid')
+    }
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it('rejects for a signal that is aborted at the call, and sends no request', async () => {
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(readWorkerFileHead({
+      workerId: 'worker',
+      path: '/file.bin',
+      bytes: 16,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: 'AbortError' })
+
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it('passes its signal to the request, and rejects when it aborts during the read', async () => {
+    const controller = new AbortController()
+    read.mockImplementation(async () => {
+      controller.abort()
+      return response(fileBytes(16), 100n)
+    })
+
+    await expect(readWorkerFileHead({
+      workerId: 'worker',
+      path: '/file.bin',
+      bytes: 16,
+      signal: controller.signal,
+    })).rejects.toMatchObject({ name: 'AbortError' })
+
+    expect(read).toHaveBeenCalledWith('worker', { path: '/file.bin', limit: 16n }, { signal: controller.signal })
+  })
+
+  it('rejects a response with an invalid size', async () => {
+    read.mockResolvedValueOnce(response(fileBytes(16), 8n))
+    await expect(readWorkerFileHead({ workerId: 'worker', path: '/file.bin', bytes: 16 })).rejects.toThrow('invalid size')
+
+    read.mockResolvedValueOnce(response(fileBytes(4), -1n))
+    await expect(readWorkerFileHead({ workerId: 'worker', path: '/file.bin', bytes: 16 })).rejects.toThrow('invalid size')
+  })
+
+  it('rejects a response that holds more bytes than it asked for', async () => {
+    read.mockResolvedValue(response(fileBytes(32), 100n))
+
+    await expect(readWorkerFileHead({ workerId: 'worker', path: '/file.bin', bytes: 16 })).rejects.toThrow('more bytes than')
+  })
+
+  it('rejects when the request fails', async () => {
+    read.mockRejectedValue(new Error('the worker is unavailable'))
+
+    await expect(readWorkerFileHead({ workerId: 'worker', path: '/file.bin', bytes: 16 })).rejects.toThrow('the worker is unavailable')
   })
 })
