@@ -21,19 +21,19 @@ import { kiloSearchLines } from '../extractors/search'
 import { KILO_TOOL_NAMES } from '../toolNames'
 
 /**
- * The kind a provider of this family knows that its own protocol layer does not state.
+ * The kind Kilo knows that its Agent Client Protocol layer does not state.
  *
  * Undefined keeps the frame's kind. Kilo answers `other` for every tool it adds on
- * top of the OpenCode set, and only Kilo knows what those tools do -- see
- * `kilo/toolKinds.ts`. OpenCode supplies none, so its rows are unchanged.
+ * top of its inherited OpenCode v1 tool set. Kilo's table supplies their kinds -- see
+ * `kilo/toolKinds.ts`.
  */
 export type KiloToolKindResolver = (toolName: string) => ToolKind | undefined
 
 /**
- * The errors one daemon of this family writes for a call that never ran because the
+ * The errors Kilo writes for a call that never ran because the
  * reader or a rule refused it.
  *
- * The family's Agent Client Protocol layer sends no refusal field. Its failed update
+ * Kilo's Agent Client Protocol layer sends no refusal field. Its failed update
  * carries the error's message alone, in a content block and in `rawOutput.error`, and
  * drops the error's class (`errorToolUpdate`, `packages/opencode/src/acp/tool.ts`). The
  * exact message is therefore the one native signal. A refusal is the WHOLE error: a
@@ -50,28 +50,26 @@ export interface KiloToolRefusals {
 }
 
 /**
- * What one daemon of this family supplies to the shared adapter.
+ * The vocabulary Kilo supplies to its adapter.
  *
- * The daemons share a wire format, but their tool sets and their error sets differ, so
- * each daemon supplies its own tables. Each table lives in that daemon's own package.
+ * The tool-kind and refusal tables describe Kilo's extensions to its inherited
+ * OpenCode v1 protocol. OpenCode v2 uses a separate native adapter.
  */
 export interface KiloToolVocabulary {
   /** The daemon's refusal errors, from its own `protocol.ts`. */
   refusals: KiloToolRefusals
   /**
-   * The daemon's tool kinds that the shared protocol does not state. Kilo supplies
-   * its own table. OpenCode supplies none.
+   * Kilo's tool kinds that its Agent Client Protocol layer does not state.
    */
   toolKinds?: KiloToolKindResolver
 }
 
 /**
- * OpenCode and Kilo hook the registry id that the daemon sends as the call title, and
- * the display metadata that it keeps beside the model-facing output.
+ * Read the registry id Kilo sends as the call title, and the display metadata
+ * that it keeps beside the model-facing output.
  *
- * A FACTORY rather than one shared value, because the two daemons run different tool
- * sets and write different refusal errors behind the same wire format. The vocabulary
- * is the only difference. The extra kinds apply where the frame states nothing useful.
+ * The vocabulary supplies the tool kinds and refusal errors. The extra kinds apply
+ * where the frame states nothing useful.
  *
  * The refusal is a post-condition around the WHOLE build, for the reason
  * `providers/README.md` gives: the build has a dozen returns, and a refused call of
@@ -104,7 +102,7 @@ function openCodeRefusal(facts: ACPToolFacts, refusals: KiloToolRefusals): strin
     : null
 }
 
-/** A registry id the daemons send as the call title: one lowercase word. */
+/** A registry id Kilo sends as the call title: one lowercase word. */
 const REGISTRY_ID = /^[a-z0-9_-]+$/
 
 /** Each question the call asked, or an empty list for a call that asked none. */
@@ -121,7 +119,7 @@ function openCodeQuestions(args: Record<string, unknown>): QuestionPrompt[] {
       }
     },
     (option) => {
-      // The daemons send an option with a description and no label, and the sentence
+      // Kilo sends an option with a description and no label, and the sentence
       // is then the only word the reader has to click. It moves into the label rather
       // than staying beside an empty one, which leaves the option with no second line.
       const label = pickString(option, 'label')
@@ -142,7 +140,7 @@ function openCodeQuestions(args: Record<string, unknown>): QuestionPrompt[] {
 function kiloToolCall(facts: ACPToolFacts, extraKinds: KiloToolKindResolver | undefined): ToolCallSpec {
   const tool = facts.tool
   const args = facts.args
-  // The tool's REGISTRY ID, which OpenCode and Kilo send as the call title. The
+  // The tool's REGISTRY ID, which Kilo sends as the call title. The
   // protocol itself carries no tool name, so the shared build had only the kind
   // to identify the row with.
   const toolName = pickString(tool, 'title')

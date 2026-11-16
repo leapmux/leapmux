@@ -153,7 +153,7 @@ describe('message context rendering', () => {
       id: 'request',
       seq: 1n,
       spanId: 'call',
-      agentProvider: AgentProvider.OPENCODE,
+      agentProvider: AgentProvider.KILO,
       content: rawContent({
         sessionUpdate: 'tool_call',
         toolCallId: 'call',

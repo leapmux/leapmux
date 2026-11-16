@@ -369,6 +369,9 @@ function createSetup(existingHarness?: ReturnType<typeof installTestBridge>): Re
 
 describe('TileRenderer image navigation', () => {
   it('focuses the source tile before opening its image', async () => {
+    // jsdom does not decode the PNG, so supply the loaded state before measuring it.
+    const imageComplete = vi.spyOn(HTMLImageElement.prototype, 'complete', 'get').mockReturnValue(true)
+    setupCleanups.push(() => imageComplete.mockRestore())
     const s = createSetup()
     const initial = s.layoutStore.focusedTileId()!
     s.addAgent('other-agent', initial)
@@ -414,7 +417,8 @@ describe('TileRenderer image navigation', () => {
     const onOpenChatImage = vi.fn(() => {
       focusedAtOpen.push(s.layoutStore.focusedTileId())
     })
-    renderRenderer(s, sourceTile, { chatStore, onOpenChatImage })
+    const view = renderRenderer(s, sourceTile, { chatStore, onOpenChatImage })
+    await reportChatViewportSize(view)
     const image = await screen.findByRole('button', { name: 'Open image' })
     fireEvent.click(image)
     expect(onOpenChatImage).toHaveBeenCalledWith(expect.objectContaining({ agentId: 'image-agent', workerId: 'image-worker' }))
