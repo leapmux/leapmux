@@ -359,6 +359,20 @@ describe('codewhaleToolCall', () => {
       expect(done.kind).toBe('edit')
       expect((done.request as { changes: Array<{ filePath: string }> }).changes.map(change => change.filePath)).toStrictEqual(['a.ts'])
       expect((done.result as { changes: Array<{ filePath: string }> }).changes.map(change => change.filePath)).toStrictEqual(['a.ts'])
+      // The opening row reads no result, so it states no file, and it keeps the
+      // arguments on the generic card.
+      const start = toolStarted(CODEWHALE_TOOL.Edit, {
+        edits: [
+          { oldText: 'before', newText: 'after' },
+        ],
+      })
+      const running = call(start, {
+        role: 'request',
+        spanType: CODEWHALE_TOOL.Edit,
+        request: requestSide(start),
+      })
+      expect(running.kind).toBe('other')
+      expect(running.status).toBe('in_progress')
     })
 
     it('states the failure words of a change that failed, and the shared sentence when it gave none', () => {
@@ -545,8 +559,8 @@ describe('codewhaleToolCall', () => {
   })
 
   describe('the rest of the vocabulary', () => {
-    // Read from the REQUEST row: the result row of an answered question hides,
-    // because the runtime redacts the answers from it.
+    // The runtime redacts the answers from the result, so the result row reads the
+    // questions from the request and states no answer.
     it('reads the questions and states no redacted answer', () => {
       const args = {
         questions: [
@@ -560,10 +574,9 @@ describe('codewhaleToolCall', () => {
           },
         ],
       }
-      const done = call(toolStarted(CODEWHALE_TOOL.RequestUserInput, args), {
-        role: 'request',
+      const done = call(toolCompleted(CODEWHALE_TOOL.RequestUserInput, args, 'User input submitted'), {
         spanType: CODEWHALE_TOOL.RequestUserInput,
-        result: requestSide(toolCompleted(CODEWHALE_TOOL.RequestUserInput, args, 'User input submitted')),
+        request: requestSide(toolStarted(CODEWHALE_TOOL.RequestUserInput, args)),
       })
       expect(done.request).toStrictEqual({
         questions: [
@@ -721,16 +734,17 @@ describe('codewhaleToolCall', () => {
       expect(done.request).toStrictEqual({ path: '' })
     })
 
-    it('draws the whole call on the request row once the result lands', () => {
-      const result = requestSide(toolCompleted(CODEWHALE_TOOL.Bash, { command: 'ls' }, 'a.ts', { exit_code: 0 }))
-      const merged = call(toolStarted(CODEWHALE_TOOL.Bash, { command: 'ls' }), { role: 'request', result })
-      expect(merged.status).toBe('completed')
-      expect(merged.result).toStrictEqual({
-        commands: [
-          { output: 'a.ts', exitCode: 0 },
-        ],
-        unresolvedTerminals: [],
+    // The request row reads its own opening frame alone, so it draws the running call,
+    // and the result row draws the answer.
+    it('states no answer on the request row', () => {
+      const start = toolStarted(CODEWHALE_TOOL.Bash, { command: 'ls' })
+      const running = call(start, {
+        role: 'request',
+        request: requestSide(start),
       })
+      expect(running.status).toBe('in_progress')
+      expect(running.result).toBeUndefined()
+      expect(running.kind === 'execute' && running.request.command).toBe('ls')
     })
 
     it('reads a subagent\'s tool blocks, naming the tool from the span', () => {
@@ -822,17 +836,6 @@ describe('codewhaleToolCall', () => {
       expect(done.kind).toBe('read')
       expect(done.label).toBe(CODEWHALE_TOOL.Read)
     })
-
-    // A request row whose result side holds another OPENING frame has no answer yet:
-    // only a final frame answers the call.
-    it('reads a paired opening frame as no answer', () => {
-      const running = call(toolStarted(CODEWHALE_TOOL.Bash, { command: 'ls' }), {
-        role: 'request',
-        result: requestSide(toolStarted(CODEWHALE_TOOL.Bash, { command: 'ls' })),
-      })
-      expect(running.status).toBe('in_progress')
-      expect(running.result).toBeUndefined()
-    })
   })
 })
 
@@ -914,61 +917,31 @@ describe('CODEWHALE_TOOL_READERS', () => {
   })
 })
 
-describe('codewhale recovered image pairing', () => {
-  it('reads an image from the matched result while building the opening row', () => {
+// The result row draws the recovered image from its own supplement (see "codewhale
+// recovered tool media"). The opening row reads no later frame, so it states none.
+describe('codewhale image ownership', () => {
+  it('states no image on the opening row', () => {
     const start = toolStarted(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' })
-    const result = requestSide(toolCompleted(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' }, 'The native image is ready.', {
-      tool_media: [MEDIA_DESCRIPTOR],
-    }))
     const options = {
       role: 'request' as const,
       spanType: CODEWHALE_TOOL.ReadMedia,
-      result: {
-        ...result,
-        supplementalContent: {
-          outputFiles: { [MEDIA_OUTPUT_FILE_ID]: MEDIA_DATA_URI },
-        },
-      },
+      request: requestSide(start),
     }
-    expect(providerToolCall(AgentProvider.CODEWHALE, start, options)?.images).toEqual([
-      {
-        mimeType: 'image/png',
-        url: MEDIA_DATA_URI,
-        dimensions: { width: 64, height: 64 },
-      },
-    ])
-    // The visible result sibling draws the image. The opening row must not duplicate it.
+    expect(providerToolCall(AgentProvider.CODEWHALE, start, options)?.images).toEqual([])
     expect(providerRowImages(AgentProvider.CODEWHALE, start, options)).toEqual([])
-    const merged = {
-      request: undefined,
-      result: options.result,
-      role: 'request' as const,
-      visibleRows: { request: true, result: false },
-    }
-    expect(providerRowImages(AgentProvider.CODEWHALE, start, { ...options, span: merged })).toEqual([
-      {
-        mimeType: 'image/png',
-        url: MEDIA_DATA_URI,
-        dimensions: { width: 64, height: 64 },
-      },
-    ])
   })
 
-  it('refuses a foreign result and keeps the generic base image array empty', () => {
-    const start = toolStarted(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' })
-    const foreign = requestSide(toolCompleted(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' }, 'A foreign result.', {
+  it('refuses a media descriptor of another call', () => {
+    const payload = toolCompleted(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' }, 'A foreign result.', {
       tool_media: [
         { ...MEDIA_DESCRIPTOR, tool_call_id: 'foreign' },
       ],
-    }, 'foreign'))
-    expect(providerRowImages(AgentProvider.CODEWHALE, start, {
-      role: 'request',
+    })
+    expect(providerRowImages(AgentProvider.CODEWHALE, payload, {
       spanType: CODEWHALE_TOOL.ReadMedia,
-      result: {
-        ...foreign,
-        supplementalContent: {
-          outputFiles: { [MEDIA_OUTPUT_FILE_ID]: MEDIA_DATA_URI },
-        },
+      request: requestSide(toolStarted(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' })),
+      supplementalContent: {
+        outputFiles: { [MEDIA_OUTPUT_FILE_ID]: MEDIA_DATA_URI },
       },
     })).toEqual([])
   })

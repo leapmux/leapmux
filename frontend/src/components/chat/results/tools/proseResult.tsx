@@ -62,7 +62,7 @@ export function proseRenderer<K extends ProseKind>(base: Omit<ToolKindRenderer<K
   }
 }
 
-/** One line of typed request facts, drawn while the call runs and the answer has not landed. */
+/** One line of typed request facts, which the pending row draws while the call runs. */
 export function typedRequestLine(parts: Array<string | undefined>): JSX.Element | null {
   const line = parts.filter(Boolean).join(' · ')
   return line

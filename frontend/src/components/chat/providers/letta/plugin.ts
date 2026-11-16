@@ -8,7 +8,7 @@ import { lettaOutputFilePaths } from './extractors/outputFilePaths'
 import { lettaResultDivider } from './extractors/resultDivider'
 import { lettaExtractRow } from './extractors/row'
 import { lettaControls } from './pluginControls'
-import { lettaRelatedMessages, lettaSpanRole } from './spanRole'
+import { lettaNeedsRequest, lettaSpanRole } from './spanRole'
 
 const lettaPlugin: ProviderPlugin = {
   transcript: {
@@ -19,7 +19,7 @@ const lettaPlugin: ProviderPlugin = {
     extractRow: lettaExtractRow,
     extractDivider: lettaResultDivider,
     spanRole: lettaSpanRole,
-    relatedMessages: lettaRelatedMessages,
+    needsRequest: lettaNeedsRequest,
   },
   controls: lettaControls,
   session: {

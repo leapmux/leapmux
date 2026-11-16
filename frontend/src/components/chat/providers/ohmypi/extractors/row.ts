@@ -52,10 +52,12 @@ function sideCallId(side: ParsedMessageContent | undefined): string | null {
 }
 
 /**
- * The row an omp tool frame becomes, with both span sides resolved.
+ * The row an omp tool frame becomes, from its own frame and the span's request.
  *
- * Only a side of THIS call counts: one turn can run several calls at once, and a
- * sibling's frame is no side of this one.
+ * A request row reads its own start frame alone. A result row also reads the start
+ * frame, which states the arguments that an end frame omits. Only a request of THIS
+ * call counts: one turn can run several calls at once, and a sibling's frame is no side
+ * of this one.
  */
 function ohMyPiToolSpanRow(payload: unknown, parsed: ParsedMessageContent, span: RowExtractionInput['span']): ChatRow | null {
   if (!isObject(payload))
@@ -63,12 +65,10 @@ function ohMyPiToolSpanRow(payload: unknown, parsed: ParsedMessageContent, span:
   const own = ohMyPiExtractTool(payload)
   if (!own)
     return null
-  const mine = (side: ParsedMessageContent | undefined) => !!side && sideCallId(side) === own.toolCallId
-  const row = ohMyPiToolRow(payload, mine(span.request)
+  const request = sideCallId(span.request) === own.toolCallId
     ? span.request
-    : undefined, mine(span.result)
-    ? span.result
-    : undefined, parsed.completion)
+    : undefined
+  const row = ohMyPiToolRow(payload, request, parsed.completion)
   if (!row)
     return null
   return toolCallRow(ohMyPiToolCall(row, parsed.completion), ohMyPiToolSpanRowRole(row), span.visibleRows)

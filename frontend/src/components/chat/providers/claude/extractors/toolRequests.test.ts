@@ -351,24 +351,38 @@ describe('CLAUDE_TOOL_REQUEST_OVERRIDES', () => {
       .toStrictEqual({ action: 'stop', taskId: 't-1' })
   })
 
-  // A `Task*` request reads the paired RESULT, which no other Claude request does: the
-  // result row of all three is hidden, so the REQUEST row is what draws the task.
-  it('reads the single task of a TaskCreate out of the paired result', () => {
-    const request = requestOf(
-      CLAUDE_TOOL_NAMES.TASK_CREATE,
-      { subject: 'Write the parser' },
-      {
-        pairedResult: {
-          task: { task_id: 'task-7', subject: 'Write the parser' },
-        },
+  // A `Task*` RESULT row reads the task its own answer states. The request row never
+  // reads its result, so it states the task its arguments carry, with no id yet.
+  it('reads the single task of a TaskCreate out of the result row', () => {
+    const result: ClaudeToolRow = {
+      ...requestRow(CLAUDE_TOOL_NAMES.TASK_CREATE, {}),
+      role: 'result',
+      toolUseResult: {
+        task: { task_id: 'task-7', subject: 'Write the parser' },
       },
-    )
+    }
+    const request = claudeSpec(requestRow(CLAUDE_TOOL_NAMES.TASK_CREATE, { subject: 'Write the parser' }), result, {}).request
     // A task with no description OMITS the note rather than stating it undefined.
     expect(request).toStrictEqual({
       items: [
         expect.objectContaining({ id: 'task-7', content: 'Write the parser' }),
       ],
     })
+  })
+
+  it('states the task of a TaskCreate request row from its arguments alone', () => {
+    const request = requestOf(CLAUDE_TOOL_NAMES.TASK_CREATE, { subject: 'Write the parser' })
+    expect(request).toStrictEqual({
+      items: [
+        expect.objectContaining({ content: 'Write the parser' }),
+      ],
+    })
+    expect((request as { items: Array<{ id?: string }> }).items[0]?.id).toBeUndefined()
+  })
+
+  // A TaskUpdate patch and a TaskGet id state no task of their own; only the answer does.
+  it.each([CLAUDE_TOOL_NAMES.TASK_UPDATE, CLAUDE_TOOL_NAMES.TASK_GET])('states no task for a %s request row', (toolName) => {
+    expect(requestOf(toolName, { taskId: '3', status: 'completed' })).toStrictEqual({ items: [] })
   })
 
   // The mcp entry answers from the tool NAME, so a name that spells no server/tool pair

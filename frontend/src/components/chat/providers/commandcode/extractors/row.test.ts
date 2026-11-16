@@ -10,9 +10,8 @@ import '../plugin'
 const provider = AgentProvider.COMMAND_CODE
 const emptySpan: ToolSpanContext = {
   request: undefined,
-  result: undefined,
   role: 'other',
-  visibleRows: { request: false, result: false },
+  visibleRows: { request: false },
 }
 function event(type: string, fields: Record<string, unknown> = {}) {
   return {
@@ -104,7 +103,7 @@ describe('commandCodeExtractRow', () => {
         ...emptySpan,
         request,
         role: 'result',
-        visibleRows: { request: true, result: true },
+        visibleRows: { request: true },
       },
     })
     if (row?.kind !== 'tool' || row.call.kind !== 'edit')
@@ -147,7 +146,7 @@ describe('commandCodeExtractRow', () => {
         ...emptySpan,
         request,
         role: 'result',
-        visibleRows: { request: true, result: true },
+        visibleRows: { request: true },
       },
     })
     expect(row?.kind === 'tool'
@@ -179,7 +178,6 @@ describe('commandCodeExtractRow', () => {
       completion: MessageCompletion.INTERRUPTED,
       span: {
         ...emptySpan,
-        result: resolved(request),
         role: 'result',
       },
     })
@@ -212,7 +210,7 @@ describe('commandCodeExtractRow', () => {
           ...emptySpan,
           request,
           role: 'result',
-          visibleRows: { request: true, result: true },
+          visibleRows: { request: true },
         },
       })
       if (row?.kind !== 'tool' || row.call.kind !== 'execute' || row.call.result === undefined || !('commands' in row.call.result))
@@ -243,6 +241,212 @@ describe('commandCodeExtractRow', () => {
     it('keeps a zero code in the text as output, because the native text states only a nonzero code', () => {
       expect(command('Exit code: 0\nout')).toStrictEqual({ output: 'Exit code: 0\nout' })
     })
+  })
+
+  describe('a queued request whose call later fails', () => {
+    const queued = event('tool_queued', {
+      toolCallId: 'failing-shell',
+      toolName: 'shell_command',
+      input: {
+        command: 'native-run',
+        args: ['--flag', 'two words'],
+      },
+    })
+    const errored = event('tool_errored', {
+      toolCallId: 'failing-shell',
+      toolName: 'shell_command',
+      error: { message: 'Native command crashed.' },
+    })
+
+    it('builds the request row from its own frame, with no result and no finished status', () => {
+      const row = extract(queued, {
+        span: {
+          ...emptySpan,
+          request: resolved(queued),
+          role: 'request',
+        },
+      })
+      if (row?.kind !== 'tool' || row.call.kind !== 'execute')
+        throw new Error('The queued shell command must remain an execute row.')
+      expect(row.role).toBe('request')
+      expect(row.call.label).toBe('Shell')
+      expect(row.call.request.command).toBe('native-run "--flag" "two words"')
+      expect(row.call.status).toBe('unstated')
+      expect(row.call).not.toHaveProperty('result')
+      expect(row.call.images).toEqual([])
+    })
+
+    it('draws the failure on the result row and keeps the shell request and label', () => {
+      const row = extract(errored, {
+        span: {
+          ...emptySpan,
+          request: resolved(queued),
+          role: 'result',
+          visibleRows: { request: true },
+        },
+      })
+      if (row?.kind !== 'tool' || row.call.kind !== 'execute')
+        throw new Error('The errored shell command must remain an execute row.')
+      expect(row.role).toBe('result')
+      expect(row.call.label).toBe('Shell')
+      expect(row.call.request.command).toBe('native-run "--flag" "two words"')
+      expect(row.call.status).toBe('failed')
+      expect(row.call.result).toEqual({ failure: true, text: 'Native command crashed.' })
+    })
+  })
+
+  // A failure replaces only the result: the result row keeps the kind and the request
+  // that the queued arguments state, so the header reads the same after the failure.
+  it.each([
+    [
+      'a refused MCP call keeps its server and tool',
+      'tool_denied',
+      {
+        toolName: 'mcp__echo_probe__echo',
+        input: { text: 'hi' },
+      },
+      'declined',
+      {
+        kind: 'mcp',
+        request: {
+          server: 'echo_probe',
+          tool: 'echo',
+          args: { text: 'hi' },
+        },
+      },
+    ],
+    [
+      'a failed agent launch keeps its type',
+      'tool_errored',
+      {
+        toolName: 'agent',
+        input: { description: 'Child', prompt: 'Exact prompt.', subagent_type: 'general' },
+      },
+      'failed',
+      {
+        kind: 'agent',
+        request: { description: 'Child', prompt: 'Exact prompt.', agentType: 'general' },
+      },
+    ],
+    [
+      'a blocked write keeps its requested content',
+      'tool_hook_blocked',
+      {
+        toolName: 'write_file',
+        input: { file_path: '/work/new.txt', content: 'New text.' },
+      },
+      'declined',
+      {
+        kind: 'write',
+        request: {
+          changes: [
+            expect.objectContaining({ filePath: '/work/new.txt', newStr: 'New text.' }),
+          ],
+        },
+      },
+    ],
+    [
+      'a failed read keeps its path and holds no picture',
+      'tool_errored',
+      {
+        toolName: 'read_file',
+        input: { file_path: '/work/absent.txt' },
+      },
+      'failed',
+      {
+        kind: 'read',
+        request: { path: '/work/absent.txt' },
+        images: [],
+      },
+    ],
+  ])('keeps the request of a failed call on its result row: %s', (_case, type, queuedFields, status, expected) => {
+    const queued = event('tool_queued', { toolCallId: 'failing', ...queuedFields })
+    const row = extract(event(type, {
+      toolCallId: 'failing',
+      toolName: queuedFields.toolName,
+      error: { message: 'Native failure.' },
+      hookOutput: 'Native failure.',
+      message: 'Native failure.',
+    }), {
+      span: {
+        ...emptySpan,
+        request: resolved(queued),
+        role: 'result',
+        visibleRows: { request: true },
+      },
+    })
+    expect(row).toMatchObject({
+      kind: 'tool',
+      role: 'result',
+      call: {
+        ...expected,
+        status,
+        result: { failure: true, text: 'Native failure.' },
+      },
+    })
+  })
+
+  it.each([
+    [
+      'an agent launch keeps its type',
+      event('tool_queued', {
+        toolCallId: 'spawn',
+        toolName: 'agent',
+        input: { description: 'Child', prompt: 'Exact prompt.', subagent_type: 'general' },
+      }),
+      {
+        kind: 'agent',
+        request: { description: 'Child', prompt: 'Exact prompt.', agentType: 'general' },
+      },
+    ],
+    [
+      'an MCP call keeps its server and tool',
+      event('tool_queued', {
+        toolCallId: 'mcp',
+        toolName: 'mcp__echo_probe__echo',
+        input: { text: 'hi' },
+      }),
+      {
+        kind: 'mcp',
+        request: {
+          server: 'echo_probe',
+          tool: 'echo',
+          args: { text: 'hi' },
+        },
+      },
+    ],
+    [
+      'a write keeps its requested content',
+      event('tool_queued', {
+        toolCallId: 'write',
+        toolName: 'write_file',
+        input: { file_path: '/work/new.txt', content: 'New text.' },
+      }),
+      {
+        kind: 'write',
+        request: {
+          changes: [
+            expect.objectContaining({ filePath: '/work/new.txt', newStr: 'New text.' }),
+          ],
+        },
+      },
+    ],
+  ])('keeps the request facts of a queued frame: %s', (_case, frame, expected) => {
+    const row = extract(frame, {
+      span: {
+        ...emptySpan,
+        request: resolved(frame),
+        role: 'request',
+      },
+    })
+    expect(row).toMatchObject({
+      kind: 'tool',
+      role: 'request',
+      call: { ...expected, status: 'unstated' },
+    })
+    expect(row?.kind === 'tool'
+      ? row.call
+      : null).not.toHaveProperty('result')
   })
 
   it('keeps denied and failed native tools distinct', () => {

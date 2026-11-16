@@ -17,11 +17,12 @@ export function deepseekHarnessSpanRole(parsed: ResolvedMessageContent): ToolSpa
   return 'other'
 }
 
-export function deepseekHarnessRelatedMessages(parsed: ResolvedMessageContent) {
-  const role = deepseekHarnessSpanRole(parsed)
-  return role === 'request'
-    ? ['result'] as const
-    : role === 'result'
-      ? ['request'] as const
-      : []
+/**
+ * A result event states neither the tool name nor the arguments: they are on the call
+ * event. A call event draws from its own event only, also where its completion makes it
+ * the final row of its span.
+ */
+export function deepseekHarnessNeedsRequest(parsed: ResolvedMessageContent): boolean {
+  return deepseekHarnessCallId(parsed.parentObject) !== ''
+    && parsed.parentObject?.type === DEEPSEEK_HARNESS_EVENT.ToolResult
 }

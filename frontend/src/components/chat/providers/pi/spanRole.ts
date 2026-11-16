@@ -24,11 +24,11 @@ export function piSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
     : 'request'
 }
 
-export function piRelatedMessages(parsed: ResolvedMessageContent) {
-  const role = piSpanRole(parsed)
-  return role === 'result'
-    ? ['request'] as const
-    : role === 'request'
-      ? ['result'] as const
-      : []
+/**
+ * Whether one row draws from its span's request: a `tool_execution_end` frame states no
+ * arguments, so it reads them from the paired `tool_execution_start`. A start frame,
+ * also one that a stopped turn retained, states its own arguments.
+ */
+export function piNeedsRequest(parsed: ResolvedMessageContent): boolean {
+  return pickString(parsed.parentObject, 'type') === PI_EVENT.ToolExecutionEnd
 }

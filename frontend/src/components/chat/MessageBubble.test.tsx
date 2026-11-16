@@ -12,12 +12,13 @@ import { MessageContextMenuHostProvider } from '~/components/chat/MessageContext
 import { messageRowChromeClass } from '~/components/chat/messageRowLayout'
 import * as chatStyles from '~/components/chat/messageStyles.css'
 import { createRenderReadinessScope, READINESS_REQUEST_LIMIT_MS } from '~/components/chat/renderReadiness'
-import { toolBodyContent, toolHeaderTimestamp } from '~/components/chat/toolStyles.css'
+import { toolBodyContent, toolHeaderTimestamp, toolUseHeader } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { deferred } from '~/test-support/async'
+import { classSelector } from '~/test-support/composedClass'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent, wrapContent } from '~/test-support/messageFactory'
@@ -141,6 +142,50 @@ describe('standalone MCP result actions', () => {
     expect(screen.getAllByTestId('message-toolbar')).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: 'Expand', hidden: true })).toHaveLength(1)
     expect(screen.getAllByTestId('message-copy-json')).toHaveLength(1)
+  })
+})
+
+// A result row draws its actions in the outer toolbar, which reads the meta of the row.
+// A header that clips words is no fact of the meta: the row reports it, and the toolbar
+// offers Expand for it as the row's own toolbar does.
+describe('outer toolbar of a tool row whose header clips', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  /** A finished Codex MCP call with a short result: nothing in its meta to expand. */
+  const shortResult = () => makeMsg({
+    agentProvider: AgentProvider.CODEX,
+    source: MessageSource.AGENT,
+    spanId: 'clipped-header',
+    content: rawContent({
+      item: {
+        id: 'clipped-header',
+        type: 'mcpToolCall',
+        status: 'completed',
+        server: 'docs',
+        tool: 'lookup',
+        arguments: {},
+        result: {
+          content: [
+            { type: 'text', text: 'one line' },
+          ],
+        },
+      },
+    }),
+  })
+
+  it('offers no Expand while the header fits', () => {
+    render(() => <PreferencesProvider><MessageBubble message={shortResult()} /></PreferencesProvider>)
+    expect(screen.queryByRole('button', { name: /^Expand(?:\s|$)/u, hidden: true })).toBeNull()
+  })
+
+  it('offers Expand when the header clips', () => {
+    vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockReturnValue(240)
+    vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(100)
+    render(() => <PreferencesProvider><MessageBubble message={shortResult()} /></PreferencesProvider>)
+    expect(screen.getAllByTestId('message-toolbar')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: /^Expand(?:\s|$)/u, hidden: true })).toBeInTheDocument()
   })
 })
 
@@ -1482,26 +1527,37 @@ describe('todoWrite collapse/expand', () => {
     expect(bubble).toHaveTextContent('3 tasks')
   })
 
-  it('always shows TodoList (alwaysVisible)', () => {
+  // The request row draws the same before and after the result, so the list the call
+  // carried is the PENDING row's preview of the running call.
+  // A request row of a span: the pending row below it states the carried list.
+  it('draws the carried list on the pending row and not on the request row', () => {
     const parent = todoWriteToolUse([
       { content: 'Task A', status: 'pending', activeForm: 'Working on A' },
       { content: 'Task B', status: 'pending', activeForm: 'Working on B' },
     ])
     const msg = makeMsg({
       source: MessageSource.AGENT,
+      spanId: 'todo-span',
       content: rawContent(parent),
     })
 
-    render(() => (
+    const request = render(() => (
       <PreferencesProvider>
         <MessageBubble message={msg} />
       </PreferencesProvider>
     ))
+    expect(request.getByTestId('message-content')).not.toHaveTextContent('Task A')
+    request.unmount()
 
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} pending />
+      </PreferencesProvider>
+    ))
     const bubble = screen.getByTestId('message-content')
-    // alwaysVisible keeps the tasks visible.
     expect(bubble).toHaveTextContent('Task A')
     expect(bubble).toHaveTextContent('Task B')
+    expect(screen.getByTestId('message-bubble').dataset.toolRowRole).toBe('pending')
   })
 
   it('shows all task statuses in TodoList', () => {
@@ -1517,7 +1573,7 @@ describe('todoWrite collapse/expand', () => {
 
     render(() => (
       <PreferencesProvider>
-        <MessageBubble message={msg} />
+        <MessageBubble message={msg} pending />
       </PreferencesProvider>
     ))
 
@@ -1574,7 +1630,9 @@ describe('todoWrite collapse/expand', () => {
     expect(screen.getByRole('button', { name: /^Expand(?:\s|$)/u, hidden: true })).toBeInTheDocument()
   })
 
-  it('body has left border (always visible)', () => {
+  // A pending row draws no header and no toolbar of its own: the request row above it
+  // holds both, and the rail of the span runs down the pending row's left edge.
+  it('draws no header and no toolbar on the pending row', () => {
     const parent = todoWriteToolUse([
       { content: 'Task A', status: 'pending', activeForm: 'Working on A' },
     ])
@@ -1585,13 +1643,32 @@ describe('todoWrite collapse/expand', () => {
 
     const { container } = render(() => (
       <PreferencesProvider>
-        <MessageBubble message={msg} />
+        <MessageBubble message={msg} pending />
       </PreferencesProvider>
     ))
 
-    // The body displays its left border before expansion.
-    const bodyWrapper = container.querySelector(`.${toolBodyContent}`)
-    expect(bodyWrapper).toBeInTheDocument()
+    expect(container.querySelector(classSelector(toolUseHeader))).toBeNull()
+    expect(container.querySelector(`.${toolBodyContent}`)).toBeNull()
+    expect(container.querySelector('[data-testid="message-toolbar"]')).toBeNull()
+    expect(container.textContent).not.toContain('1 task')
+  })
+
+  // A message of no span is its whole call: no pending row follows it, and no result row
+  // replaces it, so its row states the carried list itself.
+  it('draws the carried list on the row of a call that has no span', () => {
+    const parent = todoWriteToolUse([
+      { content: 'Task A', status: 'pending', activeForm: 'Working on A' },
+    ])
+    const msg = makeMsg({
+      source: MessageSource.AGENT,
+      content: rawContent(parent),
+    })
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={msg} />
+      </PreferencesProvider>
+    ))
+    expect(screen.getByTestId('message-content')).toHaveTextContent('Task A')
   })
 })
 
@@ -2078,7 +2155,8 @@ describe('edit/write tool_use rendering', () => {
       source: MessageSource.AGENT,
       content: rawContent(writeToolUse('export const control = true')),
     })
-    const positive = render(() => <PreferencesProvider><MessageBubble message={nonempty} /></PreferencesProvider>)
+    // The requested diff is the preview of the running call, which the pending row draws.
+    const positive = render(() => <PreferencesProvider><MessageBubble message={nonempty} pending /></PreferencesProvider>)
     expect(positive.container.querySelector('[data-file-diff]')).toBeInTheDocument()
   })
 
@@ -2346,12 +2424,35 @@ describe('tool row quote', () => {
 // A hidden premeasure copy measures a tool row before the reader reaches it. The row
 // in the list draws the other half of its tool call, so a copy that measured without
 // it reported a height that the row changed in the list.
-describe('the other half of a tool call in a hidden copy', () => {
+describe('the request of a tool call in a hidden copy', () => {
   afterEach(() => {
     vi.useRealTimers()
   })
 
-  /** A Claude tool request with the span id `spanId`. */
+  /**
+   * A Claude tool RESULT with the span id `spanId`. A result row states neither the tool
+   * name nor the arguments, so it waits for its request.
+   */
+  function toolResult(spanId: string, seq = 2n): AgentChatMessage {
+    return makeMsg({
+      id: `result-${spanId}`,
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      source: MessageSource.USER,
+      seq,
+      spanId,
+      spanType: 'Read',
+      content: rawContent({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: spanId, content: 'notes' },
+          ],
+        },
+      }),
+    })
+  }
+
+  /** A Claude tool REQUEST with the span id `spanId`. */
   function toolRequest(spanId: string, seq = 1n): AgentChatMessage {
     return makeMsg({
       id: `request-${spanId}`,
@@ -2378,10 +2479,10 @@ describe('the other half of a tool call in a hidden copy', () => {
 
   /**
    * Mount a bubble with a readiness scope, as a row copy gives it, over a resolver whose
-   * lookup of the other half the test controls. `premeasureMode` is the hidden copy, and
+   * fetch of the request the test controls. `premeasureMode` is the hidden copy, and
    * the row in the list otherwise.
    */
-  function mountCopy(initial: AgentChatMessage, loadRelated: MessageContextResolver['loadRelated'], premeasureMode = true) {
+  function mountCopy(initial: AgentChatMessage, loadRequest: MessageContextResolver['loadRequest'], premeasureMode = true) {
     const [message, setMessage] = createSignal(initial)
     const resolver: MessageContextResolver = {
       ...testMessageContext({
@@ -2389,7 +2490,7 @@ describe('the other half of a tool call in a hidden copy', () => {
           message(),
         ],
       }),
-      loadRelated,
+      loadRequest,
     }
     let scope!: RenderReadinessScope
     render(() => {
@@ -2410,10 +2511,10 @@ describe('the other half of a tool call in a hidden copy', () => {
 
   it('holds the copy until the lookup settles', async () => {
     const lookup = deferred<void>()
-    const loadRelated = vi.fn(() => lookup.promise)
-    const { scope } = mountCopy(toolRequest('toolu_a'), loadRelated)
+    const loadRequest = vi.fn(() => lookup.promise)
+    const { scope } = mountCopy(toolResult('toolu_a'), loadRequest)
 
-    await waitFor(() => expect(loadRelated).toHaveBeenCalledOnce())
+    await waitFor(() => expect(loadRequest).toHaveBeenCalledOnce())
     expect(scope.measurable()).toBe(false)
 
     lookup.resolve()
@@ -2424,8 +2525,8 @@ describe('the other half of a tool call in a hidden copy', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
       const lookup = deferred<void>()
-      const loadRelated = vi.fn(() => lookup.promise)
-      const { scope } = mountCopy(toolRequest('toolu_a'), loadRelated)
+      const loadRequest = vi.fn(() => lookup.promise)
+      const { scope } = mountCopy(toolResult('toolu_a'), loadRequest)
       await waitFor(() => expect(scope.measurable()).toBe(false))
 
       lookup.reject(new Error('the worker is unavailable'))
@@ -2439,7 +2540,7 @@ describe('the other half of a tool call in a hidden copy', () => {
   })
 
   it('looks nothing up, and holds nothing, for a row that is no tool row', async () => {
-    const loadRelated = vi.fn(() => undefined)
+    const loadRequest = vi.fn(() => undefined)
     const text = makeMsg({
       agentProvider: AgentProvider.CLAUDE_CODE,
       source: MessageSource.AGENT,
@@ -2453,29 +2554,29 @@ describe('the other half of a tool call in a hidden copy', () => {
         },
       }),
     })
-    const { scope } = mountCopy(text, loadRelated)
+    const { scope } = mountCopy(text, loadRequest)
     await settleWorkerReplies()
 
-    expect(loadRelated).not.toHaveBeenCalled()
+    expect(loadRequest).not.toHaveBeenCalled()
     expect(scope.measurable()).toBe(true)
   })
 
-  it('releases the copy at the limit when the other half does not arrive', async () => {
+  it('releases the copy at the limit when the request does not arrive', async () => {
     vi.useFakeTimers()
-    const loadRelated = vi.fn(() => new Promise<void>(() => {}))
-    const { scope } = mountCopy(toolRequest('toolu_a'), loadRelated)
+    const loadRequest = vi.fn(() => new Promise<void>(() => {}))
+    const { scope } = mountCopy(toolResult('toolu_a'), loadRequest)
     await vi.advanceTimersByTimeAsync(0)
     expect(scope.measurable()).toBe(false)
 
     await expectReleasedAtRequestLimit(scope)
     // The limit ends only the wait of the copy: it starts no second lookup.
-    expect(loadRelated).toHaveBeenCalledOnce()
+    expect(loadRequest).toHaveBeenCalledOnce()
   })
 
-  it('stays released when the other half arrives before the limit', async () => {
+  it('stays released when the request arrives before the limit', async () => {
     vi.useFakeTimers()
     const lookup = deferred<void>()
-    const { scope } = mountCopy(toolRequest('toolu_a'), () => lookup.promise)
+    const { scope } = mountCopy(toolResult('toolu_a'), () => lookup.promise)
     await vi.advanceTimersByTimeAsync(0)
     expect(scope.measurable()).toBe(false)
 
@@ -2489,13 +2590,13 @@ describe('the other half of a tool call in a hidden copy', () => {
 
   it('starts the limit again for a new message of the same bubble', async () => {
     vi.useFakeTimers()
-    const loadRelated = vi.fn(() => new Promise<void>(() => {}))
-    const { scope, setMessage } = mountCopy(toolRequest('toolu_a'), loadRelated)
+    const loadRequest = vi.fn(() => new Promise<void>(() => {}))
+    const { scope, setMessage } = mountCopy(toolResult('toolu_a'), loadRequest)
     await vi.advanceTimersByTimeAsync(4000)
 
-    setMessage(toolRequest('toolu_b', 2n))
+    setMessage(toolResult('toolu_b', 3n))
     await vi.advanceTimersByTimeAsync(0)
-    expect(loadRelated).toHaveBeenCalledTimes(2)
+    expect(loadRequest).toHaveBeenCalledTimes(2)
 
     // The rest of the limit of the first message. Its timer is cleared, so the copy
     // still waits for the lookup of the second message.
@@ -2510,33 +2611,33 @@ describe('the other half of a tool call in a hidden copy', () => {
     ['the hidden copy', true],
     ['the row in the list', false],
   ] as const)('holds nothing for %s when the lookup needs no request', async (_copy, premeasureMode) => {
-    // The resolver answers at once that the browser holds the other half.
-    const loadRelated = vi.fn(() => undefined)
-    const { scope } = mountCopy(toolRequest('toolu_a'), loadRelated, premeasureMode)
+    // The resolver answers at once that the browser holds the request.
+    const loadRequest = vi.fn(() => undefined)
+    const { scope } = mountCopy(toolResult('toolu_a'), loadRequest, premeasureMode)
 
-    await waitFor(() => expect(loadRelated).toHaveBeenCalledOnce())
+    await waitFor(() => expect(loadRequest).toHaveBeenCalledOnce())
     // A wait would hide the row at each mount, and hold its first height read.
     expect(scope.measurable()).toBe(true)
   })
 
-  it('holds the row in the list until a request for its other half settles', async () => {
-    // A row that a stored height admitted had no hidden copy, so its other half can be
-    // missing at its mount. The row must not show before the other half arrived.
+  it('holds the row in the list until a request for its request settles', async () => {
+    // A row that a stored height admitted had no hidden copy, so its request can be
+    // missing at its mount. The row must not show before the request arrived.
     const lookup = deferred<void>()
-    const loadRelated = vi.fn(() => lookup.promise)
-    const { scope } = mountCopy(toolRequest('toolu_a'), loadRelated, false)
+    const loadRequest = vi.fn(() => lookup.promise)
+    const { scope } = mountCopy(toolResult('toolu_a'), loadRequest, false)
 
-    await waitFor(() => expect(loadRelated).toHaveBeenCalledOnce())
+    await waitFor(() => expect(loadRequest).toHaveBeenCalledOnce())
     expect(scope.measurable()).toBe(false)
 
     lookup.resolve()
     await waitFor(() => expect(scope.measurable()).toBe(true))
   })
 
-  it('releases the row in the list at the limit when the other half does not arrive', async () => {
+  it('releases the row in the list at the limit when the request does not arrive', async () => {
     vi.useFakeTimers()
-    const loadRelated = vi.fn(() => new Promise<void>(() => {}))
-    const { scope } = mountCopy(toolRequest('toolu_a'), loadRelated, false)
+    const loadRequest = vi.fn(() => new Promise<void>(() => {}))
+    const { scope } = mountCopy(toolResult('toolu_a'), loadRequest, false)
     await vi.advanceTimersByTimeAsync(0)
     expect(scope.measurable()).toBe(false)
 
@@ -2547,13 +2648,13 @@ describe('the other half of a tool call in a hidden copy', () => {
     vi.useFakeTimers()
     // The resolver gives every message of a span the one request that runs.
     const running = new Promise<void>(() => {})
-    const loadRelated = vi.fn(() => running)
-    const { scope, setMessage } = mountCopy(toolRequest('toolu_a'), loadRelated)
+    const loadRequest = vi.fn(() => running)
+    const { scope, setMessage } = mountCopy(toolResult('toolu_a'), loadRequest)
     await vi.advanceTimersByTimeAsync(6000)
 
-    setMessage(toolRequest('toolu_a', 2n))
+    setMessage(toolResult('toolu_a', 3n))
     await vi.advanceTimersByTimeAsync(4000)
-    expect(loadRelated).toHaveBeenCalledTimes(2)
+    expect(loadRequest).toHaveBeenCalledTimes(2)
 
     // 10 s after the first message: its limit ended with its wait, so the copy still waits.
     expect(scope.measurable()).toBe(false)
@@ -2563,16 +2664,101 @@ describe('the other half of a tool call in a hidden copy', () => {
 
   it('ends the wait when a new message of the bubble needs no request', async () => {
     const pending = new Promise<void>(() => {})
-    const loadRelated = vi.fn<MessageContextResolver['loadRelated']>(message => (message.seq === 1n
+    const loadRequest = vi.fn<MessageContextResolver['loadRequest']>(message => (message.seq === 2n
       ? pending
       : undefined))
-    const { scope, setMessage } = mountCopy(toolRequest('toolu_a'), loadRelated)
+    const { scope, setMessage } = mountCopy(toolResult('toolu_a'), loadRequest)
     await waitFor(() => expect(scope.measurable()).toBe(false))
 
-    setMessage(toolRequest('toolu_b', 2n))
+    setMessage(toolResult('toolu_b', 3n))
 
-    await waitFor(() => expect(loadRelated).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(loadRequest).toHaveBeenCalledTimes(2))
     expect(scope.measurable()).toBe(true)
+  })
+
+  // No row reads a later message of its span, so a request row asks for nothing and
+  // waits for nothing, also when its result is missing from the browser.
+  it('holds nothing for a request row, whose result it never reads', async () => {
+    const request = toolRequest('toolu_a')
+    const resolver = testMessageContext({
+      messages: () => [request],
+    })
+    let scope!: RenderReadinessScope
+    render(() => {
+      scope = createRenderReadinessScope()
+      return (
+        <PreferencesProvider>
+          <MessageBubble message={request} host={{ messages: resolver }} premeasureMode readiness={scope} />
+        </PreferencesProvider>
+      )
+    })
+    await settleWorkerReplies()
+    expect(resolver.loadRequest(request)).toBeUndefined()
+    expect(scope.measurable()).toBe(true)
+  })
+})
+
+// A request row never reads its result, but its one-line HEADER states the newest call
+// of its span that the browser holds: the result row's call once the result landed. The
+// header is one line while the row is collapsed, so this changes its words and never the
+// height of the row.
+describe('the header of a request row', () => {
+  const request = makeMsg({
+    id: 'plan-request',
+    agentProvider: AgentProvider.CLAUDE_CODE,
+    source: MessageSource.AGENT,
+    seq: 1n,
+    spanId: 'toolu_plan',
+    spanType: 'ExitPlanMode',
+    content: rawContent({
+      type: 'assistant',
+      message: {
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_plan',
+            name: 'ExitPlanMode',
+            input: {},
+          },
+        ],
+      },
+    }),
+  })
+  const result = makeMsg({
+    id: 'plan-result',
+    agentProvider: AgentProvider.CLAUDE_CODE,
+    source: MessageSource.USER,
+    seq: 2n,
+    spanId: 'toolu_plan',
+    spanType: 'ExitPlanMode',
+    content: rawContent({
+      type: 'user',
+      message: {
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_plan', content: 'ok' },
+        ],
+      },
+      tool_use_result: { filePath: '/repo/.plans/one.md' },
+    }),
+  })
+
+  it('states the newest call of its span once the browser holds the result', async () => {
+    const [messages, setMessages] = createSignal<AgentChatMessage[]>([request])
+    const resolver = testMessageContext({ messages })
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={request} host={{ messages: resolver }} />
+      </PreferencesProvider>
+    ))
+    await settleWorkerReplies()
+    const content = screen.getByTestId('message-content')
+    expect(content).toHaveTextContent('Exit plan mode')
+
+    setMessages([request, result])
+    await settleWorkerReplies()
+    expect(content).toHaveTextContent('Plan approved')
+    // The plan file is a fact of the result, which only the result row draws.
+    expect(content).not.toHaveTextContent('/repo/.plans/one.md')
   })
 })
 

@@ -5,7 +5,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerToolCall } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
 import { acpResultDivider } from '../acp/extractors/resultDivider'
-import { acpTextContent, describeACPProviderBasics, renderACPRow, renderACPToolPair } from '../acp/testUtils'
+import { acpTextContent, describeACPCallRows, describeACPProviderBasics, renderACPRow, renderACPToolPair } from '../acp/testUtils'
 import { sendOpenCodeQuestionResponse } from '../openCodeQuestions'
 import { providerFor } from '../registry'
 
@@ -592,4 +592,46 @@ describe('kilo sendOpenCodeQuestionResponse', () => {
       },
     })
   })
+})
+
+// Kilo states the kind of its own tools by the registry id, and the answer of a chart
+// states the title that the chart drew. The request row draws the chart it asked for,
+// and the result row carries the title of the answer.
+describe('kilo call rows', () => {
+  describeACPCallRows(AgentProvider.KILO, [
+    {
+      name: 'a chart whose answer states its title',
+      request: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'kilo-chart',
+        kind: 'other',
+        title: 'chart',
+        status: 'pending',
+        rawInput: { spec: '{"type":"bar"}', title: 'Sales' },
+      },
+      result: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'kilo-chart',
+        status: 'completed',
+        content: acpTextContent('{"type":"bar","data":{"labels":["Q1"],"datasets":[{"label":"Sales","data":[1]}]}}'),
+        rawOutput: {
+          metadata: { title: 'Quarterly sales' },
+        },
+      },
+      requestCall: {
+        kind: 'chart',
+        name: 'chart',
+        title: 'Sales',
+        status: 'pending',
+        request: { spec: '{"type":"bar"}', title: 'Sales' },
+      },
+      resultCall: {
+        kind: 'chart',
+        name: 'chart',
+        title: 'Quarterly sales',
+        status: 'completed',
+        result: { title: 'Quarterly sales' },
+      },
+    },
+  ])
 })

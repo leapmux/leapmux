@@ -30,7 +30,7 @@ import type { ResolvedMessageContent, RowExtractionInput } from '../rowExtractio
 import type { ElicitationRequest } from '~/components/chat/model/controlPrompt'
 import type { AgentProvider, AssembledMessageKind, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { ToolSpanRole, ToolSpanSide } from '~/lib/messageSpan'
+import type { ToolSpanRole } from '~/lib/messageSpan'
 import type { ContextUsageInfo, RateLimitUpdate } from '~/models/agentSession'
 import type { ControlRequest } from '~/stores/control.store'
 
@@ -176,8 +176,17 @@ export interface ProviderTranscriptCapability {
    */
   spanRole: (parsed: ResolvedMessageContent) => ToolSpanRole
 
-  /** Linked messages that this row needs for rendering. Omit for self-contained rows. */
-  relatedMessages?: (parsed: ResolvedMessageContent) => readonly ToolSpanSide[]
+  /**
+   * Whether this row draws from its span's REQUEST, so the browser must hold the request
+   * before the row shows and reports a height. A result row that states no tool name or
+   * no arguments of its own answers true. Omit it for a provider whose rows are
+   * self-contained.
+   *
+   * A row can need only the EARLIER side of its span. A request never needs its result:
+   * the extraction input carries no result (see ToolSpanContext), so a row draws the
+   * same content whether or not its result exists yet.
+   */
+  needsRequest?: (parsed: ResolvedMessageContent) => boolean
 
   /**
    * Read one message of this provider's wire format into the shared row model.

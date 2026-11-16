@@ -38,29 +38,22 @@ export function kimiExtractRow(input: RowExtractionInput): ChatRow | null {
 }
 
 /**
- * Resolve the current row and its paired rows into one Kimi Code tool call.
+ * Resolve the current row and the span's request into one Kimi Code tool call.
  *
- * A result row reads the name and the arguments off its paired start. The request row
- * resolves against itself and the span's result.
+ * A result row reads the name and the arguments off its paired start. A request row
+ * reads its own start alone, so it states no result.
  */
 function kimiToolSpanRow(input: RowExtractionInput): ChatRow | null {
   const { resolved: parsed, span, spanType, completion } = input
-  const nativeResult = kimiEventData(parsed.topLevel, KIMI_EVENT.ToolResult)
-    ? parsed.topLevel
-    : span.result?.topLevel
-  const row = kimiToolRow(parsed.parentObject, spanType, span.request?.parentObject, span.result?.parentObject, completion ?? parsed.completion, nativeResult)
+  const row = kimiToolRow(parsed.parentObject, spanType, span.request?.parentObject, completion ?? parsed.completion, parsed.topLevel)
   if (!row)
     return null
   const call = kimiToolCall(row)
   const role: ToolSpanRowRole = row.finished ? 'result' : 'request'
-  // The span sides are rows of every kind, so each one must state THIS call before it
-  // counts as the row beside it.
+  // The span's request is a row of any kind, so it must state THIS call before it counts
+  // as the row beside this one.
   return toolCallRow(call, role, {
     request: span.visibleRows.request && kimiSideStates(span.request, row.toolCallId, KIMI_EVENT.ToolCallStarted),
-    result: span.visibleRows.result && (kimiSideStates(span.result, row.toolCallId, KIMI_EVENT.ToolResult)
-      // A turn that ended while the call ran stores the start again as the call's
-      // closing row, so the result side can be a start.
-      || kimiSideStates(span.result, row.toolCallId, KIMI_EVENT.ToolCallStarted)),
   })
 }
 

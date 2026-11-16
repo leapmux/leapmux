@@ -226,24 +226,30 @@ describe('a refused streamed write', () => {
     },
   ]
 
-  it.each([
-    [
-      'request',
-      opening,
-      {
-        supplementalContent: supplement,
-        result: stored(ending),
-      },
-    ],
-    [
-      'result',
-      ending,
-      {
-        request: stored(opening, supplement),
-      },
-    ],
-  ] as const)('reads the %s row as a declined edit of the file that the permission request stated', (role, frame, sides) => {
-    const call = providerToolCall(AgentProvider.FAST_AGENT, frame, { role, spanType: 'edit', ...sides })
+  // The request row reads its own frame and its own supplement alone, so it states the
+  // write that the call asked for and knows nothing of the refusal.
+  it('reads the request row as an edit of the file that the permission request stated, not finished', () => {
+    const call = providerToolCall(AgentProvider.FAST_AGENT, opening, {
+      role: 'request',
+      spanType: 'edit',
+      supplementalContent: supplement,
+      request: stored(opening, supplement),
+    })
+    expect(call?.degradation).toBeUndefined()
+    expect(call?.kind).toBe('edit')
+    expect(call?.status).toBe('pending')
+    expect(call?.kind === 'edit'
+      ? call.request.changes
+      : []).toStrictEqual(changes)
+    expect(call?.result).toBeUndefined()
+  })
+
+  it('reads the result row as a declined edit of the file that the permission request stated', () => {
+    const call = providerToolCall(AgentProvider.FAST_AGENT, ending, {
+      role: 'result',
+      spanType: 'edit',
+      request: stored(opening, supplement),
+    })
     expect(call?.degradation).toBeUndefined()
     expect(call?.kind).toBe('edit')
     expect(call?.status).toBe('declined')
@@ -251,6 +257,12 @@ describe('a refused streamed write', () => {
       ? call.request.changes
       : []).toStrictEqual(changes)
     expect(call?.result).toStrictEqual(failedResult(REFUSAL))
+  })
+
+  it('needs the request for the result row alone', () => {
+    const plugin = providerFor(AgentProvider.FAST_AGENT)!
+    expect(plugin.transcript.needsRequest?.(input(opening, null, AgentProvider.FAST_AGENT))).toBe(false)
+    expect(plugin.transcript.needsRequest?.(input(ending, null, AgentProvider.FAST_AGENT))).toBe(true)
   })
 
   // Without the supplement, the call states no file and the row degrades to the

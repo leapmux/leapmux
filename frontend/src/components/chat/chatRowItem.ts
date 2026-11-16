@@ -30,6 +30,12 @@ export interface ChatRowItem {
    * `category.kind`), never re-classifying.
    */
   kind?: string
+  /**
+   * True for a row that continues the row above it: the list leaves no gap above it, and
+   * the row's own content holds its top space. The pending row of a tool call is one (see
+   * chatPendingRows): while it has nothing to show, it takes no height and no gap.
+   */
+  continuesPrevious?: boolean
 }
 
 /**
@@ -50,6 +56,8 @@ const GEOMETRY_RELEVANCE: Record<keyof Required<ChatRowItem>, boolean> = {
   // so this rarely forces an extra rebuild on its own -- but classifying it as geometry
   // keeps the offset map correct even if that coupling ever loosens.
   kind: true,
+  // Decides the gap above the row.
+  continuesPrevious: true,
 }
 
 /** The geometry-affecting ChatRowItem keys, derived once (module load) from the above. */

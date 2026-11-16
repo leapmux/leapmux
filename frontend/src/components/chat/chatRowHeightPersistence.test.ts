@@ -120,6 +120,7 @@ describe('chatRowHeightPersistence', () => {
           version: () => cache.version() + extraVersion(),
           isMeasured: cache.isMeasured,
         },
+        storesRow: rowId => !rowId.startsWith('transient-'),
       })
     })
     return {
@@ -132,6 +133,25 @@ describe('chatRowHeightPersistence', () => {
       dispose,
     }
   }
+
+  // A row that exists only for a while -- the pending row of a running call -- takes no
+  // stored slot: no later mount adopts it.
+  it('stores no height of a row that it does not store', async () => {
+    const harness = makeHarness({ storageId: 'agent-1' })
+    try {
+      await settle()
+      harness.measure('kept', 'k-kept', 40)
+      harness.measure('transient-row', 'k-transient', 30)
+      vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
+      await settle()
+      expect((await readStored())?.rows).toEqual([
+        storedRow('kept', 'k-kept', 40),
+      ])
+    }
+    finally {
+      harness.dispose()
+    }
+  })
 
   it('restores a saved zero and excludes a stale zero digest', async () => {
     const first = makeHarness({ storageId: 'agent-1' })

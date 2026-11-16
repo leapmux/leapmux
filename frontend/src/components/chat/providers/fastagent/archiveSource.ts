@@ -168,14 +168,6 @@ export function fastAgentArchiveSource(input: ArchiveInput): FastAgentArchiveSou
     failed: raw.isError === true,
   }
 }
-export function sameFastAgentArchiveCall(left: FastAgentArchiveSource, right: FastAgentArchiveSource): boolean {
-  if ((left.kind !== 'request' && left.kind !== 'result') || (right.kind !== 'request' && right.kind !== 'result'))
-    return false
-  return left.captureId === right.captureId && left.sessionId === right.sessionId
-    && left.actor === right.actor && left.historyFile === right.historyFile
-    && left.callId === right.callId && left.spanId === right.spanId
-    && JSON.stringify(left.request.raw) === JSON.stringify(right.request.raw)
-}
 export function fastAgentNativeResultText(result: Record<string, unknown>): string {
   if (!Array.isArray(result.content))
     return ''

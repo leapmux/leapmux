@@ -18,7 +18,7 @@ import { codewhaleResultDivider } from './extractors/resultDivider'
 import { codewhaleExtractRow } from './extractors/row'
 import { codewhaleConfiguration } from './pluginConfiguration'
 import { codewhaleControls } from './pluginControls'
-import { codewhaleRelatedMessages, codewhaleSpanRole } from './spanRole'
+import { codewhaleNeedsRequest, codewhaleSpanRole } from './spanRole'
 import { CALL, childBlock, itemFinished, toolCompleted, toolStarted, turnCompleted } from './toolResults.fixtures'
 import '~/components/chat/providers'
 
@@ -58,7 +58,7 @@ describe('codewhale plugin', () => {
   it('is registered for the CODEWHALE provider with each hook wired to its own reader', () => {
     expect(plugin.transcript).toStrictEqual({
       spanRole: codewhaleSpanRole,
-      relatedMessages: codewhaleRelatedMessages,
+      needsRequest: codewhaleNeedsRequest,
       classify: classifyCodewhaleMessage,
       extractRow: codewhaleExtractRow,
       notificationEntry: codewhaleNotificationEntry,
@@ -125,14 +125,15 @@ describe('codewhale transcript through the whole pipeline', () => {
     const resultRow = scenario.toolRow('result')
     expect(requestRow.role).toBe('request')
     expect(resultRow.role).toBe('result')
-    expect(requestRow.hasResultRow).toBe(true)
     expect(resultRow.hasRequestRow).toBe(true)
     expect(resultRow.call.kind).toBe('execute')
     expect(resultRow.call.status).toBe('completed')
-    expect(requestRow.call.status).toBe('completed')
+    // The request row reads its own opening frame alone.
+    expect(requestRow.call.status).toBe('in_progress')
+    expect(requestRow.call.result).toBeUndefined()
   })
 
-  it('leaves the result row of a deferred tool\'s first call out, and states the call on its request row', () => {
+  it('states a deferred tool\'s first call on its result row, with the runtime\'s words', () => {
     const words = 'Tool `apply_patch` was deferred and has now been loaded.'
     const scenario = createTranscriptScenario({
       archive: [
@@ -140,9 +141,9 @@ describe('codewhale transcript through the whole pipeline', () => {
         message('first-result', toolCompleted(CODEWHALE_TOOL.ApplyPatch, { patch: 'x' }, words, { deferred_tool_loaded: true }), 2n, { spanId: CALL, spanType: CODEWHALE_TOOL.ApplyPatch }),
       ],
     })
-    // A classified-hidden row leaves the transcript: the entry list holds no row for it.
-    expect(() => scenario.entry('first-result')).toThrow('No classified entry for "first-result"')
-    expect(scenario.toolRow('first-request').call.result).toStrictEqual({ unparsed: true, text: words })
+    // Only the result row states the runtime's words, so the classifier keeps it.
+    expect(scenario.toolRow('first-result').call.result).toStrictEqual({ unparsed: true, text: words })
+    expect(scenario.toolRow('first-request').call.result).toBeUndefined()
   })
 
   it('states a call its turn cut short as cancelled', () => {
@@ -219,7 +220,7 @@ describe('codewhale transcript through the whole pipeline', () => {
 })
 
 describe('codewhale span roles', () => {
-  it('asks for the result of a request row and the request of a result row', () => {
+  it('asks for the request of a result row alone', () => {
     const scenario = createTranscriptScenario({
       archive: [
         message('request', toolStarted(CODEWHALE_TOOL.Bash, {}), 1n, { spanId: CALL }),
@@ -227,7 +228,7 @@ describe('codewhale span roles', () => {
     })
     const resolved = scenario.entry('request').resolved
     expect(plugin.transcript.spanRole(resolved)).toBe('request')
-    expect(plugin.transcript.relatedMessages?.(resolved)).toStrictEqual(['result'])
+    expect(plugin.transcript.needsRequest?.(resolved)).toBe(false)
     const other = createTranscriptScenario({
       archive: [
         message('result', toolCompleted(CODEWHALE_TOOL.Bash, {}, 'x'), 1n, { spanId: CALL }),
@@ -235,14 +236,14 @@ describe('codewhale span roles', () => {
     })
     const result = other.entry('result').resolved
     expect(plugin.transcript.spanRole(result)).toBe('result')
-    expect(plugin.transcript.relatedMessages?.(result)).toStrictEqual(['request'])
+    expect(plugin.transcript.needsRequest?.(result)).toBe(true)
     const reply = createTranscriptScenario({
       archive: [
         message('reply', itemFinished(CODEWHALE_ITEM_KIND.AgentMessage, 'Hi'), 1n),
       ],
     })
     expect(plugin.transcript.spanRole(reply.entry('reply').resolved)).toBe('other')
-    expect(plugin.transcript.relatedMessages?.(reply.entry('reply').resolved)).toStrictEqual([])
+    expect(plugin.transcript.needsRequest?.(reply.entry('reply').resolved)).toBe(false)
   })
 })
 

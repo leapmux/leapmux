@@ -49,7 +49,7 @@ describe('pi rpiv-todo sources', () => {
       toolName: 'todo',
       args: { action: 'update', id: 1, status: 'in_progress' },
     }
-    const source = piTodoSource(request, undefined, input(result(request.args)))
+    const source = piTodoSource(result(request.args), input(request))
     expect(source?.list.title).toBe('Update task: Inspect sample')
     expect(source?.list.todos).toHaveLength(1)
     expect(source?.list.todos[0]).toMatchObject({
@@ -59,8 +59,34 @@ describe('pi rpiv-todo sources', () => {
       status: 'in_progress',
     })
     expect(source?.description).toBe('Read **sample.ts**.')
-    expect(source?.metadata).toContainEqual({ label: 'Owner', value: 'worker' })
-    expect(piTodoSource({ ...request, toolCallId: 'foreign' }, undefined, input(result(request.args)))?.list.title).toBe('Update task: Task #1')
+    expect(source?.resultMetadata).toContainEqual({ label: 'Owner', value: 'worker' })
+  })
+
+  // A start frame states no snapshot, so its row states only what its arguments say.
+  it('reads a start frame from its arguments alone', () => {
+    const request = {
+      type: 'tool_execution_start',
+      toolCallId: 'todo-call',
+      toolName: 'todo',
+      args: { action: 'update', id: 1, status: 'in_progress' },
+    }
+    const source = piTodoSource(request, input(request))
+    expect(source?.list.title).toBe('Update task: Task #1')
+    expect(source?.list.todos).toEqual([])
+    expect(source?.resultMetadata).toEqual([])
+    expect(source?.error).toBeUndefined()
+  })
+
+  // The arguments of another call are no arguments of this one, so the snapshot's own
+  // `params` answer instead.
+  it('ignores a request from another call', () => {
+    const foreign = {
+      type: 'tool_execution_start',
+      toolCallId: 'foreign',
+      toolName: 'todo',
+      args: { action: 'update', id: 2 },
+    }
+    expect(piTodoSource(result({ action: 'update', id: 1 }), input(foreign))?.list.title).toBe('Update task: Inspect sample')
   })
 
   it('uses the provider-assigned ID for creation', () => {
@@ -72,7 +98,7 @@ describe('pi rpiv-todo sources', () => {
   it('resolves a standalone get and its dependencies without a request', () => {
     const source = piTodoSource(result({ action: 'get', id: 2 }))
     expect(source?.list.todos.map(task => task.id)).toEqual(['2'])
-    expect(source?.metadata).toContainEqual({ label: 'Blocked by', value: '#1' })
+    expect(source?.resultMetadata).toContainEqual({ label: 'Blocked by', value: '#1' })
   })
 
   it('keeps deletion visible as a tombstone', () => {

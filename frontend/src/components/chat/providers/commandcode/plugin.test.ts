@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import { classifyCommandCodeMessage } from './classification'
 import { commandCodeNotificationEntry } from './extractors/notification'
 import { commandCodeResultDivider } from './extractors/resultDivider'
-import { commandCodeSpanRole } from './spanRole'
+import { commandCodeNeedsRequest, commandCodeSpanRole } from './spanRole'
 import './plugin'
 
 const provider = AgentProvider.COMMAND_CODE
@@ -167,6 +167,31 @@ describe('command code provider', () => {
     expect(commandCodeSpanRole(input(event('tool_completed', { toolCallId: 'call' }), null, provider))).toBe('result')
     expect(commandCodeSpanRole(input(event('tool_update', { toolCallId: 'call' }), null, provider))).toBe('other')
     expect(commandCodeSpanRole(input(event('tool_completed'), null, provider))).toBe('other')
+  })
+
+  // A turn that ends while a call runs stores the queued frame AGAIN, with a completion,
+  // as the closing row. That copy is the final row of the span, and it states its own
+  // arguments.
+  it('places the closing copy of a queued frame on the result side', () => {
+    const copy = {
+      ...input(event('tool_queued', { toolCallId: 'call', toolName: 'shell_command' }), null, provider),
+      completion: MessageCompletion.INTERRUPTED,
+    }
+    expect(commandCodeSpanRole(copy)).toBe('result')
+    expect(commandCodeNeedsRequest(copy)).toBe(false)
+  })
+
+  it.each([
+    ['tool_queued', false],
+    ['tool_completed', true],
+    ['tool_errored', true],
+    ['tool_denied', true],
+    ['tool_hook_blocked', true],
+    ['tool_update', false],
+  ] as const)('answers whether a %s frame needs its request: %s', (type, expected) => {
+    const needsRequest = providerFor(provider)?.transcript.needsRequest
+    expect(needsRequest).toBe(commandCodeNeedsRequest)
+    expect(needsRequest?.(input(event(type, { toolCallId: 'call', toolName: 'shell_command' }), null, provider))).toBe(expected)
   })
 
   it('shows an explicit native failure at the turn boundary', () => {

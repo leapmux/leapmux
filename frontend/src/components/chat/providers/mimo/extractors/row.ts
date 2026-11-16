@@ -22,15 +22,11 @@ export function mimoExtractRow(input: RowExtractionInput): ChatRow | null {
 }
 
 /**
- * Read one tool row, with the final frame of its call when the span holds one.
+ * Read one tool row from its own frame.
  *
- * MiMo writes the whole call state on every frame, so the row reads the LATEST frame
- * the span holds: an opening row whose call already answered draws the answer's
- * status in its header.
- *
- * Only a frame of THIS call counts as its result. One turn can run several calls at
- * once, and a sibling's frame is no side of this one: its answer would otherwise draw
- * under this call's header.
+ * MiMo writes the whole call state on every frame, so each row draws the state its own
+ * frame states: an opening row draws the running call, and the final row draws the
+ * answer. No row reads another frame of its span.
  */
 function mimoToolSpanRow(input: RowExtractionInput): ChatRow | null {
   const { resolved: parsed, span } = input
@@ -38,13 +34,6 @@ function mimoToolSpanRow(input: RowExtractionInput): ChatRow | null {
   if (!own)
     return null
   const completion = input.completion ?? parsed.completion
-  const side = span.result
-    ? mimoToolPart(span.result.parentObject)
-    : null
-  const result = side?.partId === own.partId && side.messageId === own.messageId
-    && side.sessionId === own.sessionId && side.callId === own.callId
-    ? side
-    : null
   const role = mimoToolSpanRole(own, completion) === 'result'
     ? 'result'
     : 'request'
@@ -52,9 +41,6 @@ function mimoToolSpanRow(input: RowExtractionInput): ChatRow | null {
     own,
     ...(input.spanId
       ? { registryKey: input.spanId }
-      : {}),
-    ...(result
-      ? { result }
       : {}),
     ...(completion !== undefined
       ? { completion }

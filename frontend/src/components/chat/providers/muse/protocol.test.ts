@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MUSE_ITEM_KIND, MUSE_METHOD } from '~/generated/contracts/muse-protocol'
-import { museItem, museItemText, museParams, museSiblingItem } from './protocol'
+import { museItem, museItemText, museParams } from './protocol'
 
 describe('museItem', () => {
   it.each([MUSE_METHOD.ItemStarted, MUSE_METHOD.ItemUpdated, MUSE_METHOD.ItemCompleted])('reads the native item from %s without changing it', (method) => {
@@ -90,47 +90,6 @@ describe('museParams', () => {
     { method: 'future/event', params: [] },
   ].map(frame => ({ frame })))('rejects unreadable params $frame', ({ frame }) => {
     expect(museParams(frame)).toBeUndefined()
-  })
-})
-
-describe('museSiblingItem', () => {
-  const own = {
-    method: MUSE_METHOD.ItemStarted,
-    params: {
-      sessionId: 'session',
-      item: { itemId: 'item', kind: MUSE_ITEM_KIND.ToolCall },
-    },
-  }
-
-  it('returns the exact matching native result object', () => {
-    const result = {
-      method: MUSE_METHOD.ItemCompleted,
-      params: {
-        sessionId: 'session',
-        item: { itemId: 'item', kind: MUSE_ITEM_KIND.ToolCall, visibleOutput: 'Native output' },
-      },
-    }
-    expect(museSiblingItem(own, result)).toBe(result.params.item)
-  })
-
-  it.each([
-    {
-      sessionId: 'foreign',
-      item: { itemId: 'item', kind: MUSE_ITEM_KIND.ToolCall },
-    },
-    {
-      sessionId: 'session',
-      item: { itemId: 'foreign', kind: MUSE_ITEM_KIND.ToolCall },
-    },
-    {
-      sessionId: 'session',
-      item: { itemId: 'item', kind: MUSE_ITEM_KIND.AgentMessage },
-    },
-    {
-      item: { itemId: 'item', kind: MUSE_ITEM_KIND.ToolCall },
-    },
-  ])('rejects a sibling with another or absent identity %j', (params) => {
-    expect(museSiblingItem(own, { method: MUSE_METHOD.ItemCompleted, params })).toBeUndefined()
   })
 })
 

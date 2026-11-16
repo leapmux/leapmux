@@ -78,9 +78,12 @@ export function claudeEnvelope(row: ClaudeToolRow, context: ClaudeRowContext): T
 export interface ClaudeCallFacts {
   /** The REQUEST row: the arguments the call sent, and the tool that sent them. */
   args: ClaudeToolRow
-  /** The paired RESULT row, or undefined while the call runs. */
+  /**
+   * The RESULT row: this row when it is the result, else undefined. A request row never
+   * reads its result, so it builds from its own arguments alone.
+   */
   result: ClaudeToolRow | undefined
-  /** What the row reads beyond its own bytes: the paired payload and the task snapshot. */
+  /** What the row reads beyond its own bytes: the task snapshot and the completion. */
   context: ClaudeRowContext
 }
 

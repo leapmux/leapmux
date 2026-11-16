@@ -8,7 +8,7 @@ export function testMessageSources(overrides: Partial<MessageRenderSources> = {}
     request: () => undefined,
     result: () => undefined,
     role: () => 'other',
-    visibleRows: () => ({ request: false, result: false }),
+    visibleRows: () => ({ request: false }),
     fileImages: NO_FILE_IMAGES,
     backgroundTask: () => undefined,
     progress: () => undefined,

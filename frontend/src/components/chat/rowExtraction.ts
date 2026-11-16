@@ -21,13 +21,12 @@ const logger = createLogger('rowExtraction')
 /** The empty span context for a caller that resolved no sibling row. */
 const NO_SPAN: ToolSpanContext = {
   request: undefined,
-  result: undefined,
   role: 'other',
-  visibleRows: { request: false, result: false },
+  visibleRows: { request: false },
 }
 
 export interface RowExtractionOptions {
-  /** The request and result of this row's tool span, already resolved. */
+  /** The request of this row's tool span, already resolved. */
   span?: ToolSpanContext
   /** The stored span ID selects this row's call. */
   spanId?: string

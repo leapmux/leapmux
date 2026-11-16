@@ -1,9 +1,10 @@
-import type { ToolCallSpecVariant } from '../../../model/toolCall'
+import type { ToolCallSpecVariant, ToolFailureResult } from '../../../model/toolCall'
 import type { ToolRequestByKind } from '../../../model/tools'
 import type { ClaudeRowContext, ClaudeToolRow } from './toolCommon'
 import type { TodoItem } from '~/models/todo'
 import { rawTodosToItems } from '~/components/chat/normalizers/todo'
 import { createLogger } from '~/lib/logger'
+import { failedResult, unparsedResult } from '../../../model/toolCall'
 import { CLAUDE_TOOL_NAMES } from '../toolNames'
 import { claudeToolFailureResult } from './failure'
 import { buildTaskCreateItem, buildTaskGetItem, buildTaskUpdateItem } from './taskCard'
@@ -42,11 +43,11 @@ export function claudeTodoItemsFromResult(
  * The to-do request of one Claude call: the list `TodoWrite` asks to save, or the
  * SINGLE task a `Task*` call acts on.
  *
- * The `Task*` half reads the paired RESULT, which no other Claude request does, and
- * `CLAUDE_TOOL_REQUEST_OVERRIDES` supplies it for that reason. The three tools each
- * answer from a different half of the span -- `TaskGet` sends an id alone -- so the task
- * a reader sees exists only once the answer lands. The result row of all three is
- * hidden, so the REQUEST row is what draws it.
+ * The three `Task*` tools each answer from a different half of the span -- `TaskGet`
+ * sends an id alone -- so the whole task exists only once the answer lands. The RESULT
+ * row reads it from its own message (`result`). The REQUEST row has no result and
+ * states what its own arguments carry: the subject a `TaskCreate` asks for, and no
+ * task for a `TaskUpdate` patch or a `TaskGet` id.
  *
  * One call states one of the two, never both: `claudeTaskItem` answers null for every
  * name outside the three, and no `Task*` call carries a `todos` array.
@@ -57,8 +58,8 @@ export function claudeTodoRequest(
   result: ClaudeToolRow | undefined,
   context: ClaudeRowContext,
 ): ToolRequestByKind['todo'] {
-  const item = claudeTaskItem(toolName, input, result?.toolUseResult ?? context.pairedResult, context.todoSnapshot)
-  if (toolName === CLAUDE_TOOL_NAMES.TASK_UPDATE && !item && context.todoSnapshotDiagnostic) {
+  const item = claudeTaskItem(toolName, input, result?.toolUseResult, context.todoSnapshot)
+  if (toolName === CLAUDE_TOOL_NAMES.TASK_UPDATE && !item && context.todoSnapshotDiagnostic && claudeTaskUpdateStoresSnapshot(result)) {
     const taskId = typeof input.taskId === 'string'
       ? input.taskId
       : ''
@@ -101,27 +102,57 @@ export function claudeTodoSpec(request: ToolRequestByKind['todo'], args: ClaudeT
 }
 
 /**
- * Whether a `TaskGet` row states no task at all yet.
- *
- * `TaskGet` carries no input of its own -- it asks for a task by id, and the task
- * itself arrives in the result -- so an unresolved one has nothing to draw. Its empty
- * checklist drew the to-do body's own "To-do list cleared" under a bare "Task" header,
- * which is a sentence about a list the call never touched. The row waits instead.
- *
- * `TaskCreate` and `TaskUpdate` DO carry input, so each of them draws while it runs.
+ * The failure that a `Task*` answer states: the tool result marked as an error, or a
+ * `tool_use_result` that reports `success: false`, in its own `error` words when it
+ * states them.
  */
-export function claudeTaskGetUnresolved(args: ClaudeToolRow, result: ClaudeToolRow | undefined, context: ClaudeRowContext): boolean {
-  return args.toolName === CLAUDE_TOOL_NAMES.TASK_GET && !result && !context.pairedResult
+function claudeTaskFailureResult(result: ClaudeToolRow): ToolFailureResult | undefined {
+  const marked = claudeToolFailureResult(result)
+  if (marked)
+    return marked
+  const answer = result.toolUseResult
+  if (answer?.success !== false)
+    return undefined
+  const error = typeof answer.error === 'string'
+    ? answer.error.trim()
+    : ''
+  return failedResult(error || result.resultContent || 'The task tool failed.')
+}
+
+/**
+ * Whether the Worker stores a to-do snapshot beside this `TaskUpdate` answer. It does for
+ * an update that succeeded and states its task (`claudeTaskUpdateEvent` in the Worker),
+ * so only such an answer can miss its snapshot.
+ */
+function claudeTaskUpdateStoresSnapshot(result: ClaudeToolRow | undefined): boolean {
+  const answer = result?.toolUseResult
+  return answer?.success === true && typeof answer.taskId === 'string' && answer.taskId !== ''
 }
 
 /**
  * The todo pair of a `Task*` call: ONE item, because the call acts on one task.
  *
- * A `Task*` result row is HIDDEN, so the request row draws the item: when the
- * paired result has landed, its task rides the result slot of this one row.
+ * The request row states the task its own arguments carry, and no result: it never
+ * reads its result. The result row states the task the answer carries -- the created
+ * task with its id, the snapshot after an update, the task a read returned -- as both
+ * its request item and its result.
  */
 export function claudeTaskTodoSpec(request: ToolRequestByKind['todo'], result: ClaudeToolRow | undefined, context: ClaudeRowContext, title: string, toolName: string): ToolCallSpecVariant<'todo'> {
-  if (toolName === CLAUDE_TOOL_NAMES.TASK_UPDATE && context.todoSnapshotDiagnostic) {
+  if (!result)
+    return { kind: 'todo', request, title }
+  // A failed call states its own error, under a failed status also when only its
+  // `success: false` says so. It updated nothing, so it misses no snapshot.
+  const failure = claudeTaskFailureResult(result)
+  if (failure) {
+    return {
+      kind: 'todo',
+      request,
+      title,
+      statusOverride: 'failed',
+      result: failure,
+    }
+  }
+  if (toolName === CLAUDE_TOOL_NAMES.TASK_UPDATE && context.todoSnapshotDiagnostic && claudeTaskUpdateStoresSnapshot(result)) {
     return {
       kind: 'todo',
       request,
@@ -130,29 +161,19 @@ export function claudeTaskTodoSpec(request: ToolRequestByKind['todo'], result: C
       result: { unparsed: true, text: context.todoSnapshotDiagnostic },
     }
   }
-  // Nothing to draw: the call states no task yet, or no answer has landed beside it.
-  // An empty list is what {@link claudeTodoRequest} answers for the first of those.
-  if (request.items.length === 0 || (!result && !context.pairedResult))
-    return { kind: 'todo', request, title }
-  const failure = claudeToolFailureResult(result)
-  if (failure) {
+  // An answer that states no task: the result row shows the words the tool returned.
+  if (request.items.length === 0) {
     return {
       kind: 'todo',
       request,
       title,
-      result: failure,
+      result: unparsedResult(result.resultContent),
     }
   }
-  // The paired result may draw no row of its own, so THIS row carries its item.
-  // Without a result the call still read the task back, which is what `completed`
-  // states here.
   return {
     kind: 'todo',
     request,
     title,
-    ...(result
-      ? {}
-      : { statusOverride: 'completed' }),
     result: {
       items: request.items,
       ...(request.note !== undefined

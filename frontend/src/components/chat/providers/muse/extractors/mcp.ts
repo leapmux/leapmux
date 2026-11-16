@@ -19,7 +19,7 @@ export function museMcpSpec(input: MuseMcpFacts): ToolCallSpec<'mcp'> {
     ...mcpToolCallRequest(input.server, input.tool, input.args),
     ...(unknown
       ? {
-          metadata: [
+          resultMetadata: [
             { label: 'Native status', value: input.status || 'Unspecified' },
             ...(input.output
               ? [

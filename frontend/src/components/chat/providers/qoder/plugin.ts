@@ -8,13 +8,13 @@ import { qoderOutputFilePaths } from './extractors/outputFilePaths'
 import { qoderResultDivider } from './extractors/resultDivider'
 import { qoderExtractRow } from './extractors/row'
 import { qoderControls } from './pluginControls'
-import { qoderRelatedMessages, qoderSpanRole } from './spanRole'
+import { qoderNeedsRequest, qoderSpanRole } from './spanRole'
 
 const qoderPlugin: ProviderPlugin = {
   transcript: {
     outputFilePaths: qoderOutputFilePaths,
     spanRole: qoderSpanRole,
-    relatedMessages: qoderRelatedMessages,
+    needsRequest: qoderNeedsRequest,
     classify: classifyQoderMessage,
     notificationEntry: qoderNotificationEntry,
     compactionStart: qoderCompactionStart,

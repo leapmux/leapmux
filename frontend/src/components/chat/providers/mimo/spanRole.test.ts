@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { openingFrame, statusFrame, toolFrame } from '~/test-support/mimoFixtures'
+import { providerFor } from '../registry'
 import { input } from '../testUtils'
-import { mimoRelatedMessages, mimoSpanRole } from './spanRole'
+import { mimoSpanRole } from './spanRole'
+import './plugin'
 
 describe('mimoSpanRole', () => {
   it('reads the opening frame as the request and the final frame as the result', () => {
@@ -31,23 +33,10 @@ describe('mimoSpanRole', () => {
   })
 })
 
-describe('mimoRelatedMessages', () => {
-  it('pairs each half of a call with the other', () => {
-    expect(mimoRelatedMessages(input(openingFrame('bash', { command: 'ls' }), undefined, AgentProvider.MIMO_CODE))).toEqual(['result'])
-    expect(mimoRelatedMessages(input(toolFrame('bash', {}), undefined, AgentProvider.MIMO_CODE))).toEqual(['request'])
-    expect(mimoRelatedMessages(input(statusFrame('idle'), undefined, AgentProvider.MIMO_CODE))).toEqual([])
-  })
-
-  it('pairs a pending frame with nothing', () => {
-    expect(mimoRelatedMessages(input(toolFrame('bash', { status: 'pending' }), undefined, AgentProvider.MIMO_CODE))).toEqual([])
-  })
-
-  // The last frame of a cut call is the span's result, so it pairs with the request.
-  it('pairs a retained last frame with its request', () => {
-    const parsed = {
-      ...input(openingFrame('bash', { command: 'ls' }), undefined, AgentProvider.MIMO_CODE),
-      completion: MessageCompletion.INTERRUPTED,
-    }
-    expect(mimoRelatedMessages(parsed)).toEqual(['request'])
+// Each MiMo frame states the whole call, the input included, so no row reads its span's
+// request, and the plugin states no hook that would wait for one.
+describe('mimo needsRequest', () => {
+  it('is absent', () => {
+    expect(providerFor(AgentProvider.MIMO_CODE)?.transcript.needsRequest).toBeUndefined()
   })
 })

@@ -128,22 +128,12 @@ describe('piGenericToolSource', () => {
     ])
   })
 
-  it('uses only the matching result identity for an opening request', () => {
+  // A start frame states no result, so its row keeps the native name: the end frame's
+  // own row states the server and the tool.
+  it('states no identity for an opening request', () => {
     const request = start()
-    const result = input(end({
-      content: [
-        { type: 'text', text: 'Later output' },
-      ],
-      details,
-      structuredContent: {
-        content: [
-          { type: 'text', text: 'Native output' },
-        ],
-      },
-    }))
-    expect(piGenericToolSource(request, undefined, result)).toMatchObject({ server: 'sample', tool: 'lookup', content: [] })
-    expect(piGenericToolSource({ ...request, toolCallId: 'other' }, undefined, result)).toMatchObject({ server: '', tool: toolName, content: [] })
-    expect(piGenericToolSource({ ...request, toolName: `${toolName}_other` }, undefined, result)?.server).toBe('')
+    expect(piMcpIdentity(request)).toBeUndefined()
+    expect(piGenericToolSource(request)).toMatchObject({ server: '', tool: toolName, content: [] })
   })
 
   it('does not reverse sanitized names or hash suffixes', () => {
@@ -154,14 +144,14 @@ describe('piGenericToolSource', () => {
       }
       expect(piMcpIdentity(request)).toBeUndefined()
       expect(piGenericToolSource(request)).toMatchObject({ server: '', tool: name })
-      const result = input({
+      const result = {
         ...end({
           content: [],
           details: { server: 'server.a', tool: 'lookup/a' },
         }),
         toolName: name,
-      })
-      expect(piMcpIdentity(request, result)).toEqual({ server: 'server.a', tool: 'lookup/a' })
+      }
+      expect(piMcpIdentity(result)).toEqual({ server: 'server.a', tool: 'lookup/a' })
     }
   })
 

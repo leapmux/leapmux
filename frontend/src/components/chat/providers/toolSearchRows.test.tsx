@@ -8,12 +8,11 @@ import { input } from './testUtils'
 import './claude/plugin'
 import '~/components/chat/providers'
 
-/** The three span sides an isolated extraction resolves to nothing. */
+/** The span sides an isolated extraction resolves to nothing. */
 const NO_SIDES = {
   request: undefined,
-  result: undefined,
   role: 'other' as const,
-  visibleRows: { request: false, result: false },
+  visibleRows: { request: false },
 }
 
 /** Construct a ToolSearch tool_use assistant message. */

@@ -171,9 +171,8 @@ function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
       // which is the one thing the header can add. A copy of that wording here would
       // be a second place for it to drift from the renderer's.
       title: undefined,
-      // POPULATED, not emptied. `todoRenderer`'s own guard
-      // (`role !== 'result' && !hasResultRow`) is what stops a double draw, so an empty
-      // list here only hid the to-dos while the call was still running.
+      // POPULATED, not emptied: the pending row draws this list while the call runs,
+      // and an empty list there hid the to-dos.
       request: { items },
       ...(facts.finished
         ? {
@@ -237,8 +236,8 @@ function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
       ...nameSlot,
       label: 'Plan',
       title: pickString(planInput, 'name') || pickString(tool, 'title') || undefined,
-      // The plan is what the call PROPOSED: the proposing row draws it from here
-      // while the approval is open, and the completing row's result draws it after.
+      // The plan is what the call PROPOSED: the pending row draws it from here while
+      // the approval is open, and the completing row's result draws it after.
       // A dump of the JSON that carried it is what a reader saw instead, never here.
       // `proposal` is the TYPED field for it, so the shared renderer reads a name
       // the model declares rather than a key Cursor happens to spell.
@@ -256,13 +255,15 @@ function cursorToolCall(source: ACPToolFacts): ToolCallSpec {
   }
   if (named === CURSOR_TOOL.Task) {
     // The frame states the model that ANSWERED, the runtime's own agent id and the
-    // measured duration. The call itself carries the prompt, the description and the
-    // requested type, so the two halves together report the run and not the request.
-    const details = cursorTaskDetails(extension)
+    // measured duration, which report the run and not the request. It also restates
+    // the subagent type of the call in the spelling that the reader knows.
+    const { subagentType, ...reported } = cursorTaskDetails(extension)
     return cursorAgentCall(facts, {
       ...input,
-      ...details,
-    }, undefined, undefined)
+      ...(subagentType === undefined
+        ? {}
+        : { subagentType }),
+    }, { reported })
   }
   // The WIRE KIND is the precondition, not the two argument keys alone. This branch
   // sits above the execute, read and search branches, so testing the arguments by

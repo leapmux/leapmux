@@ -9,18 +9,22 @@ export const reportRenderer = proseRenderer<'report'>({
   title(call) {
     return call.title ?? 'Report'
   },
-  request(call, view) {
-    // A proposal that has NOT drawn its answer yet. The proposing row states it while
-    // the approval is open; once the result exists, the same rule the edit family
-    // follows hands the drawing to the row that completed the call.
-    //
-    // `request.proposal`, not `payload.plan`: layer 3 knows no provider and parses no
-    // provider's bytes (see `results/README.md`). Reaching into the untyped payload
-    // for a key one provider happens to send put a Cursor parser in the shared
-    // renderer, where no other provider could reach it.
-    const proposal = view.drawsResult && call.result === undefined
-      ? call.request.proposal
-      : undefined
-    return <Show when={proposal}>{text => <ProseResultBody result={proseResult(text(), 'markdown')} view={view} />}</Show>
+  // A proposal that has NOT drawn its answer yet. The pending row states it while the
+  // approval is open; once the result exists, the row that completed the call draws
+  // the answer, as the edit family does.
+  //
+  // `request.proposal`, not `payload.plan`: layer 3 knows no provider and parses no
+  // provider's bytes (see `results/README.md`). Reaching into the untyped payload
+  // for a key one provider happens to send put a Cursor parser in the shared
+  // renderer, where no other provider could reach it.
+  pending(call, view) {
+    return <Show when={call.request.proposal}>{text => <ProseResultBody result={proseResult(text(), 'markdown')} view={view} />}</Show>
+  },
+  hasPending: call => !!call.request.proposal,
+  // A call that completed with no words of its own leaves the proposal as the one thing
+  // to read: the row that draws the result states it. A result in words of its own
+  // answers for the call instead.
+  withoutTypedResult(call, view) {
+    return <Show when={call.request.proposal}>{text => <ProseResultBody result={proseResult(text(), 'markdown')} view={view} />}</Show>
   },
 })

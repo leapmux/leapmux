@@ -14,7 +14,7 @@ import './opencode/plugin'
 import './pi/plugin'
 import '~/components/chat/providers'
 
-const { renderMessageContent } = await import('../messageContentRenderer')
+const { renderMessageContent, renderPendingMessageContent } = await import('../messageContentRenderer')
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -71,10 +71,23 @@ function makeClaudeToolResultMessage(
   return envelope
 }
 
+/**
+ * The two rows a running call draws: its request row, and the pending row below it that
+ * states the change the call asks for until the result row takes its place.
+ */
+function renderRunningCall(parsed: unknown, category: MessageCategory, provider: AgentProvider, context?: MessageContentRenderContext) {
+  return render(() => (
+    <>
+      {renderMessageContent(parsed, context, category, provider)}
+      {renderPendingMessageContent(parsed, context, category, provider)}
+    </>
+  ))
+}
+
 function renderClaudeToolUse(name: string, input: Record<string, unknown>, context?: MessageContentRenderContext) {
   const parsed = makeClaudeToolUseMessage(name, input)
   const category = { kind: 'tool_use' } as MessageCategory
-  return render(() => renderMessageContent(parsed, context, category, AgentProvider.CLAUDE_CODE))
+  return renderRunningCall(parsed, category, AgentProvider.CLAUDE_CODE, context)
 }
 
 function renderClaudeToolResult(parsed: Record<string, unknown>, context?: MessageContentRenderContext) {
@@ -104,7 +117,7 @@ function makePiToolEnd(toolName: string, result: Record<string, unknown>, isErro
 function renderPiToolUse(toolName: string, args: Record<string, unknown>, context?: MessageContentRenderContext) {
   const toolUse = makePiToolStart(toolName, args)
   const category: MessageCategory = { kind: 'tool_use' }
-  return render(() => renderMessageContent(toolUse, context, category, AgentProvider.PI))
+  return renderRunningCall(toolUse, category, AgentProvider.PI, context)
 }
 
 function renderPiToolResult(toolName: string, resultPayload: Record<string, unknown>, startArgs: Record<string, unknown>, isError = false) {
@@ -726,7 +739,6 @@ describe('opencode tool_call_update diff selection', () => {
         sources: testMessageSources({
           current: () => parse(resultContent),
           request: () => request,
-          result: () => parse(resultContent),
           role: () => 'result',
         }),
       },

@@ -64,7 +64,7 @@ describe('imagesForRow', () => {
         picture('own'),
       ],
     })
-    expect(imagesForRow(toolRow(call, 'request', { result: true }))).toEqual([])
+    expect(imagesForRow(toolRow(call, 'request'))).toEqual([])
   })
 })
 

@@ -53,8 +53,12 @@ type StoredRow = [id: string, digest: string, height: number]
  * 5: the height key holds the exact row width and the fonts of the chat, where it held
  *    the 8px step of the width and no font. No stored digest of version 4 can match a
  *    key again.
+ * 6: a tool request row draws its own message alone: no preview of the running call
+ *    (a pending row draws it now) and a header of one line. The key of a request row
+ *    that held no result revision is unchanged, so a stored height of version 5 could
+ *    match it and admit the row at the height of the old drawing.
  */
-export const STORED_ROW_HEIGHTS_VERSION = 5
+export const STORED_ROW_HEIGHTS_VERSION = 6
 
 interface StoredRowHeights {
   v: typeof STORED_ROW_HEIGHTS_VERSION
@@ -91,6 +95,12 @@ export interface RowHeightPersistenceDeps {
   /** The items of the loaded rows: a stored height can admit a row that no hidden copy rendered. */
   loadedItems: Accessor<ChatRowItem[]>
   heights: Pick<RowHeightCache, 'commitAll' | 'snapshot' | 'version' | 'isMeasured'>
+  /**
+   * Whether the height of the row with `rowId` belongs in the stored heights. The rows of
+   * the messages do. A row that exists only for a while, such as the pending row of a
+   * running call (see chatPendingRows), does not: no later mount adopts it.
+   */
+  storesRow: (rowId: string) => boolean
 }
 
 function parseStoredRows(raw: unknown): Map<string, { digest: string, height: number }> {
@@ -173,6 +183,8 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
     for (const [rowId, entry] of pending)
       merged.set(rowId, [rowId, entry.digest, entry.height])
     for (const row of deps.heights.snapshot()) {
+      if (!deps.storesRow(row.id))
+        continue
       // delete+set (not a bare set) so a row that is ALSO still pending moves to
       // the freshly-measured end: a bare set on an existing key keeps its early
       // pending insertion position, which the over-cap slice below would shed

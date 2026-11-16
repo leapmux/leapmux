@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { describeACPProviderBasics } from '../acp/testUtils'
+import { describeACPCallRows, describeACPProviderBasics } from '../acp/testUtils'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 
@@ -181,4 +181,57 @@ describe('kiro provider', () => {
       expect(plugin.transcript.classify(input(parent, null, AgentProvider.KIRO))).toEqual({ kind: 'hidden' })
     })
   })
+})
+
+// A Kiro task list asks for the tasks that it adds, and only the answer states the
+// whole list that Kiro holds. The request row draws the asked tasks, and the result
+// row the held list.
+describe('kiro call rows', () => {
+  describeACPCallRows(AgentProvider.KIRO, [
+    {
+      name: 'a task list that answers with the held list',
+      request: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'kiro-tasks',
+        kind: 'other',
+        title: 'Task List',
+        status: 'pending',
+        rawInput: {
+          tasks: [
+            { task_description: 'Add tests' },
+          ],
+        },
+      },
+      result: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'kiro-tasks',
+        status: 'completed',
+        rawOutput: {
+          tasks: [
+            { id: '1', task_description: 'Write code', completed: true },
+            { id: '2', task_description: 'Add tests', completed: false },
+          ],
+        },
+      },
+      requestCall: {
+        kind: 'todo',
+        status: 'pending',
+        request: {
+          items: [
+            { content: 'Add tests' },
+          ],
+        },
+      },
+      resultCall: {
+        kind: 'todo',
+        status: 'completed',
+        result: {
+          items: [
+            { content: 'Write code' },
+            { content: 'Add tests' },
+          ],
+        },
+      },
+    },
+  ])
 })

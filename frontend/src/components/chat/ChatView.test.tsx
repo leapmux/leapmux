@@ -10,7 +10,7 @@ import type { UseChatScrollOptions } from './useChatScroll'
 import type { ChatVirtualizerRange, UseChatVirtualizerResult } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { create } from '@bufbuild/protobuf'
-import { fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
+import { fireEvent, render, screen, waitFor, within } from '@solidjs/testing-library'
 import { batch, createEffect, createRenderEffect, createRoot, createSignal, For } from 'solid-js'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
@@ -28,6 +28,7 @@ import { useTestStorage } from '~/test-support/persistentStorage'
 import { flushAnimationFrame, installControllableResizeObserver, triggerResizeObserverFor } from '~/test-support/resizeObserverStub'
 import { installControlledSlices } from '~/test-support/sliceSchedulers'
 import { CHAT_FONT_LOAD_LIMIT_MS } from './chatFonts'
+import { pendingRowId } from './chatPendingRows'
 import { LOOKAHEAD_PREMEASURE_ROWS } from './chatPremeasureBands'
 import { WARMUP_IDLE_DELAY_MS } from './chatPremeasureWarmup'
 import { STORED_ROW_HEIGHTS_VERSION } from './chatRowHeightPersistence'
@@ -698,9 +699,14 @@ async function stubChatViewport(view: { container: HTMLElement }, clientHeight =
  * which measures each hidden copy, so the rows join the list (see reportChatViewportSize).
  */
 async function renderChatWithRows(messages: AgentChatMessage[]): Promise<ReturnType<typeof render>> {
+  // The message resolver of these rows, as production always passes one: it pairs the
+  // rows of a call, which decides the pending row of a call that runs.
+  const messageContext = testMessageContext({
+    messages: () => messages,
+  })
   const view = render(() => (
     <PreferencesProvider>
-      <ChatView messages={messages} />
+      <ChatView messages={messages} messageContext={messageContext} />
     </PreferencesProvider>
   ))
   await reportChatViewportSize(view)
@@ -1242,7 +1248,10 @@ describe('ChatView', () => {
     expect(row(4)?.style.visibility).toBe('')
     expect(row(3)).toHaveTextContent('The actual later answer.')
     expect(row(4)?.querySelector('[data-testid="result-divider"]')).not.toBeNull()
+    // The move had ended when its rows loaded, so it drew no pending row, also while its
+    // result row waited for its measure.
     const heights = viewHeightCache().snapshot()
+    expect(heights.map(height => height.id)).not.toContain(pendingRowId('move-request'))
     expect(heights.find(height => height.id === 'move-result')?.height).toBe(0)
     view.unmount()
 
@@ -1278,6 +1287,243 @@ describe('ChatView', () => {
     finally {
       restored.unmount()
     }
+  })
+
+  // A running call draws a PENDING row below its request row: what the call asked, until
+  // the result row takes its place. The two rows change places in one update, when the
+  // result row is measured, so no row changes its height.
+  describe('the pending row of a running call', () => {
+    const SPAN = 'pending-todo'
+    const claudeMessage = (id: string, seq: bigint, payload: Record<string, unknown>) => create(AgentChatMessageSchema, {
+      id,
+      seq,
+      source: MessageSource.AGENT,
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      contentCompression: ContentCompression.NONE,
+      content: new TextEncoder().encode(JSON.stringify(payload)),
+      spanId: SPAN,
+      spanType: 'TodoWrite',
+    })
+    const todos = [
+      { content: 'Carried task', status: 'pending', activeForm: 'Carrying the task' },
+    ]
+    const request = claudeMessage('todo-request', 1n, {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: SPAN,
+            name: 'TodoWrite',
+            input: { todos },
+          },
+        ],
+      },
+    })
+    const result = claudeMessage('todo-result', 2n, {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: SPAN, content: 'Todos updated' },
+        ],
+      },
+      tool_use_result: { newTodos: todos },
+    })
+
+    /** The bubbles that the list draws, outside the hidden copies. */
+    const listed = (container: HTMLElement, selector: string) => [
+      ...container.querySelectorAll<HTMLElement>(selector),
+    ].filter(element => element.closest('[data-chat-premeasure-root]') === null)
+
+    it('stands in for the result row until the result row is measured', async () => {
+      const [messages, setMessages] = createSignal([request])
+      const messageContext = testMessageContext({ messages })
+      const view = render(() => <PreferencesProvider><ChatView messages={messages()} messageContext={messageContext} /></PreferencesProvider>)
+      await reportChatViewportSize(view)
+
+      const pending = () => listed(view.container, '[data-tool-row-role="pending"]')
+      const row = (seq: number) => view.container.querySelector<HTMLElement>(`[data-seq="${seq}"]`)
+      expect(pending()).toHaveLength(1)
+      expect(pending()[0]).toHaveTextContent('Carried task')
+      // The pending row draws no message of its own, so it carries no sequence: a reader
+      // that finds a row by its sequence finds the request row.
+      expect(row(1)?.contains(pending()[0]!)).toBe(false)
+      expect(row(1)).not.toHaveTextContent('Carried task')
+      // The persistence stores the rows of the messages alone: a pending row exists only
+      // while its call runs.
+      expect(wiringState.persistenceDeps!.loadedItems().map(item => item.id)).toEqual(['todo-request'])
+      expect(wiringState.persistenceDeps!.storesRow(pendingRowId('todo-request'))).toBe(false)
+      expect(wiringState.persistenceDeps!.storesRow('todo-request')).toBe(true)
+
+      setMessages([request, result])
+      await flushAnimationFrame()
+      expect(row(2)).toBeNull()
+      expect(pending()).toHaveLength(1)
+
+      await measureHiddenCopies(view.container)
+      expect(pending()).toHaveLength(0)
+      expect(row(2)).toHaveTextContent('Carried task')
+      expect(wiringState.persistenceDeps!.loadedItems().map(item => item.id)).toEqual(['todo-request', 'todo-result'])
+    })
+
+    // Without the message resolver, the list cannot tell a call that runs from one that
+    // ended, so it opens no pending row.
+    it('draws no pending row without a message resolver', async () => {
+      const view = render(() => <PreferencesProvider><ChatView messages={[request]} /></PreferencesProvider>)
+      await reportChatViewportSize(view)
+      expect(listed(view.container, '[data-tool-row-role="pending"]')).toHaveLength(0)
+      expect(view.container.querySelector('[data-seq="1"]')).not.toBeNull()
+    })
+
+    // A window that does not hold the live tail: a call there almost always ended, and its
+    // result lies in a newer page.
+    it('draws no pending row while the window does not hold the live tail', async () => {
+      const messageContext = testMessageContext({
+        messages: () => [request],
+      })
+      const view = render(() => (
+        <PreferencesProvider>
+          <ChatView messages={[request]} messageContext={messageContext} pagination={{ hasNewerMessages: true }} />
+        </PreferencesProvider>
+      ))
+      await reportChatViewportSize(view)
+      expect(listed(view.container, '[data-tool-row-role="pending"]')).toHaveLength(0)
+      expect(view.container.querySelector('[data-seq="1"]')).not.toBeNull()
+    })
+  })
+
+  // A result row beside its request row draws no header and no request side, so its
+  // height follows whether the window holds the request row. An older page that brings
+  // the request row in must re-key the mounted result row.
+  it('re-keys a result row when its request row enters the window', async () => {
+    const SPAN = 'window-presence'
+    const claudeMessage = (id: string, seq: bigint, payload: Record<string, unknown>) => create(AgentChatMessageSchema, {
+      id,
+      seq,
+      source: MessageSource.AGENT,
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      contentCompression: ContentCompression.NONE,
+      content: new TextEncoder().encode(JSON.stringify(payload)),
+      spanId: SPAN,
+      spanType: 'Bash',
+    })
+    const request = claudeMessage('presence-request', 1n, {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: SPAN,
+            name: 'Bash',
+            input: { command: 'make' },
+          },
+        ],
+      },
+    })
+    const result = claudeMessage('presence-result', 2n, {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: SPAN, content: 'built' },
+        ],
+      },
+      tool_use_result: { stdout: 'built', stderr: '', interrupted: false },
+    })
+    const [messages, setMessages] = createSignal([result])
+    // The browser holds the request before the window does, as after a fetch of the
+    // request for the result row: the request revision of the result row stays the same,
+    // and only the presence of the request row changes.
+    const messageContext = testMessageContext({
+      messages,
+      spanMessage: (_identity, side) => side === 'request'
+        ? request
+        : result,
+    })
+    const view = render(() => <PreferencesProvider><ChatView messages={messages()} messageContext={messageContext} /></PreferencesProvider>)
+    await reportChatViewportSize(view)
+    const keyOf = () => wiringState.persistenceDeps!.loadedItems().find(item => item.id === 'presence-result')?.heightKey
+    const alone = keyOf()
+    expect(alone).toBeDefined()
+    setMessages([request, result])
+    expect(keyOf()).not.toBe(alone)
+    view.unmount()
+  })
+
+  // A collapsed header is one line, so the newer call of the span changes its words and
+  // never the height of the request row. An expanded header wraps, so the height key of an
+  // expanded request row must follow the words of the result.
+  describe('the height key of a request row when its result lands', () => {
+    const SPAN = 'header-agent'
+    const claudeMessage = (id: string, seq: bigint, payload: Record<string, unknown>) => create(AgentChatMessageSchema, {
+      id,
+      seq,
+      source: MessageSource.AGENT,
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      contentCompression: ContentCompression.NONE,
+      content: new TextEncoder().encode(JSON.stringify(payload)),
+      spanId: SPAN,
+      spanType: 'Bash',
+    })
+    const request = claudeMessage('bash-request', 1n, {
+      type: 'assistant',
+      // A command of many lines, so the request row offers Expand.
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: SPAN,
+            name: 'Bash',
+            input: {
+              command: Array.from({ length: 20 }, (_, index) => `make step-${index}`).join('\n'),
+              description: 'Build',
+            },
+          },
+        ],
+      },
+    })
+    const result = claudeMessage('bash-result', 2n, {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: SPAN, content: 'built' },
+        ],
+      },
+      tool_use_result: { stdout: 'built', stderr: '', interrupted: false },
+    })
+
+    async function requestKeyChange(expanded: boolean): Promise<{ before: string | undefined, after: string | undefined }> {
+      const [messages, setMessages] = createSignal([request])
+      const messageContext = testMessageContext({ messages })
+      const view = render(() => <PreferencesProvider><ChatView messages={messages()} messageContext={messageContext} /></PreferencesProvider>)
+      await reportChatViewportSize(view)
+      if (expanded) {
+        const requestRow = view.container.querySelector<HTMLElement>('[data-seq="1"]')!
+        fireEvent.click(within(requestRow).getByRole('button', { name: 'Show full command' }))
+      }
+      const keyOf = () => wiringState.persistenceDeps!.loadedItems().find(item => item.id === 'bash-request')?.heightKey
+      const before = keyOf()
+      setMessages([request, result])
+      const after = keyOf()
+      view.unmount()
+      return { before, after }
+    }
+
+    it('keeps the key of a collapsed request row', async () => {
+      const { before, after } = await requestKeyChange(false)
+      expect(after).toBe(before)
+    })
+
+    it('changes the key of an expanded request row', async () => {
+      const { before, after } = await requestKeyChange(true)
+      expect(before).toBeDefined()
+      expect(after).not.toBe(before)
+    })
   })
 
   it('keeps each chat instance ID stable and distinct', () => {
@@ -3561,6 +3807,8 @@ describe('ChatView', () => {
       }),
     ]
 
+    // The resolver pairs the hidden start frame as the request of the span. It draws no
+    // row, so the completed search draws its own header and its queries.
     const view = await renderChatWithRows(messages)
 
     expect(screen.getAllByTestId('message-bubble')).toHaveLength(1)
@@ -3569,7 +3817,7 @@ describe('ChatView', () => {
     expect(view.container).not.toHaveTextContent('site:github.com openai codex')
     expect(view.container).not.toHaveTextContent('site:github.com "turn/plan/updated" codex app server')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Expand output' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Expand(?: output)?$/ }))
 
     expect(view.container).toHaveTextContent('site:github.com openai codex "turn/plan/updated"')
     expect(view.container).toHaveTextContent('site:github.com "turn/plan/updated" codex app server')

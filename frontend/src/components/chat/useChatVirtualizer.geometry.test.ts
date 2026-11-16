@@ -230,6 +230,24 @@ describe('useChatVirtualizer geometry', () => {
     })
   })
 
+  // The pending row of a tool call continues its request row: the list leaves no gap
+  // above it, and the row's own content holds its top space. An empty one takes no space.
+  it('leaves no gap above a row that continues the row above it', () => {
+    createRoot((dispose) => {
+      const items = makeItems([
+        { seq: 1 },
+        { seq: 2, span: true },
+        { seq: 3 },
+      ])
+      items[1] = { ...items[1]!, continuesPrevious: true }
+      const { virt } = setup(items)
+      expect(virt.offsetOfIndex(1)).toBe(100) // 100 + no gap
+      expect(virt.gapAboveOf('m2')).toBe(0)
+      expect(virt.offsetOfIndex(2)).toBe(220) // +100 + large gap (lower row plain)
+      dispose()
+    })
+  })
+
   describe('adjacent band rows', () => {
     // A band paints a full-bleed strip with a line on its top and bottom edge. Two
     // adjacent bands overlap by one border width so the pair shows ONE line.

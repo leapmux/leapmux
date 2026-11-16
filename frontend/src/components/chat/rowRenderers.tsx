@@ -68,11 +68,9 @@ export function renderRowContent(
       return (
         <ToolMessage
           row={row}
+          header={context?.toolHeader}
           {...(context !== undefined
             ? { context }
-            : {})}
-          {...(context?.toolProgress !== undefined
-            ? { progress: context.toolProgress }
             : {})}
         />
       )

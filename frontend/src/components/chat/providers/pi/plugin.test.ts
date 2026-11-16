@@ -7,6 +7,7 @@ import { providerQuotableText, providerRow, providerToolMeta } from '~/test-supp
 import { createControlAnswerState } from '../../controls/types'
 import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
+import { piNeedsRequest } from './spanRole'
 // Side-effect imports. The first two let the sweep below read every provider out of
 // the registry; the third REGISTERS the Pi plugin, which the metadata cases read back
 // out of it.
@@ -761,24 +762,44 @@ describe('pi is the only provider with a resume rule of its own', () => {
   })
 })
 
-// Each half of a Pi tool call wants the other: the start row carries the name and the
-// arguments, the end row carries the result.
-describe('pi relatedMessages', () => {
+// A start frame states the name and the arguments. An end frame states no arguments, so
+// its row reads them from the start frame. A start frame never waits for its end.
+describe('pi needsRequest', () => {
   const plugin = providerFor(AgentProvider.PI)!
+  const startFrame = {
+    type: 'tool_execution_start',
+    toolCallId: 'call',
+    toolName: 'bash',
+    args: { command: 'ls' },
+  }
 
-  it('each half of a tool call wants the other', () => {
-    expect(plugin?.transcript.relatedMessages!(input({
-      type: 'tool_execution_start',
-      toolCallId: 'call',
-      toolName: 'bash',
-      args: { command: 'ls' },
-    }))).toEqual(['result'])
-    expect(plugin?.transcript.relatedMessages!(input({
+  it('is the hook the plugin registers', () => {
+    expect(plugin.transcript.needsRequest).toBe(piNeedsRequest)
+  })
+
+  it('answers false for a start frame', () => {
+    expect(piNeedsRequest(input(startFrame, null, AgentProvider.PI))).toBe(false)
+  })
+
+  it('answers true for an end frame', () => {
+    expect(piNeedsRequest(input({
       type: 'tool_execution_end',
       toolCallId: 'call',
       toolName: 'bash',
       result: { content: [] },
       isError: false,
-    }))).toEqual(['request'])
+    }, null, AgentProvider.PI))).toBe(true)
+  })
+
+  // A stopped turn stores the start frame again as the closing row, with its own arguments.
+  it('answers false for a retained start frame', () => {
+    expect(piNeedsRequest({
+      ...input(startFrame, null, AgentProvider.PI),
+      completion: MessageCompletion.INTERRUPTED,
+    })).toBe(false)
+  })
+
+  it('answers false for a frame outside a tool span', () => {
+    expect(piNeedsRequest(input({ type: 'message_end', message: {} }, null, AgentProvider.PI))).toBe(false)
   })
 })

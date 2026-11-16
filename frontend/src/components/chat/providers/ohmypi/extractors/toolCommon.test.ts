@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { input } from '../../testUtils'
-import { ohMyPiExtractTool, ohMyPiPairedRequest, ohMyPiPairedResult, ohMyPiToolResultText } from './toolCommon'
+import { ohMyPiExtractTool, ohMyPiPairedRequest, ohMyPiToolResultText } from './toolCommon'
 
 const provider = AgentProvider.OH_MY_PI
 
@@ -148,58 +148,5 @@ describe('ohMyPiPairedRequest', () => {
     expect(ohMyPiPairedRequest(end, input({ type: 'tool_execution_start', toolCallId: 'c', toolName: 'bash' }, undefined, provider))).toBeUndefined()
     expect(ohMyPiPairedRequest(end, input(end, undefined, provider))).toBeUndefined()
     expect(ohMyPiPairedRequest(end, undefined)).toBeUndefined()
-  })
-})
-
-describe('ohMyPiPairedResult', () => {
-  const start = {
-    type: 'tool_execution_start',
-    toolCallId: 'c',
-    toolName: 'read',
-    args: {},
-  }
-
-  it('accepts the end frame of the same call and tool alone', () => {
-    const end = input({
-      type: 'tool_execution_end',
-      toolCallId: 'c',
-      toolName: 'read',
-      result: {},
-    }, undefined, provider)
-    expect(ohMyPiPairedResult(start, end)).toBe(end)
-    expect(ohMyPiPairedResult(start, input(start, undefined, provider))).toBeUndefined()
-  })
-
-  it('refuses the end frame of another call or another tool, an update frame, and no frame', () => {
-    expect(ohMyPiPairedResult(start, input({
-      type: 'tool_execution_end',
-      toolCallId: 'd',
-      toolName: 'read',
-      result: {},
-    }, undefined, provider))).toBeUndefined()
-    expect(ohMyPiPairedResult(start, input({
-      type: 'tool_execution_end',
-      toolCallId: 'c',
-      toolName: 'bash',
-      result: {},
-    }, undefined, provider))).toBeUndefined()
-    expect(ohMyPiPairedResult(start, input({
-      type: 'tool_execution_update',
-      toolCallId: 'c',
-      toolName: 'read',
-      partialResult: {},
-    }, undefined, provider))).toBeUndefined()
-    expect(ohMyPiPairedResult(start, undefined)).toBeUndefined()
-  })
-
-  it('refuses a pair when the row itself is no tool frame', () => {
-    const end = input({
-      type: 'tool_execution_end',
-      toolCallId: 'c',
-      toolName: 'read',
-      result: {},
-    }, undefined, provider)
-    expect(ohMyPiPairedResult({ type: 'message_end' }, end)).toBeUndefined()
-    expect(ohMyPiPairedResult(null, end)).toBeUndefined()
   })
 })

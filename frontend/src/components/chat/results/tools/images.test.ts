@@ -56,19 +56,19 @@ describe('imagesForRow over merged calls', () => {
         picture('a'),
       ],
     })
-    const row = toolRow(call, 'request', { result: true })
+    const row = toolRow(call, 'request')
     expect(imagesForRow(row)).toEqual([])
   })
 
-  // A call carries pictures only once it answered, so a lone request row draws the
-  // finished side of its span rather than a call still in flight.
-  it('lists the pictures of a request row that stands alone', () => {
+  // A call carries pictures only once it answered, and only the result row draws the
+  // answer: a request row never reads its result.
+  it('lists no pictures on a request row', () => {
     const call = toolCallFixture('read', {
       images: [
         picture('a'),
       ],
     })
-    const row = toolRow(call, 'request', { result: false })
-    expect(imagesForRow(row).map(p => p.data)).toEqual(['a'])
+    expect(imagesForRow(toolRow(call, 'request'))).toEqual([])
+    expect(imagesForRow(toolRow(call, 'result')).map(p => p.data)).toEqual(['a'])
   })
 })

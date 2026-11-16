@@ -9,7 +9,7 @@ import { droidOutputFilePaths } from './extractors/outputFilePaths'
 import { droidResultDivider } from './extractors/resultDivider'
 import { droidExtractRow } from './extractors/row'
 import { droidControls } from './pluginControls'
-import { droidRelatedMessages, droidSpanRole } from './spanRole'
+import { droidNeedsRequest, droidSpanRole } from './spanRole'
 
 const droidPlugin: ProviderPlugin = {
   transcript: {
@@ -18,7 +18,7 @@ const droidPlugin: ProviderPlugin = {
     extractRow: droidExtractRow,
     extractDivider: droidResultDivider,
     spanRole: droidSpanRole,
-    relatedMessages: droidRelatedMessages,
+    needsRequest: droidNeedsRequest,
   },
   controls: droidControls,
   session: {

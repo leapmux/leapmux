@@ -11,7 +11,7 @@ import { claudeExtractRow } from './extractors/row'
 import { claudeControls } from './pluginControls'
 import { claudeRateLimitsFromMessage } from './rateLimits'
 import { claudeContextUsageFromMessage } from './sessionMetadata'
-import { claudeRelatedMessages, claudeSpanRole } from './spanRole'
+import { claudeNeedsRequest, claudeSpanRole } from './spanRole'
 
 // Claude reserves ~16.5% of the context window as an autocompact buffer, so the
 // context-usage percentage is measured against the remaining usable capacity.
@@ -23,7 +23,7 @@ const claudeCodePlugin: ProviderPlugin = {
     outputFilePaths: claudeOutputFilePaths,
     classify: classifyClaudeCodeMessage,
     spanRole: claudeSpanRole,
-    relatedMessages: claudeRelatedMessages,
+    needsRequest: claudeNeedsRequest,
     extractRow: claudeExtractRow,
     notificationEntry: claudeNotificationEntry,
     extractDivider: claudeResultDivider,

@@ -26,30 +26,40 @@ export type ResolvedMessageContent
     readonly [resolvedMessageContent]: true
   }
 
-/** Every side of one tool span the row's extractor reads, resolved once by the caller. */
+/**
+ * The side of one tool span that a row's extractor may read, resolved once by the
+ * caller.
+ *
+ * A row reads its own message and the EARLIER request of its span, and never a later
+ * message. The result of a span arrives after its request, so a request row that read
+ * it could not show, nor report a final height, until the result existed: the browser
+ * would wait for it, or fetch it. That is why this type has no member for the result.
+ * A plugin cannot read one, because no input carries it.
+ */
 export interface ToolSpanContext {
-  /** The span's request, or undefined when the span states none. */
+  /**
+   * The span's request, or undefined when the span states none or the browser does not
+   * hold it. A request row receives its own message here.
+   */
   request: ResolvedMessageContent | undefined
-  /** The span's result, or undefined while the call still runs. */
-  result: ResolvedMessageContent | undefined
   /** The current message's role, selected through its message ID. */
   role: ToolSpanRole
-  /** The span rows that exist in the loaded transcript window. */
+  /** Whether the loaded transcript window draws the span's request as a row of its own. */
   visibleRows: ToolSpanRowPresence
 }
 
 /**
  * Everything one row extraction reads.
  *
- * The caller resolves the span's request and result once.
- * Plugins read those objects directly. They must not resolve sibling rows outside the caller's cache.
+ * The caller resolves the span's request once.
+ * Plugins read that object directly. They must not resolve sibling rows outside the caller's cache.
  */
 export interface RowExtractionInput {
   /** The row's own content with its supplemental data merged: the resolved brand, by construction. */
   resolved: ResolvedMessageContent
   /** The classification the shared classifier already reached for this row. */
   category: MessageCategory
-  /** The request and result of this row's tool span, plus this row's role. */
+  /** The request of this row's tool span, plus this row's role. No later message of the span. */
   span: ToolSpanContext
   /** The stored span ID selects this row's native call when a frame contains several calls. */
   spanId?: string

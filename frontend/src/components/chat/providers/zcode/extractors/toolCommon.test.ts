@@ -5,6 +5,7 @@ import {
   zcodeEnvelope,
   zcodeErrorText,
   zcodeExtractTool,
+  zcodeInputFromNativeRecordAlone,
   zcodeRow,
   zcodeTodoItemsFromInput,
   zcodeToolInput,
@@ -264,6 +265,52 @@ describe('zcodeToolInput', () => {
   })
 })
 
+// Whether the input of a row comes from the native record of its own frame alone: only
+// then does the request row of the call state no input.
+describe('zcodeInputFromNativeRecordAlone', () => {
+  const nativeSupplement = (input: Record<string, unknown>) => ({
+    type: 'tool.updated',
+    payload: { kind: ZCODE_TOOL_KIND.Result, toolCallId: 'call-1' },
+    nativeTool: {
+      id: 'part',
+      sessionId: 'session',
+      messageId: 'message',
+      data: {
+        type: 'tool',
+        callID: 'call-1',
+        tool: 'Read',
+        state: { status: 'completed', input },
+      },
+    },
+  })
+  const omitted = parsedOf(toolEvent(ZCODE_TOOL_KIND.Scheduled, { toolName: 'Read', inputOmitted: true }))
+  const result = toolEvent(ZCODE_TOOL_KIND.Result)
+
+  it('answers true when only the native record states the input', () => {
+    expect(zcodeInputFromNativeRecordAlone(zcodeRow(result, undefined, omitted, nativeSupplement({ file_path: '/a.ts' })))).toBe(true)
+  })
+
+  it('answers false when the request states the input', () => {
+    const stated = parsedOf(toolEvent(ZCODE_TOOL_KIND.Scheduled, {
+      toolName: 'Read',
+      input: { file_path: '/a.ts' },
+    }))
+    expect(zcodeInputFromNativeRecordAlone(zcodeRow(result, undefined, stated, nativeSupplement({ file_path: '/a.ts' })))).toBe(false)
+  })
+
+  it('answers false when the frame states its own input', () => {
+    const own = toolEvent(ZCODE_TOOL_KIND.Result, {
+      input: { file_path: '/a.ts' },
+    })
+    expect(zcodeInputFromNativeRecordAlone(zcodeRow(own, undefined, omitted, nativeSupplement({ file_path: '/a.ts' })))).toBe(false)
+  })
+
+  it('answers false when the native record states no input either', () => {
+    expect(zcodeInputFromNativeRecordAlone(zcodeRow(result, undefined, omitted, nativeSupplement({})))).toBe(false)
+    expect(zcodeInputFromNativeRecordAlone(zcodeRow(result, undefined, omitted, undefined))).toBe(false)
+  })
+})
+
 describe('zcodeErrorText', () => {
   const update = (payload: Record<string, unknown>) => zcodeExtractTool(toolEvent(ZCODE_TOOL_KIND.Error, payload))!
 
@@ -396,21 +443,22 @@ describe('zcodeToolInput stored state', () => {
     }
   }
 
-  // An EMPTY record is not an answer, exactly as it is not one for the two lookups
-  // above it. It used to short-circuit the result-row lookup that exists for this
-  // case, so a Bash row drew `command: ''` while the arguments sat in the store the
-  // next lookup reads.
-  it('keeps looking when the stored state carries an empty input', () => {
+  // A request row reads no later frame of its span, so a scheduled row whose stored
+  // state carries an empty input states no input at all.
+  it('states no input for a scheduled row whose stored state carries an empty one', () => {
     const scheduled = toolEvent(ZCODE_TOOL_KIND.Scheduled)
+    expect(zcodeToolInput(zcodeRow(scheduled, ZCODE_TOOL.Bash, undefined, stored(ZCODE_TOOL_KIND.Scheduled, {})))).toEqual({})
+  })
+
+  // The result row's OWN stored state holds the input that the scheduled frame
+  // omitted, so the result row states it.
+  it('recovers the omitted input from the result row\'s own stored state', () => {
     const completed = toolEvent(ZCODE_TOOL_KIND.Result, {
       result: { success: true },
     })
-    const row = zcodeRow(scheduled, ZCODE_TOOL.Bash, undefined, stored(ZCODE_TOOL_KIND.Scheduled, {}))
-    const result = {
-      ...parsedOf(completed),
-      supplementalContent: stored(ZCODE_TOOL_KIND.Result, { command: 'ls -la' }),
-    }
-    expect(zcodeToolInput({ ...row, result })).toEqual({ command: 'ls -la' })
+    const scheduled = parsedOf(toolEvent(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.Bash }))
+    const row = zcodeRow(completed, ZCODE_TOOL.Bash, scheduled, stored(ZCODE_TOOL_KIND.Result, { command: 'ls -la' }))
+    expect(zcodeToolInput(row)).toEqual({ command: 'ls -la' })
   })
 
   it('takes the stored input when it states one', () => {

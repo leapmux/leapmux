@@ -20,31 +20,51 @@ describe('ampResultOutcome', () => {
 })
 
 describe('ampToolRow', () => {
-  it('pairs a request with the result of the same call only', () => {
-    const request = ampToolUseRow('shell_command', { command: 'ls' }, 'TU-a')
-    const mine = input(ampToolResultRow('ok', false, 'TU-a'), undefined, provider)
-    const sibling = input(ampToolResultRow('other', false, 'TU-b'), undefined, provider)
-    expect(ampToolRow(request, undefined, mine)?.result?.content).toBe('ok')
-    expect(ampToolRow(request, undefined, sibling)?.result).toBeUndefined()
+  it('reads a call row from its own block, with no result', () => {
+    const call = ampToolUseRow('shell_command', { command: 'ls' }, 'TU-a')
+    const row = ampToolRow(call, input(call, undefined, provider))
+    expect(row).toEqual({
+      call: {
+        id: 'TU-a',
+        name: 'shell_command',
+        input: { command: 'ls' },
+      },
+      result: undefined,
+      finished: false,
+    })
+  })
+
+  it('pairs a result with the call of the same id only', () => {
+    const result = ampToolResultRow('ok', false, 'TU-a')
+    const mine = input(ampToolUseRow('shell_command', { command: 'ls' }, 'TU-a'), undefined, provider)
+    const sibling = input(ampToolUseRow('shell_command', { command: 'pwd' }, 'TU-b'), undefined, provider)
+    expect(ampToolRow(result, mine)?.call).toEqual({
+      id: 'TU-a',
+      name: 'shell_command',
+      input: { command: 'ls' },
+    })
+    expect(ampToolRow(result, mine)?.result?.content).toBe('ok')
+    expect(ampToolRow(result, sibling)?.call).toEqual({ id: 'TU-a', name: '', input: {} })
   })
 
   it('reads a retained request row as the call\'s end', () => {
     const request = ampToolUseRow('shell_command', { command: 'sleep 40' })
-    expect(ampToolRow(request, undefined, undefined)?.finished).toBe(false)
-    const retained = ampToolRow(request, undefined, undefined, MessageCompletion.INTERRUPTED)
+    expect(ampToolRow(request, undefined)?.finished).toBe(false)
+    const retained = ampToolRow(request, undefined, MessageCompletion.INTERRUPTED)
     expect(retained?.finished).toBe(true)
+    expect(retained?.result).toBeUndefined()
     expect(ampToolSpanRowRole(retained!)).toBe('result')
   })
 
   it('keeps a result whose call the store did not resolve, as a call with no name', () => {
-    const row = ampToolRow(ampToolResultRow('ok', false, 'TU-z'), undefined, undefined)
+    const row = ampToolRow(ampToolResultRow('ok', false, 'TU-z'), undefined)
     expect(row?.call).toEqual({ id: 'TU-z', name: '', input: {} })
     expect(row?.finished).toBe(true)
   })
 
   it('answers null for a row that is no tool row', () => {
-    expect(ampToolRow({ type: 'result' }, undefined, undefined)).toBeNull()
-    expect(ampToolRow(undefined, undefined, undefined)).toBeNull()
+    expect(ampToolRow({ type: 'result' }, undefined)).toBeNull()
+    expect(ampToolRow(undefined, undefined)).toBeNull()
   })
 })
 

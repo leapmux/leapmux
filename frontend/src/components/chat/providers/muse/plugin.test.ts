@@ -22,6 +22,10 @@ describe('musePlugin', () => {
     expect(plugin?.transcript.outputFilePaths).toBe(museOutputFilePaths)
   })
 
+  it('needs no request for any row, because every native item states its tool and arguments', () => {
+    expect(providerFor(AgentProvider.MUSE_CODE)?.transcript.needsRequest).toBeUndefined()
+  })
+
   it('registers the native controls and startup configuration', () => {
     const plugin = providerFor(AgentProvider.MUSE_CODE)
     expect(plugin?.controls?.askUserQuestion).toBe(museControl.askUserQuestion)

@@ -75,6 +75,11 @@ describe('geminiStoredToolCall', () => {
       },
       result: { text: 'Complete native findings.' },
     })
+    // The answer of Gemini CLI is a fact of the result, never of the request.
+    expect(call.resultMetadata).toStrictEqual([
+      { label: 'Native result', value: 'Output submitted and task completed.' },
+    ])
+    expect(call.metadata).toBeUndefined()
     expect(record).not.toHaveProperty('sessionUpdate')
   })
 

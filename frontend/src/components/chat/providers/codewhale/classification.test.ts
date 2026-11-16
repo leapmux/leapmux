@@ -37,18 +37,16 @@ describe('classifyCodewhaleMessage', () => {
     expect(classifyCodewhaleMessage(retained)).toStrictEqual({ kind: 'tool_result' })
   })
 
-  // Only a classified-hidden row leaves the transcript. A row that the extractor
-  // empties still takes a slot of no height, which is never measured and holds every
-  // later row behind it.
-  it('hides the result row of a deferred tool\'s first call, which never ran', () => {
-    expect(classify(toolCompleted(CODEWHALE_TOOL.ApplyPatch, { patch: 'x' }, 'Tool was deferred', { deferred_tool_loaded: true }))).toStrictEqual({ kind: 'hidden' })
-    // Its request row cannot tell, and draws the call.
+  // A deferred tool's first call ran nothing, and only its result row states the
+  // runtime's words for that: a request row reads no later frame of its span.
+  it('keeps the result row of a deferred tool\'s first call, which never ran', () => {
+    expect(classify(toolCompleted(CODEWHALE_TOOL.ApplyPatch, { patch: 'x' }, 'Tool was deferred', { deferred_tool_loaded: true }))).toStrictEqual({ kind: 'tool_result' })
     expect(classify(toolStarted(CODEWHALE_TOOL.ApplyPatch, { patch: 'x' }))).toStrictEqual({ kind: 'tool_use' })
   })
 
-  it('hides the result row of a subagent\'s deferred first call', () => {
+  it('keeps the result row of a subagent\'s deferred first call', () => {
     const loaded = childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, { type: CODEWHALE_BLOCK_TYPE.ToolResult, tool_use_id: 'b1', content: 'Tool `grep_files` was deferred and has now been loaded. Retry the call with the newly available schema.' })
-    expect(classify(loaded)).toStrictEqual({ kind: 'hidden' })
+    expect(classify(loaded)).toStrictEqual({ kind: 'tool_result' })
   })
 
   it('hides the redacted result row of an answered question, and keeps a failed one', () => {

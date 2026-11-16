@@ -315,8 +315,12 @@ export function messageContents(page: Page) {
   return page.locator(`[data-testid="message-content"]${VISIBLE}`)
 }
 
-/** The place of one tool row in its span: the call, a live update, or the result. */
-export type ToolCallRowRole = ToolSpanRowPosition['role']
+/**
+ * The place of one tool row: the call, a live update, or the result of its span, or the
+ * pending row that follows the call while it runs, which draws its preview and its live
+ * output.
+ */
+export type ToolCallRowRole = ToolSpanRowPosition['role'] | 'pending'
 
 /** Locate the visible row of one tool call in one role. The result row by default. */
 export function toolCallRow(page: Page, callId: string, role: ToolCallRowRole = 'result'): Locator {

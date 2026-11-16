@@ -19,7 +19,7 @@ describe('codebuddyToolCall rendering', () => {
       isError: false,
       lifecycle: { ...SYNTHETIC_TOOL_LIFECYCLE },
     })
-    const { container } = render(() => <ToolMessage row={toolCallRow(call, 'result', { request: false, result: true })} />)
+    const { container } = render(() => <ToolMessage row={toolCallRow(call, 'result', { request: false })} />)
     const headers = [
       ...container.querySelectorAll(classSelector(toolUseHeader)),
     ].map(header => header.textContent)

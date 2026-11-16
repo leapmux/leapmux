@@ -43,9 +43,8 @@ describe('rowModelCache', () => {
       renderCache: createMessageRenderCacheStore().forRow('result-revision'),
       sources: {
         request: () => request,
-        result: () => result,
         role: () => 'result' as const,
-        visibleRows: () => ({ request: requestVisible, result: true }),
+        visibleRows: () => ({ request: requestVisible }),
       },
       spanType: 'execute',
     } as unknown as RowExtractionContext

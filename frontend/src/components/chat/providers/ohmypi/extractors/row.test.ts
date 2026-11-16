@@ -9,9 +9,8 @@ import '~/components/chat/providers'
 const provider = AgentProvider.OH_MY_PI
 const noSpan: ToolSpanContext = {
   request: undefined,
-  result: undefined,
   role: 'result',
-  visibleRows: { request: false, result: true },
+  visibleRows: { request: false },
 }
 
 function extract(parent: Record<string, unknown>, kind: string, span: ToolSpanContext = noSpan) {
@@ -117,56 +116,101 @@ describe('ohMyPiExtractRow', () => {
       : null).toBe('result')
   })
 
-  it('pairs a running call with the end frame of the same call only', () => {
+  // A start row reads its own frame alone. The end frame of a `read` states that the
+  // path was a URL, so only the end row draws the fetch, and the start row draws the
+  // read it asked for.
+  it('builds a running call from its own start frame, and the full call on its end row', () => {
     const start = {
       type: 'tool_execution_start',
       toolCallId: 'call_1',
-      toolName: 'bash',
-      args: { command: 'ls' },
+      toolName: 'read',
+      args: { path: 'example.com' },
     }
-    const mine = input({
+    const startRow = input(start, undefined, provider)
+    const request = extract(start, 'tool_use', {
+      request: startRow,
+      role: 'request',
+      visibleRows: { request: true },
+    })
+    if (request?.kind !== 'tool')
+      throw new Error('The omp start frame drew no tool row.')
+    expect(request.role).toBe('request')
+    expect(request.call.kind).toBe('read')
+    expect(request.call.status).toBe('unstated')
+    expect('result' in request.call
+      ? request.call.result
+      : undefined).toBeUndefined()
+
+    const result = extract({
       type: 'tool_execution_end',
       toolCallId: 'call_1',
-      toolName: 'bash',
+      toolName: 'read',
       result: {
         content: [
-          { type: 'text', text: 'a.ts' },
+          { type: 'text', text: '# Example' },
         ],
-        details: {},
+        details: { kind: 'url', url: 'https://example.com' },
       },
       isError: false,
-    }, undefined, provider)
-    const sibling = input({
+    }, 'tool_result', {
+      request: startRow,
+      role: 'result',
+      visibleRows: { request: true },
+    })
+    if (result?.kind !== 'tool')
+      throw new Error('The omp end frame drew no tool row.')
+    expect(result).toMatchObject({ role: 'result', hasRequestRow: true })
+    expect(result.call.kind).toBe('fetch')
+    expect(result.call.status).toBe('completed')
+    expect(result.call.request).toEqual({ url: 'example.com' })
+  })
+
+  // omp states the whole checklist in the RESULT, so the start row states no items.
+  it('states the checklist on the end row alone', () => {
+    const start = {
+      type: 'tool_execution_start',
+      toolCallId: 'call_1',
+      toolName: 'todo',
+      args: { op: 'start', task: 'Write code' },
+    }
+    const startRow = input(start, undefined, provider)
+    const request = extract(start, 'tool_use', {
+      request: startRow,
+      role: 'request',
+      visibleRows: { request: true },
+    })
+    const result = extract({
       type: 'tool_execution_end',
-      toolCallId: 'call_2',
-      toolName: 'bash',
+      toolCallId: 'call_1',
+      toolName: 'todo',
       result: {
         content: [
-          { type: 'text', text: 'b.ts' },
+          { type: 'text', text: 'Remaining items (1)' },
         ],
-        details: {},
+        details: {
+          op: 'start',
+          phases: [
+            {
+              name: 'Build',
+              tasks: [
+                { content: 'Write code', status: 'in_progress' },
+              ],
+            },
+          ],
+        },
       },
-      isError: true,
-    }, undefined, provider)
-    const requestSpan: ToolSpanContext = {
-      request: undefined,
-      result: undefined,
-      role: 'request',
-      visibleRows: { request: true, result: false },
-    }
-    const paired = extract(start, 'tool_use', { ...requestSpan, result: mine })
-    expect(paired?.kind === 'tool'
-      ? paired.call.status
-      : null).toBe('completed')
-    // A sibling's end frame states neither this call's output nor its failure. omp
-    // states no status for a call that runs, so the lifecycle leaves it unstated.
-    const unpaired = extract(start, 'tool_use', { ...requestSpan, result: sibling })
-    expect(unpaired?.kind === 'tool'
-      ? unpaired.call.status
-      : null).toBe('unstated')
-    expect(unpaired?.kind === 'tool' && 'result' in unpaired.call
-      ? unpaired.call.result
-      : undefined).toBeUndefined()
+      isError: false,
+    }, 'tool_result', {
+      request: startRow,
+      role: 'result',
+      visibleRows: { request: true },
+    })
+    if (request?.kind !== 'tool' || request.call.kind !== 'todo' || result?.kind !== 'tool' || result.call.kind !== 'todo')
+      throw new Error('The omp to-do frames drew no to-do rows.')
+    expect(request.call.request.items).toEqual([])
+    expect(request.call.status).toBe('unstated')
+    expect(result.call.request.items.map(item => item.content)).toEqual(['Write code'])
+    expect(result.call.status).toBe('completed')
   })
 
   it('reads LeapMux\'s user row and plan-execution row', () => {

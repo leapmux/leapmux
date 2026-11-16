@@ -6,7 +6,7 @@ import { input } from '../testUtils'
 import { classifyDeepseekHarnessMessage } from './classification'
 import { deepseekHarnessCompactionBoundary, deepseekHarnessNotificationEntry } from './extractors/notification'
 import { deepseekHarnessResultDivider } from './extractors/resultDivider'
-import { deepseekHarnessSpanRole } from './spanRole'
+import { deepseekHarnessNeedsRequest, deepseekHarnessSpanRole } from './spanRole'
 import { deepseekHarnessToolKind } from './toolKinds'
 import './plugin'
 
@@ -176,6 +176,19 @@ describe('deepseek harness provider', () => {
       message: { toolCallId: 'call' },
     }), null, provider))).toBe('result')
     expect(deepseekHarnessSpanRole(input(event('tool/result'), null, provider))).toBe('other')
+  })
+
+  it('needs the call event only for a result event', () => {
+    const needsRequest = providerFor(provider)?.transcript.needsRequest
+    expect(needsRequest).toBe(deepseekHarnessNeedsRequest)
+    const call = input(event('tool/call', { callId: 'call', name: 'bash' }), null, provider)
+    expect(needsRequest?.(call)).toBe(false)
+    // A retained call is the final row of its span, yet it states its own name and arguments.
+    expect(needsRequest?.({ ...call, completion: MessageCompletion.INTERRUPTED })).toBe(false)
+    expect(needsRequest?.(input(event('tool/result', {
+      message: { toolCallId: 'call' },
+    }), null, provider))).toBe(true)
+    expect(needsRequest?.(input(event('tool/result'), null, provider))).toBe(false)
   })
 
   it('reads completed, interrupted, and failed native turn boundaries', () => {

@@ -25,8 +25,8 @@ import { claudeTodoRequest } from './todo'
  *
  * Three fields, and each one answers a kind whose arguments cannot. The tool NAME
  * carries a field of its own for five kinds, because Claude states no `action` and no
- * `language` argument. The paired result and the row's surroundings answer the `Task*`
- * half of the todo kind alone, whose row draws the task its ANSWER states.
+ * `language` argument. The result and the row's surroundings answer the `Task*` half
+ * of the todo kind alone, whose RESULT row draws the task its answer states.
  *
  * There is no `finished` fact here, and Claude needs none. It states a result in a
  * separate `user` message, so an absent result row means that no result exists --
@@ -36,9 +36,12 @@ import { claudeTodoRequest } from './todo'
 export interface ClaudeToolFacts {
   /** The tool name, after `canonicalClaudeToolName` folded its aliases. */
   toolName: string
-  /** The paired RESULT row, or undefined while the call runs. */
+  /**
+   * The RESULT row: this row when it is the result, else undefined. A request row never
+   * reads its result, so it builds from its own arguments alone.
+   */
   result: ClaudeToolRow | undefined
-  /** What the row reads beyond its own bytes: the paired payload and the task snapshot. */
+  /** What the row reads beyond its own bytes: the task snapshot and the completion. */
   context: ClaudeRowContext
 }
 

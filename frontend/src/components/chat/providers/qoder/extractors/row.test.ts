@@ -67,9 +67,8 @@ describe('qoderExtractRow', () => {
     const category = classifyQoderMessage({ ...resolved, agentProvider: AgentProvider.QODER })
     const span: ToolSpanContext = {
       request: resolvedQoderFrame(requestFrame),
-      result: undefined,
       role: 'none',
-      visibleRows: { request: false, result: false },
+      visibleRows: { request: false },
     }
     expect(qoderExtractRow({
       resolved,
@@ -128,9 +127,8 @@ describe('qoderExtractRow', () => {
     const extraction = extractPreparedRow(result, {
       span: {
         request: request.resolved,
-        result: result.resolved,
         role: 'result',
-        visibleRows: { request: true, result: true },
+        visibleRows: { request: true },
       },
     })
     expect(extraction.kind).toBe('row')
@@ -141,6 +139,28 @@ describe('qoderExtractRow', () => {
     expect(typedResult(extraction.row.call)?.commands[0]?.output).toBe('77')
     expect(request.original.rawText).toBe(JSON.stringify(requestFrame))
     expect(result.original.rawText).toBe(JSON.stringify(resultFrame))
+  })
+
+  it('builds a request row from its own tool_use block, with no result and no finished status', () => {
+    const request = resolvedQoderFrame(requestFrame)
+    const row = qoderExtractRow({
+      resolved: request,
+      category: classifyQoderMessage({ ...request, agentProvider: AgentProvider.QODER }),
+      span: {
+        request,
+        role: 'request',
+        visibleRows: { request: true },
+      },
+      spanId: 'second-call',
+    })
+    if (row?.kind !== 'tool' || row.call.kind !== 'execute')
+      throw new Error('The second native Qoder call produced no execute row.')
+    expect(row.role).toBe('request')
+    expect(row.call.request.command).toBe('node -e "process.stdout.write(String(70 + 7))"')
+    expect(row.call.status).toBe('in_progress')
+    expect(row.call).not.toHaveProperty('result')
+    expect(row.call).not.toHaveProperty('extraContent')
+    expect(row.call.images).toEqual([])
   })
 
   it('does not substitute the first native call for a foreign stored span', () => {
@@ -189,9 +209,8 @@ describe('qoderExtractRow', () => {
     })
     const span: ToolSpanContext = {
       request,
-      result,
       role: 'result',
-      visibleRows: { request: true, result: true },
+      visibleRows: { request: true },
     }
     const row = qoderExtractRow({
       resolved: result,
@@ -265,9 +284,8 @@ describe('qoderExtractRow', () => {
       const extraction = extractPreparedRow(prepared, {
         span: {
           request: request.resolved,
-          result: prepared.resolved,
           role: 'result',
-          visibleRows: { request: true, result: true },
+          visibleRows: { request: true },
         },
       })
       if (extraction.kind !== 'row' || extraction.row.kind !== 'tool' || extraction.row.call.kind !== 'execute')
@@ -317,6 +335,57 @@ describe('qoderExtractRow', () => {
     })
   })
 
+  it('draws the finished status and the code of a command that printed nothing', () => {
+    const request = resolvedQoderFrame({
+      type: 'assistant',
+      message: {
+        content: [
+          {
+            type: 'tool_use',
+            id: 'quiet-call',
+            name: 'Bash',
+            input: { command: 'mkdir out' },
+          },
+        ],
+      },
+    })
+    const result = resolvedQoderFrame({
+      type: 'user',
+      message: {
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'quiet-call',
+            is_error: false,
+            content: '',
+          },
+        ],
+      },
+      tool_use_result: {
+        kind: 'completed',
+        stdout: '',
+        stderr: '',
+        exitCode: 0,
+      },
+    })
+    const category = classifyQoderMessage({ ...result, agentProvider: AgentProvider.QODER })
+    expect(category).toEqual({ kind: 'tool_result' })
+    const row = qoderExtractRow({
+      resolved: result,
+      category,
+      span: {
+        request,
+        role: 'result',
+        visibleRows: { request: true },
+      },
+    })
+    if (row?.kind !== 'tool' || row.call.kind !== 'execute')
+      throw new Error('The quiet native Qoder command produced no execute row.')
+    expect(row.call.request.command).toBe('mkdir out')
+    expect(row.call.status).toBe('completed')
+    expect(typedResult(row.call)?.commands[0]).toMatchObject({ output: '', exitCode: 0 })
+  })
+
   it('marks a failed native tool result as failed', () => {
     const result = resolvedQoderFrame({
       type: 'user',
@@ -333,9 +402,8 @@ describe('qoderExtractRow', () => {
     })
     const span: ToolSpanContext = {
       request: undefined,
-      result,
       role: 'result',
-      visibleRows: { request: false, result: true },
+      visibleRows: { request: false },
     }
     const row = qoderExtractRow({
       resolved: result,

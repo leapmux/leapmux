@@ -100,7 +100,18 @@ export interface ToolCallBase {
   title?: string
   label?: string
   icon?: ToolIconHint
+  /**
+   * Facts of the REQUEST, such as a working directory or a model the call asked for. The
+   * row that draws the request draws them under its header.
+   */
   metadata?: ToolMetadataEntry[]
+  /**
+   * Facts that only the RESULT states, such as the plan file that an approval wrote or
+   * the id of the agent that a launch started. The row that draws the result draws them
+   * above its body. A request row never reads its result, so a fact that the result
+   * alone states can never reach `metadata` of the request row.
+   */
+  resultMetadata?: ToolMetadataEntry[]
   degradation?: ToolCallDegradation
 }
 
@@ -109,7 +120,7 @@ export type ToolCall<K extends ToolKind = ToolKind> = K extends ToolKind ? ToolC
 
 export type ToolCallSpecVariant<K extends ToolKind>
   = { kind: K, request: ToolRequestByKind[K], result?: ToolResult<K> }
-    & Partial<Pick<ToolCallBase, 'name' | 'label' | 'icon' | 'metadata'>>
+    & Partial<Pick<ToolCallBase, 'name' | 'label' | 'icon' | 'metadata' | 'resultMetadata'>>
     & { title?: string | undefined }
     & {
       images?: readonly ImageResultSource[]

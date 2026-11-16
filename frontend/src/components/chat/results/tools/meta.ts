@@ -1,6 +1,6 @@
 import type { ToolCallRow } from '../../model/row'
 import type { ToolKindMeta } from './renderer'
-import { rowDrawsRequest, rowDrawsResult, rowHasResultRow } from '../../model/derivations'
+import { rowDrawsRequest, rowDrawsResult } from '../../model/derivations'
 import { isToolFailureResult, isUnparsedToolResult } from '../../model/toolCall'
 import { contentBlocksCopyable } from '../genericToolCall'
 import { textNeedsCollapse } from '../useCollapsedLines'
@@ -105,7 +105,7 @@ export function toolCallMeta(row: ToolCallRow): ToolCallMeta {
   // The renderer and the call reach the hooks as ONE correlated pair, over the same
   // total table every reader dispatches through.
   const request = drawsRequest
-    ? dispatchToolCall(call, ({ renderer, parsed }) => renderer.requestMeta?.(parsed, call.result !== undefined || rowHasResultRow(row)) ?? {})
+    ? dispatchToolCall(call, ({ renderer, parsed }) => renderer.requestMeta?.(parsed) ?? {})
     : {}
   const result = drawsResult
     ? dispatchToolCall(call, ({ renderer, resolved }) => resolved !== undefined
@@ -114,6 +114,12 @@ export function toolCallMeta(row: ToolCallRow): ToolCallMeta {
     : undefined
   const fallback = drawsResult && plain
     ? plainMeta(plain.text)
+    : undefined
+  // What a row that draws an untyped result adds above it (ToolKindRenderer.withoutTypedResult).
+  const untyped = drawsResult
+    ? dispatchToolCall(call, ({ renderer, parsed, resolved }) => resolved === undefined
+        ? renderer.withoutTypedResultMeta?.(parsed)
+        : undefined)
     : undefined
   const primary = result ?? fallback
   // The meta of a side, from this call: a cached entry outlives the call that built it.
@@ -185,7 +191,11 @@ export function toolCallMeta(row: ToolCallRow): ToolCallMeta {
     : fallback?.collapsible ? fallback.expandLabel : request.expandLabel
   return {
     collapsible: (primary?.collapsible ?? false) || (drawsRequest && (request.collapsible ?? false)),
-    hasDiff: (primary?.hasDiff ?? false) || (drawsRequest && (request.hasDiff ?? false)),
+    // A row that draws the result takes the diff toggle from the result alone. The
+    // request side's diff is the preview of a running call, which only the pending row
+    // draws: a lone result row whose call failed drew no diff, and offered a toggle for
+    // none.
+    hasDiff: (primary?.hasDiff ?? false) || (untyped?.hasDiff ?? false) || (drawsRequest && !drawsResult && (request.hasDiff ?? false)),
     copyableContent,
     hasCopyable: built.text !== null,
     // Absent stays absent rather than an explicitly undefined key, which each

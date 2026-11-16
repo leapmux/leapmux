@@ -12,6 +12,8 @@ import { providerFor } from '../registry'
 import { input } from '../testUtils'
 
 import { sendCodexDecision, sendCodexUserInputResponse } from './controlResponse'
+import { nativeExecSuccessRequest, nativeExecSuccessResult } from './extractors/execute.fixtures'
+import { codexNeedsRequest } from './spanRole'
 // Side-effect import to register the Codex plugin.
 import './plugin'
 
@@ -902,31 +904,94 @@ describe('codex rateLimitsFromMessage', () => {
   })
 })
 
-// Which related half a Codex row wants. An MCP result carries no server or tool name
-// of its own; an image view and a collaboration call draw from both rows; a command
-// execution carries its whole body in each row and wants nothing.
-describe('codex relatedMessages', () => {
+// Which rows draw from the span's request. A row reads no later message of its span,
+// so a request row never needs anything. A typed item states its arguments in every
+// frame, so its result needs nothing either. Two results read the request: a native
+// code output, which states no script source, and a finished collaboration call, which
+// can state an empty prompt, model or target list.
+describe('codex needsRequest', () => {
   const plugin = providerFor(AgentProvider.CODEX)!
   const item = (fields: Record<string, unknown>) => ({
     item: { id: 'call', ...fields },
   })
+  const needsRequest = (frame: Record<string, unknown>) => codexNeedsRequest(input(frame, undefined, AgentProvider.CODEX))
 
-  it('an MCP result wants its request', () => {
-    expect(plugin?.transcript.relatedMessages!(input(item({
-      type: 'mcpToolCall',
-      status: 'completed',
-      server: 's',
-      tool: 't',
-    })))).toEqual(['request'])
+  it('is the Codex reader', () => {
+    expect(plugin.transcript.needsRequest).toBe(codexNeedsRequest)
   })
 
-  it('an image view and a collaboration call want both halves', () => {
-    expect(plugin?.transcript.relatedMessages!(input(item({ type: 'imageView', status: 'completed', path: '/a.png' })))).toEqual(['request', 'result'])
-    expect(plugin?.transcript.relatedMessages!(input(item({ type: 'collabAgentToolCall', status: 'completed', tool: 'spawnAgent' })))).toEqual(['request', 'result'])
+  it('answers true for a finished collaboration call', () => {
+    expect(needsRequest(item({ type: 'collabAgentToolCall', status: 'completed', tool: 'spawnAgent' }))).toBe(true)
+    expect(needsRequest(item({ type: 'collabAgentToolCall', status: 'interrupted', tool: 'spawnAgent' }))).toBe(true)
   })
 
-  it('a command execution wants nothing, because each row carries its own body', () => {
-    expect(plugin?.transcript.relatedMessages!(input(item({ type: 'commandExecution', status: 'completed', command: 'ls' })))).toEqual([])
+  it('answers false for a running collaboration call', () => {
+    expect(needsRequest(item({
+      type: 'collabAgentToolCall',
+      status: 'inProgress',
+      tool: 'spawnAgent',
+      prompt: 'Look',
+    }))).toBe(false)
+  })
+
+  it('answers true for a native code output, and false for its request', () => {
+    expect(needsRequest(nativeExecSuccessResult)).toBe(true)
+    expect(needsRequest(nativeExecSuccessRequest)).toBe(false)
+  })
+
+  it.each([
+    [
+      'an MCP result',
+      {
+        type: 'mcpToolCall',
+        status: 'completed',
+        server: 's',
+        tool: 't',
+        arguments: { a: 1 },
+      },
+    ],
+    [
+      'a running MCP call',
+      {
+        type: 'mcpToolCall',
+        status: 'inProgress',
+        server: 's',
+        tool: 't',
+        arguments: { a: 1 },
+      },
+    ],
+    [
+      'an image view',
+      { type: 'imageView', status: 'completed', path: '/a.png' },
+    ],
+    [
+      'a finished command',
+      { type: 'commandExecution', status: 'completed', command: 'ls' },
+    ],
+    [
+      'a running command',
+      { type: 'commandExecution', status: 'inProgress', command: 'ls' },
+    ],
+    [
+      'a finished file change',
+      {
+        type: 'fileChange',
+        status: 'completed',
+        changes: [
+          {
+            path: '/a.ts',
+            kind: { type: 'add' },
+            diff: 'a',
+          },
+        ],
+      },
+    ],
+    [
+      'a running file change',
+      { type: 'fileChange', status: 'inProgress', changes: [] },
+    ],
+  ])('answers false for %s, which states its own arguments', (_name, fields) => {
+    expect(needsRequest(item(fields))).toBe(false)
   })
 })
 

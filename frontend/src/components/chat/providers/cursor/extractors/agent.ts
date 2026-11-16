@@ -65,31 +65,42 @@ function duration(value: unknown): string | undefined {
     : `${value}ms`
 }
 
+/** What one finished launch states about its run, beside the arguments of the call. */
+export interface CursorAgentRunSources {
+  /** Cursor's own stored record of the call, which measured the run. */
+  native?: Record<string, unknown> | null
+  /** The output of the stored record, which reports the run when its steps state none. */
+  nativeReport?: string
+  /**
+   * The fields that the `cursor/task` extension frame reports about the run: the model
+   * that answered, the agent id and the measured duration. Only the result states them.
+   */
+  reported?: Record<string, unknown>
+}
+
 /**
  * Cursor's native result contains conversation steps that ACP omits.
  *
- * The request identifies the requested run. The result describes the run that the native record measured.
- * input contains merged arguments. A cursor/task caller first merges these fields from its extension frame:
- * - Model.
- * - Agent ID.
- * - Duration.
- * The result row therefore describes the measured run. nativeReport supplies a fallback from the stored native tool record.
+ * The request identifies the requested run, from the arguments of the call alone. The
+ * result describes the run that the native record or the extension frame measured, so
+ * a model that answered never reads as the model that the call asked for.
  */
 export function cursorAgentCall(
   facts: ACPToolFacts,
   input: Record<string, unknown>,
-  native: Record<string, unknown> | null | undefined,
-  nativeReport?: string,
+  run: CursorAgentRunSources = {},
 ): ToolCallSpecVariant<'agent'> {
   const tool = facts.tool
   const raw = pickObject(tool, ACP_SUPPLEMENT.RawOutput)
-  const success = pickObject(pickObject(native, 'output'), 'success')
-  const nativeError = pickObject(pickObject(native, 'output'), 'error')
+  const reported = run.reported ?? {}
+  const success = pickObject(pickObject(run.native, 'output'), 'success')
+  const nativeError = pickObject(pickObject(run.native, 'output'), 'error')
   const description = pickString(input, 'description') || pickString(tool, 'title').replace(/^Task: /, '')
   const metadata: AgentRun['metadata'] = []
-  // Use the stored native record first. Without that record, use the cursor/task fields that the caller merged into input.
-  const agentId = pickString(success, 'agentId') || pickString(input, 'agentId')
-  const modelName = pickString(input, 'model')
+  // The stored native record first, then the extension frame, then the arguments.
+  const agentId = pickString(success, 'agentId') || pickString(reported, 'agentId') || pickString(input, 'agentId')
+  const requestedModel = pickString(input, 'model')
+  const modelName = pickString(reported, 'model') || requestedModel
   const transcript = pickString(success, 'transcriptPath')
   if (agentId)
     metadata.push({ label: 'Agent ID', value: agentId })
@@ -97,11 +108,11 @@ export function cursorAgentCall(
     metadata.push({ label: 'Model', value: modelName })
   if (transcript)
     metadata.push({ label: 'Transcript', value: transcript })
-  const elapsed = duration(success?.durationMs ?? raw?.durationMs ?? input.durationMs)
+  const elapsed = duration(success?.durationMs ?? raw?.durationMs ?? reported.durationMs ?? input.durationMs)
   if (elapsed !== undefined)
     metadata.push({ label: 'Duration', value: elapsed })
   const background = pickBoolean(success, 'isBackground') ?? pickBoolean(raw, 'isBackground') ?? false
-  const failed = tool.status === 'failed' || native?.isError === true || nativeError !== null
+  const failed = tool.status === 'failed' || run.native?.isError === true || nativeError !== null
   const stopped = tool.status === 'cancelled'
   const status = stopped
     ? 'stopped'
@@ -121,7 +132,7 @@ export function cursorAgentCall(
   const report = [...reports, suffix].filter(Boolean).join('\n\n')
   const originalOutput = collectAcpToolText(tool, { rawObjects: false })
   const output = finished
-    ? error || report || nativeReport || originalOutput
+    ? error || report || run.nativeReport || originalOutput
     : originalOutput
   const source: AgentRun = {
     description,
@@ -137,9 +148,9 @@ export function cursorAgentCall(
     description,
     agentType: agentType(input),
     prompt: pickString(input, 'prompt'),
-    metadata: modelName
+    metadata: requestedModel
       ? [
-          { label: 'Model', value: modelName },
+          { label: 'Model', value: requestedModel },
         ]
       : [],
   }

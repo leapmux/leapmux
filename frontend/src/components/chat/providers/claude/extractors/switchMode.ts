@@ -42,13 +42,14 @@ export function claudeSwitchModeSpec(request: SwitchModeRequest, args: ClaudeToo
       result: proseResult(result.resultContent),
     }
   }
-  // The file the command line interface wrote the approved plan to. The row used to
-  // state it under its header, and only the RESULT carries it. A labelled fact rather
-  // than a body line, because the body holds whatever the call itself returned.
+  // The file the command line interface wrote the approved plan to. Only the RESULT
+  // carries it, so it is a fact of the result, which the row that draws the result shows
+  // above its body. A labelled fact rather than a body line, because the body holds
+  // whatever the call itself returned.
   const planFile = exitPlan
     ? pickString(result.toolUseResult, 'filePath')
     : ''
-  const metadata = planFile
+  const resultMetadata = planFile
     ? [
         { label: 'Plan file', value: planFile },
       ]
@@ -57,8 +58,8 @@ export function claudeSwitchModeSpec(request: SwitchModeRequest, args: ClaudeToo
     ...(titleAfter !== undefined
       ? { title: titleAfter }
       : {}),
-    ...(metadata !== undefined
-      ? { metadata }
+    ...(resultMetadata !== undefined
+      ? { resultMetadata }
       : {}),
   }
   if (!result.resultContent) {

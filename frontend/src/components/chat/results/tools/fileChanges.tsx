@@ -16,23 +16,23 @@ import { fileEditCopyFinal, fileEditCopyHunks, FileEditDiffBody, FileEditDiffTit
 import { RequestedFileChanges } from '../requestedFileChanges'
 
 /**
- * The changes a call ASKED for, drawn until its answer lands.
+ * The changes a call ASKED for, drawn while the call runs.
  *
  * `delete`, `edit`, `move` and `write` state a file change and share one rule: the
- * row that draws the RESULT is the row that states the request, and it states it
- * only while the result is absent. Once the result exists, the changes that LANDED
- * are the ones a reader needs, and the request's copy would repeat them.
+ * PENDING row states the request while the call runs, and it leaves when the result
+ * row joins the list. Once the result exists, the changes that LANDED are the ones a
+ * reader needs, and the request's copy would repeat them.
  *
- * A call that FAILED or was INTERRUPTED draws none of it. Nothing it asked for
- * reached the file, so a diff here would show an edit that never happened. The rule lives in this ONE place
- * rather than in each extractor: Claude used to answer it by emptying its own
- * request, and the Agent Client Protocol family answered the opposite way, so the
- * same failed row drew differently depending on which agent ran it. Keeping the
- * request lets the row's title still name the file the call was about.
+ * A call that FAILED, was INTERRUPTED or was DECLINED draws none of it: its result row
+ * states the reason, and no row draws a diff that never reached the file. The rule
+ * lives in this ONE place rather than in each extractor: Claude used to answer it by
+ * emptying its own request, and the Agent Client Protocol family answered the opposite
+ * way, so the same failed row drew differently depending on which agent ran it. Keeping
+ * the request lets the row's title still name the file the call was about.
  */
-export function RequestedChangesBody(props: { request: FileChangeRequest, view: ToolRowView, hasResult: boolean, status: ToolCallStatus }): JSX.Element {
+export function RequestedChangesBody(props: { request: FileChangeRequest, view: ToolRowView }): JSX.Element {
   return (
-    <Show when={!props.hasResult && !fileChangeFailed(props.status) && props.request.changes.length > 0}>
+    <Show when={props.request.changes.length > 0}>
       <RequestedFileChanges
         sources={props.request.changes}
         {...(props.view.context !== undefined
@@ -41,6 +41,17 @@ export function RequestedChangesBody(props: { request: FileChangeRequest, view: 
       />
     </Show>
   )
+}
+
+/**
+ * True when the call ended without applying anything, so the file took nothing.
+ *
+ * `declined` belongs here for the same reason `failed` and `interrupted` do. A reader
+ * REFUSED the call, so the tool never ran and no line reached the file.
+ */
+export function fileChangeFailed(status: ToolCallStatus): boolean {
+  const outcome = toolCallStatusOutcome(status)
+  return outcome === 'failed' || outcome === 'interrupted' || outcome === 'declined'
 }
 
 /** The changes that LANDED, one diff per file operation. */
@@ -137,33 +148,6 @@ export function requestedFileChangesMeta(changes: FileEditDiff[]): ToolKindMeta 
 }
 
 /**
- * True when the call ended without applying anything, so the file took nothing.
- *
- * `declined` belongs here for the same reason `failed` and `interrupted` do. A
- * reader REFUSED the call, so the tool never ran and no line reached the file. A
- * declined row that drew its changes drew the identical body a PENDING row draws,
- * which states a diff the file never took.
- */
-export function fileChangeFailed(status: ToolCallStatus): boolean {
-  const outcome = toolCallStatusOutcome(status)
-  return outcome === 'failed' || outcome === 'interrupted' || outcome === 'declined'
-}
-
-/**
- * The meta a FAILED call's requested changes offer: the toolbar states nothing
- * about a diff, because the file took none -- but the words it asked to change
- * stay copyable for a reader who wants them.
- */
-export function failedFileChangesMeta(changes: FileEditDiff[]): ToolKindMeta {
-  return {
-    collapsible: false,
-    hasDiff: false,
-    copyableContent: () => requestedFileChangesCopyable(changes, fileEditCopyHunks) || null,
-    copyableFinal: copyHunksFinal(changes),
-  }
-}
-
-/**
  * Every kind whose request and result are file changes.
  *
  * Derived from the two tables rather than listed, so a kind that starts stating file
@@ -181,14 +165,14 @@ export type FileChangeKind = {
  *
  * `delete`, `edit`, `move` and `write` differ in an icon, a noun, and whether the kind
  * words a title of its own out of the REQUEST. Everything else is the same for all
- * four: the two bodies, the three metas, and the rule below. Each of the four stated
+ * four: the two bodies, the two metas, and the rule below. Each of the four stated
  * it separately, down to the same two-line comment written out four times.
  *
  * A FAILED call shows only the reason, never the diff it asked for. Nothing it asked
- * for reached the file, so a diff would draw an edit that never happened.
- * `RequestedChangesBody` holds that rule and this is the only caller, so no kind can
- * answer it differently -- which is what used to happen, with Claude emptying its own
- * request and the Agent Client Protocol family keeping theirs.
+ * for reached the file, so a diff would draw an edit that never happened. Only the
+ * pending row of a running call draws `RequestedChangesBody`, so no kind can answer it
+ * differently -- which is what used to happen, with Claude emptying its own request
+ * and the Agent Client Protocol family keeping theirs.
  */
 export function fileChangeRenderer<K extends FileChangeKind>(options: {
   icon: LucideIcon
@@ -212,16 +196,32 @@ export function fileChangeRenderer<K extends FileChangeKind>(options: {
         ?? call.title
         ?? options.label
     },
-    request(call, view) {
-      return <RequestedChangesBody request={call.request} view={view} hasResult={call.result !== undefined} status={call.status} />
+    pending(call, view) {
+      return <RequestedChangesBody request={call.request} view={view} />
     },
+    hasPending: call => call.request.changes.length > 0,
     result(call, view) {
       return <FileChangesBody changes={call.result.changes} view={view} />
     },
-    requestMeta(call) {
+    // A call that ended with words alone and did not fail states the changes it asked
+    // for, which the file took: the result row is then the one place that shows them. A
+    // failed, interrupted or declined call states only its reason, because nothing it
+    // asked for reached the file.
+    withoutTypedResult(call, view) {
+      return <Show when={!(fileChangeFailed(call.status))}><RequestedChangesBody request={call.request} view={view} /></Show>
+    },
+    withoutTypedResultMeta(call) {
       return fileChangeFailed(call.status)
-        ? failedFileChangesMeta(call.request.changes)
-        : requestedFileChangesMeta(call.request.changes)
+        ? {}
+        : {
+            hasDiff: call.request.changes.some(fileEditHasDiff),
+          }
+    },
+    // The request row offers the changes it asked for whether or not the call still
+    // runs, because it never reads how the call ended. The diff toggle steers the
+    // pending row below it, which reads the same message's diff view.
+    requestMeta(call) {
+      return requestedFileChangesMeta(call.request.changes)
     },
     resultMeta(call) {
       return fileChangesMeta(call.result.changes)

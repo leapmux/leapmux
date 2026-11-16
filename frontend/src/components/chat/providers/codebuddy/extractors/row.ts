@@ -89,7 +89,11 @@ function storedFunctionToolRow(payload: Record<string, unknown>, span: RowExtrac
       resultFrameLanded: isResult,
     },
   })
-  return toolCallRow(call, isResult ? 'result' : 'request', span.visibleRows)
+  // A stored `function_call` that LeapMux stored with a completion is the closing copy
+  // of the request, and the final row of its span (see codebuddySpanRole).
+  return toolCallRow(call, isResult || retainedRowIsFinal(completion)
+    ? 'result'
+    : 'request', span.visibleRows)
 }
 
 function textRow(

@@ -9,7 +9,7 @@ import { classifyAmpMessage } from './classification'
 import { ampResultDivider } from './extractors/resultDivider'
 import { ampExtractRow } from './extractors/row'
 import { ampControls } from './pluginControls'
-import { ampRelatedMessages, ampSpanRole } from './spanRole'
+import { ampNeedsRequest, ampSpanRole } from './spanRole'
 import './plugin'
 
 const plugin = providerFor(AgentProvider.AMP)!
@@ -39,14 +39,14 @@ describe('amp plugin', () => {
       'classify',
       'extractDivider',
       'extractRow',
-      'relatedMessages',
+      'needsRequest',
       'spanRole',
     ])
     expect(plugin.transcript.classify).toBe(classifyAmpMessage)
     expect(plugin.transcript.extractRow).toBe(ampExtractRow)
     expect(plugin.transcript.extractDivider).toBe(ampResultDivider)
     expect(plugin.transcript.spanRole).toBe(ampSpanRole)
-    expect(plugin.transcript.relatedMessages).toBe(ampRelatedMessages)
+    expect(plugin.transcript.needsRequest).toBe(ampNeedsRequest)
     expect(plugin.controls).toBe(ampControls)
     // Amp writes no notification and states no compaction of its own.
     expect(plugin.session).toBeUndefined()

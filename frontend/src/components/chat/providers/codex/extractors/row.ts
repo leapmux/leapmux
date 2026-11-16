@@ -6,6 +6,7 @@ import type { ToolKind } from '../../../model/toolKind'
 import type { ExecuteRequest } from '../../../model/tools/execute'
 import type { FileChangeRequest, FileChangeResult } from '../../../model/tools/fileChange'
 import type { ImageRequest } from '../../../model/tools/image'
+import type { McpRequest } from '../../../model/tools/mcp'
 import type { WebSearchResult } from '../../../model/tools/webSearch'
 import type { ToolRequestOverrides } from '../../defaultToolRequests'
 import type { RowExtractionInput, ToolSpanContext } from '~/components/chat/rowExtractionTypes'
@@ -161,8 +162,8 @@ function codexTurnPlanRow(notification: Record<string, unknown>): ChatRow | null
     },
   )
   // A plan update is ONE row: the frame states the whole list, so the span holds no
-  // request and no result beside it.
-  return toolCallRow(call, 'result', { request: false, result: false })
+  // request beside it.
+  return toolCallRow(call, 'result', { request: false })
 }
 
 /**
@@ -213,6 +214,11 @@ export function codexItemKind(item: Record<string, unknown>, fileChanges?: FileC
  * It reads {@link codexChangeEntries}, which is the same list the specification builds its
  * request from. A second reading of the raw `changes` array answered for entries the
  * request then dropped, so the row could take the `write` kind and state no file.
+ *
+ * A list that states NO file takes `edit`. Codex sends the started item of a change
+ * with an empty `changes` list, because the Worker opts out of
+ * `item/fileChange/patchUpdated`. `createToolCall` accepts a running file change that
+ * states no file, so the request row keeps the file-change kind.
  */
 function codexFileChangeKind(entries: FileChangeEntry[]): ToolKind {
   const [only] = entries
@@ -380,13 +386,12 @@ export interface CodexToolFacts {
    * - The row closes its span.
    * - The item reports a finished status.
    * - The Worker stores a completion value.
-   * - The resolver supplies the result side.
    *
    * A retained row can still contain inProgress after the reader stops the call.
    * Checking only that word would discard its partial output.
    */
   finished: boolean
-  /** The row's span context. An agent call reads its counterpart from here. */
+  /** The row's span context. A finished agent call reads its request from here. */
   sides: ToolSpanContext
   /** The header words a status-shaped item states, or none for a type the table omits. */
   statusTitle: string | undefined
@@ -639,7 +644,11 @@ export const CODEX_TOOL_READERS: ToolCallSpecReaderTable<CodexToolFacts> = {
     }
   },
   agent: (facts): ToolCallSpecVariant<'agent'> => {
-    const counterpart = codexAgentCounterpart(facts.item, facts.finished ? facts.sides.request : facts.sides.result, facts.finished ? 'request' : 'result')
+    // A finished call can state an empty tool, prompt, model or target list, and its
+    // request supplies them. A running call reads its own item alone.
+    const counterpart = facts.finished
+      ? codexAgentCounterpart(facts.item, facts.sides.request)
+      : null
     const resolved = resolveCodexAgentItem(facts.item, counterpart)
     const request = codexAgentRequest(resolved)
     return {
@@ -698,12 +707,18 @@ export const CODEX_TOOL_READERS: ToolCallSpecReaderTable<CodexToolFacts> = {
     const title = facts.statusTitle ?? (facts.type
       ? humanizeWireWord(facts.type)
       : undefined)
-    return {
+    const head: ToolCallSpecVariant<'other'> = {
       kind: 'other',
       ...(title !== undefined
         ? { title }
         : {}),
       request: { args: facts.item },
+    }
+    // A running item states no outcome yet.
+    if (!facts.finished)
+      return head
+    return {
+      ...head,
       result: {
         content: facts.detail
           ? [
@@ -758,10 +773,10 @@ function codexFileChangeParts(facts: CodexToolFacts): { request: FileChangeReque
   const changes = codexRequestedChanges(entries)
   const request: FileChangeRequest = { changes }
   // One change identifies its file; several state their count. NONE states nothing:
-  // Codex sends the item before its `changes` list, so a running edit worded itself
-  // "0 files" -- which reads as an edit that touched nothing rather than one whose
-  // file list has not arrived. With no title the row falls back to the kind's own
-  // word, which is what every other provider's pending edit shows.
+  // Codex sends the started item before its `changes` list, and "0 files" reads as an
+  // edit that touched nothing rather than one whose file list has not arrived. With no
+  // title the row falls back to the kind's own word, which is what every other
+  // provider's pending edit shows.
   //
   // The REQUEST is what words it, at every state. A completed change whose entry
   // carried no readable body answers an empty landed list, and the shared title then
@@ -838,13 +853,18 @@ function codexMcpSpec(facts: CodexToolFacts): ToolCallSpecVariant<'mcp'> {
       },
     }
   }
+  const request: McpRequest = {
+    server: source.server,
+    tool: source.tool,
+    args: safeJson(source.argsJson ?? ''),
+  }
+  // A running call states its arguments alone. Its item holds no content yet, and an
+  // empty result on a running call is a draft that `createToolCall` refuses.
+  if (!facts.finished)
+    return { kind: 'mcp', request }
   return {
     kind: 'mcp',
-    request: {
-      server: source.server,
-      tool: source.tool,
-      args: safeJson(source.argsJson ?? ''),
-    },
+    request,
     result: {
       content: source.content,
       ...(source.structuredJson !== undefined
@@ -916,9 +936,9 @@ function codexHookPromptSpec(facts: CodexToolFacts): ToolCallSpecVariant<'skill'
 /**
  * One Codex item as the kind-discriminated call.
  *
- * The item carries both the arguments and result data. The sides differ only in
- * status -- so one set of facts builds the pair, and `finished` decides which half the
- * row states.
+ * The item carries both the arguments and result data. The rows of a span differ only
+ * in status -- so one set of facts builds each row, and `finished` decides whether the
+ * row states a result.
  */
 function codexToolCall(facts: CodexToolFacts, lifecycle: ToolCallLifecycleFacts): ToolCall {
   const spec = codexSpecFor(facts, facts.kind)
@@ -961,7 +981,11 @@ function codexItemLabel(facts: CodexToolFacts): string | undefined {
 }
 
 /**
- * One Codex tool span as a merged call.
+ * One Codex tool row as a call, read from its own item.
+ *
+ * A row reads no later message of its span. Only a finished agent call reads the
+ * span's request (see the `agent` reader), and only a raw execution output reads the
+ * script source of its request (see `codexRawExecCall`).
  *
  * An item that states NO status of its own -- `imageView` is the live case -- cannot
  * say where it sits in its span, so the resolver's role answers instead. Both sides
@@ -1003,27 +1027,10 @@ function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInpu
   // pairs that word with a finished span's pictures is a draft the validating
   // builder refuses: the row degraded to the generic card and lost the picture.
   // The role's answer states the outcome the frame's own words cannot.
-  const candidateResultItem = sides.result
-    ? extractItem(sides.result.parentObject)
-    : null
-  // A result frame belongs to this call only when both identity fields match. A
-  // corrupt span must not mark this call as answered or project another call's data.
-  const matchingResultItem = candidateResultItem
-    && pickString(candidateResultItem, 'id') === pickString(item, 'id')
-    && pickString(candidateResultItem, 'type') === pickString(item, 'type')
-    ? candidateResultItem
-    : null
-  // A closing fileChange is the authoritative full item: it carries the original
-  // change list and states which changes landed. Other Codex item kinds keep their
-  // existing per-frame projections even though the lifecycle sees their result.
-  const projectedResultItem = item.type === CODEX_ITEM.FileChange
-    ? matchingResultItem
-    : null
-  // Read every resolved span side.
-  // A request row includes its landed result, so its prompt uses the same compact expansion control.
-  const answered = atomicResult || sides.role === 'result' || isCodexFinishedStatus(statusWord) || !!matchingResultItem
-  // A landed result finishes the call even when the request frame still says inProgress.
-  // A finished result must not use an in-progress envelope. The validating builder would discard its typed card.
+  //
+  // The result landed when this row closes the span or its own item states a finished
+  // status. A request row reads no later message, so its own frame decides its status.
+  const answered = atomicResult || sides.role === 'result' || isCodexFinishedStatus(statusWord)
   // The shared lifecycle derivation decides the precedence of these facts:
   // - The item status.
   // - The provider's interruption.
@@ -1038,7 +1045,7 @@ function codexToolSpanRow(parsed: ParsedMessageContent, sides: RowExtractionInpu
     rowFinal,
     resultFrameLanded: answered,
   }
-  const call = codexToolCall(codexToolFacts(projectedResultItem ?? item, rowFinal || !!projectedResultItem, sides), lifecycle)
+  const call = codexToolCall(codexToolFacts(item, rowFinal, sides), lifecycle)
   return toolCallRow(call, role, sides.visibleRows)
 }
 

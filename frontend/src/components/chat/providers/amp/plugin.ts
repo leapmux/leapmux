@@ -6,12 +6,12 @@ import { classifyAmpMessage } from './classification'
 import { ampResultDivider } from './extractors/resultDivider'
 import { ampExtractRow } from './extractors/row'
 import { ampControls } from './pluginControls'
-import { ampRelatedMessages, ampSpanRole } from './spanRole'
+import { ampNeedsRequest, ampSpanRole } from './spanRole'
 
 const ampPlugin: ProviderPlugin = {
   transcript: {
     spanRole: ampSpanRole,
-    relatedMessages: ampRelatedMessages,
+    needsRequest: ampNeedsRequest,
     classify: classifyAmpMessage,
     extractRow: ampExtractRow,
     extractDivider: ampResultDivider,

@@ -8,7 +8,8 @@ import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { inlineFlex } from '~/styles/shared.css'
 import { ToolHeaderActions } from '../ToolHeaderActions'
-import { toolBodyBorder, toolBodyContent, toolInputText, toolMessage, toolUseHeader, toolUseIcon } from '../toolStyles.css'
+import { toolBodyBorder, toolBodyContent, toolInputText, toolMessage, toolUseHeader, toolUseIcon, toolUseTitle, toolUseTitleExpanded } from '../toolStyles.css'
+import { useHeaderTitleOverflow } from './headerTitleOverflow'
 import { spanColorKey } from './SpanLines'
 import { spanLineColors } from './SpanLines.css'
 import { ToolRunningBadge } from './ToolRunningBadge'
@@ -38,8 +39,17 @@ export function ToolUseLayout(props: {
   headerActions?: ToolHeaderActionsCallerProps
   /** False when the message host supplies these same actions in its toolbar. */
   showHeaderActions?: boolean
+  /**
+   * Reports whether the collapsed title clips anything, so the row can offer Expand,
+   * which wraps the title (see useHeaderTitleOverflow).
+   */
+  onTitleOverflow?: (overflowing: boolean) => void
 }): JSX.Element {
   const expanded = () => props.expanded ?? false
+  const titleOverflow = useHeaderTitleOverflow({
+    expanded,
+    onOverflowChange: overflowing => props.onTitleOverflow?.(overflowing),
+  })
   const summary = children(() => props.summary)
   const body = children(() => props.children)
   const showBody = () => (props.alwaysVisible || expanded()) && hasContent(body.toArray())
@@ -65,9 +75,17 @@ export function ToolUseLayout(props: {
                 : null}
           </span>
         </Tooltip>
-        {typeof props.title === 'string'
-          ? <span class={toolInputText}>{props.title}</span>
-          : props.title}
+        {/* One line while collapsed, whatever the title holds (see toolUseTitle). */}
+        <span
+          ref={titleOverflow.ref}
+          class={expanded()
+            ? `${toolUseTitle} ${toolUseTitleExpanded}`
+            : toolUseTitle}
+        >
+          {typeof props.title === 'string'
+            ? <span class={toolInputText}>{props.title}</span>
+            : props.title}
+        </span>
         <ToolRunningBadge
           {...(props.context?.toolProgress?.liveTail === undefined
             ? {}

@@ -364,17 +364,27 @@ describe('qwen refused tool calls', () => {
     expect(call?.images).toStrictEqual([])
   })
 
-  it('reads the refused request row as declined too', () => {
+  // The request row reads its own frame alone, so it states the write that the call
+  // asked for and knows nothing of the refusal. The result row states the refusal.
+  it('reads the request row of a refused write as a write of its file that has not finished', () => {
     const call = providerToolCall(AgentProvider.QWEN_CODE, opening, {
       role: 'request',
       spanType: 'edit',
       supplementalContent: supplement,
-      result: stored(ending(REFUSAL)),
+      request: stored(opening, supplement),
     })
-    expect(call?.status).toBe('declined')
+    expect(call?.degradation).toBeUndefined()
+    expect(call?.status).toBe('pending')
+    expect(call?.result).toBeUndefined()
     expect(call?.kind === 'write'
       ? call.request.changes.map(change => change.filePath)
       : []).toStrictEqual(['/w/notes.txt'])
+  })
+
+  it('needs the request for the refused result row alone', () => {
+    const plugin = providerFor(AgentProvider.QWEN_CODE)!
+    expect(plugin.transcript.needsRequest?.(input(opening, null, AgentProvider.QWEN_CODE))).toBe(false)
+    expect(plugin.transcript.needsRequest?.(input(ending(REFUSAL), null, AgentProvider.QWEN_CODE))).toBe(true)
   })
 
   // A refusal is the WHOLE text. The same words inside a longer text are a failure of

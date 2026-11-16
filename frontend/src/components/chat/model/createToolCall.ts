@@ -24,6 +24,7 @@ export interface NormalizedToolCallDraft<K extends ToolKind> {
   label?: string | undefined
   icon?: ToolIconHint | undefined
   metadata?: ToolMetadataEntry[] | undefined
+  resultMetadata?: ToolMetadataEntry[] | undefined
 }
 
 export type ToolCallBuildResult<K extends ToolKind>
@@ -82,14 +83,26 @@ export function toolCallFault(draft: ToolCallDraft): ToolCallFault | null {
     return 'incomplete-with-artifacts'
   if (isGenericKind(draft.kind) && draft.images.length > 0)
     return 'a-generic-kind-carries-its-own-images'
-  if (isFileChangeKind(draft.kind) && !statesAFile(draft.request))
+  if (isFileChangeKind(draft.kind) && !statesItsFiles(draft.request, finished))
     return 'a-file-change-states-no-file'
   return null
 }
 
-function statesAFile(request: ToolRequestByKind[ToolKind]): boolean {
+/**
+ * Whether a file change states the file of each change it lists, and lists one at all.
+ *
+ * Only a FINISHED call must list a change. A call that still runs may list none yet: a
+ * request row reads only its own frame, and Codex sends a file change before its list of
+ * changes, which the result row then states. A change that a call lists always states
+ * its file, or the row would draw a change of no file.
+ */
+function statesItsFiles(request: ToolRequestByKind[ToolKind], finished: boolean): boolean {
   const changes = (request as { changes?: readonly { filePath?: string }[] }).changes
-  return changes !== undefined && changes.length > 0 && changes.every(change => Boolean(change.filePath))
+  if (changes === undefined)
+    return false
+  return changes.length === 0
+    ? !finished
+    : changes.every(change => Boolean(change.filePath))
 }
 
 export function createToolCall<K extends ToolKind>(envelope: ToolCallEnvelope, spec: ToolCallSpecVariant<K>): ToolCall<K> | ToolCall<'other'> {
@@ -146,6 +159,9 @@ function degradedToolCall<K extends ToolKind>(built: { fault: ToolCallFault, dra
       : {}),
     ...(draft.metadata !== undefined
       ? { metadata: draft.metadata }
+      : {}),
+    ...(draft.resultMetadata !== undefined
+      ? { resultMetadata: draft.resultMetadata }
       : {}),
     degradation: { fault: built.fault, originalKind: draft.kind },
   }

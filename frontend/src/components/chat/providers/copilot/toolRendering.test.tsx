@@ -8,7 +8,7 @@ import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/a
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { providerRowImages, providerToolCall, providerToolMeta } from '~/test-support/toolCallFixture'
-import { renderMessageContent } from '../../messageContentRenderer'
+import { renderListedMessageContent, renderMessageContent } from '../../messageContentRenderer'
 import { rendererFor } from '../../results/tools'
 import { parsedCall } from '../../results/tools/renderer'
 import { toolBodyBorder, toolUseHeader } from '../../toolStyles.css'
@@ -54,7 +54,11 @@ function titleTextOf(call: ToolCall): string {
   return container.textContent ?? ''
 }
 
-/** Render one row with the sources the store would supply for its pair. */
+/**
+ * Render one row with the sources the store would supply for its pair. A REQUEST row of a
+ * call that runs draws with the pending row below it, which states what the call asks
+ * until the result row takes its place -- as the list draws them.
+ */
 function renderRow(row: Record<string, unknown>, request?: Record<string, unknown>, spanType?: string, requestVisible = false) {
   const category = plugin().transcript.classify(input(row))
   const role = request === undefined
@@ -68,15 +72,16 @@ function renderRow(row: Record<string, unknown>, request?: Record<string, unknow
         }
       : {}),
     role: () => role,
-    visibleRows: () => ({ request: requestVisible, result: role === 'result' }),
+    visibleRows: () => ({ request: requestVisible }),
   })
-  return render(() => renderMessageContent(row, {
+  const context = {
     premeasureMode: true,
     ...(spanType !== undefined
       ? { spanType }
       : {}),
     sources,
-  }, category, AgentProvider.GITHUB_COPILOT))
+  }
+  return render(() => renderListedMessageContent(row, context, category, AgentProvider.GITHUB_COPILOT))
 }
 
 /** Render the result half of one tool call, with its start row as the request. */
@@ -698,7 +703,7 @@ describe('a copilot tool row the turn interrupted', () => {
       current: () => retained,
       request: () => parsed(request),
       role: () => 'result',
-      visibleRows: () => ({ request: true, result: true }),
+      visibleRows: () => ({ request: true }),
     })
     return render(() => renderMessageContent(
       request,

@@ -40,9 +40,8 @@ describe('lettaExtractRow', () => {
       category: classifyLettaMessage({ ...selected, agentProvider: AgentProvider.LETTA }),
       span: {
         request,
-        result,
         role,
-        visibleRows: { request: true, result: result !== undefined },
+        visibleRows: { request: true },
       },
       ...(options.completion !== undefined
         ? { completion: options.completion }
@@ -60,6 +59,7 @@ describe('lettaExtractRow', () => {
       args: JSON.stringify({ file_path: '/private/native.txt', old_string: 'OLD42', new_string: 'NEW42' }),
       status: 'success',
       result: '{"message":"Successfully replaced 1 occurrence","replacements":1,"startLine":1}',
+      role: 'result',
     })
     expect(row.call.kind).toBe('edit')
     expect(row.call.name).toBe('Edit')
@@ -169,6 +169,7 @@ describe('lettaExtractRow', () => {
       args: JSON.stringify({ file_path: '/private/native.txt', old_string: 'OLD42', new_string: '' }),
       status: 'success',
       result: 'The replacement completed.',
+      role: 'result',
     })
     expect(row.call.kind).toBe('edit')
     expect(row.call.result).toMatchObject({
@@ -178,16 +179,19 @@ describe('lettaExtractRow', () => {
     })
   })
 
-  it('does not apply an unrelated completed tool result to this edit', () => {
+  it('does not apply the requested edit of another call to this result', () => {
     const row = nativeToolRow({
       name: 'Edit',
       args: JSON.stringify({ file_path: '/private/native.txt', old_string: 'OLD42', new_string: 'NEW42' }),
       status: 'success',
       result: 'OTHER_RESULT',
       resultId: 'another-tool',
+      role: 'result',
     })
-    expect(row.call.result).toBeUndefined()
-    expect(row.call.status).not.toBe('completed')
+    expect(row.call.id).toBe('another-tool')
+    expect(row.call.kind).toBe('other')
+    expect(row.call.request).toEqual({ args: {} })
+    expect(row.call.result).not.toHaveProperty('changes')
   })
 
   it.each(['error', 'success'])('keeps a retained interruption distinct from native %s', (status) => {
@@ -197,6 +201,7 @@ describe('lettaExtractRow', () => {
       status,
       result: 'native result',
       completion: MessageCompletion.INTERRUPTED,
+      role: 'result',
     })
     expect(row.call.status).toBe('cancelled')
     expect(row.call.result ?? {}).not.toHaveProperty('changes')
@@ -208,6 +213,7 @@ describe('lettaExtractRow', () => {
       args: JSON.stringify({ file_path: '/private/native.txt', old_string: 'OLD42', new_string: 'NEW42' }),
       status: 'error',
       result: 'No matching input.',
+      role: 'result',
     })
     expect(row.call.status).toBe('failed')
     expect(row.call.result).toMatchObject({ failure: true, text: 'No matching input.' })
@@ -233,6 +239,7 @@ describe('lettaExtractRow', () => {
       args,
       status: 'success',
       result: 'A native result.',
+      role: 'result',
     })
     expect(row.call.result ?? {}).not.toHaveProperty('changes')
     expect(row.call.request).not.toHaveProperty('changes')
@@ -288,19 +295,7 @@ describe('lettaExtractRow', () => {
   const QUESTION_RECEIPT_MESSAGE = 'Questions posted. Answers or dismissal will arrive later in a task notification. You may continue working; do not assume an answer.'
   const QUESTION_RECEIPT = `{"type":"ask_user_question","version":2,"toolCallId":"actual-tool","questions":[{"question":"Which color do you prefer?","header":"Color","options":[{"label":"Blue","description":"The color blue"},{"label":"Red","description":"The color red"}]}],"message":"${QUESTION_RECEIPT_MESSAGE}"}`
 
-  it('draws only the message of a question receipt on the question row', () => {
-    const row = nativeToolRow({
-      name: 'AskUserQuestion',
-      args: QUESTION_ARGS,
-      status: 'success',
-      result: QUESTION_RECEIPT,
-    })
-    expect(row.call.kind).toBe('question')
-    expect(row.call.status).toBe('completed')
-    expect(row.call.result).toEqual({ unparsed: true, text: QUESTION_RECEIPT_MESSAGE })
-  })
-
-  it('draws only the message of a question receipt on the result row', () => {
+  it('draws only the message of a question receipt on the result row, beside the questions', () => {
     const row = nativeToolRow({
       name: 'AskUserQuestion',
       args: QUESTION_ARGS,
@@ -308,12 +303,14 @@ describe('lettaExtractRow', () => {
       result: QUESTION_RECEIPT,
       role: 'result',
     })
+    expect(row.call.kind).toBe('question')
     expect(row.call.status).toBe('completed')
-    expect(row.call.result).toEqual({
-      content: [
-        { type: 'text', text: QUESTION_RECEIPT_MESSAGE },
+    expect(row.call.request).toMatchObject({
+      questions: [
+        { header: 'Color', question: 'Which color do you prefer?' },
       ],
     })
+    expect(row.call.result).toEqual({ unparsed: true, text: QUESTION_RECEIPT_MESSAGE })
   })
 
   it('draws the message of a question receipt that arrives as an object', () => {
@@ -324,11 +321,7 @@ describe('lettaExtractRow', () => {
       result: JSON.parse(QUESTION_RECEIPT),
       role: 'result',
     })
-    expect(row.call.result).toEqual({
-      content: [
-        { type: 'text', text: QUESTION_RECEIPT_MESSAGE },
-      ],
-    })
+    expect(row.call.result).toEqual({ unparsed: true, text: QUESTION_RECEIPT_MESSAGE })
   })
 
   it.each([
@@ -344,11 +337,7 @@ describe('lettaExtractRow', () => {
       result,
       role: 'result',
     })
-    expect(row.call.result).toEqual({
-      content: [
-        { type: 'text', text: result },
-      ],
-    })
+    expect(row.call.result).toEqual({ unparsed: true, text: result })
   })
 
   it('keeps the text of a failed question call', () => {
@@ -415,12 +404,13 @@ describe('lettaExtractRow', () => {
     expect(row.call.request).toEqual(request)
   })
 
-  it('keeps a returned declared-kind answer as plain text on the request row', () => {
+  it('keeps a returned shell answer as the command output on the result row', () => {
     const row = nativeToolRow({
       name: 'Bash',
       args: JSON.stringify({ command: 'printf done', description: 'Print done' }),
       status: 'success',
       result: 'done',
+      role: 'result',
     })
     expect(row.call.kind).toBe('execute')
     expect(row.call.request).toEqual({ command: 'printf done', description: 'Print done' })
@@ -433,6 +423,74 @@ describe('lettaExtractRow', () => {
     })
   })
 
+  // A request row never reads its answer, so it keeps the kind and the request that its
+  // own frame states, with no result and no finished status. The result row carries both.
+  it.each([
+    [
+      'Edit',
+      { file_path: '/private/native.txt', old_string: 'OLD42', new_string: 'NEW42' },
+      'success',
+      {
+        kind: 'edit',
+        request: {
+          changes: [
+            { filePath: '/private/native.txt', oldStr: 'OLD42', newStr: 'NEW42' },
+          ],
+        },
+      },
+    ],
+    [
+      'Monitor',
+      { name: 'ci', schedule: '*/5 * * * *', command: 'make test' },
+      'error',
+      {
+        kind: 'trigger',
+        request: { action: 'other', name: 'ci', schedule: '*/5 * * * *' },
+      },
+    ],
+    [
+      'Read',
+      { file_path: '/private/note.txt' },
+      'success',
+      {
+        kind: 'read',
+        request: { path: '/private/note.txt' },
+      },
+    ],
+  ])('builds the %s request row from its own frame, and the result row from both', (name, args, status, identity) => {
+    const request = nativeToolRow({
+      name,
+      args: JSON.stringify(args),
+      status,
+      result: 'native answer',
+    })
+    expect(request.role).toBe('request')
+    expect(request.call).toMatchObject({
+      ...identity,
+      name,
+      status: 'unstated',
+      images: [],
+    })
+    expect(request.call).not.toHaveProperty('result')
+
+    const result = nativeToolRow({
+      name,
+      args: JSON.stringify(args),
+      status,
+      result: 'native answer',
+      role: 'result',
+    })
+    expect(result.role).toBe('result')
+    expect(result.call).toMatchObject({
+      ...identity,
+      name,
+      status: status === 'success'
+        ? 'completed'
+        : 'failed',
+    })
+    expect(result.call.result).toBeDefined()
+  })
+
   it('shows the native child Read call with its exact tool id and path', () => {
     const request = resolvedLettaFrame({
       type: 'message',
@@ -443,9 +501,8 @@ describe('lettaExtractRow', () => {
     })
     const span: ToolSpanContext = {
       request,
-      result: undefined,
       role: 'request',
-      visibleRows: { request: true, result: false },
+      visibleRows: { request: true },
     }
     const row = lettaExtractRow({
       resolved: request,
@@ -473,9 +530,8 @@ function pairedLettaNativeRow(requestFrame: Record<string, unknown>, resultFrame
     category: classifyLettaMessage({ ...selected, agentProvider: AgentProvider.LETTA }),
     span: {
       request,
-      result,
       role,
-      visibleRows: { request: true, result: true },
+      visibleRows: { request: true },
     },
   })
   if (!row || row.kind !== 'tool')
@@ -499,17 +555,30 @@ describe('letta native result boundaries', () => {
     tool_return: 'native returned data',
   }
 
-  it('keeps a current-window snapshot from completing the paired request', () => {
-    const progress = { ...result, id: 'synthetic-tool-return-stream-call' }
-    const row = pairedLettaNativeRow(request, progress, 'request')
+  it('keeps a current-window snapshot from becoming an answer', () => {
+    // The classifier hides a snapshot. The extraction refuses it also, as an answer
+    // that arrives with the tool_result category.
+    const progress = resolvedLettaFrame({ ...result, id: 'synthetic-tool-return-stream-call' })
+    const row = lettaExtractRow({
+      resolved: progress,
+      category: { kind: 'tool_result' },
+      span: {
+        request: resolvedLettaFrame(request),
+        role: 'result',
+        visibleRows: { request: true },
+      },
+    })
+    if (row?.kind !== 'tool')
+      throw new Error('The native Letta snapshot must keep its tool row.')
     expect(row.call.result).toBeUndefined()
     expect(row.call.status).not.toBe('completed')
   })
 
-  it.each(['old-run', undefined])('keeps a different or absent native run from applying a result: %s', (run_id) => {
-    const row = pairedLettaNativeRow(request, { ...result, run_id }, 'request')
-    expect(row.call.result).toBeUndefined()
-    expect(row.call.status).not.toBe('completed')
+  it.each(['old-run', undefined])('keeps the request of another native run from applying to a result: %s', (run_id) => {
+    const row = pairedLettaNativeRow(request, { ...result, run_id }, 'result')
+    expect(row.call.kind).toBe('other')
+    expect(row.call.request).toEqual({ args: {} })
+    expect(row.call.result).not.toHaveProperty('changes')
   })
 
   it('retains an actual old-run final without pairing the new request arguments', () => {
@@ -634,9 +703,8 @@ describe('letta native task rows', () => {
       category: classifyLettaMessage({ ...request, agentProvider: AgentProvider.LETTA }),
       span: {
         request,
-        result: undefined,
         role: 'request',
-        visibleRows: { request: true, result: false },
+        visibleRows: { request: true },
       },
     })
     if (!row || row.kind !== 'tool')
@@ -663,7 +731,7 @@ describe('letta native task rows', () => {
     expect(row.call.result).toBeUndefined()
   })
 
-  it('reads the saved task from the native TaskCreate answer on both rows', () => {
+  it('reads the saved task from the native TaskCreate answer on the result row', () => {
     const saved = {
       items: [
         {
@@ -676,12 +744,30 @@ describe('letta native task rows', () => {
       ],
       note: 'Read the repository files.',
     }
-    for (const role of ['request', 'result'] as const) {
-      const row = pairedLettaNativeRow(taskStart('TaskCreate', createArgs), taskReturn(firstRecord), role)
-      expect(row.call.kind).toBe('todo')
-      expect(row.call.status).toBe('completed')
-      expect(row.call.result).toEqual(saved)
-    }
+    const row = pairedLettaNativeRow(taskStart('TaskCreate', createArgs), taskReturn(firstRecord), 'result')
+    expect(row.call.kind).toBe('todo')
+    expect(row.call.status).toBe('completed')
+    expect(row.call.request).toEqual(saved)
+    expect(row.call.result).toEqual(saved)
+  })
+
+  it('draws the TaskCreate request from its arguments, whatever the answer saved', () => {
+    const row = pairedLettaNativeRow(taskStart('TaskCreate', createArgs), taskReturn(firstRecord), 'request')
+    expect(row.role).toBe('request')
+    expect(row.call.kind).toBe('todo')
+    expect(row.call.status).toBe('unstated')
+    expect(row.call.request).toEqual({
+      items: [
+        {
+          rowKey: '0:Inspect the repository',
+          content: 'Inspect the repository',
+          status: 'pending',
+          activeForm: 'Inspecting the repository',
+        },
+      ],
+      note: 'Read the repository files.',
+    })
+    expect(row.call).not.toHaveProperty('result')
   })
 
   it('reads the patched task from the native TaskUpdate answer', () => {
@@ -704,7 +790,7 @@ describe('letta native task rows', () => {
   })
 
   it('reads the task a TaskGet answer returns', () => {
-    const row = pairedLettaNativeRow(taskStart('TaskGet', '{"taskId":"task_2"}'), taskReturn(secondRecord), 'request')
+    const row = pairedLettaNativeRow(taskStart('TaskGet', '{"taskId":"task_2"}'), taskReturn(secondRecord), 'result')
     expect(row.call.kind).toBe('todo')
     expect(row.call.result).toEqual({
       items: [
@@ -785,16 +871,21 @@ describe('letta native task rows', () => {
     ['TaskUpdate', '{"taskId":"task_1","status":"completed"}'],
     ['TaskGet', '{"taskId":"task_1"}'],
     ['TaskList', '{}'],
-  ])('keeps a running %s that states no task on the generic card', (name, args) => {
+  ])('keeps a %s request that states no task on the generic card', (name, args) => {
     const row = liveTaskRow(name, args)
     expect(row.call.kind).toBe('other')
     expect(row.call.request).toEqual({
       args: JSON.parse(args),
     })
+    // The answer that states the task belongs to the result row. The request row
+    // never reads it, so it stays generic after the answer lands also.
+    const answered = pairedLettaNativeRow(taskStart(name, args), taskReturn(firstRecord), 'request')
+    expect(answered.call.kind).toBe('other')
+    expect(answered.call).not.toHaveProperty('result')
   })
 
   it('keeps the native failure of a task call beside the task it asked for', () => {
-    const row = pairedLettaNativeRow(taskStart('TaskCreate', createArgs), taskReturn('TaskCreate: \'subject\' must be a non-empty string', 'error'), 'request')
+    const row = pairedLettaNativeRow(taskStart('TaskCreate', createArgs), taskReturn('TaskCreate: \'subject\' must be a non-empty string', 'error'), 'result')
     expect(row.call.kind).toBe('todo')
     expect(row.call.status).toBe('failed')
     expect(row.call.result).toEqual({ failure: true, text: 'TaskCreate: \'subject\' must be a non-empty string' })
@@ -811,7 +902,7 @@ describe('letta native task rows', () => {
       { tasks: 'none' },
     ],
   ])('keeps the answer as plain text when it holds %s', (_label, answer) => {
-    const row = pairedLettaNativeRow(taskStart('TaskCreate', createArgs), taskReturn(answer), 'request')
+    const row = pairedLettaNativeRow(taskStart('TaskCreate', createArgs), taskReturn(answer), 'result')
     expect(row.call.kind).toBe('todo')
     expect(row.call.status).toBe('completed')
     expect(row.call.result).toEqual({

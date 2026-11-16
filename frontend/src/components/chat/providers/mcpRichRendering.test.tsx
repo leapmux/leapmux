@@ -307,7 +307,6 @@ describe.each([
       renderMessageContent(start.parentObject, {
         sources: testMessageSources({
           current: () => start,
-          result: () => parsed,
         }),
       }, plugin?.transcript.classify(start), provider),
       renderMessageContent(end, {
@@ -321,14 +320,15 @@ describe.each([
     expect(container.querySelector('strong')?.textContent).toBe('body')
     expect(container.textContent).toContain('native args')
     expect(container.querySelector('img')?.getAttribute('src')).toContain(imageData)
+    // The result row reads its own supplement, which carries the stored record.
     expect(providerRowImages(provider, end, {
       category,
       request: start,
+      supplementalContent: parsed.supplementalContent,
       span: {
         request: start,
-        result: parsed,
         role: 'result',
-        visibleRows: { request: true, result: true },
+        visibleRows: { request: true },
       },
     }).map(item => item.data)).toEqual([imageData])
     if (provider === AgentProvider.CURSOR)

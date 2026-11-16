@@ -1,9 +1,12 @@
+import type { ToolCallFixtureOptions } from '~/test-support/toolCallFixture'
 import { render } from '@solidjs/testing-library'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { checkKindModule } from '~/test-support/kindTestHarness'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
+import { unparsedResult } from '../../model/toolCall'
 import { ToolMessage } from '../ToolMessage'
+import { ToolPendingMessage } from '../ToolPendingMessage'
 
 // jsdom does not provide ResizeObserver, which the shared layouts observe with.
 beforeAll(() => {
@@ -24,34 +27,59 @@ describe('report renderer', () => {
   })
 
   // A proposal that has not drawn its answer yet -- Cursor's plan, recovered from the
-  // approval the call waited on. The proposing row states it while the approval is
-  // open, and the row that completes the call takes the drawing over from there.
+  // approval the call waited on. The PENDING row states it while the approval is open,
+  // and the result row draws the answer once the call completes. The request row draws
+  // the same before and after, so it never states the proposal.
   //
   // `request.proposal`, the TYPED field: layer 3 knows no provider and parses no
   // provider's bytes, so the plan cannot ride here in the untyped payload bag.
-  describe('a proposal that drew its answer', () => {
-    // An OPEN approval is a call that has not answered, and such a call carries no
-    // result: the status moves with the body the case states.
-    const planCall = (result?: { text: string, format: 'markdown' }, hasResultRow = false) => toolRow(
+  describe('a proposal that waits for its answer', () => {
+    const running = () => toolRow(
       toolCallFixture('report', {
         title: 'Add CHANGELOG.md',
         request: { proposal: '# Add CHANGELOG.md\n\nPLANMARKER-7\n' },
-        status: result ? 'completed' : 'in_progress',
-        result,
+        status: 'in_progress',
       }),
       'request',
-      { result: hasResultRow },
     )
 
-    it('draws the plan while the approval is open', async () => {
-      const { container } = render(() => <ToolMessage row={planCall()} />)
+    it('draws the plan on the pending row while the approval is open', async () => {
+      const { container } = render(() => <ToolPendingMessage row={running()} />)
       await settleWorkerReplies()
       expect(container.textContent).toContain('PLANMARKER-7')
     })
 
-    it('hands the drawing to the row that completed the call', () => {
-      const { container } = render(() => <ToolMessage row={planCall({ text: '# Add CHANGELOG.md\n\nPLANMARKER-7\n', format: 'markdown' }, true)} />)
+    it('never draws the plan on the request row', () => {
+      const { container } = render(() => <ToolMessage row={running()} />)
       expect(container.textContent).not.toContain('PLANMARKER-7')
+    })
+  })
+
+  // Once the call completes, the result row is the one row that can state the proposal:
+  // the request row never reads how the call ended, and the pending row leaves.
+  describe('a proposal whose call completed', () => {
+    const completed = (result: ToolCallFixtureOptions<'report'>['result']) => toolRow(
+      toolCallFixture('report', {
+        title: 'Add CHANGELOG.md',
+        request: { proposal: '# Add CHANGELOG.md\n\nPLANMARKER-8\n' },
+        result,
+      }),
+      'result',
+      { request: true },
+    )
+
+    it('draws the proposal on a result row whose result states no words of its own', async () => {
+      const { container } = render(() => <ToolMessage row={completed(unparsedResult('Plan approved'))} />)
+      await settleWorkerReplies()
+      expect(container.textContent).toContain('PLANMARKER-8')
+      expect(container.textContent).toContain('Plan approved')
+    })
+
+    it('draws the answer alone when the result states words of its own', async () => {
+      const { container } = render(() => <ToolMessage row={completed({ text: 'The plan landed.', format: 'markdown' })} />)
+      await settleWorkerReplies()
+      expect(container.textContent).toContain('The plan landed.')
+      expect(container.textContent).not.toContain('PLANMARKER-8')
     })
   })
 })

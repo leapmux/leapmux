@@ -8,6 +8,7 @@
 import type { FileImageSource } from './fileImageResolver'
 import type { MessageRenderCache } from './messageRenderCache'
 import type { MessageUiKey } from './messageUiKeys'
+import type { ToolCall } from './model/toolCall'
 import type { RenderReadiness } from './renderReadiness'
 import type { DiffViewPreference } from '~/context/PreferencesContext'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
@@ -194,6 +195,18 @@ export interface ToolResultRenderContext extends ToolLayoutContext, MessageUiRen
   diffView?: () => DiffViewPreference
   onReply?: ((quotedText: string) => void) | undefined
   hasOuterToolbar?: boolean
+  /**
+   * True when the row's message belongs to no tool span. Then no other row of its call
+   * exists: no pending row follows it, and no result row replaces it. So the row draws
+   * the preview of its call itself (see ToolKindRenderer.pending).
+   */
+  loneCall?: boolean
+  /**
+   * Reports whether the header of the row clips words that only Expand shows: its title
+   * or its summary line. A row whose actions the outer toolbar draws (`hasOuterToolbar`)
+   * offers Expand there for them, as the row's own toolbar does.
+   */
+  onHeaderClipsChange?: (clips: boolean) => void
   subagents?: SubagentNavigation
   images?: ImageRenderActions
 }
@@ -217,6 +230,12 @@ export interface PlanRenderContext extends ToolLayoutContext {
 export interface RowRenderContext extends ToolResultRenderContext {
   expandUiKey?: MessageUiKey
   reviews?: ReviewActions | undefined
+  /**
+   * The newest call of the row's tool span that the browser holds, which a REQUEST row
+   * heads itself with (see ToolMessage). Undefined for every other row, and while the
+   * browser holds no newer side of the span.
+   */
+  toolHeader?: ToolCall | undefined
 }
 
 /**

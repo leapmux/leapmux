@@ -261,11 +261,30 @@ describe('zcode TodoWrite renderer', () => {
     expect(container.textContent).not.toContain('"status"')
   })
 
-  it('shows the cleared state for an emptied list', () => {
-    const { container } = render(() => (
-      <ZCodeRowView parsed={scheduled(ZCODE_TOOL.TodoWrite, { todos: [] })} />
+  // A request row never reads its result, and the empty list it carries previews
+  // nothing: only the result can state that the call cleared the list.
+  it('leaves the cleared state of an emptied list to the result row', () => {
+    const request = scheduled(ZCODE_TOOL.TodoWrite, { todos: [] })
+    const running = render(() => <ZCodeRowView parsed={request} />)
+    expect(running.container.textContent).toContain('To-do list')
+    expect(running.container.textContent).not.toContain('cleared')
+
+    const end = toolEvent(ZCODE_TOOL_KIND.Result, {
+      result: { success: true, content: '' },
+    })
+    const ended = render(() => (
+      <ZCodeRowView
+        parsed={end}
+        context={{
+          spanType: ZCODE_TOOL.TodoWrite,
+          sources: testMessageSources({
+            current: () => parsedOf(end),
+            request: () => parsedOf(request),
+          }),
+        }}
+      />
     ))
-    expect(container.textContent).toContain('cleared')
+    expect(ended.container.textContent).toContain('To-do list cleared')
   })
 
   // An input with no todos array is not a to-do row; the generic tool card still

@@ -4,7 +4,7 @@ import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { leapmuxPlanExecutionRow, leapmuxUserRow } from '../../../leapmuxRows'
 import { toolCallRow } from '../../../model/row'
 import { antigravityToolCall, antigravityToolRow } from './toolCall'
-import { antigravityStep, antigravityStepOpen } from './toolCommon'
+import { antigravityRowOpen, antigravityStep } from './toolCommon'
 
 function antigravityUserInputText(parent: Record<string, unknown> | undefined): string {
   const input = pickObject(parent, 'userInput')
@@ -35,16 +35,17 @@ export function antigravityExtractRow(input: RowExtractionInput): ChatRow | null
       }
     case 'tool_use':
     case 'tool_result': {
+      // Every native step states its tool call and its arguments, so a row reads its
+      // own step only. An open step is the request row, and a finished step is the
+      // result row.
       const own = antigravityStep(parent)
       if (!own)
         return null
-      const result = span.result?.parentObject
-      const row = antigravityToolRow(own, result === parent
-        ? own
-        : antigravityStep(result), input.completion ?? parsed.completion)
+      const completion = input.completion ?? parsed.completion
+      const row = antigravityToolRow(own, completion)
       if (input.spanId)
         row.registryKey = input.spanId
-      return toolCallRow(antigravityToolCall(row), antigravityStepOpen(own)
+      return toolCallRow(antigravityToolCall(row), antigravityRowOpen(own, completion)
         ? 'request'
         : 'result', span.visibleRows)
     }

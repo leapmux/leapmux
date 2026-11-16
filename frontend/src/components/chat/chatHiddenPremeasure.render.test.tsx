@@ -36,6 +36,8 @@ function entryWithSpanLines(
   })
   return {
     ...prepareMessage(message),
+    rowId: message.id,
+    pending: false,
     // Geometry tests select the category independently of their bubble content.
     category: { kind },
     parsedSpanLines,

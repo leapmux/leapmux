@@ -29,7 +29,7 @@ import { ohMyPiQuestionAnswers, ohMyPiQuestionPrompts } from './question'
 import { ohMyPiReadIsUrl, ohMyPiReadResult } from './read'
 import { ohMyPiGlobResult, ohMyPiGrepResult, ohMyPiSearchPattern, ohMyPiTextSearchResult } from './search'
 import { ohMyPiTodoSource } from './todo'
-import { ohMyPiExtractTool, ohMyPiPairedRequest, ohMyPiPairedResult } from './toolCommon'
+import { ohMyPiExtractTool, ohMyPiPairedRequest } from './toolCommon'
 
 /** The display name of a tool whose wire name is not the word a reader wants. */
 const OH_MY_PI_TOOL_LABELS: ReadonlyMap<string, string> = new Map<string, string>([
@@ -54,18 +54,17 @@ const OH_MY_PI_TOOL_LABELS: ReadonlyMap<string, string> = new Map<string, string
 ])
 
 /**
- * One omp tool call, resolved from its row and the two frames that describe it.
+ * One omp tool call, resolved from its own frame and the span's request.
  *
  * omp's `tool_execution_end` carries no arguments, so a result row reads them from the
- * paired `tool_execution_start`.
+ * paired `tool_execution_start`. A request row reads its own start frame alone, so it
+ * states no result.
  */
 export interface OhMyPiToolRow {
   payload: Record<string, unknown>
   tool: OhMyPiToolExecution
   /** The paired `tool_execution_start`, or undefined when the store resolved none. */
   request: ParsedMessageContent | undefined
-  /** The paired `tool_execution_end`, or undefined when the store resolved none. */
-  result: ParsedMessageContent | undefined
   /** True when this row is the last one of its call. */
   finished: boolean
 }
@@ -74,7 +73,6 @@ export interface OhMyPiToolRow {
 export function ohMyPiToolRow(
   parsed: unknown,
   request: ParsedMessageContent | undefined,
-  result: ParsedMessageContent | undefined,
   completion?: MessageCompletion,
 ): OhMyPiToolRow | null {
   if (!isObject(parsed))
@@ -89,7 +87,6 @@ export function ohMyPiToolRow(
     payload: parsed,
     tool,
     request,
-    result,
     finished,
   }
 }
@@ -113,7 +110,6 @@ export function ohMyPiToolSpanRowRole(row: OhMyPiToolRow): ToolSpanRowRole {
 export interface OhMyPiToolFacts {
   payload: Record<string, unknown>
   request: ParsedMessageContent | undefined
-  result: ParsedMessageContent | undefined
   toolName: string
   label: string | undefined
   /** The call's arguments, which only the start frame carries. */
@@ -137,7 +133,7 @@ export interface OhMyPiToolFacts {
   /** omp flagged THIS frame as an error. This is not the row's status. */
   isError: boolean
   lifecycle: ToolCallLifecycleFacts
-  /** Whether omp supplied a result on this frame or on its paired end frame. */
+  /** Whether omp supplied a result, or a partial one, on this frame. */
   resultAvailable: boolean
 }
 
@@ -150,28 +146,24 @@ function frameResult(payload: Record<string, unknown> | undefined): Record<strin
 export function ohMyPiToolFacts(row: OhMyPiToolRow, completion: MessageCompletion | undefined): OhMyPiToolFacts {
   const toolName = row.tool.toolName
   const pairedStart = ohMyPiPairedRequest(row.payload, row.request)?.parentObject
-  const pairedEnd = ohMyPiPairedResult(row.payload, row.result)?.parentObject
-  const pairedEndTool = ohMyPiExtractTool(pairedEnd)
   // The arguments live on the start frame alone. The frame's OWN arguments win where it
   // carries any.
   const args = Object.keys(row.tool.args).length > 0
     ? row.tool.args
     : pickObject(pairedStart, OH_MY_PI_FRAME_FIELD.Args) ?? {}
   const intent = (row.tool.intent || ohMyPiExtractTool(pairedStart)?.intent || '').trim()
-  // A start row whose end already landed reads the end's result, so the running call's
-  // card and the finished call's card state one answer.
-  const own = row.tool.result ?? row.tool.partialResult
-  const source = own ?? pairedEndTool?.result
-  const rawResult = frameResult(row.payload) ?? frameResult(pairedEnd)
-  const blocks = asContentArray(rawResult?.content) ?? []
+  // Only this frame states a result. A running start frame states none, so its row
+  // draws the running call. The end frame, or a start frame that a stopped turn
+  // retained with its partial result, states the answer.
+  const source = row.tool.result ?? row.tool.partialResult
+  const blocks = asContentArray(frameResult(row.payload)?.content) ?? []
   const filePath = pickString(args, 'path')
   const images = splitToolResultContent(blocks, { text: 'text' }).images.map(image => withFallbackFilePath(image, filePath || undefined))
-  const isError = row.tool.isError || (own === undefined && pairedEndTool?.isError === true)
+  const isError = row.tool.isError
   const details = source?.details ?? {}
   return {
     payload: row.payload,
     request: row.request,
-    result: row.result,
     toolName,
     label: OH_MY_PI_TOOL_LABELS.get(toolName) ?? (toolName || undefined),
     args,
@@ -190,7 +182,7 @@ export function ohMyPiToolFacts(row: OhMyPiToolRow, completion: MessageCompletio
       providerOutcome: isError ? 'failed' : null,
       retainedOutcome: retainedOutcome(completion),
       rowFinal: row.finished,
-      resultFrameLanded: pickString(row.payload, 'type') === OH_MY_PI_EVENT.ToolExecutionEnd || pairedEnd !== undefined,
+      resultFrameLanded: pickString(row.payload, 'type') === OH_MY_PI_EVENT.ToolExecutionEnd,
     },
     resultAvailable: source !== undefined,
   }
@@ -199,8 +191,8 @@ export function ohMyPiToolFacts(row: OhMyPiToolRow, completion: MessageCompletio
 /**
  * The kind one row draws with, after the corrections the tool NAME cannot make.
  *
- * A NAMED step, and the only place a kind changes, so a call draws one card from its
- * first row to its last.
+ * A NAMED step, and the only place a kind changes. Each row decides from its own frame,
+ * so a start row and its end row can differ when only the end states the fact.
  */
 export function ohMyPiReclassify(facts: OhMyPiToolFacts): ToolKind {
   const declared = ohMyPiToolKind(facts.toolName)
@@ -213,7 +205,8 @@ export function ohMyPiReclassify(facts: OhMyPiToolFacts): ToolKind {
   // -- with its JSON arguments as the content. It is not a file write.
   if (declared === 'write' && pickString(facts.args, 'path').startsWith(OH_MY_PI_DEVICE_SCHEME))
     return 'mcp'
-  // `read` of a URL fetches a web page, whether the argument or the result says so.
+  // `read` of a URL fetches a web page, whether the argument or this row's own result
+  // says so.
   if (declared === 'read' && (/^https?:\/\//i.test(pickString(facts.args, 'path')) || ohMyPiReadIsUrl(facts.details, OH_MY_PI_READ_KIND_URL)))
     return 'fetch'
   // `hub` supervises project processes as well as it messages agents. A process
@@ -816,8 +809,8 @@ export const OH_MY_PI_TOOL_READERS: ToolCallSpecReaderTable<OhMyPiToolFacts> = {
   mcp: (facts): ToolCallSpecVariant<'mcp'> => {
     const request = requestFor('mcp', facts)
     const head = header(facts)
-    // NO result until the call finishes: the row draws the live output the worker
-    // broadcasts only while the call runs AND its result is absent.
+    // NO result until the call finishes: a call that runs states none, and its pending
+    // row draws the live output the worker broadcasts.
     if (!facts.resultAvailable || !facts.finished)
       return { kind: 'mcp', ...head, request }
     const content = facts.contentBlocks.map(parseMcpContentItem)

@@ -6,7 +6,7 @@ import { assembledMessageRow } from '~/test-support/assembledMessages'
 import { providerQuotableText, providerToolCall } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
 import { acpResultDivider } from '../acp/extractors/resultDivider'
-import { acpTextContent, describeACPProviderBasics, renderACPRow, renderACPToolPair } from '../acp/testUtils'
+import { acpTextContent, describeACPCallRows, describeACPProviderBasics, renderACPRow, renderACPToolPair } from '../acp/testUtils'
 import { sendOpenCodeQuestionResponse } from '../openCodeQuestions'
 import { providerFor } from '../registry'
 
@@ -965,4 +965,54 @@ describe('opencode question recognition', () => {
   ])('refuses %s', (_name, payload) => {
     expect(capability()?.isRequest(payload)).toBeFalsy()
   })
+})
+
+// OpenCode's `read` runs a file read or a directory listing behind one registry id,
+// and only the answer states which one ran. The request row draws the read it asked
+// for, and the result row carries the listing.
+describe('opencode call rows', () => {
+  describeACPCallRows(AgentProvider.OPENCODE, [
+    {
+      name: 'a read that lists a directory',
+      request: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'oc-read',
+        kind: 'read',
+        title: 'read',
+        status: 'pending',
+        rawInput: { filePath: '/p' },
+      },
+      result: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'oc-read',
+        status: 'completed',
+        rawOutput: {
+          metadata: {
+            display: {
+              type: 'directory',
+              path: '/p',
+              entries: ['a.ts'],
+            },
+          },
+        },
+      },
+      requestCall: {
+        kind: 'read',
+        name: 'read',
+        status: 'pending',
+        request: { path: '/p' },
+      },
+      resultCall: {
+        kind: 'list',
+        name: 'read',
+        status: 'completed',
+        request: { path: '/p' },
+        result: {
+          entries: [
+            { path: 'a.ts' },
+          ],
+        },
+      },
+    },
+  ])
 })

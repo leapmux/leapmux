@@ -228,9 +228,8 @@ describe('codex image items', () => {
         ? request
         : result,
       request: () => request,
-      result: () => result,
       role: () => role,
-      visibleRows: () => ({ request: true, result: true }),
+      visibleRows: () => ({ request: true }),
       fileImages: images.files,
     })
     const category: MessageCategory = { kind: 'tool_use' }

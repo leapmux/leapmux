@@ -7,7 +7,11 @@ import type { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux
 import { fixedCacheKey } from './messageRenderCache'
 import { extractChatRow } from './rowExtraction'
 
-export type RowExtractionSources = Pick<MessageRenderSources, 'request' | 'result' | 'role' | 'visibleRows'>
+/**
+ * The sources one row extraction reads. No member gives the row a LATER message of its
+ * span: a request row never reads its result (see ToolSpanContext).
+ */
+export type RowExtractionSources = Pick<MessageRenderSources, 'request' | 'role' | 'visibleRows'>
 
 export interface RowExtractionContext extends Pick<MarkdownRenderContext, 'renderCache'> {
   sources?: RowExtractionSources
@@ -17,9 +21,8 @@ export interface RowExtractionContext extends Pick<MarkdownRenderContext, 'rende
 function rowSpanContext(context: RowExtractionContext | undefined): ToolSpanContext {
   return {
     request: context?.sources?.request(),
-    result: context?.sources?.result(),
     role: context?.sources?.role() ?? 'other',
-    visibleRows: context?.sources?.visibleRows() ?? { request: false, result: false },
+    visibleRows: context?.sources?.visibleRows() ?? { request: false },
   }
 }
 
@@ -42,10 +45,8 @@ function sameDependencies(left: RowModelDependencies, right: RowModelDependencie
     && left.completion === right.completion
     && left.spanType === right.spanType
     && left.span.request === right.span.request
-    && left.span.result === right.span.result
     && left.span.role === right.span.role
     && left.span.visibleRows.request === right.span.visibleRows.request
-    && left.span.visibleRows.result === right.span.visibleRows.result
 }
 
 const ROW_CACHE_KEY = fixedCacheKey<CachedRowEntry>('model.row')

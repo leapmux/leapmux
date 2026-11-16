@@ -42,9 +42,10 @@ const PI_TOOL_LABELS: ReadonlyMap<string, string> = new Map<string, string>([
 ])
 
 /**
- * Read one tool call from its frame and the two events that describe it.
+ * Read one tool call from its own frame and the span's request.
  *
  * Pi sends arguments only on tool_execution_start. A result row uses that exact paired request.
+ * A request row reads its own start frame alone, so it states no result.
  * Resolve the to-do source once. Both its body and outcome need the same result.
  * A to-do failure can appear in details.error while Pi reports isError: false.
  */
@@ -53,8 +54,6 @@ export interface PiToolRow {
   tool: PiToolExecution
   /** The paired `tool_execution_start`, or undefined when the store resolved none. */
   request: ParsedMessageContent | undefined
-  /** The paired `tool_execution_end`, or undefined when the store resolved none. */
-  result: ParsedMessageContent | undefined
   /** The resolved checklist of a to-do call, or null for every other tool. */
   todo: PiTodoSource | null
   /** True when this row is the last one of its call. */
@@ -67,7 +66,6 @@ export interface PiToolRow {
 export function piToolRow(
   parsed: unknown,
   request: ParsedMessageContent | undefined,
-  result: ParsedMessageContent | undefined,
   completion?: MessageCompletion,
 ): PiToolRow | null {
   if (!isObject(parsed))
@@ -78,13 +76,12 @@ export function piToolRow(
   // A retained start frame is the last row when the turn stops before native completion.
   const finished = pickString(parsed, 'type') === PI_EVENT.ToolExecutionEnd || retainedRowIsFinal(completion)
   const todo = tool.toolName === PI_TOOL.Todo
-    ? piTodoSource(parsed, request, result)
+    ? piTodoSource(parsed, request)
     : null
   return {
     payload: parsed,
     tool,
     request,
-    result,
     todo,
     finished,
     isError: tool.isError || !!todo?.error,
@@ -120,8 +117,6 @@ export interface PiToolFacts {
   payload: Record<string, unknown>
   /** The paired `tool_execution_start`, or undefined when the store resolved none. */
   request: ParsedMessageContent | undefined
-  /** The paired `tool_execution_end`, or undefined when the store resolved none. */
-  result: ParsedMessageContent | undefined
   /** Pi's own tool name, which is all Pi states about which tool ran. */
   toolName: string
   /** The tool's display name: the table's word, else the wire name. */
@@ -142,21 +137,19 @@ export interface PiToolFacts {
   isError: boolean
   /** Raw lifecycle facts. The shared derivation decides their precedence. */
   lifecycle: ToolCallLifecycleFacts
-  /** Whether Pi supplied a result body on this frame or its resolved result side. */
+  /** Whether Pi supplied a result body on this frame. */
   resultAvailable: boolean
 }
 
 /** Collect everything the payload decisions read, in one pass. */
 export function piToolFacts(row: PiToolRow, completion: MessageCompletion | undefined): PiToolFacts {
   const toolName = row.tool.toolName
-  const pairedResult = piExtractTool(row.result?.parentObject)
   // Result rows read arguments from the exact paired opening event.
   // Arguments on this frame take precedence when present.
   const paired = pickObject(piPairedRequest(row.payload, row.request)?.parentObject, 'args')
   return {
     payload: row.payload,
     request: row.request,
-    result: row.result,
     toolName,
     label: PI_TOOL_LABELS.get(toolName) ?? (toolName || undefined),
     args: Object.keys(row.tool.args).length > 0
@@ -173,12 +166,9 @@ export function piToolFacts(row: PiToolRow, completion: MessageCompletion | unde
       providerOutcome: row.isError ? 'failed' : null,
       retainedOutcome: retainedOutcome(completion),
       rowFinal: row.finished,
-      resultFrameLanded: pickString(row.payload, 'type') === PI_EVENT.ToolExecutionEnd || row.result !== undefined,
+      resultFrameLanded: pickString(row.payload, 'type') === PI_EVENT.ToolExecutionEnd,
     },
-    resultAvailable: row.tool.result !== undefined
-      || row.tool.partialResult !== undefined
-      || pairedResult?.result !== undefined
-      || pairedResult?.partialResult !== undefined,
+    resultAvailable: row.tool.result !== undefined || row.tool.partialResult !== undefined,
   }
 }
 
@@ -187,7 +177,8 @@ export function piToolFacts(row: PiToolRow, completion: MessageCompletion | unde
  *
  * This is the only step that changes a declared kind.
  * An unknown tool needs the rich-content MCP card. An invalid to-do result needs that card also.
- * Do not delay either change until completion. One call must keep one card kind while it runs and after it ends.
+ * Do not delay either change until completion: each row decides its kind from its own frame.
+ * A request row and its result row can still differ, when only the result states the fact that changes the kind.
  *
  * Export this step so the tool-call tests can check each change and unchanged kind.
  */
@@ -216,7 +207,7 @@ export function piReclassify(facts: PiToolFacts): ToolKind {
  * PI_TOOL_READERS explains that TypeScript requirement.
  */
 export const PI_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<PiToolFacts> = {
-  // Pi describes an agent launch across this frame and its paired events.
+  // Pi describes an agent launch across this frame and the paired start frame.
   // The shared request reader sees only arguments.
   agent: (_args, facts): ToolRequestByKind['agent'] => piRowAgentRequest(facts),
   // Read substitutions from the opening event.
@@ -242,7 +233,7 @@ export const PI_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<PiToolFacts> = {
   },
   // Native result details supply the original server and tool. The arguments contain neither field.
   mcp: (args, facts): ToolRequestByKind['mcp'] => {
-    const identity = piMcpIdentity(facts.payload, facts.result)
+    const identity = piMcpIdentity(facts.payload)
     return identity
       ? { server: identity.server, tool: identity.tool, args }
       : { server: '', tool: facts.toolName, args }
@@ -427,7 +418,8 @@ export const PI_TOOL_READERS: ToolCallSpecReaderTable<PiToolFacts> = {
     const header = piHeader(facts)
     // Use the native checklist title or listing count.
     const title = facts.todo?.list.title ?? header.title
-    const metadata = facts.todo?.metadata.length ? facts.todo.metadata : undefined
+    // The task facts come from the result's snapshot, so they belong to the result.
+    const resultMetadata = facts.todo?.resultMetadata.length ? facts.todo.resultMetadata : undefined
     // Pi can report a refused operation in details.error while its error flag stays false.
     // The resolved checklist supplies that failure reason.
     if (facts.todo?.error) {
@@ -435,8 +427,8 @@ export const PI_TOOL_READERS: ToolCallSpecReaderTable<PiToolFacts> = {
         kind: 'todo',
         ...header,
         title,
-        ...(metadata !== undefined
-          ? { metadata }
+        ...(resultMetadata !== undefined
+          ? { resultMetadata }
           : {}),
         request,
         result: failedResult(facts.todo.error),
@@ -448,8 +440,8 @@ export const PI_TOOL_READERS: ToolCallSpecReaderTable<PiToolFacts> = {
       kind: 'todo',
       ...header,
       title,
-      ...(metadata !== undefined
-        ? { metadata }
+      ...(resultMetadata !== undefined
+        ? { resultMetadata }
         : {}),
       request,
       ...(facts.resultAvailable
@@ -655,14 +647,14 @@ export const PI_TOOL_READERS: ToolCallSpecReaderTable<PiToolFacts> = {
         }
       : piHeader(facts)
     // Attach a result only after the call finishes.
-    // A running call needs an absent result so ToolMessage can display live output.
+    // A running call states no result: its request row draws none, and its pending row draws the live output.
     // This rule covers Pi extensions and MCP bridges under the generic kind.
     // The tool vocabulary invariant and opening-frame tests enforce the same rule.
     if (!facts.resultAvailable)
       return { kind: 'mcp', ...header, request }
     // piToolRow refuses frames without a tool call before this reader runs.
     // Optional reads still account for the nullable helper return type.
-    const source = piGenericToolSource(facts.payload, facts.request, facts.result)
+    const source = piGenericToolSource(facts.payload, facts.request)
     // Images remain in their content blocks.
     // A separate image list would duplicate every result image.
     const content = source?.content.length
@@ -728,7 +720,7 @@ export function piToolCall(row: PiToolRow, completion?: MessageCompletion): Tool
 /** The subagent card of a launch, a workflow run, or one of the two control tools. */
 function piRowAgentRequest(facts: PiToolFacts): AgentRequest {
   return facts.toolName === PI_TOOL.SubagentWorkflow
-    ? piWorkflowRequest(facts.payload, facts.request, facts.result)
+    ? piWorkflowRequest(facts.payload, facts.request)
     : piAgentRequest(facts.payload, facts.request)
 }
 

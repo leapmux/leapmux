@@ -5,9 +5,8 @@ import { piExtractRow } from './row'
 
 const NO_SIDES = {
   request: undefined,
-  result: undefined,
   role: 'other' as const,
-  visibleRows: { request: false, result: false },
+  visibleRows: { request: false },
 }
 
 function toolRow(payload: Record<string, unknown>, completion?: MessageCompletion): ToolCallRow | null {

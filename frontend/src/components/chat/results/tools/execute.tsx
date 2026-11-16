@@ -2,7 +2,7 @@ import type { JSX } from 'solid-js'
 import type { ToolMetadataEntry } from '../../model/toolMetadata'
 import type { CommandAction, CommandLanguage, ExecuteRequest } from '../../model/tools/execute'
 import type { ToolResultRenderContext } from '../../renderContext'
-import type { ParsedCall, ToolKindRenderer, ToolRowView } from './renderer'
+import type { RequestSideCall, ToolKindRenderer, ToolRowView } from './renderer'
 import Terminal from 'lucide-solid/icons/terminal'
 import { For, Show } from 'solid-js'
 import { Tooltip } from '~/components/common/Tooltip'
@@ -123,7 +123,7 @@ function commandActionEntry(action: CommandAction, language: CommandLanguage | u
 }
 
 /** A single semantic action that can replace the generic execute title. */
-function knownActionForTitle(call: ParsedCall<'execute'>): Exclude<CommandAction, { kind: 'unknown' }> | undefined {
+function knownActionForTitle(call: RequestSideCall<'execute'>): Exclude<CommandAction, { kind: 'unknown' }> | undefined {
   if (call.request.description || (call.title && call.title !== 'Run command'))
     return undefined
   const action = call.request.actions?.length === 1

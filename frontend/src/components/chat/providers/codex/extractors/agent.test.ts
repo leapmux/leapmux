@@ -61,7 +61,7 @@ describe('codex agent counterpart validation', () => {
         status: 'inProgress',
         ...fields,
       },
-    }), 'request')).toBeNull()
+    }))).toBeNull()
   })
 
   // Codex serializes an unset String as `""`, so an empty field is an ABSENT one and the
@@ -85,7 +85,7 @@ describe('codex agent counterpart validation', () => {
         child: { status: 'completed', message: 'Actual report' },
       },
     }
-    const resolved = resolveCodexAgentItem(current, codexAgentCounterpart(current, input({ item: request }), 'request'))
+    const resolved = resolveCodexAgentItem(current, codexAgentCounterpart(current, input({ item: request })))
     expect(resolved.prompt).toBe('Requested prompt')
     expect(resolved.model).toBe('requested-model')
     expect(resolved.status).toBe('completed')
@@ -108,14 +108,14 @@ describe('codex agent counterpart validation', () => {
       reasoningEffort: 'high',
     }
     const current = { ...item, [field]: '' }
-    const resolved = resolveCodexAgentItem(current, codexAgentCounterpart(current, input({ item: request }), 'request'))
+    const resolved = resolveCodexAgentItem(current, codexAgentCounterpart(current, input({ item: request })))
     expect(resolved[field]).toBe(request[field as keyof typeof request])
   })
 
   it('keeps a non-empty field of the current item, which is the authoritative one', () => {
     const request = { ...item, status: 'inProgress', prompt: 'Requested prompt' }
     const current = { ...item, prompt: 'Current prompt' }
-    const resolved = resolveCodexAgentItem(current, codexAgentCounterpart(current, input({ item: request }), 'request'))
+    const resolved = resolveCodexAgentItem(current, codexAgentCounterpart(current, input({ item: request })))
     expect(resolved.prompt).toBe('Current prompt')
   })
 

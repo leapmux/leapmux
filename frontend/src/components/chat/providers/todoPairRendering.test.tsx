@@ -64,9 +64,8 @@ describe.each([AgentProvider.CLAUDE_CODE, AgentProvider.ZCODE])('paired to-do la
     })
     const sources = (role: 'request' | 'result') => testMessageSources({
       request: () => parsed(request),
-      result: () => parsed(result),
       role: () => role,
-      visibleRows: () => ({ request: true, result: true }),
+      visibleRows: () => ({ request: true }),
     })
     const { container } = render(() => (
       <>

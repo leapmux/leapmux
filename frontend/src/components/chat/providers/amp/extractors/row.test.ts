@@ -11,9 +11,8 @@ import '~/components/chat/providers'
 const provider = AgentProvider.AMP
 const noSpan: ToolSpanContext = {
   request: undefined,
-  result: undefined,
   role: 'result',
-  visibleRows: { request: false, result: true },
+  visibleRows: { request: false },
 }
 
 function extract(parent: Record<string, unknown>, kind: string, span: ToolSpanContext = noSpan) {
@@ -72,18 +71,58 @@ describe('ampExtractRow', () => {
       : null).toBe('mcp')
   })
 
-  it('draws a running call as the request side, and its landed result on it', () => {
+  it('draws a call row from its own block, with no result', () => {
     const call = ampToolUseRow('shell_command', { command: 'ls' }, 'TU-a')
-    const running = extract(call, 'tool_use', { ...noSpan, role: 'request' })
+    const running = extract(call, 'tool_use', {
+      ...noSpan,
+      request: input(call, undefined, provider),
+      role: 'request',
+    })
     expect(running).toMatchObject({ kind: 'tool', role: 'request' })
     expect(running?.kind === 'tool'
-      ? running.call.status
-      : null).toBe('unstated')
-    const landed = input(ampToolResultRow('{"output":"x","exitCode":0}', false, 'TU-a'), undefined, provider)
-    const answered = extract(call, 'tool_use', { ...noSpan, role: 'request', result: landed })
+      ? [
+          running.call.kind,
+          running.call.status,
+          running.call.request,
+          running.call.result,
+        ]
+      : null).toEqual([
+      'execute',
+      'unstated',
+      { command: 'ls' },
+      undefined,
+    ])
+  })
+
+  it('draws the whole call on its result row', () => {
+    const request = input(ampToolUseRow('shell_command', { command: 'ls' }, 'TU-a'), undefined, provider)
+    const answered = extract(ampToolResultRow('{"output":"x","exitCode":0}', false, 'TU-a'), 'tool_result', {
+      request,
+      role: 'result',
+      visibleRows: { request: true },
+    })
+    expect(answered).toMatchObject({ kind: 'tool', role: 'result', hasRequestRow: true })
     expect(answered?.kind === 'tool'
-      ? answered.call.status
-      : null).toBe('completed')
+      ? [
+          answered.call.kind,
+          answered.call.label,
+          answered.call.status,
+          answered.call.request,
+        ]
+      : null).toEqual([
+      'execute',
+      'Shell',
+      'completed',
+      { command: 'ls' },
+    ])
+    expect(answered?.kind === 'tool' && answered.call.kind === 'execute'
+      ? answered.call.result
+      : null).toEqual({
+      commands: [
+        { output: 'x', exitCode: 0 },
+      ],
+      unresolvedTerminals: [],
+    })
   })
 
   it('answers null for a tool category on a row that is not a tool row', () => {

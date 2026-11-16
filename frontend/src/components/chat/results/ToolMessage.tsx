@@ -1,20 +1,18 @@
 import type { JSX } from 'solid-js'
-import type { MessageUiKey } from '../messageUiKeys'
 import type { ToolCallRow } from '../model/row'
+import type { ToolCall } from '../model/toolCall'
 import type { ToolKind } from '../model/toolKind'
-import type { MessageUiState, ToolProgressSource, ToolResultRenderContext } from '../renderContext'
+import type { ToolResultRenderContext } from '../renderContext'
 import type { ToolCallDispatch } from './tools/index'
 import type { ToolRowView } from './tools/renderer'
 import CircleExclamationPoint from 'lucide-solid/icons/circle-exclamation-point'
 import TriangleExclamationPoint from 'lucide-solid/icons/triangle-exclamation-point'
-import { createMemo, createSignal, Match, Show, Switch, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, Match, Show, Switch, untrack } from 'solid-js'
 import { useCopyButton } from '~/hooks/useCopyButton'
-import { stripLeadingBlankLines } from '~/lib/normalizeProgressOutput'
 import { useSharedExpandedState } from '../messageRenderers'
-import { MESSAGE_UI_KEY } from '../messageUiKeys'
 import { rowDrawsRequest, rowDrawsResult, rowHasRequestRow, toolRowPosition } from '../model/derivations'
 import { isToolFailureResult, isUnparsedToolResult } from '../model/toolCall'
-import { isFinishedToolCallStatus, toolCallStatusOutcome } from '../model/toolCallStatus'
+import { toolCallStatusOutcome } from '../model/toolCallStatus'
 import { isDisplayHeld } from '../renderContext'
 import { toolOutcomeLabel } from '../results/toolOutcomeLabel'
 import { toolInputSummary } from '../toolStyles.css'
@@ -26,56 +24,51 @@ import { extraImages, resultImages } from './rowImages'
 import { toolHintIcon } from './toolIconHints'
 import { ToolMetadata } from './ToolMetadata'
 import { ToolOutputFilePaths } from './ToolOutputFilePaths'
+import { createRowBodyContext, rowExpandKey } from './toolRowState'
 import { toolCallDisplayName } from './tools/header'
 import { dispatchParts } from './tools/index'
 import { toolCallMeta } from './tools/meta'
 import { PlainTextResult } from './tools/plainTextResult'
 import { ToolOutcomeHeader } from './ToolStatusHeader'
 
-/** Draw one tool row from its merged call: one kind, one request, one result slot. */
-export function ToolMessage(props: { row: ToolCallRow, context?: ToolResultRenderContext, progress?: ToolProgressSource }): JSX.Element {
+/**
+ * Draw one tool row from its call: one kind, one request, one result slot.
+ *
+ * A request row draws its own call alone, and never a result: it shows, and reports its
+ * height, before the result exists. Its HEADER is the one exception. `header` is the
+ * newest call of the span that the browser holds -- the result row's call once the
+ * result landed -- so the header states the facts that only the result states, such as
+ * a file path that a call learned while it ran. The header is one line while the row
+ * is collapsed (see toolUseTitle), so the newer call changes its words and never the
+ * height of the row.
+ */
+export function ToolMessage(props: { row: ToolCallRow, header?: ToolCall | undefined, context?: ToolResultRenderContext }): JSX.Element {
   const call = createMemo(() => props.row.call)
   const drawsRequest = () => rowDrawsRequest(props.row)
   const drawsResult = () => rowDrawsResult(props.row)
   // Dispatch supplies the correlated renderer and call to each hook.
   // This component requires no assertion to pair them again.
   const parts = createMemo((): ToolCallDispatch<ToolKind> => dispatchParts(call()))
+  // The call the header states. A result row heads itself with its own call, which is
+  // already the newest. A request row heads itself with the newest call of its span.
+  const headerParts = createMemo((): ToolCallDispatch<ToolKind> => {
+    const header = props.header
+    return header === undefined || drawsResult()
+      ? parts()
+      : dispatchParts(header)
+  })
   const plain = createMemo(() => {
     const result = call().result
     return isToolFailureResult(result) || isUnparsedToolResult(result)
       ? result
       : undefined
   })
-  // One key per mounted row, read once: AGENT_PROMPT for an agent request row, TOOL_RESULT_EXPANDED otherwise.
-  const expandKey = untrack((): MessageUiKey => (!drawsResult() && parts().renderer.requestExpandUiKey) || MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)
+  const expandKey = untrack(() => rowExpandKey(drawsResult(), parts()))
   const [expanded, setExpanded] = useSharedExpandedState(() => props.context, expandKey)
   const [summaryOverflows, setSummaryOverflows] = createSignal(false)
+  const [titleOverflows, setTitleOverflows] = createSignal(false)
 
-  // Local state supports an isolated render without a message-store host.
-  // The expansion reader and writer must use the same state.
-  // Replacing only the reader leaves the writer attached to another signal.
-  // The view then ignores each expansion change.
-  // This MessageUiState supplies both operations for this row's expansion key.
-  // It forwards every other key to the message host.
-  const rowUiState: MessageUiState = {
-    get: key => key === MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED
-      ? expanded()
-      : props.context?.getMessageUiState?.(key),
-    set: (key, value) => {
-      if (key === MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)
-        setExpanded(value)
-      else
-        props.context?.setMessageUiState?.(key, value)
-    },
-  }
-  const bodyContext = createMemo<ToolResultRenderContext>(() => {
-    const context: ToolResultRenderContext = Object.create(props.context ?? null)
-    Object.defineProperties(context, {
-      getMessageUiState: { value: rowUiState.get },
-      setMessageUiState: { value: rowUiState.set },
-    })
-    return context
-  })
+  const bodyContext = createRowBodyContext(() => props.context, expanded, value => setExpanded(value))
 
   // Solid compiles `view={view()}` to a getter.
   // A plain function allocates a new view for each child property read.
@@ -86,7 +79,6 @@ export function ToolMessage(props: { row: ToolCallRow, context?: ToolResultRende
     // A field-by-field reconstruction can admit an invalid sibling.
     ...toolRowPosition(props.row),
     context: bodyContext(),
-    drawsResult: drawsResult(),
     expanded,
     setExpanded: value => setExpanded(value),
     // The result body draws first, so its images start at index zero.
@@ -95,7 +87,10 @@ export function ToolMessage(props: { row: ToolCallRow, context?: ToolResultRende
     onSummaryOverflow: setSummaryOverflows,
   }))
   const meta = createMemo(() => toolCallMeta(props.row))
-  const expandable = () => meta().collapsible || summaryOverflows()
+  // Expand opens whatever the row clips: a body, a summary, or a header title.
+  const expandable = () => meta().collapsible || summaryOverflows() || titleOverflows()
+  // The outer toolbar knows the meta alone, so it learns here what the header clips.
+  createEffect(() => props.context?.onHeaderClipsChange?.(summaryOverflows() || titleOverflows()))
   const { copied, copy } = useCopyButton(() => meta().copyableContent() ?? undefined)
   // Quote and Copy use the same getter for this row's text.
   // context.onReply adds the blockquote syntax, so this handler supplies bare text.
@@ -113,14 +108,7 @@ export function ToolMessage(props: { row: ToolCallRow, context?: ToolResultRende
         reply(text)
     }
   }
-  // Show live output only before the call returns a result.
-  // The Worker broadcasts this output on the ephemeral channel.
-  // It removes that output when the persisted result arrives.
-  // The completed row then uses its own text without changing the layout.
-  const liveTail = () => !isFinishedToolCallStatus(call().status) && call().result === undefined
-    ? props.progress?.liveTail()
-    : undefined
-  const truncated = () => call().truncated || liveTail()?.outputTruncated === true
+  const truncated = () => call().truncated === true
   const statusOutcome = () => toolCallStatusOutcome(call().status)
   // Use the call's title for image tabs when it supplies one.
   // Otherwise, use the display name when the renderer puts that name first.
@@ -179,9 +167,10 @@ export function ToolMessage(props: { row: ToolCallRow, context?: ToolResultRende
         ? 'result'
         : 'request'}
       hasRequest={props.row.role === 'result' && rowHasRequestRow(props.row)}
-      icon={toolHintIcon(call().icon) ?? parts().renderer.icon}
-      toolName={toolCallDisplayName(call())}
-      title={parts().renderer.title(parts().parsed, props.context)}
+      icon={toolHintIcon(headerParts().call.icon) ?? headerParts().renderer.icon}
+      toolName={toolCallDisplayName(headerParts().call)}
+      title={headerParts().renderer.title(headerParts().parsed, props.context)}
+      onTitleOverflow={setTitleOverflows}
       {...summaryProps()}
       {...(props.context !== undefined
         ? { context: props.context }
@@ -201,20 +190,25 @@ export function ToolMessage(props: { row: ToolCallRow, context?: ToolResultRende
     >
       <Show when={drawsRequest() && call().metadata}>{items => <ToolMetadata items={items()} />}</Show>
       <Show when={drawsRequest()}>{parts().renderer.request?.(parts().parsed, view())}</Show>
-      {/* Show all result content under one rowDrawsResult condition.
-          A paired request row must show none of this content.
+      {/* A row of no span is its whole call: no pending row follows it and no result row
+          replaces it, so it draws the preview of its call itself. */}
+      <Show when={props.context?.loneCall && drawsRequest() && !drawsResult()}>{parts().renderer.pending?.(parts().parsed, view())}</Show>
+      {/* Show all result content under one rowDrawsResult condition: only a result row
+          draws it. A request row never reads its result, and the pending row below it
+          draws the live output of a call that still runs.
           Separate conditions previously duplicated extra content and truncation notices.
           They also supplied image indices for images that the request row did not own.
           An image tab could then show the wrong image after reload.
           This shared condition keeps rendering and imagesForRow consistent. */}
       <Show when={drawsResult()}>
+        <Show when={call().resultMetadata}>{items => <ToolMetadata items={items()} />}</Show>
         <ToolOutputFilePaths paths={call().outputFilePaths} />
+        <Show when={parts().resolved === undefined}>{parts().renderer.withoutTypedResult?.(parts().parsed, view(), call().result !== undefined)}</Show>
         <Switch>
           <Match when={plain()}>{p => <PlainTextResult text={p().text} view={view()} />}</Match>
           {/* Match narrows the resolved call that dispatch supplies.
               The correlated renderer and call require no assertion here. */}
           <Match when={parts().resolved}>{c => parts().renderer.result(c(), view())}</Match>
-          <Match when={liveTail()?.outputTail}>{tail => <PlainTextResult text={stripLeadingBlankLines(tail())} view={view()} />}</Match>
         </Switch>
         <Show when={truncated()}><div class={toolInputSummary}>{TRUNCATION_NOTICE}</div></Show>
         {/* Extra content follows the result body, including its image indices.

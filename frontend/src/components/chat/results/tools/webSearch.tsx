@@ -1,11 +1,10 @@
 import type { JSX } from 'solid-js'
 import type { ToolKindRenderer } from './renderer'
 import Globe from 'lucide-solid/icons/globe'
-import { Show } from 'solid-js'
 import { toolInputCode, toolInputText } from '../../toolStyles.css'
 import { COLLAPSED_RESULT_ROWS } from '../collapse'
 import { textNeedsCollapse } from '../useCollapsedLines'
-import { WebSearchResultsBody } from '../webSearchResults'
+import { extraQueries, WebSearchQueries, WebSearchResultsBody } from '../webSearchResults'
 import { renderQueryTitle, renderUrlTitle } from './titleParts'
 
 /** The summary a web search stated, or its links written out one per pair of lines. */
@@ -45,25 +44,12 @@ export const webSearchRenderer: ToolKindRenderer<'web_search'> = {
   title(call) {
     return webSearchTitle(call.request) ?? call.title ?? 'Web Search'
   },
-  // A row that has not drawn its result still states its queries: one search
-  // runs several, and the row is the only place a reader can see them all.
+  // One search often runs several queries, and the title states the first. The row
+  // that draws the request states the rest on Expand, while the call runs and after it
+  // ends: they are arguments of the call, and the result row draws only what it found.
   request(call, view) {
     return (
-      <Show when={call.result === undefined}>
-        <WebSearchResultsBody
-          source={{ links: [], summary: '' }}
-          request={call.request}
-          {...(view.context !== undefined
-            ? { context: view.context }
-            : {})}
-        />
-      </Show>
-    )
-  },
-  result(call, view) {
-    return (
-      <WebSearchResultsBody
-        source={call.result}
+      <WebSearchQueries
         request={call.request}
         {...(view.context !== undefined
           ? { context: view.context }
@@ -71,18 +57,27 @@ export const webSearchRenderer: ToolKindRenderer<'web_search'> = {
       />
     )
   },
+  result(call, view) {
+    return (
+      <WebSearchResultsBody
+        source={call.result}
+        {...(view.context !== undefined
+          ? { context: view.context }
+          : {})}
+      />
+    )
+  },
   requestMeta(call) {
-    // One search often runs several queries; the paired request row holds the
-    // header for the pair, so its toolbar offers the expand that reveals them.
+    // One search often runs several queries, and the row that draws the request
+    // states them, so its toolbar offers the expand that reveals them.
     return {
-      collapsible: (call.request.queries?.length ?? 0) > 1,
+      collapsible: extraQueries(call.request).length > 0,
       copyableContent: () => call.request.query || null,
     }
   },
   resultMeta(call) {
     return {
       collapsible: call.result.links.length > COLLAPSED_RESULT_ROWS
-        || (call.request.queries?.length ?? 0) > 1
         || textNeedsCollapse(call.result.summary),
       hasDiff: false,
       // Built INSIDE the closure. Hoisted, it joined every link's title and address on

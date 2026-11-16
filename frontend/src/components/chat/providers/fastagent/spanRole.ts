@@ -1,5 +1,5 @@
 import type { ResolvedMessageContent } from '../../rowExtractionTypes'
-import type { ToolSpanRole, ToolSpanSide } from '~/lib/messageSpan'
+import type { ToolSpanRole } from '~/lib/messageSpan'
 import { fastAgentACPPlugin } from './acpPlugin'
 import { fastAgentArchiveSource, hasFastAgentArchiveSource } from './archiveSource'
 
@@ -16,16 +16,16 @@ export function fastAgentSpanRole(parsed: ResolvedMessageContent): ToolSpanRole 
     return 'result'
   return 'none'
 }
-export function fastAgentRelatedMessages(parsed: ResolvedMessageContent): readonly ToolSpanSide[] {
-  const source = fastAgentArchiveSource(parsed)
-  if (!source) {
-    return hasFastAgentArchiveSource(parsed)
-      ? []
-      : fastAgentACPPlugin.transcript.relatedMessages?.(parsed) ?? []
-  }
-  if (source.kind === 'request')
-    return ['result']
-  if (source.kind === 'result')
-    return ['request']
-  return []
+
+/**
+ * Whether the row of one message draws from its span's request.
+ *
+ * An archived row never does: a request states its own call, and a result carries
+ * the request that it answers in its own provenance. A live row asks the Agent Client
+ * Protocol reader.
+ */
+export function fastAgentNeedsRequest(parsed: ResolvedMessageContent): boolean {
+  if (hasFastAgentArchiveSource(parsed))
+    return false
+  return fastAgentACPPlugin.transcript.needsRequest?.(parsed) ?? false
 }

@@ -4,7 +4,7 @@ import { todoList } from '~/components/todo/TodoList.css'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { providerToolMeta } from '~/test-support/toolCallFixture'
-import { renderMessageContent } from '../../messageContentRenderer'
+import { renderListedMessageContent } from '../../messageContentRenderer'
 import { renderACPToolPair } from '../acp/testUtils'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
@@ -141,7 +141,7 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
       toolCallId: 'tool',
       ...fields,
     }
-    return render(() => renderMessageContent(tool, { premeasureMode: true }, providerFor(provider)!.transcript.classify(input(tool)), provider))
+    return render(() => renderListedMessageContent(tool, { premeasureMode: true }, providerFor(provider)!.transcript.classify(input(tool)), provider))
   }
 
   it('renders directory entries from display metadata as a file list', () => {

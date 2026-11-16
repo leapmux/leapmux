@@ -245,7 +245,7 @@ export interface ToolCallFixtureOptions<K extends ToolKind> {
 
 /** One mounted row around a call. */
 export function toolRow(call: ToolCall, role: ToolSpanRowRole = 'result', span: Partial<ToolSpanRowPresence> = {}): ToolCallRow {
-  return toolCallRow(call, role, { request: span.request ?? false, result: span.result ?? false })
+  return toolCallRow(call, role, { request: span.request ?? false })
 }
 
 /** The ONE tool call a provider frame becomes, or null when the frame draws no tool row. */
@@ -315,11 +315,8 @@ export function providerRow(
     request: options.request === undefined
       ? undefined
       : resolveMessageForRendering(options.request, provider),
-    result: options.result === undefined
-      ? undefined
-      : resolveMessageForRendering(options.result, provider),
     role: options.role ?? 'result',
-    visibleRows: { request: options.request !== undefined, result: options.result !== undefined || (options.role ?? 'result') === 'result' },
+    visibleRows: { request: options.request !== undefined },
   }
   return extractedRow(extractChatRow(provider, parsed, category, { ...options, span }))
 }
@@ -327,17 +324,16 @@ export function providerRow(
 /**
  * What a test states about one row beyond the frame itself.
  *
- * `request` and `result` are the two SIDES the message store resolves for a
- * mounted row, spelled as the parsed messages a test already builds -- so a case
- * says "this result, with that request beside it" rather than assembling the
- * four-field span shape by hand.
+ * `request` is the SIDE the message store resolves for a mounted row, spelled as
+ * the parsed message a test already builds -- so a case says "this result, with that
+ * request beside it" rather than assembling the span shape by hand. No option gives a
+ * row its RESULT: a row never reads a later message of its span (see ToolSpanContext).
  */
 export interface ProviderRowOptions extends RowExtractionOptions {
   /** The stored row's native session identity. An empty value remains empty. */
   agentSessionId?: string
   category?: MessageCategory
   request?: ParsedMessageContent
-  result?: ParsedMessageContent
   /**
    * Where this row sits in its span. It defaults to `result`, because that is the
    * side every reader of a finished row resolves: the toolbar, the image tab and

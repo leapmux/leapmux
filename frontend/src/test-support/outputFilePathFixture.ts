@@ -41,11 +41,8 @@ export function outputFilePathFixture(
       request: scoped.request === undefined
         ? undefined
         : resolveMessageForRendering(scoped.request, provider),
-      result: scoped.result === undefined
-        ? undefined
-        : resolveMessageForRendering(scoped.result, provider),
       role: scoped.role ?? 'result',
-      visibleRows: { request: scoped.request !== undefined, result: scoped.result !== undefined || (scoped.role ?? 'result') === 'result' },
+      visibleRows: { request: scoped.request !== undefined },
     }
     const extraction: RowExtractionInput = {
       ...scoped,

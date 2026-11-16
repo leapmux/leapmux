@@ -1,10 +1,11 @@
 import { render, screen } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { compactControl } from '~/components/common/CompactControl.css'
+import { CURSOR_METHOD, CURSOR_SUPPLEMENT } from '~/generated/contracts/cursor-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerToolCall } from '~/test-support/toolCallFixture'
 import { createControlAnswerState } from '../../controls/types'
-import { describeACPProviderBasics } from '../acp/testUtils'
+import { describeACPCallRows, describeACPProviderBasics } from '../acp/testUtils'
 import { providerFor } from '../registry'
 
 import './plugin'
@@ -136,4 +137,91 @@ describe('native output without a filesystem pointer', () => {
     expect(registered).toBeDefined()
     expect(registered?.transcript.outputFilePaths).toBeUndefined()
   })
+})
+
+describe('cursor call rows', () => {
+  describeACPCallRows(AgentProvider.CURSOR, [
+    // Cursor states the shape of a search in the counters of its answer. The request
+    // row draws the search it asked for, and the result row the file search it was.
+    {
+      name: 'a search that the answer shows to be a file search',
+      request: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'cursor-search',
+        kind: 'search',
+        title: 'Search files',
+        status: 'pending',
+        rawInput: { pattern: '*.ts', path: '/p' },
+      },
+      result: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'cursor-search',
+        status: 'completed',
+        rawOutput: { totalFiles: 1 },
+        content: [
+          {
+            type: 'content',
+            content: { type: 'text', text: '/p/a.ts' },
+          },
+        ],
+      },
+      requestCall: {
+        kind: 'search',
+        status: 'pending',
+        request: { pattern: '*.ts' },
+      },
+      resultCall: {
+        kind: 'glob',
+        status: 'completed',
+        request: { pattern: '*.ts' },
+        result: { numFiles: 1 },
+      },
+    },
+    // The extension frame that follows a finished task reports the model that
+    // answered and the agent id. Both are facts of the run, so they reach the run
+    // of the result row and never the request of either row.
+    {
+      name: 'a task whose extension frame reports the run',
+      request: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'cursor-task',
+        kind: 'other',
+        title: 'Task: Explore',
+        status: 'pending',
+        rawInput: { _toolName: 'task', description: 'Explore', prompt: 'Find the parser' },
+      },
+      result: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'cursor-task',
+        status: 'completed',
+      },
+      resultSupplement: {
+        [CURSOR_SUPPLEMENT.Extension]: {
+          method: CURSOR_METHOD.Task,
+          params: { toolCallId: 'cursor-task', model: 'composer-2.5', agentId: 'a-1' },
+        },
+      },
+      requestCall: {
+        kind: 'agent',
+        status: 'pending',
+        request: { description: 'Explore', prompt: 'Find the parser', metadata: [] },
+      },
+      resultCall: {
+        kind: 'agent',
+        status: 'completed',
+        request: { description: 'Explore', prompt: 'Find the parser', metadata: [] },
+        result: {
+          agents: [
+            {
+              agentId: 'a-1',
+              metadata: [
+                { label: 'Agent ID', value: 'a-1' },
+                { label: 'Model', value: 'composer-2.5' },
+              ],
+            },
+          ],
+        },
+      },
+    },
+  ])
 })

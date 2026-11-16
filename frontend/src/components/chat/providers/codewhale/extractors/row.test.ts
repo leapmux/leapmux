@@ -4,13 +4,13 @@ import type { ResolvedMessageContent } from '~/components/chat/rowExtractionType
 import { describe, expect, it } from 'vitest'
 import { CODEWHALE_BLOCK_TYPE, CODEWHALE_EVENT, CODEWHALE_ITEM_KIND, CODEWHALE_TOOL, CODEWHALE_TRANSCRIPT_ROLE } from '~/generated/contracts/codewhale-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { toolCallMeta } from '../../../results/tools/meta'
 import { input } from '../../testUtils'
-import { childBlock, codewhaleEvent, itemFinished, requestSide, toolCompleted, toolFailed, toolStarted } from '../toolResults.fixtures'
+import { childBlock, codewhaleEvent, itemFinished, requestSide, toolCompleted, toolFailed, toolFinished, toolStarted } from '../toolResults.fixtures'
 import { codewhaleExtractRow } from './row'
 
 interface Span {
   request?: ResolvedMessageContent
-  result?: ResolvedMessageContent
 }
 
 function extract(payload: Record<string, unknown>, category: MessageCategory, span: Span = {}, completion?: MessageCompletion): ChatRow | null {
@@ -19,9 +19,8 @@ function extract(payload: Record<string, unknown>, category: MessageCategory, sp
     category,
     span: {
       request: span.request,
-      result: span.result,
       role: 'other',
-      visibleRows: { request: true, result: true },
+      visibleRows: { request: true },
     },
     completion,
   } as never)
@@ -79,39 +78,98 @@ describe('codewhaleExtractRow', () => {
     expect(extract(itemFinished(CODEWHALE_ITEM_KIND.AgentMessage, 'Hello.'), { kind: 'unknown' })).toBeNull()
   })
 
-  it('reads a tool request and its result as one call, each in its own role', () => {
+  // A request row reads its own opening frame alone, so it states no answer and no
+  // finished status. The result row reads its own final frame and the opening frame.
+  it('reads a tool request and its result as two rows of one call, each in its own role', () => {
     const args = { command: 'ls' }
     const start = toolStarted(CODEWHALE_TOOL.Bash, args)
     const end = toolCompleted(CODEWHALE_TOOL.Bash, args, 'a.ts')
     const request = toolRow(extract(start, { kind: 'tool_use' }, {
-      result: requestSide(end),
+      request: requestSide(start),
     }))
     expect(request.role).toBe('request')
-    expect(request.call.status).toBe('completed')
+    expect(request.call.status).toBe('in_progress')
+    expect(request.call.result).toBeUndefined()
+    expect(request.call.kind === 'execute' && request.call.request.command).toBe('ls')
     const result = toolRow(extract(end, { kind: 'tool_result' }, {
       request: requestSide(start),
     }))
     expect(result.role).toBe('result')
+    expect(result.call.status).toBe('completed')
   })
 
-  // The first call of a deferred tool loads the tool's schema and runs nothing. The
-  // classifier hides its result row, so the request row states the call whole, with
-  // the runtime's own words for what it did instead.
-  it('states a deferred tool\'s first call on its request row, with the runtime\'s words', () => {
+  // The first call of a deferred tool loads the tool's schema and runs nothing. Only
+  // its result row states the runtime's words, so that row states the call whole.
+  it('states a deferred tool\'s first call on its result row, with the runtime\'s words', () => {
     const args = { patch: 'x' }
     const start = toolStarted(CODEWHALE_TOOL.ApplyPatch, args)
     const loaded = toolCompleted(CODEWHALE_TOOL.ApplyPatch, args, 'Tool `apply_patch` was deferred and has now been loaded.', { deferred_tool_loaded: true })
-    const row = toolRow(extract(start, { kind: 'tool_use' }, {
-      result: requestSide(loaded),
+    const request = toolRow(extract(start, { kind: 'tool_use' }, {
+      request: requestSide(start),
     }))
-    expect(row.role).toBe('request')
+    expect(request.call.status).toBe('in_progress')
+    expect(request.call.result).toBeUndefined()
+    const row = toolRow(extract(loaded, { kind: 'tool_result' }, {
+      request: requestSide(start),
+    }))
+    expect(row.role).toBe('result')
     expect(row.call.status).toBe('completed')
     expect(row.call.result).toStrictEqual({ unparsed: true, text: 'Tool `apply_patch` was deferred and has now been loaded.' })
   })
 
+  // A schema load ran nothing. A file change that ended with no changes of its own states
+  // the changes it asked for as the ones the file took, so the load must not be a file
+  // change: its row states the runtime's words alone.
+  it('states a deferred first call of a file change as a call that changed no file', () => {
+    const args = { patch: '*** Begin Patch\n*** Add File: deferred.txt\n+hi\n*** End Patch\n' }
+    const start = toolStarted(CODEWHALE_TOOL.ApplyPatch, args)
+    const loaded = toolCompleted(CODEWHALE_TOOL.ApplyPatch, args, 'Tool `apply_patch` was deferred and has now been loaded.', { deferred_tool_loaded: true })
+    expect(toolRow(extract(start, { kind: 'tool_use' }, {
+      request: requestSide(start),
+    })).call.kind).toBe('edit')
+    const row = toolRow(extract(loaded, { kind: 'tool_result' }, {
+      request: requestSide(start),
+    }))
+    expect(row.call.kind).toBe('other')
+    expect(row.call.degradation).toBeUndefined()
+    expect(row.call.result).toStrictEqual({ unparsed: true, text: 'Tool `apply_patch` was deferred and has now been loaded.' })
+    expect(toolCallMeta(row).hasDiff).toBe(false)
+  })
+
+  // A load that failed applied nothing either, and a failed file change draws no
+  // requested change, so it keeps its kind and its header.
+  it('keeps the kind of a failed deferred first call of a file change, with no diff', () => {
+    const args = { patch: '*** Begin Patch\n*** Add File: deferred.txt\n+hi\n*** End Patch\n' }
+    const start = toolStarted(CODEWHALE_TOOL.ApplyPatch, args)
+    const failed = toolFinished(CODEWHALE_EVENT.ItemFailed, CODEWHALE_TOOL.ApplyPatch, args, 'The schema did not load.', { deferred_tool_loaded: true })
+    const row = toolRow(extract(failed, { kind: 'tool_result' }, {
+      request: requestSide(start),
+    }))
+    expect(row.call.kind).toBe('edit')
+    expect(row.call.status).toBe('failed')
+    expect(row.call.result).toStrictEqual({ failure: true, text: 'The schema did not load.' })
+    expect(toolCallMeta(row).hasDiff).toBe(false)
+  })
+
+  // The result row of a failed schema load draws, so it must state the failure as a
+  // failure: an unparsed result on a failed call degrades the call to the
+  // uncategorized row.
+  it('states a failed deferred first call as a failure on its result row', () => {
+    const args = { command: 'ls' }
+    const start = toolStarted(CODEWHALE_TOOL.Bash, args)
+    const failed = toolFinished(CODEWHALE_EVENT.ItemFailed, CODEWHALE_TOOL.Bash, args, 'The schema did not load.', { deferred_tool_loaded: true })
+    const row = toolRow(extract(failed, { kind: 'tool_result' }, {
+      request: requestSide(start),
+    }))
+    expect(row.call.kind).toBe('execute')
+    expect(row.call.degradation).toBeUndefined()
+    expect(row.call.status).toBe('failed')
+    expect(row.call.result).toStrictEqual({ failure: true, text: 'The schema did not load.' })
+  })
+
   // The runtime redacts a question's answers from the call's own result. The
-  // classifier hides that result row, and the request row states the question.
-  it('states an answered question on its request row', () => {
+  // classifier hides that result row, and the saved answer beside it states the reply.
+  it('states an asked question on its request row', () => {
     const args = {
       questions: [
         {
@@ -126,11 +184,18 @@ describe('codewhaleExtractRow', () => {
     }
     const start = toolStarted(CODEWHALE_TOOL.RequestUserInput, args)
     const request = toolRow(extract(start, { kind: 'tool_use' }, {
-      result: requestSide(redactedQuestionResult()),
+      request: requestSide(start),
     }))
     expect(request.call.kind).toBe('question')
-    expect(request.call.status).toBe('completed')
-    expect(request.call.result).toStrictEqual({ answers: [] })
+    expect(request.call.status).toBe('in_progress')
+    expect(request.call.result).toBeUndefined()
+    expect(request.call.kind === 'question' && request.call.request.questions.map(question => question.question)).toEqual(['Tea or coffee?'])
+    const answered = toolRow(extract(redactedQuestionResult(), { kind: 'tool_result' }, {
+      request: requestSide(start),
+    }))
+    expect(answered.call.kind).toBe('question')
+    expect(answered.call.status).toBe('completed')
+    expect(answered.call.result).toStrictEqual({ answers: [] })
   })
 
   it('keeps the result row of a question that failed', () => {
@@ -142,7 +207,9 @@ describe('codewhaleExtractRow', () => {
     })).call.status).toBe('failed')
   })
 
-  it('states a subagent\'s deferred first call on its request row', () => {
+  // A subagent's result block states neither the tool nor its arguments, so its row
+  // reads them from the `tool_use` block before it.
+  it('states a subagent\'s deferred first call on its result row', () => {
     const words = 'Tool `apply_patch` was deferred and has now been loaded. Retry the call with the newly available schema.'
     const use = childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, {
       type: CODEWHALE_BLOCK_TYPE.ToolUse,
@@ -152,8 +219,13 @@ describe('codewhaleExtractRow', () => {
     })
     const loaded = childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, { type: CODEWHALE_BLOCK_TYPE.ToolResult, tool_use_id: 'b1', content: words }, 2)
     expect(toolRow(extract(use, { kind: 'tool_use' }, {
-      result: requestSide(loaded),
-    })).call.result).toStrictEqual({ unparsed: true, text: words })
+      request: requestSide(use),
+    })).call.result).toBeUndefined()
+    const row = toolRow(extract(loaded, { kind: 'tool_result' }, {
+      request: requestSide(use),
+    }))
+    expect(row.call.name).toBe(CODEWHALE_TOOL.ApplyPatch)
+    expect(row.call.result).toStrictEqual({ unparsed: true, text: words })
   })
 
   // LeapMux's own reading of how the row ended wins: a turn the reader stopped

@@ -44,7 +44,15 @@ export function classifyQoderMessage(input: ClassificationInput): MessageCategor
   }
 }
 
-/** Read tool results. An empty provisional result precedes native image bytes. */
+/**
+ * Read tool results.
+ *
+ * Qoder sends an empty `content: []` as a provisional result before the result that
+ * holds the image bytes, so that frame stays hidden. A body of an empty string or of
+ * blank text answers a call that printed nothing, such as `mkdir`. The request row
+ * never reads its result, so this row is the only one that states the finished status
+ * and the exit code, and it stays visible.
+ */
 function classifyUser(parent: Record<string, unknown>): MessageCategory {
   const message = isObject(parent.message)
     ? parent.message
@@ -56,15 +64,12 @@ function classifyUser(parent: Record<string, unknown>): MessageCategory {
   if (!isObject(result))
     return { kind: 'unknown' }
   const body = result.content
-  if (typeof body === 'string') {
-    return {
-      kind: body.trim()
-        ? 'tool_result'
-        : 'hidden',
-    }
-  }
+  if (typeof body === 'string')
+    return { kind: 'tool_result' }
   if (!Array.isArray(body))
     return { kind: 'unknown' }
+  if (body.length === 0)
+    return { kind: 'hidden' }
   let opaque = false
   for (const block of body) {
     if (!isObject(block)) {
@@ -82,7 +87,7 @@ function classifyUser(parent: Record<string, unknown>): MessageCategory {
     opaque = true
   }
   return {
-    kind: opaque ? 'unknown' : 'hidden',
+    kind: opaque ? 'unknown' : 'tool_result',
   }
 }
 

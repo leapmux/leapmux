@@ -63,14 +63,14 @@ export interface KimiToolRow {
 /**
  * Read one tool row of a span into the facts of its call.
  *
- * `request` is the span's start row and `pairedResult` the span's result row, which the
- * store resolves separately. The row's OWN bytes decide which half it is.
+ * `request` is the span's start row, which the store resolves separately. The row's OWN
+ * bytes decide which half it is. A start row states no result: the result is a later
+ * row of the span, which this row never reads.
  */
 export function kimiToolRow(
   parsed: unknown,
   spanType: string | undefined,
   request: unknown,
-  pairedResult: unknown,
   completion: MessageCompletion | undefined,
   originalResult?: unknown,
 ): KimiToolRow | null {
@@ -82,7 +82,7 @@ export function kimiToolRow(
   const start = ownStart ?? kimiEventData(request, KIMI_EVENT.ToolCallStarted)
   const result = ownResult ?? (retainedFinal
     ? kimiRetainedOutput(ownStart)
-    : kimiEventData(pairedResult, KIMI_EVENT.ToolResult))
+    : null)
   const toolCallId = pickString(ownStart ?? ownResult, 'toolCallId')
   const nativeResult = kimiEventData(originalResult, KIMI_EVENT.ToolResult)
   // The result frame states no name, and the worker stamps the call's name on every

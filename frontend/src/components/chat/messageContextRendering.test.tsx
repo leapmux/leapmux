@@ -21,11 +21,15 @@ function resultMessage() {
 }
 
 describe('message context rendering', () => {
+  // The worker stores a TaskUpdate's post-update snapshot on the RESULT message, which it
+  // reads the todo event from. The result row draws the task from it; the request row
+  // never reads its result.
   it('keeps a TaskUpdate card on its persisted snapshot', async () => {
-    const message = makeMessage({
+    const request = makeMessage({
       id: 'task-update',
       seq: 3n,
       spanId: 'task-call',
+      spanType: 'TaskUpdate',
       agentProvider: AgentProvider.CLAUDE_CODE,
       content: rawContent({
         type: 'assistant',
@@ -38,6 +42,26 @@ describe('message context rendering', () => {
               input: { taskId: '42', status: 'completed' },
             },
           ],
+        },
+      }),
+    })
+    const result = makeMessage({
+      id: 'task-update-result',
+      seq: 4n,
+      spanId: 'task-call',
+      spanType: 'TaskUpdate',
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      content: rawContent({
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'task-call', content: 'Updated task #42 status' },
+          ],
+        },
+        tool_use_result: {
+          success: true,
+          taskId: '42',
+          updatedFields: ['status'],
         },
       }),
       supplementalContent: rawContent({
@@ -54,10 +78,10 @@ describe('message context rendering', () => {
       supplementalRevision: 1n,
     })
     const context = testMessageContext({
-      messages: () => [message],
+      messages: () => [request, result],
     })
     const { container } = render(() => (
-      <PreferencesProvider><MessageBubble message={message} host={{ messages: context }} /></PreferencesProvider>
+      <PreferencesProvider><MessageBubble message={result} host={{ messages: context }} /></PreferencesProvider>
     ))
     await settleWorkerReplies()
     await waitFor(() => expect(container.textContent).toContain('Persisted task title'))

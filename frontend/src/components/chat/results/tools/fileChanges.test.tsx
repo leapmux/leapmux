@@ -1,11 +1,12 @@
 import type { FileEditDiff } from '../../model/fileEditDiff'
+import type { ToolCallFixtureOptions } from '~/test-support/toolCallFixture'
 import { render } from '@solidjs/testing-library'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
-import { TOOL_CALL_STATUSES } from '../../model/toolCallStatus'
+import { failedResult, unparsedResult } from '../../model/toolCall'
 import { ToolMessage } from '../ToolMessage'
-import { fileChangeFailed } from './fileChanges'
+import { toolCallMeta } from './meta'
 
 // jsdom does not provide ResizeObserver, which the shared tool layout uses.
 beforeAll(() => {
@@ -54,27 +55,61 @@ describe('file change title presentation', () => {
   })
 })
 
-describe('fileChangeFailed', () => {
-  // The three states where the tool applied nothing, so the file took nothing.
-  // `declined` is the one a reader REFUSED: the tool never ran, so a row that drew
-  // its changes drew the identical body a PENDING row draws.
-  it.each(['failed', 'cancelled', 'declined'] as const)('answers true for a %s call, which changed no file', (status) => {
-    expect(fileChangeFailed(status)).toBe(true)
+// The request row never reads how its call ended, and the pending row leaves when the
+// result row joins the list. So a call that ended with words alone leaves the result row
+// as the one row that can show the changes it asked for.
+describe('a file change whose result states no changes of its own', () => {
+  const asked = { filePath: '/project/a.ts', oldStr: 'ASKED-BEFORE\n', newStr: 'ASKED-AFTER\n' }
+
+  function resultRow(options: ToolCallFixtureOptions<'edit'>) {
+    return toolRow(toolCallFixture('edit', {
+      request: {
+        changes: [asked],
+      },
+      ...options,
+    }), 'result', { request: true })
+  }
+
+  async function drawn(row: ReturnType<typeof resultRow>): Promise<string> {
+    const { container } = render(() => <ToolMessage row={row} />)
+    await settleWorkerReplies()
+    return container.textContent ?? ''
+  }
+
+  it('draws the requested changes on a completed call, and offers the diff toggle', async () => {
+    const row = resultRow({
+      result: unparsedResult('Applied the edit.'),
+    })
+    const text = await drawn(row)
+    expect(text).toContain('ASKED-AFTER')
+    expect(text).toContain('Applied the edit.')
+    expect(toolCallMeta(row).hasDiff).toBe(true)
   })
 
+  // Nothing that a failed, interrupted or declined call asked for reached the file.
   it.each([
-    'unstated',
-    'pending',
-    'in_progress',
-    'completed',
-    'incomplete',
-  ] as const)('answers false for a %s call, whose changes still stand', (status) => {
-    expect(fileChangeFailed(status)).toBe(false)
+    ['failed', 'failed'],
+    ['interrupted', 'cancelled'],
+    ['declined', 'declined'],
+  ] as const)('states only the reason of a %s call', async (_outcome, status) => {
+    const row = resultRow({
+      status,
+      result: failedResult('No change was made.'),
+    })
+    const text = await drawn(row)
+    expect(text).toContain('No change was made.')
+    expect(text).not.toContain('ASKED-AFTER')
+    expect(toolCallMeta(row).hasDiff).toBe(false)
   })
 
-  // Every status takes one side, so a new one cannot arrive with no answer here.
-  it('answers for every row status the model declares', () => {
-    const answered = TOOL_CALL_STATUSES.filter(status => typeof fileChangeFailed(status) === 'boolean')
-    expect(answered).toEqual([...TOOL_CALL_STATUSES])
+  it('draws the changes that landed, not the requested ones, for a typed result', async () => {
+    const landed = { filePath: '/project/a.ts', oldStr: 'LANDED-BEFORE\n', newStr: 'LANDED-AFTER\n' }
+    const text = await drawn(resultRow({
+      result: {
+        changes: [landed],
+      },
+    }))
+    expect(text).toContain('LANDED-AFTER')
+    expect(text).not.toContain('ASKED-AFTER')
   })
 })

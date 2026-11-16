@@ -7,7 +7,7 @@ import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { createMutableTranscript } from '~/test-support/messageContext'
 import { makeMessage, makeTranscriptMessage, rawContent } from '~/test-support/messageFactory'
 import { createTranscriptScenario } from '~/test-support/transcriptScenario'
-import { renderMessageContent } from '../../messageContentRenderer'
+import { renderListedMessageContent } from '../../messageContentRenderer'
 import { createMessageContextResolver, createMessageRenderSources } from '../../messageContextResolver'
 import { classifyLettaMessage } from './classification'
 import './plugin'
@@ -62,8 +62,8 @@ describe('letta live tool output', () => {
       const resolver = createMessageContextResolver(transcript.sources)
       const resolved = resolver.resolvedMessage(opening).resolved
       const sources = createMessageRenderSources(() => resolver, () => opening, () => resolved)
-      expect(resolver.visibleRows({ spanId: fields.spanId, agentSessionId: fields.agentSessionId })).toEqual({ request: true, result: false })
-      return renderMessageContent(request, {
+      expect(resolver.visibleRows({ spanId: fields.spanId, agentSessionId: fields.agentSessionId })).toEqual({ request: true })
+      return renderListedMessageContent(request, {
         premeasureMode: true,
         sources,
         toolProgress: {
@@ -129,7 +129,7 @@ describe('letta live tool output', () => {
       const rows = createMemo(() => transcript.sources.messages().map((message) => {
         const resolved = resolver.resolvedMessage(message).resolved
         const sources = createMessageRenderSources(() => resolver, () => message, () => resolved)
-        return renderMessageContent(resolved.parentObject, {
+        return renderListedMessageContent(resolved.parentObject, {
           premeasureMode: true,
           spanType: message.spanType,
           sources,
@@ -143,7 +143,7 @@ describe('letta live tool output', () => {
     if (!state)
       throw new Error('The native tool renderer did not create its transcript.')
     expect(container.textContent).toContain('first native window')
-    expect(state.resolver.visibleRows(fields)).toEqual({ request: true, result: false })
+    expect(state.resolver.visibleRows(fields)).toEqual({ request: true })
 
     const second = currentWindow('second native window')
     const { live, transcript, resolver } = state
@@ -178,7 +178,7 @@ describe('letta live tool output', () => {
       live.drop('test', fields)
     })
     expect(container.textContent).not.toContain('second native window')
-    expect(resolver.visibleRows(fields)).toEqual({ request: true, result: false })
+    expect(resolver.visibleRows(fields)).toEqual({ request: true })
     expect(resolver.result(fields)).toBeUndefined()
 
     const final = {
@@ -197,7 +197,7 @@ describe('letta live tool output', () => {
       content: rawContent(final),
     })
     transcript.append(finalMessage)
-    expect(resolver.visibleRows(fields)).toEqual({ request: true, result: true })
+    expect(resolver.visibleRows(fields)).toEqual({ request: true })
     expect(resolver.request(fields)?.message.id).toBe(opening.id)
     expect(resolver.result(fields)?.message.id).toBe(finalMessage.id)
     expect(container.textContent?.match(/Complete native result\./g)).toHaveLength(1)
@@ -273,8 +273,9 @@ describe('letta native task rendering', () => {
         }, 1n),
       ],
     })
-    const { container } = scenario.renderBubble('create-request')
-    await waitFor(() => expect(container.textContent).toContain('Inspect the repository'))
+    // The list draws the carried task on the pending row below the request row.
+    const { container } = scenario.renderRows('create-request')
+    await waitFor(() => expect(container.querySelector('[data-testid="tool-pending"]')?.textContent).toContain('Inspect the repository'))
     await settleWorkerReplies()
     expect(container.textContent).toContain('Read the repository files.')
   })

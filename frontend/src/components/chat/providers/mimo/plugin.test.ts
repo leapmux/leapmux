@@ -293,7 +293,6 @@ describe('mimo plugin transcript', () => {
     }))
     expect(plugin.transcript.spanRole(opening)).toBe('request')
     expect(plugin.transcript.spanRole(final)).toBe('result')
-    expect(plugin.transcript.relatedMessages?.(opening)).toEqual(['result'])
     expect(plugin.transcript.classify(final)).toEqual({ kind: 'tool_result' })
   })
 })

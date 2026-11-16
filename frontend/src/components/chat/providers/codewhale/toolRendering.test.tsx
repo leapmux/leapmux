@@ -147,7 +147,7 @@ describe('codewhale tool rendering', () => {
     const end = toolCompleted(CODEWHALE_TOOL.RequestUserInput, args, 'User input submitted')
     const startParsed = input(start, undefined, AgentProvider.CODEWHALE)
     const endParsed = input(end, undefined, AgentProvider.CODEWHALE)
-    const both = { request: true, result: true }
+    const both = { request: true }
     const request = render(() => renderMessageContent(start, {
       workingDir: '/project',
       spanType: CODEWHALE_TOOL.RequestUserInput,
@@ -155,7 +155,6 @@ describe('codewhale tool rendering', () => {
       getMessageUiState: () => true,
       sources: testMessageSources({
         current: () => startParsed,
-        result: () => endParsed,
         role: () => 'request',
         visibleRows: () => both,
       }),

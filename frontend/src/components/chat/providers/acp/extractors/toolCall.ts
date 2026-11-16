@@ -14,7 +14,6 @@ import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ContentBlock } from '~/lib/contentBlocks'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import type { ToolSpanRole } from '~/lib/messageSpan'
 import { isFinishedToolCallStatus, toolCallStatus } from '~/components/chat/model/toolCallStatus'
 import { ACP_SUPPLEMENT_REQUEST } from '~/generated/contracts/acp-protocol'
 import { prettifyArgsJson, prettifyJson } from '~/lib/jsonFormat'
@@ -47,21 +46,14 @@ import { ACP_SESSION_UPDATE } from '../updateVocabulary'
 const FILE_TARGET_KINDS = new Set<ToolKind>(['read', 'edit', 'write', 'delete'])
 
 /**
- * Each provider keeps its native fields and tool semantics in its own adapter.
+ * The facts of one stored row that its provider payload does not supply.
  *
- * `row` states where this row sits in its tool span, which a provider needs to place
- * something exactly once across the two rows of ONE call. The tool's own fields cannot do
- * that job: `resolveACPToolCall` merges the request into the result, so both rows can
- * carry the same `sessionUpdate` and `status`, and neither `acpToolFinished` nor the
- * stored `sessionUpdate` separates them by the time an adapter runs.
+ * A row builds its call from its own frame, and a finished row also from the span's
+ * request (see `acpExtractRow`). No row reads its result, so nothing here states one.
  */
 export interface ACPToolRow {
   /** The native session stored on this row. Provider payloads do not supply this value. */
   agentSessionId?: string
-  /** Where the row sits in its span. `createMessageRenderSources` decides it by message id. */
-  role?: ToolSpanRole
-  /** True when a completing row is resolved beside this one. */
-  hasResult?: boolean
 }
 
 /** Everything the shared ACP build knows before a provider adapter runs. */
@@ -121,7 +113,6 @@ export interface ACPToolFacts {
   structuredJson?: string
   images: ImageResultSource[]
   terminals: ReturnType<typeof acpTerminalResults>
-  place: ACPToolRow
 }
 
 /**
@@ -197,7 +188,7 @@ function acpArgumentsOnly<P extends ToolKind>(kind: P): ACPSpecEntry<P> {
 }
 
 /**
- * The table's entry for one kind: how to build its specification, and the two questions
+ * The table's entry for one kind: how to build its specification, and the one question
  * the shared code asks about it.
  *
  * `build` states the kind's own request and, where the kind can answer one, its own
@@ -217,14 +208,6 @@ interface ACPSpecEntry<P extends ToolKind> {
    * reads `Error (exit 1)`.
    */
   ownsFailure?: true
-  /**
-   * Whether a row of this kind still needs its result side resolved, read from the
-   * TYPED request the build produced.
-   *
-   * Absent means the shared default: a call whose arguments are empty states
-   * nothing, so the result row is the only thing that can.
-   */
-  needsResult?: (request: ToolRequestByKind[P], facts: ACPToolFacts) => boolean
 }
 
 /**
@@ -295,18 +278,6 @@ function acpRequestedFileChanges(kind: 'edit' | 'write', facts: ACPToolFacts, ch
 }
 
 /**
- * Whether a file-family call still needs its result side to state the file.
- *
- * The typed request answers first. The shared build states a change for every call
- * whose arguments state a file, so for that build an empty list already means "no
- * file". The raw arguments answer after it for a provider adapter, which builds its
- * own request and can leave the list empty although the arguments state the file.
- */
-function fileChangesNeedResult(request: { changes: readonly unknown[] }, facts: ACPToolFacts): boolean {
-  return request.changes.length === 0 && !pickFirstString(facts.args, TOOL_FILE_PATH_KEYS)
-}
-
-/**
  * One builder for each kind, each checked against its OWN kind's request and result.
  *
  * A generic `switch (kind)` cannot do this. TypeScript narrows the VALUE the switch
@@ -328,8 +299,7 @@ function fileChangesNeedResult(request: { changes: readonly unknown[] }, facts: 
  * un-annotated arrow's return type from the literals it returns, so the object loses its
  * freshness before any property is checked, and the payload then carries a key no
  * renderer reads. The annotation goes on `build` and not on the entry, because the entry
- * is an object rather than a function. `needsResult` needs none: it answers a boolean,
- * which holds no property to be excess.
+ * is an object rather than a function.
  *
  * The rule holds one step in as well. A `request` lifted into a `const` is not a fresh
  * literal, so each of the four builders that lifts one declares that `const`'s type too.
@@ -348,7 +318,6 @@ function fileChangesNeedResult(request: { changes: readonly unknown[] }, facts: 
 export const ACP_SPEC_READERS: { [P in ToolKind]: ACPSpecEntry<P> } = {
   execute: {
     ownsFailure: true,
-    needsResult: request => !request.command,
     build: (facts): ToolCallSpecVariant<'execute'> => {
       const kind = 'execute' as const
       const args = facts.args
@@ -398,7 +367,6 @@ export const ACP_SPEC_READERS: { [P in ToolKind]: ACPSpecEntry<P> } = {
     },
   },
   read: {
-    needsResult: (request, facts) => !request.path && !pickFirstString(facts.args, TOOL_FILE_PATH_KEYS),
     build: (facts): ToolCallSpecVariant<'read'> => {
       const kind = 'read' as const
       const args = facts.args
@@ -427,21 +395,18 @@ export const ACP_SPEC_READERS: { [P in ToolKind]: ACPSpecEntry<P> } = {
     },
   },
   edit: {
-    needsResult: fileChangesNeedResult,
     build: (facts): ToolCallSpecVariant<'edit'> => ({
       kind: 'edit',
       ...acpFileChangeParts('edit', facts),
     }),
   },
   write: {
-    needsResult: fileChangesNeedResult,
     build: (facts): ToolCallSpecVariant<'write'> => ({
       kind: 'write',
       ...acpFileChangeParts('write', facts),
     }),
   },
   search: {
-    needsResult: request => !request.pattern,
     build: (facts): ToolCallSpecVariant<'search'> => {
       const kind = 'search' as const
       const args = facts.args
@@ -458,7 +423,6 @@ export const ACP_SPEC_READERS: { [P in ToolKind]: ACPSpecEntry<P> } = {
     },
   },
   fetch: {
-    needsResult: request => !request.url,
     build: (facts): ToolCallSpecVariant<'fetch'> => {
       const kind = 'fetch' as const
       const args = facts.args
@@ -547,36 +511,13 @@ export const ACP_SPEC_READERS: { [P in ToolKind]: ACPSpecEntry<P> } = {
       result: proseResult(facts.text, 'markdown'),
     }),
   },
-  // An agent launch and a to-do list both answer on the row that COMPLETES them, and
-  // neither states its answer in the arguments, so both always need the result side.
-  agent: {
-    ...acpArgumentsOnly('agent'),
-    needsResult: () => true,
-  },
-  todo: {
-    ...acpArgumentsOnly('todo'),
-    needsResult: () => true,
-  },
-  delete: {
-    ...acpArgumentsOnly('delete'),
-    needsResult: fileChangesNeedResult,
-  },
-  move: {
-    ...acpArgumentsOnly('move'),
-    needsResult: fileChangesNeedResult,
-  },
-  glob: {
-    ...acpArgumentsOnly('glob'),
-    needsResult: request => !request.pattern,
-  },
-  grep: {
-    ...acpArgumentsOnly('grep'),
-    needsResult: request => !request.pattern,
-  },
-  web_search: {
-    ...acpArgumentsOnly('web_search'),
-    needsResult: request => !request.query,
-  },
+  agent: acpArgumentsOnly('agent'),
+  todo: acpArgumentsOnly('todo'),
+  delete: acpArgumentsOnly('delete'),
+  move: acpArgumentsOnly('move'),
+  glob: acpArgumentsOnly('glob'),
+  grep: acpArgumentsOnly('grep'),
+  web_search: acpArgumentsOnly('web_search'),
   chart: acpArgumentsOnly('chart'),
   // The PICTURES are the answer and they arrive on `call.images`, so the typed result
   // states only a prompt the generator revised. State the prompt all the same: a
@@ -880,34 +821,6 @@ export function acpToolCall(rawTool: Record<string, unknown>, adapter: ACPToolCa
   )
 }
 
-/** Whether this row needs its result side resolved, read from the TYPED request fields. */
-export function acpToolCallNeedsResult(tool: Record<string, unknown>, adapter: ACPToolCallAdapter | undefined, supplemental?: unknown): boolean {
-  const facts = acpToolFacts(tool, supplemental)
-  const base = () => acpBaseSpec(facts)
-  return acpSpecNeedsResult(adapter
-    ? adapter(facts, base)
-    : base(), facts)
-}
-
-/**
- * The kind's own test, over the request the build produced.
- *
- * Generic over the kind: `spec.kind` and `spec.request` stay one correlated pair.
- * The table gives the entry for that kind, and `needsResult` takes its request.
- * The caller's union satisfies the parameter member by member. An `if`-chain over the
- * kind cast the typed request back to `Record<string, unknown>` to ask the same
- * questions -- the one cast that discards exactly what the typed table exists to
- * create -- and it re-listed the kind set a third time.
- */
-function acpSpecNeedsResult<K extends ToolKind>(spec: ToolCallSpecVariant<K>, facts: ACPToolFacts): boolean {
-  const needsResult = ACP_SPEC_READERS[spec.kind].needsResult
-  // The ARGUMENTS, not the typed request: every request this build produces
-  // carries at least one key, so asking the request answers "no" for every call.
-  return needsResult
-    ? needsResult(spec.request, facts)
-    : Object.keys(facts.args).length === 0
-}
-
 /** Collect everything the shared build and the adapters read, in one pass. */
 export function acpToolFacts(rawTool: Record<string, unknown>, supplemental?: unknown, completion?: MessageCompletion, place?: ACPToolRow): ACPToolFacts {
   const extra = acpToolSupplement(rawTool, supplemental)
@@ -984,7 +897,6 @@ export function acpToolFacts(rawTool: Record<string, unknown>, supplemental?: un
       : {}),
     images,
     terminals: acpTerminalResults(tool, extra),
-    place: place ?? {},
   }
 }
 

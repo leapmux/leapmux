@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { describeACPProviderBasics } from '../acp/testUtils'
+import { describeACPCallRows, describeACPProviderBasics } from '../acp/testUtils'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 
@@ -119,4 +119,68 @@ describe('grok provider', () => {
       expect(plugin.transcript.extractDivider(parent)).toEqual({ label: 'Turn ended' })
     })
   })
+})
+
+// Grok merges a to-do update into the list that it holds, and only the answer states
+// that whole list. The request row draws the items that the call asked for, and the
+// result row the list that Grok holds after it.
+describe('grok call rows', () => {
+  describeACPCallRows(AgentProvider.GROK_BUILD, [
+    {
+      name: 'a to-do update that merges into the held list',
+      request: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'grok-todo',
+        title: 'todo_write',
+        status: 'pending',
+        rawInput: {
+          merge: true,
+          todos: [
+            { id: '2', content: 'Write hello file', status: 'in_progress' },
+          ],
+        },
+        _meta: {
+          'x.ai/tool': { version: 1, name: 'todo_write' },
+        },
+      },
+      result: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'grok-todo',
+        status: 'completed',
+        rawOutput: {
+          type: 'Todo',
+          TodosUpdated: {
+            todos: [
+              { content: 'Write probe file', status: 'completed' },
+              { content: 'Write hello file', status: 'in_progress' },
+            ],
+          },
+        },
+      },
+      requestCall: {
+        kind: 'todo',
+        status: 'pending',
+        request: {
+          items: [
+            { content: 'Write hello file' },
+          ],
+        },
+      },
+      resultCall: {
+        kind: 'todo',
+        status: 'completed',
+        request: {
+          items: [
+            { content: 'Write hello file' },
+          ],
+        },
+        result: {
+          items: [
+            { content: 'Write probe file' },
+            { content: 'Write hello file' },
+          ],
+        },
+      },
+    },
+  ])
 })

@@ -1,3 +1,4 @@
+import type { JSX } from 'solid-js'
 import type { ClassifiedEntry } from '~/components/chat/chatEntryCache'
 import type { MessageContextResolver, MessageContextSources } from '~/components/chat/messageContextResolver'
 import type { MessageUiKey } from '~/components/chat/messageUiKeys'
@@ -6,8 +7,9 @@ import type { ChatRowExtraction } from '~/components/chat/rowExtraction'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TranscriptFrame } from '~/test-support/messageFactory'
 import { render } from '@solidjs/testing-library'
-import { createRoot, createSignal } from 'solid-js'
+import { createRoot, createSignal, For } from 'solid-js'
 import { createClassifiedEntryCache, renderKeyForEntry } from '~/components/chat/chatEntryCache'
+import { createPendingRows, pendingRowId } from '~/components/chat/chatPendingRows'
 import { MessageBubble } from '~/components/chat/MessageBubble'
 import { createMessageRenderSources } from '~/components/chat/messageContextResolver'
 import { createMessageRenderCacheStore } from '~/components/chat/messageRenderCache'
@@ -53,6 +55,13 @@ export interface TranscriptScenario {
   toolRow: (id: string) => ToolCallRow
   /** The row for one message id, drawn by the real `MessageBubble` in jsdom. */
   renderBubble: (id: string) => ReturnType<typeof render>
+  /**
+   * The rows that the list draws for one message id: its row, and the pending row of a
+   * tool call that runs (see chatPendingRows), each drawn by the real `MessageBubble`.
+   * The scenario's window is the live tail, and jsdom measures no row, so a result row
+   * that the window holds counts as measured.
+   */
+  renderRows: (id: string) => ReturnType<typeof render>
   /** Load the span of one message id through the resolver's fetch path. */
   loadSpan: (id: string) => Promise<void>
   /** A frame of a NEW id: it enters the archive and the window. */
@@ -95,11 +104,23 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
   const entries = createClassifiedEntryCache({
     messages: () => transcript.sources.messages(),
     requestRevision: identity => resolver.request(identity)?.revision,
-    resultRevision: identity => resolver.result(identity)?.revision,
     contentVersionById: id => resolver.contentVersion(id),
     resolvedMessage: message => resolver.resolvedMessage(message),
     role: message => resolver.role(message),
     showHiddenMessages: () => false,
+  })
+
+  // The pending rows the list adds to the scenario's rows, by the list's own decision.
+  const listed = createPendingRows({
+    entries: entries.visibleEntries,
+    items: () => entries.visibleEntries().map(candidate => ({
+      id: candidate.rowId,
+      hasSpanLines: candidate.parsedSpanLines.length > 0,
+    })),
+    tailLoaded: () => true,
+    resultOf: identity => resolver.result(identity)?.message,
+    role: candidate => resolver.role(candidate.message),
+    isMeasured: () => true,
   })
 
   let nextSeq = options.archive.reduce((max, message) => (message.seq > max
@@ -147,30 +168,44 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
     return row
   }
 
+  function bubble(prepared: ClassifiedEntry): JSX.Element {
+    const id = prepared.message.id
+    return (
+      <MessageBubble
+        message={prepared.message}
+        prepared={prepared}
+        pending={prepared.pending}
+        host={{
+          messages: resolver,
+          getMessageUiState: key => messageUiState().get(id)?.[key],
+          setMessageUiState: (key, value) => setMessageUiState((previous) => {
+            const next = new Map(previous)
+            next.set(id, {
+              ...previous.get(id),
+              [key]: value,
+            })
+            return next
+          }),
+          get renderCache() {
+            return renderCacheStore.forRow(renderKeyForEntry(prepared))
+          },
+        }}
+      />
+    )
+  }
+
   function renderBubble(id: string): ReturnType<typeof render> {
     const prepared = entry(id)
-    const message = prepared.message
+    return render(() => <PreferencesProvider>{bubble(prepared)}</PreferencesProvider>)
+  }
+
+  function renderRows(id: string): ReturnType<typeof render> {
+    // Fail for an id that the window does not hold, as renderBubble does.
+    entry(id)
+    const rows = () => listed.entries().filter(candidate => candidate.rowId === id || candidate.rowId === pendingRowId(id))
     return render(() => (
       <PreferencesProvider>
-        <MessageBubble
-          message={message}
-          prepared={prepared}
-          host={{
-            messages: resolver,
-            getMessageUiState: key => messageUiState().get(id)?.[key],
-            setMessageUiState: (key, value) => setMessageUiState((previous) => {
-              const next = new Map(previous)
-              next.set(id, {
-                ...previous.get(id),
-                [key]: value,
-              })
-              return next
-            }),
-            get renderCache() {
-              return renderCacheStore.forRow(renderKeyForEntry(prepared))
-            },
-          }}
-        />
+        <For each={rows()}>{bubble}</For>
       </PreferencesProvider>
     ))
   }
@@ -204,6 +239,7 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
     extract,
     toolRow,
     renderBubble,
+    renderRows,
     loadSpan: async (id) => {
       await resolver.loadSpan(messageSpanIdentity(messageOf(id)))
     },

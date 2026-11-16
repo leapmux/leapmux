@@ -624,9 +624,8 @@ describe('command summary syntax highlighting selection stability', () => {
       renderMessageContent(request, {
         sources: testMessageSources({
           current: () => request,
-          result: () => result,
           role: () => 'request',
-          visibleRows: () => ({ request: true, result: true }),
+          visibleRows: () => ({ request: true }),
         }),
       }, { kind: 'tool_use' }, AgentProvider.CLAUDE_CODE),
       renderMessageContent(result, {
@@ -634,7 +633,7 @@ describe('command summary syntax highlighting selection stability', () => {
           current: () => result,
           request: () => request,
           role: () => 'result',
-          visibleRows: () => ({ request: true, result: true }),
+          visibleRows: () => ({ request: true }),
         }),
       }, { kind: 'tool_result' }, AgentProvider.CLAUDE_CODE),
     ])

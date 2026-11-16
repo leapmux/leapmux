@@ -7,9 +7,8 @@ import { codebuddyExtractRow } from './row'
 
 const NO_SIDES: ToolSpanContext = {
   request: undefined,
-  result: undefined,
   role: 'other',
-  visibleRows: { request: false, result: false },
+  visibleRows: { request: false },
 }
 
 function nativeReplRows(stored: boolean, text: string, completion?: MessageCompletion) {
@@ -74,7 +73,7 @@ function nativeReplRows(stored: boolean, text: string, completion?: MessageCompl
       ...NO_SIDES,
       request: resolvedRequest,
       role: 'result',
-      visibleRows: { request: true, result: true },
+      visibleRows: { request: true },
     },
     ...(completion === undefined
       ? {}
@@ -118,12 +117,14 @@ describe('codebuddyExtractRow', () => {
       span: {
         ...NO_SIDES,
         role: 'result',
-        visibleRows: { request: false, result: true },
+        visibleRows: { request: false },
       },
     })
     expect(row?.kind).toBe('tool')
     if (row?.kind !== 'tool')
       throw new Error('The retained CodeBuddy request requires a tool row.')
+    // The closing copy is the final row of its span, so it draws the outcome.
+    expect(row.role).toBe('result')
     expect(row.call.status).toBe('incomplete')
     expect(row.call.result).toBeUndefined()
   })
@@ -255,7 +256,7 @@ describe('codebuddyExtractRow', () => {
           ...NO_SIDES,
           request: resolvedRequest,
           role: 'result',
-          visibleRows: { request: true, result: true },
+          visibleRows: { request: true },
         },
       })
       if (row?.kind !== 'tool' || row.call.kind !== 'execute')
@@ -378,7 +379,7 @@ describe('codebuddyExtractRow', () => {
         ...NO_SIDES,
         request: resolvedRequest,
         role: 'result',
-        visibleRows: { request: true, result: true },
+        visibleRows: { request: true },
       },
     })
     expect(row?.kind).toBe('tool')
@@ -447,7 +448,7 @@ describe('codebuddyExtractRow', () => {
       span: {
         ...NO_SIDES,
         role: 'request',
-        visibleRows: { request: true, result: true },
+        visibleRows: { request: true },
       },
     })
     const resultRow = codebuddyExtractRow({
@@ -457,7 +458,7 @@ describe('codebuddyExtractRow', () => {
         ...NO_SIDES,
         request: resolvedRequest,
         role: 'result',
-        visibleRows: { request: true, result: true },
+        visibleRows: { request: true },
       },
     })
 
@@ -471,10 +472,53 @@ describe('codebuddyExtractRow', () => {
     expect(requestRow.call.kind).toBe('read')
     if (requestRow.call.kind === 'read')
       expect(requestRow.call.request.path).toBe('/work/marker.txt')
+    // The request row reads its own record alone, so it states no result and no end.
+    expect(requestRow.call.status).toBe('in_progress')
+    expect(requestRow.call.result).toBeUndefined()
     expect(resultRow.role).toBe('result')
     expect(resultRow.call.id).toBe('child-read-1')
     expect(resultRow.call.name).toBe('Read')
     expect(resultRow.call.result).toEqual({ text: 'CHILD_FILE_MARKER', unparsed: true })
+  })
+
+  it('draws a live request row from its own frame, with no result', () => {
+    const request = {
+      type: 'assistant',
+      message: {
+        content: [
+          {
+            type: 'tool_use',
+            id: 'native-bash-running',
+            name: 'Bash',
+            input: { command: 'sleep 5' },
+          },
+        ],
+      },
+    }
+    const resolved = resolveMessageForRendering({
+      rawText: JSON.stringify(request),
+      topLevel: request,
+      parentObject: request,
+      wrapper: null,
+    }, AgentProvider.CODEBUDDY)
+    const category = classifyCodebuddyMessage({ ...resolved, agentProvider: AgentProvider.CODEBUDDY })
+    const row = codebuddyExtractRow({
+      resolved,
+      category,
+      span: {
+        request: resolved,
+        role: 'request',
+        visibleRows: { request: false },
+      },
+    })
+    expect(row).toMatchObject({ kind: 'tool', role: 'request' })
+    if (row?.kind !== 'tool' || row.call.kind !== 'execute')
+      throw new Error('The live Bash request must remain an execute row.')
+    expect(row.call.name).toBe('Bash')
+    expect(row.call.request).toMatchObject({ command: 'sleep 5' })
+    expect(row.call.status).toBe('in_progress')
+    expect(row.call.result).toBeUndefined()
+    expect(row.call.images).toEqual([])
   })
 
   it('marks a failed stored tool result as failed', () => {
@@ -510,7 +554,7 @@ describe('codebuddyExtractRow', () => {
         ...NO_SIDES,
         request: resolvedRequest,
         role: 'result',
-        visibleRows: { request: true, result: true },
+        visibleRows: { request: true },
       },
     })
     expect(row?.kind).toBe('tool')

@@ -27,9 +27,10 @@ export interface ToolRowFrames {
  * cannot tell which row drew a word. The e2e specs read one row by its
  * `data-tool-row-role`, so a test of such a spec needs the rows apart.
  *
- * The supplement reaches the request row as the Worker stores it. It reaches the result
- * row through the request side of the span. The caller registers the plugin of the
- * provider.
+ * The request row reads its own frame alone, and heads itself with the result row's
+ * call, as `MessageBubble` heads it with the newest call of the span. The supplement
+ * reaches the request row as the Worker stores it. It reaches the result row through
+ * the request side of the span. The caller registers the plugin of the provider.
  */
 export function renderToolRows(provider: AgentProvider, frames: ToolRowFrames): { request: HTMLElement, result: HTMLElement } {
   const stored = (frame: Record<string, unknown>, supplementalContent?: Record<string, unknown>): ParsedMessageContent => ({
@@ -43,7 +44,6 @@ export function renderToolRows(provider: AgentProvider, frames: ToolRowFrames): 
     role: 'request',
     spanType: frames.spanType,
     supplementalContent: frames.requestSupplement,
-    result: stored(frames.ending),
   })
   const resultRow = providerRow(provider, frames.ending, {
     role: 'result',
@@ -53,7 +53,7 @@ export function renderToolRows(provider: AgentProvider, frames: ToolRowFrames): 
   if (requestRow?.kind !== 'tool' || resultRow?.kind !== 'tool')
     throw new Error('A finished call is a tool row on each side.')
   return {
-    request: render(() => <ToolMessage row={requestRow} />).container,
+    request: render(() => <ToolMessage row={requestRow} header={resultRow.call} />).container,
     result: render(() => <ToolMessage row={resultRow} />).container,
   }
 }

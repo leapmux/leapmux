@@ -2,7 +2,7 @@ import type { MessageCategory } from '../../messageClassifier'
 import type { ResolvedMessageContent } from '../../rowExtractionTypes'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerQuotableText, providerRowPreviewText } from '~/test-support/toolCallFixture'
 import { extractChatRow } from '../../rowExtraction'
 import { providerFor, resolveMessageForRendering } from '../registry'
@@ -429,11 +429,11 @@ describe('claude contextUsageFromMessage', () => {
   })
 })
 
-// The typed resolver supplies a row's related half by span identity, and the plugin
-// says which half a row needs. A RESULT always wants its request, because Claude's
-// tool name lives on the `tool_use` row. A REQUEST wants its result only when the
-// body comes from there: a subagent, a task, a to-do write.
-describe('claude relatedMessages', () => {
+// The typed resolver supplies a row's request by span identity, and the plugin says
+// whether a row needs it. A RESULT always wants its request, because Claude's tool
+// name lives on the `tool_use` row. A REQUEST never needs its result: no row reads a
+// later message of its span.
+describe('claude needsRequest', () => {
   const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
   const toolUse = (name: string) => ({
     type: 'assistant',
@@ -449,8 +449,8 @@ describe('claude relatedMessages', () => {
     },
   })
 
-  it('a result wants its request, because the name lives there', () => {
-    expect(plugin?.transcript.relatedMessages!(input({
+  it('answers true for a result, because the name lives on the request', () => {
+    expect(plugin.transcript.needsRequest!(input({
       type: 'user',
       message: {
         role: 'user',
@@ -458,20 +458,32 @@ describe('claude relatedMessages', () => {
           { type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok' },
         ],
       },
-    }))).toEqual(['request'])
+    }))).toBe(true)
   })
 
-  it('a request wants its result only when the body comes from there', () => {
-    for (const name of [
-      'Agent',
-      'Task',
-      'TodoWrite',
-      'TaskCreate',
-      'TaskUpdate',
-      'TaskGet',
-    ])
-      expect(plugin?.transcript.relatedMessages!(input(toolUse(name)))).toEqual(['result'])
-    expect(plugin?.transcript.relatedMessages!(input(toolUse('Read')))).toEqual([])
+  // These are the tools whose request rows waited for their result before.
+  it.each([
+    'Agent',
+    'Task',
+    'TodoWrite',
+    'TaskCreate',
+    'TaskUpdate',
+    'TaskGet',
+    'Read',
+  ])('answers false for a %s request', (name) => {
+    expect(plugin.transcript.needsRequest!(input(toolUse(name)))).toBe(false)
+  })
+
+  // A turn that ended while the call ran stores the tool_use frame AGAIN as the closing
+  // row. That copy is the span's result, and it states its own arguments.
+  it('treats the closing copy of a request as the result, which needs no request', () => {
+    const closing = {
+      ...input(toolUse('Bash')),
+      completion: MessageCompletion.INTERRUPTED,
+    }
+    expect(plugin.transcript.spanRole(closing)).toBe('result')
+    expect(plugin.transcript.needsRequest!(closing)).toBe(false)
+    expect(plugin.transcript.spanRole(input(toolUse('Bash')))).toBe('request')
   })
 })
 

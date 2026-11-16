@@ -76,10 +76,10 @@ export function ampResultOutcome(result: AmpToolResult | undefined): ProviderToo
   return result.isError ? 'failed' : null
 }
 
-/** One Amp tool call, resolved from its row and the two rows that describe it. */
+/** One Amp tool call, resolved from its row and the request row before it. */
 export interface AmpToolRow {
   call: AmpToolUse
-  /** The call's result, from this row or from the paired result row. */
+  /** The call's result, which only a result row states. A call row holds none. */
   result: AmpToolResult | undefined
   /** True when this row is the last one of its call. */
   finished: boolean
@@ -88,25 +88,23 @@ export interface AmpToolRow {
 /**
  * Build one tool row, or null for a row that is not an Amp tool row.
  *
- * Only a side of THIS call counts: one message can run several calls, and a sibling's
- * row is no side of this one. A result row whose request the store did not resolve
- * still draws, as the generic card of a tool with no name.
+ * A call row reads its own `tool_use` block alone. A result row reads its own
+ * `tool_result` block and the call of its request. Only a request of THIS call
+ * counts: one message can run several calls, and a sibling's row is no side of this
+ * one. A result row whose request the store did not resolve still draws, as the
+ * generic card of a tool with no name.
  */
 export function ampToolRow(
   payload: Record<string, unknown> | undefined,
   request: ParsedMessageContent | undefined,
-  result: ParsedMessageContent | undefined,
   completion?: MessageCompletion,
 ): AmpToolRow | null {
   const ownCall = ampToolUse(payload)
   const ownResult = ampToolResult(payload)
   if (ownCall) {
-    const paired = ampToolResult(result?.parentObject)
     return {
       call: ownCall,
-      result: paired?.toolUseId === ownCall.id
-        ? paired
-        : undefined,
+      result: undefined,
       // A retained request row is the call's END: the turn stopped before the result.
       finished: retainedRowIsFinal(completion),
     }

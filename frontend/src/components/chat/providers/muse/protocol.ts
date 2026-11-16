@@ -26,18 +26,6 @@ export function museParams(payload: unknown): Record<string, unknown> | undefine
     : undefined
 }
 
-/** Match a sibling item to its exact native session and item identity. */
-export function museSiblingItem(payload: unknown, siblingPayload: unknown): Record<string, unknown> | undefined {
-  const own = museItem(payload)
-  const sibling = museItem(siblingPayload)
-  const sessionId = pickString(museParams(payload), 'sessionId')
-  if (!own || !sibling || !sessionId || pickString(museParams(siblingPayload), 'sessionId') !== sessionId
-    || sibling.itemId !== own.itemId || sibling.kind !== own.kind) {
-    return undefined
-  }
-  return sibling
-}
-
 export function museItemText(item: Record<string, unknown> | undefined): string {
   if (item?.kind === MUSE_ITEM_KIND.Reasoning && Array.isArray(item.summary))
     return item.summary.filter((part): part is string => typeof part === 'string').join('\n\n') || pickString(item, 'text')

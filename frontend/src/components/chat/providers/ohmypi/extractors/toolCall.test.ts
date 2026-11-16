@@ -35,17 +35,17 @@ function end(toolName: string, result: Record<string, unknown>, isError = false)
 }
 
 function resultRow(toolName: string, args: Record<string, unknown>, result: Record<string, unknown>, isError = false): OhMyPiToolRow {
-  return ohMyPiToolRow(end(toolName, result, isError), input(start(toolName, args), undefined, AgentProvider.OH_MY_PI), undefined)!
+  return ohMyPiToolRow(end(toolName, result, isError), input(start(toolName, args), undefined, AgentProvider.OH_MY_PI))!
 }
 
 function requestRow(toolName: string, args: Record<string, unknown> = {}): OhMyPiToolRow {
-  return ohMyPiToolRow(start(toolName, args), undefined, undefined)!
+  return ohMyPiToolRow(start(toolName, args), undefined)!
 }
 
 describe('ohMyPiToolRow', () => {
   it('refuses a frame that is not a tool frame', () => {
-    expect(ohMyPiToolRow({ type: 'message_end' }, undefined, undefined)).toBeNull()
-    expect(ohMyPiToolRow('tool_execution_start', undefined, undefined)).toBeNull()
+    expect(ohMyPiToolRow({ type: 'message_end' }, undefined)).toBeNull()
+    expect(ohMyPiToolRow('tool_execution_start', undefined)).toBeNull()
   })
 
   it('reads an end frame, and a retained start frame, as the last row of its call', () => {
@@ -53,7 +53,7 @@ describe('ohMyPiToolRow', () => {
       content: text('ok'),
     }))).toBe('result')
     expect(ohMyPiToolSpanRowRole(requestRow(OH_MY_PI_TOOL.Bash))).toBe('request')
-    const retained = ohMyPiToolRow(start(OH_MY_PI_TOOL.Bash, { command: 'sleep 9' }), undefined, undefined, MessageCompletion.INTERRUPTED)!
+    const retained = ohMyPiToolRow(start(OH_MY_PI_TOOL.Bash, { command: 'sleep 9' }), undefined, MessageCompletion.INTERRUPTED)!
     expect(ohMyPiToolSpanRowRole(retained)).toBe('result')
   })
 })
@@ -76,19 +76,25 @@ describe('ohMyPiToolFacts', () => {
     }, undefined, AgentProvider.OH_MY_PI)
     const row = ohMyPiToolRow(end(OH_MY_PI_TOOL.Read, {
       content: text('x'),
-    }), other, undefined)!
+    }), other)!
     expect(ohMyPiToolFacts(row, undefined).args).toEqual({})
   })
 
-  it('reads the result of a start row whose end already landed', () => {
-    const endFrame = input(end(OH_MY_PI_TOOL.Bash, {
-      content: text('done'),
-      details: {},
-    }), undefined, AgentProvider.OH_MY_PI)
-    const row = ohMyPiToolRow(start(OH_MY_PI_TOOL.Bash, { command: 'ls' }), undefined, endFrame)!
-    const facts = ohMyPiToolFacts(row, undefined)
-    expect(facts.text).toBe('done')
-    expect(facts.lifecycle.resultFrameLanded).toBe(true)
+  // A start row reads its own frame alone, so it states no result, however soon the
+  // end frame lands.
+  it('states no result on a start row', () => {
+    const opening = start(OH_MY_PI_TOOL.Bash, { command: 'ls' })
+    const row = ohMyPiToolRow(opening, input(opening, undefined, AgentProvider.OH_MY_PI))!
+    expect(ohMyPiToolFacts(row, undefined)).toMatchObject({
+      isError: false,
+      text: '',
+      resultAvailable: false,
+      finished: false,
+    })
+    expect(ohMyPiToolFacts(row, undefined).lifecycle.resultFrameLanded).toBe(false)
+    const call = ohMyPiToolCall(row)
+    expect(call.status).toBe('unstated')
+    expect(call.result).toBeUndefined()
   })
 
   it('reads a partial result as the text a stopped call left', () => {
@@ -98,34 +104,21 @@ describe('ohMyPiToolFacts', () => {
         content: text('so far'),
         details: {},
       },
-    }, undefined, undefined, MessageCompletion.INTERRUPTED)!
+    }, undefined, MessageCompletion.INTERRUPTED)!
     expect(ohMyPiToolFacts(row, MessageCompletion.INTERRUPTED)).toMatchObject({ text: 'so far', resultAvailable: true, finished: true })
   })
 
-  it('reads the failure of a start row whose end frame landed failed', () => {
-    const endFrame = input(end(OH_MY_PI_TOOL.Bash, {
+  it('reads the failure of an end frame that omp flagged', () => {
+    const row = resultRow(OH_MY_PI_TOOL.Bash, { command: 'false' }, {
       content: text('boom'),
-    }, true), undefined, AgentProvider.OH_MY_PI)
-    const row = ohMyPiToolRow(start(OH_MY_PI_TOOL.Bash, { command: 'false' }), undefined, endFrame)!
+    }, true)
     expect(ohMyPiToolFacts(row, undefined)).toMatchObject({
       isError: true,
       text: 'boom',
       resultAvailable: true,
-      finished: false,
+      finished: true,
     })
     expect(ohMyPiToolCall(row).status).toBe('failed')
-  })
-
-  it('ignores a paired end frame of another call', () => {
-    const sibling = input({
-      ...end(OH_MY_PI_TOOL.Bash, {
-        content: text('other'),
-      }, true),
-      toolCallId: 'call_2',
-    }, undefined, AgentProvider.OH_MY_PI)
-    const row = ohMyPiToolRow(start(OH_MY_PI_TOOL.Bash, { command: 'ls' }), undefined, sibling)!
-    expect(ohMyPiToolFacts(row, undefined)).toMatchObject({ isError: false, text: '', resultAvailable: false })
-    expect(ohMyPiToolFacts(row, undefined).lifecycle.resultFrameLanded).toBe(false)
   })
 
   it('reads the pictures a result carries, with the path of the call', () => {
@@ -410,7 +403,7 @@ describe('ohMyPiToolCall', () => {
     const row = ohMyPiToolRow(end(OH_MY_PI_TOOL.Read, {
       content: text('# Example'),
       details: { kind: 'url', url: 'https://example.com' },
-    }), undefined, undefined)!
+    }), undefined)!
     const call = ohMyPiToolCall(row)
     expect(call.kind).toBe('fetch')
     expect(call.request).toEqual({ url: 'https://example.com' })
@@ -675,17 +668,17 @@ describe('ohMyPiToolCall', () => {
       ...start(OH_MY_PI_TOOL.Bash, { command: 'ls' }),
       intent: 'list the files',
     }
-    expect(ohMyPiToolCall(ohMyPiToolRow(withIntent, undefined, undefined)!).metadata).toEqual([
+    expect(ohMyPiToolCall(ohMyPiToolRow(withIntent, undefined)!).metadata).toEqual([
       { label: 'Intent', value: 'list the files' },
     ])
     const endRow = ohMyPiToolRow(end(OH_MY_PI_TOOL.Bash, {
       content: text('a.ts'),
-    }), input(withIntent, undefined, AgentProvider.OH_MY_PI), undefined)!
+    }), input(withIntent, undefined, AgentProvider.OH_MY_PI))!
     expect(ohMyPiToolCall(endRow).metadata).toEqual([
       { label: 'Intent', value: 'list the files' },
     ])
     expect(ohMyPiToolCall(requestRow(OH_MY_PI_TOOL.Bash, { command: 'ls' })).metadata).toBeUndefined()
-    expect(ohMyPiToolCall(ohMyPiToolRow({ ...withIntent, intent: '  ' }, undefined, undefined)!).metadata).toBeUndefined()
+    expect(ohMyPiToolCall(ohMyPiToolRow({ ...withIntent, intent: '  ' }, undefined)!).metadata).toBeUndefined()
   })
 
   it('reads a Model Context Protocol tool with the name after its prefix', () => {
@@ -716,7 +709,7 @@ describe('ohMyPiToolCall', () => {
       partialResult: {
         content: text('...'),
       },
-    }, undefined, undefined)!
+    }, undefined)!
     const call = ohMyPiToolCall(row)
     expect('result' in call
       ? call.result
@@ -739,7 +732,7 @@ describe('ohMyPiToolCall', () => {
   })
 
   it('reads a call the turn stopped from the completion LeapMux recorded', () => {
-    const row = ohMyPiToolRow(start(OH_MY_PI_TOOL.Read, { path: 'a.ts' }), undefined, undefined, MessageCompletion.INTERRUPTED)!
+    const row = ohMyPiToolRow(start(OH_MY_PI_TOOL.Read, { path: 'a.ts' }), undefined, MessageCompletion.INTERRUPTED)!
     expect(ohMyPiToolCall(row, MessageCompletion.INTERRUPTED).status).toBe('cancelled')
   })
 })

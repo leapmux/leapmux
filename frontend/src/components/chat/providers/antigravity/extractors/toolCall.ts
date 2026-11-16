@@ -21,9 +21,14 @@ import { antigravityMcpRequest, antigravityMcpResult } from './mcp'
 import { antigravityReadImages, antigravityReadRequest, antigravityReadResult } from './read'
 import { antigravityGenericResult, antigravityStepDeclined, antigravityStepFailed, antigravityStepOpen, antigravityToolName } from './toolCommon'
 
+/**
+ * One row's own native step.
+ *
+ * A row never reads another step of its span: an open step builds the request row,
+ * and a finished step builds the result row with the whole call.
+ */
 export interface AntigravityToolRow {
   own: AntigravityStep
-  result?: AntigravityStep
   registryKey?: string
   completion?: MessageCompletion
   rowFinal: boolean
@@ -39,7 +44,8 @@ export interface AntigravityToolFacts {
   lifecycle: ToolCallEnvelope['lifecycle']
 }
 
-function antigravityToolFacts(step: AntigravityStep, row: AntigravityToolRow): AntigravityToolFacts {
+function antigravityToolFacts(row: AntigravityToolRow): AntigravityToolFacts {
+  const step = row.own
   const answered = !antigravityStepOpen(step)
   return {
     step,
@@ -174,16 +180,43 @@ function fileChangeReader<K extends 'edit' | 'write'>(kind: K): (facts: Antigrav
   }
 }
 
+/**
+ * The command of a step, and where the run states its working directory.
+ *
+ * Only a FINISHED step states the working directory: the open step that the request row
+ * reads states none. So the finished step states it as a fact of the result, which the
+ * row that draws the result draws, and not in its request. A result row beside its
+ * request row draws no request summary, and a request field would reach no reader.
+ */
+function executeParts(facts: AntigravityToolFacts): Pick<ToolCallSpecVariant<'execute'>, 'request' | 'resultMetadata'> {
+  const request = requestFor('execute', facts)
+  if (antigravityStepOpen(facts.step) || request.cwd === undefined)
+    return { request }
+  const { cwd, ...asked } = request
+  return {
+    request: asked,
+    resultMetadata: [
+      { label: 'Working directory', value: cwd },
+    ],
+  }
+}
+
 export const ANTIGRAVITY_TOOL_READERS: ToolCallSpecReaderTable<AntigravityToolFacts> = {
   execute: (facts): ToolCallSpecVariant<'execute'> => {
-    const request = requestFor('execute', facts)
-    const initial = early('execute', facts, request)
+    const parts = executeParts(facts)
+    const initial = early('execute', facts, parts.request)
     const exitCode = pickNumber(pickObject(facts.step.raw, 'runCommand'), 'exitCode', undefined)
-    if (initial && (exitCode === undefined || exitCode === 0))
-      return initial
+    if (initial && (exitCode === undefined || exitCode === 0)) {
+      return {
+        ...initial,
+        ...(parts.resultMetadata !== undefined
+          ? { resultMetadata: parts.resultMetadata }
+          : {}),
+      }
+    }
     return {
       kind: 'execute',
-      request,
+      ...parts,
       result: genericFallback(facts, 'runCommand') ?? {
         commands: [
           antigravityCommandResult(facts.step),
@@ -249,16 +282,9 @@ export const ANTIGRAVITY_TOOL_READERS: ToolCallSpecReaderTable<AntigravityToolFa
   todo: declared('todo'),
 }
 
-export function antigravityToolRow(own: AntigravityStep, other: AntigravityStep | null, completion?: MessageCompletion): AntigravityToolRow {
-  const ownID = pickString(own.toolCall, 'id')
-  const paired = other && pickString(other.toolCall, 'id') === ownID
-    ? other
-    : undefined
+export function antigravityToolRow(own: AntigravityStep, completion?: MessageCompletion): AntigravityToolRow {
   return {
     own,
-    ...(paired
-      ? { result: paired }
-      : {}),
     ...(completion !== undefined
       ? { completion }
       : {}),
@@ -267,8 +293,8 @@ export function antigravityToolRow(own: AntigravityStep, other: AntigravityStep 
 }
 
 function antigravityToolCall(row: AntigravityToolRow): ToolCall {
-  const step = row.result ?? row.own
-  const facts = antigravityToolFacts(step, row)
+  const step = row.own
+  const facts = antigravityToolFacts(row)
   const envelope: ToolCallEnvelope = {
     id: pickString(step.toolCall, 'id') || `step-${String(step.raw.stepIndex ?? '')}`,
     name: antigravityToolName(step),

@@ -659,7 +659,6 @@ export function createTileRenderer(opts: TileRendererOpts) {
       contentVersion: chatStore.getMessageContentVersion,
       spanMessage: (identity, side) => chatStore.getSpanMessage(agentId, identity, side),
       messageBySeq: seq => chatStore.getLoadedMessageBySeq(agentId, seq),
-      holdsLiveTail: () => !chatStore.hasNewerMessages(agentId),
       fetchSpan: async (identity, signal) => {
         if (!workerId)
           throw new Error('The worker is unavailable')

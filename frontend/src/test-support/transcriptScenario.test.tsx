@@ -121,7 +121,7 @@ describe('the transcript scenario harness', () => {
     const requestRow = scenario.toolRow('request')
     const resultRow = scenario.toolRow('result')
     expect(requestRow.role).toBe('request')
-    expect(requestRow.hasResultRow).toBe(true)
+    expect(Object.keys(requestRow)).not.toContain('hasResultRow')
     expect(resultRow.role).toBe('result')
     expect(resultRow.hasRequestRow).toBe(true)
     const identity = { spanId: CALL, agentSessionId: SESSION }
@@ -270,7 +270,9 @@ describe('the transcript scenario harness', () => {
     after.unmount()
   })
 
-  it('changes the request row\'s render key when a result-side supplement lands', () => {
+  // A request row never reads its result, so a change of the result -- a body that
+  // lands in place, a supplement -- leaves the request row's key and entry as they are.
+  it('keeps the request row\'s render key when a result-side supplement lands', () => {
     const scenario = createTranscriptScenario({
       archive: [
         message(zcodeRequest('request', { command: 'printf keyed' }), 1n),
@@ -283,12 +285,8 @@ describe('the transcript scenario harness', () => {
       ...zcodeResult('result', 'the recovered body'),
       supplementalRevision: 2n,
     })
-    const after = renderKeyForEntry(scenario.entry('request'))
-    // The request row's key carries its sibling result's revision, so a
-    // result-side change rebuilds the request row too: a new render key AND a
-    // new classified-entry object, keyed by the one exact revision key.
-    expect(after).not.toBe(before)
-    expect(scenario.entry('request')).not.toBe(beforeEntry)
-    expect(scenario.entry('request').freshness.revisionKey).toContain('~result=')
+    expect(renderKeyForEntry(scenario.entry('request'))).toBe(before)
+    expect(scenario.entry('request')).toBe(beforeEntry)
+    expect(scenario.entry('request').freshness.revisionKey).not.toContain('~result=')
   })
 })

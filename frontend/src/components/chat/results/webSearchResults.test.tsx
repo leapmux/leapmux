@@ -6,7 +6,7 @@ import { clippedText } from '~/styles/shared.css'
 import { hoverForTooltip, stubClipped, stubFitting } from '~/test-support/clipStub'
 import { classSelector } from '~/test-support/composedClass'
 import { toolMetaRow } from '../toolStyles.css'
-import { WebSearchResultsBody } from './webSearchResults'
+import { WebSearchQueries, WebSearchResultsBody } from './webSearchResults'
 
 const LONG_TITLE = 'How to configure a reverse proxy for a self-hosted service without breaking websockets'
 
@@ -39,59 +39,6 @@ describe('WebSearchResultsBody', () => {
   it('marks the link untrusted', () => {
     const { container } = renderResults()
     expect(container.querySelector(`a[${UNTRUSTED_LINK_ATTRIBUTE}]`)).toBeTruthy()
-  })
-
-  // One search runs several queries and the row's TITLE states the first, so the
-  // body lists the rest. It reads them from the REQUEST, which is the one place a
-  // query lives now that the result carries none.
-  describe('further queries', () => {
-    const EXPANDED: ToolResultRenderContext = {
-      getMessageUiState: () => true,
-    }
-
-    function renderQueries(request: { query: string, queries?: string[] } | undefined, context?: ToolResultRenderContext) {
-      return render(() => (
-        <WebSearchResultsBody
-          source={{ links: [], summary: '' }}
-          {...(request !== undefined
-            ? { request }
-            : {})}
-          {...(context !== undefined
-            ? { context }
-            : {})}
-        />
-      ))
-    }
-
-    it('lists every query after the first', () => {
-      const { container } = renderQueries({
-        query: 'first query',
-        queries: ['first query', 'second query'],
-      }, EXPANDED)
-      expect(container.textContent).toContain('second query')
-      expect(container.textContent).not.toContain('first query')
-    })
-
-    it('lists none for a search that ran one query', () => {
-      const { container } = renderQueries({
-        query: 'only query',
-        queries: ['only query'],
-      }, EXPANDED)
-      expect(container.textContent).toBe('')
-    })
-
-    it('lists none for a row that states no request at all', () => {
-      const { container } = renderQueries(undefined, EXPANDED)
-      expect(container.textContent).toBe('')
-    })
-
-    it('lists none while the row stays collapsed', () => {
-      const { container } = renderQueries({
-        query: 'first query',
-        queries: ['first query', 'second query'],
-      })
-      expect(container.textContent).not.toContain('second query')
-    })
   })
 
   it('renders the link title and its domain', () => {
@@ -144,5 +91,55 @@ describe('WebSearchResultsBody', () => {
       stubFitting(label)
       expect(hoverForTooltip(label)).toBeNull()
     })
+  })
+})
+
+// One search runs several queries and the row's TITLE states the first, so the row that
+// draws the request lists the rest. It reads them from the REQUEST, which is the one
+// place a query lives: the result carries none.
+describe('WebSearchQueries', () => {
+  const EXPANDED: ToolResultRenderContext = {
+    getMessageUiState: () => true,
+  }
+
+  function renderQueries(request: { query: string, queries?: string[] }, context?: ToolResultRenderContext) {
+    return render(() => (
+      <WebSearchQueries
+        request={request}
+        {...(context !== undefined
+          ? { context }
+          : {})}
+      />
+    ))
+  }
+
+  it('lists every query after the first', () => {
+    const { container } = renderQueries({
+      query: 'first query',
+      queries: ['first query', 'second query'],
+    }, EXPANDED)
+    expect(container.textContent).toContain('second query')
+    expect(container.textContent).not.toContain('first query')
+  })
+
+  it('lists none for a search that ran one query', () => {
+    const { container } = renderQueries({
+      query: 'only query',
+      queries: ['only query'],
+    }, EXPANDED)
+    expect(container.textContent).toBe('')
+  })
+
+  it('lists none for a search that states no query list', () => {
+    const { container } = renderQueries({ query: 'only query' }, EXPANDED)
+    expect(container.innerHTML).toBe('')
+  })
+
+  it('lists none while the row stays collapsed', () => {
+    const { container } = renderQueries({
+      query: 'first query',
+      queries: ['first query', 'second query'],
+    })
+    expect(container.textContent).not.toContain('second query')
   })
 })

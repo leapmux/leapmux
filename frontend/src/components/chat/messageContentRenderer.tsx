@@ -12,6 +12,8 @@ import { createLogger } from '~/lib/logger'
 import { completionMarker, messageCompletionFromProto } from './assembledMessage'
 import { UnrecognizedMessage } from './messageRenderers'
 import { resolveMessageForRendering } from './providers/registry'
+import { ToolPendingMessage } from './results/ToolPendingMessage'
+import { extractedRow } from './rowExtraction'
 import { cachedChatRow } from './rowModelCache'
 import { renderExtractedRow } from './rowRenderers'
 
@@ -35,6 +37,57 @@ function parsedMessageOf(parsed: unknown): ParsedMessageContent {
     supplementalContent: undefined,
     messageMetadata: undefined,
   }
+}
+
+/**
+ * Extract an isolated payload and render the PENDING row of its tool call: the preview of
+ * what the call asked and its live output, as the list draws below the request row while
+ * the call runs (see ToolPendingMessage). Renders nothing for a row that is not the
+ * request row of a call.
+ */
+export function renderPendingMessageContent(
+  parsed: unknown,
+  context?: MessageContentRenderContext,
+  category?: MessageCategory,
+  agentProvider?: AgentProvider,
+  messageCompletion?: MessageCompletion,
+): JSX.Element {
+  const resolved = context?.sources?.current()
+    ?? resolveMessageForRendering(parsedMessageOf(parsed), agentProvider ?? AgentProvider.UNSPECIFIED)
+  const row = extractedRow(cachedChatRow(context, agentProvider, resolved, category ?? { kind: 'unknown' }, messageCompletion))
+  if (row?.kind !== 'tool' || row.role !== 'request')
+    return null
+  return (
+    <ToolPendingMessage
+      row={row}
+      {...(context !== undefined
+        ? { context }
+        : {})}
+      {...(context?.toolProgress !== undefined
+        ? { progress: context.toolProgress }
+        : {})}
+    />
+  )
+}
+
+/**
+ * Extract and render an isolated payload as the list draws it: its row, and below the row
+ * of a call that runs, the pending row that states what the call asks until the result row
+ * takes its place (see renderPendingMessageContent). Only a request row draws one.
+ */
+export function renderListedMessageContent(
+  parsed: unknown,
+  context?: MessageContentRenderContext,
+  category?: MessageCategory,
+  agentProvider?: AgentProvider,
+  messageCompletion?: MessageCompletion,
+): JSX.Element {
+  return (
+    <>
+      {renderMessageContent(parsed, context, category, agentProvider, messageCompletion)}
+      {renderPendingMessageContent(parsed, context, category, agentProvider, messageCompletion)}
+    </>
+  )
 }
 
 /** Extract and render an isolated payload, or render the caller's prepared extraction. */

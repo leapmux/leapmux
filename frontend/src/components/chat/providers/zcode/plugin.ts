@@ -10,7 +10,7 @@ import { zcodeConfiguration } from './pluginConfiguration'
 import { zcodeControls } from './pluginControls'
 import { resolveZCodeMessage } from './resolveMessage'
 import { zcodeContextUsageFromMessage } from './sessionMetadata'
-import { zcodeRelatedMessages, zcodeSpanRole } from './spanRole'
+import { zcodeNeedsRequest, zcodeSpanRole } from './spanRole'
 
 const zcodePlugin: ProviderPlugin = {
   transcript: {
@@ -18,7 +18,7 @@ const zcodePlugin: ProviderPlugin = {
     outputFilePaths: zcodeOutputFilePaths,
     resolveMessage: resolveZCodeMessage,
     spanRole: zcodeSpanRole,
-    relatedMessages: zcodeRelatedMessages,
+    needsRequest: zcodeNeedsRequest,
     classify: classifyZCodeMessage,
     extractRow: zcodeExtractRow,
     notificationEntry: zcodeNotificationEntry,

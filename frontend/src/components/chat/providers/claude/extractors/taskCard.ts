@@ -16,7 +16,7 @@ import { todoRowKey } from '~/models/todo'
  *   - `TaskCreate` states the whole task in its INPUT, before an id exists.
  *   - `TaskUpdate` sends a patch, so the persisted post-update snapshot supplies
  *     the complete task.
- *   - `TaskGet` sends an id alone, so the task comes from the paired result.
+ *   - `TaskGet` sends an id alone, so the task comes from its result row.
  */
 export function buildTaskCreateItem(
   toolUseInput: Record<string, unknown> | null | undefined,
@@ -56,11 +56,10 @@ export function buildTaskUpdateItem(
 }
 
 /**
- * The to-do a `TaskGet` read back, or null until its result lands.
+ * The to-do a `TaskGet` read back, or null for a payload that states none.
  *
- * The input is an id alone, so there is nothing to draw before the answer
- * arrives -- and a bubble that appeared with a placeholder and then changed
- * would re-measure the row.
+ * The input is an id alone, so only the RESULT row, which reads its own answer,
+ * can state the task. The request row draws its header alone.
  */
 export function buildTaskGetItem(
   toolUseResult: Record<string, unknown> | null | undefined,

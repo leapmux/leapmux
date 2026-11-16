@@ -29,12 +29,10 @@ export function lettaSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
   return 'other'
 }
 
-/** The span side one row needs beside it. */
-export function lettaRelatedMessages(parsed: ResolvedMessageContent) {
-  const role = lettaSpanRole(parsed)
-  return role === 'result'
-    ? ['request'] as const
-    : role === 'request'
-      ? ['result'] as const
-      : []
+/**
+ * A native answer can omit the tool name and the arguments, so a result reads them
+ * from its request. A request draws from its own frame only.
+ */
+export function lettaNeedsRequest(parsed: ResolvedMessageContent): boolean {
+  return lettaSpanRole(parsed) === 'result'
 }

@@ -34,7 +34,7 @@ function renderResult(name: string, args: Record<string, unknown>, output: unkno
     current: () => parsed(row),
     request: () => parsed(request),
     role: () => 'result',
-    visibleRows: () => ({ request: true, result: true }),
+    visibleRows: () => ({ request: true }),
   })
   return render(() => renderMessageContent(row, { premeasureMode: true, spanType: name, sources }, category, AgentProvider.CLINE))
 }

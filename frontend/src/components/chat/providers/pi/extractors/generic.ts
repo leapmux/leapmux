@@ -7,36 +7,31 @@ import { pickObject } from '~/lib/jsonPick'
 import { parseMcpContentItem } from '../../../model/mcpToolCall'
 import { PI_MCP_RESOURCE_TOOL, PI_MCP_RESULT_FIELD, PI_TOOL_RESULT_FIELD } from '../protocol'
 import { piNativeMcpContent, piNativeMcpIdentity } from './mcp'
-import { piExtractTool, piPairedRequest, piPairedResult } from './toolCommon'
+import { piExtractTool, piPairedRequest } from './toolCommon'
 
-/** Read native MCP identity from this result or the exact paired result. */
-export function piMcpIdentity(
-  payload: Record<string, unknown>,
-  pairedResult?: ParsedMessageContent,
-): { server: string, tool: string } | undefined {
+/**
+ * Read native MCP identity from this frame's own result details.
+ *
+ * A running start frame states no result, so it states no identity: its row keeps the
+ * native tool name, and the end frame's row states the server and the tool.
+ */
+export function piMcpIdentity(payload: Record<string, unknown>): { server: string, tool: string } | undefined {
   const tool = piExtractTool(payload)
   if (!tool)
     return undefined
-  return piNativeMcpIdentity(tool.toolName, piMcpDetails(payload, pairedResult))
-}
-
-/** The `details` record that identifies the MCP call: this row's own, else the paired result's. */
-function piMcpDetails(payload: Record<string, unknown>, pairedResult?: ParsedMessageContent): Record<string, unknown> | undefined {
   const result = pickObject(payload, 'result') ?? pickObject(payload, 'partialResult')
-  return pickObject(result, PI_TOOL_RESULT_FIELD.Details)
-    ?? pickObject(pickObject(piPairedResult(payload, pairedResult)?.parentObject, 'result'), PI_TOOL_RESULT_FIELD.Details)
-    ?? undefined
+  return piNativeMcpIdentity(tool.toolName, pickObject(result, PI_TOOL_RESULT_FIELD.Details))
 }
 
 /** Pi extensions use the same rich content blocks as the built-in tools. */
-export function piGenericToolSource(payload: Record<string, unknown>, request?: ParsedMessageContent, pairedResult?: ParsedMessageContent): McpCallFacts | null {
+export function piGenericToolSource(payload: Record<string, unknown>, request?: ParsedMessageContent): McpCallFacts | null {
   const tool = piExtractTool(payload)
   if (!tool)
     return null
   const result = pickObject(payload, 'result') ?? pickObject(payload, 'partialResult')
   const details = pickObject(result, PI_TOOL_RESULT_FIELD.Details)
   const args = pickObject(piPairedRequest(payload, request)?.parentObject, 'args') ?? tool.args
-  const identity = piMcpIdentity(payload, pairedResult)
+  const identity = piMcpIdentity(payload)
   const native = identity
     ? pickObject(result, PI_MCP_RESULT_FIELD.StructuredContent)
     : undefined

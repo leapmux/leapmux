@@ -116,7 +116,8 @@ export interface CodewhaleToolFrame {
   /**
    * The first call of a DEFERRED tool, which the runtime answered by loading the
    * tool's schema rather than by running it. The model calls the tool again, and that
-   * second call is the real one, so both rows of the first call draw nothing.
+   * second call is the real one. The result row of the first call states the runtime's
+   * words for what it did instead of running.
    */
   deferredLoad: boolean
 }
@@ -267,21 +268,19 @@ function blockToolFrame(child: CodewhaleChildBlock): CodewhaleToolFrame | null {
 /**
  * Whether a tool frame is a row that draws nothing, so the classifier hides it.
  *
- * Two result frames say so on their own, and the hide happens in the classifier
+ * One result frame says so on its own, and the hide happens in the classifier
  * because only a classified-hidden row leaves the transcript. A row that the
  * extractor empties still takes a slot, and a slot of no height is never
  * measured, so it holds every later row of the transcript behind it.
  *
- * - The result of a deferred tool's FIRST call, which loaded the tool's schema
- *   and ran nothing. Its request row states the call and the runtime's words.
- * - The result of an answered question. The runtime redacts the answers from
- *   it, so it states nothing, and the saved answer beside it states the reply.
+ * That frame is the result of an answered question. The runtime redacts the answers
+ * from it, so it states nothing, and the saved answer beside it states the reply.
+ *
+ * The result of a deferred tool's FIRST call draws: it is the only row that states
+ * the runtime's words for loading the tool's schema, because a request row reads no
+ * later frame of its span.
  */
 export function codewhaleFrameDrawsNothing(frame: CodewhaleToolFrame): boolean {
-  if (frame.outcome === 'open')
-    return false
-  if (frame.deferredLoad)
-    return true
   return frame.outcome === 'completed' && frame.metadata[CODEWHALE_RESULT_METADATA.ResponseRedacted] === true
 }
 

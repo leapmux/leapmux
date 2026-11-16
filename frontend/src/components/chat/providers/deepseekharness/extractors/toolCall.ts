@@ -1,4 +1,4 @@
-import type { ToolCall, ToolCallEnvelope, ToolCallSpecVariant } from '../../../model/toolCall'
+import type { ToolCall, ToolCallEnvelope, ToolCallSpecVariant, ToolFailureResult } from '../../../model/toolCall'
 import type { ToolKind } from '../../../model/toolKind'
 import type { RowExtractionInput } from '../../../rowExtractionTypes'
 import { DEEPSEEK_HARNESS_EVENT, DEEPSEEK_HARNESS_TOOL } from '~/generated/contracts/deepseek-harness-protocol'
@@ -26,17 +26,29 @@ interface ToolFacts {
   envelope: ToolCallEnvelope
 }
 
+/**
+ * The result of one call: none before the result event lands, the native error text
+ * of a call that failed, and the typed result otherwise.
+ *
+ * A failure replaces only the result. The call keeps the kind, the request and the
+ * icon that its arguments state, so its header reads the same before and after the
+ * failure lands.
+ */
+function landedResult<R>(facts: ToolFacts, typed: () => R): { result?: R | ToolFailureResult } {
+  if (!facts.landed)
+    return {}
+  return {
+    result: facts.failed
+      ? failedResult(facts.text)
+      : typed(),
+  }
+}
+
 function generic<K extends ToolKind>(kind: K, facts: ToolFacts): ToolCall {
   const spec: ToolCallSpecVariant<K> = {
     kind,
     request: DEFAULT_TOOL_REQUESTS[kind](facts.args),
-    ...(facts.landed
-      ? {
-          result: facts.failed
-            ? failedResult(facts.text)
-            : unparsedResult(facts.text),
-        }
-      : {}),
+    ...landedResult(facts, () => unparsedResult(facts.text)),
   }
   return createToolCall(facts.envelope, spec)
 }
@@ -55,18 +67,24 @@ function argumentsObject(value: unknown): Record<string, unknown> {
   }
 }
 
+/**
+ * One native call from the row's own event and the earlier call event.
+ *
+ * A call event builds its row from its own event only, so it keeps its kind and its
+ * arguments whatever the result states. Only a result event carries the output, the
+ * failure and the applied changes.
+ */
 export function deepseekHarnessToolCall(input: RowExtractionInput): ToolCall | null {
   const own = input.resolved.parentObject
   const id = deepseekHarnessCallId(own)
   if (!own || !id)
     return null
-  const same = (payload: unknown) => deepseekHarnessCallId(payload) === id
-    ? payload
-    : undefined
+  const sibling = input.span.request?.parentObject
   const request = deepseekHarnessEventData(own, DEEPSEEK_HARNESS_EVENT.ToolCall)
-    ?? deepseekHarnessEventData(same(input.span.request?.parentObject), DEEPSEEK_HARNESS_EVENT.ToolCall)
+    ?? (deepseekHarnessCallId(sibling) === id
+      ? deepseekHarnessEventData(sibling, DEEPSEEK_HARNESS_EVENT.ToolCall)
+      : undefined)
   const result = deepseekHarnessEventData(own, DEEPSEEK_HARNESS_EVENT.ToolResult)
-    ?? deepseekHarnessEventData(same(input.span.result?.parentObject), DEEPSEEK_HARNESS_EVENT.ToolResult)
   const message = pickObject(result, 'message')
   const name = pickString(request, 'name') || input.spanType || ''
   const blocks = Array.isArray(message?.content)
@@ -101,8 +119,6 @@ export function deepseekHarnessToolCall(input: RowExtractionInput): ToolCall | n
   const kind = declared === 'unspecified'
     ? 'mcp'
     : declared
-  if (facts.failed && kind !== 'mcp' && kind !== 'execute')
-    return generic(kind, facts)
   switch (kind) {
     case 'execute': {
       const script = name === DEEPSEEK_HARNESS_TOOL.Workflow || name === DEEPSEEK_HARNESS_TOOL.RunCode
@@ -115,16 +131,10 @@ export function deepseekHarnessToolCall(input: RowExtractionInput): ToolCall | n
       return createToolCall(facts.envelope, {
         kind: 'execute',
         request,
-        ...(facts.landed
-          ? {
-              result: facts.failed
-                ? failedResult(facts.text)
-                : {
-                    commands: [command],
-                    unresolvedTerminals: [],
-                  },
-            }
-          : {}),
+        ...landedResult(facts, () => ({
+          commands: [command],
+          unresolvedTerminals: [],
+        })),
       })
     }
     case 'read': {
@@ -137,11 +147,10 @@ export function deepseekHarnessToolCall(input: RowExtractionInput): ToolCall | n
       return createToolCall(facts.envelope, {
         kind: 'read',
         request: DEFAULT_TOOL_REQUESTS.read(facts.args),
-        ...(facts.landed
-          ? {
-              result: { lines: null, fallbackContent: facts.text },
-              images,
-            }
+        ...landedResult(facts, () => ({ lines: null, fallbackContent: facts.text })),
+        // A failed call holds no picture.
+        ...(facts.landed && !facts.failed
+          ? { images }
           : {}),
       })
     }
@@ -158,16 +167,13 @@ export function deepseekHarnessToolCall(input: RowExtractionInput): ToolCall | n
       return createToolCall(facts.envelope, {
         kind,
         request,
-        ...(facts.landed
-          ? {
-              result: applied === undefined
-                ? unparsedResult(facts.text)
-                : { changes: applied },
-            }
-          : {}),
+        ...landedResult(facts, () => applied === undefined
+          ? unparsedResult(facts.text)
+          : { changes: applied }),
       })
     }
     case 'mcp': {
+      // An MCP server states its failure in its content, so a failed call keeps it.
       const tool = parseMcpToolName(name)
       return createToolCall(facts.envelope, {
         kind: 'mcp',
@@ -188,11 +194,7 @@ export function deepseekHarnessToolCall(input: RowExtractionInput): ToolCall | n
       return createToolCall(facts.envelope, {
         kind: 'todo',
         request: { items },
-        ...(facts.landed
-          ? {
-              result: { items, note: facts.text },
-            }
-          : {}),
+        ...landedResult(facts, () => ({ items, note: facts.text })),
       })
     }
     case 'agent': {
@@ -201,21 +203,17 @@ export function deepseekHarnessToolCall(input: RowExtractionInput): ToolCall | n
       return createToolCall(facts.envelope, {
         kind: 'agent',
         request,
-        ...(facts.landed
-          ? {
-              result: {
-                agents: [
-                  {
-                    description: request.description,
-                    agentId: childId ?? '',
-                    outcome: childId ? 'running' : 'completed',
-                    metadata: [],
-                    body: facts.text,
-                  },
-                ],
-              },
-            }
-          : {}),
+        ...landedResult(facts, () => ({
+          agents: [
+            {
+              description: request.description,
+              agentId: childId ?? '',
+              outcome: childId ? 'running' as const : 'completed' as const,
+              metadata: [],
+              body: facts.text,
+            },
+          ],
+        })),
       })
     }
     case 'question': {
@@ -225,15 +223,11 @@ export function deepseekHarnessToolCall(input: RowExtractionInput): ToolCall | n
       return createToolCall(facts.envelope, {
         kind: 'question',
         request: { questions },
-        ...(facts.landed
-          ? {
-              result: {
-                answers: [
-                  { header: questions[0]?.question ?? 'Answer', answer: facts.text || null },
-                ],
-              },
-            }
-          : {}),
+        ...landedResult(facts, () => ({
+          answers: [
+            { header: questions[0]?.question ?? 'Answer', answer: facts.text || null },
+          ],
+        })),
       })
     }
     case 'switch_mode':
@@ -241,11 +235,7 @@ export function deepseekHarnessToolCall(input: RowExtractionInput): ToolCall | n
         kind: 'switch_mode',
         request: { mode: 'act' },
         icon: 'plan-exit',
-        ...(facts.landed
-          ? {
-              result: proseResult(facts.text),
-            }
-          : {}),
+        ...landedResult(facts, () => proseResult(facts.text)),
       })
     default:
       return generic(kind, facts)

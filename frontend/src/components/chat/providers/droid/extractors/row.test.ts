@@ -34,9 +34,8 @@ describe('droidExtractRow', () => {
     }
     const span: ToolSpanContext = {
       request,
-      result: undefined,
       role: 'result',
-      visibleRows: { request: false, result: true },
+      visibleRows: { request: false },
     }
     const row = droidExtractRow({
       resolved: request,
@@ -65,9 +64,8 @@ describe('droidExtractRow', () => {
     })
     const span: ToolSpanContext = {
       request,
-      result: undefined,
       role: 'request',
-      visibleRows: { request: true, result: false },
+      visibleRows: { request: true },
     }
     const row = droidExtractRow({
       resolved: request,
@@ -94,6 +92,35 @@ describe('droidExtractRow', () => {
     ])
   })
 
+  it('builds an Edit request from its own notification, with no result and no finished status', () => {
+    const request = resolvedDroidFrame({
+      type: 'tool_call',
+      toolUse: {
+        id: 'edit-1',
+        name: 'Edit',
+        input: { file_path: '/repo/a.txt', old_string: 'old', new_string: 'new' },
+      },
+    })
+    const row = droidExtractRow({
+      resolved: request,
+      category: classifyDroidMessage({ ...request, agentProvider: AgentProvider.DROID }),
+      span: {
+        request,
+        role: 'request',
+        visibleRows: { request: true },
+      },
+    })
+    if (row?.kind !== 'tool' || row.call.kind !== 'edit')
+      throw new Error('The native Droid Edit request requires an edit row.')
+    expect(row.role).toBe('request')
+    expect(row.call.request.changes).toEqual([
+      { filePath: '/repo/a.txt', oldStr: 'old', newStr: 'new' },
+    ])
+    expect(row.call.status).toBe('unstated')
+    expect(row.call).not.toHaveProperty('result')
+    expect(row.call.images).toEqual([])
+  })
+
   it('normalizes Droid Read file_path into the typed path field', () => {
     const request = resolvedDroidFrame({
       type: 'tool_call',
@@ -105,9 +132,8 @@ describe('droidExtractRow', () => {
     })
     const span: ToolSpanContext = {
       request,
-      result: undefined,
       role: 'request',
-      visibleRows: { request: true, result: false },
+      visibleRows: { request: true },
     }
     const row = droidExtractRow({
       resolved: request,
@@ -143,9 +169,8 @@ describe('droidExtractRow', () => {
     })
     const span: ToolSpanContext = {
       request,
-      result,
       role: 'result',
-      visibleRows: { request: true, result: true },
+      visibleRows: { request: true },
     }
     const row = droidExtractRow({
       resolved: result,
@@ -154,12 +179,13 @@ describe('droidExtractRow', () => {
     })
 
     expect(row?.kind).toBe('tool')
-    if (row?.kind !== 'tool' || row.call.kind !== 'other')
-      throw new Error('The native Droid result requires a generic tool row.')
-    expect(isGenericToolResult(row.call.result)).toBe(true)
-    if (!isGenericToolResult(row.call.result))
-      throw new Error('The native Droid result requires generic content.')
-    expect(row.call.result.content).toEqual([
+    if (row?.kind !== 'tool' || row.call.kind !== 'read')
+      throw new Error('The native Droid Read result requires a read row.')
+    expect(row.call.request.path).toBe('/repo/shot.png')
+    expect(row.call.status).toBe('completed')
+    // A picture keeps the native blocks in their order, beside an empty text result.
+    expect(row.call.result).toEqual({ unparsed: true, text: '' })
+    expect(row.call.extraContent).toEqual([
       { type: 'text', text: 'Image file: shot.png' },
       {
         type: 'image',
@@ -168,13 +194,109 @@ describe('droidExtractRow', () => {
     ])
   })
 
+  // The result row draws the header of its request once the result lands, so it carries
+  // the kind and the request that the request row shows.
+  it.each([
+    [
+      'Grep',
+      { pattern: 'needle', path: '/repo' },
+      false,
+      {
+        kind: 'grep',
+        request: { pattern: 'needle' },
+        result: { unparsed: true, text: 'native answer' },
+      },
+    ],
+    [
+      'Edit',
+      { file_path: '/repo/a.txt', old_string: 'old', new_string: 'new' },
+      false,
+      {
+        kind: 'edit',
+        request: {
+          changes: [
+            { filePath: '/repo/a.txt', oldStr: 'old', newStr: 'new' },
+          ],
+        },
+        result: { unparsed: true, text: 'native answer' },
+      },
+    ],
+    [
+      'TodoWrite',
+      {
+        todos: [
+          { content: 'Inspect', status: 'pending' },
+        ],
+      },
+      false,
+      {
+        kind: 'todo',
+        request: {
+          items: [
+            { content: 'Inspect', status: 'pending' },
+          ],
+        },
+        result: { unparsed: true, text: 'native answer' },
+      },
+    ],
+    [
+      'Read',
+      { file_path: '/repo/absent.txt' },
+      true,
+      {
+        kind: 'read',
+        status: 'failed',
+        request: { path: '/repo/absent.txt' },
+        result: { failure: true, text: 'native answer' },
+      },
+    ],
+  ])('gives the %s result row the declared kind and the request of its arguments', (name, input, isError, expected) => {
+    const request = resolvedDroidFrame({
+      type: 'tool_call',
+      toolUse: { id: 'typed', name, input },
+    })
+    const result = resolvedDroidFrame({
+      type: 'tool_result',
+      toolUseId: 'typed',
+      content: 'native answer',
+      isError,
+    })
+    const requestRow = droidExtractRow({
+      resolved: request,
+      category: classifyDroidMessage({ ...request, agentProvider: AgentProvider.DROID }),
+      span: {
+        request,
+        role: 'request',
+        visibleRows: { request: true },
+      },
+    })
+    const resultRow = droidExtractRow({
+      resolved: result,
+      category: classifyDroidMessage({ ...result, agentProvider: AgentProvider.DROID }),
+      span: {
+        request,
+        role: 'result',
+        visibleRows: { request: true },
+      },
+    })
+    expect(resultRow).toMatchObject({
+      kind: 'tool',
+      role: 'result',
+      call: { ...expected, name },
+    })
+    if (requestRow?.kind !== 'tool' || resultRow?.kind !== 'tool')
+      throw new Error('The native Droid call requires two tool rows.')
+    expect(resultRow.call.kind).toBe(requestRow.call.kind)
+    expect(resultRow.call.request).toEqual(requestRow.call.request)
+    expect(resultRow.call).not.toHaveProperty('extraContent')
+  })
+
   it('keeps a plain native result as one text block', () => {
     const result = resolvedDroidFrame({ type: 'tool_result', toolUseId: 'read-2', content: 'plain output' })
     const span: ToolSpanContext = {
       request: undefined,
-      result,
       role: 'result',
-      visibleRows: { request: false, result: true },
+      visibleRows: { request: false },
     }
     const row = droidExtractRow({
       resolved: result,
@@ -193,12 +315,8 @@ describe('droidExtractRow', () => {
   it.each([
     [
       'Read',
-      'other',
-      {
-        content: [
-          { type: 'text', text: 'native preview' },
-        ],
-      },
+      'read',
+      { unparsed: true, text: 'native preview' },
     ],
     [
       'Execute',
@@ -222,9 +340,8 @@ describe('droidExtractRow', () => {
     const result = resolvedDroidFrame({ type: 'tool_result', toolUseId: 'native-call', content: 'native preview' })
     const span: ToolSpanContext = {
       request,
-      result,
       role: 'result',
-      visibleRows: { request: true, result: true },
+      visibleRows: { request: true },
     }
     const row = droidExtractRow({
       resolved: result,
@@ -261,9 +378,8 @@ describe('droidExtractRow', () => {
       })
       const span: ToolSpanContext = {
         request,
-        result,
         role: 'result',
-        visibleRows: { request: true, result: true },
+        visibleRows: { request: true },
       }
       const row = droidExtractRow({
         resolved: result,
@@ -334,9 +450,8 @@ describe('droidExtractRow', () => {
     const result = resolvedDroidFrame({ type: 'tool_result', toolUseId: 'native-call', content: 'native preview' })
     const span: ToolSpanContext = {
       request,
-      result,
       role: 'result',
-      visibleRows: { request: true, result: true },
+      visibleRows: { request: true },
     }
     const row = droidExtractRow({
       resolved: result,
@@ -364,9 +479,8 @@ describe('droidExtractRow', () => {
     })
     const span: ToolSpanContext = {
       request,
-      result,
       role: 'result',
-      visibleRows: { request: true, result: true },
+      visibleRows: { request: true },
     }
     const row = droidExtractRow({
       resolved: result,

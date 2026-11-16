@@ -2,7 +2,8 @@ import type { JSX } from 'solid-js'
 import type { ParsedCall, ResolvedCall, ToolKindRenderer, ToolRowView } from './renderer'
 import Blocks from 'lucide-solid/icons/blocks'
 import { mcpToolCallDisplayName } from '../../model/mcpToolCall'
-import { genericRequestBody, genericResultBody, genericResultMeta, genericTitle } from './generic'
+import { genericHasPending, genericPendingBody, genericResultBody, genericResultMeta, genericTitle } from './generic'
+import { previewWithoutResult } from './renderer'
 
 /**
  * The MCP call's own renderer: its request states the server and the tool, so the
@@ -16,7 +17,9 @@ export const mcpRenderer: ToolKindRenderer<'mcp'> = {
   title(call: ParsedCall<'mcp'>): JSX.Element | string {
     return genericTitle(mcpToolCallDisplayName(call.request), call.request.args)
   },
-  request: genericRequestBody,
+  pending: genericPendingBody,
+  hasPending: genericHasPending,
+  withoutTypedResult: previewWithoutResult(genericPendingBody),
   result(call: ResolvedCall<'mcp'>, view: ToolRowView) {
     return genericResultBody(call, view, mcpToolCallDisplayName(call.request))
   },

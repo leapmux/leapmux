@@ -181,8 +181,8 @@ describe('zcode retained tool row', () => {
   // The row is read through `extractChatRow` rather than through `providerToolMeta`,
   // which builds its parsed message from the frame alone. Only LeapMux's completion
   // column states that this call ended: the progress frame still reads as a call in
-  // flight, and a call in flight carries no result at all -- `ToolMessage` draws the
-  // live output the worker broadcasts there.
+  // flight, and a call in flight carries no result at all -- its pending row draws the
+  // live output the worker broadcasts.
   it('presents the progress output tails as the partial result, one stream per line', () => {
     const parsed = resolveMessageForRendering({
       ...parsedOf(toolEvent(ZCODE_TOOL_KIND.Progress, { stdoutTail: 'partial ', stderrTail: 'output' })),
@@ -192,9 +192,8 @@ describe('zcode retained tool row', () => {
       spanType: ZCODE_TOOL.Bash,
       span: {
         request: undefined,
-        result: parsed,
         role: 'result',
-        visibleRows: { request: false, result: true },
+        visibleRows: { request: false },
       },
     }))
     expect(row?.kind === 'tool'

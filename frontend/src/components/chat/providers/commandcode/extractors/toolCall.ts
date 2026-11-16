@@ -1,5 +1,5 @@
 import type { CommandResult } from '../../../model/commandResult'
-import type { ToolCall, ToolCallEnvelope, ToolCallSpecVariant } from '../../../model/toolCall'
+import type { ToolCall, ToolCallEnvelope, ToolCallSpecVariant, ToolFailureResult } from '../../../model/toolCall'
 import type { ToolKind } from '../../../model/toolKind'
 import type { RowExtractionInput } from '../../../rowExtractionTypes'
 import { COMMAND_CODE_EVENT } from '~/generated/contracts/commandcode-protocol'
@@ -24,17 +24,29 @@ interface ToolFacts {
   envelope: ToolCallEnvelope
 }
 
+/**
+ * The result of one call: none before a finished frame lands, the native text of a
+ * call that failed or that a rule refused, and the typed result otherwise.
+ *
+ * A failure replaces only the result. The call keeps the kind, the request and the
+ * label that its arguments state, so its header reads the same before and after the
+ * failure lands.
+ */
+function landedResult<R>(facts: ToolFacts, typed: () => R): { result?: R | ToolFailureResult } {
+  if (!facts.landed)
+    return {}
+  return {
+    result: facts.failed
+      ? failedResult(facts.text)
+      : typed(),
+  }
+}
+
 function generic<K extends ToolKind>(kind: K, facts: ToolFacts): ToolCall {
   const spec: ToolCallSpecVariant<K> = {
     kind,
     request: DEFAULT_TOOL_REQUESTS[kind](facts.args),
-    ...(facts.landed
-      ? {
-          result: facts.failed
-            ? failedResult(facts.text)
-            : unparsedResult(facts.text),
-        }
-      : {}),
+    ...landedResult(facts, () => unparsedResult(facts.text)),
   }
   return createToolCall(facts.envelope, spec)
 }
@@ -68,26 +80,27 @@ function commandCodeShellResult(text: string): CommandResult {
   }
 }
 
+/**
+ * One native call from the row's own frame and the earlier queued request.
+ *
+ * A queued request builds its call from its own frame only, so it keeps its kind and
+ * its arguments whatever the finished frame states. Only a finished frame carries the
+ * output and the failure.
+ */
 export function commandCodeToolCall(input: RowExtractionInput): ToolCall | null {
   const own = commandCodeEvent(input.resolved.parentObject)
   const id = pickString(own, 'toolCallId')
   if (!own || !id)
     return null
-  const same = (event: Record<string, unknown> | undefined) => event && pickString(event, 'toolCallId') === id
-    ? event
-    : undefined
-  const siblingRequest = same(commandCodeEvent(input.span.request?.parentObject))
-  const siblingResult = same(commandCodeEvent(input.span.result?.parentObject))
+  const siblingRequest = commandCodeEvent(input.span.request?.parentObject)
   const request = own.type === COMMAND_CODE_EVENT.ToolQueued
     ? own
-    : siblingRequest?.type === COMMAND_CODE_EVENT.ToolQueued
+    : siblingRequest?.type === COMMAND_CODE_EVENT.ToolQueued && pickString(siblingRequest, 'toolCallId') === id
       ? siblingRequest
       : undefined
   const result = COMMAND_CODE_TOOL_RESULTS.has(pickString(own, 'type'))
     ? own
-    : COMMAND_CODE_TOOL_RESULTS.has(pickString(siblingResult, 'type'))
-      ? siblingResult
-      : undefined
+    : undefined
   const name = pickString(request, 'toolName') || pickString(own, 'toolName')
   const blocks = result && Array.isArray(result.result)
     ? result.result.filter(isObject)
@@ -119,8 +132,6 @@ export function commandCodeToolCall(input: RowExtractionInput): ToolCall | null 
     },
   }
   const kind = commandCodeToolKind(name)
-  if (facts.failed)
-    return generic(kind, facts)
   switch (kind) {
     case 'execute': {
       const request = DEFAULT_TOOL_REQUESTS.execute(facts.args)
@@ -134,16 +145,12 @@ export function commandCodeToolCall(input: RowExtractionInput): ToolCall | null 
         kind: 'execute',
         request,
         label: 'Shell',
-        ...(facts.landed
-          ? {
-              result: {
-                commands: [
-                  commandCodeShellResult(facts.text),
-                ],
-                unresolvedTerminals: [],
-              },
-            }
-          : {}),
+        ...landedResult(facts, () => ({
+          commands: [
+            commandCodeShellResult(facts.text),
+          ],
+          unresolvedTerminals: [],
+        })),
       })
     }
     case 'read': {
@@ -156,11 +163,10 @@ export function commandCodeToolCall(input: RowExtractionInput): ToolCall | null 
       return createToolCall(facts.envelope, {
         kind: 'read',
         request: DEFAULT_TOOL_REQUESTS.read(facts.args),
-        ...(facts.landed
-          ? {
-              result: { lines: null, fallbackContent: facts.text },
-              images,
-            }
+        ...landedResult(facts, () => ({ lines: null, fallbackContent: facts.text })),
+        // A failed or refused call holds no picture.
+        ...(facts.landed && !facts.failed
+          ? { images }
           : {}),
       })
     }
@@ -179,13 +185,9 @@ export function commandCodeToolCall(input: RowExtractionInput): ToolCall | null 
       return createToolCall(facts.envelope, {
         kind: 'mcp',
         request: { server: tool?.server ?? '', tool: tool?.tool ?? name, args: facts.args },
-        ...(facts.landed
-          ? {
-              result: {
-                content: facts.blocks.map(parseMcpContentItem),
-              },
-            }
-          : {}),
+        ...landedResult(facts, () => ({
+          content: facts.blocks.map(parseMcpContentItem),
+        })),
       })
     }
     case 'todo': {
@@ -195,11 +197,7 @@ export function commandCodeToolCall(input: RowExtractionInput): ToolCall | null 
       return createToolCall(facts.envelope, {
         kind: 'todo',
         request: { items },
-        ...(facts.landed
-          ? {
-              result: { items, note: facts.text },
-            }
-          : {}),
+        ...landedResult(facts, () => ({ items, note: facts.text })),
       })
     }
     case 'agent': {
@@ -215,21 +213,17 @@ export function commandCodeToolCall(input: RowExtractionInput): ToolCall | null 
             ? { agentType }
             : {}),
         },
-        ...(facts.landed
-          ? {
-              result: {
-                agents: [
-                  {
-                    description: request.description,
-                    agentId: nativeID ?? facts.envelope.id,
-                    outcome: background ? 'running' : 'completed',
-                    metadata: [],
-                    body: facts.text,
-                  },
-                ],
-              },
-            }
-          : {}),
+        ...landedResult(facts, () => ({
+          agents: [
+            {
+              description: request.description,
+              agentId: nativeID ?? facts.envelope.id,
+              outcome: background ? 'running' as const : 'completed' as const,
+              metadata: [],
+              body: facts.text,
+            },
+          ],
+        })),
       })
     }
     default:

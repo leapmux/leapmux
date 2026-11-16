@@ -190,7 +190,7 @@ describe('toolCallMeta', () => {
         ],
       },
     })
-    const requestRow = toolRow(call, 'request', { result: true })
+    const requestRow = toolRow(call, 'request')
     holdComputedDiffs(true)
 
     expect(toolCallMeta(requestRow).copyableContent()).toContain('-a\n-b\n-c\n+a\n+B\n+c\n')
@@ -208,7 +208,9 @@ describe('toolCallMeta', () => {
     expect(builds()).toBe(2)
   })
 
-  it('ors an unparsed result into the request meta and keeps a requested diff\'s hasDiff', () => {
+  // A completed file change whose result is words alone draws the changes it asked for
+  // above them (withoutTypedResult), so the row offers the diff toggle for that diff.
+  it('ors an unparsed result into the request meta and offers the toggle for the requested diff it draws', () => {
     const call = toolCallFixture('edit', {
       status: 'completed',
       request: {
@@ -227,6 +229,25 @@ describe('toolCallMeta', () => {
     expect(meta.hasCopyable).toBe(true)
     expect(meta.copyableContent()).toContain('raw payload')
     expect(meta.hasDiff).toBe(true)
+  })
+
+  // A failed change took nothing, so its row draws no diff and offers no toggle for one.
+  it('offers no diff toggle for a failed file change that states only its reason', () => {
+    const call = toolCallFixture('edit', {
+      status: 'failed',
+      request: {
+        changes: [
+          {
+            filePath: '/p/a.ts',
+            oldStr: 'x',
+            newStr: 'y',
+            structuredPatch: null,
+          },
+        ],
+      },
+      result: failedResult('the file is read-only'),
+    })
+    expect(toolCallMeta(toolRow(call)).hasDiff).toBe(false)
   })
 
   it('answers about the request alone on a paired request row', () => {
@@ -253,7 +274,7 @@ describe('toolCallMeta', () => {
         ],
       },
     })
-    const requestRow = toolRow(call, 'request', { result: true })
+    const requestRow = toolRow(call, 'request')
     const meta = toolCallMeta(requestRow)
     expect(meta.hasDiff).toBe(true)
   })
@@ -271,7 +292,7 @@ describe('toolCallMeta', () => {
         { type: 'text', text: 'extra output' },
       ],
     })
-    expect(toolCallMeta(toolRow(call, 'request', { result: true })).copyableContent()).toBe('printf request')
+    expect(toolCallMeta(toolRow(call, 'request')).copyableContent()).toBe('printf request')
   })
 
   it('keeps request text off a result row whose request row is visible', () => {
@@ -302,13 +323,16 @@ describe('toolCallMeta', () => {
 
   // A call the turn CUT keeps the body it printed so far, and it is the one status
   // whose result is partial: a call still running carries no result at all.
-  it('answers about the partial result of an update row with no result row', () => {
+  // An update row sits before the result, and never draws a result: its toolbar answers
+  // about the request side alone.
+  it('answers nothing about a result on an update row', () => {
     const call = toolCallFixture('read', {
       status: 'cancelled',
       result: { lines: null, fallbackContent: 'partial' },
     })
     const meta = toolCallMeta(toolRow(call, 'update'))
-    expect(meta.copyableContent()).toBe('partial')
+    expect(meta.copyableContent()).toBeNull()
+    expect(meta.hasCopyable).toBe(false)
   })
 
   it('states a failure\'s text as the copyable content', () => {

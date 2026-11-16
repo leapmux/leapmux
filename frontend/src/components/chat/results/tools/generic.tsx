@@ -1,7 +1,7 @@
 import type { LucideIcon } from 'lucide-solid'
 import type { JSX } from 'solid-js'
 import type { GenericToolKind } from '../../model/toolCall'
-import type { ParsedCall, ResolvedCall, ToolKindMeta, ToolKindRenderer, ToolRowView } from './renderer'
+import type { ParsedCall, RequestSideCall, ResolvedCall, ToolKindMeta, ToolKindRenderer, ToolRowView } from './renderer'
 import { Show } from 'solid-js'
 import { isObject } from '~/lib/jsonPick'
 import { genericArgsText } from '../../model/tools/generic'
@@ -11,6 +11,7 @@ import { toolInputCode, toolInputSummary, toolInputText } from '../../toolStyles
 import { CollapsibleContent } from '../CollapsibleContent'
 import { genericResultCollapsible, genericResultCopyable, GenericToolBody } from '../genericToolCall'
 import { useCollapsedLines } from '../useCollapsedLines'
+import { previewWithoutResult } from './renderer'
 
 /** The two kinds one renderer serves: a tool no vocabulary lists, with no protocol shape of its own. */
 export type PlainGenericKind = 'unspecified' | 'other'
@@ -90,14 +91,18 @@ function plainImageTabName(call: { label?: string, name: string }): string {
 }
 
 /**
- * The request body every generic kind shares: a pending unpaired row shows what it
- * asked; once a result exists, the body's own Arguments block is the one place.
+ * The preview every generic kind shares: while the call runs, the pending row shows
+ * what it asked. Once a result exists, the result body's own Arguments block is the
+ * one place.
  */
-export function genericRequestBody(call: ParsedCall<GenericToolKind>, view: ToolRowView): JSX.Element | null {
-  const text = view.drawsResult && call.result === undefined
-    ? genericArgsText(call.request)
-    : ''
+export function genericPendingBody(call: RequestSideCall<GenericToolKind>, view: ToolRowView): JSX.Element | null {
+  const text = genericArgsText(call.request)
   return <Show when={text}>{args => <PendingArguments text={args()} view={view} />}</Show>
+}
+
+/** Whether a generic call states arguments to preview while it runs. */
+export function genericHasPending(call: RequestSideCall<GenericToolKind>): boolean {
+  return genericArgsText(call.request) !== ''
 }
 
 /** The result body every generic kind shares, headed by the tab name its images open under. */
@@ -148,7 +153,9 @@ export function genericRenderer(options: { icon: LucideIcon, label: string }): T
         ? humanizeWireWord(call.name)
         : options.label), call.request.args)
     },
-    request: genericRequestBody,
+    pending: genericPendingBody,
+    hasPending: genericHasPending,
+    withoutTypedResult: previewWithoutResult(genericPendingBody),
     result(call: ResolvedCall<PlainGenericKind>, view: ToolRowView): JSX.Element | null {
       return genericResultBody(call, view, plainImageTabName(call))
     },

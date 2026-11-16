@@ -5,6 +5,7 @@ import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { checkKindModule } from '~/test-support/kindTestHarness'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { ToolMessage } from '../ToolMessage'
+import { ToolPendingMessage } from '../ToolPendingMessage'
 import { parsedCall } from './renderer'
 import { TODO_PARTIAL_LIST_NOTICE, todoRenderer } from './todo'
 
@@ -76,16 +77,17 @@ describe('todo renderer', () => {
         note: 'MARKER-NOTE',
       },
     })
-    const { container } = render(() => <ToolMessage row={toolRow(call, 'update')} />)
+    const { container } = render(() => <ToolMessage row={toolRow(call, 'result')} />)
     await settleWorkerReplies()
     const text = container.textContent ?? ''
     expect(text.match(/MARKER-ONE/g)).toHaveLength(1)
     expect(text.match(/MARKER-NOTE/g)).toHaveLength(1)
   })
 
-  // A row whose answer has NOT landed still states the list the call carried, which is
-  // the newest fact the reader has.
-  it('draws the carried checklist while the answer is absent', () => {
+  // While the answer has NOT landed, the PENDING row states the list the call carried,
+  // which is the newest fact the reader has. The request row draws the same before and
+  // after the answer, so it never states the list.
+  it('draws the carried checklist on the pending row while the answer is absent', () => {
     const call = toolCallFixture('todo', {
       status: 'in_progress',
       request: {
@@ -94,8 +96,31 @@ describe('todo renderer', () => {
         ],
       },
     })
-    const { container } = render(() => <ToolMessage row={toolRow(call, 'update')} />)
-    expect(container.textContent).toContain('MARKER-ONE')
+    expect(render(() => <ToolPendingMessage row={toolRow(call, 'request')} />).container.textContent).toContain('MARKER-ONE')
+    expect(render(() => <ToolMessage row={toolRow(call, 'request')} />).container.textContent).not.toContain('MARKER-ONE')
+  })
+
+  // An empty carried list previews nothing: only the result can say that the call
+  // cleared the list. So the pending row of the call draws nothing.
+  it('previews nothing for an empty carried list', () => {
+    const call = toolCallFixture('todo', {
+      status: 'in_progress',
+      request: { items: [] },
+    })
+    expect(todoRenderer.hasPending?.(parsedCall(call), false)).toBe(false)
+  })
+
+  // A call that creates a task carries its note and no list yet. The preview states the
+  // note alone, and never "cleared", which only a result can say.
+  it('previews the note of a call that carries no list, and claims no cleared list', async () => {
+    const call = toolCallFixture('todo', {
+      status: 'in_progress',
+      request: { items: [], note: 'NOTE-MARKER for the new task' },
+    })
+    const { container } = render(() => <ToolPendingMessage row={toolRow(call, 'request')} />)
+    await settleWorkerReplies()
+    expect(container.textContent).toContain('NOTE-MARKER')
+    expect(container.textContent).not.toContain('cleared')
   })
 
   /**
@@ -135,10 +160,10 @@ describe('todo renderer', () => {
       status: 'in_progress',
       request: { items: ONE_TASK, note: 'MARKER-REQUEST-NOTE' },
     })
-    const request = render(() => <ToolMessage row={toolRow(carried, 'update')} />)
+    const pending = render(() => <ToolPendingMessage row={toolRow(carried, 'request')} />)
     await settleWorkerReplies()
-    expect(request.container.textContent).toContain('MARKER-REQUEST-NOTE')
-    expect(request.container.querySelector('[data-tool-output-preview]')).toBeNull()
+    expect(pending.container.textContent).toContain('MARKER-REQUEST-NOTE')
+    expect(pending.container.querySelector('[data-tool-output-preview]')).toBeNull()
   })
 
   it('marks an empty checklist the turn stopped, which the body calls cleared', () => {

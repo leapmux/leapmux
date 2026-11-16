@@ -13,7 +13,7 @@ import { ohMyPiControls } from './pluginControls'
 import { resolveOhMyPiMessage } from './resolveMessage'
 import { ohMyPiValidateResumeHandle } from './resumeHandle'
 import { ohMyPiContextUsageFromMessage } from './sessionMetadata'
-import { ohMyPiRelatedMessages, ohMyPiSpanRole } from './spanRole'
+import { ohMyPiNeedsRequest, ohMyPiSpanRole } from './spanRole'
 import './plugin'
 
 const plugin = providerFor(AgentProvider.OH_MY_PI)!
@@ -44,7 +44,7 @@ describe('ohmypi plugin', () => {
     expect(plugin.transcript).toEqual({
       resolveMessage: resolveOhMyPiMessage,
       spanRole: ohMyPiSpanRole,
-      relatedMessages: ohMyPiRelatedMessages,
+      needsRequest: ohMyPiNeedsRequest,
       classify: classifyOhMyPiMessage,
       extractRow: ohMyPiExtractRow,
       notificationEntry: ohMyPiNotificationEntry,

@@ -35,7 +35,7 @@ function plugin(): ProviderPlugin {
           kind: 'other',
           request: { args: {} },
           result: { content: [] },
-        }), 'result', { request: false, result: true })
+        }), 'result', { request: false })
       },
       outputFilePaths: (input, call) => {
         observations.push(input)

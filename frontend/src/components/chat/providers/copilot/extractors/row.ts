@@ -49,7 +49,8 @@ export function copilotExtractRow(input: RowExtractionInput): ChatRow | null {
 }
 
 /**
- * Resolve the current row and its paired rows into one Copilot tool call.
+ * Resolve the current row, and for a result the span's request, into one Copilot tool
+ * call.
  *
  * A RESULT event states no tool name and no arguments of its own, so it reads them off
  * the paired start. The REQUEST resolves against ITSELF, which is what a request's own
@@ -60,39 +61,23 @@ function copilotToolSpanRow(
   span: RowExtractionInput['span'],
   spanType: string | undefined,
 ): ChatRow | null {
-  // ONE call from every side of THIS call the store resolved: the start event
-  // identifies the tool and the arguments, the completion the outcome. A start for
-  // another call would supply the wrong name and the wrong arguments.
+  // ONE call from this row and the start of THIS call: the start event identifies the
+  // tool and the arguments, the completion the outcome. A start for another call would
+  // supply the wrong name and the wrong arguments.
   const row = copilotToolRow(parsed.parentObject, { spanType, request: span.request, completion: parsed.completion })
   if (!row)
     return null
   const call: ToolCall = copilotToolCall(row)
   const role: ToolSpanRowRole = row.finished ? 'result' : 'request'
-  // Copilot's span sides are events of every kind, so each one must NAME this call
-  // before it counts as the row beside it.
+  // Copilot's span sides are events of every kind, so the request must be the start
+  // of THIS call before it counts as the row beside this one.
   return toolCallRow(call, role, {
     request: span.visibleRows.request && copilotSideIsStart(span.request, row.toolCallId),
-    result: span.visibleRows.result && copilotSideNames(span.result, row.toolCallId),
   })
 }
 
 /** Whether one side is the START event of the named call. */
 function copilotSideIsStart(side: ParsedMessageContent | undefined, toolCallId: string): boolean {
   const data = copilotEventData(side?.parentObject, COPILOT_EVENT.ToolStarted)
-  return !!data && pickString(data, 'toolCallId') === toolCallId
-}
-
-/**
- * Whether one side states THIS call, whichever frame it is.
- *
- * A turn that ended while a call ran stores the start frame AGAIN as the closing
- * row, so the result side can legitimately be a start event. Asking "is it not a
- * start frame" therefore answered no for exactly that case: the request then read as
- * having no result row, `rowDrawsResult` returned true for both halves, and a
- * retained subagent launch drew its prompt card twice.
- */
-function copilotSideNames(side: ParsedMessageContent | undefined, toolCallId: string): boolean {
-  const parent = side?.parentObject
-  const data = copilotEventData(parent, COPILOT_EVENT.ToolStarted) ?? copilotEventData(parent, COPILOT_EVENT.ToolCompleted)
   return !!data && pickString(data, 'toolCallId') === toolCallId
 }

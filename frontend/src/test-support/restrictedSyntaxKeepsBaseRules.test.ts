@@ -147,8 +147,8 @@ const ALLOWED_ARCHITECTURE_SAMPLES: LintSample[] = [
   { label: 'model allowed sibling import type', file: 'src/components/chat/model/auditProbe.ts', source: 'type ToolModule = typeof import(\'./toolCall\')' },
   { label: 'registry resolved content assertion', file: 'src/components/chat/providers/registry.ts', source: 'value as ResolvedMessageContent' },
   { label: 'checked builder tool call assertion', file: 'src/components/chat/model/createToolCall.ts', source: 'value as ToolCall' },
-  { label: 'plugin imported related hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'import { related } from \'./spanRole\'\nconst plugin = { transcript: { relatedMessages: related } }' },
-  { label: 'plugin imported hook factory', file: 'src/components/chat/providers/probe/plugin.ts', source: 'import { related } from \'./spanRole\'\nconst plugin = { transcript: { relatedMessages: related() } }' },
+  { label: 'plugin imported request hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'import { requestNeeded } from \'./spanRole\'\nconst plugin = { transcript: { needsRequest: requestNeeded } }' },
+  { label: 'plugin imported hook factory', file: 'src/components/chat/providers/probe/plugin.ts', source: 'import { requestNeeded } from \'./spanRole\'\nconst plugin = { transcript: { needsRequest: requestNeeded() } }' },
   { label: 'registration factory parameter hook', file: 'src/components/chat/providers/probe/registerProbeProvider.ts', source: 'export function registerProbeProvider(opts: { spanRole: () => string }) {\n  const plugin = { transcript: { spanRole: opts.spanRole } }\n  return plugin\n}' },
   { label: 'imported capability helper', file: 'src/components/chat/auditProbe.ts', source: 'import { agentTabSupportsInterrupt } from \'~/stores/tab.helpers\'\nvoid agentTabSupportsInterrupt(undefined)' },
   // A wire token matches the whole literal. A word that only CONTAINS a token is not
@@ -254,7 +254,7 @@ function contractTableSamples(): LintSample[] {
 const CONTRACT_TABLE_SAMPLES = contractTableSamples()
 
 const REGISTRATION_SAMPLES: LintSample[] = [
-  { label: 'plugin inline related hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const plugin = { transcript: { relatedMessages: () => [] } }' },
+  { label: 'plugin inline request hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const plugin = { transcript: { needsRequest: () => false } }' },
   { label: 'plugin inline role hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const plugin = { transcript: { spanRole() { return \'other\' } } }' },
   { label: 'plugin local named hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const spanRole = () => \'other\'\nconst plugin = { transcript: { spanRole } }' },
   { label: 'plugin inline control-response hook', file: 'src/components/chat/providers/probe/plugin.ts', source: 'const plugin = { controls: { buildControlResponse() { return {} } } }' },

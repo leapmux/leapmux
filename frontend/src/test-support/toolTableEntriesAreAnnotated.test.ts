@@ -160,7 +160,7 @@ function resultValues(expr: ts.Expression): ts.Expression[] {
 /**
  * Whether a function hands back an object LITERAL on any path.
  *
- * This is what separates a builder from a predicate beside it. `needsResult` answers a
+ * This is what separates a builder from a predicate beside it. A predicate answers a
  * boolean, which holds no property that could be excess, so it needs no annotation; a
  * `build` that returns `{ kind, request }` does.
  */
@@ -326,7 +326,7 @@ function checkFactory(scan: Scan, name: string, site: ts.Node, label: string): v
 
 /**
  * An entry that is an OBJECT rather than a function: the Agent Client Protocol's
- * `{ build, needsResult, ownsFailure }`.
+ * `{ build, ownsFailure }`, or one that holds a predicate beside its builder.
  *
  * Every member that builds a literal is checked; a predicate member is not, for the
  * reason {@link returnsObjectLiteral} gives.
@@ -494,10 +494,10 @@ describe('a tool-call table entry declares its return type', () => {
       'function declaredOnly(kind) {\n  return facts => ({ kind })\n}\n',
     )).toHaveLength(1)
     // An entry OBJECT, whose annotation belongs on the member that builds.
-    expect(offencesOf('  \'edit\': { needsResult: r => !r.path, build: facts => ({ kind: \'edit\' }) },\n')).toHaveLength(1)
+    expect(offencesOf('  \'edit\': { applies: r => !r.path, build: facts => ({ kind: \'edit\' }) },\n')).toHaveLength(1)
     // The same entry object assembled by a factory and then extended.
     expect(offencesOf(
-      '  \'todo\': { ...argumentsOnly(\'todo\'), needsResult: () => true },\n',
+      '  \'todo\': { ...argumentsOnly(\'todo\'), applies: () => true },\n',
       'function argumentsOnly(kind) {\n  return { build: facts => ({ kind }) }\n}\n',
     )).toHaveLength(1)
     // A shorthand entry, which states a local function under its own name.
@@ -538,14 +538,14 @@ describe('a tool-call table entry declares its return type', () => {
       '  \'wait\': declaredOnly(\'wait\'),\n',
       'function declaredOnly(kind) {\n  return (facts): Payload<P> => ({ kind })\n}\n',
     )).toEqual([])
-    expect(offencesOf('  \'edit\': { needsResult: r => !r.path, build: (facts): Payload<\'edit\'> => ({ kind: \'edit\' }) },\n')).toEqual([])
+    expect(offencesOf('  \'edit\': { applies: r => !r.path, build: (facts): Payload<\'edit\'> => ({ kind: \'edit\' }) },\n')).toEqual([])
   })
 
   // Three neutral forms. A rule that reported one of them would teach the next reader to
   // widen an allow-list rather than to annotate a builder.
   it('reads nothing into a predicate, a local, or a table over another union', () => {
-    // `needsResult` answers a boolean: no property of its answer can be excess.
-    expect(offencesOf('  \'edit\': { needsResult: r => !r.path, build: (f): P => ({ kind: \'edit\' }) },\n')).toEqual([])
+    // A predicate answers a boolean: no property of its answer can be excess.
+    expect(offencesOf('  \'edit\': { applies: r => !r.path, build: (f): P => ({ kind: \'edit\' }) },\n')).toEqual([])
     // A local the function READS rather than hands back. `String(seen)` answers a
     // string, so no key the literal holds reaches the model through it.
     expect(offencesOf(

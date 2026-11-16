@@ -4,18 +4,22 @@ import type { RenderReadinessScope } from '~/components/chat/renderReadiness'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ImageDimensions } from '~/lib/imageDimensions'
 import type { ToolProgressEntry } from '~/stores/chatToolProgress'
-import { render, waitFor } from '@solidjs/testing-library'
+import { fireEvent, render, waitFor } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { MESSAGE_UI_KEY } from '~/components/chat/messageUiKeys'
 import { failedResult } from '~/components/chat/model/toolCall'
 import { createRenderReadinessScope } from '~/components/chat/renderReadiness'
 import { imagesForRow } from '~/components/chat/results/rowImages'
 import { ToolMessage } from '~/components/chat/results/ToolMessage'
+import { ToolPendingMessage } from '~/components/chat/results/ToolPendingMessage'
 import { deferred, settle } from '~/test-support/async'
+import { classSelector } from '~/test-support/composedClass'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testImageActions } from '~/test-support/imageActions'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { nativeOutputPathsPrecedePreview } from '../../../../tests/e2e/helpers/nativeToolOutputFilePaths'
+import { toolUseTitle, toolUseTitleExpanded } from '../toolStyles.css'
 import { toolCallMeta } from './tools/meta'
 
 function progress(outputTail: string | undefined) {
@@ -137,7 +141,7 @@ describe('ToolMessage', () => {
       outputFilePaths: ['/native/tool-output/paired.log'],
     })
 
-    const request = render(() => <ToolMessage row={toolRow(call, 'request', { result: true })} />)
+    const request = render(() => <ToolMessage row={toolRow(call, 'request')} />)
     const result = render(() => <ToolMessage row={toolRow(call, 'result', { request: true })} />)
 
     expect(request.container.textContent).not.toContain('/native/tool-output/paired.log')
@@ -189,28 +193,31 @@ describe('ToolMessage', () => {
     expect(alone.container.querySelector('[data-tool-message]')).not.toBeNull()
   })
 
-  it('draws the live tail of a call that has not returned', () => {
-    const call = toolCallFixture('execute', { status: 'in_progress' })
+  // The live output of a call that runs belongs to its PENDING row (ToolPendingMessage).
+  // A request row never draws a result, so it draws no live output either: it must not
+  // change when the output ends and the result lands.
+  it('draws no live output on a request row of a call that has not returned', () => {
+    const call = toolCallFixture('execute', {
+      status: 'in_progress',
+      request: { command: 'make' },
+    })
     const liveTail = progress('streaming bytes')
-    const { container } = render(() => <ToolMessage row={toolRow(call)} progress={{ liveTail }} />)
-    expect(container.textContent).toContain('streaming bytes')
+    const { container } = render(() => (
+      <ToolMessage
+        row={toolRow(call, 'request')}
+        context={{
+          toolProgress: { liveTail },
+        }}
+      />
+    ))
+    expect(container.textContent).toContain('make')
+    expect(container.textContent).not.toContain('streaming bytes')
   })
 
   it('states truncation when the provider kept only part of the output', () => {
     // The completed result carries the call's truncation flag.
     const finished = toolCallFixture('execute', { truncated: true })
     expect(render(() => <ToolMessage row={toolRow(finished)} />).container.textContent).toMatch(/truncated/i)
-
-    // An unfinished result receives its truncation notice only through the live tail.
-    const running = toolCallFixture('execute', { status: 'in_progress' })
-    expect(render(() => (
-      <ToolMessage
-        row={toolRow(running)}
-        progress={{
-          liveTail: () => ({ outputTail: 'streaming bytes', outputTruncated: true }),
-        }}
-      />
-    )).container.textContent).toMatch(/truncated/i)
   })
 
   it('draws the outcome header above a prose body, and none above a status body', () => {
@@ -328,15 +335,211 @@ describe('ToolMessage', () => {
     expect(container.textContent).not.toContain('Error')
   })
 
-  it('uses the agent prompt expand key on an agent request row', async () => {
+  // A request row draws the same whether or not its call runs, so it shows the prompt
+  // only on Expand. The pending row shows the prompt while the subagent runs.
+  it('draws the agent prompt on a request row only once the reader expands it', async () => {
     const call = toolCallFixture('agent', {
       status: 'in_progress',
       request: { description: 'Fix the build', prompt: 'Run the tests.' },
     })
-    const { container } = render(() => <ToolMessage row={toolRow(call, 'request', { result: false })} />)
+    const [expanded, setExpanded] = createSignal<boolean | undefined>(undefined)
+    const context: ToolResultRenderContext = {
+      getMessageUiState: key => key === MESSAGE_UI_KEY.AGENT_PROMPT
+        ? expanded()
+        : undefined,
+      setMessageUiState: (key, value) => {
+        if (key === MESSAGE_UI_KEY.AGENT_PROMPT)
+          setExpanded(value)
+      },
+    }
+    const { container } = render(() => <ToolMessage row={toolRow(call, 'request')} context={context} />)
     await settleWorkerReplies()
     expect(container.textContent).toContain('Fix the build')
+    expect(container.textContent).not.toContain('Run the tests.')
+
+    setExpanded(true)
+    await settleWorkerReplies()
     expect(container.textContent).toContain('Run the tests.')
+  })
+
+  // The header of a request row is the newest call of its span: the result row's call
+  // once the result landed. The rest of the row stays its own call.
+  it('heads a request row with the newer call it is given, and draws its own body', () => {
+    const own = toolCallFixture('execute', {
+      status: 'in_progress',
+      request: { command: 'make all', description: 'Build' },
+    })
+    const newer = toolCallFixture('execute', {
+      request: { command: 'make all', description: 'Build the release' },
+      result: {
+        commands: [
+          { output: 'RESULT OUTPUT' },
+        ],
+        unresolvedTerminals: [],
+      },
+    })
+    const { container } = render(() => <ToolMessage row={toolRow(own, 'request')} header={newer} />)
+    expect(container.textContent).toContain('Build the release')
+    expect(container.textContent).toContain('make all')
+    expect(container.textContent).not.toContain('RESULT OUTPUT')
+  })
+
+  // The header of a request row is one line, so the newer words of its result cannot move
+  // the row. Expand shows what the line clips: the row offers it, and it wraps the title.
+  describe('a header title that clips', () => {
+    /** Make every box report content wider than itself, as a clipped title does. */
+    function stubClippedBoxes() {
+      vi.spyOn(HTMLElement.prototype, 'scrollWidth', 'get').mockReturnValue(240)
+      vi.spyOn(HTMLElement.prototype, 'clientWidth', 'get').mockReturnValue(100)
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks()
+    })
+
+    const call = toolCallFixture('execute', {
+      status: 'in_progress',
+      request: { command: 'make' },
+    })
+    // The words of the Expand button, which the kind states.
+    const expandLabel = toolCallMeta(toolRow(call, 'request')).expandLabel ?? 'Expand output'
+
+    it('offers Expand on a row with nothing else to expand, and Expand wraps the title', () => {
+      stubClippedBoxes()
+      const [expanded, setExpanded] = createSignal(false)
+      const { container, getByRole } = render(() => (
+        <ToolMessage
+          row={toolRow(call, 'request')}
+          context={{
+            getMessageUiState: key => key === MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED
+              ? expanded()
+              : undefined,
+            setMessageUiState: (key, value) => {
+              if (key === MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)
+                setExpanded(value)
+            },
+          }}
+        />
+      ))
+      expect(toolCallMeta(toolRow(call, 'request')).collapsible).toBe(false)
+      const titleBox = () => container.querySelector(classSelector(toolUseTitle))
+      expect(titleBox()?.matches(classSelector(toolUseTitleExpanded))).toBe(false)
+      fireEvent.click(getByRole('button', { name: expandLabel }))
+      expect(titleBox()?.matches(classSelector(toolUseTitleExpanded))).toBe(true)
+    })
+
+    it('offers no Expand for a title that fits', () => {
+      const { queryByRole } = render(() => <ToolMessage row={toolRow(call, 'request')} />)
+      expect(queryByRole('button', { name: expandLabel })).toBeNull()
+    })
+
+    // A result row draws its actions in the outer toolbar of the message, which reads
+    // the meta alone, so the row reports what its header clips.
+    it('reports the clip to the outer toolbar', () => {
+      stubClippedBoxes()
+      const reports: boolean[] = []
+      render(() => (
+        <ToolMessage
+          row={toolRow(toolCallFixture('execute', {
+            request: { command: 'make' },
+          }), 'result')}
+          context={{
+            hasOuterToolbar: true,
+            onHeaderClipsChange: clips => reports.push(clips),
+          }}
+        />
+      ))
+      expect(reports.at(-1)).toBe(true)
+    })
+  })
+
+  // The pending row of a call leaves when its result row joins the list, and the request
+  // row never draws the preview. A call that ended with NO result -- the turn stopped it
+  // -- states the preview on the row that ended it. A result in words answers instead.
+  describe('a call that ended with no result', () => {
+    const asked = {
+      server: 'docs',
+      tool: 'lookup',
+      args: { query: 'ARGS-MARKER' },
+    }
+
+    it('states what it asked on the row that ended it', async () => {
+      const call = toolCallFixture('mcp', { status: 'cancelled', request: asked })
+      const { container } = render(() => <ToolMessage row={toolRow(call, 'result', { request: true })} />)
+      await settleWorkerReplies()
+      expect(container.textContent).toContain('ARGS-MARKER')
+    })
+
+    it('states no preview beside a result in words', async () => {
+      const call = toolCallFixture('mcp', {
+        status: 'failed',
+        request: asked,
+        result: failedResult('the server refused'),
+      })
+      const { container } = render(() => <ToolMessage row={toolRow(call, 'result', { request: true })} />)
+      await settleWorkerReplies()
+      expect(container.textContent).toContain('the server refused')
+      expect(container.textContent).not.toContain('ARGS-MARKER')
+    })
+
+    it('states the carried list of a stopped to-do call', () => {
+      const call = toolCallFixture('todo', {
+        status: 'cancelled',
+        request: {
+          items: [
+            {
+              rowKey: '1',
+              content: 'LIST-MARKER',
+              status: 'pending',
+              activeForm: 'Writing the list',
+            },
+          ],
+        },
+      })
+      const { container } = render(() => <ToolMessage row={toolRow(call, 'result', { request: true })} />)
+      expect(container.textContent).toContain('LIST-MARKER')
+    })
+  })
+
+  // A result row heads itself with its own call, whatever it is given: it is the newest.
+  it('heads a result row with its own call', () => {
+    const own = toolCallFixture('execute', {
+      request: { command: 'make', description: 'Own words' },
+      result: {
+        commands: [
+          { output: 'done' },
+        ],
+        unresolvedTerminals: [],
+      },
+    })
+    const other = toolCallFixture('execute', {
+      request: { command: 'make', description: 'Other words' },
+    })
+    const { container } = render(() => <ToolMessage row={toolRow(own, 'result', { request: false })} header={other} />)
+    expect(container.textContent).toContain('Own words')
+    expect(container.textContent).not.toContain('Other words')
+  })
+
+  // Facts that only the result states draw above the result body, on the row that draws
+  // the result, and never on the request row.
+  it('draws the facts of the result on the result row alone', () => {
+    const call = Object.assign(toolCallFixture('execute', {
+      result: {
+        commands: [
+          { output: 'done' },
+        ],
+        unresolvedTerminals: [],
+      },
+    }), {
+      resultMetadata: [
+        { label: 'Plan file', value: '/repo/plan.md' },
+      ],
+    })
+    const request = render(() => <ToolMessage row={toolRow(call, 'request')} />)
+    const result = render(() => <ToolMessage row={toolRow(call, 'result', { request: true })} />)
+    expect(request.container.textContent).not.toContain('/repo/plan.md')
+    expect(result.container.textContent).toContain('Plan file')
+    expect(result.container.textContent).toContain('/repo/plan.md')
   })
 })
 
@@ -393,7 +596,7 @@ describe('the result side of a paired tool span (ToolMessage)', () => {
     ],
     truncated: true,
   })
-  const requestRow = toolRow(call, 'request', { result: true })
+  const requestRow = toolRow(call, 'request')
   const resultRow = toolRow(call, 'result', { request: true })
 
   it('draws no result-side content on a request row whose result row is beside it', async () => {
@@ -606,7 +809,7 @@ describe('ToolMessage output DOM ownership', () => {
     }), {
       outputFilePaths: [path],
     })
-    const request = render(() => <ToolMessage row={toolRow(call, 'request', { result: true })} />)
+    const request = render(() => <ToolMessage row={toolRow(call, 'request')} />)
     await settleWorkerReplies()
     const result = render(() => <ToolMessage row={toolRow(call, 'result', { request: true })} />)
     await settleWorkerReplies()
@@ -628,8 +831,8 @@ describe('ToolMessage output DOM ownership', () => {
     expect(failedOutputs[0]?.textContent).toBe(marker)
     expect(failed.container.textContent).toContain('Error')
     const live = render(() => (
-      <ToolMessage
-        row={toolRow(toolCallFixture('execute', { status: 'in_progress' }))}
+      <ToolPendingMessage
+        row={toolRow(toolCallFixture('execute', { status: 'in_progress' }), 'request')}
         progress={{
           liveTail: () => ({ outputTail: marker }),
         }}

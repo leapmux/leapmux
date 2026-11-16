@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { providerToolCall } from '~/test-support/toolCallFixture'
-import { describeACPProviderBasics } from '../acp/testUtils'
+import { acpTextContent, describeACPCallRows, describeACPProviderBasics } from '../acp/testUtils'
 import { providerFor } from '../registry'
 
 import './plugin'
@@ -130,4 +130,52 @@ describe('native output file paths', () => {
     expect(registered).toBeDefined()
     expect(registered?.transcript.outputFilePaths).toBeDefined()
   })
+})
+
+// The record that the worker saves beside a finished read states the path that
+// Reasonix resolved. The request row draws the path that the call asked for, and the
+// result row the resolved one.
+describe('reasonix call rows', () => {
+  describeACPCallRows(AgentProvider.REASONIX, [
+    {
+      name: 'a read whose saved record states the resolved path',
+      request: {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'reasonix-read',
+        kind: 'read',
+        title: 'read_file',
+        status: 'pending',
+        rawInput: { path: 'a.ts' },
+      },
+      result: {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'reasonix-read',
+        status: 'completed',
+        content: acpTextContent('1\tconst a = 1\n'),
+      },
+      resultSupplement: {
+        rawOutput: {
+          reasonix: {
+            role: 'tool',
+            tool_call_id: 'reasonix-read',
+            name: 'read_file',
+            content: '1\tconst a = 1\n',
+            read_result: {
+              source: { canonical_path: '/p/a.ts' },
+            },
+          },
+        },
+      },
+      requestCall: {
+        kind: 'read',
+        status: 'pending',
+        request: { path: 'a.ts' },
+      },
+      resultCall: {
+        kind: 'read',
+        status: 'completed',
+        request: { path: '/p/a.ts' },
+      },
+    },
+  ])
 })

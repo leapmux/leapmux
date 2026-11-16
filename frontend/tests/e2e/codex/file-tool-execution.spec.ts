@@ -8,7 +8,7 @@ import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { exerciseFileToolExecution, runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall, codexApplyPatch, editToolCall, writeToolCall } from '../helpers/providerToolCalls'
-import { assistantBubbles, fileChangeRow, messageBubbles, toolRows } from '../helpers/ui'
+import { assistantBubbles, fileChangeRow, messageBubbles, toolCallRow, toolRows } from '../helpers/ui'
 import { codexAppliedFileChange, requireCodexPatchResult } from './appliedFileChange'
 import { codexExecContext } from './scenarios'
 
@@ -30,20 +30,22 @@ codexTest.describe('codex tool execution', () => {
     // A native Write creates a tool row with its line count and a separate added-line diff.
     // The tool title omits the diff badge, so fileChangeRow cannot identify it.
     // The prompt and scripted answer cannot satisfy these tool and diff locators.
+    // The request row heads itself with the newest call of its span, so it states the
+    // file and its line count once the result lands. The result row states the outcome.
     const title = toolRows(page).filter({ hasText: 'codex-test-file.txt (1 line)' })
     const tool = messageBubbles(page).filter({ has: title }).first()
     await expect(tool).toBeVisible()
     await expect(tool.getByText('codex-test-file.txt', { exact: true })).toBeVisible()
     await expect(tool.getByText('(1 line)', { exact: true })).toBeVisible()
-    await expect(tool).toHaveAttribute('data-tool-status', 'completed')
+    const itemId = await tool.getAttribute('data-tool-call-id')
+    if (!itemId)
+      throw new Error('The visible native file tool contains no item identity.')
+    await expect(toolCallRow(page, itemId)).toHaveAttribute('data-tool-status', 'completed')
     await expect(page.locator(`[data-file-diff][data-file-path="${cssAttributeValue(path)}"]:visible`).filter({ hasText: 'codex was here' }).first()).toBeVisible()
     // Check the scripted answer separately from the native tool result.
     await expect(assistantBubbles(page).filter({ hasText: /codex-test-file|codex was here/ }).first()).toBeVisible()
     expect(readFileSync(path, 'utf8')).toBe('codex was here\n')
     requireCodexPatchResult(resultRequest, 'write-call')
-    const itemId = await tool.getAttribute('data-tool-call-id')
-    if (!itemId)
-      throw new Error('The visible native file tool contains no item identity.')
     const agent = await currentNativeAgent(native)
     if (agent.agentSessionId.trim() === '')
       throw new Error('The native Codex file proof requires its root session ID.')

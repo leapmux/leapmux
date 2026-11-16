@@ -13,7 +13,7 @@ import { clineResultDivider } from './extractors/resultDivider'
 import { clineExtractRow } from './extractors/row'
 import { clineConfiguration } from './pluginConfiguration'
 import { clineControls } from './pluginControls'
-import { clineRelatedMessages, clineSpanRole } from './spanRole'
+import { clineNeedsRequest, clineSpanRole } from './spanRole'
 import { CLINE_SPAWN_WARNING } from './spawnWarning'
 import './plugin'
 
@@ -75,8 +75,8 @@ describe('cline plugin', () => {
       'compactionStart',
       'extractDivider',
       'extractRow',
+      'needsRequest',
       'notificationEntry',
-      'relatedMessages',
       'spanRole',
     ])
     expect(plugin.transcript.compactionStart).toBe(clineCompactionStart)
@@ -85,7 +85,7 @@ describe('cline plugin', () => {
     expect(plugin.transcript.extractDivider).toBe(clineResultDivider)
     expect(plugin.transcript.notificationEntry).toBe(clineNotificationEntry)
     expect(plugin.transcript.spanRole).toBe(clineSpanRole)
-    expect(plugin.transcript.relatedMessages).toBe(clineRelatedMessages)
+    expect(plugin.transcript.needsRequest).toBe(clineNeedsRequest)
     expect(plugin.session?.compactionBoundaryFromMessage).toBe(clineCompactionBoundary)
     expect(plugin.controls).toBe(clineControls)
     expect(plugin.configuration).toBe(clineConfiguration)
