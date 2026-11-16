@@ -2741,6 +2741,33 @@ describe('DirectoryTree closed directories and persistence', () => {
     expect(storedExpandedPaths(storeKey)).toEqual([root, `${root}/src`])
   })
 
+  it('flushes a pending write without reading selection props during disposal', async () => {
+    mockTree()
+    let inputsAvailable = true
+    const selectedPath = () => {
+      if (!inputsAvailable)
+        throw new Error('The selection owner is being disposed.')
+      return ''
+    }
+    let handle!: DirectoryTreeHandle
+    const { unmount } = render(() => (
+      <DirectoryTree
+        workerId="w1"
+        gitStatusStore={gitStatusStore}
+        rootPath={root}
+        selectedPath={selectedPath()}
+        onSelect={() => {}}
+        ref={(value) => { handle = value }}
+      />
+    ))
+    await waitFor(() => expect(storedExpandedPaths(storeKey)).toEqual([root]))
+    handle.expandPath(`${root}/src`)
+    inputsAvailable = false
+
+    expect(() => unmount()).not.toThrow()
+    expect(storedExpandedPaths(storeKey)).toEqual([root, `${root}/src`])
+  })
+
   // A reload or a tab close runs no Solid cleanup, so the unmount flush never
   // runs then. `pagehide` does fire.
   it('writes a waiting state at once when the page hides', async () => {

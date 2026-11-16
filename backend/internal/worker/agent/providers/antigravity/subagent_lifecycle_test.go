@@ -30,6 +30,8 @@ func childLifecycleTestAgent(t *testing.T) (*Agent, *agenttest.Sink, *cascadeSta
 	a.cascades[child.id] = child
 	child.connectedOnce.Do(func() { close(child.connected) })
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: child.id, ChildAgentID: child.childAgentID, Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning,
 	}))
 	return a, sink, child
@@ -70,7 +72,9 @@ func TestAntigravityChildSendReceiptCannotReviveCompletedTurn(t *testing.T) {
 				_, _ = w.Write([]byte(`{}`))
 			})
 			done := make(chan error, 1)
-			go func() { done <- a.SendChildInput(child.id, "finish before the receipt", nil) }()
+			go func() {
+				done <- agenttest.SendChildInput(a, child.id, agent.ChildInput{Content: "finish before the receipt"})
+			}()
 			receiveTestValue(t, entered)
 			require.NoError(t, a.applyUpdate(child, agentStateUpdate{Status: cascadeStatusRunning}, false))
 			require.NoError(t, a.applyUpdate(child, agentStateUpdate{Status: cascadeStatusIdle}, false))
@@ -196,6 +200,8 @@ func (s *delayedChildCreationSink) EnsureChildAgent(spec agent.ChildAgentSpec) (
 	}
 	// The production sink creates this row inside EnsureChildAgent.
 	if err := s.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: spec.ProviderChildKey, ChildAgentID: childID, Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning,
 	}); err != nil {
 		return "", err
@@ -322,7 +328,7 @@ func TestAntigravityChildInputEchoOwnership(t *testing.T) {
 			if steer {
 				require.NoError(t, a.SteerChildInput(child.id, "same text", nil))
 			} else {
-				require.NoError(t, a.SendChildInput(child.id, "same text", nil))
+				require.NoError(t, agenttest.SendChildInput(a, child.id, agent.ChildInput{Content: "same text"}))
 			}
 			assert.Empty(t, transcriptMessages(sink.Child(child.childAgentID)))
 			native := json.RawMessage(`{"type":"CORTEX_STEP_TYPE_USER_INPUT","status":"CORTEX_STEP_STATUS_DONE","userInput":{"userResponse":"same text"}}`)
@@ -618,7 +624,11 @@ func TestAntigravityConcurrentChildReopenStartsOneAttempt(t *testing.T) {
 	var ready sync.WaitGroup
 	ready.Add(8)
 	for range 8 {
-		go func() { ready.Done(); <-start; results <- a.SendChildInput(child.id, "continue once", nil) }()
+		go func() {
+			ready.Done()
+			<-start
+			results <- agenttest.SendChildInput(a, child.id, agent.ChildInput{Content: "continue once"})
+		}()
 	}
 	ready.Wait()
 	close(start)
@@ -642,7 +652,7 @@ func TestAntigravityChildReopenWaitHonorsCancellation(t *testing.T) {
 	child.streamDone = make(chan struct{})
 	connected := child.connected
 	a.streamCancel()
-	assert.ErrorIs(t, a.SendChildInput(child.id, "do not send", nil), agent.ErrChildRouteNotReady)
+	assert.ErrorIs(t, agenttest.SendChildInput(a, child.id, agent.ChildInput{Content: "do not send"}), agent.ErrChildRouteNotReady)
 	assert.Equal(t, connected, child.connected)
 	assert.True(t, child.closed)
 }
@@ -737,7 +747,9 @@ func TestAntigravityBackgroundCloseRecoversWithoutAnotherFrame(t *testing.T) {
 				require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: task.rowKey, Kind: bgtask.KindShell, Status: bgtask.StatusRunning}))
 				a.finishBackgroundStep(a.root, task, antigravityStep{Type: "CORTEX_STEP_TYPE_RUN_COMMAND", Status: "CORTEX_STEP_STATUS_DONE"})
 			} else {
-				require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: task.rowKey, ChildAgentID: "child-agent", Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning}))
+				require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+					Role:   bgtask.RoleChildTask,
+					RowKey: task.rowKey, ChildAgentID: "child-agent", Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning}))
 				child := newCascadeState(kind, a.sink.ChildSink("child-agent"), a.generation, false)
 				child.parent = a.root
 				child.rowOpen = true
@@ -767,7 +779,9 @@ func TestAntigravityChildReviveFollowsRetainedClose(t *testing.T) {
 	child := newCascadeState("child", a.sink.ChildSink("child-agent"), a.generation, false)
 	child.parent = a.root
 	a.cascades[child.id] = child
-	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: child.id, ChildAgentID: "child-agent", Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning}))
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role:   bgtask.RoleChildTask,
+		RowKey: child.id, ChildAgentID: "child-agent", Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning}))
 	queue := sink.OutputQueue()
 	queue.Append(agent.OutputWrite{Label: "close the previous child turn", Run: func() error { return writer.CloseBackgroundTask(child.id, bgtask.StatusSucceeded) }})
 	require.Error(t, queue.Flush())
@@ -977,7 +991,7 @@ func TestAntigravityReopenPreservesEstablishedReplayBoundary(t *testing.T) {
 		<-r.Context().Done()
 	})
 	t.Cleanup(func() { a.streamCancel(); a.streamWG.Wait() })
-	require.NoError(t, a.SendChildInput(child.id, "continue after the peer reply", nil))
+	require.NoError(t, agenttest.SendChildInput(a, child.id, agent.ChildInput{Content: "continue after the peer reply"}))
 	assert.Equal(t, int32(0), recounts.Load())
 	messages := transcriptMessages(sink.Child(child.childAgentID))
 	require.Len(t, messages, 2)

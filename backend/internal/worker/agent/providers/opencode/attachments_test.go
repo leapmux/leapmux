@@ -20,13 +20,33 @@ import (
 
 const familyAudioCatalog = `{"all":[{"id":"private","models":{"voice":{"id":"voice","providerID":"private","api":{"id":"gemini","npm":"@ai-sdk/google"},"capabilities":{"input":{"audio":true}}},"text":{"id":"text","providerID":"private","api":{"id":"text","npm":"@ai-sdk/google"},"capabilities":{"input":{"audio":false}}}}}]}`
 
+func TestOpenCodeRefusesAudioBeforeNativePromptEncoding(t *testing.T) {
+	t.Parallel()
+	for _, format := range []string{"wav", "flac"} {
+		for _, content := range []string{"", "listen"} {
+			t.Run(format+"/"+content, func(t *testing.T) {
+				t.Parallel()
+				attachments := []*leapmuxv1.Attachment{{Filename: "voice." + format, MimeType: "audio/" + format, Data: []byte{0, 255, 1}}}
+				model := &openCodeModelInfo{Name: "Advertised audio model"}
+				model.Capabilities.Input = []string{"audio"}
+				_, err := buildOpenCodePrompt(content, attachments, model)
+				require.ErrorContains(t, err, "does not support audio attachments")
+				classified := agent.ClassifyAttachments(attachments)
+				require.Len(t, classified, 1)
+				assert.ErrorContains(t, Registration().Plugin.ValidateAttachment(classified[0]), "does not support audio attachments")
+				assert.Equal(t, []byte{0, 255, 1}, attachments[0].Data)
+			})
+		}
+	}
+}
+
 type familyAudioAgentConfig struct {
 	status     int
 	catalog    string
 	childModel string
 }
 
-func newFamilyAudioAgent(t *testing.T, config familyAudioAgentConfig) (*Agent, func() []agenttest.RecordedRequest, *atomic.Int64) {
+func newFamilyAudioAgent(t *testing.T, config familyAudioAgentConfig) (*familyTestAgent, func() []agenttest.RecordedRequest, *atomic.Int64) {
 	t.Helper()
 	calls := &atomic.Int64{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -41,7 +61,7 @@ func newFamilyAudioAgent(t *testing.T, config familyAudioAgentConfig) (*Agent, f
 	t.Cleanup(server.Close)
 	childReply, err := json.Marshal(map[string]any{"models": map[string]string{"currentModelId": config.childModel}})
 	require.NoError(t, err)
-	a, requests := acptest.NewAgentForRPCWithResponder(t, func() *Agent { return &Agent{} }, func(a *Agent) *acp.Base { return &a.Base }, func(method string) agenttest.RPCReply {
+	a, requests := acptest.NewAgentForRPCWithResponder(t, func() *familyTestAgent { return &familyTestAgent{} }, func(a *familyTestAgent) *acp.Base { return &a.Base }, func(method string) agenttest.RPCReply {
 		if method == acp.MethodSessionLoad {
 			return agenttest.RPCReply{Result: childReply}
 		}
@@ -56,7 +76,7 @@ func newFamilyAudioAgent(t *testing.T, config familyAudioAgentConfig) (*Agent, f
 	return a, requests, calls
 }
 
-func audioPromptRequests(t *testing.T, a *Agent, requests func() []agenttest.RecordedRequest) []agenttest.RecordedRequest {
+func audioPromptRequests(t *testing.T, a *familyTestAgent, requests func() []agenttest.RecordedRequest) []agenttest.RecordedRequest {
 	t.Helper()
 	_, err := a.SendRequest("test/sync", nil, a.APITimeout())
 	require.NoError(t, err)

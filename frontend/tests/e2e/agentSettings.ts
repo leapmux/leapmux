@@ -62,7 +62,7 @@ export const AGENT_E2E_SETTINGS = {
   [AgentProvider.FAST_AGENT]: { model: FAST_AGENT_MOCK_MODEL },
   [AgentProvider.KILO]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
   [AgentProvider.MIMO_CODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
-  [AgentProvider.OPENCODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'high' },
+  [AgentProvider.OPENCODE]: { model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`, effort: 'variant:high' },
   [AgentProvider.OH_MY_PI]: { model: `${MOCK_PROVIDER_IDS.ohMyPi}/${MOCK_MODELS.ohMyPi}`, effort: 'high' },
   [AgentProvider.ZCODE]: { model: `${MOCK_PROVIDER_IDS.zcode}/${MOCK_MODELS.zai}`, effort: 'high' },
 } as const satisfies Record<Exclude<AgentProvider, AgentProvider.UNSPECIFIED>, AgentE2ESettings>

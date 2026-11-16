@@ -20,7 +20,7 @@ func TestGooseCompactTurnStoresTheBoundaryRow(t *testing.T) {
 	a := newGooseOutputAgent(agent.NewProviderServices(sink))
 	a.SetPromptActiveForTest(true)
 	a.Mu.Lock()
-	a.compactPending = true
+	a.promptOutput.compactPending = true
 	a.Mu.Unlock()
 	providerkit.PublishCompaction(a.Sink(), "manual")
 	a.FinishPromptRequestForTest("s1", []byte(`{"stopReason":"end_turn","usage":{"totalTokens":2}}`), nil)

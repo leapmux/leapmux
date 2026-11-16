@@ -670,8 +670,7 @@ describe('openChildTabFromRow', () => {
 })
 
 describe('expectRowBecomesFinal', () => {
-  function finalRow(status: string, label: string, appearance: { title?: string, dotLabel?: string, secondaryPresent?: boolean } = {}) {
-    const observed: string[] = []
+  function finalRow(status: string, label: string, appearance: { title?: string, dotLabel?: string, secondaryPresent?: boolean, visible?: boolean, count?: number } = {}) {
     const title = appearance.title ?? 'Task'
     const dotLabel = appearance.dotLabel ?? label
     const secondaryPresent = appearance.secondaryPresent ?? true
@@ -681,30 +680,15 @@ describe('expectRowBecomesFinal', () => {
     const page = Object.assign({} as Page, {
       locator: () => header,
     })
-    const row = Object.assign(probe(1, { 'data-status': status }), {
-      locator: (selector: string) => {
-        if (selector === '[data-testid="bg-task-status-dot"]:visible') {
-          return Object.assign(probe(1, { 'aria-label': dotLabel }), {
-            observeAttributeAssertion: (_key: string, expected: string) => observed.push(expected),
-          })
-        }
-        if (selector === '[data-testid="bg-task-secondary"]:visible, :scope:not(:has([data-testid="bg-task-secondary"]:visible)) [data-testid="bg-task-title"]:visible') {
-          return Object.assign(probe(1), {
-            readText: () => secondaryPresent ? label : title,
-          })
-        }
-        throw new Error(`The final-row probe does not support selector ${selector}`)
-      },
-      filter: ({ hasText }: { hasText: string }) => {
-        const text = secondaryPresent
-          ? `${title} ${label}`
-          : title
-        return probe(text.toLowerCase().includes(hasText.toLowerCase())
-          ? 1
-          : 0)
-      },
+    const row = Object.assign(probe(1), {
+      evaluateAll: async () => Array.from({ length: appearance.count ?? 1 }, () => ({
+        status,
+        dotLabel,
+        labelText: secondaryPresent ? label : title,
+        visible: appearance.visible ?? true,
+      })),
     })
-    return { page, row, observed }
+    return { page, row }
   }
 
   it.each([
@@ -716,13 +700,11 @@ describe('expectRowBecomesFinal', () => {
   ])('accepts the final %s row and requires its exact label', async (status, label) => {
     const view = finalRow(status, label)
     await expect(expectRowBecomesFinal(view.page, view.row)).resolves.toBeUndefined()
-    expect(view.observed).toEqual([label])
   })
 
   it.each(['pending', 'running', 'paused', ''])('refuses the open or absent row status %j', async (status) => {
     const view = finalRow(status, 'Running')
-    await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow('not to be null')
-    expect(view.observed).toEqual([])
+    await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow('expected')
   })
 
   it('refuses a wrong status-dot label when the title contains the expected end label', async () => {
@@ -738,18 +720,25 @@ describe('expectRowBecomesFinal', () => {
   it('accepts the canonical title when the repeated end line is absent', async () => {
     const view = finalRow('succeeded', 'Succeeded', { title: 'Succeeded', secondaryPresent: false })
     await expect(expectRowBecomesFinal(view.page, view.row)).resolves.toBeUndefined()
-    expect(view.observed).toEqual(['Succeeded'])
   })
 
   it('checks the secondary when a longer title contains the canonical word', async () => {
     const view = finalRow('succeeded', 'Succeeded', { title: 'Succeeded task' })
     await expect(expectRowBecomesFinal(view.page, view.row)).resolves.toBeUndefined()
-    expect(view.observed).toEqual(['Succeeded'])
   })
 
   it('refuses a final row whose visible label states a different outcome', async () => {
     const view = finalRow('failed', 'Succeeded')
     await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow('expected')
-    expect(view.observed).toEqual(['Failed'])
+  })
+  it('refuses a hidden label or an ambiguous row selection', async () => {
+    for (const appearance of [
+      { visible: false },
+      { count: 0 },
+      { count: 2 },
+    ]) {
+      const view = finalRow('succeeded', 'Succeeded', appearance)
+      await expect(expectRowBecomesFinal(view.page, view.row)).rejects.toThrow('expected')
+    }
   })
 })

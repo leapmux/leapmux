@@ -13,7 +13,7 @@ const log = createLogger('tabBusyProbe')
 
 /** Why closing a tab would interrupt work, and what that work is. */
 export type TabBusyReason
-  = | { kind: 'agent-turn', activeTasks: BackgroundTaskItem[] }
+  = | { kind: 'agent-work', activeRows: BackgroundTaskItem[] }
     | { kind: 'terminal-processes', processes: TerminalProcess[], totalCount: number }
 
 /** One busy tab and the reason, for the aggregated bulk-close prompt. */
@@ -109,11 +109,10 @@ export function createTabBusyProbe(deps: TabBusyProbeDeps) {
           if (!activityInterruptsWork(info.activityState))
             continue
           out.set(info.id, {
-            kind: 'agent-turn',
-            // The same predicate the chip counts with. Re-spelling the statuses
-            // here would let the dialog list fewer running tasks than the chip
-            // beside it reports as soon as a new status joins the enum.
-            activeTasks: deps.tasksFor(info.id).filter(t => isActiveBackgroundTaskStatus(t.status)),
+            kind: 'agent-work',
+            // Every working row matters to closing, including activity-only children.
+            // The dialog separates task counters from child activity through roles.
+            activeRows: deps.tasksFor(info.id).filter(t => isActiveBackgroundTaskStatus(t.status)),
           })
         }
       }

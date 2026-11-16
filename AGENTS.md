@@ -165,10 +165,12 @@ Each provider is a Go package under `backend/internal/worker/agent/providers/`,
 as each frontend plugin is a folder under `frontend/src/components/chat/providers/`.
 These providers read their own native protocol: `claude`, `codex`, `copilot`,
 `pi`, `zcode`, `codewhale`, `kimi`, `mimo`, `ohmypi`, `amp`, `cline`, `codebuddy`,
-`commandcode`, `deepseekharness`, `droid`, `letta`, `qoder`, `muse`, `antigravity`.
+`commandcode`, `deepseekharness`, `droid`, `letta`, `qoder`, `muse`, `antigravity`, `opencode`.
 These speak the Agent Client Protocol on the shared base in `providers/acp` (`acp.Start`):
-`opencode`, `cursor`, `kilo`, `goose`, `reasonix`, `qwen`, `grok`, `kiro`, `dirac`,
+`cursor`, `kilo`, `goose`, `reasonix`, `qwen`, `grok`, `kiro`, `dirac`,
 `fastagent`, `gemini`, `junie`.
+The `opencode` adapter drives OpenCode v2's native HTTP server and reads
+server-sent events. Kilo keeps ACP and the shared OpenCode v1 family base.
 Copilot is NOT ACP — `providers/copilot/connection_test.go` and
 `session_lifecycle_test.go` assert its arguments hold no `--acp`. MiMo Code is
 a fork of OpenCode and is NOT ACP either: `mimo` drives MiMo's own HTTP server,

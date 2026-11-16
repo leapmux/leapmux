@@ -125,6 +125,9 @@ const (
 	// PAUSES: a message the user typed must not need a manual retry because the
 	// agent was between processes.
 	DispatchNotReady
+	// DispatchPending waits for an earlier input's native admission. No turn
+	// runs, and a dependency notification asks the queue to dispatch again.
+	DispatchPending
 )
 
 // String gives the text that a refusal carries into the item's error column,
@@ -132,6 +135,8 @@ const (
 // cause already says what happened.
 func (o DispatchOutcome) String() string {
 	switch o {
+	case DispatchPending:
+		return "agent input waits for native admission"
 	case DispatchBusy:
 		return "agent input waits for the turn in flight"
 	case DispatchNotReady:

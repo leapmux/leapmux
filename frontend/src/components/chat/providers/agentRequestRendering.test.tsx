@@ -1,11 +1,12 @@
 import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { MIMO_ACTOR_ACTION, MIMO_TOOL } from '~/generated/contracts/mimo-protocol'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { renderMessageContent, renderPendingMessageContent } from '~/test-support/messageContentRenderer'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
+import { openCodeToolPart } from './opencode/toolResults.fixtures'
 import { providerFor } from './registry'
 import { input } from './testUtils'
 import './index'
@@ -24,95 +25,109 @@ describe.each([
     const mimoArgs = {
       operation: { action: MIMO_ACTOR_ACTION.Run, ...args },
     }
-    const request = provider === AgentProvider.CLAUDE_CODE
-      ? {
-          type: 'assistant',
-          message: {
-            content: [
-              {
-                type: 'tool_use',
-                id: 'call',
-                name: 'Agent',
-                input: args,
-              },
-            ],
-          },
-        }
-      : provider === AgentProvider.ZCODE
+    const nativeArgs = { description: args.description, agent: 'explore', prompt: args.prompt }
+    const request = provider === AgentProvider.OPENCODE
+      ? openCodeToolPart('call', 'subagent', nativeArgs, { status: 'running' })
+      : provider === AgentProvider.CLAUDE_CODE
         ? {
-            type: 'tool.updated',
-            payload: {
-              kind: 'scheduled',
-              toolCallId: 'call',
-              toolName: 'Agent',
-              input: args,
+            type: 'assistant',
+            message: {
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'call',
+                  name: 'Agent',
+                  input: args,
+                },
+              ],
             },
           }
-        : provider === AgentProvider.MIMO_CODE
-          ? openingFrame(MIMO_TOOL.Actor, mimoArgs, 'call')
-          : {
-              sessionUpdate: 'tool_call',
-              toolCallId: 'call',
-              title: 'task',
-              kind: 'think',
-              status: 'pending',
-              rawInput: args,
+        : provider === AgentProvider.ZCODE
+          ? {
+              type: 'tool.updated',
+              payload: {
+                kind: 'scheduled',
+                toolCallId: 'call',
+                toolName: 'Agent',
+                input: args,
+              },
             }
+          : provider === AgentProvider.MIMO_CODE
+            ? openingFrame(MIMO_TOOL.Actor, mimoArgs, 'call')
+            : {
+                sessionUpdate: 'tool_call',
+                toolCallId: 'call',
+                title: 'task',
+                kind: 'think',
+                status: 'pending',
+                rawInput: args,
+              }
     // Each dialect states the SAME completion: the call ended and it reported "Done".
     // The Agent Client Protocol frame carries that word in its content blocks, and it
     // has to carry it -- a completed call states a result (invariant I2), so a frame
     // that reports nothing at all describes no answered call.
-    const result = provider === AgentProvider.CLAUDE_CODE
-      ? {
-          type: 'user',
-          message: {
-            content: [
-              { type: 'tool_result', tool_use_id: 'call', content: 'Done' },
-            ],
-          },
-        }
-      : provider === AgentProvider.ZCODE
+    const result = provider === AgentProvider.OPENCODE
+      ? openCodeToolPart('call', 'subagent', nativeArgs, {
+          status: 'completed',
+          content: [
+            { type: 'text', text: 'Done' },
+          ],
+        })
+      : provider === AgentProvider.CLAUDE_CODE
         ? {
-            type: 'tool.updated',
-            payload: {
-              kind: 'result',
-              toolCallId: 'call',
-              result: { success: true, content: 'Done' },
+            type: 'user',
+            message: {
+              content: [
+                { type: 'tool_result', tool_use_id: 'call', content: 'Done' },
+              ],
             },
           }
-        : provider === AgentProvider.MIMO_CODE
-          ? toolFrame(MIMO_TOOL.Actor, { input: mimoArgs, output: 'Done' }, 'call')
-          : {
-              sessionUpdate: 'tool_call_update',
-              toolCallId: 'call',
-              status: 'completed',
-              content: [
-                {
-                  type: 'content',
-                  content: { type: 'text', text: 'Done' },
-                },
-              ],
+        : provider === AgentProvider.ZCODE
+          ? {
+              type: 'tool.updated',
+              payload: {
+                kind: 'result',
+                toolCallId: 'call',
+                result: { success: true, content: 'Done' },
+              },
             }
+          : provider === AgentProvider.MIMO_CODE
+            ? toolFrame(MIMO_TOOL.Actor, { input: mimoArgs, output: 'Done' }, 'call')
+            : {
+                sessionUpdate: 'tool_call_update',
+                toolCallId: 'call',
+                status: 'completed',
+                content: [
+                  {
+                    type: 'content',
+                    content: { type: 'text', text: 'Done' },
+                  },
+                ],
+              }
     const sources = testMessageSources({
-      current: () => input(request),
+      current: () => input(request, null, provider),
       role: () => 'request',
       visibleRows: () => ({ request: true }),
     })
-    const category = providerFor(provider)!.transcript.classify(input(request))
+    const category = providerFor(provider)!.transcript.classify(input(request, null, provider))
     return {
       request,
       result,
-      renderRow: () => render(() => renderMessageContent(request, { premeasureMode: true, sources }, category, provider)),
-      renderPending: () => render(() => renderPendingMessageContent(request, { premeasureMode: true, sources }, category, provider)),
+      renderRow: () => render(() => renderMessageContent(request, { premeasureMode: true, spanId: 'call', sources }, category, provider)),
+      renderPending: () => render(() => renderPendingMessageContent(request, { premeasureMode: true, spanId: 'call', sources }, category, provider)),
       renderResult: () => render(() => renderMessageContent(result, {
         premeasureMode: true,
+        spanId: 'call',
         sources: testMessageSources({
-          current: () => input(result),
-          request: () => input(request),
+          current: () => ({
+            ...input(result, null, provider),
+            completion: MessageCompletion.COMPLETE,
+          }),
+          request: () => input(request, null, provider),
           role: () => 'result',
           visibleRows: () => ({ request: true }),
         }),
-      }, providerFor(provider)!.transcript.classify(input(result)), provider)),
+      }, providerFor(provider)!.transcript.classify(input(result, null, provider)), provider)),
     }
   }
 

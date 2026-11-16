@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"slices"
 	"strings"
 	"sync"
 
@@ -27,7 +26,8 @@ import (
 // it through the Kimi plugin. The answer comes back through
 // SendControlResponse: ResolveControlResponse (control_response.go) turns the
 // browser's decision into the server's own body, and deliverControlResponse
-// posts it.
+// posts it. Transcript records also carry control lifecycle state. A subscription
+// re-emits the current pending live frames after its acknowledgement.
 //
 // The server resolves a request by itself when the turn ends (an abort, a
 // failure) and states that with an `interaction` frame whose status is `ended`. The worker then withdraws the request, so no banner waits on an
@@ -43,8 +43,10 @@ const (
 
 // kimiPendingControl is one published control request.
 type kimiPendingControl struct {
-	kind      kimiControlKind
-	sessionID string
+	kind       kimiControlKind
+	sessionID  string
+	agentID    string
+	toolCallID string
 	// answered is set once LeapMux delivered an answer, so the server's
 	// resolution that follows does not withdraw a request the user answered.
 	answered        bool
@@ -65,6 +67,7 @@ type kimiInteraction struct {
 	InteractionID string                  `json:"interaction_id"`
 	SessionID     string                  `json:"session_id"`
 	AgentID       string                  `json:"agent_id"`
+	ToolCallID    string                  `json:"tool_call_id"`
 	Status        string                  `json:"status"`
 	Request       *kimiInteractionRequest `json:"request"`
 	Raw           json.RawMessage         `json:"-"`
@@ -125,7 +128,7 @@ func (a *Agent) dispatchInteraction(interaction kimiInteraction) {
 		return
 	}
 	if interaction.Status == kimiInteractionEnded {
-		a.resolveControl(interaction.InteractionID)
+		a.resolveControl(interaction)
 		return
 	}
 	if interaction.Status != kimiInteractionPending || interaction.Request == nil {
@@ -151,12 +154,12 @@ func (a *Agent) handleApprovalRequested(interaction kimiInteraction) {
 	}
 	tool := interaction.Request.ToolName
 	bypassable := tool != "" && tool != contracts.KimiToolExitPlanMode && tool != contracts.KimiToolCreateGoal && tool != contracts.KimiToolAskUserQuestion && display.Kind != contracts.KimiDisplayPlanReview && display.Kind != contracts.KimiDisplayGoalStart
-	a.publishControl(interaction.InteractionID, kimiControlApproval, interaction.Raw, bypassable)
+	a.publishControl(interaction, kimiControlApproval, bypassable)
 }
 
 func (a *Agent) handleQuestionRequested(interaction kimiInteraction) {
 	a.flushAgentText(interaction.agent())
-	a.publishControl(interaction.InteractionID, kimiControlQuestion, interaction.Raw, false)
+	a.publishControl(interaction, kimiControlQuestion, false)
 }
 
 // flushAgentText persists what an agent streamed so far. An empty id is the
@@ -176,7 +179,8 @@ func (a *Agent) flushAgentText(agentID string) {
 // A request the store refused cannot reach the user, and the tool call it
 // parks would wait for good. The worker cancels it instead, which the server
 // reports to the model as a refusal it can act on.
-func (a *Agent) publishControl(requestID string, kind kimiControlKind, payload []byte, bypassable bool) {
+func (a *Agent) publishControl(interaction kimiInteraction, kind kimiControlKind, bypassable bool) {
+	requestID := interaction.InteractionID
 	a.Mu.Lock()
 	sessionID := a.sessionID
 	if a.controls == nil {
@@ -188,7 +192,8 @@ func (a *Agent) publishControl(requestID string, kind kimiControlKind, payload [
 	}
 	bypass := bypassable && a.settings.permissionOption() == contracts.KimiModeAuto && !a.StoppedLocked()
 	pending := &kimiPendingControl{kind: kind, sessionID: sessionID, bypassable: bypassable,
-		payload: append([]byte(nil), payload...), ready: bypass, publicationDone: make(chan struct{})}
+		agentID: interaction.agent(), toolCallID: interaction.ToolCallID,
+		payload: append([]byte(nil), interaction.Raw...), ready: bypass, publicationDone: make(chan struct{})}
 	a.controls[requestID] = pending
 	a.Mu.Unlock()
 	if bypass {
@@ -238,7 +243,7 @@ func (a *Agent) publishRegisteredControl(requestID string, pending *kimiPendingC
 func (a *Agent) queuePermissionApprovals() {
 	a.approvalWork.Run("permissions", func() {
 		a.sessionMu.Lock()
-		defer a.sessionMu.Unlock()
+		defer a.finishSessionMutation()
 		a.approvePendingPermissions()
 	})
 }
@@ -337,12 +342,20 @@ func (a *Agent) cancelUnpublishedControl(sessionID, requestID string, kind kimiC
 // resolveControl drops a request the server resolved. One LeapMux did not
 // answer -- the turn ended, or another client answered it -- is withdrawn from
 // the user's banner.
-func (a *Agent) resolveControl(requestID string) {
+func (a *Agent) resolveControl(interaction kimiInteraction) {
+	requestID := interaction.InteractionID
 	if requestID == "" {
 		return
 	}
 	a.Mu.Lock()
 	pending := a.controls[requestID]
+	if pending != nil && (pending.sessionID != interaction.SessionID || pending.agentID != interaction.agent() ||
+		(pending.kind == kimiControlApproval && interaction.Kind != contracts.KimiInteractionKindApproval) ||
+		(pending.kind == kimiControlQuestion && interaction.Kind != contracts.KimiInteractionKindQuestion) ||
+		(pending.toolCallID != "" && interaction.ToolCallID != "" && pending.toolCallID != interaction.ToolCallID)) {
+		a.Mu.Unlock()
+		return
+	}
 	delete(a.controls, requestID)
 	withdraw := pending != nil && !pending.answered && pending.published
 	if pending != nil {
@@ -373,110 +386,6 @@ func (a *Agent) withdrawAllControls() {
 	}
 	// The workspace-trust question belongs to the session too.
 	a.workspaceTrust.Retire(a.sink)
-}
-
-// reconcileControls makes the published requests match the ones the server
-// states as pending after a reconnect. Interactions are unsequenced, so durable
-// event replay cannot recover their changes. A request that the server raised
-// during the disconnect is published, and one that it resolved is withdrawn
-// because an answer to it would fail. The caller holds dispatchMu.
-func (a *Agent) reconcileControls(sessionID string, approvals, questions []json.RawMessage) {
-	pending := make(map[string]bool, len(approvals)+len(questions))
-	var raised []kimiInteraction
-	collect := func(items []json.RawMessage, interactionKind string) {
-		for _, item := range items {
-			interaction, requestID, ok := kimiSnapshotInteraction(interactionKind, sessionID, item)
-			if !ok {
-				slog.Warn("kimi snapshot states an interaction that does not decode", "agent_id", a.AgentID(), "kind", interactionKind)
-				continue
-			}
-			pending[requestID] = true
-			raised = append(raised, interaction)
-		}
-	}
-	collect(approvals, contracts.KimiInteractionKindApproval)
-	collect(questions, contracts.KimiInteractionKindQuestion)
-
-	a.Mu.Lock()
-	var resolved []string
-	for requestID, control := range a.controls {
-		if pending[requestID] || control.sessionID != sessionID {
-			continue
-		}
-		delete(a.controls, requestID)
-		control.publicationOnce.Do(func() { close(control.publicationDone) })
-		if !control.answered && control.published {
-			resolved = append(resolved, requestID)
-		}
-	}
-	a.Mu.Unlock()
-	slices.Sort(resolved)
-	for _, requestID := range resolved {
-		a.sink.CancelControlRequest(requestID)
-	}
-	// publishControl skips a request that is published already.
-	for _, interaction := range raised {
-		a.dispatchInteraction(interaction)
-	}
-}
-
-// kimiSnapshotInteraction projects the current REST snapshot item into the same
-// native interaction shape that the WebSocket supplies. REST lists approvals and
-// questions separately and keeps their request fields beside their identity.
-func kimiSnapshotInteraction(kind, sessionID string, item json.RawMessage) (kimiInteraction, string, bool) {
-	var fields map[string]json.RawMessage
-	if json.Unmarshal(item, &fields) != nil || fields == nil {
-		return kimiInteraction{}, "", false
-	}
-	var ids struct {
-		ApprovalID string `json:"approval_id"`
-		QuestionID string `json:"question_id"`
-		AgentID    string `json:"agent_id"`
-		ToolCallID string `json:"tool_call_id"`
-	}
-	if json.Unmarshal(item, &ids) != nil {
-		return kimiInteraction{}, "", false
-	}
-	var requestID string
-	switch kind {
-	case contracts.KimiInteractionKindApproval:
-		requestID = ids.ApprovalID
-	case contracts.KimiInteractionKindQuestion:
-		requestID = ids.QuestionID
-	default:
-		return kimiInteraction{}, "", false
-	}
-	if requestID == "" {
-		return kimiInteraction{}, "", false
-	}
-	agentID := ids.AgentID
-	if agentID == "" {
-		agentID = kimiMainAgentID
-	}
-	createdAt := fields["created_at"]
-	for _, key := range []string{"approval_id", "question_id", "session_id", "agent_id", "turn_id", "tool_call_id", "created_at", "type", "agentId", "sessionId"} {
-		delete(fields, key)
-	}
-	frame := map[string]any{
-		"type": contracts.KimiFrameInteraction, "session_id": sessionID, "agent_id": agentID,
-		"interaction_id": requestID, "kind": kind, "status": kimiInteractionPending, "request": fields,
-	}
-	if ids.ToolCallID != "" {
-		frame["tool_call_id"] = ids.ToolCallID
-	}
-	if len(createdAt) != 0 {
-		frame["event_created_at"] = createdAt
-	}
-	raw, err := json.Marshal(frame)
-	if err != nil {
-		return kimiInteraction{}, "", false
-	}
-	var interaction kimiInteraction
-	if json.Unmarshal(raw, &interaction) != nil {
-		return kimiInteraction{}, "", false
-	}
-	interaction.Raw = raw
-	return interaction, requestID, true
 }
 
 // kimiControlEnvelope is the control-response envelope the service forwards:
@@ -523,7 +432,7 @@ func (a *Agent) deliverControlResponse(raw []byte) error {
 		return ctx.Err()
 	}
 	a.sessionMu.Lock()
-	defer a.sessionMu.Unlock()
+	defer a.finishSessionMutation()
 	a.Mu.Lock()
 	if pending.sessionID != a.sessionID {
 		a.Mu.Unlock()

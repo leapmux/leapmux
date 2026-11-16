@@ -1,0 +1,102 @@
+{
+  "_readme": "OpenCode v2 uses its native HTTP and server-sent event protocol. This vocabulary contains only values interpreted by both the Worker and browser. Native events remain unchanged in stored messages. Projected message and tool-part types describe recovery records. Permission decisions are native HTTP reply values. Control answer fields describe typed form replies and the resolved answers stored by the Worker registry. Both sides interpret the subagent, shell and experimental to-do tools. Other tool names belong to the browser. Kilo and MiMo retain their own transports and the shared question vocabulary in opencode-protocol.json. Metadata subsets control both Worker notification routing and browser suppression.",
+  "events": {
+    "ToolInputStarted": "session.tool.input.started",
+    "ToolCalled": "session.tool.called",
+    "ToolProgress": "session.tool.progress",
+    "ToolSuccess": "session.tool.success",
+    "ToolFailed": "session.tool.failed",
+    "ExecutionSucceeded": "session.execution.succeeded",
+    "ExecutionFailed": "session.execution.failed",
+    "ExecutionInterrupted": "session.execution.interrupted",
+    "RetryScheduled": "session.retry.scheduled",
+    "CompactionStarted": "session.compaction.started",
+    "CompactionDelta": "session.compaction.delta",
+    "CompactionEnded": "session.compaction.ended",
+    "CompactionFailed": "session.compaction.failed",
+    "PermissionAsked": "permission.asked",
+    "FormCreated": "form.created",
+    "SessionCreated": "session.created",
+    "SessionForked": "session.forked",
+    "SessionRenamed": "session.renamed",
+    "SessionMetadataUpdated": "session.metadata.updated",
+    "SessionPermissions": "session.permissions",
+    "SessionViewed": "session.viewed",
+    "SessionArchived": "session.archived",
+    "SessionUnarchived": "session.unarchived",
+    "SessionInstructionsUpdated": "session.instructions.updated",
+    "StepStarted": "session.step.started",
+    "StepFirstToken": "session.step.first-token",
+    "StepStreamed": "session.step.streamed",
+    "StepEnded": "session.step.ended",
+    "StepFailed": "session.step.failed",
+    "UsageUpdated": "session.usage.updated"
+  },
+  "messageTypes": {
+    "User": "user",
+    "Idle": "idle",
+    "Compaction": "compaction",
+    "ModelSwitched": "model-switched"
+  },
+  "partTypes": {
+    "Tool": "tool"
+  },
+  "permissionDecisions": {
+    "Once": "once",
+    "Always": "always",
+    "Reject": "reject"
+  },
+  "answerFields": {
+    "Answer": "answer",
+    "Cancel": "cancel",
+    "Decision": "decision"
+  },
+  "tools": {
+    "Subagent": "subagent",
+    "TodoWrite": "todowrite",
+    "Shell": "shell"
+  },
+  "toolStatuses": {
+    "Running": "running",
+    "Completed": "completed",
+    "Error": "error"
+  },
+  "compactionStatuses": {
+    "Running": "running",
+    "Completed": "completed",
+    "Failed": "failed"
+  },
+  "formFieldTypes": {
+    "String": "string",
+    "Number": "number",
+    "Integer": "integer",
+    "Boolean": "boolean",
+    "Multiselect": "multiselect",
+    "External": "external"
+  },
+  "outcomes": {
+    "Succeeded": "succeeded",
+    "Failed": "failed",
+    "Interrupted": "interrupted"
+  },
+  "metadataEvents": [
+    "SessionCreated",
+    "SessionForked",
+    "SessionRenamed",
+    "SessionMetadataUpdated",
+    "SessionPermissions",
+    "SessionViewed",
+    "SessionArchived",
+    "SessionUnarchived",
+    "SessionInstructionsUpdated",
+    "UsageUpdated",
+    "StepStarted",
+    "StepFirstToken",
+    "StepStreamed",
+    "StepEnded",
+    "StepFailed"
+  ],
+  "metadataMessageTypes": [
+    "ModelSwitched"
+  ]
+}

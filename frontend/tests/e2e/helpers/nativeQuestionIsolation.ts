@@ -7,7 +7,7 @@ import { askQuestions, NATIVE_CONTROL_QUESTION } from './nativeQuestion'
 import { restoreQuestionTextDraft } from './nativeQuestionRestoration'
 import { currentNativeAgent } from './nativeScenario'
 import { waitForOneNativeControl } from './nativeStoredControlDecision'
-import { collapseWorkspaceRow, composerEditor, controlAgentId, controlBanner, expectNoControlBanner, openWorkspace, sidebarLeaves, tabById, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from './ui'
+import { collapseWorkspaceRow, composerEditor, controlAgentId, controlBanner, expectNoControlBanner, fillComposer, openWorkspace, sidebarLeaves, tabById, waitForAgentIdle, waitForControlBanner, waitForEditorDraft, waitForWorkspaceReady, workspaceRow, workspaceRowTitle } from './ui'
 import { openProviderAgent } from './workspace'
 
 /** Verify that a real native question belongs to its tab and workspace, including its stored draft. */
@@ -33,7 +33,7 @@ export async function exerciseQuestionIsolation(
   const questionDraft = 'Keep this separate native question answer.'
   await withCleanup(async () => {
     await askQuestions(context, [NATIVE_CONTROL_QUESTION], { gate })
-    await composerEditor(page).fill(conversationDraft)
+    await fillComposer(page, conversationDraft)
     await waitForEditorDraft(page, userId, conversationDraft)
     await secondTab.click()
     await expect(secondTab).toHaveAttribute('aria-selected', 'true')
@@ -66,7 +66,7 @@ export async function exerciseQuestionIsolation(
     await expect(banner).toContainText(NATIVE_CONTROL_QUESTION.question)
     if (options.customAnswerDraft) {
       await expect(composerEditor(page)).toHaveText('')
-      await composerEditor(page).fill(questionDraft)
+      await fillComposer(page, questionDraft)
       await restoreQuestionTextDraft(context, questionDraft)
       await secondTab.click()
       await expect(controlBanner(page)).toHaveCount(0)

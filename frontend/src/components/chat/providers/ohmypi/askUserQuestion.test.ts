@@ -24,9 +24,8 @@ const askRequest = {
       multi: true,
       options: [
         { label: 'Go' },
-        { label: 'Rust' },
+        { label: 'Rust Recommended', markup: '<label><strong>Rust</strong> Recommended</label>' },
       ],
-      recommended: 1,
     },
   ],
 }
@@ -78,6 +77,46 @@ describe('isOhMyPiDialogQuestion', () => {
 })
 
 describe('ohMyPiQuestionsFromPayload', () => {
+  it('preserves choice values, required-answer flags and native defaults', () => {
+    const questions = ohMyPiQuestionsFromPayload({
+      type: 'leapmux_ask',
+      id: 'html-form',
+      questions: [
+        {
+          id: 'style',
+          question: 'Choose a style',
+          multi: true,
+          allowEmpty: true,
+          allowCustomText: false,
+          initialSelections: ['0', 'missing', '0'],
+          options: [
+            { value: '0', label: 'Alpha' },
+            { value: '1', label: 'Beta' },
+          ],
+        },
+      ],
+    })
+    expect(questions).toMatchObject([
+      {
+        id: 'style',
+        multiSelect: true,
+        allowEmpty: true,
+        allowCustomText: false,
+        initialSelections: ['0'],
+        options: [
+          { value: '0', label: 'Alpha' },
+          { value: '1', label: 'Beta' },
+        ],
+      },
+    ])
+  })
+
+  it('keeps an ungrouped native select limited to its offered values', () => {
+    expect(ohMyPiQuestionsFromPayload(dialog('select', {
+      title: 'Choose',
+      options: ['Alpha', 'Beta'],
+    }))[0]).toMatchObject({ allowCustomText: false })
+  })
   it('reads every question of the bridge\'s request', () => {
     expect(ohMyPiQuestionsFromPayload(askRequest)).toEqual([
       {
@@ -113,6 +152,7 @@ describe('ohMyPiQuestionsFromPayload', () => {
     }))).toEqual([
       {
         question: 'Which database?',
+        allowCustomText: false,
         options: [
           { label: 'SQLite (Recommended)', description: 'Single file' },
           { label: 'PostgreSQL' },
@@ -127,6 +167,7 @@ describe('ohMyPiQuestionsFromPayload', () => {
     }))).toEqual([
       {
         question: 'Choose an option',
+        allowCustomText: false,
         options: [
           { label: 'a' },
         ],
@@ -142,6 +183,7 @@ describe('ohMyPiQuestionsFromPayload', () => {
     }))).toEqual([
       {
         question: 'Pick',
+        allowCustomText: false,
         options: [
           { label: 'a' },
           { label: 'b' },
@@ -158,6 +200,7 @@ describe('ohMyPiQuestionsFromPayload', () => {
     }))).toEqual([
       {
         question: 'Pick',
+        allowCustomText: false,
         options: [
           { label: 'a' },
           { label: 'b' },
@@ -169,7 +212,7 @@ describe('ohMyPiQuestionsFromPayload', () => {
 
   it('reads a select with no options, or options that are not words, as a question with no options', () => {
     expect(ohMyPiQuestionsFromPayload(dialog('select', { title: 'Pick' }))).toEqual([
-      { question: 'Pick', options: [] },
+      { question: 'Pick', allowCustomText: false, options: [] },
     ])
     expect(ohMyPiQuestionsFromPayload(dialog('select', {
       title: 'Pick',
@@ -181,6 +224,7 @@ describe('ohMyPiQuestionsFromPayload', () => {
     }))).toEqual([
       {
         question: 'Pick',
+        allowCustomText: false,
         options: [
           { label: 'kept' },
         ],

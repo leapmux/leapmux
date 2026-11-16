@@ -1,6 +1,6 @@
 import type { MessageCategory } from '../../messageClassifier'
 import type { ClassificationInput } from '../registry'
-import { KIMI_EVENT, KIMI_NOTIFICATION_EVENT, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
+import { KIMI_NOTIFICATION_EVENT, KIMI_TRANSCRIPT_TOOL, KIMI_TRANSCRIPT_TURN } from '~/generated/contracts/kimi-protocol'
 import { isObject, pickString } from '~/lib/jsonPick'
 import { isPlainNotificationType } from '~/lib/notificationTypes'
 import { isNotificationThreadWrapper } from '../../messageUtils'
@@ -9,9 +9,12 @@ import { retainedRowIsFinal } from '../registry'
 import { kimiNotificationEntry } from './extractors/notification'
 import { kimiPlanText } from './extractors/plan'
 import { kimiEvent } from './protocol'
+import { kimiTranscriptMarker, kimiTranscriptRetry, kimiTranscriptTaskText, kimiTranscriptTool, kimiTranscriptTurn } from './transcript'
 
 /** Whether one thread entry is a Kimi Code notice. */
 function kimiNotifies(entry: unknown): boolean {
+  if (kimiTranscriptMarker(entry) || kimiTranscriptRetry(entry))
+    return true
   const event = kimiEvent(entry)
   return !!event && KIMI_NOTIFICATION_EVENT.has(event.type)
 }
@@ -35,6 +38,38 @@ export function classifyKimiMessage(input: ClassificationInput): MessageCategory
   if (!parent)
     return { kind: 'unknown' }
 
+  if (kimiTranscriptMarker(parent) || kimiTranscriptRetry(parent) || kimiTranscriptTaskText(parent) !== null)
+    return notification([parent], 'hidden')
+
+  const nativeTurn = kimiTranscriptTurn(parent)
+  if (nativeTurn) {
+    switch (pickString(nativeTurn, 'state')) {
+      case KIMI_TRANSCRIPT_TURN.Completed:
+      case KIMI_TRANSCRIPT_TURN.Cancelled:
+      case KIMI_TRANSCRIPT_TURN.Failed:
+        return { kind: 'result_divider' }
+      case KIMI_TRANSCRIPT_TURN.Running:
+        return notification([parent], 'hidden')
+      case KIMI_TRANSCRIPT_TURN.Queued:
+        return { kind: 'hidden' }
+      default:
+        return { kind: 'unknown' }
+    }
+  }
+
+  const nativeTool = kimiTranscriptTool(parent)
+  if (nativeTool) {
+    const finished = nativeTool.state !== KIMI_TRANSCRIPT_TOOL.Running || retainedRowIsFinal(input.completion)
+    if (kimiPlanText(parent) !== null) {
+      return finished
+        ? { kind: 'hidden' }
+        : { kind: 'assistant_plan' }
+    }
+    return finished
+      ? { kind: 'tool_result' }
+      : { kind: 'tool_use' }
+  }
+
   const event = kimiEvent(parent)
   if (!event) {
     // A row the service layer wrote: the LeapMux-neutral `{content}` user row, or one
@@ -49,32 +84,6 @@ export function classifyKimiMessage(input: ClassificationInput): MessageCategory
     return { kind: 'unknown' }
   }
 
-  switch (event.type) {
-    case KIMI_EVENT.ToolCallStarted: {
-      // A retained copy of this frame is the call's RESULT: the turn ended while the
-      // call ran, so the server sent no result and the worker stored the start again.
-      const retained = retainedRowIsFinal(input.completion)
-      // The plan an `ExitPlanMode` call proposes is drawn as the plan itself. The
-      // retained copy of that start is the call's closing row, which is hidden for the
-      // same reason the result of a plan call is: the plan row already states the plan.
-      if (kimiPlanText(parent) !== null) {
-        return retained
-          ? { kind: 'hidden' }
-          : { kind: 'assistant_plan' }
-      }
-      return retained
-        ? { kind: 'tool_result' }
-        : { kind: 'tool_use' }
-    }
-    case KIMI_EVENT.ToolResult:
-      // The plan row and the answer row already state the plan and the decision, and
-      // the result repeats the whole plan for the model.
-      if (input.spanType === KIMI_TOOL.ExitPlanMode)
-        return { kind: 'hidden' }
-      return { kind: 'tool_result' }
-    case KIMI_EVENT.TurnEnded:
-      return { kind: 'result_divider' }
-  }
   if (KIMI_NOTIFICATION_EVENT.has(event.type))
     return notification([parent], 'hidden')
   // The Worker preserves unknown native events as separate message rows.

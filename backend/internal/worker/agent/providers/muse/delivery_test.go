@@ -1,6 +1,8 @@
 package muse
 
 import (
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	"context"
 	"encoding/json"
 	"fmt"
@@ -207,7 +209,9 @@ func nativeParentInputRuntimeWithClock(t *testing.T, scenario nativeParentInputC
 	}
 	require.NotEmpty(t, original)
 	key := museChildRowKey(scenario.ParentSessionID, scenario.SubagentID)
-	id, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: key, AgentSessionID: scenario.ChildSessionID, Title: scenario.InitialObjective})
+	id, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn", ProviderChildKey: key, AgentSessionID: scenario.ChildSessionID, Title: scenario.InitialObjective})
 	require.NoError(t, err)
 	require.NoError(t, a.sink.PersistChildPrompt(id, scenario.InitialObjective))
 	cursor := "accepted-prefix"

@@ -1,6 +1,8 @@
 package providerkit
 
 import (
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -77,7 +79,9 @@ func TestPersistSubagentReportResolvesAChildRow(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-1", ProviderChildKey: "row-1", Title: "Reviewer"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn-1", ProviderChildKey: "row-1", Title: "Reviewer"})
 	require.NoError(t, err)
 	write := agent.ChildSubagentReportWrite{
 		RowKey: "row-1",

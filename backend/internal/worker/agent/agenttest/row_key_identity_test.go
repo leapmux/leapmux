@@ -30,9 +30,13 @@ func TestRecordingRegistryNativeKeysDoNotAliasDerivedKeys(t *testing.T) {
 func TestRecordingChildSubagentReportKeepsTheExactRegistryKey(t *testing.T) {
 	t.Parallel()
 	sink := &Sink{}
-	first, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: " child-key ", Title: "Spaced child"})
+	first, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: " child-key ", Title: "Spaced child"})
 	require.NoError(t, err)
-	second, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "child-key", Title: "Plain child"})
+	second, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "child-key", Title: "Plain child"})
 	require.NoError(t, err)
 	require.NotEqual(t, first, second)
 	write := agent.ChildSubagentReportWrite{

@@ -142,6 +142,9 @@ func TestOutputTodos_OpenCodeFamilyNativeResults(t *testing.T) {
 					"sessionUpdate": "tool_call_update", "toolCallId": "todos", "status": status,
 					"rawOutput": map[string]any{"metadata": map[string]any{"todos": todos}},
 				})
+				if provider == leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE {
+					body = marshalJSON(t, map[string]any{"type": contracts.OpenCodeNativePartTypeTool, "name": contracts.OpenCodeNativeToolTodoWrite, "state": map[string]any{"status": status, "metadata": map[string]any{"todos": todos}}})
+				}
 				require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: body}, agent.SpanInfo{SpanID: "todos", SpanType: "other"}))
 			}
 			todos := []map[string]string{{"content": "Inspect sample", "status": "in_progress"}, {"content": "Cancelled task", "status": "cancelled"}}
@@ -274,8 +277,9 @@ func TestOutputTodos_OneProvidersShapeNeverFeedsAnother(t *testing.T) {
 			  "input":{"todos":[{"content":"A","status":"pending"}]}}]}}`},
 		"codex plan": {leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, "",
 			`{"method":"turn/plan/updated","params":{"plan":[{"step":"A","status":"pending"}]}}`},
-		"acp plan": {leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, "",
+		"acp plan": {leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO, "",
 			`{"sessionUpdate":"plan","entries":[{"content":"A","status":"pending"}]}`},
+		"opencode native todos": {leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE, "todowrite", `{"type":"session.tool.success","data":{"name":"todowrite","metadata":{"todos":[{"content":"A","status":"pending"}]}}}`},
 		"zcode tool.updated": {leapmuxv1.AgentProvider_AGENT_PROVIDER_ZCODE, "TodoWrite",
 			`{"type":"tool.updated","payload":{"kind":"scheduled","toolCallId":"c1","toolName":"TodoWrite",
 			  "input":{"todos":[{"content":"A","status":"pending"}]}}}`},
@@ -284,6 +288,7 @@ func TestOutputTodos_OneProvidersShapeNeverFeedsAnother(t *testing.T) {
 			  "state":{"status":"completed","input":{"operation":{"action":"create","summary":"A"}},"metadata":{"id":"T1","status":"open"}}}}}`},
 	}
 	readers := []leapmuxv1.AgentProvider{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
@@ -720,7 +725,7 @@ func TestOutputTodos_CodexPlanSnapshotPopulates(t *testing.T) {
 func TestOutputTodos_AcpPlanSnapshotPopulates(t *testing.T) {
 	t.Parallel()
 
-	sink, _, listRows := setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE)
+	sink, _, listRows := setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO)
 	body := marshalJSON(t, map[string]any{
 		"sessionUpdate": "plan",
 		"entries": []any{
@@ -947,18 +952,20 @@ func TestOutputTodos_EnrichmentNeverReplaysTheListTheRowAlreadyCarried(t *testin
 
 	sink, _, listRows := setupTodoTestForProvider(t, leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE)
 	stale := marshalJSON(t, map[string]any{
-		"sessionUpdate": "plan",
-		"entries":       []any{map[string]any{"content": "stale", "status": "pending"}},
+		"type": contracts.OpenCodeNativeEventToolSuccess,
+		"data": map[string]any{"name": contracts.OpenCodeNativeToolTodoWrite, "metadata": map[string]any{"todos": []any{map[string]any{"content": "stale", "status": "pending"}}}},
 	})
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 		agent.MessageContent{Original: stale}, agent.SpanInfo{SpanID: "call-1", Closing: true}))
 	fresh := marshalJSON(t, map[string]any{
-		"sessionUpdate": "plan",
-		"entries":       []any{map[string]any{"content": "fresh", "status": "completed"}},
+		"type": contracts.OpenCodeNativeEventToolSuccess,
+		"data": map[string]any{"name": contracts.OpenCodeNativeToolTodoWrite, "metadata": map[string]any{"todos": []any{map[string]any{"content": "fresh", "status": "completed"}}}},
 	})
 	require.NoError(t, sink.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT,
 		agent.MessageContent{Original: fresh}, agent.SpanInfo{SpanID: "call-2", Closing: true}))
-	require.Equal(t, "fresh", listRows()[0].Content)
+	beforeEnrichment := listRows()
+	require.Len(t, beforeEnrichment, 1)
+	require.Equal(t, "fresh", beforeEnrichment[0].Content)
 
 	written, err := sink.EnrichMessage(agent.MessageEnrichment{
 		SpanID: "call-1", OriginalContent: stale, SupplementalContent: []byte(`{"rawOutput":{"content":[]}}`),

@@ -6,8 +6,10 @@ import { createHash } from 'node:crypto'
 import { unlinkSync } from 'node:fs'
 import { isAbsolute, relative } from 'node:path'
 import { expect } from '@playwright/test'
+import { qwenRegistryRowKey } from '../../../src/components/chat/providers/qwen/registryKey'
 import { resolveMessageForRendering } from '../../../src/components/chat/providers/registry'
 import { OPTION_ID_PERMISSION_MODE } from '../../../src/components/chat/settingsGroups'
+import { QWEN_TOOL } from '../../../src/generated/contracts/qwen-protocol'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '../../../src/lib/jsonPick'
 import { parseMessageContent } from '../../../src/lib/messageParser'
@@ -241,8 +243,16 @@ for (const background of [false, true]) {
     }
     const childId = await openChildTabFromRow(page, row)
     const child = await nativeAgentById(context, childId)
-    if (!child || child.parentAgentId !== root.id || child.rootAgentId !== root.id || child.spawnSpanId !== spawnId || child.agentSessionId !== root.agentSessionId)
-      throw new Error('The native Qwen child has another parent, session, or spawn.')
+    const registryKey = qwenRegistryRowKey(QWEN_TOOL.Agent, root.agentSessionId, spawnId)
+    if (!child || registryKey === undefined)
+      throw new Error('The native Qwen spawn requires a child and a registry identity.')
+    await expect(row).toHaveAttribute('data-task-id', registryKey)
+    expect(child).toMatchObject({
+      parentAgentId: root.id,
+      rootAgentId: root.id,
+      spawnSpanId: registryKey,
+      agentSessionId: root.agentSessionId,
+    })
     const status = await modelScript.status()
     expect(status.ruleMatches[commandRule]).toBe(1)
     expect(status.ruleMatches[finishedRule]).toBe(1)

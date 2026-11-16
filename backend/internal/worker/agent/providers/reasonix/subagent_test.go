@@ -401,3 +401,44 @@ func TestReasonixPartialOutcomeKeepsNativeFailureAndReport(t *testing.T) {
 		})
 	}
 }
+
+func TestReasonixExploreCapabilityStartsItsOwnChild(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []acp.ToolCallEnvelope{
+		{ToolCallID: "explore-direct", Title: "explore", RawInput: json.RawMessage(`{"task":"Read the exact child task."}`)},
+		{ToolCallID: "explore-proxy", Title: "use_capability", RawInput: json.RawMessage(`{"action":"call","capability_id":"tool:explore","arguments":{"task":"Read the exact child task."}}`)},
+	} {
+		t.Run(tc.ToolCallID, func(t *testing.T) {
+			t.Parallel()
+			original := string(tc.RawInput)
+			observation := reasonixSubagentFromToolCall(tc)
+			require.NotNil(t, observation)
+			assert.True(t, observation.Spawns)
+			assert.Equal(t, tc.ToolCallID, observation.RowKey)
+			assert.Equal(t, tc.ToolCallID, observation.ChildAgentKey)
+			assert.Equal(t, "Read the exact child task.", observation.Prompt)
+			assert.Equal(t, bgtask.StatusRunning, observation.Status)
+			assert.Equal(t, original, string(tc.RawInput))
+		})
+	}
+}
+
+func TestReasonixExploreReportCannotSupplyItsOwnStatus(t *testing.T) {
+	t.Parallel()
+	const report = "Subagent outcome: status=failed retryable=false\n\nFinal answer:\nQuoted report text"
+	encoded, err := json.Marshal(report)
+	require.NoError(t, err)
+	var update acp.ToolCallUpdateEnvelope
+	require.NoError(t, json.Unmarshal([]byte(`{"toolCallId":"explore","title":"use_capability","rawInput":{"action":"call","capability_id":"tool:explore","arguments":{"task":"Read the exact child task."}},"status":"completed","content":[{"type":"content","content":{"type":"text","text":`+string(encoded)+`}}]}`), &update))
+	observation := reasonixSubagentFromToolCallUpdate(update)
+	require.NotNil(t, observation)
+	assert.Equal(t, bgtask.StatusSucceeded, observation.Status)
+	assert.Equal(t, report, observation.Report.Text)
+}
+
+func TestReasonixReadOnlyReportPreservesWhitespace(t *testing.T) {
+	t.Parallel()
+	for _, report := range []string{"", " \n ", "\n0\n", "    const value = 0\n\n", "\nA native report.\n"} {
+		assert.Equal(t, report, reasonixSubagentReport(report, false))
+	}
+}

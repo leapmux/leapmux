@@ -247,7 +247,15 @@ export async function exerciseInterruptTurn(
     // Each provider counts the tool that the stop ended in the totals of the turn.
     if (options.kind === 'tool') {
       await expect(divider.getByTestId('result-divider-totals'), 'the divider counts the stopped native calls').toHaveText(toolTotals)
-      await expect.poll(() => isAlive(toolPid), { message: 'interruption stops the actual native command' }).toBe(false)
+      try {
+        await expect.poll(() => isAlive(toolPid), { message: 'interruption stops the actual native command' }).toBe(false)
+      }
+      catch (error) {
+        const processes = listProcesses()
+        const command = processes.find(row => row.pid === toolPid)
+        const parent = command && processes.find(row => row.pid === command.ppid)
+        throw new Error(`The interrupted native command ${toolPid} still exists: ${JSON.stringify({ command, parent })}`, { cause: error })
+      }
     }
     // The divider states that the runtime ended the turn, so it read the late answer
     // already. That answer belongs to a cancelled turn, and no row may draw it.

@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
-	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -29,92 +29,60 @@ type kimiStreamRig struct {
 	reconnects []kimiReconnect
 }
 
-func TestKimiGlobalReplaySubscribesFromARecentCursor(t *testing.T) {
+func TestKimiStreamUsesNativeV2SubscriptionIncludingChildren(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct{ current, from int64 }{{300, 44}, {20, 0}, {0, 0}, {-1 << 63, 0}, {1 << 62, (1 << 62) - 256}} {
-		t.Run(strconv.FormatInt(tc.current, 10), func(t *testing.T) {
+	rig := newKimiStreamRig(t)
+	rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) { return 0, kimiAck{Accepted: sub.IDs} })
+	_, err := rig.stream.subscribe(t.Context(), "session_1")
+	require.NoError(t, err)
+	frames := rig.fake.subscribeFrames()
+	require.Len(t, frames, 1)
+	assert.Equal(t, "subscribe_v2", frames[0].WireType)
+	assert.JSONEq(t, `{"session_id":"session_1","transcript":{"*":"delta"}}`, string(frames[0].Payload))
+}
+
+func TestKimiStreamRejectsInvalidSubscriptionAcknowledgements(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		ack  kimiAck
+	}{
+		{name: "missing result"},
+		{name: "another accepted session", ack: kimiAck{Accepted: []string{"other"}}},
+		{name: "another missing session", ack: kimiAck{NotFound: []string{"other"}}},
+		{name: "conflicting results", ack: kimiAck{Accepted: []string{"session_1"}, NotFound: []string{"session_1"}}},
+		{name: "duplicate results", ack: kimiAck{Accepted: []string{"session_1", "session_1"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newKimiStreamRig(t)
-			rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) {
-				return 0, kimiAck{Accepted: sub.IDs, Cursors: map[string]kimiCursor{kimiGlobalSessionID: {Seq: tc.current, Epoch: "global-epoch"}}}
-			})
-			a := newOfflineKimiAgent(t, &agenttest.Sink{})
-			a.stream = rig.stream
-			a.replayStartupConfigWarnings(t.Context())
-			frames := rig.fake.subscribeFrames()
-			require.Len(t, frames, 2)
-			assert.Equal(t, []string{kimiGlobalSessionID}, frames[0].IDs)
-			assert.Empty(t, frames[0].Cursors)
-			assert.Equal(t, map[string]kimiCursor{kimiGlobalSessionID: {Seq: tc.from, Epoch: "global-epoch"}}, frames[1].Cursors)
-			cursor, tracked := rig.cursor(kimiGlobalSessionID)
-			assert.True(t, tracked)
-			assert.Equal(t, tc.current, cursor.Seq, "the explicit replay must not move the live cursor backward")
+			rig.fake.setAckFor(func(fakeKapSubscribe) (int, kimiAck) { return 0, tc.ack })
+			_, err := rig.stream.subscribe(t.Context(), "session_1")
+			require.ErrorContains(t, err, "invalid subscribe acknowledgement")
+			_, tracked := rig.cursor("session_1")
+			assert.False(t, tracked)
 		})
 	}
 }
 
-func TestKimiGlobalReplayNeedsACursor(t *testing.T) {
+func TestKimiStreamResubscribesFromEachNativeTranscriptPosition(t *testing.T) {
 	t.Parallel()
 	rig := newKimiStreamRig(t)
 	rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) { return 0, kimiAck{Accepted: sub.IDs} })
-	a := newOfflineKimiAgent(t, &agenttest.Sink{})
-	a.stream = rig.stream
-	a.replayStartupConfigWarnings(t.Context())
-	assert.Len(t, rig.fake.subscribeFrames(), 1)
-}
-
-func TestKimiGlobalReplayWaitUsesTheAgentClock(t *testing.T) {
-	t.Parallel()
-	rig := newKimiStreamRig(t)
-	entered, release := make(chan struct{}), make(chan struct{})
-	rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) {
-		close(entered)
-		<-release
-		return 0, kimiAck{Accepted: sub.IDs}
-	})
-	t.Cleanup(func() { close(release) })
-	a := newOfflineKimiAgent(t, &agenttest.Sink{})
-	a.stream = rig.stream
-	clock := testutil.NewQuartzMock(t)
-	a.clock = clock
-	trap := clock.Trap().AfterFunc(kimiGlobalReplayTimerTag)
-	t.Cleanup(trap.Close)
-	done := make(chan struct{})
-	go func() {
-		a.replayStartupConfigWarnings(t.Context())
-		close(done)
-	}()
-	ctx := testutil.DeadlineContext(t)
-	duration := testutil.WaitForTimer(t, ctx, trap)
-	select {
-	case <-entered:
-	case <-ctx.Done():
-		t.Fatal("the global subscription did not reach the server")
+	_, err := rig.stream.subscribe(t.Context(), "session_1")
+	require.NoError(t, err)
+	for _, frame := range []map[string]any{
+		{"type": "transcript.reset", "session_id": "session_1", "payload": map[string]any{"agent_id": "main", "seq": 7, "snapshot": map[string]any{"items": []any{}, "interactions": []any{}, "attachments": []any{}, "prompts": []any{}, "hasMoreOlder": false}, "has_more_older": false}},
+		{"type": "transcript.ops", "session_id": "session_1", "payload": map[string]any{"agent_id": "main", "seq": 8, "ops": []any{}}},
+		{"type": "transcript.reset", "session_id": "session_1", "payload": map[string]any{"agent_id": "agent-1", "seq": 3, "snapshot": map[string]any{"items": []any{}, "interactions": []any{}, "attachments": []any{}, "prompts": []any{}, "hasMoreOlder": false}, "has_more_older": false}},
+	} {
+		rig.fake.push(t, frame)
 	}
-	clock.Advance(duration).MustWait(ctx)
-	select {
-	case <-done:
-	case <-ctx.Done():
-		t.Fatal("the global subscription did not stop at its deadline")
-	}
-	assert.Len(t, rig.fake.subscribeFrames(), 1)
-}
-
-func TestKimiGlobalReplayRefusalLeavesTheLiveCursor(t *testing.T) {
-	t.Parallel()
-	rig := newKimiStreamRig(t)
-	rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) {
-		if len(sub.Cursors) > 0 {
-			return 40300, kimiAck{}
-		}
-		return 0, kimiAck{Accepted: sub.IDs, Cursors: map[string]kimiCursor{kimiGlobalSessionID: {Seq: 300, Epoch: "global-epoch"}}}
-	})
-	a := newOfflineKimiAgent(t, &agenttest.Sink{})
-	a.stream = rig.stream
-	a.replayStartupConfigWarnings(t.Context())
-	assert.Len(t, rig.fake.subscribeFrames(), 2)
-	cursor, tracked := rig.cursor(kimiGlobalSessionID)
-	assert.True(t, tracked)
-	assert.Equal(t, kimiCursor{Seq: 300, Epoch: "global-epoch"}, cursor)
+	waitFor(t, func() bool { return len(rig.conversationFrames()) == 3 }, "the native transcript positions reach the dispatcher")
+	rig.stream.resubscribeAll(t.Context())
+	frames := rig.fake.subscribeFrames()
+	require.Len(t, frames, 2)
+	assert.JSONEq(t, `{"session_id":"session_1","transcript":{"*":"delta"},"transcript_since":{"main":8,"agent-1":3}}`, string(frames[1].Payload))
 }
 
 // kimiReconnect is one call of the stream's reconnect handler.
@@ -168,6 +136,17 @@ func (r *kimiStreamRig) received() []kimiFrame {
 	return append([]kimiFrame(nil), r.frames...)
 }
 
+// conversationFrames excludes the native state snapshots sent at subscription.
+func (r *kimiStreamRig) conversationFrames() []kimiFrame {
+	var frames []kimiFrame
+	for _, frame := range r.received() {
+		if frame.Type != contracts.KimiEventAgent && frame.Type != contracts.KimiEventUsage && frame.Type != contracts.KimiEventGoal {
+			frames = append(frames, frame)
+		}
+	}
+	return frames
+}
+
 func (r *kimiStreamRig) reconnected() []kimiReconnect {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -193,56 +172,57 @@ func TestKimiStreamAnswersEveryPing(t *testing.T) {
 	rig.fake.push(t, map[string]any{"type": kimiFramePing})
 	waitFor(t, func() bool { return len(rig.fake.pongNonces()) == 3 }, "every ping gets a pong")
 	assert.Equal(t, []string{"n-1", "n-2", ""}, rig.fake.pongNonces())
-	assert.Empty(t, rig.received(), "a ping is not an event")
+	assert.Empty(t, rig.conversationFrames(), "a ping is not an event")
 }
 
 func TestKimiStreamDeliversEventsInOrder(t *testing.T) {
 	t.Parallel()
 	rig := newKimiStreamRig(t)
 	rig.fake.store("session_1", fakeKapSession{})
-	_, err := rig.stream.subscribe(context.Background(), "session_1")
+	_, err := rig.stream.subscribe(t.Context(), "session_1")
 	require.NoError(t, err)
-
-	for seq := int64(1); seq <= 20; seq++ {
-		rig.fake.push(t, map[string]any{"type": "assistant.delta", "seq": seq, "session_id": "session_1", "payload": map[string]any{"type": "assistant.delta"}})
+	for seq := int64(1); seq <= 21; seq++ {
+		if seq == 21 {
+			rig.fake.push(t, "not a frame")
+		}
+		rig.fake.push(t, map[string]any{"type": "transcript.ops", "session_id": "session_1", "payload": map[string]any{"agent_id": "main", "seq": seq, "ops": []any{}}})
 	}
-	// A frame that is not JSON is skipped, and the stream reads on.
-	rig.fake.push(t, "not a frame")
-	rig.fake.push(t, map[string]any{"type": "turn.ended", "seq": 21, "session_id": "session_1", "payload": map[string]any{"type": "turn.ended"}})
-	waitFor(t, func() bool { return len(rig.received()) == 21 }, "every event arrives")
-	for i, frame := range rig.received() {
-		assert.Equal(t, int64(i+1), frame.Seq)
+	waitFor(t, func() bool { return len(rig.conversationFrames()) == 21 }, "every transcript update arrives")
+	for i, frame := range rig.conversationFrames() {
+		var position struct {
+			Seq int64 `json:"seq"`
+		}
+		require.NoError(t, json.Unmarshal(frame.Payload, &position))
+		assert.Equal(t, int64(i+1), position.Seq)
 	}
 	cursor, tracked := rig.cursor("session_1")
 	require.True(t, tracked)
-	assert.Equal(t, int64(21), cursor.Seq)
+	assert.Equal(t, map[string]int64{"main": 21}, cursor.Positions)
 }
 
 func TestKimiStreamSubscribe(t *testing.T) {
 	t.Parallel()
 
-	t.Run("adopts the cursor the ack states", func(t *testing.T) {
+	t.Run("tracks an accepted session until its transcript arrives", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiStreamRig(t)
 		rig.fake.store("session_1", fakeKapSession{})
-		rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) {
-			return 0, kimiAck{Accepted: sub.IDs, Cursors: map[string]kimiCursor{"session_1": {Seq: 7, Epoch: "ep_1"}}}
-		})
-		ack, err := rig.stream.subscribe(context.Background(), "session_1")
+		ack, err := rig.stream.subscribe(t.Context(), "session_1")
 		require.NoError(t, err)
 		assert.Equal(t, []string{"session_1"}, ack.Accepted)
-		cursor, _ := rig.cursor("session_1")
-		assert.Equal(t, kimiCursor{Seq: 7, Epoch: "ep_1"}, cursor)
-		subscribes := rig.fake.subscribeFrames()
-		require.Len(t, subscribes, 1)
-		assert.Empty(t, subscribes[0].Cursors, "a first subscribe states no cursor")
+		cursor, tracked := rig.cursor("session_1")
+		assert.True(t, tracked)
+		assert.Empty(t, cursor.Positions)
+		frames := rig.fake.subscribeFrames()
+		require.Len(t, frames, 1)
+		assert.Empty(t, frames[0].Since)
 	})
 
 	t.Run("reports a session the server has not loaded", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiStreamRig(t)
 		_, err := rig.stream.subscribe(context.Background(), "session_unknown")
-		require.ErrorIs(t, err, errKimiSessionNotLoaded)
+		require.ErrorIs(t, err, errKimiSessionUnavailable)
 		_, tracked := rig.cursor("session_unknown")
 		assert.False(t, tracked, "a session the server refused is not re-subscribed on a reconnect")
 	})
@@ -310,43 +290,33 @@ func TestKimiStreamSubscribe(t *testing.T) {
 		err := <-done
 		close(release)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "closed before it acknowledged")
+		assert.Contains(t, err.Error(), "closed before the subscribe response")
 	})
 }
 
 func TestKimiStreamCursor(t *testing.T) {
 	t.Parallel()
-
 	stream := newKimiStream(nil, "test-agent", quartz.NewReal(), nil, nil)
-	stream.sessions["session_1"] = kimiCursor{Seq: 5, Epoch: "ep_1"}
-
-	stream.noteCursor(kimiFrame{SessionID: "session_1", Seq: 9, Epoch: "ep_1", Volatile: true})
-	assert.Equal(t, kimiCursor{Seq: 5, Epoch: "ep_1"}, stream.sessions["session_1"], "a volatile event moves no cursor")
-
-	stream.noteCursor(kimiFrame{SessionID: "session_1", Seq: 3, Epoch: "ep_1"})
-	assert.Equal(t, kimiCursor{Seq: 5, Epoch: "ep_1"}, stream.sessions["session_1"], "an older seq moves no cursor")
-
-	stream.noteCursor(kimiFrame{SessionID: "session_1", Seq: 6})
-	assert.Equal(t, kimiCursor{Seq: 6, Epoch: "ep_1"}, stream.sessions["session_1"], "a frame with no epoch keeps the epoch")
-
-	stream.noteCursor(kimiFrame{SessionID: "session_1", Seq: 2, Epoch: "ep_2"})
-	assert.Equal(t, kimiCursor{Seq: 2, Epoch: "ep_2"}, stream.sessions["session_1"], "a new epoch restarts the numbering")
-
-	stream.noteCursor(kimiFrame{SessionID: "session_2", Seq: 4})
-	_, tracked := stream.sessions["session_2"]
-	assert.False(t, tracked, "an event of a session nobody subscribed tracks nothing")
-
-	stream.noteCursor(kimiFrame{Seq: 4})
-	stream.noteCursor(kimiFrame{SessionID: "session_1"})
-	assert.Equal(t, kimiCursor{Seq: 2, Epoch: "ep_2"}, stream.sessions["session_1"])
-
-	stream.adoptAckCursors(kimiAck{Cursors: map[string]kimiCursor{
-		"session_1": {Seq: 1, Epoch: "ep_2"},
-		"session_3": {Seq: 1},
-	}})
-	assert.Equal(t, kimiCursor{Seq: 2, Epoch: "ep_2"}, stream.sessions["session_1"], "an ack behind the stream does not move it back")
-	_, tracked = stream.sessions["session_3"]
-	assert.False(t, tracked)
+	stream.sessions["session_1"] = kimiCursor{Positions: map[string]int64{"main": 5}}
+	note := func(kind, sessionID, payload string) {
+		stream.noteCursor(kimiFrame{Type: kind, SessionID: sessionID, Payload: json.RawMessage(payload)})
+	}
+	note("transcript.ops", "session_1", `{"agent_id":"main","seq":3}`)
+	assert.Equal(t, int64(5), stream.sessions["session_1"].Positions["main"])
+	note("transcript.ops", "session_1", `{"agent_id":"main","seq":6}`)
+	note("transcript.ops", "session_1", `{"agent_id":"child","seq":0}`)
+	assert.Equal(t, map[string]int64{"main": 6, "child": 0}, stream.sessions["session_1"].Positions)
+	note("transcript.reset", "session_1", `{"agent_id":"main","seq":2}`)
+	assert.Equal(t, map[string]int64{"main": 2, "child": 0}, stream.sessions["session_1"].Positions)
+	assert.Equal(t, uint64(1), stream.sessions["session_1"].Resets)
+	for _, payload := range []string{`{`, `{}`, `{"seq":9}`, `{"agent_id":"main"}`, `{"agent_id":"main","seq":-1}`, `{"agent_id":"main","seq":1.5}`} {
+		note("transcript.ops", "session_1", payload)
+	}
+	note("agent", "session_1", `{"agent_id":"main","seq":9}`)
+	note("transcript.ops", "session_2", `{"agent_id":"main","seq":9}`)
+	note("transcript.ops", "", `{"agent_id":"main","seq":9}`)
+	assert.Equal(t, kimiCursor{Positions: map[string]int64{"main": 2, "child": 0}, Resets: 1}, stream.sessions["session_1"])
+	assert.Len(t, stream.sessions, 1)
 }
 
 func TestKimiStreamReconnectsAndReplays(t *testing.T) {
@@ -355,50 +325,58 @@ func TestKimiStreamReconnectsAndReplays(t *testing.T) {
 	rig.fake.store("session_1", fakeKapSession{})
 	_, err := rig.stream.subscribe(context.Background(), "session_1")
 	require.NoError(t, err)
-	rig.fake.push(t, map[string]any{"type": "turn.started", "seq": 4, "epoch": "ep_1", "session_id": "session_1", "payload": map[string]any{"type": "turn.started"}})
-	waitFor(t, func() bool { return len(rig.received()) == 1 }, "the event arrives")
+	rig.fake.push(t, map[string]any{"type": "transcript.ops", "session_id": "session_1", "payload": map[string]any{"agent_id": "main", "seq": 4, "ops": []any{}}})
+	waitFor(t, func() bool { return len(rig.conversationFrames()) == 1 }, "the event arrives")
 
 	rig.fake.closeConnections()
 	waitFor(t, func() bool { return len(rig.fake.subscribeFrames()) == 2 }, "the stream re-subscribes on a new socket")
 	resubscribe := rig.fake.subscribeFrames()[1]
 	assert.Equal(t, []string{"session_1"}, resubscribe.IDs)
-	assert.Equal(t, map[string]kimiCursor{"session_1": {Seq: 4, Epoch: "ep_1"}}, resubscribe.Cursors,
+	assert.Equal(t, map[string]int64{"main": 4}, resubscribe.Since,
 		"the re-subscribe states the last durable event, so the server replays only what the socket missed")
 
 	waitFor(t, func() bool { return len(rig.reconnected()) == 1 }, "the reconnect handler runs once the server answered")
 	assert.Equal(t, []kimiReconnect{{sessionID: "session_1", replayed: true}}, rig.reconnected(),
 		"the server replayed every durable event, and only the volatile ones are lost")
 
-	rig.fake.push(t, map[string]any{"type": "turn.ended", "seq": 5, "epoch": "ep_1", "session_id": "session_1", "payload": map[string]any{"type": "turn.ended"}})
-	waitFor(t, func() bool { return len(rig.received()) == 2 }, "events flow on the new socket")
+	rig.fake.push(t, map[string]any{"type": "transcript.ops", "session_id": "session_1", "payload": map[string]any{"agent_id": "main", "seq": 5, "ops": []any{}}})
+	waitFor(t, func() bool { return len(rig.conversationFrames()) == 2 }, "events flow on the new socket")
 }
 
-func TestKimiStreamReplaysASessionThatHadNoDurableEvent(t *testing.T) {
+func TestKimiStreamRecognizesAResetBeforeTheSubscriptionAcknowledgement(t *testing.T) {
 	t.Parallel()
 	rig := newKimiStreamRig(t)
 	rig.fake.store("session_1", fakeKapSession{})
-	_, err := rig.stream.subscribe(context.Background(), "session_1")
+	_, err := rig.stream.subscribe(t.Context(), "session_1")
 	require.NoError(t, err)
-
-	rig.fake.closeConnections()
-	waitFor(t, func() bool { return len(rig.reconnected()) == 1 }, "the stream re-subscribes on a new socket")
-	assert.Equal(t, map[string]kimiCursor{"session_1": {Epoch: fakeKapEpoch}}, rig.fake.subscribeFrames()[1].Cursors,
-		"a cursor at seq 0 replays every event of the epoch, so the events of the gap are not lost")
-	assert.Equal(t, []kimiReconnect{{sessionID: "session_1", replayed: true}}, rig.reconnected())
+	rig.stream.noteCursor(kimiFrame{Type: "transcript.ops", SessionID: "session_1", Payload: json.RawMessage(`{"agent_id":"main","seq":9}`)})
+	rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) {
+		rig.fake.push(t, map[string]any{"type": "transcript.reset", "session_id": sub.SessionID, "payload": map[string]any{"agent_id": "main", "seq": 1, "snapshot": map[string]any{"items": []any{}}}})
+		return 0, kimiAck{Accepted: sub.IDs}
+	})
+	rig.stream.resubscribeAll(t.Context())
+	assert.Equal(t, []kimiReconnect{{sessionID: "session_1", replayed: false}}, rig.reconnected())
+	cursor, tracked := rig.cursor("session_1")
+	require.True(t, tracked)
+	assert.Equal(t, map[string]int64{"main": 1}, cursor.Positions)
+	assert.Equal(t, uint64(1), cursor.Resets)
+	frames := rig.fake.subscribeFrames()
+	require.Len(t, frames, 2)
+	assert.Equal(t, map[string]int64{"main": 9}, frames[1].Since)
 }
 
 func TestKimiStreamReportsASessionWithNoCursorAsNotReplayed(t *testing.T) {
 	t.Parallel()
 	rig := newKimiStreamRig(t)
 	rig.fake.store("session_1", fakeKapSession{})
-	// An ack that states no cursor leaves the stream nothing to replay from.
+	// No transcript has arrived, so the stream requests a fresh reset.
 	rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) { return 0, kimiAck{Accepted: sub.IDs} })
 	_, err := rig.stream.subscribe(context.Background(), "session_1")
 	require.NoError(t, err)
 
 	rig.fake.closeConnections()
 	waitFor(t, func() bool { return len(rig.reconnected()) == 1 }, "the stream re-subscribes on a new socket")
-	assert.Empty(t, rig.fake.subscribeFrames()[1].Cursors)
+	assert.Empty(t, rig.fake.subscribeFrames()[1].Since)
 	assert.Equal(t, []kimiReconnect{{sessionID: "session_1", replayed: false}}, rig.reconnected(),
 		"the server subscribed the session again and replayed nothing")
 }
@@ -413,10 +391,11 @@ func TestKimiStreamResyncsWhatItCannotReplay(t *testing.T) {
 	_, err = rig.stream.subscribe(context.Background(), "session_2")
 	require.NoError(t, err)
 
-	// The server lists a session that it accepted but could not replay under
-	// both accepted and resync_required.
-	rig.fake.setAckFor(func(fakeKapSubscribe) (int, kimiAck) {
-		return 0, kimiAck{Accepted: []string{"session_1"}, ResyncRequired: []string{"session_1"}, NotFound: []string{"session_2"}}
+	rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) {
+		if sub.SessionID == "session_2" {
+			return 0, kimiAck{NotFound: sub.IDs}
+		}
+		return 0, kimiAck{Accepted: sub.IDs}
 	})
 	rig.fake.closeConnections()
 	waitFor(t, func() bool { return len(rig.reconnected()) == 2 }, "both sessions resync")
@@ -574,7 +553,7 @@ func TestKimiStreamKeepsDialingAfterAFailedReconnect(t *testing.T) {
 	rig.fake.closeConnections()
 	waitFor(t, func() bool { return len(rig.reconnected()) == 1 }, "the stream re-subscribes once a dial succeeds")
 	assert.Equal(t, 5, rig.fake.socketDialCount(), "the first socket, three refused dials, and the one that succeeded")
-	assert.Equal(t, []kimiReconnect{{sessionID: "session_1", replayed: true}}, rig.reconnected())
+	assert.Equal(t, []kimiReconnect{{sessionID: "session_1", replayed: false}}, rig.reconnected())
 }
 
 // Each refused dial doubles the wait before the next one, up to the cap. The
@@ -644,7 +623,7 @@ func TestKimiStreamReconnectsAConnectionThatFallsSilent(t *testing.T) {
 	assert.Equal(t, 2, rig.fake.socketDialCount())
 
 	rig.fake.push(t, map[string]any{"type": "turn.ended", "seq": 1, "session_id": "session_1", "payload": map[string]any{"type": "turn.ended"}})
-	waitFor(t, func() bool { return len(rig.received()) == 1 }, "the new socket delivers events")
+	waitFor(t, func() bool { return len(rig.conversationFrames()) == 1 }, "the new socket delivers events")
 }
 
 // A read that receives no frame for the read timeout fails with
@@ -745,24 +724,25 @@ func TestKimiStreamResubscribeAll(t *testing.T) {
 		assert.Empty(t, rig.reconnected(), "no session was re-subscribed, so none is reported")
 	})
 
-	t.Run("reports a session once when the ack lists it twice", func(t *testing.T) {
+	t.Run("rejects conflicting acknowledgement results", func(t *testing.T) {
 		t.Parallel()
 		rig := subscribed(t, "session_1")
 		rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) {
-			return 0, kimiAck{Accepted: sub.IDs, ResyncRequired: sub.IDs, NotFound: sub.IDs}
+			return 0, kimiAck{Accepted: sub.IDs, NotFound: sub.IDs}
 		})
 		rig.stream.resubscribeAll(context.Background())
-		assert.Equal(t, []kimiReconnect{{sessionID: "session_1", replayed: false}}, rig.reconnected())
+		assert.Empty(t, rig.reconnected())
 	})
 
-	t.Run("re-subscribes every tracked session in one frame, in id order", func(t *testing.T) {
+	t.Run("re-subscribes each tracked session in id order", func(t *testing.T) {
 		t.Parallel()
 		rig := subscribed(t, "session_b", "session_a")
 		rig.stream.resubscribeAll(context.Background())
 		frames := rig.fake.subscribeFrames()
-		require.Len(t, frames, 3)
-		assert.Equal(t, []string{"session_a", "session_b"}, frames[2].IDs)
-		assert.Equal(t, []kimiReconnect{{sessionID: "session_a", replayed: true}, {sessionID: "session_b", replayed: true}}, rig.reconnected())
+		require.Len(t, frames, 4)
+		assert.Equal(t, "session_a", frames[2].SessionID)
+		assert.Equal(t, "session_b", frames[3].SessionID)
+		assert.Equal(t, []kimiReconnect{{sessionID: "session_a", replayed: false}, {sessionID: "session_b", replayed: false}}, rig.reconnected())
 	})
 
 	t.Run("sends nothing when no session is tracked", func(t *testing.T) {
@@ -811,7 +791,7 @@ func TestKimiStreamReportsAnAckThatDoesNotDecode(t *testing.T) {
 	releaseAck()
 	_, err := rig.stream.subscribe(context.Background(), "session_2")
 	require.NoError(t, err, "the late ack of the failed subscribe does not answer the next one")
-	assert.Empty(t, rig.received(), "an ack is never an event")
+	assert.Empty(t, rig.conversationFrames(), "an ack is never an event")
 }
 
 // Each subscribe waits for the ack that carries its own id, so concurrent
@@ -869,7 +849,25 @@ func TestKimiStreamSubscribeThatFailsTracksNoNewSession(t *testing.T) {
 	// still does not find it must not remove it from the next reconnect.
 	rig.fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) { return 0, kimiAck{NotFound: sub.IDs} })
 	_, err = rig.stream.subscribe(context.Background(), "session_1")
-	require.ErrorIs(t, err, errKimiSessionNotLoaded)
+	require.ErrorIs(t, err, errKimiSessionUnavailable)
 	_, tracked = rig.cursor("session_1")
 	assert.True(t, tracked, "a tracked session that the server did not find stays tracked")
+}
+
+func TestKimiStreamDropsCachedStateWhileDisconnected(t *testing.T) {
+	t.Parallel()
+	ctx := testutil.DeadlineContext(t)
+	clock := testutil.NewQuartzMock(t)
+	reconnectTimer := clock.Trap().NewTimer(kimiStreamReconnectTimerTag)
+	defer reconnectTimer.Close()
+	rig := newKimiStreamRigOnClock(t, clock, kimiStreamFirstBackoff)
+	rig.fake.store("session_1", fakeKapSession{Model: "kimi-k2", Permission: "manual"})
+	_, err := rig.stream.subscribe(ctx, "session_1")
+	require.NoError(t, err)
+	_, exists := rig.stream.sessionStatus("session_1")
+	require.True(t, exists)
+	rig.fake.closeConnections()
+	assert.Equal(t, kimiStreamFirstBackoff, testutil.WaitForTimer(t, ctx, reconnectTimer))
+	_, exists = rig.stream.sessionStatus("session_1")
+	assert.False(t, exists, "disconnected state must not satisfy a settings confirmation")
 }

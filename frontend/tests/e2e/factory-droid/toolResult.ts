@@ -1,25 +1,29 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import type { NativeToolOutcome } from '../helpers/nativeScenario'
 import type { NativeToolCallRecord } from '../helpers/nativeToolResult'
+import { isDeepStrictEqual } from 'node:util'
 import { DROID_TOOL } from '../../../src/generated/contracts/droid-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
 import { nativeToolCallArguments, nativeToolResult } from '../helpers/nativeToolResult'
-
-function matchesOriginalId(nativeId: string, originalId: string): boolean {
-  if (originalId.startsWith('call_'))
-    return nativeId === originalId
-  if (nativeId === `call_${originalId}`)
-    return true
-  // The native mapper removes toolu_, clips the original ID, then adds its cached counter.
-  const clipped = originalId.replace(/^toolu_/, '').slice(0, 24)
-  const prefix = `call_${clipped}_`
-  return nativeId.startsWith(prefix) && /^(?:0|[1-9]\d*)$/.test(nativeId.slice(prefix.length))
-}
+import { droidToolCallId } from '../helpers/providerToolCalls'
+import { scriptedDroidCall } from './toolIdentity'
 
 function droidNativeCall(request: MockModelRequestRecord | undefined, callId: string, toolName: string): NativeToolCallRecord {
   if (!callId || request?.protocol !== 'openai-chat-completions' || !isObject(request.body) || !Array.isArray(request.body.messages))
     throw new Error('The native Droid result requires an exact call ID and actual Chat model messages.')
-  const call = nativeToolCallArguments(request, nativeId => matchesOriginalId(nativeId, callId), `the original Droid call ${callId}`)
+  const scriptedID = droidToolCallId(callId)
+  let matches: string | ((id: string) => boolean) = scriptedID
+  if (request.scriptedToolCalls !== undefined) {
+    const expected = scriptedDroidCall(request.scriptedToolCalls, callId)
+    if (expected.name !== toolName)
+      throw new Error('The exact scripted Droid call does not match the requested native tool.')
+    const ids = request.body.messages.filter(isObject).filter(message => message.role === 'assistant').flatMap(message => Array.isArray(message.tool_calls)
+      ? message.tool_calls
+      : []).filter(isObject).filter(call => isObject(call.function) && call.function.name === expected.name && typeof call.function.arguments === 'string'
+        && isDeepStrictEqual(JSON.parse(call.function.arguments), expected.arguments)).map(call => call.id)
+    matches = id => ids.includes(id)
+  }
+  const call = nativeToolCallArguments(request, matches, `the original Droid call ${callId}`)
   if (call.name !== toolName)
     throw new Error('The exact Droid assistant call does not match the requested native tool.')
   return call

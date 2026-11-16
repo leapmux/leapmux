@@ -105,7 +105,7 @@ func TestBuildShellWrappedCommand_Fish(t *testing.T) {
 	assert.Equal(t, "-i", cmd.Args[1])
 	assert.Equal(t, "-l", cmd.Args[2])
 	assert.Equal(t, "-c", cmd.Args[3])
-	assert.Contains(t, cmd.Args[4], "unset CLAUDECODE")
+	assert.Contains(t, cmd.Args[4], "set --global --unexport CLAUDECODE")
 	assert.Contains(t, cmd.Args[4], "exec 'claude'")
 	// No conditional (no env gate)
 	assert.NotContains(t, cmd.Args[4], "LEAPMUX_TEST_GATE_A")
@@ -194,12 +194,12 @@ func TestBuildShellWrappedCommand_Nu_Interactive(t *testing.T) {
 }
 
 func TestBuildNuCommand_SingleQuoteInArgs(t *testing.T) {
-	inner := buildNuCommand(WrapSpec{
+	inner := buildNuCommand(prepareShellLaunch(WrapSpec{
 		Launch:       Spec{Program: "claude"},
 		StripEnvKeys: []string{"CLAUDECODE"},
 		BaseArgs:     []string{"--output-format", "stream-json"},
 		EnvGated:     testEnvGate("--model", "it's-a-model"),
-	}, "__DELIM__", "__META__ ")
+	}, "test", nil), "__DELIM__", "__META__ ")
 	// Single quotes in args must be safely double-quoted, not POSIX-quoted.
 	assert.Contains(t, inner, `"it's-a-model"`)
 	assert.NotContains(t, inner, `'\''`)
@@ -421,12 +421,12 @@ func TestBuildShellWrappedCommand_ProbeThirdPartyDefaultModel_NuAndPwsh(t *testi
 }
 
 func TestBuildShellWrappedCommand_ModelEffortInElseBranch(t *testing.T) {
-	inner := buildPosixCommand(WrapSpec{
+	inner := buildPosixCommand(prepareShellLaunch(WrapSpec{
 		Launch:       Spec{Program: "claude"},
 		StripEnvKeys: []string{"CLAUDECODE"},
 		BaseArgs:     []string{"--output-format", "stream-json"},
 		EnvGated:     testEnvGate("--model", "opus", "--effort", "high"),
-	}, "__DELIM__", "__META__ ")
+	}, "test", nil), "__DELIM__", "__META__ ")
 
 	// The else branch should contain the gated args
 	parts := strings.SplitN(inner, "else", 2)
@@ -476,35 +476,35 @@ func TestBuildShellWrappedCommand_CodexUsesCodexEnvMarkers_NuAndPwsh(t *testing.
 func TestBuildShellWrappedCommand_QuotesProgramPathWithSpace(t *testing.T) {
 	const program = `/Applications/My Tools/node`
 
-	posix := buildPosixCommand(WrapSpec{
+	posix := buildPosixCommand(prepareShellLaunch(WrapSpec{
 		Launch:   Spec{Program: program},
 		BaseArgs: []string{"/opt/zcode.cjs", "app-server", "--stdio"},
-	}, "__DELIM__", "")
+	}, "test", nil), "__DELIM__", "")
 	assert.Contains(t, posix, "exec '"+program+"'")
 
-	nu := buildNuCommand(WrapSpec{
+	nu := buildNuCommand(prepareShellLaunch(WrapSpec{
 		Launch:   Spec{Program: program},
 		BaseArgs: []string{"/opt/zcode.cjs"},
-	}, "__DELIM__", "")
+	}, "test", nil), "__DELIM__", "")
 	assert.Contains(t, nu, `^"`+program+`"`)
 
-	pwsh := buildPwshCommand(WrapSpec{
+	pwsh := buildPwshCommand(prepareShellLaunch(WrapSpec{
 		Launch:   Spec{Program: program},
 		BaseArgs: []string{"/opt/zcode.cjs"},
-	}, "__DELIM__", "")
+	}, "test", nil), "__DELIM__", "")
 	assert.Contains(t, pwsh, "& '"+program+"'")
 }
 
 // The quoting must also survive a quote character inside the path, using each
 // dialect's own escape (POSIX '\”, PowerShell doubled ”, Nushell \").
 func TestBuildShellWrappedCommand_EscapesQuoteInProgramPath(t *testing.T) {
-	posix := buildPosixCommand(WrapSpec{Launch: Spec{Program: "/opt/it's/node"}}, "__DELIM__", "")
+	posix := buildPosixCommand(prepareShellLaunch(WrapSpec{Launch: Spec{Program: "/opt/it's/node"}}, "test", nil), "__DELIM__", "")
 	assert.Contains(t, posix, `exec '/opt/it'\''s/node'`)
 
-	pwsh := buildPwshCommand(WrapSpec{Launch: Spec{Program: "/opt/it's/node"}}, "__DELIM__", "")
+	pwsh := buildPwshCommand(prepareShellLaunch(WrapSpec{Launch: Spec{Program: "/opt/it's/node"}}, "test", nil), "__DELIM__", "")
 	assert.Contains(t, pwsh, `& '/opt/it''s/node'`)
 
-	nu := buildNuCommand(WrapSpec{Launch: Spec{Program: `/opt/say"hi"/node`}}, "__DELIM__", "")
+	nu := buildNuCommand(prepareShellLaunch(WrapSpec{Launch: Spec{Program: `/opt/say"hi"/node`}}, "test", nil), "__DELIM__", "")
 	assert.Contains(t, nu, `^"/opt/say\"hi\"/node"`)
 }
 
@@ -512,14 +512,14 @@ func TestBuildShellWrappedCommand_EscapesQuoteInProgramPath(t *testing.T) {
 // a command that no PATH entry supplies must exit 127 as POSIX shells do, so
 // the absent-CLI mappings of the providers keep working under pwsh.
 func TestBuildPwshCommand_PropagatesExitCodes(t *testing.T) {
-	pwsh := buildPwshCommand(WrapSpec{Launch: Spec{Program: "/opt/node"}}, "__DELIM__", "")
+	pwsh := buildPwshCommand(prepareShellLaunch(WrapSpec{Launch: Spec{Program: "/opt/node"}}, "test", nil), "__DELIM__", "")
 	assert.Contains(t, pwsh, "exit $LASTEXITCODE")
 	assert.Contains(t, pwsh, "catch [System.Management.Automation.CommandNotFoundException] { exit 127 }")
 
-	gated := buildPwshCommand(WrapSpec{
+	gated := buildPwshCommand(prepareShellLaunch(WrapSpec{
 		Launch:   Spec{Program: "/opt/node"},
 		EnvGated: &EnvGatedArgs{EnvVars: []string{"ELECTRON_RUN_AS_NODE"}, Args: []string{"--node"}},
-	}, "__DELIM__", "__META__ ")
+	}, "test", nil), "__DELIM__", "__META__ ")
 	assert.Contains(t, gated, "exit $LASTEXITCODE")
 	assert.Contains(t, gated, "catch [System.Management.Automation.CommandNotFoundException] { exit 127 }")
 }
@@ -644,39 +644,41 @@ func TestBuildShellWrappedCommand_EnvGateRejectsUnsafeNames(t *testing.T) {
 	}
 }
 
-// Every dialect sets the SetEnv entries after it strips the StripEnvKeys and
-// before the program starts, each in its own syntax and with the value quoted.
+// Every dialect applies pins after clearing inherited keys and before starting
+// the program. Values travel in environment bindings rather than shell code.
 func TestBuildShellWrappedCommand_EveryDialectSetsTheSetEnvEntries(t *testing.T) {
 	cases := []struct {
 		shell string
 		want  []string
 	}{
-		{"/bin/bash", []string{"export LEAPMUX_TEST_PORT='4321' && ", "export LEAPMUX_TEST_PATH='/tmp/a b' && "}},
-		{"/usr/bin/fish", []string{"export LEAPMUX_TEST_PORT='4321' && "}},
-		{"/bin/tcsh", []string{"setenv LEAPMUX_TEST_PORT '4321'; ", "setenv LEAPMUX_TEST_PATH '/tmp/a b'; "}},
-		{"/usr/bin/nu", []string{`$env.LEAPMUX_TEST_PORT = "4321"; `, `$env.LEAPMUX_TEST_PATH = "/tmp/a b"; `}},
-		{"/usr/bin/pwsh", []string{"$env:LEAPMUX_TEST_PORT = '4321'; ", "$env:LEAPMUX_TEST_PATH = '/tmp/a b'; "}},
+		{"/bin/bash", []string{`export LEAPMUX_TEST_PORT="$__LEAPMUX_PIN_`, `export LEAPMUX_TEST_PATH="$__LEAPMUX_PIN_`}},
+		{"/usr/bin/fish", []string{`set --global --export LEAPMUX_TEST_PORT "$__LEAPMUX_PIN_`, `set --global --export LEAPMUX_TEST_PATH "$__LEAPMUX_PIN_`}},
+		{"/bin/tcsh", []string{`setenv LEAPMUX_TEST_PORT ${__LEAPMUX_PIN_`, `setenv LEAPMUX_TEST_PATH ${__LEAPMUX_PIN_`}},
+		{"/usr/bin/nu", []string{`$env.LEAPMUX_TEST_PORT = $env.__LEAPMUX_PIN_`, `$env.LEAPMUX_TEST_PATH = $env.__LEAPMUX_PIN_`}},
+		{"/usr/bin/pwsh", []string{`$env:LEAPMUX_TEST_PORT = $env:__LEAPMUX_PIN_`, `$env:LEAPMUX_TEST_PATH = $env:__LEAPMUX_PIN_`}},
 	}
 	for _, c := range cases {
 		t.Run(c.shell, func(t *testing.T) {
-			cmd, _, _ := Wrap(context.Background(), WrapSpec{
-				Shell:        c.shell,
-				Launch:       Spec{Program: "cline"},
-				StripEnvKeys: []string{"LEAPMUX_TEST_STRIP"},
-				SetEnv:       []string{"LEAPMUX_TEST_PORT=4321", "LEAPMUX_TEST_PATH=/tmp/a b"},
-				BaseArgs:     []string{"--port", "4321"},
-				WorkingDir:   "/tmp",
-			})
+			cmd, _, _ := Wrap(context.Background(), WrapSpec{Shell: c.shell, Launch: Spec{Program: "cline"}, StripEnvKeys: []string{"LEAPMUX_TEST_STRIP"}, SetEnv: []string{"LEAPMUX_TEST_PORT=4321", "LEAPMUX_TEST_PATH=/tmp/a b"}, BaseArgs: []string{"--port", "4321"}, WorkingDir: "/tmp"})
 			inner := cmd.Args[len(cmd.Args)-1]
 			for _, want := range c.want {
 				assert.Contains(t, inner, want)
 			}
+			assert.NotContains(t, inner, "/tmp/a b")
+			var values []string
+			for _, entry := range cmd.Env {
+				name, value, _ := strings.Cut(entry, "=")
+				if strings.HasPrefix(name, "__LEAPMUX_PIN_") {
+					values = append(values, value)
+				}
+			}
+			assert.ElementsMatch(t, []string{"4321", "/tmp/a b"}, values)
 			strip := strings.Index(inner, "LEAPMUX_TEST_STRIP")
 			set := strings.Index(inner, "LEAPMUX_TEST_PORT")
 			program := strings.Index(inner, "cline")
 			require.NotEqual(t, -1, strip)
-			assert.Less(t, strip, set, "the strip runs before the set, so a key in both keeps the set value")
-			assert.Less(t, set, program, "the set runs before the program starts")
+			assert.Less(t, strip, set, "clearing must precede the pinned assignment")
+			assert.Less(t, set, program, "the pinned assignment must precede process startup")
 		})
 	}
 }

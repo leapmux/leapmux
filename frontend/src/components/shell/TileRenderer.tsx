@@ -1049,13 +1049,15 @@ export function createTileRenderer(opts: TileRendererOpts) {
               // against a worker that has no such agent.
               ...(onOpenChatImage !== undefined
                 ? {
-                    onOpenImage: (image: { seq: bigint, index: number, filePath?: string, title: string }) =>
+                    onOpenImage: (image: { seq: bigint, index: number, filePath?: string, title: string }) => {
+                      activateTile(tileId)
                       onOpenChatImage({
                         ...image,
                         agentId,
                         workerId: agent()?.workerId ?? '',
                         workingDir: agent()?.workingDir ?? '',
-                      }),
+                      })
+                    },
                   }
                 : {}),
               get todos() { return todosFor(agentId) },

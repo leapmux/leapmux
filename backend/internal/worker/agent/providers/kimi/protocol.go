@@ -5,6 +5,13 @@ import (
 	"regexp"
 )
 
+const (
+	kimiFrameTaskResponse = "response"
+	kimiFrameTaskStop     = "task.stop"
+	kimiFrameTaskWatch    = "task.watch"
+	kimiFrameTaskUnwatch  = "task.unwatch"
+)
+
 // kimiPromptReply is the data of POST /sessions/{id}/prompts.
 type kimiPromptReply struct {
 	PromptID string `json:"prompt_id"`
@@ -13,11 +20,13 @@ type kimiPromptReply struct {
 
 // A queued prompt waits for a turn. A blocked prompt starts no turn.
 const (
-	kimiPromptQueued         = "queued"
-	kimiPromptBlocked        = "blocked"
-	kimiGlobalSessionID      = "__global__"
-	kimiGlobalReplayWindow   = 256
-	kimiGlobalReplayTimerTag = "kimi-global-replay"
+	kimiPromptQueued    = "queued"
+	kimiPromptBlocked   = "blocked"
+	kimiPromptRunning   = "running"
+	kimiPromptCompleted = "completed"
+	kimiPromptFailed    = "failed"
+	kimiPromptAborted   = "aborted"
+	kimiGlobalSessionID = "__global__"
 )
 
 // Kimi Code's kap-server vocabulary that only the worker reads.
@@ -124,8 +133,8 @@ const (
 	kimiFramePing        = "ping"
 	kimiFramePong        = "pong"
 	kimiFrameAck         = "ack"
-	kimiFrameSubscribe   = "subscribe"
-	kimiFrameUnsubscribe = "unsubscribe"
+	kimiFrameSubscribe   = "subscribe_v2"
+	kimiFrameUnsubscribe = "unsubscribe_v2"
 )
 
 // kimiMainAgentID identifies the session's main agent in every event. Each
@@ -171,15 +180,13 @@ const (
 	kimiActionCancel  = ":cancel"
 )
 
-// The kinds of `task.started.info`.
+// Internal task categories distinguish detached processes from coordinator tasks.
 const (
-	kimiTaskKindProcess  = "process"
-	kimiTaskKindAgent    = "agent"
-	kimiTaskKindQuestion = "question"
+	kimiTaskKindProcess = "process"
+	kimiTaskKindAgent   = "agent"
 )
 
-// The final statuses of a background task, as `task.terminated.info.status`
-// states them.
+// Native task outcomes include completed, failed, timed_out, killed, and lost.
 const (
 	kimiTaskStatusRunning   = "running"
 	kimiTaskStatusCompleted = "completed"
@@ -189,34 +196,7 @@ const (
 	kimiTaskStatusLost      = "lost"
 )
 
-// The `kind` words of an item of GET /sessions/{id}/tasks. The route maps the
-// task kinds onto its own words: a process is `bash`, an agent is `subagent`,
-// and a question is `tool`.
-const (
-	kimiWireTaskKindBash     = "bash"
-	kimiWireTaskKindSubagent = "subagent"
-)
-
-// The `status` words of a task item and of a subagent of the snapshot's roster.
-// The task route folds timed_out and lost into failed, and killed into
-// cancelled.
-const (
-	kimiWireStatusRunning   = "running"
-	kimiWireStatusCompleted = "completed"
-	kimiWireStatusFailed    = "failed"
-	kimiWireStatusCancelled = "cancelled"
-)
-
-// The `subagent_phase` words of the snapshot's roster that decide a subagent's
-// turn flag. A working subagent runs its turn. A queued or suspended one runs
-// none: it waits to start, or for the swarm to retry it.
-const (
-	kimiSubagentPhaseQueued    = "queued"
-	kimiSubagentPhaseWorking   = "working"
-	kimiSubagentPhaseSuspended = "suspended"
-)
-
-// The `tool.progress.update.kind` words that carry a command's output.
+// The `frame.progress.kind` words that carry one chunk of command output.
 const (
 	kimiProgressStdout = "stdout"
 	kimiProgressStderr = "stderr"

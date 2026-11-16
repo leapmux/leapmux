@@ -3,7 +3,7 @@ import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { MessageContentRenderContext } from '~/test-support/messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, BackgroundTaskRole } from '~/generated/proto/leapmux/v1/agent_pb'
 import { subagentsFrom } from '../renderContext'
 import '~/components/chat/providers'
 
@@ -14,6 +14,7 @@ const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[
 
 function subagentRow(over: Partial<BackgroundTaskItem> = {}): BackgroundTaskItem {
   return {
+    role: over.role ?? BackgroundTaskRole.TASK_OUTCOME,
     rowKey: 'a1b2c3d4e5f60718',
     kind: 'subagent',
     childAgentId: 'child-1',

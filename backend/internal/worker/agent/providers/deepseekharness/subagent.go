@@ -51,7 +51,9 @@ func (a *Agent) beginOwnedChild(stream *sessionStream, descriptor nativeChildDes
 	}
 	sink := a.streamSink(stream)
 	spawnID := ""
-	virtualID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: spawnID, ProviderChildKey: descriptor.ID, Title: descriptor.Label, Options: optionmap.Map{contracts.DeepseekHarnessOptionChildMode: descriptor.Mode}})
+	virtualID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  spawnID, ProviderChildKey: descriptor.ID, Title: descriptor.Label, Options: optionmap.Map{contracts.DeepseekHarnessOptionChildMode: descriptor.Mode}})
 	if err != nil {
 		return err
 	}
@@ -116,7 +118,9 @@ func (a *Agent) bindChildResult(stream *sessionStream, callID string, raw []byte
 	if child.spawnID != "" && child.spawnID != callID {
 		return fmt.Errorf("DeepSeek Harness child result changes its first spawn span")
 	}
-	virtualID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: callID, ProviderChildKey: childID, Title: descriptor.Label, Options: optionmap.Map{contracts.DeepseekHarnessOptionChildMode: descriptor.Mode}})
+	virtualID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  callID, ProviderChildKey: childID, Title: descriptor.Label, Options: optionmap.Map{contracts.DeepseekHarnessOptionChildMode: descriptor.Mode}})
 	if err != nil {
 		return err
 	}
@@ -163,8 +167,8 @@ func (a *Agent) childTurnState(id string, active bool, completion agent.MessageC
 	return a.sink.CloseBackgroundTask(id, status)
 }
 
-func (a *Agent) SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendChild(childKey, content, attachments, "queue")
+func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.ChildInputResult, error) {
+	return agent.ChildInputResult{StartsTurn: true}, a.sendChild(childKey, input.Content, input.Attachments, "queue")
 }
 func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
 	return a.sendChild(childKey, content, attachments, "steer")

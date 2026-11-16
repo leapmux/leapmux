@@ -1166,11 +1166,11 @@
         "testStatus": "passed"
       },
       "opencode": {
-        "support": "supported",
-        "userNote": "Use WAV, MP3, AAC, Ogg, FLAC or WebM with a Google model that accepts audio.",
-        "detailNote": "OpenCode 1.19.4 forwards embedded ACP audio resources through its Google adapter with unchanged bytes. The worker validates the exact root or loaded child model against the same daemon /provider catalog, requiring capabilities.input.audio and api.npm=@ai-sdk/google. Unknown metadata and incompatible adapters fail before original bytes reach a native prompt. Native WAV/catalog proof audit-zP4JbO, valid 16,007-byte FLAC audit-HZ0TiO and direct mock proof audit-lm7m0e are in .tmp/audio-native-probe/. The extra native request is the scripted title-system rule. Seven MIME types are shared with the browser. Both complete audio cases passed zero retries in e2e-RMGJzS and e2e-YzFi9y, including same-session model-switch retry.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "support": "agent-limit",
+        "userNote": "OpenCode 2.3 does not forward audio attachments to the model.",
+        "detailNote": "OpenCode 2.3.0 accepts file attachments over its native HTTP API, but attachmentContent in packages/core/src/session/runner/to-llm-message.ts discards audio before model input. This also affects Google models whose catalog advertises audio input. Source commit ba77ff90d34efc0bc792169698c760dd892ad1e2 and captured Google requests in e2e-MdzBlx confirm the limitation. LeapMux refuses audio uploads and rejects queued recordings before native prompt encoding. All four WAV/FLAC cases in e2e-zRuv5Z passed: with and without prompts, upload feedback, queue refusal, reload, exact retained bytes, and zero model requests.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
         "spec": "frontend/tests/e2e/opencode/audio-attachments.spec.ts",
-        "audit": "source-verified",
+        "audit": "refusal-covered",
         "verified": true,
         "testStatus": "passed"
       },
@@ -2654,7 +2654,7 @@
       "oh-my-pi": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Verified with installed Oh My Pi 18.18.6 on 2026-11-16. Both automatic and manual native end frames produce outcome-aware notices; only a committed compaction result produces a context boundary. Cancellation, skipped work, and failure preserve their native meaning. The complete installed-provider suite passed 87 tests without retries or skips in e2e-vqmgPe, including both compaction browser tests.",
         "spec": "frontend/tests/e2e/oh-my-pi/compaction-notice.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -2935,7 +2935,7 @@
       "oh-my-pi": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Verified with installed Oh My Pi 18.18.6 on 2026-11-16. Native manual_compaction_start/manual_compaction_end frames supply lifecycle and outcome. Command receipts retain separate ownership and cannot close a newer compaction. Success, cancellation, skipped work, failure, missing ends, and reordered publications have deterministic Go/frontend coverage. The complete installed-provider suite passed 87 tests without retries or skips in e2e-vqmgPe, including the manual compaction and completed-notice tests.",
         "spec": "frontend/tests/e2e/oh-my-pi/manual-compaction.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -4620,8 +4620,8 @@
       },
       "oh-my-pi": {
         "support": "supported",
-        "userNote": "",
-        "detailNote": "",
+        "userNote": "Choice fields appear together. Text fields and table forms use Oh My Pi's native dialogs.",
+        "detailNote": "Verified with installed Oh My Pi 18.18.6 on 2026-11-16. The ask tool takes HTML, and its RPC fallback opens unnumbered select/input chains. LeapMux groups supported choice fields, preserves native values and checked defaults, and extracts labels, descriptions, and code previews from retained HTML in the browser. Other forms retain native input/editor metadata. Native result details contain answers with field names, questions, and string answers; an empty answer is valid. The complete installed-provider suite passed 87 tests without retries or skips in e2e-vqmgPe. All six question tests passed, including pagination, previews, custom text, owner isolation, and clearing enabled defaults while disabled defaults remain excluded from native form data after reload.",
         "spec": "frontend/tests/e2e/oh-my-pi/agent-questions.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -5138,7 +5138,7 @@
       "zcode": {
         "support": "supported",
         "userNote": "When an MCP server asks for input, ZCode forwards the server's form, and LeapMux shows it as a form with typed fields, such as a number, a yes-or-no choice, or a list of choices. Your answer reaches the server with those types.",
-        "detailNote": "ZCode 3.16.3 declares the MCP form capability (`elicitation.form`) and forwards a server's form as a user-input request of the `mcp_elicitation` interaction. The request holds the server's own schema beside a list of questions that flattens it. LeapMux draws the form from the schema, so a choice field keeps its choices and a number keeps its limits. It answers ZCode with one text answer for each field, in ZCode's field order (`answer_<i>`), and ZCode types each answer back from the schema: a boolean, a number, or the string. A field that ZCode cannot carry, such as an array, does not reach the server. Decline and cancel reach the server as those actions. ZCode 3.14.4 declared no MCP form capability, so a server could not ask it for input.\n\nVerified with ZCode 3.16.3 through a private native probe of a project MCP server's form (`.zcode/config.json`). All 90 ZCode browser cases passed with zero retries in e2e-yRHQz0, including a project server's form answered with zero, false and a choice after a reload, whose typed answers the server received once and whose result the model read. All 1,666 tests of the ZCode package and the shared provider kit passed under the race detector.",
+        "detailNote": "The installed ZCode app server forwards MCP elicitation.form requests as typed user-input forms. LeapMux draws the server schema and returns native indexed answers, preserving zero, false and string choices. The native server receives those typed answers once after reload, and its result reaches the model. The fixture uses a trusted user MCP declaration in ~/.zcode/cli/config.json and restores the previous bytes or removes its temporary file on every outcome. The older ~/.zcode/v2/config.json remains a model-profile path and does not configure current user MCP servers. Native project MCP declarations require a separate trust control that LeapMux does not expose; see the workspace-trust cell. The complete form case passed with zero retries in e2e-QCs71g on 2026-11-17. All 2,079 ZCode package tests passed under the race detector in zcode-mcp-retirement-native-after.log.",
         "spec": "frontend/tests/e2e/zcode/mcp-input-request.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -6869,7 +6869,7 @@
       "oh-my-pi": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "Verified with installed Oh My Pi 18.12.6 and source commit 0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0 on 2026-10-22. The native goal RPC accepts create, pause, resume, and drop. LeapMux enables RPC goal continuation in a private process configuration and sends acknowledged native commands. Goal events remain the source of displayed state. Both complete goal browser specs passed with zero retries in e2e-VSGSeS, including autonomous work after create and resume, pause across reload, clearing, and creating a second goal. A pause stops continuation while the current round finishes. Clear an existing active or paused goal before setting another.",
+        "detailNote": "Verified with installed Oh My Pi 18.12.6 and source commit 0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0 on 2026-10-22. The native goal RPC accepts create, pause, resume, and drop. LeapMux enables RPC goal continuation in a private process configuration and sends acknowledged native commands. Goal events remain the source of displayed state. Both complete goal browser specs passed with zero retries in e2e-VSGSeS, including autonomous work after create and resume, pause across reload, clearing, and creating a second goal. A pause stops continuation while the current round finishes. Clear an existing active or paused goal before setting another. Reverified with installed Oh My Pi 18.18.6 on 2026-11-16 in the complete 87-test provider suite e2e-vqmgPe, without retries or skips.",
         "spec": "frontend/tests/e2e/oh-my-pi/session-goal-set-and-clear.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -7150,7 +7150,7 @@
       "oh-my-pi": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "Verified with installed Oh My Pi 18.12.6 and source commit 0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0 on 2026-10-22. The native goal RPC accepts create, pause, resume, and drop. LeapMux enables RPC goal continuation in a private process configuration and sends acknowledged native commands. Goal events remain the source of displayed state. Both complete goal browser specs passed with zero retries in e2e-VSGSeS, including autonomous work after create and resume, pause across reload, clearing, and creating a second goal. A pause stops continuation while the current round finishes. Clear an existing active or paused goal before setting another.",
+        "detailNote": "Verified with installed Oh My Pi 18.12.6 and source commit 0b5c27ab24719c86a5986b95ee55f4e75bc1aaa0 on 2026-10-22. The native goal RPC accepts create, pause, resume, and drop. LeapMux enables RPC goal continuation in a private process configuration and sends acknowledged native commands. Goal events remain the source of displayed state. Both complete goal browser specs passed with zero retries in e2e-VSGSeS, including autonomous work after create and resume, pause across reload, clearing, and creating a second goal. A pause stops continuation while the current round finishes. Clear an existing active or paused goal before setting another. Reverified with installed Oh My Pi 18.18.6 on 2026-11-16 in the complete 87-test provider suite e2e-vqmgPe, without retries or skips.",
         "spec": "frontend/tests/e2e/oh-my-pi/session-goal-pause-and-resume.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -7404,7 +7404,7 @@
       "kimi-code": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Kimi Code 2.5.3 flat to-do state supplies the current list, including an explicit empty list. Replayed historical tool output cannot overwrite a newer state snapshot. Native browser acceptance checks list updates and persistence after reload. Complete provider acceptance: 89 tests passed in e2e-iSL8yl.",
         "spec": "frontend/tests/e2e/kimi-code/to-do-sidebar.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -7685,7 +7685,7 @@
       "kimi-code": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Kimi Code 2.5.3 publishes native shell tasks and coordinator task outcomes. Child headers control separate child activity rows. Queued tasks retain their identity before a child exists, and known task outcomes do not finish another child turn. Native browser acceptance checks background shell completion and child transcript routing. Complete provider acceptance: 89 tests passed in e2e-iSL8yl.",
         "spec": "frontend/tests/e2e/kimi-code/background-tasks-sidebar.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -8807,11 +8807,11 @@
         "verified": true
       },
       "kimi-code": {
-        "support": "supported",
-        "userNote": "",
-        "detailNote": "",
+        "support": "agent-limit",
+        "userNote": "Kimi exposes coordinator task cancellation but no exact cancellation address for the current child turn. The child tab has no Interrupt control.",
+        "detailNote": "Kimi Code 2.5.3 permits several suspended or running coordinator tasks to share one child transcript. Native task state carries no child turn or prompt identity. Cancelling a task selected through the child could therefore cancel a different assignment. LeapMux keeps native task outcomes separate from child activity and refuses direct child interruption. The browser spec checks the absent control and API refusal while a real child still runs. The complete installed Kimi suite passed all 89 tests without retries or skips in e2e-iSL8yl. Separate exact-row task controls are tracked in https://github.com/leapmux/leapmux/issues/644; they do not identify the current child turn.",
         "spec": "frontend/tests/e2e/kimi-code/interrupt-a-subagent.spec.ts",
-        "audit": "covered",
+        "audit": "unsupported",
         "testStatus": "passed",
         "verified": true
       },
@@ -9371,7 +9371,7 @@
       "kimi-code": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Native AgentSwarm invocations group member outcomes by their complete parent tool identity. Native coordinator outcomes and canonical child activity remain separate rows; several rows can open the same child transcript. The complete browser spec checks the group, independent outcomes and transcript links across reload. Complete installed Kimi Code 2.5.3 acceptance: 89 tests passed in e2e-iSL8yl.",
         "spec": "frontend/tests/e2e/kimi-code/workflow-grouping.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -10266,11 +10266,11 @@
         "testStatus": "passed"
       },
       "codebuddy-code": {
-        "support": "supported",
+        "support": "agent-limit",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "CodeBuddy can omit output from a command that exits immediately. LeapMux displays the output or empty result supplied by the CLI.\n\nCodeBuddy 2.183.0 resolves its child-process shell handle on the process exit event. It then ignores later stdout and stderr data without waiting for stream closure. This native race can lose fast output. The Bash output callback retains each chunk in its result buffers before writing the native spool file. Deterministic output tests hold each command until the selected native session spool contains its computed marker, then release it and require the exact native result and visible output. The protocol exposes no live shell bytes, so a browser observation cannot release this hold. Successful and failed commands retain their strict stdout, stderr and exit-status assertions. Both complete shell and bypass-shortcut files passed all five cases with zero retries in e2e-30B60d on 2026-11-17. Empty failure records remain covered before and after reload.",
         "spec": "frontend/tests/e2e/codebuddy-code/shell-tool-execution.spec.ts",
-        "audit": "source-verified",
+        "audit": "covered-negative",
         "verified": true,
         "testStatus": "passed"
       },
@@ -11320,7 +11320,7 @@
       "kimi-code": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "The shared /clear path restarts this provider with no prior resume handle. Native ClearContext support does not control this user command.",
+        "detailNote": "Kimi Code 2.5.3 context clear stops the private runtime and its owned commands, then creates a fresh native session without a resume handle. The Worker and saved transcript remain available, and selected settings persist. The complete session-reset file proves the old runtime and held background command stop, the new session answers, and saved history remains visible. Complete installed provider acceptance: 89 tests passed in e2e-iSL8yl.",
         "spec": "frontend/tests/e2e/kimi-code/session-reset.spec.ts",
         "audit": "source-verified",
         "verified": true,
@@ -12986,11 +12986,11 @@
         "testStatus": "passed"
       },
       "zcode": {
-        "support": "supported",
+        "support": "leapmux-limit",
         "userNote": "",
-        "detailNote": "ZCode 3.16.3 runs a project's hooks (`hooks` in `.zcode/config.json`) only after the user trusts each one. When the first turn of a session starts, ZCode states the hooks that wait for trust in a `hookAdmission` update, and the turn runs without them. ZCode's own hook review reaches only a subscriber of its desktop protocol, so the stdio app-server asks LeapMux nothing. LeapMux asks the shared workspace-trust question when that turn ends. Trust subscribes to the session's conversation (`v4/conversation/subscribe`), asks ZCode for the review (`requestWorkspaceHookReview`), and trusts each hook that waits for trust (`respondWorkspaceHookReview`). ZCode keeps the grant for each hook, and the running session runs the hooks from its next prompt. Do not trust sends nothing, so the hooks stay blocked. Instruction files such as `AGENTS.md` load without trust.\n\nVerified with ZCode 3.16.3 through a private native probe of a project hook: the review reached only a subscriber, and the answer let the hook run at the next prompt of the same session. All 93 ZCode browser cases passed with zero retries in e2e-E90HHm, including a project hook that stayed blocked at the first prompt, then ran at the next prompt after Trust, and stayed blocked after Do not trust. The Kimi Code and GitHub Copilot cases of the shared question passed in the same run. All 2,878 tests of the ZCode, Kimi Code and GitHub Copilot packages and the shared provider kit passed under the race detector.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/522.",
+        "detailNote": "LeapMux asks before project hooks run. Project MCP declarations require ZCode’s native trust control. User-configured MCP servers can run without that project trust.\n\nZCode 3.16.3 runs a project's hooks (`hooks` in `.zcode/config.json`) only after the user trusts each one. When the first turn of a session starts, ZCode states the hooks that wait for trust in a `hookAdmission` update, and the turn runs without them. ZCode's own hook review reaches only a subscriber of its desktop protocol, so the stdio app-server asks LeapMux nothing. LeapMux asks the shared workspace-trust question when that turn ends. Trust subscribes to the session's conversation (`v4/conversation/subscribe`), asks ZCode for the review (`requestWorkspaceHookReview`), and trusts each hook that waits for trust (`respondWorkspaceHookReview`). ZCode keeps the grant for each hook, and the running session runs the hooks from its next prompt. Do not trust sends nothing, so the hooks stay blocked. Instruction files such as `AGENTS.md` load without trust.\n\nVerified with ZCode 3.16.3 through a private native probe of a project hook: the review reached only a subscriber, and the answer let the hook run at the next prompt of the same session. All 93 ZCode browser cases passed with zero retries in e2e-E90HHm, including a project hook that stayed blocked at the first prompt, then ran at the next prompt after Trust, and stayed blocked after Do not trust. The Kimi Code and GitHub Copilot cases of the shared question passed in the same run. All 2,878 tests of the ZCode, Kimi Code and GitHub Copilot packages and the shared provider kit passed under the race detector.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/522.\n\nCurrent installed app-server inspection on 2026-11-17 found a separate project MCP declaration-trust control. mcp/list reports an untrusted project server with its declarationDigest, source path and execution details. workspace/mcp/trust grants that exact declaration. Public session.updated maps both hook and MCP admission hints to the same count/digest shape; the v4 conversation snapshot distinguishes them. LeapMux currently interprets the shared hint as hooks and does not expose the MCP grant. A complete repair requires using the explicit snapshot state for hook reviews and the exact native MCP declaration reviews. Native probes confirmed a project server stays untrusted while the same server in ~/.zcode/cli/config.json connects. This limitation is separate from typed MCP elicitation.",
         "spec": "frontend/tests/e2e/zcode/workspace-trust.spec.ts",
-        "audit": "source-verified",
+        "audit": "covered-negative",
         "verified": true,
         "testStatus": "passed"
       },
@@ -15299,7 +15299,7 @@
       "goose": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "Goose 1.56.0 saves truncated native shell output and states each saved path. The Native Commands setting chooses the agent runtime instead of the ACP host terminal and applies through a restart; the default keeps the LeapMux terminal. The Goose plugin reads only complete native shell truncation notices and preserves the original tail preview. Native mock capture: .tmp/goose-native-output-capture.json (e2e-54noCX); browser acceptance of both default-terminal and native-command cases: e2e-hxgtjU, zero retries, with original file contents, Copy and reload proofs. Native acceptance: all 74 Goose browser cases passed with zero retries in e2e-AHUK0W; .tmp/goose-directory-acceptance.log EXIT 0 (Goose and Claude race tests, matrix scripts, and full Goose directory)",
+        "detailNote": "Goose 1.59.1 runs shell commands in its own runtime and ignores the ACP host-terminal capability. LeapMux removes the ineffective Native Commands selector. Goose saves truncated shell output and states each saved path. The plugin recognizes complete native truncation notices, shows the paths before the original tail preview, and keeps Copy on that preview. Native file bytes and the preview survive reload. All 74 Goose browser cases passed with zero retries in e2e-kqsjuF on 2026-11-17, including the retained-output proof. Backend lint and 4,954 focused race tests passed in alias-identity-goose-buffer-after.log.",
         "spec": "frontend/tests/e2e/goose/output-file-paths.spec.ts",
         "audit": "source-verified",
         "verified": true,

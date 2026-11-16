@@ -316,8 +316,6 @@ type zcodeTurnState struct {
 	pendingNative *zcodePendingNativeSettlement
 	// toolUses counts completed calls of this owner, including late results.
 	toolUses int
-	// acceptedAt is when LeapMux observed the turn.started.
-	acceptedAt time.Time
 	// admissionRevision is the session state revision the turn was admitted
 	// under.
 	admissionRevision int64
@@ -655,7 +653,6 @@ func (a *Agent) createProvisionalZCodeTurnForSession(identity zcodeSessionObserv
 		admissionRevision = a.stateRevision
 	}
 	turn := a.createZCodeTurnLocked(zcodeTurnState{
-		acceptedAt:        a.Clock().Now(),
 		admissionRevision: admissionRevision,
 		inputID:           inputID,
 	})

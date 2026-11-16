@@ -19,8 +19,8 @@ import (
 //
 // A session's model, thinking level, permission mode, plan mode and swarm mode
 // all live on its main agent, and POST /sessions/{id}/profile changes any of
-// them at once. The server reports the plan and swarm modes back on
-// `agent.status.updated`, and GET /sessions/{id}/status states all five.
+// them at once. Flat agent frames report the effective settings.
+// Flat usage frames report the current context.
 //
 // Plan mode is a switch beside the permission mode on the server, and one value
 // of the permission-mode axis in LeapMux: the plan toggle and the plan approval
@@ -108,25 +108,39 @@ func (a *Agent) SettingsSnapshot() agent.SettingsApplyResult {
 	return agent.ConfirmedSettings(agent.CurrentOptions(a.OptionGroups()))
 }
 
-// kimiStatus is GET /sessions/{id}/status.
+// kimiStatus is the main agent's current settings and usage from native push frames.
 type kimiStatus struct {
-	Busy             bool    `json:"busy"`
-	Model            string  `json:"model"`
-	ThinkingLevel    string  `json:"thinking_level"`
-	Permission       string  `json:"permission"`
-	PlanMode         bool    `json:"plan_mode"`
-	SwarmMode        bool    `json:"swarm_mode"`
-	ContextTokens    int64   `json:"context_tokens"`
-	MaxContextTokens int64   `json:"max_context_tokens"`
-	ContextUsage     float64 `json:"context_usage"`
+	HasContextUsage  bool
+	Busy             bool
+	Model            string
+	ThinkingLevel    string
+	Permission       string
+	PlanMode         bool
+	SwarmMode        bool
+	ContextTokens    int64
+	MaxContextTokens int64
 }
 
-// readStatus reads the session's status. A read also loads a session the
-// server has not loaded, which is what makes a stored session subscribable.
+// readStatus reads the native push state, subscribing first when it has not arrived.
 func (a *Agent) readStatus(ctx context.Context, sessionID string) (kimiStatus, error) {
-	var status kimiStatus
-	err := a.api.get(ctx, kimiSessionPath(sessionID, "/status"), &status)
-	return status, err
+	if err := ctx.Err(); err != nil {
+		return kimiStatus{}, err
+	}
+	if _, exists := a.stream.sessionStatus(sessionID); !exists {
+		if _, err := a.stream.subscribe(ctx, sessionID); err != nil {
+			return kimiStatus{}, err
+		}
+	}
+	return a.stream.waitSessionStatus(ctx, sessionID, func(kimiStatus) bool { return true })
+}
+
+func (a *Agent) confirmProfileStatus(ctx context.Context, sessionID string, config map[string]any) (kimiStatus, error) {
+	if _, err := a.readStatus(ctx, sessionID); err != nil {
+		return kimiStatus{}, err
+	}
+	return a.stream.waitSessionStatus(ctx, sessionID, func(status kimiStatus) bool {
+		return kimiStatusMatchesProfile(status, config)
+	})
 }
 
 // applyStatus folds a status read into the settings. An effort of Auto stays
@@ -139,7 +153,7 @@ func (a *Agent) applyStatus(status kimiStatus) {
 }
 
 // applyStatusLocked is applyStatus for a caller that holds a.Mu.
-func (a *Agent) applyStatusLocked(status kimiStatus) {
+func (a *Agent) applyStatusLocked(status kimiStatus) bool {
 	if status.Model != "" {
 		a.settings.model = status.Model
 	}
@@ -151,21 +165,29 @@ func (a *Agent) applyStatusLocked(status kimiStatus) {
 	}
 	a.settings.planMode = status.PlanMode
 	a.settings.swarmMode = status.SwarmMode
-	if status.MaxContextTokens > 0 || status.ContextTokens > 0 {
-		a.recordContextLocked(status.ContextTokens, status.MaxContextTokens)
+	if status.HasContextUsage || status.MaxContextTokens > 0 || status.ContextTokens > 0 {
+		var tokens, window *int64
+		if status.HasContextUsage || status.ContextTokens != 0 {
+			tokens = &status.ContextTokens
+		}
+		if status.HasContextUsage || status.MaxContextTokens != 0 {
+			window = &status.MaxContextTokens
+		}
+		return a.recordContextLocked(tokens, window)
 	}
+	return false
 }
 
 // foldStatus folds a status read into the settings and the context readout,
-// and reports what moved, as handleStatusUpdated reports an update event. A
-// reconnect reads the status because the server never replays that event.
+// and reports what moved. A new connection receives current state before its
+// subscription acknowledgement.
 func (a *Agent) foldStatus(status kimiStatus) {
 	a.Mu.Lock()
 	before := a.settings
-	a.applyStatusLocked(status)
+	contextChanged := a.applyStatusLocked(status)
 	after := a.settings
 	var usage map[string]any
-	if status.MaxContextTokens > 0 || status.ContextTokens > 0 {
+	if contextChanged {
 		usage = maps.Clone(a.contextUsage)
 	}
 	a.Mu.Unlock()
@@ -175,8 +197,7 @@ func (a *Agent) foldStatus(status kimiStatus) {
 	a.reportSettingsChange(before, after)
 }
 
-// reportSettingsChange reports each axis that moved from before to after, for
-// a move the server made by itself. The permission-mode axis goes through
+// reportSettingsChange reports each confirmed axis change. The permission-mode axis goes through
 // UpdatePermissionMode, and the other axes are persisted as a settings refresh.
 func (a *Agent) reportSettingsChange(before, after kimiSettings) {
 	if before.permissionOption() != after.permissionOption() {
@@ -259,7 +280,7 @@ func kimiValidPermission(mode string) bool {
 // profile write, then reads the status back and settles each axis against it.
 func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResult {
 	a.sessionMu.Lock()
-	defer a.sessionMu.Unlock()
+	defer a.finishSessionMutation()
 	defer a.approvePendingPermissions()
 	result := agent.SettingsApplyResult{AppliedLive: true, Settlements: make(agent.OptionSettlements)}
 
@@ -327,17 +348,14 @@ func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResul
 		a.Mu.Unlock()
 	}
 	ctx, cancel := a.requestContext()
-	status, err := a.readStatus(ctx, sessionID)
+	status, err := a.confirmProfileStatus(ctx, sessionID, config)
 	cancel()
 	if err != nil {
 		slog.Warn("kimi read settings after an update", "agent_id", a.AgentID(), "error", err)
+		result.SurfacedOptions = agent.CurrentOptions(a.OptionGroups())
 		return result
 	}
-	a.applyStatus(status)
-	if status.Model != "" && status.Model != have.model {
-		// The plan limits only its own models, so the windows follow the model.
-		a.requestUsageRefresh()
-	}
+	a.foldStatus(status)
 	result.SurfacedOptions = agent.CurrentOptions(a.OptionGroups())
 	for key := range result.Settlements {
 		value := result.SurfacedOptions[key]
@@ -347,6 +365,36 @@ func (a *Agent) UpdateSettings(requested optionmap.Map) agent.SettingsApplyResul
 	}
 	a.sink.PersistSettingsRefresh(result.SurfacedOptions)
 	return result
+}
+
+// kimiStatusMatchesProfile confirms only the fields that a successful write changed.
+// Native "on" selects an effective level, while "off" can omit the level.
+func kimiStatusMatchesProfile(status kimiStatus, config map[string]any) bool {
+	for key, actual := range map[string]string{
+		kimiConfigModel: status.Model, kimiConfigPermissionMode: status.Permission,
+	} {
+		if expected, present := config[key].(string); present && expected != actual {
+			return false
+		}
+	}
+	for key, actual := range map[string]bool{
+		kimiConfigPlanMode: status.PlanMode, kimiConfigSwarmMode: status.SwarmMode,
+	} {
+		if expected, present := config[key].(bool); present && expected != actual {
+			return false
+		}
+	}
+	if expected, present := config[kimiConfigThinking].(string); present {
+		switch expected {
+		case kimiThinkingOn:
+			return status.ThinkingLevel != "" && status.ThinkingLevel != kimiThinkingOff
+		case kimiThinkingOff:
+			return status.ThinkingLevel == "" || status.ThinkingLevel == kimiThinkingOff
+		default:
+			return status.ThinkingLevel == expected
+		}
+	}
+	return true
 }
 
 // restateAutoThinking adds to config the level that Auto stands for, when want is on Auto and the
@@ -424,20 +472,6 @@ func (a *Agent) applyApprovalPermissionMode(sessionID, mode string) error {
 	return nil
 }
 
-// kimiStatusUpdate is the part of agent.status.updated the worker reads. Each
-// field is optional: an update states only what changed.
-type kimiStatusUpdate struct {
-	Model            string `json:"model"`
-	ThinkingEffort   string `json:"thinkingEffort"`
-	PlanMode         *bool  `json:"planMode"`
-	SwarmMode        *bool  `json:"swarmMode"`
-	ContextTokens    *int64 `json:"contextTokens"`
-	MaxContextTokens *int64 `json:"maxContextTokens"`
-	Usage            *struct {
-		CurrentTurn *kimiTokenUsage `json:"currentTurn"`
-	} `json:"usage"`
-}
-
 // kimiTokenUsage is one usage object: the tokens of a step, a turn or a model.
 type kimiTokenUsage struct {
 	InputOther         int64 `json:"inputOther"`
@@ -446,73 +480,44 @@ type kimiTokenUsage struct {
 	InputCacheCreation int64 `json:"inputCacheCreation"`
 }
 
-// handleStatusUpdated folds a status update of the main agent into the settings
-// and the context readout.
-//
-// A plan mode the model entered or left by itself changes LeapMux's
-// permission-mode axis, which the update reports and persists. A model or level
-// the server moved on its own is persisted as a settings refresh.
-func (a *Agent) handleStatusUpdated(event kimiEvent) {
-	if event.AgentID != kimiMainAgentID {
-		return
-	}
-	var update kimiStatusUpdate
-	if !event.decode(&update) {
-		return
-	}
-	a.Mu.Lock()
-	before := a.settings
-	if update.PlanMode != nil {
-		a.settings.planMode = *update.PlanMode
-	}
-	if update.SwarmMode != nil {
-		a.settings.swarmMode = *update.SwarmMode
-	}
-	if update.Model != "" {
-		a.settings.model = update.Model
-	}
-	if update.ThinkingEffort != "" && a.settings.effort != agent.EffortAuto {
-		a.settings.effort = update.ThinkingEffort
-	}
-	after := a.settings
-	var usage map[string]any
-	if update.ContextTokens != nil || update.MaxContextTokens != nil {
-		var tokens, window int64
-		if update.ContextTokens != nil {
-			tokens = *update.ContextTokens
-		}
-		if update.MaxContextTokens != nil {
-			window = *update.MaxContextTokens
-		}
-		a.recordContextLocked(tokens, window)
-		if update.Usage != nil && update.Usage.CurrentTurn != nil {
-			turn := update.Usage.CurrentTurn
-			providerkit.ContextTokenCounts{
-				Input: turn.InputOther, CacheRead: turn.InputCacheRead,
-				CacheWrite: turn.InputCacheCreation, Output: turn.Output,
-			}.Into(a.contextUsage)
-		}
-		usage = maps.Clone(a.contextUsage)
-	}
-	a.Mu.Unlock()
-
-	if len(usage) > 0 {
-		a.sink.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyContextUsage: usage})
-	}
-	a.reportSettingsChange(before, after)
-}
-
 // recordContextLocked records the context the main agent holds. The caller
 // holds a.Mu.
-func (a *Agent) recordContextLocked(tokens, window int64) {
+func (a *Agent) recordContextLocked(tokens, window *int64) bool {
+	changed := a.contextUsage == nil
 	if a.contextUsage == nil {
 		a.contextUsage = providerkit.ContextUsageMap(providerkit.ContextTokenCounts{})
 	}
-	if tokens > 0 {
-		a.contextUsage[contracts.ContextUsageFieldContextTokens] = tokens
+	if tokens != nil && *tokens >= 0 {
+		previous, valid := a.contextUsage[contracts.ContextUsageFieldContextTokens].(int64)
+		changed = changed || !valid || previous != *tokens
+		a.contextUsage[contracts.ContextUsageFieldContextTokens] = *tokens
 	}
-	if window > 0 {
-		a.contextUsage[contracts.ContextUsageFieldContextWindow] = window
+	if window != nil && *window >= 0 {
+		previous, valid := a.contextUsage[contracts.ContextUsageFieldContextWindow].(int64)
+		changed = changed || !valid || previous != *window
+		a.contextUsage[contracts.ContextUsageFieldContextWindow] = *window
+	}
+	return changed
+}
+
+func (a *Agent) handleNativeUsage(frame kimiFrame) {
+	state, valid := decodeKimiUsageState(frame)
+	if !valid || state.AgentID != kimiMainAgentID {
+		return
+	}
+	var window int64
+	if state.MaxContextTokens != nil {
+		window = *state.MaxContextTokens
+	}
+	a.Mu.Lock()
+	changed := a.recordContextLocked(state.ContextTokens, &window)
+	var usage map[string]any
+	if changed {
+		usage = maps.Clone(a.contextUsage)
+	}
+	a.Mu.Unlock()
+	if changed {
+		a.sink.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyContextUsage: usage})
 	}
 }
 

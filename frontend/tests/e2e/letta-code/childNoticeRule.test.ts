@@ -34,7 +34,12 @@ function receipt(text = `Task running in background with task ID: ${launch.taskI
               id: options.spawnCallId,
               function: {
                 name: callName,
-                arguments: JSON.stringify({ description: options.description, prompt: 'Perform the actual child task.', subagent_type: 'general-purpose' }),
+                arguments: JSON.stringify({
+                  description: options.description,
+                  prompt: 'Perform the actual child task.',
+                  harness: 'letta',
+                  fork_context: false,
+                }),
               },
             },
           ],

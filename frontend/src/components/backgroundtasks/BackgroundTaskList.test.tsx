@@ -6,8 +6,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { rowDomIdentity } from '~/components/backgroundtasks/BackgroundTaskList'
 import * as styles from '~/components/backgroundtasks/BackgroundTaskList.css'
 import { BackgroundTaskPanel } from '~/components/backgroundtasks/BackgroundTaskPanel'
-import { BackgroundTaskKind, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import { protoBackgroundTaskToStore } from '~/stores/chatBackgroundTasks'
+import { BackgroundTaskKind, BackgroundTaskRole, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { countActiveBackgroundTasks, protoBackgroundTaskToStore } from '~/stores/chatBackgroundTasks'
 import { createBackgroundTaskStore } from '~/stores/chatBackgroundTaskStore'
 import { clippedText } from '~/styles/shared.css'
 import * as statusDotStyles from '~/styles/statusDot.css'
@@ -16,6 +16,7 @@ import { classSelector } from '~/test-support/composedClass'
 
 function row(over: Partial<BackgroundTaskItem> & { rowKey: string }): BackgroundTaskItem {
   return {
+    role: over.role ?? BackgroundTaskRole.TASK_OUTCOME,
     kind: over.kind ?? 'subagent',
     title: over.title ?? 'T',
     activity: over.activity ?? '',
@@ -27,6 +28,7 @@ function row(over: Partial<BackgroundTaskItem> & { rowKey: string }): Background
 /** One wire row, for the cases that drive the real store rather than a literal list. */
 function protoTask(id: string, title: string, activeForm: string): ProtoBackgroundTaskItem {
   return {
+    role: BackgroundTaskRole.TASK_OUTCOME,
     id,
     kind: BackgroundTaskKind.SUBAGENT,
     status: BackgroundTaskStatus.RUNNING,
@@ -1236,5 +1238,93 @@ describe('background task canonical outcome display', () => {
     expect(secondaries(container)[0]).not.toHaveTextContent('old activity')
     fireEvent.click(task)
     expect(open).toHaveBeenCalledWith(expect.objectContaining({ rowKey: 'native-outcome', childAgentId: 'native-child' }))
+  })
+})
+
+describe('BackgroundTaskList activity roles', () => {
+  it('keeps activity and known outcomes separate while opening the same child', async () => {
+    const open = vi.fn()
+    const tasks = [
+      row({
+        rowKey: 'activity',
+        role: BackgroundTaskRole.CHILD_ACTIVITY,
+        title: 'Child session',
+        childAgentId: 'same-child',
+        status: 'running',
+      }),
+      row({
+        rowKey: 'task-success',
+        role: BackgroundTaskRole.TASK_OUTCOME,
+        title: 'Known successful task',
+        childAgentId: 'same-child',
+        status: 'succeeded',
+      }),
+    ]
+    const view = renderList({ tasks, onOpenSubagent: open })
+    const rows = view.getAllByTestId('bg-task-row')
+    expect(rows).toHaveLength(2)
+    expect(view.getByTestId('bg-task-role').textContent).toBe('Child activity')
+    expect(rows[0]?.getAttribute('data-role')).toBe(String(BackgroundTaskRole.CHILD_ACTIVITY))
+    expect(rows[1]?.getAttribute('data-status')).toBe('succeeded')
+    expect(countActiveBackgroundTasks(tasks)).toBe(0)
+    await fireEvent.click(rows[0]!)
+    await fireEvent.click(rows[1]!)
+    expect(open).toHaveBeenNthCalledWith(1, expect.objectContaining({ rowKey: 'activity', childAgentId: 'same-child' }))
+    expect(open).toHaveBeenNthCalledWith(2, expect.objectContaining({ rowKey: 'task-success', childAgentId: 'same-child' }))
+  })
+})
+
+describe('BackgroundTaskList workflow transcript links', () => {
+  it('opens native and invocation workflow outcomes through their shared child link', async () => {
+    const open = vi.fn()
+    const tasks = [
+      row({
+        rowKey: 'native-workflow',
+        kind: 'workflow',
+        title: 'Native task',
+        childAgentId: 'shared-child',
+        status: 'succeeded',
+      }),
+      row({
+        rowKey: 'invocation-workflow',
+        kind: 'workflow',
+        title: 'Parent invocation',
+        childAgentId: 'shared-child',
+        status: 'succeeded',
+        groupKey: 'group',
+        groupLabel: 'Workflow',
+      }),
+      row({ rowKey: 'opaque-workflow', kind: 'workflow', title: 'Opaque workflow' }),
+    ]
+    const view = renderList({ tasks, onOpenSubagent: open })
+    for (const key of ['native-workflow', 'invocation-workflow']) {
+      const element = view.container.querySelector(`[data-task-id="${key}"]`)
+      expect(element).toBeInstanceOf(HTMLButtonElement)
+      await fireEvent.click(element!)
+    }
+    expect(open).toHaveBeenNthCalledWith(1, expect.objectContaining({ rowKey: 'native-workflow', childAgentId: 'shared-child' }))
+    expect(open).toHaveBeenNthCalledWith(2, expect.objectContaining({ rowKey: 'invocation-workflow', childAgentId: 'shared-child' }))
+    const opaque = view.container.querySelector('[data-task-id="opaque-workflow"]')
+    expect(opaque).not.toBeInstanceOf(HTMLButtonElement)
+    await fireEvent.click(opaque!)
+    expect(open).toHaveBeenCalledTimes(2)
+  })
+
+  it('opens a workflow after child admission and preserves its button during later updates', async () => {
+    const open = vi.fn()
+    const [tasks, setTasks] = createStore([
+      row({ rowKey: 'pending-workflow', kind: 'workflow' }),
+    ])
+    const view = renderList({ tasks, onOpenSubagent: open })
+    expect(view.container.querySelector('[data-task-id="pending-workflow"]')).not.toBeInstanceOf(HTMLButtonElement)
+    setTasks(0, 'childAgentId', 'first-child')
+    const button = view.container.querySelector('[data-task-id="pending-workflow"]')
+    expect(button).toBeInstanceOf(HTMLButtonElement)
+    await fireEvent.click(button!)
+    expect(open).toHaveBeenLastCalledWith(expect.objectContaining({ childAgentId: 'first-child' }))
+    setTasks(0, 'childAgentId', 'current-child')
+    expect(view.container.querySelector('[data-task-id="pending-workflow"]')).toBe(button)
+    await fireEvent.click(button!)
+    expect(open).toHaveBeenLastCalledWith(expect.objectContaining({ childAgentId: 'current-child' }))
   })
 })

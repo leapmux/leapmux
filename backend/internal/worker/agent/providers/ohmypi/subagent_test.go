@@ -61,7 +61,7 @@ func TestChildInputUsesTheOwnedNativeChild(t *testing.T) {
 	r.emit(frameTaskStart, frameStarted, subagentEvent("Probe", `{"type":"agent_start"}`))
 	key := subagentRowKey(r.agent.sessionID, "Probe")
 	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, steerer.ActiveChildTurnState(key))
-	require.ErrorIs(t, steerer.SendChildInput(key, "Read this", nil), agent.ErrAgentBusy)
+	require.ErrorIs(t, agenttest.SendChildInput(steerer, key, agent.ChildInput{Content: "Read this"}), agent.ErrAgentBusy)
 	assert.Empty(t, r.commandsOfType("steer_subagent"))
 	attachment := &leapmuxv1.Attachment{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("revised instructions")}
 	require.NoError(t, steerer.SteerChildInput(key, "Read this", []*leapmuxv1.Attachment{attachment}))
@@ -75,7 +75,7 @@ func TestChildInputUsesTheOwnedNativeChild(t *testing.T) {
 	r.emit(subagentEvent("Probe", `{"type":"agent_end","messages":[]}`))
 	assert.Equal(t, agent.TurnState{}, steerer.ActiveChildTurnState(key))
 	require.ErrorIs(t, steerer.SteerChildInput(key, "Too late", nil), agent.ErrNoActiveTurn)
-	require.NoError(t, steerer.SendChildInput(key, "Start another child round", nil))
+	require.NoError(t, agenttest.SendChildInput(steerer, key, agent.ChildInput{Content: "Start another child round"}))
 	assert.Len(t, r.commandsOfType("steer_subagent"), 2)
 }
 
@@ -123,7 +123,7 @@ func TestChildControlsRejectStaleIdentityAndNativeFailures(t *testing.T) {
 	require.ErrorContains(t, interrupter.InterruptChild(key, agent.StopContext{}), "Subagent not running")
 	assert.Equal(t, bgtask.StatusRunning, subagentRow(t, r, "Probe").Status, "a refused command does not invent a final status")
 	r.emit(frameCompleted)
-	require.ErrorIs(t, steerer.SendChildInput(key, "Finished", nil), agent.ErrChildRouteNotReady)
+	require.ErrorIs(t, agenttest.SendChildInput(steerer, key, agent.ChildInput{Content: "Finished"}), agent.ErrChildRouteNotReady)
 	require.ErrorIs(t, interrupter.InterruptChild(key, agent.StopContext{}), agent.ErrChildRouteNotReady)
 	assert.Len(t, r.commandsOfType("steer_subagent"), 1)
 	assert.Len(t, r.commandsOfType("cancel_subagent"), 1)

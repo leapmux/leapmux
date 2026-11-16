@@ -16,6 +16,7 @@ import {
   UserContentMessage,
 } from './messageRenderers'
 import { rowDrawsResult } from './model/derivations'
+import { toolCallStatusOutcome } from './model/toolCallStatus'
 import { flattenNotificationEntries } from './notificationEntries'
 import { renderNotificationBlocks } from './notificationRenderers'
 import { ResultDivider } from './resultDividerRenderers'
@@ -217,6 +218,10 @@ export function renderExtractedRow(
     ? row
     : null
   const completion = extraction.completion
+  // The effective tool outcome can identify a refusal that the stored completion only records as an error.
+  const toolOutcome = toolRow === null
+    ? null
+    : toolCallStatusOutcome(toolRow.call.status)
   // The outcome note is LeapMux's own statement about a tool row, so it is drawn here
   // rather than by any provider.
   const note = toolOutcomeNote(messageMetadata)
@@ -276,9 +281,9 @@ export function renderExtractedRow(
     return (
       <ToolStatusHeader
         icon={CircleExclamationPoint}
-        title={toolOutcomeLabel(completion === 'interrupted'
+        title={toolOutcomeLabel(toolOutcome ?? (completion === 'interrupted'
           ? 'interrupted'
-          : 'failed')}
+          : 'failed'))}
         dataToolMessage
       >
         {withNote}

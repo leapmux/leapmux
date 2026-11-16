@@ -322,7 +322,9 @@ func TestCapturedTestSinkNotificationKeepsAggregateProvenanceOnReplay(t *testing
 func TestSinkSpanOnlyCreationStaysUnlinked(t *testing.T) {
 	t.Parallel()
 	parent := &Sink{}
-	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "native-span-only"})
+	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "native-span-only"})
 	require.NoError(t, err)
 	require.NotEmpty(t, childID)
 	child := parent.Child(childID)
@@ -336,12 +338,18 @@ func TestSinkSpanOnlyCreationStaysUnlinked(t *testing.T) {
 func TestSinkSpanOnlyChildrenKeepSeparateSpans(t *testing.T) {
 	t.Parallel()
 	parent := &Sink{}
-	first, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "first-native-span"})
+	first, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "first-native-span"})
 	require.NoError(t, err)
-	second, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "second-native-span"})
+	second, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "second-native-span"})
 	require.NoError(t, err)
 	assert.NotEqual(t, first, second)
-	replayed, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "first-native-span"})
+	replayed, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "first-native-span"})
 	require.NoError(t, err)
 	assert.Equal(t, first, replayed)
 	assert.ElementsMatch(t, []string{first, second}, parent.ChildAgentIDs())
@@ -351,7 +359,9 @@ func TestSinkSpanOnlyChildrenKeepSeparateSpans(t *testing.T) {
 func TestSinkAdoptsTheRealKeyAfterSpanOnlyCreation(t *testing.T) {
 	t.Parallel()
 	parent := &Sink{}
-	spec := agent.ChildAgentSpec{SpawnSpanID: "native-adoption-span"}
+	spec := agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "native-adoption-span"}
 	childID, err := parent.EnsureChildAgent(spec)
 	require.NoError(t, err)
 	require.NoError(t, parent.PersistChildPrompt(childID, "Inspect the native task."))
@@ -394,7 +404,9 @@ func TestSinkChildCreationKeepsItsInitialNativeSession(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			t.Parallel()
 			parent := &Sink{}
-			spec := agent.ChildAgentSpec{SpawnSpanID: "child-spawn", ProviderChildKey: "native-child", AgentSessionID: scenario.initial}
+			spec := agent.ChildAgentSpec{
+				RegistryRole: bgtask.RoleChildTask,
+				SpawnSpanID:  "child-spawn", ProviderChildKey: "native-child", AgentSessionID: scenario.initial}
 			childID, err := parent.EnsureChildAgent(spec)
 			require.NoError(t, err)
 			require.NoError(t, parent.PersistChildPrompt(childID, "Native child prompt."))
@@ -553,9 +565,13 @@ func TestToolResultExactReadsKeepRecordedSequenceAndSession(t *testing.T) {
 func TestSinkChildSpawnLookupRequiresTheDirectParent(t *testing.T) {
 	t.Parallel()
 	root := &Sink{}
-	firstID, err := root.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "first-spawn"})
+	firstID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "first-spawn"})
 	require.NoError(t, err)
-	secondID, err := root.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "second-spawn"})
+	secondID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "second-spawn"})
 	require.NoError(t, err)
 	first := root.Child(firstID)
 	for _, id := range []string{firstID, secondID} {
@@ -563,7 +579,9 @@ func TestSinkChildSpawnLookupRequiresTheDirectParent(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, span, "a child cannot grant ownership of itself or its sibling")
 	}
-	nestedID, err := first.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "nested-spawn"})
+	nestedID, err := first.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "nested-spawn"})
 	require.NoError(t, err)
 	span, err := first.ChildSpawnSpan(nestedID)
 	require.NoError(t, err)
@@ -584,7 +602,9 @@ func TestTestSink_ChildAgentIDsReturnsChildIDsNotSpawnSpans(t *testing.T) {
 	t.Parallel()
 
 	s := &Sink{}
-	childID, err := s.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "tu-spawn", ProviderChildKey: "task-1", Title: "explore"})
+	childID, err := s.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "tu-spawn", ProviderChildKey: "task-1", Title: "explore"})
 	require.NoError(t, err)
 	require.Equal(t, "child-of-tu-spawn", childID)
 
@@ -595,7 +615,9 @@ func TestTestSink_ChildAgentIDsReturnsChildIDsNotSpawnSpans(t *testing.T) {
 func TestSink_EnsureChildAgentStartsTheRegistryRowRunning(t *testing.T) {
 	t.Parallel()
 	sink := &Sink{}
-	spec := agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "native-child", Title: "Reviewer"}
+	spec := agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn", ProviderChildKey: "native-child", Title: "Reviewer"}
 	childID, err := sink.EnsureChildAgent(spec)
 	require.NoError(t, err)
 	row, ok := sink.BackgroundTask(spec.ProviderChildKey)
@@ -617,10 +639,14 @@ func TestSink_EnsureChildAgentStartsTheRegistryRowRunning(t *testing.T) {
 func TestSink_ReviveBackgroundTaskUsesTheSharedRegistry(t *testing.T) {
 	t.Parallel()
 	root := &Sink{}
-	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "child"})
+	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "child"})
 	require.NoError(t, err)
 	child := root.Child(childID)
-	_, err = child.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "grandchild"})
+	_, err = child.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "grandchild"})
 	require.NoError(t, err)
 	require.NoError(t, child.CloseBackgroundTask("grandchild", bgtask.StatusFailed))
 	require.NoError(t, child.ReviveBackgroundTask("grandchild"))
@@ -636,13 +662,19 @@ func TestSink_ReviveBackgroundTaskUsesTheSharedRegistry(t *testing.T) {
 func TestSink_IndependentUnlinkedChildrenKeepTheirNativeIdentity(t *testing.T) {
 	t.Parallel()
 	sink := &Sink{}
-	first, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "", ProviderChildKey: "native-child-a", Title: "First child"})
+	first, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "", ProviderChildKey: "native-child-a", Title: "First child"})
 	require.NoError(t, err)
-	second, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "", ProviderChildKey: "native-child-b", Title: "Second child"})
+	second, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "", ProviderChildKey: "native-child-b", Title: "Second child"})
 	require.NoError(t, err)
 	require.NotEqual(t, first, second)
 	assert.ElementsMatch(t, []string{first, second}, sink.ChildAgentIDs())
-	replay, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "", ProviderChildKey: "native-child-a", Title: "First child"})
+	replay, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "", ProviderChildKey: "native-child-a", Title: "First child"})
 	require.NoError(t, err)
 	assert.Equal(t, first, replay)
 	span, err := sink.ChildSpawnSpan(first)
@@ -653,7 +685,9 @@ func TestSink_IndependentUnlinkedChildrenKeepTheirNativeIdentity(t *testing.T) {
 func TestSink_UnlinkedChildRequiresNativeIdentity(t *testing.T) {
 	t.Parallel()
 	sink := &Sink{}
-	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "", ProviderChildKey: "", Title: "Unidentified child"})
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "", ProviderChildKey: "", Title: "Unidentified child"})
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, agent.ErrChildIdentityRefused)
 	assert.Empty(t, sink.ChildAgentIDs())
@@ -662,9 +696,13 @@ func TestSink_UnlinkedChildRequiresNativeIdentity(t *testing.T) {
 func TestSink_ConflictingNativeChildKeyCannotReuseAnotherChildsSpawnSpan(t *testing.T) {
 	t.Parallel()
 	sink := &Sink{}
-	first, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-a", SpawnSpanID: "spawn", Title: "First"})
+	first, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-a", SpawnSpanID: "spawn", Title: "First"})
 	require.NoError(t, err)
-	_, err = sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-b", SpawnSpanID: "spawn", Title: "Wrong child"})
+	_, err = sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-b", SpawnSpanID: "spawn", Title: "Wrong child"})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, agent.ErrChildIdentityRefused)
 	assert.Equal(t, []string{first}, sink.ChildAgentIDs())
@@ -683,7 +721,9 @@ func TestSink_ConcurrentUnlinkedNativeChildCreatesOneSink(t *testing.T) {
 	var group sync.WaitGroup
 	for range cap(results) {
 		group.Go(func() {
-			id, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child"})
+			id, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole:     bgtask.RoleChildTask,
+				ProviderChildKey: "native-child"})
 			results <- outcome{id: id, err: err}
 		})
 	}
@@ -703,9 +743,13 @@ func TestSink_ConcurrentUnlinkedNativeChildCreatesOneSink(t *testing.T) {
 func TestSink_FirstExactSpanAttachesToAnExistingNativeChild(t *testing.T) {
 	t.Parallel()
 	sink := &Sink{}
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child", Title: "Child"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-child", Title: "Child"})
 	require.NoError(t, err)
-	replay, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child", SpawnSpanID: "native-call", Title: "Child"})
+	replay, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-child", SpawnSpanID: "native-call", Title: "Child"})
 	require.NoError(t, err)
 	assert.Equal(t, childID, replay)
 	span, err := sink.ChildSpawnSpan(childID)

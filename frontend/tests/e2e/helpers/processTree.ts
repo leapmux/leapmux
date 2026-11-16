@@ -155,11 +155,10 @@ export function newProcessesMatching(rows: readonly ProcessRow[], before: Readon
   return rows.filter(row => !before.has(row.pid) && row.command.includes(text))
 }
 
-/** Whether a process of this id still exists. */
+/** Whether the process has not exited, including sleeping and suspended processes. */
 export function isAlive(pid: number): boolean {
   try {
     process.kill(pid, 0)
-    return true
   }
   catch (error) {
     if (typeof error === 'object' && error !== null && 'code' in error) {
@@ -169,6 +168,26 @@ export function isAlive(pid: number): boolean {
       if (error.code === 'EPERM')
         return true
     }
+    throw error
+  }
+  if (process.platform === 'win32')
+    return true
+  // Signal zero also succeeds for an exited process until its parent reaps it.
+  try {
+    const state = execFileSync('ps', [
+      '-p',
+      String(pid),
+      '-o',
+      'stat=',
+    ], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    return state !== '' && !state.startsWith('Z')
+  }
+  catch (error) {
+    if (typeof error === 'object' && error !== null && 'status' in error && error.status === 1)
+      return false
     throw error
   }
 }

@@ -2,6 +2,7 @@ import type { MockModelRule } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import type { NativeChildProfile } from '../helpers/runningChildProof'
 import { expect } from '@playwright/test'
+import { waitForNativeToolSteps } from '../helpers/nativeToolExecution'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
 import { sendMessage, subagentReportBubble, userBubbles } from '../helpers/ui'
@@ -60,7 +61,7 @@ export async function exerciseReasonixSpawnTranscript(context: ManagedNativeScen
     { text: 'The subagent reported PONG.' },
   )
   await sendMessage(page, modelScript.prompt('Delegate one word to a read-only subagent.'))
-  await modelScript.waitForSteps(start + 2)
+  await waitForNativeToolSteps(context, start + 2)
 
   const row = await requireRegistryRow(page)
   await expectRowBecomesFinal(page, row)

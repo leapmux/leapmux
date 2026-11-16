@@ -31,6 +31,7 @@ var qwenNotifyMethods = map[string]qwenNotifyMethod{
 	"qwen/notify/session/title-update":       {reason: "LeapMux uses its own tab titles"},
 	"qwen/notify/workspace/generation/event": {reason: "LeapMux does not start native workspace generation requests"},
 	"qwen/notify/session/model-update":       {reason: "the config-option update already states the model"},
+	"qwen/notify/session/last-user-prompt":   {reason: "the timestamp synchronizes Qwen clients"},
 	qwenModeUpdateMethod:                     {read: (*Agent).handleModeUpdate, sessionOptional: true},
 	"qwen/notify/session/prompt-suggestion":  {read: (*Agent).handlePromptSuggestion},
 	"qwen/notify/session/recording-degraded": {read: (*Agent).handleRecordingDegraded},

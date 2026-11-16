@@ -2,10 +2,12 @@ import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
+import { BackgroundTaskRole } from '~/generated/proto/leapmux/v1/agent_pb'
 import { BackgroundTaskPanel } from './BackgroundTaskPanel'
 
 function row(over: Partial<BackgroundTaskItem> & { rowKey: string }): BackgroundTaskItem {
   return {
+    role: over.role ?? BackgroundTaskRole.TASK_OUTCOME,
     kind: over.kind ?? 'subagent',
     title: over.title ?? 'T',
     activity: over.activity ?? '',

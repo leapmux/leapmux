@@ -388,7 +388,9 @@ func (a *Agent) openClaudeTaskChild(ev *claudeTaskEnvelope, known claudeKnownTas
 	// Use restart evidence instead of a span-type lookup.
 	// A nested child's SendMessage belongs to its own tracker, which the root tracker cannot identify. See the preceding guard.
 	if childID == "" && ev.ToolUseID != "" && !restart.restarted() {
-		childID, err = a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: ev.ToolUseID, ProviderChildKey: ev.TaskID, Title: title})
+		childID, err = a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  ev.ToolUseID, ProviderChildKey: ev.TaskID, Title: title})
 	}
 	if childID != "" {
 		a.tasks.rememberTaskChild(ev.TaskID, childID)
@@ -720,7 +722,9 @@ func (a *Agent) routeSubagentMessage(content []byte, msgType string, env *messag
 	// Use the known spawn span for the early row.
 	// handleClaudeTaskStarted later renames it to the actual task ID, preserving one row for the entire run.
 	// A blank span still links nothing and causes no registry write until the run becomes identifiable.
-	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: spawnSpanID, ProviderChildKey: taskID, Title: ""})
+	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  spawnSpanID, ProviderChildKey: taskID, Title: ""})
 	if err != nil {
 		slog.Warn("claude route subagent: ensure child failed", "spawn_span", spawnSpanID, "error", err)
 		return
@@ -741,7 +745,7 @@ func (a *Agent) routeSubagentMessage(content []byte, msgType string, env *messag
 		// Open the row as Running because the forwarded envelope proves active child work.
 		// Without a row, activity derivation has no live child input.
 		if err := a.sink.UpsertBackgroundTask(bgtask.Upsert{
-			RowKey: registryKey, Kind: bgtask.KindSubagent, ChildAgentID: childID,
+			RowKey: registryKey, Role: bgtask.RoleChildTask, Kind: bgtask.KindSubagent, ChildAgentID: childID,
 			ParentAgentID: a.AgentID(), Status: bgtask.StatusRunning,
 		}); err != nil {
 			slog.Warn("claude route subagent: open pre-start row failed", "spawn_span", spawnSpanID, "error", err)

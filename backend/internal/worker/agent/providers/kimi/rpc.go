@@ -5,14 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// Kimi Code's REST transport.
+// Kimi Code's request transport.
 //
 // Every reply is an envelope `{code, msg, data, request_id}`, and the HTTP
 // status says almost nothing: the server answers a refused request with 200 and
@@ -65,15 +68,19 @@ type kimiClient struct {
 // call sends one request and decodes the envelope's `data` into out, which may
 // be nil. A reply whose code is 0, or one of accept, succeeds; every other code
 // returns a *kimiAPIError. A request whose context has no deadline takes the
-// client's timeout. path carries no query: no route the provider calls takes one.
+// client's timeout.
 func (c *kimiClient) call(ctx context.Context, method, path string, body, out any, accept ...int) error {
+	return c.callQuery(ctx, method, path, nil, body, out, accept...)
+}
+
+func (c *kimiClient) callQuery(ctx context.Context, method, path string, query url.Values, body, out any, accept ...int) error {
 	if _, ok := ctx.Deadline(); !ok && c.timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, c.timeout)
 		defer cancel()
 	}
 	var env kimiEnvelope
-	err := c.endpoint.Do(ctx, method, path, body, &env)
+	err := c.endpoint.DoQuery(ctx, method, path, query, body, &env)
 	if err != nil {
 		var statusErr *providerkit.HTTPStatusError
 		if errors.As(err, &statusErr) {
@@ -110,4 +117,34 @@ func (c *kimiClient) post(ctx context.Context, path string, body, out any, accep
 		body = struct{}{}
 	}
 	return c.call(ctx, "POST", path, body, out, accept...)
+}
+
+// requestFrame owns one response waiter from admission through cleanup.
+func (s *kimiStream) requestFrame(ctx context.Context, operation string, build func(string) any) (kimiFrame, error) {
+	if err := ctx.Err(); err != nil {
+		return kimiFrame{}, err
+	}
+	s.mu.Lock()
+	s.nextID++
+	id := strconv.FormatInt(s.nextID, 10)
+	reply := make(chan kimiFrame, 1)
+	s.acks[id] = reply
+	s.mu.Unlock()
+	defer func() { s.mu.Lock(); delete(s.acks, id); s.mu.Unlock() }()
+	if err := s.write(build(id)); err != nil {
+		return kimiFrame{}, err
+	}
+	select {
+	case response, open := <-reply:
+		if open {
+			return response, nil
+		}
+		cause := ctx.Err()
+		if cause == nil {
+			cause = fmt.Errorf("the Kimi event stream closed before the %s response", operation)
+		}
+		return kimiFrame{}, fmt.Errorf("%w: %w", agent.ErrDeliveryUncertain, cause)
+	case <-ctx.Done():
+		return kimiFrame{}, fmt.Errorf("%w: %w", agent.ErrDeliveryUncertain, ctx.Err())
+	}
 }

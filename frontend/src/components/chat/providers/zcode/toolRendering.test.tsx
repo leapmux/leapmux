@@ -108,7 +108,7 @@ describe('zcode tool rendering', () => {
 
   it('renders the subagent report and separates its native usage footer', async () => {
     const report = '**Findings**\n\nThe entry points are present.'
-    const content = `${report}\nagentId: agent_child (use SendMessage with to: 'agent_child' to continue this agent)\n<usage>subagent_tokens: 123\ntool_uses: 2\nduration_ms: 1500</usage>`
+    const content = `${report}\nagentId: agent_child (use SendMessage with to: 'agent_child', summary: '<5-10 word recap>' to continue this agent)\n<usage>subagent_tokens: 123\ntool_uses: 2\nduration_ms: 1500</usage>`
     const { container, meta } = renderResult('Agent', { description: 'Inspect project structure' }, { success: true, content })
     await settleWorkerReplies()
     expect(container.textContent).toContain('Agent "Inspect project structure" completed')

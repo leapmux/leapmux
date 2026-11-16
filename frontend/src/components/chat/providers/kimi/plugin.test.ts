@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { KIMI_DEFAULT_MODE, KIMI_EVENT, KIMI_MODE, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
 import { WORKSPACE_TRUST_CONTROL_TYPE, WORKSPACE_TRUST_DECISION } from '~/generated/contracts/workspace-trust'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { kimiApprovalRequest, kimiFrame, kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
+import { kimiApprovalRequest, kimiFrame, kimiTranscriptMarkerFrame, kimiTranscriptToolFrame, kimiTranscriptTurnFrame } from '~/test-support/kimiFixtures'
 import { providerFor, resolveMessageForRendering } from '../registry'
 import { input } from '../testUtils'
 import { WORKSPACE_TRUST_OPTION } from '../workspaceTrust'
@@ -16,7 +16,11 @@ describe('kimi plugin', () => {
   it('registers the Kimi reader behind every transcript and session hook', () => {
     const parsed = (row: Record<string, unknown>) => resolveMessageForRendering(input(row, undefined, AgentProvider.KIMI_CODE), AgentProvider.KIMI_CODE)
     const warning = kimiFrame(KIMI_EVENT.Warning, { message: 'Low disk' })
-    const start = kimiToolStart('c', KIMI_TOOL.Agent, { prompt: 'p' })
+    const start = kimiTranscriptToolFrame({
+      toolCallId: 'c',
+      name: KIMI_TOOL.Agent,
+      input: { prompt: 'p' },
+    })
 
     expect(plugin.transcript.classify(input(warning, undefined, AgentProvider.KIMI_CODE))).toStrictEqual({
       kind: 'notification',
@@ -27,11 +31,23 @@ describe('kimi plugin', () => {
     expect(plugin.transcript.notificationEntry?.(warning)).toStrictEqual([
       { kind: 'text', text: 'Warning: Low disk' },
     ])
-    expect(plugin.transcript.spanRole(parsed(kimiToolResult('c', 'x')))).toBe('result')
+    expect(plugin.transcript.spanRole(parsed(kimiTranscriptToolFrame({
+      toolCallId: 'c',
+      name: 'Bash',
+      input: {},
+      state: 'done',
+      output: 'x',
+    })))).toBe('result')
     expect(plugin.transcript.needsRequest?.(parsed(start))).toBe(false)
-    expect(plugin.transcript.needsRequest?.(parsed(kimiToolResult('c', 'x')))).toBe(true)
-    expect(plugin.transcript.extractDivider?.(kimiFrame(KIMI_EVENT.TurnEnded, { reason: 'cancelled' }))).toStrictEqual({ label: 'Turn interrupted' })
-    expect(plugin.session?.compactionBoundaryFromMessage?.(parsed(kimiFrame(KIMI_EVENT.CompactionCompleted, {
+    expect(plugin.transcript.needsRequest?.(parsed(kimiTranscriptToolFrame({
+      name: 'Bash',
+      input: {},
+      state: 'done',
+      output: 'x',
+    })))).toBe(true)
+    expect(plugin.transcript.extractDivider?.(kimiTranscriptTurnFrame({ state: 'cancelled' }))).toStrictEqual({ label: 'Turn interrupted' })
+    expect(plugin.session?.compactionBoundaryFromMessage?.(parsed(kimiTranscriptMarkerFrame('compaction', {
+      phase: 'completed',
       result: { tokensBefore: 9, tokensAfter: 1 },
     }))))
       .toStrictEqual({ pre: 9, post: 1 })

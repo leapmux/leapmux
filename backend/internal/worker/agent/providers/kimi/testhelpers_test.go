@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,15 +22,14 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
-	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
 // The fake kap-server the tests drive.
 //
 // It serves the REST routes and the event WebSocket the provider calls, with the
 // envelope, the bearer check and the subscribe/ack exchange the real server
-// uses. It keeps the settings of each session it created, so a profile write and
-// the status read after it agree, as they do on the real server. A test replaces
+// uses. It keeps each session's settings, so profile writes and pushed state agree.
+// A test replaces
 // any reply by its route, and pushes events down the socket.
 //
 // The same fake serves the tests in this process (httptest) and the helper
@@ -55,6 +55,7 @@ type fakeKapReply struct {
 	Code       int
 	Msg        string
 	Data       any
+	DataFor    func(fakeKapRequest) any
 	// BeforeReply runs after the fake records the request and before it writes the reply.
 	BeforeReply func()
 	// Drop, when set, closes the connection with no reply: a transport failure
@@ -72,30 +73,20 @@ type fakeKapSession struct {
 	// Busy is the status's `busy`: some agent of the session runs, or a
 	// background task does. It decides the status of a prompt the session takes.
 	Busy bool
-	// Goal is the GET .../goal reply, or nil for a session with no goal.
+	// Goal supplies the native subscription snapshot, or nil for no goal.
 	Goal any
-	// InFlightTurn is the id of the main agent's running turn, which GET
-	// .../snapshot states, or nil when the main agent runs none.
-	InFlightTurn *int64
-	// PendingApprovals and PendingQuestions are the snapshot's unresolved
-	// interactions, in the shape toWireApproval and toWireQuestion give them:
-	// the event payload with no `type`, `agentId` or `sessionId`.
-	PendingApprovals []map[string]any
-	PendingQuestions []map[string]any
-	// Subagents is the snapshot's subagent roster, in the shape of
-	// snapshotSubagentSchema.
-	Subagents []map[string]any
-	// Tasks is the GET .../tasks reply, in the shape of taskSchema.
-	Tasks []map[string]any
+	// ReplayFrames are complete native frames sent when this session is subscribed.
+	ReplayFrames []any
 }
-
-// fakeKapEpoch is the epoch of every session's event journal in the fake.
-const fakeKapEpoch = "ep_1"
 
 // fakeKapSubscribe is one subscribe frame the fake received.
 type fakeKapSubscribe struct {
-	IDs     []string              `json:"session_ids"`
-	Cursors map[string]kimiCursor `json:"cursors"`
+	SessionID  string            `json:"session_id"`
+	Transcript map[string]string `json:"transcript"`
+	IDs        []string          `json:"-"`
+	Since      map[string]int64  `json:"transcript_since"`
+	WireType   string            `json:"-"`
+	Payload    json.RawMessage   `json:"-"`
 }
 
 type fakeKap struct {
@@ -129,13 +120,30 @@ type fakeKap struct {
 	// ackFor answers one subscribe. nil accepts every session the fake knows and
 	// lists every other one under not_found.
 	ackFor func(sub fakeKapSubscribe) (code int, ack kimiAck)
+	// beforeReplay pauses an accepted subscription before native state and replay.
+	beforeReplay   func(fakeKapSubscribe)
+	taskCommands   []fakeKimiTaskCommand
+	taskCommandFor func(fakeKimiTaskCommand) (int, string)
+	taskStateFor   func(fakeKimiTaskCommand) any
+	taskOutputsFor func(fakeKimiTaskCommand) []any
 	// onShutdown runs when POST /shutdown arrives.
 	onShutdown func()
+}
+
+type fakeKimiTaskCommand struct {
+	Type      string `json:"type"`
+	RequestID string `json:"request_id"`
+	SessionID string `json:"session_id"`
+	AgentID   string `json:"agent_id"`
+	TaskID    string `json:"task_id"`
+	TailBytes *int   `json:"tail_bytes,omitempty"`
 }
 
 type fakeKapConn struct {
 	mu   sync.Mutex
 	conn *websocket.Conn
+	// The fake's mutex protects subscriptions with its session state.
+	subscriptions map[string]bool
 }
 
 func (c *fakeKapConn) write(ctx context.Context, frame any) error {
@@ -233,13 +241,54 @@ func (f *fakeKap) setBusy(id string, busy bool) {
 	f.update(id, func(session *fakeKapSession) { session.Busy = busy })
 }
 
-// update changes the state of one session the fake knows, as the server's own
-// work does while no socket watches it.
+// update changes a stored session and publishes its native state to subscribers.
 func (f *fakeKap) update(id string, change func(*fakeKapSession)) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	if session := f.sessions[id]; session != nil {
 		change(session)
+	}
+	f.mu.Unlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	f.publishSessionState(ctx, id)
+}
+
+func (f *fakeKap) sessionStateFrames(id string) []any {
+	session, exists := f.session(id)
+	if !exists {
+		return nil
+	}
+	status := "idle"
+	if session.Busy {
+		status = "running"
+	}
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	return []any{
+		map[string]any{
+			"type": contracts.KimiEventAgent, "session_id": id, "agent_id": kimiMainAgentID, "event_created_at": at,
+			"status": status, "model": session.Model, "thinking": session.Thinking, "permission_mode": session.Permission,
+			"plan_mode": session.PlanMode, "swarm_mode": session.SwarmMode, "tower_mode": false,
+		},
+		map[string]any{
+			"type": contracts.KimiEventUsage, "session_id": id, "agent_id": kimiMainAgentID, "event_created_at": at,
+			"context_tokens": 1000, "max_context_tokens": 262144,
+		},
+	}
+}
+
+func (f *fakeKap) publishSessionState(ctx context.Context, id string) {
+	f.mu.Lock()
+	var targets []*fakeKapConn
+	for _, conn := range f.conns {
+		if conn.subscriptions[id] {
+			targets = append(targets, conn)
+		}
+	}
+	f.mu.Unlock()
+	for _, frame := range f.sessionStateFrames(id) {
+		for _, conn := range targets {
+			_ = conn.write(ctx, frame)
+		}
 	}
 }
 
@@ -374,7 +423,11 @@ func (f *fakeKap) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if status == 0 {
 			status = http.StatusOK
 		}
-		writeFakeKapEnvelope(w, status, scripted.Code, scripted.Msg, scripted.Data)
+		data := scripted.Data
+		if scripted.DataFor != nil {
+			data = scripted.DataFor(request)
+		}
+		writeFakeKapEnvelope(w, status, scripted.Code, scripted.Msg, data)
 		return
 	}
 	if request.Method == http.MethodPost {
@@ -404,11 +457,19 @@ func (f *fakeKap) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if request.Method == http.MethodGet && (strings.HasSuffix(request.Path, "/status") || strings.HasSuffix(request.Path, "/snapshot") || strings.HasSuffix(request.Path, "/tasks")) {
+		writeFakeKapEnvelope(w, http.StatusNotFound, 40400, "the session route does not exist", nil)
+		return
+	}
 	data := f.defaultReply(request)
+	if request.Method == http.MethodPost && strings.HasSuffix(request.Path, "/profile") {
+		id := strings.TrimSuffix(strings.TrimPrefix(request.Path, kimiRouteSessions+"/"), "/profile")
+		f.publishSessionState(r.Context(), id)
+	}
 	writeFakeKapEnvelope(w, http.StatusOK, kimiCodeOK, "success", data)
 }
 
-// defaultReply answers a request no test scripted, as the real server does.
+// defaultReply supplies the native routes that a test does not script explicitly.
 func (f *fakeKap) defaultReply(request fakeKapRequest) any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -444,41 +505,8 @@ func (f *fakeKap) defaultReply(request fakeKapRequest) any {
 		return map[string]any{}
 	}
 	switch {
-	case request.Method == http.MethodGet && rest == "status":
-		return map[string]any{
-			"busy": session.Busy, "model": session.Model, "thinking_level": session.Thinking,
-			"permission": session.Permission, "plan_mode": session.PlanMode, "swarm_mode": session.SwarmMode,
-			"context_tokens": 1000, "max_context_tokens": 262144,
-		}
 	case request.Method == http.MethodGet && rest == "goal":
 		return session.Goal
-	case request.Method == http.MethodGet && rest == "snapshot":
-		var inFlight any
-		if session.InFlightTurn != nil {
-			inFlight = map[string]any{"turn_id": *session.InFlightTurn, "assistant_text": "", "thinking_text": "", "running_tools": []any{}}
-		}
-		approvals, questions, subagents := session.PendingApprovals, session.PendingQuestions, session.Subagents
-		if approvals == nil {
-			approvals = []map[string]any{}
-		}
-		if questions == nil {
-			questions = []map[string]any{}
-		}
-		if subagents == nil {
-			subagents = []map[string]any{}
-		}
-		return map[string]any{
-			"as_of_seq": 0, "epoch": fakeKapEpoch, "session": map[string]any{"id": sessionID},
-			"messages":       map[string]any{"items": []any{}, "has_more": false},
-			"in_flight_turn": inFlight, "pending_approvals": approvals, "pending_questions": questions,
-			"subagents": subagents,
-		}
-	case request.Method == http.MethodGet && rest == "tasks":
-		tasks := session.Tasks
-		if tasks == nil {
-			tasks = []map[string]any{}
-		}
-		return map[string]any{"items": tasks}
 	case request.Method == http.MethodPost && rest == "profile":
 		var body struct {
 			Config map[string]any `json:"agent_config"`
@@ -506,7 +534,14 @@ func (f *fakeKap) defaultReply(request fakeKapRequest) any {
 		if session.Busy {
 			status = kimiPromptQueued
 		}
-		return map[string]any{"prompt_id": fmt.Sprintf("prompt_%d", f.nextPrompt), "status": status}
+		var body struct {
+			PromptID string `json:"prompt_id"`
+		}
+		_ = json.Unmarshal(request.Body, &body)
+		if body.PromptID == "" {
+			body.PromptID = fmt.Sprintf("prompt_%d", f.nextPrompt)
+		}
+		return map[string]any{"prompt_id": body.PromptID, "status": status}
 	}
 	return map[string]any{}
 }
@@ -533,7 +568,7 @@ func (f *fakeKap) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	wrapped := &fakeKapConn{conn: conn}
+	wrapped := &fakeKapConn{conn: conn, subscriptions: make(map[string]bool)}
 	f.mu.Lock()
 	f.conns = append(f.conns, wrapped)
 	f.mu.Unlock()
@@ -553,6 +588,31 @@ func (f *fakeKap) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		switch frame.Type {
+		case "task.stop", "task.watch", "task.unwatch":
+			var command fakeKimiTaskCommand
+			if json.Unmarshal(data, &command) != nil {
+				continue
+			}
+			f.mu.Lock()
+			f.taskCommands = append(f.taskCommands, command)
+			answer := f.taskCommandFor
+			stateFor := f.taskStateFor
+			outputsFor := f.taskOutputsFor
+			f.mu.Unlock()
+			code, msg := 0, "success"
+			if answer != nil {
+				code, msg = answer(command)
+			}
+			response := map[string]any{"type": "response", "request_id": command.RequestID, "code": code, "msg": msg}
+			if stateFor != nil && command.Type == kimiFrameTaskWatch {
+				response["task"] = stateFor(command)
+			}
+			_ = wrapped.write(ctx, response)
+			if command.Type == kimiFrameTaskWatch && code == 0 && outputsFor != nil {
+				for _, output := range outputsFor(command) {
+					_ = wrapped.write(ctx, output)
+				}
+			}
 		case kimiFramePong:
 			var pong struct {
 				Nonce string `json:"nonce"`
@@ -564,13 +624,39 @@ func (f *fakeKap) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 		case kimiFrameSubscribe:
 			var sub fakeKapSubscribe
 			_ = json.Unmarshal(frame.Payload, &sub)
+			sub.IDs = []string{sub.SessionID}
+			sub.WireType = frame.Type
+			sub.Payload = append(json.RawMessage(nil), frame.Payload...)
 			f.mu.Lock()
 			f.subscribes = append(f.subscribes, sub)
 			ackFor := f.ackFor
+			beforeReplay := f.beforeReplay
 			f.mu.Unlock()
 			code, ack := f.defaultAck(sub)
 			if ackFor != nil {
 				code, ack = ackFor(sub)
+			}
+			if code == kimiCodeOK && slices.Contains(ack.Accepted, sub.SessionID) {
+				f.mu.Lock()
+				first := !wrapped.subscriptions[sub.SessionID]
+				wrapped.subscriptions[sub.SessionID] = true
+				f.mu.Unlock()
+				if first && ackFor == nil {
+					if beforeReplay != nil {
+						beforeReplay(sub)
+					}
+					for _, state := range f.sessionStateFrames(sub.SessionID) {
+						_ = wrapped.write(ctx, state)
+					}
+					if goal, enabled := f.initialGoalFrame(sub.SessionID); enabled {
+						_ = wrapped.write(ctx, goal)
+					}
+					if session, exists := f.session(sub.SessionID); exists {
+						for _, replay := range session.ReplayFrames {
+							_ = wrapped.write(ctx, replay)
+						}
+					}
+				}
 			}
 			reply := map[string]any{"type": kimiFrameAck, "id": frame.ID, "payload": ack}
 			if code != kimiCodeOK {
@@ -580,29 +666,54 @@ func (f *fakeKap) serveWebSocket(w http.ResponseWriter, r *http.Request) {
 			_ = wrapped.write(ctx, reply)
 		case kimiFrameUnsubscribe:
 			var unsub struct {
-				IDs []string `json:"session_ids"`
+				SessionID string `json:"session_id"`
 			}
 			_ = json.Unmarshal(frame.Payload, &unsub)
 			f.mu.Lock()
-			f.unsubscribes = append(f.unsubscribes, unsub.IDs)
+			f.unsubscribes = append(f.unsubscribes, []string{unsub.SessionID})
+			delete(wrapped.subscriptions, unsub.SessionID)
 			f.mu.Unlock()
 		}
 	}
 }
 
+func (f *fakeKap) initialGoalFrame(sessionID string) (any, bool) {
+	f.mu.Lock()
+	enabled := slices.ContainsFunc(f.features, func(feature map[string]string) bool {
+		return feature["name"] == kimiFeatureGoal && feature["state"] == "active"
+	})
+	f.mu.Unlock()
+	session, exists := f.session(sessionID)
+	if !enabled || !exists {
+		return nil, false
+	}
+	frame := map[string]any{"type": contracts.KimiEventGoal, "session_id": sessionID, "agent_id": kimiMainAgentID}
+	if session.Goal != nil {
+		goal, valid := session.Goal.(map[string]any)
+		if !valid {
+			panic("the fake Kimi goal must be a map")
+		}
+		native := map[string]any{"objective": goal["objective"], "status": goal["status"], "turns_used": 0, "tokens_used": 0, "wall_clock_ms": 0}
+		for source, target := range map[string]string{"turnsUsed": "turns_used", "tokensUsed": "tokens_used", "wallClockMs": "wall_clock_ms"} {
+			if value, present := goal[source]; present {
+				native[target] = value
+			}
+		}
+		frame["goal"] = native
+	}
+	return frame, true
+}
+
 func (f *fakeKap) defaultAck(sub fakeKapSubscribe) (int, kimiAck) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	ack := kimiAck{Cursors: map[string]kimiCursor{}}
+	ack := kimiAck{}
 	for _, id := range sub.IDs {
 		if f.sessions[id] == nil {
 			ack.NotFound = append(ack.NotFound, id)
 			continue
 		}
 		ack.Accepted = append(ack.Accepted, id)
-		// The real server states the cursor of every session it accepts, which is
-		// what a reconnect replays from.
-		ack.Cursors[id] = kimiCursor{Epoch: fakeKapEpoch}
 	}
 	return kimiCodeOK, ack
 }
@@ -632,6 +743,16 @@ func connectKimiTestRig(t *testing.T, fake *fakeKap, url string, opts agent.Opti
 	t.Helper()
 	a, sink, opts := newConnectedKimiAgent(t, url, opts)
 	require.NoError(t, a.openStartupSession(opts, 30*time.Second))
+	fake.mu.Lock()
+	waitForGoal := fake.ackFor == nil && a.features[kimiFeatureGoal]
+	fake.mu.Unlock()
+	if waitForGoal {
+		waitFor(t, func() bool {
+			a.Mu.Lock()
+			defer a.Mu.Unlock()
+			return a.goalPushSeen && (len(sink.Goals()) > 0 || len(sink.GoalClearSnapshots()) > 0)
+		}, "the initial native goal state is applied")
+	}
 	return &kimiTestRig{agent: a, fake: fake, sink: sink}
 }
 
@@ -640,7 +761,16 @@ func connectKimiTestRig(t *testing.T, fake *fakeKap, url string, opts agent.Opti
 func newConnectedKimiAgent(t *testing.T, url string, opts agent.Options) (*Agent, *agenttest.ControlSink, agent.Options) {
 	t.Helper()
 	sink := &agenttest.ControlSink{}
-	ctx, cancel := context.WithCancel(context.Background())
+	a, opts := newUnconnectedKimiAgent(t, opts, agent.NewModelProgressResetSink(agent.NewProviderServices(sink)))
+	require.NoError(t, a.connect(a.Context(), url, fakeKapToken, opts, 30*time.Second))
+	t.Cleanup(a.closeStream)
+	return a, sink, opts
+}
+
+// newUnconnectedKimiAgent installs services before the stream can use them.
+func newUnconnectedKimiAgent(t *testing.T, opts agent.Options, services agent.ProviderServices) (*Agent, agent.Options) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
 	t.Cleanup(cancel)
 	if opts.AgentID == "" {
 		opts.AgentID = "test-agent"
@@ -656,13 +786,11 @@ func newConnectedKimiAgent(t *testing.T, url string, opts agent.Options) (*Agent
 			AgentID: opts.AgentID, ProviderName: "kimi", Ctx: ctx, Cancel: cancel,
 			Stdin: agenttest.NopStdin(io.Discard), APITimeout: opts.APITimeout,
 		}),
-		sink:       agent.NewModelProgressResetSink(agent.NewProviderServices(sink)),
+		sink:       services,
 		workingDir: opts.WorkingDir,
 		clock:      quartz.NewReal(),
 	}
-	require.NoError(t, a.connect(ctx, url, fakeKapToken, opts, 30*time.Second))
-	t.Cleanup(a.closeStream)
-	return a, sink, opts
+	return a, opts
 }
 
 // sessionID returns the agent's current session.
@@ -679,8 +807,8 @@ func (r *kimiTestRig) feed(t *testing.T, payload map[string]any) {
 	r.agent.HandleOutput(kimiEventFrame(t, r.sessionID(), payload))
 }
 
-// kimiEventFrame renders one event frame the way the server sends it: the
-// payload's own `type` repeated on the frame.
+// kimiEventFrame builds flat native interactions and retained diagnostic envelopes.
+// Diagnostic envelopes repeat the payload type on the outer frame.
 func kimiEventFrame(t *testing.T, sessionID string, payload map[string]any) []byte {
 	t.Helper()
 	if payload["type"] == contracts.KimiFrameInteraction {
@@ -704,8 +832,7 @@ func kimiEventFrame(t *testing.T, sessionID string, payload map[string]any) []by
 func newOfflineKimiAgent(t *testing.T, sink agent.ServiceFacets) *Agent {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	return &Agent{
+	a := &Agent{
 		Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{
 			AgentID: "test-agent", ProviderName: "kimi", Ctx: ctx, Cancel: cancel,
 			Stdin: agenttest.NopStdin(io.Discard),
@@ -716,21 +843,25 @@ func newOfflineKimiAgent(t *testing.T, sink agent.ServiceFacets) *Agent {
 		sessionID:  "session_1",
 		settings:   kimiSettings{model: "kimi-k2", effort: agent.EffortAuto, permission: "manual"},
 	}
+	t.Cleanup(func() {
+		cancel()
+		a.closeStream()
+	})
+	return a
 }
 
-// pauseBackgroundTaskUpsert holds the provider's registry update until the test releases it.
-// EnsureChildAgent can create the row before the provider supplies its remaining fields.
-func pauseBackgroundTaskUpsert(t *testing.T, sink *agenttest.ControlSink, rowKey string) func() {
+func adoptNativeKimiChild(t *testing.T, a *Agent, nativeID string) string {
 	t.Helper()
-	released := make(chan struct{})
-	release := sync.OnceFunc(func() { close(released) })
-	t.Cleanup(release)
-	sink.OnUpsertBackgroundTask = func(task bgtask.Upsert) {
-		if task.RowKey == rowKey {
-			<-released
-		}
-	}
-	return release
+	a.Mu.Lock()
+	sessionID := a.sessionID
+	a.Mu.Unlock()
+	raw, err := json.Marshal(map[string]any{"type": contracts.KimiEventTask, "session_id": sessionID,
+		"agent_id": kimiMainAgentID, "task_id": "task-" + nativeID, "kind": "subagent", "status": "running", "detached": false, "child_agent_id": nativeID})
+	require.NoError(t, err)
+	a.HandleOutput(raw)
+	child, linked := a.children.get(nativeID)
+	require.True(t, linked)
+	return child.childAgentID
 }
 
 // waitFor polls cond until it holds. The deadline is generous and never

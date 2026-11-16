@@ -134,6 +134,14 @@ func (a *Agent) handleSystem(raw []byte) {
 		return
 	}
 	switch envelope.Subtype {
+	case codebuddySubtypeUsageUpdate:
+		var usage codebuddyUsageSnapshot
+		if err := json.Unmarshal(raw, &usage); err != nil {
+			slog.Debug("codebuddy: malformed usage update", "agent_id", a.AgentID(), "error", err)
+			return
+		}
+		a.broadcastContextUsage(usage)
+		return
 	case contracts.CodebuddySystemSubtypeKeepalive:
 		return
 	case contracts.CodebuddySystemSubtypeStatus:
@@ -232,12 +240,7 @@ func (a *Agent) handleResult(raw []byte) {
 		slog.Warn("codebuddy: malformed result", "agent_id", a.AgentID(), "error", err)
 	} else {
 		a.backfillMissingAssistantText(result)
-		a.mu.Lock()
-		model := a.model
-		a.mu.Unlock()
-		if usage := codebuddyContextUsage(result, model); usage != nil {
-			a.sink.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyContextUsage: usage})
-		}
+		a.broadcastContextUsage(result.codebuddyUsageSnapshot)
 	}
 	a.mu.Lock()
 	diagnostic := a.lastDiagnostic
@@ -459,27 +462,44 @@ func (a *Agent) backfillMissingAssistantText(result resultMessage) {
 	a.persistRaw(frame)
 }
 
+func (a *Agent) broadcastContextUsage(snapshot codebuddyUsageSnapshot) {
+	a.mu.Lock()
+	model, sessionID := a.model, a.sessionID
+	a.mu.Unlock()
+	if snapshot.SessionID != "" && snapshot.SessionID != sessionID {
+		return
+	}
+	if usage := codebuddyContextUsage(snapshot, model); usage != nil {
+		a.sink.BroadcastSessionInfo(map[string]any{contracts.SessionInfoKeyContextUsage: usage})
+	}
+}
+
 // codebuddyContextUsage reads the primary model's counts and current context size.
-func codebuddyContextUsage(result resultMessage, model string) map[string]any {
+func codebuddyContextUsage(snapshot codebuddyUsageSnapshot, model string) map[string]any {
+	if snapshot.Usage == nil && snapshot.Meta.TurnUsage != nil && snapshot.Meta.TurnUsage.Version == 1 && snapshot.Meta.TurnUsage.Scope == "turn" {
+		snapshot.Usage = snapshot.Meta.TurnUsage.Total.Usage
+	}
+
 	var selected *codebuddyModelUsage
-	if usage, ok := result.ModelUsage[model]; ok {
+	if usage, ok := snapshot.ModelUsage[model]; ok {
 		selected = &usage
-	} else if len(result.ModelUsage) == 1 {
-		for _, usage := range result.ModelUsage {
+	} else if len(snapshot.ModelUsage) == 1 {
+		for _, usage := range snapshot.ModelUsage {
 			selected = &usage
 		}
 	}
-	if selected == nil && result.Usage == nil && result.Meta.ContextUsed == nil {
+	hasContextTokens := snapshot.Meta.ContextUsed != nil && *snapshot.Meta.ContextUsed >= 0
+	if selected == nil && snapshot.Usage == nil && !hasContextTokens {
 		return nil
 	}
 
 	counts := providerkit.ContextTokenCounts{}
-	if result.Usage != nil {
+	if snapshot.Usage != nil {
 		counts = providerkit.ContextTokenCounts{
-			Input:      max(0, result.Usage.InputTokens),
-			Output:     max(0, result.Usage.OutputTokens),
-			CacheWrite: max(0, result.Usage.CacheCreationInputTokens),
-			CacheRead:  max(0, result.Usage.CacheReadInputTokens),
+			Input:      max(0, snapshot.Usage.InputTokens),
+			Output:     max(0, snapshot.Usage.OutputTokens),
+			CacheWrite: max(0, snapshot.Usage.CacheCreationInputTokens),
+			CacheRead:  max(0, snapshot.Usage.CacheReadInputTokens),
 		}
 	}
 	if selected != nil {
@@ -494,8 +514,8 @@ func codebuddyContextUsage(result resultMessage, model string) map[string]any {
 	if selected != nil && selected.ContextWindow > 0 {
 		usage[contracts.ContextUsageFieldContextWindow] = selected.ContextWindow
 	}
-	if result.Meta.ContextUsed != nil && *result.Meta.ContextUsed >= 0 {
-		usage[contracts.ContextUsageFieldContextTokens] = *result.Meta.ContextUsed
+	if hasContextTokens {
+		usage[contracts.ContextUsageFieldContextTokens] = *snapshot.Meta.ContextUsed
 	}
 	return usage
 }

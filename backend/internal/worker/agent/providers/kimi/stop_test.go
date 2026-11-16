@@ -25,13 +25,15 @@ func TestKimiWaitSettlesWhatTheProcessLeftOpen(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			rig := newKimiOutputRig(t)
-			rig.startTurn(t, 0, contracts.KimiOriginUser)
-			rig.feed(t, map[string]any{"type": contracts.KimiEventToolCallStarted, "turnId": 0, "toolCallId": "call_1",
-				"name": contracts.KimiToolBash, "args": map[string]any{"command": "sleep 60"}})
-			spawnAgent(t, rig, "agent-0", "call_child", nil)
-			// A tool call flushes the text before it, so the text the process leaves
-			// behind is what streamed after the last call started.
-			rig.feed(t, map[string]any{"type": contracts.KimiEventAssistantDelta, "turnId": 0, "delta": "Half an answer"})
+			rig.transcriptOps(t, 1,
+				`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`,
+				`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"call_1","toolCallId":"call_1","name":"Bash","state":"running","input":{"command":"sleep 60"}}}`,
+				`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"spawn","toolCallId":"call_child","name":"Agent","state":"running","input":{"prompt":"Review."},"agentRefs":[{"agentId":"agent-0","role":"child"}]}}`)
+			rig.transcriptAgentOps(t, "agent-0", 1,
+				`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"other"},"prompt":"Review."}}`,
+				`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"read","toolCallId":"read","name":"Read","state":"running","input":{"path":"a.go"}}}`,
+				`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"text","frameId":"answer","role":"assistant","text":"Found it."}}`)
+			rig.transcriptOps(t, 2, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"text","frameId":"answer","role":"assistant","text":"Half an answer"}}`)
 			_, child := childOf(t, rig.sink, "session_1/agent-0")
 			childBefore := len(child.Messages())
 
@@ -41,7 +43,7 @@ func TestKimiWaitSettlesWhatTheProcessLeftOpen(t *testing.T) {
 
 			var text, call bool
 			for _, message := range rig.sink.Messages() {
-				if message.SpanID == kimiSpanID("session_1", kimiMainAgentID, 0, "call_1") && message.Closing {
+				if message.SpanID == "session_1/"+kimiTranscriptScope("main", "t0", "t0.1", "call_1") && message.Closing {
 					call = true
 					assert.Equal(t, tc.completion, message.Completion, "the open call states how the process ended")
 				}
@@ -72,7 +74,7 @@ func TestKimiWaitSettlesWhatTheProcessLeftOpen(t *testing.T) {
 func TestKimiProcessExitReleasesManualCompaction(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual"})
+	rig.publishMarker(t, kimiMainAgentID, "compaction", map[string]any{"trigger": "manual", "phase": "started"})
 	active, published := rig.sink.LastTurnActive()
 	require.True(t, published)
 	require.True(t, active, "manual compaction holds the queue before process exit")
@@ -119,7 +121,7 @@ func TestKimiStop(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		exitOnShutdown(rig)
-		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": "user"}})
+		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user","payload":{"kind":"user"}}}}`)
 		rig.fake.reply("POST "+kimiSessionPath("session_1", kimiActionAbort), fakeKapReply{Code: 50000, Msg: "abort failed"})
 		rig.agent.Stop()
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiSessionPath("session_1", kimiActionAbort)), 1)
@@ -142,7 +144,7 @@ func TestKimiInterrupt(t *testing.T) {
 	t.Run("reports an abort the server refuses", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": "user"}})
+		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user","payload":{"kind":"user"}}}}`)
 		rig.fake.reply("POST "+kimiSessionPath("session_1", kimiActionAbort), fakeKapReply{Code: 40401, Msg: "no running turn"})
 		require.ErrorContains(t, rig.agent.Interrupt(agent.StopContext{}), "no running turn")
 	})
@@ -150,7 +152,7 @@ func TestKimiInterrupt(t *testing.T) {
 	t.Run("refuses a session id that Kimi Code does not issue", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": "user"}})
+		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user","payload":{"kind":"user"}}}}`)
 		rig.agent.Mu.Lock()
 		rig.agent.sessionID = "../other"
 		rig.agent.Mu.Unlock()

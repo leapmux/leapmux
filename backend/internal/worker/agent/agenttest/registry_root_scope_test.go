@@ -1,6 +1,8 @@
 package agenttest
 
 import (
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	"testing"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -11,10 +13,14 @@ import (
 func TestRecordingDescendantTasksUseTheRootRegistry(t *testing.T) {
 	t.Parallel()
 	root := &Sink{}
-	parentID, err := root.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-parent", Title: "Parent"})
+	parentID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-parent", Title: "Parent"})
 	require.NoError(t, err)
 	parent := root.Child(parentID)
-	grandchildID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-grandchild", Title: "Grandchild"})
+	grandchildID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-grandchild", Title: "Grandchild"})
 	require.NoError(t, err)
 	require.NotEqual(t, parentID, grandchildID)
 	for _, lookup := range []struct {

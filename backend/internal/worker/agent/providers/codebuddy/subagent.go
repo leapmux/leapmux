@@ -428,7 +428,9 @@ func (a *Agent) replayWorkflowChild(runID string, child codebuddyWorkflowChild, 
 	if err != nil {
 		return err
 	}
-	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: child.rowKey, ProviderChildKey: child.rowKey, Title: child.title})
+	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  child.rowKey, ProviderChildKey: child.rowKey, Title: child.title})
 	if err != nil {
 		return fmt.Errorf("%w: ensure workflow child %s: %w", errCodebuddyChildRoute, child.rowKey, err)
 	}
@@ -498,7 +500,9 @@ func (a *Agent) ensureChildRow(spawnID, rowKey, title, prompt, groupKey, groupLa
 	childID := knownChild
 	if childID == "" {
 		var err error
-		childID, err = a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: spawnID, ProviderChildKey: rowKey, Title: title})
+		childID, err = a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  spawnID, ProviderChildKey: rowKey, Title: title})
 		if err != nil {
 			slog.Warn("codebuddy: ensure child", "spawn_id", spawnID, "error", err)
 			return ""

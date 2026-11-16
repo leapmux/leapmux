@@ -8,6 +8,7 @@ import { testMessageSources } from '~/test-support/messageRenderSources'
 import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
 import { toolOutcomeLabel } from '../results/toolOutcomeLabel'
 import { toolUseHeader } from '../toolStyles.css'
+import { openCodeToolPart } from './opencode/toolResults.fixtures'
 import { providerFor } from './registry'
 import { input } from './testUtils'
 import './index'
@@ -19,6 +20,18 @@ function mcpMessages(provider: AgentProvider) {
   ]
   // The literal above holds one block, so the indexed read never misses at runtime.
   const firstText = content[0]?.text ?? ''
+  if (provider === AgentProvider.OPENCODE) {
+    return {
+      spanType: 'Docs_lookup',
+      request: openCodeToolPart('call', 'Docs_lookup', args, { status: 'running' }),
+      result: openCodeToolPart('call', 'Docs_lookup', args, {
+        status: 'completed',
+        content: [
+          { type: 'text', text: firstText },
+        ],
+      }),
+    }
+  }
   if (provider === AgentProvider.CLAUDE_CODE) {
     return {
       spanType: 'mcp__Docs__lookup',
@@ -195,22 +208,32 @@ describe.each([
     const { request, result, spanType } = mcpMessages(provider)
     const plugin = providerFor(provider)!
     const sources = (current: Record<string, unknown>, role: 'request' | 'result') => testMessageSources({
-      current: () => input(current),
-      request: () => input(request),
+      current: () => ({
+        ...input(current, null, provider),
+        completion: role === 'result'
+          ? MessageCompletion.COMPLETE
+          : MessageCompletion.UNSPECIFIED,
+      }),
+      request: () => input(request, null, provider),
       role: () => role,
       visibleRows: () => ({ request: true }),
     })
     const { container } = render(() => [
       renderMessageContent(request, {
         premeasureMode: true,
+        spanId: 'call',
         spanType,
         sources: sources(request, 'request'),
-      }, plugin?.transcript.classify(input(request)), provider),
+      }, plugin?.transcript.classify(input(request, null, provider)), provider),
       renderMessageContent(result, {
         premeasureMode: true,
+        spanId: 'call',
         spanType,
         sources: sources(result, 'result'),
-      }, plugin?.transcript.classify(input(result)), provider),
+      }, plugin?.transcript.classify({
+        ...input(result, null, provider),
+        completion: MessageCompletion.COMPLETE,
+      }), provider),
     ])
     await settleWorkerReplies()
     expect(container.querySelectorAll(`.${toolUseHeader}`)).toHaveLength(1)
@@ -245,7 +268,10 @@ it('does not use arguments from a different Pi tool call', () => {
     sources: testMessageSources({
       request: () => input(other),
     }),
-  }, plugin?.transcript.classify(input(result)), AgentProvider.PI))
+  }, plugin?.transcript.classify({
+    ...input(result, null, AgentProvider.PI),
+    completion: MessageCompletion.COMPLETE,
+  }), AgentProvider.PI))
   expect(container.textContent).not.toContain('foreign argument')
   expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toContain('lookup')
 })
@@ -272,7 +298,10 @@ it('does not use a Claude request from another call', () => {
     sources: testMessageSources({
       request: () => input(other),
     }),
-  }, plugin?.transcript.classify(input(result)), AgentProvider.CLAUDE_CODE))
+  }, plugin?.transcript.classify({
+    ...input(result, null, AgentProvider.CLAUDE_CODE),
+    completion: MessageCompletion.COMPLETE,
+  }), AgentProvider.CLAUDE_CODE))
   expect(container.textContent).not.toContain('foreign argument')
   expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toContain('lookup')
 })
@@ -308,9 +337,12 @@ it.each([AgentProvider.PI, AgentProvider.ZCODE])('does not repeat a synthetic fa
     premeasureMode: true,
     spanType,
     sources: testMessageSources({
-      request: () => input(request),
+      request: () => input(request, null, provider),
     }),
-  }, plugin?.transcript.classify(input(result)), provider))
+  }, plugin?.transcript.classify({
+    ...input(result, null, provider),
+    completion: MessageCompletion.COMPLETE,
+  }), provider))
   expect(container.textContent).toContain(toolOutcomeLabel('failed'))
   expect(container.textContent).toContain('Access denied')
   expect(container.textContent).not.toContain('Tool call failed')
@@ -341,10 +373,11 @@ describe('retained MCP completion', () => {
     const plugin = providerFor(provider)!
     const { container } = render(() => renderMessageContent(result, {
       premeasureMode: true,
+      spanId: 'call',
       spanType,
       sources: testMessageSources({
         current: () => parsed,
-        request: () => input(request),
+        request: () => input(request, null, provider),
       }),
     }, plugin?.transcript.classify(parsed), provider, MessageCompletion.INTERRUPTED))
     await settleWorkerReplies()

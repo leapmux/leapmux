@@ -12,7 +12,7 @@ opencodeTest('keeps its Plan mode and effort after a turn and reload', async ({ 
 // notification before it answers the model request. Both models offer high, which differs from that reset.
 opencodeTest('keeps the chosen effort after a model switch and a reload', async ({ native }) => {
   await exerciseModelSwitchKeepsOption(native, {
-    kept: { groupId: 'effort', value: 'high' },
+    kept: { groupId: 'effort', value: 'variant:high' },
     model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.pi}`,
     nativeProof: (request) => {
       expect(request.body).toMatchObject({ model: MOCK_MODELS.pi, reasoning_effort: 'high' })
@@ -20,16 +20,19 @@ opencodeTest('keeps the chosen effort after a model switch and a reload', async 
   })
 })
 
-// OpenCode 1.18.34 states no effort option for a model that declares no reasoning variant, so the control hides. When
-// the reasoning model returns, OpenCode reports the variant that the session held, Low, and the ACP base shows it.
-opencodeTest('hides the effort for a model without variants and keeps the chosen effort over the round trip', async ({ native }) => {
+// Native clients keep an independent effort preference for each model. Returning to the reasoning model restores
+// its previous choice after a model without variants hid the control.
+opencodeTest('hides the effort for a model without variants and restores the previous model preference', async ({ native }) => {
   await exerciseEffortModelRoundTrip(native, {
     effortGroupId: 'effort',
     model: `${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`,
-    chosen: 'low',
+    chosen: 'variant:low',
     via: OPENCODE_FAMILY_PLAIN_MODEL_ID,
     viaEfforts: 'hidden',
-    settled: 'low',
-    nativeProof: request => expect(request.body).toMatchObject({ model: MOCK_MODELS.zai, reasoning_effort: 'low' }),
+    settled: 'variant:low',
+    nativeProof: (request) => {
+      expect(request.body).toMatchObject({ model: MOCK_MODELS.zai })
+      expect(request.body).toMatchObject({ reasoning_effort: 'low' })
+    },
   })
 })

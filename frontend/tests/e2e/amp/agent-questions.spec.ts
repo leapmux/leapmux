@@ -43,8 +43,12 @@ ampTest('disables the actual native question tool while real permission controls
           nativeProof: async (request) => {
             expect((await nativeToolOutcome(native, request, callId)).text).toContain('AMPQUESTIONLIMIT42')
             const frames = watch.controls()
-            expect(frames.length).toBeGreaterThan(0)
-            expect(frames.every(frame => ampExtractControl({ payload: frame.payload })?.kind === 'permission')).toBe(true)
+            const requests = frames.filter(frame => !frame.canceled)
+            expect(requests.length).toBeGreaterThan(0)
+            expect(requests.every(frame => ampExtractControl({ payload: frame.payload })?.kind === 'permission')).toBe(true)
+            const permissionIds = new Set(requests.map(frame => frame.requestId))
+            for (const frame of frames.filter(frame => frame.canceled))
+              expect(permissionIds.has(frame.requestId)).toBe(true)
           },
         }),
       }),

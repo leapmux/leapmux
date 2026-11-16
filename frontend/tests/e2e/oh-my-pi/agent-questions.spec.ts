@@ -1,7 +1,10 @@
 import { expect } from '@playwright/test'
 import { chooseQuestionOption, exerciseQuestionAnswer, exerciseQuestionPages, exerciseQuestionPreviews, exerciseTypedQuestionAnswer } from '../helpers/nativeQuestion'
 import { exerciseQuestionIsolation } from '../helpers/nativeQuestionIsolation'
-import { savedControlAnswer } from '../helpers/ui'
+import { restoreQuestionEmptySelection } from '../helpers/nativeQuestionRestoration'
+import { nativeTextStep, nativeToolOutcome } from '../helpers/nativeScenario'
+import { ohMyPiAskFormToolCall } from '../helpers/providerToolCalls'
+import { assistantBubbles, controlButton, expectNoControlBanner, savedControlAnswer, sendMessage, waitForAgentIdle, waitForControlBanner } from '../helpers/ui'
 import { ohMyPiTest } from '../ohmypi-fixtures'
 
 /**
@@ -58,4 +61,36 @@ ohMyPiTest('returns a custom native answer after its draft survives reload', asy
 
 ohMyPiTest('keeps a native question on its owner tab and workspace after reload', async ({ native }) => {
   await exerciseQuestionIsolation(native, { customAnswerDraft: true })
+})
+
+ohMyPiTest('clears optional defaults and preserves the empty answer after reload', async ({ native }) => {
+  const callId = 'optional-languages'
+  const answer = 'The optional languages are empty.'
+  const html = '<form><fieldset><legend>Languages</legend><label><input type="checkbox" name="langs" value="go" checked>Go</label><label><input type="checkbox" name="langs" value="rust">Rust</label><label><input type="checkbox" name="langs" value="disabled" checked disabled>Disabled</label></fieldset></form>'
+  const start = await native.modelScript.queue(
+    {
+      toolCalls: [
+        ohMyPiAskFormToolCall(callId, html, 'Choose languages'),
+      ],
+    },
+    nativeTextStep(native, answer),
+  )
+  await sendMessage(native.page, native.modelScript.prompt('Ask the optional languages form and report the answer.'))
+  await native.modelScript.waitForSteps(start + 1)
+  const banner = await waitForControlBanner(native.page)
+  const selected = banner.getByTestId('question-option-Go')
+  await expect(selected.locator('input')).toBeChecked()
+  await expect(banner.getByTestId('question-option-Disabled')).toHaveCount(0)
+  await selected.click()
+  await restoreQuestionEmptySelection(native, banner, 'Go')
+  await expect(controlButton(native.page, 'submit')).toBeEnabled()
+  await controlButton(native.page, 'submit').click()
+  await native.modelScript.waitForSteps(start + 2)
+  await waitForAgentIdle(native.page)
+  const result = await nativeToolOutcome(native, await native.modelScript.requestAt(start + 1), callId)
+  expect(result.text).toMatch(/"langs":\s*\[\]/)
+  expect(result.text).not.toContain('go')
+  expect(result.text).not.toContain('disabled')
+  await expect(assistantBubbles(native.page).filter({ hasText: answer }).first()).toBeVisible()
+  await expectNoControlBanner(native.page)
 })

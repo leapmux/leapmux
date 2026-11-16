@@ -3,7 +3,6 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { writeMcpFormServer } from './mcpFormServer'
 import { writePrivateJSON } from './privateConfigFile'
-import { qoderEndpointCacheRecords } from './qoderSurface'
 
 /**
  * The user output style that every Qoder run offers beside the built-in ones. Qoder lists it in the
@@ -16,6 +15,8 @@ export interface QoderEnvironmentOptions {
   homeDir: string
   /** The origin of the mock, which serves Qoder's account and endpoint services. */
   origin: string
+  /** The worker requires an HTTPS origin for its center override. */
+  centerOrigin?: string
   /** The OpenAI-compatible base URL of the mock, which ends in `/v1`. */
   baseURL: string
   modelKey: string
@@ -34,7 +35,7 @@ export interface QoderEnvironmentOptions {
  * QODER_JOB_TOKEN supplies the current non-persistent job credential.
  * The account credential is independent of the custom model credential.
  *
- * qoderEndpointCaches supplies each elected endpoint through both native cache formats.
+ * QODER_CENTER_ENDPOINT directs native endpoint election to the mock.
  * Authentication calls reach handleQoderHttp in ./qoderSurface. Model calls reach ./mockModelServer.
  * A modelConfigs.customModels entry beside providers causes a native catalog conflict.
  * The fixture therefore supplies one provider registration.
@@ -48,7 +49,6 @@ export function createQoderEnvironment(options: QoderEnvironmentOptions): Record
   const formServer = writeMcpFormServer(qoderHome, 'form-server.mjs')
   writePrivateJSON(join(qoderHome, 'settings.json'), qoderSettings(options, formServer))
   writeQoderProbeOutputStyle(qoderHome)
-  qoderEndpointCaches(qoderHome, options.origin)
   return {
     QODER_SITE: 'GLOBAL',
     // Select prod without a region suffix. The native format is "<env>-<region>".
@@ -80,6 +80,7 @@ export function createQoderEnvironment(options: QoderEnvironmentOptions): Record
     }),
     QODERSEC_SKIP_ASYNC_UPDATE: '1',
     QODER_CONFIG_SERVICE_URL: options.origin,
+    QODER_CENTER_ENDPOINT: options.centerOrigin ?? options.origin,
     QODER_SERVER_ENDPOINT: '',
   }
 }
@@ -116,7 +117,21 @@ function qoderSettings(options: QoderEnvironmentOptions, formServer: McpProbeSer
           {
             model: options.modelID,
             displayName: 'Mock Model',
-            capabilities: { vision: true },
+            capabilities: {
+              vision: true,
+              thinking: {
+                modes: ['adaptive', 'enabled'],
+                preferredMode: 'adaptive',
+                supportsEffort: true,
+                supportedEffortLevels: [
+                  'low',
+                  'medium',
+                  'high',
+                  'xhigh',
+                  'max',
+                ],
+              },
+            },
           },
           {
             model: options.alternateModelID,
@@ -138,21 +153,4 @@ function writeQoderProbeOutputStyle(qoderHome: string): void {
   const directory = join(qoderHome, 'output-styles')
   mkdirSync(directory, { recursive: true })
   writeFileSync(join(directory, 'leapmux-probe.md'), `---\nname: ${QODER_PROBE_OUTPUT_STYLE.name}\ndescription: The LeapMux E2E probe style\n---\n\n${QODER_PROBE_OUTPUT_STYLE.marker}: answer as the LeapMux probe style.\n`)
-}
-
-/**
- * Set every elected Qoder endpoint to the mock through its native V1 and V2 caches.
- *
- * A cold native cache selects real *.qoder.sh endpoints for authentication and model calls.
- * The auth path requires V1. Its absence causes access_token_invalid before token exchange.
- * Discovery refresh writes V2. Both formats expire after 24 hours.
- * The fixture writes a fresh updatedAt for each run.
- */
-function qoderEndpointCaches(qoderHome: string, origin: string): void {
-  const cacheDir = join(qoderHome, '.cache')
-  mkdirSync(cacheDir, { recursive: true })
-  const { v1, v2 } = qoderEndpointCacheRecords(origin, Date.now())
-  writePrivateJSON(join(cacheDir, 'qoder-client-endpoint-cache.json'), v2)
-  writePrivateJSON(join(cacheDir, 'qoder-client-endpoint-cache-public.json'), v2)
-  writePrivateJSON(join(cacheDir, 'endpoint-cache.json'), v1)
 }

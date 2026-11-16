@@ -338,7 +338,9 @@ func (a *Agent) startWorkflowChild(event *qoderTaskEvent) bool {
 		title = "Workflow child"
 	}
 	child := &qoderWorkflowChild{taskID: event.TaskID, title: title, prompt: event.Prompt}
-	if childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: event.TaskID, ProviderChildKey: event.TaskID, Title: title}); err != nil {
+	if childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  event.TaskID, ProviderChildKey: event.TaskID, Title: title}); err != nil {
 		providerkit.LogRegistryRefusal("qoder", "open workflow child", err)
 	} else {
 		child.childID = childID
@@ -396,7 +398,9 @@ func (a *Agent) applyWorkflowArchive(run *qoderWorkflowRun, status bgtask.Status
 		saved := archive.children[taskID]
 		title := bgtask.FirstLine(saved.prompt)
 		child := &qoderWorkflowChild{taskID: taskID, title: title, prompt: saved.prompt}
-		if childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: taskID, ProviderChildKey: taskID, Title: title}); err != nil {
+		if childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  taskID, ProviderChildKey: taskID, Title: title}); err != nil {
 			routeErrors[taskID] = fmt.Errorf("open saved workflow child: %w", err)
 		} else {
 			child.childID = childID
@@ -467,6 +471,8 @@ func (a *Agent) startChildTask(event *qoderTaskEvent) bool {
 		title = "Subagent"
 	}
 	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+
 		SpawnSpanID: event.ToolUseID, ProviderChildKey: event.ToolUseID, Title: title,
 		Options: optionmap.Map{qoderOptionChildKind: qoderChildKindTask},
 	})

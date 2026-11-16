@@ -388,6 +388,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const rowContext: RowExtractionContext = {
     sources,
     get renderCache() { return props.host?.renderCache },
+    get spanId() { return props.message.spanId },
     get spanType() { return props.message.spanType },
     get spanId() { return props.message.spanId },
   }

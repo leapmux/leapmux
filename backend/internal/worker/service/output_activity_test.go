@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -803,10 +804,16 @@ func TestActivity_TreeChildrenUnionTheListAndTheMapWithoutDuplicates(t *testing.
 	h.setTurnActive("child-9", "root-2", true)
 
 	rows := []bgtask.Item{
-		{RowKey: "a", ChildAgentID: "child-1", Status: bgtask.StatusRunning},
-		{RowKey: "b", ChildAgentID: "child-2", Status: bgtask.StatusRunning},
+		{
+			Role:   bgtask.RoleChildTask,
+			RowKey: "a", ChildAgentID: "child-1", Status: bgtask.StatusRunning},
+		{
+			Role:   bgtask.RoleChildTask,
+			RowKey: "b", ChildAgentID: "child-2", Status: bgtask.StatusRunning},
 		{RowKey: "c", Status: bgtask.StatusRunning},
-		{RowKey: "d", ChildAgentID: "root-1", Status: bgtask.StatusRunning},
+		{
+			Role:   bgtask.RoleChildTask,
+			RowKey: "d", ChildAgentID: "root-1", Status: bgtask.StatusRunning},
 	}
 
 	got := h.treeChildIDs("root-1", rows)
@@ -867,10 +874,16 @@ func TestCountActiveBackgroundTasks(t *testing.T) {
 	t.Parallel()
 
 	rows := []bgtask.Item{
-		{RowKey: "a", ChildAgentID: "child-1", Status: bgtask.StatusSucceeded},
-		{RowKey: "b", ChildAgentID: "child-2", Status: bgtask.StatusRunning},
-		{RowKey: "c", Status: bgtask.StatusPending},
-		{RowKey: "d", ChildAgentID: "child-3", Status: bgtask.StatusPaused},
+		{
+			Role:   bgtask.RoleChildTask,
+			RowKey: "a", ChildAgentID: "child-1", Status: bgtask.StatusSucceeded},
+		{
+			Role:   bgtask.RoleChildTask,
+			RowKey: "b", ChildAgentID: "child-2", Status: bgtask.StatusRunning},
+		{Role: bgtask.RoleTaskOutcome, RowKey: "c", Status: bgtask.StatusPending},
+		{
+			Role:   bgtask.RoleChildTask,
+			RowKey: "d", ChildAgentID: "child-3", Status: bgtask.StatusPaused},
 	}
 
 	// A ROOT counts every descendant's row; that roll-up is what the root tab has
@@ -946,9 +959,13 @@ func TestActivity_APausedRowHiddenByTheCapStaysIdle(t *testing.T) {
 
 	svc, sink := setupRootSink(t, "root-1")
 	svc.Output.processRunning = func(string) bool { return true }
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-paused", ProviderChildKey: "task-paused", Title: "Paused child"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn-paused", ProviderChildKey: "task-paused", Title: "Paused child"})
 	require.NoError(t, err)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: "task-paused", Kind: bgtask.KindSubagent, ChildAgentID: childID,
 		Title: "Paused child", Status: bgtask.StatusPaused,
 	}))
@@ -975,12 +992,16 @@ func TestActivity_AReadmittedRowStopsBeingCountedTwice(t *testing.T) {
 	// running does not.
 	svc, sink := setupRootSink(t, "root-1")
 	svc.Output.processRunning = func(string) bool { return true }
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	// A CHANGED title each time, so the upsert is a real mutation. An identical
 	// one is a no-op the registry never re-admits.
 	upsertChild := func(title string) {
 		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+			Role: bgtask.RoleChildTask,
+
 			RowKey: "task-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
 			Title: title, Status: bgtask.StatusRunning,
 		}))
@@ -1120,9 +1141,13 @@ func setupRunningSubagent(
 	t.Helper()
 	svc, sink := setupRootSink(t, rootID)
 	svc.Output.processRunning = func(string) bool { return true }
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: "task-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
 		Title: "SCAN", Status: status,
 	}))
@@ -1248,6 +1273,8 @@ func TestActivity_RootRollsUpDescendantsAndAChildReadsOnlyItsOwnRow(t *testing.T
 
 	svc, sink, rootID, childID := setupActivityRegistryTest(t)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: "row-key-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
 		Title: "child task", Status: bgtask.StatusRunning,
 	}))
@@ -1268,12 +1295,18 @@ func TestActivity_AFinishedChildIsIdleWhileASiblingKeepsRunning(t *testing.T) {
 
 	svc, sink, rootID, childID := setupActivityRegistryTest(t)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: "row-key-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
 		Title: "child task", Status: bgtask.StatusRunning,
 	}))
-	siblingID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span-2", ProviderChildKey: "row-key-2", Title: "sibling task"})
+	siblingID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn-span-2", ProviderChildKey: "row-key-2", Title: "sibling task"})
 	require.NoError(t, err)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: "row-key-2", Kind: bgtask.KindSubagent, ChildAgentID: siblingID,
 		Title: "sibling task", Status: bgtask.StatusRunning,
 	}))
@@ -1296,6 +1329,8 @@ func TestActivity_ChildIsIdleWhenTheFeedingProcessIsGone(t *testing.T) {
 
 	svc, sink, rootID, childID := setupActivityRegistryTest(t)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: "row-key-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
 		Title: "child task", Status: bgtask.StatusRunning,
 	}))
@@ -1316,6 +1351,8 @@ func TestAgentToProto_CarriesTheDerivedActivity(t *testing.T) {
 	ctx := context.Background()
 	svc, sink, rootID, childID := setupActivityRegistryTest(t)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: "row-key-1", Kind: bgtask.KindSubagent, ChildAgentID: childID,
 		Title: "child task", Status: bgtask.StatusRunning,
 	}))
@@ -1416,7 +1453,9 @@ func TestActivity_AFinishedChildStaysIdlePastTheCap(t *testing.T) {
 
 	svc, sink := setupRootSink(t, "root-1")
 	svc.Output.processRunning = func(string) bool { return true }
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 
@@ -1446,7 +1485,9 @@ func TestHasRegistryRowFor(t *testing.T) {
 	t.Parallel()
 
 	rows := []bgtask.Item{
-		{RowKey: "a", ChildAgentID: "child-1", Status: bgtask.StatusSucceeded},
+		{
+			Role:   bgtask.RoleChildTask,
+			RowKey: "a", ChildAgentID: "child-1", Status: bgtask.StatusSucceeded},
 		{RowKey: "b", Status: bgtask.StatusRunning},
 	}
 
@@ -2259,4 +2300,180 @@ func TestActivity_AProcessBoundaryAfterShutdownClearsTheEntryAndPublishesNothing
 	assert.Equal(t, []bool{true}, rec.busyStates(), "no broadcast leaves after the latch")
 	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE,
 		h.AgentActivitySnapshot("agent-1", "agent-1").State, "the turn flag is still cleared")
+}
+
+func TestBackgroundTaskRolesKeepChildActivitySeparate(t *testing.T) {
+	t.Parallel()
+	rows := []bgtask.Item{
+		{RowKey: "task", Role: bgtask.RoleTaskOutcome, ChildAgentID: "child", Status: bgtask.StatusRunning},
+		{RowKey: "child", Role: bgtask.RoleChildActivity, ChildAgentID: "child", Status: bgtask.StatusSucceeded},
+	}
+	assert.Zero(t, countActiveBackgroundTasks(rows, "child"), "a running related task does not revive canonical child activity")
+	assert.Equal(t, int32(1), countActiveBackgroundTasks(rows, ""))
+	assert.False(t, hasRegistryRowFor(rows[:1], "child"), "a related outcome does not suppress canonical storage fallback")
+	rows[0].Status = bgtask.StatusSucceeded
+	rows[1].Status = bgtask.StatusRunning
+	assert.Zero(t, countActiveBackgroundTasks(rows, "child"), "child activity does not invent a task count")
+	assert.True(t, backgroundTaskActivityFor(rows, "child").working)
+	assert.Zero(t, countActiveBackgroundTasks(rows, ""), "an activity-only marker is not another task")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING,
+		activityStateLocked(&agentActivity{}, activityInputs{processAlive: true, registryWorking: true}),
+		"root work can exist without another task count")
+}
+
+func TestBackgroundTaskRolesRoutePastAnEarlierOutcome(t *testing.T) {
+	t.Parallel()
+	svc, sink := setupRootSink(t, "role-root")
+	svc.Output.processRunning = func(string) bool { return true }
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "earlier-task", Role: bgtask.RoleTaskOutcome, Kind: bgtask.KindSubagent, Title: "Coordinator task", Status: bgtask.StatusRunning}))
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{RegistryRole: bgtask.RoleChildActivity, ProviderChildKey: "canonical-child", SpawnSpanID: "role-spawn", Title: "Child activity"})
+	require.NoError(t, err)
+	require.NoError(t, sink.CloseBackgroundTask("canonical-child", bgtask.StatusSucceeded))
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "earlier-task", Role: bgtask.RoleTaskOutcome, Kind: bgtask.KindSubagent, ChildAgentID: childID, Status: bgtask.StatusRunning}))
+	row, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(t.Context(), childID)
+	require.NoError(t, err)
+	assert.Equal(t, "canonical-child", row.RowKey, "routing must select canonical authority rather than creation order")
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE, svc.Output.AgentActivitySnapshot(childID, "role-root").State)
+	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks-1)
+	rows, err := svc.Output.LoadBackgroundTasks(t.Context(), "role-root")
+	require.NoError(t, err)
+	for _, item := range rows {
+		require.NotEqual(t, "canonical-child", item.RowKey, "the cap must hide the completed canonical row")
+	}
+	assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_IDLE, svc.Output.AgentActivitySnapshot(childID, "role-root").State, "a visible outcome must not hide canonical storage fallback")
+}
+
+func TestBackgroundTaskRolesPreserveHiddenActivityWithoutAnotherTask(t *testing.T) {
+	t.Parallel()
+	svc, sink := setupRootSink(t, "hidden-role-root")
+	svc.Output.processRunning = func(string) bool { return true }
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{RegistryRole: bgtask.RoleChildActivity, ProviderChildKey: "hidden-child", SpawnSpanID: "hidden-role-span", Title: "Child activity"})
+	require.NoError(t, err)
+	for index := range bgtask.MaxTasks {
+		require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{Role: bgtask.RoleTaskOutcome, RowKey: "filler-" + strconv.Itoa(index), Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning}))
+	}
+	rows, err := svc.Output.LoadBackgroundTasks(t.Context(), "hidden-role-root")
+	require.NoError(t, err)
+	require.False(t, hasRegistryRowFor(rows, childID), "the activity marker must actually be hidden")
+	for index := range bgtask.MaxTasks {
+		require.NoError(t, sink.CloseBackgroundTask("filler-"+strconv.Itoa(index), bgtask.StatusSucceeded))
+	}
+	for _, cold := range []bool{false, true} {
+		if cold {
+			cache := svc.Output.bgTaskCache("hidden-role-root")
+			cache.Mu.Lock()
+			cache.seeded = false
+			cache.Rows = nil
+			cache.evictedActive = registryWorkingSet[string]{}
+			cache.Mu.Unlock()
+		}
+		root := svc.Output.AgentActivitySnapshot("hidden-role-root", "hidden-role-root")
+		assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, root.State, "cold=%v", cold)
+		assert.Zero(t, root.ActiveTasks, "an activity-only marker is not another task; cold=%v", cold)
+		child := svc.Output.AgentActivitySnapshot(childID, "hidden-role-root")
+		assert.Equal(t, leapmuxv1.AgentActivityState_AGENT_ACTIVITY_STATE_WORKING, child.State)
+		assert.Zero(t, child.ActiveTasks)
+	}
+}
+
+func TestBackgroundTaskRolesConcurrentOutcomesShareOneChildActivity(t *testing.T) {
+	t.Parallel()
+	svc, sink := setupRootSink(t, "concurrent-role-root")
+	svc.Output.processRunning = func(string) bool { return true }
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{RegistryRole: bgtask.RoleChildActivity, ProviderChildKey: "concurrent-child", SpawnSpanID: "concurrent-role-span", Title: "Child activity"})
+	require.NoError(t, err)
+	const tasks = 16
+	var writes sync.WaitGroup
+	results := make(chan error, tasks)
+	for index := range tasks {
+		writes.Go(func() {
+			results <- sink.UpsertBackgroundTask(bgtask.Upsert{Role: bgtask.RoleTaskOutcome, RowKey: "task-" + strconv.Itoa(index), Kind: bgtask.KindSubagent, ChildAgentID: childID, Status: bgtask.StatusRunning})
+		})
+	}
+	writes.Wait()
+	close(results)
+	for err := range results {
+		require.NoError(t, err)
+	}
+	assert.Equal(t, int32(tasks), svc.Output.AgentActivitySnapshot("concurrent-role-root", "concurrent-role-root").ActiveTasks)
+	child := svc.Output.AgentActivitySnapshot(childID, "concurrent-role-root")
+	assert.True(t, child.Working())
+	assert.Zero(t, child.ActiveTasks)
+	for index := range tasks {
+		require.NoError(t, sink.CloseBackgroundTask("task-"+strconv.Itoa(index), bgtask.StatusSucceeded))
+	}
+	root := svc.Output.AgentActivitySnapshot("concurrent-role-root", "concurrent-role-root")
+	assert.True(t, root.Working(), "child activity outlives independent task outcomes")
+	assert.Zero(t, root.ActiveTasks)
+	require.NoError(t, sink.CloseBackgroundTask("concurrent-child", bgtask.StatusEndedWithUnknownOutcome))
+	assert.False(t, svc.Output.AgentActivitySnapshot("concurrent-role-root", "concurrent-role-root").Working())
+}
+
+func TestBackgroundTaskRolesValidateCanonicalAuthority(t *testing.T) {
+	t.Parallel()
+	svc, sink := setupRootSink(t, "validated-role-root")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{RegistryRole: bgtask.RoleChildActivity, ProviderChildKey: "canonical-role", SpawnSpanID: "validated-role-span", Title: "Child"})
+	require.NoError(t, err)
+	for _, invalid := range []bgtask.Upsert{
+		{Role: bgtask.Role(99), RowKey: "unknown-role", Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning},
+		{Role: bgtask.RoleChildTask, RowKey: "unlinked-activity", Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning},
+		{Role: bgtask.RoleChildTask, RowKey: "duplicate-activity", Kind: bgtask.KindSubagent, ChildAgentID: childID, Status: bgtask.StatusRunning},
+	} {
+		assert.Error(t, sink.UpsertBackgroundTask(invalid))
+	}
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{RowKey: "canonical-role", Title: "Updated title", Status: bgtask.StatusRunning}))
+	rows, err := svc.Output.LoadBackgroundTasks(t.Context(), "validated-role-root")
+	require.NoError(t, err)
+	require.Len(t, rows, 1, "refused roles and duplicate authority cannot leave partial rows")
+	assert.Equal(t, bgtask.RoleChildActivity, rows[0].Role, "a partial update preserves canonical authority")
+	assert.Equal(t, "Updated title", rows[0].Title)
+	canonical, err := svc.Queries.GetAgentBackgroundTaskByChildAgentID(t.Context(), childID)
+	require.NoError(t, err)
+	assert.Equal(t, "canonical-role", canonical.RowKey)
+}
+
+func TestBackgroundTaskRolesRefusedAdoptionPreservesChildIdentity(t *testing.T) {
+	t.Parallel()
+	svc, sink := setupRootSink(t, "role-adoption-root")
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{RegistryRole: bgtask.RoleChildActivity, SpawnSpanID: "role-adoption-span", Title: "Child"})
+	require.NoError(t, err)
+	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{Role: bgtask.RoleChildTask, RowKey: "existing-route", Kind: bgtask.KindSubagent, ChildAgentID: childID, Status: bgtask.StatusRunning}))
+	_, err = sink.EnsureChildAgent(agent.ChildAgentSpec{RegistryRole: bgtask.RoleChildActivity, SpawnSpanID: "role-adoption-span", ProviderChildKey: "refused-route", Title: "Child"})
+	require.Error(t, err)
+	child, err := svc.Queries.GetAgentByID(t.Context(), childID)
+	require.NoError(t, err)
+	assert.Empty(t, child.ProviderChildKey)
+	rows, err := svc.Output.LoadBackgroundTasks(t.Context(), "role-adoption-root")
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	assert.Equal(t, "existing-route", rows[0].RowKey)
+}
+
+func TestBackgroundTaskRolesRenamePreservesCanonicalRouting(t *testing.T) {
+	t.Parallel()
+	for _, role := range []bgtask.Role{bgtask.RoleChildTask, bgtask.RoleChildActivity} {
+		t.Run(strconv.Itoa(int(role)), func(t *testing.T) {
+			svc, sink := setupRootSink(t, "rename-role-root")
+			childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{RegistryRole: role, ProviderChildKey: "canonical", SpawnSpanID: "rename-role-span", Title: "Child"})
+			require.NoError(t, err)
+			require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{Role: bgtask.RoleTaskOutcome, RowKey: "outcome", Kind: bgtask.KindSubagent, ChildAgentID: childID, Status: bgtask.StatusRunning}))
+			before, err := svc.Queries.ListAllAgentBackgroundTasksForResume(t.Context(), "rename-role-root")
+			require.NoError(t, err)
+			err = sink.RenameBackgroundTask("canonical", "outcome")
+			expectedKey := "canonical"
+			if role == bgtask.RoleChildActivity {
+				assert.Error(t, err)
+				after, readErr := svc.Queries.ListAllAgentBackgroundTasksForResume(t.Context(), "rename-role-root")
+				require.NoError(t, readErr)
+				assert.Equal(t, before, after, "an incompatible rename cannot change claims or rows")
+			} else {
+				require.NoError(t, err)
+				expectedKey = "outcome"
+			}
+			canonical, readErr := svc.Queries.GetAgentBackgroundTaskByChildAgentID(t.Context(), childID)
+			require.NoError(t, readErr, "the child route must survive alias resolution")
+			assert.Equal(t, expectedKey, canonical.RowKey)
+			assert.Equal(t, leapmuxv1.BackgroundTaskRole(role), canonical.Role)
+		})
+	}
 }

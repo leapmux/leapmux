@@ -6,6 +6,7 @@ import { MIMO_STATUS_TYPE, MIMO_TOOL } from '~/generated/contracts/mimo-protocol
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
 import { AgentProvider as Provider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { copilotToolStart } from '~/test-support/copilotFixtures'
+import { kimiTranscriptToolFrame, kimiTranscriptTurnFrame } from '~/test-support/kimiFixtures'
 import { compactionFrame, errorFrame, openingFrame, statusFrame, toolFrame } from '~/test-support/mimoFixtures'
 
 /**
@@ -31,6 +32,7 @@ export interface RowKindCase {
   category: MessageCategory['kind']
   /** The `span_type` column, which several providers read to identify a tool. */
   spanType?: string
+  spanId?: string
   /**
    * The worker's own metadata column for this row.
    *
@@ -668,13 +670,17 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     provider: Provider.OPENCODE,
     name: 'tool call',
     payload: {
-      sessionUpdate: 'tool_call',
-      toolCallId: 'oc-1',
-      kind: 'read',
-      title: 'read',
-      status: 'pending',
-      rawInput: { filePath: '/repo/a.ts' },
+      type: 'tool',
+      id: 'oc-1',
+      name: 'read',
+      time: { created: 0 },
+      state: {
+        status: 'running',
+        input: { path: '/repo/a.ts' },
+        metadata: {},
+      },
     },
+    spanId: 'stored-opencode-span',
     category: 'tool_use',
   },
   {
@@ -1131,21 +1137,13 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   },
 
   // --- Kimi Code ---------------------------------------------------------
-  //
-  // Verbatim payloads of the 2.0.2 server, captured from a live session, which the
-  // worker persists as they arrive.
+  // Native transcript operations for the tool and turn rows the Worker retains.
   {
     provider: Provider.KIMI_CODE,
     name: 'tool call started',
-    payload: {
-      type: 'tool.call.started',
-      time: 1790186809163,
-      agentId: 'main',
-      turnId: 0,
-      toolCallId: 'call_bash_1',
+    payload: kimiTranscriptToolFrame({
       name: 'Bash',
-      args: { command: 'echo hi-from-bash', description: 'Echo a greeting' },
-      description: 'Running: echo hi-from-bash',
+      input: { command: 'echo hi-from-bash', description: 'Echo a greeting' },
       display: {
         kind: 'command',
         command: 'echo hi-from-bash',
@@ -1153,37 +1151,25 @@ export const ROW_KIND_CASES: RowKindCase[] = [
         description: 'Echo a greeting',
         language: 'bash',
       },
-      sessionId: 'session_f7cf22a1-3d27-4d41-b8e2-978b1e5fa5a7',
-    },
+    }),
     category: 'tool_use',
   },
   {
     provider: Provider.KIMI_CODE,
     name: 'tool result',
-    payload: {
-      type: 'tool.result',
-      time: 1790186809167,
-      agentId: 'main',
-      turnId: 0,
-      toolCallId: 'call_bash_1',
+    payload: kimiTranscriptToolFrame({
+      name: 'Bash',
+      input: { command: 'echo hi-from-bash', description: 'Echo a greeting' },
+      state: 'done',
       output: 'hi-from-bash\n',
-      sessionId: 'session_f7cf22a1-3d27-4d41-b8e2-978b1e5fa5a7',
-    },
+    }),
     spanType: 'Bash',
     category: 'tool_result',
   },
   {
     provider: Provider.KIMI_CODE,
     name: 'turn end',
-    payload: {
-      type: 'turn.ended',
-      time: 1790186809300,
-      agentId: 'main',
-      turnId: 0,
-      reason: 'completed',
-      durationMs: 32,
-      sessionId: 'session_f7cf22a1-3d27-4d41-b8e2-978b1e5fa5a7',
-    },
+    payload: kimiTranscriptTurnFrame({ state: 'completed', durationMs: 32 }),
     category: 'result_divider',
   },
 

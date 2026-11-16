@@ -1,9 +1,8 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import process from 'node:process'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createQoderEnvironment, QODER_PROBE_OUTPUT_STYLE } from './qoderEnvironment'
-import { qoderEndpointCacheRecords } from './qoderSurface'
 
 let runDirectory: string
 function options() {
@@ -26,7 +25,6 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  vi.useRealTimers()
   rmSync(runDirectory, { recursive: true, force: true })
 })
 
@@ -38,6 +36,22 @@ describe('createQoderEnvironment', () => {
       ...createQoderEnvironment(options()),
     }
     expect(merged.QODER_SERVICE_ACCOUNT_KEY).toBe('')
+  })
+
+  it('uses the HTTPS center override independently of the model endpoint', () => {
+    const env = createQoderEnvironment({
+      ...options(),
+      centerOrigin: 'https://localhost:4568',
+    })
+    expect(env.QODER_CENTER_ENDPOINT).toBe('https://localhost:4568')
+    const settings = JSON.parse(readFileSync(join(runDirectory, 'home', '.qoder', 'settings.json'), 'utf8'))
+    expect(settings.providers.mockprov.baseUrl).toBe('http://127.0.0.1:4567/v1')
+    expect(existsSync(join(runDirectory, 'home', '.qoder', '.cache', 'endpoint-cache.json'))).toBe(false)
+  })
+
+  it('routes native endpoint election through the isolated center service', () => {
+    const env = createQoderEnvironment(options())
+    expect(env.QODER_CENTER_ENDPOINT).toBe('http://127.0.0.1:4567')
   })
 
   it('uses the current job credential without the removed SDK worker mode', () => {
@@ -54,6 +68,19 @@ describe('createQoderEnvironment', () => {
     const qoderHome = join(runDirectory, 'home', '.qoder')
     const settings = JSON.parse(readFileSync(join(qoderHome, 'settings.json'), 'utf8'))
     expect(settings.autoMode).toEqual({ classifier: 'llm' })
+    expect(settings.providers.mockprov.models[0].capabilities.thinking).toEqual({
+      modes: ['adaptive', 'enabled'],
+      preferredMode: 'adaptive',
+      supportsEffort: true,
+      supportedEffortLevels: [
+        'low',
+        'medium',
+        'high',
+        'xhigh',
+        'max',
+      ],
+    })
+    expect(settings.providers.mockprov.models[1].capabilities.thinking).toBeUndefined()
     expect(Object.keys(settings.providers)).toEqual(['mockprov'])
     expect(settings.providers.mockprov).toMatchObject({ baseUrl: 'http://127.0.0.1:4567/v1', apiKey: 'unit-key' })
     expect(settings.providers.mockprov.models.map((model: { model: string }) => model.model)).toEqual(['unit-model', 'unit-alt'])
@@ -65,19 +92,6 @@ describe('createQoderEnvironment', () => {
     })
     expect(existsSync(join(qoderHome, 'form-server.mjs'))).toBe(true)
     expect(settings.modelConfigs).toBeUndefined()
-  })
-
-  it('writes both endpoint cache formats for the given origin, with the current time', () => {
-    vi.useFakeTimers({
-      now: new Date('2026-10-06T00:00:00Z'),
-      toFake: ['Date'],
-    })
-    createQoderEnvironment(options())
-    const cacheDir = join(runDirectory, 'home', '.qoder', '.cache')
-    const expected = qoderEndpointCacheRecords('http://127.0.0.1:4567', Date.parse('2026-10-06T00:00:00Z'))
-    expect(JSON.parse(readFileSync(join(cacheDir, 'endpoint-cache.json'), 'utf8'))).toEqual(expected.v1)
-    for (const file of ['qoder-client-endpoint-cache.json', 'qoder-client-endpoint-cache-public.json'])
-      expect(JSON.parse(readFileSync(join(cacheDir, file), 'utf8')), file).toEqual(expected.v2)
   })
 
   it('supplies a current job token and empties the developer\'s own token', () => {

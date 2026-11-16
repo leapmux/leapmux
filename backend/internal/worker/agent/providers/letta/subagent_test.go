@@ -79,10 +79,14 @@ func TestLettaChildSnapshotOpensOneRegistryRowAndPrompt(t *testing.T) {
 func TestLettaChildDeltasStayInTheirChildTranscript(t *testing.T) {
 	t.Parallel()
 	a, sink := newLettaChildTestAgent(t)
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "letta-tool-call-agent-1", ProviderChildKey: lettaTestChildID, Title: "Count the files"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "letta-tool-call-agent-1", ProviderChildKey: lettaTestChildID, Title: "Count the files"})
 	require.NoError(t, err)
 	require.NoError(t, sink.PersistChildPrompt(childID, lettaTestChildPrompt))
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: lettaTestChildID, Kind: bgtask.KindSubagent, ChildAgentID: childID,
 		Title: "Count the files", Status: bgtask.StatusRunning,
 	}))

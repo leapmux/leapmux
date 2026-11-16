@@ -72,7 +72,9 @@ func (a *Agent) handleFrame(line *providerkit.ParsedLine) {
 			trigger = "auto"
 		}
 		a.beginCompaction(root, trigger)
-	case contracts.OhMyPiEventAutoCompactionEnd:
+	case contracts.OhMyPiEventManualCompactionStart:
+		a.beginCompaction(root, "manual")
+	case contracts.OhMyPiEventAutoCompactionEnd, contracts.OhMyPiEventManualCompactionEnd:
 		a.persistCompactionEnd(root, line.Raw)
 	case contracts.OhMyPiEventTtsrTriggered:
 		a.Mu.Lock()

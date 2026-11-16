@@ -19,11 +19,23 @@
     "modes",
     "reply",
     "todoStatuses",
-    "turnEndReasons",
     "defaultMode",
     "notificationEvents",
     "frames",
-    "interactionKinds"
+    "interactionKinds",
+    "transcriptOperations",
+    "transcriptFrameKinds",
+    "transcriptTurnStates",
+    "transcriptStepStates",
+    "transcriptToolStates",
+    "transcriptMarkers",
+    "compactionPhases",
+    "transcriptSupplement",
+    "transcriptNodeKinds",
+    "mediaSourceKinds",
+    "transcriptTextRoles",
+    "noticeLevels",
+    "outputPartKinds"
   ],
   "$defs": {
     "table": {
@@ -174,9 +186,6 @@
     "todoStatuses": {
       "$ref": "#/$defs/table"
     },
-    "turnEndReasons": {
-      "$ref": "#/$defs/table"
-    },
     "defaultMode": {
       "description": "The key in `modes` a fresh Kimi Code session runs on. A key, not a literal, so it cannot specify a mode the table does not carry -- the generator checks the membership.",
       "type": "string",
@@ -198,6 +207,45 @@
       "$ref": "#/$defs/table"
     },
     "interactionKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "transcriptOperations": {
+      "$ref": "#/$defs/table"
+    },
+    "transcriptFrameKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "transcriptTurnStates": {
+      "$ref": "#/$defs/table"
+    },
+    "transcriptStepStates": {
+      "$ref": "#/$defs/table"
+    },
+    "transcriptToolStates": {
+      "$ref": "#/$defs/table"
+    },
+    "transcriptMarkers": {
+      "$ref": "#/$defs/table"
+    },
+    "compactionPhases": {
+      "$ref": "#/$defs/table"
+    },
+    "transcriptSupplement": {
+      "$ref": "#/$defs/table"
+    },
+    "transcriptNodeKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "mediaSourceKinds": {
+      "$ref": "#/$defs/table"
+    },
+    "transcriptTextRoles": {
+      "$ref": "#/$defs/table"
+    },
+    "noticeLevels": {
+      "$ref": "#/$defs/table"
+    },
+    "outputPartKinds": {
       "$ref": "#/$defs/table"
     }
   }

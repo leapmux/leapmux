@@ -44,7 +44,7 @@ export function lettaChildLaunch(request: MockModelRequestRecord, spawnCallId: s
   if (call.name !== 'Agent')
     throw new Error('The Letta child receipt contains no unique actual Agent call.')
   const input = call.arguments
-  if (!isObject(input) || typeof input.description !== 'string' || input.description.trim() === '' || typeof input.prompt !== 'string' || input.prompt.trim() === '' || input.subagent_type !== 'general-purpose')
+  if (!isObject(input) || typeof input.description !== 'string' || input.description.trim() === '' || typeof input.prompt !== 'string' || input.prompt.trim() === '' || input.harness !== 'letta' || input.fork_context !== false || Object.hasOwn(input, 'subagent_type'))
     throw new Error('The Letta Agent call contains invalid child arguments.')
   const result = nativeToolResult(request, spawnCallId)
   const tasks = [

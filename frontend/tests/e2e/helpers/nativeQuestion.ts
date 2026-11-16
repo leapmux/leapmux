@@ -7,7 +7,7 @@ import { expectTurnEndedAfter } from './modelScriptFixture'
 import { restoreQuestionSelection, restoreQuestionTextDraft } from './nativeQuestionRestoration'
 import { nativeTextStep, nativeToolOutcome } from './nativeScenario'
 import { askUserQuestionToolCall } from './providerToolCalls'
-import { assistantBubbles, composerEditor, controlButton, expectNoControlBanner, questionPagination, readAttached, sendMessage, waitForAgentIdle, waitForControlBanner } from './ui'
+import { assistantBubbles, composerEditor, controlButton, expectNoControlBanner, fillComposer, questionPagination, readAttached, sendMessage, waitForAgentIdle, waitForControlBanner } from './ui'
 
 /**
  * A question that serves as a real native control in a proof that another control stays absent.
@@ -142,7 +142,7 @@ export function chooseQuestionOptionWithNote(context: ManagedNativeScenarioConte
   return async (banner) => {
     await pickQuestionOption(banner, label)
     await restoreQuestionSelection(context, banner, label)
-    await composerEditor(context.page).fill(note)
+    await fillComposer(context.page, note)
     await restoreQuestionTextDraft(context, note)
     const restored = await waitForControlBanner(context.page)
     await expect(restored.getByTestId(`question-option-${label}`).locator('input')).toBeChecked()
@@ -228,7 +228,7 @@ export function chooseQuestionPages(
     for (const [index, answer] of answers.entries()) {
       await openPage(index)
       if ('text' in answer) {
-        await composerEditor(page).fill(answer.text)
+        await fillComposer(page, answer.text)
         await restoreQuestionTextDraft(context, answer.text, questions.length > 1
           ? index
           : undefined)

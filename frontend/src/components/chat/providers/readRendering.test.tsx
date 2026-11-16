@@ -33,9 +33,9 @@ function makeReadResult(toolUseResult: Record<string, unknown> | undefined, cont
   }
 }
 
-function renderOpenCodeUpdate(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
+function renderKiloUpdate(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_use' }
-  const result = renderMessageContent(toolUse, context, category, AgentProvider.OPENCODE)
+  const result = renderMessageContent(toolUse, context, category, AgentProvider.KILO)
   return render(() => result)
 }
 
@@ -210,9 +210,9 @@ describe('pi Read tool_result rendering', () => {
   })
 })
 
-describe('opencode Read tool_call_update rendering', () => {
+describe('kilo Read tool_call_update rendering', () => {
   it('renders cat-n output via the shared syntax-highlighted body', () => {
-    const { container } = renderOpenCodeUpdate({
+    const { container } = renderKiloUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'read',
       status: 'completed',
@@ -232,7 +232,7 @@ describe('opencode Read tool_call_update rendering', () => {
   })
 
   it('falls back to plain text when output is not cat-n', () => {
-    const { container } = renderOpenCodeUpdate({
+    const { container } = renderKiloUpdate({
       sessionUpdate: 'tool_call_update',
       kind: 'read',
       status: 'completed',

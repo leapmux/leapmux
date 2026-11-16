@@ -210,7 +210,9 @@ func (a *Agent) openSpawn(t *transcript, event hubEvent, call toolEvent) {
 		title = spawnTitleFallback
 	}
 	sink := a.sinkFor(t)
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: call.ToolCallID, ProviderChildKey: call.ToolCallID, Title: title})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  call.ToolCallID, ProviderChildKey: call.ToolCallID, Title: title})
 	if err != nil {
 		slog.Warn("cline subagent ensure child failed", "agent_id", a.AgentID(), "tool_call_id", call.ToolCallID, "error", err)
 	}

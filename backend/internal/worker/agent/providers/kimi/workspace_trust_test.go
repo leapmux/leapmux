@@ -23,7 +23,17 @@ const kimiTrustRoute = kimiRouteWorkspaces + "/" + kimiTestWorkspaceID + "/trust
 // unless trusted is true.
 func newKimiTrustRig(t *testing.T, trusted bool) *kimiTestRig {
 	t.Helper()
-	rig := newKimiTestRig(t, agent.Options{})
+	return newKimiTrustRigAtSequence(t, trusted, 1)
+}
+
+func newKimiTrustRigAtSequence(t *testing.T, trusted bool, sequence int) *kimiTestRig {
+	t.Helper()
+	require.Positive(t, sequence)
+	fake, server := newFakeKap(t)
+	fake.mu.Lock()
+	fake.nextSession = sequence - 1
+	fake.mu.Unlock()
+	rig := connectKimiTestRig(t, fake, server.URL, agent.Options{})
 	rig.fake.reply("GET "+kimiSessionPath(rig.sessionID(), ""), fakeKapReply{Data: map[string]any{"id": rig.sessionID(), "workspace_id": kimiTestWorkspaceID}})
 	rig.fake.reply("GET "+kimiTrustRoute, fakeKapReply{Data: map[string]any{"trusted": trusted}})
 	rig.fake.reply("POST "+kimiTrustRoute, fakeKapReply{Data: map[string]any{"trusted": true}})
@@ -55,78 +65,59 @@ func TestKimiWorkspaceTrustAsksAboutAnUntrustedWorkspace(t *testing.T) {
 	assert.JSONEq(t, `{"type":"leapmux_workspace_trust","path":"/work/project","configuration":["MCP servers","skills","instructions"]}`, string(published.Payload))
 }
 
-// Clearing the context retires the old session's unanswered question. The real
-// asynchronous check of the replacement session publishes its own question.
-func TestKimiClearContextReplacesAnUnansweredWorkspaceTrustQuestion(t *testing.T) {
+// Runtime replacement retires the old question before a new Agent checks its own session.
+func TestKimiRuntimeReplacementReplacesAnUnansweredWorkspaceTrustQuestion(t *testing.T) {
 	t.Parallel()
-	rig := newKimiTrustRig(t, false)
-	rig.agent.checkWorkspaceTrust()
+	old := newKimiTrustRig(t, false)
+	old.agent.checkWorkspaceTrust()
 	oldRequestID := providerkit.WorkspaceTrustRequestID("session_1")
-	require.Equal(t, oldRequestID, rig.sink.LastPublishedControl().RequestID)
-	rig.fake.reply("GET "+kimiSessionPath("session_2", ""), fakeKapReply{Data: map[string]any{
-		"id": "session_2", "workspace_id": kimiTestWorkspaceID,
-	}})
-
-	sessionID, err := rig.agent.ClearContext()
-	require.NoError(t, err)
-	require.Equal(t, "session_2", sessionID)
-	assert.Contains(t, rig.sink.CanceledControls(), oldRequestID)
-	waitFor(t, func() bool { return rig.sink.PublishedControlCount() == 2 }, "the replacement session publishes its workspace-trust question")
-	published := rig.sink.LastPublishedControl()
-	assert.Equal(t, "workspace-trust:session_2", published.RequestID)
+	require.Equal(t, oldRequestID, old.sink.LastPublishedControl().RequestID)
+	old.agent.withdrawAllControls()
+	assert.Contains(t, old.sink.CanceledControls(), oldRequestID)
+	old.agent.closeStream()
+	fresh := newKimiTrustRigAtSequence(t, false, 2)
+	fresh.agent.checkWorkspaceTrust()
+	require.Equal(t, 1, fresh.sink.PublishedControlCount())
+	published := fresh.sink.LastPublishedControl()
+	assert.Equal(t, providerkit.WorkspaceTrustRequestID("session_2"), published.RequestID)
 	assert.Equal(t, "session_2", published.AgentSessionID)
+	require.ErrorIs(t, answerKimiWorkspaceTrust(t, old.agent, oldRequestID, contracts.WorkspaceTrustDecisionTrust), providerkit.ErrWorkspaceTrustClosed)
+	require.ErrorIs(t, answerKimiWorkspaceTrust(t, fresh.agent, oldRequestID, contracts.WorkspaceTrustDecisionTrust), providerkit.ErrWorkspaceTrustClosed)
+	assert.Empty(t, old.fake.requestsTo("POST "+kimiTrustRoute))
+	assert.Empty(t, fresh.fake.requestsTo("POST "+kimiTrustRoute))
 }
 
-// A trust read of the old session can finish after ClearContext retired its
-// generation. The stale result publishes nothing, while the replacement session
-// completes its own read and publishes its own question.
-func TestKimiClearContextRetiresABlockedOldSessionWorkspaceTrustCheck(t *testing.T) {
+// The old HTTP check may finish after retirement; only the fresh runtime can publish its question.
+func TestKimiRuntimeReplacementRetiresABlockedWorkspaceTrustCheck(t *testing.T) {
 	t.Parallel()
-	rig := newKimiTrustRig(t, false)
-	readEntered := make(chan struct{})
-	readRelease := make(chan struct{})
-	release := sync.OnceFunc(func() { close(readRelease) })
+	old := newKimiTrustRig(t, false)
+	entered, held := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(held) })
 	defer release()
-	untrusted := fakeKapReply{Data: map[string]any{"trusted": false}}
-	rig.fake.reply("GET "+kimiTrustRoute, fakeKapReply{
-		Data: map[string]any{"trusted": false},
-		BeforeReply: func() {
-			close(readEntered)
-			<-readRelease
-		},
-	}, untrusted)
-	rig.fake.reply("GET "+kimiSessionPath("session_2", ""), fakeKapReply{Data: map[string]any{
-		"id": "session_2", "workspace_id": kimiTestWorkspaceID,
-	}})
-
-	oldCheckDone := make(chan struct{})
-	go func() {
-		rig.agent.checkWorkspaceTrust()
-		close(oldCheckDone)
-	}()
+	old.fake.reply("GET "+kimiTrustRoute, fakeKapReply{Data: map[string]any{"trusted": false}, BeforeReply: func() { close(entered); <-held }})
+	completed := make(chan struct{})
+	go func() { old.agent.checkWorkspaceTrust(); close(completed) }()
 	ctx := testutil.DeadlineContext(t)
 	select {
-	case <-readEntered:
+	case <-entered:
 	case <-ctx.Done():
-		t.Fatal("the old session's workspace-trust read did not start")
+		t.Fatal("the old runtime trust check did not reach its native HTTP read")
 	}
-
-	sessionID, err := rig.agent.ClearContext()
-	require.NoError(t, err)
-	require.Equal(t, "session_2", sessionID)
-	waitFor(t, func() bool {
-		return rig.sink.PublishedControlCount() == 1 && rig.sink.LastPublishedControl().RequestID == "workspace-trust:session_2"
-	}, "the replacement session publishes while the old session's read is blocked")
+	old.agent.withdrawAllControls()
+	fresh := newKimiTrustRigAtSequence(t, false, 2)
+	fresh.agent.checkWorkspaceTrust()
+	require.Equal(t, 1, fresh.sink.PublishedControlCount())
+	assert.Equal(t, providerkit.WorkspaceTrustRequestID("session_2"), fresh.sink.LastPublishedControl().RequestID)
 	release()
 	select {
-	case <-oldCheckDone:
+	case <-completed:
 	case <-ctx.Done():
-		t.Fatal("the old session's workspace-trust check did not finish")
+		t.Fatal("the retired runtime trust check did not finish")
 	}
-
-	require.Equal(t, 1, rig.sink.PublishedControlCount(), "the stale old-session check must not publish")
-	assert.Equal(t, "workspace-trust:session_2", rig.sink.LastPublishedControl().RequestID)
-	assert.Len(t, rig.fake.requestsTo("GET "+kimiTrustRoute), 2, "both sessions completed the real HTTP read")
+	assert.Zero(t, old.sink.PublishedControlCount(), "the late old HTTP result cannot publish after retirement")
+	assert.Equal(t, 1, fresh.sink.PublishedControlCount())
+	assert.Len(t, old.fake.requestsTo("GET "+kimiTrustRoute), 1)
+	assert.Len(t, fresh.fake.requestsTo("GET "+kimiTrustRoute), 1)
 }
 
 // A trusted workspace, a workspace the session does not state, and an answer

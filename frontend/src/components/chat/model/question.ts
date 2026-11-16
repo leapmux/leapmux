@@ -15,6 +15,8 @@ export interface ControlQuestion extends QuestionPrompt {
   id?: string
   multiSelect?: boolean
   allowEmpty?: boolean
+  /** Native initial values apply only while this request has no answer draft. */
+  initialSelections?: string[]
   /** False when the native transport accepts selected options only. Absent permits custom text. */
   allowCustomText?: boolean
   /**

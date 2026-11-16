@@ -2347,3 +2347,208 @@ describe('resolveMockModelUsage', () => {
     expect(() => resolveMockModelUsage(usage)).toThrow(/safe integer/u)
   })
 })
+
+describe('parseScenarioSpec toolSafety', () => {
+  const call = {
+    id: 'call',
+    name: 'Bash',
+    arguments: { count: 0, enabled: false },
+  }
+
+  it('keeps a deny verdict, an empty reason, and a separate response gate', () => {
+    const toolSafety = {
+      decisions: {
+        call: { decision: 'deny', reason: '' },
+      },
+      gate: 'safety-check',
+    }
+    expect(parseScenarioSpec({
+      steps: [
+        {
+          toolCalls: [call],
+          toolSafety,
+        },
+      ],
+    }).steps[0]).toMatchObject({
+      toolCalls: [call],
+      toolSafety,
+    })
+  })
+
+  it.each([
+    null,
+    false,
+    0,
+    [],
+    { decisions: [] },
+    {
+      decisions: {
+        foreign: { decision: 'allow' },
+      },
+    },
+    {
+      decisions: {
+        call: { decision: 'other' },
+      },
+    },
+    {
+      decisions: {
+        call: { decision: 'allow', reason: 0 },
+      },
+    },
+    {
+      decisions: {
+        call: { decision: 'deny', extra: true },
+      },
+    },
+    { gate: '' },
+    { gate: false },
+    { unknown: true },
+  ])('rejects an invalid tool safety script: %j', (toolSafety) => {
+    expect(() => parseScenarioSpec({
+      steps: [
+        {
+          toolCalls: [call],
+          toolSafety,
+        },
+      ],
+    })).toThrow(/toolSafety/)
+  })
+
+  it('resolves a captured call identity and reason together', () => {
+    const parsed = parseScenarioSpec({
+      steps: [
+        {
+          toolCalls: [
+            { ...call, id: '{{identity}}' },
+          ],
+          toolSafety: {
+            decisions: {
+              '{{identity}}': { decision: 'deny', reason: '{{reason}}' },
+            },
+          },
+          captures: { identity: 'ID=([^ ]+)', reason: 'WHY=(.+)' },
+        },
+      ],
+    }).steps[0]!
+    const result = resolveStepCaptures(parsed, { text: 'ID=call-출력 WHY=The exact safety reason.' })
+    expect(result).toMatchObject({
+      step: {
+        toolCalls: [
+          { ...call, id: 'call-출력' },
+        ],
+        toolSafety: {
+          decisions: {
+            'call-출력': { decision: 'deny', reason: 'The exact safety reason.' },
+          },
+        },
+      },
+    })
+    expect(parsed.toolCalls?.[0]?.id).toBe('{{identity}}')
+    expect(parsed.toolSafety?.decisions).toHaveProperty('{{identity}}')
+  })
+})
+
+describe('userHistory matching', () => {
+  it.each([
+    {
+      protocol: 'openai-chat-completions' as const,
+      body: {
+        messages: [
+          { role: 'user', content: 'child-task' },
+          { role: 'user', content: 'native reminder' },
+        ],
+      },
+    },
+    {
+      protocol: 'anthropic-messages' as const,
+      body: {
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'child-task' },
+            ],
+          },
+          { role: 'user', content: 'native reminder' },
+        ],
+      },
+    },
+    {
+      protocol: 'openai-responses' as const,
+      body: {
+        input: [
+          {
+            role: 'user',
+            content: [
+              { type: 'input_text', text: 'child-task' },
+            ],
+          },
+          { role: 'user', content: 'native reminder' },
+        ],
+      },
+    },
+    {
+      protocol: 'google-generative-language' as const,
+      body: {
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: 'child-task' },
+            ],
+          },
+          {
+            role: 'user',
+            parts: [
+              { text: 'native reminder' },
+            ],
+          },
+        ],
+      },
+    },
+  ])('matches a prior prompt in $protocol', ({ protocol, body }) => {
+    expect(matchesRequest({ userHistory: 'child-task' }, request({ protocol, body, userText: 'native reminder' }))).toBe(true)
+    expect(matchesRequest({ userHistory: 'absent-task' }, request({ protocol, body }))).toBe(false)
+  })
+  it.each([
+    null,
+    {},
+    { messages: [] },
+    {
+      messages: [
+        { role: 'assistant', content: 'child-task' },
+      ],
+    },
+    {
+      messages: [
+        { role: 'tool', content: 'child-task' },
+      ],
+    },
+  ])('refuses absent user prompts in %j', (body) => {
+    expect(matchesRequest({ userHistory: 'child-task' }, request({ body }))).toBe(false)
+  })
+  it('parses the serialized criterion and validates its regular expression', () => {
+    const parsed = parseScenarioSpec({
+      steps: [],
+      rules: [
+        {
+          name: 'child',
+          when: { userHistory: 'child-task' },
+          respond: { text: 'done' },
+        },
+      ],
+    })
+    expect(parsed.rules?.[0]?.when).toEqual({ userHistory: 'child-task' })
+    expect(() => parseScenarioSpec({
+      steps: [],
+      rules: [
+        {
+          name: 'child',
+          when: { userHistory: '[' },
+          respond: { text: 'done' },
+        },
+      ],
+    })).toThrow('userHistory is not a valid regular expression')
+  })
+})

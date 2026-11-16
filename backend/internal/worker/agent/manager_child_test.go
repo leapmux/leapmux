@@ -7,6 +7,8 @@ package agent_test
 import (
 	"testing"
 
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/stretchr/testify/assert"
@@ -31,13 +33,13 @@ type sendInputCall struct {
 	attachments int
 }
 
-func (s *steerableStub) SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
+func (s *steerableStub) SendChildInput(childKey string, input agent.ChildInput) (agent.ChildInputResult, error) {
 	s.sendInputCalls = append(s.sendInputCalls, sendInputCall{
 		childKey:    childKey,
-		content:     content,
-		attachments: len(attachments),
+		content:     input.Content,
+		attachments: len(input.Attachments),
 	})
-	return s.sendInputErr
+	return agent.ChildInputResult{StartsTurn: true}, s.sendInputErr
 }
 
 func (s *steerableStub) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
@@ -66,7 +68,7 @@ var _ agent.Agent = (*steerableStub)(nil)
 func TestManager_SendChildInputNotRunning(t *testing.T) {
 	t.Parallel()
 	m := agent.NewManager(testRegistry, nil)
-	err := m.SendChildInput("nope", "child-1", "hello", nil)
+	err := agenttest.SendChildInputToOwner(m, "nope", "child-1", agent.ChildInput{Content: "hello"})
 	assert.ErrorIs(t, err, agent.ErrAgentNotFound)
 }
 
@@ -74,7 +76,7 @@ func TestManager_SendChildInputUnsupportedProvider(t *testing.T) {
 	t.Parallel()
 	m := agent.NewManager(testRegistry, nil)
 	m.PutAgentForTest("root", &stubProvider{})
-	err := m.SendChildInput("root", "child-1", "hello", nil)
+	err := agenttest.SendChildInputToOwner(m, "root", "child-1", agent.ChildInput{Content: "hello"})
 	assert.ErrorIs(t, err, agent.ErrChildOperationUnsupported)
 }
 
@@ -85,7 +87,7 @@ func TestManager_SendChildInputDispatch(t *testing.T) {
 	m.PutAgentForTest("root", st)
 
 	atts := []*leapmuxv1.Attachment{{Filename: "a.txt"}}
-	err := m.SendChildInput("root", "child-1", "hello", atts)
+	err := agenttest.SendChildInputToOwner(m, "root", "child-1", agent.ChildInput{Content: "hello", Attachments: atts})
 	require.NoError(t, err)
 	require.Len(t, st.sendInputCalls, 1)
 	assert.Equal(t, "child-1", st.sendInputCalls[0].childKey)
@@ -102,7 +104,7 @@ func TestManager_SendChildInputPreservesABusyTurnKind(t *testing.T) {
 	}
 	m.PutAgentForTest("root", st)
 
-	err := m.SendChildInput("root", "child-1", "hello", nil)
+	err := agenttest.SendChildInputToOwner(m, "root", "child-1", agent.ChildInput{Content: "hello"})
 	var busyErr *agent.AgentBusyError
 	require.ErrorAs(t, err, &busyErr)
 	assert.True(t, busyErr.ActiveTurnSteerable)

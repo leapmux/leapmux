@@ -13,7 +13,7 @@ import type { TriggerRequest } from '../../../model/tools/trigger'
 import type { ToolRequestOverrides } from '../../defaultToolRequests'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
-import { KIMI_EVENT, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
+import { KIMI_TOOL, KIMI_TRANSCRIPT_TOOL } from '~/generated/contracts/kimi-protocol'
 import { parseDataImageUrl } from '~/lib/imageBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
 import { createToolCall } from '../../../model/createToolCall'
@@ -23,33 +23,23 @@ import { failedResult, proseResult, readToolCallSpec, unparsedResult } from '../
 import { DEFAULT_TOOL_REQUESTS, toolRequestFor } from '../../defaultToolRequests'
 import { retainedOutcome, retainedRowIsFinal } from '../../registry'
 import { kimiQuestionsFromToolInput } from '../askUserQuestion'
-import { kimiDisplay, kimiEventData } from '../protocol'
+import { kimiDisplay } from '../protocol'
 import { kimiToolKind } from '../toolKinds'
+import { kimiTranscriptTool, kimiTranscriptToolsMatch } from '../transcript'
 import { kimiTodoItems } from './todo'
 
 /**
  * One Kimi Code tool call, as the persisted rows state it.
- *
- * The server states a call in two events. `tool.call.started` carries the tool name,
- * the arguments and a `display` that words the call for a UI; `tool.result` carries the
- * output and nothing else -- no name, no arguments, no display. So a result row reads
- * the call's facts off its paired start.
- *
- * A turn that ended while the call ran leaves no result: the worker stores the START
- * payload again as the call's closing row, with the completion column stating how the
- * turn ended. That row is finished although its bytes are a start, and it carries the
- * output the call printed before it stopped in the fields a result states it in.
+ * Native tool frames retain the name, input and display with their output.
+ * The display copy supplies recovered output; the original frame retains its command outcome.
+ * A final completion column closes a retained running frame when its turn ends.
  */
 export interface KimiToolRow {
   toolCallId: string
   toolName: string
   args: Record<string, unknown>
   display: Record<string, unknown> | undefined
-  /**
-   * The payload that states the call's output: the `tool.result`, or a retained start
-   * that carries the output the call printed. Null while the call runs, and for a
-   * retained start that printed nothing.
-   */
+  /** The final frame or retained output. Null when no result is available. */
   result: Record<string, unknown> | null
   /** The unchanged native result supplies command outcome text after output file recovery. */
   originalResult?: Record<string, unknown> | null
@@ -63,61 +53,51 @@ export interface KimiToolRow {
 /**
  * Read one tool row of a span into the facts of its call.
  *
- * `request` is the span's start row, which the store resolves separately. The row's OWN
- * bytes decide which half it is. A start row states no result: the result is a later
- * row of the span, which this row never reads.
+ * Each frame supplies its own name, input and state. A running request never reads
+ * a later result. The completion column can identify its retained closing copy.
  */
 export function kimiToolRow(
   parsed: unknown,
-  spanType: string | undefined,
-  request: unknown,
   completion: MessageCompletion | undefined,
   originalResult?: unknown,
 ): KimiToolRow | null {
-  const ownStart = kimiEventData(parsed, KIMI_EVENT.ToolCallStarted)
-  const ownResult = kimiEventData(parsed, KIMI_EVENT.ToolResult)
-  if (!ownStart && !ownResult)
-    return null
-  const retainedFinal = !!ownStart && retainedRowIsFinal(completion)
-  const start = ownStart ?? kimiEventData(request, KIMI_EVENT.ToolCallStarted)
-  const result = ownResult ?? (retainedFinal
-    ? kimiRetainedOutput(ownStart)
-    : null)
-  const toolCallId = pickString(ownStart ?? ownResult, 'toolCallId')
-  const nativeResult = kimiEventData(originalResult, KIMI_EVENT.ToolResult)
-  // The result frame states no name, and the worker stamps the call's name on every
-  // row of the span as its span type, so a result whose start is out of the loaded
-  // window still states its tool.
-  const toolName = pickString(start, 'name') || spanType || ''
-  const finished = !!ownResult || retainedFinal
-  return {
-    toolCallId,
-    toolName,
-    args: pickObject(start, 'args') ?? {},
-    display: kimiDisplay(start),
-    result,
-    originalResult: nativeResult && pickString(nativeResult, 'toolCallId') === toolCallId
-      ? nativeResult
-      : result,
-    retained: retainedFinal,
-    finished,
-    lifecycle: {
-      frameStatus: 'unstated',
-      providerOutcome: result?.isError === true
-        ? 'failed'
-        : null,
-      retainedOutcome: retainedOutcome(retainedFinal ? completion : undefined),
-      rowFinal: finished,
-      resultFrameLanded: result !== null,
-    },
+  const native = kimiTranscriptTool(parsed)
+  if (native) {
+    const original = kimiTranscriptTool(originalResult)
+    const retained = native.state === KIMI_TRANSCRIPT_TOOL.Running && retainedRowIsFinal(completion)
+    const finished = native.state !== KIMI_TRANSCRIPT_TOOL.Running || retained
+    const result = finished
+      ? native.state !== KIMI_TRANSCRIPT_TOOL.Running || Object.hasOwn(native.frame, 'output')
+        ? native.frame
+        : null
+      : null
+    return {
+      toolCallId: native.toolCallId,
+      toolName: native.name,
+      args: pickObject(native.frame, 'input') ?? {},
+      display: kimiDisplay(native.frame),
+      result,
+      originalResult: finished && kimiTranscriptToolsMatch(native, original)
+        ? original?.frame ?? null
+        : result,
+      retained,
+      finished,
+      lifecycle: {
+        frameStatus: native.state === KIMI_TRANSCRIPT_TOOL.Running
+          ? 'in_progress'
+          : native.state === KIMI_TRANSCRIPT_TOOL.Error
+            ? 'failed'
+            : 'completed',
+        providerOutcome: result?.state === KIMI_TRANSCRIPT_TOOL.Error
+          ? 'failed'
+          : null,
+        retainedOutcome: retainedOutcome(retained ? completion : undefined),
+        rowFinal: finished,
+        resultFrameLanded: result !== null,
+      },
+    }
   }
-}
-
-/** The retained start of a call, as its result, when it carries output. */
-function kimiRetainedOutput(start: Record<string, unknown> | null): Record<string, unknown> | null {
-  if (!start || (typeof start.output !== 'string' && !Array.isArray(start.output)))
-    return null
-  return start
+  return null
 }
 
 /**
@@ -154,7 +134,7 @@ export function kimiToolFacts(row: KimiToolRow): KimiToolFacts {
     text,
     lifecycleText: kimiOutput(row.originalResult?.output ?? row.result?.output).text,
     images,
-    failed: row.result?.isError === true,
+    failed: row.lifecycle.providerOutcome === 'failed',
     truncated: row.result?.truncated === true,
     resultAvailable: row.result !== null,
   }
@@ -216,6 +196,10 @@ export function kimiOutput(output: unknown): { text: string, images: ImageResult
     if (!isObject(part))
       continue
     switch (part.type) {
+      case 'image':
+        if (typeof part.mimeType === 'string' && typeof part.data === 'string' && part.data)
+          images.push({ mimeType: part.mimeType, data: part.data })
+        break
       case 'text':
         texts.push(pickString(part, 'text'))
         break
@@ -795,23 +779,9 @@ function kimiSearchResult(facts: KimiToolFacts, kind: 'glob' | 'grep'): { result
   }
   const lines = facts.text.split('\n').map(line => line.trimEnd()).filter(line => line !== '' && !/^<system>.*<\/system>$/.test(line))
   const empty = lines.length === 0 || /^No (?:files|matches) found\.?$/i.test(lines[0] ?? '')
-  if (kind === 'glob') {
-    const filenames = empty
-      ? []
-      : lines
-    return {
-      result: {
-        filenames,
-        content: '',
-        numFiles: filenames.length,
-        numLines: 0,
-        truncated: facts.truncated,
-        fallbackContent: facts.text,
-        empty,
-      },
-    }
-  }
-  const mode = pickString(facts.input, 'output_mode')
+  const mode = kind === 'glob'
+    ? 'files_with_matches'
+    : pickString(facts.input, 'output_mode')
   if (mode === 'files_with_matches') {
     const filenames = empty
       ? []
@@ -825,7 +795,9 @@ function kimiSearchResult(facts: KimiToolFacts, kind: 'glob' | 'grep'): { result
         truncated: facts.truncated,
         fallbackContent: facts.text,
         empty,
-        mode: 'files_with_matches',
+        ...(kind === 'grep'
+          ? { mode }
+          : {}),
       },
     }
   }
@@ -1012,6 +984,9 @@ export function kimiToolCall(row: KimiToolRow): ToolCall {
   const label = spec.label ?? (row.toolName || undefined)
   return createToolCall(envelope, {
     ...spec,
+    ...(facts.truncated
+      ? { truncated: true }
+      : {}),
     ...(label !== undefined
       ? { label }
       : {}),

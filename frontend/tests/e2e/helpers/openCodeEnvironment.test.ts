@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { mcpProbeServer } from './mcpProbeServer'
-import { createOpenCodeEnvironment, openCodeFamilyConfig } from './openCodeEnvironment'
+import { createOpenCodeEnvironment, openCodeFamilyConfig, openCodeNativeConfig } from './openCodeEnvironment'
 
 const echoServer = mcpProbeServer('echo_probe', '/srv/echo.mjs')
 const provider = {
@@ -74,10 +74,10 @@ describe('openCodeFamilyConfig', () => {
 describe('createOpenCodeEnvironment', () => {
   const kiloCloud = { origin: 'http://127.0.0.1:4567', identityToken: 'unit-identity-token' }
 
-  it('gives OpenCode and Kilo one configuration that keeps two recent turns', () => {
+  it('gives each native transport its own canonical configuration', () => {
     const env = createOpenCodeEnvironment({ ...provider, mcpEchoServer: echoServer, kiloCloud })
-    expect(env.KILO_CONFIG_CONTENT).toBe(env.OPENCODE_CONFIG_CONTENT)
-    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT!)).toEqual({
+    expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT!)).toEqual(openCodeNativeConfig(provider, echoServer))
+    expect(JSON.parse(env.KILO_CONFIG_CONTENT!)).toEqual({
       ...openCodeFamilyConfig(provider, echoServer),
       compaction: { tail_turns: 2 },
     })
@@ -114,5 +114,56 @@ describe('createOpenCodeEnvironment', () => {
       OPENCODE_DISABLE_EXTERNAL_SKILLS: 'true',
       KILO_DISABLE_EXTERNAL_SKILLS: 'true',
     })
+  })
+})
+
+describe('openCodeNativeConfig', () => {
+  it('restricts models to the mock provider and supplies native model references', () => {
+    expect(openCodeNativeConfig(provider, echoServer)).toMatchObject({
+      model: { providerID: 'unit-provider', model: 'first-model' },
+      policies: [
+        { action: 'provider.use', resource: '*', effect: 'deny' },
+        { action: 'provider.use', resource: 'unit-provider', effect: 'allow' },
+      ],
+      providers: {
+        'unit-provider': {
+          package: '@opencode/ai/providers/openai-compatible',
+          settings: { apiKey: 'unit-key', baseURL: provider.baseURL },
+          models: {
+            'first-model': {
+              capabilities: {
+                input: ['text', 'image', 'pdf'],
+              },
+            },
+          },
+        },
+      },
+      mcp: {
+        servers: {
+          echo_probe: {
+            type: 'local',
+            command: [echoServer.command, '/srv/echo.mjs'],
+          },
+        },
+      },
+    })
+  })
+
+  it('keeps a nonreasoning model free of variants and refuses an absent default', () => {
+    expect(openCodeNativeConfig({
+      ...provider,
+      models: [
+        { id: 'plain', name: 'Plain', reasoning: false },
+      ],
+    }, echoServer)).toMatchObject({
+      providers: {
+        'unit-provider': {
+          models: {
+            plain: { variants: [] },
+          },
+        },
+      },
+    })
+    expect(() => openCodeNativeConfig({ ...provider, models: [] }, echoServer)).toThrow('needs at least one model')
   })
 })

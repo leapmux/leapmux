@@ -102,5 +102,5 @@ func TestKimiOpenStartupSessionStampsTheAttachFromTheClock(t *testing.T) {
 	a.clock = clock
 
 	require.NoError(t, a.openStartupSession(opts, 30*time.Second))
-	assertAttachSplitsTheTaskHistory(t, &kimiTestRig{agent: a, fake: fake, sink: sink}, attach)
+	assertAttachFiltersHistoricalNotices(t, &kimiTestRig{agent: a, fake: fake, sink: sink}, attach)
 }

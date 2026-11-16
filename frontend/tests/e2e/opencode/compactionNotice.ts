@@ -1,5 +1,5 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
-import { OPENCODE_EVENT } from '../../../src/generated/contracts/opencode-protocol'
+import { OPENCODE_NATIVE_EVENT } from '../../../src/generated/contracts/opencode-native-protocol'
 import { NOTIFICATION_THREAD_TYPE } from '../../../src/generated/contracts/worker-vocab'
 import { MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { isObject, pickObject } from '../../../src/lib/jsonPick'
@@ -17,8 +17,8 @@ export function openCodeCompactionEvents(snapshot: NativeMessageSnapshot): Recor
     if (!isObject(frame) || frame.type !== NOTIFICATION_THREAD_TYPE || !Array.isArray(frame.messages))
       continue
     for (const event of frame.messages) {
-      if (isObject(event) && event.type === OPENCODE_EVENT.SessionCompacted
-        && pickObject(event, 'properties')?.sessionID === snapshot.agentSessionId) {
+      if (isObject(event) && event.type === OPENCODE_NATIVE_EVENT.CompactionEnded
+        && pickObject(event, 'data')?.sessionID === snapshot.agentSessionId) {
         events.push(event)
       }
     }

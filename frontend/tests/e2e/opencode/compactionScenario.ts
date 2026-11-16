@@ -9,14 +9,15 @@ import { currentNativeAgent, expectSameNativeSession, nativeScenarioModelContext
 import { waitForAgentIdle } from '../helpers/ui'
 import { openCodeCompactionEvents } from './compactionNotice'
 
-const summaryMarker = 'Create a new anchored summary from the conversation history'
+const summaryMarker = 'You MUST summarize the conversation above into a structured summary'
 
 /**
- * The native compaction of OpenCode, and of Kilo, which builds on OpenCode and sends the same summarizer prompt.
- * The summarizer request falls through to the fallback, which answers the summary.
+ * The native v2 summarizer requires one of its requested Markdown headings.
+ * The fallback returns a summary in that format.
  */
 export const OPENCODE_COMPACTION: NativeCompactionOptions = {
   summary: { route: 'fallback', requestMarker: summaryMarker },
+  summaryEnvelope: summary => `## Objective\n${summary}\n`,
 }
 
 /** Prove that a successful native summary creates one stored daemon event and one divider. */
@@ -35,8 +36,8 @@ export async function exerciseOpenCodeCompactionNotice(context: ManagedNativeSce
   expect(events).toHaveLength(1)
   expect(events).toMatchObject([
     {
-      type: 'session.compacted',
-      properties: { sessionID: before.agentSessionId },
+      type: 'session.compaction.ended',
+      data: { sessionID: before.agentSessionId },
     },
   ])
   await expectCompactionNoticeAfterReload(context.page, { divider: true })
@@ -65,7 +66,7 @@ export async function exerciseFailedOpenCodeCompactionNotice(context: ManagedNat
     priority: 'high',
     once: true,
     when: { body: summaryMarker },
-    respond: { text: MANUAL_COMPACTION_SUMMARY },
+    respond: { text: `## Objective\n${MANUAL_COMPACTION_SUMMARY}\n` },
   })
   await requestNativeCompaction(context)
   await expect.poll(async () => (await context.modelScript.status()).ruleMatches[recoveryRule] ?? 0).toBe(1)

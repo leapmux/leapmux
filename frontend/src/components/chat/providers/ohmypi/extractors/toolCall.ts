@@ -9,7 +9,7 @@ import type { OhMyPiToolExecution } from './toolCommon'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ImageResultSource } from '~/lib/imageBlocks'
 import type { ParsedMessageContent } from '~/lib/messageParser'
-import { OH_MY_PI_EVENT, OH_MY_PI_FRAME_FIELD, OH_MY_PI_TOOL } from '~/generated/contracts/ohmypi-protocol'
+import { OH_MY_PI_ASK_ARGUMENT, OH_MY_PI_EVENT, OH_MY_PI_FRAME_FIELD, OH_MY_PI_TOOL } from '~/generated/contracts/ohmypi-protocol'
 import { asContentArray, splitToolResultContent } from '~/lib/contentBlocks'
 import { withFallbackFilePath } from '~/lib/imageBlocks'
 import { isObject, pickObject, pickString } from '~/lib/jsonPick'
@@ -25,7 +25,7 @@ import { ohMyPiAgentRequest, ohMyPiAgentRuns } from './agent'
 import { ohMyPiCommandOutcome, ohMyPiEvalRequest, ohMyPiEvalResults } from './execute'
 import { ohMyPiPatchChanges, ohMyPiResultChanges, ohMyPiWriteChange } from './fileEdit'
 import { ohMyPiHubIsProcessOp, ohMyPiHubProcessRequest } from './hub'
-import { ohMyPiQuestionAnswers, ohMyPiQuestionPrompts } from './question'
+import { ohMyPiQuestionAnswers } from './question'
 import { ohMyPiReadIsUrl, ohMyPiReadResult } from './read'
 import { ohMyPiGlobResult, ohMyPiGrepResult, ohMyPiSearchPattern, ohMyPiTextSearchResult } from './search'
 import { ohMyPiTodoSource } from './todo'
@@ -276,9 +276,14 @@ export const OH_MY_PI_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<OhMyPiToolFac
         : {}),
     }
   },
-  // omp's own question record, which no other provider sends.
+  // The form's instruction describes the tool call. Its fields arrive through
+  // the control channel, while native result details retain each answer.
   question: (args): ToolRequestByKind['question'] => ({
-    questions: ohMyPiQuestionPrompts(args.questions),
+    questions: typeof args[OH_MY_PI_ASK_ARGUMENT.HTML] === 'string'
+      ? [
+          { question: pickString(args, OH_MY_PI_ASK_ARGUMENT.Instruction) || 'Complete the form', options: [] },
+        ]
+      : [],
   }),
   // The checklist the result states. omp puts the whole list in the RESULT, so a
   // running call states none yet.

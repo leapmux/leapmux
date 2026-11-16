@@ -1,68 +1,34 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { ManagedNativeScenarioContext, NativeToolOutcome } from '../helpers/nativeScenario'
-import { acpSupplementProtocol, acpSupplementRawOutput, acpToolSupplement } from '../../../src/components/chat/providers/acp/toolSupplement'
-import { ACP_UPDATE } from '../../../src/generated/contracts/acp-protocol'
-import { isObject } from '../../../src/lib/jsonPick'
-import { nativeMessageBody, nativeMessageSupplement, readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { OPENCODE_NATIVE_TOOL_STATUS } from '../../../src/generated/contracts/opencode-native-protocol'
+import { isObject, pickObject } from '../../../src/lib/jsonPick'
+import { readNativeMessageSnapshot } from '../helpers/nativeMessages'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
+import { openCodeNativeToolRecords } from './nativeToolRecords'
 
-/** Read the numeric shell outcome from the exact OpenCode-family native result frame. */
+/** Compare the native numeric exit status and original content with the model receipt. */
 export function openCodeShellOutcome(snapshot: NativeMessageSnapshot, callId: string, modelText: string): NativeToolOutcome {
-  if (!callId || snapshot.agentId.trim() === '' || snapshot.agentSessionId.trim() === '')
-    throw new Error('The native shell result requires an exact agent, session, and call ID.')
-  const outcomes: NativeToolOutcome[] = []
-  for (const message of snapshot.messages) {
-    if (message.agentSessionId !== snapshot.agentSessionId || message.spanId !== callId)
-      continue
-    const original = nativeMessageBody(message)
-    if (!isObject(original))
-      throw new Error('The paired native shell result must contain an object.')
-    if (original.sessionUpdate !== ACP_UPDATE.ToolCallUpdate)
-      continue
-    if (original.toolCallId !== callId)
-      throw new Error('The paired native shell result identifies another call.')
-    if (original.status !== 'completed' && original.status !== 'failed')
-      continue
-    const decoded = nativeMessageSupplement(message)
-    const supplemental = isObject(decoded)
-      ? decoded.provider
-      : undefined
-    const extra = acpToolSupplement(original, supplemental)
-    const resolved = {
-      ...acpSupplementProtocol(extra),
-      ...original,
-    }
-    const raw = isObject(resolved.rawOutput)
-      ? resolved.rawOutput
-      : acpSupplementRawOutput(extra)
-    if (!isObject(raw) || !isObject(raw.metadata) || !Number.isSafeInteger(raw.metadata.exit))
-      throw new Error('The paired native shell result contains no safe integer exit code.')
-    const exitCode = raw.metadata.exit
-    if (typeof exitCode !== 'number')
-      throw new TypeError('The paired native shell exit code must be a number.')
-    const output = typeof raw.output === 'string'
-      ? raw.output
-      : typeof raw.error === 'string'
-        ? raw.error
-        : undefined
-    if (output === undefined || output !== modelText)
-      throw new Error('The native shell frame and model result contain different output bytes.')
-    outcomes.push({ text: modelText, exitCode, failed: original.status === 'failed' || exitCode !== 0 })
-  }
-  if (outcomes.length !== 1)
+  const endings = openCodeNativeToolRecords(snapshot, callId).filter(record => record.finished)
+  if (endings.length !== 1 || !endings[0])
     throw new Error('The exact native shell call must have one completed result frame.')
-  const outcome = outcomes[0]
-  if (!outcome)
-    throw new Error('The exact native shell result is absent.')
-  return outcome
+  const { data, status } = endings[0]
+  const exitCode = pickObject(data, 'metadata')?.exit
+  if (typeof exitCode !== 'number' || !Number.isSafeInteger(exitCode))
+    throw new TypeError('The paired native shell result contains no safe integer exit code.')
+  const output = Array.isArray(data.content)
+    ? data.content.flatMap(item => isObject(item) && item.type === 'text' && typeof item.text === 'string'
+        ? [item.text]
+        : []).join('\n')
+    : undefined
+  if (output === undefined || output !== modelText)
+    throw new Error('The native shell frame and model result contain different output bytes.')
+  return { text: modelText, exitCode, failed: status === OPENCODE_NATIVE_TOOL_STATUS.Error || exitCode !== 0 }
 }
 
-/** Keep model output separate from the Worker frame that proves its native exit status. */
+/** Read only stored native rows and the model receipt; never infer status from prose. */
 export async function readOpenCodeShellOutcome(context: ManagedNativeScenarioContext, request: MockModelRequestRecord, callId: string): Promise<NativeToolOutcome> {
   const agent = await currentNativeAgent(context)
-  const snapshot = await readNativeMessageSnapshot(context, agent.id)
-  const text = nativeToolResult(request, callId)
-  return openCodeShellOutcome(snapshot, callId, text)
+  return openCodeShellOutcome(await readNativeMessageSnapshot(context, agent.id), callId, nativeToolResult(request, callId))
 }

@@ -2,8 +2,11 @@ import type { McpProbeServer } from './mcpProbeServer'
 import type { OpenCodeFamilyProviderOptions } from './openCodeEnvironment'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
-import { writeMcpConfirmationServer } from './mcpFormServer'
+import { writeMcpConfirmationServer, writeMcpFormServer } from './mcpFormServer'
 import { openCodeFamilyConfig } from './openCodeEnvironment'
+
+/** The typed form server that proves MiMo's empty-confirmation limit. */
+export const MIMO_INPUT_FORM_SERVER_NAME = 'input_probe'
 
 export interface MimoEnvironmentOptions extends OpenCodeFamilyProviderOptions {
   /** The run directory. MiMo keeps its data, configuration, state, and cache under one root inside it. */
@@ -21,12 +24,16 @@ export function createMimoEnvironment(options: MimoEnvironmentOptions): Record<s
   const mimoHome = join(options.runDirectory, 'mimocode-home')
   mkdirSync(mimoHome, { recursive: true })
   const confirmationServer = writeMcpConfirmationServer(mimoHome)
+  const inputServer = {
+    ...writeMcpFormServer(mimoHome, 'mcp-input-form.mjs'),
+    name: MIMO_INPUT_FORM_SERVER_NAME,
+  }
   // MiMo reads no OPENCODE_* variable, so it takes the same inline provider
   // under its own names. Every switch below stops a request that no test
   // scripts, or a read of the developer's own configuration.
   return {
     MIMOCODE_HOME: mimoHome,
-    MIMOCODE_CONFIG_CONTENT: JSON.stringify(mimoCodeConfig(options, confirmationServer, options.mcpEchoServer)),
+    MIMOCODE_CONFIG_CONTENT: JSON.stringify(mimoCodeConfig(options, [confirmationServer, options.mcpEchoServer, inputServer])),
     MIMOCODE_DISABLE_PROJECT_CONFIG: 'true',
     // The worker pins this one too. It is here so that the configuration states
     // every tool that the specs script.
@@ -78,20 +85,19 @@ export function createMimoEnvironment(options: MimoEnvironmentOptions): Record<s
  * global config files, never from this inline value, so MIMOCODE_DISABLE_AUTOUPDATE
  * in the environment carries the switch.
  */
-function mimoCodeConfig(provider: OpenCodeFamilyProviderOptions, mcpConfirmationServer: McpProbeServer, mcpEchoServer: McpProbeServer): Record<string, unknown> {
+function mimoCodeConfig(provider: MimoEnvironmentOptions, servers: readonly McpProbeServer[]): Record<string, unknown> {
+  if (new Set(servers.map(server => server.name)).size !== servers.length)
+    throw new Error('The MiMo test environment requires distinct MCP server names.')
   const noRetry = { mode: 'bounded', maxRetries: 0 }
   return {
-    ...openCodeFamilyConfig(provider, mcpEchoServer),
-    mcp: {
-      [mcpConfirmationServer.name]: {
+    ...openCodeFamilyConfig(provider, provider.mcpEchoServer),
+    mcp: Object.fromEntries(servers.map(server => [
+      server.name,
+      {
         type: 'local',
-        command: [mcpConfirmationServer.command, ...mcpConfirmationServer.args],
+        command: [server.command, ...server.args],
       },
-      [mcpEchoServer.name]: {
-        type: 'local',
-        command: [mcpEchoServer.command, ...mcpEchoServer.args],
-      },
-    },
+    ])),
     agent: {
       title: { disable: true },
     },

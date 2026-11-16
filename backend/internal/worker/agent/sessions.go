@@ -66,9 +66,16 @@ type StoredSessionQuery struct {
 
 // Env reads one environment variable through the query's seam.
 func (q StoredSessionQuery) Env(key string) string {
+	value, _ := q.LookupEnv(key)
+	return value
+}
+
+// LookupEnv preserves presence from an environment snapshot or the process.
+// A lookup-only Getenv treats an empty answer as absent.
+func (q StoredSessionQuery) LookupEnv(key string) (string, bool) {
 	if q.EnvEntries != nil {
 		if key == "" {
-			return ""
+			return "", false
 		}
 		for index := len(q.EnvEntries) - 1; index >= 0; index-- {
 			entryKey, value, valid := strings.Cut(q.EnvEntries[index], "=")
@@ -76,15 +83,16 @@ func (q StoredSessionQuery) Env(key string) string {
 				continue
 			}
 			if entryKey == key || (runtime.GOOS == "windows" && strings.EqualFold(entryKey, key)) {
-				return value
+				return value, true
 			}
 		}
-		return ""
+		return "", false
 	}
 	if q.Getenv != nil {
-		return q.Getenv(key)
+		value := q.Getenv(key)
+		return value, value != ""
 	}
-	return os.Getenv(key)
+	return os.LookupEnv(key)
 }
 
 // Environ returns an independent ordered snapshot, or nil for a lookup-only seam.

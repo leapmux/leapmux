@@ -54,20 +54,29 @@ func (w SubagentReportWrite) NotificationPayload() (map[string]any, error) {
 
 // CaptureSubagentReport freezes the report bytes and exact decorated transcript writer.
 func CaptureSubagentReport(writer TranscriptServices, write SubagentReportWrite) (CapturedTranscript, bool, error) {
-	payload, err := write.NotificationPayload()
-	if err != nil || payload == nil {
-		return CapturedTranscript{}, false, err
+	content, present, err := SubagentReportContent(write)
+	if err != nil || !present {
+		return CapturedTranscript{}, present, err
 	}
 	if writer == nil {
 		return CapturedTranscript{}, false, errors.New("the subagent report has no writer")
 	}
+	return CaptureTranscript(writer, content, SpanInfo{}), true, nil
+}
+
+// SubagentReportContent serializes the report and stable identity without choosing an owner.
+func SubagentReportContent(write SubagentReportWrite) (MessageContent, bool, error) {
+	payload, err := write.NotificationPayload()
+	if err != nil || payload == nil {
+		return MessageContent{}, false, err
+	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return CapturedTranscript{}, false, fmt.Errorf("marshal subagent report: %w", err)
+		return MessageContent{}, false, fmt.Errorf("marshal subagent report: %w", err)
 	}
 	sum := sha256.Sum256([]byte(write.ReportID))
 	content := MessageContent{Original: encoded, IdempotencyKey: fmt.Sprintf("subagent-report:%x", sum)}
-	return CaptureTranscript(writer, content, SpanInfo{}), true, nil
+	return content, true, nil
 }
 
 // CaptureChildSubagentReport resolves the required child before the write can be delayed.

@@ -216,7 +216,9 @@ func (transcript *geminiChildTranscript) persist(session geminiSession) error {
 			break
 		}
 	}
-	childID, err := transcript.services.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: session.SessionID, Title: title})
+	childID, err := transcript.services.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: session.SessionID, Title: title})
 	if err != nil {
 		return err
 	}

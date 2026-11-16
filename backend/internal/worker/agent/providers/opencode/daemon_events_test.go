@@ -53,7 +53,7 @@ func (p *storedMessagePeer) reply(body string, status int) {
 	p.mu.Unlock()
 }
 
-func newDaemonGenerationAgent(t *testing.T) (*Agent, *agenttest.Sink, *storedMessagePeer) {
+func newDaemonGenerationAgent(t *testing.T) (*familyTestAgent, *agenttest.Sink, *storedMessagePeer) {
 	t.Helper()
 	sink := &agenttest.Sink{}
 	a := newOpenCodeAgentWithSink(agent.NewProviderServices(sink))
@@ -81,7 +81,7 @@ func newDaemonGenerationAgent(t *testing.T) (*Agent, *agenttest.Sink, *storedMes
 	return a, sink, peer
 }
 
-func feedDaemonEvent(t *testing.T, a *Agent, kind string, fields map[string]any) {
+func feedDaemonEvent(t *testing.T, a *familyTestAgent, kind string, fields map[string]any) {
 	t.Helper()
 	properties := map[string]any{"sessionID": "test-session"}
 	for key, value := range fields {
@@ -92,7 +92,7 @@ func feedDaemonEvent(t *testing.T, a *Agent, kind string, fields map[string]any)
 	a.Questions.handleEvent(t.Context(), raw)
 }
 
-func feedDaemonChunk(t *testing.T, a *Agent, kind, messageID, text string) {
+func feedDaemonChunk(t *testing.T, a *familyTestAgent, kind, messageID, text string) {
 	t.Helper()
 	raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{
 		"sessionId": "test-session", "update": map[string]any{"sessionUpdate": kind, "messageId": messageID, "content": map[string]any{"type": "text", "text": text}},
@@ -134,7 +134,7 @@ func TestOpenCodeSummaryStaysOutOfTheTranscript(t *testing.T) {
 	}
 }
 
-func markDaemonRetry(t *testing.T, a *Agent) {
+func markDaemonRetry(t *testing.T, a *familyTestAgent) {
 	t.Helper()
 	feedDaemonEvent(t, a, "message.updated", map[string]any{"info": map[string]any{"id": "message-1", "role": "assistant"}})
 	feedDaemonEvent(t, a, "session.status", map[string]any{"status": map[string]any{"type": "retry", "attempt": 1}})
@@ -384,7 +384,7 @@ func TestOpenCodeCompactionRow(t *testing.T) {
 	require.Len(t, sink.PersistedNotifications(), 1)
 	notice := sink.PersistedNotifications()[0]
 	assert.JSONEq(t, `{"type":"session.compacted","properties":{"sessionID":"test-session"}}`, string(notice.Content))
-	assert.Equal(t, agent.CompactionBoundaryNotification(), Registration().Plugin.Classify(notice.Content))
+	assert.Equal(t, agent.CompactionBoundaryNotification(), (FamilyProvider{}).Classify(notice.Content))
 	assert.Equal(t, []string{"text:before"}, daemonGenerationRows(sink))
 	assert.Equal(t, []interface{}{map[string]interface{}{}, nil}, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
 }
@@ -444,7 +444,7 @@ func TestOpenCodeRetryRowFolds(t *testing.T) {
 	notices := sink.PersistedNotifications()
 	require.Len(t, notices, 2)
 	for _, notice := range notices {
-		assert.Equal(t, agent.APIRetryNotification(), Registration().Plugin.Classify(notice.Content))
+		assert.Equal(t, agent.APIRetryNotification(), (FamilyProvider{}).Classify(notice.Content))
 	}
 	assert.Empty(t, sink.LeapMuxNotifications())
 	for range 2 {

@@ -428,13 +428,13 @@ func (a *Agent) ownedChild(rootSessionID, childKey string) (string, linkedSubage
 
 // SendChildInput keeps ordinary input queued while the child runs. Grok takes
 // messages only during its active task, so the queue offers Steer for this input.
-func (a *Agent) SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.WithSessionID(func(rootSessionID string) error {
+func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.ChildInputResult, error) {
+	return agent.ChildInputResult{StartsTurn: true}, a.WithSessionID(func(rootSessionID string) error {
 		_, child, found := a.ownedChild(rootSessionID, childKey)
 		if !found || child.agentAddress == "" {
 			return agent.ErrChildRouteNotReady
 		}
-		if err := validateGrokChildMessage(content, attachments); err != nil {
+		if err := validateGrokChildMessage(input.Content, input.Attachments); err != nil {
 			return err
 		}
 		return agent.ErrAgentBusy

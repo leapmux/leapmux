@@ -14,10 +14,11 @@ func fallbackJunieModes() []*leapmuxv1.AvailableOption {
 	return []*leapmuxv1.AvailableOption{
 		{Id: contracts.JunieModeDefault, Name: "Default"},
 		{Id: contracts.JunieModePlan, Name: "Plan"},
+		{Id: contracts.JunieModeGoal, Name: "Goal"},
 	}
 }
 
-// junieStaticOptionGroups holds Junie's static default/plan mode group. The
+// junieStaticOptionGroups holds Junie's static mode group. The
 // factory registration and Start both read this one value.
 var junieStaticOptionGroups = acp.StaticSecondaryGroup(acp.ModeChannelPermissionMode, fallbackJunieModes())
 

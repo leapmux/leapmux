@@ -53,7 +53,9 @@ func setupChildAgentTest(t *testing.T) (*Service, testRPCDispatcher, string, str
 	sink := newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX)
 	// EnsureChildAgent creates the child row + registry row in one idempotent
 	// call; the returned id is the virtual child agent id.
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span-1", ProviderChildKey: "row-key-1", Title: "child task"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn-span-1", ProviderChildKey: "row-key-1", Title: "child task"})
 	require.NoError(t, err)
 	require.NotEmpty(t, childID)
 
@@ -431,9 +433,8 @@ func TestAgentToProto_RootAgentIdResolved(t *testing.T) {
 
 // TestAgentToProto_ChildCapabilitiesFollowTheProvider pins what a child tab may
 // do, per provider: send a message (accepts_messages) and interrupt its turn
-// (accepts_interrupt). A root accepts both. Each expected value is a product
-// decision, stated here rather than read from the plugin, so the test fails
-// when a provider loses a capability that its tab offers.
+// (accepts_interrupt). A root accepts both. The expected values state each
+// provider's native child operations independently from its plugin.
 func TestAgentToProto_ChildCapabilitiesFollowTheProvider(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -442,7 +443,7 @@ func TestAgentToProto_ChildCapabilitiesFollowTheProvider(t *testing.T) {
 		acceptsChildInterrupt bool
 	}{
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_CODEX, false, true},
-		{leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE, true, true},
+		{leapmuxv1.AgentProvider_AGENT_PROVIDER_KIMI_CODE, true, false},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD, true, true},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE, false, true},
 		{leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE, true, false},
@@ -456,7 +457,9 @@ func TestAgentToProto_ChildCapabilitiesFollowTheProvider(t *testing.T) {
 			require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
 				ID: rootID, WorkingDir: t.TempDir(), AgentProvider: tc.provider,
 			}))
-			childID, err := newTestRootOutputSink(t, svc.Output, rootID, tc.provider).EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span-1", ProviderChildKey: "row-key-1", Title: "child task"})
+			childID, err := newTestRootOutputSink(t, svc.Output, rootID, tc.provider).EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole: bgtask.RoleChildTask,
+				SpawnSpanID:  "spawn-span-1", ProviderChildKey: "row-key-1", Title: "child task"})
 			require.NoError(t, err)
 
 			rootRow, err := svc.Queries.GetAgentByID(ctx, rootID)
@@ -570,7 +573,9 @@ func TestCloseAgentReportsDescendantTabsToTheCaller(t *testing.T) {
 
 	// A grandchild, so the answer is the whole subtree rather than one level.
 	childSink := requireRootOutputSink(t, svc.Output, rootID).ChildSink(childID)
-	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span-2", ProviderChildKey: "row-key-2", Title: "grandchild task"})
+	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn-span-2", ProviderChildKey: "row-key-2", Title: "grandchild task"})
 	require.NoError(t, err)
 	require.NotEmpty(t, grandchildID)
 
@@ -601,7 +606,9 @@ func TestInspectLastTabCloseReportsTheSubtreeSoAClientCanOrderIt(t *testing.T) {
 
 	svc, d, childID, rootID := setupChildAgentTest(t)
 	childSink := requireRootOutputSink(t, svc.Output, rootID).ChildSink(childID)
-	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span-2", ProviderChildKey: "row-key-2", Title: "grandchild task"})
+	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn-span-2", ProviderChildKey: "row-key-2", Title: "grandchild task"})
 	require.NoError(t, err)
 
 	w := newTestWriter()
@@ -642,7 +649,9 @@ func TestCloseAgentOnChildStillReportsItsOwnDescendants(t *testing.T) {
 
 	svc, d, childID, rootID := setupChildAgentTest(t)
 	childSink := requireRootOutputSink(t, svc.Output, rootID).ChildSink(childID)
-	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-span-2", ProviderChildKey: "row-key-2", Title: "grandchild task"})
+	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn-span-2", ProviderChildKey: "row-key-2", Title: "grandchild task"})
 	require.NoError(t, err)
 
 	w := newTestWriter()

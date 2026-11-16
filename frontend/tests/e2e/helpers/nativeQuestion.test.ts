@@ -77,13 +77,11 @@ vi.mock('./ui', () => ({
       browser.events.push(`click:${action}`)
     },
   }),
-  composerEditor: () => ({
-    fake: 'composer',
-    fill: async (text: string) => {
-      browser.draft = text
-      browser.events.push('fill-note')
-    },
-  }),
+  composerEditor: () => fakeLocator('composer'),
+  fillComposer: async (_page: Page, text: string) => {
+    browser.draft = text
+    browser.events.push('fill-note')
+  },
   waitForEditorDraft: async (_page: Page, userId: string, text: string) => {
     expect(userId).toBe('question-user')
     expect(text).toBe(browser.draft)

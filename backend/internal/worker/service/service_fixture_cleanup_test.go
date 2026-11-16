@@ -1,6 +1,8 @@
 package service
 
 import (
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	"context"
 	"fmt"
 	"net"
@@ -328,10 +330,14 @@ func TestFixtureCountsRetiredProgressPublishers(t *testing.T) {
 		value, ok := svc.Output.rootSinks.Load(ownerID)
 		require.True(t, ok)
 		original := value.(*agentOutputSink)
-		childID, err := services.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "child-span", ProviderChildKey: "child", Title: "child"})
+		childID, err := services.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  "child-span", ProviderChildKey: "child", Title: "child"})
 		require.NoError(t, err)
 		childServices := services.ChildSink(childID)
-		descendantID, err := childServices.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "descendant-span", ProviderChildKey: "descendant", Title: "descendant"})
+		descendantID, err := childServices.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  "descendant-span", ProviderChildKey: "descendant", Title: "descendant"})
 		require.NoError(t, err)
 		childServices.ChildSink(descendantID)
 		value, ok = svc.Output.sinksByAgent.Load(childID)

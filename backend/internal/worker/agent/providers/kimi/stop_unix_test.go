@@ -14,7 +14,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/envutil"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/util/testutil/processtest"
@@ -112,7 +111,7 @@ func TestKimiStopCapturesDetachedCommandsBeforeServerShutdown(t *testing.T) {
 	a, tree := startKimiOwnedTree(t, "owned-kimi-stop")
 	_, unrelated := startKimiOwnedTree(t, "unrelated-kimi-stop")
 	connectKimiOwnedTreeSession(t, a, server.URL)
-	a.HandleOutput(kimiEventFrame(t, "session_1", map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": "user"}}))
+	a.HandleOutput([]byte(`{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","seq":1,"ops":[{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}]}}`))
 	beforeReply, rootExit := newKimiRootExitHook(t, a, tree)
 	fake.reply("POST "+kimiRouteShutdown, fakeKapReply{BeforeReply: beforeReply})
 	stopKimiAndAwaitRootExit(t, a, rootExit)
@@ -149,7 +148,7 @@ func TestKimiStopSendsNoRequestsAfterNativeExit(t *testing.T) {
 			fake, server := newFakeKap(t)
 			a, tree := startKimiOwnedTree(t, "exited-kimi-stop")
 			connectKimiOwnedTreeSession(t, a, server.URL)
-			a.HandleOutput(kimiEventFrame(t, "session_1", map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": "user"}}))
+			a.HandleOutput([]byte(`{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","seq":1,"ops":[{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}]}}`))
 			require.NoError(t, a.BindDescendants(t.Context()))
 			killed, err := tree.Root.Kill()
 			require.NoError(t, err)
@@ -176,7 +175,7 @@ func TestKimiStopRetainsCommandsWhenTheServerExitsDuringAbort(t *testing.T) {
 	fake, server := newFakeKap(t)
 	a, tree := startKimiOwnedTree(t, "abort-exit-kimi-stop")
 	connectKimiOwnedTreeSession(t, a, server.URL)
-	a.HandleOutput(kimiEventFrame(t, "session_1", map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": "user"}}))
+	a.HandleOutput([]byte(`{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","seq":1,"ops":[{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}]}}`))
 	beforeReply, rootExit := newKimiRootExitHook(t, a, tree)
 	fake.reply("POST "+kimiSessionPath("session_1", kimiActionAbort), fakeKapReply{BeforeReply: beforeReply})
 	stopKimiAndAwaitRootExit(t, a, rootExit)

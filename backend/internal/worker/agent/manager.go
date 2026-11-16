@@ -796,20 +796,20 @@ func (m *Manager) InterruptEscalationReady(agentID string) bool {
 // before calling here.
 // Like SendInput, it waits for an active lifecycle operation on the owner.
 // The lock covers only provider resolution because child steering can block.
-func (m *Manager) SendChildInput(rootAgentID, childKey, content string, attachments []*leapmuxv1.Attachment) error {
+func (m *Manager) SendChildInput(rootAgentID, childKey string, input ChildInput) (ChildInputResult, error) {
 	p, err := m.providerAfterLifecycle(rootAgentID)
 	if err != nil {
-		return err
+		return ChildInputResult{StartsTurn: true}, err
 	}
 	steerer, ok := p.(ChildSteerer)
 	if !ok {
-		return ErrChildOperationUnsupported
+		return ChildInputResult{StartsTurn: true}, ErrChildOperationUnsupported
 	}
-	err = steerer.SendChildInput(childKey, content, attachments)
+	result, err := steerer.SendChildInput(childKey, input)
 	if errors.Is(err, ErrAgentBusy) {
-		return &AgentBusyError{Err: err, ActiveTurnSteerable: steerer.ActiveChildTurnState(childKey).Steerable}
+		return ChildInputResult{StartsTurn: true}, &AgentBusyError{Err: err, ActiveTurnSteerable: steerer.ActiveChildTurnState(childKey).Steerable}
 	}
-	return err
+	return result, err
 }
 
 func (m *Manager) SteerChildInput(rootAgentID, childKey, content string, attachments []*leapmuxv1.Attachment) error {

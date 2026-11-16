@@ -170,7 +170,9 @@ func (a *Agent) teamRunFor(event hubEvent, runID, agentID, teamName string) *tea
 	}
 	// No worker-visible tool call starts this run.
 	// Its row key therefore supplies its independent transcript span.
-	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: run.rowKey(), ProviderChildKey: run.rowKey(), Title: title})
+	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  run.rowKey(), ProviderChildKey: run.rowKey(), Title: title})
 	if err != nil {
 		slog.Warn("cline teammate ensure child failed", "agent_id", a.AgentID(), "run_id", runID, "error", err)
 	}

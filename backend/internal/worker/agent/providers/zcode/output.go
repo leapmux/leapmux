@@ -531,7 +531,6 @@ func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 		id:                    event.TurnID,
 		background:            background,
 		foregroundExecutionID: payload.ForegroundExecutionID,
-		acceptedAt:            a.Clock().Now(),
 		admissionRevision:     a.stateRevision,
 		anchorMessageID:       payload.MessageID,
 		inputID:               payload.InputID,
@@ -2159,6 +2158,7 @@ func (a *Agent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 		}
 	}
 
+	var finishedChildID string
 	// A subagent task with a tool-call ID can resolve or create its child
 	// transcript through the same internal spawn record as tool updates.
 	//
@@ -2174,6 +2174,7 @@ func (a *Agent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 		if ok {
 			a.children.rememberSession(rowKey, task.ChildSessionID)
 			upsert.ChildAgentID = childID
+			upsert.Role = bgtask.RoleChildTask
 			// The creator may have used the spawn's own label instead of this event's, so
 			// the row states what the tab states.
 			upsert.Title = childTitle
@@ -2183,16 +2184,21 @@ func (a *Agent) handleZCodeBackgroundTask(event zcodeEventEnvelope) {
 			if final && !a.children.reportsLifecycle(rowKey) {
 				// Drop the index entry too, or the spawn's own result would clean up a
 				// transcript this path already tore down.
-				a.persistIncompleteZCodeToolsForChild(rowKey, zcodeIncompleteChildCompletion(upsert.Status))
-				a.children.takeChild(rowKey)
-				a.children.forgetTitle(rowKey)
-				a.sink.CleanupChildAgent(childID)
-				a.reapZCodeSettledTurns()
+				finishedChildID = childID
 			}
 		}
 	}
 
 	providerkit.LogRegistryRefusal("zcode", "upsert", a.sink.UpsertBackgroundTask(upsert))
+	if finishedChildID != "" {
+		// Publish the final row while its activity entry still exists. Cleanup
+		// removes that entry, so a later tree refresh cannot publish its idle state.
+		a.persistIncompleteZCodeToolsForChild(rowKey, zcodeIncompleteChildCompletion(upsert.Status))
+		a.children.takeChild(rowKey)
+		a.children.forgetTitle(rowKey)
+		a.sink.CleanupChildAgent(finishedChildID)
+		a.reapZCodeSettledTurns()
+	}
 }
 
 // zcodeBackgroundTitle labels a background-task row with its command, description,

@@ -316,6 +316,14 @@ func (s Status) IsFinished() bool {
 	return s == StatusSucceeded || s == StatusFailed || s == StatusStopped || s == StatusInterrupted || s == StatusEndedWithUnknownOutcome
 }
 
+// ValidateFinishedStatus rejects active or invalid values before a task closes.
+func ValidateFinishedStatus(status Status) error {
+	if !status.IsFinished() {
+		return fmt.Errorf("the background task status %s does not describe a finished task", status)
+	}
+	return nil
+}
+
 // IsWorking reports whether a task currently contributes to agent activity.
 // A paused task stays open for a later turn but does not keep its tab busy.
 func (s Status) IsWorking() bool {
@@ -326,6 +334,7 @@ func (s Status) IsWorking() bool {
 // registry pipeline stays decoupled from the proto generated types. A zero
 // EndedAt means the task is still active.
 type Item struct {
+	Role Role
 	// OutputGeneration is Worker storage authority and never enters the public projection.
 	OutputGeneration int64
 	RowKey           string
@@ -351,7 +360,9 @@ type Item struct {
 }
 
 // PreservingBlanksFrom returns a copy of i with each descriptive field that the
-// caller left blank (empty string, or KindUnspecified) filled from existing.
+// caller left blank (empty string, KindUnspecified, or RoleUnspecified) filled from existing.
+// A new unlinked row defaults to TaskOutcome. Introducing a child link requires
+// an explicit role; metadata for an already linked row preserves its role.
 // GroupKey and GroupLabel are preserved together as a pair: a blank incoming
 // GroupKey keeps BOTH the existing key and label (a partial upsert cannot clear
 // a group), and a blank incoming LABEL under the SAME key keeps the existing
@@ -361,6 +372,13 @@ type Item struct {
 // "blank means keep" rule so adding a descriptive field cannot silently regress
 // a partial upsert.
 func (i Item) PreservingBlanksFrom(existing Item) Item {
+	introducesChildLink := i.ChildAgentID != "" && i.ChildAgentID != existing.ChildAgentID
+	if i.Role == RoleUnspecified && !introducesChildLink {
+		i.Role = existing.Role
+	}
+	if i.Role == RoleUnspecified && i.ChildAgentID == "" {
+		i.Role = RoleTaskOutcome
+	}
 	if i.ChildAgentID == "" {
 		i.ChildAgentID = existing.ChildAgentID
 	}
@@ -407,6 +425,7 @@ func (i Item) PreservingBlanksFrom(existing Item) Item {
 // ProviderServices.UpsertBackgroundTask. It never carries seq/created_at (those are
 // allocated by the sink on insert) nor ended_at (set on close).
 type Upsert struct {
+	Role          Role
 	RowKey        string
 	Kind          Kind
 	ChildAgentID  string // "" for registry-only rows
@@ -507,6 +526,7 @@ func (u Upsert) Clean() Upsert {
 // passing while the field they were meant to cover never arrived.
 func (u Upsert) ToItem() Item {
 	return Item{
+		Role:           u.Role,
 		RowKey:         u.RowKey,
 		ChildAgentID:   u.ChildAgentID,
 		ParentAgentID:  u.ParentAgentID,
@@ -578,6 +598,7 @@ func (i Item) ToProto() *leapmuxv1.BackgroundTaskItem {
 		// the guard above. `GroupLabel` keeps the wireString repair because it
 		// is prose: nothing joins on it.
 		Id:             i.RowKey,
+		Role:           leapmuxv1.BackgroundTaskRole(i.Role),
 		Kind:           leapmuxv1.BackgroundTaskKind(i.Kind),
 		ChildAgentId:   i.ChildAgentID,
 		ParentAgentId:  i.ParentAgentID,

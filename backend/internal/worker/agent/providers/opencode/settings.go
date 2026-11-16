@@ -2,6 +2,7 @@ package opencode
 
 import (
 	"encoding/json"
+	"log/slog"
 	"strconv"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -11,17 +12,15 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// AutoApproveGroup is the family's Auto-approve option.
+// AutoApproveGroup is the client's Auto-approve option.
 //
-// OpenCode and Kilo implement their `--auto` mode in their own clients: the
-// client answers each permission request once, and a request that a rule
-// denies never reaches it. The daemon has no such mode to switch on, and its
-// session rule update only appends rules, so it cannot switch one off again.
-// LeapMux is the client here, so it answers the requests itself while the
-// option is on.
+// LeapMux answers eligible permission requests once while this option is on.
+// The native server applies deny rules before raising a request. The ACP
+// family's session-rule update appends rules instead of removing them.
+// Client replies preserve the session rules when this option changes.
 var AutoApproveGroup = agent.SelectGroup(contracts.OpenCodeOptionAutoApprove, "Auto-approve", agent.OptionOrderPermissionMode, "false", []agent.OptionDef{
 	{Id: "false", Name: "Off", Description: "Ask before each tool call that no rule allows", Default: true},
-	{Id: "true", Name: "On", Description: "Approve each permission request once, as the --auto option does. Explicit deny rules still apply."},
+	{Id: "true", Name: "On", Description: "Approve eligible permission requests once. Explicit deny rules still apply."},
 })
 
 // acpPermissionKindAllowAlways is the ACP kind of a permission option that
@@ -107,6 +106,136 @@ func permissionOffersAlways(line *providerkit.ParsedLine) bool {
 	}
 	for _, option := range request.Options {
 		if option.Kind == acpPermissionKindAllowAlways {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *openCodeSessionRuntime) OptionGroups() []*leapmuxv1.AvailableOptionGroup {
+	s.mu.Lock()
+	selectedAgentID, selectedModel, catalog := s.selectedAgentID, s.selectedModel, s.catalog
+	s.mu.Unlock()
+	primary := selectedAgentID
+	if primary == "" {
+		primary = catalog.defaultAgent
+	}
+	model, err := catalog.effectiveModel(selectedModel, primary)
+	if err != nil && selectedModel != nil {
+		model = *selectedModel
+	}
+	effort := agent.EffortAuto
+	if model.Variant != "default" {
+		effort = openCodeVariantOption(model.Variant)
+	}
+	groups := providerkit.ModelAndEffortGroups(catalog.modelOptions(), openCodeModelKey(model), effort, agent.EffortGroupLabel, nil)
+	if err != nil && selectedModel != nil {
+		groups = append(groups, agent.ReadOnlyValueGroup(agent.OptionIDEffort, agent.EffortGroupLabel, agent.OptionOrderEffort, effort, ""))
+	}
+
+	primaryGroup := agent.SelectGroup(agent.OptionIDPrimaryAgent, "Agent", agent.OptionOrderPrimaryAgent, catalog.defaultAgent, catalog.primaryAgents())
+	return append(groups, providerkit.LiveGroup(primaryGroup, primary))
+}
+
+func (s *openCodeSessionRuntime) SettingsSnapshot() agent.SettingsApplyResult {
+	return agent.ConfirmedSettings(agent.CurrentOptions(s.OptionGroups()))
+}
+
+// applySettingsChange retains a newer native observation when an HTTP reply is late.
+func (s *openCodeSessionRuntime) applySettingsChange(send func() error, apply func()) error {
+	s.mu.Lock()
+	version := s.settingsVersion
+	s.mu.Unlock()
+	if err := send(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.settingsVersion == version {
+		apply()
+		s.settingsVersion++
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *openCodeSessionRuntime) UpdateSettings(options optionmap.Map) agent.SettingsApplyResult {
+	s.operations.Lock()
+	defer s.operations.Unlock()
+	if s.ctx.Err() != nil {
+		return agent.RestartRequiredSettings(options)
+	}
+	s.mu.Lock()
+	selectedAgentID, selectedModel, catalog := s.selectedAgentID, s.selectedModel, s.catalog
+	s.mu.Unlock()
+	currentAgent := selectedAgentID
+	if currentAgent == "" {
+		currentAgent = catalog.defaultAgent
+	}
+	nextAgent := currentAgent
+	if requested := options[agent.OptionIDPrimaryAgent]; requested != "" && catalog.offersAgent(requested) {
+		nextAgent = requested
+	}
+	model, requestedModelAvailable := catalog.modelRef(options[agent.OptionIDModel])
+	if !requestedModelAvailable {
+		var err error
+		model, err = catalog.effectiveModel(selectedModel, nextAgent)
+		if err != nil {
+			return agent.RestartRequiredSettings(options)
+		}
+	}
+	requestedEffort := options[agent.OptionIDEffort]
+	previousModel, previousModelError := catalog.effectiveModel(selectedModel, currentAgent)
+	if requestedModelAvailable && previousModelError == nil && openCodeModelKey(previousModel) != openCodeModelKey(model) &&
+		!catalog.offersEffortOption(openCodeModelKey(previousModel), agent.EffortAuto) && (requestedEffort == "" || requestedEffort == agent.EffortAuto) {
+		variant, found, err := s.rpc.modelVariantPreference(s.ctx, s.id, model)
+		if err != nil {
+			slog.Warn("OpenCode could not read the model effort preference", "session_id", s.id, "error", err)
+			return s.SettingsSnapshot()
+		}
+		if found {
+			model.Variant = variant
+			model, err = catalog.settleVariant(model)
+			if err != nil {
+				return agent.RestartRequiredSettings(options)
+			}
+			requestedEffort = ""
+		}
+	}
+	modelChanged := requestedModelAvailable && (selectedModel == nil || *selectedModel != model)
+
+	if requested := requestedEffort; requested != "" {
+		if catalog.offersEffortOption(openCodeModelKey(model), requested) {
+			variant, valid := openCodeVariantFromOption(requested)
+			if valid {
+				model.Variant = variant
+				modelChanged = selectedModel == nil || *selectedModel != model
+			}
+		}
+	}
+	if nextAgent != currentAgent {
+		err := s.applySettingsChange(func() error { return s.rpc.switchAgent(s.ctx, s.id, nextAgent) }, func() { s.selectedAgentID = nextAgent })
+		if err != nil {
+			slog.Warn("OpenCode could not change the session agent", "session_id", s.id, "error", err)
+			return agent.RestartRequiredSettings(options)
+		}
+	}
+	if modelChanged {
+		err := s.applySettingsChange(func() error { return s.rpc.switchModel(s.ctx, s.id, model) }, func() { s.selectedModel = copyOpenCodeModelRef(&model) })
+		if err != nil {
+			slog.Warn("OpenCode could not change the session model", "session_id", s.id, "error", err)
+			return agent.RestartRequiredSettings(options)
+		}
+	}
+	return s.SettingsSnapshot()
+}
+
+func (c openCodeCatalog) offersEffortOption(modelID, optionID string) bool {
+	model := agent.FindAvailableModel(c.modelOptions(), modelID)
+	if model == nil {
+		return false
+	}
+	for _, effort := range model.SupportedEfforts {
+		if effort.Id == optionID {
 			return true
 		}
 	}

@@ -207,6 +207,43 @@ function cursorResponse(server: MockModelServer, conversationID: string, prompt:
 }
 
 describe('createMockModelServer', () => {
+  it('retains calls from a completed response for the next native receipt', async () => {
+    const server = await startServer()
+    const tool = {
+      id: 'scripted-call',
+      name: 'Execute',
+      arguments: { command: 'printf 0', count: 0, enabled: false },
+    }
+    await registerScenario(server, 'native-tool-origins', {
+      steps: [
+        {
+          toolCalls: [tool],
+        },
+        { text: 'done' },
+      ],
+    })
+    const body = {
+      model: MOCK_MODELS.deepseek,
+      messages: [
+        {
+          role: 'user',
+          content: mockScenarioPrompt('native-tool-origins', 'Run the tool.'),
+        },
+      ],
+    }
+    const post = () => fetch(`${server.url}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const first = await post()
+    const answer = await first.json() as { choices: { message: { tool_calls: { id: string }[] } }[] }
+    expect(answer.choices[0]!.message.tool_calls[0]!.id).toBe(tool.id)
+    await (await post()).text()
+    const status = await readScenarioStatus(server.url, 'native-tool-origins')
+    expect(status.requests[0]!.scriptedToolCalls).toEqual([])
+    expect(status.requests[1]!.scriptedToolCalls).toEqual([tool])
+  })
   it('selects the native user prompt instead of a later truncated session title', async () => {
     const server = await startServer()
     const scenario = 'native-deepseek-compaction'
@@ -2380,6 +2417,191 @@ describe('createMockModelServer', () => {
     expect(body).toBe(await responseText(await chat(plain, mockScenarioPrompt('plain-chat', 'Answer in chat.'))))
   })
 
+  it.each([false, true])('returns the requested per-call Claude safety verdicts with streaming=%s', async (streaming) => {
+    const server = await startServer()
+    await registerScenario(server, 'claude-server-safety', {
+      steps: [
+        {
+          toolCalls: [
+            {
+              id: 'call-zero',
+              name: 'Read',
+              arguments: { file_path: 'README.md' },
+            },
+            {
+              id: 'call-next',
+              name: 'Bash',
+              arguments: { command: 'printf proof' },
+            },
+          ],
+        },
+      ],
+    })
+    const response = await fetch(`${server.url}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'mock-model',
+        stream: streaming,
+        safeguards: [
+          {
+            type: 'dangerous_tool_use',
+            classifier_context: {
+              rules: { allow: [], deny: [], ask: [] },
+            },
+          },
+        ],
+        messages: [
+          {
+            role: 'user',
+            content: mockScenarioPrompt('claude-server-safety', 'Read the file and print the proof.'),
+          },
+        ],
+      }),
+    })
+    expect(response.status).toBe(200)
+    const body = await responseText(response)
+    const result = streaming
+      ? body.split('\n').filter(line => line.startsWith('data: ')).map(line => JSON.parse(line.slice(6))).find(event => event.type === 'message_delta')?.delta.safeguard_results
+      : JSON.parse(body).safeguard_results
+    expect(result).toEqual([
+      {
+        type: 'dangerous_tool_use',
+        status: {
+          type: 'available',
+          tool_uses: {
+            'call-zero': { type: 'evaluated', outcome: 'not_flagged' },
+            'call-next': { type: 'evaluated', outcome: 'not_flagged' },
+          },
+        },
+      },
+    ])
+    const status = await readScenarioStatus(server.url, 'claude-server-safety')
+    expect(status.nextStep).toBe(1)
+    expect(status.unexpectedRequests).toEqual([])
+  })
+
+  it('delivers tool calls before a held safety verdict and preserves a deny reason', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'held-safety', {
+      steps: [
+        {
+          toolCalls: [
+            {
+              id: 'denied-call',
+              name: 'Bash',
+              arguments: { command: 'printf proof' },
+            },
+          ],
+          toolSafety: {
+            gate: 'review',
+            decisions: {
+              'denied-call': { decision: 'deny', reason: 'The exact denied action.' },
+            },
+          },
+        },
+      ],
+    })
+    const response = await fetch(`${server.url}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        stream: true,
+        safeguards: [
+          { type: 'dangerous_tool_use' },
+        ],
+        messages: [
+          {
+            role: 'user',
+            content: mockScenarioPrompt('held-safety', 'Run the action.'),
+          },
+        ],
+      }),
+    })
+    await waitForGate(server, 'held-safety', 'review')
+    const reader = response.body!.getReader()
+    const decoder = new TextDecoder()
+    let text = ''
+    while (!text.includes('event: content_block_stop')) {
+      const next = await reader.read()
+      expect(next.done).toBe(false)
+      text += decoder.decode(next.value, { stream: true })
+    }
+    expect(text).toContain('"id":"denied-call"')
+    expect(text).not.toContain('safeguard_results')
+    const released = await fetch(`${server.url}/__e2e/scenarios/held-safety/gates/review/release`, { method: 'POST' })
+    expect(released.status).toBe(204)
+    for (;;) {
+      const next = await reader.read()
+      if (next.done)
+        break
+      text += decoder.decode(next.value, { stream: true })
+    }
+    text += decoder.decode()
+    expect(text).toContain('"outcome":"flagged","explanation":"The exact denied action."')
+    expect(text).toContain('event: message_stop')
+  })
+
+  it('abandons a held safety verdict when its client disconnects', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'cancel-safety', {
+      steps: [
+        {
+          toolCalls: [
+            { id: 'call', name: 'Read', arguments: {} },
+          ],
+          toolSafety: { gate: 'review' },
+        },
+      ],
+    })
+    const controller = new AbortController()
+    const response = await fetch(`${server.url}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        stream: true,
+        safeguards: [
+          { type: 'dangerous_tool_use' },
+        ],
+        messages: [
+          {
+            role: 'user',
+            content: mockScenarioPrompt('cancel-safety', 'Read once.'),
+          },
+        ],
+      }),
+    })
+    await waitForGate(server, 'cancel-safety', 'review')
+    controller.abort()
+    await expect(response.text()).rejects.toMatchObject({ name: 'AbortError' })
+    expect((await waitForGateAbandoned(server, 'cancel-safety', 'review')).pendingGates).toEqual([])
+  })
+
+  it('adds no Claude safety result when the request asks for no check', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'claude-no-safety', {
+      steps: [
+        { text: 'Complete.' },
+      ],
+    })
+    const response = await fetch(`${server.url}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'mock-model',
+        messages: [
+          {
+            role: 'user',
+            content: mockScenarioPrompt('claude-no-safety', 'Reply once.'),
+          },
+        ],
+      }),
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).not.toHaveProperty('safeguard_results')
+  })
+
   it('streams Anthropic text and tool blocks', async () => {
     const server = await startServer()
     await registerScenario(server, 'anthropic-tools', {
@@ -4021,7 +4243,7 @@ describe('native Surface dispatch and accounting', () => {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        namespaces: ['qodercli-feature-gates'],
+        namespaces: ['qodercli-feature-gates', 'enterprise-governance'],
         keys: [],
         context: { platform: 'macos', clientVersion: '1.1.65', clientType: 'qodercli' },
       }),
@@ -4036,7 +4258,7 @@ describe('native Surface dispatch and accounting', () => {
       },
     })
     const controller = new AbortController()
-    const stream = await fetch(`${server.url}/api/v1/qcs/config/stream?ns=qodercli-feature-gates`, { headers, signal: controller.signal })
+    const stream = await fetch(`${server.url}/api/v1/qcs/config/stream?ns=qodercli-feature-gates%2Centerprise-governance`, { headers, signal: controller.signal })
     expect(stream.status).toBe(200)
     const reader = stream.body?.getReader()
     if (!reader)

@@ -4,7 +4,7 @@ import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { openWorkspace } from '../helpers/ui'
 import { openProviderAgent } from '../helpers/workspace'
 import { kiloTest } from '../kilo-fixtures'
-import { openCodeTailWindowMarkers, readOpenCodeNativeOutput } from '../opencode/outputFilePaths'
+import { openCodeTailWindowMarkers, readOpenCodeNativeOutput } from './outputFilePaths'
 import { KILO_AGENT, nativeContext } from './scenarios'
 
 kiloTest('keeps the native output path and exact inline preview after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {

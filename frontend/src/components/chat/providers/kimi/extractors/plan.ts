@@ -1,6 +1,7 @@
-import { KIMI_DISPLAY, KIMI_EVENT, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
+import { KIMI_DISPLAY, KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
 import { pickString } from '~/lib/jsonPick'
-import { kimiDisplay, kimiEventData } from '../protocol'
+import { kimiDisplay } from '../protocol'
+import { kimiTranscriptTool } from '../transcript'
 
 /**
  * The plan an `ExitPlanMode` call proposes, or null for any other row.
@@ -11,7 +12,7 @@ import { kimiDisplay, kimiEventData } from '../protocol'
  * the row drawn agree.
  */
 export function kimiPlanText(parsed: unknown): string | null {
-  const start = kimiEventData(parsed, KIMI_EVENT.ToolCallStarted)
+  const start = kimiTranscriptTool(parsed)?.frame
   if (!start || pickString(start, 'name') !== KIMI_TOOL.ExitPlanMode)
     return null
   const display = kimiDisplay(start)

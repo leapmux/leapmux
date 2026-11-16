@@ -2,6 +2,7 @@ import type { CompactionDetails, NotificationEntry } from '../../../model/notifi
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { OH_MY_PI_COMMAND, OH_MY_PI_CUSTOM_TYPE, OH_MY_PI_EVENT, OH_MY_PI_EXTENSION_METHOD, OH_MY_PI_ROLE } from '~/generated/contracts/ohmypi-protocol'
 import { isObject, pickNumber, pickObject, pickString } from '~/lib/jsonPick'
+import { literalCodeBlock } from '~/lib/literalCodeBlock'
 import { getInnerMessage } from '~/lib/messageParser'
 import { retryEntry, toTokenCount } from '../../../model/notification'
 import {
@@ -23,7 +24,7 @@ import {
  */
 const AUTO_COMPACTION_TRIGGER = 'auto'
 
-/** The trigger of a compaction that the worker's own `compact` command asked for. */
+/** The trigger of a manual compaction, including commands and extension requests. */
 const MANUAL_COMPACTION_TRIGGER = 'manual'
 
 /** What one compaction states about the context it rewrote: the trigger and the size before it. omp states no size after. */
@@ -38,13 +39,13 @@ function compactionDetail(trigger: string, result: Record<string, unknown> | nul
 }
 
 /**
- * Whether one `auto_compaction_end` states a compaction that rewrote the context.
+ * Whether one native compaction end states a compaction that rewrote the context.
  *
  * omp states a failure with no `result`, and with its own sentence in `errorMessage`
  * (`session-maintenance.ts`). An aborted or a skipped compaction rewrote nothing
  * either.
  */
-function autoCompactionRewrote(msg: Record<string, unknown>): boolean {
+function compactionRewrote(msg: Record<string, unknown>): boolean {
   return msg.aborted !== true && msg.skipped !== true && !pickString(msg, 'errorMessage') && isObject(msg.result)
 }
 
@@ -64,9 +65,12 @@ export function ohMyPiCompactionBoundary(parsed: ParsedMessageContent): Compacti
   const inner = getInnerMessage(parsed)
   if (!isObject(inner))
     return null
-  if (pickString(inner, 'type') === OH_MY_PI_EVENT.AutoCompactionEnd) {
-    return autoCompactionRewrote(inner)
-      ? compactionDetail(AUTO_COMPACTION_TRIGGER, pickObject(inner, 'result'))
+  const type = pickString(inner, 'type')
+  if (type === OH_MY_PI_EVENT.AutoCompactionEnd || type === OH_MY_PI_EVENT.ManualCompactionEnd) {
+    return compactionRewrote(inner)
+      ? compactionDetail(type === OH_MY_PI_EVENT.ManualCompactionEnd
+          ? MANUAL_COMPACTION_TRIGGER
+          : AUTO_COMPACTION_TRIGGER, pickObject(inner, 'result'))
       : null
   }
   if (isCompactResponse(inner)) {
@@ -77,8 +81,8 @@ export function ohMyPiCompactionBoundary(parsed: ParsedMessageContent): Compacti
   return null
 }
 
-/** The entry of one `auto_compaction_end`: a boundary, or the reason that it is none. */
-function autoCompactionEndEntry(msg: Record<string, unknown>): NotificationEntry {
+/** The entry of one native compaction end: a boundary, or the reason that it is none. */
+function compactionEndEntry(msg: Record<string, unknown>, trigger: string): NotificationEntry {
   if (msg.aborted === true)
     return { kind: 'compaction', phase: 'end', outcome: 'aborted' }
   if (msg.skipped === true)
@@ -103,7 +107,7 @@ function autoCompactionEndEntry(msg: Record<string, unknown>): NotificationEntry
   return {
     kind: 'compaction',
     phase: 'end',
-    detail: compactionDetail(AUTO_COMPACTION_TRIGGER, pickObject(msg, 'result')),
+    detail: compactionDetail(trigger, pickObject(msg, 'result')),
   }
 }
 
@@ -262,17 +266,6 @@ function deliveredResults(content: string, jobIds: readonly string[]): Map<strin
   return results
 }
 
-/** A text inside a Markdown code fence that is longer than every run of backticks the text holds. */
-function fenced(text: string): string {
-  // A loop rather than a spread into `Math.max`: a long output holds more runs than a
-  // call can take as arguments.
-  let longest = 0
-  for (const run of text.matchAll(/`+/g))
-    longest = Math.max(longest, run[0].length)
-  const fence = '`'.repeat(Math.max(3, longest + 1))
-  return `${fence}\n${text}\n${fence}`
-}
-
 /**
  * The entries of the notice omp injects when background jobs finish.
  *
@@ -308,7 +301,7 @@ function backgroundDeliveryEntries(message: Record<string, unknown>): Notificati
     return {
       kind: 'subagent-report',
       label,
-      text: fenced(result),
+      text: literalCodeBlock(result),
     }
   })
 }
@@ -378,7 +371,11 @@ export function ohMyPiNotificationEntry(msg: Record<string, unknown>): Notificat
     }
     case OH_MY_PI_EVENT.AutoCompactionEnd:
       return [
-        autoCompactionEndEntry(msg),
+        compactionEndEntry(msg, AUTO_COMPACTION_TRIGGER),
+      ]
+    case OH_MY_PI_EVENT.ManualCompactionEnd:
+      return [
+        compactionEndEntry(msg, MANUAL_COMPACTION_TRIGGER),
       ]
     case OH_MY_PI_EVENT.AutoRetryStart:
       return [
@@ -551,5 +548,5 @@ export function ohMyPiNotificationEntry(msg: Record<string, unknown>): Notificat
 
 /** Identify an old stored start without changing its ordinary category. */
 export function ohMyPiCompactionStart(message: Record<string, unknown>): boolean {
-  return message.type === OH_MY_PI_EVENT.AutoCompactionStart
+  return message.type === OH_MY_PI_EVENT.AutoCompactionStart || message.type === OH_MY_PI_EVENT.ManualCompactionStart
 }

@@ -51,7 +51,7 @@ function toolMessage(id: string, seq: bigint, side: 'request' | 'result', extra:
     id,
     seq,
     spanId: 'span',
-    agentProvider: AgentProvider.OPENCODE,
+    agentProvider: AgentProvider.KILO,
     source: MessageSource.AGENT,
     content: new TextEncoder().encode(JSON.stringify(content)),
     contentCompression: ContentCompression.NONE,

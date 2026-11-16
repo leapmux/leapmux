@@ -10,7 +10,7 @@ import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeM
 export function reasonixChildTaskMatcher(marker: string): MockModelMatcher {
   if (marker.trim() === '')
     throw new Error('The native Reasonix child matcher requires a nonempty task marker.')
-  return { user: `^<subagent-context event="SubagentStart">[\\s\\S]*?</subagent-context>\\n\\n<workspace-context event="SubagentWorkspace">[\\s\\S]*?</workspace-context>\\n\\n${escapeRegExp(marker)}(?=[:\\s]|$)` }
+  return { user: `^<subagent-context event="SubagentStart">[\\s\\S]*?</subagent-context>\\n\\n${escapeRegExp(marker)}(?=[:\\s]|$)` }
 }
 
 /** Resolve the exact native read-only task receipt without guessing its display title. */
@@ -35,7 +35,10 @@ export function reasonixChildTaskId(snapshot: NativeMessageSnapshot, spawnCallId
       title = input.capability_id.slice(REASONIX_CAPABILITY_PREFIX.Tool.length)
       input = input.arguments
     }
-    if (title !== REASONIX_TOOL.ReadOnlyTask || !isObject(input) || input.prompt !== prompt)
+    const promptField = title === REASONIX_TOOL.Explore
+      ? 'task'
+      : 'prompt'
+    if ((title !== REASONIX_TOOL.ReadOnlyTask && title !== REASONIX_TOOL.Explore) || !isObject(input) || input[promptField] !== prompt)
       throw new Error('The paired Reasonix call has another tool or child prompt.')
     found = true
   }

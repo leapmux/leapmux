@@ -24,7 +24,9 @@ codebuddyTest('runs native code and retains computed output and script errors af
     args: ['--agent', 'ptc'],
   })
   // The native PTC mode selects REPL as its sole direct tool.
-  await withNativeStartupWorker(initial, launch, {}, async (workerId, wrapper) => {
+  await withNativeStartupWorker(initial, launch, {
+    workerEnvironment: () => ({ CODEBUDDY_CODE_MODE_ENABLED: '1' }),
+  }, async (workerId, wrapper) => {
     const server = { ...leapmuxServer, workerId }
     const context = await nativeContext({
       page,

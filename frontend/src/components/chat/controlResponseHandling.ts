@@ -401,6 +401,28 @@ export function useControlResponseHandling(
     },
   ))
 
+  // Defaults fill only absent draft fields. An explicit empty selection is an
+  // answer and must survive storage restoration and provider metadata updates.
+  createEffect(() => {
+    const request = activeControlRequest()
+    if (!request || answerOwner !== request || !answerState.ready() || !canAnswerControlRequest(request) || restoringFor === request)
+      return
+    const questions = questionFor(request)?.questions
+    if (!questions)
+      return
+    answerState.setSelections((previous) => {
+      let next = previous
+      questions.forEach((question, index) => {
+        if (question.initialSelections === undefined || Object.hasOwn(previous, index))
+          return
+        if (next === previous)
+          next = { ...previous }
+        next[index] = [...question.initialSelections]
+      })
+      return next
+    })
+  })
+
   // Persist the answers under the key of the request they BELONG to.
   //
   // The owner is a plain variable, not the active request. A swap makes this

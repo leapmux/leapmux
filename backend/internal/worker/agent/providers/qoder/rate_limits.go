@@ -10,11 +10,11 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
-// usageInfoTimeout limits a get_usage_info request. Qoder reads the account
+// usageInfoTimeout limits a daemon.get_usage_info request. Qoder reads the account
 // quota service, or a cached reply of the last 15 seconds.
 const usageInfoTimeout = 30 * time.Second
 
-// The account quotas of a get_usage_info reply, by Qoder's own names. Each
+// The account quotas of a daemon.get_usage_info reply, by Qoder's own names. Each
 // becomes one rate-limit window of that name.
 const (
 	qoderQuotaUser    = "user_quota"
@@ -23,7 +23,7 @@ const (
 	qoderQuotaAccount = "account"
 )
 
-// qoderUsageReply is the part of a get_usage_info reply that LeapMux reads.
+// qoderUsageReply is the part of a daemon.get_usage_info reply that LeapMux reads.
 // Qoder reports `usage` as null when the quota service does not answer.
 type qoderUsageReply struct {
 	Usage *qoderQuotaUsage `json:"usage"`
@@ -104,7 +104,7 @@ func (a *Agent) requestUsageRefresh() {
 	}
 }
 
-// refreshUsageLoop sends one get_usage_info at a time until the process ends.
+// refreshUsageLoop sends one daemon.get_usage_info at a time until the process ends.
 func (a *Agent) refreshUsageLoop() {
 	for {
 		select {

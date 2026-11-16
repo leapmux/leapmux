@@ -64,7 +64,9 @@ func (a *Agent) dispatchFrame(line []byte, env *droidEnvelope) string {
 
 	switch env.Type {
 	case droidTypeNotification:
-		return a.handleNotification(env)
+		if env.Method == droidMethodSessionNotif {
+			return a.handleNotification(env)
+		}
 	case droidTypeRequest:
 		a.handleServerRequest(line, env)
 	case droidTypeResponse:
@@ -156,7 +158,8 @@ func (a *Agent) handleNotification(env *droidEnvelope) string {
 			a.onSettingsUpdated(payload)
 		}
 	case contracts.DroidNotificationSessionTitleUpdated, contracts.DroidNotificationSessionTokenUsageChanged,
-		contracts.DroidNotificationToolExecutionHeartbeat, contracts.DroidNotificationPermissionResolved:
+		contracts.DroidNotificationToolExecutionHeartbeat, contracts.DroidNotificationPermissionResolved,
+		droidNotificationChildSessionSettled:
 	// These receipts and counters supply no transcript content.
 	case contracts.DroidNotificationHookExecutionStarted, contracts.DroidNotificationStructuredOutput:
 	// LeapMux asks for no structured output. A hook reports its result separately.

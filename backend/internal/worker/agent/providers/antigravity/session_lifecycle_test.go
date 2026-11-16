@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
@@ -238,9 +239,11 @@ func TestAntigravityPendingChildInputPublishesItsActualSteeringState(t *testing.
 	a.cascades[child.id] = child
 	close(child.connected)
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: child.id, ChildAgentID: child.childAgentID, Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning,
 	}))
-	require.NoError(t, a.SendChildInput(child.id, "start the child turn", nil))
+	require.NoError(t, agenttest.SendChildInput(a, child.id, agent.ChildInput{Content: "start the child turn"}))
 	states := childSink.TurnStates()
 	require.NotEmpty(t, states)
 	assert.Equal(t, agent.TurnState{Active: true, Steerable: false}, states[len(states)-1])

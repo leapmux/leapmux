@@ -3,12 +3,14 @@ package qoder
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -16,17 +18,18 @@ import (
 type Agent struct {
 	providerkit.Process
 
-	sink agent.ProviderServices
-	opts agent.Options
+	sink      agent.ProviderServices
+	opts      agent.Options
+	directory *agentdir.Dir
 
 	mu                       sync.Mutex
 	sessionID                string
 	model                    string
-	models                   []qoderModel
+	models                   []qoderModelEntry
 	modelsReported           bool
-	configuredModelsOnce     sync.Once
-	configuredModels         []qoderModel
+	customModels             []qoderModel
 	permissionMode           string
+	disabledPermissionModes  []string
 	planMode                 bool
 	effort                   string
 	thinking                 string   // The Extended Thinking value at launch; Qoder reads it only then.
@@ -53,7 +56,8 @@ type Agent struct {
 	// Its result consumes the flag. A turn end without a result clears it also.
 	interruptRequested bool
 
-	controls providerkit.Correlator[string]
+	controls    providerkit.Correlator[string]
+	credentials qoderCredentials
 
 	// usageRefresh wakes refreshUsageLoop. Start creates it, so an agent built
 	// without a process sends no quota request. It never changes afterwards.
@@ -67,6 +71,7 @@ var _ agent.ChildInterrupter = (*Agent)(nil)
 // qoderControlResult is the outcome of one pending control request.
 type qoderControlResult struct {
 	Success     bool
+	SessionID   string
 	Error       string
 	Mode        string
 	RawResponse json.RawMessage
@@ -291,6 +296,9 @@ func (a *Agent) Wait() error {
 	err := a.Process.Wait()
 	a.stopWorkflowArchiveRetries()
 	a.setTurnActive(false)
+	if a.directory != nil {
+		err = errors.Join(err, a.directory.Close())
+	}
 	return err
 }
 

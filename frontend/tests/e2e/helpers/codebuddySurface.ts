@@ -4,7 +4,7 @@ import { escapeRegExp } from '../../../src/lib/regexp'
 import { holdsAncestorInstructions, holdsOnlySentinelDocuments } from './ancestorInstructions'
 
 /** The line that opens the system prompt of each request of CodeBuddy's Auto-mode classifier. */
-export const CODEBUDDY_CLASSIFIER_SYSTEM_OPENING = 'You are a security monitor for autonomous AI coding agents.'
+export const CODEBUDDY_CLASSIFIER_SYSTEM_OPENING = '# Transcript provenance\nTranscript entries are JSON records.'
 
 /** The sentence that opens the classifier's context message, which quotes the memory files. */
 const CODEBUDDY_CLASSIFIER_MEMORY_OPENING = 'The following is the user\'s CODEBUDDY.md configuration.'

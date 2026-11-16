@@ -284,7 +284,9 @@ func TestABackfillKeepsWhatReachedTheTranscriptLive(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	sink := &agenttest.Sink{}
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "row-1", Title: "Child"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "row-1", Title: "Child"})
 	require.NoError(t, err)
 	child := newChildTranscript(agent.NewProviderServices(sink), childID)
 	child.written.texts = 1
@@ -582,7 +584,9 @@ func TestWriteStoredConversationSkipsWhatItCannotShow(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
 	sink := &agenttest.Sink{}
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "row-1", Title: "Child"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "row-1", Title: "Child"})
 	require.NoError(t, err)
 	child := newChildTranscript(agent.NewProviderServices(sink), childID)
 	r.agent.writeStoredConversation(backfillJob{target: child, label: "test"}, "stored", json.RawMessage(`{"not":"a list"}`))

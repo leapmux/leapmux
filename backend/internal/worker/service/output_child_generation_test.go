@@ -23,7 +23,9 @@ func TestStaleEnsureChildAgentCannotAttachTheReplacementSpan(t *testing.T) {
 			const rootID = "stale-child-generation"
 			svc, outgoing := setupRootSink(t, rootID)
 			replacement := newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-			childID, err := replacement.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "shared-child", Title: "Replacement child"})
+			childID, err := replacement.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole:     bgtask.RoleChildTask,
+				ProviderChildKey: "shared-child", Title: "Replacement child"})
 			require.NoError(t, err)
 			before, err := svc.Queries.GetAgentByID(t.Context(), childID)
 			require.NoError(t, err)
@@ -32,14 +34,18 @@ func TestStaleEnsureChildAgentCannotAttachTheReplacementSpan(t *testing.T) {
 			if cold {
 				svc.Output.bgtasks.Delete(rootID)
 			}
-			resolved, err := outgoing.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "shared-child", SpawnSpanID: "obsolete-span", Title: "Obsolete child"})
+			resolved, err := outgoing.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole:     bgtask.RoleChildTask,
+				ProviderChildKey: "shared-child", SpawnSpanID: "obsolete-span", Title: "Obsolete child"})
 			assert.ErrorIs(t, err, agent.ErrChildIdentityRefused, "an older physical source cannot establish a route to replacement work")
 			assert.Empty(t, resolved)
 			after, err := svc.Queries.GetAgentByID(t.Context(), childID)
 			require.NoError(t, err)
 			assert.Equal(t, before, after, "a refused source must change no child identity or metadata")
 			assert.Equal(t, registryBefore, storedRow(t, svc, rootID, "shared-child"))
-			resolved, err = replacement.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "shared-child", SpawnSpanID: "replacement-span", Title: "Later native title"})
+			resolved, err = replacement.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole:     bgtask.RoleChildTask,
+				ProviderChildKey: "shared-child", SpawnSpanID: "replacement-span", Title: "Later native title"})
 			require.NoError(t, err)
 			assert.Equal(t, childID, resolved)
 			completed, err := svc.Queries.GetAgentByID(t.Context(), childID)
@@ -56,7 +62,9 @@ func TestReplacementEnsureChildAgentClaimsTheOriginalChildWithoutChangingIdentit
 	t.Parallel()
 	const rootID = "claimed-child-generation"
 	svc, outgoing := setupRootSink(t, rootID)
-	spec := agent.ChildAgentSpec{ProviderChildKey: "shared-child", SpawnSpanID: "original-span", AgentSessionID: "original-native-session", Title: "Original native title"}
+	spec := agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "shared-child", SpawnSpanID: "original-span", AgentSessionID: "original-native-session", Title: "Original native title"}
 	childID, err := outgoing.EnsureChildAgent(spec)
 	require.NoError(t, err)
 	before, err := svc.Queries.GetAgentByID(t.Context(), childID)
@@ -87,10 +95,14 @@ func TestHistoricalEnsureChildAgentCanFinishAnIndependentChild(t *testing.T) {
 	svc, outgoing := setupRootSink(t, rootID)
 	oldGeneration := requireRootOutputSink(t, svc.Output, rootID).outputGeneration
 	replacement := newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-	newChildID, err := replacement.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "replacement-child", SpawnSpanID: "replacement-span"})
+	newChildID, err := replacement.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "replacement-child", SpawnSpanID: "replacement-span"})
 	require.NoError(t, err)
 	newBefore := storedRow(t, svc, rootID, "replacement-child")
-	oldChildID, err := outgoing.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "independent-old-child", SpawnSpanID: "independent-old-span"})
+	oldChildID, err := outgoing.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "independent-old-child", SpawnSpanID: "independent-old-span"})
 	require.NoError(t, err, "physical replacement alone cannot reject independent retained history")
 	assert.NotEqual(t, newChildID, oldChildID)
 	assert.Equal(t, oldGeneration, storedRow(t, svc, rootID, "independent-old-child").OutputGeneration)
@@ -126,7 +138,9 @@ func TestEnsureChildAgentRechecksTheSourceAfterConcurrentReplacement(t *testing.
 	}
 	done := make(chan result, 1)
 	go func() {
-		id, err := outgoing.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: key, SpawnSpanID: "obsolete-span", Title: "Obsolete child"})
+		id, err := outgoing.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole:     bgtask.RoleChildTask,
+			ProviderChildKey: key, SpawnSpanID: "obsolete-span", Title: "Obsolete child"})
 		done <- result{id: id, err: err}
 	}()
 	ctx := testutil.DeadlineContext(t)
@@ -136,7 +150,9 @@ func TestEnsureChildAgentRechecksTheSourceAfterConcurrentReplacement(t *testing.
 		t.Fatal("the outgoing child ensure did not reach its admission boundary")
 	}
 	replacement := newTestRootOutputSink(t, svc.Output, rootID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-	childID, err := replacement.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: key, Title: "Replacement child"})
+	childID, err := replacement.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: key, Title: "Replacement child"})
 	require.NoError(t, err)
 	before, err := svc.Queries.GetAgentByID(t.Context(), childID)
 	require.NoError(t, err)
@@ -153,7 +169,9 @@ func TestEnsureChildAgentRechecksTheSourceAfterConcurrentReplacement(t *testing.
 	require.NoError(t, err)
 	assert.Equal(t, before, after)
 	assert.Equal(t, registryBefore, storedRow(t, svc, rootID, bgtask.NormalizeRowKey(key)))
-	resolved, err := replacement.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: key, SpawnSpanID: "replacement-span"})
+	resolved, err := replacement.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: key, SpawnSpanID: "replacement-span"})
 	require.NoError(t, err)
 	assert.Equal(t, childID, resolved)
 	final, err := svc.Queries.GetAgentByID(t.Context(), childID)
@@ -166,10 +184,12 @@ func TestEnsureChildAgentLinkFailureRollsBackIdentityAndGeneration(t *testing.T)
 	t.Parallel()
 	const rootID = "child-link-rollback-generation"
 	svc, original := setupRootSink(t, rootID)
-	childID, err := original.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "shared-child", Title: "Original child"})
+	childID, err := original.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "shared-child", Title: "Original child"})
 	require.NoError(t, err)
 	// Model the existing partial-linkage failure state while preserving the native child identity.
-	_, err = svc.DB.ExecContext(t.Context(), "UPDATE agent_background_tasks SET child_agent_id = '' WHERE owner_agent_id = ? AND row_key = ?", rootID, "shared-child")
+	_, err = svc.DB.ExecContext(t.Context(), "UPDATE agent_background_tasks SET child_agent_id = '',role = ? WHERE owner_agent_id = ? AND row_key = ?", leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_TASK_OUTCOME, rootID, "shared-child")
 	require.NoError(t, err)
 	before, err := svc.Queries.GetAgentByID(t.Context(), childID)
 	require.NoError(t, err)
@@ -185,7 +205,9 @@ func TestEnsureChildAgentLinkFailureRollsBackIdentityAndGeneration(t *testing.T)
 WHEN NEW.owner_agent_id = 'child-link-rollback-generation' AND NEW.row_key = 'shared-child'
 BEGIN SELECT RAISE(ABORT, 'child registry linkage refused'); END`)
 	require.NoError(t, err)
-	spec := agent.ChildAgentSpec{ProviderChildKey: "shared-child", SpawnSpanID: "replacement-span", Title: "Original child"}
+	spec := agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "shared-child", SpawnSpanID: "replacement-span", Title: "Original child"}
 	resolved, err := replacement.EnsureChildAgent(spec)
 	require.ErrorContains(t, err, "child registry linkage refused")
 	assert.NotErrorIs(t, err, agent.ErrChildIdentityRefused, "a storage refusal is distinct from a superseded native identity")

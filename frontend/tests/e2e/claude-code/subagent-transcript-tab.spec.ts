@@ -6,7 +6,7 @@ import { nativeAgentById, selectedAgentTabId } from '../helpers/nativeScenario'
 import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { retryUntilPass } from '../helpers/retryUntilPass'
 import { backgroundTasksSection, expectNoRegistryRows, expectRowBecomesFinal, expectSectionPersists, openChildTabFromRow, requireRegistryRow } from '../helpers/subagentRegistry'
-import { agentTabs, ASSISTANT_BUBBLE_SELECTOR, expectAgentTabCount, sendMessage, tabById, waitForAgentIdle } from '../helpers/ui'
+import { ASSISTANT_BUBBLE_SELECTOR, expectAgentTabCount, sendMessage, tabById, waitForAgentIdle } from '../helpers/ui'
 
 claudeTest.describe('subagent background tasks for Claude', () => {
   claudeTest('subagent spawn creates a registry row, a child tab, and isolates the transcript', async ({
@@ -97,15 +97,15 @@ claudeTest.describe('subagent background tasks for Claude', () => {
     //    nothing can add to. The worktree prompt is the parent's own and may or
     //    may not appear here (it depends on the working dir's git state), so
     //    answer it when it does.
-    await tabById(page, parentTabId).locator('[data-testid="tab-close"]').dispatchEvent('click')
+    await tabById(page, parentTabId).getByTestId('tab-close').click()
 
-    // Wait for whichever the inspect produces -- the prompt, or the close going
-    // straight through -- rather than reading visibility before either lands.
+    // A late child report can start a parent continuation. Handle its busy
+    // confirmation as well as the worktree confirmation, or a direct close.
     const closeDialog = page.getByRole('dialog').filter({
-      has: page.getByRole('heading', { name: 'Close Last Tab' }),
+      has: page.getByRole('button', { name: 'Close anyway', exact: true }),
     })
     await expect.poll(async () =>
-      await closeDialog.count() > 0 || await agentTabs(page).count() === 0,
+      await closeDialog.count() > 0 || await tabById(page, parentTabId).count() === 0,
     ).toBe(true)
     if (await closeDialog.count() > 0) {
       await closeDialog.getByRole('button', { name: 'Close anyway' }).click()

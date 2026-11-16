@@ -163,7 +163,7 @@
     "ElicitationResponse": "elicitation_response",
     "McpStatus": "mcp_status",
     "McpSetServers": "mcp_set_servers",
-    "GetUsageInfo": "get_usage_info",
+    "GetUsageInfo": "daemon.get_usage_info",
     "StopTask": "stop_task",
     "GenerateSessionTitle": "generate_session_title",
     "EndSession": "end_session"
@@ -180,6 +180,8 @@
     "ApiRetry": "api_retry",
     "ModelQueueStatus": "model_queue_status",
     "HookResponse": "hook_response",
+    "HookDiagnostics": "hook_diagnostics",
+    "PermissionPolicy": "permission_policy",
     "AgentsMdSizeWarning": "agents_md_size_warning"
   },
   "modes": {

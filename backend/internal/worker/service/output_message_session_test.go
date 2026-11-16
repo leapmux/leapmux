@@ -1,6 +1,8 @@
 package service
 
 import (
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	"context"
 	"testing"
 
@@ -28,7 +30,9 @@ func TestMessageSessionIDMatchesTheRowsEachSinkWrites(t *testing.T) {
 		leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: []byte(`{"type":"assistant"}`)},
 		agent.SpanInfo{SpanID: "root-span-1", SpanType: "text"}))
 
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "child"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
 	childSink := sink.ChildSink(childID)
 
@@ -96,7 +100,9 @@ func TestChildMessageSessionIDIsNotInheritedFromItsParent(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-1")
 	sink.UpdateSessionID("sess-root")
 
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "child"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
 	childSink := sink.ChildSink(childID)
 

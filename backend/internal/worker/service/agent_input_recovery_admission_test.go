@@ -199,7 +199,7 @@ func TestInputRecoveryKeepsHiddenWorkUntilApproval(t *testing.T) {
 				cache := svc.Output.bgTaskCache(id)
 				cache.Mu.Lock()
 				cache.seeded = false
-				cache.evictedActive = nil
+				cache.evictedActive = registryWorkingSet[string]{}
 				cache.Mu.Unlock()
 				_, err = svc.Output.LoadBackgroundTasks(t.Context(), id)
 				require.NoError(t, err)
@@ -217,7 +217,7 @@ func TestInputRecoveryKeepsHiddenWorkUntilApproval(t *testing.T) {
 type workingBackgroundTaskReadFault struct{ db.DBTX }
 
 func (store workingBackgroundTaskReadFault) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	if strings.Contains(query, "-- name: ListWorkingAgentBackgroundTaskKeys :many") {
+	if strings.Contains(query, "-- name: ListWorkingAgentBackgroundTaskActivity :many") {
 		return nil, assert.AnError
 	}
 	return store.DBTX.QueryContext(ctx, query, args...)

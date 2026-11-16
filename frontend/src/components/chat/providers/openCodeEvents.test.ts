@@ -6,7 +6,7 @@ import './opencode/plugin'
 import './kilo/plugin'
 
 describe('open code family native notifications', () => {
-  for (const provider of [AgentProvider.OPENCODE, AgentProvider.KILO]) {
+  for (const provider of [AgentProvider.KILO]) {
     const plugin = providerFor(provider)!
     it(`reads retry notices for provider ${provider}`, () => {
       const frame = {

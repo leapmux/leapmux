@@ -30,6 +30,7 @@ func (sink *agentOutputSink) beginCatalogOperation() *catalogOperation {
 	release := source.lock()
 	defer release()
 	source.session = sink.currentMessageSessionFact()
+	source.publisherSession = source.publisher.currentMessageSessionFact()
 	return sink.beginCatalogOperationLocked(source)
 }
 

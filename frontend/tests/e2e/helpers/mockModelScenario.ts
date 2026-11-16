@@ -104,6 +104,16 @@ export const HOUSEKEEPING_RULES: readonly MockModelRule[] = [
     when: { user: TITLE_REQUEST },
     respond: { text: MOCK_SESSION_TITLE },
   },
+
+  {
+    name: 'title-opencode-native',
+    priority: 'high',
+    when: {
+      system: '^You name conversations so the user can find them later in a list of past sessions\\.',
+      user: '^Here is (?:the first message of the conversation|the conversation so far):[\\s\\S]*Reply with only the title\\.$',
+    },
+    respond: { text: MOCK_SESSION_TITLE },
+  },
   {
     name: 'title-grok',
     priority: 'high',

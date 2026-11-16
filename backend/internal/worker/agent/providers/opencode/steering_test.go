@@ -16,8 +16,8 @@ func TestOpenCodeSteerUsesConcurrentACPPrompt(t *testing.T) {
 	t.Parallel()
 
 	ag, requests := acptest.NewAgentForRPC(t,
-		func() *Agent { return &Agent{} },
-		func(agent *Agent) *acp.Base { return &agent.Base },
+		func() *familyTestAgent { return &familyTestAgent{} },
+		func(agent *familyTestAgent) *acp.Base { return &agent.Base },
 	)
 	ag.SetSinkForTest(agent.NewProviderServices(&agenttest.Sink{}))
 	ag.SetPromptActiveForTest(true)
@@ -33,7 +33,7 @@ func TestOpenCodeSteerUsesConcurrentACPPrompt(t *testing.T) {
 // advertises no steer method.
 func TestOpenCodeSupportsSteeringWithoutAnAdvertisedMethod(t *testing.T) {
 	t.Parallel()
-	ag := &Agent{}
+	ag := &familyTestAgent{}
 	*ag.HooksForTest() = FamilyHooks(&ag.FamilyBase)
 	assert.True(t, ag.SupportsSteering())
 }
@@ -44,7 +44,7 @@ func TestOpenCodeSupportsSteeringWithoutAnAdvertisedMethod(t *testing.T) {
 func TestOpenCodePublishesItsTurnAsSteerable(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.Sink{}
-	ag := &Agent{}
+	ag := &familyTestAgent{}
 	*ag.HooksForTest() = FamilyHooks(&ag.FamilyBase)
 	ag.SetSinkForTest(agent.NewProviderServices(sink))
 	ag.WireTurnActiveForTest()
@@ -60,8 +60,8 @@ func TestOpenCodeSendInputDuringActiveTurnReportsAgentBusy(t *testing.T) {
 
 	sink := &agenttest.Sink{}
 	ag, requests := acptest.NewAgentForRPC(t,
-		func() *Agent { return &Agent{} },
-		func(agent *Agent) *acp.Base { return &agent.Base },
+		func() *familyTestAgent { return &familyTestAgent{} },
+		func(agent *familyTestAgent) *acp.Base { return &agent.Base },
 	)
 	ag.SetSinkForTest(agent.NewProviderServices(sink))
 	ag.WireTurnActiveForTest()

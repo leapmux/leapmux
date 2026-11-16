@@ -91,7 +91,7 @@ describe('messageToolResultImages over a resolved payload', () => {
 
   function openCodeMessage(content: unknown): AgentChatMessage {
     return makeMessage({
-      agentProvider: AgentProvider.OPENCODE,
+      agentProvider: AgentProvider.KILO,
       spanId: 'c1',
       content: rawContent(content),
     })
@@ -120,7 +120,7 @@ describe('messageToolResultImages over a resolved payload', () => {
       seq: 3,
       content: inner,
     })
-    const resolved = resolveMessageForRendering(parseMessageContent(message), AgentProvider.OPENCODE)
+    const resolved = resolveMessageForRendering(parseMessageContent(message), AgentProvider.KILO)
     // The transcript classifies the RESOLVED payload, which is the row the reader
     // clicked. The resolver must reach the same one.
     expect(classifyMessage(toClassificationInput(resolved, message)).kind).toBe('tool_use')

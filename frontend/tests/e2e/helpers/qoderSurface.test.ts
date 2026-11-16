@@ -8,7 +8,7 @@ import { MOCK_IDENTITY_TOKEN } from './mockAgentEnvironment'
 import { registerMockModelScenario, removeMockModelScenario } from './mockModelScenario'
 import { createMockModelServer } from './mockModelServer'
 import { createQoderEnvironment } from './qoderEnvironment'
-import { handleQoderHttp, QODER_QUOTA_CONTROL_PREFIX, QODER_QUOTA_PATH, qoderEndpointCacheRecords } from './qoderSurface'
+import { handleQoderHttp, QODER_QUOTA_CONTROL_PREFIX, QODER_QUOTA_PATH } from './qoderSurface'
 
 const origin = 'http://127.0.0.1:4555'
 const token = 'isolated-identity-token'
@@ -166,71 +166,9 @@ describe('handleQoderHttp', () => {
   })
 })
 
-describe('qoderEndpointCacheRecords', () => {
-  it.each([
-    0,
-    -1,
-    1_797_000_000_000,
-    Number.MAX_SAFE_INTEGER,
-  ])('retains the complete V1 and V2 records with timestamp %s', (updatedAt) => {
-    const records = qoderEndpointCacheRecords(origin, updatedAt)
-    expect(records.v1).toEqual({
-      version: 1,
-      entries: {
-        prod: {
-          endpoint: origin,
-          inferEndpoints: [origin],
-          securityEndpoint: origin,
-          securityEndpoints: [origin],
-          centerEndpoint: origin,
-          centerEndpoints: [origin],
-          openapiEndpoint: origin,
-          openapiEndpoints: [origin],
-          updatedAt,
-        },
-      },
-    })
-    expect(records.v2).toEqual({
-      version: 2,
-      entries: {
-        prod: {
-          updatedAt,
-          endpointSets: {
-            center: {
-              candidates: [origin],
-              selected: origin,
-            },
-            inference: {
-              candidates: [origin],
-              selected: origin,
-            },
-            securityInference: {
-              candidates: [origin],
-              selected: origin,
-            },
-            openapi: {
-              candidates: [origin],
-              selected: origin,
-            },
-          },
-        },
-      },
-    })
-  })
-
-  it('returns independent cache records for separate private origins', () => {
-    const first = qoderEndpointCacheRecords(origin, 1)
-    const before = JSON.stringify(first)
-    const second = qoderEndpointCacheRecords('http://127.0.0.1:4666', 2)
-    expect(JSON.stringify(first)).toBe(before)
-    expect(second.v1).not.toEqual(first.v1)
-    expect(second.v2).not.toEqual(first.v2)
-  })
-})
-
 describe('handleQoderHttp configuration client', () => {
   const body = {
-    namespaces: ['qodercli-feature-gates'],
+    namespaces: ['qodercli-feature-gates', 'enterprise-governance'],
     keys: [],
     context: { platform: 'macos', clientVersion: '1.1.65', clientType: 'qodercli' },
   }
@@ -247,6 +185,7 @@ describe('handleQoderHttp configuration client', () => {
     expect(response.headers.get('etag')).toBe('"leapmux-e2e-qoder-config"')
     expect(await response.json()).toEqual({
       configs: {
+        'enterprise-governance': {},
         'qodercli-feature-gates': {
           prompt_policy: {
             value: {
@@ -294,6 +233,20 @@ describe('handleQoderHttp configuration client', () => {
       },
       label: 'another native client',
     },
+    {
+      request: {
+        ...body,
+        namespaces: ['qodercli-feature-gates'],
+      },
+      label: 'missing enterprise namespace',
+    },
+    {
+      request: {
+        ...body,
+        namespaces: ['qodercli-feature-gates', 'qodercli-feature-gates'],
+      },
+      label: 'duplicate namespace',
+    },
     { request: {}, label: 'absent fields' },
   ])('rejects $label before returning config values', async ({ request }) => {
     const url = await configServer()
@@ -326,7 +279,7 @@ describe('handleQoderHttp configuration client', () => {
   it('opens the native config stream and keeps it open until the client closes', async () => {
     const url = await configServer()
     const controller = new AbortController()
-    const response = await fetch(`${url}/api/v1/qcs/config/stream?ns=qodercli-feature-gates`, {
+    const response = await fetch(`${url}/api/v1/qcs/config/stream?ns=qodercli-feature-gates%2Centerprise-governance`, {
       headers: { authorization: `Bearer ${token}`, accept: 'text/event-stream' },
       signal: controller.signal,
     })
@@ -399,7 +352,7 @@ describe('createQoderSurface quota service', () => {
         method: 'POST',
         headers,
         body: JSON.stringify({
-          namespaces: ['qodercli-feature-gates'],
+          namespaces: ['qodercli-feature-gates', 'enterprise-governance'],
           keys: [],
           context: { platform: 'macos', clientVersion: '1.1.81', clientType: 'qodercli' },
         }),

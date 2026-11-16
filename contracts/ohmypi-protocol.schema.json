@@ -29,7 +29,8 @@
     "commands",
     "asyncJobStates",
     "structs",
-    "notificationEvents"
+    "notificationEvents",
+    "askArguments"
   ],
   "$defs": {
     "table": {
@@ -218,6 +219,9 @@
         "type": "string",
         "pattern": "^[A-Z][A-Za-z0-9]*$"
       }
+    },
+    "askArguments": {
+      "$ref": "#/$defs/table"
     }
   }
 }

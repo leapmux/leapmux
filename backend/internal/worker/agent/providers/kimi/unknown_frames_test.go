@@ -15,15 +15,16 @@ func TestKimiUnknownEventsPersist(t *testing.T) {
 	}, func(t *testing.T, tc agenttest.UnknownFrameCase) *agenttest.Sink {
 		sink := &agenttest.Sink{}
 		a := newOfflineKimiAgent(t, sink)
+		childID := ""
 		if tc.Name == "child" {
-			a.children.link("agent-1", &kimiChild{childAgentID: "child-1", rowKey: "session_1/agent-1"})
+			childID = adoptNativeKimiChild(t, a, "agent-1")
 		}
 		a.HandleOutput(tc.Frame)
 		if tc.Name == "child" {
 			if len(sink.Messages()) != 0 || len(sink.PersistedNotifications()) != 0 {
 				t.Error("the child event reached the parent transcript")
 			}
-			return sink.Child("child-1")
+			return sink.Child(childID)
 		}
 		return sink
 	})

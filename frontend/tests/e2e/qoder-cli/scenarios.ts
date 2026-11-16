@@ -23,7 +23,7 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
 export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
   return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
     binaryName: 'qodercli',
-    holdWhen: ['-p'],
+    holdWhen: ['--sdk'],
   })
 }
 

@@ -1,7 +1,7 @@
 import type { BackgroundTaskItem as ProtoBackgroundTaskItem } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import { describe, expect, it } from 'vitest'
-import { BackgroundTaskKind, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { BackgroundTaskKind, BackgroundTaskRole, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 import {
   backgroundTaskEndLabel,
@@ -22,6 +22,7 @@ import {
 
 function proto(over: { id: string, kind?: BackgroundTaskKind, status: BackgroundTaskStatus, title?: string, activeForm?: string }): ProtoBackgroundTaskItem {
   return {
+    role: BackgroundTaskRole.TASK_OUTCOME,
     id: over.id,
     kind: over.kind ?? BackgroundTaskKind.SUBAGENT,
     status: over.status,
@@ -40,6 +41,7 @@ function proto(over: { id: string, kind?: BackgroundTaskKind, status: Background
 
 function item(over: Partial<BackgroundTaskItem> & { rowKey: string }): BackgroundTaskItem {
   return {
+    role: over.role ?? BackgroundTaskRole.TASK_OUTCOME,
     kind: over.kind ?? 'subagent',
     title: over.title ?? 'T',
     activity: over.activity ?? '',
@@ -203,6 +205,7 @@ describe('isActiveBackgroundTaskStatus', () => {
 
 describe('chipTasksFor', () => {
   const row = (over: Partial<BackgroundTaskItem> & { rowKey: string }): BackgroundTaskItem => ({
+    role: over.role ?? BackgroundTaskRole.TASK_OUTCOME,
     kind: 'subagent',
     title: 't',
     activity: '',
@@ -342,6 +345,10 @@ describe('shouldShowBackgroundTasksSection', () => {
 // by the SendMessage card. Each site covers only half of it today, so the cases
 // live here.
 describe('opensSubagentTranscript', () => {
+  it('opens a workflow member with an actual child transcript', () => {
+    expect(opensSubagentTranscript(item({ rowKey: 'member', kind: 'workflow', childAgentId: 'child' }))).toBe(true)
+    expect(opensSubagentTranscript(item({ rowKey: 'opaque', kind: 'workflow' }))).toBe(false)
+  })
   it('reports a subagent row that owns a transcript', () => {
     expect(opensSubagentTranscript(item({ rowKey: 'r1', kind: 'subagent', childAgentId: 'c1' }))).toBe(true)
   })
@@ -363,6 +370,7 @@ describe('opensSubagentTranscript', () => {
 
 describe('createTabTaskScope', () => {
   const row = (over: Partial<BackgroundTaskItem> & { rowKey: string }): BackgroundTaskItem => ({
+    role: over.role ?? BackgroundTaskRole.TASK_OUTCOME,
     kind: 'subagent',
     title: 't',
     activity: '',
@@ -445,5 +453,64 @@ describe('background task canonical outcome names', () => {
   it('explains an ended row without asserting success or failure', () => {
     const task = protoBackgroundTaskToStore(proto({ id: 'unknown-result', status: BackgroundTaskStatus.ENDED_WITH_UNKNOWN_OUTCOME }))
     expect(backgroundTaskEndTooltip(task.status)).toBe('The provider reports an end without a known outcome')
+  })
+})
+
+describe('background task roles', () => {
+  it('preserves activity-only markers without counting another task', () => {
+    const marker = protoBackgroundTaskToStore({
+      ...proto({ id: 'marker', status: BackgroundTaskStatus.RUNNING }),
+      role: BackgroundTaskRole.CHILD_ACTIVITY,
+      childAgentId: 'child',
+    })
+    const outcome = protoBackgroundTaskToStore({
+      ...proto({ id: 'outcome', status: BackgroundTaskStatus.RUNNING }),
+      role: BackgroundTaskRole.TASK_OUTCOME,
+      childAgentId: 'child',
+    })
+    const combined = protoBackgroundTaskToStore({
+      ...proto({ id: 'combined', status: BackgroundTaskStatus.RUNNING }),
+      role: BackgroundTaskRole.CHILD_TASK,
+      childAgentId: 'another-child',
+    })
+    expect(marker).toMatchObject({ role: BackgroundTaskRole.CHILD_ACTIVITY })
+    expect(countActiveBackgroundTasks([marker])).toBe(0)
+    expect(countActiveBackgroundTasks([marker, outcome, combined])).toBe(2)
+    expect(shouldShowBackgroundTasksSection([marker], false)).toBe(true)
+    expect(opensSubagentTranscript(marker)).toBe(true)
+  })
+  it('keeps an individual task outcome linked to its child transcript', () => {
+    const outcome = protoBackgroundTaskToStore({
+      ...proto({ id: 'member', kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.SUCCEEDED }),
+      role: BackgroundTaskRole.TASK_OUTCOME,
+      childAgentId: 'child',
+    })
+    expect(opensSubagentTranscript(outcome)).toBe(true)
+    const unlinked = { ...outcome }
+    delete unlinked.childAgentId
+    expect(opensSubagentTranscript(unlinked)).toBe(false)
+    expect(opensSubagentTranscript({ ...outcome, kind: 'shell' })).toBe(false)
+  })
+})
+
+describe('countActiveBackgroundTasks role counter', () => {
+  it('does not count an activity marker as another task', () => {
+    const marker = Object.assign(item({ rowKey: 'marker', status: 'running', childAgentId: 'child' }), { role: BackgroundTaskRole.CHILD_ACTIVITY })
+    const outcome = Object.assign(item({ rowKey: 'task', status: 'running', childAgentId: 'child' }), { role: BackgroundTaskRole.TASK_OUTCOME })
+    expect(countActiveBackgroundTasks([marker])).toBe(0)
+    expect(countActiveBackgroundTasks([marker, outcome])).toBe(1)
+  })
+})
+
+describe('protoBackgroundTaskToStore role validation', () => {
+  it.each([0, -1, 99, 2147483647])('keeps unsupported role %s out of task counters', (role) => {
+    const record = protoBackgroundTaskToStore({
+      ...proto({ id: 'unsupported', status: BackgroundTaskStatus.RUNNING }),
+      role,
+    })
+    expect(record.role).toBe(BackgroundTaskRole.UNSPECIFIED)
+    if (role !== BackgroundTaskRole.UNSPECIFIED)
+      expect(record.rawRole).toBe(role)
+    expect(countActiveBackgroundTasks([record])).toBe(0)
   })
 })

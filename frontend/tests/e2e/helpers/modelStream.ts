@@ -5,6 +5,7 @@ import { textChunks } from './mockModelScript'
 
 export interface ModelStream {
   readonly active: boolean
+  waitForGate: (name: string) => Promise<boolean>
   chunks: (text: string | undefined) => AsyncGenerator<string>
 }
 
@@ -53,7 +54,17 @@ function createControlledModelStream(
   let emitted = 0
   let cancelled = false
   const active = () => !cancelled && control.active()
+  const waitForGate = async (name: string): Promise<boolean> => {
+    if (!hold)
+      throw new Error('A model stream gate requires a scenario-owned gate handler')
+    if (!active())
+      return false
+    if (!await hold(name))
+      cancelled = true
+    return active()
+  }
   return {
+    waitForGate,
     get active() { return active() },
     async* chunks(text) {
       if (text === undefined)
@@ -74,12 +85,8 @@ function createControlledModelStream(
         emitted++
         const gate = stream?.gates?.find(gate => gate.afterChunk === emitted)
         if (gate) {
-          if (!hold)
-            throw new Error('A model stream gate requires a scenario-owned gate handler')
-          if (!await hold(gate.name)) {
-            cancelled = true
+          if (!await waitForGate(gate.name))
             return
-          }
         }
       }
     },

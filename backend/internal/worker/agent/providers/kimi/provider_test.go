@@ -15,11 +15,15 @@ func TestKimiClassify(t *testing.T) {
 	t.Parallel()
 
 	for payload, want := range map[string]agent.NotificationClassification{
-		`{"type":"turn.step.retrying","attempt":2}`: agent.APIRetryNotification(),
+		`{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","ops":[{"op":"step.upsert","turnId":"t0","step":{"kind":"step","stepId":"t0.1","state":"running","retry":{"failedAttempt":1,"nextAttempt":2,"maxAttempts":10,"delayMs":0}}}]}}`: agent.APIRetryNotification(),
+		`{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","ops":[{"op":"marker.upsert","item":{"kind":"marker","markerId":"m1","marker":"compaction","payload":{"phase":"completed"}}}]}}`:                                                agent.CompactionBoundaryNotification(),
+		`{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","ops":[{"op":"marker.upsert","item":{"kind":"marker","markerId":"m1","marker":"compaction","payload":{"phase":"cancelled"}}}]}}`:                                                agent.CompactionBoundaryNotification(),
+		`{"type":"transcript.ops","payload":{"ops":[{"op":"step.upsert","step":{"retry":{"nextAttempt":2}}}]}}`:                                                                                                                                                                                 {},
+		`{"type":"turn.step.retrying","attempt":2}`: {},
 		`{"type":"compaction.started"}`:             {},
 		`{"type":"compaction.blocked"}`:             {},
-		`{"type":"compaction.cancelled"}`:           agent.CompactionBoundaryNotification(),
-		`{"type":"compaction.completed"}`:           agent.CompactionBoundaryNotification(),
+		`{"type":"compaction.cancelled"}`:           {},
+		`{"type":"compaction.completed"}`:           {},
 		`{"type":"warning"}`:                        {},
 		`{"type":"turn.started"}`:                   {},
 		`{}`:                                        {},
@@ -79,4 +83,11 @@ func TestKimiProviderFacts(t *testing.T) {
 func TestPluginStatesTheChildCapabilitiesOfTheAgent(t *testing.T) {
 	t.Parallel()
 	agenttest.AssertChildCapabilities(t, Registration().Plugin, (*Agent)(nil))
+}
+
+func TestKimiChildInterruptionRequiresAnUnavailableNativeTurnAddress(t *testing.T) {
+	t.Parallel()
+	assert.False(t, kimiProvider{}.ChildCapabilities(nil).AcceptsInterrupt, "task service addresses do not identify the current child turn")
+	_, implements := any((*Agent)(nil)).(agent.ChildInterrupter)
+	assert.False(t, implements, "the Worker must use its unsupported-operation path rather than guessing a coordinator")
 }

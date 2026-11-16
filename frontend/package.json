@@ -58,6 +58,7 @@
     "fzstd": "^0.1.1",
     "lightningcss": "^1.33.0",
     "lucide-solid": "^1.34.0",
+    "parse5": "8.1.1",
     "random-word-slugs": "^0.1.7",
     "rehype-stringify": "^10.0.1",
     "remark-gfm": "^4.0.1",

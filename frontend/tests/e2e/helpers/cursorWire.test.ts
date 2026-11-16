@@ -856,7 +856,7 @@ describe('cursorMcpExec and cursorMcpResponseOf', () => {
     const fields = readCursorProtobufFields(args).strings
     expect(new TextDecoder().decode(fields.get(1)?.[0])).toBe('form_probe-echo')
     expect(new TextDecoder().decode(fields.get(3)?.[0])).toBe('mcp-1')
-    expect(new TextDecoder().decode(fields.get(5)?.[0])).toBe('form_probe-echo')
+    expect(new TextDecoder().decode(fields.get(5)?.[0])).toBe('echo')
     expect(new TextDecoder().decode(fields.get(9)?.[0])).toBe('form_probe')
     const input = Object.fromEntries((fields.get(2) ?? []).map((entry) => {
       const key = new TextDecoder().decode(descend(entry, [1]))

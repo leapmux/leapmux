@@ -2,7 +2,7 @@ import type { ClientRequest, IncomingMessage, Server } from 'node:http'
 import type { Socket } from 'node:net'
 import type { Duplex } from 'node:stream'
 import { Buffer } from 'node:buffer'
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import https from 'node:https'
 import { join, resolve } from 'node:path'
@@ -126,6 +126,22 @@ afterEach(async () => {
 })
 
 describe('startTlsProxy', () => {
+  it('exposes its certificate for clients that verify the private HTTPS endpoint', async () => {
+    const proxy = await startTlsProxy(await target())
+    try {
+      const certificatePath: unknown = Reflect.get(proxy, 'certificatePath')
+      expect(typeof certificatePath).toBe('string')
+      if (typeof certificatePath !== 'string')
+        throw new TypeError('The TLS proxy did not expose its certificate path.')
+      expect(await request(proxy.url, {
+        rejectUnauthorized: true,
+        ca: readFileSync(certificatePath),
+      })).toEqual({ status: 200, body: 'REPLY42' })
+    }
+    finally {
+      await proxy.close()
+    }
+  })
   it('binds its final listener directly while another process owns the provisional port', async () => {
     const occupied = await listen(http.createServer())
     vi.mocked(findFreePort).mockResolvedValueOnce(occupied)

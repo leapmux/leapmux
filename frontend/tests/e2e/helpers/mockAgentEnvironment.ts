@@ -289,6 +289,7 @@ export interface MockAgentEnvironment {
 
 interface MockAgentEnvironmentOptions {
   realHomeDir?: string
+  modelTLS?: { url: string, certificatePath: string }
 }
 
 /** Write isolated agent configuration and return its process environment. */
@@ -358,6 +359,9 @@ export async function createMockAgentEnvironment(
       // before mise's shims, which cannot start a tool under the isolated HOME
       // above. See `agentSearchPath`.
       ...searchPathEnv,
+      ...(options.modelTLS
+        ? { NODE_EXTRA_CA_CERTS: options.modelTLS.certificatePath }
+        : {}),
       // Amp reads its settings, its history and its cache under these, and a value in
       // the developer's own environment would otherwise point it at theirs. Each one
       // is the directory the isolated HOME implies anyway, so no provider that
@@ -519,6 +523,9 @@ export async function createMockAgentEnvironment(
       }),
       ...createQoderEnvironment({
         homeDir,
+        ...(options.modelTLS
+          ? { centerOrigin: options.modelTLS.url }
+          : {}),
         identityToken: MOCK_IDENTITY_TOKEN,
         origin,
         baseURL: openAIBaseURL,

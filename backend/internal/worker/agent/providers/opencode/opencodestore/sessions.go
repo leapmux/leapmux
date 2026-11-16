@@ -1,20 +1,9 @@
-// Package opencodestore reads the session store that OpenCode, Kilo, ZCode and
-// MiMo Code share.
+// Package opencodestore reads the SQLite session layout shared by Kilo, ZCode
+// and MiMo Code. Each provider supplies its own database path. The query reads
+// top-level, unarchived sessions for one directory. A provider can exclude
+// sessions that another table identifies, such as imported sessions.
 //
-// OpenCode keeps its sessions in one SQLite database, in a `session` table
-// whose columns this package reads. Kilo is a fork of OpenCode, ZCode is a
-// derivative of it, and MiMo Code is a fork of it, and all four ship the same
-// table: `id`, `parent_id`, `directory`, `title`, `time_updated`,
-// `time_archived`. Verified against all four live databases -- the columns are
-// identical, and ZCode's own `task_type` discriminator agrees exactly with
-// `parent_id IS NULL` (every `subagent_child` row has a parent), so the shared
-// query needs no column that only one of them has.
-//
-// Hence ONE reader with four callers, each supplying its own database path
-// from its own package. The alternative -- four near-identical queries -- would
-// drift the moment one of them renames a column. A fork that marks some of its
-// sessions in a table of its own states that table as an Exclusion, and the
-// shared query stays the one query.
+// OpenCode uses session_v2. Its reader lives in the parent opencode package.
 package opencodestore
 
 import (

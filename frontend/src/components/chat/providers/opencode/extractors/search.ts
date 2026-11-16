@@ -1,10 +1,10 @@
 import type { SearchMatch } from '../../../model/searchResult'
 
-/** Read OpenCode's grouped grep output only when every row matches its native format. */
+/** Read OpenCode v2 grouped grep output only when every row matches its native format. */
 export function openCodeSearchLines(text: string, count: number, truncated = false): SearchMatch[] | null {
   if (!Number.isSafeInteger(count) || count < 0)
     return null
-  if (count === 0 && text.trim() === 'No files found')
+  if (count === 0 && text.trim() === 'No matches found')
     return []
   const rows = text.split(/\r?\n/)
   const heading = /^Found (\d+) matches(?: \(more matches available\))?$/.exec(rows.shift() ?? '')

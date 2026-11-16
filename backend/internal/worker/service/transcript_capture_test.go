@@ -1,6 +1,8 @@
 package service
 
 import (
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	"context"
 	"encoding/json"
 	"errors"
@@ -237,7 +239,9 @@ func TestCapturedTailRetainsItsOwnerThroughDelayedWireDelivery(t *testing.T) {
 				subjectID := rootID
 				services := rootServices
 				if population == "child" {
-					childID, err := rootServices.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "tail-child", Title: "Child"})
+					childID, err := rootServices.EnsureChildAgent(agent.ChildAgentSpec{
+						RegistryRole: bgtask.RoleChildTask,
+						SpawnSpanID:  "spawn", ProviderChildKey: "tail-child", Title: "Child"})
 					require.NoError(t, err)
 					subjectID = childID
 					services = rootServices.ChildSink(childID)

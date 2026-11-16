@@ -66,7 +66,9 @@ func TestPersistChildPrompt_HeadReadFailureRetainsTheAssignmentBeforeChildOutput
 	t.Parallel()
 	clock := testutil.NewQuartzMock(t)
 	svc, sink := setupRootSink(t, "prompt-head-root", withClock(clock))
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "native-child", AgentSessionID: "native-child-session", Title: "Original assignment"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn", ProviderChildKey: "native-child", AgentSessionID: "native-child-session", Title: "Original assignment"})
 	require.NoError(t, err)
 	store := &unavailableChildTranscriptHead{DBTX: svc.DB, childID: childID}
 	store.unavailable.Store(true)
@@ -94,7 +96,9 @@ func TestPersistChildPrompt_RetriesWithoutAnotherProviderFrameAndOrdersEveryChil
 	t.Parallel()
 	clock := testutil.NewQuartzMock(t)
 	svc, sink := setupRootSink(t, "prompt-retry-root", withClock(clock))
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "native-child", Title: "Assignment"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn", ProviderChildKey: "native-child", Title: "Assignment"})
 	require.NoError(t, err)
 	store := &unavailableChildTranscriptHead{DBTX: svc.DB, childID: childID}
 	store.unavailable.Store(true)
@@ -127,7 +131,9 @@ func TestPersistChildPrompt_RetriesWithoutAnotherProviderFrameAndOrdersEveryChil
 func TestPersistChildPrompt_ConcurrentRepeatsKeepOneOriginalReservation(t *testing.T) {
 	t.Parallel()
 	svc, sink := setupRootSink(t, "prompt-concurrent-root")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "native-child", Title: "Assignment"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn", ProviderChildKey: "native-child", Title: "Assignment"})
 	require.NoError(t, err)
 	entered, release := make(chan struct{}), make(chan struct{})
 	releaseRead := sync.OnceFunc(func() { close(release) })
@@ -178,7 +184,9 @@ func TestPersistChildPrompt_OriginalSessionSurvivesSinkReplacement(t *testing.T)
 	t.Parallel()
 	clock := testutil.NewQuartzMock(t)
 	svc, original := setupRootSink(t, "prompt-replacement-root", withClock(clock))
-	childID, err := original.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "native-child", AgentSessionID: "original-child-session", Title: "Assignment"})
+	childID, err := original.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn", ProviderChildKey: "native-child", AgentSessionID: "original-child-session", Title: "Assignment"})
 	require.NoError(t, err)
 	store := &unavailableChildTranscriptHead{DBTX: svc.DB, childID: childID}
 	store.unavailable.Store(true)
@@ -202,7 +210,9 @@ func TestPersistChildPrompt_OriginalSessionSurvivesSinkReplacement(t *testing.T)
 func TestPersistChildPrompt_DeletedHistoryIsEmptyWithoutResettingItsSequence(t *testing.T) {
 	t.Parallel()
 	svc, sink := setupRootSink(t, "prompt-deleted-root")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "native-child", Title: "Assignment"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn", ProviderChildKey: "native-child", Title: "Assignment"})
 	require.NoError(t, err)
 	require.NoError(t, sink.PersistChildPrompt(childID, "The first assignment."))
 	old, err := svc.Queries.ListAllMessagesByAgentID(t.Context(), db.ListAllMessagesByAgentIDParams{AgentID: childID})
@@ -241,12 +251,16 @@ func TestEnsureChildAgent_CreatesOnce(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-1")
 
 	// First call creates the child agent row.
-	id1, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "build feature"})
+	id1, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "build feature"})
 	require.NoError(t, err)
 	assert.NotEmpty(t, id1)
 
 	// Second call is idempotent: same child key resolves to the same agent id.
-	id2, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "build feature"})
+	id2, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "build feature"})
 	require.NoError(t, err)
 	assert.Equal(t, id1, id2, "EnsureChildAgent is idempotent")
 
@@ -265,7 +279,9 @@ func TestEnsureChildAgent_RegistryRowLinksChild(t *testing.T) {
 	ctx := context.Background()
 	svc, sink := setupRootSink(t, "root-1")
 
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "build feature"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "build feature"})
 	require.NoError(t, err)
 
 	// The registry row under the root owner links to the child.
@@ -283,7 +299,9 @@ func TestPersistSubagentReportResolvesTheChildAndDeduplicatesDurably(t *testing.
 
 	ctx := context.Background()
 	svc, sink := setupRootSink(t, "root-report")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-1", ProviderChildKey: "row-1", Title: "Reviewer"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn-1", ProviderChildKey: "row-1", Title: "Reviewer"})
 	require.NoError(t, err)
 	write := agent.ChildSubagentReportWrite{
 		RowKey: "row-1",
@@ -408,7 +426,9 @@ func TestPersistSubagentReportDeduplicatesConcurrentWriters(t *testing.T) {
 
 	ctx := context.Background()
 	svc, sink := setupRootSink(t, "root-concurrent-report")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-1", ProviderChildKey: "row-1", Title: "Reviewer"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn-1", ProviderChildKey: "row-1", Title: "Reviewer"})
 	require.NoError(t, err)
 	write := agent.ChildSubagentReportWrite{
 		RowKey: "row-1",
@@ -479,7 +499,9 @@ func TestCleanupChildAgent_ReclaimsPerChildState(t *testing.T) {
 	ctx := context.Background()
 	svc, sink := setupRootSink(t, "root-1")
 
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "build feature"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "build feature"})
 	require.NoError(t, err)
 	// Touch the child sink + a span so the per-child caches are populated.
 	childSink := sink.ChildSink(childID)
@@ -517,7 +539,9 @@ func TestEnsureChildAgent_SpawnSpanFallbackAfterRegistryLoss(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-1")
 
 	// First spawn: creates the child.
-	id1, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "first"})
+	id1, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "first"})
 	require.NoError(t, err)
 
 	// Simulate a worker restart between the agent-row insert and the registry
@@ -527,7 +551,9 @@ func TestEnsureChildAgent_SpawnSpanFallbackAfterRegistryLoss(t *testing.T) {
 	sink2 := newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	// The spawn-span fallback reattaches the same child row.
-	id2, err := sink2.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "first"})
+	id2, err := sink2.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "first"})
 	require.NoError(t, err)
 	assert.Equal(t, id1, id2, "spawn-span fallback reattaches the existing child")
 }
@@ -540,7 +566,9 @@ func TestChildSpawnSpan_AnswersFromTheChildRow(t *testing.T) {
 
 	svc, sink := setupRootSink(t, "root-1")
 
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "build feature"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "build feature"})
 	require.NoError(t, err)
 
 	span, err := sink.ChildSpawnSpan(childID)
@@ -573,7 +601,9 @@ func TestChildSpawnSpan_DoesNotAnswerForAnotherRootsChild(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "build feature"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "build feature"})
 	require.NoError(t, err)
 
 	other := newRootAgent(t, svc, "root-2")
@@ -617,7 +647,9 @@ func TestChildSink_PersistsIntoChildSeqSpace(t *testing.T) {
 	ctx := context.Background()
 	svc, sink := setupRootSink(t, "root-1")
 
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "child"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
 
 	// Persist into the child transcript via ChildSink.
@@ -650,7 +682,9 @@ func TestChildSink_SpanTrackerIndependentOfParent(t *testing.T) {
 	ctx := context.Background()
 	svc, sink := setupRootSink(t, "root-1")
 
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "child"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
 
 	// Open a span on the root and the child with the SAME id. Each transcript
@@ -684,13 +718,17 @@ func TestNestedChild_RegistersUnderRoot(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-1")
 
 	// First-level child.
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "child"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
 	childSink := sink.ChildSink(childID)
 
 	// Grandchild: spawned from the child's transcript. Its registry row lives
 	// under the ROOT owner, but parent_agent_id is the child.
-	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-2", ProviderChildKey: "task-2", Title: "grandchild"})
+	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-2", ProviderChildKey: "task-2", Title: "grandchild"})
 	require.NoError(t, err)
 	assert.NotEmpty(t, grandchildID)
 	assert.NotEqual(t, childID, grandchildID)
@@ -731,7 +769,9 @@ func TestChildSink_TrackerRegisteredAsChildKind(t *testing.T) {
 	require.True(t, ok, "root tracker seeded by NewRootSink")
 	assert.Equal(t, spanTrackerRoot, rootKind, "NewRootSink registers the root kind")
 
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "child"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
 	_ = sink.ChildSink(childID) // drive child-tracker creation
 
@@ -759,7 +799,9 @@ func TestCleanupChildAgent_OrphanedTrackerPointerIsBenign(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-1")
 	rootSink := requireRootOutputSink(t, svc.Output, "root-1")
 
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "child"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
 	retainedChildSink := requireChildOutputSink(t, rootSink, childID)
 	retainedChildSink.OpenSpan("item-1", "span-1")
@@ -803,9 +845,13 @@ func TestCleanupChildAgent_PrunesChildSinkFromDirectParent(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-1")
 	rootSink := requireRootOutputSink(t, svc.Output, "root-1")
 
-	closedID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "closed-child"})
+	closedID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "closed-child"})
 	require.NoError(t, err)
-	survivingID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-2", ProviderChildKey: "task-2", Title: "surviving-child"})
+	survivingID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-2", ProviderChildKey: "task-2", Title: "surviving-child"})
 	require.NoError(t, err)
 
 	// Drive ChildSink for both so both are cached on the root sink.
@@ -852,11 +898,15 @@ func TestCleanupChildAgent_PrunesGrandchildFromIntermediateParent(t *testing.T) 
 
 	// child -> grandchild (depth 2). The grandchild's cached sink lives on the
 	// child's childSinks, not the root's.
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "child"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
 	childSink := requireChildOutputSink(t, rootSink, childID)
 
-	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-2", ProviderChildKey: "task-2", Title: "grandchild"})
+	grandchildID, err := childSink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-2", ProviderChildKey: "task-2", Title: "grandchild"})
 	require.NoError(t, err)
 	grandchildSink := requireChildOutputSink(t, childSink, grandchildID)
 	_ = grandchildSink
@@ -924,7 +974,9 @@ func TestCleanupChildAgent_ReChildSinkGetsFreshTracker(t *testing.T) {
 	svc, sink := setupRootSink(t, "root-1")
 	rootSink := requireRootOutputSink(t, svc.Output, "root-1")
 
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "child"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "child"})
 	require.NoError(t, err)
 	first := requireChildOutputSink(t, rootSink, childID)
 	firstTracker := first.tracker
@@ -952,7 +1004,9 @@ func TestObsoleteParentCleanupKeepsTheReplacementChildAndHeldSettle(t *testing.T
 	t.Parallel()
 	svc, sink := setupRootSink(t, "root-old-parent")
 	oldRoot := requireRootOutputSink(t, svc.Output, "root-old-parent")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "child-spawn", ProviderChildKey: "native-child", Title: "Child"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "child-spawn", ProviderChildKey: "native-child", Title: "Child"})
 	require.NoError(t, err)
 	oldChild := requireChildOutputSink(t, oldRoot, childID)
 	oldChild.UpdateSessionID("original-child-session")
@@ -991,7 +1045,9 @@ func TestRetiredChildCapturedOperationsKeepOriginalSessionAndGeometry(t *testing
 	t.Parallel()
 	svc, parent := setupRootSink(t, "root-historical-child")
 	oldRoot := requireRootOutputSink(t, svc.Output, "root-historical-child")
-	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn-old", ProviderChildKey: "old-child", Title: "Child"})
+	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn-old", ProviderChildKey: "old-child", Title: "Child"})
 	require.NoError(t, err)
 	oldChild := requireChildOutputSink(t, oldRoot, childID)
 	oldChild.UpdateSessionID("original-child-session")
@@ -1026,7 +1082,9 @@ func TestRetiredChildCapturedUncachedSinkKeepsReplacementMapsExact(t *testing.T)
 	t.Parallel()
 	svc, parent := setupRootSink(t, "root-uncached-history")
 	oldRoot := requireRootOutputSink(t, svc.Output, "root-uncached-history")
-	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "uncached-spawn", ProviderChildKey: "uncached-child", Title: "Child"})
+	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "uncached-spawn", ProviderChildKey: "uncached-child", Title: "Child"})
 	require.NoError(t, err)
 	newTestRootOutputSink(t, svc.Output, oldRoot.agentID, oldRoot.agentProvider)
 	currentRoot := requireRootOutputSink(t, svc.Output, oldRoot.agentID)
@@ -1145,7 +1203,9 @@ func TestPersistChildPrompt_IsTheFirstMessage(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	require.NoError(t, sink.PersistChildPrompt(childID, "Review the diff."))
@@ -1160,7 +1220,9 @@ func TestPersistChildPrompt_SkipsABlankPrompt(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	require.NoError(t, sink.PersistChildPrompt(childID, ""))
@@ -1175,7 +1237,9 @@ func TestPersistChildPrompt_DoesNotAppendOnceTheChildHasSpoken(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	require.NoError(t, sink.PersistChildPrompt(childID, "Review the diff."))
@@ -1197,7 +1261,9 @@ func TestCloseBackgroundTask_LeavesTheNativeTranscriptUnchanged(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
@@ -1217,7 +1283,9 @@ func TestCloseBackgroundTask_CarriesTheFinalStatus(t *testing.T) {
 		t.Run(bgtask.StatusWire(status), func(t *testing.T) {
 			t.Parallel()
 			svc, sink := setupRootSink(t, "root-1")
-			childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+			childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole: bgtask.RoleChildTask,
+				SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 			require.NoError(t, err)
 			require.NoError(t, sink.CloseBackgroundTask("task-1", status))
 
@@ -1274,7 +1342,9 @@ func TestSubagentCompletion_FollowsWhicheverMutationEndsTheRow(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			svc, sink := setupRootSink(t, "root-1")
-			childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+			childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole: bgtask.RoleChildTask,
+				SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 			require.NoError(t, err)
 
 			tc.end(t, sink)
@@ -1295,7 +1365,9 @@ func TestSubagentCompletion_PreservesTheNativeResultInEitherArrivalOrder(t *test
 	t.Run("registry closes first, then the forwarded result", func(t *testing.T) {
 		t.Parallel()
 		svc, sink := setupRootSink(t, "root-1")
-		childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+		childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 		require.NoError(t, err)
 
 		require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
@@ -1310,7 +1382,9 @@ func TestSubagentCompletion_PreservesTheNativeResultInEitherArrivalOrder(t *test
 	t.Run("forwarded result first, then the registry close", func(t *testing.T) {
 		t.Parallel()
 		svc, sink := setupRootSink(t, "root-1")
-		childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+		childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 		require.NoError(t, err)
 
 		require.NoError(t, sink.ChildSink(childID).PersistTurnEnd(agent.MessageContent{Original: result}, agent.SpanInfo{}))
@@ -1327,7 +1401,9 @@ func TestSubagentCompletion_ConcurrentWritersRetainTheNativeResult(t *testing.T)
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	result := []byte(`{"type":"result","duration_ms":12}`)
@@ -1354,7 +1430,9 @@ func TestSubagentCompletion_RepeatedFinalStatusLeavesTheTranscriptUnchanged(t *t
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	require.NoError(t, sink.UpdateBackgroundTaskStatus("task-1", bgtask.StatusSucceeded, "wrote the summary"))
@@ -1382,7 +1460,9 @@ func TestCloseBackgroundTask_RepeatedClosePreservesTheFirstOutcome(t *testing.T)
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
@@ -1412,7 +1492,9 @@ func TestMarkBackgroundTasksExited_RecordsTheOutcomeWithoutChangingTheTranscript
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	// stopped=false is the crash path, which labels the row 'interrupted'.
@@ -1428,7 +1510,9 @@ func TestMarkBackgroundTasksExited_ClosesASubagentPastTheDisplayCap(t *testing.T
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	fillSubagentDisplayCap(t, sink, bgtask.MaxTasks)
 
@@ -1453,7 +1537,9 @@ func TestMarkBackgroundTasksExited_LabelsAnExplicitStopAsStopped(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	svc.Output.MarkAgentBackgroundTasksExited("root-1", true)
@@ -1468,7 +1554,9 @@ func TestMarkBackgroundTasksExited_SkipsAnAlreadyClosedSubagent(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 
@@ -1484,7 +1572,9 @@ func TestCloseBackgroundTask_PreservesAnEarlierNativeResult(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	// The forwarded subagent result, persisted as the child's turn end.
@@ -1501,7 +1591,9 @@ func TestCloseBackgroundTask_PreservesTheLastNativeMessageWhenStoppedMidFlight(t
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	// Work, but no closing envelope.
@@ -1531,7 +1623,9 @@ func TestCloseBackgroundTask_PreservesTheNativeMessagesProvider(t *testing.T) {
 		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
 	}))
 	sink := newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":0}`)}, agent.SpanInfo{}))
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
@@ -1554,9 +1648,13 @@ func TestMarkBackgroundTasksExited_RecordsEveryChildOutcome(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childA, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-a", ProviderChildKey: "task-a", Title: "A"})
+	childA, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-a", ProviderChildKey: "task-a", Title: "A"})
 	require.NoError(t, err)
-	childB, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-b", ProviderChildKey: "task-b", Title: "B"})
+	childB, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-b", ProviderChildKey: "task-b", Title: "B"})
 	require.NoError(t, err)
 
 	svc.Output.MarkAgentBackgroundTasksExited("root-1", false)
@@ -1577,7 +1675,9 @@ func TestMarkBackgroundTasksExited_SkipsATranscriptThatAlreadyEnded(t *testing.T
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":5100}`)}, agent.SpanInfo{}))
 
@@ -1611,7 +1711,9 @@ func TestReviveBackgroundTask_ReturnsAFinishedRowToRunning(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	// A finished Claude subagent carries its output file in Description, written
 	// by the same task_notification that ended it.
@@ -1651,7 +1753,9 @@ func TestReviveBackgroundTask_IsANoOpForAnActiveOrAbsentRow(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	// Still running: nothing to reopen, and the row must not be disturbed.
@@ -1670,7 +1774,9 @@ func TestReviveBackgroundTask_PreservesNativeResultsAcrossRuns(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":12}`)}, agent.SpanInfo{}))
@@ -1689,7 +1795,9 @@ func TestSubagentCompletion_PreservesEachNativeRunAfterARevive(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.PersistChildTurnEnd(childID, agent.MessageContent{Original: []byte(`{"type":"result","duration_ms":12}`)}, agent.SpanInfo{}))
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
@@ -1712,7 +1820,9 @@ func TestChildTranscript_AppendsAfterRegistryCompletion(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 
@@ -1729,7 +1839,9 @@ func TestLookupBackgroundTask_ResolvesTheChildAndStatus(t *testing.T) {
 	t.Parallel()
 
 	_, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	gotChild, status, ok, _ := sink.LookupBackgroundTask("task-1")
@@ -1750,7 +1862,9 @@ func TestLookupBackgroundTask_ResolvesTheChildAndStatus(t *testing.T) {
 func fillSubagentDisplayCap(t *testing.T, sink agent.ProviderServices, extra int) {
 	t.Helper()
 	for i := range extra {
-		_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: fmt.Sprintf("filler-span-%d", i), ProviderChildKey: fmt.Sprintf("filler-%d", i), Title: "filler"})
+		_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  fmt.Sprintf("filler-span-%d", i), ProviderChildKey: fmt.Sprintf("filler-%d", i), Title: "filler"})
 		require.NoError(t, err)
 	}
 }
@@ -1763,7 +1877,9 @@ func TestLookupBackgroundTask_ResolvesARowThatLeftTheDisplayCache(t *testing.T) 
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 
@@ -1792,7 +1908,9 @@ func TestGetAgentBackgroundTaskByChildAgentID_ResolvesPastTheDisplayCap(t *testi
 
 	ctx := context.Background()
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 
@@ -1810,7 +1928,9 @@ func TestLookupBackgroundTask_ReportsAMissForAnUnknownKey(t *testing.T) {
 	t.Parallel()
 
 	_, sink := setupRootSink(t, "root-1")
-	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	for _, key := range []string{"", "task-nope", "bridge:another-machine"} {
@@ -1842,7 +1962,9 @@ func TestReviveBackgroundTask_TrustsTheDatabaseOverAStaleCache(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-1", bgtask.StatusSucceeded))
 	require.True(t, registrySnapshotRow(t, svc, "root-1", "task-1").Status.IsFinished())
@@ -1872,7 +1994,9 @@ func TestPersistChildUserMessage_AppendsWithTheScrollRailMark(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 	require.NoError(t, sink.PersistChildPrompt(childID, "Find every caller."))
 
@@ -1900,7 +2024,9 @@ func TestPersistChildUserMessage_IsANoOpForBlankInput(t *testing.T) {
 	t.Parallel()
 
 	svc, sink := setupRootSink(t, "root-1")
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
 
 	require.NoError(t, sink.PersistChildUserMessage(childID, "   \n\t "))
@@ -1913,7 +2039,9 @@ func TestEnsureChildAgentStoresItsInitialNativeSessionBeforeItsPrompt(t *testing
 	t.Parallel()
 	svc, parent := setupRootSink(t, "initial-session-root")
 	const nativeSession = "97d857a0-9cd7-4bbf-987b-a6ab094a074b"
-	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "initial-session-spawn", ProviderChildKey: "initial-session-child", AgentSessionID: nativeSession})
+	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "initial-session-spawn", ProviderChildKey: "initial-session-child", AgentSessionID: nativeSession})
 	require.NoError(t, err)
 	child, err := svc.Queries.GetAgentByID(t.Context(), childID)
 	require.NoError(t, err)
@@ -1944,7 +2072,9 @@ func TestEnsureChildAgentPreservesAnExistingNativeSession(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			t.Parallel()
 			svc, parent := setupRootSink(t, "existing-session-root")
-			base := agent.ChildAgentSpec{SpawnSpanID: "existing-spawn", ProviderChildKey: "existing-child"}
+			base := agent.ChildAgentSpec{
+				RegistryRole: bgtask.RoleChildTask,
+				SpawnSpanID:  "existing-spawn", ProviderChildKey: "existing-child"}
 			childID, err := parent.EnsureChildAgent(base)
 			require.NoError(t, err)
 			if scenario.stored != "" {
@@ -1988,7 +2118,9 @@ func TestEnsureChildAgentConcurrentInitialSessionsKeepOneIdentity(t *testing.T) 
 	for _, session := range []string{"native-a", "native-b"} {
 		go func() {
 			<-start
-			id, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "shared-spawn", ProviderChildKey: "shared-child", AgentSessionID: session})
+			id, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole: bgtask.RoleChildTask,
+				SpawnSpanID:  "shared-spawn", ProviderChildKey: "shared-child", AgentSessionID: session})
 			results <- childResult{id: id, session: session, err: err}
 		}()
 	}
@@ -2012,10 +2144,14 @@ func TestEnsureChildAgentConcurrentInitialSessionsKeepOneIdentity(t *testing.T) 
 func TestEnsureChildAgentReportsTypedDirectParentRefusal(t *testing.T) {
 	t.Parallel()
 	svc, root := setupRootSink(t, "typed-parent-root")
-	parentID, err := root.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "parent-spawn", ProviderChildKey: "parent-child"})
+	parentID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "parent-spawn", ProviderChildKey: "parent-child"})
 	require.NoError(t, err)
 	parent := root.ChildSink(parentID)
-	spec := agent.ChildAgentSpec{SpawnSpanID: "nested-spawn", ProviderChildKey: "nested-native", AgentSessionID: "nested-session"}
+	spec := agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "nested-spawn", ProviderChildKey: "nested-native", AgentSessionID: "nested-session"}
 	childID, err := parent.EnsureChildAgent(spec)
 	require.NoError(t, err)
 	before, err := svc.Queries.GetAgentByID(t.Context(), childID)
@@ -2034,11 +2170,15 @@ func TestEnsureChildAgentReportsTypedDirectParentRefusal(t *testing.T) {
 func TestEnsureChildAgentReportsTypedNativeKeyRefusal(t *testing.T) {
 	t.Parallel()
 	svc, parent := setupRootSink(t, "typed-key-root")
-	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "shared-spawn", ProviderChildKey: "native-first"})
+	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "shared-spawn", ProviderChildKey: "native-first"})
 	require.NoError(t, err)
 	before, err := svc.Queries.GetAgentByID(t.Context(), childID)
 	require.NoError(t, err)
-	resolved, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "shared-spawn", ProviderChildKey: "native-second"})
+	resolved, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "shared-spawn", ProviderChildKey: "native-second"})
 	assert.ErrorIs(t, err, agent.ErrChildIdentityRefused)
 	assert.Empty(t, resolved)
 	after, err := svc.Queries.GetAgentByID(t.Context(), childID)
@@ -2053,7 +2193,9 @@ func TestEnsureChildAgentKeepsReadFailureDistinctFromIdentityRefusal(t *testing.
 	missingParent := newTestRootOutputSink(t, svc.Output, "absent-parent", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 	_, deleteErr := svc.DB.ExecContext(t.Context(), "DELETE FROM agents WHERE id = ?", "absent-parent")
 	require.NoError(t, deleteErr)
-	id, err := missingParent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "missing-parent-spawn", ProviderChildKey: "missing-parent-child"})
+	id, err := missingParent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "missing-parent-spawn", ProviderChildKey: "missing-parent-child"})
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, agent.ErrChildIdentityRefused)
 	assert.Empty(t, id)
@@ -2062,7 +2204,9 @@ func TestEnsureChildAgentKeepsReadFailureDistinctFromIdentityRefusal(t *testing.
 func TestEnsureChildAgentSpanOnlyCreationStaysUnlinked(t *testing.T) {
 	t.Parallel()
 	svc, parent := setupRootSink(t, "span-only-root")
-	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "native-spawn-only", Title: "Native child"})
+	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "native-spawn-only", Title: "Native child"})
 	require.NoError(t, err)
 	require.NotEmpty(t, childID)
 	child, err := svc.Queries.GetAgentByID(t.Context(), childID)
@@ -2081,12 +2225,18 @@ func TestEnsureChildAgentSpanOnlyCreationStaysUnlinked(t *testing.T) {
 func TestEnsureChildAgentSpanOnlyChildrenKeepSeparateSpans(t *testing.T) {
 	t.Parallel()
 	svc, parent := setupRootSink(t, "separate-span-root")
-	first, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "first-native-span"})
+	first, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "first-native-span"})
 	require.NoError(t, err)
-	second, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "second-native-span"})
+	second, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "second-native-span"})
 	require.NoError(t, err)
 	assert.NotEqual(t, first, second)
-	replayed, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "first-native-span"})
+	replayed, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "first-native-span"})
 	require.NoError(t, err)
 	assert.Equal(t, first, replayed)
 	children, err := svc.Queries.ListAgentDescendantsForResume(t.Context(), sqlString("separate-span-root"))
@@ -2107,7 +2257,9 @@ func TestEnsureChildAgentSpanOnlyChildrenKeepSeparateSpans(t *testing.T) {
 func TestEnsureChildAgentAdoptsTheRealKeyAfterSpanOnlyCreation(t *testing.T) {
 	t.Parallel()
 	svc, parent := setupRootSink(t, "native-adoption-root")
-	spec := agent.ChildAgentSpec{SpawnSpanID: "native-adoption-span", Title: "Native task"}
+	spec := agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "native-adoption-span", Title: "Native task"}
 	childID, err := parent.EnsureChildAgent(spec)
 	require.NoError(t, err)
 	require.NoError(t, parent.PersistChildPrompt(childID, "Inspect the native task."))
@@ -2150,7 +2302,9 @@ func TestEnsureChildAgentAdoptsTheRealKeyAfterSpanOnlyCreation(t *testing.T) {
 	rejected, err := parent.EnsureChildAgent(wrong)
 	assert.ErrorIs(t, err, agent.ErrChildIdentityRefused)
 	assert.Empty(t, rejected)
-	otherParentID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "other-parent-span", ProviderChildKey: "other-parent-key"})
+	otherParentID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "other-parent-span", ProviderChildKey: "other-parent-key"})
 	require.NoError(t, err)
 	otherParent := parent.ChildSink(otherParentID)
 	beforeRefusal, err := svc.Queries.GetAgentByID(t.Context(), childID)

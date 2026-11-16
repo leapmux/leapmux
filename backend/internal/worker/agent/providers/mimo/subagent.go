@@ -314,6 +314,8 @@ func (a *Agent) ensureActorRecordTranscript(actor *mimoActor, sessionID string) 
 	if created {
 		var err error
 		childID, err = a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+
 			SpawnSpanID: spawnSpan, ProviderChildKey: rowKey, AgentSessionID: sessionID, Title: title,
 		})
 		if err != nil {
@@ -675,8 +677,8 @@ func (a *Agent) actorForRowKeyLocked(rowKey string) *mimoActor {
 // always refuses it. A subagent that runs refuses with ErrAgentBusy, so the queue
 // holds the message and offers it as a steer. A subagent that runs no turn
 // refuses with errSubagentIdle (see sendChildInput).
-func (a *Agent) SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendChildInput(childKey, content, attachments, false)
+func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.ChildInputResult, error) {
+	return agent.ChildInputResult{StartsTurn: true}, a.sendChildInput(childKey, input.Content, input.Attachments, false)
 }
 
 // SteerChildInput adds a message to a subagent's running turn. The actor reads

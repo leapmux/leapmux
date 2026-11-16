@@ -8,7 +8,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
@@ -23,7 +22,7 @@ func goalSnapshot(status string) map[string]any {
 func TestKimiGoalUpdated(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": goalSnapshot("active")})
+	rig.publishGoalMarker(t, map[string]any{"snapshot": goalSnapshot("active")})
 
 	goal, ok := rig.sink.LastGoal()
 	require.True(t, ok)
@@ -43,7 +42,7 @@ func TestKimiGoalUpdated(t *testing.T) {
 	assert.False(t, goal.CreatedAt.IsZero())
 	created := goal.CreatedAt
 
-	rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": goalSnapshot("paused")})
+	rig.publishGoalMarker(t, map[string]any{"snapshot": goalSnapshot("paused")})
 	goal, _ = rig.sink.LastGoal()
 	assert.Equal(t, agent.GoalStatusPaused, goal.Status)
 	assert.Equal(t, created, goal.CreatedAt, "the same goal keeps the time the worker first saw it")
@@ -70,7 +69,7 @@ func TestKimiGoalDetailStatesTheNativeReason(t *testing.T) {
 			rig := newKimiOutputRig(t)
 			snapshot := goalSnapshot("blocked")
 			snapshot["terminalReason"] = tc.endReason
-			rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": snapshot, "change": tc.change})
+			rig.publishGoalMarker(t, map[string]any{"snapshot": snapshot, "change": tc.change})
 			goal, ok := rig.sink.LastGoal()
 			require.True(t, ok, "optional diagnostic fields must not discard a valid goal snapshot")
 			assert.Equal(t, agent.GoalStatusBlocked, goal.Status)
@@ -85,18 +84,18 @@ func TestKimiGoalRemoval(t *testing.T) {
 	t.Run("a goal that completed leaves quietly", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
-		rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": goalSnapshot("complete")})
+		rig.publishGoalMarker(t, map[string]any{"snapshot": goalSnapshot("complete")})
 		goal, _ := rig.sink.LastGoal()
 		assert.Equal(t, agent.GoalStatusDone, goal.Status)
-		rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": nil})
+		rig.publishGoalMarker(t, map[string]any{"snapshot": nil})
 		assert.Equal(t, []bool{true}, rig.sink.GoalClearSnapshots(), "the completion is already in the transcript")
 	})
 
 	t.Run("a cancelled goal leaves with a row", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
-		rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": goalSnapshot("active")})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": nil})
+		rig.publishGoalMarker(t, map[string]any{"snapshot": goalSnapshot("active")})
+		rig.publishGoalMarker(t, map[string]any{"snapshot": nil})
 		assert.Equal(t, []bool{false}, rig.sink.GoalClearSnapshots())
 	})
 
@@ -106,17 +105,16 @@ func TestKimiGoalRemoval(t *testing.T) {
 	t.Run("a removal clears the stored goal even when the provider knew of none", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
-		rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": nil})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": map[string]any{"objective": "  "}})
+		rig.publishGoalMarker(t, map[string]any{"snapshot": nil})
+		rig.publishGoalMarker(t, map[string]any{"snapshot": map[string]any{"objective": "  "}})
 		assert.Equal(t, []bool{false, false}, rig.sink.GoalClearSnapshots())
 	})
 
 	t.Run("a subagent's goal is not the session's", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
-		rig.startTurn(t, 0, contracts.KimiOriginUser)
-		spawnAgent(t, rig, "agent-0", "call_child", nil)
-		rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "agentId": "agent-0", "snapshot": goalSnapshot("active")})
+		adoptNativeKimiChild(t, rig.agent, "agent-0")
+		rig.publishGoalMarker(t, map[string]any{"agentId": "agent-0", "snapshot": goalSnapshot("active")})
 		_, ok := rig.sink.LastGoal()
 		assert.False(t, ok)
 	})
@@ -176,7 +174,7 @@ func TestKimiGoalActions(t *testing.T) {
 	t.Run("a new objective replaces the running goal", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": goalSnapshot("active")})
+		rig.publishGoalMarker(t, map[string]any{"snapshot": goalSnapshot("active")})
 		before := len(profileBodies(t, rig))
 		_, err := rig.agent.PerformGoalAction(agent.GoalActionSet, "Another goal")
 		require.NoError(t, err)
@@ -220,13 +218,13 @@ func TestKimiGoalActions(t *testing.T) {
 			assert.Equal(t, control, body.Config[kimiConfigGoalControl])
 		}
 		assert.Empty(t, rig.fake.requestsTo("POST "+kimiSessionPath(rig.sessionID(), kimiActionAbort)), "an idle goal needs no abort")
-		assert.Empty(t, rig.sink.GoalClearSnapshots(), "a cancel that the server took is reported by its goal.updated, not by the action")
+		assert.Equal(t, []bool{true}, rig.sink.GoalClearSnapshots(), "the initial snapshot clears once; a cancel waits for the native goal update")
 	})
 
 	t.Run("a new objective is not created when the running goal cannot be cancelled", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": goalSnapshot("active")})
+		rig.publishGoalMarker(t, map[string]any{"snapshot": goalSnapshot("active")})
 		before := len(profileBodies(t, rig))
 		rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/profile"), fakeKapReply{Code: 50000, Msg: "goal store locked"})
 		_, err := rig.agent.PerformGoalAction(agent.GoalActionSet, "Another goal")
@@ -239,7 +237,7 @@ func TestKimiGoalActions(t *testing.T) {
 	t.Run("a pause succeeds when the abort of the running turn fails", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": "system_trigger"}})
+		rig.transcriptOps(t, 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"other","payload":{"kind":"system_trigger"}}}}`)
 		rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), kimiActionAbort), fakeKapReply{Code: 50000, Msg: "no turn"})
 		_, err := rig.agent.PerformGoalAction(agent.GoalActionPause, "")
 		require.NoError(t, err, "the goal is paused, which is what the reader asked for")
@@ -269,7 +267,7 @@ func TestKimiGoalActions(t *testing.T) {
 	t.Run("a pause stops the running turn", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": "system_trigger"}})
+		rig.transcriptOps(t, 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"other","payload":{"kind":"system_trigger"}}}}`)
 		_, err := rig.agent.PerformGoalAction(agent.GoalActionPause, "")
 		require.NoError(t, err)
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiSessionPath(rig.sessionID(), kimiActionAbort)), 1)
@@ -281,18 +279,18 @@ func TestKimiGoalActions(t *testing.T) {
 	t.Run("a clear of a goal the server already removed succeeds", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": goalSnapshot("active")})
+		rig.publishGoalMarker(t, map[string]any{"snapshot": goalSnapshot("active")})
 		rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/profile"), fakeKapReply{Code: kimiCodeGoalNotFound, Msg: "No current goal"})
 		outcome, err := rig.agent.PerformGoalAction(agent.GoalActionClear, "")
 		require.NoError(t, err, "the session has no goal, which is the state the reader asked for")
 		assert.Empty(t, outcome.QueuedInput)
-		assert.Equal(t, []bool{false}, rig.sink.GoalClearSnapshots(), "LeapMux's copy of the goal goes too")
+		assert.Equal(t, []bool{true, false}, rig.sink.GoalClearSnapshots(), "LeapMux clears the initial snapshot and then its copy of the removed goal")
 	})
 
 	t.Run("a new objective replaces a goal the server already removed", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": goalSnapshot("active")})
+		rig.publishGoalMarker(t, map[string]any{"snapshot": goalSnapshot("active")})
 		before := len(profileBodies(t, rig))
 		rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/profile"),
 			fakeKapReply{Code: kimiCodeGoalNotFound, Msg: "No current goal"}, fakeKapReply{})
@@ -326,6 +324,7 @@ func TestKimiReadsTheGoalOfAResumedSession(t *testing.T) {
 	fake, server := newFakeKap(t)
 	fake.store("session_stored", fakeKapSession{Model: "kimi-k2", Permission: "manual", Goal: goalSnapshot("paused")})
 	rig := connectKimiTestRig(t, fake, server.URL, agent.Options{ResumeSessionID: "session_stored"})
+	waitFor(t, func() bool { _, ok := rig.sink.LastGoal(); return ok }, "the resumed subscription restores the goal")
 	goal, ok := rig.sink.LastGoal()
 	require.True(t, ok)
 	assert.True(t, goal.Snapshot, "a resume restates the goal; it is not a change")
@@ -337,7 +336,7 @@ func TestKimiReadsTheGoalOfAResumedSession(t *testing.T) {
 func TestKimiGoalWithAbsentFields(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": map[string]any{
+	rig.publishGoalMarker(t, map[string]any{"snapshot": map[string]any{
 		"goalId": "goal_1", "objective": "Ship the release", "status": "active",
 	}})
 	goal, ok := rig.sink.LastGoal()
@@ -347,7 +346,7 @@ func TestKimiGoalWithAbsentFields(t *testing.T) {
 	assert.Nil(t, goal.TokenBudget)
 	assert.Nil(t, goal.TimeUsedSeconds)
 
-	rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": map[string]any{
+	rig.publishGoalMarker(t, map[string]any{"snapshot": map[string]any{
 		"goalId": "goal_1", "objective": "Ship the release", "status": "active", "budget": map[string]any{}, "wallClockMs": 999,
 	}})
 	goal, _ = rig.sink.LastGoal()
@@ -364,6 +363,7 @@ func TestKimiReadGoalOfAResumedSession(t *testing.T) {
 		fake, server := newFakeKap(t)
 		fake.store("session_stored", fakeKapSession{Model: "kimi-k2", Permission: "manual"})
 		rig := connectKimiTestRig(t, fake, server.URL, agent.Options{ResumeSessionID: "session_stored"})
+		waitFor(t, func() bool { return len(rig.sink.GoalClearSnapshots()) > 0 }, "the resumed subscription clears an absent goal")
 		assert.Equal(t, []bool{true}, rig.sink.GoalClearSnapshots(),
 			"the worker's store can hold a goal from a previous process, and a restatement writes no row")
 		_, ok := rig.sink.LastGoal()
@@ -382,15 +382,18 @@ func TestKimiReadGoalOfAResumedSession(t *testing.T) {
 		assert.Empty(t, rig.sink.GoalClearSnapshots())
 	})
 
-	t.Run("a goal read that fails changes nothing", func(t *testing.T) {
+	t.Run("a native goal restores without the REST goal route", func(t *testing.T) {
 		t.Parallel()
 		fake, server := newFakeKap(t)
 		fake.store("session_stored", fakeKapSession{Model: "kimi-k2", Permission: "manual", Goal: goalSnapshot("active")})
 		fake.reply("GET "+kimiSessionPath("session_stored", "/goal"), fakeKapReply{HTTPStatus: 500, Code: 50000, Msg: "goal store down"})
 		rig := connectKimiTestRig(t, fake, server.URL, agent.Options{ResumeSessionID: "session_stored"})
-		_, ok := rig.sink.LastGoal()
-		assert.False(t, ok)
-		assert.Empty(t, rig.sink.GoalClearSnapshots(), "a read that failed proves nothing about the goal")
+		goal, ok := rig.sink.LastGoal()
+		require.True(t, ok)
+		assert.Equal(t, agent.GoalStatusActive, goal.Status)
+		assert.True(t, goal.Snapshot)
+		assert.Empty(t, fake.requestsTo("GET "+kimiSessionPath("session_stored", "/goal")))
+		assert.Empty(t, rig.sink.GoalClearSnapshots())
 		assert.Equal(t, "session_stored", rig.sessionID(), "the resume itself succeeds")
 	})
 }
@@ -411,7 +414,7 @@ func TestKimiGoalCreatedAtFollowsTheGoalID(t *testing.T) {
 		t.Helper()
 		snapshot := goalSnapshot(status)
 		snapshot["goalId"] = goalID
-		rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": snapshot})
+		rig.publishGoalMarker(t, map[string]any{"snapshot": snapshot})
 		goal, ok := rig.sink.LastGoal()
 		require.True(t, ok)
 		return goal
@@ -423,7 +426,60 @@ func TestKimiGoalCreatedAtFollowsTheGoalID(t *testing.T) {
 	clock.Advance(time.Minute).MustWait(ctx)
 	assert.Equal(t, first.Add(2*time.Minute), report("goal_2", "active").CreatedAt, "a new goal id takes a new stamp")
 
-	rig.feed(t, map[string]any{"type": contracts.KimiEventGoalUpdated, "snapshot": nil})
+	rig.publishGoalMarker(t, map[string]any{"snapshot": nil})
 	clock.Advance(time.Minute).MustWait(ctx)
 	assert.Equal(t, first.Add(3*time.Minute), report("goal_2", "active").CreatedAt, "a goal that returns after a removal takes a new stamp")
+}
+
+func TestKimiNativeGoalFrameReportsZeroUsageAndClears(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	send := func(raw string) { t.Helper(); rig.agent.HandleOutput([]byte(raw)) }
+	send(`{"type":"goal","session_id":"session_1","agent_id":"main","goal":{"objective":"Ship the release","status":"active","turns_used":0,"tokens_used":0,"wall_clock_ms":0}}`)
+	goal, ok := rig.sink.LastGoal()
+	require.True(t, ok)
+	assert.True(t, goal.Snapshot)
+	assert.Empty(t, goal.NativeID)
+	assert.Equal(t, "Ship the release", goal.Objective)
+	assert.Equal(t, agent.GoalStatusActive, goal.Status)
+	require.NotNil(t, goal.Iterations)
+	assert.Zero(t, *goal.Iterations)
+	require.NotNil(t, goal.TokensUsed)
+	assert.Zero(t, *goal.TokensUsed)
+	require.NotNil(t, goal.TimeUsedSeconds)
+	assert.Zero(t, *goal.TimeUsedSeconds)
+	assert.Nil(t, goal.TokenBudget)
+	created := goal.CreatedAt
+	send(`{"type":"goal","session_id":"session_1","agent_id":"main","goal":{"objective":"Ship the release","status":"paused","turns_used":2,"tokens_used":5,"wall_clock_ms":1500.5}}`)
+	goal, _ = rig.sink.LastGoal()
+	assert.False(t, goal.Snapshot)
+	assert.Equal(t, agent.GoalStatusPaused, goal.Status)
+	assert.Equal(t, created, goal.CreatedAt)
+	assert.EqualValues(t, 1, *goal.TimeUsedSeconds)
+	send(`{"type":"goal","session_id":"session_1","agent_id":"main"}`)
+	assert.Len(t, rig.sink.GoalClearSnapshots(), 1)
+}
+
+func TestKimiNativeGoalRejectsInvalidAndForeignFrames(t *testing.T) {
+	t.Parallel()
+	for _, raw := range []string{
+		`{"type":"goal","session_id":"foreign","agent_id":"main"}`,
+		`{"type":"goal","session_id":"session_1","agent_id":"child"}`,
+		`{"type":"goal","session_id":"session_1","agent_id":"main","goal":null}`,
+		`{"type":"goal","session_id":"session_1","agent_id":"main","goal":{"objective":"","status":"active","turns_used":0,"tokens_used":0,"wall_clock_ms":0}}`,
+		`{"type":"goal","session_id":"session_1","agent_id":"main","goal":{"objective":"goal","status":"unknown","turns_used":0,"tokens_used":0,"wall_clock_ms":0}}`,
+		`{"type":"goal","session_id":"session_1","agent_id":"main","goal":{"objective":"goal","status":"active","tokens_used":0,"wall_clock_ms":0}}`,
+		`{"type":"goal","session_id":"session_1","agent_id":"main","goal":{"objective":"goal","status":"active","turns_used":-1,"tokens_used":0,"wall_clock_ms":0}}`,
+		`{"type":"goal","session_id":"session_1","agent_id":"main","goal":{"objective":"goal","status":"active","turns_used":0,"tokens_used":-1,"wall_clock_ms":0}}`,
+		`{"type":"goal","session_id":"session_1","agent_id":"main","goal":{"objective":"goal","status":"active","turns_used":0,"tokens_used":0,"wall_clock_ms":-1}}`,
+		`{"type":"goal","session_id":"session_1","agent_id":"main","goal":{"objective":"goal","status":"active","turns_used":0,"tokens_used":0,"wall_clock_ms":1e100}}`,
+	} {
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			rig := newKimiOutputRig(t)
+			rig.agent.HandleOutput([]byte(raw))
+			assert.Empty(t, rig.sink.Goals())
+			assert.Empty(t, rig.sink.GoalClearSnapshots())
+		})
+	}
 }

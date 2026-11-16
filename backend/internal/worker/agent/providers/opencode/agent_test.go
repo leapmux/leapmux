@@ -15,40 +15,40 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
 )
 
-func newOpenCodeAgentForRPC(t *testing.T) (*Agent, func() []agenttest.RecordedRequest) {
+func newOpenCodeAgentForRPC(t *testing.T) (*familyTestAgent, func() []agenttest.RecordedRequest) {
 	return acptest.NewAgentForRPC(t,
-		func() *Agent {
-			a := &Agent{}
+		func() *familyTestAgent {
+			a := &familyTestAgent{}
 			a.HooksForTest().ModeChannel = acp.ModeChannelPrimaryAgent
 			a.HooksForTest().PrimaryAgentHiddenFilter = IsHiddenPrimaryAgent
 			return a
 		},
-		func(a *Agent) *acp.Base { return &a.Base },
+		func(a *familyTestAgent) *acp.Base { return &a.Base },
 	)
 }
 
-func newOpenCodeAgentForRPCWithResponder(t *testing.T, respond func(method string) agenttest.RPCReply) (*Agent, func() []agenttest.RecordedRequest) {
+func newOpenCodeAgentForRPCWithResponder(t *testing.T, respond func(method string) agenttest.RPCReply) (*familyTestAgent, func() []agenttest.RecordedRequest) {
 	return acptest.NewAgentForRPCWithResponder(t,
-		func() *Agent {
-			a := &Agent{}
+		func() *familyTestAgent {
+			a := &familyTestAgent{}
 			a.HooksForTest().ModeChannel = acp.ModeChannelPrimaryAgent
 			a.HooksForTest().PrimaryAgentHiddenFilter = IsHiddenPrimaryAgent
 			return a
 		},
-		func(a *Agent) *acp.Base { return &a.Base },
+		func(a *familyTestAgent) *acp.Base { return &a.Base },
 		respond,
 	)
 }
 
-func newOpenCodeAgentForRPCWithRequestResponder(t *testing.T, respond func(req agenttest.RecordedRequest) agenttest.RPCReply) (*Agent, func() []agenttest.RecordedRequest) {
+func newOpenCodeAgentForRPCWithRequestResponder(t *testing.T, respond func(req agenttest.RecordedRequest) agenttest.RPCReply) (*familyTestAgent, func() []agenttest.RecordedRequest) {
 	return acptest.NewAgentForRPCWithRequestResponder(t,
-		func() *Agent {
-			a := &Agent{}
+		func() *familyTestAgent {
+			a := &familyTestAgent{}
 			a.HooksForTest().ModeChannel = acp.ModeChannelPrimaryAgent
 			a.HooksForTest().PrimaryAgentHiddenFilter = IsHiddenPrimaryAgent
 			return a
 		},
-		func(a *Agent) *acp.Base { return &a.Base },
+		func(a *familyTestAgent) *acp.Base { return &a.Base },
 		respond,
 	)
 }
@@ -80,7 +80,7 @@ func TestBuildSessionRequest_ResumeSession(t *testing.T) {
 func TestOpenCodeConfigurePrimaryAgentsUsesSessionCurrentMode(t *testing.T) {
 	t.Parallel()
 
-	agent := &Agent{}
+	agent := &familyTestAgent{}
 	agent.HooksForTest().PrimaryAgentHiddenFilter = IsHiddenPrimaryAgent
 	err := agent.ConfigurePrimaryAgentsForTest([]acp.ModeInfo{
 		{ID: PrimaryAgentBuild, Name: PrimaryAgentBuild},
@@ -178,7 +178,7 @@ func TestOpenCodeClearContextReappliesModelAndPrimaryAgent(t *testing.T) {
 func TestOpenCodeCurrentSettingsExposesPrimaryAgent(t *testing.T) {
 	t.Parallel()
 
-	a := &Agent{}
+	a := &familyTestAgent{}
 	a.HooksForTest().ModeChannel = acp.ModeChannelPrimaryAgent
 	a.SetModelForTest("openai/gpt-5")
 	a.SetAvailableModelsForTest([]*agent.ModelInfo{{Id: "openai/gpt-5", DisplayName: "GPT-5"}})
@@ -194,7 +194,7 @@ func TestOpenCodeAvailablePrimaryAgentGroupFallsBack(t *testing.T) {
 	// configure sets the channel and acp.Start seeds the static fallback list from the provider's
 	// registration; OptionGroups serves that fallback before the session reports a primary-agent
 	// catalog. This test wires the Base directly, so it sets secondaryFallback itself.
-	ag := &Agent{}
+	ag := &familyTestAgent{}
 	ag.HooksForTest().ModeChannel = acp.ModeChannelPrimaryAgent
 	ag.SetSecondaryFallbackForTest(fallbackOpenCodePrimaryAgents())
 	groups := ag.OptionGroups()
@@ -379,3 +379,6 @@ func TestOpenCodeExplicitNoneEffortNotRaised(t *testing.T) {
 		"exactly the explicit write -- no override write chasing it back up")
 	assert.Equal(t, "none", openCodeEffortWrites(requests())[0].Params["value"])
 }
+
+// familyTestAgent exercises the ACP family implementation that Kilo uses.
+type familyTestAgent struct{ FamilyBase }

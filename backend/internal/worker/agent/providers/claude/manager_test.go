@@ -180,7 +180,7 @@ func TestManager_SendChildInputWaitsForRestartToFinish(t *testing.T) {
 
 	sendErr := make(chan error, 1)
 	go func() {
-		sendErr <- m.SendChildInput(agentID, "child-key", "sent while restarting", nil)
+		sendErr <- agenttest.SendChildInputToOwner(m, agentID, "child-key", agent.ChildInput{Content: "sent while restarting"})
 	}()
 
 	// Nothing can deliver this yet. A send that resolves here resolved against

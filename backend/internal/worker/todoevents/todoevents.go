@@ -1,9 +1,9 @@
 // Package todoevents is the provider-neutral to-do list model: an Item,
 // its Status, and the Event variants that mutate a list of them.
 //
-// It holds no provider's wire shape. Each provider's plugin reads its
-// own messages and returns an Event from them
-// (agent.Provider.ExtractTodoEvent); the worker owns the canonical
+// It holds no provider's wire shape. Providers read their native data into
+// these items and events. Message extractors use agent.Provider.ExtractTodoEvent;
+// native state feeds use agent.TodoServices. The worker owns the canonical
 // state in agent_todos and broadcasts the post-mutation snapshot to
 // clients via the todos_changed event. The frontend does not reduce these
 // events locally.

@@ -131,20 +131,35 @@ type systemInitMessage struct {
 
 // resultMessage is the part of a result line the worker reads.
 type resultMessage struct {
-	RequestID  json.RawMessage                `json:"_requestId"`
-	Result     json.RawMessage                `json:"result"`
-	IsError    bool                           `json:"is_error"`
-	Errors     []string                       `json:"errors"`
+	RequestID json.RawMessage `json:"_requestId"`
+	Result    json.RawMessage `json:"result"`
+	IsError   bool            `json:"is_error"`
+	Errors    []string        `json:"errors"`
+	codebuddyUsageSnapshot
+	// AbortReason is set by CodeBuddy 2.158.0 and later on the `result` of an
+	// aborted turn, and on no other `result`.
+	AbortReason string `json:"terminal_reason"`
+}
+
+// codebuddyUsageSnapshot is the usage shared by result and system frames.
+type codebuddyUsageSnapshot struct {
 	SessionID  string                         `json:"session_id"`
 	Usage      *codebuddyUsage                `json:"usage"`
 	ModelUsage map[string]codebuddyModelUsage `json:"modelUsage"`
 	Meta       struct {
 		ContextUsed *int64 `json:"codebuddy.ai/contextUsed"`
+		TurnUsage   *struct {
+			Version int    `json:"version"`
+			Scope   string `json:"scope"`
+			Total   struct {
+				Usage *codebuddyUsage `json:"usage"`
+			} `json:"total"`
+		} `json:"codebuddy.ai/turnUsage"`
 	} `json:"_meta"`
-	// AbortReason is set by CodeBuddy 2.158.0 and later on the `result` of an
-	// aborted turn, and on no other `result`.
-	AbortReason string `json:"terminal_reason"`
 }
+
+// The native usage update contains state for the Worker.
+const codebuddySubtypeUsageUpdate = "usage_update"
 
 // The `terminal_reason` values that state a turn ended in an abort, as CodeBuddy
 // spells them. CodeBuddy 2.160.0 writes the first when a stop arrives while the

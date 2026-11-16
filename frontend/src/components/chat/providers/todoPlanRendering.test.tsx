@@ -144,9 +144,9 @@ function renderCodexTurnPlan(parsed: Record<string, unknown>, context?: MessageC
   return render(() => result)
 }
 
-function renderOpenCodePlan(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
+function renderKiloPlan(toolUse: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_use' }
-  const result = renderMessageContent(toolUse, context, category, AgentProvider.OPENCODE)
+  const result = renderMessageContent(toolUse, context, category, AgentProvider.KILO)
   return render(() => result)
 }
 
@@ -472,9 +472,9 @@ describe('claude classifies Task* tool_result messages', () => {
   })
 })
 
-describe('opencode plan renders via the shared TodoListBody', () => {
+describe('kilo plan renders via the shared TodoListBody', () => {
   it('renders the entries as todos', () => {
-    const { container } = renderOpenCodePlan({
+    const { container } = renderKiloPlan({
       sessionUpdate: 'plan',
       entries: [
         { rowKey: 'opencode entry one', content: 'opencode entry one', status: 'pending' },
@@ -487,7 +487,7 @@ describe('opencode plan renders via the shared TodoListBody', () => {
   })
 
   it('renders the cleared placeholder for an empty entries list', () => {
-    const { container } = renderOpenCodePlan({
+    const { container } = renderKiloPlan({
       sessionUpdate: 'plan',
       entries: [],
     })

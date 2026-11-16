@@ -2,7 +2,7 @@ import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { Tab } from '~/stores/tab.types'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTabBusyProbe } from '~/components/shell/tabBusyProbe'
-import { AgentActivityState } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentActivityState, BackgroundTaskRole } from '~/generated/proto/leapmux/v1/agent_pb'
 import { TabType } from '~/generated/proto/leapmux/v1/common_pb'
 
 const mockInspect = vi.fn()
@@ -37,6 +37,7 @@ function terminalTab(id: string, workerId = 'w-1'): Tab {
 
 function task(overrides: Partial<BackgroundTaskItem> = {}): BackgroundTaskItem {
   return {
+    role: overrides.role ?? BackgroundTaskRole.TASK_OUTCOME,
     rowKey: 'r1',
     kind: 'subagent',
     title: 'Research the API',
@@ -91,8 +92,8 @@ describe('createTabBusyProbe', () => {
       const reason = await probe.probe(agentTab('a1'))
 
       expect(reason).toEqual({
-        kind: 'agent-turn',
-        activeTasks: [
+        kind: 'agent-work',
+        activeRows: [
           task(),
         ],
       })
@@ -201,7 +202,7 @@ describe('createTabBusyProbe', () => {
       const { probe } = makeProbe()
       agentIs('a1', AgentActivityState.WORKING)
 
-      expect(await probe.probe(agentTab('a1'))).toEqual({ kind: 'agent-turn', activeTasks: [] })
+      expect(await probe.probe(agentTab('a1'))).toEqual({ kind: 'agent-work', activeRows: [] })
     })
 
     it('warns about an agent waiting on a permission prompt', async () => {
@@ -214,8 +215,8 @@ describe('createTabBusyProbe', () => {
       agentIs('a1', AgentActivityState.WAITING_FOR_USER)
 
       expect(await probe.probe(agentTab('a1'))).toEqual({
-        kind: 'agent-turn',
-        activeTasks: [
+        kind: 'agent-work',
+        activeRows: [
           task(),
         ],
       })
@@ -338,7 +339,7 @@ describe('createTabBusyProbe', () => {
 
       expect(busy.map(b => b.tab.id)).toEqual(['a1', 't1'])
       expect(busy[0]?.title).toBe('Refactor')
-      expect(busy[0]?.reason.kind).toBe('agent-turn')
+      expect(busy[0]?.reason.kind).toBe('agent-work')
       expect(busy[1]?.reason.kind).toBe('terminal-processes')
     })
 
@@ -384,6 +385,20 @@ describe('createTabBusyProbe', () => {
 
       expect(busy).toEqual([])
       expect(mockInspect).not.toHaveBeenCalled()
+    })
+  })
+  it('reports working child activity without claiming a root turn or another task', async () => {
+    const marker = task({
+      role: BackgroundTaskRole.CHILD_ACTIVITY,
+      rowKey: 'activity',
+      childAgentId: 'child',
+      title: 'Child session',
+    })
+    const { probe } = makeProbe([marker])
+    agentIs('a1', AgentActivityState.WORKING)
+    expect(await probe.probe(agentTab('a1'))).toMatchObject({
+      kind: 'agent-work',
+      activeRows: [marker],
     })
   })
 })

@@ -44,6 +44,69 @@ function setup(overrides?: Partial<ControlResponseHandlingProps>) {
 }
 
 describe('questions with selected answers only', () => {
+  it.each([
+    {
+      label: 'a fresh request',
+      draft: undefined,
+      expected: ['0'],
+    },
+    { label: 'an explicit empty draft', draft: [], expected: [] },
+    {
+      label: 'a different saved selection',
+      draft: ['1'],
+      expected: ['1'],
+    },
+  ])('restores native choice defaults for $label', async ({ label, draft, expected }) => {
+    const request: ControlRequest = {
+      agentId: 'omp-default-agent',
+      requestId: `omp-default-${label}`,
+      claimToken: 'omp-default-token',
+      payload: {
+        type: 'leapmux_ask',
+        id: `omp-default-${label}`,
+        questions: [
+          {
+            id: 'style',
+            question: 'Choose a style',
+            multi: true,
+            allowEmpty: true,
+            allowCustomText: false,
+            initialSelections: ['0'],
+            options: [
+              { value: '0', label: 'Alpha' },
+              { value: '1', label: 'Beta' },
+            ],
+          },
+        ],
+      },
+    }
+    if (draft !== undefined) {
+      localStorageStore(`${PREFIX_CONTROL_STATE}${request.agentId}:${request.requestId}:${request.claimToken}`, {
+        selections: { 0: draft },
+      })
+      await flushStorageWrites()
+    }
+    const state = createControlAnswerState()
+    const { dispose } = createRoot((dispose) => {
+      useControlResponseHandling({
+        agentId: request.agentId!,
+        agent: { agentProvider: AgentProvider.OH_MY_PI },
+        controlRequests: [request],
+        questionsOpen: true,
+        onSendMessage: vi.fn(),
+      }, state, () => undefined, vi.fn())
+      return { dispose }
+    })
+    try {
+      await vi.waitFor(() => {
+        expect(state.ready()).toBe(true)
+        expect(state.selections()).toEqual({ 0: expected })
+      })
+    }
+    finally {
+      dispose()
+    }
+  })
   it('restores a selected answer without hidden custom text', async () => {
     const request: ControlRequest = {
       agentId: 'test-agent',
@@ -1244,25 +1307,37 @@ describe('handleControlSend', () => {
         agent: { agentProvider: AgentProvider.OPENCODE },
         controlRequests: [
           makeControlRequest('que-1', 'test-agent', {
-            type: 'question.asked',
-            properties: {
-              questions: [
-                {
-                  header: 'Task',
-                  question: 'Pick a task',
-                  options: [
-                    { label: 'Build' },
-                  ],
-                },
-                {
-                  header: 'Env',
-                  question: 'Pick an env',
-                  options: [
-                    { label: 'Dev' },
-                  ],
-                  custom: true,
-                },
-              ],
+            type: 'form.created',
+            data: {
+              form: {
+                id: 'frm_1',
+                sessionID: 'ses_1',
+                metadata: { kind: 'question' },
+                fields: [
+                  {
+                    key: 'q0',
+                    type: 'string',
+                    title: 'Task',
+                    description: 'Pick a task',
+                    required: true,
+                    custom: true,
+                    options: [
+                      { value: 'Build', label: 'Build' },
+                    ],
+                  },
+                  {
+                    key: 'q1',
+                    type: 'string',
+                    title: 'Env',
+                    description: 'Pick an env',
+                    required: true,
+                    custom: true,
+                    options: [
+                      { value: 'Dev', label: 'Dev' },
+                    ],
+                  },
+                ],
+              },
             },
           }),
         ],
@@ -1271,6 +1346,7 @@ describe('handleControlSend', () => {
       }
       const result = useControlResponseHandling(props, answerState, () => undefined, vi.fn())
 
+      expect(result.editorPurpose()).toBe('answer')
       result.handleControlSend('')
 
       expect(onControlResponse).toHaveBeenCalledOnce()
@@ -1282,10 +1358,7 @@ describe('handleControlSend', () => {
         jsonrpc: '2.0',
         id: 'que-1',
         result: {
-          answers: [
-            ['Build'],
-            ['Dev'],
-          ],
+          answer: { q0: 'Build', q1: 'Dev' },
         },
       })
       dispose()
@@ -1305,24 +1378,37 @@ describe('handleControlSend', () => {
         agent: { agentProvider: AgentProvider.OPENCODE },
         controlRequests: [
           makeControlRequest('que-1', 'test-agent', {
-            type: 'question.asked',
-            properties: {
-              questions: [
-                {
-                  header: 'Task',
-                  question: 'Pick a task',
-                  options: [
-                    { label: 'Build' },
-                  ],
-                },
-                {
-                  header: 'Env',
-                  question: 'Pick an env',
-                  options: [
-                    { label: 'Dev' },
-                  ],
-                },
-              ],
+            type: 'form.created',
+            data: {
+              form: {
+                id: 'frm_1',
+                sessionID: 'ses_1',
+                metadata: { kind: 'question' },
+                fields: [
+                  {
+                    key: 'q0',
+                    type: 'string',
+                    title: 'Task',
+                    description: 'Pick a task',
+                    required: true,
+                    custom: true,
+                    options: [
+                      { value: 'Build', label: 'Build' },
+                    ],
+                  },
+                  {
+                    key: 'q1',
+                    type: 'string',
+                    title: 'Env',
+                    description: 'Pick an env',
+                    required: true,
+                    custom: true,
+                    options: [
+                      { value: 'Dev', label: 'Dev' },
+                    ],
+                  },
+                ],
+              },
             },
           }),
         ],
@@ -1331,6 +1417,7 @@ describe('handleControlSend', () => {
       }
       const result = useControlResponseHandling(props, answerState, () => editorContentRef, vi.fn())
 
+      expect(result.editorPurpose()).toBe('answer')
       const submitted = result.handleControlSend('Build')
 
       expect(submitted).toBe(false)

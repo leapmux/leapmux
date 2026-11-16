@@ -209,11 +209,26 @@ export interface MockModelRateLimits {
 }
 
 /** One model answer. A step carries output or an error, never both. */
+/** The scripted disposition of one native tool call. */
+export interface MockModelToolSafetyDecision {
+  decision: 'allow' | 'deny'
+  reason?: string
+}
+
+/** Script a native tool safety check separately from model generation. */
+export interface MockModelToolSafetyCheck {
+  decisions?: Record<string, MockModelToolSafetyDecision>
+  /** Hold the verdict after the model has delivered its tool calls. */
+  gate?: string
+}
+
 export interface MockModelStep {
   /** The thinking the model reports before its answer. */
   reasoning?: string
   text?: string
   toolCalls?: MockModelToolCall[]
+  /** Server safety verdicts for Anthropic requests that ask for dangerous_tool_use checks. */
+  toolSafety?: MockModelToolSafetyCheck
   error?: MockModelError
   /** Stop the answer with this native reason when the protocol can state it. */
   stopReason?: 'refusal' | 'max_tokens'
@@ -306,6 +321,8 @@ export interface MockModelMatcher {
   system?: MockModelPattern
   /** Tested against the text of the last user turn. */
   user?: MockModelPattern
+  /** Match one user prompt anywhere in the history, excluding assistant tool arguments. */
+  userHistory?: MockModelPattern
   /** Tested against the complete request body as JSON. */
   body?: MockModelPattern
   /** Match only the final message of the active generic model API. */
@@ -371,6 +388,8 @@ export interface MockModelRequestRecord {
   /** Set when the queue was exhausted and the fallback answered. */
   fallback?: true
   body: unknown
+  /** Calls from completed earlier scripted responses, for exact native receipt correlation. */
+  scriptedToolCalls?: MockModelToolCall[]
   /** Completed native service history before this request. The native body stays unchanged. */
   serverContext?: MockModelServerContext
   /** The actual decoded native Run fields beside the unchanged request body. */
@@ -380,7 +399,7 @@ export interface MockModelRequestRecord {
   /** The actual allowlisted beta header. Never retain arbitrary headers or credentials. */
   requestHeaders?: { 'anthropic-beta': string }
   /** The actual completed response. Cancelled responses produce no receipt. */
-  response?: { status: number, headers: Record<string, string>, serviceError?: { code: string, message: string } }
+  response?: { status: number, headers: Record<string, string>, toolCalls?: readonly MockModelToolCall[], serviceError?: { code: string, message: string } }
   serviceResponse?: { kind: 'amp-error-set', code: string, message: string }
 }
 
@@ -551,7 +570,12 @@ function parseMatcher(value: unknown, ruleName: string): MockModelMatcher {
       throw new Error(`Model rule ${ruleName} protocol must be one of ${MOCK_MODEL_PROTOCOLS.join(', ')}`)
     matcher.protocol = value.protocol as MockModelProtocol
   }
-  for (const field of ['system', 'user', 'body'] as const) {
+  for (const field of [
+    'system',
+    'user',
+    'userHistory',
+    'body',
+  ] as const) {
     const declared = value[field]
     if (declared === undefined)
       continue
@@ -645,6 +669,9 @@ function parseStep(value: unknown, label: string): MockModelStep {
   const stream = parseTextStream(value.stream, label)
   if (stream && value.text === undefined && value.reasoning === undefined)
     throw new Error(`Model ${label} states stream but no text to deliver`)
+  const toolSafety = parseToolSafetyCheck(value.toolSafety, label, toolCalls)
+  if (toolSafety && error)
+    throw new Error(`Model ${label} cannot combine toolSafety with an error`)
   const captures = parseCaptures(value.captures, label)
   if (captures && error)
     throw new Error(`Model ${label} cannot combine captures with an error`)
@@ -694,6 +721,9 @@ function parseStep(value: unknown, label: string): MockModelStep {
     ...(captures === undefined
       ? {}
       : { captures }),
+    ...(toolSafety === undefined
+      ? {}
+      : { toolSafety }),
   }
   if (!captures)
     validateStreamGatePositions(step, label)
@@ -725,6 +755,44 @@ export function stopReasonToken(protocol: MockModelProtocol, reason: 'refusal' |
   if (protocol === 'openai-responses' && reason === 'max_tokens')
     return 'max_output_tokens'
   throw new Error(`The mock cannot state stop reason ${reason} on ${protocol}`)
+}
+
+function parseToolSafetyCheck(value: unknown, label: string, calls: MockModelToolCall[] | undefined): MockModelToolSafetyCheck | undefined {
+  if (value === undefined)
+    return undefined
+  if (!isObject(value) || Object.keys(value).some(key => key !== 'gate' && key !== 'decisions'))
+    throw new Error(`Model ${label} toolSafety must contain only decisions and gate`)
+  const gate = parseGate(value.gate, `${label} toolSafety`)
+  if (value.decisions !== undefined && !isObject(value.decisions))
+    throw new Error(`Model ${label} toolSafety decisions must be an object`)
+  const decisions = value.decisions === undefined
+    ? undefined
+    : Object.fromEntries(Object.entries(value.decisions).map(([id, entry]): [string, MockModelToolSafetyDecision] => {
+        if (!calls?.some(call => call.id === id))
+          throw new Error(`Model ${label} toolSafety identifies an absent tool call ${id}`)
+        if (!isObject(entry) || (entry.decision !== 'allow' && entry.decision !== 'deny')
+          || Object.keys(entry).some(key => key !== 'decision' && key !== 'reason')
+          || (entry.reason !== undefined && typeof entry.reason !== 'string')) {
+          throw new Error(`Model ${label} toolSafety decision ${id} must state allow or deny and an optional reason`)
+        }
+        return [
+          id,
+          {
+            decision: entry.decision,
+            ...(entry.reason === undefined
+              ? {}
+              : { reason: entry.reason }),
+          },
+        ]
+      }))
+  return {
+    ...(decisions === undefined
+      ? {}
+      : { decisions }),
+    ...(gate === undefined
+      ? {}
+      : { gate }),
+  }
 }
 
 function parseGate(value: unknown, label: string): string | undefined {
@@ -770,7 +838,12 @@ function parseCaptures(value: unknown, label: string): Record<string, string> | 
 /** Every placeholder name that the step's strings use, with repeats. */
 function stepPlaceholders(step: MockModelStep): string[] {
   const names: string[] = []
-  visitStrings([step.text, step.reasoning, step.toolCalls], (text) => {
+  visitStrings([
+    step.text,
+    step.reasoning,
+    step.toolCalls,
+    Object.entries(step.toolSafety?.decisions ?? {}),
+  ], (text) => {
     for (const match of text.matchAll(CAPTURE_PLACEHOLDER))
       names.push(match[1]!)
   })
@@ -825,6 +898,22 @@ export function resolveStepCaptures(step: MockModelStep, body: unknown): Resolve
   // The resolved step states literal values. Keeping the captures would let a
   // second resolution match the filled text against the patterns again.
   delete resolved.captures
+  if (step.toolSafety?.decisions) {
+    resolved.toolSafety = {
+      ...step.toolSafety,
+      decisions: Object.fromEntries(Object.entries(step.toolSafety.decisions).map(([id, decision]) => [
+        fill(id),
+        {
+          ...decision,
+          ...(decision.reason === undefined
+            ? {}
+            : {
+                reason: fill(decision.reason),
+              }),
+        },
+      ])),
+    }
+  }
   validateStreamGatePositions(resolved, 'resolved step')
   return { step: resolved }
 }
@@ -1125,6 +1214,8 @@ export function matchesRequest(
   if (!matchesPattern(matcher.system, request.systemText))
     return false
   if (!matchesPattern(matcher.user, request.userText))
+    return false
+  if (matcher.userHistory !== undefined && !scenarioUserTexts(request.protocol, request.body).some(text => matchesPattern(matcher.userHistory, text)))
     return false
   // Serialize lazily. The body can be large, and most matchers never read it.
   if (matcher.body !== undefined && !matchesPattern(matcher.body, JSON.stringify(request.body ?? null)))

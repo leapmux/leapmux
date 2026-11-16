@@ -30,7 +30,7 @@ type registryCache[T any, K comparable] struct {
 	nextSeq int64
 	ops     registryOps[T, K]
 
-	// evictedActive holds the keys of rows the cap gave up while they were still
+	// evictedActive retains the keys and counter contributions of rows the cap gave up while they were still
 	// ACTIVE and that retention kept in the store. They are running work with no
 	// row in the display list.
 	//
@@ -41,7 +41,7 @@ type registryCache[T any, K comparable] struct {
 	//
 	// A worker restart cannot desync it: the boot sweep ends every active row
 	// before any cache exists.
-	evictedActive map[K]struct{}
+	evictedActive registryWorkingSet[K]
 }
 
 // seedEntry pairs a stored item with its persisted seq, so ensureSeededLocked
@@ -102,9 +102,9 @@ type registryOps[T any, K comparable] struct {
 	// newest first, projecting each into a stored item plus its persisted seq.
 	// `bucket` is 0 for a single-pool registry (bucketOf nil).
 	listRows func(ctx context.Context, q *db.Queries, ownerID string, bucket int64, limit int32) ([]seedEntry[T], error)
-	// listWorkingKeys rebuilds hidden working rows during seeding. Optional:
+	// listWorkingEntries rebuilds hidden working rows and counter contributions during seeding. Optional:
 	// nil means no working rows survive outside the display list.
-	listWorkingKeys func(ctx context.Context, q *db.Queries, ownerID string) ([]K, error)
+	listWorkingEntries func(ctx context.Context, q *db.Queries, ownerID string) ([]registryWorkingEntry[K], error)
 	// reclaimFinishedBelowSeq deletes the pool's FINISHED rows older than `seq` --
 	// the surplus a seed window leaves behind. Optional: nil skips the pass.
 	reclaimFinishedBelowSeq func(ctx context.Context, q *db.Queries, ownerID string, bucket, seq int64) error
@@ -115,6 +115,8 @@ type registryOps[T any, K comparable] struct {
 	isFinished func(T) bool
 	// isWorking reports whether a retained row contributes to agent activity.
 	isWorking func(T) bool
+	// countsWorking reports whether working activity contributes to the counter. Nil counts each working row.
+	countsWorking func(T) bool
 	// deleteByKey deletes the persisted row for `key` under `ownerID`.
 	deleteByKey func(ctx context.Context, q *db.Queries, ownerID string, key K) error
 	// retention makes some rows outlive the display cap in the store. Optional:
@@ -293,20 +295,16 @@ func (v registryView[T, K]) ensureSeededLocked(ctx context.Context) error {
 			maxSeq = e.seq
 		}
 	}
-	var hidden map[K]struct{}
-	if c.ops.listWorkingKeys != nil {
-		working, err := c.ops.listWorkingKeys(ctx, q, ownerID)
+	var hidden registryWorkingSet[K]
+	if c.ops.listWorkingEntries != nil {
+		working, err := c.ops.listWorkingEntries(ctx, q, ownerID)
 		if err != nil {
 			return err
 		}
-		for _, key := range working {
-			if _, visible := displayed[key]; visible {
-				continue
+		for _, entry := range working {
+			if _, visible := displayed[entry.key]; !visible {
+				hidden.include(entry.key, entry.counted)
 			}
-			if hidden == nil {
-				hidden = make(map[K]struct{})
-			}
-			hidden[key] = struct{}{}
 		}
 	}
 	c.Rows = rows
@@ -536,10 +534,8 @@ func (v registryView[T, K]) evictAtLocked(ctx context.Context, evictIdx int) (T,
 // Caller must hold c.Mu.
 func (c *registryCache[T, K]) rememberEvictedActiveLocked(row T) {
 	if c.ops.isWorking(row) && c.ops.retention != nil && c.ops.retention.keep(row) {
-		if c.evictedActive == nil {
-			c.evictedActive = make(map[K]struct{}, 1)
-		}
-		c.evictedActive[c.ops.keyOf(row)] = struct{}{}
+		counted := c.ops.countsWorking == nil || c.ops.countsWorking(row)
+		c.evictedActive.include(c.ops.keyOf(row), counted)
 	}
 }
 
@@ -553,18 +549,12 @@ type registryMirror[T any, K comparable] struct {
 	seeded        bool
 	rows          []T
 	nextSeq       int64
-	evictedActive map[K]struct{}
+	evictedActive registryWorkingSet[K]
 }
 
 // mirrorLocked copies the mutable display state. Caller must hold c.Mu.
 func (c *registryCache[T, K]) mirrorLocked() registryMirror[T, K] {
-	var hidden map[K]struct{}
-	if c.evictedActive != nil {
-		hidden = make(map[K]struct{}, len(c.evictedActive))
-		for key := range c.evictedActive {
-			hidden[key] = struct{}{}
-		}
-	}
+	hidden := c.evictedActive.clone()
 	// The rows are COPIED, not aliased: `slices.Delete` and `append` both write
 	// through the backing array, so a restore that shared it would put back a slice
 	// whose elements the failed attempt had already moved.
@@ -582,13 +572,13 @@ func (c *registryCache[T, K]) restoreLocked(mirror registryMirror[T, K]) {
 // forgetEvictedActiveLocked drops key from the hidden-active set, for a row that
 // came back into the list or left the store. Caller must hold c.Mu.
 func (c *registryCache[T, K]) forgetEvictedActiveLocked(key K) {
-	delete(c.evictedActive, key)
+	c.evictedActive.remove(key)
 }
 
-// EvictedActiveCount reports how many still-running rows the cap hid from the
-// display list. Caller must hold c.Mu.
+// EvictedActiveCount reports the task count of hidden working rows.
+// Activity-only markers retain working state without increasing this count. Caller holds c.Mu.
 func (c *registryCache[T, K]) EvictedActiveCount() int32 {
-	return int32(len(c.evictedActive))
+	return c.evictedActive.count()
 }
 
 // dropStoredRowLocked deletes the persisted row unless ops.retention keeps it,

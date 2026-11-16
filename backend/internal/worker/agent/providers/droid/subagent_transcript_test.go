@@ -73,7 +73,7 @@ func droidArchiveStart(id, work string) string {
 }
 
 func droidArchiveChildAvailable(id, toolUseID string) string {
-	return fmt.Sprintf(`{"type":"notification","params":{"sessionId":"main-session","notification":{"type":"child_session_available","childSessionId":%q,"toolUseId":%q,"subagentType":"explorer","description":"Inspect the note"}}}`, id, toolUseID)
+	return fmt.Sprintf(`{"type":"notification","method":"droid.session_notification","params":{"sessionId":"main-session","notification":{"type":"child_session_available","childSessionId":%q,"toolUseId":%q,"subagentType":"explorer","description":"Inspect the note"}}}`, id, toolUseID)
 }
 
 func appendDroidArchive(t *testing.T, path string, records ...string) {
@@ -550,7 +550,7 @@ func droidEarlySendArchive(t *testing.T, sends int) (*Agent, *agenttest.Sink, *q
 			// Native idle can reach the bound child before the archive ticker runs.
 			child.endTurn()
 		}
-		require.NoError(t, a.SendChildInput(archiveChildID, fmt.Sprintf("follow-up %d", index+1), nil))
+		require.NoError(t, agenttest.SendChildInput(a, archiveChildID, agent.ChildInput{Content: fmt.Sprintf("follow-up %d", index+1)}))
 	}
 	records := []string{`{"type":"agent_turn_outcome","turnId":"turn-1","reason":"completed","resultKind":"text"}`}
 	for index := range sends {

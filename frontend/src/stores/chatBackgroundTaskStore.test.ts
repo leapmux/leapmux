@@ -1,10 +1,11 @@
 import type { BackgroundTaskItem as ProtoBackgroundTaskItem } from '~/generated/proto/leapmux/v1/agent_pb'
 import { describe, expect, it } from 'vitest'
-import { BackgroundTaskKind, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
+import { BackgroundTaskKind, BackgroundTaskRole, BackgroundTaskStatus } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createBackgroundTaskStore } from '~/stores/chatBackgroundTaskStore'
 
 function proto(id: string, status: BackgroundTaskStatus, activeForm = ''): ProtoBackgroundTaskItem {
   return {
+    role: BackgroundTaskRole.TASK_OUTCOME,
     id,
     kind: BackgroundTaskKind.SUBAGENT,
     status,
@@ -195,5 +196,48 @@ describe('createBackgroundTaskStore', () => {
       store.clear('a2')
       expect(store.loadFailed('a2')).toBe(false)
     })
+  })
+})
+
+describe('createBackgroundTaskStore role projection', () => {
+  it('retains separate outcomes that link one child', () => {
+    const store = createBackgroundTaskStore()
+    store.replace('root', [
+      {
+        ...proto('activity', BackgroundTaskStatus.RUNNING),
+        role: BackgroundTaskRole.CHILD_ACTIVITY,
+        childAgentId: 'child',
+      },
+      {
+        ...proto('task-a', BackgroundTaskStatus.SUCCEEDED),
+        role: BackgroundTaskRole.TASK_OUTCOME,
+        childAgentId: 'child',
+      },
+      {
+        ...proto('task-b', BackgroundTaskStatus.RUNNING),
+        role: BackgroundTaskRole.TASK_OUTCOME,
+        childAgentId: 'child',
+      },
+    ])
+    expect(store.get('root')).toMatchObject([
+      {
+        rowKey: 'activity',
+        role: BackgroundTaskRole.CHILD_ACTIVITY,
+        childAgentId: 'child',
+        status: 'running',
+      },
+      {
+        rowKey: 'task-a',
+        role: BackgroundTaskRole.TASK_OUTCOME,
+        childAgentId: 'child',
+        status: 'succeeded',
+      },
+      {
+        rowKey: 'task-b',
+        role: BackgroundTaskRole.TASK_OUTCOME,
+        childAgentId: 'child',
+        status: 'running',
+      },
+    ])
   })
 })

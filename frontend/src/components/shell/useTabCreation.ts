@@ -87,12 +87,17 @@ interface AccountLifetime {
   readonly generation: number
 }
 
+interface TabSelectionSnapshot {
+  storedKey: string | null | undefined
+  effectiveKey: string | null
+}
+
 interface CreationFrame extends AccountLifetime {
   activeWorkspace: string | null | undefined
   focusedTile: string | null
   sourceTab: Tab | undefined
-  selectedWorkspaceTab: string | null | undefined
-  selectedFocusedTab: string | null | undefined
+  selectedWorkspaceTab: TabSelectionSnapshot | undefined
+  selectedFocusedTab: TabSelectionSnapshot | undefined
   view: Accessor<unknown> | undefined
   viewIdentity: unknown
 }
@@ -103,8 +108,8 @@ interface CreationObserver {
   onError: TabCreationOrigin['onError']
   frame: CreationFrame
   destinationFocus: string | null
-  selectedDestinationTab: string | null | undefined
-  selectedPlacementTab: string | null | undefined
+  selectedDestinationTab: TabSelectionSnapshot
+  selectedPlacementTab: TabSelectionSnapshot | undefined
   resolve: (observed: boolean) => void
 }
 
@@ -212,6 +217,25 @@ export function useTabCreation(options: UseTabCreationOptions) {
     }
   }
 
+  function workspaceSelection(workspaceId: string): TabSelectionSnapshot {
+    return {
+      storedKey: options.selection.state.activeByWorkspace[workspaceId],
+      effectiveKey: options.selection.activeKeyForWorkspace(workspaceId),
+    }
+  }
+
+  function tileSelection(tileId: string): TabSelectionSnapshot {
+    return {
+      storedKey: options.selection.state.activeByTile[tileId],
+      effectiveKey: options.selection.activeKeyForTile(tileId),
+    }
+  }
+
+  function selectionUnchanged(before: TabSelectionSnapshot | undefined, current: TabSelectionSnapshot): boolean {
+    // Recording a visible fallback fills the stored pointer without changing the visible selection.
+    return before !== undefined && (before.storedKey === current.storedKey || (current.storedKey === before.effectiveKey && current.effectiveKey === before.effectiveKey))
+  }
+
   function captureFrame(origin: Pick<TabCreationOrigin, 'viewIdentity'>): CreationFrame | undefined {
     syncAccount()
     if (disposed || !account)
@@ -244,8 +268,12 @@ export function useTabCreation(options: UseTabCreationOptions) {
               : {}),
           }
         : undefined,
-      selectedWorkspaceTab: activeWorkspace ? options.selection.state.activeByWorkspace[activeWorkspace] : undefined,
-      selectedFocusedTab: focusedTile ? options.selection.state.activeByTile[focusedTile] : undefined,
+      selectedWorkspaceTab: activeWorkspace
+        ? workspaceSelection(activeWorkspace)
+        : undefined,
+      selectedFocusedTab: focusedTile
+        ? tileSelection(focusedTile)
+        : undefined,
       view: origin.viewIdentity,
       viewIdentity: origin.viewIdentity?.(),
     }
@@ -307,11 +335,11 @@ export function useTabCreation(options: UseTabCreationOptions) {
       : undefined
     return options.activeWorkspaceId() === frame.activeWorkspace
       && (!frame.activeWorkspace || options.layoutStore.focusedTileIdFor(frame.activeWorkspace) === frame.focusedTile)
-      && (!frame.activeWorkspace || options.selection.state.activeByWorkspace[frame.activeWorkspace] === frame.selectedWorkspaceTab)
-      && (!frame.focusedTile || options.selection.state.activeByTile[frame.focusedTile] === frame.selectedFocusedTab)
+      && (!frame.activeWorkspace || selectionUnchanged(frame.selectedWorkspaceTab, workspaceSelection(frame.activeWorkspace)))
+      && (!frame.focusedTile || selectionUnchanged(frame.selectedFocusedTab, tileSelection(frame.focusedTile)))
       && options.layoutStore.focusedTileIdFor(workspaceId) === observer.destinationFocus
-      && options.selection.state.activeByWorkspace[workspaceId] === observer.selectedDestinationTab
-      && (!tileId || options.selection.state.activeByTile[tileId] === observer.selectedPlacementTab)
+      && selectionUnchanged(observer.selectedDestinationTab, workspaceSelection(workspaceId))
+      && (!tileId || selectionUnchanged(observer.selectedPlacementTab, tileSelection(tileId)))
   }
 
   function focusAfterCompletion(observer: CreationObserver, tab: Tab) {
@@ -466,8 +494,10 @@ export function useTabCreation(options: UseTabCreationOptions) {
         frame,
         resolve,
         destinationFocus: options.layoutStore.focusedTileIdFor(origin.workspaceId),
-        selectedDestinationTab: options.selection.state.activeByWorkspace[origin.workspaceId],
-        selectedPlacementTab: tileId ? options.selection.state.activeByTile[tileId] : undefined,
+        selectedDestinationTab: workspaceSelection(origin.workspaceId),
+        selectedPlacementTab: tileId
+          ? tileSelection(tileId)
+          : undefined,
       })
       changed()
       sendAttempt(attempt)

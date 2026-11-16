@@ -1,25 +1,23 @@
 import type { Component } from 'solid-js'
 import type { TabBusyReason } from './tabBusyProbe'
-import { For, Match, Show, Switch } from 'solid-js'
+import { createMemo, For, Match, Show, Switch } from 'solid-js'
+import { BACKGROUND_TASK_ROLE_CAPABILITIES } from '~/generated/contracts/background-task-roles'
 import { pluralize } from '~/lib/plural'
 import { busyDetails } from './TabBusyDetails.css'
 
-const AgentBusyDetails: Component<{ reason: Extract<TabBusyReason, { kind: 'agent-turn' }> }> = (props) => {
-  const taskCount = () => props.reason.activeTasks.length
+const AgentBusyDetails: Component<{ reason: Extract<TabBusyReason, { kind: 'agent-work' }> }> = (props) => {
+  const tasks = createMemo(() => props.reason.activeRows.filter(row => BACKGROUND_TASK_ROLE_CAPABILITIES[row.role]?.countsAsTask))
+  const childActivities = createMemo(() => props.reason.activeRows.filter((row) => {
+    const role = BACKGROUND_TASK_ROLE_CAPABILITIES[row.role]
+    return role?.canonicalChildActivity === true && !role.countsAsTask
+  }))
+  const taskCount = () => tasks().length
+  const childCount = () => childActivities().length
   return (
     <>
-      {/*
-        The Worker reports a root busy for a turn OR for a running background
-        task, and the wire carries only the answer, not which one made it true.
-        So the turn is claimed only when nothing else can explain the state: a
-        turn that ended while a subagent kept running would otherwise be
-        announced as "in progress" after it finished.
-      */}
-      <p>
-        {taskCount() === 0
-          ? 'This agent\'s turn is in progress. Closing the tab stops it.'
-          : 'This agent is still working. Closing the tab stops it.'}
-      </p>
+      {/* Exact working state can come from a root turn, a task, or child activity.
+          The wire does not identify which one caused it. */}
+      <p>This agent is still working. Closing the tab stops it.</p>
       <Show when={taskCount() > 0}>
         <p>
           {`${pluralize(taskCount(), 'background task')} ${taskCount() === 1
@@ -27,9 +25,19 @@ const AgentBusyDetails: Component<{ reason: Extract<TabBusyReason, { kind: 'agen
             : 'are'} active:`}
         </p>
         <ul class={busyDetails} data-testid="busy-background-tasks">
-          <For each={props.reason.activeTasks}>
+          <For each={tasks()}>
             {task => <li>{task.title}</li>}
           </For>
+        </ul>
+      </Show>
+      <Show when={childCount() > 0}>
+        <p>
+          {`${pluralize(childCount(), 'child agent')} ${childCount() === 1
+            ? 'is'
+            : 'are'} active:`}
+        </p>
+        <ul class={busyDetails} data-testid="busy-child-activities">
+          <For each={childActivities()}>{child => <li>{child.title}</li>}</For>
         </ul>
       </Show>
     </>
@@ -46,12 +54,12 @@ const AgentBusyDetails: Component<{ reason: Extract<TabBusyReason, { kind: 'agen
  *
  * Switch/Match rather than a Show with a fallback. The fallback form needs a
  * cast to name the other case, and that cast routes ANY future reason kind into
- * the agent branch, where reading its `activeTasks` throws at render.
+ * the agent branch, where reading its `activeRows` throws at render.
  */
 export const TabBusyDetails: Component<{ reason: TabBusyReason }> = (props) => {
   return (
     <Switch>
-      <Match when={props.reason.kind === 'agent-turn'
+      <Match when={props.reason.kind === 'agent-work'
         ? props.reason
         : null}
       >

@@ -33,7 +33,9 @@ func TestCodexChildInterruptKeepsTheStoredNativeIdentity(t *testing.T) {
 			rig.agent.SetAPITimeoutForTest(30 * time.Second)
 			recording := &agenttest.Sink{}
 			rig.agent.sink = agent.NewProviderServices(recording)
-			childID, err := rig.agent.sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: test.nativeID, Title: "Native child"})
+			childID, err := rig.agent.sink.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole:     bgtask.RoleChildTask,
+				ProviderChildKey: test.nativeID, Title: "Native child"})
 			require.NoError(t, err)
 			rig.agent.collabChildren = map[string]*codexChildState{test.nativeID: {spawnCorrelationID: "spawn", childAgentID: childID, turnID: "native-turn"}}
 			rows := recording.BackgroundTasks()

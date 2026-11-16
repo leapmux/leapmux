@@ -198,6 +198,22 @@ describe('exerciseBypassPermissions', () => {
     expect(fake.reads).toEqual([1, 3])
   })
 
+  it('holds each command until its output is visible and releases both passes', async () => {
+    await Reflect.apply(exerciseBypassPermissions, undefined, [
+      shortcutContext('bypass'),
+      { outputGate: true },
+    ])
+    expect(fake.commands).toHaveLength(2)
+    for (const command of fake.commands) {
+      expect(command).toContain('trap leapmux_hold_output EXIT')
+      const releasePath = /\[ ! -e '([^']+)' \]/.exec(command)?.[1]
+      expect(releasePath).toBeDefined()
+      expect(existsSync(releasePath!)).toBe(true)
+    }
+    expect(fake.events.some(event => event.startsWith('output BYPASS-1-42'))).toBe(true)
+    expect(fake.events.some(event => event.startsWith('output BYPASS-2-42'))).toBe(true)
+  })
+
   it('applies no preset when the preparation fails', async () => {
     await expect(exerciseBypassPermissions(shortcutContext('bypass'), {
       prepare: async () => {

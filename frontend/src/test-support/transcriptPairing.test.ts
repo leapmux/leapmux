@@ -1,9 +1,10 @@
 import type { TranscriptFrame } from '~/test-support/messageFactory'
 import { describe, expect, it } from 'vitest'
 import { isFinishedToolCallStatus } from '~/components/chat/model/toolCallStatus'
+import { openCodeToolPart } from '~/components/chat/providers/opencode/toolResults.fixtures'
 import { MIMO_TOOL, MIMO_TOOL_STATUS } from '~/generated/contracts/mimo-protocol'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
+import { kimiTranscriptToolFrame } from '~/test-support/kimiFixtures'
 import { makeTranscriptMessage } from '~/test-support/messageFactory'
 import { openingFrame, toolFrame } from '~/test-support/mimoFixtures'
 import { createTranscriptScenario } from '~/test-support/transcriptScenario'
@@ -15,7 +16,7 @@ import { createTranscriptScenario } from '~/test-support/transcriptScenario'
 // protocol's own status words follow. The calls keep their TYPED kind, which a
 // degradation never does: the degrade always answers the generic row.
 //
-// Every Agent Client Protocol speaker shares one adapter, so OpenCode stands for
+// Every Agent Client Protocol speaker shares one adapter, so Kilo stands for
 // the family here. The deviations of each family member (Cursor's names, Goose's
 // `_meta`, Reasonix's envelope, and the tool identities of Grok Build, Qwen Code
 // and Kiro) stay covered by that member's own extractor tests.
@@ -59,12 +60,28 @@ interface PairCase {
   kind: string
   /** The status the protocol's own outcome words must derive on the result side. */
   status: 'completed' | 'failed' | 'cancelled' | 'declined'
+  resultCompletion?: MessageCompletion
 }
 
 const CASES: PairCase[] = [
   {
-    label: 'Agent Client Protocol through OpenCode',
+    label: 'OpenCode native projections',
     provider: AgentProvider.OPENCODE,
+    spanType: 'shell',
+    request: openCodeToolPart('native-call', 'shell', { command: 'printf native' }, { status: 'running' }),
+    result: openCodeToolPart('native-call', 'shell', { command: 'printf native' }, {
+      status: 'completed',
+      content: [
+        { type: 'text', text: 'native output' },
+      ],
+    }),
+    resultCompletion: MessageCompletion.COMPLETE,
+    kind: 'execute',
+    status: 'completed',
+  },
+  {
+    label: 'Agent Client Protocol through Kilo',
+    provider: AgentProvider.KILO,
     request: {
       sessionUpdate: 'tool_call',
       toolCallId: 'acp-call',
@@ -359,11 +376,20 @@ const CASES: PairCase[] = [
     label: 'Kimi Code',
     provider: AgentProvider.KIMI_CODE,
     spanType: 'Bash',
-    request: kimiToolStart('kimi-call', 'Bash', { command: 'printf kimi' }),
-    result: kimiToolResult('kimi-call', 'kimi failed\nCommand failed with exit code: 1.', { isError: true }),
+    request: kimiTranscriptToolFrame({
+      toolCallId: 'kimi-call',
+      name: 'Bash',
+      input: { command: 'printf kimi' },
+    }),
+    result: kimiTranscriptToolFrame({
+      toolCallId: 'kimi-call',
+      name: 'Bash',
+      input: { command: 'printf kimi' },
+      state: 'error',
+      output: 'kimi failed\nCommand failed with exit code: 1.',
+    }),
     kind: 'execute',
-    // `isError` on the result is the failure the server reported, over the frame's
-    // own completion.
+    // The native error state preserves the failure, including when the request row renders it.
     status: 'failed',
   },
   {
@@ -390,7 +416,12 @@ describe('one request/result pair per protocol', () => {
       const scenario = createTranscriptScenario({
         archive: [
           makeTranscriptMessage(frame('request', testCase.provider, 'pair-call', testCase.spanType, testCase.request), 1n),
-          makeTranscriptMessage(frame('result', testCase.provider, 'pair-call', testCase.spanType, testCase.result), 2n),
+          makeTranscriptMessage({
+            ...frame('result', testCase.provider, 'pair-call', testCase.spanType, testCase.result),
+            ...(testCase.resultCompletion === undefined
+              ? {}
+              : { completion: testCase.resultCompletion }),
+          }, 2n),
         ],
       })
       const requestRow = scenario.toolRow('request')

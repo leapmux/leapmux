@@ -13,6 +13,64 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestOutputQueueOwnerReadinessLeavesOtherWritesPending(t *testing.T) {
+	t.Parallel()
+	for _, other := range []*OutputOwner{nil, NewOutputOwner()} {
+		t.Run(map[bool]string{false: "different owner", true: "nil owner"}[other == nil], func(t *testing.T) {
+			t.Parallel()
+			var queue OutputQueue
+			owner := NewOutputOwner()
+			calls := 0
+			ticket := queue.Append(OutputWrite{Owner: owner, Label: "owned write", Run: func() error { calls++; return nil }})[0]
+			require.NoError(t, queue.FlushOwnerAfterReady(other))
+			assert.Zero(t, calls)
+			assert.False(t, ticket.Done())
+			assert.True(t, queue.HasPending())
+			require.NoError(t, queue.FlushOwnerAfterReady(owner))
+			assert.Equal(t, 1, calls)
+			assert.True(t, ticket.Done())
+			assert.False(t, queue.HasPending())
+		})
+	}
+}
+
+func TestOutputQueueOwnerReadinessSurvivesAnActiveCallback(t *testing.T) {
+	t.Parallel()
+	var queue OutputQueue
+	owner := NewOutputOwner()
+	entered, released := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(released) })
+	defer release()
+	var calls atomic.Int64
+	ticket := queue.Append(OutputWrite{Owner: owner, Label: "owned write", Run: func() error {
+		if calls.Add(1) == 1 {
+			close(entered)
+			<-released
+			return ErrOutputInFlight
+		}
+		return nil
+	}})[0]
+	done := make(chan error, 1)
+	go func() { done <- queue.Flush() }()
+	ctx := testutil.DeadlineContext(t)
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("the owned callback did not start")
+	}
+	require.ErrorIs(t, queue.FlushOwnerAfterReady(owner), ErrOutputInFlight)
+	release()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal("the owned callback did not resume after readiness")
+	}
+	assert.True(t, ticket.Done())
+	assert.EqualValues(t, 2, calls.Load())
+	assert.False(t, queue.HasPending())
+}
+
 func TestOutputQueueKeepsTheFailedWriteBeforeLaterWritesAndEffects(t *testing.T) {
 	t.Parallel()
 	var queue OutputQueue

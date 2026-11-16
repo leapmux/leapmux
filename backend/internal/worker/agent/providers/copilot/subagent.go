@@ -121,6 +121,8 @@ func (a *Agent) startNativeSubagent(raw []byte, event copilotEvent) {
 	title := sessionstore.FirstNonBlank(input.Name, started.AgentDisplayName, started.AgentName, input.Description, started.AgentDescription)
 	background := started.ExecutionMode == copilotExecutionBackground
 	workerAgentID, err := owner.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+
 		SpawnSpanID: started.ToolCallID, ProviderChildKey: event.AgentID, Title: title,
 		Options: optionmap.Map{copilotOptionExecutionMode: started.ExecutionMode},
 	})
@@ -382,17 +384,17 @@ func (a *Agent) InterruptChild(childKey string, _ agent.StopContext) error {
 // it in its next turn. A running background subagent answers busy, and the
 // queue steers the message (SteerChildInput). A foreground subagent and an
 // ended one take no message.
-func (a *Agent) SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
+func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.ChildInputResult, error) {
 	state, known := a.childState(childKey)
 	switch {
 	case !known:
-		return errCopilotSubagentEnded
+		return agent.ChildInputResult{StartsTurn: true}, errCopilotSubagentEnded
 	case !state.background:
-		return errCopilotForegroundSubagent
+		return agent.ChildInputResult{StartsTurn: true}, errCopilotForegroundSubagent
 	case !state.idle:
-		return agent.ErrAgentBusy
+		return agent.ChildInputResult{StartsTurn: true}, agent.ErrAgentBusy
 	}
-	return a.sendChildMessage(state, content, attachments)
+	return agent.ChildInputResult{StartsTurn: true}, a.sendChildMessage(state, input.Content, input.Attachments)
 }
 
 // SteerChildInput sends a message to a running background subagent. Copilot

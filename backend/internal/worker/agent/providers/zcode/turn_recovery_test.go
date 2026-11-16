@@ -154,42 +154,28 @@ func TestZCodeTurnRecovery_ProvisionalOwnerAdoptsNativeTurnID(t *testing.T) {
 	a.Mu.Unlock()
 }
 
-func TestZCodeTurnRecovery_ProvisionalSnapshotRequiresMatchingNativeInput(t *testing.T) {
+func TestZCodeTurnRecovery_ProvisionalSnapshotWaitsForNativeInputIdentity(t *testing.T) {
 	t.Parallel()
-	for _, matching := range []bool{false, true} {
-		t.Run(fmt.Sprintf("matching input %t", matching), func(t *testing.T) {
-			t.Parallel()
-			a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
-			a.createProvisionalZCodeTurn("sess-1", "input-a", 5)
-			a.Mu.Lock()
-			owner := a.turns[a.foregroundTurnID]
-			state := owner.recovery
-			a.Mu.Unlock()
-			input := "input-b"
-			if matching {
-				input = "input-a"
-			}
-			zcodeRespondToRequestsForTest(t, a, func(request zcodeSentRequest) json.RawMessage {
-				if request.Method == MethodSessionMessages {
-					return json.RawMessage(`{"messages":[{"info":{"id":"user","role":"user","anchor":{"turnId":"native-turn","sourceCommandId":"` + input + `"}}}]}`)
-				}
-				return nil
-			})
-			snap := zcodeSessionReadSnapshot{Runtime: &zcodeRuntimeState{activeTurnIDKnown: true, stateRevisionKnown: true, eventSeqKnown: true, ActiveTurnID: "native-turn", StateRevision: 10}, Projection: &zcodeProjectionState{TurnCount: 5, CurrentTurnID: "native-turn"}}
-			settled, err := a.applyZCodeRecoverySnapshot(owner, state, snap)
-			require.NoError(t, err)
-			assert.False(t, settled)
-			a.Mu.Lock()
-			defer a.Mu.Unlock()
-			if matching {
-				assert.Same(t, owner, a.turns["native-turn"])
-				assert.Equal(t, "user", owner.anchorMessageID)
-			} else {
-				assert.Nil(t, a.turns["native-turn"], "another active turn does not prove ownership of queued input")
-			}
-			assert.Same(t, state, owner.recovery)
-		})
-	}
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+	a.createProvisionalZCodeTurn("sess-1", "input-a", 5)
+	a.Mu.Lock()
+	owner := a.turns[a.foregroundTurnID]
+	state := owner.recovery
+	a.Mu.Unlock()
+	snap := zcodeSessionReadSnapshot{Runtime: &zcodeRuntimeState{activeTurnIDKnown: true, stateRevisionKnown: true, eventSeqKnown: true, ActiveTurnID: "native-turn", StateRevision: 10}, Projection: &zcodeProjectionState{TurnCount: 5, CurrentTurnID: "native-turn"}}
+	settled, err := a.applyZCodeRecoverySnapshot(owner, state, snap)
+	require.NoError(t, err)
+	assert.False(t, settled)
+	a.Mu.Lock()
+	assert.Nil(t, a.turns["native-turn"], "a runtime turn ID does not identify the queued input")
+	assert.Same(t, state, owner.recovery)
+	a.Mu.Unlock()
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "native-turn", contracts.ZCodeEventTurnStarted, `{"inputId":"input-a","messageId":"native-user"}`))
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Same(t, owner, a.turns["native-turn"])
+	assert.Equal(t, "native-user", owner.anchorMessageID)
+	assert.Same(t, state, owner.recovery, "native adoption retains the watcher and generation")
 }
 
 func TestZCodeTurnRecovery_ObsoleteSnapshotCannotReinsertAnOwner(t *testing.T) {
@@ -683,63 +669,20 @@ func TestZCodeTurnRecovery_IDlessBoundaryForSoleUnsettledOwner(t *testing.T) {
 	assert.Nil(t, evidence, "two unsettled owners make the ID-less boundary ambiguous")
 }
 
-// selectZCodeOwnerMessages picks the final-message reconciliation window of one
-// owner: the messages after its anchor, or -- for a provisional accepted turn
-// with no anchor -- the assistant messages created at or after the acceptance.
-// A resumed owner without a user-message anchor needs an exact native turn anchor.
+// Both provisional and resumed owners wait for native message identity.
 func TestZCodeTurnRecovery_SelectsOnlyTheOwnersOwnMessages(t *testing.T) {
 	t.Parallel()
-
-	t.Run("a provisional owner takes assistant messages from its acceptance on", func(t *testing.T) {
-		t.Parallel()
-		owner := &zcodeTurnState{
-			id: "turn-1", acceptedAt: time.UnixMilli(1700000000000),
-			contentByScope: map[string]*zcodeScopeContent{}, toolInvocationIDs: map[string]struct{}{},
-		}
-		messages := []zcodeNativeMessage{
-			{Info: zcodeNativeMessageInfo{ID: "early", Role: "assistant", Time: zcodeNativeMessageTime{Created: 1699999999999}}},
-			{Info: zcodeNativeMessageInfo{ID: "boundary", Role: "assistant", Time: zcodeNativeMessageTime{Created: 1700000000000}}},
-			{Info: zcodeNativeMessageInfo{ID: "user-echo", Role: "user", Time: zcodeNativeMessageTime{Created: 1700000001000}}},
-			{Info: zcodeNativeMessageInfo{ID: "late", Role: "assistant", Time: zcodeNativeMessageTime{Created: 1700000002500}}},
-		}
-		selected, truncated := selectZCodeOwnerMessages(owner, messages, false)
-		require.False(t, truncated, "the no-anchor selection never truncates")
-		require.Len(t, selected, 2, "the earlier assistant message and the user message are not the turn's")
-		assert.Equal(t, "boundary", selected[0].Info.ID, "a message created exactly at the acceptance belongs to the turn")
-		assert.Equal(t, "late", selected[1].Info.ID)
-	})
-
-	t.Run("a resumed owner without an anchor reconciles nothing", func(t *testing.T) {
-		t.Parallel()
-		owner := &zcodeTurnState{
-			id: "turn-1", contentByScope: map[string]*zcodeScopeContent{}, toolInvocationIDs: map[string]struct{}{},
-		}
-		messages := []zcodeNativeMessage{
-			{Info: zcodeNativeMessageInfo{ID: "m1", Role: "assistant", Time: zcodeNativeMessageTime{Created: 1700000002500}}},
-		}
-		selected, truncated := selectZCodeOwnerMessages(owner, messages, false)
-		assert.Empty(t, selected, "an unanchored resumed owner must wait for the anchor")
-		assert.False(t, truncated)
-	})
-
-	t.Run("only messages after the anchor belong to the turn", func(t *testing.T) {
-		t.Parallel()
-		owner := &zcodeTurnState{
-			id: "turn-1", anchorMessageID: "anchor",
-			contentByScope: map[string]*zcodeScopeContent{}, toolInvocationIDs: map[string]struct{}{},
-		}
-		messages := []zcodeNativeMessage{
-			{Info: zcodeNativeMessageInfo{ID: "before", Role: "assistant"}},
-			{Info: zcodeNativeMessageInfo{ID: "anchor", Role: "user"}},
-			{Info: zcodeNativeMessageInfo{ID: "after-1", Role: "assistant", ParentID: "anchor"}},
-			{Info: zcodeNativeMessageInfo{ID: "after-2", Role: "assistant", ParentID: "anchor"}},
-		}
-		selected, truncated := selectZCodeOwnerMessages(owner, messages, false)
-		require.False(t, truncated)
-		require.Len(t, selected, 2)
-		assert.Equal(t, "after-1", selected[0].Info.ID, "the anchor itself is not the turn's message")
-		assert.Equal(t, "after-2", selected[1].Info.ID)
-	})
+	for _, id := range []string{"#turn-provisional", "resumed-turn"} {
+		t.Run(id, func(t *testing.T) {
+			t.Parallel()
+			owner := &zcodeTurnState{id: id}
+			var messages []zcodeNativeMessage
+			require.NoError(t, json.Unmarshal([]byte(`[{"info":{"messageId":"early","role":"assistant","time":{"created":1699999999999}}},{"info":{"messageId":"late","role":"assistant","time":{"created":1700000002500}}}]`), &messages))
+			selected, incomplete := selectZCodeOwnerMessages(owner, messages)
+			assert.Empty(t, selected)
+			assert.True(t, incomplete, "timestamps do not prove ownership")
+		})
+	}
 }
 
 // Helpers.
@@ -767,17 +710,13 @@ func registerZCodeRecoveryForTest(a *Agent, owner *zcodeTurnState, state *zcodeT
 	a.refreshTurnActiveLocked()
 }
 
-func TestZCodeFinalMessageSelection_UsesNativeMillisecondTimestamps(t *testing.T) {
+func TestZCodeFinalMessageSelection_DoesNotInferOwnershipFromTimestamps(t *testing.T) {
 	t.Parallel()
-	accepted := time.UnixMilli(1700000000000)
-	owner := &zcodeTurnState{id: "turn-1", acceptedAt: accepted}
-	messages := []zcodeNativeMessage{
-		{Info: zcodeNativeMessageInfo{ID: "before", Role: "assistant", Time: zcodeNativeMessageTime{Created: float64(accepted.UnixMilli() - 1)}}},
-		{Info: zcodeNativeMessageInfo{ID: "at", Role: "assistant", Time: zcodeNativeMessageTime{Created: float64(accepted.UnixMilli())}}},
-	}
-	selected, _ := selectZCodeOwnerMessages(owner, messages, false)
-	require.Len(t, selected, 1)
-	assert.Equal(t, "at", selected[0].Info.ID)
+	var messages []zcodeNativeMessage
+	require.NoError(t, json.Unmarshal([]byte(`[{"info":{"messageId":"at","role":"assistant","time":{"created":1700000000000}}}]`), &messages))
+	selected, incomplete := selectZCodeOwnerMessages(&zcodeTurnState{id: "turn-1"}, messages)
+	assert.Empty(t, selected)
+	assert.True(t, incomplete, "timestamps cannot replace native parent identity")
 }
 
 func TestZCodeFinalMessageSelection_RequiresAssistantOwnership(t *testing.T) {
@@ -785,13 +724,13 @@ func TestZCodeFinalMessageSelection_RequiresAssistantOwnership(t *testing.T) {
 	owner := &zcodeTurnState{id: "turn-1", anchorMessageID: "user-1"}
 	var messages []zcodeNativeMessage
 	require.NoError(t, json.Unmarshal([]byte(`[
- {"info":{"id":"user-1","role":"user"}},
- {"info":{"id":"owned","role":"assistant","parentID":"user-1","anchor":{"turnId":"turn-1"},"semantics":{"kind":"assistant_response"}}},
- {"info":{"id":"other-user","role":"user"}},
- {"info":{"id":"foreign","role":"assistant","parentID":"other-user","anchor":{"turnId":"turn-2"}}},
- {"info":{"id":"timeline","role":"assistant","parentID":"user-1","anchor":{"turnId":"turn-1"},"semantics":{"kind":"timeline_event"}}}
+ {"info":{"messageId":"user-1","role":"user"}},
+ {"info":{"messageId":"owned","role":"assistant","parentMessageId":"user-1","semantics":{"kind":"assistant_response"}}},
+ {"info":{"messageId":"other-user","role":"user"}},
+ {"info":{"messageId":"foreign","role":"assistant","parentMessageId":"other-user"}},
+ {"info":{"messageId":"timeline","role":"assistant","parentMessageId":"user-1","semantics":{"kind":"timeline_event"}}}
  ]`), &messages))
-	selected, _ := selectZCodeOwnerMessages(owner, messages, false)
+	selected, _ := selectZCodeOwnerMessages(owner, messages)
 	require.Len(t, selected, 1)
 	assert.Equal(t, "owned", selected[0].Info.ID)
 }
@@ -799,22 +738,22 @@ func TestZCodeFinalMessageSelection_RequiresAssistantOwnership(t *testing.T) {
 func TestZCodeFinalMessageSelection_MissingAnchorAlwaysRequiresAFullRead(t *testing.T) {
 	t.Parallel()
 	owner := &zcodeTurnState{id: "turn-1", anchorMessageID: "missing"}
-	_, incomplete := selectZCodeOwnerMessages(owner, []zcodeNativeMessage{{Info: zcodeNativeMessageInfo{ID: "other", Role: "assistant"}}}, false)
+	_, incomplete := selectZCodeOwnerMessages(owner, []zcodeNativeMessage{{Info: zcodeNativeMessageInfo{ID: "other", Role: "assistant"}}})
 	assert.True(t, incomplete, "a short response still cannot establish the requested anchor")
 }
 
 func TestZCodeFinalMessageSelection_FullUnanchoredWindowRequiresAFullRead(t *testing.T) {
 	t.Parallel()
-	owner := &zcodeTurnState{id: "turn-1", acceptedAt: time.UnixMilli(1)}
+	owner := &zcodeTurnState{id: "turn-1"}
 	messages := make([]zcodeNativeMessage, zcodeRecoveredMessageWindow)
 	for index := range messages {
-		messages[index].Info = zcodeNativeMessageInfo{ID: "message", Role: "assistant", Time: zcodeNativeMessageTime{Created: 2}}
+		messages[index].Info = zcodeNativeMessageInfo{ID: "message", Role: "assistant"}
 	}
-	_, incomplete := selectZCodeOwnerMessages(owner, messages, false)
+	_, incomplete := selectZCodeOwnerMessages(owner, messages)
 	assert.True(t, incomplete, "the newest tail may omit earlier messages of the accepted turn")
 }
 
-func TestZCodeTurnRecovery_ResumeDoesNotCreateANewAcceptanceTime(t *testing.T) {
+func TestZCodeTurnRecovery_ResumeRequiresNativeMessageIdentity(t *testing.T) {
 	t.Parallel()
 	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
 	var snap zcodeStateSnapshot
@@ -824,7 +763,10 @@ func TestZCodeTurnRecovery_ResumeDoesNotCreateANewAcceptanceTime(t *testing.T) {
 	owner := a.turns["resumed"]
 	a.Mu.Unlock()
 	require.NotNil(t, owner)
-	assert.True(t, owner.acceptedAt.IsZero(), "a resume cannot claim historical messages from a new local timestamp")
+	assert.Empty(t, owner.anchorMessageID, "a runtime turn ID cannot establish the user message")
+	selected, incomplete := selectZCodeOwnerMessages(owner, []zcodeNativeMessage{{Info: zcodeNativeMessageInfo{ID: "unrelated", Role: "assistant", ParentID: "another-user"}}})
+	assert.Empty(t, selected)
+	assert.True(t, incomplete)
 }
 
 func TestZCodeTurnRecovery_EmptyNativeScopeConflictsWithRetainedContent(t *testing.T) {
@@ -961,7 +903,7 @@ func TestZCodeRecoveryWatcher_ReconcilesNativeMessagesBeforeSettlement(t *testin
 			return json.RawMessage(`{"runtime":{"eventSeq":2,"stateRevision":2,"activeTurnId":""},"projection":{"currentTurnId":"turn","turnCount":1,"status":"idle"}}`)
 		case MethodSessionMessages:
 			fetched++
-			return json.RawMessage(`{"messages":[{"info":{"id":"user","role":"user"}},{"info":{"id":"message","role":"assistant","parentID":"user","anchor":{"turnId":"turn"}},"parts":[{"id":"text","type":"text","text":"hello world"}]}]}`)
+			return json.RawMessage(`{"messages":[{"info":{"role":"user","messageId":"user"}},{"info":{"role":"assistant","anchor":{"turnId":"turn"},"messageId":"message","parentMessageId":"user"},"parts":[{"type":"text","text":"hello world","partId":"text"}]}]}`)
 		}
 		return nil
 	})
@@ -1069,7 +1011,7 @@ func TestZCodeRecoveryEvidence_PreservesNativeEnvelopeAndRecordedOutcome(t *test
 					return json.RawMessage(fmt.Sprintf(`{"runtime":{"eventSeq":1,"stateRevision":2,"activeTurnId":""},"projection":{"currentTurnId":"turn","turnCount":1,"status":%q}}`, status))
 				}
 				if request.Method == MethodSessionMessages {
-					return json.RawMessage(`{"messages":[{"info":{"id":"user","role":"user"}}]}`)
+					return json.RawMessage(`{"messages":[{"info":{"role":"user","messageId":"user"}}]}`)
 				}
 				return nil
 			})
@@ -1949,7 +1891,7 @@ func TestZCodeTurnRecovery_AcceptsNativeIdleShapeWithoutAnActiveID(t *testing.T)
 			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
 			zcodeRespondToRequestsForTest(t, a, func(request zcodeSentRequest) json.RawMessage {
 				if request.Method == MethodSessionMessages {
-					return json.RawMessage(`{"messages":[{"info":{"id":"user","role":"user","anchor":{"turnId":"turn"}}},{"info":{"id":"assistant","role":"assistant","parentID":"user","anchor":{"turnId":"turn"}},"parts":[{"id":"text","type":"text","text":"Recovered native answer"}]}]}`)
+					return json.RawMessage(`{"messages":[{"info":{"role":"user","anchor":{"turnId":"turn"},"messageId":"user"}},{"info":{"role":"assistant","anchor":{"turnId":"turn"},"messageId":"assistant","parentMessageId":"user"},"parts":[{"type":"text","text":"Recovered native answer","partId":"text"}]}]}`)
 				}
 				return nil
 			})
@@ -2143,7 +2085,7 @@ func TestZCodeTurnRecovery_HeldFinalReadRejectsChangedOwnership(t *testing.T) {
 				require.NotSame(t, owner, replacementOwner)
 				wantFinished = true
 			}
-			a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{"messages":[{"info":{"id":"user","role":"user"}},{"info":{"id":"stale","role":"assistant","parentID":"user","anchor":{"turnId":"turn"}},"parts":[{"id":"text","type":"text","text":"stale recovered output"}]}]}`)))
+			a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{"messages":[{"info":{"role":"user","messageId":"user"}},{"info":{"role":"assistant","anchor":{"turnId":"turn"},"messageId":"stale","parentMessageId":"user"},"parts":[{"type":"text","text":"stale recovered output","partId":"text"}]}]}`)))
 			var result recoveryResult
 			select {
 			case result = <-done:
@@ -2193,47 +2135,23 @@ func TestZCodeTurnRecovery_HeldFinalReadRejectsChangedOwnership(t *testing.T) {
 	}
 }
 
-func TestZCodeTurnRecovery_HeldAnchorReadPreservesANativeIDCollision(t *testing.T) {
+func TestZCodeTurnRecovery_NativeStartPreservesAnExistingTurnOwner(t *testing.T) {
 	t.Parallel()
 	sink := &agenttest.ControlSink{}
-	stdin := &zcodeRecordedStdin{}
-	a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(sink), stdin)
+	a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
 	owner := &zcodeTurnState{id: "#turn-accepted", inputID: "accepted-input", contentByScope: make(map[string]*zcodeScopeContent), toolInvocationIDs: make(map[string]struct{})}
 	state := &zcodeTurnRecoveryState{}
 	registerZCodeRecoveryForTest(a, owner, state)
-	snapshot := zcodeSessionReadSnapshot{
-		Runtime:    &zcodeRuntimeState{activeTurnIDKnown: true, stateRevisionKnown: true, eventSeqKnown: true, ActiveTurnID: "native", StateRevision: 2},
-		Projection: &zcodeProjectionState{CurrentTurnID: "native", TurnCount: 1, Status: "running"},
-	}
-	type recoveryResult struct {
-		settled bool
-		err     error
-	}
-	done := make(chan recoveryResult, 1)
-	go func() {
-		settled, err := a.applyZCodeRecoverySnapshot(owner, state, snapshot)
-		done <- recoveryResult{settled, err}
-	}()
-	request := waitZCodeRequest(t, stdin, MethodSessionMessages)
-	a.HandleOutput(zcodeTurnEventLine(t, 1, "native", contracts.ZCodeEventTurnStarted, `{"turnNumber":1,"inputSource":"background_task"}`))
+	a.HandleOutput(zcodeTurnEventLine(t, 1, "native", contracts.ZCodeEventTurnStarted, `{"turnNumber":1,"inputSource":"background_task","messageId":"background-user"}`))
 	a.Mu.Lock()
 	nativeOwner := a.turns["native"]
 	a.Mu.Unlock()
 	require.NotNil(t, nativeOwner)
 	require.NotSame(t, owner, nativeOwner)
-	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, request), json.RawMessage(`{"messages":[{"info":{"id":"accepted-user","role":"user","anchor":{"turnId":"native","sourceCommandId":"accepted-input"}}}]}`)))
-	var result recoveryResult
-	select {
-	case result = <-done:
-	case <-testutil.DeadlineContext(t).Done():
-		t.Fatal("the held anchor read did not finish")
-	}
-	require.NoError(t, result.err)
-	assert.False(t, result.settled)
+	a.HandleOutput(zcodeTurnEventLine(t, 2, "native", contracts.ZCodeEventTurnStarted, `{"inputId":"accepted-input","messageId":"accepted-user"}`))
 	a.Mu.Lock()
 	assert.Same(t, owner, a.turns["#turn-accepted"])
 	assert.Same(t, nativeOwner, a.turns["native"])
-	assert.Equal(t, "#turn-accepted", owner.id)
 	assert.Empty(t, owner.anchorMessageID)
 	assert.Same(t, state, owner.recovery)
 	assert.False(t, owner.settled)
@@ -2264,8 +2182,11 @@ func TestZCodeTurnRecovery_ResumedOwnerRecoversExactNativeTurnMessages(t *testin
 			}
 			a.HandleOutput([]byte(`{"method":"state.updated","params":{"scope":"session","sessionId":"sess-1","revision":2,"reason":"prompt_completed","patch":{}}}`))
 			zcodeRespondToRequestsForTest(t, a, func(request zcodeSentRequest) json.RawMessage {
+				if request.Method == MethodSessionEvents {
+					return json.RawMessage(`{"events":[{"eventId":"resumed-start","sessionId":"sess-1","seq":1,"type":"turn.started","turnId":"resumed","payload":{"messageId":"resumed-user"}}]}`)
+				}
 				if request.Method == MethodSessionMessages {
-					return json.RawMessage(`{"messages":[{"info":{"id":"history","role":"assistant","anchor":{"turnId":"old"}},"parts":[{"id":"old-text","type":"text","text":"Historical answer"}]},{"info":{"id":"assistant","role":"assistant","anchor":{"turnId":"resumed"}},"parts":[{"id":"text","type":"text","text":"Recovered answer"}]},{"info":{"id":"foreign","role":"assistant","anchor":{"turnId":"background"}},"parts":[{"id":"foreign-text","type":"text","text":"Foreign answer"}]}]}`)
+					return json.RawMessage(`{"messages":[{"info":{"messageId":"resumed-user","role":"user"},"parts":[]},{"info":{"role":"assistant","parentMessageId":"old-user","messageId":"history"},"parts":[{"type":"text","text":"Historical answer","partId":"old-text"}]},{"info":{"role":"assistant","parentMessageId":"resumed-user","messageId":"assistant"},"parts":[{"type":"text","text":"Recovered answer","partId":"text"}]},{"info":{"role":"assistant","parentMessageId":"background-user","messageId":"foreign"},"parts":[{"type":"text","text":"Foreign answer","partId":"foreign-text"}]}]}`)
 				}
 				return nil
 			})
@@ -2461,7 +2382,7 @@ func zcodeCanonicalReplayFixtureWithClock(t *testing.T, clock quartz.Clock, emit
 }
 
 func zcodeCanonicalMessages() json.RawMessage {
-	return json.RawMessage(`{"messages":[{"info":{"id":"user","role":"user"}},{"info":{"id":"message","role":"assistant","parentID":"user","anchor":{"turnId":"turn-A"}},"parts":[{"id":"reasoning","type":"reasoning","text":"Hello"},{"id":"text","type":"text","text":"Answer"}]}]}`)
+	return json.RawMessage(`{"messages":[{"info":{"role":"user","messageId":"user"}},{"info":{"role":"assistant","anchor":{"turnId":"turn-A"},"messageId":"message","parentMessageId":"user"},"parts":[{"type":"reasoning","text":"Hello","partId":"reasoning"},{"type":"text","text":"Answer","partId":"text"}]}]}`)
 }
 
 func waitZCodeCanonicalEnd(t *testing.T, sink *zcodeCanonicalEndSink) {
@@ -2787,7 +2708,7 @@ func TestZCodeNativeEnd_SupersedesAnOlderIdleRecoveryRead(t *testing.T) {
 	first := waitZCodeRequestNumber(t, stdin, MethodSessionMessages, 0)
 	a.HandleOutput(zcodeTurnEventLine(t, 5, "turn-A", contracts.ZCodeEventTurnCompleted, `{"resultType":"success"}`))
 	second := waitZCodeRequestNumber(t, stdin, MethodSessionMessages, 1)
-	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, first), json.RawMessage(`{"messages":[{"info":{"id":"user","role":"user"}},{"info":{"id":"message","role":"assistant","parentID":"user","anchor":{"turnId":"turn-A"}},"parts":[{"id":"reasoning","type":"reasoning","text":"stale output"},{"id":"text","type":"text","text":"stale answer"}]}]}`)))
+	a.HandleOutput(zcodeReplyLine(t, zcodeSentRequestID(t, first), json.RawMessage(`{"messages":[{"info":{"role":"user","messageId":"user"}},{"info":{"role":"assistant","anchor":{"turnId":"turn-A"},"messageId":"message","parentMessageId":"user"},"parts":[{"type":"reasoning","text":"stale output","partId":"reasoning"},{"type":"text","text":"stale answer","partId":"text"}]}]}`)))
 	old := zcodeTestReceive(t, oldRead)
 	require.NoError(t, old.err)
 	assert.False(t, old.settled)
@@ -2851,4 +2772,124 @@ func TestZCodeRecoveryCoverage_ReusesCanonicalStringsForRecoveredSuffixes(t *tes
 	_, buffered, present := a.generationBuffer.ScopeSnapshot(zcodeTextScope("message"))
 	assert.True(t, present)
 	assert.Equal(t, text, buffered)
+}
+
+func TestZCodeNativeMessagesRetainWireIdentity(t *testing.T) {
+	t.Parallel()
+	var response struct {
+		Messages []zcodeNativeMessage `json:"messages"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(`{"messages":[
+		{"info":{"messageId":"native-user","sessionId":"session","role":"user","time":{"created":1000},"agent":"default"},"parts":[]},
+		{"info":{"messageId":"native-answer","sessionId":"session","parentMessageId":"native-user","role":"assistant","time":{"created":1001},"agent":"default","semantics":{"kind":"assistant_response"}},"parts":[{"partId":"native-part","messageId":"native-answer","sessionId":"session","type":"text","text":"Recovered answer"}]},
+		{"info":{"messageId":"other-answer","sessionId":"session","parentMessageId":"other-user","role":"assistant","time":{"created":1002},"agent":"default"},"parts":[{"partId":"other-part","messageId":"other-answer","sessionId":"session","type":"text","text":"Another turn"}]}
+	]}`), &response))
+	selected, truncated := selectZCodeOwnerMessages(&zcodeTurnState{id: "native-turn", anchorMessageID: "native-user"}, response.Messages)
+	require.False(t, truncated, "the native user message is present in the complete read")
+	require.Len(t, selected, 1)
+	assert.Equal(t, "native-answer", selected[0].Info.ID)
+	assert.Equal(t, "native-user", selected[0].Info.ParentID)
+	require.Len(t, selected[0].Parts, 1)
+	assert.Equal(t, "native-part", selected[0].Parts[0].ID)
+	assert.Equal(t, "Recovered answer", selected[0].Parts[0].Text)
+}
+
+func TestZCodeRecoveryDoesNotReadPrivateCoreAnchorsFromWireMessages(t *testing.T) {
+	t.Parallel()
+	var response struct {
+		Messages []zcodeNativeMessage `json:"messages"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(`{"messages":[{"info":{"messageId":"another-response","parentMessageId":"another-user","role":"assistant","anchor":{"turnId":"current-turn"}},"parts":[{"partId":"part","type":"text","text":"Another turn"}]}]}`), &response))
+	selected, _ := selectZCodeOwnerMessages(&zcodeTurnState{id: "current-turn"}, response.Messages)
+	assert.Empty(t, selected, "unknown private fields cannot establish turn ownership")
+}
+
+func TestZCodeResumedMessageReadFindsItsNativeStartAnchor(t *testing.T) {
+	t.Parallel()
+	a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+	zcodeRespondToRequestsForTest(t, a, func(request zcodeSentRequest) json.RawMessage {
+		switch request.Method {
+		case MethodSessionEvents:
+			return json.RawMessage(`{"events":[{"sessionId":"sess-1","seq":1,"type":"turn.started","turnId":"resumed","payload":{"inputId":"accepted-input","messageId":"native-user"}}]}`)
+		case MethodSessionMessages:
+			return json.RawMessage(`{"messages":[{"info":{"messageId":"native-user","role":"user"},"parts":[]},{"info":{"messageId":"answer","parentMessageId":"native-user","role":"assistant"},"parts":[{"partId":"text","type":"text","text":"Recovered answer"}]},{"info":{"messageId":"foreign","parentMessageId":"another-user","role":"assistant"},"parts":[{"partId":"foreign-text","type":"text","text":"Foreign answer"}]}]}`)
+		default:
+			return nil
+		}
+	})
+	messages, err := a.fetchZCodeFinalMessages(t.Context(), "sess-1", &zcodeTurnState{id: "resumed"})
+	require.NoError(t, err)
+	require.Len(t, messages, 1)
+	assert.Equal(t, "answer", messages[0].Info.ID)
+	assert.Equal(t, "Recovered answer", messages[0].Parts[0].Text)
+}
+
+func TestZCodeMessageAnchorRequiresConsistentNativeStartIdentity(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, inputID, events, want, wantError string
+	}{
+		{"matching input", "input", `[{"seq":1,"turnId":"foreign","type":"turn.started","payload":{"messageId":"foreign-user"}},{"seq":2,"turnId":"turn","type":"turn.started","payload":{"inputId":"input","messageId":"user"}}]`, "user", ""},
+		{"duplicate observation", "", `[{"seq":1,"turnId":"turn","type":"turn.started","payload":{"messageId":"user"}},{"seq":2,"turnId":"turn","type":"turn.started","payload":{"messageId":"user"}}]`, "user", ""},
+		{"empty archive", "", `[]`, "", "no user-message identity"},
+		{"foreign turn", "", `[{"seq":1,"turnId":"foreign","type":"turn.started","payload":{"messageId":"foreign-user"}}]`, "", "no user-message identity"},
+		{"missing user identity", "", `[{"seq":1,"turnId":"turn","type":"turn.started","payload":{}}]`, "", "no user-message identity"},
+		{"mismatched input", "accepted", `[{"seq":1,"turnId":"turn","type":"turn.started","payload":{"inputId":"another","messageId":"user"}}]`, "", "another input"},
+		{"conflicting messages", "", `[{"seq":1,"turnId":"turn","type":"turn.started","payload":{"messageId":"user"}},{"seq":2,"turnId":"turn","type":"turn.started","payload":{"messageId":"another-user"}}]`, "", "conflicting start"},
+		{"conflicting inputs", "", `[{"seq":1,"turnId":"turn","type":"turn.started","payload":{"inputId":"first","messageId":"user"}},{"seq":2,"turnId":"turn","type":"turn.started","payload":{"inputId":"second","messageId":"user"}}]`, "", "conflicting start"},
+		{"malformed payload", "", `[{"seq":1,"turnId":"turn","type":"turn.started","payload":[]}]`, "", "decode the native turn start"},
+		{"zero sequence", "", `[{"seq":0,"turnId":"turn","type":"turn.started","payload":{"messageId":"user"}}]`, "", "positive event sequence"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := newZCodeTestAgent(t, agent.NewProviderServices(&agenttest.Sink{}))
+			zcodeRespondToRequestsForTest(t, a, func(request zcodeSentRequest) json.RawMessage {
+				require.Equal(t, MethodSessionEvents, request.Method)
+				var params struct {
+					SessionID string `json:"sessionId"`
+					AfterSeq  int64  `json:"afterSeq"`
+				}
+				require.NoError(t, json.Unmarshal(request.Params, &params))
+				assert.Equal(t, "sess-1", params.SessionID)
+				assert.Zero(t, params.AfterSeq)
+				return json.RawMessage(`{"events":` + tc.events + `}`)
+			})
+			anchor, err := a.resolveZCodeMessageAnchor(t.Context(), "sess-1", &zcodeTurnState{id: "turn", inputID: tc.inputID}, nil)
+			if tc.wantError != "" {
+				require.ErrorContains(t, err, tc.wantError)
+				assert.Empty(t, anchor)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, anchor)
+		})
+	}
+}
+
+func TestZCodeMessageAnchorUsesTheObservedAssistantIdentity(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, wantError string
+		messages        []zcodeNativeMessage
+	}{
+		{"owned response", "", []zcodeNativeMessage{{Info: zcodeNativeMessageInfo{ID: "foreign", Role: "assistant", ParentID: "foreign-user"}}, {Info: zcodeNativeMessageInfo{ID: "observed", Role: "assistant", ParentID: "user"}}}},
+		{"missing parent", "no user-message parent", []zcodeNativeMessage{{Info: zcodeNativeMessageInfo{ID: "observed", Role: "assistant"}}}},
+		{"wrong role", "no user-message parent", []zcodeNativeMessage{{Info: zcodeNativeMessageInfo{ID: "observed", Role: "user", ParentID: "user"}}}},
+		{"conflicting parents", "conflicting parents", []zcodeNativeMessage{{Info: zcodeNativeMessageInfo{ID: "observed", Role: "assistant", ParentID: "user"}}, {Info: zcodeNativeMessageInfo{ID: "observed", Role: "assistant", ParentID: "other-user"}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stdin := &zcodeRecordedStdin{}
+			a := newZCodeTestAgentWithStdin(t, agent.NewProviderServices(&agenttest.Sink{}), stdin)
+			anchor, err := a.resolveZCodeMessageAnchor(t.Context(), "sess-1", &zcodeTurnState{id: "turn", currentAssistantMessageID: "observed"}, tc.messages)
+			if tc.wantError != "" {
+				require.ErrorContains(t, err, tc.wantError)
+				assert.Empty(t, anchor)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, "user", anchor)
+			}
+			assert.Empty(t, stdin.Requests(t), "an observed native response supplies its parent without another request")
+		})
+	}
 }

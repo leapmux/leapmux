@@ -46,7 +46,9 @@ func (a *Agent) observeChild(raw []byte, event nativeEvent) {
 			return
 		}
 		rowKey := childRowKey(sessionID, event.ToolCallID)
-		id, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: event.ToolCallID, ProviderChildKey: rowKey, Title: input.Description})
+		id, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+			SpawnSpanID:  event.ToolCallID, ProviderChildKey: rowKey, Title: input.Description})
 		if err != nil {
 			slog.Warn("open a Command Code child transcript", "error", err)
 			return

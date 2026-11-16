@@ -191,8 +191,8 @@ describe('prepareMessage', () => {
   // the native envelope carries no `sessionUpdate`, so the raw frame classifies as a
   // frame nobody can read, and only the unwrapped payload is a tool row.
   it('classifies the RESOLVED payload, not the raw frame', () => {
-    const wrapped = prepareMessage(message({ provider: AgentProvider.OPENCODE, content: ACP_WRAPPED }))
-    const bare = prepareMessage(message({ provider: AgentProvider.OPENCODE, content: ACP_INNER }))
+    const wrapped = prepareMessage(message({ provider: AgentProvider.KILO, content: ACP_WRAPPED }))
+    const bare = prepareMessage(message({ provider: AgentProvider.KILO, content: ACP_INNER }))
     expect(wrapped.category).toEqual(bare.category)
     expect(wrapped.category.kind).toBe('tool_use')
   })
@@ -200,7 +200,7 @@ describe('prepareMessage', () => {
   // Both payloads are kept, because they answer different questions: the row is drawn
   // from the resolved one and the Raw JSON view shows the agent's own bytes.
   it('keeps the original parse beside the resolved one', () => {
-    const prepared = prepareMessage(message({ provider: AgentProvider.OPENCODE, content: ACP_WRAPPED }))
+    const prepared = prepareMessage(message({ provider: AgentProvider.KILO, content: ACP_WRAPPED }))
     expect(prepared.original.parentObject).toEqual(ACP_WRAPPED)
     expect(prepared.resolved.parentObject).toEqual(ACP_INNER)
   })
@@ -208,24 +208,24 @@ describe('prepareMessage', () => {
   // A provider that recovers nothing resolves to the payload it was given, and the two
   // are then the SAME object -- no reader pays for a copy of bytes nobody changed.
   it('resolves to the original object when nothing was recovered', () => {
-    const prepared = prepareMessage(message({ provider: AgentProvider.OPENCODE, content: ACP_INNER }))
+    const prepared = prepareMessage(message({ provider: AgentProvider.KILO, content: ACP_INNER }))
     expect(prepared.resolved.parentObject).toBe(prepared.original.parentObject)
   })
 
   it('carries the message it prepared', () => {
-    const source = message({ provider: AgentProvider.OPENCODE, content: ACP_INNER })
+    const source = message({ provider: AgentProvider.KILO, content: ACP_INNER })
     expect(prepareMessage(source).message).toBe(source)
   })
 
   // ChatView holds both payloads already, and preparing a row must not parse the
   // content a second time for every mounted bubble.
   it('takes a caller supplied parse rather than parsing again', () => {
-    const source = message({ provider: AgentProvider.OPENCODE, content: ACP_INNER })
+    const source = message({ provider: AgentProvider.KILO, content: ACP_INNER })
     const original = parseMessageContent(source)
     const resolved = resolveMessageForRendering({
       ...original,
       parentObject: { ...ACP_INNER, status: 'pending' },
-    }, AgentProvider.OPENCODE)
+    }, AgentProvider.KILO)
     const prepared = prepareMessage(source, { original, resolved })
     expect(prepared.original).toBe(original)
     expect(prepared.resolved).toBe(resolved)
@@ -251,7 +251,7 @@ describe('prepareMessage', () => {
       id: 'm3',
       source: MessageSource.AGENT,
       seq: 7n,
-      agentProvider: AgentProvider.OPENCODE,
+      agentProvider: AgentProvider.KILO,
       contentCompression: ContentCompression.NONE,
       content: new TextEncoder().encode('{unfinished'),
     })
@@ -276,7 +276,7 @@ describe('extractPreparedRow', () => {
   // The scroll rail resolves no siblings. The default still states this message's
   // role and its presence in the loaded window.
   it('states the prepared row role and visible-row presence', () => {
-    const prepared = prepareMessage(message({ provider: AgentProvider.OPENCODE, content: ACP_INNER }))
+    const prepared = prepareMessage(message({ provider: AgentProvider.KILO, content: ACP_INNER }))
     const row = extractedRow(extractPreparedRow(prepared))
     expect(row?.kind).toBe('tool')
     if (row?.kind !== 'tool')
@@ -288,7 +288,7 @@ describe('extractPreparedRow', () => {
   // not returned is a request and its finished row closes the span.
   it('derives the span role from the provider', () => {
     const pending = prepareMessage(message({
-      provider: AgentProvider.OPENCODE,
+      provider: AgentProvider.KILO,
       content: {
         sessionUpdate: 'tool_call',
         toolCallId: 'call-1',
@@ -297,7 +297,7 @@ describe('extractPreparedRow', () => {
         kind: 'execute',
       },
     }))
-    const finished = prepareMessage(message({ provider: AgentProvider.OPENCODE, content: ACP_INNER }))
+    const finished = prepareMessage(message({ provider: AgentProvider.KILO, content: ACP_INNER }))
     const roleOf = (row: ReturnType<typeof extractedRow>) => row?.kind === 'tool'
       ? row.role
       : null
@@ -310,7 +310,7 @@ describe('extractPreparedRow', () => {
   // rail cannot afford to fetch is exactly what the transcript supplies.
   it('takes an explicit sides over the derived one', () => {
     const request = prepareMessage(message({
-      provider: AgentProvider.OPENCODE,
+      provider: AgentProvider.KILO,
       content: {
         sessionUpdate: 'tool_call',
         toolCallId: 'call-1',
@@ -319,7 +319,7 @@ describe('extractPreparedRow', () => {
         kind: 'execute',
       },
     }))
-    const prepared = prepareMessage(message({ provider: AgentProvider.OPENCODE, content: ACP_INNER }))
+    const prepared = prepareMessage(message({ provider: AgentProvider.KILO, content: ACP_INNER }))
     const withRequest = extractedRow(extractPreparedRow(prepared, {
       span: {
         request: request.resolved,
@@ -340,7 +340,7 @@ describe('extractPreparedRow', () => {
 
   it('does not treat fetched sibling data as a visible sibling row', () => {
     const request = prepareMessage(message({
-      provider: AgentProvider.OPENCODE,
+      provider: AgentProvider.KILO,
       content: {
         sessionUpdate: 'tool_call',
         toolCallId: 'call-1',
@@ -349,7 +349,7 @@ describe('extractPreparedRow', () => {
         kind: 'execute',
       },
     }))
-    const prepared = prepareMessage(message({ provider: AgentProvider.OPENCODE, content: ACP_INNER }))
+    const prepared = prepareMessage(message({ provider: AgentProvider.KILO, content: ACP_INNER }))
     const row = extractedRow(extractPreparedRow(prepared, {
       span: {
         request: request.resolved,
@@ -369,7 +369,7 @@ describe('extractPreparedRow', () => {
   // every reader draws the same notice without passing it by hand.
   it('reports the completion the message records', () => {
     const prepared = prepareMessage(message({
-      provider: AgentProvider.OPENCODE,
+      provider: AgentProvider.KILO,
       content: ACP_INNER,
       completion: MessageCompletion.INTERRUPTED,
     }))
@@ -379,7 +379,7 @@ describe('extractPreparedRow', () => {
 
 describe('prepareChatRow', () => {
   it('returns the preparation and the extraction it produced', () => {
-    const source = message({ provider: AgentProvider.OPENCODE, content: ACP_WRAPPED })
+    const source = message({ provider: AgentProvider.KILO, content: ACP_WRAPPED })
     const { prepared, extraction } = prepareChatRow(source)
     expect(prepared.message).toBe(source)
     expect(extraction.kind).toBe('row')

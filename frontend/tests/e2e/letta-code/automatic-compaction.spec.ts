@@ -9,15 +9,18 @@ lettaTest('ends automatic compaction with one boundary row and no live indicator
   await modelScript.rule({
     name: 'letta automatic summary',
     priority: 'high',
-    // Letta Code 0.34.15 uses LOCAL_ALL_COMPACTION_PROMPT or LOCAL_SLIDING_WINDOW_COMPACTION_PROMPT as its system prompt.
+    // Letta Code 0.34.51 uses LOCAL_ALL_COMPACTION_PROMPT or LOCAL_SLIDING_WINDOW_COMPACTION_PROMPT as its system prompt.
     when: { system: '(?:Your task is to create a detailed summary of the conversation so far|The following messages are being evicted from the BEGINNING of your context window)' },
     respond: {
       text: modelScript.prompt(`${summary} The first task is complete.`),
     },
   })
+  // The native default window is 128000 tokens with a 16384-token reserve.
+  // Keep enough real history for the CLI to reclaim the reported pressure.
+  const padding = Array.from({ length: 2000 }, (_, index) => `LETTA_OLD_CONTEXT_${index} contains completed task details.`).join('\n')
   const first = await modelScript.queue({
-    text: 'The first task is complete.',
-    usage: { inputTokens: 5_000_000, outputTokens: 20 },
+    text: `The first task is complete.\n${padding}`,
+    usage: { inputTokens: 112640, outputTokens: 20 },
   })
   await sendMessage(page, modelScript.prompt('Complete the first scripted task.'))
   await modelScript.waitForSteps(first + 1)

@@ -130,7 +130,7 @@ func TestHelperProcessOpenCodeACP(t *testing.T) {
 func TestStartOpenCode_NewSessionHandshakeReadsConfigOptionModels(t *testing.T) {
 	installFakeOpenCodeACP(t, "")
 
-	provider, err := Start(context.Background(), agent.Options{
+	provider, err := startFamilyTestAgent(context.Background(), agent.Options{
 		AgentID:       "opencode-new",
 		WorkingDir:    t.TempDir(),
 		Shell:         testutil.TestShell(),
@@ -139,7 +139,7 @@ func TestStartOpenCode_NewSessionHandshakeReadsConfigOptionModels(t *testing.T) 
 	}, agent.NewProviderServices(&agenttest.Sink{}))
 	require.NoError(t, err)
 
-	a := provider.(*Agent)
+	a := provider.(*familyTestAgent)
 	t.Cleanup(func() {
 		a.Stop()
 		_ = a.Wait()
@@ -169,7 +169,7 @@ func TestStartOpenCode_NewSessionHandshakeReadsConfigOptionModels(t *testing.T) 
 func TestStartOpenCode_TheFamilyStartSteers(t *testing.T) {
 	installFakeOpenCodeACP(t, "")
 
-	provider, err := Start(context.Background(), agent.Options{
+	provider, err := startFamilyTestAgent(context.Background(), agent.Options{
 		AgentID:       "opencode-steer",
 		WorkingDir:    t.TempDir(),
 		Shell:         testutil.TestShell(),
@@ -178,7 +178,7 @@ func TestStartOpenCode_TheFamilyStartSteers(t *testing.T) {
 	}, agent.NewProviderServices(&agenttest.Sink{}))
 	require.NoError(t, err)
 
-	a := provider.(*Agent)
+	a := provider.(*familyTestAgent)
 	t.Cleanup(func() {
 		a.Stop()
 		_ = a.Wait()
@@ -196,7 +196,7 @@ func TestStartOpenCode_TheFamilyStartSteers(t *testing.T) {
 func TestStartOpenCode_HandshakeSurfacesGenericConfigOption(t *testing.T) {
 	installFakeOpenCodeACP(t, "generic-option")
 
-	provider, err := Start(context.Background(), agent.Options{
+	provider, err := startFamilyTestAgent(context.Background(), agent.Options{
 		AgentID:       "opencode-generic",
 		WorkingDir:    t.TempDir(),
 		Shell:         testutil.TestShell(),
@@ -205,7 +205,7 @@ func TestStartOpenCode_HandshakeSurfacesGenericConfigOption(t *testing.T) {
 	}, agent.NewProviderServices(&agenttest.Sink{}))
 	require.NoError(t, err)
 
-	a := provider.(*Agent)
+	a := provider.(*familyTestAgent)
 	t.Cleanup(func() {
 		a.Stop()
 		_ = a.Wait()
@@ -231,7 +231,7 @@ func TestStartOpenCode_HandshakeSurfacesGenericConfigOption(t *testing.T) {
 func TestStartOpenCode_RejectedModelIsNonFatal(t *testing.T) {
 	installFakeOpenCodeACP(t, "reject-model")
 
-	provider, err := Start(context.Background(), agent.Options{
+	provider, err := startFamilyTestAgent(context.Background(), agent.Options{
 		AgentID:       "opencode-reject",
 		WorkingDir:    t.TempDir(),
 		Options:       map[string]string{agent.OptionIDModel: "made-up/model"},
@@ -241,7 +241,7 @@ func TestStartOpenCode_RejectedModelIsNonFatal(t *testing.T) {
 	}, agent.NewProviderServices(&agenttest.Sink{}))
 	require.NoError(t, err, "a rejected model must not abort startup")
 
-	agent := provider.(*Agent)
+	agent := provider.(*familyTestAgent)
 	t.Cleanup(func() {
 		agent.Stop()
 		_ = agent.Wait()
@@ -265,7 +265,7 @@ func TestStartOpenCode_ModelChangeSurfacesEffort(t *testing.T) {
 	installFakeOpenCodeACP(t, "effort-on-model-switch")
 
 	sink := &agenttest.Sink{}
-	provider, err := Start(context.Background(), agent.Options{
+	provider, err := startFamilyTestAgent(context.Background(), agent.Options{
 		AgentID:       "opencode-effort",
 		WorkingDir:    t.TempDir(),
 		Shell:         testutil.TestShell(),
@@ -274,7 +274,7 @@ func TestStartOpenCode_ModelChangeSurfacesEffort(t *testing.T) {
 	}, agent.NewProviderServices(sink))
 	require.NoError(t, err)
 
-	ag := provider.(*Agent)
+	ag := provider.(*familyTestAgent)
 	t.Cleanup(func() {
 		ag.Stop()
 		_ = ag.Wait()
@@ -300,4 +300,14 @@ func TestStartOpenCode_ModelChangeSurfacesEffort(t *testing.T) {
 	// newly-surfaced effort group would never reach the settings panel.
 	assert.Greater(t, sink.StatusActiveCount(), broadcastsBefore,
 		"a status refresh must broadcast the new effort group to the frontend")
+}
+
+func startFamilyTestAgent(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+	return StartFamily(ctx, opts, sink, Registration(), FamilySpec{
+		ProviderName:         "opencode",
+		RCMarkerEnvKey:       "OPENCODE_CLIENT",
+		QuestionToolEnv:      openCodeQuestionToolEnv,
+		DisableAutoUpdateEnv: openCodeDisableAutoUpdateEnv,
+		DefaultPrimaryAgent:  PrimaryAgentBuild,
+	}, func() *familyTestAgent { return &familyTestAgent{} }, func(a *familyTestAgent) *FamilyBase { return &a.FamilyBase })
 }

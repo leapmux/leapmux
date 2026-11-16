@@ -6,13 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
-	"strconv"
 	"sync"
 	"time"
 
 	"github.com/coder/quartz"
 	"github.com/coder/websocket"
+	"github.com/leapmux/leapmux/internal/worker/agent"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -29,14 +30,13 @@ import (
 //     pings, and the events go to a second goroutine through a queue. An event
 //     handler that blocks -- on the database, on a broadcast -- then delays the
 //     transcript and never the pong.
-//   - Durable events carry a rising `seq`, and a re-subscribe that states the
-//     last one received replays what the socket missed. So a lost socket is
-//     reconnected, not reported. A volatile event is never replayed, and a
-//     server that kept fewer events than the socket missed replays none, so
-//     the caller restores what the replay cannot (reconnected).
-//   - A session that is not loaded in the server is not subscribable: the ack
-//     lists it under `not_found`. A REST read of the session loads it, which is
-//     the caller's job before it subscribes.
+//   - Each agent's transcript carries its own sequence number. A subscription
+//     sends those positions to replay missed operations. When replay is
+//     unavailable, the server sends a potentially incomplete transcript reset before its ack.
+//     Transcript pagination recovers the turns that the reset omits.
+//   - subscribe_v2 resumes the session itself. Its ack lists an unavailable
+//     session under not_found. Global events arrive automatically and have no
+//     replay cursor.
 //
 // Every goroutine of the stream runs under its own context. Stop closes that
 // context, and Wait joins the goroutines. The process context ends after native
@@ -44,19 +44,25 @@ import (
 
 // kimiFrame is one WebSocket frame, including native control interactions.
 type kimiFrame struct {
-	Type      string          `json:"type"`
-	ID        string          `json:"id,omitempty"`
-	Seq       int64           `json:"seq,omitempty"`
-	SessionID string          `json:"session_id,omitempty"`
-	Timestamp string          `json:"timestamp,omitempty"`
-	Epoch     string          `json:"epoch,omitempty"`
-	Volatile  bool            `json:"volatile,omitempty"`
-	Code      int             `json:"code,omitempty"`
-	Msg       string          `json:"msg,omitempty"`
-	Payload   json.RawMessage `json:"payload,omitempty"`
-	// Raw preserves the complete native interaction frame, whose request is
-	// outside the payload used by durable events.
-	Raw json.RawMessage `json:"-"`
+	// afterDispatch is an internal barrier, never a native wire frame.
+	afterDispatch func()
+	Type          string          `json:"type"`
+	ID            string          `json:"id,omitempty"`
+	RequestID     string          `json:"request_id,omitempty"`
+	Seq           int64           `json:"seq,omitempty"`
+	SessionID     string          `json:"session_id,omitempty"`
+	Timestamp     string          `json:"timestamp,omitempty"`
+	Epoch         string          `json:"epoch,omitempty"`
+	Volatile      bool            `json:"volatile,omitempty"`
+	Code          int             `json:"code,omitempty"`
+	Msg           string          `json:"msg,omitempty"`
+	Payload       json.RawMessage `json:"payload,omitempty"`
+	Task          json.RawMessage `json:"task,omitempty"`
+	// Raw preserves native frames whose fields are outside payload.
+	Raw      json.RawMessage `json:"-"`
+	wireSize int
+	// transcriptSeq is decoded once at the transcript boundary.
+	transcriptSeq *int64
 }
 
 func (f *kimiFrame) UnmarshalJSON(data []byte) error {
@@ -66,29 +72,28 @@ func (f *kimiFrame) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*f = kimiFrame(decoded)
-	if f.Type == contracts.KimiFrameInteraction {
+	f.wireSize = len(data)
+	if f.Type == contracts.KimiFrameInteraction || f.Type == contracts.KimiEventAgent || f.Type == contracts.KimiEventUsage || f.Type == contracts.KimiEventTask || f.Type == contracts.KimiEventTaskList || f.Type == contracts.KimiEventGoal || f.Type == contracts.KimiEventTodo {
 		f.Raw = append(json.RawMessage(nil), data...)
 	}
 	return nil
 }
 
-// kimiCursor is the position of one session's durable event stream.
+// kimiCursor holds each agent's transcript position and counts received resets.
 type kimiCursor struct {
-	Seq   int64  `json:"seq"`
-	Epoch string `json:"epoch"`
+	Positions map[string]int64
+	Resets    uint64
 }
 
 // kimiAck is the payload of the ack a subscribe receives.
 type kimiAck struct {
-	Accepted       []string              `json:"accepted"`
-	NotFound       []string              `json:"not_found"`
-	ResyncRequired []string              `json:"resync_required"`
-	Cursors        map[string]kimiCursor `json:"cursors"`
+	Accepted []string `json:"accepted"`
+	NotFound []string `json:"not_found"`
 }
 
-// errKimiSessionNotLoaded reports a subscribe the server refused because the
-// session is not loaded. A REST read loads it.
-var errKimiSessionNotLoaded = errors.New("the session is not loaded in the Kimi server")
+// errKimiSessionUnavailable reports a subscribe the server refused because the
+// session is unavailable.
+var errKimiSessionUnavailable = errors.New("the session is unavailable in the Kimi server")
 
 // errKimiStreamClosed reports a start of a stream that close already ended.
 var errKimiStreamClosed = errors.New("the Kimi event stream is closed")
@@ -131,12 +136,9 @@ const (
 // arguments or output, which can hold a large file.
 const kimiStreamReadLimit = 64 << 20
 
-// kimiReconnectHandler restores what a re-subscribe did not replay. It runs
-// on the goroutine that re-subscribed, once for each session the server
-// answered for. replayed is true when the server replayed every durable event
-// the socket missed. It is false when the server replayed nothing: it kept
-// fewer events than the socket missed, it no longer had the session loaded, or
-// the stream held no cursor to replay from. ctx ends when the stream closes.
+// kimiReconnectHandler refreshes unsequenced state after each subscription.
+// replayed is true when an existing transcript position resumed without a reset.
+// ctx ends when the stream closes.
 type kimiReconnectHandler func(ctx context.Context, sessionID string, replayed bool)
 
 // kimiStream owns the event WebSocket of one kap-server.
@@ -147,6 +149,8 @@ type kimiStream struct {
 	dispatch func(kimiFrame)
 	// reconnected runs after each re-subscribe. See kimiReconnectHandler.
 	reconnected kimiReconnectHandler
+	// recovering starts a projection fence before a native resubscription.
+	recovering func(context.Context, string) func(bool)
 	// clock drives the wait before a reconnect attempt and the read timeout.
 	clock quartz.Clock
 	// backoff is the first wait between reconnect attempts. It doubles up to
@@ -175,19 +179,24 @@ type kimiStream struct {
 	// durable event received for it. A reconnect re-subscribes each one from
 	// its cursor.
 	sessions map[string]kimiCursor
+	// states holds the current native main-agent state for each tracked session.
+	states       map[string]kimiSessionPushState
+	stateChanged chan struct{}
 }
 
 func newKimiStream(endpoint *providerkit.HTTPEndpoint, agentID string, clock quartz.Clock, dispatch func(kimiFrame), reconnected kimiReconnectHandler) *kimiStream {
 	return &kimiStream{
-		endpoint:    endpoint,
-		dispatch:    dispatch,
-		reconnected: reconnected,
-		clock:       clock,
-		backoff:     kimiStreamFirstBackoff,
-		agentID:     agentID,
-		queue:       make(chan kimiFrame, kimiStreamQueueDepth),
-		acks:        make(map[string]chan kimiFrame),
-		sessions:    make(map[string]kimiCursor),
+		endpoint:     endpoint,
+		dispatch:     dispatch,
+		reconnected:  reconnected,
+		clock:        clock,
+		backoff:      kimiStreamFirstBackoff,
+		agentID:      agentID,
+		queue:        make(chan kimiFrame, kimiStreamQueueDepth),
+		acks:         make(map[string]chan kimiFrame),
+		sessions:     make(map[string]kimiCursor),
+		states:       make(map[string]kimiSessionPushState),
+		stateChanged: make(chan struct{}),
 	}
 }
 
@@ -248,7 +257,13 @@ func (s *kimiStream) dial(ctx context.Context, timeout time.Duration) (*websocke
 // returned.
 func (s *kimiStream) close() {
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
 	s.closed = true
+	clear(s.states)
+	s.signalStateChangeLocked()
 	cancel, conn := s.cancel, s.conn
 	s.conn = nil
 	s.mu.Unlock()
@@ -279,7 +294,11 @@ func (s *kimiStream) runDispatcher(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			s.dispatch(frame)
+			if frame.afterDispatch != nil {
+				frame.afterDispatch()
+			} else {
+				s.dispatch(frame)
+			}
 		}
 	}
 }
@@ -292,6 +311,13 @@ func (s *kimiStream) runReader(ctx context.Context, conn *websocket.Conn) {
 		if ctx.Err() != nil {
 			return
 		}
+		s.mu.Lock()
+		if s.conn == conn {
+			s.conn = nil
+			clear(s.states)
+			s.signalStateChangeLocked()
+		}
+		s.mu.Unlock()
 		slog.Warn("kimi event stream lost; reconnecting", "agent_id", s.agentID, "error", err)
 		next, ok := s.reconnect(ctx)
 		if !ok {
@@ -359,10 +385,14 @@ func (s *kimiStream) readUntilFailure(ctx context.Context, conn *websocket.Conn)
 			s.pong(ctx, conn, frame)
 		case kimiFrameAck:
 			s.deliverAck(frame)
+		case kimiFrameTaskResponse:
+			frame.ID = frame.RequestID
+			s.deliverAck(frame)
 		case kimiFrameServerHello:
 			// The hello states the heartbeat interval and the protocol version. The
 			// reader's timeout already assumes the 10-second heartbeat.
 		default:
+			s.observeSessionState(frame)
 			s.noteCursor(frame)
 			select {
 			case s.queue <- frame:
@@ -406,11 +436,17 @@ func (s *kimiStream) pong(ctx context.Context, conn *websocket.Conn, ping kimiFr
 	}
 }
 
-// noteCursor records the position of a durable event, so a reconnect replays
-// only what came after it. A volatile event carries the CURRENT durable seq
-// rather than a new one, so it never moves the cursor.
+// noteCursor records the native position of each agent's transcript.
+// A reset replaces its position, including when a server restarts numbering.
 func (s *kimiStream) noteCursor(frame kimiFrame) {
-	if frame.Volatile || frame.Seq <= 0 || frame.SessionID == "" {
+	if frame.SessionID == "" || (frame.Type != contracts.KimiEventTranscriptReset && frame.Type != contracts.KimiEventTranscriptOps) {
+		return
+	}
+	var position struct {
+		AgentID string `json:"agent_id"`
+		Seq     *int64 `json:"seq"`
+	}
+	if json.Unmarshal(frame.Payload, &position) != nil || position.AgentID == "" || position.Seq == nil || *position.Seq < 0 {
 		return
 	}
 	s.mu.Lock()
@@ -419,18 +455,20 @@ func (s *kimiStream) noteCursor(frame kimiFrame) {
 	if !tracked {
 		return
 	}
-	if frame.Epoch != "" && frame.Epoch != cursor.Epoch {
-		// A new epoch restarts the numbering, so the old seq means nothing in it.
-		cursor = kimiCursor{Epoch: frame.Epoch}
+	if cursor.Positions == nil {
+		cursor.Positions = make(map[string]int64)
 	}
-	if frame.Seq > cursor.Seq {
-		cursor.Seq = frame.Seq
+	if frame.Type == contracts.KimiEventTranscriptReset {
+		cursor.Resets++
+		cursor.Positions[position.AgentID] = *position.Seq
+	} else if previous, exists := cursor.Positions[position.AgentID]; !exists || *position.Seq > previous {
+		cursor.Positions[position.AgentID] = *position.Seq
 	}
 	s.sessions[frame.SessionID] = cursor
 }
 
 // subscribe subscribes the current connection to sessionID and returns the ack.
-// A session the server has not loaded returns errKimiSessionNotLoaded.
+// An unavailable session returns errKimiSessionUnavailable.
 //
 // A subscribe that fails forgets a session that it added: the caller does not
 // drive that session, and a reconnect must not subscribe it again. A session
@@ -442,9 +480,9 @@ func (s *kimiStream) subscribe(ctx context.Context, sessionID string) (kimiAck, 
 		s.sessions[sessionID] = kimiCursor{}
 	}
 	s.mu.Unlock()
-	ack, err := s.sendSubscribe(ctx, []string{sessionID}, nil)
+	ack, err := s.sendSessionSubscribe(ctx, sessionID, nil)
 	if err == nil && slices.Contains(ack.NotFound, sessionID) {
-		err = errKimiSessionNotLoaded
+		err = errKimiSessionUnavailable
 	}
 	if err != nil {
 		if !tracked {
@@ -452,47 +490,7 @@ func (s *kimiStream) subscribe(ctx context.Context, sessionID string) (kimiAck, 
 		}
 		return ack, err
 	}
-	s.adoptAckCursors(ack)
 	return ack, nil
-}
-
-// replay requests recent events for an already tracked session without moving its live cursor backward.
-func (s *kimiStream) replay(ctx context.Context, sessionID string, from kimiCursor) (kimiAck, error) {
-	ack, err := s.sendSubscribe(ctx, []string{sessionID}, map[string]kimiCursor{sessionID: from})
-	if err == nil && slices.Contains(ack.NotFound, sessionID) {
-		err = errKimiSessionNotLoaded
-	}
-	if err == nil {
-		s.adoptAckCursors(ack)
-	}
-	return ack, err
-}
-
-// replayStartupConfigWarnings reads a recent part of the persistent global journal.
-// handleGlobalFrame excludes warnings from an earlier server launch.
-func (a *Agent) replayStartupConfigWarnings(ctx context.Context) {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	timer := a.clock.AfterFunc(a.APITimeout(), cancel, kimiGlobalReplayTimerTag)
-	defer timer.Stop()
-	ack, err := a.stream.subscribe(ctx, kimiGlobalSessionID)
-	if err != nil {
-		slog.Warn("subscribe to Kimi config warnings", "agent_id", a.AgentID(), "error", err)
-		return
-	}
-	from, exists := ack.Cursors[kimiGlobalSessionID]
-	if !exists {
-		slog.Warn("the Kimi global subscription supplied no cursor", "agent_id", a.AgentID())
-		return
-	}
-	if from.Seq > kimiGlobalReplayWindow {
-		from.Seq -= kimiGlobalReplayWindow
-	} else {
-		from.Seq = 0
-	}
-	if _, err := a.stream.replay(ctx, kimiGlobalSessionID, from); err != nil {
-		slog.Warn("replay Kimi config warnings", "agent_id", a.AgentID(), "error", err)
-	}
 }
 
 // unsubscribe stops the events of sessionID. A failure is logged: the session's
@@ -502,7 +500,7 @@ func (s *kimiStream) unsubscribe(sessionID string) {
 	s.forget(sessionID)
 	if err := s.write(map[string]any{
 		"type":    kimiFrameUnsubscribe,
-		"payload": map[string][]string{"session_ids": {sessionID}},
+		"payload": map[string]string{"session_id": sessionID},
 	}); err != nil {
 		slog.Debug("kimi event stream unsubscribe failed", "agent_id", s.agentID, "session_id", sessionID, "error", err)
 	}
@@ -511,6 +509,10 @@ func (s *kimiStream) unsubscribe(sessionID string) {
 func (s *kimiStream) forget(sessionID string) {
 	s.mu.Lock()
 	delete(s.sessions, sessionID)
+	delete(s.states, sessionID)
+	if !s.closed {
+		s.signalStateChangeLocked()
+	}
 	s.mu.Unlock()
 }
 
@@ -523,120 +525,77 @@ func (s *kimiStream) resubscribeAll(ctx context.Context) {
 	cursors := make(map[string]kimiCursor, len(s.sessions))
 	for id, cursor := range s.sessions {
 		ids = append(ids, id)
-		// A cursor replays what came after it, even at seq 0: the session had no
-		// durable event yet when the stream subscribed. A cursor with no epoch
-		// cannot replay, because the server answers any epoch it does not hold
-		// with resync_required.
-		if cursor.Epoch != "" {
-			cursors[id] = cursor
-		}
+		cursor.Positions = maps.Clone(cursor.Positions)
+		cursors[id] = cursor
 	}
 	s.mu.Unlock()
-	if len(ids) == 0 {
-		return
-	}
 	slices.Sort(ids)
-	ack, err := s.sendSubscribe(ctx, ids, cursors)
-	if err != nil {
-		slog.Warn("kimi event stream resubscribe failed", "agent_id", s.agentID, "error", err)
-		return
-	}
-	s.adoptAckCursors(ack)
-
-	// The server lists a session it accepted but could not replay under both
-	// accepted and resync_required.
-	var unreplayed []string
-	for _, id := range ack.ResyncRequired {
-		slog.Warn("kimi event stream missed more events than the server keeps", "agent_id", s.agentID, "session_id", id)
-		unreplayed = append(unreplayed, id)
-	}
-	for _, id := range ack.NotFound {
-		slog.Warn("kimi event stream lost a session on reconnect", "agent_id", s.agentID, "session_id", id)
-		unreplayed = append(unreplayed, id)
-	}
-	if s.reconnected == nil {
-		return
-	}
-	for _, id := range ack.Accepted {
-		if slices.Contains(unreplayed, id) {
-			continue
+	for _, id := range ids {
+		var applied func(bool)
+		if s.recovering != nil {
+			applied = s.recovering(ctx, id)
 		}
-		_, replayable := cursors[id]
-		s.reconnected(ctx, id, replayable)
-	}
-	for i, id := range unreplayed {
-		if !slices.Contains(unreplayed[:i], id) {
-			s.reconnected(ctx, id, false)
-		}
-	}
-}
-
-// adoptAckCursors records the cursor the server stated for each accepted
-// session, when it is ahead of the one the stream holds.
-func (s *kimiStream) adoptAckCursors(ack kimiAck) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for id, cursor := range ack.Cursors {
-		current, tracked := s.sessions[id]
-		if !tracked {
-			continue
-		}
-		if cursor.Epoch != current.Epoch || cursor.Seq > current.Seq {
-			s.sessions[id] = cursor
-		}
-	}
-}
-
-// sendSubscribe writes one subscribe frame and waits for its ack.
-func (s *kimiStream) sendSubscribe(ctx context.Context, ids []string, cursors map[string]kimiCursor) (kimiAck, error) {
-	// A caller that gave up sends nothing: the frame would only be an ack that
-	// nobody reads.
-	if err := ctx.Err(); err != nil {
-		return kimiAck{}, err
-	}
-	s.mu.Lock()
-	s.nextID++
-	id := strconv.FormatInt(s.nextID, 10)
-	reply := make(chan kimiFrame, 1)
-	s.acks[id] = reply
-	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		delete(s.acks, id)
-		s.mu.Unlock()
-	}()
-
-	payload := map[string]any{"session_ids": ids}
-	if len(cursors) > 0 {
-		payload["cursors"] = cursors
-	}
-	if err := s.write(map[string]any{"type": kimiFrameSubscribe, "id": id, "payload": payload}); err != nil {
-		return kimiAck{}, err
-	}
-	select {
-	case frame, ok := <-reply:
-		if !ok {
-			// The connection failed. When the caller gave up as well, its own end
-			// is the answer that it waits for.
-			if err := ctx.Err(); err != nil {
-				return kimiAck{}, err
+		ack, err := s.sendSessionSubscribe(ctx, id, cursors[id].Positions)
+		accepted := err == nil && slices.Contains(ack.Accepted, id)
+		if applied != nil {
+			select {
+			case s.queue <- kimiFrame{afterDispatch: func() { applied(accepted) }}:
+			case <-ctx.Done():
+				return
 			}
-			return kimiAck{}, errors.New("the Kimi event stream closed before it acknowledged the subscribe")
 		}
-		if frame.Code != kimiCodeOK {
-			return kimiAck{}, fmt.Errorf("the Kimi server refused the subscribe: %s (code %d)", frame.Msg, frame.Code)
+		if err != nil {
+			slog.Warn("kimi event stream resubscribe failed", "agent_id", s.agentID, "session_id", id, "error", err)
+			continue
 		}
-		var ack kimiAck
-		if err := json.Unmarshal(frame.Payload, &ack); err != nil {
-			return kimiAck{}, fmt.Errorf("decode the subscribe ack: %w", err)
+		if s.reconnected == nil {
+			continue
 		}
-		return ack, nil
-	case <-ctx.Done():
-		return kimiAck{}, ctx.Err()
+		if slices.Contains(ack.NotFound, id) {
+			s.reconnected(ctx, id, false)
+			continue
+		}
+		s.mu.Lock()
+		current, tracked := s.sessions[id]
+		s.mu.Unlock()
+		if tracked && slices.Contains(ack.Accepted, id) {
+			previous := cursors[id]
+			s.reconnected(ctx, id, len(previous.Positions) > 0 && current.Resets == previous.Resets)
+		}
 	}
 }
 
-// deliverAck hands an ack to the subscribe that waits for it.
+// sendSessionSubscribe subscribes one session and waits for its acknowledgement.
+func (s *kimiStream) sendSessionSubscribe(ctx context.Context, sessionID string, since map[string]int64) (kimiAck, error) {
+	payload := map[string]any{
+		"session_id": sessionID,
+		"transcript": map[string]string{"*": "delta"},
+	}
+	if len(since) > 0 {
+		payload["transcript_since"] = since
+	}
+	frame, err := s.requestFrame(ctx, "subscribe", func(id string) any {
+		return map[string]any{"type": kimiFrameSubscribe, "id": id, "payload": payload}
+	})
+	if err != nil {
+		return kimiAck{}, err
+	}
+	if frame.Code != kimiCodeOK {
+		return kimiAck{}, fmt.Errorf("the Kimi server refused the subscribe: %s (code %d)", frame.Msg, frame.Code)
+	}
+	var ack kimiAck
+	if err := json.Unmarshal(frame.Payload, &ack); err != nil {
+		return kimiAck{}, fmt.Errorf("decode the subscribe ack: %w", err)
+	}
+	if len(ack.Accepted)+len(ack.NotFound) != 1 ||
+		(len(ack.Accepted) == 1 && ack.Accepted[0] != sessionID) ||
+		(len(ack.NotFound) == 1 && ack.NotFound[0] != sessionID) {
+		return kimiAck{}, fmt.Errorf("invalid subscribe acknowledgement for Kimi session %q", sessionID)
+	}
+	return ack, nil
+}
+
+// deliverAck hands a response to the request that waits for it.
 func (s *kimiStream) deliverAck(frame kimiFrame) {
 	s.mu.Lock()
 	reply := s.acks[frame.ID]
@@ -647,8 +606,8 @@ func (s *kimiStream) deliverAck(frame kimiFrame) {
 	}
 }
 
-// failPendingAcks releases every subscribe that waits on the connection that
-// just failed. Its ack cannot arrive any more, and the reconnect re-subscribes.
+// failPendingAcks releases every request waiting on the failed connection.
+// Its response cannot arrive after that connection closes.
 func (s *kimiStream) failPendingAcks() {
 	s.mu.Lock()
 	pending := s.acks
@@ -678,5 +637,8 @@ func (s *kimiStream) write(frame any) error {
 	}
 	writeCtx, cancel := context.WithTimeout(streamCtx, kimiStreamWriteTimeout)
 	defer cancel()
-	return conn.Write(writeCtx, websocket.MessageText, data)
+	if err := conn.Write(writeCtx, websocket.MessageText, data); err != nil {
+		return fmt.Errorf("%w: %w", agent.ErrDeliveryUncertain, err)
+	}
+	return nil
 }

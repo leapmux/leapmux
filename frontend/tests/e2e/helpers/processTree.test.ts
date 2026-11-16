@@ -146,6 +146,46 @@ describe('listProcesses', () => {
 })
 
 describe('isAlive', () => {
+  it.each(['R', 'S+', 'T', 'I', 'D'])('keeps a live process in state %s', (state) => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    vi.spyOn(process, 'kill').mockReturnValueOnce(true)
+    vi.mocked(execFileSync).mockReturnValueOnce(`${state}\n`)
+    expect(isAlive(123)).toBe(true)
+  })
+
+  it('returns false when the process disappears before the state query', () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    vi.spyOn(process, 'kill').mockReturnValueOnce(true)
+    vi.mocked(execFileSync).mockImplementationOnce(() => {
+      throw Object.assign(new Error('No process matches.'), { status: 1 })
+    })
+    expect(isAlive(123)).toBe(false)
+  })
+
+  it('propagates a failed process-state query', () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    vi.spyOn(process, 'kill').mockReturnValueOnce(true)
+    const failure = Object.assign(new Error('The process-state query failed.'), { status: 2 })
+    vi.mocked(execFileSync).mockImplementationOnce(() => {
+      throw failure
+    })
+    expect(() => isAlive(123)).toThrow(failure)
+  })
+
+  it('uses the signal query alone on Windows', () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    vi.spyOn(process, 'kill').mockReturnValueOnce(true)
+    expect(isAlive(123)).toBe(true)
+    expect(execFileSync).not.toHaveBeenCalled()
+  })
+
+  it('returns false for a zombie that its parent has not reaped', () => {
+    Object.defineProperty(process, 'platform', { value: 'darwin' })
+    vi.spyOn(process, 'kill').mockReturnValueOnce(true)
+    vi.mocked(execFileSync).mockReturnValueOnce('Z+\n')
+    expect(isAlive(123)).toBe(false)
+  })
+
   it('knows this process', () => {
     expect(isAlive(process.pid)).toBe(true)
   })

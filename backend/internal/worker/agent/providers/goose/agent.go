@@ -27,18 +27,8 @@ func gooseSteeringMethod([]byte) string {
 type Agent struct {
 	acp.Base
 	gooseOutput map[string]gooseOutputState
-	// The goal-end rule reads the last agent message of the running prompt.
-	// goalArmed is set by the goal notice and consumed at PromptEnded.
-	goalArmed           bool
-	goalObjective       string
-	goalLastMessageID   string
-	goalLastMessageText string
-	// compactPending states that the running prompt is a manual /compact turn.
-	compactPending bool
-	// nativeCommands states the launch value of the Native Commands axis.
-	// Goose reads the terminal capability only in the initialize handshake,
-	// so a change restarts the process.
-	nativeCommands bool
+	// promptOutput is consumed atomically when the native prompt ends.
+	promptOutput goosePromptOutputState
 	// gooseChildRenames remembers each delegate ack's row rename, from the
 	// spawn toolCallId to the native session id the ack stated. A tool request
 	// that arrives after the ack still names the spawn id, so it must reach

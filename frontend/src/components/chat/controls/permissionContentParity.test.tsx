@@ -58,6 +58,17 @@ describe('permission content parity', () => {
   // MiMo states the command as the request's patterns, and the rest of the call's
   // facts as its metadata.
   const { command: _command, ...mimoMetadata } = input
+  const nativeShellRequest = {
+    type: 'permission.asked',
+    data: {
+      id: 'per_1',
+      sessionID: 'ses_1',
+      action: 'shell',
+      resources: [command],
+      save: [],
+      metadata: mimoMetadata,
+    },
+  }
   const mimoShellRequest = {
     type: 'permission.asked',
     properties: {
@@ -98,14 +109,69 @@ describe('permission content parity', () => {
   })
 
   it.each([...providers, AgentProvider.PI])('does not request another approval after provider %s receives a response', (provider) => {
-    const payload = provider === AgentProvider.PI
-      ? {
-          type: 'extension_ui_request',
-          id: 'request',
-          method: 'confirm',
-          title: 'Confirm command',
-          message: command,
-        }
+    const payload = provider === AgentProvider.OPENCODE
+      ? nativeShellRequest
+      : provider === AgentProvider.PI
+        ? {
+            type: 'extension_ui_request',
+            id: 'request',
+            method: 'confirm',
+            title: 'Confirm command',
+            message: command,
+          }
+        : provider === AgentProvider.OH_MY_PI
+          ? ohMyPiApproval
+          : provider === AgentProvider.CLAUDE_CODE || provider === AgentProvider.ZCODE
+            ? {
+                request: { tool_name: 'Bash', input },
+              }
+            : provider === AgentProvider.CODEX
+              ? {
+                  method: 'item/commandExecution/requestApproval',
+                  params: { command },
+                }
+              : provider === AgentProvider.GITHUB_COPILOT
+                ? copilotShellRequest
+                : provider === AgentProvider.KIMI_CODE
+                  ? kimiCommandRequest
+                  : provider === AgentProvider.MIMO_CODE
+                    ? mimoShellRequest
+                    : provider === AgentProvider.AMP
+                      ? ampShellRequest
+                      : provider === AgentProvider.CLINE
+                        ? clineShellRequest
+                        : {
+                            method: 'session/request_permission',
+                            params: {
+                              toolCall: {
+                                toolCallId: 'command',
+                                kind: 'execute',
+                                title: 'Run command',
+                                rawInput: input,
+                              },
+                            },
+                          }
+    const { getByText, queryByText } = render(() => (
+      <ControlRequestContent
+        agentProvider={provider}
+        request={{
+          agentId: 'agent',
+          requestId: 'request',
+          payload,
+          responseState: ControlResponseState.DELIVERED,
+        }}
+        answerState={createControlAnswerState()}
+      />
+    ))
+    expect(getByText(provider === AgentProvider.PI
+      ? 'Confirm command'
+      : 'Permission request', { exact: true })).toBeVisible()
+    expect(queryByText('Permission Required', { exact: true })).toBeNull()
+  })
+
+  it.each(providers)('renders a command with the shared permission heading for provider %s', (provider) => {
+    const payload = provider === AgentProvider.OPENCODE
+      ? nativeShellRequest
       : provider === AgentProvider.OH_MY_PI
         ? ohMyPiApproval
         : provider === AgentProvider.CLAUDE_CODE || provider === AgentProvider.ZCODE
@@ -115,7 +181,7 @@ describe('permission content parity', () => {
           : provider === AgentProvider.CODEX
             ? {
                 method: 'item/commandExecution/requestApproval',
-                params: { command },
+                params: { command, cwd: '/workspace', reason: 'Inspect the command.' },
               }
             : provider === AgentProvider.GITHUB_COPILOT
               ? copilotShellRequest
@@ -138,57 +204,6 @@ describe('permission content parity', () => {
                             },
                           },
                         }
-    const { getByText, queryByText } = render(() => (
-      <ControlRequestContent
-        agentProvider={provider}
-        request={{
-          agentId: 'agent',
-          requestId: 'request',
-          payload,
-          responseState: ControlResponseState.DELIVERED,
-        }}
-        answerState={createControlAnswerState()}
-      />
-    ))
-    expect(getByText(provider === AgentProvider.PI
-      ? 'Confirm command'
-      : 'Permission request', { exact: true })).toBeVisible()
-    expect(queryByText('Permission Required', { exact: true })).toBeNull()
-  })
-
-  it.each(providers)('renders a command with the shared permission heading for provider %s', (provider) => {
-    const payload = provider === AgentProvider.OH_MY_PI
-      ? ohMyPiApproval
-      : provider === AgentProvider.CLAUDE_CODE || provider === AgentProvider.ZCODE
-        ? {
-            request: { tool_name: 'Bash', input },
-          }
-        : provider === AgentProvider.CODEX
-          ? {
-              method: 'item/commandExecution/requestApproval',
-              params: { command, cwd: '/workspace', reason: 'Inspect the command.' },
-            }
-          : provider === AgentProvider.GITHUB_COPILOT
-            ? copilotShellRequest
-            : provider === AgentProvider.KIMI_CODE
-              ? kimiCommandRequest
-              : provider === AgentProvider.MIMO_CODE
-                ? mimoShellRequest
-                : provider === AgentProvider.AMP
-                  ? ampShellRequest
-                  : provider === AgentProvider.CLINE
-                    ? clineShellRequest
-                    : {
-                        method: 'session/request_permission',
-                        params: {
-                          toolCall: {
-                            toolCallId: 'command',
-                            kind: 'execute',
-                            title: 'Run command',
-                            rawInput: input,
-                          },
-                        },
-                      }
     const { container, getByText } = render(() => (
       <ControlRequestContent
         agentProvider={provider}

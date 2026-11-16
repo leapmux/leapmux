@@ -92,6 +92,8 @@ func TestChildFinalizationRetainsFailedWrites(t *testing.T) {
 					path: filepath.Join(t.TempDir(), "absent.jsonl"), nudge: make(chan struct{}, 1), openTools: map[string]string{},
 				}
 				require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+					Role: bgtask.RoleChildTask,
+
 					RowKey: child.agentID, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, Status: bgtask.StatusRunning,
 				}))
 				appendTranscript(t, child.path, transcriptLine(t, 0, "assistant", map[string]any{"type": "text", "text": child.answer}))
@@ -163,6 +165,8 @@ func TestChildFinalizationHandlesEmptyAndDuplicateReports(t *testing.T) {
 			}})
 			child := &codewhaleChild{agentID: testChildID, childID: "completed-child", title: "counter"}
 			require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+				Role: bgtask.RoleChildTask,
+
 				RowKey: child.agentID, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, Status: bgtask.StatusRunning,
 			}))
 			if tc.duplicate {
@@ -291,6 +295,8 @@ func TestSettleChildPreservesTranscriptWatcherOwnership(t *testing.T) {
 		path: filepath.Join(t.TempDir(), "child.jsonl"), nudge: make(chan struct{}, 1), openTools: map[string]string{},
 	}
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: testChildID, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, Status: bgtask.StatusRunning,
 	}))
 	appendTranscript(t, child.path, transcriptLine(t, 0, "assistant", map[string]any{"type": "text", "text": "The settled answer."}))
@@ -426,6 +432,8 @@ func TestInterruptedChildRunResumesWithoutClosingItsRegistryRow(t *testing.T) {
 		openTools: map[string]string{},
 	}
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: testChildID, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, Status: bgtask.StatusRunning,
 	}))
 	a.children.start(child, a.watchChild)
@@ -565,6 +573,8 @@ func TestFinishChildWritesTheReportBeforeItClosesTheRow(t *testing.T) {
 	}})
 	child := &codewhaleChild{agentID: testChildID, childID: "child-of-call_spawn", title: "counter"}
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: child.agentID, Kind: bgtask.KindSubagent, ChildAgentID: child.childID, Status: bgtask.StatusRunning,
 	}))
 

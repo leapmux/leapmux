@@ -61,17 +61,23 @@ func TestKimiReplayedEventsStillReconcileUnsequencedInteractions(t *testing.T) {
 	rig := newKimiTestRig(t, agent.Options{})
 	rig.feed(t, approvalEvent("approval_ended_while_disconnected", map[string]any{"kind": "command", "command": "pwd"}))
 	require.Equal(t, 1, rig.sink.PublishedControlCount())
-	rig.fake.update(rig.sessionID(), func(session *fakeKapSession) {
-		session.PendingApprovals = []map[string]any{{
-			"approval_id": "approval_raised_while_disconnected", "tool_name": "Bash",
-			"tool_input_display": map[string]any{"kind": "command", "command": "pwd"},
+	sessionID := rig.sessionID()
+	rig.fake.update(sessionID, func(session *fakeKapSession) {
+		session.ReplayFrames = []any{map[string]any{
+			"type": "transcript.reset", "session_id": sessionID,
+			"payload": map[string]any{"type": "transcript.reset", "agent_id": "main", "seq": 1,
+				"snapshot": map[string]any{"items": []any{}, "interactions": []any{map[string]any{"interactionId": "approval_raised_while_disconnected", "interactionKind": "approval", "state": "pending"}}, "hasMoreOlder": false}},
 		}}
 	})
-	rig.agent.resyncSession(t.Context(), rig.sessionID(), true)
-	assert.Equal(t, []string{"approval_ended_while_disconnected"}, rig.sink.CanceledControls(),
-		"durable replay cannot recover the resolution of an unsequenced interaction")
-	assert.Equal(t, 2, rig.sink.PublishedControlCount())
+	rig.fake.closeConnections()
+	waitFor(t, func() bool { return len(rig.sink.CanceledControls()) == 1 }, "the complete native reset retires the resolved unsequenced interaction")
+	assert.Equal(t, []string{"approval_ended_while_disconnected"}, rig.sink.CanceledControls())
+	replayed := approvalEvent("approval_raised_while_disconnected", map[string]any{"kind": "command", "command": "pwd"})
+	replayed["session_id"] = rig.sessionID()
+	rig.fake.push(t, replayed)
+	waitFor(t, func() bool { return rig.sink.PublishedControlCount() == 2 }, "the re-emitted live interaction restores the pending card")
 	assert.Equal(t, "approval_raised_while_disconnected", rig.sink.LastPublishedControl().RequestID)
+	assert.Empty(t, rig.fake.requestsTo("GET "+kimiSessionPath(rig.sessionID(), "/snapshot")))
 }
 
 func TestKimiInteractionFramesRejectInvalidControls(t *testing.T) {

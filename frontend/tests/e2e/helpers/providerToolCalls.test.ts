@@ -64,6 +64,7 @@ import {
   diracRespondToolCall,
   droidExecuteToolCall,
   droidScriptToolCall,
+  droidToolCallId,
   droidToolSearchToolCall,
   editToolCall,
   enterPlanModeToolCall,
@@ -81,6 +82,7 @@ import {
   junieSubmitPlanToolCall,
   kimiAgentSwarmToolCall,
   kimiReadMediaFileToolCall,
+  kimiSkillToolCall,
   kiroCompleteTodosToolCall,
   kiroSwitchToExecutionToolCall,
   lettaMcpCatalogArguments,
@@ -96,6 +98,7 @@ import {
   mimoTaskToolCall,
   mimoWorkflowToolCall,
   museSubmitResultToolCall,
+  ohMyPiAskFormToolCall,
   ohMyPiTodoToolCall,
   ohMyPiYieldToolCall,
   piCodemodeToolCall,
@@ -238,12 +241,12 @@ describe('native Fast Agent label schema', () => {
   })
 })
 
-describe('native Goose text Read tool', () => {
+describe('Goose file reading through its native shell', () => {
   it.each(['/private/note.txt', '/private/path $(touch marker); \'quoted\'/note.txt'])('uses the actual read operation for %j', (path) => {
     expect(readToolCall(AgentProvider.GOOSE, 'native-goose-read', path)).toEqual({
       id: 'native-goose-read',
-      name: 'read',
-      arguments: { path },
+      name: 'shell',
+      arguments: { command: `cat -- ${quotePosixShellArgument(path)}` },
     })
   })
 })
@@ -533,11 +536,11 @@ describe('codebuddyFindToolsToolCall', () => {
 describe('droidToolSearchToolCall', () => {
   it('keeps exact selection text and the native call ID with an optional maximum', () => {
     expect(droidToolSearchToolCall('search', 'select:Read,Execute', 100)).toEqual({
-      id: 'call_search',
+      id: droidToolCallId('search'),
       name: 'ToolSearch',
       arguments: { query: 'select:Read,Execute', max_results: 100 },
     })
-    expect(droidToolSearchToolCall('call_search', 'select:Read').arguments).toEqual({ query: 'select:Read' })
+    expect(droidToolSearchToolCall(droidToolCallId('search'), 'select:Read').arguments).toEqual({ query: 'select:Read' })
   })
 
   it.each([
@@ -556,11 +559,11 @@ describe('droidScriptToolCall', () => {
   it('keeps raw source and native directives with the exact native call ID', () => {
     const script = '// @script: {"await":true}\nreturn "출력" + (40 + 2);\n'
     expect(droidScriptToolCall('native-script', script)).toEqual({
-      id: 'call_native-script',
+      id: droidToolCallId('native-script'),
       name: 'Script',
       arguments: { script },
     })
-    expect(droidScriptToolCall('call_native-script', script).arguments).toEqual({ script })
+    expect(droidScriptToolCall(droidToolCallId('native-script'), script).arguments).toEqual({ script })
   })
 
   it('accepts the exact UTF-8 size limit and rejects a multibyte overflow', () => {
@@ -622,7 +625,7 @@ describe('codeExecutionToolCall', () => {
     const source = 'const value = "출력";\nreturn value;'
     const call = codeExecutionToolCall(provider, 'native-code', source)
     expect(call.id).toBe(provider === AgentProvider.DROID
-      ? 'call_native-code'
+      ? droidToolCallId('native-code')
       : 'native-code')
     expect(call.name).toBe(name)
     if (field === 'deferred') {
@@ -661,7 +664,7 @@ describe('native Droid Execute arguments', () => {
     const command = '\n  printf "출력"\n'
     expect(droidExecuteToolCall('explicit', { command, summary: 'Print the native output', riskLevel }))
       .toEqual({
-        id: 'call_explicit',
+        id: droidToolCallId('explicit'),
         name: 'Execute',
         arguments: { command, summary: 'Print the native output', riskLevel },
       })
@@ -1500,7 +1503,7 @@ describe('bashToolCall', () => {
     for (const provider of PROVIDERS.filter(p => hasToolFor(p, 'bash'))) {
       const call = bashToolCall(provider, 'call-42', 'echo hi')
       expect(call.id, `provider ${provider}`).toBe(provider === AgentProvider.DROID
-        ? 'call_call-42'
+        ? droidToolCallId('call-42')
         : 'call-42')
       expect(call.name.length, `provider ${provider}`).toBeGreaterThan(0)
       // Exactly one payload form. A call with neither says nothing, and a call
@@ -1561,6 +1564,21 @@ describe('backgroundBashToolCall for Codewhale', () => {
 describe('spawnSubagentToolCall', () => {
   // `run` blocks until the child reports, so the parent's next scripted step reads
   // the report rather than a later notification turn.
+  it('starts the native Reasonix explorer through its capability proxy', () => {
+    expect(spawnSubagentToolCall(AgentProvider.REASONIX, 'explore-call', {
+      description: 'Inspect the exact child task',
+      prompt: 'Read the exact child task.',
+    })).toEqual({
+      id: 'explore-call',
+      name: 'use_capability',
+      arguments: {
+        action: 'call',
+        capability_id: 'tool:explore',
+        arguments: { task: 'Read the exact child task.' },
+      },
+    })
+  })
+
   it('runs a MiMo Code subagent and waits for its report', () => {
     const call = spawnSubagentToolCall(AgentProvider.MIMO_CODE, 'call-1', { description: 'Probe it', prompt: 'Go.' })
     expect(call).toEqual({
@@ -1631,6 +1649,32 @@ describe('spawnSubagentToolCall', () => {
 })
 
 describe('askUserQuestionToolCall', () => {
+  it('uses the native HTML form schema for Oh My Pi', () => {
+    const call = askUserQuestionToolCall(AgentProvider.OH_MY_PI, 'html-ask', [
+      {
+        question: 'Choose <style> & "layout"',
+        header: 'Style',
+        multiSelect: true,
+        options: [
+          { label: 'Alpha', description: 'Fast & small', preview: 'first\nsecond' },
+          { label: 'Beta', description: 'Stable' },
+        ],
+      },
+    ])
+    expect(call.name).toBe('ask')
+    expect(call.arguments).toMatchObject({
+      i: expect.any(String),
+      html: expect.any(String),
+    })
+    expect(call.arguments).not.toHaveProperty('questions')
+    const html = call.arguments?.html
+    expect(html).toContain('<form>')
+    expect(html).toContain('type="checkbox"')
+    expect(html).toContain('Choose &lt;style&gt; &amp; &quot;layout&quot;')
+    expect(html).toContain('<strong>Alpha</strong>')
+    expect(html).toContain('Fast &amp; small')
+    expect(html).toContain('<pre>first\nsecond</pre>')
+  })
   it('uses the native Deepseek model field for multiple selection', () => {
     const call = askUserQuestionToolCall(AgentProvider.DEEPSEEK_HARNESS, 'question', [
       {
@@ -2053,13 +2097,16 @@ describe('mcpToolCall', () => {
       name: 'mcp__form_probe__echo',
       arguments: { text: 'hi' },
     })
-    for (const provider of [AgentProvider.MIMO_CODE, AgentProvider.KILO, AgentProvider.OPENCODE]) {
-      expect(mcpToolCall(provider, 'family-call', request)).toEqual({
-        id: 'family-call',
-        name: 'form_probe_echo',
-        arguments: { text: 'hi' },
-      })
-    }
+    expect(mcpToolCall(AgentProvider.KILO, 'family-call', request)).toEqual({
+      id: 'family-call',
+      name: 'form_probe_echo',
+      arguments: { text: 'hi' },
+    })
+    expect(mcpToolCall(AgentProvider.OPENCODE, 'native-call', request)).toEqual({
+      id: 'native-call',
+      name: 'execute',
+      arguments: { code: 'return await tools["form_probe"]["echo"]({"text":"hi"})' },
+    })
   })
 })
 
@@ -2246,10 +2293,10 @@ describe('updateTodosToolCall', () => {
     }
   })
 
-  // OpenCode and Kilo require a priority for each item. Cursor folds the
+  // Kilo requires a priority for each item. Cursor folds the
   // neutral statuses onto its own enum words.
-  it('writes the OpenCode family list with priorities, and the Cursor list with enum statuses', () => {
-    for (const provider of [AgentProvider.OPENCODE, AgentProvider.KILO]) {
+  it('writes the Kilo list with priorities, and the Cursor list with enum statuses', () => {
+    for (const provider of [AgentProvider.KILO]) {
       expect(updateTodosToolCall(provider, 'call-1', [
         { step: 'One', status: 'pending' },
       ])).toEqual({
@@ -2658,7 +2705,12 @@ describe('spawnSubagentToolCall background flag', () => {
           ? {}
           : { background }),
       })
-      expect(call.arguments).toEqual({ description: request.description, prompt: request.prompt, subagent_type: 'general-purpose' })
+      expect(call.arguments).toEqual({
+        description: request.description,
+        prompt: request.prompt,
+        harness: 'letta',
+        fork_context: false,
+      })
     }
   })
 
@@ -2741,7 +2793,7 @@ describe('Droid Task tool call', () => {
   it('states a valid child type and both native await choices', () => {
     const request = { description: 'Inspect the parser', prompt: 'Count the files.' }
     expect(spawnSubagentToolCall(AgentProvider.DROID, 'droid-task', request)).toEqual({
-      id: 'call_droid-task',
+      id: droidToolCallId('droid-task'),
       name: 'Task',
       arguments: {
         subagent_type: 'explorer',
@@ -2751,7 +2803,7 @@ describe('Droid Task tool call', () => {
       },
     })
     expect(spawnSubagentToolCall(AgentProvider.DROID, 'droid-task-bg', { ...request, background: true })).toEqual({
-      id: 'call_droid-task-bg',
+      id: droidToolCallId('droid-task-bg'),
       name: 'Task',
       arguments: {
         subagent_type: 'explorer',
@@ -2817,9 +2869,9 @@ describe('the Droid native call identity', () => {
       build: id => droidToolSearchToolCall(id, 'form_probe ask'),
     },
   ]
-  it.each(builders)('preserves the full original ID in the native $operation call', ({ build }) => {
-    expect(build(originalId).id).toBe(`call_${originalId}`)
-    expect(build(`call_${originalId}`).id).toBe(`call_${originalId}`)
+  it.each(builders)('derives one stable ID and preserves the native $operation ID', ({ build }) => {
+    expect(build(originalId).id).toBe(droidToolCallId(originalId))
+    expect(build(droidToolCallId(originalId)).id).toBe(droidToolCallId(originalId))
   })
   it.each(builders)('refuses an absent identity before the native $operation call', ({ build }) => {
     expect(() => build('')).toThrow('nonempty ID')
@@ -2839,12 +2891,12 @@ describe('Droid file tool calls', () => {
   it('uses the installed Read and Edit argument names', () => {
     const path = '/work/droid-note.txt'
     expect(readToolCall(AgentProvider.DROID, 'read-note', path)).toEqual({
-      id: 'call_read-note',
+      id: droidToolCallId('read-note'),
       name: 'Read',
       arguments: { file_path: path },
     })
     expect(editToolCall(AgentProvider.DROID, 'edit-note', { path, before: 'before', after: 'after' })).toEqual({
-      id: 'call_edit-note',
+      id: droidToolCallId('edit-note'),
       name: 'Edit',
       arguments: { file_path: path, old_str: 'before', new_str: 'after' },
     })
@@ -2854,12 +2906,12 @@ describe('Droid file tool calls', () => {
 describe('Droid MCP tool call', () => {
   it('uses the native three-underscore server and tool name', () => {
     expect(droidToolSearchToolCall('search-1', 'form_probe ask')).toEqual({
-      id: 'call_search-1',
+      id: droidToolCallId('search-1'),
       name: 'ToolSearch',
       arguments: { query: 'form_probe ask' },
     })
     expect(mcpToolCall(AgentProvider.DROID, 'form-1', { server: 'form_probe', tool: 'ask', input: {} })).toEqual({
-      id: 'call_form-1',
+      id: droidToolCallId('form-1'),
       name: 'form_probe___ask',
       arguments: {},
     })
@@ -3109,8 +3161,8 @@ describe('the Oh My Pi tool vocabulary', () => {
     })
   })
 
-  it('gives each question of an ask call its own id, and states multi for a multi-select alone', () => {
-    // The question bridge matches each answer to its question by this id.
+  it('gives each HTML field its own name and native radio or checkbox type', () => {
+    // Field names identify questions; HTML input types state their selection mode.
     const call = askUserQuestionToolCall(omp, 'call-1', [
       {
         question: 'Which?',
@@ -3128,31 +3180,22 @@ describe('the Oh My Pi tool vocabulary', () => {
         ],
       },
     ])
-    expect(call).toEqual({
+    expect(call).toMatchObject({
       id: 'call-1',
       name: 'ask',
       arguments: {
-        questions: [
-          {
-            id: 'q1',
-            question: 'Which?',
-            header: 'Choice',
-            options: [
-              { label: 'A', description: 'The first' },
-            ],
-          },
-          {
-            id: 'q2',
-            question: 'Which sizes?',
-            header: 'Sizes',
-            options: [
-              { label: 'S', description: 'Small', preview: '```\nS\n```' },
-            ],
-            multi: true,
-          },
-        ],
+        i: expect.any(String),
+        html: expect.any(String),
       },
     })
+    const markup = call.arguments?.html
+    expect(markup).toContain('type="radio" name="q1" value="A" required')
+    expect(markup).toContain('type="checkbox" name="q2" value="S" required')
+    expect(markup).toContain('<legend>Choice</legend><p>Which?</p>')
+    expect(markup).toContain('<legend>Sizes</legend><p>Which sizes?</p>')
+    expect(markup).toContain('<span>The first</span>')
+    expect(markup).toContain('<span>Small</span>')
+    expect(markup).toContain('<pre>```\nS\n```</pre>')
   })
 
   it('spawns a subagent through a task batch, whose task name becomes the subagent\'s id', () => {
@@ -3652,9 +3695,25 @@ describe('the MiMo Code tool vocabulary', () => {
     expect(hasToolFor(mimo, 'updateTodos')).toBe(false)
   })
 
-  it('calls the local MCP tool under its server prefix', () => {
+  it('calls a deferred MCP tool through the native dispatcher', () => {
     expect(mcpToolCall(mimo, 'ask-1', { server: 'form_probe', tool: 'ask', input: {} }))
-      .toEqual({ id: 'ask-1', name: 'form_probe_ask', arguments: {} })
+      .toEqual({
+        id: 'ask-1',
+        name: 'mcp_tool_use',
+        arguments: { name: 'form_probe_ask', arguments: {} },
+      })
+    expect(mcpToolCall(mimo, 'echo-1', {
+      server: 'probe.one',
+      tool: 'echo/출력',
+      input: { count: 0, enabled: false, text: '' },
+    })).toEqual({
+      id: 'echo-1',
+      name: 'mcp_tool_use',
+      arguments: {
+        name: 'probe_one_echo___',
+        arguments: { count: 0, enabled: false, text: '' },
+      },
+    })
   })
 })
 
@@ -4506,5 +4565,68 @@ describe('codewhaleEditToolCall', () => {
       { oldText: 'one', newText: 'ONE' },
     ])
     expect(codewhaleEditToolCall('encoded-edit', { path: 'a.ts', edits: encoded }).arguments).toEqual({ path: 'a.ts', edits: encoded })
+  })
+})
+
+describe('OpenCode native tool builders', () => {
+  it('uses native shell and file argument names', () => {
+    expect(bashToolCall(AgentProvider.OPENCODE, 'shell', 'pwd')).toMatchObject({
+      name: 'shell',
+      arguments: { command: 'pwd' },
+    })
+    expect(writeToolCall(AgentProvider.OPENCODE, 'write', { path: '/file', content: 'text' })).toMatchObject({
+      name: 'write',
+      arguments: { path: '/file', content: 'text' },
+    })
+    expect(readToolCall(AgentProvider.OPENCODE, 'read', '/file')).toMatchObject({
+      name: 'read',
+      arguments: { path: '/file' },
+    })
+    expect(updateTodosToolCall(AgentProvider.OPENCODE, 'todos', [])).toMatchObject({
+      name: 'todowrite',
+      arguments: { todos: [] },
+    })
+  })
+
+  it('calls native MCP tools through the default Code Mode namespace', () => {
+    expect(mcpToolCall(AgentProvider.OPENCODE, 'mcp', {
+      server: 'test-server',
+      tool: 'echo',
+      input: { value: 'hello' },
+    })).toMatchObject({
+      name: 'execute',
+      arguments: { code: 'return await tools["test-server"]["echo"]({"value":"hello"})' },
+    })
+  })
+})
+
+describe('ohMyPiAskFormToolCall', () => {
+  it('preserves native HTML and the instruction', () => {
+    const html = '<form><input type="checkbox" name="x" checked></form>'
+    expect(ohMyPiAskFormToolCall('form-call', html, 'Choose settings')).toEqual({
+      id: 'form-call',
+      name: 'ask',
+      arguments: { i: 'Choose settings', html },
+    })
+    expect(ohMyPiAskFormToolCall('form-call', html).arguments).toEqual({ i: 'Complete the form', html })
+  })
+  it.each([
+    [' ', '<form></form>', 'Choose'],
+    ['form-call', ' ', 'Choose'],
+    ['form-call', '<form></form>', ' '],
+  ])('rejects an absent component before producing a call: %s', (id, html, instruction) => {
+    expect(() => ohMyPiAskFormToolCall(id!, html!, instruction!)).toThrow('requires a call ID, HTML, and an instruction')
+  })
+})
+
+describe('kimiSkillToolCall', () => {
+  it('keeps the native skill and argument string', () => {
+    expect(kimiSkillToolCall('skill-1', 'review', 'staged changes')).toEqual({
+      id: 'skill-1',
+      name: 'Skill',
+      arguments: { skill: 'review', args: 'staged changes' },
+    })
+    expect(kimiSkillToolCall('skill-2', 'review').arguments).toEqual({ skill: 'review' })
+    expect(kimiSkillToolCall('skill-3', 'review', '').arguments).toEqual({ skill: 'review', args: '' })
   })
 })

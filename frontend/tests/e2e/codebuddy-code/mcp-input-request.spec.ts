@@ -92,18 +92,18 @@ codebuddyTest.describe('native MCP input form for CodeBuddy Code', () => {
           : []
       })
       expect(nativeResults).toHaveLength(1)
-      expect(nativeResults[0]?.is_error).toBe(false)
+      expect(nativeResults[0]?.is_error).toBe(true)
 
       await expect(page.getByTestId('elicitation-form').filter({ visible: true })).toHaveCount(0)
       await expectNoControlBanner(page)
       const result = toolCallRow(page, call.id)
       await expect(result).toHaveCount(1)
-      // CodeBuddy's native stream reports is_error:false for this refused form result.
-      await expect(result).toHaveAttribute('data-tool-status', 'completed')
+      // CodeBuddy preserves the native refusal as a failed tool result.
+      await expect(result).toHaveAttribute('data-tool-status', 'failed')
       await expect(result).toContainText(refusal.toolResult.text)
       await page.reload()
       await expect(result).toHaveCount(1)
-      await expect(result).toHaveAttribute('data-tool-status', 'completed')
+      await expect(result).toHaveAttribute('data-tool-status', 'failed')
       await expect(result).toContainText(refusal.toolResult.text)
       await expect(page.getByTestId('elicitation-form').filter({ visible: true })).toHaveCount(0)
       await expectNoControlBanner(page)

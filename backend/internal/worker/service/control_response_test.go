@@ -665,66 +665,36 @@ func TestSendControlResponse_BroadcastsCancelBeforeSyntheticMessage(t *testing.T
 
 func TestSendControlResponse_PersistsOpenCodeQuestionRow(t *testing.T) {
 	t.Parallel()
-
 	ctx := context.Background()
 	svc, d, w := setupTestService(t)
-
-	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{
-		ID:            "agent-1",
-		WorkingDir:    t.TempDir(),
-		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-	}))
-	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{
-		AgentID:   "agent-1",
-		RequestID: "que-1",
-		Payload: []byte(`{
-			"type":"question.asked",
-			"properties":{
-				"questions":[
-					{"header":"Task","question":"Pick a task"},
-					{"header":"Env","question":"Pick an environment"}
-				]
-			}
-		}`),
+	require.NoError(t, svc.Queries.CreateAgent(ctx, db.CreateAgentParams{ID: "agent-1", WorkingDir: t.TempDir(), AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE}))
+	const requestID = "opencode:form:ses_1:frm_1"
+	request := marshalJSON(t, map[string]any{
+		"type": contracts.OpenCodeNativeEventFormCreated,
+		"data": map[string]any{"form": map[string]any{
+			"id": "frm_1", "sessionID": "ses_1",
+			"metadata": map[string]any{"kind": "question"},
+			"fields": []any{
+				map[string]any{"key": "task", "type": "string", "title": "Pick a task"},
+				map[string]any{"key": "env", "type": "string", "title": "Pick an environment"},
+			},
+		}},
 	})
-
-	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{
-		AgentID:    "agent-1",
-		Options:    map[string]string{agent.OptionIDModel: "opus"},
-		WorkingDir: t.TempDir(),
-	}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE), claudetest.StartEcho)
+	createTestControlRequest(t, ctx, svc.Queries, db.StoreControlRequestParams{AgentID: "agent-1", RequestID: requestID, Payload: request})
+	_, err := svc.Agents.StartAgentWith(ctx, agent.Options{AgentID: "agent-1", Options: map[string]string{agent.OptionIDModel: "opus"}, WorkingDir: t.TempDir()}, newTestRootOutputSink(t, svc.Output, "agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE), claudetest.StartEcho)
 	require.NoError(t, err)
 	defer svc.Agents.StopAgent("agent-1")
-
-	response := []byte(`{
-		"jsonrpc":"2.0",
-		"id":"que-1",
-		"result":{
-			"answers":[["Build"],["Dev"]]
-		}
-	}`)
-	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{
-		AgentId: "agent-1",
-		Content: response,
-	}, w)
-
+	response := marshalJSON(t, map[string]any{"id": requestID, "result": map[string]any{"answer": map[string]any{"task": "Build", "env": "Dev"}}})
+	dispatch(d, leapmuxv1connect.WorkerAgentServiceSendControlResponseProcedure, &leapmuxv1.SendControlResponseRequest{AgentId: "agent-1", Content: response}, w)
 	require.Empty(t, w.errors)
-
-	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{
-		AgentID: "agent-1",
-		Seq:     0,
-		Limit:   10,
-	})
+	rows, err := svc.Queries.ListMessagesByAgentID(ctx, db.ListMessagesByAgentIDParams{AgentID: "agent-1", Seq: 0, Limit: 10})
 	require.NoError(t, err)
 	require.Len(t, rows, 1)
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_USER, rows[0].Source)
 	cr := decodeStructuredControlResponse(t, rows[0])
-	assert.Equal(t, "que-1", cr.RequestID)
-	assert.JSONEq(t, `{
-		"type":"question.asked",
-		"properties":{"questions":[{"header":"Task","question":"Pick a task"},{"header":"Env","question":"Pick an environment"}]}
-	}`, string(cr.Request), "the question headers let the frontend label the structured answers")
-	assert.Equal(t, string(response), string(cr.Response))
+	assert.Equal(t, requestID, cr.RequestID)
+	assert.JSONEq(t, string(request), string(cr.Request), "native field keys and titles remain available to label stored answers")
+	assert.JSONEq(t, `{"request_id":"opencode:form:ses_1:frm_1","answer":{"task":"Build","env":"Dev"}}`, string(cr.Response), "the stored answer retains the translated native field values")
 	assert.Equal(t, leapmuxv1.MarkType_MARK_TYPE_CONTROL_RESPONSE, workerdb.StorageEnumValue(rows[0].MarkType), "a control-response answer draws a scroll-rail jump dot")
 }
 

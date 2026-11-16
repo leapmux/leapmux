@@ -1,9 +1,8 @@
-{"type":"turn.step.started","session_id":"session_1","payload":{"type":"turn.step.started","agentId":"main","turnId":0}}
-{"type":"assistant.delta","session_id":"session_1","payload":{"type":"assistant.delta","agentId":"main","turnId":0,"delta":"DISCARDED-ONE "}}
-{"type":"assistant.delta","session_id":"session_1","payload":{"type":"assistant.delta","agentId":"main","turnId":0,"delta":"DISCARDED-TWO "}}
-{"type":"turn.step.retrying","session_id":"session_1","payload":{"type":"turn.step.retrying","agentId":"main","turnId":0,"failedAttempt":1,"nextAttempt":2,"maxAttempts":10,"delayMs":519.0315819438043,"errorName":"APIConnectionError","errorMessage":"terminated"}}
-{"type":"turn.step.started","session_id":"session_1","payload":{"type":"turn.step.started","agentId":"main","turnId":0}}
-{"type":"assistant.delta","session_id":"session_1","payload":{"type":"assistant.delta","agentId":"main","turnId":0,"delta":"RETRIED-"}}
-{"type":"assistant.delta","session_id":"session_1","payload":{"type":"assistant.delta","agentId":"main","turnId":0,"delta":"ANSWER"}}
-{"type":"turn.step.completed","session_id":"session_1","payload":{"type":"turn.step.completed","agentId":"main","turnId":0}}
-{"type":"turn.ended","session_id":"session_1","payload":{"type":"turn.ended","agentId":"main","turnId":0,"reason":"completed"}}
+{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","seq":1,"ops":[{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}]}}
+{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","seq":2,"ops":[{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"text","frameId":"failed-frame","text":"DISCARDED-ONE ","role":"assistant"}}]}}
+{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","seq":3,"ops":[{"op":"append","target":{"type":"frame","turnId":"t0","stepId":"t0.1","frameId":"failed-frame"},"offset":14,"text":"DISCARDED-TWO "}]}}
+{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","seq":4,"ops":[{"op":"step.upsert","turnId":"t0","step":{"kind":"step","stepId":"t0.1","ordinal":1,"state":"running","retry":{"failedAttempt":1,"nextAttempt":2,"maxAttempts":10,"delayMs":519.0315819438043,"errorName":"APIConnectionError","errorMessage":"terminated"}}}]}}
+{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","seq":5,"ops":[{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"text","role":"assistant","frameId":"retried-frame","text":"RETRIED-"}}]}}
+{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","seq":6,"ops":[{"op":"append","target":{"type":"frame","turnId":"t0","stepId":"t0.1","frameId":"retried-frame"},"offset":8,"text":"ANSWER"}]}}
+{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","seq":7,"ops":[{"op":"step.upsert","turnId":"t0","step":{"kind":"step","stepId":"t0.1","ordinal":1,"state":"completed"}}]}}
+{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","seq":8,"ops":[{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"completed","origin":{"kind":"user"}}}]}}

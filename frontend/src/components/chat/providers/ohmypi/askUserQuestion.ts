@@ -55,23 +55,14 @@ function selectOptions(payload: Record<string, unknown>): ControlQuestion['optio
  */
 export function ohMyPiQuestionsFromPayload(payload: Record<string, unknown>): ControlQuestion[] {
   if (isOhMyPiAskRequest(payload)) {
-    return ohMyPiQuestionPrompts(payload[OH_MY_PI_ASK_ENVELOPE.Questions]).map(prompt => ({
-      id: prompt.id,
-      question: prompt.question,
-      ...(prompt.header
-        ? { header: prompt.header }
-        : {}),
-      options: prompt.options,
-      ...(prompt.multiSelect
-        ? { multiSelect: true }
-        : {}),
-    }))
+    return ohMyPiQuestionPrompts(payload[OH_MY_PI_ASK_ENVELOPE.Questions])
   }
   if (payload.method !== OH_MY_PI_DIALOG_METHOD.Select)
     return []
   return [
     {
       question: pickString(payload, 'title') || 'Choose an option',
+      allowCustomText: false,
       options: selectOptions(payload),
     },
   ]

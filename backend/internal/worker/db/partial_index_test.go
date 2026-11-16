@@ -190,7 +190,7 @@ func TestQueriesRepeatTheirPartialIndexPredicate(t *testing.T) {
 		},
 		{
 			name:  "GetAgentBackgroundTaskByChildAgentID",
-			index: "idx_agent_background_tasks_child",
+			index: "idx_agent_background_tasks_canonical_child",
 			run: func(t *testing.T) {
 				_, err := q.GetAgentBackgroundTaskByChildAgentID(t.Context(), "child")
 				require.ErrorIs(t, err, sql.ErrNoRows)

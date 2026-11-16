@@ -10,6 +10,7 @@ import { exerciseAgentStartup } from '../helpers/nativeLifecycle'
 import { AGENT_TAB_SELECTOR } from '../helpers/tabSelectors'
 import { extractWorkerMarks, installRpcListeners, renderTimeline, withTimingWorker } from '../helpers/timingFixture'
 import { agentTabs, ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, COMPOSER_EDITOR_SELECTOR, composerEditor, expectAgentTabCount, expectAssistantAnswer, expectSettingsChip, loginViaToken, openWorkspace, settingsBar } from '../helpers/ui'
+import { waitForAgentStartupViaAPI } from '../helpers/workerTabs'
 import { withTestWorkspace } from '../helpers/workspace'
 import { nativeLaunch } from './scenarios'
 
@@ -51,6 +52,7 @@ timingTest.describe('agent open timing for Claude Code', () => {
     // Each measured open still starts a new native process and performs its handshake.
     await withTestWorkspace(srv, 'timing', async ({ workspaceId }) => {
       await openAgentViaAPI(srv, workspaceId)
+      await waitForAgentStartupViaAPI(srv.hubUrl, srv.adminToken, srv.workerId, workspaceId)
       await loginViaToken(page, srv.adminToken)
       await openWorkspace(page, workspaceId)
       await expectAgentTabCount(page, 1)
@@ -80,6 +82,7 @@ timingTest.describe('agent open timing for Claude Code', () => {
           w.__tabBaseline = document.querySelectorAll(agentTabSelector).length
           const priorEditor = document.querySelector(composerEditorSelector)
           w.__tabObserver?.disconnect()
+          let startupOverlaySeen = false
           w.__tabObserver = new MutationObserver(() => {
             if (w.__tabAppearedAt == null) {
               const tabs = document.querySelectorAll(agentTabSelector)
@@ -92,12 +95,13 @@ timingTest.describe('agent open timing for Claude Code', () => {
               if (ed && ed !== priorEditor)
                 w.__editorAppearedAt = performance.now()
             }
-            // ACTIVE removes the startup overlay. Record that visible readiness change.
-            if (w.__startupOverlayGoneAt == null && w.__tabAppearedAt != null) {
-              const overlay = document.querySelector('[data-testid="agent-startup-overlay"]')
-              if (!overlay)
-                w.__startupOverlayGoneAt = performance.now()
-            }
+            // Initial absence precedes mounting. Only an observed overlay's
+            // disappearance supplies a readiness timestamp.
+            const overlay = document.querySelector('[data-testid="agent-startup-overlay"]')
+            if (overlay)
+              startupOverlaySeen = true
+            if (startupOverlaySeen && !overlay && w.__startupOverlayGoneAt == null && w.__tabAppearedAt != null)
+              w.__startupOverlayGoneAt = performance.now()
           })
           w.__tabObserver.observe(document.body, { childList: true, subtree: true })
         }, { agentTabSelector: AGENT_TAB_SELECTOR, composerEditorSelector: COMPOSER_EDITOR_SELECTOR })
@@ -121,7 +125,7 @@ timingTest.describe('agent open timing for Claude Code', () => {
         // The observer records the tab and editor timestamps directly.
         // Also require removal of the startup overlay before reading the completed marks.
         await page.locator('[data-testid="agent-startup-overlay"]').waitFor({ state: 'detached' })
-        const { tTabDomMs, tEditorReadyMs, tStatusActiveMs } = await page.evaluate(() => {
+        const { tTabDomMs, tEditorReadyMs, tOverlayGoneMs } = await page.evaluate(() => {
           const w: Window & {
             __tabAppearedAt?: number | null
             __editorAppearedAt?: number | null
@@ -130,7 +134,7 @@ timingTest.describe('agent open timing for Claude Code', () => {
           return {
             tTabDomMs: w.__tabAppearedAt ?? performance.now(),
             tEditorReadyMs: w.__editorAppearedAt ?? performance.now(),
-            tStatusActiveMs: w.__startupOverlayGoneAt ?? performance.now(),
+            tOverlayGoneMs: w.__startupOverlayGoneAt ?? null,
           }
         })
 
@@ -163,14 +167,20 @@ timingTest.describe('agent open timing for Claude Code', () => {
           marks.push({ name: 'ui:rpc-recv', tMs: openRecv.at })
         marks.push({ name: 'ui:tab-dom-visible', tMs: tTabDomMs })
         marks.push({ name: 'ui:editor-ready', tMs: tEditorReadyMs })
-        // ACTIVE removes the startup overlay and tells the user that the agent accepts input.
-        marks.push({ name: 'ui:agent-status-active', tMs: tStatusActiveMs })
+        // A fast startup can finish before the overlay mounts. Report only an observed transition.
+        if (tOverlayGoneMs !== null)
+          marks.push({ name: 'ui:startup-overlay-hidden', tMs: tOverlayGoneMs })
         marks.sort((a, b) => a.tMs - b.tMs)
         runs.push(marks)
 
         clickToTabMs.push(tTabDomMs - tClickMs)
 
-        // Require every backend phase in the first iteration.
+        // OpenAgent responds before asynchronous native startup finishes.
+        expect(openSend).toBeDefined()
+        expect(openRecv).toBeDefined()
+        expect(openRecv!.at).toBeGreaterThanOrEqual(openSend!.at)
+
+        // Require every current backend startup phase in the first iteration.
         if (iter === 0) {
           const seen = new Set(backendMarks.map(m => m.name.replace(/^worker:/, '')))
           for (const expected of [
@@ -188,8 +198,6 @@ timingTest.describe('agent open timing for Claude Code', () => {
             'before_permission_mode',
             'after_permission_mode',
             'after_start_agent',
-            'before_response',
-            'response_sent',
           ]) {
             expect(seen, `missing backend phase ${expected}`).toContain(expected)
           }

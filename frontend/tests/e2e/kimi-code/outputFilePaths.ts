@@ -1,6 +1,7 @@
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import { KIMI_OUTPUT_FILE_HEADER, KIMI_OUTPUT_FILE_LIMIT, KIMI_OUTPUT_FILE_POINTER } from '../../../src/components/chat/providers/kimi/protocol'
-import { KIMI_TOOL } from '../../../src/generated/contracts/kimi-protocol'
+import { kimiTranscriptTool } from '../../../src/components/chat/providers/kimi/transcript'
+import { KIMI_TOOL, KIMI_TRANSCRIPT_TOOL } from '../../../src/generated/contracts/kimi-protocol'
 import { isObject } from '../../../src/lib/jsonPick'
 import { isFilesystemPath } from '../../../src/lib/paths'
 import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
@@ -97,15 +98,45 @@ export function kimiNativeOutputPointer(text: string, callId: string, expectedTo
   }
 }
 
-/** Read the original dotted result event within its exact native span. */
+function nativeKimiToolOutput(envelope: Record<string, unknown>) {
+  const row = kimiTranscriptTool(envelope)
+  if (!row || (row.state !== KIMI_TRANSCRIPT_TOOL.Done && row.state !== KIMI_TRANSCRIPT_TOOL.Error))
+    return null
+  return {
+    agentId: row.agentId,
+    turnId: row.turnId,
+    stepId: row.stepId,
+    frameId: row.frameId,
+    toolCallId: row.toolCallId,
+    name: row.name,
+    output: row.frame.output,
+  }
+}
+
+/** Read one native result within its exact Worker session and span. */
 export function readKimiNativeOutput(snapshot: NativeMessageSnapshot, callId: string, toolName: string) {
   const record = readNativeToolOutputRecord(snapshot, {
     callId,
-    spanId: frame => `${snapshot.agentSessionId}/${frame.agentId}/${frame.turnId}/${callId}`,
-    accepts: frame => frame.type === 'tool.result' && frame.toolCallId === callId && typeof frame.agentId === 'string'
-      && frame.agentId !== '' && typeof frame.turnId === 'number' && Number.isSafeInteger(frame.turnId) && frame.turnId >= 0,
+    spanId: (envelope) => {
+      const frame = nativeKimiToolOutput(envelope)
+      if (!frame)
+        throw new Error('The native Kimi output has no complete tool identity.')
+      return `${snapshot.agentSessionId}/kimi/${[
+        frame.agentId,
+        frame.turnId,
+        frame.stepId,
+        frame.frameId,
+      ].map(value => JSON.stringify(value)).join('/')}`
+    },
+    accepts: (envelope) => {
+      const frame = nativeKimiToolOutput(envelope)
+      return envelope.session_id === snapshot.agentSessionId && frame !== null && frame.toolCallId === callId && frame.name === toolName
+    },
   })
-  const output = record.frame.output
+  const frame = nativeKimiToolOutput(record.frame)
+  if (!frame)
+    throw new Error('The native Kimi output has no complete tool frame.')
+  const output = frame.output
   const texts = typeof output === 'string'
     ? [output]
     : Array.isArray(output)
@@ -114,7 +145,7 @@ export function readKimiNativeOutput(snapshot: NativeMessageSnapshot, callId: st
   const previewText = texts.join('\n')
   const pointer = kimiNativeOutputPointer(previewText, callId, toolName)
   const parts = pointer.path.replaceAll('\\', '/').split('/')
-  if (!parts.includes(snapshot.agentSessionId) || !parts.includes(String(record.frame.agentId)))
+  if (!parts.includes(snapshot.agentSessionId) || !parts.includes(frame.agentId))
     throw new Error('The native Kimi path belongs to another session or agent.')
   return {
     ...pointer,

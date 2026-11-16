@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
@@ -89,7 +91,7 @@ func TestCopilotChildMessageRoutesFollowTheSubagentState(t *testing.T) {
 			assert.Equal(t, test.turnState, h.agent.ActiveChildTurnState(key))
 			before := len(*h.requests)
 			if test.sendErr != nil {
-				require.ErrorIs(t, h.agent.SendChildInput(key, "Hello.", nil), test.sendErr)
+				require.ErrorIs(t, agenttest.SendChildInput(h.agent, key, agent.ChildInput{Content: "Hello."}), test.sendErr)
 			}
 			if test.steerErr != nil {
 				require.ErrorIs(t, h.agent.SteerChildInput(key, "Hello.", nil), test.steerErr)
@@ -117,7 +119,7 @@ func TestCopilotSendChildInputWakesAnIdleBackgroundSubagent(t *testing.T) {
 	h := newCopilotTaskHarness(t, copilotTaskScript{})
 	startCopilotSubagent(t, h.agent, h.sink, copilotExecutionBackground)
 	pauseCopilotSubagent(t, h.agent)
-	require.NoError(t, h.agent.SendChildInput("agent-1", "Now check the docs.", nil))
+	require.NoError(t, agenttest.SendChildInput(h.agent, "agent-1", agent.ChildInput{Content: "Now check the docs."}))
 	assert.Equal(t, []string{"session.tasks.list", "session.tasks.sendMessage"}, h.methods())
 	assert.Equal(t, map[string]any{"sessionId": "session-1", "id": "worker-task", "message": "Now check the docs."}, h.lastParams(t))
 }
@@ -165,7 +167,7 @@ func TestCopilotChildMessageFailures(t *testing.T) {
 			h := newCopilotTaskHarness(t, test.script)
 			startCopilotSubagent(t, h.agent, h.sink, copilotExecutionBackground)
 			pauseCopilotSubagent(t, h.agent)
-			err := h.agent.SendChildInput("agent-1", "Hello.", test.attachments)
+			err := agenttest.SendChildInput(h.agent, "agent-1", agent.ChildInput{Content: "Hello.", Attachments: test.attachments})
 			require.Error(t, err)
 			if test.wantErr != nil {
 				require.ErrorIs(t, err, test.wantErr)
@@ -185,7 +187,7 @@ func TestCopilotChildMessageRefusesAStoppedAgent(t *testing.T) {
 	startCopilotSubagent(t, h.agent, h.sink, copilotExecutionBackground)
 	pauseCopilotSubagent(t, h.agent)
 	h.stop()
-	err := h.agent.SendChildInput("agent-1", "Hello.", nil)
+	err := agenttest.SendChildInput(h.agent, "agent-1", agent.ChildInput{Content: "Hello."})
 	require.ErrorContains(t, err, "agent is stopped")
 	assert.Empty(t, *h.requests)
 }

@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
@@ -72,6 +74,8 @@ func TestAntigravityFailedChildStreamCanReopenAndStop(t *testing.T) {
 	child.rowOpen = true
 	a.cascades[child.id] = child
 	require.NoError(t, sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role: bgtask.RoleChildTask,
+
 		RowKey: child.id, ChildAgentID: child.childAgentID, Kind: bgtask.KindSubagent, Status: bgtask.StatusRunning,
 	}))
 	a.startCascadeStream(child)
@@ -81,7 +85,7 @@ func TestAntigravityFailedChildStreamCanReopenAndStop(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, bgtask.StatusFailed, row.Status)
 
-	require.NoError(t, a.SendChildInput(child.id, "continue the child", nil))
+	require.NoError(t, agenttest.SendChildInput(a, child.id, agent.ChildInput{Content: "continue the child"}))
 	assert.Equal(t, child.id, <-delivered)
 	a.streamCancel()
 	a.streamWG.Wait()

@@ -526,7 +526,12 @@ func (a *Agent) persistZCodeChildText(childID, text string, completion agent.Mes
 }
 
 func (a *Agent) upsertZCodeSubagent(rowKey, childID, title string) {
+	role := bgtask.RoleUnspecified
+	if childID != "" {
+		role = bgtask.RoleChildTask
+	}
 	providerkit.LogRegistryRefusal("zcode", "upsert", a.sink.UpsertBackgroundTask(bgtask.Upsert{
+		Role:   role,
 		RowKey: a.zcodeSubagentRegistryKey(rowKey), Kind: bgtask.KindSubagent, Title: title,
 		Status: bgtask.StatusRunning, ChildAgentID: childID,
 	}))
@@ -604,7 +609,9 @@ func (a *Agent) ensureZCodeSubagentTranscript(rowKey, spawnSpanID, fallbackTitle
 			return "", "", false
 		}
 	}
-	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: spawnSpanID, ProviderChildKey: nativeKey, Title: title})
+	childID, err := a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  spawnSpanID, ProviderChildKey: nativeKey, Title: title})
 	if err != nil {
 		slog.Warn("zcode subagent ensure child failed", "agent_id", a.AgentID(), "error", err)
 		return "", "", false
@@ -853,10 +860,33 @@ func zcodeSubagentLaunchedInBackground(payload zcodeToolUpdated) bool {
 		return false
 	}
 	var result struct {
+		Success *bool  `json:"success"`
 		Content string `json:"content"`
 	}
-	return json.Unmarshal(payload.Result, &result) == nil &&
-		strings.HasPrefix(result.Content, "Async agent launched successfully.\n")
+	if json.Unmarshal(payload.Result, &result) != nil || (result.Success != nil && !*result.Success) {
+		return false
+	}
+	lines := strings.Split(result.Content, "\n")
+	if len(lines) != 4 && len(lines) != 6 {
+		return false
+	}
+	if lines[0] != contracts.ZCodeAgentLaunchHeader || lines[2] != contracts.ZCodeAgentLaunchBackground {
+		return false
+	}
+	identity, ok := strings.CutPrefix(lines[1], contracts.ZCodeAgentLaunchIdentityPrefix)
+	if !ok {
+		return false
+	}
+	agentID, _, ok := strings.Cut(identity, contracts.ZCodeAgentLaunchIdentityMiddle)
+	if !ok || agentID == "" || strings.ContainsAny(agentID, "'\r\n") ||
+		identity != agentID+contracts.ZCodeAgentLaunchIdentityMiddle+agentID+contracts.ZCodeAgentLaunchIdentitySuffix {
+		return false
+	}
+	if len(lines) == 4 {
+		return lines[3] == contracts.ZCodeAgentLaunchWait
+	}
+	outputFile, ok := strings.CutPrefix(lines[4], contracts.ZCodeAgentLaunchOutputPrefix)
+	return lines[3] == contracts.ZCodeAgentLaunchWork && ok && outputFile != "" && lines[5] == contracts.ZCodeAgentLaunchOutputRule
 }
 
 func (a *Agent) persistZCodeSubagentReport(payload zcodeToolUpdated) {
@@ -1083,7 +1113,9 @@ func (a *Agent) resolveZCodeSpawn(event zcodeEventEnvelope, nativeCallID, childS
 	var childID, storedSpan string
 	if childSessionID != "" {
 		var err error
-		childID, err = a.sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: childSessionID})
+		childID, err = a.sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole:     bgtask.RoleChildTask,
+			ProviderChildKey: childSessionID})
 		if err != nil {
 			return ""
 		}

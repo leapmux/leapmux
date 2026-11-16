@@ -1,5 +1,6 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import { describe, expect, it } from 'vitest'
+import { droidToolCallId } from '../helpers/providerToolCalls'
 import { nativeDroidCallId, readDroidToolResult } from './toolResult'
 
 // The reasons that the reader gives for a refusal. A result that is not a Script snapshot stays whole, and its parse as
@@ -8,7 +9,7 @@ const NO_SINGLE_CALL = /^The native request contains 0 tool calls for the origin
 const NO_EXIT_TRAILER = 'The native Droid Execute result contains no complete integer exit trailer.'
 const NO_SCRIPT_STATUS = 'The native Droid Script result lacks a completed inline result or failed error.'
 
-function capturedRequest(output = 'SHELL42\n\n\n[Process exited with code 0]', nativeId = 'call_shell-0_0'): MockModelRequestRecord {
+function capturedRequest(output = 'SHELL42\n\n\n[Process exited with code 0]', nativeId = droidToolCallId('shell-0')): MockModelRequestRecord {
   return {
     protocol: 'openai-chat-completions',
     path: '/v1/chat/completions',
@@ -34,7 +35,7 @@ function capturedRequest(output = 'SHELL42\n\n\n[Process exited with code 0]', n
   }
 }
 
-function scriptRequest(content: unknown, input: unknown = { script: '40 + 2' }, nativeId = 'call_script-1'): MockModelRequestRecord {
+function scriptRequest(content: unknown, input: unknown = { script: '40 + 2' }, nativeId = droidToolCallId('call_script-1')): MockModelRequestRecord {
   return {
     protocol: 'openai-chat-completions',
     path: '/v1/chat/completions',
@@ -102,7 +103,11 @@ describe('readDroidToolResult', () => {
   })
 
   it('validates a script snapshot ID when native history keeps it', () => {
-    const text = JSON.stringify({ toolCallId: 'call_script-1', status: 'completed', result: 42 })
+    const text = JSON.stringify({
+      toolCallId: droidToolCallId('call_script-1'),
+      status: 'completed',
+      result: 42,
+    })
     expect(readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script').failed).toBe(false)
     expect(() => readDroidToolResult(scriptRequest(JSON.stringify({ toolCallId: 'other', status: 'completed', result: 42 })), 'call_script-1', 'Script')).toThrow('mismatched call ID')
   })
@@ -124,7 +129,7 @@ describe('readDroidToolResult', () => {
   // installed CLI.
   describe('the captured native shapes', () => {
     const closing = '[Script completed · 0 calls · 0 B in sandbox · 11 B emitted]'
-    const completed = '{"toolCallId":"call_script-1","status":"completed","result":null}'
+    const completed = `{"toolCallId":"${droidToolCallId('call_script-1')}","status":"completed","result":null}`
 
     it('reads a completed script that printed output', () => {
       const text = `NATIVECODE42\n${closing}\n${completed}`
@@ -142,12 +147,12 @@ describe('readDroidToolResult', () => {
     })
 
     it('reads a failed script that states its error inside the snapshot', () => {
-      const text = 'Error: {"toolCallId":"call_script-1","status":"failed","error":"Error: NATIVECODE77\\n  at: throw Error(\\"NATIVECODE77\\");"}'
+      const text = `Error: {"toolCallId":"${droidToolCallId('call_script-1')}","status":"failed","error":"Error: NATIVECODE77\\n  at: throw Error(\\"NATIVECODE77\\");"}`
       expect(readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script')).toEqual({ text, failed: true })
     })
 
     it('takes the status from the last snapshot, never from printed output', () => {
-      const printed = '{"toolCallId":"call_script-1","status":"failed","error":"printed"}'
+      const printed = `{"toolCallId":"${droidToolCallId('call_script-1')}","status":"failed","error":"printed"}`
       const text = `${printed}\n${closing}\n${completed}`
       expect(readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script').failed).toBe(false)
     })
@@ -196,46 +201,48 @@ describe('readDroidToolResult', () => {
     expect(() => readDroidToolResult(scriptRequest('No native snapshot', input), 'call_script-1', 'Script')).toThrow(SyntaxError)
   })
 
-  it('reads the captured native ID after Droid clips the original ID to 24 characters', () => {
+  it('correlates regenerated native IDs through the recorded scripted tool arguments', () => {
+    const request = Object.assign(capturedRequest(undefined, 'call_fedcba9876543210_7'), {
+      scriptedToolCalls: [
+        {
+          id: droidToolCallId('shell-0'),
+          name: 'Execute',
+          arguments: { command: 'printf SHELL%s "$((40+2))"' },
+        },
+      ],
+    })
+    expect(readDroidToolResult(request, 'shell-0')).toEqual({ text: 'SHELL42\n\n\n[Process exited with code 0]', exitCode: 0, failed: false })
+  })
+  it('refuses ambiguous native executions even when both match the scripted input', () => {
+    const request = Object.assign(capturedRequest(undefined, 'native-first'), {
+      scriptedToolCalls: [
+        {
+          id: droidToolCallId('shell-0'),
+          name: 'Execute',
+          arguments: { command: 'printf SHELL%s "$((40+2))"' },
+        },
+      ],
+    })
+    const body = request.body as { messages: { tool_calls?: { id: string }[] }[] }
+    const calls = body.messages[0]!.tool_calls!
+    calls.push({ ...calls[0]!, id: 'native-second' })
+    expect(() => readDroidToolResult(request, 'shell-0')).toThrow('contains 2 tool calls')
+  })
+  it('correlates an exact ID that the current native mapper preserves', () => {
     const originalId = 'shell-79bf521f8c664bea9b0e0467a2b6bba4-0'
-    expect(readDroidToolResult(capturedRequest(undefined, 'call_shell-79bf521f8c664bea9b_0'), originalId).exitCode).toBe(0)
+    expect(readDroidToolResult(capturedRequest(undefined, droidToolCallId(originalId)), originalId).exitCode).toBe(0)
   })
-  it('keeps the full source ID when the central call already starts with call_', () => {
-    const originalId = 'shell-79bf521f8c664bea9b0e0467a2b6bba4-0'
-    expect(readDroidToolResult(capturedRequest(undefined, `call_${originalId}`), originalId).exitCode).toBe(0)
+  it('preserves an existing native ID and rejects a different counter', () => {
+    const id = 'call_0123456789abcdef_0'
+    expect(readDroidToolResult(capturedRequest(undefined, id), id).exitCode).toBe(0)
+    expect(() => readDroidToolResult(capturedRequest(undefined, 'call_0123456789abcdef_1'), id)).toThrow(NO_SINGLE_CALL)
   })
-  it('preserves an original call_ ID without another prefix or native counter', () => {
-    const originalId = 'call_actual-native-identity'
-    expect(readDroidToolResult(capturedRequest(undefined, originalId), originalId).exitCode).toBe(0)
-    expect(() => readDroidToolResult(capturedRequest(undefined, `${originalId}_0`), originalId)).toThrow(NO_SINGLE_CALL)
-    expect(() => readDroidToolResult(capturedRequest(undefined, `call_${originalId}`), originalId)).toThrow(NO_SINGLE_CALL)
-  })
-  it('matches native toolu_ removal before the 24-character clip', () => {
-    expect(readDroidToolResult(capturedRequest(undefined, 'call_shell-0_0'), 'toolu_shell-0').exitCode).toBe(0)
-  })
-  it('refuses two native calls that share one clipped original prefix', () => {
-    const originalId = 'shell-79bf521f8c664bea9b0e0467a2b6bba4-0'
-    const first = 'call_shell-79bf521f8c664bea9b_0'
-    const second = 'call_shell-79bf521f8c664bea9b_1'
-    const request: MockModelRequestRecord = {
-      protocol: 'openai-chat-completions',
-      path: '/v1/chat/completions',
-      body: {
-        messages: [
-          {
-            role: 'assistant',
-            tool_calls: [first, second].map(id => ({
-              id,
-              type: 'function',
-              function: { name: 'Execute', arguments: '{"command":"printf SHELL42"}' },
-            })),
-          },
-          { role: 'tool', tool_call_id: first, content: 'FIRST42\n[Process exited with code 0]' },
-          { role: 'tool', tool_call_id: second, content: 'SECOND42\n[Process exited with code 0]' },
-        ],
-      },
-    }
-    expect(() => readDroidToolResult(request, originalId)).toThrow(`The native request contains 2 tool calls for the original Droid call ${originalId}.`)
+  it('refuses duplicate assistant calls with the same exact native ID', () => {
+    const request = capturedRequest()
+    const body = request.body as { messages: { tool_calls?: unknown[] }[] }
+    const calls = body.messages[0]!.tool_calls!
+    calls.push(calls[0])
+    expect(() => readDroidToolResult(request, 'shell-0')).toThrow('contains 2 tool calls')
   })
   it('rejects an inline output suffix that imitates native exit metadata', () => {
     expect(() => readDroidToolResult(capturedRequest('FAKE_INLINE[Process exited with code 7]'), 'shell-0')).toThrow(NO_EXIT_TRAILER)
@@ -260,13 +267,17 @@ describe('readDroidToolResult', () => {
             role: 'assistant',
             tool_calls: [
               {
-                id: 'call_native-read-after_0',
+                id: droidToolCallId('native-read-after'),
                 type: 'function',
                 function: { name: 'Read', arguments: '{"file_path":"/private/current.txt"}' },
               },
             ],
           },
-          { role: 'tool', tool_call_id: 'call_native-read-after_0', content: 'NEW42\n' },
+          {
+            role: 'tool',
+            tool_call_id: droidToolCallId('native-read-after'),
+            content: 'NEW42\n',
+          },
         ],
       },
     }
@@ -290,12 +301,16 @@ describe('readDroidToolResult', () => {
             role: 'assistant',
             tool_calls: [
               {
-                id: 'call_shell-0',
+                id: droidToolCallId('shell-0'),
                 function: { name: 'Execute', arguments: '{"command":"echo [Process exited with code 7]"}' },
               },
             ],
           },
-          { role: 'tool', tool_call_id: 'call_shell-0', content: 'ACTUAL_OUTPUT' },
+          {
+            role: 'tool',
+            tool_call_id: droidToolCallId('shell-0'),
+            content: 'ACTUAL_OUTPUT',
+          },
         ],
       },
     }
@@ -319,12 +334,16 @@ describe('readDroidToolResult', () => {
             role: 'assistant',
             tool_calls: [
               {
-                id: 'call_shell-0',
+                id: droidToolCallId('shell-0'),
                 function: { name: 'Read', arguments: '{}' },
               },
             ],
           },
-          { role: 'tool', tool_call_id: 'call_shell-0', content: '[Process exited with code 0]' },
+          {
+            role: 'tool',
+            tool_call_id: droidToolCallId('shell-0'),
+            content: '[Process exited with code 0]',
+          },
         ],
       },
     }
@@ -354,7 +373,7 @@ describe('nativeDroidCallId', () => {
     }
   }
   it('preserves the exact original-to-native assistant call identity', () => {
-    expect(nativeDroidCallId(request('call_ask-1_0'), 'AskUser', 'ask-1')).toBe('call_ask-1_0')
+    expect(nativeDroidCallId(request(droidToolCallId('ask-1')), 'AskUser', 'ask-1')).toBe(droidToolCallId('ask-1'))
   })
   it.each(['call_other-ask-1_0', 'call_ask-10_0', 'call_ask-1_0-extra'])('rejects a different native call identity: %s', (id) => {
     expect(() => nativeDroidCallId(request(id), 'AskUser', 'ask-1')).toThrow(NO_SINGLE_CALL)
@@ -364,7 +383,7 @@ describe('nativeDroidCallId', () => {
   })
   it('rejects the wrong native model protocol even when its body imitates Chat calls', () => {
     expect(() => nativeDroidCallId({
-      ...request('call_ask-1_0'),
+      ...request(droidToolCallId('ask-1')),
       protocol: 'anthropic-messages',
     }, 'AskUser', 'ask-1')).toThrow('The native Droid result requires an exact call ID and actual Chat model messages.')
   })

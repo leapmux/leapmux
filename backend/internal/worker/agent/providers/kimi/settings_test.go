@@ -13,6 +13,80 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 )
 
+func TestKimiReadsStatusFromNativeSubscription(t *testing.T) {
+	t.Parallel()
+	fake, server := newFakeKap(t)
+	fake.store("session_1", fakeKapSession{Model: "kimi-k2", Permission: "auto"})
+	fake.reply("GET "+kimiSessionPath("session_1", "/status"), fakeKapReply{HTTPStatus: 404, Msg: "the status route does not exist"})
+	a, err := connectOffline(t, server.URL, fakeKapToken)
+	require.NoError(t, err)
+	fake.setAckFor(func(sub fakeKapSubscribe) (int, kimiAck) {
+		fake.push(t, map[string]any{
+			"type": "agent", "session_id": sub.SessionID, "agent_id": "main",
+			"status": "running", "model": "kimi-k2", "thinking": "high", "permission_mode": "auto",
+			"plan_mode": true, "swarm_mode": false, "tower_mode": false,
+		})
+		fake.push(t, map[string]any{
+			"type": "usage", "session_id": sub.SessionID, "agent_id": "main",
+			"context_tokens": 0, "max_context_tokens": 4096,
+		})
+		return 0, kimiAck{Accepted: sub.IDs}
+	})
+	status, err := a.readStatus(t.Context(), "session_1")
+	require.NoError(t, err)
+	assert.Equal(t, kimiStatus{
+		HasContextUsage: true,
+		Busy:            true, Model: "kimi-k2", ThinkingLevel: "high", Permission: "auto", PlanMode: true,
+		ContextTokens: 0, MaxContextTokens: 4096,
+	}, status)
+	assert.Empty(t, fake.requestsTo("GET "+kimiSessionPath("session_1", "/status")))
+}
+
+func TestKimiReportedZeroContextClearsPreviousUsage(t *testing.T) {
+	t.Parallel()
+	a := newOfflineKimiAgent(t, &agenttest.Sink{})
+	a.applyStatus(kimiStatus{ContextTokens: 9, MaxContextTokens: 100})
+	a.applyStatus(kimiStatus{HasContextUsage: true})
+	assert.EqualValues(t, 0, a.contextUsage[contracts.ContextUsageFieldContextTokens])
+	assert.EqualValues(t, 0, a.contextUsage[contracts.ContextUsageFieldContextWindow])
+}
+
+func TestKimiNativeAgentStateUpdatesLiveOptions(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	rig.agent.catalog = buildKimiCatalog([]kimiModelItem{{Model: "kimi-k2"}, {Model: "kimi-text"}}, "kimi-k2")
+	rig.agent.HandleOutput([]byte(`{"type":"agent","session_id":"session_1","agent_id":"main","status":"idle","model":"kimi-text","thinking":"off","permission_mode":"auto","plan_mode":true,"swarm_mode":true,"tower_mode":false}`))
+	current := agent.CurrentOptions(rig.agent.OptionGroups())
+	assert.Equal(t, "kimi-text", current[agent.OptionIDModel])
+	assert.Equal(t, contracts.KimiModePlan, current[agent.OptionIDPermissionMode])
+	assert.Equal(t, kimiSwarmOn, current[kimiOptionSwarmMode])
+	rig.agent.HandleOutput([]byte(`{"type":"agent","session_id":"session_1","agent_id":"main","status":"idle","model":"kimi-k2","thinking":"high","permission_mode":"yolo","plan_mode":false,"swarm_mode":false,"tower_mode":false}`))
+	current = agent.CurrentOptions(rig.agent.OptionGroups())
+	assert.Equal(t, "kimi-k2", current[agent.OptionIDModel])
+	assert.Equal(t, contracts.KimiModeYolo, current[agent.OptionIDPermissionMode])
+	assert.Equal(t, kimiSwarmOff, current[kimiOptionSwarmMode])
+}
+
+func TestKimiNativeUsageUpdatesContextWithoutChangingModes(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	rig.agent.applyStatus(kimiStatus{PlanMode: true, SwarmMode: true, ContextTokens: 9, MaxContextTokens: 100})
+	raw := []byte(`{"type":"usage","session_id":"session_1","agent_id":"main","context_tokens":0,"max_context_tokens":4096}`)
+	rig.agent.HandleOutput(raw)
+	value, exists := rig.sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
+	require.True(t, exists)
+	usage, ok := value.(map[string]any)
+	require.True(t, ok)
+	assert.EqualValues(t, 0, usage[contracts.ContextUsageFieldContextTokens])
+	assert.EqualValues(t, 4096, usage[contracts.ContextUsageFieldContextWindow])
+	current := agent.CurrentOptions(rig.agent.OptionGroups())
+	assert.Equal(t, contracts.KimiModePlan, current[agent.OptionIDPermissionMode])
+	assert.Equal(t, kimiSwarmOn, current[kimiOptionSwarmMode])
+	before := rig.sink.SessionInfoCount()
+	rig.agent.HandleOutput(raw)
+	assert.Equal(t, before, rig.sink.SessionInfoCount(), "an unchanged native usage snapshot adds no broadcast")
+}
+
 // lastProfile returns the agent_config of the newest profile write.
 func lastProfile(t *testing.T, rig *kimiTestRig) map[string]any {
 	t.Helper()
@@ -212,11 +286,11 @@ func TestKimiUpdateSettings(t *testing.T) {
 		assert.Equal(t, "kimi-k2", agent.CurrentOptions(rig.agent.OptionGroups())[agent.OptionIDModel])
 	})
 
-	t.Run("a read-back that fails confirms nothing", func(t *testing.T) {
+	t.Run("a closed state stream confirms nothing", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		refreshes := rig.sink.SettingsRefreshCount()
-		rig.fake.reply("GET "+kimiSessionPath(rig.sessionID(), "/status"), fakeKapReply{HTTPStatus: 500, Code: 50000, Msg: "status down"})
+		rig.agent.stream.close()
 		result := rig.agent.UpdateSettings(optionmap.Map{agent.OptionIDModel: "kimi-text"})
 		assert.True(t, result.AppliedLive)
 		assert.Equal(t, map[string]any{"model": "kimi-text", "thinking": "off"}, lastProfile(t, rig), "the write went out")
@@ -291,74 +365,66 @@ func TestKimiAutoThinking(t *testing.T) {
 
 func TestKimiStatusUpdated(t *testing.T) {
 	t.Parallel()
-
-	t.Run("plan mode the model entered moves the permission axis", func(t *testing.T) {
+	t.Run("native plan mode moves the permission axis", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
-		rig.feed(t, map[string]any{"type": contracts.KimiEventAgentStatusUpdated, "planMode": true})
+		rig.agent.HandleOutput([]byte(`{"type":"agent","session_id":"session_1","agent_id":"main","status":"idle","permission_mode":"manual","plan_mode":true,"swarm_mode":false,"tower_mode":false}`))
 		assert.Equal(t, contracts.KimiModePlan, rig.sink.PermissionMode())
-		rig.feed(t, map[string]any{"type": contracts.KimiEventAgentStatusUpdated, "planMode": false})
-		assert.Equal(t, contracts.KimiModeManual, rig.sink.PermissionMode(), "leaving plan mode returns to the mode under it")
+		rig.agent.HandleOutput([]byte(`{"type":"agent","session_id":"session_1","agent_id":"main","status":"idle","permission_mode":"manual","plan_mode":false,"swarm_mode":false,"tower_mode":false}`))
+		assert.Equal(t, contracts.KimiModeManual, rig.sink.PermissionMode())
 		assert.Equal(t, []string{contracts.KimiModePlan, contracts.KimiModeManual}, rig.sink.PermissionModes())
 	})
-
-	t.Run("a model, a level and the swarm the server moved are refreshed", func(t *testing.T) {
+	t.Run("native model effort and swarm changes refresh their axes", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
 		rig.agent.settings.effort = "low"
-		rig.feed(t, map[string]any{"type": contracts.KimiEventAgentStatusUpdated, "model": "kimi-text", "thinkingEffort": "high", "swarmMode": true})
+		rig.agent.HandleOutput([]byte(`{"type":"agent","session_id":"session_1","agent_id":"main","status":"idle","model":"kimi-text","thinking":"high","permission_mode":"manual","plan_mode":false,"swarm_mode":true,"tower_mode":false}`))
 		refresh := rig.sink.LastSettingsRefresh()
 		assert.Equal(t, "kimi-text", refresh.Model)
 		assert.Equal(t, "high", refresh.Effort)
 		assert.Equal(t, kimiSwarmOn, refresh.Options[kimiOptionSwarmMode])
-		assert.Empty(t, rig.sink.PermissionModes(), "the permission axis did not move")
+		assert.Empty(t, rig.sink.PermissionModes())
 	})
-
-	t.Run("Auto stays Auto whatever level the server runs", func(t *testing.T) {
+	t.Run("Auto remains Auto when the native thinking level changes", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
-		rig.feed(t, map[string]any{"type": contracts.KimiEventAgentStatusUpdated, "thinkingEffort": "high"})
+		rig.agent.HandleOutput([]byte(`{"type":"agent","session_id":"session_1","agent_id":"main","status":"idle","thinking":"high","permission_mode":"manual","plan_mode":false,"swarm_mode":false,"tower_mode":false}`))
 		assert.Zero(t, rig.sink.SettingsRefreshCount())
 		rig.agent.Mu.Lock()
 		effort := rig.agent.settings.effort
 		rig.agent.Mu.Unlock()
 		assert.Equal(t, agent.EffortAuto, effort)
 	})
-
-	t.Run("a subagent's status is not the session's", func(t *testing.T) {
+	t.Run("a linked child's native state does not change the session", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
-		rig.startTurn(t, 0, contracts.KimiOriginUser)
-		spawnAgent(t, rig, "agent-0", "call_child", nil)
-		rig.feed(t, map[string]any{"type": contracts.KimiEventAgentStatusUpdated, "agentId": "agent-0", "planMode": true, "model": "kimi-text"})
+		adoptNativeKimiChild(t, rig.agent, "agent-0")
+		rig.agent.HandleOutput([]byte(`{"type":"agent","session_id":"session_1","agent_id":"agent-0","status":"running","model":"kimi-text","thinking":"high","permission_mode":"auto","plan_mode":true,"swarm_mode":true,"tower_mode":false}`))
 		assert.Empty(t, rig.sink.PermissionModes())
 		assert.Zero(t, rig.sink.SettingsRefreshCount())
 	})
-
-	t.Run("a step's usage updates the readout", func(t *testing.T) {
+	t.Run("native step usage updates all token counters", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
-		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStepCompleted, "turnId": 0,
-			"usage": map[string]any{"inputOther": 7, "output": 3, "inputCacheRead": 90, "inputCacheCreation": 0}})
+		rig.transcriptOps(t, 1, `{"op":"step.upsert","turnId":"t0","step":{"kind":"step","stepId":"t0.1","ordinal":1,"state":"completed","usage":{"inputOther":7,"output":3,"inputCacheRead":90,"inputCacheCreation":0}}}`)
 		usage, ok := rig.sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
 		require.True(t, ok)
 		fields, ok := usage.(map[string]any)
 		require.True(t, ok)
-		assert.NotEmpty(t, fields)
-
+		assert.EqualValues(t, 7, fields["input_tokens"])
+		assert.EqualValues(t, 3, fields["output_tokens"])
+		assert.EqualValues(t, 90, fields["cache_read_input_tokens"])
+		assert.EqualValues(t, 0, fields["cache_creation_input_tokens"])
 		before := rig.sink.SessionInfoCount()
-		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStepCompleted, "turnId": 0})
-		assert.Equal(t, before, rig.sink.SessionInfoCount(), "a step with no usage broadcasts nothing")
+		rig.transcriptOps(t, 2, `{"op":"step.upsert","turnId":"t0","step":{"kind":"step","stepId":"t0.2","ordinal":2,"state":"completed"}}`)
+		assert.Equal(t, before, rig.sink.SessionInfoCount())
 	})
-
-	t.Run("a subagent's step usage is not the session's readout", func(t *testing.T) {
+	t.Run("a child's native step usage is not the session readout", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
-		rig.startTurn(t, 0, contracts.KimiOriginUser)
-		spawnAgent(t, rig, "agent-0", "call_child", nil)
+		adoptNativeKimiChild(t, rig.agent, "agent-0")
 		before := rig.sink.SessionInfoCount()
-		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStepCompleted, "agentId": "agent-0", "turnId": 0,
-			"usage": map[string]any{"inputOther": 7, "output": 3}})
+		rig.transcriptAgentOps(t, "agent-0", 1, `{"op":"step.upsert","turnId":"t0","step":{"kind":"step","stepId":"t0.1","ordinal":1,"state":"completed","usage":{"inputOther":7,"output":3,"inputCacheCreation":0}}}`)
 		assert.Equal(t, before, rig.sink.SessionInfoCount())
 		rig.agent.Mu.Lock()
 		usage := rig.agent.contextUsage

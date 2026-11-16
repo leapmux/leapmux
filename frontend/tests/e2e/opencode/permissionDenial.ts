@@ -2,75 +2,48 @@ import type { MockModelToolCall } from '../helpers/mockModelScript'
 import type { NativeMessageSnapshot } from '../helpers/nativeMessages'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
-import { ACP_UPDATE } from '../../../src/generated/contracts/acp-protocol'
-import { isObject } from '../../../src/lib/jsonPick'
-import { nativeMessageBody } from '../helpers/nativeMessages'
+import { isObject, pickObject, pickString } from '../../../src/lib/jsonPick'
 import { exerciseNativePermissionRefusal, expectDeclinedToolRow } from '../helpers/nativePermission'
+import { nativeToolRowId } from '../helpers/nativeToolRowId'
 import { savedControlAnswer } from '../helpers/ui'
+import { openCodeNativeToolRecords } from './nativeToolRecords'
 
-/**
- * The error that OpenCode and Kilo store for a tool call whose permission the reader rejected.
- * Both checkouts state it in `packages/core/src/v1/permission.ts`.
- */
-export const OPENCODE_PERMISSION_REJECTION = 'The user rejected permission to use this specific tool call.'
+/** The installed native runtime's refusal message. */
+export const OPENCODE_PERMISSION_REJECTION = 'The user declined this tool call'
 
-/** The final native frame of one OpenCode-family tool call. */
 export interface OpenCodeToolEnding {
   status: 'completed' | 'failed' | 'cancelled'
-  /** The text blocks of the frame content, in order. */
   text: string[]
-  /** The error of the raw output, when the frame has one. */
   error?: string
 }
 
-/** Read the one final native frame of a call in the native session of the snapshot. */
+/** Read one original completed native tool result. */
 export function openCodeToolEnding(snapshot: NativeMessageSnapshot, callId: string): OpenCodeToolEnding {
-  if (!callId || snapshot.agentId.trim() === '' || snapshot.agentSessionId.trim() === '')
-    throw new Error('The native tool ending requires an exact agent, session, and call ID.')
-  const endings: OpenCodeToolEnding[] = []
-  for (const message of snapshot.messages) {
-    if (message.agentSessionId !== snapshot.agentSessionId || message.spanId !== callId)
-      continue
-    const frame = nativeMessageBody(message)
-    if (!isObject(frame))
-      throw new Error('The paired native tool frame must contain an object.')
-    if (frame.sessionUpdate !== ACP_UPDATE.ToolCallUpdate)
-      continue
-    if (frame.toolCallId !== callId)
-      throw new Error('The paired native tool frame identifies another call.')
-    const status = frame.status
-    if (status !== 'completed' && status !== 'failed' && status !== 'cancelled')
-      continue
-    const content: unknown[] = Array.isArray(frame.content)
-      ? frame.content
-      : []
-    const text = content.flatMap(block => isObject(block) && block.type === 'content' && isObject(block.content)
-      && block.content.type === 'text' && typeof block.content.text === 'string'
-      ? [block.content.text]
-      : [])
-    const raw = isObject(frame.rawOutput)
-      ? frame.rawOutput
-      : undefined
-    endings.push({
-      status,
-      text,
-      ...(typeof raw?.error === 'string'
-        ? { error: raw.error }
-        : {}),
-    })
-  }
-  const ending = endings[0]
-  if (endings.length !== 1 || !ending)
+  const endings = openCodeNativeToolRecords(snapshot, callId).filter(record => record.finished)
+  if (endings.length !== 1 || !endings[0])
     throw new Error(`The native call ${callId} has ${endings.length} final frames. Exactly one is required.`)
-  return ending
+  const { data, status } = endings[0]
+  const error = pickString(pickObject(data, 'error'), 'message')
+  return {
+    status: status === 'completed'
+      ? 'completed'
+      : status === 'error'
+        ? 'failed'
+        : 'cancelled',
+    text: Array.isArray(data.content)
+      ? data.content.flatMap(item => isObject(item) && item.type === 'text' && typeof item.text === 'string'
+          ? [item.text]
+          : [])
+      : [],
+    ...(error
+      ? { error }
+      : {}),
+  }
 }
 
 /**
- * Deny one native permission and prove the native refusal of OpenCode or Kilo.
- *
- * The runtime ends the turn after the refusal and sends no further model request.
- * The session processor sets `blocked = shouldBreak` for a rejected permission.
- * `shouldBreak` is true unless the config sets `experimental.continue_loop_on_deny`, and LeapMux never sets it.
+ * Deny one native permission and prove the native refusal.
+ * The runtime interrupts the execution after this refusal without stopping its server.
  */
 export async function exerciseOpenCodeFamilyDenial(context: ManagedNativeScenarioContext, options: {
   toolCall: MockModelToolCall
@@ -85,13 +58,13 @@ export async function exerciseOpenCodeFamilyDenial(context: ManagedNativeScenari
     nativeRefusal: (snapshot) => {
       expect(openCodeToolEnding(snapshot, options.toolCall.id)).toEqual({
         status: 'failed',
-        text: [OPENCODE_PERMISSION_REJECTION],
+        text: [],
         error: OPENCODE_PERMISSION_REJECTION,
       })
     },
     viewProof: async () => {
-      await expect(savedControlAnswer(context.page)).toHaveText('Reject')
-      await expectDeclinedToolRow(context.page, options.toolCall.id, OPENCODE_PERMISSION_REJECTION)
+      await expect(savedControlAnswer(context.page)).toHaveText('Denied')
+      await expectDeclinedToolRow(context.page, await nativeToolRowId(context, options.toolCall.id), OPENCODE_PERMISSION_REJECTION)
     },
   })
 }

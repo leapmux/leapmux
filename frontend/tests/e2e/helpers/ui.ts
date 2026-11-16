@@ -191,10 +191,15 @@ export function composerEditor(page: Page): Locator {
 
 /** Click the composer's text block, outside the padding reserved for action buttons, and return the editor. */
 export async function focusComposer(page: Page): Promise<Locator> {
-  const editor = composerEditor(page)
+  const editor = composerEditor(page).and(page.locator('[contenteditable="true"]'))
   await expect(editor).toBeVisible()
   await editor.locator(':scope > :first-child').click()
   return editor
+}
+
+/** Fill the composer after its current draft becomes editable. */
+export async function fillComposer(page: Page, text: string): Promise<void> {
+  await (await focusComposer(page)).fill(text)
 }
 
 /**
@@ -417,14 +422,15 @@ export async function expectNoControlBanner(page: Page): Promise<void> {
 
 /**
  * The action of a control request button:
- * - `allow` and `deny`: the decision buttons of a permission or plan request. With text in the composer, `deny` sends
+ * - `allow` and `deny`: the decision buttons of a permission, a plan, or an MCP confirmation. With text in the composer, `deny` sends
  *   that text as feedback.
  * - `submit`: the button that sends the answers of a question.
  * - `stop`: the question button that refuses the question.
+ * - `cancel`: the elicitation button that returns the MCP cancel action.
  * - `skip`: the question button that skips a question the agent asked without waiting.
  * - `yolo`: the question button that fills each unanswered question with the recommended option and sends the answers.
  */
-export type ControlAction = 'allow' | 'deny' | 'submit' | 'stop' | 'skip' | 'yolo'
+export type ControlAction = 'allow' | 'deny' | 'submit' | 'stop' | 'skip' | 'yolo' | 'cancel'
 
 /** Locate every visible button of one control request action. */
 export function controlButton(page: Page, action: ControlAction): Locator {

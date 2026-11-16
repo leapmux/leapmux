@@ -15,6 +15,18 @@ const ABORTED_RESULT = {
 }
 
 describe('qoderResultDivider', () => {
+  it('leaves the error detail to the synthetic assistant that the SDK reports in model usage', () => {
+    expect(qoderResultDivider({
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      duration_ms: 490,
+      errors: ['The native service failed'],
+      modelUsage: {
+        '<synthetic>': { inputTokens: 0, outputTokens: 0 },
+      },
+    })).toEqual({ label: 'Turn failed (490ms)', isError: true })
+  })
   it('returns null for a row that is not a result', () => {
     expect(qoderResultDivider({ type: 'assistant' })).toBeNull()
     expect(qoderResultDivider('result')).toBeNull()
@@ -42,8 +54,7 @@ describe('qoderResultDivider', () => {
   })
 
   it('shows the provider error that the CLI relays after a stream failure as the detail', () => {
-    // A stream that fails after a partial answer: Qoder keeps the provider's
-    // own words in `errors` and nowhere else in the transcript.
+    // Without synthetic model usage, the result owns the provider's error detail.
     const divider = qoderResultDivider({
       type: 'result',
       subtype: 'error_during_execution',

@@ -2,6 +2,8 @@ package goose
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/leapmux/leapmux/generated/contracts"
@@ -241,4 +243,90 @@ func TestGooseLiveOutputKeepsTheShellIdentity(t *testing.T) {
 	assert.Equal(t, agent.ProgressOutputTotal, progress[0].Operation)
 	assert.Equal(t, agent.ProgressOutputTail, progress[1].Operation)
 	assert.Equal(t, "hello", progress[1].Text)
+}
+
+func TestGoosePromptFailureDoesNotRepeatObservedNativeError(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	a := newGooseOutputAgent(agent.NewProviderServices(sink))
+	a.SetPromptActiveForTest(true)
+	const text = "Ran into this error: Failure42."
+	for _, chunk := range []string{"Ran into this error: ", "Failure42."} {
+		a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","messageId":"native-error","content":{"type":"text","text":` + jsonString(t, chunk) + `}}}}`))
+	}
+	a.FinishPromptRequestForTest("s1", nil, fmt.Errorf("wrapped request: %w", &providerkit.JSONRPCResponseError{Code: -32603, Message: text, Data: json.RawMessage(`{"reason":"turn_failed"}`)}))
+	errors := 0
+	for _, note := range sink.Notifications() {
+		if note[contracts.NotificationFieldType] == contracts.NotificationTypeAgentError {
+			errors++
+		}
+	}
+	assert.Zero(t, errors, "the native error is already the conversation's failure note")
+	retained := false
+	for _, message := range sink.Messages() {
+		retained = retained || strings.Contains(string(message.Content), "Failure42")
+	}
+	assert.True(t, retained, "deduplication keeps the native failure text")
+}
+
+func TestGooseNativeMessageAssemblyReusesItsBuffer(t *testing.T) {
+	// Allocation counts include other goroutines. Keep this test sequential.
+	const count = 512
+	chunk := strings.Repeat("x", 128)
+	update := func(id string) json.RawMessage {
+		return json.RawMessage(`{"sessionUpdate":"agent_message_chunk","messageId":"` + id + `","content":{"type":"text","text":` + jsonString(t, chunk) + `}}`)
+	}
+	first, second := update("a"), update("b")
+	measure := func(changeIdentity bool) float64 {
+		a := newGooseOutputAgent(agent.NewProviderServices(&agenttest.Sink{}))
+		return testing.AllocsPerRun(2, func() {
+			a.Mu.Lock()
+			a.promptOutput = goosePromptOutputState{}
+			a.Mu.Unlock()
+			for index := range count {
+				raw := first
+				if changeIdentity && index%2 != 0 {
+					raw = second
+				}
+				a.observeGooseSessionUpdate("s1", a.Sink(), raw)
+			}
+		})
+	}
+	assert.Less(t, measure(false), measure(true), "one message should reuse its buffer across chunks")
+}
+
+func TestGoosePromptFailureNeedsExactObservedEvidence(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, id, text, message, data string
+		code                          int
+	}{
+		{"different message", "native", "partial answer", "failure", `{"reason":"turn_failed"}`, -32603},
+		{"missing message ID", "", "failure", "failure", `{"reason":"turn_failed"}`, -32603},
+		{"empty text", "native", "", "", `{"reason":"turn_failed"}`, -32603},
+		{"different code", "native", "failure", "failure", `{"reason":"turn_failed"}`, -32000},
+		{"missing data", "native", "failure", "failure", `null`, -32603},
+		{"different reason", "native", "failure", "failure", `{"reason":"credits_exhausted"}`, -32603},
+		{"malformed reason", "native", "failure", "failure", `{"reason":false}`, -32603},
+		{"different long suffix", "native", strings.Repeat("x", 128*1024) + "a", strings.Repeat("x", 128*1024) + "b", `{"reason":"turn_failed"}`, -32603},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := newGooseOutputAgent(agent.NewProviderServices(&agenttest.Sink{}))
+			update, err := json.Marshal(map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": tc.id, "content": map[string]any{"type": "text", "text": tc.text}})
+			require.NoError(t, err)
+			a.observeGooseSessionUpdate("s1", a.Sink(), update)
+			ending := a.finishGoosePrompt(&providerkit.JSONRPCResponseError{Code: tc.code, Message: tc.message, Data: json.RawMessage(tc.data)}, false)
+			assert.False(t, ending.NoteWritten, "the host must retain errors without exact native evidence")
+		})
+	}
+}
+
+func TestGoosePromptFailureDoesNotReuseAnotherPromptsMessage(t *testing.T) {
+	t.Parallel()
+	a := newGooseOutputAgent(agent.NewProviderServices(&agenttest.Sink{}))
+	a.observeGooseSessionUpdate("s1", a.Sink(), json.RawMessage(`{"sessionUpdate":"agent_message_chunk","messageId":"native-error","content":{"type":"text","text":"failure"}}`))
+	err := &providerkit.JSONRPCResponseError{Code: -32603, Message: "failure", Data: json.RawMessage(`{"reason":"turn_failed"}`)}
+	assert.True(t, a.finishGoosePrompt(err, false).NoteWritten)
+	assert.False(t, a.finishGoosePrompt(err, false).NoteWritten, "a later failure without native text still needs a host note")
 }

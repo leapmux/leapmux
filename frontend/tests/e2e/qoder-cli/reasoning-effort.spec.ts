@@ -38,7 +38,7 @@ qoderTest.describe('Qoder CLI effort and session goal', () => {
         if (step.value === 'low')
           expect(request.body).toMatchObject({ reasoning_effort: 'low' })
         else
-          expect(request.body).not.toHaveProperty('reasoning_effort')
+          expect(request.body).toMatchObject({ reasoning_effort: 'medium' })
       },
     })
   })

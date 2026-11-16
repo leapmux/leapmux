@@ -1,7 +1,7 @@
 import type { Locator } from '@playwright/test'
 import type { ManagedNativeScenarioContext } from './nativeScenario'
 import { describe, expect, it, vi } from 'vitest'
-import { restoreQuestionSelection, restoreQuestionTextDraft } from './nativeQuestionRestoration'
+import { restoreQuestionEmptySelection, restoreQuestionSelection, restoreQuestionTextDraft } from './nativeQuestionRestoration'
 
 describe('native question restoration validation', () => {
   it.each([
@@ -17,6 +17,7 @@ describe('native question restoration validation', () => {
     const context = {
       get page() { return read() },
     } as unknown as ManagedNativeScenarioContext
+    await expect(restoreQuestionEmptySelection(context, {} as Locator, 'Green', pageIndex)).rejects.toThrow('nonnegative safe integer')
     await expect(restoreQuestionSelection(context, {} as Locator, 'Green', pageIndex)).rejects.toThrow('nonnegative safe integer')
     await expect(restoreQuestionTextDraft(context, 'Answer', pageIndex)).rejects.toThrow('nonnegative safe integer')
     expect(read).not.toHaveBeenCalled()

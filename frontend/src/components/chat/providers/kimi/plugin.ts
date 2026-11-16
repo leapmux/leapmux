@@ -8,10 +8,12 @@ import { kimiResultDivider } from './extractors/resultDivider'
 import { kimiExtractRow } from './extractors/row'
 import { kimiConfiguration } from './pluginConfiguration'
 import { kimiControls } from './pluginControls'
+import { resolveKimiMessage } from './resolveMessage'
 import { kimiNeedsRequest, kimiSpanRole } from './spanRole'
 
 const kimiPlugin: ProviderPlugin = {
   transcript: {
+    resolveMessage: resolveKimiMessage,
     outputFilePaths: kimiOutputFilePaths,
     classify: classifyKimiMessage,
     extractRow: kimiExtractRow,

@@ -1239,14 +1239,39 @@ func (m *Manager) NotifyDependencyReady(agentID string) {
 	m.scheduleDrain(agentID)
 }
 
+// NotifyInputReady checks the original source before scheduling a queue pass.
+// It changes no native turn or provisional input reservation.
+func (m *Manager) NotifyInputReady(agentID string, admission agent.InputReadinessAdmission) {
+	if admission != nil {
+		m.scheduleDrainFrom(agentID, admission)
+	}
+}
+
 // scheduleDrain starts the agent's drain loop, or records a request for the
 // loop that already runs. It is the one admission point of every automatic
 // dispatch, so it holds the two refusals that no source of drains may bypass:
 // a recovered queue waits for DrainRecovered, which confirms the Worker owner
 // and the Hub's tab, and a retired (closed) agent takes no input at all.
 func (m *Manager) scheduleDrain(agentID string) {
+	m.scheduleDrainFrom(agentID, nil)
+}
+
+func (m *Manager) scheduleDrainFrom(agentID string, admission agent.InputReadinessAdmission) {
 	if !m.beginDrainActivity(agentID) {
 		return
+	}
+	var lease agent.InputReadinessLease
+	if admission != nil {
+		lease = admission.Acquire()
+		if lease == nil {
+			m.endActivity()
+			return
+		}
+		defer func() {
+			if lease != nil {
+				lease.Release()
+			}
+		}()
 	}
 	c := m.coordinator(agentID)
 	c.mu.Lock()
@@ -1263,6 +1288,10 @@ func (m *Manager) scheduleDrain(agentID string) {
 	}
 	c.draining = true
 	c.mu.Unlock()
+	if lease != nil {
+		lease.Release()
+		lease = nil
+	}
 	go func() {
 		defer m.endActivity()
 		m.drain(agentID, c)
@@ -1405,12 +1434,16 @@ func (m *Manager) acceptDispatch(c *coordinator, ctx context.Context, prepared P
 }
 
 // recordDispatchFailure stores the outcome of a dispatch that the provider
-// refused. DispatchOutcome states which of the four it was, and the switch is
-// exhaustive so a fifth cannot be added without answering for it here.
+// refused. DispatchOutcome distinguishes delivery failures, busy turns, pending
+// admission and unavailable processes. Each outcome has its own store operation.
 func (m *Manager) recordDispatchFailure(c *coordinator, ctx context.Context, prepared PreparedDispatch, dispatchErr error) (Snapshot, error) {
 	item := prepared.Item
 	var record func() (Snapshot, error)
 	switch dispatchOutcome(dispatchErr) {
+	case DispatchPending:
+		record = func() (Snapshot, error) {
+			return m.store.RequeuePending(ctx, item.AgentID, item.ID)
+		}
 	case DispatchBusy:
 		activeTurnSteerable := false
 		var deliveryErr *DeliveryError

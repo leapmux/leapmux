@@ -37,7 +37,7 @@ function writeHookProject(workingDir: string): string {
   return marker
 }
 
-// ZCode's trust controls a project's hooks, and nothing else: an instruction file loads without a question.
+// Instruction files load without trust. Project hooks and MCP declarations have separate native trust controls.
 zcodeTest('starts and reads a private project without a workspace trust request', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   const context = await nativeContext({
     page,

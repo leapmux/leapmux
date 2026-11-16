@@ -260,6 +260,23 @@ describe('classifyOhMyPiMessage', () => {
     expect(classifyOhMyPiMessage(input(undefined, { old_seqs: [], messages: [] }, AgentProvider.OH_MY_PI))).toEqual({ kind: 'hidden' })
   })
 
+  it('classifies a native manual compaction end as a notification', () => {
+    expect(classify({
+      type: 'manual_compaction_end',
+      aborted: false,
+      result: { tokensBefore: 12 },
+    })).toEqual({
+      kind: 'notification',
+      entries: [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { trigger: 'manual', pre: 12 },
+        },
+      ],
+    })
+  })
+
   it('hides a thread of notifications that each read as no entry', () => {
     const blank = classifyOhMyPiMessage(input(undefined, {
       old_seqs: [],

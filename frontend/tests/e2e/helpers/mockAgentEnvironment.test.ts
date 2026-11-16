@@ -11,7 +11,6 @@ import { KIMI_CODE_SERVICE_PATH } from './kimiCodeSurface'
 import { KIMI_ACCOUNT_PROVIDER, kimiAccountCredentialKey } from './kimiEnvironment'
 import { CLINE_PROVIDER_ID, CODEBUDDY_ALT_MODEL_ID, CODEBUDDY_ALT_MODEL_WIRE_ID, CODEBUDDY_MODEL_ID, CODEWHALE_VISION_MODEL_ID, COMMAND_CODE_ALT_MODEL_ID, COMMAND_CODE_MODEL_ID, COMMAND_CODE_REASONING_MODEL_ID, createMockAgentEnvironment, DROID_MOCK_MODEL_IDS, GROK_ALT_MODEL_ID, GROK_REASONING_MODEL_ID, JUNIE_MOCK_MODEL, JUNIE_NATIVE_EFFORT_MODEL, JUNIE_PROXY_PROVIDER, JUNIE_RESPONSES_MODEL, KIMI_MOCK_MODELS, KIRO_E2E_API_KEY, LETTA_MODEL_ID, LETTA_REASONING_MODEL_ID, LETTA_VISION_MODEL_ID, MOCK_IDENTITY_TOKEN, MOCK_MODEL_IDS, MOCK_MODELS, MOCK_PROVIDER_IDS, OH_MY_PI_ALT_MODEL_ID, OH_MY_PI_ALT_MODEL_WIRE_ID, OH_MY_PI_PROFILE, OPENCODE_FAMILY_PLAIN_MODEL_ID, OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID, PI_PLAIN_MODEL_ID, QODER_ALTERNATE_MODEL_ID, QODER_MODEL_ID, QWEN_ALT_MODEL_ID, QWEN_ALT_MODEL_WIRE_ID, QWEN_MODEL_ID, QWEN_PLAIN_MODEL_ID, QWEN_PLAIN_MODEL_WIRE_ID, REASONIX_ALT_MODEL_ID, REASONIX_ALT_PROVIDER_ID, REASONIX_PLAIN_MODEL_ID, REASONIX_PLAIN_PROVIDER_ID, ZCODE_PLAIN_MODEL_WIRE_ID } from './mockAgentEnvironment'
 import { privateDirectoryMode, privateFileMode } from './privateConfigFile'
-import { qoderEndpointCacheRecords } from './qoderSurface'
 
 const setupBoundary = vi.hoisted(() => {
   const original: { execute?: typeof import('node:child_process').execFileSync } = {}
@@ -665,29 +664,43 @@ describe('createMockAgentEnvironment', () => {
     expect(env.KILO_TELEMETRY_LEVEL).toBe('off')
   })
 
-  it('supplies equivalent inline OpenCode and Kilo providers', async () => {
+  it('supplies format-specific OpenCode and Kilo configurations', async () => {
     const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
     const openCode = JSON.parse(env.OPENCODE_CONFIG_CONTENT!)
     const kilo = JSON.parse(env.KILO_CONFIG_CONTENT!)
+    const nativeProvider = openCode.providers[MOCK_PROVIDER_IDS.openCode]
+    const legacyProvider = kilo.provider[MOCK_PROVIDER_IDS.openCode]
 
-    expect(openCode).toEqual(kilo)
-    expect(openCode.provider[MOCK_PROVIDER_IDS.openCode].options).toEqual({
-      apiKey: 'leapmux-e2e-model-key',
-      baseURL: 'http://127.0.0.1:43210/v1',
+    expect(nativeProvider.settings).toEqual({ apiKey: 'leapmux-e2e-model-key', baseURL: 'http://127.0.0.1:43210/v1' })
+    expect(legacyProvider.options).toEqual(nativeProvider.settings)
+    expect(Object.keys(nativeProvider.models)).toEqual(Object.keys(legacyProvider.models))
+    expect(nativeProvider.models[MOCK_MODELS.zai].variants.find((variant: { id: string }) => variant.id === 'low')).toEqual({
+      id: 'low',
+      settings: { reasoningEffort: 'low' },
     })
-    expect(openCode.provider[MOCK_PROVIDER_IDS.openCode].models[MOCK_MODELS.zai]).toBeDefined()
-    expect(openCode.provider[MOCK_PROVIDER_IDS.openCode].models[MOCK_MODELS.pi]).toBeDefined()
-    expect(openCode.provider[MOCK_PROVIDER_IDS.openCode].models[MOCK_MODELS.zai].variants.low).toEqual({ reasoningEffort: 'low' })
-    expect(openCode.model).toBe(`${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`)
-    expect(openCode.enabled_providers).toEqual([MOCK_PROVIDER_IDS.openCode])
-    expect(openCode.compaction).toEqual({ tail_turns: 2 })
-    expect(openCode.mcp.echo_probe).toEqual({
+    expect(nativeProvider.models[OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID].variants).toEqual([])
+    expect(openCode.model).toEqual({ providerID: MOCK_PROVIDER_IDS.openCode, model: MOCK_MODELS.zai })
+    expect(openCode.policies).toEqual([
+      { action: 'provider.use', resource: '*', effect: 'deny' },
+      { action: 'provider.use', resource: MOCK_PROVIDER_IDS.openCode, effect: 'allow' },
+    ])
+    expect(openCode.compaction).toEqual({
+      keep: { tokens: 0 },
+    })
+    expect(openCode.mcp.servers.echo_probe).toEqual({
       type: 'local',
       command: [
         process.execPath,
         join(directory, 'mcp-echo.mjs'),
       ],
     })
+    expect(legacyProvider.models[MOCK_MODELS.zai]).toBeDefined()
+    expect(legacyProvider.models[MOCK_MODELS.pi]).toBeDefined()
+    expect(legacyProvider.models[MOCK_MODELS.zai].variants.low).toEqual({ reasoningEffort: 'low' })
+    expect(kilo.model).toBe(`${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`)
+    expect(kilo.enabled_providers).toEqual([MOCK_PROVIDER_IDS.openCode])
+    expect(kilo.compaction).toEqual({ tail_turns: 2 })
+    expect(kilo.mcp.echo_probe).toEqual(openCode.mcp.servers.echo_probe)
   })
 
   // MiMo takes the OpenCode family's provider block under its own variable names.
@@ -696,17 +709,17 @@ describe('createMockAgentEnvironment', () => {
     const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
     const mimo = JSON.parse(env.MIMOCODE_CONFIG_CONTENT!)
 
-    const openCode = JSON.parse(env.OPENCODE_CONFIG_CONTENT!).provider[MOCK_PROVIDER_IDS.openCode]
+    const legacyProvider = JSON.parse(env.KILO_CONFIG_CONTENT!).provider[MOCK_PROVIDER_IDS.openCode]
     const provider = mimo.provider[MOCK_PROVIDER_IDS.openCode]
-    expect(provider.options).toEqual(openCode.options)
+    expect(provider.options).toEqual(legacyProvider.options)
     // Both configurations send the selected effort to the mock model. The third model does not reason, so it offers no
     // effort in either.
     expect(Object.keys(provider.models)).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi, OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID])
-    expect(Object.keys(openCode.models)).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi, OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID])
+    expect(Object.keys(legacyProvider.models)).toEqual([MOCK_MODELS.zai, MOCK_MODELS.pi, OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID])
     expect(provider.models[MOCK_MODELS.pi].variants.low).toEqual({ reasoningEffort: 'low' })
-    expect(openCode.models[MOCK_MODELS.zai].variants.low).toEqual({ reasoningEffort: 'low' })
-    expect(Object.keys(provider.models[MOCK_MODELS.zai].variants)).toEqual(Object.keys(openCode.models[MOCK_MODELS.zai].variants))
-    for (const plain of [provider.models[OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID], openCode.models[OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID]])
+    expect(legacyProvider.models[MOCK_MODELS.zai].variants.low).toEqual({ reasoningEffort: 'low' })
+    expect(Object.keys(provider.models[MOCK_MODELS.zai].variants)).toEqual(Object.keys(legacyProvider.models[MOCK_MODELS.zai].variants))
+    for (const plain of [provider.models[OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID], legacyProvider.models[OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID]])
       expect(plain).toMatchObject({ reasoning: false, variants: {} })
     expect(OPENCODE_FAMILY_PLAIN_MODEL_ID).toBe(`${MOCK_PROVIDER_IDS.openCode}/${OPENCODE_FAMILY_PLAIN_MODEL_WIRE_ID}`)
     expect(mimo.model).toBe(`${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`)
@@ -1113,11 +1126,8 @@ describe('createMockAgentEnvironment', () => {
   })
 
   it('opens the Qoder headless gate with a mocked account and pre-seeded endpoints', async () => {
-    // Two independent seams have to hold at once or the agent dies with
-    // "Not logged in · Please run /login" before any model call: the current job
-    // credential and the
-    // endpoint-election caches (without which the exchange and the model call
-    // fall through to the real `*.qoder.sh`).
+    // The job credential and native center endpoint keep authentication and
+    // endpoint election inside the mock before the first model call.
     const { env, homeDir } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
     const origin = 'http://127.0.0.1:43210'
 
@@ -1127,6 +1137,7 @@ describe('createMockAgentEnvironment', () => {
       QODER_HTTPDNS: '0',
       QODER_FORCE_FILE_STORAGE: '1',
       QODER_CONFIG_SERVICE_URL: origin,
+      QODER_CENTER_ENDPOINT: origin,
       QODER_SERVER_ENDPOINT: '',
       // Empty, not unset: a developer's own PAT must not reach the E2E Qoder.
       QODER_PERSONAL_ACCESS_TOKEN: '',
@@ -1137,30 +1148,6 @@ describe('createMockAgentEnvironment', () => {
     expect(env.QODER_SDK_AUTH_PAYLOAD_FILE).toBeUndefined()
 
     const qoderHome = join(homeDir, '.qoder')
-    const cacheDir = join(qoderHome, '.cache')
-    const v1 = JSON.parse(readFileSync(join(cacheDir, 'endpoint-cache.json'), 'utf8'))
-    expect(v1.entries.prod).toMatchObject({
-      endpoint: origin,
-      openapiEndpoint: origin,
-      centerEndpoint: origin,
-    })
-    expect(v1.version).toBe(1)
-    expect(Number.isSafeInteger(v1.entries.prod.updatedAt)).toBe(true)
-    expect(v1.entries.prod.updatedAt).toBeGreaterThan(0)
-    const expectedCaches = qoderEndpointCacheRecords(origin, v1.entries.prod.updatedAt)
-    expect(v1).toEqual(expectedCaches.v1)
-    for (const file of ['qoder-client-endpoint-cache.json', 'qoder-client-endpoint-cache-public.json']) {
-      const v2 = JSON.parse(readFileSync(join(cacheDir, file), 'utf8'))
-      expect(v2).toEqual(expectedCaches.v2)
-      for (const purpose of [
-        'center',
-        'inference',
-        'securityInference',
-        'openapi',
-      ])
-        expect(v2.entries.prod.endpointSets[purpose].selected).toBe(origin)
-    }
-
     // One registration only: a `modelConfigs.customModels` key beside the
     // `providers` entry makes Qoder drop the provider as a catalog conflict,
     // and the model call escapes to the real API.
@@ -1170,7 +1157,21 @@ describe('createMockAgentEnvironment', () => {
       {
         model: MOCK_MODELS.deepseek,
         displayName: 'Mock Model',
-        capabilities: { vision: true },
+        capabilities: {
+          vision: true,
+          thinking: {
+            modes: ['adaptive', 'enabled'],
+            preferredMode: 'adaptive',
+            supportsEffort: true,
+            supportedEffortLevels: [
+              'low',
+              'medium',
+              'high',
+              'xhigh',
+              'max',
+            ],
+          },
+        },
       },
       {
         model: MOCK_MODELS.qoder,

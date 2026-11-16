@@ -251,6 +251,18 @@ describe('runWithGatedOutput', () => {
     return { gated, release, released: released.promise }
   }
 
+  it('consumes an operation rejection when the observer throws synchronously', async () => {
+    const operationError = new Error('The operation failed.')
+    const observerError = new Error('The observer failed before returning a promise.')
+    const { gated, release } = fakeGated(() => {
+      throw observerError
+    })
+    await expect(runWithGatedOutput(gated, async () => {
+      throw operationError
+    })).rejects.toBe(operationError)
+    expect(release).toHaveBeenCalled()
+  })
+
   it('runs the operation alone when no gate exists', async () => {
     const run = vi.fn(async () => 'result')
     await expect(runWithGatedOutput(undefined, run)).resolves.toBe('result')

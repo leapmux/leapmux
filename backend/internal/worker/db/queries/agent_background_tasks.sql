@@ -20,11 +20,11 @@ SELECT * FROM agent_background_tasks WHERE owner_agent_id = ? ORDER BY seq ASC;
 -- the old process cannot still own work in the new root.
 -- name: CloneAgentBackgroundTaskForResume :execrows
 INSERT INTO agent_background_tasks (
-    owner_agent_id, output_generation, row_key, seq, kind, child_agent_id, parent_agent_id,
+    owner_agent_id, output_generation, row_key, seq, kind, role, child_agent_id, parent_agent_id,
     group_key, group_label, title, title_is_command, description,
     active_form, status, created_at, updated_at, ended_at
 )
-SELECT sqlc.arg(new_root_id), 0, source.row_key, source.seq, source.kind,
+SELECT sqlc.arg(new_root_id), 0, source.row_key, source.seq, source.kind, source.role,
        sqlc.arg(new_child_id), sqlc.arg(new_parent_id),
        source.group_key, source.group_label, source.title, source.title_is_command, source.description,
        source.active_form,
@@ -87,12 +87,12 @@ WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND kind = sqlc.arg(kind) AND se
 -- drift across a reconnect).
 -- name: UpsertAgentBackgroundTask :execrows
 INSERT INTO agent_background_tasks (
-    owner_agent_id, output_generation, row_key, seq, kind, child_agent_id, parent_agent_id,
+    owner_agent_id, output_generation, row_key, seq, kind, role, child_agent_id, parent_agent_id,
     group_key, group_label, title, title_is_command, description, active_form,
     status, created_at, updated_at, ended_at
 )
 SELECT sqlc.arg(owner_agent_id), sqlc.arg(output_generation), sqlc.arg(row_key),
-       sqlc.arg(seq), sqlc.arg(kind), sqlc.arg(child_agent_id), sqlc.arg(parent_agent_id),
+       sqlc.arg(seq), sqlc.arg(kind), sqlc.arg(role), sqlc.arg(child_agent_id), sqlc.arg(parent_agent_id),
        sqlc.arg(group_key), sqlc.arg(group_label), sqlc.arg(title), sqlc.arg(title_is_command),
        sqlc.arg(description), sqlc.arg(active_form), sqlc.arg(status),
        sqlc.arg(created_at), sqlc.arg(updated_at), sqlc.arg(ended_at)
@@ -100,6 +100,7 @@ WHERE sqlc.arg(output_generation) > 0
 ON CONFLICT(owner_agent_id, row_key) DO UPDATE SET
     output_generation = excluded.output_generation,
     kind = excluded.kind,
+    role = excluded.role,
     child_agent_id = CASE WHEN excluded.child_agent_id <> '' THEN excluded.child_agent_id ELSE agent_background_tasks.child_agent_id END,
     parent_agent_id = excluded.parent_agent_id,
     group_key = excluded.group_key,
@@ -198,6 +199,16 @@ WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND row_key = sqlc.arg(row_key)
 -- name: DeleteAgentBackgroundTaskByRowKey :execresult
 DELETE FROM agent_background_tasks WHERE owner_agent_id = ? AND row_key = ?;
 
+-- UpdateAgentBackgroundTaskDescription preserves lifecycle and linkage.
+-- name: UpdateAgentBackgroundTaskDescription :execrows
+UPDATE agent_background_tasks
+SET description = sqlc.arg(description),
+    output_generation = sqlc.arg(output_generation),
+    updated_at = sqlc.arg(updated_at)
+WHERE owner_agent_id = sqlc.arg(owner_agent_id)
+  AND row_key = sqlc.arg(row_key)
+  AND output_generation <= sqlc.arg(output_generation);
+
 -- ResequenceAgentBackgroundTask gives a row a new seq, for one the display cache
 -- re-admitted after the cap evicted it.
 --
@@ -250,24 +261,13 @@ WHERE owner_agent_id = sqlc.arg(owner_agent_id) AND row_key = sqlc.arg(row_key)
 -- name: GetAgentBackgroundTaskByRowKey :one
 SELECT * FROM agent_background_tasks WHERE owner_agent_id = ? AND row_key = ?;
 
--- GetAgentBackgroundTaskByChildAgentID is the reverse lookup behind
--- send-to-subagent and interrupt routing: child agent id -> (owner, row_key).
---
--- idx_agent_background_tasks_child is not UNIQUE, so this :one picks a row out of
--- a set the schema permits to hold more than one. ORDER BY makes the pick
--- DEFINED rather than left to the plan: without it an index change or a VACUUM
--- silently moves the answer, and a caller that steers or interrupts through it
--- addresses a different row than it did yesterday. The lowest seq is the OLDEST
--- row, which is the run that opened the transcript.
---
--- `child_agent_id <> ''` repeats the predicate of the PARTIAL
--- idx_agent_background_tasks_child, which SQLite matches syntactically: without
--- that term the planner reads every background task of every agent. It also
--- refuses an EMPTY id, which would otherwise answer with the oldest shell row.
+-- GetAgentBackgroundTaskByChildAgentID selects the unique canonical activity row.
+-- Outcome rows can link the same child without becoming its input/interrupt route.
+-- The role predicate matches the partial unique index. The enum numbering test
+-- checks ChildTask=2 and ChildActivity=3 in both this query and the index.
 -- name: GetAgentBackgroundTaskByChildAgentID :one
 SELECT * FROM agent_background_tasks
-WHERE child_agent_id = ? AND child_agent_id <> ''
-ORDER BY seq LIMIT 1;
+WHERE child_agent_id = ? AND child_agent_id <> '' AND role IN (2, 3);
 
 -- MarkAgentBackgroundTasksEnded gives every still-active row owned by an agent a
 -- final status (used on clean process exit).
@@ -292,10 +292,10 @@ UPDATE agent_background_tasks SET
     updated_at = sqlc.arg(updated_at)
 WHERE status < sqlc.arg(min_final_status);
 
--- ListWorkingAgentBackgroundTaskKeys includes working rows outside the display cap.
+-- ListWorkingAgentBackgroundTaskActivity includes the role of retained work outside the display cap.
 -- Paused rows stay open but do not contribute working activity.
--- name: ListWorkingAgentBackgroundTaskKeys :many
-SELECT row_key FROM agent_background_tasks
+-- name: ListWorkingAgentBackgroundTaskActivity :many
+SELECT row_key, role FROM agent_background_tasks
 WHERE owner_agent_id = sqlc.arg(owner_agent_id)
   AND status IN (sqlc.arg(pending_status), sqlc.arg(running_status))
 ORDER BY seq;

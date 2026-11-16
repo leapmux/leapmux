@@ -2,6 +2,7 @@ package kimi
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -26,14 +27,15 @@ func newKimiOutputRig(t *testing.T) *kimiOutputRig {
 	return &kimiOutputRig{agent: newOfflineKimiAgent(t, sink), sink: sink}
 }
 
+func (r *kimiOutputRig) sessionID() string {
+	r.agent.Mu.Lock()
+	defer r.agent.Mu.Unlock()
+	return r.agent.sessionID
+}
+
 func (r *kimiOutputRig) feed(t *testing.T, payload map[string]any) {
 	t.Helper()
 	r.agent.HandleOutput(kimiEventFrame(t, "session_1", payload))
-}
-
-func (r *kimiOutputRig) startTurn(t *testing.T, turnID int, origin string) {
-	t.Helper()
-	r.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": turnID, "origin": map[string]any{"kind": origin}, "prompt": "Do it."})
 }
 
 // assembledRow decodes a row the worker assembled from deltas.
@@ -77,14 +79,14 @@ func metadataField(t *testing.T, message agenttest.Message, key string) (json.Ra
 func TestKimiAssemblesThinkingAndText(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.startTurn(t, 0, contracts.KimiOriginUser)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventThinkingDelta, "turnId": 0, "delta": "Let me "})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventThinkingDelta, "turnId": 0, "delta": "think."})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventAssistantDelta, "turnId": 0, "delta": "Hello "})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventAssistantDelta, "turnId": 0, "delta": ""})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventAssistantDelta, "turnId": 0, "delta": "world."})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStepCompleted, "turnId": 0})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "turnId": 0, "reason": "completed"})
+	rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`)
+	rig.transcriptOps(t, 2, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"thinking","frameId":"thought","text":"Let me "}}`)
+	rig.transcriptOps(t, 3, `{"op":"append","target":{"type":"frame","turnId":"t0","stepId":"t0.1","frameId":"thought"},"offset":7,"text":"think."}`)
+	rig.transcriptOps(t, 4, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"text","frameId":"answer","role":"assistant","text":"Hello "}}`)
+	rig.transcriptOps(t, 5, `{"op":"append","target":{"type":"frame","turnId":"t0","stepId":"t0.1","frameId":"answer"},"offset":6,"text":""}`)
+	rig.transcriptOps(t, 6, `{"op":"append","target":{"type":"frame","turnId":"t0","stepId":"t0.1","frameId":"answer"},"offset":6,"text":"world."}`)
+	rig.transcriptOps(t, 7, `{"op":"step.upsert","turnId":"t0","step":{"kind":"step","stepId":"t0.1","state":"completed","ordinal":1}}`)
+	rig.transcriptOps(t, 8, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"completed","origin":{"kind":"user"}}}`)
 
 	messages := rig.sink.Messages()
 	require.Len(t, messages, 3)
@@ -95,7 +97,7 @@ func TestKimiAssemblesThinkingAndText(t *testing.T) {
 	assert.Equal(t, string(agent.AssembledMessageKindText), kind)
 	assert.Equal(t, "Hello world.", text)
 	assert.True(t, messages[2].TurnEnd)
-	assert.Equal(t, contracts.KimiEventTurnEnded, eventType(t, messages[2]))
+	assert.Equal(t, contracts.KimiEventTranscriptOps, eventType(t, messages[2]))
 
 	assert.Equal(t, []string{"turn_active:true", "turn_end", "reset_spans", "turn_active:false"}, rig.sink.TurnLifecycle(),
 		"the turn end is persisted BEFORE the flag clears")
@@ -112,14 +114,17 @@ func TestKimiAssemblesThinkingAndText(t *testing.T) {
 func TestKimiTurnEndCarriesTheToolCountAndTheContext(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.startTurn(t, 0, contracts.KimiOriginUser)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventAgentStatusUpdated, "contextTokens": 1200, "maxContextTokens": 262144,
-		"usage": map[string]any{"currentTurn": map[string]any{"inputOther": 10, "output": 5, "inputCacheRead": 100, "inputCacheCreation": 1}}})
+	rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`)
+	rig.agent.HandleOutput([]byte(`{"type":"usage","session_id":"session_1","agent_id":"main","context_tokens":1200,"max_context_tokens":262144}`))
+	seq := int64(2)
 	for _, id := range []string{"call_1", "call_2"} {
-		rig.feed(t, map[string]any{"type": contracts.KimiEventToolCallStarted, "turnId": 0, "toolCallId": id, "name": contracts.KimiToolRead, "args": map[string]any{"path": "a.go"}})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventToolResult, "turnId": 0, "toolCallId": id, "output": "package a"})
+		rig.transcriptOps(t, seq,
+			fmt.Sprintf(`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":%q,"toolCallId":%q,"name":"Read","state":"running","input":{"path":"a.go"}}}`, id, id),
+			fmt.Sprintf(`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":%q,"toolCallId":%q,"name":"Read","state":"done","input":{"path":"a.go"},"output":"package a"}}`, id, id))
+		seq++
 	}
-	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "turnId": 0, "reason": "completed"})
+	rig.transcriptOps(t, seq, `{"op":"step.upsert","turnId":"t0","step":{"kind":"step","stepId":"t0.1","state":"completed","ordinal":1,"usage":{"inputOther":10,"output":5,"inputCacheRead":100,"inputCacheCreation":1}}}`)
+	rig.transcriptOps(t, seq+1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"completed","origin":{"kind":"user"}}}`)
 
 	messages := rig.sink.Messages()
 	turnEnd := messages[len(messages)-1]
@@ -133,6 +138,10 @@ func TestKimiTurnEndCarriesTheToolCountAndTheContext(t *testing.T) {
 	require.NoError(t, json.Unmarshal(usage, &fields))
 	assert.EqualValues(t, 1200, fields[contracts.ContextUsageFieldContextTokens])
 	assert.EqualValues(t, 262144, fields[contracts.ContextUsageFieldContextWindow])
+	assert.EqualValues(t, 10, fields["input_tokens"])
+	assert.EqualValues(t, 5, fields["output_tokens"])
+	assert.EqualValues(t, 100, fields["cache_read_input_tokens"])
+	assert.EqualValues(t, 1, fields["cache_creation_input_tokens"])
 
 	info, ok := rig.sink.LastSessionInfoValue(contracts.SessionInfoKeyContextUsage)
 	require.True(t, ok, "the status update broadcasts the context")
@@ -142,17 +151,19 @@ func TestKimiTurnEndCarriesTheToolCountAndTheContext(t *testing.T) {
 func TestKimiToolCallLifecycle(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.startTurn(t, 3, contracts.KimiOriginUser)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventAssistantDelta, "turnId": 3, "delta": "Running it."})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolCallDelta, "turnId": 3, "toolCallId": "call_bash"})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolCallStarted, "turnId": 3, "toolCallId": "call_bash", "name": contracts.KimiToolBash, "args": map[string]any{"command": "echo hi"}})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolCallStarted, "turnId": 3, "toolCallId": "call_bash", "name": contracts.KimiToolBash, "args": map[string]any{"command": "echo hi"}})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolProgress, "turnId": 3, "toolCallId": "call_bash", "update": map[string]any{"kind": "stdout", "text": "hi\n"}})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolProgress, "turnId": 3, "toolCallId": "call_bash", "update": map[string]any{"kind": "status", "text": "ignored"}})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolProgress, "turnId": 3, "toolCallId": "call_unknown", "update": map[string]any{"kind": "stdout", "text": "x"}})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolResult, "turnId": 3, "toolCallId": "call_bash", "output": "hi\n"})
+	rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t3","state":"running","origin":{"kind":"user"}}}`)
+	rig.transcriptOps(t, 2, `{"op":"frame.upsert","turnId":"t3","stepId":"t3.1","frame":{"kind":"text","frameId":"answer","role":"assistant","text":"Running it."}}`)
+	rig.transcriptOps(t, 3, `{"op":"frame.upsert","turnId":"t3","stepId":"t3.1","frame":{"kind":"tool","frameId":"t3.1.call_bash","toolCallId":"call_bash","name":"Bash","state":"running"}}`)
+	opening := `{"op":"frame.upsert","turnId":"t3","stepId":"t3.1","frame":{"kind":"tool","frameId":"t3.1.call_bash","toolCallId":"call_bash","name":"Bash","state":"running","input":{"command":"echo hi"}}}`
+	rig.transcriptOps(t, 4, opening)
+	rig.transcriptOps(t, 5, opening)
+	rig.transcriptOps(t, 6, `{"op":"frame.upsert","turnId":"t3","stepId":"t3.1","frame":{"kind":"tool","frameId":"t3.1.call_bash","toolCallId":"call_bash","name":"Bash","state":"running","input":{"command":"echo hi"},"progress":{"kind":"stdout","text":"hi\n"}}}`)
+	rig.transcriptOps(t, 7, `{"op":"frame.upsert","turnId":"t3","stepId":"t3.1","frame":{"kind":"tool","frameId":"t3.1.call_bash","toolCallId":"call_bash","name":"Bash","state":"running","input":{"command":"echo hi"},"progress":{"kind":"status","text":"ignored"}}}`)
+	rig.transcriptOps(t, 8, `{"op":"frame.upsert","turnId":"t3","stepId":"t3.1","frame":{"kind":"tool","frameId":"unknown","toolCallId":"unknown","state":"running","progress":{"kind":"stdout","text":"x"}}}`)
+	rig.transcriptOps(t, 9, `{"op":"frame.upsert","turnId":"t3","stepId":"t3.1","frame":{"kind":"tool","frameId":"t3.1.call_bash","toolCallId":"call_bash","name":"Bash","state":"done","input":{"command":"echo hi"},"output":"hi\n"}}`)
 
-	spanID := kimiSpanID("session_1", kimiMainAgentID, 3, "call_bash")
+	spanID := `session_1/kimi/"main"/"t3"/"t3.1"/"t3.1.call_bash"`
+
 	messages := rig.sink.Messages()
 	require.Len(t, messages, 3, "the text, the call and its result; a repeated start adds nothing")
 	_, text := assembledRow(t, messages[0])
@@ -160,10 +171,10 @@ func TestKimiToolCallLifecycle(t *testing.T) {
 	assert.Equal(t, spanID, messages[1].SpanID)
 	assert.Equal(t, contracts.KimiToolBash, messages[1].SpanType)
 	assert.False(t, messages[1].Closing)
-	assert.Equal(t, contracts.KimiEventToolCallStarted, eventType(t, messages[1]))
+	assert.Equal(t, contracts.KimiEventTranscriptOps, eventType(t, messages[1]))
 	assert.Equal(t, spanID, messages[2].SpanID)
 	assert.True(t, messages[2].Closing)
-	assert.Equal(t, contracts.KimiEventToolResult, eventType(t, messages[2]))
+	assert.Equal(t, contracts.KimiEventTranscriptOps, eventType(t, messages[2]))
 	assert.Contains(t, rig.sink.ClosedSpans(), spanID)
 
 	var total, tail bool
@@ -196,11 +207,12 @@ func TestKimiToolCallLifecycle(t *testing.T) {
 func TestKimiToolProgressKeepsALimitedTail(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.startTurn(t, 0, contracts.KimiOriginUser)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolCallStarted, "turnId": 0, "toolCallId": "c", "name": contracts.KimiToolBash, "args": map[string]any{}})
+	rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`)
+	rig.transcriptOps(t, 2, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"c","toolCallId":"c","name":"Bash","state":"running","input":{}}}`)
 	chunk := strings.Repeat("x", kimiLiveOutputLimit)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolProgress, "turnId": 0, "toolCallId": "c", "update": map[string]any{"kind": "stdout", "text": chunk}})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolProgress, "turnId": 0, "toolCallId": "c", "update": map[string]any{"kind": "stderr", "text": "tail-end"}})
+	for index, progress := range []struct{ kind, text string }{{"stdout", chunk}, {"stderr", "tail-end"}} {
+		rig.transcriptOps(t, int64(index+3), fmt.Sprintf(`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"c","toolCallId":"c","name":"Bash","state":"running","input":{},"progress":{"kind":%q,"text":%q}}}`, progress.kind, progress.text))
+	}
 
 	var last agent.ProgressUpdate
 	var lastTotal int64
@@ -223,11 +235,11 @@ func TestKimiToolProgressKeepsALimitedTail(t *testing.T) {
 func TestKimiTurnEndClosesTheCallsItLeftOpen(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.startTurn(t, 0, contracts.KimiOriginUser)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolCallStarted, "turnId": 0, "toolCallId": "first", "name": contracts.KimiToolBash, "args": map[string]any{"command": "sleep 1"}})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolCallStarted, "turnId": 0, "toolCallId": "second", "name": contracts.KimiToolGrep, "args": map[string]any{"pattern": "x"}})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventAssistantDelta, "turnId": 0, "delta": "partial"})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "turnId": 0, "reason": "cancelled"})
+	rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`)
+	rig.transcriptOps(t, 2, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"first","toolCallId":"first","name":"Bash","state":"running","input":{"command":"sleep 1"}}}`)
+	rig.transcriptOps(t, 3, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"second","toolCallId":"second","name":"Grep","state":"running","input":{"pattern":"x"}}}`)
+	rig.transcriptOps(t, 4, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"text","frameId":"answer","role":"assistant","text":"partial"}}`)
+	rig.transcriptOps(t, 5, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"cancelled","origin":{"kind":"user"}}}`)
 
 	messages := rig.sink.Messages()
 	require.Len(t, messages, 6)
@@ -237,10 +249,10 @@ func TestKimiTurnEndClosesTheCallsItLeftOpen(t *testing.T) {
 		"the text a cancelled turn left is marked as cut off")
 	for i, id := range []string{"first", "second"} {
 		closing := messages[3+i]
-		assert.Equal(t, kimiSpanID("session_1", kimiMainAgentID, 0, id), closing.SpanID, "the calls close in the order they opened")
+		assert.Equal(t, fmt.Sprintf(`session_1/kimi/"main"/"t0"/"t0.1"/%q`, id), closing.SpanID, "the calls close in the order they opened")
 		assert.True(t, closing.Closing)
 		assert.Equal(t, agent.MessageCompletionInterrupted, closing.Completion)
-		assert.Equal(t, contracts.KimiEventToolCallStarted, eventType(t, closing), "the call's own opening payload is its last row")
+		assert.Equal(t, contracts.KimiEventTranscriptOps, eventType(t, closing), "the retained closing row keeps the native operation")
 	}
 	assert.True(t, messages[5].TurnEnd)
 	assert.Equal(t, 1, rig.sink.ResetSpanCount())
@@ -261,23 +273,25 @@ func TestKimiAnnouncesATurnTheAgentStartedByItself(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		origin string
-		notes  bool
+		origin, nativeKind string
+		notes              bool
 	}{
-		{contracts.KimiOriginUser, false},
-		{contracts.KimiOriginTask, false},
-		{contracts.KimiOriginBackgroundTask, false},
-		{"", false},
-		{contracts.KimiOriginSystemTrigger, true},
-		{contracts.KimiOriginCronJob, true},
-		{contracts.KimiOriginRetry, true},
-		{contracts.KimiOriginHookResult, true},
+		{contracts.KimiOriginUser, "user", false},
+		{contracts.KimiOriginTask, "task", false},
+		{contracts.KimiOriginBackgroundTask, "task", false},
+		{"", "", false},
+		{contracts.KimiOriginSystemTrigger, "other", true},
+		{contracts.KimiOriginCronJob, "cron", true},
+		{contracts.KimiOriginRetry, "other", true},
+		{contracts.KimiOriginHookResult, "hook", true},
 	} {
 		rig := newKimiOutputRig(t)
-		rig.startTurn(t, 0, tc.origin)
+		rig.transcriptOps(t, 1, fmt.Sprintf(`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":%q,"payload":{"kind":%q}}}}`, tc.nativeKind, tc.origin))
 		if tc.notes {
 			require.Equal(t, 1, rig.sink.NotificationCount(), "origin %q", tc.origin)
-			assert.Equal(t, contracts.KimiEventTurnStarted, eventType(t, rig.sink.LastNotification()))
+			record, valid := readKimiTranscriptRecord(rig.sink.LastNotification().Content)
+			require.True(t, valid)
+			assert.Equal(t, contracts.KimiTranscriptOperationTurnUpsert, record.operation.Op)
 		} else {
 			assert.Zero(t, rig.sink.NotificationCount(), "origin %q", tc.origin)
 		}
@@ -287,27 +301,26 @@ func TestKimiAnnouncesATurnTheAgentStartedByItself(t *testing.T) {
 func TestKimiRecordsNotices(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	for _, eventName := range []string{
-		contracts.KimiEventCompactionStarted, contracts.KimiEventCompactionCompleted,
-		contracts.KimiEventTurnStepRetrying, contracts.KimiEventWarning, contracts.KimiEventTaskNotified,
-	} {
-		rig.feed(t, map[string]any{"type": eventName})
-	}
+	rig.publishMarker(t, kimiMainAgentID, "compaction", map[string]any{"phase": "started", "trigger": "auto"})
+	rig.publishMarker(t, kimiMainAgentID, "compaction", map[string]any{"phase": "completed"})
+	rig.transcriptOps(t, 3, `{"op":"step.upsert","turnId":"t0","step":{"kind":"step","stepId":"t0.1","state":"running","ordinal":1,"retry":{"failedAttempt":1,"nextAttempt":2,"maxAttempts":5,"delayMs":0}}}`)
+	rig.publishMarker(t, kimiMainAgentID, "notice", map[string]any{"level": "warning", "message": "A native warning."})
+	rig.transcriptOps(t, 5, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.2","frame":{"kind":"text","frameId":"task-note","role":"user","taskId":"task-1","text":"The background task completed."}}`)
 	assert.Equal(t, 4, rig.sink.NotificationCount())
 
 	rig.agent.DiscardOutput()
-	rig.feed(t, map[string]any{"type": contracts.KimiEventWarning})
+	rig.publishMarker(t, kimiMainAgentID, "notice", map[string]any{"level": "warning", "message": "Discarded warning."})
 	assert.Equal(t, 4, rig.sink.NotificationCount(), "an agent that discards its output records nothing")
 }
 
 func TestKimiManualCompactionReleasesTheInputQueue(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual"})
+	rig.publishMarker(t, kimiMainAgentID, "compaction", map[string]any{"trigger": "manual", "phase": "started"})
 
-	rig.feed(t, map[string]any{
-		"type":   contracts.KimiEventCompactionCompleted,
-		"result": map[string]any{"summary": "Keep the task state.", "compactedCount": 3, "tokensBefore": 120, "tokensAfter": 20},
+	rig.publishMarker(t, kimiMainAgentID, "compaction", map[string]any{
+
+		"result": map[string]any{"summary": "Keep the task state.", "compactedCount": 3, "tokensBefore": 120, "tokensAfter": 20}, "phase": "completed",
 	})
 	last, published := rig.sink.LastTurnActive()
 	assert.True(t, published, "the completed event must release the queue's compact turn")
@@ -317,11 +330,11 @@ func TestKimiManualCompactionReleasesTheInputQueue(t *testing.T) {
 func TestKimiAutoCompactionKeepsTheUserTurnActive(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.startTurn(t, 1, contracts.KimiOriginUser)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "auto"})
-	rig.feed(t, map[string]any{
-		"type":   contracts.KimiEventCompactionCompleted,
-		"result": map[string]any{"summary": "Keep the task state.", "compactedCount": 3, "tokensBefore": 120, "tokensAfter": 20},
+	rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t1","state":"running","origin":{"kind":"user"}}}`)
+	rig.publishMarker(t, kimiMainAgentID, "compaction", map[string]any{"trigger": "auto", "phase": "started"})
+	rig.publishMarker(t, kimiMainAgentID, "compaction", map[string]any{
+
+		"result": map[string]any{"summary": "Keep the task state.", "compactedCount": 3, "tokensBefore": 120, "tokensAfter": 20}, "phase": "completed",
 	})
 	last, published := rig.sink.LastTurnActive()
 	assert.True(t, published)
@@ -331,14 +344,13 @@ func TestKimiAutoCompactionKeepsTheUserTurnActive(t *testing.T) {
 func TestKimiRepeatedCompactionCompletionKeepsTheNextTurnActive(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual"})
+	rig.publishMarker(t, kimiMainAgentID, "compaction", map[string]any{"trigger": "manual", "phase": "started"})
 	completed := map[string]any{
-		"type":   contracts.KimiEventCompactionCompleted,
-		"result": map[string]any{"summary": "Keep the task state.", "compactedCount": 3, "tokensBefore": 120, "tokensAfter": 20},
+		"phase": "completed", "result": map[string]any{"summary": "Keep the task state.", "compactedCount": 3, "tokensBefore": 120, "tokensAfter": 20},
 	}
-	rig.feed(t, completed)
-	rig.startTurn(t, 2, contracts.KimiOriginUser)
-	rig.feed(t, completed)
+	rig.publishMarker(t, kimiMainAgentID, "compaction", completed)
+	rig.transcriptOps(t, 3, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t2","state":"running","origin":{"kind":"user"}}}`)
+	rig.publishMarker(t, kimiMainAgentID, "compaction", completed)
 	last, published := rig.sink.LastTurnActive()
 	assert.True(t, published)
 	assert.True(t, last, "a duplicate completion cannot release the next turn")
@@ -346,15 +358,15 @@ func TestKimiRepeatedCompactionCompletionKeepsTheNextTurnActive(t *testing.T) {
 
 func TestKimiManualCompactionWaitsForAnActualEnd(t *testing.T) {
 	t.Parallel()
-	for _, eventType := range []string{contracts.KimiEventCompactionBlocked, contracts.KimiEventCompactionCancelled} {
-		t.Run(eventType, func(t *testing.T) {
+	for _, phase := range []string{"blocked", "cancelled"} {
+		t.Run(phase, func(t *testing.T) {
 			t.Parallel()
 			rig := newKimiOutputRig(t)
-			rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual"})
-			rig.feed(t, map[string]any{"type": eventType})
+			rig.publishMarker(t, kimiMainAgentID, "compaction", map[string]any{"trigger": "manual", "phase": "started"})
+			rig.publishMarker(t, kimiMainAgentID, "compaction", map[string]any{"phase": phase})
 			last, published := rig.sink.LastTurnActive()
 			assert.True(t, published)
-			assert.Equal(t, eventType == contracts.KimiEventCompactionBlocked, last, "a blocked compaction still waits for its end")
+			assert.Equal(t, phase == "blocked", last, "a blocked compaction still waits for its end")
 		})
 	}
 }
@@ -362,13 +374,13 @@ func TestKimiManualCompactionWaitsForAnActualEnd(t *testing.T) {
 func TestKimiCompactionStartIsLiveState(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "auto"})
+	rig.publishMarker(t, kimiMainAgentID, "compaction", map[string]any{"trigger": "auto", "phase": "started"})
 	assert.Empty(t, rig.sink.PersistedNotifications())
 	assert.Empty(t, rig.sink.Messages())
 	value, exists := rig.sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
 	assert.True(t, exists)
 	assert.Equal(t, map[string]any{contracts.CompactionFieldTrigger: "auto"}, value)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "reason": "completed"})
+	rig.transcriptOps(t, 3, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"completed","origin":{"kind":"user"}}}`)
 	value, _ = rig.sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
 	assert.NotNil(t, value, "compaction can continue after the model turn ends")
 }
@@ -376,8 +388,8 @@ func TestKimiCompactionStartIsLiveState(t *testing.T) {
 func TestKimiBlockedCompactionIsLiveAndKeepsTheManualFlag(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual"})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionBlocked})
+	rig.publishMarker(t, kimiMainAgentID, "compaction", map[string]any{"trigger": "manual", "phase": "started"})
+	rig.publishMarker(t, kimiMainAgentID, "compaction", map[string]any{"phase": "blocked"})
 	assert.True(t, rig.agent.manualCompactionActive)
 	assert.Empty(t, rig.sink.PersistedNotifications())
 	value, exists := rig.sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
@@ -387,14 +399,18 @@ func TestKimiBlockedCompactionIsLiveAndKeepsTheManualFlag(t *testing.T) {
 
 func TestKimiCompactionEndClearsTheLiveKeyAndStoresTheEnd(t *testing.T) {
 	t.Parallel()
-	for _, kind := range []string{contracts.KimiEventCompactionCompleted, contracts.KimiEventCompactionCancelled} {
-		t.Run(kind, func(t *testing.T) {
+	for _, phase := range []string{"completed", "cancelled"} {
+		t.Run(phase, func(t *testing.T) {
 			rig := newKimiOutputRig(t)
-			rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual"})
-			rig.feed(t, map[string]any{"type": kind})
+			rig.publishMarker(t, kimiMainAgentID, "compaction", map[string]any{"trigger": "manual", "phase": "started"})
+			rig.publishMarker(t, kimiMainAgentID, "compaction", map[string]any{"phase": phase})
 			assert.False(t, rig.agent.manualCompactionActive)
 			require.Len(t, rig.sink.PersistedNotifications(), 1)
-			assert.Equal(t, kind, eventType(t, rig.sink.PersistedNotifications()[0]))
+			record, valid := readKimiTranscriptRecord(rig.sink.PersistedNotifications()[0].Content)
+			require.True(t, valid)
+			marker, valid := decodeTranscriptMarker(record.operation)
+			require.True(t, valid)
+			assert.Equal(t, phase, marker.Payload.Phase)
 			value, exists := rig.sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
 			assert.True(t, exists)
 			assert.Nil(t, value)
@@ -405,13 +421,13 @@ func TestKimiCompactionEndClearsTheLiveKeyAndStoresTheEnd(t *testing.T) {
 func TestKimiChildCompactionPublishesOnTheChildSink(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.agent.children.link("agent-1", &kimiChild{childAgentID: "child-1", rowKey: "session_1/agent-1"})
-	for _, kind := range []string{contracts.KimiEventCompactionStarted, contracts.KimiEventCompactionCancelled} {
-		rig.feed(t, map[string]any{"type": kind, "agentId": "agent-1", "trigger": "auto"})
+	childID := adoptNativeKimiChild(t, rig.agent, "agent-1")
+	for _, phase := range []string{"started", "cancelled"} {
+		rig.publishMarker(t, "agent-1", "compaction", map[string]any{"phase": phase, "trigger": "auto"})
 	}
 	assert.Empty(t, rig.sink.SessionInfos())
 	assert.Empty(t, rig.sink.PersistedNotifications())
-	child := rig.sink.Child("child-1")
+	child := rig.sink.Child(childID)
 	assert.Equal(t, []map[string]any{
 		{contracts.SessionInfoKeyCompaction: map[string]any{contracts.CompactionFieldTrigger: "auto"}},
 		{contracts.SessionInfoKeyCompaction: nil},
@@ -421,38 +437,33 @@ func TestKimiChildCompactionPublishesOnTheChildSink(t *testing.T) {
 
 func TestKimiFailedTurn(t *testing.T) {
 	t.Parallel()
-
 	t.Run("the error that repeats the turn's failure is not recorded twice", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
-		rig.startTurn(t, 0, contracts.KimiOriginUser)
-		failure := map[string]any{"code": "provider.rate_limited", "message": "slow down", "retryable": false}
-		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "turnId": 0, "reason": "failed", "error": failure})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventError, "code": "provider.rate_limited", "message": "slow down"})
+		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`)
+		rig.transcriptOps(t, 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"failed","origin":{"kind":"user"},"error":"slow down"}}`)
+		failure := map[string]any{"level": "error", "message": "slow down", "event": map[string]any{"agentId": "main", "code": "provider.rate_limited", "message": "slow down", "retryable": false}}
+		rig.publishMarker(t, kimiMainAgentID, "notice", failure)
 		assert.Zero(t, rig.sink.NotificationCount())
-		assert.Equal(t, 1, rig.sink.AutoCancelCount(), "a failure that cannot be retried cancels a pending retry")
-
-		rig.feed(t, map[string]any{"type": contracts.KimiEventError, "code": "provider.rate_limited", "message": "slow down"})
-		assert.Equal(t, 1, rig.sink.NotificationCount(), "only the one repeat is dropped")
-		rig.feed(t, map[string]any{"type": contracts.KimiEventError, "code": "other", "message": "different"})
+		assert.Equal(t, 2, rig.sink.AutoCancelCount(), "completion cancels older retry state and the notice confirms that this failure cannot retry")
+		rig.publishMarker(t, kimiMainAgentID, "notice", failure)
+		assert.Equal(t, 1, rig.sink.NotificationCount(), "a later distinct error is not the consumed failure notice")
+		rig.publishMarker(t, kimiMainAgentID, "notice", map[string]any{"level": "error", "message": "different", "event": map[string]any{"agentId": "main", "code": "other", "message": "different"}})
 		assert.Equal(t, 2, rig.sink.NotificationCount())
 	})
-
 	t.Run("a retryable failure schedules a retry", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
-		rig.startTurn(t, 0, contracts.KimiOriginUser)
-		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "turnId": 0, "reason": "failed",
-			"error": map[string]any{"code": "provider.overloaded", "message": "busy", "retryable": true}})
+		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"failed","origin":{"kind":"user"},"error":"busy"}}`)
+		rig.publishMarker(t, kimiMainAgentID, "notice", map[string]any{"level": "error", "message": "busy", "event": map[string]any{"agentId": "main", "code": "provider.overloaded", "message": "busy", "retryable": true}})
 		require.Equal(t, 1, rig.sink.AutoScheduleCount())
 		assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, rig.sink.LastAutoSchedule().Kind)
 	})
-
-	t.Run("an error of a subagent is recorded in its own transcript only", func(t *testing.T) {
+	t.Run("an unlinked subagent error waits for its transcript", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
-		rig.feed(t, map[string]any{"type": contracts.KimiEventError, "agentId": "agent-0", "code": "x", "message": "y"})
-		assert.Zero(t, rig.sink.NotificationCount(), "an unlinked subagent's error waits for its transcript")
+		rig.publishMarker(t, "agent-0", "notice", map[string]any{"level": "error", "message": "y", "event": map[string]any{"agentId": "agent-0", "code": "x", "message": "y"}})
+		assert.Zero(t, rig.sink.NotificationCount())
 	})
 }
 
@@ -489,10 +500,10 @@ func TestKimiSpawnFromArgs(t *testing.T) {
 func TestKimiRetainedRowCarriesThePrintedOutput(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.startTurn(t, 0, contracts.KimiOriginUser)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolCallStarted, "turnId": 0, "toolCallId": "c", "name": contracts.KimiToolBash, "args": map[string]any{"command": "make"}})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolProgress, "turnId": 0, "toolCallId": "c", "update": map[string]any{"kind": "stdout", "text": "building...\n"}})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "turnId": 0, "reason": "cancelled"})
+	rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`)
+	rig.transcriptOps(t, 2, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"c","toolCallId":"c","name":"Bash","state":"running","input":{"command":"make"}}}`)
+	rig.transcriptOps(t, 3, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"c","toolCallId":"c","name":"Bash","state":"running","input":{"command":"make"},"progress":{"kind":"stdout","text":"building...\n"}}}`)
+	rig.transcriptOps(t, 4, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"cancelled","origin":{"kind":"user"}}}`)
 
 	var closing agenttest.Message
 	for _, message := range rig.sink.Messages() {
@@ -500,22 +511,42 @@ func TestKimiRetainedRowCarriesThePrintedOutput(t *testing.T) {
 			closing = message
 		}
 	}
-	var row map[string]any
-	require.NoError(t, json.Unmarshal(closing.Content, &row))
-	assert.Equal(t, contracts.KimiEventToolCallStarted, row["type"], "the row is still the call's own opening payload")
-	assert.Equal(t, "building...\n", row["output"])
-	assert.NotContains(t, row, "truncated")
+	record, valid := readKimiTranscriptRecord(closing.Content)
+	require.True(t, valid)
+	var frame map[string]any
+	require.NoError(t, json.Unmarshal(record.operation.Frame, &frame))
+	assert.Equal(t, "running", frame["state"])
+	assert.NotContains(t, frame, "output")
+	assert.NotContains(t, frame, "truncated")
+	var supplement map[string]map[string]any
+	require.NoError(t, json.Unmarshal(closing.SupplementalContent, &supplement))
+	assert.Equal(t, "building...\n", supplement["toolOutput"]["text"])
+	assert.Equal(t, false, supplement["toolOutput"]["truncated"])
+
 }
 
-func TestKimiWithRetainedOutput(t *testing.T) {
+func TestKimiRetainedNativeOutputHandlesEmptyAndMalformedRecords(t *testing.T) {
 	t.Parallel()
-
-	frame := []byte(`{"type":"tool.call.started","toolCallId":"c"}`)
-	assert.Equal(t, frame, kimiWithRetainedOutput(frame, "", true), "a call that printed nothing keeps its payload")
-	assert.JSONEq(t, `{"type":"tool.call.started","toolCallId":"c","output":"tail","truncated":true}`, string(kimiWithRetainedOutput(frame, "tail", true)))
-	assert.JSONEq(t, `{"type":"tool.call.started","toolCallId":"c","output":"tail"}`, string(kimiWithRetainedOutput(frame, "tail", false)))
-	assert.Equal(t, []byte(`not json`), kimiWithRetainedOutput([]byte(`not json`), "tail", false))
-	assert.Equal(t, []byte(`null`), kimiWithRetainedOutput([]byte(`null`), "tail", false))
+	record := []byte(`{"type":"transcript.ops","session_id":"session_1","payload":{"type":"transcript.ops","agent_id":"main","seq":1,"ops":[{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"c","toolCallId":"c","name":"Bash","state":"running","input":{}}}]}}`)
+	content, native := kimiRetainedTranscriptToolContent(record, "", true)
+	require.True(t, native)
+	assert.Equal(t, record, content.Original)
+	assert.Empty(t, content.Supplemental)
+	for _, truncated := range []bool{false, true} {
+		content, native = kimiRetainedTranscriptToolContent(record, "tail", truncated)
+		require.True(t, native)
+		assert.Equal(t, record, content.Original)
+		var supplement map[string]map[string]any
+		require.NoError(t, json.Unmarshal(content.Supplemental, &supplement))
+		assert.Equal(t, "tail", supplement["toolOutput"]["text"])
+		assert.Equal(t, truncated, supplement["toolOutput"]["truncated"])
+	}
+	for _, invalid := range []string{"not json", "null"} {
+		content, native = kimiRetainedTranscriptToolContent([]byte(invalid), "tail", true)
+		assert.False(t, native)
+		assert.Equal(t, []byte(invalid), content.Original)
+		assert.Empty(t, content.Supplemental)
+	}
 }
 
 // A session resumed while a call ran reports the call's result with no start
@@ -523,15 +554,16 @@ func TestKimiWithRetainedOutput(t *testing.T) {
 func TestKimiResultOfACallThisProcessNeverSawOpen(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.startTurn(t, 4, contracts.KimiOriginUser)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolResult, "turnId": 4, "toolCallId": "call_old", "output": "done"})
+	rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t4","state":"running","origin":{"kind":"user"}}}`)
+	rig.transcriptOps(t, 2, `{"op":"frame.upsert","turnId":"t4","stepId":"t4.1","frame":{"kind":"tool","frameId":"call_old","toolCallId":"call_old","name":"Read","state":"done","input":{},"output":"done"}}`)
 
-	spanID := kimiSpanID("session_1", kimiMainAgentID, 4, "call_old")
+	spanID := `session_1/kimi/"main"/"t4"/"t4.1"/"call_old"`
+
 	messages := rig.sink.Messages()
 	require.Len(t, messages, 1)
 	assert.Equal(t, spanID, messages[0].SpanID)
 	assert.True(t, messages[0].Closing)
-	assert.Equal(t, contracts.KimiEventToolResult, eventType(t, messages[0]))
+	assert.Equal(t, contracts.KimiEventTranscriptOps, eventType(t, messages[0]))
 	assert.Contains(t, rig.sink.ClosedSpans(), spanID)
 	rig.agent.Mu.Lock()
 	uses := rig.agent.TurnToolUses
@@ -544,11 +576,15 @@ func TestKimiRepeatedToolCallIDOfALaterTurnOpensItsOwnSpan(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
 	for turn := range 2 {
-		rig.startTurn(t, turn, contracts.KimiOriginUser)
-		rig.feed(t, map[string]any{"type": contracts.KimiEventToolCallStarted, "turnId": turn, "toolCallId": "call_1", "name": contracts.KimiToolRead, "args": map[string]any{}})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventToolResult, "turnId": turn, "toolCallId": "call_1", "output": "ok"})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "turnId": turn, "reason": contracts.KimiTurnEndCompleted})
+		id, step := fmt.Sprintf("t%d", turn), fmt.Sprintf("t%d.1", turn)
+		seq := int64(turn*3 + 1)
+		rig.transcriptOps(t, seq, fmt.Sprintf(`{"op":"turn.upsert","turn":{"kind":"turn","turnId":%q,"state":"running","origin":{"kind":"user"}}}`, id))
+		rig.transcriptOps(t, seq+1,
+			fmt.Sprintf(`{"op":"frame.upsert","turnId":%q,"stepId":%q,"frame":{"kind":"tool","frameId":"call_1","toolCallId":"call_1","name":"Read","state":"running","input":{}}}`, id, step),
+			fmt.Sprintf(`{"op":"frame.upsert","turnId":%q,"stepId":%q,"frame":{"kind":"tool","frameId":"call_1","toolCallId":"call_1","name":"Read","state":"done","input":{},"output":"ok"}}`, id, step))
+		rig.transcriptOps(t, seq+2, fmt.Sprintf(`{"op":"turn.upsert","turn":{"kind":"turn","turnId":%q,"state":"completed","origin":{"kind":"user"}}}`, id))
 	}
+
 	var spans []string
 	for _, message := range rig.sink.Messages() {
 		if message.SpanID != "" && !message.Closing {
@@ -556,8 +592,8 @@ func TestKimiRepeatedToolCallIDOfALaterTurnOpensItsOwnSpan(t *testing.T) {
 		}
 	}
 	assert.Equal(t, []string{
-		kimiSpanID("session_1", kimiMainAgentID, 0, "call_1"),
-		kimiSpanID("session_1", kimiMainAgentID, 1, "call_1"),
+		`session_1/kimi/"main"/"t0"/"t0.1"/"call_1"`,
+		`session_1/kimi/"main"/"t1"/"t1.1"/"call_1"`,
 	}, spans, "the second call is not read as a repeat of the first")
 }
 
@@ -566,18 +602,17 @@ func TestKimiRepeatedToolCallIDOfALaterTurnOpensItsOwnSpan(t *testing.T) {
 func TestKimiTurnEndOfAnAgentThatDiscardsItsOutput(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.startTurn(t, 0, contracts.KimiOriginUser)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolCallStarted, "turnId": 0, "toolCallId": "call_1", "name": contracts.KimiToolBash, "args": map[string]any{}})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventAssistantDelta, "turnId": 0, "delta": "never shown"})
+	rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`)
+	rig.transcriptOps(t, 2, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"call_1","toolCallId":"call_1","name":"Bash","state":"running","input":{}}}`)
+	rig.transcriptOps(t, 3, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"text","frameId":"answer","role":"assistant","text":"never shown"}}`)
 	before := rig.sink.MessageCount()
-
 	rig.agent.DiscardOutput()
-	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "turnId": 0, "reason": contracts.KimiTurnEndCancelled})
+	rig.transcriptOps(t, 4, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"cancelled","origin":{"kind":"user"}}}`)
 
 	written := rig.sink.Messages()[before:]
 	require.Len(t, written, 1, "no text row and no retained call row")
 	assert.True(t, written[0].TurnEnd, "only the turn end is written")
-	assert.Contains(t, rig.sink.ClosedSpans(), kimiSpanID("session_1", kimiMainAgentID, 0, "call_1"))
+	assert.Contains(t, rig.sink.ClosedSpans(), `session_1/kimi/"main"/"t0"/"t0.1"/"call_1"`)
 	last, _ := rig.sink.LastTurnActive()
 	assert.False(t, last)
 }
@@ -585,17 +620,18 @@ func TestKimiTurnEndOfAnAgentThatDiscardsItsOutput(t *testing.T) {
 func TestKimiToolEventWithNoCallIDIsIgnored(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.startTurn(t, 0, contracts.KimiOriginUser)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolCallStarted, "turnId": 0, "name": contracts.KimiToolBash, "args": map[string]any{}})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolProgress, "turnId": 0, "update": map[string]any{"kind": "stdout", "text": "x"}})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventToolResult, "turnId": 0, "output": "ok"})
+	rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`)
+	rig.transcriptOps(t, 2,
+		`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"missing","name":"Bash","state":"running","input":{}}}`,
+		`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"missing","name":"Bash","state":"running","input":{},"progress":{"kind":"stdout","text":"x"}}}`,
+		`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"missing","name":"Bash","state":"done","output":"ok"}}`)
 	assert.Zero(t, rig.sink.MessageCount(), "a call with no id has no span to open or close")
 	assert.Empty(t, rig.sink.ClosedSpans())
 }
 
 func TestKimiRetryKeepsTheFailedTextInterrupted(t *testing.T) {
 	t.Parallel()
-	// Trimmed from .tmp/probe/kimi/logs/ws-frames.jsonl, frames 15 through 25.
+	// Native operations preserve the failed partial text before the successful retry.
 	agenttest.RunRetryAttemptCase(t, agenttest.RetryAttemptCase{
 		Name: "a retried Kimi step", FramesPath: "testdata/retry_step.jsonl",
 		NewAgent: func(t *testing.T, sink *agenttest.Sink) func([]byte) {
@@ -610,7 +646,7 @@ func TestKimiRetryKeepsTheFailedTextInterrupted(t *testing.T) {
 
 func TestKimiRetryDiscardsAThinkingOnlyAttempt(t *testing.T) {
 	t.Parallel()
-	// Trimmed from .tmp/probe/kimi/logs/ws-frames.jsonl, frames 43 through 53.
+	// Native retry boundaries discard reasoning that never reached an answer.
 	agenttest.RunRetryAttemptCase(t, agenttest.RetryAttemptCase{
 		Name: "a retried thought", FramesPath: "testdata/retry_thinking_only.jsonl",
 		NewAgent: func(t *testing.T, sink *agenttest.Sink) func([]byte) {
@@ -624,22 +660,17 @@ func TestKimiRetryDiscardsAThinkingOnlyAttempt(t *testing.T) {
 func TestKimiRetryOfASubagentStaysInItsTranscript(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.agent.children.link("agent-1", &kimiChild{childAgentID: "child-1", rowKey: "session_1/agent-1"})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventAssistantDelta, "delta": "Root answer."})
-	for _, event := range []map[string]any{
-		{"type": contracts.KimiEventThinkingDelta, "delta": "Unsigned thought."},
-		{"type": contracts.KimiEventTurnStepRetrying, "nextAttempt": 2},
-		{"type": contracts.KimiEventAssistantDelta, "delta": "Child partial."},
-		{"type": contracts.KimiEventTurnStepRetrying, "nextAttempt": 3},
-		{"type": contracts.KimiEventAssistantDelta, "delta": "Child answer."},
-		{"type": contracts.KimiEventTurnEnded, "reason": "completed"},
-	} {
-		event["agentId"] = "agent-1"
-		rig.feed(t, event)
-	}
+	childID := adoptNativeKimiChild(t, rig.agent, "agent-1")
+	rig.transcriptOps(t, 1, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"text","frameId":"root-answer","role":"assistant","text":"Root answer."}}`)
+	rig.transcriptAgentOps(t, "agent-1", 1, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"thinking","frameId":"thought","text":"Unsigned thought."}}`)
+	rig.transcriptAgentOps(t, "agent-1", 2, kimiNativeRetryStep)
+	rig.transcriptAgentOps(t, "agent-1", 3, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"text","frameId":"partial","role":"assistant","text":"Child partial."}}`)
+	rig.transcriptAgentOps(t, "agent-1", 4, `{"op":"step.upsert","turnId":"t0","step":{"kind":"step","stepId":"t0.1","ordinal":1,"state":"running","retry":{"failedAttempt":2,"nextAttempt":3,"maxAttempts":10,"delayMs":0}}}`)
+	rig.transcriptAgentOps(t, "agent-1", 5, `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"text","frameId":"answer","role":"assistant","text":"Child answer."}}`)
+	rig.transcriptAgentOps(t, "agent-1", 6, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"completed","origin":{"kind":"other"}}}`)
 	assert.Empty(t, rig.sink.Messages())
 	assert.Empty(t, rig.sink.PersistedNotifications())
-	child := rig.sink.Child("child-1")
+	child := rig.sink.Child(childID)
 	rows := child.Messages()
 	require.Len(t, rows, 2)
 	_, partial := assembledRow(t, rows[0])
@@ -649,7 +680,7 @@ func TestKimiRetryOfASubagentStaysInItsTranscript(t *testing.T) {
 	assert.Equal(t, "Child answer.", answer)
 	assert.Len(t, child.PersistedNotifications(), 2)
 	assert.Len(t, child.LeapMuxNotifications(), 2)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStepCompleted})
+	rig.transcriptOps(t, 2, `{"op":"step.upsert","turnId":"t0","step":{"kind":"step","stepId":"t0.1","ordinal":1,"state":"completed"}}`)
 	require.Len(t, rig.sink.Messages(), 1)
 	_, root := assembledRow(t, rig.sink.Messages()[0])
 	assert.Equal(t, "Root answer.", root)
@@ -657,27 +688,31 @@ func TestKimiRetryOfASubagentStaysInItsTranscript(t *testing.T) {
 
 func TestKimiRetryResolvesAtTheFirstOutput(t *testing.T) {
 	t.Parallel()
-	for _, output := range []map[string]any{
-		{"type": contracts.KimiEventAssistantDelta, "delta": "Answer."},
-		{"type": contracts.KimiEventThinkingDelta, "delta": "Thought."},
-		{"type": contracts.KimiEventToolCallDelta, "toolCallId": "call-1"},
-		{"type": contracts.KimiEventToolCallStarted, "toolCallId": "call-1", "name": "Read", "args": map[string]any{}},
+	for _, output := range []struct{ name, operation string }{
+		{"assistant text", `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"text","frameId":"answer","role":"assistant","text":"Answer."}}`},
+		{"reasoning", `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"thinking","frameId":"thought","text":"Thought."}}`},
+		{"tool arguments", `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"call-1","toolCallId":"call-1","name":"","state":"running","inputText":""}}`},
+		{"complete tool input", `{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"tool","frameId":"call-1","toolCallId":"call-1","name":"Read","state":"running","input":{}}}`},
 	} {
-		t.Run(output["type"].(string), func(t *testing.T) {
+		t.Run(output.name, func(t *testing.T) {
 			rig := newKimiOutputRig(t)
-			rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStepRetrying, "nextAttempt": 2})
+			rig.transcriptOps(t, 1, kimiNativeRetryStep)
 			assert.Empty(t, rig.sink.Notifications())
-			rig.feed(t, output)
-			rig.feed(t, output)
+			rig.transcriptOps(t, 2, output.operation)
+			rig.transcriptOps(t, 3, output.operation)
 			require.Len(t, rig.sink.Notifications(), 1)
 			assert.Equal(t, contracts.NotificationTypeApiRetryResolved, rig.sink.Notifications()[0][contracts.NotificationFieldType])
+			if output.name == "tool arguments" {
+				assert.Empty(t, rig.sink.Messages(), "argument streaming resolves retry without opening an incomplete call")
+				assert.Empty(t, rig.sink.ClosedSpans())
+			}
 		})
 	}
 	t.Run("a turn end forgets an unresolved retry", func(t *testing.T) {
 		rig := newKimiOutputRig(t)
-		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStepRetrying, "nextAttempt": 2})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "reason": "failed"})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventAssistantDelta, "delta": "Another turn."})
+		rig.transcriptOps(t, 1, kimiNativeRetryStep)
+		rig.transcriptOps(t, 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"failed","origin":{"kind":"user"}}}`)
+		rig.transcriptOps(t, 3, `{"op":"frame.upsert","turnId":"t1","stepId":"t1.1","frame":{"kind":"text","frameId":"answer","role":"assistant","text":"Another turn."}}`)
 		assert.Empty(t, rig.sink.Notifications())
 	})
 }
@@ -687,14 +722,14 @@ func TestKimiRetryDoesNotResolveEmptyOrDiscardedOutput(t *testing.T) {
 	for _, discard := range []bool{false, true} {
 		t.Run(map[bool]string{false: "empty", true: "discarded"}[discard], func(t *testing.T) {
 			rig := newKimiOutputRig(t)
-			rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStepRetrying, "nextAttempt": 2})
+			rig.transcriptOps(t, 1, kimiNativeRetryStep)
 			text := ""
 			if discard {
 				rig.agent.DiscardOutput()
 				text = "Discarded answer."
 			}
-			rig.feed(t, map[string]any{"type": contracts.KimiEventAssistantDelta, "delta": text})
-			rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStepCompleted})
+			rig.transcriptOps(t, 2, fmt.Sprintf(`{"op":"frame.upsert","turnId":"t0","stepId":"t0.1","frame":{"kind":"text","frameId":"answer","role":"assistant","text":%q}}`, text))
+			rig.transcriptOps(t, 3, `{"op":"step.upsert","turnId":"t0","step":{"kind":"step","stepId":"t0.1","ordinal":1,"state":"completed"}}`)
 			assert.Empty(t, rig.sink.Notifications())
 			assert.Empty(t, rig.sink.Messages())
 		})

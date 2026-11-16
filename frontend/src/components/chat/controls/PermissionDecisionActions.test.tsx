@@ -143,9 +143,9 @@ describe('PermissionDecisionActions', () => {
     return { onRespond, apply }
   }
 
-  /** OpenCode's wire shape: an allow_always with no reject_always. */
-  function renderOpenCodeShapeActions() {
-    return renderDecisions(AgentProvider.OPENCODE, '8', [
+  /** Kilo's wire shape: an allow_always with no reject_always. */
+  function renderKiloShapeActions() {
+    return renderDecisions(AgentProvider.KILO, '8', [
       { optionId: 'once', kind: 'allow_once', name: 'Allow once' },
       { optionId: 'always', kind: 'allow_always', name: 'Always allow' },
       { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
@@ -210,7 +210,7 @@ describe('PermissionDecisionActions', () => {
   })
 
   it('keeps the reject-once option under a remembering scope when the agent offers no reject_always', async () => {
-    const { onRespond } = renderOpenCodeShapeActions()
+    const { onRespond } = renderKiloShapeActions()
 
     fireEvent.click(allowChoicePillGroup().getByRole('radio', { name: 'Always' }))
     await fireEvent.click(screen.getByTestId('control-deny-btn'))

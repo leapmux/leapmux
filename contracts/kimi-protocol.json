@@ -1,76 +1,16 @@
 {
-  "_readme": "These Kimi Code values cross the Go and TypeScript boundary. LeapMux runs `kimi web` and drives its kap-server through REST and one WebSocket. Each event payload repeats its frame type. The Worker stores native event payloads and complete native interaction frames. Approvals and questions arrive through unsequenced interaction frames with nested requests. The frames and interactionKinds tables describe that envelope. The Worker removes repeated entries from global config warnings and preserves their other native fields. The browser dispatches on those same event types. The events table includes every declared server event, including the server-added event.* family. The origins table identifies who starts a turn. The tools and displayKinds tables identify tools and control displays. The decision and answer tables hold native reply values. The goalModes table holds approval labels. The modes table combines the three native permission modes with LeapMux plan mode. Moonshot AI owns the native wire values. LeapMux owns its plan mode and permission_mode, which selects the mode after plan approval. Control answers use the unified interaction route and carry their native kind. A question dismissal sets dismissed to true. The todoStatuses and turnEndReasons tables hold native task and completion values. The browser owns native output headers and per-line footers in its provider protocol module. The opening event supplies the tool name because native result events contain no name. Per-line footers contain no declared length. The browser shows the reported output_path beside the original preview. It checks native session and agent identity. It checks native turn and call identity also. LeapMux reads no output file. The Worker also stores each entry of GET /sessions/{id}/warnings in the shape of the warning event (type, agentId, sessionId, code, message). The server publishes profile warnings before a subscription can receive them. notificationEvents lists the event types that the Worker stores as notification rows. The browser treats the same set as one notification thread. The Worker stores other unknown session events as message rows. Compaction starts and blocked compactions use the live compaction key.",
+  "_readme": "These Kimi Code values cross the Go and TypeScript boundary. LeapMux runs kimi web and drives its kap-server through REST and one WebSocket. Native subscriptions deliver transcript.reset and transcript.ops for each selected agent. The Worker stores one complete native operation per tool or turn row. Snapshot entries use the corresponding operation shape. Turn, step and frame IDs are strings. Tool frames include their own name, input and output. The transcript tables define their node kinds, frame kinds and states. The mediaSourceKinds table defines native media pointers. Flat agent, usage, goal, todo, task and task.list frames carry unsequenced state. Native interaction frames carry approvals and questions with nested requests. The frames and interactionKinds tables describe that envelope. Control replies use the unified interaction route. The browser reads native output headers and file pointers while preserving the preview. Native progress carries individual stdout or stderr chunks. Snapshots can repeat the latest chunk, but do not restore the complete output history. The Worker collects live chunks and retains their tail when a call has no final native output. An explicit native output remains authoritative, including an empty or null value. The transcriptSupplement table scopes collected output and media by the complete native tool identity. The Worker fetches session media through the authenticated API and checks its MIME type and digest. The browser resolves supplements only into a display copy. Original native operation fields remain intact. The events and notificationEvents tables define the provider event vocabulary used by both sides. The native read-only configuration validator recovers startup warnings emitted before subscription. The Worker removes repeated global configuration warnings. Moonshot AI owns native values. LeapMux owns plan mode and permission_mode, which selects the native permission mode after plan approval. The text-role table and shared notice-level and output-part variants hold discriminants interpreted by both runtimes. Variants interpreted only by the browser remain in its plugin. The shared tables cover vocabulary LeapMux interprets. Native media references supply attachment content without an attachment operation reader. Undo is reconciled through native reset, cancelled headers supply interruption outcomes, and ExitPlanMode supplies plan content. Auxiliary attachment/remove operations, schema-only notice frames, and undo/interruption/plan revision marker metadata are not interpreted as separate conversation features. Engine conversation events are not delivered by native subscriptions.",
   "events": {
-    "AgentCreated": "agent.created",
-    "AgentDisposed": "agent.disposed",
-    "AgentStatusUpdated": "agent.status.updated",
-    "AssistantDelta": "assistant.delta",
-    "ThinkingDelta": "thinking.delta",
-    "ToolCallDelta": "tool.call.delta",
-    "ToolCallStarted": "tool.call.started",
-    "ToolProgress": "tool.progress",
-    "ToolResult": "tool.result",
-    "ToolListUpdated": "tool.list.updated",
-    "TurnStarted": "turn.started",
-    "TurnEnded": "turn.ended",
-    "TurnSteer": "turn.steer",
-    "TurnStepStarted": "turn.step.started",
-    "TurnStepCompleted": "turn.step.completed",
-    "TurnStepInterrupted": "turn.step.interrupted",
-    "TurnStepRetrying": "turn.step.retrying",
-    "PromptSubmitted": "prompt.submitted",
-    "PromptQueued": "prompt.queued",
-    "PromptStarted": "prompt.started",
-    "PromptSteered": "prompt.steered",
-    "PromptCompleted": "prompt.completed",
-    "PromptAborted": "prompt.aborted",
-    "CompactionStarted": "compaction.started",
-    "CompactionCompleted": "compaction.completed",
-    "CompactionBlocked": "compaction.blocked",
-    "CompactionCancelled": "compaction.cancelled",
-    "ContextSpliced": "context.spliced",
-    "ContextUndone": "context.undone",
-    "Error": "error",
     "Warning": "warning",
-    "GoalUpdated": "goal.updated",
-    "SubagentSpawned": "subagent.spawned",
-    "SubagentStarted": "subagent.started",
-    "SubagentCompleted": "subagent.completed",
-    "SubagentFailed": "subagent.failed",
-    "SubagentCancelled": "subagent.cancelled",
-    "SubagentSuspended": "subagent.suspended",
-    "TaskStarted": "task.started",
-    "TaskTerminated": "task.terminated",
-    "TaskNotified": "task.notified",
-    "BackgroundTaskStarted": "background.task.started",
-    "BackgroundTaskTerminated": "background.task.terminated",
-    "CronFired": "cron.fired",
-    "HookResult": "hook.result",
-    "McpServerStatus": "mcp.server.status",
-    "PlanRevision": "plan.revision",
-    "SkillActivated": "skill.activated",
-    "PluginCommandActivated": "plugin_command.activated",
-    "ShellStarted": "shell.started",
-    "ShellOutput": "shell.output",
-    "ShellCompleted": "shell.completed",
-    "TowerInboxSent": "tower.inbox.sent",
-    "SessionMetaUpdated": "session.meta.updated",
-    "PermissionApprovalRequested": "permission.approval.requested",
-    "PermissionApprovalResolved": "permission.approval.resolved",
-    "SessionCreated": "event.session.created",
-    "SessionArchived": "event.session.archived",
-    "SessionDeleted": "event.session.deleted",
-    "SessionWorkChanged": "event.session.work_changed",
-    "SessionStatusChanged": "event.session.status_changed",
-    "WorkspaceCreated": "event.workspace.created",
-    "WorkspaceUpdated": "event.workspace.updated",
-    "WorkspaceDeleted": "event.workspace.deleted",
-    "ConfigChanged": "event.config.changed",
     "ConfigWarning": "event.config.warning",
-    "ModelCatalogChanged": "event.model_catalog.changed",
-    "PluginChanged": "event.plugin.changed",
-    "CapabilityChanged": "event.capability.changed",
-    "UnitChanged": "event.di.unit_changed"
+    "TranscriptOps": "transcript.ops",
+    "TranscriptReset": "transcript.reset",
+    "Agent": "agent",
+    "Usage": "usage",
+    "Goal": "goal",
+    "Todo": "todo",
+    "TaskList": "task.list",
+    "Task": "task"
   },
   "origins": {
     "User": "user",
@@ -167,12 +107,6 @@
     "InProgress": "in_progress",
     "Done": "done"
   },
-  "turnEndReasons": {
-    "Completed": "completed",
-    "Cancelled": "cancelled",
-    "Failed": "failed",
-    "Blocked": "blocked"
-  },
   "structs": {
     "KimiApprovalReply": {
       "doc": "KimiApprovalReply is the body that answers one approval, as the worker stores it.\n\nThe worker posts it to `/sessions/{id}/interactions/{interaction_id}` without\n`permission_mode`, which is LeapMux's own: it states the mode an approved plan\nor goal start switches to, and the worker applies it before it posts the\ndecision. The browser\nreads the stored reply back to word the saved answer.",
@@ -267,14 +201,7 @@
     }
   },
   "notificationEvents": [
-    "TurnStarted",
-    "TurnStepRetrying",
-    "CompactionCompleted",
-    "CompactionCancelled",
     "Warning",
-    "Error",
-    "TaskNotified",
-    "HookResult",
     "ConfigWarning"
   ],
   "frames": {
@@ -283,5 +210,86 @@
   "interactionKinds": {
     "Approval": "approval",
     "Question": "question"
+  },
+  "transcriptOperations": {
+    "Reset": "reset",
+    "TurnUpsert": "turn.upsert",
+    "StepUpsert": "step.upsert",
+    "FrameUpsert": "frame.upsert",
+    "Append": "append",
+    "MarkerUpsert": "marker.upsert",
+    "InteractionUpsert": "interaction.upsert",
+    "PromptUpsert": "prompt.upsert"
+  },
+  "transcriptFrameKinds": {
+    "Text": "text",
+    "Thinking": "thinking",
+    "Tool": "tool"
+  },
+  "transcriptTurnStates": {
+    "Queued": "queued",
+    "Running": "running",
+    "Completed": "completed",
+    "Failed": "failed",
+    "Cancelled": "cancelled"
+  },
+  "transcriptStepStates": {
+    "Running": "running",
+    "Completed": "completed",
+    "Interrupted": "interrupted",
+    "Failed": "failed"
+  },
+  "transcriptToolStates": {
+    "Running": "running",
+    "Done": "done",
+    "Error": "error"
+  },
+  "transcriptMarkers": {
+    "Hook": "hook",
+    "Skill": "skill",
+    "CronFired": "cron.fired",
+    "Compaction": "compaction",
+    "Goal": "goal",
+    "Notice": "notice"
+  },
+  "compactionPhases": {
+    "Started": "started",
+    "Blocked": "blocked",
+    "Completed": "completed",
+    "Cancelled": "cancelled"
+  },
+  "transcriptSupplement": {
+    "Media": "media",
+    "SessionID": "sessionId",
+    "AgentID": "agentId",
+    "TurnID": "turnId",
+    "StepID": "stepId",
+    "FrameID": "frameId",
+    "ToolCallID": "toolCallId",
+    "Files": "files",
+    "MIMEType": "mimeType",
+    "Data": "data",
+    "ToolOutput": "toolOutput",
+    "Text": "text",
+    "Truncated": "truncated"
+  },
+  "transcriptNodeKinds": {
+    "Turn": "turn",
+    "Step": "step",
+    "Frame": "frame",
+    "Marker": "marker"
+  },
+  "mediaSourceKinds": {
+    "SessionMedia": "session_media"
+  },
+  "transcriptTextRoles": {
+    "Assistant": "assistant",
+    "User": "user"
+  },
+  "noticeLevels": {
+    "Error": "error"
+  },
+  "outputPartKinds": {
+    "Image": "image"
   }
 }

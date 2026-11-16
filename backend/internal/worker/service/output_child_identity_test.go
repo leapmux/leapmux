@@ -18,12 +18,16 @@ func TestChildNativeKeyKeepsExactProviderBytesOutsideTheRegistryKey(t *testing.T
 	t.Parallel()
 	svc, sink, _, _ := setupBgTaskTestWithService(t)
 	key := strings.Repeat("한😀/", 100)
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: key, Title: "Read the native source"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: key, Title: "Read the native source"})
 	require.NoError(t, err)
 	child, err := svc.Queries.GetAgentByID(t.Context(), childID)
 	require.NoError(t, err)
 	assert.Equal(t, key, child.ProviderChildKey)
-	replayID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: key, SpawnSpanID: "native-call"})
+	replayID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: key, SpawnSpanID: "native-call"})
 	require.NoError(t, err)
 	assert.Equal(t, childID, replayID)
 	child, err = svc.Queries.GetChildAgentByProviderKey(t.Context(), db.GetChildAgentByProviderKeyParams{ParentAgentID: sqlString(child.ParentAgentID.String), ProviderChildKey: key})
@@ -38,9 +42,13 @@ func TestChildNativeKeyKeepsExactProviderBytesOutsideTheRegistryKey(t *testing.T
 func TestChildNativeKeyRejectsARegistryChildOwnedByAnotherParent(t *testing.T) {
 	t.Parallel()
 	svc, root, _, _ := setupBgTaskTestWithService(t)
-	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child", SpawnSpanID: "spawn", Title: "Native child"})
+	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-child", SpawnSpanID: "spawn", Title: "Native child"})
 	require.NoError(t, err)
-	_, err = root.ChildSink(childID).EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child", SpawnSpanID: "nested-spawn"})
+	_, err = root.ChildSink(childID).EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-child", SpawnSpanID: "nested-spawn"})
 	require.ErrorContains(t, err, "parent")
 	child, err := svc.Queries.GetAgentByID(t.Context(), childID)
 	require.NoError(t, err)
@@ -51,9 +59,13 @@ func TestChildNativeKeyRejectsARegistryChildOwnedByAnotherParent(t *testing.T) {
 func TestChildNativeKeyCollisionDoesNotPublishOrRelinkTheRegistry(t *testing.T) {
 	t.Parallel()
 	svc, sink, _, rows := setupBgTaskTestWithService(t)
-	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-a", SpawnSpanID: "spawn", Title: "First"})
+	childID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-a", SpawnSpanID: "spawn", Title: "First"})
 	require.NoError(t, err)
-	_, err = sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-b", SpawnSpanID: "spawn", Title: "Wrong child"})
+	_, err = sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-b", SpawnSpanID: "spawn", Title: "Wrong child"})
 	require.Error(t, err)
 	retained := rows()
 	require.Len(t, retained, 1, "a rejected native identity must not create a registry row")
@@ -75,7 +87,9 @@ func TestConcurrentUnlinkedNativeChildCreatesOneOwnedAgent(t *testing.T) {
 	var group sync.WaitGroup
 	for range cap(results) {
 		group.Go(func() {
-			id, err := sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child", Title: "Read the source"})
+			id, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole:     bgtask.RoleChildTask,
+				ProviderChildKey: "native-child", Title: "Read the source"})
 			results <- outcome{id: id, err: err}
 		})
 	}
@@ -99,7 +113,9 @@ func TestConcurrentUnlinkedNativeChildCreatesOneOwnedAgent(t *testing.T) {
 func TestFailedChildNativeResultWriteAcceptsTheNextValidAttempt(t *testing.T) {
 	t.Parallel()
 	svc, root, _, _ := setupBgTaskTestWithService(t)
-	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child", Title: "Read the source"})
+	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-child", Title: "Read the source"})
 	require.NoError(t, err)
 	child := root.ChildSink(childID)
 	_, err = svc.DB.ExecContext(t.Context(), `CREATE TRIGGER refuse_child_divider BEFORE INSERT ON messages WHEN NEW.agent_id <> 'agent-1' BEGIN SELECT RAISE(FAIL, 'the store refused the child divider'); END`)
@@ -119,7 +135,9 @@ func TestChildRegistryLinkFailureRollsBackCreationAndReplaysTheNativeIdentity(t 
 	svc, sink, _, rows := setupBgTaskTestWithService(t)
 	_, err := svc.DB.ExecContext(t.Context(), `CREATE TRIGGER refuse_child_link BEFORE INSERT ON agent_background_tasks BEGIN SELECT RAISE(FAIL, 'the store refused the child link'); END`)
 	require.NoError(t, err)
-	spec := agent.ChildAgentSpec{ProviderChildKey: "native-link-child", SpawnSpanID: "native-link-span", Title: "Read the source"}
+	spec := agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-link-child", SpawnSpanID: "native-link-span", Title: "Read the source"}
 	_, err = sink.EnsureChildAgent(spec)
 	require.ErrorContains(t, err, "the store refused the child link")
 	assert.Empty(t, rows())
@@ -176,6 +194,8 @@ func TestFailedChildRegistryLinkAtCapPreservesEveryExistingSidebarRow(t *testing
 	svc, sink, ownerID, rows := setupBgTaskTestWithService(t)
 	for index := range bgtask.MaxTasks {
 		_, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+
 			ProviderChildKey: fmt.Sprintf("native-child-%d", index), Title: "Read the source",
 		})
 		require.NoError(t, err)
@@ -186,7 +206,9 @@ func TestFailedChildRegistryLinkAtCapPreservesEveryExistingSidebarRow(t *testing
 	require.Len(t, displayed, int(bgtask.MaxTasks))
 	_, err = svc.DB.ExecContext(t.Context(), `CREATE TRIGGER refuse_new_child_link BEFORE INSERT ON agent_background_tasks WHEN NEW.row_key = 'refused-native-child' BEGIN SELECT RAISE(FAIL, 'the store refused the new child link'); END`)
 	require.NoError(t, err)
-	_, err = sink.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "refused-native-child", Title: "Read more source"})
+	_, err = sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "refused-native-child", Title: "Read more source"})
 	require.ErrorContains(t, err, "the store refused the new child link")
 	assert.Equal(t, stored, rows(), "existing child transcripts must remain linked")
 	after, err := svc.Output.LoadBackgroundTasks(t.Context(), ownerID)

@@ -35,11 +35,11 @@ func (s *childSessionStdin) Write(data []byte) (int, error) {
 	return n, err
 }
 
-func newChildSessionAgent(t *testing.T) (*Agent, *agenttest.Sink, *childSessionStdin) {
+func newChildSessionAgent(t *testing.T) (*familyTestAgent, *agenttest.Sink, *childSessionStdin) {
 	t.Helper()
 	stdin := &childSessionStdin{written: make(chan struct{}, 1)}
 	ctx, cancel := context.WithCancel(t.Context())
-	a := &Agent{}
+	a := &familyTestAgent{}
 	a.AttachPeerForTest(ctx, cancel, stdin, "test-agent", "session-1")
 	sink := &agenttest.Sink{}
 	a.SetSinkForTest(agent.NewProviderServices(sink))
@@ -116,7 +116,7 @@ func awaitRequest(t *testing.T, stdin *childSessionStdin, method string, count i
 
 // followRunningChild opens the row of the task call call-1, states its child
 // session, and answers the agent's load of that session.
-func followRunningChild(t *testing.T, a *Agent, stdin *childSessionStdin) {
+func followRunningChild(t *testing.T, a *familyTestAgent, stdin *childSessionStdin) {
 	t.Helper()
 	a.HandleToolCallForTest(openCodeTaskRequest(t, "call-1", "", "Count slowly to one hundred."))
 	a.handleDaemonEvent(taskPartEvent(t, "session-1", "call-1", "task", "running", "ses-child"))
@@ -126,7 +126,7 @@ func followRunningChild(t *testing.T, a *Agent, stdin *childSessionStdin) {
 	testutil.RequireEventually(t, func() bool { return a.ActiveChildTurnState("call-1").Steerable }, "the load marks the child session steerable")
 }
 
-func clearChildSessionContext(t *testing.T, a *Agent, stdin *childSessionStdin) {
+func clearChildSessionContext(t *testing.T, a *familyTestAgent, stdin *childSessionStdin) {
 	t.Helper()
 	done := make(chan error, 1)
 	go func() {
@@ -149,7 +149,7 @@ func TestOpenCodeContextClearRetiresLoadedChildRoutes(t *testing.T) {
 	followRunningChild(t, a, stdin)
 	clearChildSessionContext(t, a, stdin)
 	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState("call-1"))
-	assert.ErrorIs(t, a.SendChildInput("call-1", "old input", nil), errOpenCodeSubagentIdle)
+	assert.ErrorIs(t, agenttest.SendChildInput(a, "call-1", agent.ChildInput{Content: "old input"}), errOpenCodeSubagentIdle)
 	assert.ErrorIs(t, a.SteerChildInput("call-1", "old steer", nil), agent.ErrNoActiveTurn)
 	assert.Empty(t, writtenRequests(stdin, "session/prompt"))
 	_, served := a.SessionOwner("ses-child")
@@ -307,7 +307,7 @@ func TestOpenCodeChildSessionUpdatesReachTheSubagentTranscript(t *testing.T) {
 func TestOpenCodeSteersARunningChild(t *testing.T) {
 	t.Parallel()
 	a, sink, stdin := newChildSessionAgent(t)
-	assert.ErrorIs(t, a.SendChildInput("call-1", "Also count backwards.", nil), errOpenCodeSubagentIdle)
+	assert.ErrorIs(t, agenttest.SendChildInput(a, "call-1", agent.ChildInput{Content: "Also count backwards."}), errOpenCodeSubagentIdle)
 	assert.ErrorIs(t, a.SteerChildInput("call-1", "Also count backwards.", nil), agent.ErrNoActiveTurn)
 	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState("call-1"))
 
@@ -319,7 +319,7 @@ func TestOpenCodeSteersARunningChild(t *testing.T) {
 	require.True(t, a.Deliver(load.ID, agenttest.JSONRPCResponse(load.ID, agenttest.RPCReply{Result: json.RawMessage(`{}`)})))
 	testutil.RequireEventually(t, func() bool { return a.ActiveChildTurnState("call-1").Steerable })
 
-	assert.ErrorIs(t, a.SendChildInput("call-1", "Also count backwards.", nil), agent.ErrAgentBusy, "the queue steers a running child")
+	assert.ErrorIs(t, agenttest.SendChildInput(a, "call-1", agent.ChildInput{Content: "Also count backwards."}), agent.ErrAgentBusy, "the queue steers a running child")
 	require.NoError(t, a.SteerChildInput("call-1", "Also count backwards.", nil))
 	prompt := awaitRequest(t, stdin, "session/prompt", 1)
 	assert.JSONEq(t, `{"sessionId":"ses-child","prompt":[{"type":"text","text":"Also count backwards."}]}`, string(prompt.Params))
@@ -336,7 +336,7 @@ func TestOpenCodeSteersARunningChild(t *testing.T) {
 
 	// The task's end ends the subagent's turn: a later message is refused.
 	a.HandleToolCallUpdateForTest(openCodeTaskResult(t, "call-1", "ses-child", "Counted."))
-	assert.ErrorIs(t, a.SendChildInput("call-1", "One more.", nil), errOpenCodeSubagentIdle)
+	assert.ErrorIs(t, agenttest.SendChildInput(a, "call-1", agent.ChildInput{Content: "One more."}), errOpenCodeSubagentIdle)
 	assert.ErrorIs(t, a.SteerChildInput("call-1", "One more.", nil), agent.ErrNoActiveTurn)
 	assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState("call-1"))
 }

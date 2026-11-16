@@ -31,22 +31,37 @@ type Agent struct {
 	stream *kimiStream
 	// endpoint is the server's HTTP endpoint. Stop closes its idle connections.
 	endpoint *providerkit.HTTPEndpoint
+	media    *kimiMediaService
 	// features lists the engine features GET /meta reported as active. Read once
 	// at startup and never mutated, so it needs no lock.
 	features map[string]bool
 
 	// dispatchMu serializes handleFrame calls from the event stream and HandleOutput.
 	// Without it, a tool result could precede its opener and leave the card active indefinitely.
-	dispatchMu sync.Mutex
+	dispatchMu kimiPublicationMutex
+	// Registry writes share one readiness owner across dispatch and session mutations.
+	registryOnce  sync.Once
+	registryOwner *agent.OutputOwner
 	// The launch stamp is immutable. dispatchMu protects the warning fingerprints.
 	serverLaunchedAt      time.Time
-	storedConfigWarnings  map[string]struct{}
+	storedConfigWarnings  map[kimiConfigWarningKey]struct{}
+	pendingConfigWarnings []kimiFrame
+	pendingSession        *kimiSessionAdmission
 	storedSessionWarnings map[string]struct{}
 	// sessionMu serializes session replacement and configuration changes.
 	// ClearContext and UpdateSettings use it. Goal writes use it also.
 	// A caller must not acquire it while it holds Mu.
-	sessionMu    sync.Mutex
-	approvalWork providerkit.CoalescingWork
+	sessionMu              kimiPublicationMutex
+	approvalWork           providerkit.CoalescingWork
+	taskRecoveryWork       providerkit.CoalescingWork
+	taskReportWork         providerkit.CoalescingWork
+	transcriptRecoveryWork providerkit.CoalescingWork
+	// dispatchMu protects bytes retained for native transcript recovery.
+	pendingNativeBytes int64
+	// dispatchMu protects the applied native restoration fence.
+	invocationRecovery *kimiInvocationRecovery
+	// dispatchMu protects locally submitted prompt identities and child admission.
+	promptSubmissions map[string]*kimiPromptSubmission
 	// usageWork reads the plan usage of the Kimi Code account. See
 	// rate_limits.go.
 	usageWork providerkit.CoalescingWork
@@ -54,9 +69,8 @@ type Agent struct {
 	// --- guarded by Mu ---
 
 	sessionID string
-	// attachedAt is when the agent began to drive the current session. The
-	// server restores a session's old tasks, so a task that started before this
-	// time is the session's history, and a resync opens no row for it.
+	// attachedAt marks when the worker began driving this session. Native
+	// recovery uses it to omit historical notices and finished turns.
 	attachedAt time.Time
 	// turnActive is true while the MAIN agent runs a turn, whoever started it.
 	turnActive bool
@@ -74,10 +88,6 @@ type Agent struct {
 	// contextUsage is the broadcast-shaped context readout, kept so a turn end
 	// carries the last one.
 	contextUsage map[string]any
-	// lastTurnError identifies the failure the last main turn ended with. The
-	// server repeats it as an `error` event right after the turn end, and the
-	// divider already states it.
-	lastTurnError string
 	// runs holds the output state of each agent of the session: the main agent
 	// and every subagent that reported an event. See output.go.
 	runs map[string]*kimiRun
@@ -85,9 +95,10 @@ type Agent struct {
 	// resolved yet. See control.go.
 	controls map[string]*kimiPendingControl
 	// tasks holds the background tasks the session reported. See tasks.go.
-	tasks map[string]*kimiTask
+	tasks map[kimiTaskAddress]*kimiTask
 	// goal is the last goal the session reported. See goal.go.
-	goal kimiGoalState
+	goal         kimiGoalState
+	goalPushSeen bool
 	// trustRestartRequired is true once the reader trusted the workspace: the
 	// session that runs loads the project's configuration only in a new process.
 	// See workspace_trust.go.
@@ -106,7 +117,6 @@ var (
 	_ agent.InputSteerer     = (*Agent)(nil)
 	_ agent.ContextCompactor = (*Agent)(nil)
 	_ agent.ChildSteerer     = (*Agent)(nil)
-	_ agent.ChildInterrupter = (*Agent)(nil)
 	_ agent.GoalWriter       = (*Agent)(nil)
 )
 
@@ -151,11 +161,11 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	if err != nil {
 		return err
 	}
-	// The turn flag moves on the turn.started event and never here. The server
+	// The native turn header moves the turn flag, never this reply. The server
 	// replies once the turn launched, and a short turn can END before the reply
 	// arrives: a flag raised from the reply would then latch a turn that is over,
 	// with no event left to clear it. A second message that slips in before
-	// turn.started waits in the server's own queue and runs next, which delivers
+	// the native turn header waits in the server's queue and runs next, which delivers
 	// it all the same.
 	reply, err := a.submitPrompt(sessionID, kimiMainAgentID, parts)
 	if err == nil && reply.Status == kimiPromptBlocked {
@@ -169,7 +179,16 @@ func (a *Agent) submitPrompt(sessionID, agentID string, parts []map[string]any) 
 	if err := kimiCheckID("session", sessionID); err != nil {
 		return kimiPromptReply{}, err
 	}
-	body := map[string]any{"content": parts}
+	submission, err := a.reservePromptSubmission(sessionID, agentID)
+	if err != nil {
+		return kimiPromptReply{}, err
+	}
+	return a.submitReservedPrompt(submission, parts)
+}
+
+func (a *Agent) submitReservedPrompt(submission *kimiPromptSubmission, parts []map[string]any) (kimiPromptReply, error) {
+	sessionID, agentID := submission.sessionID, submission.receiver
+	body := map[string]any{"content": parts, "prompt_id": submission.id}
 	if agentID != kimiMainAgentID {
 		body["agent_id"] = agentID
 	}
@@ -177,7 +196,18 @@ func (a *Agent) submitPrompt(sessionID, agentID string, parts []map[string]any) 
 	defer cancel()
 	var reply kimiPromptReply
 	if err := a.api.post(ctx, kimiSessionPath(sessionID, "/prompts"), body, &reply); err != nil {
-		return kimiPromptReply{}, classifyKimiDeliveryError(err)
+		deliveryErr := classifyKimiDeliveryError(err)
+		a.finishPromptSubmission(submission, deliveryErr)
+		return kimiPromptReply{}, deliveryErr
+	}
+	if reply.PromptID != submission.id {
+		return kimiPromptReply{}, fmt.Errorf("%w: Kimi Code returned a different prompt id", agent.ErrDeliveryUncertain)
+	}
+	if reply.Status != kimiPromptRunning && reply.Status != kimiPromptQueued && reply.Status != kimiPromptBlocked {
+		return kimiPromptReply{}, fmt.Errorf("%w: Kimi Code returned an invalid prompt status %q", agent.ErrDeliveryUncertain, reply.Status)
+	}
+	if reply.Status == kimiPromptBlocked {
+		a.finishPromptSubmission(submission, nil)
 	}
 	return reply, nil
 }
@@ -236,7 +266,7 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	}
 	if reply.Status != kimiPromptQueued {
 		// The turn ended before the prompt arrived, so the prompt started the next
-		// turn. The text reached the agent either way, and turn.started moves the
+		// turn. The text reached the agent either way, and its native header moves the
 		// flag for the new turn.
 		return nil
 	}

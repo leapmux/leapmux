@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strings"
 	"time"
 
@@ -15,18 +16,16 @@ import (
 
 // Kimi Code's session goal.
 //
-// The server owns a goal of its own and reports every change with
-// `goal.updated`, whose `snapshot` is the whole goal or null. LeapMux writes it
-// through the session profile: `goal_objective` creates one and `goal_control`
+// The server publishes its goal in a flat `goal` frame. An omitted goal clears
+// the session's goal. LeapMux writes the goal through the session profile: `goal_objective` creates one and `goal_control`
 // pauses, resumes or cancels it. So the provider is a side-band GoalWriter, with
 // one exception the TUI states too: creating a goal starts no turn, so a Set
 // also returns the objective as the user message that starts the work.
 //
-// The server removes a goal that completed -- the snapshot turns null right
-// after the completion -- and the card follows it. The completion itself reaches
-// the transcript first, as the Done transition.
+// The server removes a completed goal by omitting it from the next frame.
+// LeapMux records the completed state before it clears the card.
 
-// kimiGoalSnapshot is `goal.updated.snapshot` and the reply of GET .../goal.
+// kimiGoalSnapshot holds the goal fields consumed by applyGoal.
 type kimiGoalSnapshot struct {
 	EndReason   json.RawMessage `json:"terminalReason"`
 	GoalID      string          `json:"goalId"`
@@ -46,11 +45,53 @@ type kimiGoalChange struct {
 
 // kimiGoalState is what the agent remembers about the session's goal.
 type kimiGoalState struct {
-	// goalID and createdAt identify the current goal. The server states no
-	// creation time, so the worker records when it first saw the goal.
-	goalID    string
+	// The objective and creation time identify a goal when the native frame
+	// supplies no goal ID. The worker records when it first sees the goal.
+	snapshot  kimiGoalSnapshot
 	createdAt time.Time
-	status    agent.GoalStatus
+}
+
+// handleNativeGoal reads the pushed state, including the initial subscription snapshot.
+func (a *Agent) handleNativeGoal(frame kimiFrame) {
+	var state struct {
+		AgentID string          `json:"agent_id"`
+		Goal    json.RawMessage `json:"goal"`
+	}
+	if frame.SessionID == "" || json.Unmarshal(frame.Raw, &state) != nil || state.AgentID != kimiMainAgentID {
+		return
+	}
+	var goal *kimiGoalSnapshot
+	if len(state.Goal) != 0 {
+		var native struct {
+			Objective   string   `json:"objective"`
+			Status      string   `json:"status"`
+			TurnsUsed   *int32   `json:"turns_used"`
+			TokensUsed  *int64   `json:"tokens_used"`
+			WallClockMS *float64 `json:"wall_clock_ms"`
+		}
+		if json.Unmarshal(state.Goal, &native) != nil || strings.TrimSpace(native.Objective) == "" || native.TurnsUsed == nil || *native.TurnsUsed < 0 || native.TokensUsed == nil || *native.TokensUsed < 0 || native.WallClockMS == nil || *native.WallClockMS < 0 || *native.WallClockMS >= math.MaxInt64 {
+			return
+		}
+		switch native.Status {
+		case kimiGoalActive, kimiGoalPaused, kimiGoalBlocked, kimiGoalComplete:
+		default:
+			return
+		}
+		milliseconds := int64(*native.WallClockMS)
+		goal = &kimiGoalSnapshot{Objective: native.Objective, Status: native.Status, TurnsUsed: native.TurnsUsed, TokensUsed: native.TokensUsed, WallClockMs: &milliseconds}
+	}
+	a.Mu.Lock()
+	if goal != nil && a.goal.snapshot.Objective == goal.Objective {
+		goal.GoalID = a.goal.snapshot.GoalID
+		goal.Budget = a.goal.snapshot.Budget
+		if goal.Status == a.goal.snapshot.Status {
+			goal.EndReason = a.goal.snapshot.EndReason
+		}
+	}
+	snapshot := !a.goalPushSeen
+	a.goalPushSeen = true
+	a.Mu.Unlock()
+	a.applyGoal(goal, nil, snapshot)
 }
 
 // kimiGoalStatus maps a goal status word onto the neutral status. A word this
@@ -71,30 +112,6 @@ func kimiGoalStatus(status string) agent.GoalStatus {
 	}
 }
 
-func (a *Agent) handleGoalUpdated(event kimiEvent) {
-	if event.AgentID != kimiMainAgentID {
-		// A subagent's goal is not the session's. See GoalServices.UpsertGoal.
-		return
-	}
-	var payload struct {
-		Snapshot *kimiGoalSnapshot `json:"snapshot"`
-		Change   json.RawMessage   `json:"change"`
-	}
-	if !event.decode(&payload) {
-		return
-	}
-	var change *kimiGoalChange
-	if providerkit.RawPresent(payload.Change) {
-		var decoded kimiGoalChange
-		if err := json.Unmarshal(payload.Change, &decoded); err != nil {
-			slog.Debug("read the Kimi goal change detail", "agent_id", a.AgentID(), "error", err)
-		} else {
-			change = &decoded
-		}
-	}
-	a.applyGoal(payload.Snapshot, change, false)
-}
-
 // applyGoal records one goal report. snapshot marks a report that restates the
 // goal -- the read at a resume -- rather than a change.
 func (a *Agent) applyGoal(goal *kimiGoalSnapshot, change *kimiGoalChange, snapshot bool) {
@@ -102,7 +119,7 @@ func (a *Agent) applyGoal(goal *kimiGoalSnapshot, change *kimiGoalChange, snapsh
 		a.Mu.Lock()
 		// A goal that completed is gone by the server's rule, and its completion is
 		// already in the transcript; the removal needs no row of its own.
-		quiet := snapshot || a.goal.status == agent.GoalStatusDone
+		quiet := snapshot || kimiGoalStatus(a.goal.snapshot.Status) == agent.GoalStatusDone
 		a.goal = kimiGoalState{}
 		a.Mu.Unlock()
 		// The clear runs even when this agent knew of no goal. The worker's store
@@ -111,15 +128,18 @@ func (a *Agent) applyGoal(goal *kimiGoalSnapshot, change *kimiGoalChange, snapsh
 		a.sink.ClearGoal(quiet)
 		return
 	}
-	status := kimiGoalStatus(goal.Status)
+	updated := *goal
 	a.Mu.Lock()
-	if a.goal.goalID != goal.GoalID || a.goal.createdAt.IsZero() {
-		a.goal.goalID = goal.GoalID
+	previous := a.goal.snapshot
+	sameGoal := previous.Objective == goal.Objective && (previous.GoalID == "" || goal.GoalID == "" || previous.GoalID == goal.GoalID)
+	if !sameGoal || a.goal.createdAt.IsZero() {
 		a.goal.createdAt = a.clock.Now().UTC()
 	}
-	a.goal.status = status
+	a.goal.snapshot = updated
 	createdAt := a.goal.createdAt
 	a.Mu.Unlock()
+	goal = &updated
+	status := kimiGoalStatus(goal.Status)
 
 	detail, _ := providerkit.RawString(goal.EndReason)
 	detail = strings.TrimSpace(detail)
@@ -149,19 +169,6 @@ func (a *Agent) applyGoal(goal *kimiGoalSnapshot, change *kimiGoalChange, snapsh
 	a.sink.UpsertGoal(update)
 }
 
-// readGoal restates the session's goal after a resume.
-func (a *Agent) readGoal(ctx context.Context, sessionID string) {
-	if !a.features[kimiFeatureGoal] {
-		return
-	}
-	var goal *kimiGoalSnapshot
-	if err := a.api.get(ctx, kimiSessionPath(sessionID, "/goal"), &goal); err != nil {
-		slog.Debug("kimi read goal failed", "agent_id", a.AgentID(), "error", err)
-		return
-	}
-	a.applyGoal(goal, nil, true)
-}
-
 // SupportedGoalActions reports every action once the engine runs its goal
 // feature: the profile route states each one.
 func (a *Agent) SupportedGoalActions() []agent.GoalAction {
@@ -177,9 +184,9 @@ func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (ag
 		return agent.GoalOutcome{}, agent.ErrGoalControlUnsupported
 	}
 	a.sessionMu.Lock()
-	defer a.sessionMu.Unlock()
+	defer a.finishSessionMutation()
 	a.Mu.Lock()
-	sessionID, busy, hasGoal := a.sessionID, a.turnActive, a.goal.goalID != ""
+	sessionID, busy, hasGoal := a.sessionID, a.turnActive, a.goal.snapshot.Objective != ""
 	a.Mu.Unlock()
 	if err := kimiCheckID("session", sessionID); err != nil {
 		return agent.GoalOutcome{}, err
@@ -221,7 +228,7 @@ func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (ag
 			// with the goal events.
 			a.dispatchMu.Lock()
 			a.applyGoal(nil, nil, false)
-			a.dispatchMu.Unlock()
+			a.finishDispatch()
 		}
 		return agent.GoalOutcome{}, nil
 	case agent.GoalActionPause:

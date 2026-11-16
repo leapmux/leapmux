@@ -1,35 +1,38 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
-import { nativeModelLastUserText } from '../helpers/nativeScenario'
+import { nativeModelContextText } from '../helpers/nativeScenario'
 import { exerciseNativePlanWithEffort } from '../helpers/nativeSettings'
 import { expectSettingsChip } from '../helpers/ui'
 
 /** The reminder that OpenCode puts into the last user message of a Plan turn. */
-export const OPENCODE_PLAN_REMINDER = '# Plan Mode - System Reminder'
+export const OPENCODE_PLAN_REMINDER = 'You are in Plan mode.'
+const OPENCODE_PLAN_EXIT_REMINDER = 'You are NO LONGER in Plan mode.'
+
+/** The last native reminder states the active mode, even when history keeps older reminders. */
+export function openCodePlanIsActive(request: MockModelRequestRecord): boolean {
+  const text = nativeModelContextText(request)
+  return text.lastIndexOf(OPENCODE_PLAN_REMINDER) > text.lastIndexOf(OPENCODE_PLAN_EXIT_REMINDER)
+}
 
 /**
- * Restore the selected native axis while preserving the coupled Plan and effort settings, for OpenCode and for Kilo,
- * which builds on OpenCode. The two differ only in the Plan reminder, which each passes.
+ * Restore the selected native axis while preserving the coupled Plan and effort settings.
  */
 export async function exercisePlanAndEffort(
   context: ManagedNativeScenarioContext,
   restore: 'mode' | 'effort',
-  planReminder: string = OPENCODE_PLAN_REMINDER,
 ): Promise<void> {
-  if (planReminder.trim() === '')
-    throw new Error('The OpenCode family Plan check needs the Plan reminder of its provider.')
   const expectNativePlan = (request: MockModelRequestRecord) => {
     expect(request.protocol).toBe('openai-chat-completions')
     expect(request.body).toMatchObject({ reasoning_effort: 'low' })
-    expect(nativeModelLastUserText(request)).toContain(planReminder)
+    expect(openCodePlanIsActive(request)).toBe(true)
   }
   await exerciseNativePlanWithEffort(context, {
     mode: { groupId: 'primaryAgent', value: 'plan' },
-    effort: { groupId: 'effort', value: 'low' },
+    effort: { groupId: 'effort', value: 'variant:low' },
     restore,
     nativeBuildProof(request) {
-      expect(nativeModelLastUserText(request)).not.toContain(planReminder)
+      expect(openCodePlanIsActive(request)).toBe(false)
     },
     nativePlanProof: expectNativePlan,
   })

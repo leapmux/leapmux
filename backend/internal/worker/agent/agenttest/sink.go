@@ -9,14 +9,17 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/id"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/leapmux/leapmux/internal/worker/spantrack"
+	"github.com/leapmux/leapmux/internal/worker/todoevents"
 )
 
 // SettingsRefresh records the arguments of a PersistSettingsRefresh call.
@@ -35,6 +38,7 @@ type ModeChange struct {
 
 // Sink is a test implementation of ProviderServices that records calls.
 type Sink struct {
+	todoItems          []todoevents.Item
 	planUpdates        []PlanUpdateRecord
 	outputQueue        agent.OutputQueue
 	childLifetime      *testChildSinkLifetime
@@ -50,7 +54,7 @@ type Sink struct {
 	progress           []agent.ProgressUpdate
 	progressCount      agent.ProgressCounter
 	sessionIDs         []string
-	sessionFact        *testSessionFact
+	sessionFact        atomic.Pointer[testSessionFact]
 	sessionObservation *sinkSessionObservationWriter
 	transcriptScope    *testTranscriptScope
 	permissionModes    []string
@@ -300,10 +304,11 @@ func (s *Sink) messageIdentityLocked(content agent.MessageContent) nativeMessage
 
 // currentSessionIDLocked returns the current native session. The caller holds mu.
 func (s *Sink) currentSessionIDLocked() string {
-	if s.sessionFact == nil {
+	session := s.sessionFact.Load()
+	if session == nil {
 		return ""
 	}
-	return s.sessionFact.id
+	return session.id
 }
 
 func (s *Sink) EnrichMessage(change agent.MessageEnrichment) (bool, error) {
@@ -792,8 +797,9 @@ func (s *Sink) updateSessionID(sessionID string, newLifetime bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sessionIDs = append(s.sessionIDs, sessionID)
-	if newLifetime || s.sessionFact == nil || s.sessionFact.id != sessionID {
-		s.sessionFact = &testSessionFact{id: sessionID}
+	session := s.sessionFact.Load()
+	if newLifetime || session == nil || session.id != sessionID {
+		s.sessionFact.Store(&testSessionFact{id: sessionID})
 	}
 }
 func (s *Sink) UpdatePermissionMode(mode string) {
@@ -1115,6 +1121,9 @@ type childSinkIdentity struct{ spanID, providerKey, lateChildID string }
 // EnsureChildAgent resolves a child by its spawn span or native key without a database.
 // Replaying the same identity returns the same child ID.
 func (s *Sink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
+	if !spec.RegistryRole.IsCanonicalChildActivity() {
+		return "", fmt.Errorf("child creation requires a canonical activity role")
+	}
 	if spec.SpawnSpanID == "" && spec.ProviderChildKey == "" {
 		return "", errors.New("a child requires a native key or a spawn span")
 	}
@@ -1153,14 +1162,27 @@ func (s *Sink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
 	if child != nil && spec.AgentSessionID != "" && child.LastSessionID() != spec.AgentSessionID {
 		return "", fmt.Errorf("the child belongs to another native session: %w", agent.ErrChildIdentityRefused)
 	}
+	cid := "child-of-" + spec.SpawnSpanID
+	if spec.SpawnSpanID == "" {
+		cid = "child-key-" + rowKey
+	}
+	if child != nil {
+		cid = child.childAgentID()
+	} else if s.childAgentID() != "" {
+		// Parent-local span IDs can repeat below different children of one registry.
+		cid = "nested-child-" + id.Generate()
+	}
+	if rowKey != "" {
+		registry.bgTasksMu.Lock()
+		defer registry.bgTasksMu.Unlock()
+		if err := registry.validateCanonicalRegistryRowLocked(bgtask.Item{Role: spec.RegistryRole, RowKey: rowKey, ChildAgentID: cid}); err != nil {
+			return "", err
+		}
+	}
 	if child == nil {
 		child = &Sink{nativeChildKey: spec.ProviderChildKey, registryRoot: s.registry()}
 		if spec.AgentSessionID != "" {
 			child.UpdateSessionID(spec.AgentSessionID)
-		}
-		cid := "child-of-" + spec.SpawnSpanID
-		if spec.SpawnSpanID == "" {
-			cid = "child-key-" + rowKey
 		}
 		child.setChildAgentID(cid)
 		if len(spec.Options) > 0 {
@@ -1171,7 +1193,6 @@ func (s *Sink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
 	} else if child.nativeChildKey == "" && spec.ProviderChildKey != "" {
 		child.nativeChildKey = spec.ProviderChildKey
 	}
-	cid := child.childAgentID()
 	if spec.SpawnSpanID != "" {
 		if s.spawnSpans == nil {
 			s.spawnSpans = make(map[string]string)
@@ -1181,12 +1202,12 @@ func (s *Sink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
 		}
 	}
 	if rowKey != "" {
-		registry.bgTasksMu.Lock()
 		if registry.bgTasks == nil {
 			registry.bgTasks = make(map[string]bgtask.Item)
 		}
 		item := registry.bgTasks[rowKey]
 		item.RowKey, item.ChildAgentID, item.Kind = rowKey, cid, bgtask.KindSubagent
+		item.Role = spec.RegistryRole
 		if item.Status == bgtask.StatusUnspecified {
 			item.Status = bgtask.StatusRunning
 		}
@@ -1198,7 +1219,6 @@ func (s *Sink) EnsureChildAgent(spec agent.ChildAgentSpec) (string, error) {
 		}
 		registry.bgTasks[rowKey] = item
 		registry.recordBgTaskStatusLocked(rowKey, item.Status)
-		registry.bgTasksMu.Unlock()
 	}
 	return cid, nil
 }
@@ -1371,6 +1391,12 @@ func (s *Sink) UpsertBackgroundTask(task bgtask.Upsert) error {
 	task.RowKey = bgtask.NormalizeRowKey(task.RowKey)
 	existing := r.bgTasks[task.RowKey]
 	item := task.Clean().ToItem().PreservingBlanksFrom(existing)
+	if err := item.ValidateRole(); err != nil {
+		return err
+	}
+	if err := r.validateCanonicalRegistryRowLocked(item); err != nil {
+		return err
+	}
 	// A final status is absorbing, as in the registry: a replayed non-final
 	// upsert must not resurrect a row that already ended. Without this the fake
 	// was MORE permissive than production, so a test pinning the guard failed
@@ -1384,6 +1410,20 @@ func (s *Sink) UpsertBackgroundTask(task bgtask.Upsert) error {
 	}
 	r.bgTasks[task.RowKey] = item
 	r.recordBgTaskStatusLocked(task.RowKey, item.Status)
+	return nil
+}
+
+// validateCanonicalRegistryRowLocked matches the worker's partial unique index.
+// The registry lock covers this check and the write that follows it.
+func (s *Sink) validateCanonicalRegistryRowLocked(item bgtask.Item) error {
+	if !item.Role.IsCanonicalChildActivity() {
+		return nil
+	}
+	for key, existing := range s.bgTasks {
+		if key != item.RowKey && existing.ChildAgentID == item.ChildAgentID && existing.Role.IsCanonicalChildActivity() {
+			return fmt.Errorf("the child already has a canonical activity row")
+		}
+	}
 	return nil
 }
 
@@ -1421,6 +1461,9 @@ func (s *Sink) UpdateBackgroundTaskStatus(rowKey string, status bgtask.Status, a
 }
 
 func (s *Sink) CloseBackgroundTask(rowKey string, status bgtask.Status) error {
+	if err := bgtask.ValidateFinishedStatus(status); err != nil {
+		return err
+	}
 	if s.OnCloseBackgroundTask != nil {
 		s.OnCloseBackgroundTask(rowKey, status)
 	}
@@ -1526,12 +1569,10 @@ func (s *Sink) ReviveBackgroundTask(rowKey string) error {
 	return nil
 }
 
-// UnlinkBackgroundTask clears the child linkage but retains the row and child transcript.
-// This models a child that EnsureChildAgent creates before its registry linkage write fails.
-// A finished child can then exist without a linked transcript in the registry row.
-// Display-cap eviction does not create this state.
-// The stored linkage survives that cap, as registryOps.retention requires.
-// Do not use eviction to test missing linkage.
+// UnlinkBackgroundTask models a provisional task whose child link was not retained.
+// A combined row keeps its task outcome. An activity-only row has no valid unlinked
+// representation, so a refused linkage leaves that row absent. Display eviction
+// cannot create this state because linked rows remain in storage.
 func (s *Sink) UnlinkBackgroundTask(rowKey string) {
 	r := s.registry()
 	r.bgTasksMu.Lock()
@@ -1540,7 +1581,12 @@ func (s *Sink) UnlinkBackgroundTask(rowKey string) {
 	if !ok {
 		return
 	}
+	if item.Role == bgtask.RoleChildActivity {
+		delete(r.bgTasks, rowKey)
+		return
+	}
 	item.ChildAgentID = ""
+	item.Role = bgtask.RoleTaskOutcome
 	r.bgTasks[rowKey] = item
 }
 
@@ -1582,13 +1628,19 @@ func (s *Sink) RenameBackgroundTask(oldKey, newKey string) error {
 	if !ok || oldKey == newKey {
 		return nil
 	}
-	// The Worker keeps the existing destination when a rename reaches an occupied (owner, row_key) primary key.
-	// It removes the duplicate source row and retains the destination lifecycle.
-	// The test sink must preserve that behavior.
-	// Overwriting the destination would let tests accept the opposite result.
-	// Claude restart events can reach this collision after each reorder.
-	if _, occupied := r.bgTasks[newKey]; occupied {
-		delete(r.bgTasks, oldKey)
+	// An occupied alias retains the destination lifecycle. A combined child-task
+	// source transfers canonical responsibility; independent activity cannot merge
+	// into a task outcome. The same neutral resolver supplies the production rule.
+	if target, occupied := r.bgTasks[newKey]; occupied {
+		resolved, err := item.ResolveAlias(target)
+		if err != nil {
+			return err
+		}
+		outcomeAlias := item.Role == bgtask.RoleTaskOutcome && target.Role == bgtask.RoleTaskOutcome
+		if outcomeAlias || item.ChildAgentID == "" || item.ChildAgentID == resolved.ChildAgentID {
+			delete(r.bgTasks, oldKey)
+		}
+		r.bgTasks[newKey] = resolved
 		return nil
 	}
 	delete(r.bgTasks, oldKey)
@@ -1840,6 +1892,10 @@ func (nop) EnrichMessage(agent.MessageEnrichment) (bool, error) { return false, 
 func (nop) TranscriptScopeFor(agent.CapturedTranscript) (agent.TranscriptScope, error) {
 	return nil, errors.New("the transcript sink has no captured authority")
 }
+
+func (nop) HistoricalTranscriptScopeFor(agent.CapturedTranscript) (agent.TranscriptScope, error) {
+	return nil, errors.New("the no-op sink has no historical transcript authority")
+}
 func (nop) ReadToolRequest(string) (*agent.StoredMessage, error)                  { return nil, nil }
 func (nop) ReadToolResult(string) (*agent.StoredMessage, error)                   { return nil, nil }
 func (nop) ReadToolResultBySeq(int64) (*agent.StoredMessage, error)               { return nil, nil }
@@ -1909,6 +1965,10 @@ func (nop) ChildSink(string) agent.ProviderServices               { return Nop()
 func (nop) AcquireChildSink(string) agent.ChildSinkLease {
 	return agent.ChildSinkLease{Sink: Nop(), CaptureMessage: func(content agent.MessageContent, _ agent.SpanInfo) agent.MessageContent { return content.Clone() }, Cleanup: func() bool { return true }}
 }
+func (n nop) AcquireChildStateSink(childID string) agent.ChildSinkLease {
+	return n.AcquireChildSink(childID)
+}
+
 func (nop) PersistChildMessage(string, leapmuxv1.MessageSource, []byte, agent.SpanInfo) error {
 	return nil
 }

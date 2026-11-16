@@ -45,7 +45,8 @@
     "records",
     "backgroundTurnEnd",
     "workerMetadata",
-    "invocation"
+    "invocation",
+    "agentLaunch"
   ],
   "$defs": {
     "table": {
@@ -280,6 +281,9 @@
       "$ref": "#/$defs/table"
     },
     "invocation": {
+      "$ref": "#/$defs/table"
+    },
+    "agentLaunch": {
       "$ref": "#/$defs/table"
     }
   }

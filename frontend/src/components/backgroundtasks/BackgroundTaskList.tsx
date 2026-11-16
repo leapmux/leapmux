@@ -7,6 +7,7 @@ import WorkflowIcon from 'lucide-solid/icons/workflow'
 import { createMemo, For, Match, Show, Switch } from 'solid-js'
 import { ClippedText } from '~/components/common/ClippedText'
 import { StatusDot } from '~/components/common/StatusDot'
+import { BACKGROUND_TASK_ROLE_CAPABILITIES } from '~/generated/contracts/background-task-roles'
 import { BACKGROUND_TASK_STATUS_TOKEN } from '~/generated/contracts/worker-vocab'
 import { cleanName } from '~/lib/validate'
 import {
@@ -143,7 +144,7 @@ function statusDotClass(status: BackgroundTaskItem['status']): string {
  * It sorts active rows before paused rows and groups workflow phases.
  * Each row contains a kind icon, a title, a status dot, and an optional second line.
  * Each clipped line exposes its full text on hover.
- * Subagent rows with a childAgentId open transcripts. Shell and workflow rows remain static.
+ * Subagent and linked workflow rows open transcripts. Shell rows and unlinked workflows remain static.
  * BackgroundTaskPanel owns the tabs and root. This component preserves row identity across broadcasts.
  */
 export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) => {
@@ -176,6 +177,10 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
     // The title and repeat-text guard share one cleaned value per update.
     const title = createMemo(() => rowTitle(item))
     const secondaryText = createMemo(() => secondary(item, title()))
+    const activityOnly = () => {
+      const role = BACKGROUND_TASK_ROLE_CAPABILITIES[item.role]
+      return role?.canonicalChildActivity === true && !role.countsAsTask
+    }
     return (
       <>
         {/* Switch updates the selected icon branch when the kind changes. */}
@@ -206,6 +211,9 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
               testId="bg-task-status-dot"
             />
           </div>
+          <Show when={activityOnly()}>
+            <span class={styles.taskSecondary} data-testid="bg-task-role">Child activity</span>
+          </Show>
           {/* ClippedText exposes the complete second line on hover.
               A detail appears below the label and also appears when the label fits.
               Show preserves the element when one nonempty activity changes to another. */}
@@ -240,29 +248,30 @@ export const BackgroundTaskList: Component<BackgroundTaskListProps> = (props) =>
     get 'data-task-id'() { return rowDomIdentity(item.rowKey) },
     get 'data-status'() { return item.status },
     get 'data-kind'() { return item.kind },
+    get 'data-role'() { return item.role },
     get 'data-child-agent-id'() { return item.childAgentId ?? '' },
   })
 
   const renderRow = (item: BackgroundTaskItem): JSX.Element => {
-    // Stable row kind and host capability decide the element tag.
-    // A delayed childAgentId updates clickability without replacing the row or its tooltip and status dot.
-    const openable = item.kind === 'subagent' && !!props.onOpenSubagent
     const clickable = () => opensSubagentTranscript(item) && !!props.onOpenSubagent
-    if (!openable)
-      return <div {...rowAttrs(item)}>{rowBody(item)}</div>
+    // Subagent rows reserve their button while the child starts. A workflow
+    // becomes a button when its actual child transcript becomes available.
+    const openable = () => clickable() || (item.kind === 'subagent' && !!props.onOpenSubagent)
     return (
-      <button
-        type="button"
-        {...rowAttrs(item, clickable)}
-        // aria-disabled preserves pointer events for the title tooltip while the child starts.
-        // The click handler still refuses a row without an available transcript.
-        aria-disabled={clickable()
-          ? undefined
-          : 'true'}
-        onClick={() => clickable() && props.onOpenSubagent?.(item)}
-      >
-        {rowBody(item)}
-      </button>
+      <Show when={openable()} fallback={<div {...rowAttrs(item)}>{rowBody(item)}</div>}>
+        <button
+          type="button"
+          {...rowAttrs(item, clickable)}
+          // aria-disabled preserves pointer events for the title tooltip while the child starts.
+          // The click handler still refuses a row without an available transcript.
+          aria-disabled={clickable()
+            ? undefined
+            : 'true'}
+          onClick={() => clickable() && props.onOpenSubagent?.(item)}
+        >
+          {rowBody(item)}
+        </button>
+      </Show>
     )
   }
 

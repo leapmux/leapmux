@@ -2,6 +2,7 @@ package ohmypi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -103,11 +104,13 @@ func (a *Agent) disarmTurn(id string) {
 }
 
 // conversation is the state that omp's session events drive for one transcript:
-// the session's own, or one subagent's. Every field is guarded by Process.Mu,
-// except generation, which guards itself.
+// the session's own, or one subagent's. Process.Mu guards native state.
+// generation and compactionPublications guard themselves.
 type conversation struct {
-	compactionOpen bool
-	ttsrPending    bool
+	// compactionPublications preserves live-state admission order without holding Process.Mu during callbacks.
+	compactionPublications agent.OutputQueue
+	compaction             *compactionPass
+	ttsrPending            bool
 	// sink is the transcript the conversation writes to: the agent's own sink, or
 	// the child sink of a subagent.
 	sink agent.ProviderServices
@@ -417,31 +420,59 @@ func (a *Agent) handleMessageUpdate(c *conversation, raw []byte) {
 	c.generation.Append(scopeID, kind, event.Delta, providerkit.JoinVerbatim)
 }
 
-// beginCompaction publishes the native start without storing a transcript row.
-func (a *Agent) beginCompaction(c *conversation, trigger string) {
-	a.Mu.Lock()
-	c.compactionOpen = true
-	a.Mu.Unlock()
-	providerkit.PublishCompaction(c.sink, trigger)
+type compactionStage uint8
+
+const (
+	compactionAwaitingNativeStart compactionStage = iota
+	compactionNativeRunning
+	compactionNativeEnded
+	compactionCommandFinished
+)
+
+// compactionPass identifies one maintenance pass and retains its native stage.
+type compactionPass struct {
+	trigger string
+	stage   compactionStage
 }
 
-// endCompaction clears the flag before it withdraws the live state.
-func (a *Agent) endCompaction(c *conversation) {
+// beginCompaction publishes the native start without storing a transcript row.
+func (a *Agent) beginCompaction(c *conversation, trigger string) *compactionPass {
 	a.Mu.Lock()
-	c.compactionOpen = false
+	if c.compaction != nil && c.compaction == a.compactionCommand && c.compaction.trigger == trigger && c.compaction.stage == compactionAwaitingNativeStart {
+		pass := c.compaction
+		pass.stage = compactionNativeRunning
+		a.Mu.Unlock()
+		return pass
+	}
+	pass := &compactionPass{trigger: trigger, stage: compactionNativeRunning}
+	c.compaction = pass
+	a.queueCompactionStateLocked(c)
+	root := c == a.root
 	a.Mu.Unlock()
-	providerkit.EndCompaction(c.sink)
+	a.flushCompactionState(c)
+	if root {
+		a.PublishTurnActive()
+	}
+	return pass
 }
 
 // persistCompactionEnd preserves a native end even when the start was not observed.
 func (a *Agent) persistCompactionEnd(c *conversation, raw []byte) {
 	a.Mu.Lock()
-	c.compactionOpen = false
+	if c.compaction != nil {
+		c.compaction.stage = compactionNativeEnded
+	}
+	c.compaction = nil
+	a.queueCompactionStateLocked(c)
+	root := c == a.root
 	a.Mu.Unlock()
 	if _, err := c.sink.PersistNotification(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: raw}); err != nil {
 		slog.Error("omp persist compaction end", "agent_id", a.AgentID(), "error", err)
 	}
-	providerkit.EndCompaction(c.sink)
+	a.flushCompactionState(c)
+	if root {
+		a.PublishTurnActive()
+	}
 }
 
 // finishOpenCompactions claims each missing end once before the conversations close.
@@ -449,19 +480,48 @@ func (a *Agent) finishOpenCompactions() {
 	a.Mu.Lock()
 	var unfinished []*conversation
 	take := func(c *conversation) {
-		if c != nil && c.compactionOpen {
-			c.compactionOpen = false
+		if c != nil && c.compaction != nil {
+			c.compaction.stage = compactionCommandFinished
+			c.compaction = nil
+			a.queueCompactionStateLocked(c)
 			unfinished = append(unfinished, c)
 		}
 	}
 	take(a.root)
+	a.compactionCommand = nil
 	for _, state := range a.subagents {
 		take(state.conv)
 	}
 	a.Mu.Unlock()
 	for _, c := range unfinished {
-		providerkit.EndCompaction(c.sink)
+		a.flushCompactionState(c)
 		providerkit.PersistCompactionEnded(c.sink, providerkit.CompactionEndAborted, "")
+	}
+}
+
+// queueCompactionStateLocked admits the live-state effect with its state change.
+// Each conversation keeps that order across concurrent native and command callbacks.
+func (a *Agent) queueCompactionStateLocked(c *conversation) {
+	open, trigger := c.compaction != nil, ""
+	if open {
+		trigger = c.compaction.trigger
+	}
+	writer := c.sink
+	c.compactionPublications.Append(agent.OutputWrite{Label: "publish omp compaction state", Run: func() error {
+		if open {
+			providerkit.PublishCompaction(writer, trigger)
+		} else {
+			providerkit.EndCompaction(writer)
+		}
+		return nil
+	}})
+}
+
+// flushCompactionState runs sink callbacks without provider locks. A reentrant
+// flush leaves its effects behind the current publisher for that publisher to drain.
+func (a *Agent) flushCompactionState(c *conversation) {
+	if err := c.compactionPublications.Flush(); err != nil && !errors.Is(err, agent.ErrOutputInFlight) {
+		slog.Warn("omp publish compaction state", "agent_id", a.AgentID(), "error", err)
 	}
 }
 

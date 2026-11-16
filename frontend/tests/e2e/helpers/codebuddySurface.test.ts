@@ -40,6 +40,23 @@ function classifierRequest(memory: Record<string, unknown> = memoryMessage(SENTI
 }
 
 describe('withoutCodebuddyClassifierSentinelMemory', () => {
+  it('recognizes the shipped Auto review prompt before checking sentinel memory', () => {
+    const system = {
+      role: 'system',
+      content: '# Transcript provenance\nTranscript entries are JSON records. The host assigns each record\'s author, index, and label.\n\nYou are judging one planned coding-agent action.',
+    }
+    const body = {
+      messages: [
+        system,
+        memoryMessage(SENTINEL_MEMORY),
+        TRANSCRIPT,
+      ],
+    }
+    expect(withoutCodebuddyClassifierSentinelMemory('openai-chat-completions', body)).toStrictEqual({
+      ...body,
+      messages: [system, TRANSCRIPT],
+    })
+  })
   it('removes the memory message that quotes only sentinel documents, and keeps every other part', () => {
     const body = classifierRequest()
     expect(holdsAncestorInstructions(body)).toBe(true)

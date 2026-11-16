@@ -67,7 +67,7 @@ mimoTest('applies the native primary agent mode before and after reload', async 
 
 mimoTest('returns from Plan to Build and proves each native mode after reload', async ({ native }) => {
   await waitForNativeSettingsHydrated(native.page)
-  await expectSettingsOptionsOffered(native.page, 'permissionMode', ['build', 'plan', 'compose'])
+  await expectSettingsOptionsOffered(native.page, 'permissionMode', ['build', 'plan'])
   await expectSettingsChip(native.page, 'Build')
   let observed = new Set((await nativeMessages(native)).map(message => message.id))
   const notices: NativeModeNotice[] = []

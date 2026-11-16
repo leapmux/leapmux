@@ -127,14 +127,7 @@ func TestProviderFor_ACPSharesNoopClassification(t *testing.T) {
 	// ACP-based providers register Provider which embeds noop
 	// classify/merge — they only provide IsInterrupt. Verify a few of
 	// them route to the same behavior.
-	for _, provider := range []leapmuxv1.AgentProvider{
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO,
-	} {
+	for _, provider := range acpProvidersForTest() {
 		plugin := registry.Plugin(provider)
 		assert.False(t, plugin.Classify(json.RawMessage(`{"method":"session/cancel"}`)).Consolidatable(),
 			"ACP provider %v must not consolidate notifications", provider)
@@ -197,5 +190,22 @@ func TestProviderFor_IsInterruptIsolatedPerProvider(t *testing.T) {
 		for _, c := range cases {
 			assert.False(t, plugin.IsInterrupt(c.ownFrame), "%v plugin must reject %s's interrupt frame", provider, c.name)
 		}
+	}
+}
+
+// acpProvidersForTest is the registry-boundary coverage for the shared ACP protocol.
+func acpProvidersForTest() []leapmuxv1.AgentProvider {
+	return []leapmuxv1.AgentProvider{
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_CURSOR,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GOOSE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_REASONIX,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GROK_BUILD,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_KIRO,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_DIRAC,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_FAST_AGENT,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_GEMINI_CLI,
+		leapmuxv1.AgentProvider_AGENT_PROVIDER_JUNIE,
 	}
 }

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { createZcodeEnvironment, refreshZcodeDefaultModel, revokeZcodeModelFromConfiguration, withZcodeConfigurationRestored, withZcodePersonalProviderConfiguration } from './zcodeEnvironment'
+import { createZcodeEnvironment, refreshZcodeDefaultModel, revokeZcodeModelFromConfiguration, withZcodeConfigurationRestored, withZcodePersonalProviderConfiguration, withZcodeUserMcpServer } from './zcodeEnvironment'
 
 let runDirectory: string
 function options() {
@@ -172,5 +172,84 @@ describe('withZcodeConfigurationRestored', () => {
       ]),
     })
     expect(readFileSync(personalPath)).toEqual(original)
+  })
+})
+
+describe('withZcodeUserMcpServer', () => {
+  it.each([false, true])('uses the current CLI path and restores existing bytes after failure: %s', async (fails) => {
+    const { homeDir } = options()
+    createZcodeEnvironment(options())
+    const cliDirectory = join(homeDir, '.zcode', 'cli')
+    mkdirSync(cliDirectory, { recursive: true })
+    const path = join(cliDirectory, 'config.json')
+    const initial = {
+      provider: {
+        existing: { model: 'keep' },
+      },
+      mcp: {
+        servers: {
+          existing: { type: 'stdio', command: 'existing' },
+        },
+      },
+    }
+    writeFileSync(path, JSON.stringify(initial))
+    const before = readFileSync(path)
+    const legacyPath = join(homeDir, '.zcode', 'v2', 'config.json')
+    const legacyBefore = readFileSync(legacyPath)
+    const failure = new Error('The native MCP scenario failed.')
+    const run = withZcodeUserMcpServer(homeDir, 'form_probe', {
+      command: '/private/node',
+      args: ['literal $(false) path'],
+    }, async () => {
+      const configured = JSON.parse(readFileSync(path, 'utf8'))
+      expect(configured.provider).toEqual(initial.provider)
+      expect(configured.mcp.servers).toEqual({
+        existing: initial.mcp.servers.existing,
+        form_probe: {
+          type: 'stdio',
+          command: '/private/node',
+          args: ['literal $(false) path'],
+          env: {},
+        },
+      })
+      if (fails)
+        throw failure
+      return 'completed'
+    })
+    if (fails)
+      await expect(run).rejects.toBe(failure)
+    else
+      await expect(run).resolves.toBe('completed')
+    expect(readFileSync(path)).toEqual(before)
+    expect(readFileSync(legacyPath)).toEqual(legacyBefore)
+  })
+
+  it.each(['success', 'throw', 'remove'])('restores an absent CLI configuration after %s', async (outcome) => {
+    createZcodeEnvironment(options())
+    const path = join(options().homeDir, '.zcode', 'cli', 'config.json')
+    const run = withZcodeUserMcpServer(options().homeDir, 'probe', { command: 'node', args: [] }, async () => {
+      expect(JSON.parse(readFileSync(path, 'utf8')).mcp.servers.probe.command).toBe('node')
+      if (outcome === 'throw')
+        throw new Error('The native scenario failed.')
+      if (outcome === 'remove')
+        rmSync(path)
+      return 'completed'
+    })
+    if (outcome === 'throw')
+      await expect(run).rejects.toThrow('The native scenario failed.')
+    else
+      await expect(run).resolves.toBe('completed')
+    expect(existsSync(path)).toBe(false)
+  })
+
+  it.each([
+    { name: '', command: 'node' },
+    { name: 'probe', command: '' },
+  ])('rejects an empty declaration before mutation: $name / $command', async ({ name, command }) => {
+    createZcodeEnvironment(options())
+    const path = join(options().homeDir, '.zcode', 'v2', 'config.json')
+    const before = readFileSync(path)
+    await expect(withZcodeUserMcpServer(options().homeDir, name, { command, args: [] }, async () => 'unused')).rejects.toThrow('requires a server name and command')
+    expect(readFileSync(path)).toEqual(before)
   })
 })

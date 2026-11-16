@@ -160,7 +160,9 @@ func TestConcurrentKeyedNativeTurnEndReplayPublishesAfterOneMessage(t *testing.T
 func TestKeyedChildTurnEndReplayKeepsTheNativeResultAndOneCompletion(t *testing.T) {
 	t.Parallel()
 	svc, root := setupRootSink(t, "root-1")
-	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{ProviderChildKey: "native-child", SpawnSpanID: "spawn", Title: "Read the source"})
+	childID, err := root.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole:     bgtask.RoleChildTask,
+		ProviderChildKey: "native-child", SpawnSpanID: "spawn", Title: "Read the source"})
 	require.NoError(t, err)
 	child := root.ChildSink(childID)
 	child.UpdateSessionID("native-child-session")

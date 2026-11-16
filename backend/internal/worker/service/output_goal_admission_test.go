@@ -1,6 +1,8 @@
 package service
 
 import (
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	"sync"
 	"testing"
 
@@ -195,7 +197,9 @@ func TestGoalAdmissionPreservesExpiredNotificationCapture(t *testing.T) {
 func TestGoalAdmissionRejectsChildrenBeforeCallbacks(t *testing.T) {
 	svc, _, writer, services, process := goalPublicationFixture(t)
 	services.UpsertGoal(goalPublicationUpdate("Root goal", 11))
-	childID, err := services.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "child-goal-spawn", ProviderChildKey: "child-goal-key", Title: "Child goal"})
+	childID, err := services.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "child-goal-spawn", ProviderChildKey: "child-goal-key", Title: "Child goal"})
 	require.NoError(t, err)
 	child := services.ChildSink(childID)
 	before := storedGoalColumns(t, svc)

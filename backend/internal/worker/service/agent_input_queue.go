@@ -180,13 +180,14 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 		if !svc.Agents.AgentAlive(row.OwnerAgentID) {
 			return inputqueue.DispatchResult{}, &inputqueue.DeliveryError{Err: agent.ErrAgentNotFound, Outcome: inputqueue.DispatchNotReady}
 		}
-		if err := svc.Agents.SendChildInput(row.OwnerAgentID, row.RowKey, text, attachments); err != nil {
+		result, err := svc.Agents.SendChildInput(row.OwnerAgentID, row.RowKey, agent.ChildInput{Content: text, Attachments: attachments, Ready: svc.childInputReady(item.AgentID)})
+		if err != nil {
 			if errors.Is(err, agent.ErrChildOperationUnsupported) {
 				return inputqueue.DispatchResult{}, inputqueue.ErrSteeringUnsupported
 			}
 			return inputqueue.DispatchResult{}, classifyQueueDeliveryError(err)
 		}
-		return inputqueue.DispatchResult{StartsTurn: true, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: spanLines}, nil
+		return inputqueue.DispatchResult{StartsTurn: result.StartsTurn, TurnSteerable: a.SupportsSteering(item.AgentID), SpanLines: spanLines}, nil
 	}
 
 	ensureRunning := func() error {
@@ -269,8 +270,8 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 }
 
 // classifyQueueDeliveryError turns a provider error into the queue's own
-// outcome. Three conditions are transient and must NOT become a permanent
-// failure that the user has to retry by hand. All three mean the input never
+// outcome. Transient refusals must not become a permanent
+// failure that the user has to retry by hand. These mean the input never
 // reached the provider, so redispatch is safe.
 //
 // Two of them need the agent to change state first, so the queue pauses and
@@ -282,13 +283,16 @@ func (a *agentInputQueueAdapter) Dispatch(item inputqueue.DispatchItem) (inputqu
 //     write. Manager returns it from providerAfterLifecycle, which resolves the
 //     provider BEFORE any write, so nothing reached the agent.
 //
-// The third needs nothing (DispatchBusy):
+// A busy turn releases its waiting input when it ends (DispatchBusy):
 //
 //   - ErrAgentBusy: the provider is already inside a turn that the queue's own
 //     active_turn view did not record. The agent works, and the end of that
 //     turn releases the item on its own -- so a pause here would stop a queue
 //     that has no problem, and hold it stopped until the user resumed it by
 //     hand.
+//
+// ErrInputPending waits for an earlier input's native admission. Its readiness
+// notification releases the queue without claiming that a turn ran.
 func classifyQueueDeliveryError(err error) error {
 	var stated *inputqueue.DeliveryError
 	if errors.As(err, &stated) {
@@ -310,6 +314,8 @@ func classifyQueueDeliveryError(err error) error {
 
 func queueDispatchOutcome(err error) inputqueue.DispatchOutcome {
 	switch {
+	case errors.Is(err, agent.ErrInputPending):
+		return inputqueue.DispatchPending
 	case errors.Is(err, agent.ErrAgentBusy):
 		return inputqueue.DispatchBusy
 	case errors.Is(err, agent.ErrChildRouteNotReady), errors.Is(err, agent.ErrAgentNotFound):

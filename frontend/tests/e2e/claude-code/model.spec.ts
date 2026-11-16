@@ -1,23 +1,33 @@
 import type { MockModelRequestRecord } from '../helpers/mockModelScript'
+import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
 import { expect } from '@playwright/test'
+import { isObject } from '../../../src/lib/jsonPick'
 import { claudeTest, claudeProcessTest as test } from '../claude-fixtures'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
+import { nativeMessageBody, readNativeMessageSnapshot } from '../helpers/nativeMessages'
+import { currentNativeAgent } from '../helpers/nativeScenario'
 import { exerciseNativeOption } from '../helpers/nativeSettings'
-import { chooseSettingsOption, expectAssistantAnswer, expectNoSettingsChip, expectSettingsChip, openSettingsMenu, sendMessage, settingsBar, visibleOnly, waitForSettingsIdle } from '../helpers/ui'
+import { chooseSettingsOption, expectAssistantAnswer, expectNoSettingsChip, expectSettingsChip, openSettingsMenu, sendMessage, settingsBar, visibleOnly, waitForAgentIdle, waitForSettingsIdle } from '../helpers/ui'
 
-/** The native model ID and beta header together prove the 1M selection. */
-function expectNativeOpus1M(request: MockModelRequestRecord): void {
+/** The CLI result reports the model's context window, including models with a native 1M window. */
+async function expectNativeOpus1M(context: ManagedNativeScenarioContext, request: MockModelRequestRecord): Promise<void> {
   expect(request.protocol).toBe('anthropic-messages')
   expect(request.body).toMatchObject({
     model: expect.stringMatching(/^claude-opus-/),
   })
-  expect(request.requestHeaders?.['anthropic-beta']?.split(',')).toContain('context-1m-2025-08-07')
+  await waitForAgentIdle(context.page)
+  const agent = await currentNativeAgent(context)
+  const snapshot = await readNativeMessageSnapshot(context, agent.id)
+  const result = snapshot.messages.map(nativeMessageBody).filter(isObject).findLast(frame => frame.type === 'result')
+  if (!result || !isObject(result.modelUsage) || !isObject(request.body) || typeof request.body.model !== 'string')
+    throw new Error('The native Claude result has no model usage for the requested model.')
+  expect(result.modelUsage[request.body.model]).toMatchObject({ contextWindow: 1_000_000 })
 }
 
 /**
  * The name of the opus[1m] row in the native catalog.
  * Claude Code 2.1.289 drops "(1M context)" from the Opus row, because the 1M window is the only Opus window that it offers.
- * The native request proves the 1M selection: see expectNativeOpus1M.
+ * The native result proves the 1M window: see expectNativeOpus1M.
  */
 const OPUS_1M_LABEL = 'Opus'
 
@@ -37,7 +47,7 @@ test.describe('Agent Settings', () => {
   })
 
   test.describe('bracketed model names', () => {
-    test('switch to model with bracket characters', async ({ authenticatedWorkspace, page, modelScript }) => {
+    test('switch to model with bracket characters', async ({ authenticatedWorkspace, native, page, modelScript }) => {
       const trigger = settingsBar(page)
       await expect(trigger).toBeVisible()
 
@@ -49,7 +59,7 @@ test.describe('Agent Settings', () => {
       // The actual answer proves that the restarted native process serves a turn.
       const step = await modelScript.queue({ text: '7' })
       await sendMessage(page, modelScript.prompt('What is 3+4? Reply with just the number, nothing else.'))
-      expectNativeOpus1M(await modelScript.requestAt(step))
+      await expectNativeOpus1M(native, await modelScript.requestAt(step))
 
       // The duration row also has the agent role. Search all visible answer rows.
       await expectAssistantAnswer(page, { answer: /\b7\b/ })
@@ -115,7 +125,7 @@ test.describe('Agent Settings', () => {
 const MODEL_CHANGE_PATTERN = /Model \(Sonnet → Opus\)/
 
 claudeTest.describe('1m-context model', () => {
-  claudeTest('switch to opus[1m] and exchange messages', async ({ authenticatedWorkspace, page, modelScript }) => {
+  claudeTest('switch to opus[1m] and exchange messages', async ({ authenticatedWorkspace, native, page, modelScript }) => {
     const trigger = settingsBar(page)
     await expect(trigger).toBeVisible()
 
@@ -133,10 +143,10 @@ claudeTest.describe('1m-context model', () => {
     // Wait for agent restart to complete
     await waitForSettingsIdle(page)
 
-    // Verify the native model and 1M header in the restarted process's next request.
+    // Verify the native model and reported 1M window in the restarted process's next request.
     const first = await modelScript.queue({ text: '8' })
     await sendMessage(page, modelScript.prompt('What is 5+3? Reply with just the number, nothing else.'))
-    expectNativeOpus1M(await modelScript.requestAt(first))
+    await expectNativeOpus1M(native, await modelScript.requestAt(first))
 
     // The duration row also has the agent role. Search all visible answer rows.
     await expectAssistantAnswer(page, { answer: /\b8\b/ })
@@ -144,7 +154,7 @@ claudeTest.describe('1m-context model', () => {
     // Send a follow-up to confirm the agent session is stable
     const next = await modelScript.queue({ text: '6' })
     await sendMessage(page, modelScript.prompt('What is 10-4? Reply with just the number, nothing else.'))
-    expectNativeOpus1M(await modelScript.requestAt(next))
+    await expectNativeOpus1M(native, await modelScript.requestAt(next))
 
     await expectAssistantAnswer(page, { answer: /\b6\b/ })
 

@@ -13,6 +13,7 @@ import type {
   MockModelScenarioSpec,
   MockModelScenarioStatus,
   MockModelStep,
+  MockModelToolCall,
   MockModelUnexpectedRequest,
 } from './mockModelScript'
 import type { ModelStream } from './modelStream'
@@ -24,6 +25,7 @@ import { isObject } from '../../../src/lib/jsonPick'
 import { LOOPBACK_HOSTNAMES } from './agentEnvironmentInputs'
 import { ampScriptOptions, createAmpSurface } from './ampSurface'
 import { ANCESTOR_INSTRUCTION_SENTINEL, holdsAncestorInstructions, refusedInstructionFiles } from './ancestorInstructions'
+import { claudeSafeguardResults } from './claudeSafeguards'
 import { claudeLifecycleAnswer, prepareClaudeMessageStep } from './claudeSurface'
 import { withoutCodebuddyClassifierSentinelMemory } from './codebuddySurface'
 import { copilotCatalogMetadata, copilotReasoningFields, handleCopilotHttp } from './copilotSurface'
@@ -157,7 +159,7 @@ interface ModelGate {
 }
 
 /** Capture headers after the native response completes without retaining any request credential. */
-function recordModelResponse(response: ServerResponse, record: MockModelRequestRecord, readError: () => MockModelDeliveredError | undefined): void {
+function recordModelResponse(response: ServerResponse, record: MockModelRequestRecord, readError: () => MockModelDeliveredError | undefined, toolCalls?: readonly MockModelToolCall[]): void {
   response.once('finish', () => {
     const headers = Object.fromEntries(Object.entries(response.getHeaders()).map(([key, value]) => [
       key,
@@ -168,6 +170,11 @@ function recordModelResponse(response: ServerResponse, record: MockModelRequestR
     const error = readError()
     record.response = {
       status: response.statusCode,
+      ...(toolCalls?.length
+        ? {
+            toolCalls: structuredClone(toolCalls),
+          }
+        : {}),
       headers,
       ...(error
         ? {
@@ -304,7 +311,7 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
           const stream = createBufferedModelStream(signal, step.stream, name => holdGate(scenario, name, { signal }))
           return bufferModelOutput(stream, step)
         },
-        recordHttpResponse: (response, readError) => recordModelResponse(response, record, readError),
+        recordHttpResponse: (response, readError) => recordModelResponse(response, record, readError, step.toolCalls),
         recordServiceError: error => (record.serviceResponse = error),
       }
     },
@@ -417,7 +424,7 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
       const { step, scenario } = answer
       recordModelResponse(response, answer.record, () => step.error
         ? genericModelError(step.error)
-        : undefined)
+        : undefined, step.toolCalls)
       const transport = { request, response }
       const stream = createModelStream(response, step.stream, name => holdGate(scenario, name, transport))
       // Codex reads response.metadata while a step waits.
@@ -613,6 +620,7 @@ function chooseStep(scenario: ScenarioState, context: ModelRequestContext): Mock
 function recordScenarioRequest(scenario: ScenarioState, record: MockModelRequestRecord, context: Pick<ModelRequestContext, 'serverContext' | 'mockCredential' | 'requestHeaders' | 'nativeRequest'>): void {
   scenario.requests.push({
     ...record,
+    scriptedToolCalls: scenario.requests.flatMap(prior => prior.response?.toolCalls ?? []),
     ...(context.serverContext
       ? { serverContext: context.serverContext }
       : {}),
@@ -950,6 +958,8 @@ function isModelsPath(path: string): boolean {
 }
 
 async function writeModelResponse(response: ServerResponse, protocol: MockModelProtocol, body: unknown, step: MockModelStep, id: string, stream: ModelStream): Promise<void> {
+  if (step.toolSafety !== undefined && protocol !== 'anthropic-messages')
+    throw new Error('The scripted tool safety check requires Anthropic Messages.')
   switch (protocol) {
     case 'openai-chat-completions':
       await writeOpenAIChatCompletion(response, body, step, id, stream)
@@ -1307,6 +1317,13 @@ function responseItems(step: MockModelStep, responseID: string): Record<string, 
 }
 
 async function writeAnthropicMessage(response: ServerResponse, requestBody: unknown, step: MockModelStep, id: string, stream: ModelStream): Promise<void> {
+  const safeguards = claudeSafeguardResults(requestBody, step)
+  const safetyFields = safeguards === undefined
+    ? {}
+    : { safeguard_results: safeguards }
+  const waitForSafety = () => step.toolSafety?.gate === undefined
+    ? Promise.resolve(stream.active)
+    : stream.waitForGate(step.toolSafety.gate)
   const content: Record<string, unknown>[] = []
   // The client returns a thinking block's signature in its next request.
   // The signature is opaque, so a fixed mock value is sufficient.
@@ -1334,7 +1351,10 @@ async function writeAnthropicMessage(response: ServerResponse, requestBody: unkn
   if (!streamRequested(requestBody)) {
     if (step.stream && !await bufferModelOutput(stream, step))
       return
+    if (!await waitForSafety())
+      return
     writeJSON(response, 200, {
+      ...safetyFields,
       id,
       type: 'message',
       role: 'assistant',
@@ -1429,9 +1449,11 @@ async function writeAnthropicMessage(response: ServerResponse, requestBody: unkn
     writeSSEEvent(response, { type: 'content_block_stop', index })
     index++
   }
+  if (!await waitForSafety())
+    return
   writeSSEEvent(response, {
     type: 'message_delta',
-    delta: { stop_reason: stopReason, stop_sequence: null },
+    delta: { ...safetyFields, stop_reason: stopReason, stop_sequence: null },
     usage: { output_tokens: resolveMockModelUsage(step.usage).outputTokens },
   })
   writeSSEEvent(response, { type: 'message_stop' })

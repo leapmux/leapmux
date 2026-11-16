@@ -104,6 +104,8 @@ func TestBackgroundTaskReplacementRejectsOldQueuedMutation(t *testing.T) {
 			name: "upsert", linked: true,
 			mutate: func(sink agent.ProviderServices, originalChildID string) error {
 				return sink.UpsertBackgroundTask(bgtask.Upsert{
+					Role: bgtask.RoleTaskOutcome,
+
 					RowKey: "shared", Kind: bgtask.KindSubagent, ChildAgentID: originalChildID, Title: "Obsolete native title",
 					GroupKey: "obsolete-group", GroupLabel: "Obsolete group", Description: "Obsolete native description",
 					Status: bgtask.StatusFailed, ActiveForm: "Obsolete native activity",
@@ -142,6 +144,8 @@ func TestBackgroundTaskReplacementRejectsOldQueuedMutation(t *testing.T) {
 			if tc.linked {
 				var err error
 				originalChildID, err = original.EnsureChildAgent(agent.ChildAgentSpec{
+					RegistryRole: bgtask.RoleChildTask,
+
 					SpawnSpanID: "original-spawn", ProviderChildKey: "original-native-child", Title: "Original child",
 				})
 				require.NoError(t, err)
@@ -151,6 +155,8 @@ func TestBackgroundTaskReplacementRejectsOldQueuedMutation(t *testing.T) {
 				status = bgtask.StatusRunning
 			}
 			require.NoError(t, original.UpsertBackgroundTask(bgtask.Upsert{
+				Role: bgtask.RoleTaskOutcome,
+
 				RowKey: "shared", Kind: bgtask.KindSubagent, ChildAgentID: originalChildID, Title: "Original assignment", Status: status,
 			}))
 			if tc.collision {
@@ -172,6 +178,8 @@ func TestBackgroundTaskReplacementRejectsOldQueuedMutation(t *testing.T) {
 				if tc.linked {
 					var err error
 					childID, err = replacement.EnsureChildAgent(agent.ChildAgentSpec{
+						RegistryRole: bgtask.RoleChildTask,
+
 						SpawnSpanID: "replacement-spawn", ProviderChildKey: "replacement-native-child", Title: "Replacement child",
 					})
 					require.NoError(t, err)
@@ -181,6 +189,8 @@ func TestBackgroundTaskReplacementRejectsOldQueuedMutation(t *testing.T) {
 					status = bgtask.StatusRunning
 				}
 				require.NoError(t, replacement.UpsertBackgroundTask(bgtask.Upsert{
+					Role: bgtask.RoleTaskOutcome,
+
 					RowKey: key, Kind: bgtask.KindSubagent, ChildAgentID: childID, Title: "Replacement native assignment",
 					GroupKey: "replacement-group", GroupLabel: "Replacement group", Description: "Replacement native description",
 					ActiveForm: "Replacement native activity", Status: status,
@@ -243,6 +253,8 @@ func TestBackgroundTaskExitPreservesOnlyWorkingReplacementRowsInHiddenActivity(t
 		status bgtask.Status
 	}{{"hidden-paused", bgtask.StatusPaused}, {"hidden-running", bgtask.StatusRunning}} {
 		_, err := replacement.EnsureChildAgent(agent.ChildAgentSpec{
+			RegistryRole: bgtask.RoleChildTask,
+
 			SpawnSpanID: row.key + "-spawn", ProviderChildKey: row.key, Title: row.key,
 		})
 		require.NoError(t, err)
@@ -341,6 +353,8 @@ func TestOutputSinkChildServicesKeepTheirOriginalPhysicalRoot(t *testing.T) {
 			svc, original := setupRootSink(t, "physical-root")
 			root := requireRootOutputSink(t, svc.Output, "physical-root")
 			childID, err := original.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole: bgtask.RoleChildTask,
+
 				SpawnSpanID: "native-spawn", ProviderChildKey: "native-child", AgentSessionID: "native-child-session",
 			})
 			require.NoError(t, err)
@@ -374,7 +388,9 @@ func TestBackgroundTaskUnchangedObservationClaimsItsPhysicalWriter(t *testing.T)
 			svc, original := setupRootSink(t, "unchanged-generation", withClock(clock))
 			task := bgtask.Upsert{RowKey: "shared", Kind: bgtask.KindSubagent, Title: "The unchanged native assignment", Status: bgtask.StatusRunning}
 			if operation == "paused child link" {
-				_, err := original.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "shared-spawn", ProviderChildKey: "shared", Title: task.Title})
+				_, err := original.EnsureChildAgent(agent.ChildAgentSpec{
+					RegistryRole: bgtask.RoleChildTask,
+					SpawnSpanID:  "shared-spawn", ProviderChildKey: "shared", Title: task.Title})
 				require.NoError(t, err)
 				require.NoError(t, original.UpdateBackgroundTaskStatus("shared", bgtask.StatusPaused, "Paused native assignment"))
 			} else {
@@ -406,7 +422,9 @@ func TestBackgroundTaskUnchangedObservationClaimsItsPhysicalWriter(t *testing.T)
 			case "self rename":
 				require.NoError(t, replacement.RenameBackgroundTask("shared", "shared"))
 			case "paused child link":
-				_, err := replacement.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "shared-spawn", ProviderChildKey: "shared", Title: task.Title})
+				_, err := replacement.EnsureChildAgent(agent.ChildAgentSpec{
+					RegistryRole: bgtask.RoleChildTask,
+					SpawnSpanID:  "shared-spawn", ProviderChildKey: "shared", Title: task.Title})
 				require.NoError(t, err)
 			case "collision winner":
 				require.NoError(t, replacement.RenameBackgroundTask("provisional", "shared"))
@@ -500,7 +518,7 @@ func TestBackgroundTaskHiddenWorkingRetentionSurvivesRollbackAndExit(t *testing.
 	cache.Mu.Lock()
 	mirror := cache.mirrorLocked()
 	cache.Mu.Unlock()
-	require.Contains(t, mirror.evictedActive, "shell-0")
+	require.True(t, mirror.evictedActive.has("shell-0"))
 	before, err := svc.Queries.ListAllAgentBackgroundTasksForResume(t.Context(), owner)
 	require.NoError(t, err)
 	_, err = svc.DB.ExecContext(t.Context(), `CREATE TRIGGER reject_hidden_status BEFORE UPDATE OF status ON agent_background_tasks
@@ -516,8 +534,14 @@ WHEN NEW.owner_agent_id = 'hidden-working-rollback' AND NEW.row_key = 'shell-0' 
 	assert.Equal(t, mirror, current, "rollback restores both display and hidden working rows")
 	_, err = svc.DB.ExecContext(t.Context(), "DROP TRIGGER reject_hidden_status")
 	require.NoError(t, err)
+	pending, err := svc.Queries.ListWorkingAgentBackgroundTaskActivity(t.Context(), db.ListWorkingAgentBackgroundTaskActivityParams{OwnerAgentID: owner, PendingStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusPending), RunningStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning)})
+	require.NoError(t, err)
+	require.NotEmpty(t, pending)
+	for _, row := range pending {
+		assert.NoError(t, bgtask.Role(row.Role).Validate(), "working-row recovery retains role metadata")
+	}
 	svc.HandleAgentProcessExit(agent.ProcessExit{AgentID: owner, Stopped: true, Output: sink})
-	working, err := svc.Queries.ListWorkingAgentBackgroundTaskKeys(t.Context(), db.ListWorkingAgentBackgroundTaskKeysParams{
+	working, err := svc.Queries.ListWorkingAgentBackgroundTaskActivity(t.Context(), db.ListWorkingAgentBackgroundTaskActivityParams{
 		OwnerAgentID: owner, PendingStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusPending), RunningStatus: leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
 	})
 	require.NoError(t, err)
@@ -530,7 +554,9 @@ func TestBackgroundTaskRejectedSQLRestoresClaimAndDisplayAdmission(t *testing.T)
 		t.Run(operation, func(t *testing.T) {
 			t.Parallel()
 			svc, original := setupRootSink(t, "rollback-generation")
-			_, err := original.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "retained-spawn", ProviderChildKey: "retained", Title: "Retained assignment"})
+			_, err := original.EnsureChildAgent(agent.ChildAgentSpec{
+				RegistryRole: bgtask.RoleChildTask,
+				SpawnSpanID:  "retained-spawn", ProviderChildKey: "retained", Title: "Retained assignment"})
 			require.NoError(t, err)
 			require.NoError(t, original.CloseBackgroundTask("retained", bgtask.StatusSucceeded))
 			require.NoError(t, original.UpsertBackgroundTask(bgtask.Upsert{RowKey: "victim", Kind: bgtask.KindSubagent, Title: "Unlinked eviction victim", Status: bgtask.StatusSucceeded}))
@@ -713,7 +739,9 @@ func TestBackgroundTaskOwnedStartFailureFinalizesExactlyItsAttempt(t *testing.T)
 func TestBackgroundTaskVirtualChildCapturesNoPhysicalProcessCompletion(t *testing.T) {
 	t.Parallel()
 	svc, parent := setupRootSink(t, "virtual-completion-generation")
-	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "spawn", ProviderChildKey: "child"})
+	childID, err := parent.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "spawn", ProviderChildKey: "child"})
 	require.NoError(t, err)
 	child := parent.ChildSink(childID)
 	before := storedRow(t, svc, "virtual-completion-generation", "child")

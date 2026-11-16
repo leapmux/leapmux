@@ -11,11 +11,11 @@ import (
 // A reentrant caller must leave its submitted writes for that caller.
 var ErrOutputInFlight = errors.New("an output write is in flight")
 
-// OutputOwner identifies writes that one stream buffer can discard or transfer.
+// OutputOwner identifies writes that one producer can discard, transfer, or make ready together.
 // The nonzero size gives each allocated owner a distinct address.
 type OutputOwner struct{ _ byte }
 
-// NewOutputOwner creates an identity for one stream buffer's pending rows.
+// NewOutputOwner creates an identity for one group of pending writes.
 func NewOutputOwner() *OutputOwner { return &OutputOwner{} }
 
 // OutputWrite retains one immutable write or one dependent effect.
@@ -84,6 +84,22 @@ func (queue *OutputQueue) FlushAfterReady(tickets ...*OutputTicket) error {
 				break
 			}
 		}
+	}
+	queue.mu.Unlock()
+	return queue.Flush()
+}
+
+// FlushOwnerAfterReady retries the head when it belongs to owner.
+// A running drainer retains the readiness signal until its current callback returns.
+// Unrelated head writes keep their own readiness and retry policy.
+func (queue *OutputQueue) FlushOwnerAfterReady(owner *OutputOwner) error {
+	queue.mu.Lock()
+	if owner == nil || len(queue.pending) == 0 || queue.pending[0].write.Owner != owner {
+		queue.mu.Unlock()
+		return nil
+	}
+	if queue.running {
+		queue.readyWake = queue.pending[0]
 	}
 	queue.mu.Unlock()
 	return queue.Flush()

@@ -564,19 +564,3 @@ func TestGooseToolNotificationLeavesTheUnownedTypeAlone(t *testing.T) {
 	}), "a log line without data is claimed and dropped")
 	assert.Empty(t, sink.Messages())
 }
-
-func TestStartGooseRejectsInvalidNativeCommands(t *testing.T) {
-	installFakeGooseCLI(t, "new")
-	for _, value := range []string{"bogus", "0", "-1", "TRUE"} {
-		provider, err := Start(context.Background(), agent.Options{
-			AgentID:    "invalid-native-commands",
-			WorkingDir: t.TempDir(),
-			Shell:      testutil.TestShell(),
-			Options:    map[string]string{OptionNativeCommands: value},
-		}, agent.NewProviderServices(&agenttest.Sink{}))
-		if provider != nil {
-			provider.Stop()
-		}
-		require.ErrorContains(t, err, "must be true or false")
-	}
-}

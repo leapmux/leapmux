@@ -6,6 +6,7 @@ import { expect } from '@playwright/test'
 import { expectNoNativeControl } from './nativeControlObservation'
 import { assertPrivateNativePath } from './nativePrivatePath'
 import { currentNativeAgent, nativeTextStep, nativeToolOutcome, toolTurnSteps } from './nativeScenario'
+import { createOutputGate, runWithGatedOutput } from './outputGate'
 import { bashToolCall } from './providerToolCalls'
 import { getGlobalState } from './server'
 import { printfMarkerCommand, quotePosixShellArgument } from './shellArguments'
@@ -19,6 +20,8 @@ export interface NativeShortcutCommand {
 
 /** The optional checks and command for a permission shortcut test. */
 export interface NativeShortcutProof {
+  /** Keep a fast command alive until the browser or a supplied native observer confirms its captured output. */
+  outputGate?: boolean | ((output: string) => Promise<void>)
   /** Where the native exchange carries its answer. Supply context.readToolResult when results arrive outside model requests. */
   answerStep?: NativeAnswerStep
   /** Bring the session to the state that the shortcut must change, before the shortcut applies. */
@@ -75,17 +78,32 @@ async function exercisePermissionShortcut(context: ManagedNativeScenarioContext,
             await expect(messageBubbles(context.page).filter({ hasText: output }).first()).toBeVisible()
           },
         }
+        const outputObserver = typeof options.outputGate === 'function'
+          ? options.outputGate
+          : undefined
+        const gate = options.outputGate
+          ? createOutputGate(agent.workingDir)
+          : undefined
         const steps = toolTurnSteps(
           [
-            bashToolCall(context.provider, id, proof.command),
+            bashToolCall(context.provider, id, gate?.hold(proof.command) ?? proof.command),
           ],
           nativeTextStep(context, answer),
           options.answerStep,
         )
         const start = await context.modelScript.queue(...steps)
-        await sendMessage(context.page, context.modelScript.prompt('Run the scripted removal under the current permission shortcut.'))
-        await context.modelScript.waitForSteps(start + steps.length)
-        await waitForAgentIdle(context.page)
+        await runWithGatedOutput(gate
+          ? {
+              gate,
+              shown: outputObserver
+                ? () => outputObserver(output)
+                : () => expect(messageBubbles(context.page).filter({ hasText: output }).first()).toBeVisible(),
+            }
+          : undefined, async () => {
+          await sendMessage(context.page, context.modelScript.prompt('Run the scripted removal under the current permission shortcut.'))
+          await context.modelScript.waitForSteps(start + steps.length)
+          await waitForAgentIdle(context.page)
+        })
         expect(existsSync(target), 'The native command must remove its target.').toBe(false)
         const request = await context.modelScript.requestAt(start + steps.length - 1)
         await proof.resultProof(await nativeToolOutcome(context, request, id))

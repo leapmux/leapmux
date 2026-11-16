@@ -570,7 +570,7 @@ const (
 	planAnswerNo  = "No"
 )
 
-// MCP elicitation answers. MiMo HEAD asks an MCP server's confirmation as one
+// MCP elicitation answers. MiMo 0.1.17 asks an MCP server's confirmation as one
 // question with these three options (mcp/elicitation.ts). It reads "Accept" and
 // "Decline" as those MCP actions, and any other answer as cancel.
 const (

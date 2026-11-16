@@ -9,7 +9,7 @@ import (
 )
 
 func TestOpenCodeNativeOutputPathPreservesPreviewWithoutSavedText(t *testing.T) {
-	opencodetest.AssertNativeOutputPathDoesNotSaveText(t, "opencode", Start)
+	opencodetest.AssertNativeOutputPathDoesNotSaveText(t, "opencode", startFamilyTestAgent)
 }
 
 func TestHelperProcessCompleteToolOutputFile(*testing.T) {

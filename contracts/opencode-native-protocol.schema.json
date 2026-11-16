@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "opencode-native-protocol.schema.json",
+  "title": "OpenCode native protocol vocabulary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "events",
+    "messageTypes",
+    "partTypes",
+    "permissionDecisions",
+    "answerFields",
+    "tools",
+    "toolStatuses",
+    "compactionStatuses",
+    "formFieldTypes",
+    "outcomes",
+    "metadataEvents",
+    "metadataMessageTypes"
+  ],
+  "$defs": {
+    "table": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      },
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "subset": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Z][A-Za-z0-9]*$"
+      }
+    }
+  },
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "events": {
+      "$ref": "#/$defs/table"
+    },
+    "messageTypes": {
+      "$ref": "#/$defs/table"
+    },
+    "partTypes": {
+      "$ref": "#/$defs/table"
+    },
+    "permissionDecisions": {
+      "$ref": "#/$defs/table"
+    },
+    "answerFields": {
+      "$ref": "#/$defs/table"
+    },
+    "tools": {
+      "$ref": "#/$defs/table"
+    },
+    "toolStatuses": {
+      "$ref": "#/$defs/table"
+    },
+    "compactionStatuses": {
+      "$ref": "#/$defs/table"
+    },
+    "formFieldTypes": {
+      "$ref": "#/$defs/table"
+    },
+    "outcomes": {
+      "$ref": "#/$defs/table"
+    },
+    "metadataEvents": {
+      "$ref": "#/$defs/subset"
+    },
+    "metadataMessageTypes": {
+      "$ref": "#/$defs/subset"
+    }
+  }
+}

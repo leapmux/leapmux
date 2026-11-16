@@ -1,8 +1,103 @@
 import { describe, expect, it } from 'vitest'
 import { GEMINI_MODEL_ID, MOCK_PROVIDER_IDS } from './mockAgentEnvironment'
-import { OPENCODE_AUDIO_MODEL_ALIAS, OPENCODE_AUDIO_MODEL_ID, openCodeAudioConfiguration } from './openCodeAudioConfiguration'
+import { kiloAudioConfiguration, OPENCODE_AUDIO_MODEL_ALIAS, OPENCODE_AUDIO_MODEL_ID, openCodeAudioConfiguration } from './openCodeAudioConfiguration'
 
 describe('openCodeAudioConfiguration', () => {
+  function configuration(input: unknown = ['text', 'image'], extra: Record<string, unknown> = {}, endpoint = 'http://127.0.0.1:4321/v1') {
+    return {
+      model: { providerID: MOCK_PROVIDER_IDS.openCode, model: 'original' },
+      providers: {
+        [MOCK_PROVIDER_IDS.openCode]: {
+          settings: { apiKey: 'private-credential', baseURL: endpoint },
+          models: {
+            original: {
+              modelID: 'original',
+              settings: {},
+              ...extra,
+              capabilities: {
+                input,
+                output: ['text'],
+              },
+            },
+          },
+        },
+      },
+    }
+  }
+
+  it('adds a native Google alias without changing the configured text model', () => {
+    const original = configuration()
+    const before = structuredClone(original)
+    expect(openCodeAudioConfiguration(original)).toEqual({
+      textModelID: `${MOCK_PROVIDER_IDS.openCode}/original`,
+      configuration: {
+        providers: {
+          [MOCK_PROVIDER_IDS.openCode]: {
+            models: {
+              [OPENCODE_AUDIO_MODEL_ALIAS]: {
+                modelID: GEMINI_MODEL_ID,
+                name: 'LeapMux audio fixture',
+                package: '@opencode/ai/providers/google',
+                settings: { baseURL: 'http://127.0.0.1:4321/v1beta' },
+                capabilities: {
+                  input: ['text', 'image', 'audio'],
+                  output: ['text'],
+                },
+                variants: [],
+              },
+            },
+          },
+        },
+      },
+    })
+    expect(original).toEqual(before)
+  })
+
+  it.each([
+    null,
+    {},
+    {
+      model: { providerID: 'external', model: 'original' },
+    },
+  ])('refuses a missing private native model: %j', (value) => {
+    expect(() => openCodeAudioConfiguration(value)).toThrow('private mock model')
+  })
+
+  it.each([
+    null,
+    'text',
+    ['text', 42],
+  ])('refuses invalid native input capabilities: %j', (input) => {
+    expect(() => openCodeAudioConfiguration(configuration(input))).toThrow('input capabilities')
+  })
+
+  it('refuses a different native wire model and an existing alias', () => {
+    expect(() => openCodeAudioConfiguration(configuration(['text'], { modelID: 'another' }))).toThrow('wire model')
+    const original = configuration()
+    const provider = original.providers[MOCK_PROVIDER_IDS.openCode]
+    expect(() => openCodeAudioConfiguration({
+      ...original,
+      providers: {
+        [MOCK_PROVIDER_IDS.openCode]: {
+          ...provider,
+          models: { ...provider.models, [OPENCODE_AUDIO_MODEL_ALIAS]: {} },
+        },
+      },
+    })).toThrow('alias already exists')
+  })
+
+  it.each([
+    'https://localhost:4321/v1',
+    'http://example.com/v1',
+    'http://user:secret@localhost:4321/v1',
+    'http://localhost:4321/v1?key=value',
+    'http://localhost:4321/another',
+  ])('refuses an unsafe native endpoint: %j', (endpoint) => {
+    expect(() => openCodeAudioConfiguration(configuration(['text'], {}, endpoint))).toThrow('OpenCode audio fixture')
+  })
+})
+
+describe('kiloAudioConfiguration', () => {
   function configuration(input: unknown = ['text', 'image', 'pdf'], extra: Record<string, unknown> = {}, endpoint = 'http://127.0.0.1:4321/v1') {
     return {
       model: `${MOCK_PROVIDER_IDS.openCode}/original`,
@@ -31,7 +126,7 @@ describe('openCodeAudioConfiguration', () => {
     const original = configuration()
     const before = structuredClone(original)
     expect(OPENCODE_AUDIO_MODEL_ID).toBe(`${MOCK_PROVIDER_IDS.openCode}/${OPENCODE_AUDIO_MODEL_ALIAS}`)
-    expect(openCodeAudioConfiguration(original)).toEqual({
+    expect(kiloAudioConfiguration(original)).toEqual({
       textModelID: original.model,
       configuration: {
         provider: {
@@ -58,7 +153,7 @@ describe('openCodeAudioConfiguration', () => {
     expect(original).toEqual(before)
   })
   it('does not duplicate an existing audio modality', () => {
-    expect(openCodeAudioConfiguration(configuration(['text', 'audio'])).configuration).toMatchObject({
+    expect(kiloAudioConfiguration(configuration(['text', 'audio'])).configuration).toMatchObject({
       provider: {
         [MOCK_PROVIDER_IDS.openCode]: {
           models: {
@@ -78,20 +173,20 @@ describe('openCodeAudioConfiguration', () => {
     { model: 'external/model' },
     { model: `${MOCK_PROVIDER_IDS.openCode}/missing`, provider: {} },
   ])('refuses an absent private model: %j', (value) => {
-    expect(() => openCodeAudioConfiguration(value)).toThrow('OpenCode audio fixture')
+    expect(() => kiloAudioConfiguration(value)).toThrow('OpenCode audio fixture')
   })
   it.each([
     null,
     'text',
     ['text', 42],
   ])('refuses invalid native input modalities: %j', (input) => {
-    expect(() => openCodeAudioConfiguration(configuration(input))).toThrow('input modalities')
+    expect(() => kiloAudioConfiguration(configuration(input))).toThrow('input modalities')
   })
   it('refuses a different wire model or an existing alias', () => {
-    expect(() => openCodeAudioConfiguration(configuration(['text'], { id: 'another' }))).toThrow('wire model')
+    expect(() => kiloAudioConfiguration(configuration(['text'], { id: 'another' }))).toThrow('wire model')
     const original = configuration()
     const provider = original.provider[MOCK_PROVIDER_IDS.openCode]
-    expect(() => openCodeAudioConfiguration({
+    expect(() => kiloAudioConfiguration({
       ...original,
       provider: {
         [MOCK_PROVIDER_IDS.openCode]: {
@@ -108,6 +203,6 @@ describe('openCodeAudioConfiguration', () => {
     'http://localhost:4321/v1?key=value',
     'http://localhost:4321/another',
   ])('refuses an unsafe or unexpected endpoint: %j', (endpoint) => {
-    expect(() => openCodeAudioConfiguration(configuration(['text'], {}, endpoint))).toThrow('OpenCode audio fixture')
+    expect(() => kiloAudioConfiguration(configuration(['text'], {}, endpoint))).toThrow('OpenCode audio fixture')
   })
 })

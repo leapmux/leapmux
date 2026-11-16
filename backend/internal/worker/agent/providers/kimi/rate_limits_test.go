@@ -1,8 +1,12 @@
 package kimi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -209,24 +213,24 @@ func TestKimiUsageRefreshKeepsTheLastWindowsWhenTheReadFails(t *testing.T) {
 	}
 }
 
-// The end of a main turn reads the plan, because the turn used it. The end of
-// a subagent's turn does not: the main turn's end follows.
-func TestKimiUsageRefreshFollowsTheMainTurnEnd(t *testing.T) {
+// Main turn completion refreshes account usage; a child completion does not.
+func TestKimiUsageRefreshFollowsNativeTurnCompletion(t *testing.T) {
 	t.Parallel()
 	rig := newKimiPlanRig(t)
-	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": contracts.KimiOriginUser}})
-	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "turnId": 0, "reason": contracts.KimiTurnEndCompleted})
+	native := &kimiOutputRig{agent: rig.agent, sink: rig.sink}
+	before := len(rig.fake.requestsTo("GET " + kimiRouteManagedUsage))
+	native.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","ordinal":0,"state":"running","origin":{"kind":"user"}}}`)
+	native.transcriptOps(t, 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","ordinal":0,"state":"completed","origin":{"kind":"user"}}}`)
 	waitForKimiUsageRead(t, rig)
-	assert.Len(t, rig.fake.requestsTo("GET "+kimiRouteManagedUsage), 1)
+	assert.Len(t, rig.fake.requestsTo("GET "+kimiRouteManagedUsage), before+1)
 	assert.JSONEq(t, kimiTestPlanWindows, lastKimiRateLimitState(t, rig.sink))
-
-	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "agentId": "agent_child", "turnId": 0, "reason": contracts.KimiTurnEndCompleted})
+	adoptNativeKimiChild(t, rig.agent, "agent-0")
+	native.transcriptAgentOps(t, "agent-0", 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"completed","origin":{"kind":"other"}}}`)
 	waitForKimiUsageRead(t, rig)
-	assert.Len(t, rig.fake.requestsTo("GET "+kimiRouteManagedUsage), 1, "a subagent's turn end reads nothing")
+	assert.Len(t, rig.fake.requestsTo("GET "+kimiRouteManagedUsage), before+1, "a child completion does not refresh the account")
+
 }
 
-// A model change reads the windows of the new model: a switch to the account's
-// model shows the plan, and a switch away clears it.
 func TestKimiUsageRefreshFollowsTheModel(t *testing.T) {
 	t.Parallel()
 	t.Run("a switch that the reader makes", func(t *testing.T) {
@@ -254,18 +258,86 @@ func TestKimiUsageRefreshFollowsTheModel(t *testing.T) {
 	t.Run("a switch that the server reports", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiPlanRig(t)
-		rig.feed(t, map[string]any{"type": contracts.KimiEventAgentStatusUpdated, "model": "kimi-text"})
+		rig.agent.HandleOutput([]byte(`{"type":"agent","session_id":"session_1","agent_id":"main","status":"idle","model":"kimi-text","permission_mode":"manual","plan_mode":false,"swarm_mode":false,"tower_mode":false}`))
 		waitForKimiUsageRead(t, rig)
 		assert.Empty(t, rig.fake.requestsTo("GET "+kimiRouteManagedUsage))
 		assert.Equal(t, []string{`{}`}, kimiRateLimitStates(t, rig.sink))
 
-		rig.feed(t, map[string]any{"type": contracts.KimiEventAgentStatusUpdated, "model": kimiTestManagedModelID})
+		rig.agent.HandleOutput([]byte(fmt.Sprintf(`{"type":"agent","session_id":"session_1","agent_id":"main","status":"idle","model":%q,"permission_mode":"manual","plan_mode":false,"swarm_mode":false,"tower_mode":false}`, kimiTestManagedModelID)))
 		waitForKimiUsageRead(t, rig)
 		assert.Len(t, rig.fake.requestsTo("GET "+kimiRouteManagedUsage), 1)
 		assert.JSONEq(t, kimiTestPlanWindows, lastKimiRateLimitState(t, rig.sink))
 
-		rig.feed(t, map[string]any{"type": contracts.KimiEventAgentStatusUpdated, "planMode": true})
+		rig.agent.HandleOutput([]byte(fmt.Sprintf(`{"type":"agent","session_id":"session_1","agent_id":"main","status":"idle","model":%q,"permission_mode":"manual","plan_mode":true,"swarm_mode":false,"tower_mode":false}`, kimiTestManagedModelID)))
 		waitForKimiUsageRead(t, rig)
 		assert.Len(t, rig.fake.requestsTo("GET "+kimiRouteManagedUsage), 1, "an update that keeps the model reads nothing")
 	})
+}
+
+func TestKimiModelUpdateRefreshesUsageOnceWhenNativeStateArrivesBeforeTheReply(t *testing.T) {
+	t.Parallel()
+	fake, server := newFakeKap(t)
+	fake.models = append(fake.models, kimiTestManagedModel())
+	fake.usage = kimiTestPlanUsage()
+	rig := connectKimiTestRig(t, fake, server.URL, agent.Options{})
+	waitForKimiUsageRead(t, rig)
+	before := len(fake.requestsTo("GET " + kimiRouteManagedUsage))
+	stateApplied := make(chan struct{})
+	replyReleased := make(chan struct{})
+	releaseReply := sync.OnceFunc(func() { close(replyReleased) })
+	t.Cleanup(releaseReply)
+	fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/profile"), fakeKapReply{Data: map[string]any{}, BeforeReply: func() {
+		profiles := fake.requestsTo("POST " + kimiSessionPath("session_1", "/profile"))
+		var patch struct {
+			Config map[string]any `json:"agent_config"`
+		}
+		if !assert.NoError(t, json.Unmarshal(profiles[len(profiles)-1].Body, &patch)) {
+			return
+		}
+		fake.update("session_1", func(session *fakeKapSession) {
+			session.Model = kimiTestManagedModelID
+			if thinking, exists := patch.Config[kimiConfigThinking].(string); exists {
+				if thinking == "on" {
+					thinking = "high"
+				}
+				session.Thinking = thinking
+			}
+		})
+		for _, state := range fake.sessionStateFrames("session_1") {
+			data, err := json.Marshal(state)
+			if !assert.NoError(t, err) {
+				return
+			}
+			var frame kimiFrame
+			if !assert.NoError(t, json.Unmarshal(data, &frame)) {
+				return
+			}
+			rig.agent.stream.observeSessionState(frame)
+			rig.agent.handleFrame(frame)
+		}
+		close(stateApplied)
+		<-replyReleased
+	}})
+	applied := make(chan agent.SettingsApplyResult, 1)
+	go func() {
+		applied <- rig.agent.UpdateSettings(optionmap.Map{agent.OptionIDModel: kimiTestManagedModelID})
+	}()
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	select {
+	case <-stateApplied:
+	case <-ctx.Done():
+		t.Fatal("the native model update was not applied")
+	}
+	waitForKimiUsageRead(t, rig)
+	assert.Len(t, fake.requestsTo("GET "+kimiRouteManagedUsage), before+1)
+	releaseReply()
+	select {
+	case result := <-applied:
+		require.Equal(t, agent.OptionSettlementConfirmed, result.Settlements[agent.OptionIDModel].State)
+	case <-ctx.Done():
+		t.Fatal("the model update did not finish")
+	}
+	waitForKimiUsageRead(t, rig)
+	assert.Len(t, fake.requestsTo("GET "+kimiRouteManagedUsage), before+1)
 }

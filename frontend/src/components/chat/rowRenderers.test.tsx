@@ -3,7 +3,9 @@ import type { ChatRow } from './model/row'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { ERROR_MARKER, INTERRUPTION_MARKER } from './assembledMessage'
+import { failedResult } from './model/toolCall'
 import { renderExtractedRow } from './rowRenderers'
 
 /** The text of one extracted row, drawn with `completion`, once its Markdown landed. */
@@ -19,6 +21,24 @@ const INTERRUPTED_DIVIDER: ChatRow = {
 }
 
 describe('renderExtractedRow', () => {
+  it.each([
+    ['declined', 'error', 'Declined'],
+    ['declined', 'interrupted', 'Declined'],
+    ['cancelled', 'error', 'Interrupted'],
+    ['failed', 'error', 'Error'],
+  ] as const)('preserves the effective %s tool outcome with recorded %s completion', async (status, completion, expected) => {
+    const reason = 'The tool did not run.'
+    const call = toolCallFixture('execute', {
+      status,
+      result: failedResult(reason),
+    })
+    const text = await drawnText(toolRow(call), completion)
+    expect(text).toContain(expected)
+    expect(text.match(/The tool did not run\./g)).toHaveLength(1)
+    if (expected !== 'Error')
+      expect(text).not.toContain('Error')
+  })
+
   it('draws the finality marker without an error or interruption claim', async () => {
     const text = await drawnText({ kind: 'assistant-text', text: 'Native partial text' }, 'finished')
     expect(text).toContain('Native partial text')

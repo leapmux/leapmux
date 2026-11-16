@@ -13,32 +13,10 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 )
 
-// The question bridge.
-//
-// omp's `ask` tool asks its questions through a CHAIN of dialogs, one select per
-// question: a multi-select question toggles one option per select, and "Other"
-// opens an editor. LeapMux's question surface asks the whole set at once and
-// returns every answer together. The bridge joins the two:
-//
-//  1. The assistant message that calls `ask` states the questions. The bridge
-//     keeps them (rememberAskCalls).
-//  2. The FIRST dialog of the call arrives before the call's tool_execution_start.
-//     The bridge checks that it asks the first question, then publishes ONE
-//     control request for the whole call under that dialog's id
-//     (contracts.OhMyPiAskRequest).
-//  3. The browser answers with one contracts.OhMyPiAskAnswer. The bridge answers
-//     the first dialog, and then every later dialog of the chain as it arrives,
-//     from that one answer.
-//
-// A dialog that does not have the shape the bridge expects is published as it is,
-// so the reader can still answer it by hand, and the bridge answers nothing more
-// for that call.
-//
-// omp cannot finish a multi-select question inside a multi-question call the
-// usual way: in that mode it offers no "Done" option, because it expects the
-// arrow keys of its own terminal to move to the next question, and RPC forwards
-// no key. The bridge finishes such a question through "Other" instead, and the
-// model then reads the chosen labels as the reader's own text.
+// The choice-form bridge retains a native HTML ask call until its first select.
+// LeapMux asks the choice fields together, then answers the native selects and
+// custom input dialogs from the submitted values. Unexpected dialogs remain
+// available through the native dialog surface. No native answer is guessed.
 
 // askBridge is the question bridge's state. Guarded by Process.Mu.
 type askBridge struct {
@@ -118,15 +96,17 @@ func (a *Agent) rememberAskCalls(content json.RawMessage) {
 		if block.Type != contentBlockToolCall || block.Name != contracts.OhMyPiToolAsk || block.ID == "" {
 			continue
 		}
-		var args struct {
-			Questions []contracts.OhMyPiAskQuestion `json:"questions"`
-		}
-		if json.Unmarshal(block.Arguments, &args) != nil || len(args.Questions) == 0 {
-			// omp refuses such a call before it opens any dialog, so there is no
-			// chain to follow.
+		var args contracts.OhMyPiAskArguments
+		if json.Unmarshal(block.Arguments, &args) != nil {
 			continue
 		}
-		calls = append(calls, &askCall{toolCallID: block.ID, questions: args.Questions})
+		questions, err := readAskChoiceQuestions(args.HTML)
+		if err != nil || len(questions) == 0 {
+			// Unsupported forms keep their native dialogs. A form with no named
+			// fields opens no dialogs.
+			continue
+		}
+		calls = append(calls, &askCall{toolCallID: block.ID, questions: questions})
 	}
 	if len(calls) == 0 {
 		return
@@ -139,7 +119,7 @@ func (a *Agent) rememberAskCalls(content json.RawMessage) {
 // routeAskDialog offers one dialog to the question bridge, and reports whether the
 // bridge took it: published it as the call's request, or answered it.
 func (a *Agent) routeAskDialog(head dialogHeader) bool {
-	if head.Method != contracts.OhMyPiDialogMethodSelect && head.Method != contracts.OhMyPiDialogMethodEditor {
+	if head.Method != contracts.OhMyPiDialogMethodSelect && head.Method != contracts.OhMyPiDialogMethodInput {
 		return false
 	}
 	a.Mu.Lock()
@@ -297,31 +277,50 @@ func (a *Agent) finishAsk(toolCallID string) {
 	}
 }
 
-// opensAsk reports whether a dialog is the first dialog of a call: the select of
-// its first question.
+// opensAsk matches the first select, including its native preselected count.
 func opensAsk(questions []contracts.OhMyPiAskQuestion, head dialogHeader) bool {
-	if head.Method != contracts.OhMyPiDialogMethodSelect || len(questions) == 0 {
+	if len(questions) == 0 {
 		return false
 	}
 	plan := &askPlan{questions: questions}
-	return plan.matchesSelect(0, 0, head) == nil
+	return plan.matchesSelect(0, len(questions[0].InitialSelections), head) == nil
 }
 
-// askPlan answers one call's dialog chain from the reader's answers.
+type askActionKind uint8
+
+const (
+	askSelectOption askActionKind = iota
+	askSelectOther
+	askInputOther
+	askSelectDone
+)
+
+type askDialogAction struct {
+	questionIndex int
+	selectedCount int
+	kind          askActionKind
+	value         string
+}
+
+// askPlan retains exact native actions compiled from one submitted answer set.
 type askPlan struct {
-	questions []contracts.OhMyPiAskQuestion
-	answers   []contracts.OhMyPiAskQuestionAnswer
-	// index is the question the next dialog asks.
-	index int
-	// toggled counts the options a multi-select question has toggled so far.
-	toggled int
-	// other is true after the bridge chose "Other"; an editor dialog follows.
-	other bool
+	questions     []contracts.OhMyPiAskQuestion
+	actions       []askDialogAction
+	nextAction    int
+	questionIndex int
 }
 
-// newAskPlan checks the reader's answers against the questions and orders them
-// like the questions.
+func askOptionValue(option contracts.OhMyPiAskOption) string {
+	if option.Value != "" {
+		return option.Value
+	}
+	return option.Label
+}
+
 func newAskPlan(questions []contracts.OhMyPiAskQuestion, answers []contracts.OhMyPiAskQuestionAnswer) (*askPlan, error) {
+	if len(questions) == 0 {
+		return nil, fmt.Errorf("the form has no questions")
+	}
 	byID := make(map[string]contracts.OhMyPiAskQuestionAnswer, len(answers))
 	for _, answer := range answers {
 		if _, duplicate := byID[answer.ID]; duplicate {
@@ -329,180 +328,189 @@ func newAskPlan(questions []contracts.OhMyPiAskQuestion, answers []contracts.OhM
 		}
 		byID[answer.ID] = answer
 	}
-	ordered := make([]contracts.OhMyPiAskQuestionAnswer, len(questions))
-	for i, question := range questions {
-		answer, ok := byID[question.ID]
-		if !ok {
+	plan := &askPlan{questions: questions}
+	for questionIndex, question := range questions {
+		answer, exists := byID[question.ID]
+		if !exists {
 			return nil, fmt.Errorf("the answer states nothing for question %q", question.ID)
 		}
-		labels := make([]string, len(question.Options))
-		for j, option := range question.Options {
-			labels[j] = option.Label
-		}
-		seen := make(map[string]bool, len(answer.Selected))
-		for _, label := range answer.Selected {
-			if !slices.Contains(labels, label) {
-				return nil, fmt.Errorf("question %q offers no option %q", question.ID, label)
+		delete(byID, question.ID)
+		offered := make(map[string]string, len(question.Options))
+		for _, option := range question.Options {
+			value := askOptionValue(option)
+			if _, duplicate := offered[value]; duplicate {
+				return nil, fmt.Errorf("question %q repeats an option value", question.ID)
 			}
-			if seen[label] {
-				return nil, fmt.Errorf("question %q selects option %q twice", question.ID, label)
-			}
-			seen[label] = true
+			offered[value] = option.Label
 		}
-		switch {
-		case strings.TrimSpace(answer.Custom) != "":
-		case question.Multi && len(answer.Selected) > 0:
-		case !question.Multi && len(answer.Selected) == 1:
-		case !question.Multi && len(answer.Selected) > 1:
+		desired := make(map[string]bool, len(answer.Selected))
+		for _, value := range answer.Selected {
+			if _, exists := offered[value]; !exists {
+				return nil, fmt.Errorf("question %q offers no option %q", question.ID, value)
+			}
+			if desired[value] {
+				return nil, fmt.Errorf("question %q selects option %q twice", question.ID, value)
+			}
+			desired[value] = true
+		}
+		custom := strings.TrimSpace(answer.Custom) != ""
+		if custom && !question.AllowCustomText {
+			return nil, fmt.Errorf("question %q accepts selected options only", question.ID)
+		}
+		if !question.Multi && len(answer.Selected) > 1 {
 			return nil, fmt.Errorf("question %q takes one option", question.ID)
-		default:
+		}
+		if !custom && len(desired) == 0 && (!question.Multi || !question.AllowEmpty) {
 			return nil, fmt.Errorf("question %q has no answer", question.ID)
 		}
-		ordered[i] = answer
+		initial := make(map[string]bool, len(question.InitialSelections))
+		for _, value := range question.InitialSelections {
+			initial[value] = true
+		}
+		count := len(initial)
+		appendAction := func(kind askActionKind, value string) {
+			plan.actions = append(plan.actions, askDialogAction{questionIndex: questionIndex, selectedCount: count, kind: kind, value: value})
+		}
+		if !question.Multi {
+			if custom {
+				appendAction(askSelectOther, "")
+				appendAction(askInputOther, answer.Custom)
+			} else {
+				appendAction(askSelectOption, offered[answer.Selected[0]])
+			}
+			continue
+		}
+		// Disabled preselected options remain in the native count. Only offered
+		// choices can be toggled; the browser sends the desired enabled values.
+		for _, option := range question.Options {
+			value := askOptionValue(option)
+			if initial[value] && !desired[value] {
+				appendAction(askSelectOption, option.Label)
+				count--
+			}
+		}
+		for _, option := range question.Options {
+			value := askOptionValue(option)
+			if !initial[value] && desired[value] {
+				appendAction(askSelectOption, option.Label)
+				count++
+			}
+		}
+		if custom {
+			appendAction(askSelectOther, "")
+			appendAction(askInputOther, answer.Custom)
+			count++
+		}
+		appendAction(askSelectDone, "")
 	}
-	return &askPlan{questions: questions, answers: ordered}, nil
+	if len(byID) > 0 {
+		return nil, fmt.Errorf("the answer includes a question the form did not ask")
+	}
+	return plan, nil
 }
 
-// multiQuestion reports whether the call asks more than one question. omp then
-// numbers each title, and offers no "Done" option for a multi-select question.
-func (p *askPlan) multiQuestion() bool { return len(p.questions) > 1 }
-
-// title returns the title omp gives the select of one question, with the number
-// of options already toggled.
-func (p *askPlan) title(index, toggled int) string {
-	title := p.questions[index].Question
-	if p.multiQuestion() {
-		title += " (" + strconv.Itoa(index+1) + "/" + strconv.Itoa(len(p.questions)) + ")"
+func (plan *askPlan) title(questionIndex, selectedCount int) string {
+	question := plan.questions[questionIndex]
+	if question.Multi && selectedCount > 0 {
+		return "(" + strconv.Itoa(selectedCount) + " selected) " + question.Question
 	}
-	if toggled > 0 {
-		title = askSelectedPrefixOpen + strconv.Itoa(toggled) + askSelectedPrefixClose + title
-	}
-	return title
+	return question.Question
 }
 
-// askRowEllipsis ends a title row that omp shortened to fit its terminal.
-const askRowEllipsis = "…"
-
-// editorContinuesQuestion matches the question title of the preceding select.
-// Native RPC editors send that title alone. A rendered prompt can append its options after a blank line.
-//
-// omp shortens that row to the width of its terminal, less the panel's chrome
-// (tools/ask.ts, clampLineToWidth). In RPC mode stdout is a pipe, so the width is
-// omp's default, and the width appears nowhere in the dialog. So the row is either
-// the whole title, or a prefix of it that ends with an ellipsis. The select titles
-// are not shortened, so they keep the exact match of matchesSelect.
-func editorContinuesQuestion(editorTitle, question string) bool {
-	if editorTitle == question {
-		return true
+func nativeAskOther(question contracts.OhMyPiAskQuestion) string {
+	value := askOtherOption
+	taken := make(map[string]bool, len(question.Options))
+	for _, option := range question.Options {
+		taken[option.Label] = true
 	}
-	row, rest, found := strings.Cut(editorTitle, "\n")
-	if !found || !strings.HasPrefix(rest, "\n") {
-		return false
+	for suffix := 2; taken[value]; suffix++ {
+		value = askOtherOption + " (" + strconv.Itoa(suffix) + ")"
 	}
-	if row == question {
-		return true
-	}
-	prefix, shortened := strings.CutSuffix(row, askRowEllipsis)
-	return shortened && prefix != "" && strings.HasPrefix(question, prefix)
+	return value
 }
 
-// errAskShape reports a dialog that does not have the shape the bridge expects.
 var errAskShape = errors.New("the dialog does not continue the question chain")
 
-// matchesSelect checks that a select dialog asks one question, after `toggled`
-// toggles. The options must start with the question's own labels, in order, and
-// end with "Other".
-func (p *askPlan) matchesSelect(index, toggled int, head dialogHeader) error {
-	if head.Method != contracts.OhMyPiDialogMethodSelect || index >= len(p.questions) {
+func isAskDoneLabel(value string) bool {
+	const text = "Done selecting"
+	index := strings.LastIndex(value, text)
+	if index < 0 || index > 0 && value[index-1] != ' ' {
+		return false
+	}
+	suffix := value[index+len(text):]
+	if suffix == "" {
+		return true
+	}
+	if !strings.HasPrefix(suffix, " (") || !strings.HasSuffix(suffix, ")") {
+		return false
+	}
+	digits := suffix[2 : len(suffix)-1]
+	number, err := strconv.Atoi(digits)
+	return err == nil && number >= 2 && strconv.Itoa(number) == digits
+}
+
+func (plan *askPlan) matchesSelect(questionIndex, selectedCount int, head dialogHeader) error {
+	if questionIndex < 0 || questionIndex >= len(plan.questions) || selectedCount < 0 || head.Method != contracts.OhMyPiDialogMethodSelect {
 		return errAskShape
 	}
-	if head.Title != p.title(index, toggled) {
+	question := plan.questions[questionIndex]
+	if head.Title != plan.title(questionIndex, selectedCount) {
 		return fmt.Errorf("%w: title %q", errAskShape, head.Title)
 	}
-	question := p.questions[index]
-	options := head.Options
-	extra := len(options) - len(question.Options)
-	// "Other" always; "Done" after the first toggle of a single multi-select.
-	if extra < 1 || extra > 2 || options[len(options)-1] != askOtherOption {
-		return fmt.Errorf("%w: %d options", errAskShape, len(options))
+	expected := len(question.Options)
+	if question.AllowCustomText {
+		expected++
 	}
-	for i, option := range question.Options {
-		if !strings.HasPrefix(options[i], option.Label) {
-			return fmt.Errorf("%w: option %d is %q", errAskShape, i, options[i])
+	done := question.Multi && (question.AllowEmpty || selectedCount > 0)
+	if done {
+		expected++
+	}
+	if len(head.Options) != expected {
+		return fmt.Errorf("%w: %d options", errAskShape, len(head.Options))
+	}
+	for index, option := range question.Options {
+		if head.Options[index] != option.Label {
+			return fmt.Errorf("%w: option %d", errAskShape, index)
 		}
+	}
+	if question.AllowCustomText && head.Options[len(question.Options)] != nativeAskOther(question) {
+		return fmt.Errorf("%w: no native custom choice", errAskShape)
+	}
+	if done && !isAskDoneLabel(head.Options[len(head.Options)-1]) {
+		return fmt.Errorf("%w: no native finish choice", errAskShape)
 	}
 	return nil
 }
 
-// respond returns the value that answers one dialog of the chain, and advances the
-// plan past it.
-func (p *askPlan) respond(head dialogHeader) (string, error) {
-	if p.index >= len(p.questions) {
+func (plan *askPlan) respond(head dialogHeader) (string, error) {
+	if plan.nextAction >= len(plan.actions) {
 		return "", fmt.Errorf("%w: every question is answered", errAskShape)
 	}
-	question := p.questions[p.index]
-	answer := p.answers[p.index]
-	if head.Method == contracts.OhMyPiDialogMethodEditor {
-		if !p.other || !editorContinuesQuestion(head.Title, p.title(p.index, p.toggled)) {
-			return "", fmt.Errorf("%w: editor %q", errAskShape, head.Title)
+	action := plan.actions[plan.nextAction]
+	question := plan.questions[action.questionIndex]
+	value := action.value
+	switch action.kind {
+	case askInputOther:
+		if head.Method != contracts.OhMyPiDialogMethodInput || head.Title != question.Question {
+			return "", fmt.Errorf("%w: native custom input", errAskShape)
 		}
-		text := answer.Custom
-		if question.Multi && p.multiQuestion() {
-			text = joinedAnswer(answer)
+	case askSelectOption, askSelectOther, askSelectDone:
+		if err := plan.matchesSelect(action.questionIndex, action.selectedCount, head); err != nil {
+			return "", err
 		}
-		p.advance()
-		return text, nil
-	}
-	if err := p.matchesSelect(p.index, p.toggled, head); err != nil {
-		return "", err
-	}
-	other := head.Options[len(head.Options)-1]
-	if !question.Multi {
-		if strings.TrimSpace(answer.Custom) != "" {
-			p.other = true
-			return other, nil
+		if action.kind == askSelectOther {
+			value = nativeAskOther(question)
 		}
-		value := head.Options[slices.IndexFunc(question.Options, func(o contracts.OhMyPiAskOption) bool { return o.Label == answer.Selected[0] })]
-		p.advance()
-		return value, nil
+		if action.kind == askSelectDone {
+			value = head.Options[len(head.Options)-1]
+		}
+	default:
+		return "", fmt.Errorf("%w: unsupported question action", errAskShape)
 	}
-	if p.toggled < len(answer.Selected) {
-		label := answer.Selected[p.toggled]
-		index := slices.IndexFunc(question.Options, func(o contracts.OhMyPiAskOption) bool { return o.Label == label })
-		p.toggled++
-		return head.Options[index], nil
+	plan.nextAction++
+	plan.questionIndex = len(plan.questions)
+	if plan.nextAction < len(plan.actions) {
+		plan.questionIndex = plan.actions[plan.nextAction].questionIndex
 	}
-	if p.multiQuestion() || strings.TrimSpace(answer.Custom) != "" {
-		// Finish through "Other": the editor that follows carries the text.
-		p.other = true
-		return other, nil
-	}
-	// A single multi-select question finishes on "Done", which omp adds after the
-	// first toggle, just before "Other".
-	if len(head.Options) != len(question.Options)+2 {
-		return "", fmt.Errorf("%w: no option finishes the selection", errAskShape)
-	}
-	done := head.Options[len(question.Options)]
-	p.advance()
-	return done, nil
-}
-
-// advance moves the plan to the next question.
-func (p *askPlan) advance() {
-	p.index++
-	p.toggled = 0
-	p.other = false
-}
-
-// joinedAnswer is the text that finishes a multi-select question inside a
-// multi-question call: the chosen labels, then the reader's own text.
-func joinedAnswer(answer contracts.OhMyPiAskQuestionAnswer) string {
-	parts := make([]string, 0, 2)
-	if len(answer.Selected) > 0 {
-		parts = append(parts, strings.Join(answer.Selected, ", "))
-	}
-	if custom := strings.TrimSpace(answer.Custom); custom != "" {
-		parts = append(parts, custom)
-	}
-	return strings.Join(parts, "; ")
+	return value, nil
 }

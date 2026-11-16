@@ -149,7 +149,7 @@ describe('PROVIDER_WIRE_TOKENS', () => {
     ['turn_end', 'kiro-protocol metaKinds'],
     ['_qwencode/end_turn', 'qwen-protocol methods'],
     ['cursor/create_plan', 'cursor-protocol methods'],
-    ['permission.approval.requested', 'kimi-protocol events'],
+    ['transcript.ops', 'kimi-protocol events'],
     ['message.part.updated', 'mimo-protocol events'],
     ['subagent_transcript_header', 'codewhale-protocol transcriptKinds'],
     ['user_input', 'codewhale-protocol replyFrames'],

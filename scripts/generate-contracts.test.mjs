@@ -15,6 +15,7 @@ import { describe, expect, it } from 'bun:test'
 
 import {
   bufDescriptor,
+  checkBackgroundTaskRoles,
   checkChatHistory,
   checkCodexPermissionPresets,
   checkDesktop,
@@ -44,6 +45,7 @@ import {
   DESKTOP_RS_BEHAVIOR_NAMES,
   DESKTOP_RS_MACOS_ONLY_EVENTS,
   DESKTOP_TS_BEHAVIOR_NAMES,
+  emitGoBackgroundTaskRoles,
   emitGoChatHistory,
   emitGoCodexPermissionPresets,
   emitGoDesktop,
@@ -61,6 +63,7 @@ import {
   emitGoWire,
   emitGoWorkerVocab,
   emitRsDesktop,
+  emitTsBackgroundTaskRoles,
   emitTsChatHistory,
   emitTsCodexPermissionPresets,
   emitTsDesktop,
@@ -1954,6 +1957,7 @@ describe('generate', () => {
       'backend/generated/contracts/amp-protocol.go',
       'backend/generated/contracts/antigravity-protocol.go',
       'backend/generated/contracts/attachment-media.go',
+      'backend/generated/contracts/background-task-roles.go',
       'backend/generated/contracts/captcha.go',
       'backend/generated/contracts/chat-history.go',
       'backend/generated/contracts/claude-protocol.go',
@@ -1986,6 +1990,7 @@ describe('generate', () => {
       'backend/generated/contracts/mimo-protocol.go',
       'backend/generated/contracts/muse-protocol.go',
       'backend/generated/contracts/ohmypi-protocol.go',
+      'backend/generated/contracts/opencode-native-protocol.go',
       'backend/generated/contracts/opencode-protocol.go',
       'backend/generated/contracts/pagination.go',
       'backend/generated/contracts/pi-protocol.go',
@@ -2012,6 +2017,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/amp-protocol.ts',
       'frontend/src/generated/contracts/antigravity-protocol.ts',
       'frontend/src/generated/contracts/attachment-media.ts',
+      'frontend/src/generated/contracts/background-task-roles.ts',
       'frontend/src/generated/contracts/captcha.ts',
       'frontend/src/generated/contracts/chat-history.ts',
       'frontend/src/generated/contracts/claude-protocol.ts',
@@ -2044,6 +2050,7 @@ describe('generate', () => {
       'frontend/src/generated/contracts/mimo-protocol.ts',
       'frontend/src/generated/contracts/muse-protocol.ts',
       'frontend/src/generated/contracts/ohmypi-protocol.ts',
+      'frontend/src/generated/contracts/opencode-native-protocol.ts',
       'frontend/src/generated/contracts/opencode-protocol.ts',
       'frontend/src/generated/contracts/pagination.ts',
       'frontend/src/generated/contracts/pi-protocol.ts',
@@ -4377,5 +4384,44 @@ describe('emitTsProviderProtocol', () => {
     expect(emitted).toContain('export type ProbeTool = typeof PROBE_TOOL[keyof typeof PROBE_TOOL]')
     expect(emitted).not.toContain('export type undefined')
     expect(emitGoProviderProtocol(descriptor, data)).toContain('ProbeToolRead = "read"')
+  })
+})
+
+describe('background task role capabilities', () => {
+  const members = [
+    'BACKGROUND_TASK_ROLE_UNSPECIFIED',
+    'BACKGROUND_TASK_ROLE_TASK_OUTCOME',
+    'BACKGROUND_TASK_ROLE_CHILD_TASK',
+    'BACKGROUND_TASK_ROLE_CHILD_ACTIVITY',
+  ]
+  const fixture = () => ({
+    roles: {
+      TaskOutcome: { countsAsTask: true, canonicalChildActivity: false },
+      ChildTask: { countsAsTask: true, canonicalChildActivity: true },
+      ChildActivity: { countsAsTask: false, canonicalChildActivity: true },
+    },
+  })
+  it('covers every nonzero enum role and emits typed capability readers', () => {
+    expect(() => checkBackgroundTaskRoles(fixture(), members)).not.toThrow()
+    expect(emitGoBackgroundTaskRoles(fixture())).toContain('BackgroundTaskRole_BACKGROUND_TASK_ROLE_CHILD_ACTIVITY')
+    expect(emitGoBackgroundTaskRoles(fixture())).toContain('CountsAsTask: false, CanonicalChildActivity: true')
+    expect(emitTsBackgroundTaskRoles(fixture())).toContain('[BackgroundTaskRole.CHILD_ACTIVITY]')
+  })
+  it('rejects missing enum coverage and unrelated metadata', () => {
+    expect(() => checkBackgroundTaskRoles(fixture(), [...members, 'BACKGROUND_TASK_ROLE_NEW'])).toThrow('cover every nonzero')
+    const missing = fixture()
+    delete missing.roles.ChildTask
+    expect(() => checkBackgroundTaskRoles(missing, members)).toThrow('matches no roles key')
+  })
+  it('rejects roles without work, duplicate capabilities and nonboolean values', () => {
+    const empty = fixture()
+    empty.roles.TaskOutcome.countsAsTask = false
+    expect(() => checkBackgroundTaskRoles(empty, members)).toThrow('contributes neither')
+    const duplicate = fixture()
+    duplicate.roles.ChildActivity.countsAsTask = true
+    expect(() => checkBackgroundTaskRoles(duplicate, members)).toThrow('repeats another')
+    const malformed = fixture()
+    malformed.roles.ChildTask.countsAsTask = 'true'
+    expect(() => checkBackgroundTaskRoles(malformed, members)).toThrow('must be boolean')
   })
 })

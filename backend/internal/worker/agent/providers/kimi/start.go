@@ -68,9 +68,6 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 	address, err := ready.waiter.Wait(ctx, a.Clock(), a.ProcessDone(), timeout)
 	if err != nil {
 		cleanup()
-		if errors.Is(err, providerkit.ErrServerExited) {
-			return nil, a.FormatStartupError("server start", err)
-		}
 		return nil, a.FormatStartupError("server start", err)
 	}
 	if err := a.connect(ctx, address, ready.token(), opts, timeout); err != nil {
@@ -88,8 +85,8 @@ func startServer(ctx context.Context, opts agent.Options, sink agent.ProviderSer
 	a.Mu.Lock()
 	sessionID := a.sessionID
 	a.Mu.Unlock()
-	a.sink.UpdateSessionID(sessionID)
-	a.replayStartupConfigWarnings(ctx)
+	a.flushStartupConfigWarnings()
+	a.persistStartupConfigDiagnostics(ctx, opts, spec)
 	a.persistSessionWarnings(ctx, sessionID)
 	a.sink.PersistSettingsRefresh(agent.CurrentOptions(a.OptionGroups()))
 	a.sink.BroadcastStatusActive(sessionID)
@@ -130,6 +127,7 @@ func (a *Agent) connect(ctx context.Context, address, token string, opts agent.O
 	}
 
 	a.stream = newKimiStream(endpoint, a.AgentID(), a.clock, a.handleFrame, a.resyncSession)
+	a.stream.recovering = a.beginInvocationRecovery
 	if err := a.stream.start(a.Context(), timeout); err != nil {
 		return err
 	}
@@ -170,6 +168,7 @@ func (a *Agent) openStartupSession(opts agent.Options, timeout time.Duration) er
 		a.sessionID = opts.ResumeSessionID
 		a.settings.effort = wanted.effort
 		a.Mu.Unlock()
+		a.sink.UpdateSessionID(opts.ResumeSessionID)
 		status, err := a.resumeSession(ctx, opts.ResumeSessionID, wanted)
 		if err != nil {
 			a.Mu.Lock()
@@ -178,7 +177,6 @@ func (a *Agent) openStartupSession(opts agent.Options, timeout time.Duration) er
 			return err
 		}
 		a.applyStatus(status)
-		a.readGoal(ctx, opts.ResumeSessionID)
 		return nil
 	}
 
@@ -193,9 +191,15 @@ func (a *Agent) openStartupSession(opts agent.Options, timeout time.Duration) er
 	if err != nil {
 		return err
 	}
-	a.Mu.Lock()
-	a.sessionID = sessionID
-	a.Mu.Unlock()
+	a.dispatchMu.Lock()
+	frames, err := a.takeSessionAdmissionLocked(sessionID)
+	if err != nil {
+		a.finishDispatch()
+		a.stream.unsubscribe(sessionID)
+		return err
+	}
+	a.adoptSessionLocked(sessionID, frames)
+	a.finishDispatch()
 	status, err := a.readStatus(ctx, sessionID)
 	if err != nil {
 		return err

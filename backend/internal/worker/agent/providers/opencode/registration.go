@@ -41,7 +41,7 @@ func FamilyRegistration(spec FamilyRegistrationSpec) agent.Registration {
 		Plugin:   spec.Plugin,
 		Start:    spec.Start,
 		Locator:  spec.Locator,
-		// Models are discovered dynamically from newSession.
+		// The runtime discovers models during startup.
 		DefaultModels:       nil,
 		OptionGroups:        spec.OptionGroups,
 		AdditionalOptionIDs: []string{agent.OptionIDEffort},

@@ -26,8 +26,8 @@ const (
 	frameAgentEnd      = `{"type":"agent_end","isTerminal":true,"messages":[{"role":"user","content":[{"type":"text","text":"say hello"}]},{"role":"assistant","content":[{"type":"text","text":"Hello."}],"stopReason":"stop"}]}`
 )
 
-// TestTurnFrames lists the frames that move the turn flag. Every other frame of
-// omp's vocabulary -- and one that does not exist yet -- must publish nothing.
+// TestTurnFrames lists prompt and maintenance frames that publish input activity.
+// Every other frame, including an unknown future frame, must publish nothing.
 func TestTurnFrames(t *testing.T) {
 	t.Parallel()
 	cases := []agenttest.TurnFrameCase{
@@ -45,7 +45,10 @@ func TestTurnFrames(t *testing.T) {
 		{Name: "tool_execution_start", Line: frameBashStart},
 		{Name: "tool_execution_end", Line: frameBashEnd},
 		{Name: "auto_retry_start", Line: `{"type":"auto_retry_start","attempt":1,"maxAttempts":10,"delayMs":92,"errorMessage":"400"}`},
-		{Name: "auto_compaction_start", Line: `{"type":"auto_compaction_start","reason":"threshold","action":"snapcompact"}`},
+		{Name: "auto_compaction_start", Line: `{"type":"auto_compaction_start","reason":"threshold","action":"snapcompact"}`, Moves: true},
+		{Name: "auto_compaction_end", Line: `{"type":"auto_compaction_end","result":{"summary":"done"}}`, Moves: true},
+		{Name: "manual_compaction_start", Line: `{"type":"manual_compaction_start"}`, Moves: true},
+		{Name: "manual_compaction_end", Line: `{"type":"manual_compaction_end","aborted":true}`, Moves: true},
 		{Name: "todo_reminder", Line: `{"type":"todo_reminder","todos":[{"content":"Write code","status":"in_progress"}],"attempt":1,"maxAttempts":3}`},
 		{Name: "notice", Line: `{"type":"notice","level":"info","message":"hi"}`},
 		{Name: "extension_ui_request setWidget", Line: `{"type":"extension_ui_request","id":"w1","method":"setWidget","widgetKey":"autoresearch"}`},
@@ -889,7 +892,7 @@ func TestFinishOutputEndsAnOpenChildCompaction(t *testing.T) {
 	require.Len(t, notifications, 1)
 	assert.Equal(t, contracts.NotificationTypeCompactionEnded, notifications[0][contracts.NotificationFieldType])
 	assert.Equal(t, contracts.CompactionEndOutcomeAborted, notifications[0][contracts.NotificationFieldOutcome])
-	assert.False(t, child.compactionOpen)
+	assert.Nil(t, child.compaction)
 }
 
 func TestTtsrDiscardsTheAbortedPartialAndKeepsOneTurn(t *testing.T) {

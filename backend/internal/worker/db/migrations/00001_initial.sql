@@ -657,8 +657,8 @@ CREATE UNIQUE INDEX idx_agent_todos_task_id ON agent_todos(agent_id, task_id) WH
 -- page reloads and cross-machine opens. One registry per ROOT main agent
 -- (owner_agent_id); rows for descendants at any depth live under the root.
 -- row_key is the provider linkage key (Claude task_id, Codex thread id, ACP
--- toolCallId, etc.). child_agent_id is set only for subagent rows that own a
--- transcript (openable tab); deliberately NOT an FK so the registry row
+-- toolCallId, etc.). child_agent_id links an openable transcript. The role
+-- identifies its canonical activity row. This is deliberately NOT an FK so the registry row
 -- survives its child row, and whole-tree deletion cascades through the owner.
 -- Same security posture as agent_todos: content lives only in worker SQLite
 -- and travels only over the E2EE WatchEvents channel.
@@ -670,7 +670,9 @@ CREATE TABLE agent_background_tasks (
     row_key         TEXT NOT NULL,  -- provider linkage key (tool_use id / thread id / session id / task id)
     seq             INTEGER NOT NULL,
     kind            INTEGER NOT NULL CHECK (typeof(kind) = 'integer') CHECK (kind BETWEEN 1 AND 3), -- BackgroundTaskKind ordinal (SUBAGENT | SHELL | WORKFLOW)
-    child_agent_id  TEXT NOT NULL DEFAULT '', -- set for subagent rows that own a transcript
+    -- BackgroundTaskRole ordinal. The role separates transcript activity from task outcomes.
+    role            INTEGER NOT NULL CHECK (typeof(role) = 'integer') CHECK (role BETWEEN 1 AND 3),
+    child_agent_id  TEXT NOT NULL DEFAULT '', -- transcript link; several outcomes can share a child
     parent_agent_id TEXT NOT NULL DEFAULT '', -- immediate parent agent id ('' == the owner itself)
     group_key       TEXT NOT NULL DEFAULT '', -- workflow/phase grouping key
     group_label     TEXT NOT NULL DEFAULT '', -- human label for the group
@@ -695,10 +697,14 @@ CREATE TABLE agent_background_tasks (
     created_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     updated_at      DATETIME NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     ended_at        DATETIME,
+    -- Role TASK_OUTCOME is 1; the enum numbering test checks this constraint.
+    CHECK (child_agent_id <> '' OR role = 1),
     PRIMARY KEY (owner_agent_id, row_key),
     UNIQUE (owner_agent_id, seq)
 );
-CREATE INDEX idx_agent_background_tasks_child ON agent_background_tasks(child_agent_id) WHERE child_agent_id <> '';
+-- ChildTask=2 and ChildActivity=3 own canonical activity. The enum numbering test checks these ordinals.
+CREATE UNIQUE INDEX idx_agent_background_tasks_canonical_child ON agent_background_tasks(child_agent_id)
+    WHERE child_agent_id <> '' AND role IN (2, 3);
 
 -- Every OPEN tab and the directory its git questions are answered from, as one
 -- relation.

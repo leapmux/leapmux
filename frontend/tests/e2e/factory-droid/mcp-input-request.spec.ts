@@ -17,7 +17,7 @@ droidTest.describe('Factory Droid MCP input form', () => {
     const receiptLog = join(directory, 'droid-form-receipt.json')
     const server = writeMcpFormServer(directory, 'droid-form-server.mjs', { receiptLog })
     await withDroidMcpWorkspace({ page, modelScript, leapmuxServer }, { server, prefix: 'droid-mcp-form' }, async (context) => {
-      // The Droid builder adds `call_` to the ID, and Droid can clip it, so the result reader matches the original ID.
+      // The shared builder supplies a stable native ID, which the result reader matches exactly.
       const callId = 'call-form'
       const call = mcpToolCall(context.provider, callId, { server: server.name, tool: 'ask', input: {} })
       let resultRequest: MockModelRequestRecord | undefined

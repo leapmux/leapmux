@@ -77,6 +77,39 @@ describe('createModelStream', () => {
     expect(await collect(stream.chunks('later'))).toEqual([])
   })
 
+  it('holds nontext output until the same scenario gate releases', async () => {
+    let release!: (value: boolean) => void
+    let reached!: () => void
+    const entered = new Promise<void>(resolve => reached = resolve)
+    const held = new Promise<boolean>(resolve => release = resolve)
+    const stream = createModelStream(response(), undefined, () => {
+      reached()
+      return held
+    })
+    let finished = false
+    const output = stream.waitForGate('safety').then(async (allowed) => {
+      finished = true
+      return allowed
+        ? collect(stream.chunks('after verdict'))
+        : []
+    })
+    await entered
+    expect(finished).toBe(false)
+    release(true)
+    expect(await output).toEqual(['after verdict'])
+  })
+
+  it('drops later output when a nontext gate is cancelled', async () => {
+    const stream = createModelStream(response(), undefined, async () => false)
+    expect(await stream.waitForGate('safety')).toBe(false)
+    expect(stream.active).toBe(false)
+    expect(await collect(stream.chunks('never delivered'))).toEqual([])
+  })
+
+  it('rejects a nontext gate without an owning scenario', async () => {
+    await expect(createModelStream(response()).waitForGate('missing')).rejects.toThrow('scenario-owned gate handler')
+  })
+
   it('emits no chunks for an absent field and preserves an explicit empty field', async () => {
     const stream = createModelStream(response())
     expect(await collect(stream.chunks(undefined))).toEqual([])

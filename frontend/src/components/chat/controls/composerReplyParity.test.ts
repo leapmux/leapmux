@@ -30,7 +30,6 @@ describe('the composer reply of each ACP plugin', () => {
     AgentProvider.GROK_BUILD,
     AgentProvider.KILO,
     AgentProvider.KIRO,
-    AgentProvider.OPENCODE,
     AgentProvider.QWEN_CODE,
     AgentProvider.REASONIX,
   ] as const
@@ -53,9 +52,8 @@ describe('the composer reply of each ACP plugin', () => {
       })
   })
 
-  // OpenCode and Kilo draw their daemon's own `once`/`reject` pair for a request that
-  // states no option list, and the composer answers with the same pair.
-  it.each([AgentProvider.OPENCODE, AgentProvider.KILO].map(provider => [AgentProvider[provider], provider] as const))('answers an option-less request with the daemon pair for %s', (_name, provider) => {
+  // Kilo supplies its daemon's once/reject pair when a request gives no option list.
+  it.each([AgentProvider.KILO].map(provider => [AgentProvider[provider], provider] as const))('answers an option-less request with the daemon pair for %s', (_name, provider) => {
     const optionLess = {
       ...PERMISSION_REQUEST,
       params: { ...PERMISSION_REQUEST.params, options: undefined },
@@ -86,5 +84,33 @@ describe('the composer reply of each ACP plugin', () => {
           outcome: { outcome: 'selected', optionId: 'once' },
         },
       })
+  })
+})
+
+describe('native OpenCode composer replies', () => {
+  it('binds allow and denial feedback to the current control request', () => {
+    const controls = providerFor(AgentProvider.OPENCODE)?.controls
+    const payload = {
+      type: 'permission.asked',
+      data: {
+        action: 'shell',
+        resources: ['ls'],
+        save: [],
+      },
+    }
+    expect(controls?.buildControlResponse?.(payload, 'use the other file', 'native-request')).toMatchObject({
+      type: 'control_response',
+      response: {
+        request_id: 'native-request',
+        response: { behavior: 'deny', message: 'use the other file' },
+      },
+    })
+    expect(controls?.buildControlResponse?.(payload, '', 'native-request')).toMatchObject({
+      type: 'control_response',
+      response: {
+        request_id: 'native-request',
+        response: { behavior: 'allow', updatedInput: {} },
+      },
+    })
   })
 })

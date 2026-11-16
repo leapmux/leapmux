@@ -288,7 +288,8 @@ export async function exerciseSteerBeforeTool(context: NativeScenarioContext, op
     await sendMessage(context.page, context.modelScript.prompt('Run the scripted shell command, then reply.'))
     await context.modelScript.waitForGate(gate)
     await steerQueuedInput(context.page, { message: steering, match: 'Also include the word' })
-    await context.modelScript.releaseGate(gate)
+    // A steer can cancel the held request before the release.
+    await context.modelScript.releaseGateIfHeld(gate)
   }, async () => {
     await context.modelScript.releaseGateIfHeld(gate)
   })

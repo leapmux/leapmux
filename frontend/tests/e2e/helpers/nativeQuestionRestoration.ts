@@ -52,6 +52,25 @@ export async function restoreQuestionSelection(context: ManagedNativeScenarioCon
   })
 }
 
+/** Restore an explicit empty selection without reinstating native defaults. */
+export async function restoreQuestionEmptySelection(context: ManagedNativeScenarioContext, banner: Locator, label: string, pageIndex = 0): Promise<void> {
+  validateQuestionPageIndex(pageIndex)
+  if (!label)
+    throw new Error('An empty-selection proof requires an option label.')
+  await expect(banner.getByTestId(`question-option-${label}`).locator('input')).not.toBeChecked()
+  await restoreQuestionAfterStoredState(context, async ({ agentId, userId }) => {
+    await waitForStoredEntry(
+      context.page,
+      accountStorageKey(userId, `${PREFIX_CONTROL_STATE}${agentId}:`),
+      stored => isObject(stored) && isObject(stored.selections)
+        && Array.isArray(stored.selections[pageIndex]) && stored.selections[pageIndex].length === 0,
+      'the empty selection reaches durable storage before reload',
+    )
+  }, async (restored) => {
+    await expect(restored.getByTestId(`question-option-${label}`).locator('input')).not.toBeChecked()
+  })
+}
+
 /** Restore a typed answer only after its draft and optional page reach durable account storage. */
 export async function restoreQuestionTextDraft(context: ManagedNativeScenarioContext, text: string, pageIndex?: number): Promise<void> {
   validateQuestionPageIndex(pageIndex)

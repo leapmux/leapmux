@@ -4,7 +4,7 @@ import type { ManagedNativeScenarioContext, NativeScenarioContext } from './nati
 import type { NativeChildProfile, NativeChildScript, NativeChildScriptContext, NativeChildTask, ProfiledNativeChild, RunningChildOptions, RunningNativeChild } from './runningChildProof'
 import { describe, expect, it } from 'vitest'
 import { fakeLocator } from '~/test-support/fakeLocator'
-import { AgentProvider, BackgroundTaskKind, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, BackgroundTaskKind, BackgroundTaskRole, BackgroundTaskStatus } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { MOCK_MODEL_IDS } from './mockAgentEnvironment'
 import { mockScenarioPrompt, readScenarioStatus, registerMockModelScenario } from './mockModelScenario'
 import { matchesRequest, parseScenarioSpec } from './mockModelScript'
@@ -30,6 +30,7 @@ import {
 describe('selectRunningChildTask', () => {
   const old: NativeChildTask = {
     id: 'old-native-task',
+    role: BackgroundTaskRole.CHILD_TASK,
     kind: BackgroundTaskKind.SUBAGENT,
     childAgentId: 'old-worker-child',
     parentAgentId: 'actual-parent',
@@ -38,6 +39,7 @@ describe('selectRunningChildTask', () => {
   }
   const current: NativeChildTask = {
     id: 'current-native-task',
+    role: BackgroundTaskRole.CHILD_TASK,
     kind: BackgroundTaskKind.SUBAGENT,
     childAgentId: 'current-worker-child',
     parentAgentId: 'actual-parent',
@@ -50,6 +52,26 @@ describe('selectRunningChildTask', () => {
     previousChildIds: new Set([old.childAgentId]),
     rowText: 'leapmux-e2e-child',
   }
+  it('selects canonical activity when several outcomes share its child transcript', () => {
+    const canonical = { ...current, id: 'child-activity', role: BackgroundTaskRole.CHILD_ACTIVITY }
+    const outcomes = [
+      { ...current, id: 'coordinator-a', role: BackgroundTaskRole.TASK_OUTCOME },
+      { ...current, id: 'coordinator-b', role: BackgroundTaskRole.TASK_OUTCOME },
+    ]
+    expect(selectRunningChildTask([...outcomes, canonical], selection)).toEqual(canonical)
+    expect(selectRunningChildTask([...outcomes, canonical], { ...selection, taskId: 'coordinator-b' })).toEqual(canonical)
+  })
+  it('does not infer running child activity from its running coordinator', () => {
+    const canonical = {
+      ...current,
+      id: 'child-activity',
+      role: BackgroundTaskRole.CHILD_ACTIVITY,
+      status: BackgroundTaskStatus.ENDED_WITH_UNKNOWN_OUTCOME,
+    }
+    const coordinator = { ...current, id: 'coordinator', role: BackgroundTaskRole.TASK_OUTCOME }
+    expect(selectRunningChildTask([coordinator, canonical], selection)).toBeUndefined()
+    expect(selectRunningChildTask([coordinator, canonical], { ...selection, taskId: coordinator.id })).toBeUndefined()
+  })
   it('selects the exact new running child when an old native child has the same title', () => {
     expect(selectRunningChildTask([old, current], selection)).toEqual(current)
   })

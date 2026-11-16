@@ -99,7 +99,7 @@ func TestMuseContextClearRetiresEveryDescendantAndKeepsReceivedEvidence(t *testi
 		assert.Contains(t, unsubscribed, id)
 		assert.Contains(t, childControls[id].canceled, "control-"+id)
 		assert.Equal(t, agent.TurnState{}, a.ActiveChildTurnState(key))
-		require.ErrorIs(t, a.SendChildInput(key, "late input", nil), agent.ErrChildRouteNotReady)
+		require.ErrorIs(t, agenttest.SendChildInput(a, key, agent.ChildInput{Content: "late input"}), agent.ErrChildRouteNotReady)
 		require.ErrorIs(t, a.SteerChildInput(key, "late input", nil), agent.ErrChildRouteNotReady)
 		require.ErrorIs(t, a.InterruptChild(key, agent.StopContext{}), agent.ErrChildRouteNotReady)
 		beforeTurns, beforeProgress, beforeInfo := len(childSink.TurnActiveCalls), len(childSink.ProgressUpdates()), childSink.SessionInfoCount()
@@ -341,7 +341,7 @@ func TestMuseResumeRestoresChildRoutesWithoutReplayingParentConversation(t *test
 			assert.Equal(t, "native-model", a.settings[agent.OptionIDModel])
 			child.childViewPrefix = childViewPrefixReady // View bootstrap is covered independently.
 			child.viewRecovery = nil
-			require.NoError(t, a.SendChildInput(museChildRowKey("session", "sub"), "A note after restart", nil))
+			require.NoError(t, agenttest.SendChildInput(a, museChildRowKey("session", "sub"), agent.ChildInput{Content: "A note after restart"}))
 			assert.Equal(t, 1, sends)
 			for _, message := range sink.Messages() {
 				assert.NotContains(t, string(message.Content), "Never replay this parent answer")
@@ -523,7 +523,7 @@ func TestHardChildOpeningPromptFailureBlocksViewUntilOneExplicitRetry(t *testing
 		}
 	}})
 	require.NoError(t, a.InterruptChild(state.childKey, agent.StopContext{}))
-	require.ErrorIs(t, a.SendChildInput(state.childKey, "later", nil), agent.ErrChildRouteNotReady)
+	require.ErrorIs(t, agenttest.SendChildInput(a, state.childKey, agent.ChildInput{Content: "later"}), agent.ErrChildRouteNotReady)
 	assert.Equal(t, []string{methodChildInterrupt}, methods)
 	assert.Equal(t, 1, outcome.calls)
 	outcome.failure = nil

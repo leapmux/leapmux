@@ -28,7 +28,6 @@ func TestNormalizeAttachmentsForProvider_RequiresAnImplementedAudioPolicy(t *tes
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_MIMO_CODE:       true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_QWEN_CODE:       true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_FAST_AGENT:      true,
-		leapmuxv1.AgentProvider_AGENT_PROVIDER_OPENCODE:        true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_KILO:            true,
 		leapmuxv1.AgentProvider_AGENT_PROVIDER_ANTIGRAVITY_CLI: true,
 	}

@@ -18,8 +18,9 @@ import (
 
 // promptBody is the part of POST .../prompts a test reads.
 type promptBody struct {
-	Content []map[string]any `json:"content"`
-	AgentID string           `json:"agent_id"`
+	PromptID string           `json:"prompt_id"`
+	Content  []map[string]any `json:"content"`
+	AgentID  string           `json:"agent_id"`
 }
 
 func decodePrompt(t *testing.T, request fakeKapRequest) promptBody {
@@ -46,13 +47,13 @@ func TestKimiSendInput(t *testing.T) {
 		rig.agent.Mu.Lock()
 		active := rig.agent.turnActive
 		rig.agent.Mu.Unlock()
-		assert.False(t, active, "the turn flag moves on turn.started, never on the POST reply")
+		assert.False(t, active, "the native running header moves the turn flag; the POST reply does not")
 	})
 
 	t.Run("refuses input while a turn runs", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.feed(t, map[string]any{"type": "turn.started", "turnId": 0, "origin": map[string]any{"kind": "user"}})
+		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user","payload":{"kind":"user"}}}}`)
 		err := rig.agent.SendInput("Another message.", nil)
 		agenttest.AssertBusyRefusalRepublishesTheTurn(t, &rig.sink.Sink, rig.agent, err)
 		var busy *agent.AgentBusyError
@@ -135,7 +136,9 @@ func TestKimiSendInput(t *testing.T) {
 func TestKimiBlockedPromptReleasesTheTurn(t *testing.T) {
 	t.Parallel()
 	rig := newKimiTestRig(t, agent.Options{})
-	rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/prompts"), fakeKapReply{Data: map[string]any{"status": "blocked"}})
+	rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/prompts"), fakeKapReply{DataFor: func(request fakeKapRequest) any {
+		return map[string]any{"prompt_id": decodePrompt(t, request).PromptID, "status": "blocked"}
+	}})
 	before := len(rig.sink.TurnActives())
 	require.NoError(t, rig.agent.SendInput("The hook blocks this prompt.", nil))
 	assert.Equal(t, []bool{false}, rig.sink.TurnActives()[before:], "the queue must receive the inactive state before dispatch returns")
@@ -153,7 +156,7 @@ func TestKimiSteerInput(t *testing.T) {
 
 	startTurn := func(t *testing.T, rig *kimiTestRig) {
 		t.Helper()
-		rig.feed(t, map[string]any{"type": "turn.started", "turnId": 0, "origin": map[string]any{"kind": "user"}})
+		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user","payload":{"kind":"user"}}}}`)
 		rig.fake.setBusy(rig.sessionID(), true)
 	}
 
@@ -164,7 +167,7 @@ func TestKimiSteerInput(t *testing.T) {
 		require.NoError(t, rig.agent.SteerInput("Use the other file.", nil))
 		prompts := rig.fake.requestsTo("POST " + kimiSessionPath(rig.sessionID(), "/prompts"))
 		require.Len(t, prompts, 1)
-		steers := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "prompts", "prompt_1", ":steer"))
+		steers := rig.fake.requestsTo("POST " + kimiItemPath(rig.sessionID(), "prompts", decodePrompt(t, prompts[0]).PromptID, ":steer"))
 		require.Len(t, steers, 1, "the queued prompt is steered by the id the POST returned")
 	})
 
@@ -178,7 +181,7 @@ func TestKimiSteerInput(t *testing.T) {
 	t.Run("delivers a prompt that started a turn of its own", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.feed(t, map[string]any{"type": "turn.started", "turnId": 0, "origin": map[string]any{"kind": "user"}})
+		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user","payload":{"kind":"user"}}}}`)
 		// The server ended the turn before the prompt arrived, so the prompt ran.
 		require.NoError(t, rig.agent.SteerInput("Also this.", nil))
 		for _, route := range rig.fake.routes() {
@@ -190,28 +193,40 @@ func TestKimiSteerInput(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		startTurn(t, rig)
-		rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "prompts", "prompt_1", ":steer"), fakeKapReply{Code: kimiCodePromptNotPending})
+		rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/prompts"), fakeKapReply{DataFor: func(request fakeKapRequest) any {
+			promptID := decodePrompt(t, request).PromptID
+			rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "prompts", promptID, ":steer"), fakeKapReply{Code: kimiCodePromptNotPending})
+			return map[string]any{"prompt_id": promptID, "status": kimiPromptQueued}
+		}})
 		require.NoError(t, rig.agent.SteerInput("Also this.", nil))
-		assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "prompts", "prompt_1", kimiActionAbort)))
+		assert.Empty(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "prompts", decodePrompt(t, rig.fake.requestsTo("POST " + kimiSessionPath(rig.sessionID(), "/prompts"))[0]).PromptID, kimiActionAbort)))
 	})
 
 	t.Run("withdraws the queued prompt when the steer fails", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		startTurn(t, rig)
-		rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "prompts", "prompt_1", ":steer"), fakeKapReply{Code: 50000, Msg: "boom"})
+		rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/prompts"), fakeKapReply{DataFor: func(request fakeKapRequest) any {
+			promptID := decodePrompt(t, request).PromptID
+			rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "prompts", promptID, ":steer"), fakeKapReply{Code: 50000, Msg: "boom"})
+			return map[string]any{"prompt_id": promptID, "status": kimiPromptQueued}
+		}})
 		err := rig.agent.SteerInput("Also this.", nil)
 		require.Error(t, err)
 		assert.NotErrorIs(t, err, agent.ErrDeliveryUncertain, "the withdrawn prompt reached nobody")
-		assert.Len(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "prompts", "prompt_1", kimiActionAbort)), 1)
+		assert.Len(t, rig.fake.requestsTo("POST "+kimiItemPath(rig.sessionID(), "prompts", decodePrompt(t, rig.fake.requestsTo("POST " + kimiSessionPath(rig.sessionID(), "/prompts"))[0]).PromptID, kimiActionAbort)), 1)
 	})
 
 	t.Run("reports an uncertain delivery when the withdrawal fails too", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
 		startTurn(t, rig)
-		rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "prompts", "prompt_1", ":steer"), fakeKapReply{Code: 50000, Msg: "boom"})
-		rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "prompts", "prompt_1", kimiActionAbort), fakeKapReply{Code: 50000, Msg: "boom"})
+		rig.fake.reply("POST "+kimiSessionPath(rig.sessionID(), "/prompts"), fakeKapReply{DataFor: func(request fakeKapRequest) any {
+			promptID := decodePrompt(t, request).PromptID
+			rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "prompts", promptID, ":steer"), fakeKapReply{Code: 50000, Msg: "boom"})
+			rig.fake.reply("POST "+kimiItemPath(rig.sessionID(), "prompts", promptID, kimiActionAbort), fakeKapReply{Code: 50000, Msg: "boom"})
+			return map[string]any{"prompt_id": promptID, "status": kimiPromptQueued}
+		}})
 		require.ErrorIs(t, rig.agent.SteerInput("Also this.", nil), agent.ErrDeliveryUncertain)
 	})
 
@@ -264,7 +279,11 @@ func TestKimiTurnSteerability(t *testing.T) {
 		t.Run("a turn of origin "+origin+" takes a steer", func(t *testing.T) {
 			t.Parallel()
 			rig := newKimiTestRig(t, agent.Options{})
-			rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": origin}})
+			nativeKind := "other"
+			if origin == contracts.KimiOriginUser {
+				nativeKind = "user"
+			}
+			rig.transcriptOps(t, 1, fmt.Sprintf(`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":%q,"payload":{"kind":%q}}}}`, nativeKind, origin))
 			assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, rig.agent.PublishTurnActive())
 			var busy *agent.AgentBusyError
 			require.ErrorAs(t, rig.agent.SendInput("More.", nil), &busy)
@@ -279,11 +298,15 @@ func TestKimiTurnSteerability(t *testing.T) {
 		t.Run("a turn of origin "+origin+" takes no steer", func(t *testing.T) {
 			t.Parallel()
 			rig := newKimiTestRig(t, agent.Options{})
-			rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": origin}})
+			nativeKind := "other"
+			if origin == contracts.KimiOriginUser {
+				nativeKind = "user"
+			}
+			rig.transcriptOps(t, 1, fmt.Sprintf(`{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":%q,"payload":{"kind":%q}}}}`, nativeKind, origin))
 			rig.fake.setBusy(rig.sessionID(), true)
 			assert.Equal(t, agent.TurnState{Active: true, Steerable: false}, rig.agent.PublishTurnActive(),
 				"the queue waits for the turn to end")
-			assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, rig.sink.TurnKinds()[0], "the turn.started publish states it too")
+			assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_UNSPECIFIED, rig.sink.TurnKinds()[0], "the native header publication states it too")
 
 			var busy *agent.AgentBusyError
 			require.ErrorAs(t, rig.agent.SendInput("More.", nil), &busy)
@@ -300,9 +323,9 @@ func TestKimiTurnSteerability(t *testing.T) {
 	t.Run("a turn end clears the steerability with the turn", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": contracts.KimiOriginUser}})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "turnId": 0, "reason": contracts.KimiTurnEndCompleted})
-		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 1, "origin": map[string]any{"kind": contracts.KimiOriginCronJob}})
+		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user","payload":{"kind":"user"}}}}`)
+		rig.transcriptOps(t, 2, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"completed","origin":{"kind":"user"}}}`)
+		rig.transcriptOps(t, 3, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t1","state":"running","origin":{"kind":"cron","payload":{"kind":"cron_job"}}}}`)
 		assert.Equal(t, agent.TurnState{Active: true, Steerable: false}, rig.agent.PublishTurnActive())
 	})
 }
@@ -313,7 +336,7 @@ func TestKimiSendRawInput(t *testing.T) {
 	t.Run("the raw abort frame interrupts the running turn", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiTestRig(t, agent.Options{})
-		rig.feed(t, map[string]any{"type": "turn.started", "turnId": 0, "origin": map[string]any{"kind": "user"}})
+		rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user","payload":{"kind":"user"}}}}`)
 		require.NoError(t, rig.agent.SendRawInput([]byte(`{"action":"abort"}`), agent.StopContext{}))
 		assert.Len(t, rig.fake.requestsTo("POST "+kimiSessionPath(rig.sessionID(), kimiActionAbort)), 1)
 	})
@@ -366,28 +389,30 @@ func TestKimiHandleOutputSkipsAFrameThatIsNotJSON(t *testing.T) {
 func TestKimiDispatchIsSafeForConcurrentFrames(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
-	rig.startTurn(t, 0, contracts.KimiOriginUser)
-
+	rig.transcriptOps(t, 1, `{"op":"turn.upsert","turn":{"kind":"turn","turnId":"t0","state":"running","origin":{"kind":"user"}}}`)
 	const calls = 32
-	frames := make([][][]byte, calls)
+	operations := make([]any, 0, calls*3)
 	for i := range calls {
 		id := fmt.Sprintf("call_%d", i)
-		frames[i] = [][]byte{
-			kimiEventFrame(t, "session_1", map[string]any{"type": contracts.KimiEventToolCallStarted, "turnId": 0, "toolCallId": id,
-				"name": contracts.KimiToolRead, "args": map[string]any{"path": id}}),
-			kimiEventFrame(t, "session_1", map[string]any{"type": contracts.KimiEventToolProgress, "turnId": 0, "toolCallId": id,
-				"update": map[string]any{"kind": "stdout", "text": "x"}}),
-			kimiEventFrame(t, "session_1", map[string]any{"type": contracts.KimiEventToolResult, "turnId": 0, "toolCallId": id, "output": "ok"}),
+		for _, state := range []string{"opening", "progress", "done"} {
+			frame := map[string]any{"kind": "tool", "frameId": id, "toolCallId": id, "name": "Read", "state": "running", "input": map[string]any{"path": id}}
+			if state == "progress" {
+				frame["progress"] = map[string]any{"kind": "stdout", "text": "x"}
+			}
+			if state == "done" {
+				frame["state"], frame["output"] = "done", "ok"
+			}
+			operations = append(operations, map[string]any{"op": "frame.upsert", "turnId": "t0", "stepId": "t0.1", "frame": frame})
 		}
 	}
+	batch, err := json.Marshal(map[string]any{"type": "transcript.ops", "session_id": "session_1", "payload": map[string]any{"type": "transcript.ops", "agent_id": "main", "seq": 2, "ops": operations}})
+	require.NoError(t, err)
 	approval := kimiEventFrame(t, "session_1", approvalEvent("approval_1", map[string]any{"kind": "command", "command": "ls"}))
 
 	var wg sync.WaitGroup
-	for i := range calls {
+	for range calls {
 		wg.Go(func() {
-			for _, frame := range frames[i] {
-				rig.agent.HandleOutput(frame)
-			}
+			rig.agent.HandleOutput(batch)
 			rig.agent.HandleOutput(approval)
 		})
 	}
@@ -396,7 +421,7 @@ func TestKimiDispatchIsSafeForConcurrentFrames(t *testing.T) {
 	assert.Equal(t, 1, rig.sink.PublishedControlCount(), "a request that arrives many times at once publishes once")
 	closed := rig.sink.ClosedSpans()
 	for i := range calls {
-		assert.Contains(t, closed, kimiSpanID("session_1", kimiMainAgentID, 0, fmt.Sprintf("call_%d", i)))
+		assert.Contains(t, closed, "session_1/"+kimiTranscriptScope("main", "t0", "t0.1", fmt.Sprintf("call_%d", i)))
 	}
 	rig.agent.Mu.Lock()
 	uses, open := rig.agent.TurnToolUses, len(rig.agent.runs[kimiMainAgentID].tools)

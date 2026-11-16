@@ -1093,7 +1093,7 @@ func (s *Store) prepare(ctx context.Context, agentID, expectedInputID string, mo
 // RequeuePrepared returns a prepared item to the queue. The steer path uses it,
 // and PrepareSteer claims no turn identity, so there is none to release.
 func (s *Store) RequeuePrepared(ctx context.Context, agentID, inputID string) (Snapshot, error) {
-	return s.requeuePrepared(ctx, agentID, inputID, false, false)
+	return s.requeuePrepared(ctx, agentID, inputID, requeuePreserveTurn, false)
 }
 
 // RequeueBusy returns a prepared item to the queue after the provider refused
@@ -1112,10 +1112,24 @@ func (s *Store) RequeuePrepared(ctx context.Context, agentID, inputID string) (S
 // turn that ended inside the provider call already committed its clear, and a
 // write here would restore a turn that no envelope ever ends again.
 func (s *Store) RequeueBusy(ctx context.Context, agentID, inputID string, activeTurnSteerable bool) (Snapshot, error) {
-	return s.requeuePrepared(ctx, agentID, inputID, true, activeTurnSteerable)
+	return s.requeuePrepared(ctx, agentID, inputID, requeueNativeTurn, activeTurnSteerable)
 }
 
-func (s *Store) requeuePrepared(ctx context.Context, agentID, inputID string, releaseTurnIdentity bool, activeTurnSteerable bool) (Snapshot, error) {
+type requeueTurnDisposition uint8
+
+const (
+	requeuePreserveTurn requeueTurnDisposition = iota
+	requeueNativeTurn
+	requeuePendingInput
+)
+
+// RequeuePending waits for native admission without inventing a running turn.
+// The item and its provisional turn claim change in the same transaction.
+func (s *Store) RequeuePending(ctx context.Context, agentID, inputID string) (Snapshot, error) {
+	return s.requeuePrepared(ctx, agentID, inputID, requeuePendingInput, false)
+}
+
+func (s *Store) requeuePrepared(ctx context.Context, agentID, inputID string, disposition requeueTurnDisposition, activeTurnSteerable bool) (Snapshot, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Snapshot{}, err
@@ -1133,11 +1147,17 @@ func (s *Store) requeuePrepared(ctx context.Context, agentID, inputID string, re
 	if n, _ := result.RowsAffected(); n != 1 {
 		return Snapshot{}, ErrConflict
 	}
-	if releaseTurnIdentity {
+	if disposition == requeueNativeTurn {
 		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn_steerable = ?, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_input_id = ?`, activeTurnSteerable, nowText(), agentID, inputID); err != nil {
 			return Snapshot{}, err
 		}
 	}
+	if disposition == requeuePendingInput {
+		if _, err := tx.ExecContext(ctx, `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', updated_at = ? WHERE agent_id = ? AND active_input_id = ?`, nowText(), agentID, inputID); err != nil {
+			return Snapshot{}, err
+		}
+	}
+
 	if err := bumpRevision(ctx, tx, agentID); err != nil {
 		return Snapshot{}, err
 	}
@@ -1240,8 +1260,8 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 	if err := compactOrder(ctx, tx, item.AgentID); err != nil {
 		return AcceptedTranscript{}, Snapshot{}, err
 	}
-	stateUpdate := `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ?`
-	stateArgs := []any{nowText(), item.AgentID}
+	stateUpdate := `UPDATE agent_input_queue_state SET active_turn = 0, active_turn_steerable = 0, active_input_id = '', revision = revision + 1, updated_at = ? WHERE agent_id = ? AND active_input_id = ?`
+	stateArgs := []any{nowText(), item.AgentID, item.ID}
 	if result.StartsTurn && !result.Steering {
 		// The turn is asserted only while the state still holds THIS dispatch.
 		// PrepareDispatch opened the turn and recorded the input id before the
@@ -1254,6 +1274,7 @@ func (s *Store) Accept(ctx context.Context, prepared PreparedDispatch, result Di
 		stateArgs = []any{result.TurnSteerable, item.ID, nowText(), item.AgentID, item.ID}
 	} else if result.Steering {
 		stateUpdate = `UPDATE agent_input_queue_state SET revision = revision + 1, updated_at = ? WHERE agent_id = ?`
+		stateArgs = []any{nowText(), item.AgentID}
 	}
 	stateResult, err := tx.ExecContext(ctx, stateUpdate, stateArgs...)
 	if err != nil {

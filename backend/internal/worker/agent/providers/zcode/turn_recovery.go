@@ -279,50 +279,8 @@ func (a *Agent) applyZCodeRecoverySnapshotContext(ctx context.Context, owner *zc
 		a.Mu.Unlock()
 		return false, nil
 	}
-	// A runtime turn may precede this queued input. Only the persisted user
-	// anchor links a missing start event to the accepted input.
-	if (owner.id == "" || strings.HasPrefix(owner.id, "#turn-")) && owner.inputID != "" && snap.Projection != nil && snap.Projection.CurrentTurnID != "" && snap.Projection.TurnCount > 0 {
-		sessionID, inputID, previousSeq := a.sessionID, owner.inputID, owner.lastEventSeq
-		a.Mu.Unlock()
-		a.unlockZCodeDispatch()
-		messages, readErr := func() ([]zcodeNativeMessage, error) {
-			defer a.dispatchMu.Lock()
-			return a.fetchZCodeSessionMessages(ctx, sessionID, 0)
-		}()
-		a.Mu.Lock()
-		if !a.currentZCodeRecoveryLocked(owner, state) || owner.lastEventSeq != previousSeq {
-			current := a.currentZCodeRecoveryLocked(owner, state)
-			a.Mu.Unlock()
-			return !current, nil
-		}
-		if ctx.Err() != nil {
-			a.Mu.Unlock()
-			return true, nil
-		}
-		if !a.zcodeReadObservationCurrentLocked(snap.identity, snap.Runtime) {
-			a.Mu.Unlock()
-			return false, nil
-		}
-		a.Mu.Unlock()
-		gap := a.zcodeReplayHasGapLocked()
-		a.Mu.Lock()
-		if gap {
-			a.Mu.Unlock()
-			return false, nil
-		}
-		if readErr != nil {
-			a.Mu.Unlock()
-			return false, readErr
-		}
-		for _, message := range messages {
-			if message.Info.Role == "user" && message.Info.ID != "" && message.Info.Anchor.SourceCommandID == inputID && message.Info.Anchor.TurnID == snap.Projection.CurrentTurnID {
-				if a.adoptZCodeTurnIDLocked(owner, message.Info.Anchor.TurnID) {
-					owner.anchorMessageID = message.Info.ID
-				}
-				break
-			}
-		}
-	}
+	// Runtime snapshots identify the active turn, not the queued input that owns it.
+	// Only an observed or replayed turn.started event can supply that relation.
 
 	// Watermark.
 	var projection zcodeProjectionState
@@ -395,7 +353,7 @@ func (a *Agent) applyZCodeRecoverySnapshotContext(ctx context.Context, owner *zc
 		}
 		a.Mu.Lock()
 		sessionID := a.sessionID
-		selection := &zcodeTurnState{id: owner.id, anchorMessageID: owner.anchorMessageID, acceptedAt: owner.acceptedAt}
+		selection := &zcodeTurnState{id: owner.id, inputID: owner.inputID, anchorMessageID: owner.anchorMessageID, currentAssistantMessageID: owner.currentAssistantMessageID}
 		observedOwnerSeq := owner.lastEventSeq
 		a.Mu.Unlock()
 		// The read loop must deliver this RPC's reply, so no dispatch lock crosses it.
@@ -585,29 +543,20 @@ type zcodeNativeMessage struct {
 
 // zcodeNativeMessageInfo identifies one native message.
 type zcodeNativeMessageInfo struct {
-	ID       string                 `json:"id"`
-	Role     string                 `json:"role"`
-	Time     zcodeNativeMessageTime `json:"time"`
-	ParentID string                 `json:"parentID"`
-	Anchor   struct {
-		TurnID          string `json:"turnId"`
-		SourceCommandID string `json:"sourceCommandId"`
-	} `json:"anchor"`
+	ID   string `json:"messageId"`
+	Role string `json:"role"`
+
+	ParentID  string `json:"parentMessageId"`
 	Semantics struct {
 		Kind string `json:"kind"`
 	} `json:"semantics"`
 	Finish string `json:"finish"`
 }
 
-// zcodeNativeMessageTime carries the message's creation timestamp.
-type zcodeNativeMessageTime struct {
-	Created float64 `json:"created"`
-}
-
 // zcodeNativePart is one part of a native message. Native part order determines
 // text order. Part IDs deduplicate repeated parts.
 type zcodeNativePart struct {
-	ID   string `json:"id"`
+	ID   string `json:"partId"`
 	Type string `json:"type"`
 	Text string `json:"text"`
 }
@@ -618,33 +567,35 @@ const (
 	zcodeNativePartTypeReasoning = "reasoning"
 )
 
-// fetchZCodeFinalMessages fetches and selects the owner's native assistant messages.
-// The caller revalidates ownership before comparing and emitting missing suffixes.
-//
-// Request the newest 200 messages. Retry without a limit when the required
-// user-message anchor is absent or an unanchored window is full.
-// Reject a full read that still lacks the required user-message anchor.
-// Native part order determines text order. Part IDs deduplicate repeated parts.
+// fetchZCodeFinalMessages selects native messages through an exact user-message identity.
+// An observed assistant ID or a retained start event can recover that identity after resume.
+// A limited page that omits the user message requires a complete read.
 func (a *Agent) fetchZCodeFinalMessages(ctx context.Context, sessionID string, owner *zcodeTurnState) ([]zcodeNativeMessage, error) {
 	if owner == nil || sessionID == "" {
 		return nil, fmt.Errorf("no native owner for message reconciliation")
 	}
-	// Phase 1: fetch the limited window (outside the lock).
+	// Fetch the limited window outside the lock.
 	messages, err := a.fetchZCodeSessionMessages(ctx, sessionID, zcodeRecoveredMessageWindow)
 	if err != nil {
 		return nil, fmt.Errorf("session/messages: %w", err)
 	}
 
-	// Phase 2: select owner messages and check for truncation.
-	selected, truncated := selectZCodeOwnerMessages(owner, messages, false)
+	selection := &zcodeTurnState{id: owner.id, inputID: owner.inputID, anchorMessageID: owner.anchorMessageID, currentAssistantMessageID: owner.currentAssistantMessageID}
+	if selection.anchorMessageID == "" {
+		selection.anchorMessageID, err = a.resolveZCodeMessageAnchor(ctx, sessionID, selection, messages)
+		if err != nil {
+			return nil, err
+		}
+	}
+	selected, truncated := selectZCodeOwnerMessages(selection, messages)
 
-	// Phase 3: if truncated and the anchor is absent, retry unlimited.
+	// Request the complete history when the limited page omits the user message.
 	if truncated {
 		allMessages, err := a.fetchZCodeSessionMessages(ctx, sessionID, 0)
 		if err != nil {
 			return nil, fmt.Errorf("session/messages (full): %w", err)
 		}
-		selected, truncated = selectZCodeOwnerMessages(owner, allMessages, true)
+		selected, truncated = selectZCodeOwnerMessages(selection, allMessages)
 		if truncated {
 			return nil, fmt.Errorf("session/messages lacks the anchor for turn %s after a full read", owner.id)
 		}
@@ -673,60 +624,92 @@ func (a *Agent) fetchZCodeSessionMessages(ctx context.Context, sessionID string,
 	return resp.Messages, nil
 }
 
-// selectZCodeOwnerMessages picks the messages that belong to the owner.
-//
-// With an anchor: messages starting after anchorMessageID. Provisional
-// accepted turn (no anchor): assistant messages with info.time.created >=
-// acceptedAt. An exact native turn anchor also proves ownership without a local
-// acceptance time, including after resume.
-//
-// truncated is true when the window may have cut the owner's messages.
-func selectZCodeOwnerMessages(owner *zcodeTurnState, messages []zcodeNativeMessage, complete bool) (selected []zcodeNativeMessage, truncated bool) {
+// resolveZCodeMessageAnchor reads native identity without changing the live turn.
+// The caller revalidates the captured turn after all requests finish.
+func (a *Agent) resolveZCodeMessageAnchor(ctx context.Context, sessionID string, owner *zcodeTurnState, messages []zcodeNativeMessage) (string, error) {
+	anchor := ""
+	if owner.currentAssistantMessageID != "" {
+		for _, message := range messages {
+			if message.Info.ID != owner.currentAssistantMessageID {
+				continue
+			}
+			if message.Info.Role != "assistant" || message.Info.ParentID == "" {
+				return "", fmt.Errorf("the observed native assistant message has no user-message parent")
+			}
+			if anchor != "" && anchor != message.Info.ParentID {
+				return "", fmt.Errorf("the observed native assistant message has conflicting parents")
+			}
+			anchor = message.Info.ParentID
+		}
+		if anchor != "" {
+			return anchor, nil
+		}
+	}
+	if owner.id == "" || strings.HasPrefix(owner.id, "#turn-") {
+		return "", fmt.Errorf("no native turn identity for message reconciliation")
+	}
+	events, _, err := a.fetchZCodeSessionEvents(ctx, sessionID, 0)
+	if err != nil {
+		return "", fmt.Errorf("read the native turn's user-message identity: %w", err)
+	}
+	inputID := ""
+	for _, event := range events {
+		if event.Type != contracts.ZCodeEventTurnStarted || event.TurnID != owner.id {
+			continue
+		}
+		var started zcodeTurnStarted
+		if err := json.Unmarshal(event.Payload, &started); err != nil {
+			return "", fmt.Errorf("decode the native turn start: %w", err)
+		}
+		if owner.inputID != "" && started.InputID != owner.inputID {
+			return "", fmt.Errorf("the native turn start identifies another input")
+		}
+		if started.MessageID == "" {
+			continue
+		}
+		if (anchor != "" && anchor != started.MessageID) || (inputID != "" && started.InputID != "" && inputID != started.InputID) {
+			return "", fmt.Errorf("the native turn has conflicting start identities")
+		}
+		anchor = started.MessageID
+		if started.InputID != "" {
+			inputID = started.InputID
+		}
+	}
+	if anchor == "" {
+		return "", fmt.Errorf("the native event archive has no user-message identity for turn %s", owner.id)
+	}
+	return anchor, nil
+}
+
+// selectZCodeOwnerMessages requires the user message and retains only its assistant responses.
+// An absent user message means that the page cannot establish ownership.
+func selectZCodeOwnerMessages(owner *zcodeTurnState, messages []zcodeNativeMessage) (selected []zcodeNativeMessage, truncated bool) {
 	if owner == nil {
 		return nil, false
 	}
-	if owner.anchorMessageID != "" {
-		// Messages after the anchor.
-		found := false
-		for _, msg := range messages {
-			if found && zcodeMessageBelongsToOwner(owner, msg) {
-				selected = append(selected, msg)
-			}
-			if msg.Info.ID == owner.anchorMessageID {
-				found = true
-			}
-		}
-		if !found {
-			return nil, true
-		}
-		return selected, false
+	if owner.anchorMessageID == "" {
+		return nil, true
 	}
-	// An exact native turn anchor proves ownership independently of local timing.
-	// Timestamp fallback requires a known local acceptance.
-	for _, msg := range messages {
-		if !zcodeMessageBelongsToOwner(owner, msg) {
-			continue
+	found := false
+	for _, message := range messages {
+		if found && zcodeMessageBelongsToOwner(owner, message) {
+			selected = append(selected, message)
 		}
-		if msg.Info.Anchor.TurnID != "" || (!owner.acceptedAt.IsZero() && msg.Info.Time.Created >= float64(owner.acceptedAt.UnixMilli())) {
-			selected = append(selected, msg)
+		if message.Info.ID == owner.anchorMessageID && message.Info.Role == "user" {
+			found = true
 		}
 	}
-	return selected, !complete && len(messages) >= zcodeRecoveredMessageWindow
+	if !found {
+		return nil, true
+	}
+	return selected, false
 }
 
 func zcodeMessageBelongsToOwner(owner *zcodeTurnState, message zcodeNativeMessage) bool {
 	info := message.Info
-	if info.Role != "assistant" || info.Finish == "stream_recovery_discarded" ||
-		(info.Semantics.Kind != "" && info.Semantics.Kind != "assistant_response") {
-		return false
-	}
-	if info.Anchor.TurnID != "" {
-		return owner.id != "" && !strings.HasPrefix(owner.id, "#turn-") && info.Anchor.TurnID == owner.id
-	}
-	if owner.anchorMessageID != "" {
-		return info.ParentID == owner.anchorMessageID
-	}
-	return info.ParentID == "" && !owner.acceptedAt.IsZero()
+	return info.Role == "assistant" && info.Finish != "stream_recovery_discarded" &&
+		(info.Semantics.Kind == "" || info.Semantics.Kind == "assistant_response") &&
+		owner.anchorMessageID != "" && info.ParentID == owner.anchorMessageID
 }
 
 // zcodeRecoveredScope records a canonical scope's kind and unsubmitted suffix.
@@ -1243,7 +1226,7 @@ func (a *Agent) checkZCodeNativeSettlement(ctx context.Context, owner *zcodeTurn
 	a.Mu.Lock()
 	current = a.currentZCodeRecoveryLocked(owner, state) && owner.pendingNative == pending && a.zcodeSessionLifetimeCurrentLocked(identity)
 	sessionID := a.sessionID
-	selection := &zcodeTurnState{id: owner.id, anchorMessageID: owner.anchorMessageID, acceptedAt: owner.acceptedAt}
+	selection := &zcodeTurnState{id: owner.id, inputID: owner.inputID, anchorMessageID: owner.anchorMessageID, currentAssistantMessageID: owner.currentAssistantMessageID}
 	observedSeq := owner.lastEventSeq
 	a.Mu.Unlock()
 	if !current || ctx.Err() != nil {

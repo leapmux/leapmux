@@ -20,11 +20,15 @@ func reasonixSubagentFromToolCall(tc acp.ToolCallEnvelope) *acp.SubagentObservat
 	var input struct {
 		Description string `json:"description"`
 		Prompt      string `json:"prompt"`
+		Task        string `json:"task"`
 	}
 	// Invalid or incomplete arguments keep the same launch layout.
 	title := ""
 	if json.Unmarshal(rawInput, &input) == nil {
 		title = strings.TrimSpace(input.Description)
+	}
+	if toolName == contracts.ReasonixToolExplore {
+		input.Prompt = input.Task
 	}
 	if title == "" {
 		title = "Reasonix subagent"
@@ -54,7 +58,7 @@ func resolveReasonixTask(title string, rawInput json.RawMessage) (string, json.R
 		title = strings.TrimPrefix(capability.ID, contracts.ReasonixCapabilityPrefixTool)
 		rawInput = capability.Arguments
 	}
-	if title != contracts.ReasonixToolTask && title != contracts.ReasonixToolReadOnlyTask {
+	if title != contracts.ReasonixToolTask && title != contracts.ReasonixToolReadOnlyTask && title != contracts.ReasonixToolExplore {
 		return "", nil
 	}
 	return title, rawInput
@@ -69,9 +73,10 @@ func reasonixSubagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.Sub
 	}
 	status := acp.FinalStatus(tcu.Status)
 	toolName, rawInput := resolveReasonixTask(tcu.Title, tcu.RawInput)
+	readOnly := toolName == contracts.ReasonixToolReadOnlyTask || toolName == contracts.ReasonixToolExplore
 	backgroundLaunch := false
 	// A successful read-only task returns plain report text, not a status envelope.
-	if tcu.Status != "cancelled" && (tcu.Status != "completed" || toolName != contracts.ReasonixToolReadOnlyTask) {
+	if tcu.Status != "cancelled" && (tcu.Status != "completed" || !readOnly) {
 		outcome := reasonixOutcomeHeader.FindStringSubmatch(acp.ToolCallText(tcu.Content))
 		if len(outcome) > 1 {
 			switch outcome[1] {
@@ -90,7 +95,7 @@ func reasonixSubagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.Sub
 			}
 		}
 	}
-	hasOutcomeEnvelope := toolName != contracts.ReasonixToolReadOnlyTask
+	hasOutcomeEnvelope := !readOnly
 	report := reasonixSubagentReport(acp.ToolCallText(tcu.Content), hasOutcomeEnvelope)
 	if backgroundLaunch {
 		// Reasonix sends the launch acknowledgement but no later child lifecycle over ACP.
@@ -106,10 +111,10 @@ func reasonixSubagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.Sub
 }
 
 func reasonixSubagentReport(text string, hasOutcomeEnvelope bool) string {
-	text = strings.TrimSpace(text)
 	if !hasOutcomeEnvelope {
 		return text
 	}
+	text = strings.TrimSpace(text)
 	text = reasonixOutcomeHeader.ReplaceAllString(text, "")
 	text = strings.TrimSpace(text)
 	if report, ok := strings.CutPrefix(text, "Final answer:"); ok {

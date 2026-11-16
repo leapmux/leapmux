@@ -34,6 +34,8 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 			storeQuery := agent.StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir}
 			transcript := newReasonixToolTranscript(ctx, sink, a.CurrentSessionID, storeQuery, opts.WorkingDir)
 			return acp.Hooks{
+				// A permission reply releases Reasonix's model loop immediately.
+				CancelBeforeControlWithdrawal: true,
 				WithBypassPermission: func(claim func()) {
 					a.WithOptionValue(contracts.ReasonixConfigToolApproval, contracts.ReasonixApprovalYolo, claim)
 				},

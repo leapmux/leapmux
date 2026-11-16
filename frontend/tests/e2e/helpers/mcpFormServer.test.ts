@@ -427,6 +427,23 @@ describe('writeMcpConfirmationServer', () => {
     expect(completed?.result.content[0].text).toBe('FORM_ROUND_TRIP_FAILED')
   })
 
+  it('keeps a cancelled confirmation distinct from a declined confirmation', () => {
+    const replies = executeConfirmation([
+      {
+        jsonrpc: '2.0',
+        id: 0,
+        method: 'tools/call',
+        params: { name: 'ask', arguments: {} },
+      },
+      {
+        jsonrpc: '2.0',
+        id: 'probe-confirm',
+        result: { action: 'cancel' },
+      },
+    ])
+    expect(replies.find(reply => reply.result)?.result.content[0].text).toBe('MCP_CONFIRM_CANCELLED')
+  })
+
   it('correlates two concurrent confirmations that return in reverse order', () => {
     const replies = executeConfirmation([
       {

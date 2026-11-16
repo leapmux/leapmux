@@ -3,20 +3,33 @@ import type { ParsedMessageContent } from '~/lib/messageParser'
 import type { ToolFailureFixture, ToolResultCheck, ToolResultFixture } from '~/test-support/toolVocabulary'
 import { KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
-import { kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
+import { kimiTranscriptToolFrame } from '~/test-support/kimiFixtures'
 import { input } from '../testUtils'
+import { kimiTranscriptTool } from './transcript'
 
 const CALL = 'call_1'
 
-/** The paired start frame a fixture's result reads its name and arguments from. */
+/** The native opening frame paired with a complete result. */
 function request(toolName: string, args: Record<string, unknown>, display?: Record<string, unknown>): ParsedMessageContent {
-  return input(kimiToolStart(CALL, toolName, args, display), undefined, AgentProvider.KIMI_CODE)
+  return input(kimiTranscriptToolFrame({
+    toolCallId: CALL,
+    name: toolName,
+    input: args,
+    display,
+  }), undefined, AgentProvider.KIMI_CODE)
 }
 
 /** A successful result for one call, with its paired start beside it. */
 function done(toolName: string, args: Record<string, unknown>, output: unknown, display?: Record<string, unknown>): ToolResultFixture {
   return {
-    payload: kimiToolResult(CALL, output),
+    payload: kimiTranscriptToolFrame({
+      toolCallId: CALL,
+      name: toolName,
+      input: args,
+      display,
+      state: 'done',
+      output,
+    }),
     options: {
       request: request(toolName, args, display),
       spanType: toolName,
@@ -91,13 +104,16 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
  */
 const ERROR_TEXT = 'The tool reported an error.'
 
-/** A FAILED result: `isError` set, and the reason as the output. */
+/** A failed native state with the reason as its output. */
 function failed(kind: ToolKind, name: string): ToolFailureFixture {
   const paired = FIXTURES[name]
   if (paired === undefined)
     throw new Error(`No successful fixture pairs with the failed frame for ${name}`)
+  const native = kimiTranscriptTool(paired.payload)
+  if (!native)
+    throw new Error(`The native fixture has no complete tool identity for ${name}`)
   return {
-    payload: kimiToolResult(CALL, ERROR_TEXT, { isError: true }),
+    payload: kimiTranscriptToolFrame({ ...native.frame, state: 'error', output: ERROR_TEXT }),
     ...(paired.options !== undefined
       ? { options: paired.options }
       : {}),

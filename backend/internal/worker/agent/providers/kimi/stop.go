@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // Kimi Code's stop.
@@ -51,6 +52,10 @@ func (a *Agent) Stop() {
 		return
 	}
 	a.NoteIntentionalStop()
+	a.Mu.Lock()
+	sessionID := a.sessionID
+	a.Mu.Unlock()
+	a.cancelMediaSession(sessionID)
 	a.shutdownServer()
 	// Close the stream before Process.Stop so it cannot redial during local
 	// shutdown. Wait joins its goroutines.
@@ -135,6 +140,10 @@ func (a *Agent) closeStream() {
 		a.stream.close()
 		a.stream.wait()
 	}
+	a.transcriptRecoveryWork.CloseAndWait()
+	a.taskRecoveryWork.CloseAndWait()
+	a.taskReportWork.CloseAndWait()
+	a.closeMedia()
 	if a.endpoint != nil {
 		a.endpoint.Close()
 	}
@@ -148,7 +157,7 @@ func (a *Agent) closeStream() {
 // an agent whose process exited.
 func (a *Agent) settleAfterExit(completion agent.MessageCompletion) {
 	a.dispatchMu.Lock()
-	defer a.dispatchMu.Unlock()
+	defer a.finishDispatch()
 	a.Mu.Lock()
 	runs := make([]*kimiRun, 0, len(a.runs))
 	for _, run := range a.runs {
@@ -168,15 +177,20 @@ func (a *Agent) settleAfterExit(completion agent.MessageCompletion) {
 		}
 		a.flushRun(run, sink, completion)
 		a.closeOpenTools(run, sink, completion)
+		if run.compactionLive {
+			providerkit.EndCompaction(sink)
+			run.compactionLive = false
+		}
 		a.Mu.Lock()
 		childTurn := run.agentID != kimiMainAgentID && run.turnActive
 		run.turnActive = false
 		a.Mu.Unlock()
 		if childTurn {
-			if childID, linked := a.children.childOf(run.agentID); linked {
-				a.publishChildTurn(childID, false)
+			if _, linked := a.children.childOf(run.agentID); linked {
+				a.publishChildTurn(run, false)
 			}
 		}
+		run.childGraph.abandon()
 	}
 	a.ResetCumulativeOutput()
 	a.PublishTurnActive()

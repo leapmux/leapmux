@@ -42,8 +42,8 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	return a.sendToState(root, content, attachments, steer, true)
 }
 
-func (a *Agent) SendChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {
-	return a.sendChild(childKey, content, attachments, false)
+func (a *Agent) SendChildInput(childKey string, input agent.ChildInput) (agent.ChildInputResult, error) {
+	return agent.ChildInputResult{StartsTurn: true}, a.sendChild(childKey, input.Content, input.Attachments, false)
 }
 
 func (a *Agent) SteerChildInput(childKey, content string, attachments []*leapmuxv1.Attachment) error {

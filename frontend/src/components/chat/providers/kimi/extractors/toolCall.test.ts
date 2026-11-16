@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { KIMI_TOOL } from '~/generated/contracts/kimi-protocol'
 import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
-import { kimiToolResult, kimiToolStart } from '~/test-support/kimiFixtures'
+import { kimiTranscriptFrame, kimiTranscriptToolFrame } from '~/test-support/kimiFixtures'
 import { providerToolCall } from '~/test-support/toolCallFixture'
 import { input } from '../../testUtils'
 import { kimiAgentRuns, kimiFileChanges, kimiOutput, kimiSwarmRuns, kimiToolRow } from './toolCall'
@@ -11,15 +11,168 @@ const CALL = 'call_1'
 
 /** The call a result frame extracts, with its start beside it. */
 function resultCall(name: string, args: Record<string, unknown>, output: unknown, extra: Record<string, unknown> = {}, display?: Record<string, unknown>) {
-  return providerToolCall(AgentProvider.KIMI_CODE, kimiToolResult(CALL, output, extra), {
-    request: input(kimiToolStart(CALL, name, args, display), undefined, AgentProvider.KIMI_CODE),
+  return providerToolCall(AgentProvider.KIMI_CODE, kimiTranscriptToolFrame({
+    toolCallId: CALL,
+    name,
+    input: args,
+    display,
+    state: 'done',
+    output,
+    ...extra,
+  }), {
+    request: input(kimiTranscriptToolFrame({
+      toolCallId: CALL,
+      name,
+      input: args,
+      display,
+    }), undefined, AgentProvider.KIMI_CODE),
     spanType: name,
   })
 }
 
 describe('kimiToolRow', () => {
+  it('renders exact native session media only from its scoped supplement', () => {
+    const fileId = `f_${'a'.repeat(64)}`
+    const data = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aY9sAAAAASUVORK5CYII='
+    const frame = kimiTranscriptToolFrame({
+      name: 'ReadMediaFile',
+      state: 'done',
+      input: { path: 'original.png' },
+      display: { path: '/work/original.png' },
+      output: [
+        {
+          type: 'image',
+          source: { kind: 'session_media', file_id: fileId },
+        },
+      ],
+    })
+    const media = {
+      sessionId: 'session_1',
+      agentId: 'main',
+      turnId: 't0',
+      stepId: 't0.1',
+      frameId: 't0.1.call_1',
+      toolCallId: 'call_1',
+      files: {
+        [fileId]: { mimeType: 'image/png', data },
+      },
+    }
+    const before = structuredClone(frame)
+    const call = providerToolCall(AgentProvider.KIMI_CODE, frame, {
+      supplementalContent: { media },
+      agentSessionId: 'session_1',
+    })
+    expect(call?.images).toMatchObject([
+      { mimeType: 'image/png', data },
+    ])
+    expect(frame).toStrictEqual(before)
+    const foreign = providerToolCall(AgentProvider.KIMI_CODE, frame, {
+      supplementalContent: {
+        media: { ...media, frameId: 'other' },
+      },
+      agentSessionId: 'session_1',
+    })
+    expect(foreign?.images).not.toMatchObject([
+      { data },
+    ])
+  })
+
+  it('preserves the status stated by each native tool frame', () => {
+    for (const [state, frameStatus] of [
+      ['running', 'in_progress'],
+      ['done', 'completed'],
+      ['error', 'failed'],
+    ]) {
+      const row = kimiToolRow(kimiTranscriptToolFrame({
+        name: 'Bash',
+        state,
+        input: { command: 'printf ok' },
+        output: 'ok',
+      }), undefined)
+      expect(row?.lifecycle.frameStatus).toBe(frameStatus)
+    }
+  })
+
+  it('reads a native result with its own name and input', () => {
+    const frame = {
+      kind: 'tool',
+      frameId: 't0.1.call',
+      toolCallId: CALL,
+      name: 'Bash',
+      state: 'error',
+      input: { command: 'printf failed' },
+      output: 'failed',
+      error: 'The command failed.',
+    }
+    const row = kimiToolRow(kimiTranscriptFrame({
+      op: 'frame.upsert',
+      turnId: 't0',
+      stepId: 't0.1',
+      frame,
+    }), undefined)
+    expect(row).toMatchObject({
+      toolCallId: CALL,
+      toolName: 'Bash',
+      args: { command: 'printf failed' },
+      result: frame,
+      finished: true,
+      retained: false,
+      lifecycle: { providerOutcome: 'failed', rowFinal: true, resultFrameLanded: true },
+    })
+  })
+
+  it('reads raw result metadata only for the same complete native identity', () => {
+    const operation = {
+      op: 'frame.upsert',
+      turnId: 't0',
+      stepId: 't0.1',
+      frame: {
+        kind: 'tool',
+        frameId: 't0.1.call',
+        toolCallId: CALL,
+        name: 'Bash',
+        state: 'running',
+        input: { command: 'printf ok' },
+      },
+    }
+    const request = kimiTranscriptFrame(operation)
+    const resultOperation = {
+      ...operation,
+      frame: { ...operation.frame, state: 'done', output: 'ok' },
+    }
+    const result = kimiTranscriptFrame(resultOperation)
+    const displayOperation = {
+      ...resultOperation,
+      frame: { ...resultOperation.frame, output: 'recovered display' },
+    }
+    const display = kimiTranscriptFrame(displayOperation)
+    expect(kimiToolRow(request, undefined)).toMatchObject({ result: null, finished: false })
+    expect(kimiToolRow(display, undefined, result)?.originalResult).toEqual(resultOperation.frame)
+    for (const foreign of [
+      kimiTranscriptFrame(resultOperation, 'child'),
+      kimiTranscriptFrame(resultOperation, 'main', 'session_other'),
+      kimiTranscriptFrame({ ...resultOperation, turnId: 't1' }),
+      kimiTranscriptFrame({ ...resultOperation, stepId: 't0.2' }),
+      kimiTranscriptFrame({
+        ...resultOperation,
+        frame: { ...resultOperation.frame, frameId: 'other' },
+      }),
+      kimiTranscriptFrame({
+        ...resultOperation,
+        frame: { ...resultOperation.frame, toolCallId: 'other' },
+      }),
+    ]) {
+      expect(kimiToolRow(display, undefined, foreign)?.originalResult).toEqual(displayOperation.frame)
+    }
+  })
+
   it('reads a start as a request of its call', () => {
-    const row = kimiToolRow(kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'ls' }, { kind: 'command' }), undefined, undefined, undefined)
+    const row = kimiToolRow(kimiTranscriptToolFrame({
+      toolCallId: CALL,
+      name: KIMI_TOOL.Bash,
+      input: { command: 'ls' },
+      display: { kind: 'command' },
+    }), undefined)
     expect(row).toMatchObject({
       toolCallId: CALL,
       toolName: KIMI_TOOL.Bash,
@@ -30,8 +183,14 @@ describe('kimiToolRow', () => {
     })
   })
 
-  it('reads a result with the name and the arguments of its start', () => {
-    const row = kimiToolRow(kimiToolResult(CALL, 'a.go'), KIMI_TOOL.Glob, kimiToolStart(CALL, KIMI_TOOL.Glob, { pattern: '*' }), undefined)
+  it('reads the name and input carried by a complete native result', () => {
+    const row = kimiToolRow(kimiTranscriptToolFrame({
+      toolCallId: CALL,
+      name: KIMI_TOOL.Glob,
+      input: { pattern: '*' },
+      state: 'done',
+      output: 'a.go',
+    }), undefined)
     expect(row).toMatchObject({
       toolName: KIMI_TOOL.Glob,
       args: { pattern: '*' },
@@ -40,8 +199,14 @@ describe('kimiToolRow', () => {
     expect(row?.lifecycle.resultFrameLanded).toBe(true)
   })
 
-  it('reads a result whose start is out of the window by its span type', () => {
-    const row = kimiToolRow(kimiToolResult(CALL, 'ok'), KIMI_TOOL.Read, undefined, undefined)
+  it('reads a complete result when its opening row is outside the window', () => {
+    const row = kimiToolRow(kimiTranscriptToolFrame({
+      toolCallId: CALL,
+      name: KIMI_TOOL.Read,
+      input: {},
+      state: 'done',
+      output: 'ok',
+    }), undefined)
     expect(row).toMatchObject({
       toolCallId: CALL,
       toolName: KIMI_TOOL.Read,
@@ -52,45 +217,74 @@ describe('kimiToolRow', () => {
     })
   })
 
-  it('reads a result that states no tool and has no span type with no name', () => {
-    expect(kimiToolRow(kimiToolResult(CALL, 'ok'), undefined, undefined, undefined)?.toolName).toBe('')
+  it('rejects a native result without its required tool name', () => {
+    expect(kimiToolRow(kimiTranscriptToolFrame({
+      toolCallId: CALL,
+      input: {},
+      state: 'done',
+      output: 'ok',
+    }), undefined)).toBeNull()
   })
 
   it('reads a start with no completion, or an unstated one, as a request', () => {
-    const start = kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'ls' })
+    const start = kimiTranscriptToolFrame({
+      toolCallId: CALL,
+      name: KIMI_TOOL.Bash,
+      input: { command: 'ls' },
+    })
     for (const completion of [undefined, MessageCompletion.UNSPECIFIED]) {
-      const row = kimiToolRow(start, undefined, undefined, completion)
+      const row = kimiToolRow(start, completion)
       expect(row, String(completion)).toMatchObject({ finished: false, retained: false, result: null })
       expect(row?.lifecycle, String(completion)).toMatchObject({ retainedOutcome: null, rowFinal: false, resultFrameLanded: false })
     }
   })
 
   it('states the failed outcome of a result frame that reports an error', () => {
-    const row = kimiToolRow(kimiToolResult(CALL, 'boom', { isError: true }), KIMI_TOOL.Bash, undefined, undefined)
+    const row = kimiToolRow(kimiTranscriptToolFrame({
+      toolCallId: CALL,
+      name: KIMI_TOOL.Bash,
+      input: {},
+      state: 'error',
+      output: 'boom',
+    }), undefined)
     expect(row?.lifecycle).toMatchObject({ providerOutcome: 'failed', rowFinal: true, resultFrameLanded: true })
-    expect(kimiToolRow(kimiToolResult(CALL, 'ok'), KIMI_TOOL.Bash, undefined, undefined)?.lifecycle.providerOutcome).toBeNull()
+    expect(kimiToolRow(kimiTranscriptToolFrame({
+      toolCallId: CALL,
+      name: KIMI_TOOL.Read,
+      input: {},
+      state: 'done',
+      output: 'ok',
+    }), undefined)?.lifecycle.providerOutcome).toBeNull()
   })
 
   it('reads the outcome of each way a turn can end around a retained start', () => {
-    const start = kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'sleep 9' })
+    const start = kimiTranscriptToolFrame({
+      toolCallId: CALL,
+      name: KIMI_TOOL.Bash,
+      input: { command: 'sleep 9' },
+    })
     const completed = providerToolCall(AgentProvider.KIMI_CODE, start, { spanType: KIMI_TOOL.Bash, completion: MessageCompletion.COMPLETE })
-    expect(kimiToolRow(start, undefined, undefined, MessageCompletion.COMPLETE)?.lifecycle.retainedOutcome).toBe('succeeded')
+    expect(kimiToolRow(start, MessageCompletion.COMPLETE)?.lifecycle.retainedOutcome).toBe('succeeded')
     // The turn ended although the call printed nothing, so the call answers nothing.
     expect(completed?.status).toBe('incomplete')
     expect(completed?.result).toBeUndefined()
-    expect(kimiToolRow(start, undefined, undefined, MessageCompletion.ERROR)?.lifecycle.retainedOutcome).toBe('failed')
+    expect(kimiToolRow(start, MessageCompletion.ERROR)?.lifecycle.retainedOutcome).toBe('failed')
     expect(providerToolCall(AgentProvider.KIMI_CODE, start, { spanType: KIMI_TOOL.Bash, completion: MessageCompletion.ERROR })?.status).toBe('failed')
   })
 
   it('reads the content parts a retained start carries as its result', () => {
-    const start = {
-      ...kimiToolStart(CALL, KIMI_TOOL.Read, { path: 'a.go' }),
+    const start = kimiTranscriptToolFrame({
+      toolCallId: CALL,
+      name: KIMI_TOOL.Read,
+      input: { path: 'a.go' },
       output: [
         { type: 'text', text: '1\tpackage a' },
       ],
-    }
-    const row = kimiToolRow(start, undefined, undefined, MessageCompletion.ERROR)
-    expect(row?.result).toBe(start)
+    })
+    const row = kimiToolRow(start, MessageCompletion.ERROR)
+    expect(row?.result?.output).toStrictEqual([
+      { type: 'text', text: '1\tpackage a' },
+    ])
     expect(row?.lifecycle.resultFrameLanded).toBe(true)
     const call = providerToolCall(AgentProvider.KIMI_CODE, start, { spanType: KIMI_TOOL.Read, completion: MessageCompletion.ERROR })
     expect(call?.status).toBe('failed')
@@ -101,22 +295,30 @@ describe('kimiToolRow', () => {
     })
   })
 
-  it('reads no output from a retained start whose output is neither text nor parts', () => {
+  it('preserves explicit structured and scalar output in a retained native frame', () => {
     for (const output of [
+      0,
       42,
+      false,
       { text: 'x' },
       null,
     ]) {
-      const start = {
-        ...kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'x' }),
+      const start = kimiTranscriptToolFrame({
+        toolCallId: CALL,
+        name: KIMI_TOOL.Bash,
+        input: { command: 'x' },
         output,
-      }
-      expect(kimiToolRow(start, undefined, undefined, MessageCompletion.INTERRUPTED)?.result, JSON.stringify(output)).toBeNull()
+      })
+      expect(kimiToolRow(start, MessageCompletion.INTERRUPTED)?.result?.output).toStrictEqual(output)
     }
   })
 
   it('reads a retained start as the finished call, with how its turn ended', () => {
-    const row = kimiToolRow(kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'sleep 9' }), undefined, undefined, MessageCompletion.INTERRUPTED)
+    const row = kimiToolRow(kimiTranscriptToolFrame({
+      toolCallId: CALL,
+      name: KIMI_TOOL.Bash,
+      input: { command: 'sleep 9' },
+    }), MessageCompletion.INTERRUPTED)
     expect(row?.finished).toBe(true)
     expect(row?.retained).toBe(true)
     expect(row?.result).toBeNull()
@@ -124,10 +326,12 @@ describe('kimiToolRow', () => {
   })
 
   it('reads the output a retained start carries as its result', () => {
-    const start = {
-      ...kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'make' }),
+    const start = kimiTranscriptToolFrame({
+      toolCallId: CALL,
+      name: KIMI_TOOL.Bash,
+      input: { command: 'make' },
       output: 'building...\n',
-    }
+    })
     const call = providerToolCall(AgentProvider.KIMI_CODE, start, { spanType: KIMI_TOOL.Bash, completion: MessageCompletion.INTERRUPTED })
     expect(call?.status).toBe('cancelled')
     expect(call?.result).toStrictEqual({
@@ -139,7 +343,7 @@ describe('kimiToolRow', () => {
   })
 
   it('reads no row that is not a tool event', () => {
-    expect(kimiToolRow({ type: 'turn.ended' }, undefined, undefined, undefined)).toBeNull()
+    expect(kimiToolRow({ type: 'turn.ended' }, undefined)).toBeNull()
   })
 })
 
@@ -168,7 +372,7 @@ describe('kimi execute calls', () => {
   })
 
   it('reads the exit code a failed command states and drops the trailer', () => {
-    const call = resultCall(KIMI_TOOL.Bash, { command: 'false' }, 'oops\nCommand failed with exit code: 2.', { isError: true })
+    const call = resultCall(KIMI_TOOL.Bash, { command: 'false' }, 'oops\nCommand failed with exit code: 2.', { state: 'error' })
     expect(call?.status).toBe('failed')
     expect(call?.result).toStrictEqual({
       commands: [
@@ -180,13 +384,17 @@ describe('kimi execute calls', () => {
 
   it('reads a command the server stopped as cancelled', () => {
     for (const trailer of ['Command killed by timeout (60s)', 'Interrupted by user']) {
-      const call = resultCall(KIMI_TOOL.Bash, { command: 'sleep 99' }, `partial\n${trailer}`, { isError: true })
+      const call = resultCall(KIMI_TOOL.Bash, { command: 'sleep 99' }, `partial\n${trailer}`, { state: 'error' })
       expect(call?.status, trailer).toBe('cancelled')
     }
   })
 
   it('states no result while the command runs', () => {
-    const call = providerToolCall(AgentProvider.KIMI_CODE, kimiToolStart(CALL, KIMI_TOOL.Bash, { command: 'ls' }), { spanType: KIMI_TOOL.Bash, role: 'request' })
+    const call = providerToolCall(AgentProvider.KIMI_CODE, kimiTranscriptToolFrame({
+      toolCallId: CALL,
+      name: KIMI_TOOL.Bash,
+      input: { command: 'ls' },
+    }), { spanType: KIMI_TOOL.Bash, role: 'request' })
     expect(call?.result).toBeUndefined()
   })
 
@@ -201,7 +409,7 @@ describe('kimi execute calls', () => {
   })
 
   it('reads a negative exit code from the trailer', () => {
-    const call = resultCall(KIMI_TOOL.Bash, { command: 'kill -9 $$' }, 'Command failed with exit code: -1.', { isError: true })
+    const call = resultCall(KIMI_TOOL.Bash, { command: 'kill -9 $$' }, 'Command failed with exit code: -1.', { state: 'error' })
     expect(call?.result).toStrictEqual({
       commands: [
         { output: '', exitCode: -1 },
@@ -212,7 +420,7 @@ describe('kimi execute calls', () => {
 
   it('reads the trailer only at the end of the output', () => {
     const output = 'Command failed with exit code: 2.\nmore output'
-    const call = resultCall(KIMI_TOOL.Bash, { command: 'x' }, output, { isError: true })
+    const call = resultCall(KIMI_TOOL.Bash, { command: 'x' }, output, { state: 'error' })
     // A failed command whose output states no trailer states no exit code.
     expect(call?.status).toBe('failed')
     expect(call?.result).toStrictEqual({
@@ -731,7 +939,11 @@ describe('kimi uncategorized calls', () => {
   })
 
   it('reads a call that states no tool name as the generic card with no label', () => {
-    const call = providerToolCall(AgentProvider.KIMI_CODE, kimiToolStart(CALL, '', { a: 1 }), { spanType: '', role: 'request' })
+    const call = providerToolCall(AgentProvider.KIMI_CODE, kimiTranscriptToolFrame({
+      toolCallId: CALL,
+      name: '',
+      input: { a: 1 },
+    }), { spanType: '', role: 'request' })
     expect(call?.kind).toBe('other')
     expect(call?.label).toBeUndefined()
     expect(call?.request).toStrictEqual({

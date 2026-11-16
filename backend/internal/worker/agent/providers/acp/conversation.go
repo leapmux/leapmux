@@ -1,6 +1,8 @@
 package acp
 
 import (
+	"github.com/leapmux/leapmux/internal/worker/bgtask"
+
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -707,6 +709,8 @@ func (c *conversation) resolveObservedChild(obs *SubagentObservation) (string, e
 		}
 	}
 	id, err := c.sink().EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+
 		SpawnSpanID: spawnSpanID, ProviderChildKey: obs.ChildAgentKey,
 		Title: obs.Title, AgentSessionID: obs.ChildAgentSessionID,
 	})

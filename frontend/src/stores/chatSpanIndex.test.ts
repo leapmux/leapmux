@@ -2,6 +2,7 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
 import { create } from '@bufbuild/protobuf'
 import { describe, expect, it, vi } from 'vitest'
+import { openCodeToolPart } from '~/components/chat/providers/opencode/toolResults.fixtures'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageCompletion, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { parseMessageContent } from '~/lib/messageParser'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
@@ -162,7 +163,6 @@ describe('createSpanIndex', () => {
   })
 
   it.each([
-    AgentProvider.OPENCODE,
     AgentProvider.KILO,
     AgentProvider.CURSOR,
     AgentProvider.GOOSE,
@@ -193,6 +193,35 @@ describe('createSpanIndex', () => {
     idx.index('agent', request)
     expect(idx.getRequestMessage('agent', { spanId: 'call', agentSessionId: '' })).toBe(request)
     expect(idx.getResultMessage('agent', { spanId: 'call', agentSessionId: '' })).toBe(result)
+  })
+
+  it('pairs native OpenCode parts by Worker completion when the result arrives first', () => {
+    const idx = createSpanIndex()
+    const frame = (id: string, result: boolean) => create(AgentChatMessageSchema, {
+      id,
+      seq: result ? 2n : 1n,
+      spanId: 'native-call',
+      agentSessionId: 'native-session',
+      agentProvider: AgentProvider.OPENCODE,
+      completion: result ? MessageCompletion.COMPLETE : MessageCompletion.UNSPECIFIED,
+      contentCompression: ContentCompression.NONE,
+      content: encode(openCodeToolPart('call', 'shell', { command: 'printf ok' }, result
+        ? {
+            status: 'completed',
+            content: [
+              { type: 'text', text: 'ok' },
+            ],
+          }
+        : { status: 'running' })),
+    })
+    const request = frame('native-request', false)
+    const result = frame('native-result', true)
+    const identity = { spanId: 'native-call', agentSessionId: 'native-session' }
+    idx.index('agent', result)
+    expect(idx.getRequestMessage('agent', identity)).toBeUndefined()
+    idx.index('agent', request)
+    expect(idx.getRequestMessage('agent', identity)).toBe(request)
+    expect(idx.getResultMessage('agent', identity)).toBe(result)
   })
 
   // Copilot speaks its own native protocol, so its pair is a start event and a

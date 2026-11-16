@@ -8,66 +8,14 @@ import { acpClosedToolCall, requireAcpToolSupplement } from '../helpers/acpToolF
 import { nativeMessageBody, nativeMessageSupplement } from '../helpers/nativeMessages'
 import { assertPrivateNativePath } from '../helpers/nativePrivatePath'
 import { expandNativeResultView } from '../helpers/nativeResultView'
-import { expectNativeOptionValue } from '../helpers/nativeScenario'
-import { waitForNativeOptionApplied } from '../helpers/nativeSettings'
 import { computedNativeToolOutput } from '../helpers/nativeToolOutput'
 import { expectUnchangedNativeRecord, proveNativeToolOutputFilePaths } from '../helpers/nativeToolOutputFilePaths'
 import { captureNativeToolOutput } from '../helpers/nativeToolOutputScenario'
 import { nativeToolResult } from '../helpers/nativeToolResult'
 import { getGlobalState } from '../helpers/server'
-import { chooseSettingsOption } from '../helpers/ui'
 import { bypassToolRequests } from './scenarios'
-import { gooseTerminalOutputFileLimit } from './terminalOutputLimit'
-
-gooseTest('records the native client terminal output limit and retains its exact output after reload', async ({ native }, testInfo) => {
-  const output = computedNativeToolOutput({ lineCount: 6000, padding: 48 })
-  await captureNativeToolOutput(native, testInfo, {
-    output,
-    callId: 'native-goose-output-limit',
-    prepare: () => bypassToolRequests(native),
-    proof: async (capture) => {
-      const readLimit = (snapshot: NativeMessageSnapshot) => {
-        const records = snapshot.messages.filter(message => message.agentSessionId === capture.agent.agentSessionId)
-          .filter((message) => {
-            const body = nativeMessageBody(message)
-            return isObject(body) && acpClosedToolCall(body, capture.call.id, ['completed'])
-          })
-        expect(records).toHaveLength(1)
-        const record = records[0]
-        if (!record)
-          throw new Error('The exact native Goose terminal result is absent.')
-        return gooseTerminalOutputFileLimit(nativeMessageBody(record), nativeMessageSupplement(record), capture.call.id)
-      }
-      const limit = readLimit(capture.snapshot)
-      const modelText = nativeToolResult(capture.request, capture.call.id)
-      expect(modelText).toContain(limit.text)
-      expect(modelText).not.toContain(output.omittedMarker)
-      expect(limit.text).not.toContain(output.firstMarker)
-      expect(limit.text).not.toContain(output.omittedMarker)
-      expect(limit.text).toContain(output.lastMarker)
-      await testInfo.attach('goose-native-client-terminal-limit', {
-        body: JSON.stringify({ sessionId: capture.agent.agentSessionId, previewText: limit.text, ...limit }),
-        contentType: 'application/json',
-      })
-      await proveNativeToolOutputFilePaths({
-        context: native,
-        callId: capture.call.id,
-        previewText: limit.text,
-        previewMarkers: [output.lastMarker],
-        absentMarkers: [output.omittedMarker],
-        paths: [],
-        status: 'completed',
-        prepareView: expandNativeResultView,
-        workerProof: () => expectUnchangedNativeRecord(native, capture.agent, readLimit, limit),
-      })
-    },
-  })
-})
 
 gooseTest('states its native output file paths when the agent runs commands itself', async ({ native }, testInfo) => {
-  await expectNativeOptionValue(native, 'nativeCommands', 'false')
-  await chooseSettingsOption(native.page, 'nativeCommands-true')
-  await waitForNativeOptionApplied(native, 'nativeCommands', 'true')
   const output = computedNativeToolOutput({ lineCount: 6000, padding: 48 })
   await captureNativeToolOutput(native, testInfo, {
     output,

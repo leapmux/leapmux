@@ -194,25 +194,15 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
     },
   }, { query: 'leapmux' }),
   [OH_MY_PI_TOOL.Ask]: end(OH_MY_PI_TOOL.Ask, {
-    content: text('User selected: SQLite'),
+    content: text('User answers:\n{ "db": "sqlite" }'),
     details: {
-      question: 'Which database?',
-      options: ['SQLite', 'PostgreSQL'],
-      multi: false,
-      selectedOptions: ['SQLite'],
+      answers: [
+        { name: 'db', question: 'Which database?', answer: 'SQLite' },
+      ],
     },
   }, {
-    questions: [
-      {
-        id: 'db',
-        question: 'Which database?',
-        options: [
-          { label: 'SQLite' },
-          { label: 'PostgreSQL' },
-        ],
-        recommended: 0,
-      },
-    ],
+    i: 'Which database?',
+    html: '<form><fieldset><legend>Which database?</legend><label><input type="radio" name="db" value="sqlite">SQLite</label><label><input type="radio" name="db" value="pg">PostgreSQL</label></fieldset></form>',
   }),
   [OH_MY_PI_TOOL.Yield]: end(OH_MY_PI_TOOL.Yield, {
     content: text('Result submitted.'),

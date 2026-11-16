@@ -187,3 +187,19 @@ func TestKimiAPIErrorMessage(t *testing.T) {
 	assert.Equal(t, "GET /api/v1/y: the request was refused (code 50000)",
 		(&kimiAPIError{Method: "GET", Path: "/api/v1/y", Code: 50000}).Error(), "a refusal with no message still states one")
 }
+
+func TestKimiFakeRejectsRemovedSessionRoutes(t *testing.T) {
+	t.Parallel()
+	_, server := newFakeKap(t)
+	for _, route := range []string{"status", "snapshot", "tasks"} {
+		t.Run(route, func(t *testing.T) {
+			request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL+kimiSessionPath("session_1", "/"+route), nil)
+			require.NoError(t, err)
+			request.Header.Set("Authorization", "Bearer "+fakeKapToken)
+			response, err := server.Client().Do(request)
+			require.NoError(t, err)
+			defer func() { require.NoError(t, response.Body.Close()) }()
+			assert.Equal(t, http.StatusNotFound, response.StatusCode)
+		})
+	}
+}

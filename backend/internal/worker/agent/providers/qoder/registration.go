@@ -6,12 +6,15 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/internal/agentdir"
 	"github.com/leapmux/leapmux/internal/worker/agent/internal/launch"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // qoderLocator finds the Qoder CLI on the user's PATH.
 var qoderLocator = launch.Binaries("qodercli")
+
+func agentDirSpec() agentdir.Spec { return agentdir.Spec{Prefix: "qoder"} }
 
 // qoderPermissionModes are the modes the wire emits in camelCase. The flag
 // vocabulary is snake_case and is normalized before emission.
@@ -120,7 +123,9 @@ func qoderOutputStyleGroup(current string, styles []string) *leapmuxv1.Available
 // Registration states everything the worker knows about Qoder CLI before any of
 // its agents runs.
 func Registration() agent.Registration {
+	directory := agentDirSpec()
 	return agent.Registration{
+		AgentDir: &directory,
 		Provider: leapmuxv1.AgentProvider_AGENT_PROVIDER_QODER,
 		Plugin:   qoderProvider{},
 		Start:    Start,

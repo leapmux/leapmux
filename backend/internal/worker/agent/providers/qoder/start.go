@@ -2,6 +2,7 @@ package qoder
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -17,28 +18,10 @@ import (
 
 var _ agent.StartFunc = Start
 
-// qoderAgentEnv pins startup settings and removes inherited native session identity.
-// The headless CLI rejects SDK-worker identity even when a payload file exists.
+// qoderAgentEnv pins SDK startup settings and removes inherited session identity.
 func qoderAgentEnv(environ []string) []string {
-	env := envutil.FilterEnv(environ,
-		"QODER_SESSION_ID",
-		"QODER_PID",
-		"QODER_SESSION_TYPE",
-		"QODER_REMOTE_CHILD",
-		"QODER_AGENT_SDK_ENTRYPOINT",
-		"QODER_SDK_AUTH_PAYLOAD_FILE",
-		"QODER_SDK_CUSTOM_BASE_URL_BYOK",
-		"QODER_CLI",
-		"QODERCN_CLI",
-		"QODER_PERSONAL_ACCESS_TOKEN",
-	)
-	pins := []string{
-		"QODER_SITE=GLOBAL",
-		"QODER_NO_RC=1",
-		"QODER_FORCE_FILE_STORAGE=1",
-		"QODER_HTTPDNS=0",
-	}
-	return envutil.PinEnv(env, pins...)
+	env := envutil.FilterEnv(environ, qoderStrippedEnvKeys...)
+	return envutil.PinEnv(env, qoderLaunchEnvPins...)
 }
 
 // qoderSessionArgs returns the argv pair that pins or resumes the session.
@@ -58,7 +41,7 @@ func qoderSessionArgs(resumeSessionID string) ([]string, error) {
 }
 
 // Start spawns one Qoder process and begins reading its output.
-func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (agent.Agent, error) {
+func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices) (_ agent.Agent, retErr error) {
 	ctx, cancel := context.WithCancel(ctx)
 
 	registration := Registration()
@@ -77,40 +60,51 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 	effort := opts.Effort()
 	thinking := qoderThinkingValue(opts.Get(OptionThinking))
 	outputStyle := opts.Get(OptionOutputStyle)
-	baseArgs := []string{
-		"--config-dir", qoderConfigRoot(opts),
-		"-w", opts.WorkingDir,
-		"-p",
+	directory, settingsPath, err := prepareSDKSettings(ctx, opts.AgentDirs)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	transferred := false
+	defer func() {
+		if !transferred {
+			retErr = errors.Join(retErr, directory.Close())
+		}
+	}()
+	workerArgs := []string{
+		"--settings", settingsPath,
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
-		// Askable tool calls must reach the worker as can_use_tool
-		// control_requests. Without this hidden flag Qoder keeps the
-		// permission channel closed and fails every ask closed ("Allow
-		// writing to ..." becomes the tool error), so a Default-mode agent
-		// could never raise a banner.
+		// The SDK host exposes can_use_tool only for a session with this flag.
 		"--permission-prompt-tool", "stdio",
 		"--include-partial-messages",
 		"--replay-user-messages",
 		"--permission-mode", qoderPermissionFlag(opts.PermissionMode()),
 	}
 	if model := opts.Model(); model != "" {
-		baseArgs = append(baseArgs, "-m", model)
+		workerArgs = append(workerArgs, "-m", model)
 	}
-	baseArgs = append(baseArgs, qoderReasoningArgs(effort, thinking)...)
-	baseArgs = append(baseArgs, qoderOutputStyleArgs(outputStyle)...)
-	baseArgs = append(baseArgs, sessionArgs...)
+	workerArgs = append(workerArgs, qoderReasoningArgs(effort, thinking)...)
+	workerArgs = append(workerArgs, qoderOutputStyleArgs(outputStyle)...)
+	workerArgs = append(workerArgs, sessionArgs...)
 
 	cmd, preambleDelimiter, metaPrefix := launch.Wrap(ctx, launch.WrapSpec{
 		Shell:        opts.Shell,
 		LoginShell:   opts.LoginShell,
 		Launch:       launchSpec,
-		StripEnvKeys: []string{"QODER_SESSION_ID", "QODER_CLI", "QODERCN_CLI"},
-		BaseArgs:     baseArgs,
+		StripEnvKeys: qoderStrippedEnvKeys,
+		BaseArgs:     []string{"--sdk", "--config-dir", qoderConfigRoot(opts), "-w", opts.WorkingDir},
 		WorkingDir:   opts.WorkingDir,
+		SetEnv:       qoderLaunchEnvPins,
 	})
 
 	cmd.Env = qoderAgentEnv(cmd.Environ())
 	cmd.Env = providerkit.FinalizeAgentEnv(cmd.Env, opts)
+	credentials, err := qoderCredentialsFromEnv(cmd.Env)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 
 	pipes, err := providerkit.SetupProcessPipes(cmd, cancel)
 	if err != nil {
@@ -129,21 +123,22 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		thinking:       thinking,
 		outputStyle:    outputStyle,
 		usageRefresh:   make(chan struct{}, 1),
-	}
-	if opts.ResumeSessionID != "" {
-		a.sessionID = opts.ResumeSessionID
+		credentials:    credentials,
+		directory:      directory,
 	}
 
 	if err := a.StartCmd(); err != nil {
 		cancel()
 		return nil, err
 	}
+	transferred = true
 	a.DrainStderr(stderrPipe)
 	scanner := agent.NewStdoutScanner(stdout)
 	go a.readOutputLoop(scanner)
 
-	if err := a.startStream(); err != nil {
+	if err := a.startDaemon(workerArgs); err != nil {
 		cancel()
+		_ = a.Wait()
 		return nil, err
 	}
 	// The account quota arrives in the background, so it delays no startup.
@@ -189,9 +184,8 @@ func (a *Agent) processEnded() bool {
 	}
 }
 
-// qoderConfigRoot states the per-agent config directory. Qoder's --config-dir
-// is mandatory for isolation: it becomes the user-level config root holding
-// settings.json, .auth/, projects/ and logs/.
+// qoderConfigRoot selects the native profile under the launch's home directory.
+// Qoder stores settings.json, .auth/, projects/ and logs/ under --config-dir.
 func qoderConfigRoot(opts agent.Options) string {
 	if opts.HomeDir != "" {
 		return opts.HomeDir + "/.qoder"

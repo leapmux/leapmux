@@ -8,21 +8,11 @@ import { exerciseNativeCodeExecution, nativeCodeExecutionSchema } from '../helpe
 import { withNativeWorker } from '../helpers/nativeWorker'
 import { createTestDirectory } from '../helpers/runDirectory'
 import { opencodeMcpServerConfiguration } from './mcpLimit'
+import { nativeContext } from './scenarios'
 
 /**
- * One OpenCode-family provider: the environment variables through which it reads its configuration and its code mode.
- * Its agent opens by the rule of the provider of the scenario context.
- */
-export interface OpenCodeFamilyCodeMode {
-  /** The variable that holds the inline configuration, such as `OPENCODE_CONFIG_CONTENT`. */
-  configurationVariable: string
-  /** The variable that turns on the experimental code mode, such as `OPENCODE_EXPERIMENTAL_CODE_MODE`. */
-  codeModeVariable: string
-}
-
-/**
- * Run the native code executor of an OpenCode-family provider on a private Worker.
- * The Worker starts the agent in the code mode, with one result server added to the inline configuration.
+ * Run the native v2 code executor on a private Worker.
+ * The Worker adds one result server to the isolated inline configuration.
  *
  * Four scripts prove these outcomes:
  *
@@ -34,8 +24,8 @@ export interface OpenCodeFamilyCodeMode {
  * {@link exerciseNativeCodeExecution} checks each outcome in the model request, in the transcript, and in the
  * transcript after a reload. The receipt of the result server must then hold exactly the two nested calls.
  */
-export async function exerciseOpenCodeFamilyCodeExecution(context: ManagedNativeScenarioContext, mode: OpenCodeFamilyCodeMode): Promise<void> {
-  const original = context.leapmuxServer.agentEnv?.[mode.configurationVariable]
+export async function exerciseOpenCodeCodeExecution(context: ManagedNativeScenarioContext): Promise<void> {
+  const original = context.leapmuxServer.agentEnv?.OPENCODE_CONFIG_CONTENT
   if (!original)
     throw new Error('The native executor requires its isolated provider configuration.')
   const directory = createTestDirectory('native-code-mcp-')
@@ -45,9 +35,9 @@ export async function exerciseOpenCodeFamilyCodeExecution(context: ManagedNative
   await withNativeWorker(context.leapmuxServer, {
     dataDirPrefix: 'native-code-worker',
     workerName: 'Native code executor',
-    env: { [mode.codeModeVariable]: 'true', [mode.configurationVariable]: content },
+    env: { OPENCODE_CONFIG_CONTENT: content },
   }, async ({ server: worker }) => {
-    const privateContext = { ...context, leapmuxServer: worker }
+    const privateContext = await nativeContext({ ...context, leapmuxServer: worker })
     await openNativeAgent(privateContext, { directoryPrefix: 'native-code-execution-' })
     await exerciseNativeCodeExecution(privateContext, {
       catalogProof: (request) => {

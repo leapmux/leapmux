@@ -41,14 +41,20 @@ func TestRestoreStateMarksActiveBackgroundTasksInterrupted(t *testing.T) {
 	// rows (pending + running) plus one already-finished row to confirm the
 	// sweep is scoped to active rows only.
 	writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
+		Role: leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_TASK_OUTCOME,
+
 		OwnerAgentID: "root-1", RowKey: "task-pending", Seq: 1,
 		Kind: leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent), Title: "pending row", Status: leapmuxv1.BackgroundTaskStatus(bgtask.StatusPending),
 	})
 	writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
+		Role: leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_TASK_OUTCOME,
+
 		OwnerAgentID: "root-1", RowKey: "task-running", Seq: 2,
 		Kind: leapmuxv1.BackgroundTaskKind(bgtask.KindShell), Title: "running row", Status: leapmuxv1.BackgroundTaskStatus(bgtask.StatusRunning),
 	})
 	writeBackgroundTaskFixture(t, svc.Queries, db.UpsertAgentBackgroundTaskParams{
+		Role: leapmuxv1.BackgroundTaskRole_BACKGROUND_TASK_ROLE_TASK_OUTCOME,
+
 		OwnerAgentID: "root-1", RowKey: "task-done", Seq: 3,
 		Kind: leapmuxv1.BackgroundTaskKind(bgtask.KindSubagent), Title: "already done", Status: leapmuxv1.BackgroundTaskStatus(bgtask.StatusSucceeded),
 	})
@@ -93,15 +99,21 @@ func TestRestoreStatePreservesNativeMessagesForEachInterruptedChild(t *testing.T
 	sink := newTestRootOutputSink(t, svc.Output, "root-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 
 	// Only the two active children receive an interrupted registry status.
-	liveID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
+	liveID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-1", ProviderChildKey: "task-1", Title: "SCAN"})
 	require.NoError(t, err)
-	otherID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-2", ProviderChildKey: "task-2", Title: "BUILD"})
+	otherID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-2", ProviderChildKey: "task-2", Title: "BUILD"})
 	require.NoError(t, err)
 	for _, childID := range []string{liveID, otherID} {
 		require.NoError(t, sink.PersistChildMessage(childID,
 			leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, []byte(`{"type":"text","text":"Native work before the Worker stopped."}`), agent.SpanInfo{}))
 	}
-	doneID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{SpawnSpanID: "span-3", ProviderChildKey: "task-3", Title: "DONE"})
+	doneID, err := sink.EnsureChildAgent(agent.ChildAgentSpec{
+		RegistryRole: bgtask.RoleChildTask,
+		SpawnSpanID:  "span-3", ProviderChildKey: "task-3", Title: "DONE"})
 	require.NoError(t, err)
 	require.NoError(t, sink.CloseBackgroundTask("task-3", bgtask.StatusSucceeded))
 	doneBefore := len(transcriptMessages(t, svc, doneID))
