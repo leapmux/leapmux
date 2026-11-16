@@ -3,8 +3,8 @@
 //
 // Solid signals holding a Set/Map re-render only when the reference changes, so
 // every membership edit clones the collection. The "clone, edit one key, but
-// return the SAME reference when the edit is a no-op" idiom recurred verbatim
-// across the chat premeasure queue and skeleton-crossfade state machines; the
+// return the SAME reference when the edit is a no-op" idiom recurs verbatim
+// across the skeleton-crossfade state machines and the render readiness scope; the
 // no-op short-circuit is load-bearing (a churned reference re-runs every
 // subscriber for a change that didn't happen). Centralizing it keeps the
 // short-circuit from being forgotten at one site and drifting from the others.
