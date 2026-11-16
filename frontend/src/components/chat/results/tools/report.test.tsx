@@ -4,7 +4,7 @@ import { beforeAll, describe, expect, it } from 'vitest'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { checkKindModule } from '~/test-support/kindTestHarness'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
-import { unparsedResult } from '../../model/toolCall'
+import { failedResult, unparsedResult } from '../../model/toolCall'
 import { ToolMessage } from '../ToolMessage'
 import { ToolPendingMessage } from '../ToolPendingMessage'
 
@@ -55,28 +55,60 @@ describe('report renderer', () => {
     })
   })
 
-  // Once the call completes, the result row is the one row that can state the proposal:
-  // the request row never reads how the call ended, and the pending row leaves.
-  describe('a proposal whose call completed', () => {
-    const completed = (result: ToolCallFixtureOptions<'report'>['result']) => toolRow(
+  // Once the call ends, the request row never reads how it ended, and the pending row
+  // leaves. A call that ended with NO result -- the turn stopped it -- leaves the proposal
+  // as the one thing to read, on the row that ended it. A result of any form, in words
+  // or typed, answers for the call instead: a refused plan must not read as one that
+  // stands.
+  describe('a proposal whose call ended', () => {
+    const ended = (options: Pick<ToolCallFixtureOptions<'report'>, 'result' | 'status'>) => toolRow(
       toolCallFixture('report', {
         title: 'Add CHANGELOG.md',
         request: { proposal: '# Add CHANGELOG.md\n\nPLANMARKER-8\n' },
-        result,
+        ...options,
       }),
       'result',
       { request: true },
     )
 
-    it('draws the proposal on a result row whose result states no words of its own', async () => {
-      const { container } = render(() => <ToolMessage row={completed(unparsedResult('Plan approved'))} />)
+    it('draws the proposal on the row that ended a call with no result', async () => {
+      const { container } = render(() => <ToolMessage row={ended({ status: 'incomplete' })} />)
       await settleWorkerReplies()
       expect(container.textContent).toContain('PLANMARKER-8')
-      expect(container.textContent).toContain('Plan approved')
     })
 
-    it('draws the answer alone when the result states words of its own', async () => {
-      const { container } = render(() => <ToolMessage row={completed({ text: 'The plan landed.', format: 'markdown' })} />)
+    it('draws the words alone when the result states words of its own', async () => {
+      const { container } = render(() => (
+        <ToolMessage row={ended({
+          result: unparsedResult('Plan approved'),
+        })}
+        />
+      ))
+      await settleWorkerReplies()
+      expect(container.textContent).toContain('Plan approved')
+      expect(container.textContent).not.toContain('PLANMARKER-8')
+    })
+
+    it('states only the reason of a declined proposal', async () => {
+      const { container } = render(() => (
+        <ToolMessage row={ended({
+          status: 'declined',
+          result: failedResult('The reader declined the plan.'),
+        })}
+        />
+      ))
+      await settleWorkerReplies()
+      expect(container.textContent).toContain('The reader declined the plan.')
+      expect(container.textContent).not.toContain('PLANMARKER-8')
+    })
+
+    it('draws the answer alone when the result states it typed', async () => {
+      const { container } = render(() => (
+        <ToolMessage row={ended({
+          result: { text: 'The plan landed.', format: 'markdown' },
+        })}
+        />
+      ))
       await settleWorkerReplies()
       expect(container.textContent).toContain('The plan landed.')
       expect(container.textContent).not.toContain('PLANMARKER-8')

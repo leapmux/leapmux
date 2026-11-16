@@ -1,8 +1,10 @@
 import type { MessageContextResolver, MessageContextSources } from '~/components/chat/messageContextResolver'
+import type { ToolSpanRowPresence } from '~/components/chat/model/row'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageSpanIdentity } from '~/lib/messageSpan'
 import { createMemo, createRoot, createSignal } from 'solid-js'
 import { afterEach } from 'vitest'
+import { createClassifiedEntryCache, listedRequestSpanKeys } from '~/components/chat/chatEntryCache'
 import { createMessageContextResolver } from '~/components/chat/messageContextResolver'
 import { messageSpanKey } from '~/lib/messageSpan'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
@@ -187,4 +189,27 @@ export function testTranscriptContext(archive: readonly AgentChatMessage[], opti
     tuple.resolver = createMessageContextResolver(tuple.transcript.sources)
   })
   return tuple
+}
+
+/**
+ * The request rows that the list draws over `messages`, as ChatView derives them: from the
+ * classified entries of the messages, through `resolver` (see listedRequestSpanKeys). It
+ * answers for a span as a row reads it, as `visibleRows`. Call it within a reactive owner.
+ */
+export function createListedRequestRows(
+  resolver: MessageContextResolver,
+  messages: () => readonly AgentChatMessage[],
+): (identity: MessageSpanIdentity) => ToolSpanRowPresence {
+  const entries = createClassifiedEntryCache({
+    messages,
+    requestRevision: identity => resolver.request(identity)?.revision,
+    contentVersionById: id => resolver.contentVersion(id),
+    resolvedMessage: message => resolver.resolvedMessage(message),
+    role: message => resolver.role(message),
+    showHiddenMessages: () => false,
+  })
+  const listed = createMemo(() => listedRequestSpanKeys(entries.visibleEntries()))
+  return identity => ({
+    request: listed().has(messageSpanKey(identity)),
+  })
 }

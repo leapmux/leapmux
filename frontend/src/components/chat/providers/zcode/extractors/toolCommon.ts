@@ -272,13 +272,7 @@ export function zcodePairedRequest(parsed: unknown, request: ParsedMessageConten
  * states none until its result row draws the call.
  */
 export function zcodeToolInput(row: ZCodeRow): Record<string, unknown> {
-  const own = zcodeExtractTool(row.parsed)?.input
-  if (own && Object.keys(own).length > 0)
-    return own
-  const request = zcodePairedRequest(row.parsed, row.toolUseParsed)?.input
-  if (request && Object.keys(request).length > 0)
-    return request
-  return pickObject(zcodeNativeTool(row)?.state, 'input') ?? {}
+  return zcodeToolInputSource(row).input
 }
 
 /**
@@ -288,14 +282,25 @@ export function zcodeToolInput(row: ZCodeRow): Record<string, unknown> {
  * of the call states no input either (see zcodeToolInput).
  */
 export function zcodeInputFromNativeRecordAlone(row: ZCodeRow): boolean {
+  return zcodeToolInputSource(row).source === 'native'
+}
+
+/**
+ * The input of a row, and the source that states it (see zcodeToolInput). The one place
+ * that orders the sources, so the input and the fact of where it came from can never
+ * disagree. A source states the input only when it holds at least one field.
+ */
+function zcodeToolInputSource(row: ZCodeRow): { source: 'own' | 'request' | 'native' | 'none', input: Record<string, unknown> } {
   const own = zcodeExtractTool(row.parsed)?.input
   if (own && Object.keys(own).length > 0)
-    return false
+    return { source: 'own', input: own }
   const request = zcodePairedRequest(row.parsed, row.toolUseParsed)?.input
   if (request && Object.keys(request).length > 0)
-    return false
+    return { source: 'request', input: request }
   const native = pickObject(zcodeNativeTool(row)?.state, 'input')
-  return native !== undefined && native !== null && Object.keys(native).length > 0
+  return native && Object.keys(native).length > 0
+    ? { source: 'native', input: native }
+    : { source: 'none', input: native ?? {} }
 }
 
 /**

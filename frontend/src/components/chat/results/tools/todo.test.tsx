@@ -107,7 +107,8 @@ describe('todo renderer', () => {
       status: 'in_progress',
       request: { items: [] },
     })
-    expect(todoRenderer.hasPending?.(parsedCall(call), false)).toBe(false)
+    const pending = render(() => <ToolPendingMessage row={toolRow(call, 'request')} />)
+    expect(pending.container.querySelector('[data-testid="tool-pending"]')?.matches(':empty')).toBe(true)
   })
 
   // A call that creates a task carries its note and no list yet. The preview states the

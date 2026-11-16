@@ -196,7 +196,7 @@ function executeParts(facts: AntigravityToolFacts): Pick<ToolCallSpecVariant<'ex
   return {
     request: asked,
     resultMetadata: [
-      { label: 'Working directory', value: cwd },
+      { label: 'Working directory', value: cwd, path: true },
     ],
   }
 }

@@ -279,10 +279,16 @@ func (a *Agent) failPendingRequests(err error) {
 
 // persistRowTo stores one transcript row in its native session.
 func (a *Agent) persistRowTo(target agent.ProviderServices, payload []byte, span agent.SpanInfo) {
+	a.persistContentTo(target, agent.MessageContent{Original: payload}, span)
+}
+
+// persistContentTo stores one transcript row in its native session, and keeps
+// the completion and the metadata that the content states.
+func (a *Agent) persistContentTo(target agent.ProviderServices, content agent.MessageContent, span agent.SpanInfo) {
 	a.Mu.Lock()
-	sessionID := a.conversationID
+	content.AgentSessionID = a.conversationID
 	a.Mu.Unlock()
-	if err := target.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, agent.MessageContent{Original: payload, AgentSessionID: sessionID}, span); err != nil {
+	if err := target.PersistMessage(leapmuxv1.MessageSource_MESSAGE_SOURCE_AGENT, content, span); err != nil {
 		slog.Error("letta: persist message failed", "agent_id", a.AgentID(), "error", err)
 	}
 }

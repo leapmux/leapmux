@@ -1,9 +1,9 @@
 import type { JSX } from 'solid-js'
-import type { MessageContentRenderContext } from '../../messageContentRenderer'
+import type { MessageContentRenderContext } from '~/test-support/messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '~/lib/jsonPick'
-import { renderListedMessageContent } from '../../messageContentRenderer'
+import { renderListedMessageContent } from '~/test-support/messageContentRenderer'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 // Side-effect: the helper dispatches through the registry, so the plugin must be in it.

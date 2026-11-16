@@ -29,7 +29,16 @@ export type ToolSpanRowRole = 'request' | 'update' | 'result'
 export type ToolSpanRowPosition
   = | { role: 'request', hasRequestRow?: false }
     | { role: 'update', hasRequestRow: boolean }
-    | { role: 'result', hasRequestRow: boolean }
+    | {
+      role: 'result'
+      hasRequestRow: boolean
+      /**
+       * The request row beside this one states no input -- its message omitted it --
+       * and only this row's own message recovers it. So this row draws the request side
+       * too, under the header of the request row beside it (see rowDrawsRequest).
+       */
+      restatesRequest?: boolean
+    }
 
 /**
  * What the transcript draws for the REQUEST of one tool span, whichever row the
@@ -69,14 +78,8 @@ export function toolCallRow(call: ToolCall, role: ToolSpanRowRole, span: ToolSpa
         call,
         role,
       }
+    case 'update':
     case 'result':
-      return {
-        kind: 'tool',
-        call,
-        role,
-        hasRequestRow: span.request,
-      }
-    default:
       return {
         kind: 'tool',
         call,

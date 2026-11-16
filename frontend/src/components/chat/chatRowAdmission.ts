@@ -362,6 +362,21 @@ function admittedIdsOf(rows: readonly ChatRowItem[], range: AdmittedRange): Read
 }
 
 /**
+ * The row that the unit keeps for the admitted rows of `range`, which hold the tail (see
+ * RowAdmission.holdsTail): their last row, or the row that it continues
+ * (ChatRowItem.continuesPrevious). A continuing row can leave the loaded rows while the
+ * row above it stays -- a pending row leaves when the result row of its call is measured
+ * (see chatPendingRows), and a newer message can still be staged then. A kept row that
+ * left counts for nothing, so keeping the continuing row would end the hold.
+ */
+function keptRowOf(rows: readonly ChatRowItem[], range: AdmittedRange): string {
+  let index = range.end - 1
+  while (index > range.start && rows[index]!.continuesPrevious === true)
+    index--
+  return rows[index]!.id
+}
+
+/**
  * Whether the admitted rows of `range` hold the tail (see RowAdmission.holdsTail).
  * `keptRowId` is the kept row, or `undefined`.
  */
@@ -411,9 +426,10 @@ export interface RowAdmission {
    *
    * They hold it when their last row is the last loaded row. They hold it also while only
    * new messages are staged below: the unit keeps the last admitted row of each state in
-   * which the admitted rows hold the tail (the kept row), and the admitted rows hold the
-   * tail while their last row is the kept row or a row after it. So a burst of new
-   * messages that measures row by row never ends the hold.
+   * which the admitted rows hold the tail (the kept row; for a row that continues the row
+   * above it, the row that it continues), and the admitted rows hold the tail while their
+   * last row is the kept row or a row after it. So a burst of new messages that measures
+   * row by row never ends the hold.
    *
    * The unit keeps a row only while the loaded window holds the live tail, and forgets it
    * otherwise: the rows of a newer history page are no new messages, and a reader who
@@ -504,7 +520,7 @@ export function createRowAdmission(deps: {
         ? before.admittedIds
         : admittedIdsOf(rows, result),
       keptRowId: tailLoaded && holdsTail && admitsRows
-        ? rows[result.end - 1]!.id
+        ? keptRowOf(rows, result)
         : kept,
     }
   })

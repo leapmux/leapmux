@@ -150,7 +150,7 @@ export function grokAgentRun(facts: ACPToolFacts, request: AgentRequest): AgentR
  *
  * The metadata states the arguments of the call alone. The script file of a saved
  * workflow is a fact of the answer, so the run states it (see {@link grokWorkflowRun}).
- * The answer also names the saved workflow, and that name titles the result row.
+ * The answer also identifies the saved workflow, and that name titles the result row.
  */
 export function grokWorkflowRequest(input: Record<string, unknown>, facts: ACPToolFacts): AgentRequest {
   const output = grokRawOutput(facts.tool, 'Workflow')

@@ -4,8 +4,8 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import '~/components/chat/providers'
 
-const { renderMessageContent } = await import('../messageContentRenderer')
-type MessageContentRenderContext = import('../messageContentRenderer').MessageContentRenderContext
+const { renderMessageContent } = await import('~/test-support/messageContentRenderer')
+type MessageContentRenderContext = import('~/test-support/messageContentRenderer').MessageContentRenderContext
 
 /** Construct a Grep tool_use assistant message. */
 function makeGrepToolUse(input: Record<string, unknown> = {}) {

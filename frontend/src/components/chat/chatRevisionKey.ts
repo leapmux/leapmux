@@ -39,7 +39,7 @@ const ROW_REVISION_KEY_VERSION = 1
  * The LENGTH prefix keeps an id that contains the delimiter from forging a
  * different member's fields: the reader takes the id by count, not by scan.
  */
-function member(tag: string, revision: MessageRevision): string {
+export function revisionKeyMember(tag: string, revision: MessageRevision): string {
   return `${tag}=${revision.id.length}:${revision.id}|${revision.seq}|${revision.contentVersion}|${revision.supplementalRevision}`
 }
 
@@ -55,9 +55,9 @@ export function rowRevisionKey(
 ): string {
   const parts = [
     `v${ROW_REVISION_KEY_VERSION}`,
-    member('own', dependencies.own),
+    revisionKeyMember('own', dependencies.own),
   ]
   if (dependencies.request !== undefined)
-    parts.push(member('request', dependencies.request))
+    parts.push(revisionKeyMember('request', dependencies.request))
   return parts.join('~')
 }

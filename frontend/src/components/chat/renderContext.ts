@@ -202,11 +202,12 @@ export interface ToolResultRenderContext extends ToolLayoutContext, MessageUiRen
    */
   loneCall?: boolean
   /**
-   * Reports whether the header of the row clips words that only Expand shows: its title
-   * or its summary line. A row whose actions the outer toolbar draws (`hasOuterToolbar`)
-   * offers Expand there for them, as the row's own toolbar does.
+   * Reports whether the row offers Expand: its meta states a collapsible body, or its
+   * header clips words that only Expand shows (its title or its summary line). A row
+   * whose actions the outer toolbar draws (`hasOuterToolbar`) offers Expand there exactly
+   * when it does here.
    */
-  onHeaderClipsChange?: (clips: boolean) => void
+  onExpandableChange?: (expandable: boolean) => void
   subagents?: SubagentNavigation
   images?: ImageRenderActions
 }

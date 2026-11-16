@@ -1368,6 +1368,151 @@ describe('ChatView', () => {
       expect(wiringState.persistenceDeps!.loadedItems().map(item => item.id)).toEqual(['todo-request', 'todo-result'])
     })
 
+    // The store drops the live output the moment the result message arrives, and the
+    // result row joins the list only once a hidden copy measured it. The pending row keeps
+    // the output that it drew in between, so the swap moves no text.
+    it('keeps its live output until the result row replaces it', async () => {
+      const BASH_SPAN = 'pending-bash'
+      const bashMessage = (id: string, seq: bigint, payload: Record<string, unknown>) => create(AgentChatMessageSchema, {
+        id,
+        seq,
+        source: MessageSource.AGENT,
+        agentProvider: AgentProvider.CLAUDE_CODE,
+        contentCompression: ContentCompression.NONE,
+        content: new TextEncoder().encode(JSON.stringify(payload)),
+        spanId: BASH_SPAN,
+        spanType: 'Bash',
+      })
+      const bashRequest = bashMessage('bash-request', 1n, {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: BASH_SPAN,
+              name: 'Bash',
+              input: { command: 'make' },
+            },
+          ],
+        },
+      })
+      const bashResult = bashMessage('bash-result', 2n, {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: BASH_SPAN, content: 'built' },
+          ],
+        },
+      })
+      const [messages, setMessages] = createSignal([bashRequest])
+      const [outputTail, setOutputTail] = createSignal<string | undefined>('compiling main.c')
+      const messageContext = testMessageContext({
+        messages,
+        progress: () => {
+          const tail = outputTail()
+          return tail === undefined
+            ? undefined
+            : { outputTail: tail }
+        },
+      })
+      const view = render(() => <PreferencesProvider><ChatView messages={messages()} messageContext={messageContext} /></PreferencesProvider>)
+      await reportChatViewportSize(view)
+
+      const pending = () => listed(view.container, '[data-tool-row-role="pending"]')
+      expect(pending()).toHaveLength(1)
+      expect(pending()[0]).toHaveTextContent('compiling main.c')
+
+      batch(() => {
+        setMessages([bashRequest, bashResult])
+        setOutputTail(undefined)
+      })
+      await flushAnimationFrame()
+      expect(view.container.querySelector('[data-seq="2"]')).toBeNull()
+      expect(pending()).toHaveLength(1)
+      expect(pending()[0]).toHaveTextContent('compiling main.c')
+
+      await measureHiddenCopies(view.container)
+      expect(pending()).toHaveLength(0)
+      expect(view.container.querySelector('[data-seq="2"]')).toHaveTextContent('built')
+    })
+
+    // The request row of a running file change offers the diff toggle only while its
+    // pending row draws the requested changes. Once the result row replaces the pending
+    // row, no row of the call draws them on that request row.
+    it('offers the diff toggle of a request row only while its pending row is listed', async () => {
+      const WRITE_SPAN = 'pending-write'
+      const writeMessage = (id: string, seq: bigint, payload: Record<string, unknown>) => create(AgentChatMessageSchema, {
+        id,
+        seq,
+        source: MessageSource.AGENT,
+        agentProvider: AgentProvider.CLAUDE_CODE,
+        contentCompression: ContentCompression.NONE,
+        content: new TextEncoder().encode(JSON.stringify(payload)),
+        spanId: WRITE_SPAN,
+        spanType: 'Write',
+      })
+      const writeRequest = writeMessage('write-request', 1n, {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: WRITE_SPAN,
+              name: 'Write',
+              input: { file_path: '/src/new-file.ts', content: 'export const control = true' },
+            },
+          ],
+        },
+      })
+      const writeResult = writeMessage('write-result', 2n, {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            { type: 'tool_result', tool_use_id: WRITE_SPAN, content: 'File created successfully at: /src/new-file.ts' },
+          ],
+        },
+        tool_use_result: {
+          type: 'create',
+          filePath: '/src/new-file.ts',
+          content: 'export const control = true',
+          structuredPatch: [],
+        },
+      })
+      const [messages, setMessages] = createSignal([writeRequest])
+      const messageContext = testMessageContext({ messages })
+      const view = render(() => <PreferencesProvider><ChatView messages={messages()} messageContext={messageContext} /></PreferencesProvider>)
+      await reportChatViewportSize(view)
+      const menuOfRequestRow = async () => {
+        const bubble = view.container.querySelector<HTMLElement>('[data-seq="1"] [data-testid="message-bubble"]')!
+        bubble.dispatchEvent(new MouseEvent('contextmenu', {
+          clientX: 150,
+          buttons: 0,
+          bubbles: true,
+          cancelable: true,
+        }))
+        await waitFor(() => expect(screen.queryByTestId('message-context-menu')?.querySelector('[data-testid]')).toBeTruthy())
+        return [
+          ...screen.getByTestId('message-context-menu').querySelectorAll('[data-testid]'),
+        ].map(element => element.getAttribute('data-testid'))
+      }
+      expect(listed(view.container, '[data-tool-row-role="pending"]')).toHaveLength(1)
+      expect(await menuOfRequestRow()).toContain('message-menu-diff-view')
+
+      setMessages([writeRequest, writeResult])
+      await measureHiddenCopies(view.container)
+      expect(listed(view.container, '[data-tool-row-role="pending"]')).toHaveLength(0)
+      // The gesture opens its menu one task after the press. Close the first menu, so the
+      // wait below reads the items of the second.
+      fireEvent.keyDown(screen.getByTestId('message-context-menu'), { key: 'Escape' })
+      await waitFor(() => expect(screen.queryByTestId('message-context-menu')?.querySelector('[data-testid]') ?? null).toBeNull())
+      expect(await menuOfRequestRow()).not.toContain('message-menu-diff-view')
+      view.unmount()
+    })
+
     // Without the message resolver, the list cannot tell a call that runs from one that
     // ended, so it opens no pending row.
     it('draws no pending row without a message resolver', async () => {
@@ -1446,10 +1591,18 @@ describe('ChatView', () => {
     const view = render(() => <PreferencesProvider><ChatView messages={messages()} messageContext={messageContext} /></PreferencesProvider>)
     await reportChatViewportSize(view)
     const keyOf = () => wiringState.persistenceDeps!.loadedItems().find(item => item.id === 'presence-result')?.heightKey
+    const row = (seq: number) => view.container.querySelector<HTMLElement>(`[data-seq="${seq}"]`)
     const alone = keyOf()
     expect(alone).toBeDefined()
+    // Alone, the result row states the call that it ends.
+    expect(row(2)).toHaveTextContent('make')
     setMessages([request, result])
     expect(keyOf()).not.toBe(alone)
+    await measureHiddenCopies(view.container)
+    // Beside its request row, the result row leaves the call to the request row.
+    expect(row(1)).toHaveTextContent('make')
+    expect(row(2)).not.toHaveTextContent('make')
+    expect(row(2)).toHaveTextContent('built')
     view.unmount()
   })
 
@@ -1523,6 +1676,69 @@ describe('ChatView', () => {
       const { before, after } = await requestKeyChange(true)
       expect(before).toBeDefined()
       expect(after).not.toBe(before)
+    })
+
+    // An agent launch opens its prompt under a key of its own (the agent prompt key), and
+    // its expanded header wraps as any other does.
+    it.each([false, true])('re-keys an agent launch only while its prompt is expanded: expanded %s', async (expanded) => {
+      const TASK_SPAN = 'header-task'
+      const taskMessage = (id: string, seq: bigint, payload: Record<string, unknown>) => create(AgentChatMessageSchema, {
+        id,
+        seq,
+        source: MessageSource.AGENT,
+        agentProvider: AgentProvider.CLAUDE_CODE,
+        contentCompression: ContentCompression.NONE,
+        content: new TextEncoder().encode(JSON.stringify(payload)),
+        spanId: TASK_SPAN,
+        spanType: 'Task',
+      })
+      const taskRequest = taskMessage('task-request', 1n, {
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: TASK_SPAN,
+              name: 'Task',
+              input: { description: 'Fix the build', prompt: 'Run the tests and fix each failure.', subagent_type: 'general-purpose' },
+            },
+          ],
+        },
+      })
+      const taskResult = taskMessage('task-result', 2n, {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: TASK_SPAN,
+              content: [
+                { type: 'text', text: 'The build passes.' },
+              ],
+            },
+          ],
+        },
+      })
+      const [messages, setMessages] = createSignal([taskRequest])
+      const messageContext = testMessageContext({ messages })
+      const view = render(() => <PreferencesProvider><ChatView messages={messages()} messageContext={messageContext} /></PreferencesProvider>)
+      await reportChatViewportSize(view)
+      if (expanded) {
+        const requestRow = view.container.querySelector<HTMLElement>('[data-seq="1"]')!
+        fireEvent.click(within(requestRow).getByRole('button', { name: 'Show prompt' }))
+        expect(requestRow).toHaveTextContent('Run the tests and fix each failure.')
+      }
+      const keyOf = () => wiringState.persistenceDeps!.loadedItems().find(item => item.id === 'task-request')?.heightKey
+      const before = keyOf()
+      expect(before).toBeDefined()
+      setMessages([taskRequest, taskResult])
+      if (expanded)
+        expect(keyOf()).not.toBe(before)
+      else
+        expect(keyOf()).toBe(before)
+      view.unmount()
     })
   })
 

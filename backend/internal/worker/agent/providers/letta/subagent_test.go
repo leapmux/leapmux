@@ -446,29 +446,6 @@ func TestLettaLiveOutputKeepsRootAndTwoChildOwnersSeparate(t *testing.T) {
 	assert.Empty(t, a.tools)
 }
 
-func TestLettaScopeCompletionClearsAnErrorEndWithoutInventingAResult(t *testing.T) {
-	t.Parallel()
-	sink := &agenttest.Sink{}
-	a := &Agent{sink: agent.NewProviderServices(sink)}
-	start, _ := lettaOutputFrame(t, "", lettaOutputStart("call", "run"))
-	window, _ := lettaOutputFrame(t, "", lettaOutputWindow("call", "run", "actual live output"))
-	end, native := lettaOutputFrame(t, "", map[string]any{"message_type": "client_tool_end", "tool_call_id": "call", "run_id": "run", "status": "error"})
-	a.HandleOutput(start)
-	a.HandleOutput(window)
-	a.HandleOutput(end)
-	assert.Empty(t, sink.ClosedSpans())
-	a.HandleOutput([]byte(lettaLiveTurnFinished))
-	rows := sink.Messages()
-	require.Len(t, rows, 4)
-	assert.Equal(t, native, rows[2].Content)
-	for _, row := range rows {
-		assert.False(t, row.Closing, "native scope completion must create no result payload")
-	}
-	assert.True(t, rows[3].TurnEnd)
-	assert.Empty(t, a.tools)
-	assert.Equal(t, []string{"letta-tool-call"}, sink.ClosedSpans())
-}
-
 func TestLettaTaskNotificationClearsLiveCallsBeforeItsLateNativeFinal(t *testing.T) {
 	t.Parallel()
 	a, sink := newLettaChildTestAgent(t)

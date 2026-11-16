@@ -19,7 +19,7 @@ import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { testImageActions } from '~/test-support/imageActions'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { nativeOutputPathsPrecedePreview } from '../../../../tests/e2e/helpers/nativeToolOutputFilePaths'
-import { toolUseTitle, toolUseTitleExpanded } from '../toolStyles.css'
+import { toolUseHeader, toolUseTitle, toolUseTitleExpanded } from '../toolStyles.css'
 import { toolCallMeta } from './tools/meta'
 
 function progress(outputTail: string | undefined) {
@@ -428,14 +428,32 @@ describe('ToolMessage', () => {
       expect(titleBox()?.matches(classSelector(toolUseTitleExpanded))).toBe(true)
     })
 
+    // The expand state outlives a remount: a row that scrolled out of the window while
+    // expanded mounts expanded. Its title wraps and clips nothing, but the row keeps the
+    // control that collapses it.
+    it('offers Collapse on a row that mounts expanded with nothing else to expand', () => {
+      const { container, getByRole } = render(() => (
+        <ToolMessage
+          row={toolRow(call, 'request')}
+          context={{
+            getMessageUiState: key => key === MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED
+              ? true
+              : undefined,
+          }}
+        />
+      ))
+      expect(container.querySelector(classSelector(toolUseTitle))?.matches(classSelector(toolUseTitleExpanded))).toBe(true)
+      expect(getByRole('button', { name: 'Collapse' })).toBeInTheDocument()
+    })
+
     it('offers no Expand for a title that fits', () => {
       const { queryByRole } = render(() => <ToolMessage row={toolRow(call, 'request')} />)
       expect(queryByRole('button', { name: expandLabel })).toBeNull()
     })
 
-    // A result row draws its actions in the outer toolbar of the message, which reads
-    // the meta alone, so the row reports what its header clips.
-    it('reports the clip to the outer toolbar', () => {
+    // A result row draws its actions in the outer toolbar of the message, which cannot see
+    // what the row's header clips, so the row reports whether it can expand.
+    it('reports to the outer toolbar that the row can expand', () => {
       stubClippedBoxes()
       const reports: boolean[] = []
       render(() => (
@@ -445,7 +463,7 @@ describe('ToolMessage', () => {
           }), 'result')}
           context={{
             hasOuterToolbar: true,
-            onHeaderClipsChange: clips => reports.push(clips),
+            onExpandableChange: expandable => reports.push(expandable),
           }}
         />
       ))
@@ -540,6 +558,80 @@ describe('ToolMessage', () => {
     expect(request.container.textContent).not.toContain('/repo/plan.md')
     expect(result.container.textContent).toContain('Plan file')
     expect(result.container.textContent).toContain('/repo/plan.md')
+  })
+
+  // A result row whose request row states no input restates the request side, under
+  // the request row's header: one header for the call, and the command below it.
+  it('draws the request side of a result row that restates it, under no header of its own', () => {
+    const call = toolCallFixture('execute', {
+      request: { command: 'make all' },
+      result: {
+        commands: [
+          { output: 'built' },
+        ],
+        unresolvedTerminals: [],
+      },
+    })
+    const result = toolRow(call, 'result', { request: true })
+    if (result.role !== 'result')
+      throw new Error('A result role must build a result row.')
+    const { container } = render(() => <ToolMessage row={{ ...result, restatesRequest: true }} />)
+    expect(container.querySelector(classSelector(toolUseHeader))).toBeNull()
+    expect(container.textContent).toContain('make all')
+    expect(container.textContent).toContain('built')
+  })
+
+  // The restated command is collapsed as on a request row. The row draws no header, so it
+  // offers Expand through the outer toolbar, worded for the command it clips.
+  it('offers Expand for the long command of a result row that restates it', () => {
+    const command = Array.from({ length: 30 }, (_, index) => `make step-${index}`).join('\n')
+    const call = toolCallFixture('execute', {
+      request: { command },
+      result: {
+        commands: [
+          { output: 'built' },
+        ],
+        unresolvedTerminals: [],
+      },
+    })
+    const result = toolRow(call, 'result', { request: true })
+    if (result.role !== 'result')
+      throw new Error('A result role must build a result row.')
+    const restating = { ...result, restatesRequest: true }
+    expect(toolCallMeta(restating)).toMatchObject({ collapsible: true, expandLabel: 'Show full command' })
+    expect(toolCallMeta(result)).toMatchObject({ collapsible: false })
+    const reports: boolean[] = []
+    const { container } = render(() => (
+      <ToolMessage
+        row={restating}
+        context={{
+          hasOuterToolbar: true,
+          onExpandableChange: expandable => reports.push(expandable),
+        }}
+      />
+    ))
+    expect(container.querySelector('[data-command-input-collapsed]')).not.toBeNull()
+    expect(reports.at(-1)).toBe(true)
+  })
+
+  it('shows a path fact of the result relative to the working directory', () => {
+    const call = Object.assign(toolCallFixture('execute', {
+      result: {
+        commands: [
+          { output: 'done' },
+        ],
+        unresolvedTerminals: [],
+      },
+    }), {
+      resultMetadata: [
+        { label: 'Working directory', value: '/repo/sub', path: true },
+      ],
+    })
+    const result = render(() => (
+      <ToolMessage row={toolRow(call, 'result', { request: true })} context={{ workingDir: '/repo' }} />
+    ))
+    expect(result.container.textContent).toContain('Working directory:sub')
+    expect(result.container.textContent).not.toContain('/repo/sub')
   })
 })
 
@@ -833,8 +925,10 @@ describe('ToolMessage output DOM ownership', () => {
     const live = render(() => (
       <ToolPendingMessage
         row={toolRow(toolCallFixture('execute', { status: 'in_progress' }), 'request')}
-        progress={{
-          liveTail: () => ({ outputTail: marker }),
+        context={{
+          toolProgress: {
+            liveTail: () => ({ outputTail: marker }),
+          },
         }}
       />
     ))

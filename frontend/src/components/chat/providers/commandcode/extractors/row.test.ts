@@ -252,7 +252,7 @@ describe('commandCodeExtractRow', () => {
         args: ['--flag', 'two words'],
       },
     })
-    const errored = event('tool_errored', {
+    const failedFrame = event('tool_errored', {
       toolCallId: 'failing-shell',
       toolName: 'shell_command',
       error: { message: 'Native command crashed.' },
@@ -277,7 +277,7 @@ describe('commandCodeExtractRow', () => {
     })
 
     it('draws the failure on the result row and keeps the shell request and label', () => {
-      const row = extract(errored, {
+      const row = extract(failedFrame, {
         span: {
           ...emptySpan,
           request: resolved(queued),
@@ -286,7 +286,7 @@ describe('commandCodeExtractRow', () => {
         },
       })
       if (row?.kind !== 'tool' || row.call.kind !== 'execute')
-        throw new Error('The errored shell command must remain an execute row.')
+        throw new Error('The failed shell command must remain an execute row.')
       expect(row.role).toBe('result')
       expect(row.call.label).toBe('Shell')
       expect(row.call.request.command).toBe('native-run "--flag" "two words"')

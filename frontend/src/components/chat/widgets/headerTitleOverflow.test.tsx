@@ -72,14 +72,22 @@ describe('headerTitleClips', () => {
   it('ignores a difference below half a pixel', () => {
     expect(headerTitleClips(titleBox({ ...FITS, scrollWidth: 100.4 }))).toBe(false)
   })
+
+  // A title mixes a proportional and a monospace face on one baseline, and the browser
+  // rounds the content height of that line, so a title that fits can read one pixel
+  // taller than its box. A part that broke onto a second line adds a whole line.
+  it('ignores a content height one pixel taller than the box', () => {
+    expect(headerTitleClips(titleBox({ ...FITS, scrollHeight: 21 }))).toBe(false)
+    expect(headerTitleClips(titleBox({ ...FITS, scrollHeight: 22 }))).toBe(true)
+  })
 })
 
 describe('useHeaderTitleOverflow', () => {
   /** Mount a title box whose size and words the test drives, and record each report. */
-  function mountTitle(initial: BoxSize) {
+  function mountTitle(initial: BoxSize, opts: { expanded?: boolean } = {}) {
     const [size, setSize] = createSignal(initial)
     const [words, setWords] = createSignal('Read src/main.ts')
-    const [expanded, setExpanded] = createSignal(false)
+    const [expanded, setExpanded] = createSignal(opts.expanded ?? false)
     const reports: boolean[] = []
     let overflowing: () => boolean = () => false
     function Title() {
@@ -141,6 +149,19 @@ describe('useHeaderTitleOverflow', () => {
     title.setSize(FITS)
     title.setWords('Read src/main.ts (412 lines)')
     await flushMutations()
+    expect(title.reports).toEqual([true])
+    expect(title.overflowing()).toBe(true)
+
+    title.setExpanded(false)
+    expect(title.reports).toEqual([true, false])
+    expect(title.overflowing()).toBe(false)
+  })
+
+  // The expand state of a row outlives a remount (see createMessageUiState). A row that
+  // mounts expanded has no collapsed answer yet, and a clipped title can be the one reason
+  // that the row is expandable: the row keeps its control until it collapses and measures.
+  it('reports a clip for a title that mounts expanded, until the title collapses', () => {
+    const title = mountTitle(FITS, { expanded: true })
     expect(title.reports).toEqual([true])
     expect(title.overflowing()).toBe(true)
 

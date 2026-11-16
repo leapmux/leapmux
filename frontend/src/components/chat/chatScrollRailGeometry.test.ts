@@ -49,6 +49,36 @@ describe('chatScrollRailGeometry', () => {
       expect(seqAtContentY(prep, 500)).toBe(6)
     })
 
+    // A pending row shares the sequence of its request row (see chatPendingRows).
+    it('splits the one sequence unit of rows that share a sequence between them', () => {
+      const prep = prepOf([1n, 2n, 2n, 3n])
+      expect(prep.rowSeqs).toEqual([1, 2, 2.5, 3, 4])
+      expect(seqAtContentY(prep, 100)).toBe(2)
+      expect(seqAtContentY(prep, 150)).toBe(2.25)
+      expect(seqAtContentY(prep, 200)).toBe(2.5)
+      expect(seqAtContentY(prep, 300)).toBe(3)
+    })
+
+    // The pending row of a running call is the last row of a live window.
+    it('ends the map one unit after rows that share the last sequence', () => {
+      const prep = prepOf([1n, 2n, 2n])
+      expect(prep.rowSeqs).toEqual([1, 2, 2.5, 3])
+      expect(seqAtContentY(prep, 250)).toBe(2.75)
+      expect(seqAtContentY(prep, 300)).toBe(3)
+      expect(contentYForSeq(prep, 2.5)).toBe(200)
+    })
+
+    // A row spans to the start of the next row, so the last row that shares a sequence
+    // takes the gap after it, as a lone row does: the hidden rows that follow a request
+    // map into its pending row.
+    it('gives the seq gap after a shared sequence to the last row that shares it', () => {
+      const prep = prepOf([1n, 1n, 5n])
+      expect(prep.rowSeqs).toEqual([1, 1.5, 5, 6])
+      expect(seqAtContentY(prep, 50)).toBe(1.25)
+      expect(seqAtContentY(prep, 150)).toBe(3.25)
+      expect(contentYForSeq(prep, 1)).toBe(0)
+    })
+
     it('absorbs seq gaps (deleted/hidden rows) linearly between visible rows', () => {
       // seqs jump 3 -> 7: the pixel span between them covers seqs [3,7).
       const prep = prepOf([1n, 3n, 7n])
@@ -62,6 +92,15 @@ describe('chatScrollRailGeometry', () => {
     it('round-trips with seqAtContentY within the loaded window', () => {
       const prep = prepOf([1n, 2n, 3n, 4n, 5n])
       for (const y of [0, 50, 150, 250, 399]) {
+        const seqF = seqAtContentY(prep, y)!
+        expect(contentYForSeq(prep, seqF)).toBeCloseTo(y, 5)
+      }
+    })
+
+    it('places a sequence that two rows share at the top of the first of them', () => {
+      const prep = prepOf([1n, 2n, 2n, 3n])
+      expect(contentYForSeq(prep, 2)).toBe(100)
+      for (const y of [100, 150, 200, 250, 399]) {
         const seqF = seqAtContentY(prep, y)!
         expect(contentYForSeq(prep, seqF)).toBeCloseTo(y, 5)
       }

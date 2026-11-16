@@ -3,10 +3,12 @@ import type { ToolKind } from '~/components/chat/model/toolKind'
 import type { ToolRequestByKind, ToolResultByKind } from '~/components/chat/model/tools'
 import { render } from '@solidjs/testing-library'
 import { ToolMessage } from '~/components/chat/results/ToolMessage'
-import { toolCallHasPending, ToolPendingMessage } from '~/components/chat/results/ToolPendingMessage'
+import { ToolPendingMessage } from '~/components/chat/results/ToolPendingMessage'
 import { rendererFor } from '~/components/chat/results/tools/index'
 import { toolCallMeta } from '~/components/chat/results/tools/meta'
 import { parsedCall } from '~/components/chat/results/tools/renderer'
+import { toolPending } from '~/components/chat/toolStyles.css'
+import { classSelector } from '~/test-support/composedClass'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 
@@ -77,11 +79,10 @@ export function checkKindModule(check: KindModuleCheck): void {
       expect(container.textContent).toContain(check.resultPart)
   })
 
-  // ToolPendingMessage asks `toolCallHasPending` whether the pending row of a call that
-  // runs draws something, and gives the row its top space only then. The answer must be
-  // true exactly when the row draws something: otherwise an empty row takes space, or a
-  // preview sits against the request row with no space above it.
-  it.each([false, true])('draws a pending row exactly when the call has a preview, with expanded %s', async (expanded) => {
+  // A pending row takes its top space only while it holds something (`toolPending` reads
+  // `:not(:empty)`), so a preview that draws nothing must leave no element behind, or the
+  // row takes space with nothing to read in it.
+  it.each([false, true])('leaves the pending row empty exactly when it draws no text, with expanded %s', async (expanded) => {
     const calls = [
       toolCallFixture(check.kind, { status: 'in_progress', request: check.request }),
       toolCallFixture(check.kind, { status: 'in_progress' }),
@@ -96,8 +97,9 @@ export function checkKindModule(check: KindModuleCheck): void {
         />
       ))
       await settleWorkerReplies()
-      const drawn = container.querySelector('[data-testid="tool-pending"]')?.innerHTML ?? ''
-      expect(drawn !== '', drawn).toBe(toolCallHasPending(call, () => expanded, undefined))
+      const root = container.querySelector('[data-testid="tool-pending"]')!
+      expect(root.matches(classSelector(toolPending))).toBe(true)
+      expect(root.matches(':empty'), root.innerHTML).toBe(root.textContent === '')
       unmount()
     }
   })

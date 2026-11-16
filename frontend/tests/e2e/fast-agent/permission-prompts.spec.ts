@@ -52,12 +52,13 @@ fastAgentTest.describe('Fast Agent control requests', () => {
         await expect(savedControlAnswer(page)).toHaveText('Reject Once')
         // Fast Agent gives the call an identifier of its own, so the test finds the result row by its refusal.
         const callId = await toolResultCallId(page, refusal)
-        // The refused write reads declined, and its result row states the refusal. The request
-        // row heads the call with the file, because a paired result row draws no header. Fast
-        // Agent streams the call, so the opening frame states no path. The path reaches the
-        // client in a content diff, which the refusal replaces, and in the permission request.
-        // The Worker stores the input of the permission request with the request row. The
-        // checks hold before and after a reload.
+        // The refused write reads declined on its result row, which states the refusal. The
+        // request row reads only its own frame, so the outcome is not its to state. It heads
+        // the call with the file, because a paired result row draws no header. Fast Agent
+        // streams the call, so the opening frame states no path. The path reaches the client
+        // in a content diff, which the refusal replaces, and in the permission request. The
+        // Worker stores the input of the permission request with the request row. The checks
+        // hold before and after a reload.
         const request = toolCallRow(page, callId, 'request')
         for (const reload of [false, true]) {
           if (reload) {
@@ -65,7 +66,6 @@ fastAgentTest.describe('Fast Agent control requests', () => {
             await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
           }
           await expectDeclinedToolRow(page, callId, refusal)
-          await expect(request).toHaveAttribute('data-tool-status', 'declined')
           await expect(request).toContainText('fa-local.txt')
         }
       },

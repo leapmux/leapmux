@@ -1,16 +1,16 @@
 import type { MessageUiKey } from '../messageUiKeys'
 import type { ToolResultRenderContext } from '../renderContext'
 import { render } from '@solidjs/testing-library'
-import { createSignal } from 'solid-js'
+import { batch, createSignal } from 'solid-js'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { classSelector } from '~/test-support/composedClass'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { toolCallFixture, toolRow } from '~/test-support/toolCallFixture'
 import { MESSAGE_UI_KEY } from '../messageUiKeys'
-import { toolPendingShown } from '../toolStyles.css'
+import { toolPending } from '../toolStyles.css'
 import { TRUNCATION_NOTICE } from '../truncationNotice'
 import { ToolMessage } from './ToolMessage'
-import { toolCallHasPending, ToolPendingMessage } from './ToolPendingMessage'
+import { pendingRowRequest, ToolPendingMessage } from './ToolPendingMessage'
 
 // jsdom does not provide ResizeObserver, which the shared layouts observe with.
 beforeAll(() => {
@@ -38,46 +38,36 @@ function pendingText(outputTail: string | undefined, outputTruncated = false): s
   const { container } = render(() => (
     <ToolPendingMessage
       row={toolRow(runningCommand, 'request')}
-      progress={{
-        liveTail: () => outputTail === undefined
-          ? undefined
-          : {
-              outputTail,
-              ...(outputTruncated
-                ? { outputTruncated }
-                : {}),
-            },
+      context={{
+        toolProgress: {
+          liveTail: () => outputTail === undefined
+            ? undefined
+            : {
+                outputTail,
+                ...(outputTruncated
+                  ? { outputTruncated }
+                  : {}),
+              },
+        },
       }}
     />
   ))
   return container.querySelector('[data-testid="tool-pending"]')?.textContent ?? ''
 }
 
-describe('toolCallHasPending', () => {
-  it('answers true for live output, whatever the kind previews', () => {
-    expect(toolCallHasPending(runningCommand, () => false, 'compiling')).toBe(true)
+// The list places a pending row after a request row alone (see chatPendingRows), so the
+// bubble and the isolated renderer draw one for a request row alone.
+describe('pendingRowRequest', () => {
+  it('answers the row of a tool request', () => {
+    const row = toolRow(runningCommand, 'request')
+    expect(pendingRowRequest(row)).toBe(row)
   })
 
-  it('answers false for a call with no preview and no live output', () => {
-    expect(toolCallHasPending(runningCommand, () => false, undefined)).toBe(false)
-  })
-
-  // The Worker sends an empty tail before the first byte; it draws nothing.
-  it('answers false for an empty live output', () => {
-    expect(toolCallHasPending(runningCommand, () => false, '')).toBe(false)
-  })
-
-  // The pending row and the request row share one expand state. An agent's prompt is on
-  // the pending row while collapsed, and on the request row once expanded.
-  it('reads the expand key that the row reads', () => {
-    const asked: MessageUiKey[] = []
-    const expandedOf = (expanded: boolean) => (key: MessageUiKey): boolean => {
-      asked.push(key)
-      return expanded
-    }
-    expect(toolCallHasPending(runningAgent, expandedOf(false), undefined)).toBe(true)
-    expect(toolCallHasPending(runningAgent, expandedOf(true), undefined)).toBe(false)
-    expect(asked).toEqual([MESSAGE_UI_KEY.AGENT_PROMPT, MESSAGE_UI_KEY.AGENT_PROMPT])
+  it('answers null for an update row, a result row, a row of another kind, and no row', () => {
+    expect(pendingRowRequest(toolRow(runningCommand, 'update'))).toBeNull()
+    expect(pendingRowRequest(toolRow(runningCommand, 'result', { request: true }))).toBeNull()
+    expect(pendingRowRequest({ kind: 'assistant-text', text: 'x' })).toBeNull()
+    expect(pendingRowRequest(null)).toBeNull()
   })
 })
 
@@ -102,21 +92,104 @@ describe('ToolPendingMessage', () => {
     const { container } = render(() => (
       <ToolPendingMessage
         row={toolRow(runningCommand, 'request')}
-        progress={{
-          liveTail: () => {
-            const tail = outputTail()
-            return tail === undefined
-              ? undefined
-              : { outputTail: tail }
+        context={{
+          toolProgress: {
+            liveTail: () => {
+              const tail = outputTail()
+              return tail === undefined
+                ? undefined
+                : { outputTail: tail }
+            },
           },
         }}
       />
     ))
     const root = () => container.querySelector('[data-testid="tool-pending"]')!
-    expect(root().matches(classSelector(toolPendingShown))).toBe(false)
-    expect(root().innerHTML).toBe('')
+    expect(root().matches(classSelector(toolPending))).toBe(true)
+    expect(root().matches(':empty')).toBe(true)
     setOutputTail('compiling')
-    expect(root().matches(classSelector(toolPendingShown))).toBe(true)
+    expect(root().matches(':empty')).toBe(false)
+  })
+
+  // The Worker can broadcast a tail of line breaks before the first printed line. The row
+  // strips the leading blank lines, so such a tail draws nothing and takes no space.
+  it('takes no space for a live output of blank lines alone', () => {
+    const { container } = render(() => (
+      <ToolPendingMessage
+        row={toolRow(runningCommand, 'request')}
+        context={{
+          toolProgress: {
+            liveTail: () => ({ outputTail: '\n\n' }),
+          },
+        }}
+      />
+    ))
+    const root = container.querySelector('[data-testid="tool-pending"]')!
+    expect(root.matches(':empty')).toBe(true)
+    expect(root.innerHTML).toBe('')
+  })
+
+  // The store drops the live output the moment the result message arrives, but the row
+  // stays until the result row is measured and replaces it in one update. Keeping the last
+  // output keeps the row's height, so the swap moves nothing.
+  it('keeps the output it drew while the result of its call is held', () => {
+    const [outputTail, setOutputTail] = createSignal<string | undefined>('compiling')
+    const [resultHeld, setResultHeld] = createSignal(false)
+    const { container } = render(() => (
+      <ToolPendingMessage
+        row={toolRow(runningCommand, 'request')}
+        resultHeld={resultHeld}
+        context={{
+          toolProgress: {
+            liveTail: () => {
+              const tail = outputTail()
+              return tail === undefined
+                ? undefined
+                : { outputTail: tail }
+            },
+          },
+        }}
+      />
+    ))
+    const root = () => container.querySelector('[data-testid="tool-pending"]')!
+    expect(root().textContent).toBe('compiling')
+
+    batch(() => {
+      setResultHeld(true)
+      setOutputTail(undefined)
+    })
+    expect(root().textContent).toBe('compiling')
+    expect(root().matches(':empty')).toBe(false)
+
+    // The browser can release the held result, as when the window moves off the tail.
+    // The output that the row kept for it goes with it.
+    setResultHeld(false)
+    expect(root().textContent).toBe('')
+    expect(root().matches(':empty')).toBe(true)
+  })
+
+  // A turn that ends clears the output of a call that never answered. No result row
+  // replaces this row, so it keeps no output that the store no longer holds.
+  it('drops the output that the store clears while no result is held', () => {
+    const [outputTail, setOutputTail] = createSignal<string | undefined>('compiling')
+    const { container } = render(() => (
+      <ToolPendingMessage
+        row={toolRow(runningCommand, 'request')}
+        resultHeld={() => false}
+        context={{
+          toolProgress: {
+            liveTail: () => {
+              const tail = outputTail()
+              return tail === undefined
+                ? undefined
+                : { outputTail: tail }
+            },
+          },
+        }}
+      />
+    ))
+    setOutputTail(undefined)
+    expect(container.querySelector('[data-testid="tool-pending"]')!.innerHTML).toBe('')
   })
 
   // One Expand control, on the request row, opens both rows of the call: the prompt moves

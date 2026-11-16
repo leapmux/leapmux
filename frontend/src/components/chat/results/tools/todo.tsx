@@ -85,7 +85,6 @@ export const todoRenderer: ToolKindRenderer<'todo'> = {
   // newest fact the reader has. The result row then states the list the call saved, or
   // the carried one again when the call ended with no answer.
   pending: todoPreview,
-  hasPending: call => todoHasPending(call.request),
   withoutTypedResult: previewWithoutResult(todoPreview),
   result(call, view) {
     // The ROW's own status, and not a field of the list. The interruption is a fact

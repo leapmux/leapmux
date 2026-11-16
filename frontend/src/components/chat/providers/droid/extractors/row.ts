@@ -43,18 +43,21 @@ export function droidExtractRow(input: RowExtractionInput): ChatRow | null {
   }
 }
 
-/** The lifecycle every Droid tool row shares. */
+/**
+ * The lifecycle every Droid tool row shares. `rowFinal` states whether the row is the
+ * final row of its span (see droidToolRow).
+ */
 function droidLifecycle(
   completion: RowExtractionInput['resolved']['completion'],
   isError: boolean,
-  isResult: boolean,
+  rowFinal: boolean,
   hasResultContent: boolean,
 ) {
   return {
     frameStatus: 'unstated' as const,
     providerOutcome: isError ? ('failed' as const) : null,
     retainedOutcome: retainedOutcome(completion),
-    rowFinal: isResult || retainedRowIsFinal(completion),
+    rowFinal,
     resultFrameLanded: hasResultContent,
   }
 }
@@ -108,10 +111,15 @@ function droidToolRow(
   const kind = declared === 'unspecified' || Object.keys(args).length === 0
     ? 'other'
     : declared
+  // A `tool_call` notification that LeapMux stored with a completion is the final row
+  // of its span (see retainedRowIsFinal), as for every provider. The Droid Worker stores
+  // each `tool_call` once with no completion today; this keeps a stored completion from
+  // leaving an open request row with a pending row that never leaves.
+  const rowFinal = isResult || retainedRowIsFinal(completion)
   const call = createToolCall({
     id,
     name,
-    lifecycle: droidLifecycle(completion, isError, isResult, resultContent !== undefined),
+    lifecycle: droidLifecycle(completion, isError, rowFinal, resultContent !== undefined),
   }, {
     kind,
     name,
@@ -120,11 +128,7 @@ function droidToolRow(
       ? {}
       : droidResult(kind, resultContent, isError)),
   })
-  // A `tool_call` notification that LeapMux stored with a completion is the final row
-  // of its span (see retainedRowIsFinal), as for every provider. The Droid Worker stores
-  // each `tool_call` once with no completion today; this keeps a stored completion from
-  // leaving an open request row with a pending row that never leaves.
-  return toolCallRow(call, isResult || retainedRowIsFinal(completion)
+  return toolCallRow(call, rowFinal
     ? 'result'
     : 'request', span.visibleRows)
 }

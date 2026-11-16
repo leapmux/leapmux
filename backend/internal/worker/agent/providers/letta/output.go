@@ -346,7 +346,8 @@ func (a *Agent) finishOutputAfterExit(completion agent.MessageCompletion) {
 			a.finishOpenCompaction(target, id, completion)
 			a.flushHeldErrors(target, id, "")
 			a.retryForTarget(id).Reset()
-			a.finishToolOutputScope(id, target)
+			// The process is gone, so no native result can follow.
+			a.closeToolScope(id, target, completion)
 		}
 	}
 	a.setTurnActive(false)
@@ -436,12 +437,15 @@ func (a *Agent) onToolStart(payload []byte, delta *lettaDelta, target agent.Prov
 		a.tools = make(map[string]*lettaTool)
 	}
 	previous := a.tools[toolKey]
+	a.toolStarts++
 	a.tools[toolKey] = &lettaTool{
 		id:         delta.ToolCallID,
 		name:       delta.ToolName,
 		spanID:     spanID,
 		runID:      delta.RunID,
 		subagentID: subagentID,
+		row:        payload,
+		order:      a.toolStarts,
 	}
 	if subagentID == "" {
 		if a.turnToolCallIDs == nil {
@@ -547,11 +551,13 @@ func (a *Agent) onTurnFinished(payload []byte) {
 	a.flushGenerationFor("", completion)
 	a.finishOpenCompaction(a.sink, "", completion)
 	a.flushHeldErrors(a.sink, "", finished.Error)
+	// The closing rows of the calls that the turn outlived precede its turn end,
+	// as each result of the turn does.
+	a.closeToolScope("", a.sink, completion)
 	content := agent.MessageContent{Original: payload, Completion: completion}
 	if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, toolUses), agent.SpanInfo{}); err != nil {
 		slog.Debug("letta: persist turn end failed", "agent_id", a.AgentID(), "error", err)
 	}
-	a.finishToolOutputScope("", a.sink)
 	a.withdrawPermissions()
 	a.setTurnActive(false)
 	a.requestQuotaRefreshLocked()

@@ -41,7 +41,12 @@ function entryWithSpanLines(
     // Geometry tests select the category independently of their bubble content.
     category: { kind },
     parsedSpanLines,
-    freshness: { revisionKey: 'fixture-revision', isChildTranscript: false, settingsLabelRevision: '' },
+    freshness: {
+      revisionKey: 'fixture-revision',
+      isChildTranscript: false,
+      settingsLabelRevision: '',
+      role: 'other',
+    },
     spanLinesRef: message.spanLines,
     settingsLabelDependencies: [],
   }

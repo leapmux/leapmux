@@ -6,7 +6,9 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it } from 'vitest'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
-import { createPendingRows, isPendingRowId, pendingRowId, pendingRowSpanLines } from './chatPendingRows'
+import { createPendingRows, isPendingRowId, messageIdOfRow, pendingRowId, pendingRowSpanLines } from './chatPendingRows'
+import { nearestServerRowIndexBySeq } from './chatScrollAnchor'
+import { rowStartSeqs } from './chatScrollRailGeometry'
 import { resolvedSpanRole } from './providers/registry'
 import { prepareMessage } from './rowPreparation'
 import './providers'
@@ -77,7 +79,12 @@ function entryOf(message: AgentChatMessage, parsedSpanLines: (SpanLine | null)[]
     rowId: message.id,
     pending: false,
     parsedSpanLines,
-    freshness: { revisionKey: message.id, isChildTranscript: false, settingsLabelRevision: '' },
+    freshness: {
+      revisionKey: message.id,
+      isChildTranscript: false,
+      settingsLabelRevision: '',
+      role: 'other',
+    },
     spanLinesRef: message.spanLines,
     settingsLabelDependencies: [],
   }
@@ -95,6 +102,7 @@ function itemOf(entry: ClassifiedEntry): ChatRowItem {
 
 interface Harness {
   ids: () => string[]
+  isOpen: (messageId: string) => boolean
   entries: () => readonly ClassifiedEntry[]
   items: () => ChatRowItem[]
   setEntries: (entries: ClassifiedEntry[]) => void
@@ -122,6 +130,7 @@ function withPendingRows(initial: ClassifiedEntry[], overrides: Partial<PendingR
       })
       body({
         ids: () => rows.entries().map(entry => entry.rowId),
+        isOpen: rows.isOpen,
         entries: rows.entries,
         items: rows.items,
         setEntries,
@@ -135,6 +144,14 @@ function withPendingRows(initial: ClassifiedEntry[], overrides: Partial<PendingR
     }
   })
 }
+
+describe('messageIdOfRow', () => {
+  // A pending row draws its request's message, and reads that message's UI state.
+  it('answers the message that a row draws', () => {
+    expect(messageIdOfRow('msg-1')).toBe('msg-1')
+    expect(messageIdOfRow(pendingRowId('msg-1'))).toBe('msg-1')
+  })
+})
 
 describe('isPendingRowId', () => {
   it('recognizes the id of a pending row, and no message id', () => {
@@ -195,10 +212,10 @@ describe('createPendingRows', () => {
       expect(pending.parsedSpanLines).toEqual([
         { span_id: 'span-1', color: 3, type: 'active' },
       ])
-      // No sequence, so a jump to the request's sequence lands on the request row, and no
-      // gap above it, so an empty pending row takes no space.
+      // The request's sequence, and no gap above it, so an empty pending row takes no space.
       expect(items()[1]).toEqual({
         id: pendingRowId('req'),
+        seq: 1n,
         hasSpanLines: true,
         heightKey: 'pending|key:req',
         kind: 'tool_use',
@@ -207,12 +224,43 @@ describe('createPendingRows', () => {
     })
   })
 
+  // Every consumer of a row's sequence reads the list with its pending rows: the scroll
+  // rail maps each row to its place in the conversation, a scroll anchor recovers by the
+  // nearest sequence, and a jump lands on the row of a sequence. A row with no sequence
+  // made the rail give up while any call ran.
+  // A list item states no sequence for a row that the conversation does not number. The
+  // pending row then states none either, rather than an undefined field.
+  it('states no sequence on the pending row of a request item that states none', () => {
+    withPendingRows([request, text], {
+      items: () => [request, text].map((entry) => {
+        const { seq: _seq, ...item } = itemOf(entry)
+        return item
+      }),
+    }, ({ items }) => {
+      expect(items()[1]).not.toHaveProperty('seq')
+      expect(items()[1]).toMatchObject({
+        id: pendingRowId('req'),
+        continuesPrevious: true,
+      })
+    })
+  })
+
+  it('keeps every row of the list on the conversation\'s sequence map while a call runs', () => {
+    withPendingRows([request, text], {}, ({ items }) => {
+      expect(rowStartSeqs(items())).toEqual([1, 1.5, 2, 3])
+      // A jump to the call's sequence lands on its request row, not on the pending row.
+      expect(nearestServerRowIndexBySeq(items(), 1n)).toBe(0)
+    })
+  })
+
   // A window that does not hold the live tail draws no pending row: a call there almost
   // always ended, and its result lies in a newer page.
   it('draws no pending row while the window does not hold the live tail', () => {
-    withPendingRows([request, text], {}, ({ ids, setTail }) => {
+    withPendingRows([request, text], {}, ({ ids, isOpen, setTail }) => {
+      expect(isOpen('req')).toBe(true)
       setTail(false)
       expect(ids()).toEqual(['req', 'text'])
+      expect(isOpen('req')).toBe(false)
       setTail(true)
       expect(ids()).toEqual([
         'req',
@@ -243,7 +291,7 @@ describe('createPendingRows', () => {
   // the two change places in one update and no row changes its height.
   it('keeps the pending row until the result row is measured', () => {
     const result = entryOf(resultMessage('res', 3n, 'span-1'))
-    withPendingRows([request, text], {}, ({ ids, setEntries, setResult, setMeasured }) => {
+    withPendingRows([request, text], {}, ({ ids, isOpen, setEntries, setResult, setMeasured }) => {
       setEntries([request, text, result])
       setResult(result.message)
       expect(ids()).toEqual([
@@ -252,8 +300,11 @@ describe('createPendingRows', () => {
         'text',
         'res',
       ])
+      expect(isOpen('req')).toBe(true)
       setMeasured(['res'])
       expect(ids()).toEqual(['req', 'text', 'res'])
+      expect(isOpen('req')).toBe(false)
+      expect(isOpen('text')).toBe(false)
     })
   })
 
@@ -265,6 +316,23 @@ describe('createPendingRows', () => {
       resultOf: () => result.message,
     }, ({ ids }) => {
       expect(ids()).toEqual(['req', 'text', 'res'])
+    })
+  })
+
+  // Almost every call of a window has ended. The span role costs lookups in the span
+  // index, and the list runs this for each new message, so it reads none for such a call.
+  it('reads no span role for a call whose result the browser holds', () => {
+    const result = entryOf(resultMessage('res', 3n, 'span-1'))
+    const asked: string[] = []
+    withPendingRows([request, text, result], {
+      resultOf: () => result.message,
+      role: (entry) => {
+        asked.push(entry.message.id)
+        return resolvedSpanRole(entry.resolved, entry.message.agentProvider)
+      },
+    }, ({ ids }) => {
+      expect(ids()).toEqual(['req', 'text', 'res'])
+      expect(asked).toEqual([])
     })
   })
 

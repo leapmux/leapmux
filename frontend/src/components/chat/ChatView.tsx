@@ -8,6 +8,7 @@ import type { RenderReadiness } from './renderReadiness'
 import type { ChatLoadedRows, ChatScrollState, PaginationCallbacks, UseChatScrollResult } from './useChatScroll'
 import type { ChatVirtualizerRange } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { MessageSpanIdentity } from '~/lib/messageSpan'
 import type { TodoItem } from '~/models/todo'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { LiveCompaction } from '~/stores/chatCompaction'
@@ -22,20 +23,21 @@ import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import { messageSpanIdentity } from '~/lib/messageSpan'
+import { messageSpanIdentity, messageSpanKey } from '~/lib/messageSpan'
 import { formatChatQuote } from '~/lib/quoteUtils'
-import { shallowEqual } from '~/lib/shallowEqual'
+import { shallowEqual, shallowEqualSets } from '~/lib/shallowEqual'
 import { onSyntaxThemeChange } from '~/lib/syntaxThemeStore'
 import { motion } from '~/styles/tokens'
 import { AgentStartupBanner } from './AgentStartupBanner'
-import { createClassifiedEntryCache, heightKeyForEntry, renderKeyForEntry } from './chatEntryCache'
+import { createClassifiedEntryCache, heightKeyForEntry, listedRequestSpanKeys, renderKeyForEntry } from './chatEntryCache'
 import { createChatFonts } from './chatFonts'
 import { ChatHiddenPremeasure } from './chatHiddenPremeasure'
 import { createMessageUiState } from './chatMessageUiState'
 import { createOrderedTailReveal } from './chatOrderedReveal'
-import { createPendingRows, isPendingRowId } from './chatPendingRows'
+import { createPendingRows, isPendingRowId, messageIdOfRow } from './chatPendingRows'
 import { createChatPremeasureBands } from './chatPremeasureBands'
 import { resolveScrollbarOwner } from './chatRailPolicy'
+import { revisionKeyMember } from './chatRevisionKey'
 import { createRowAdmission } from './chatRowAdmission'
 import { kindScopedLayoutKey } from './chatRowGeometry'
 import { createRowHeightCache } from './chatRowHeightCache'
@@ -54,8 +56,9 @@ import { MessageBubble } from './MessageBubble'
 import { MessageContextMenuHostProvider } from './MessageContextMenuHost'
 import { createMessageRenderCacheStore } from './messageRenderCache'
 import { messageRowChrome } from './messageRowLayout'
-import { expandedUiKeyFor, MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
+import { expandedUiKeyFor, messageUiDefault } from './messageUiKeys'
 import { createRowReadinessRegistry, useReplacingReadiness } from './renderReadiness'
+import { REQUEST_ROW_EXPAND_KEYS } from './results/toolRowState'
 import { useChatScroll } from './useChatScroll'
 import { useChatVirtualizer } from './useChatVirtualizer'
 import { ChatRowSkeleton } from './widgets/ChatRowSkeleton'
@@ -325,6 +328,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   })
   const visibleEntries = entries.visibleEntries
   const hasVisibleEntries = entries.hasVisibleEntries
+  // The spans whose REQUEST row the list draws, from the entries that it lists (see
+  // listedRequestSpanKeys). A row of the span reads it as `visibleRows.request`, and the
+  // height key of a tool row holds it (see requestRowKey). One decision, by the list that
+  // draws the rows: no second walk of the window classifies the messages again.
+  const listedRequestSpans = createMemo(() => listedRequestSpanKeys(visibleEntries()), new Set<string>(), { equals: shallowEqualSets })
+  const requestRowListed = (identity: MessageSpanIdentity): boolean => listedRequestSpans().has(messageSpanKey(identity))
 
   // The measured heights of the rows. ChatView owns the cache, because the admission, the
   // virtualizer, the staging bands, and the persistence all read it. Its eviction keeps the
@@ -340,9 +349,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // createMessageUiState (its own tested unit); see that module for why it
   // deliberately outlives the windowed list and is cap-bounded instead of pruned.
   // The cap protects the currently-rendered rows (the mounted rows of the height cache)
-  // so an on-screen row's choice is never the eviction target.
+  // so an on-screen row's choice is never the eviction target. The state is keyed by the
+  // message, and a pending row draws its request's message and reads its state.
   const { getLocalDiffView, setLocalDiffView, getMessageUiBool, setMessageUiBool, getUiVersion } = createMessageUiState({
-    protectedIds: () => heightCache.mountedIds,
+    protectedIds: () => new Set(Array.from(heightCache.mountedIds, messageIdOfRow)),
   })
   const renderCacheStore = createMessageRenderCacheStore()
   // A syntax theme change invalidates every cached body at once: they all carry
@@ -460,22 +470,17 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // override ALSO bumps that row's uiVersion, so it re-keys the row either way; reading the
   // override HERE is what lets a GLOBAL toggle leave an already-overridden row untouched.)
   const effectiveDiffView = (id: string): string => getLocalDiffView(id) ?? prefs.diffView()
-  // The row's EFFECTIVE thinking-expand state (its per-message override, else the global
-  // expandAgentThoughts default). Uses the SAME key + default resolvers the renderers use
-  // (expandedUiKeyFor / messageUiDefault), so the cache key can't disagree with the render.
-  const effectiveThinkingExpanded = (entry: ClassifiedEntry): boolean => {
-    const key = expandedUiKeyFor(entry.category.kind)
-    return getMessageUiBool(entry.message.id, key) ?? messageUiDefault(key, {
-      expandAgentThoughts: prefs.expandAgentThoughts(),
-    })
-  }
-
   // Whether the row of a message reads as expanded for `key`, as the row itself reads it:
-  // its own state, else the shared default.
+  // its own state, else the shared default. Uses the SAME default resolver the renderers
+  // use (messageUiDefault), so the cache key can't disagree with the render.
   const messageExpanded = (messageId: string, key: MessageUiKey): boolean =>
     getMessageUiBool(messageId, key) ?? messageUiDefault(key, {
       expandAgentThoughts: prefs.expandAgentThoughts(),
     })
+  // The row's EFFECTIVE thinking-expand state (its per-message override, else the global
+  // expandAgentThoughts default), under the key the renderers use (expandedUiKeyFor).
+  const effectiveThinkingExpanded = (entry: ClassifiedEntry): boolean =>
+    messageExpanded(entry.message.id, expandedUiKeyFor(entry.category.kind))
 
   // The revision of the call that heads an EXPANDED request row: the result of its span,
   // when the browser holds one. A collapsed header is one line, so the newer call changes
@@ -484,12 +489,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const expandedHeaderKey = (entry: ClassifiedEntry): string => {
     if (entry.category.kind !== 'tool_use' || entry.message.spanId === '')
       return ''
-    if (!messageExpanded(entry.message.id, MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED) && !messageExpanded(entry.message.id, MESSAGE_UI_KEY.AGENT_PROMPT))
+    if (!REQUEST_ROW_EXPAND_KEYS.some(key => messageExpanded(entry.message.id, key)))
       return ''
     const revision = props.messageContext?.result(messageSpanIdentity(entry.message))?.revision
     return revision === undefined
       ? ''
-      : `|header:${revision.id}:${revision.seq}:${revision.contentVersion}:${revision.supplementalRevision}`
+      : `|${revisionKeyMember('header', revision)}`
   }
 
   // Whether the REQUEST row of a tool row's span is in the list. A result row beside its
@@ -499,7 +504,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const requestRowKey = (entry: ClassifiedEntry): string => {
     if ((entry.category.kind !== 'tool_use' && entry.category.kind !== 'tool_result') || entry.message.spanId === '')
       return ''
-    return props.messageContext?.visibleRows(messageSpanIdentity(entry.message)).request
+    return requestRowListed(messageSpanIdentity(entry.message))
       ? '|request-row'
       : ''
   }
@@ -535,7 +540,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       })),
     [],
     // Suppress the recompute of every reader when a recompute leaves the rows identical
-    // (same id/hasSpanLines/heightKey sequence) -- see sameChatRowItems.
+    // (same geometry fields at every index) -- see sameChatRowItems.
     { equals: sameChatRowItems },
   )
 
@@ -545,10 +550,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const pendingRows = createPendingRows({
     entries: visibleEntries,
     items: messageItems,
-    // Without the message resolver, the list cannot tell a call that runs from one that
-    // ended, so it opens no pending row.
-    tailLoaded: () => props.messageContext !== undefined && !props.pagination?.hasNewerMessages,
+    tailLoaded: () => !props.pagination?.hasNewerMessages,
     resultOf: identity => props.messageContext?.result(identity)?.message,
+    // Without the message resolver, the list cannot tell a call that runs from one that
+    // ended: no row is a request, so no pending row opens.
     role: entry => props.messageContext?.role(entry.message) ?? 'other',
     isMeasured: item => heightCache.isMeasured(item),
   })
@@ -614,7 +619,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     },
     [],
     // Suppress the geom rebuild + layout-shift pass when a recompute leaves the offset
-    // map identical (same id/hasSpanLines/heightKey sequence) -- see sameChatRowItems.
+    // map identical (same geometry fields at every index) -- see sameChatRowItems.
     { equals: sameChatRowItems },
   )
 
@@ -788,13 +793,17 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     get renderCache() {
       return renderCacheStore.forRow(renderKeyForEntry(entry))
     },
-    // These two are agent-scoped accessors that already exist, so reading them costs
+    // These three are agent-scoped accessors that already exist, so reading them costs
     // nothing and they stay plain fields. `rowOffscreen` and `rowNearView` close over the
     // row, so they are getters like the five above.
     syntaxHighlightingPaused,
     textSelectionActive,
+    requestRowListed,
     get rowOffscreen() {
       return () => !isRowNearViewport(entry.rowId)
+    },
+    get pendingRowOpen() {
+      return () => pendingRows.isOpen(entry.message.id)
     },
     // isRowNearViewport reads the scroll position and the height of the pane with no
     // subscription. The two reads before it run the test again when its answer can differ
@@ -1457,9 +1466,10 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                                   ? `${virt.heightOfId(rowId)}px`
                                   : undefined,
                               }}
-                              // A pending row draws no message of its own, so it carries no
-                              // sequence: a reader that finds a row by its sequence finds
-                              // the request row.
+                              // A pending row draws no message of its own, so its element
+                              // carries no sequence: a reader that finds a row element by
+                              // its sequence finds the request row. Its list item shares
+                              // the request's sequence (see chatPendingRows).
                               data-seq={entry.pending
                                 ? undefined
                                 : message.seq.toString()}

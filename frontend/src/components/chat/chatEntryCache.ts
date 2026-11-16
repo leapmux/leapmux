@@ -7,7 +7,7 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageRevision, MessageSpanIdentity, ToolSpanRole } from '~/lib/messageSpan'
 import type { SettingsLabelDependency } from '~/lib/settingsLabelCache'
 import { createMemo } from 'solid-js'
-import { messageSpanIdentity } from '~/lib/messageSpan'
+import { messageSpanIdentity, messageSpanKey } from '~/lib/messageSpan'
 import { collectSettingsLabelDependencies, settingsLabelCacheRevision, settingsLabelDependencyRevision } from '~/lib/settingsLabelCache'
 import { shallowEqual } from '~/lib/shallowEqual'
 import { rowRevisionKey } from './chatRevisionKey'
@@ -51,6 +51,11 @@ export interface EntryFreshness {
   isChildTranscript: boolean
   /** Revisions of the exact display-label groups that this row reads. */
   settingsLabelRevision: string
+  /**
+   * The span role of the row. It decides whether the list counts the row as the request
+   * row of its span (see listedRequestSpanKeys), so a change of it rebuilds the entry.
+   */
+  role: ToolSpanRole
 }
 
 /**
@@ -207,6 +212,7 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
       }),
       isChildTranscript: deps.isChildTranscript?.() ?? false,
       settingsLabelRevision: settingsLabelDependencyRevision(labelDependencies),
+      role,
     }
   }
   /**
@@ -308,4 +314,22 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
     hasVisibleEntries,
     getEntry: id => entryCache.get(id),
   }
+}
+
+/**
+ * The span keys of the request rows that the list draws, from the entries that it lists:
+ * an entry of a span whose span role is request and whose category the transcript draws
+ * as a row. A row of another span reads this as `ToolSpanRowPresence.request`: a result
+ * row beside its request row draws no header and no request side.
+ *
+ * A hidden request draws no request row, also while the debug preference lists it as its
+ * raw payload, so the row of its result then draws the request side itself.
+ */
+export function listedRequestSpanKeys(entries: readonly ClassifiedEntry[]): ReadonlySet<string> {
+  const keys = new Set<string>()
+  for (const entry of entries) {
+    if (entry.message.spanId !== '' && entry.freshness.role === 'request' && entry.category.kind !== 'hidden')
+      keys.add(messageSpanKey(entry.message))
+  }
+  return keys
 }

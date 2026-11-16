@@ -144,11 +144,27 @@ declare const requestSideCall: RequestSideCall<'edit'>
 void requestSideCall.result
 // @ts-expect-error The request side of a call states no status.
 void requestSideCall.status
+// @ts-expect-error The request side of a call states no fact that only its result states.
+void requestSideCall.resultMetadata
+// The request side LISTS its members, and these are all of them: a member that the call
+// gains reaches no request-side hook until someone lists it there, and a member that
+// someone lists must be added here too, where the choice is reviewed.
+const requestSideMembers: Record<keyof RequestSideCall<'edit'>, true> = {
+  id: true,
+  name: true,
+  title: true,
+  label: true,
+  icon: true,
+  metadata: true,
+  kind: true,
+  request: true,
+}
 void [
   spanWithResult,
   presenceWithResult,
   requestRowWithResultFlag,
   asksForResult,
+  requestSideMembers,
 ]
 
 // The brand itself is not spellable from outside: a structurally identical

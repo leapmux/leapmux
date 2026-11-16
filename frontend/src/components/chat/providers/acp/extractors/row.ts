@@ -86,11 +86,7 @@ function acpToolCallSpanRow(tool: Record<string, unknown>, own: ParsedMessageCon
   const requestFrame = finished
     ? span.request?.parentObject
     : undefined
-  const call: ToolCall = acpToolCall(resolveACPToolCall(tool, requestFrame), callAdapter, own.supplementalContent, own.completion, {
-    ...(own.agentSessionId === undefined
-      ? {}
-      : { agentSessionId: own.agentSessionId }),
-  })
+  const call: ToolCall = acpToolCall(resolveACPToolCall(tool, requestFrame), callAdapter, own.supplementalContent, own.completion, own.agentSessionId)
   const role: ToolSpanRowRole = finished
     ? 'result'
     : pickString(tool, ACP_SUPPLEMENT_IDENTITY.SessionUpdate) === ACP_SESSION_UPDATE.TOOL_CALL

@@ -8,7 +8,7 @@ import { providerToolMeta } from '~/test-support/toolCallFixture'
 import { resolveMessageForRendering } from './registry'
 import '~/components/chat/providers'
 
-const { renderMessageContent } = await import('../messageContentRenderer')
+const { renderMessageContent } = await import('~/test-support/messageContentRenderer')
 
 const PROMPT = 'You are the lead reviewer subagent. Read the code that it names.'
 const OUTPUT_FILE = '/private/tmp/claude-501/-Users-trustin/tasks/a7bcba10b2b861663.output'

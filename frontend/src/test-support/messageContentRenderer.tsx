@@ -1,21 +1,21 @@
 import type { JSX } from 'solid-js'
-import type { MessageCategory } from './messageClassifier'
-import type { MessageRenderSources } from './messageContextResolver'
-import type { RowRenderContext } from './renderContext'
-import type { ChatRowExtraction } from './rowExtraction'
-import type { RowExtractionContext, RowExtractionSources } from './rowModelCache'
+import type { MessageCategory } from '~/components/chat/messageClassifier'
+import type { MessageRenderSources } from '~/components/chat/messageContextResolver'
+import type { RowRenderContext } from '~/components/chat/renderContext'
+import type { ChatRowExtraction } from '~/components/chat/rowExtraction'
+import type { RowExtractionContext, RowExtractionSources } from '~/components/chat/rowModelCache'
 import type { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import { completionMarker, messageCompletionFromProto } from '~/components/chat/assembledMessage'
+import { UnrecognizedMessage } from '~/components/chat/messageRenderers'
+import { resolveMessageForRendering } from '~/components/chat/providers/registry'
+import { pendingRowRequest, ToolPendingMessage } from '~/components/chat/results/ToolPendingMessage'
+import { extractedRow } from '~/components/chat/rowExtraction'
+import { cachedChatRow } from '~/components/chat/rowModelCache'
+import { renderExtractedRow } from '~/components/chat/rowRenderers'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { isObject } from '~/lib/jsonPick'
 import { createLogger } from '~/lib/logger'
-import { completionMarker, messageCompletionFromProto } from './assembledMessage'
-import { UnrecognizedMessage } from './messageRenderers'
-import { resolveMessageForRendering } from './providers/registry'
-import { ToolPendingMessage } from './results/ToolPendingMessage'
-import { extractedRow } from './rowExtraction'
-import { cachedChatRow } from './rowModelCache'
-import { renderExtractedRow } from './rowRenderers'
 
 const logger = createLogger('messageContentRenderer')
 
@@ -54,17 +54,14 @@ export function renderPendingMessageContent(
 ): JSX.Element {
   const resolved = context?.sources?.current()
     ?? resolveMessageForRendering(parsedMessageOf(parsed), agentProvider ?? AgentProvider.UNSPECIFIED)
-  const row = extractedRow(cachedChatRow(context, agentProvider, resolved, category ?? { kind: 'unknown' }, messageCompletion))
-  if (row?.kind !== 'tool' || row.role !== 'request')
+  const row = pendingRowRequest(extractedRow(cachedChatRow(context, agentProvider, resolved, category ?? { kind: 'unknown' }, messageCompletion)))
+  if (row === null)
     return null
   return (
     <ToolPendingMessage
       row={row}
       {...(context !== undefined
         ? { context }
-        : {})}
-      {...(context?.toolProgress !== undefined
-        ? { progress: context.toolProgress }
         : {})}
     />
   )

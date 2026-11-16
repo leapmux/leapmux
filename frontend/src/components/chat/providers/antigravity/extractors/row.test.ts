@@ -154,8 +154,10 @@ describe('antigravityExtractRow', () => {
       // Only the finished step states the working directory, so the row that draws the
       // result states it: beside its request row, it draws no request summary.
       expect(row.call.request).toEqual({ command: 'echo probe' })
+      // A path, which the row shows relative to the working directory, as the request side
+      // of a command does.
       expect(row.call.resultMetadata).toEqual([
-        { label: 'Working directory', value: '/p' },
+        { label: 'Working directory', value: '/p', path: true },
       ])
       expect(row.call.status).toBe('completed')
       expect(row.call.result).toEqual({

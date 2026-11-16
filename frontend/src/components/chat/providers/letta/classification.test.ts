@@ -1,6 +1,6 @@
 import type { NotificationEntry } from '../../model/notification'
 import { describe, expect, it } from 'vitest'
-import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
+import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { LETTA_MODEL_ERROR_MARKER, lettaLoopError, lettaMixedErrorThread, lettaSubagentSnapshot } from '~/test-support/lettaFixtures'
 import { input } from '../testUtils'
 import { classifyLettaMessage } from './classification'
@@ -19,6 +19,52 @@ describe('classifyLettaMessage', () => {
 
     expect(classifyLettaMessage(resolved)).toEqual({ kind: 'tool_use' })
     expect(lettaSpanRole(resolved)).toBe('request')
+  })
+
+  // The Worker stores the opening frame of a call again, with a completion, when the
+  // turn or the process ends before Letta Code answers the call. That copy is the
+  // call's result.
+  it.each([
+    MessageCompletion.INTERRUPTED,
+    MessageCompletion.ERROR,
+    MessageCompletion.COMPLETE,
+  ].map(completion => [MessageCompletion[completion], completion] as const))('reads a retained start frame and native call frame as a result: %s', (_name, completion) => {
+    const start = {
+      id: 'letta-msg-1',
+      message_type: 'client_tool_start',
+      tool_call_id: 'call-1',
+      run_id: 'run-1',
+      tool_name: 'Bash',
+      tool_args: '{"command":"ls"}',
+    }
+    const call = {
+      type: 'message',
+      message_type: 'tool_call_message',
+      tool_calls: [
+        { tool_call_id: 'call-1', name: 'Read', arguments: '{"file_path":"note.txt"}' },
+      ],
+    }
+    for (const frame of [start, call]) {
+      expect(classifyLettaMessage(input(frame, undefined, AgentProvider.LETTA))).toEqual({ kind: 'tool_use' })
+      expect(classifyLettaMessage({
+        ...input(frame, undefined, AgentProvider.LETTA),
+        completion,
+      })).toEqual({ kind: 'tool_result' })
+    }
+  })
+
+  it('keeps a retained native call frame that states no call unknown', () => {
+    const frame = {
+      type: 'message',
+      message_type: 'tool_call_message',
+      tool_calls: [
+        { name: 'Read' },
+      ],
+    }
+    expect(classifyLettaMessage({
+      ...input(frame, undefined, AgentProvider.LETTA),
+      completion: MessageCompletion.INTERRUPTED,
+    })).toEqual({ kind: 'unknown' })
   })
 })
 

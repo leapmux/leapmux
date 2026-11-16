@@ -173,6 +173,24 @@ describe('chatScrollAnchor', () => {
       expect(resolveNearestAnchorScrollTop(geo, { id: 'gone', offsetWithinRow: 0, seq: 99n })).toBe(480)
     })
 
+    // A pending row shares its request row's sequence (see chatPendingRows), and the
+    // result row replaces it when the call ends.
+    it('lands on the row whose sequence the removed row shared', () => {
+      const running = fakeGeo([
+        { id: 'm10', seq: 10n },
+        { id: 'm10#pending', seq: 10n },
+        { id: 'm20', seq: 20n },
+      ])
+      const anchor = anchorAtOffset(running, 150)!
+      expect(anchor).toMatchObject({ id: 'm10#pending', seq: 10n })
+      const ended = fakeGeo([
+        { id: 'm10', seq: 10n },
+        { id: 'm15', seq: 15n },
+        { id: 'm20', seq: 20n },
+      ])
+      expect(resolveNearestAnchorScrollTop(ended, anchor)).toBe(0)
+    })
+
     it('returns null when the removed anchor has no sequence', () => {
       expect(resolveNearestAnchorScrollTop(fakeGeo(rows([10])), { id: 'gone', offsetWithinRow: 0 })).toBeNull()
     })

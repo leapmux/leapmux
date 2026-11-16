@@ -1,6 +1,6 @@
 import type { MessageCategory } from '../messageClassifier'
-import type { MessageContentRenderContext } from '../messageContentRenderer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { MessageContentRenderContext } from '~/test-support/messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider, ContentCompression } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -14,7 +14,7 @@ import './opencode/plugin'
 import './pi/plugin'
 import '~/components/chat/providers'
 
-const { renderMessageContent, renderPendingMessageContent } = await import('../messageContentRenderer')
+const { renderMessageContent, renderPendingMessageContent } = await import('~/test-support/messageContentRenderer')
 
 // ---------------------------------------------------------------------------
 // Test helpers

@@ -1,5 +1,5 @@
 import type { MessageCategory } from '../messageClassifier'
-import type { MessageContentRenderContext } from '../messageContentRenderer'
+import type { MessageContentRenderContext } from '~/test-support/messageContentRenderer'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal, untrack } from 'solid-js'
 import { describe, expect, it } from 'vitest'
@@ -13,7 +13,7 @@ import './claude/plugin'
 import './codex/plugin'
 import '~/components/chat/providers'
 
-const { renderMessageContent } = await import('../messageContentRenderer')
+const { renderMessageContent } = await import('~/test-support/messageContentRenderer')
 
 function renderClaudeToolResult(parsed: Record<string, unknown>, context?: MessageContentRenderContext) {
   const category: MessageCategory = { kind: 'tool_result' }

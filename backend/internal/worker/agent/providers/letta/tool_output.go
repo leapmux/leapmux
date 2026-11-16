@@ -1,7 +1,9 @@
 package letta
 
 import (
+	"cmp"
 	"encoding/json"
+	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -69,7 +71,7 @@ func (a *Agent) toolOutputTarget(subagentID, messageType string) (agent.Provider
 func (a *Agent) onToolProgress(payload []byte, delta *lettaDelta, target agent.ProviderServices, subagentID string) {
 	a.Mu.Lock()
 	tool := a.tools[lettaToolKey(subagentID, delta.ToolCallID)]
-	owned := tool != nil && delta.RunID != "" && tool.runID == delta.RunID && !tool.executionEnded
+	owned := tool != nil && delta.RunID != "" && tool.runID == delta.RunID && !tool.ended()
 	a.Mu.Unlock()
 	span := agent.SpanInfo{}
 	if owned {
@@ -97,7 +99,7 @@ func (a *Agent) onClientToolEnd(payload []byte, delta *lettaDelta, target agent.
 	owned := tool != nil && tool.runID == delta.RunID && valid &&
 		(delta.Status == contracts.LettaToolStatusSuccess || delta.Status == contracts.LettaToolStatusError)
 	if owned {
-		tool.executionEnded = true
+		tool.endStatus = delta.Status
 	}
 	a.Mu.Unlock()
 	span := agent.SpanInfo{}
@@ -109,9 +111,45 @@ func (a *Agent) onClientToolEnd(payload []byte, delta *lettaDelta, target agent.
 	a.persistRowTo(target, payload, span)
 }
 
-// Native scope completion clears live state without creating a result message.
+// finishToolOutputScope ends the live output of each call that one scope leaves
+// open, and stores no row for it.
+//
+// A child task ends its calls this way. A native result of a child can arrive
+// after its task ends (see toolOutputTarget), and a closing row before it would
+// give the call a second result.
 func (a *Agent) finishToolOutputScope(subagentID string, target agent.ProviderServices) {
+	for _, tool := range a.takeScopeTools(subagentID) {
+		target.ReportProgress(agent.CompleteOutputProgress(tool.spanID))
+		target.CloseSpan(tool.spanID)
+	}
+}
+
+// closeToolScope ends each call that one scope leaves open, and stores the row
+// that opened the call again as its closing row. The completion of that row
+// states how the call ended (see lettaTool.closingCompletion). Letta Code sends
+// no result for such a call, so without the closing row the call never ends in
+// the transcript. The copy holds only bytes that Letta Code sent.
+//
+// A turn of the main conversation and the process each end their calls this
+// way. Letta Code sends the result of each call that an interrupt stops before
+// it sends `turn_finished`, and a process that ended sends nothing.
+func (a *Agent) closeToolScope(subagentID string, target agent.ProviderServices, completion agent.MessageCompletion) {
+	discarding := a.IsDiscardingOutput()
+	for _, tool := range a.takeScopeTools(subagentID) {
+		target.ReportProgress(agent.CompleteOutputProgress(tool.spanID))
+		if !discarding {
+			a.persistContentTo(target, agent.MessageContent{Original: tool.row, Completion: tool.closingCompletion(completion)},
+				agent.SpanInfo{SpanID: tool.spanID, SpanType: tool.name, Closing: true})
+		}
+		target.CloseSpan(tool.spanID)
+	}
+}
+
+// takeScopeTools removes the open calls of one scope, and returns them in the
+// order in which they opened.
+func (a *Agent) takeScopeTools(subagentID string) []*lettaTool {
 	a.Mu.Lock()
+	defer a.Mu.Unlock()
 	var tools []*lettaTool
 	for key, tool := range a.tools {
 		if tool.subagentID == subagentID {
@@ -119,9 +157,8 @@ func (a *Agent) finishToolOutputScope(subagentID string, target agent.ProviderSe
 			delete(a.tools, key)
 		}
 	}
-	a.Mu.Unlock()
-	for _, tool := range tools {
-		target.ReportProgress(agent.CompleteOutputProgress(tool.spanID))
-		target.CloseSpan(tool.spanID)
-	}
+	slices.SortFunc(tools, func(left, right *lettaTool) int {
+		return cmp.Compare(left.order, right.order)
+	})
+	return tools
 }

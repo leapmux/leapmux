@@ -49,12 +49,18 @@ export const toolUseTitle = style({
   overflow: 'clip',
 })
 
-// The pending row of a running call that shows something: the gap that the list leaves
-// above a row with span lines, which the list leaves out above a pending row so that an
-// empty one takes no space at all (see ChatRowItem.continuesPrevious). The value is the
-// token that ChatView measures as the small gap of the list.
-export const toolPendingShown = style({
-  paddingTop: 'var(--space-2)',
+// The pending row of a running call. Once it draws something, it takes the gap that the
+// list leaves above a row with span lines, which the list leaves out above a pending row
+// so that an empty one takes no space at all (see ChatRowItem.continuesPrevious). What the
+// row drew decides: a row that draws nothing holds no element and no text, so `:empty`
+// matches it (the empty text node that Solid leaves for a child that renders nothing does
+// not count). The value is the token that ChatView measures as the small gap of the list.
+export const toolPending = style({
+  selectors: {
+    '&:not(:empty)': {
+      paddingTop: 'var(--space-2)',
+    },
+  },
 })
 
 // An expanded row wraps its title instead of clipping it.

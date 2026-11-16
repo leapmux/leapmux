@@ -66,11 +66,12 @@ const GEOMETRY_KEYS = (Object.keys(GEOMETRY_RELEVANCE) as (keyof ChatRowItem)[])
 
 /**
  * Whether two arrays of row items are GEOMETRY-EQUIVALENT: same length and the same
- * geometry fields (GEOMETRY_KEYS = id, hasSpanLines, heightKey, kind) at every index. The
- * virtualizer keys its offset map, inter-row gap, and measured-height cache on exactly
- * those fields, so a recompute that preserves them produces an
- * identical offset map. It is the `equals` of two memos of ChatView: `loadedItems` (the
- * loaded rows) and `virtualItems` (the admitted rows). A recompute that does not add,
+ * geometry fields (GEOMETRY_KEYS = id, hasSpanLines, heightKey, kind, continuesPrevious)
+ * at every index. The virtualizer keys its offset map, inter-row gap, and measured-height
+ * cache on exactly those fields, so a recompute that preserves them produces an
+ * identical offset map. It is the `equals` of three memos: ChatView's `messageItems` (the
+ * rows of the messages), the pending rows' `items` (the loaded rows, see
+ * chatPendingRows), and ChatView's `virtualItems` (the admitted rows). A recompute that does not add,
  * remove, reorder, or revise a row keeps the prior array reference. That stops an
  * unnecessary geometry rebuild and layout-shift pass. Row content still updates through
  * visibleEntries. Row measurement catches a real height change.

@@ -24,8 +24,9 @@ export function codexAgentCounterpart(item: Record<string, unknown>, request: Pa
   const otherTool = pickString(candidate, 'tool')
   if (tool && otherTool && tool !== otherTool)
     return null
+  // A request that states a running status cannot state a finished one, so only the
+  // stored completion and the completion time of its frame can end it.
   const finished = messageCompletionFromProto(request?.completion) !== null || Number.isFinite(request?.parentObject?.completedAtMs)
-    || ['completed', 'failed', 'interrupted'].includes(pickString(candidate, 'status'))
   return !finished && candidate.status === CODEX_STATUS.IN_PROGRESS
     ? candidate
     : null

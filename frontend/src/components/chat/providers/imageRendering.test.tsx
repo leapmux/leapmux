@@ -1,5 +1,5 @@
 import type { MessageCategory } from '../messageClassifier'
-import type { MessageContentRenderContext } from '../messageContentRenderer'
+import type { MessageContentRenderContext } from '~/test-support/messageContentRenderer'
 import { render, waitFor } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -16,7 +16,7 @@ import './opencode/plugin'
 import './pi/plugin'
 import '~/components/chat/providers'
 
-const { renderMessageContent } = await import('../messageContentRenderer')
+const { renderMessageContent } = await import('~/test-support/messageContentRenderer')
 
 const PNG = 'iVBORw0KGgo='
 const PNG_DATA_URL = `data:image/png;base64,${PNG}`

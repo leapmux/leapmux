@@ -14,7 +14,13 @@ export function toolRowPosition(row: ToolCallRow): ToolSpanRowPosition {
     case 'update':
       return { role: row.role, hasRequestRow: row.hasRequestRow }
     case 'result':
-      return { role: row.role, hasRequestRow: row.hasRequestRow }
+      return {
+        role: row.role,
+        hasRequestRow: row.hasRequestRow,
+        ...(row.restatesRequest === true
+          ? { restatesRequest: true }
+          : {}),
+      }
   }
 }
 
@@ -41,7 +47,13 @@ export function rowDrawsResult(row: ToolCallRow): boolean {
   return row.role === 'result'
 }
 
-/** Whether this row draws the request: a request row, or a result/update with no visible request row. */
+/**
+ * Whether this row draws the request: a request row, a result or update row with no
+ * request row beside it, or a result row that restates a request row that states no
+ * input (see ToolSpanRowPosition).
+ */
 export function rowDrawsRequest(row: ToolCallRow): boolean {
-  return row.role === 'request' || !rowHasRequestRow(row)
+  return row.role === 'request'
+    || !rowHasRequestRow(row)
+    || (row.role === 'result' && row.restatesRequest === true)
 }

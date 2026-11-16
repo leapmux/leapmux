@@ -6,7 +6,7 @@ import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import '~/components/chat/providers'
 
-const { renderMessageContent } = await import('../messageContentRenderer')
+const { renderMessageContent } = await import('~/test-support/messageContentRenderer')
 
 // ---------------------------------------------------------------------------
 // MCP name parsing (unit tests for inline utilities via rendered output)

@@ -1,14 +1,16 @@
 import type { ClassifiedEntryCacheDeps } from './chatEntryCache'
 import type { NotificationEntry } from './model/notification'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { ToolSpanRole } from '~/lib/messageSpan'
 import { create } from '@bufbuild/protobuf'
 import { createRoot, createSignal } from 'solid-js'
 import { describe, expect, it, vi } from 'vitest'
 import { ZCODE_EVENT, ZCODE_TOOL, ZCODE_TOOL_KIND } from '~/generated/contracts/zcode-protocol'
 import { AgentChatMessageSchema, AgentProvider, AvailableOptionGroupSchema, AvailableOptionSchema, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { invalidateMessageParseCache } from '~/lib/messageParser'
+import { messageSpanKey } from '~/lib/messageSpan'
 import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
-import { createClassifiedEntryCache, heightKeyForEntry, renderKeyForEntry } from './chatEntryCache'
+import { createClassifiedEntryCache, heightKeyForEntry, listedRequestSpanKeys, renderKeyForEntry } from './chatEntryCache'
 import { resolvedSpanRole } from './providers/registry'
 import { prepareMessage } from './rowPreparation'
 import * as rowPreparation from './rowPreparation'
@@ -1272,5 +1274,124 @@ describe('renderKeyForEntry', () => {
   // notification consolidation -- so the row must be read again.
   it('answers a new key when the message seq moves', () => {
     expect(renderKeyForEntry(entryOf('m1', 2n, 'hello'))).not.toBe(renderKeyForEntry(entryOf('m1', 1n, 'hello')))
+  })
+})
+
+describe('listedRequestSpanKeys', () => {
+  /** A Claude tool row of span `spanId`: a `tool_use` request, or its `tool_result`. */
+  const claudeTool = (id: string, seq: bigint, spanId: string, side: 'request' | 'result', name = 'Bash') => create(AgentChatMessageSchema, {
+    id,
+    seq,
+    spanId,
+    spanType: name,
+    source: MessageSource.AGENT,
+    agentProvider: AgentProvider.CLAUDE_CODE,
+    contentCompression: ContentCompression.NONE,
+    content: new TextEncoder().encode(JSON.stringify(side === 'request'
+      ? {
+          type: 'assistant',
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: spanId,
+                name,
+                input: { command: 'make' },
+              },
+            ],
+          },
+        }
+      : {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: spanId, content: 'done' },
+            ],
+          },
+        })),
+  })
+
+  /** The span keys that the list counts as request rows over `messages`. */
+  function listed(messages: AgentChatMessage[], showHiddenMessages = false): string[] {
+    return createRoot((dispose) => {
+      try {
+        const cache = createClassifiedEntryCache({
+          messages: () => messages,
+          role: message => message.spanId === ''
+            ? 'other'
+            : resolvedSpanRole(prepareMessage(message).resolved, message.agentProvider),
+          showHiddenMessages: () => showHiddenMessages,
+        })
+        return [
+          ...listedRequestSpanKeys(cache.visibleEntries()),
+        ]
+      }
+      finally {
+        dispose()
+      }
+    })
+  }
+
+  it('lists the span of a request row that the list draws', () => {
+    expect(listed([
+      claudeTool('req', 1n, 'span-1', 'request'),
+    ])).toEqual([
+      messageSpanKey({ spanId: 'span-1', agentSessionId: '' }),
+    ])
+  })
+
+  it('lists no span for a result row alone', () => {
+    expect(listed([
+      claudeTool('res', 1n, 'span-1', 'result'),
+    ])).toEqual([])
+  })
+
+  // A hidden request draws no request row, so the row of its result draws the request side
+  // itself. The debug preference lists the hidden request as its raw payload, which is no
+  // request row either.
+  it('lists no span for a request that the transcript hides, also under the debug preference', () => {
+    const hidden = claudeTool('req', 1n, 'span-1', 'request', 'ToolSearch')
+    expect(listed([hidden])).toEqual([])
+    expect(listed([hidden], true)).toEqual([])
+  })
+
+  it('lists no span for a message of no span', () => {
+    expect(listed([
+      claudeTool('req', 1n, '', 'request'),
+    ])).toEqual([])
+  })
+
+  // The span role of a message can change in place, as when a closing copy of the same
+  // frame lands. The cached entry holds the role, so the change must rebuild it.
+  it('follows a span role that changes in place', () => {
+    createRoot((dispose) => {
+      const [role, setRole] = createSignal<ToolSpanRole>('request')
+      const messages = [
+        claudeTool('req', 1n, 'span-1', 'request'),
+      ]
+      const cache = createClassifiedEntryCache({
+        messages: () => messages,
+        role: () => role(),
+        showHiddenMessages: () => false,
+      })
+      const before = cache.visibleEntries()[0]!
+      expect(before.freshness.role).toBe('request')
+      expect([
+        ...listedRequestSpanKeys(cache.visibleEntries()),
+      ]).toEqual([
+        messageSpanKey({ spanId: 'span-1', agentSessionId: '' }),
+      ])
+
+      setRole('result')
+      const after = cache.visibleEntries()[0]!
+      expect(after).not.toBe(before)
+      expect(after.freshness.role).toBe('result')
+      expect([
+        ...listedRequestSpanKeys(cache.visibleEntries()),
+      ]).toEqual([])
+      dispose()
+    })
   })
 })

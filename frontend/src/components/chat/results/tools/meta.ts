@@ -191,10 +191,12 @@ export function toolCallMeta(row: ToolCallRow): ToolCallMeta {
     : fallback?.collapsible ? fallback.expandLabel : request.expandLabel
   return {
     collapsible: (primary?.collapsible ?? false) || (drawsRequest && (request.collapsible ?? false)),
-    // A row that draws the result takes the diff toggle from the result alone. The
-    // request side's diff is the preview of a running call, which only the pending row
-    // draws: a lone result row whose call failed drew no diff, and offered a toggle for
-    // none.
+    // A row that draws the result takes the diff toggle from what it draws: the result,
+    // or the requested changes that it shows for a call that ended with no typed result.
+    // The request side's diff is the preview that the pending row draws while the call
+    // runs, so only a row that draws no result offers it (and MessageBubble offers it only
+    // while that pending row is listed): a lone result row whose call failed drew no diff,
+    // and offered a toggle for none.
     hasDiff: (primary?.hasDiff ?? false) || (untyped?.hasDiff ?? false) || (drawsRequest && !drawsResult && (request.hasDiff ?? false)),
     copyableContent,
     hasCopyable: built.text !== null,

@@ -1,4 +1,5 @@
 import type { MessageContextResolver } from '~/components/chat/messageContextResolver'
+import type { MessageUiKey } from '~/components/chat/messageUiKeys'
 import type { RenderReadinessScope } from '~/components/chat/renderReadiness'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import { cleanup, fireEvent, render, screen, waitFor } from '@solidjs/testing-library'
@@ -11,10 +12,12 @@ import { classifyAgentMessage } from '~/components/chat/messageClassifier'
 import { MessageContextMenuHostProvider } from '~/components/chat/MessageContextMenuHost'
 import { messageRowChromeClass } from '~/components/chat/messageRowLayout'
 import * as chatStyles from '~/components/chat/messageStyles.css'
+import { MESSAGE_UI_KEY } from '~/components/chat/messageUiKeys'
 import { createRenderReadinessScope, READINESS_REQUEST_LIMIT_MS } from '~/components/chat/renderReadiness'
 import { toolBodyContent, toolHeaderTimestamp, toolUseHeader } from '~/components/chat/toolStyles.css'
 import { PreferencesProvider, usePreferences } from '~/context/PreferencesContext'
-import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
+import { MESSAGE_METADATA_FIELD, MESSAGE_SUPPLEMENT_FIELD, TOOL_OUTCOME } from '~/generated/contracts/worker-vocab'
+import { ZCODE_TOOL } from '~/generated/contracts/zcode-protocol'
 import { AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { KEY_BROWSER_PREFS, localStorageSet } from '~/lib/browserStorage'
 import { deferred } from '~/test-support/async'
@@ -186,6 +189,79 @@ describe('outer toolbar of a tool row whose header clips', () => {
     render(() => <PreferencesProvider><MessageBubble message={shortResult()} /></PreferencesProvider>)
     expect(screen.getAllByTestId('message-toolbar')).toHaveLength(1)
     expect(screen.getByRole('button', { name: /^Expand(?:\s|$)/u, hidden: true })).toBeInTheDocument()
+  })
+
+  // A row whose outcome note replaces its body draws no tool row, so nothing on it reads
+  // its expand state. An Expand there would toggle a state that nothing draws.
+  it('offers no Expand on a result row whose outcome note replaces its body', () => {
+    const message = makeMsg({
+      agentProvider: AgentProvider.ZCODE,
+      source: MessageSource.AGENT,
+      spanId: 'call',
+      spanType: ZCODE_TOOL.Bash,
+      content: rawContent({
+        type: 'tool.updated',
+        payload: {
+          kind: 'scheduled',
+          toolCallId: 'call',
+          toolName: ZCODE_TOOL.Bash,
+          input: {
+            command: Array.from({ length: 30 }, (_, i) => `make step-${i}`).join('\n'),
+          },
+        },
+      }),
+      supplementalContent: rawContent({
+        [MESSAGE_SUPPLEMENT_FIELD.Metadata]: {
+          [MESSAGE_METADATA_FIELD.ToolOutcome]: {
+            [TOOL_OUTCOME.FieldSource]: TOOL_OUTCOME.SourceBatchSummary,
+            [TOOL_OUTCOME.FieldOutcome]: TOOL_OUTCOME.OutcomeSucceeded,
+          },
+        },
+      }),
+    })
+    render(() => <PreferencesProvider><MessageBubble message={message} /></PreferencesProvider>)
+    expect(screen.getByRole('note')).toHaveTextContent('The agent sent no result for this call')
+    expect(screen.queryByRole('button', { name: 'Show full command', hidden: true })).toBeNull()
+  })
+
+  // The outcome note can arrive in place after the row drew its tool row. The tool row
+  // that reported Expand is then gone, so its report must go with it.
+  it('withdraws the Expand of a tool row that an outcome note replaces in place', () => {
+    const scheduled = {
+      agentProvider: AgentProvider.ZCODE,
+      source: MessageSource.AGENT,
+      spanId: 'call',
+      spanType: ZCODE_TOOL.Bash,
+      content: rawContent({
+        type: 'tool.updated',
+        payload: {
+          kind: 'scheduled',
+          toolCallId: 'call',
+          toolName: ZCODE_TOOL.Bash,
+          input: {
+            command: Array.from({ length: 30 }, (_, i) => `make step-${i}`).join('\n'),
+          },
+        },
+      }),
+    }
+    const [message, setMessage] = createSignal(makeMsg(scheduled))
+    render(() => <PreferencesProvider><MessageBubble message={message()} /></PreferencesProvider>)
+    expect(screen.getAllByRole('button', { name: 'Show full command', hidden: true }).length).toBeGreaterThan(0)
+
+    setMessage(makeMsg({
+      ...scheduled,
+      supplementalRevision: 1n,
+      supplementalContent: rawContent({
+        [MESSAGE_SUPPLEMENT_FIELD.Metadata]: {
+          [MESSAGE_METADATA_FIELD.ToolOutcome]: {
+            [TOOL_OUTCOME.FieldSource]: TOOL_OUTCOME.SourceBatchSummary,
+            [TOOL_OUTCOME.FieldOutcome]: TOOL_OUTCOME.OutcomeSucceeded,
+          },
+        },
+      }),
+    }))
+    expect(screen.getByRole('note')).toHaveTextContent('The agent sent no result for this call')
+    expect(screen.queryByRole('button', { name: 'Show full command', hidden: true })).toBeNull()
   })
 })
 
@@ -2234,6 +2310,211 @@ describe('edit/write tool_use rendering', () => {
       // Both surfaces carry the send time.
       expect(screen.getByTestId('message-toolbar').querySelector(`.${toolHeaderTimestamp}`)).not.toBeNull()
       expect(menu.querySelector('[data-testid="message-menu-info"]')).not.toBeNull()
+    })
+
+    // The request row of an edit draws no diff: the pending row below it draws the
+    // requested changes while the call runs. The request row's diff toggle steers that
+    // drawing, so it exists only while the pending row is in the list.
+    it('offers the diff toggle of a request row only while its pending row is listed', async () => {
+      const msg = makeMsg({
+        source: MessageSource.AGENT,
+        spanId: 'toolu_write_1',
+        content: rawContent(writeToolUse('export const control = true')),
+      })
+      const menuIds = async (pendingRowOpen: boolean): Promise<string[]> => {
+        const { container } = render(() => (
+          <PreferencesProvider>
+            <MessageContextMenuHostProvider>
+              <MessageBubble
+                message={msg}
+                host={{
+                  pendingRowOpen: () => pendingRowOpen,
+                }}
+              />
+            </MessageContextMenuHostProvider>
+          </PreferencesProvider>
+        ))
+        rowOf(container).dispatchEvent(new MouseEvent('contextmenu', {
+          clientX: 150,
+          buttons: 0,
+          bubbles: true,
+          cancelable: true,
+        }))
+        await waitFor(() => expect(screen.queryByTestId('message-context-menu')?.querySelector('[data-testid]')).toBeTruthy())
+        const ids = [
+          ...screen.getByTestId('message-context-menu').querySelectorAll('[data-testid]'),
+        ]
+          .map(el => el.getAttribute('data-testid')!)
+        cleanup()
+        return ids
+      }
+      expect(await menuIds(true)).toContain('message-menu-diff-view')
+      // The call ended: the result row replaced the pending row.
+      expect(await menuIds(false)).not.toContain('message-menu-diff-view')
+    })
+
+    // A call with no span has no pending row and no result row: its request row draws
+    // the requested changes itself (ToolResultRenderContext.loneCall), so it keeps the
+    // toggle with no host at all.
+    it('offers the diff toggle of a request row whose call has no span', async () => {
+      const msg = makeMsg({
+        source: MessageSource.AGENT,
+        spanId: '',
+        content: rawContent(writeToolUse('export const control = true')),
+      })
+      const { container } = render(() => (
+        <PreferencesProvider>
+          <MessageContextMenuHostProvider>
+            <MessageBubble message={msg} />
+          </MessageContextMenuHostProvider>
+        </PreferencesProvider>
+      ))
+      expect(container).toHaveTextContent('export const control = true')
+      rowOf(container).dispatchEvent(new MouseEvent('contextmenu', {
+        clientX: 150,
+        buttons: 0,
+        bubbles: true,
+        cancelable: true,
+      }))
+      await waitFor(() => expect(screen.queryByTestId('message-context-menu')?.querySelector('[data-testid]')).toBeTruthy())
+      const ids = [
+        ...screen.getByTestId('message-context-menu').querySelectorAll('[data-testid]'),
+      ].map(el => el.getAttribute('data-testid'))
+      expect(ids).toContain('message-menu-diff-view')
+    })
+
+    // An agent launch's request row opens its prompt under a key of its own (the agent
+    // prompt key). The menu's Expand must toggle the key that the row reads.
+    it('toggles the expand key that an agent request row reads', async () => {
+      const written: MessageUiKey[] = []
+      const msg = makeMsg({
+        source: MessageSource.AGENT,
+        spanId: 'toolu_task_1',
+        content: rawContent({
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_task_1',
+                name: 'Task',
+                input: { description: 'Fix the build', prompt: 'Run the tests.', subagent_type: 'general-purpose' },
+              },
+            ],
+          },
+        }),
+      })
+      const { container } = render(() => (
+        <PreferencesProvider>
+          <MessageContextMenuHostProvider>
+            <MessageBubble
+              message={msg}
+              host={{
+                getMessageUiState: () => undefined,
+                setMessageUiState: key => written.push(key),
+              }}
+            />
+          </MessageContextMenuHostProvider>
+        </PreferencesProvider>
+      ))
+      rowOf(container).dispatchEvent(new MouseEvent('contextmenu', {
+        clientX: 150,
+        buttons: 0,
+        bubbles: true,
+        cancelable: true,
+      }))
+      await waitFor(() => expect(screen.queryByTestId('message-menu-expand')).toBeTruthy())
+      fireEvent.click(screen.getByTestId('message-menu-expand'))
+      expect(written).toEqual([MESSAGE_UI_KEY.AGENT_PROMPT])
+    })
+
+    // The pending row draws what its call asks and prints, below the request row. A
+    // right-click or a long-press there opens the actions of the call that it draws.
+    it('opens the request row actions on its pending row', async () => {
+      const msg = makeMsg({
+        source: MessageSource.AGENT,
+        spanId: 'toolu_write_1',
+        content: rawContent(writeToolUse('export const control = true')),
+      })
+      const { container } = render(() => (
+        <PreferencesProvider>
+          <MessageContextMenuHostProvider>
+            <MessageBubble
+              message={msg}
+              pending
+              host={{
+                pendingRowOpen: () => true,
+              }}
+            />
+          </MessageContextMenuHostProvider>
+        </PreferencesProvider>
+      ))
+      rowOf(container).dispatchEvent(new MouseEvent('contextmenu', {
+        clientX: 150,
+        buttons: 0,
+        bubbles: true,
+        cancelable: true,
+      }))
+      await waitFor(() => expect(screen.queryByTestId('message-context-menu')?.querySelector('[data-testid]')).toBeTruthy())
+      const ids = [
+        ...screen.getByTestId('message-context-menu').querySelectorAll('[data-testid]'),
+      ]
+        .map(el => el.getAttribute('data-testid'))
+      expect(ids).toContain('message-menu-copy-json')
+      expect(ids).toContain('message-menu-diff-view')
+    })
+
+    // Only a drawn tool row reports what it clips, and the pending row draws no header.
+    // Its menu therefore offers no Expand, although the request row's menu does.
+    it('offers no Expand on the pending row of a request row that offers one', async () => {
+      const msg = makeMsg({
+        source: MessageSource.AGENT,
+        spanId: 'toolu_task_1',
+        content: rawContent({
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_task_1',
+                name: 'Task',
+                input: { description: 'Fix the build', prompt: 'Run the tests.', subagent_type: 'general-purpose' },
+              },
+            ],
+          },
+        }),
+      })
+      const openMenu = async (pending: boolean) => {
+        const { container, unmount } = render(() => (
+          <PreferencesProvider>
+            <MessageContextMenuHostProvider>
+              <MessageBubble
+                message={msg}
+                pending={pending}
+                host={{
+                  pendingRowOpen: () => true,
+                }}
+              />
+            </MessageContextMenuHostProvider>
+          </PreferencesProvider>
+        ))
+        rowOf(container).dispatchEvent(new MouseEvent('contextmenu', {
+          clientX: 150,
+          buttons: 0,
+          bubbles: true,
+          cancelable: true,
+        }))
+        await waitFor(() => expect(screen.queryByTestId('message-context-menu')?.querySelector('[data-testid]')).toBeTruthy())
+        const ids = [
+          ...screen.getByTestId('message-context-menu').querySelectorAll('[data-testid]'),
+        ].map(el => el.getAttribute('data-testid'))
+        unmount()
+        return ids
+      }
+      expect(await openMenu(false)).toContain('message-menu-expand')
+      const pendingIds = await openMenu(true)
+      expect(pendingIds).toContain('message-menu-copy-json')
+      expect(pendingIds).not.toContain('message-menu-expand')
     })
 
     it('suppresses the native menu on the row', () => {

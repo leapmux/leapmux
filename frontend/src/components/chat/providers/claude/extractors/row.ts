@@ -156,10 +156,8 @@ function claudeToolSpanRow(input: RowExtractionInput): ChatRow | null {
   // The span's tool name is ONE fact, and either side may be the one that knows
   // it: a result row takes its tool name from the span column, and a row rendered
   // without one would otherwise report no tool at all.
-  // Canonicalized, because `claudeToolRowHidden` states "canonical names only"
-  // and the worker's `span_type` column carries the RAW name. No alias maps onto a
-  // hidden tool today, but one added later would make the two sides of a span
-  // disagree about whether the other draws, and the pair would render blank.
+  // Canonicalized as the row's own name is, because the worker's `span_type` column
+  // carries the RAW name: the request side then reads the same tool as this row.
   const spanTool = canonicalClaudeToolName(spanType || own.toolName)
   // A sibling belongs to THIS call only when its tool-use id says so: one turn
   // can carry several parallel calls, and a request with another id is not ours.
@@ -200,9 +198,10 @@ function claudeToolSpanRow(input: RowExtractionInput): ChatRow | null {
   const rowRole = own.role === 'request' && retainedRowIsFinal(completion)
     ? 'result'
     : own.role
-  // A Claude tool whose request row the transcript HIDES states no request row beside
-  // this one, because the sibling the flag promises is never drawn.
+  // A request of another call is no request row of this one. The list counts no request
+  // row for a request that the transcript hides (see listedRequestSpanKeys in chatEntryCache),
+  // so this row then draws the request side itself.
   return toolCallRow(call, rowRole, {
-    request: span.visibleRows.request && !!requestSide && !claudeToolRowHidden(spanTool, 'request'),
+    request: span.visibleRows.request && !!requestSide,
   })
 }

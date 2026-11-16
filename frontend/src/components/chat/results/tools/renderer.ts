@@ -21,8 +21,12 @@ export type ResolvedCall<K extends ToolKind> = Omit<ToolCallVariant<K>, 'result'
  * before the result exists. So a hook typed over this cannot change the request row
  * when the result lands. A row that draws both sides (a result row with no request
  * row beside it) passes its whole call, which this type accepts.
+ *
+ * The members are LISTED, not excluded: a member that a later change adds to the call
+ * reaches no request-side hook until someone lists it here and decides that the
+ * request states it.
  */
-export type RequestSideCall<K extends ToolKind> = Omit<ToolCallVariant<K>, 'result' | 'status' | 'images' | 'extraContent' | 'truncated' | 'resultMetadata' | 'outputFilePaths' | 'degradation'>
+export type RequestSideCall<K extends ToolKind> = Pick<ToolCallVariant<K>, 'id' | 'name' | 'title' | 'label' | 'icon' | 'metadata' | 'kind' | 'request'>
 
 /** The call with its failed and unparsed results stripped, so a kind hook reads its own payload alone. */
 export function parsedCall<K extends ToolKind>(call: ToolCallVariant<K>): ParsedCall<K> {
@@ -155,21 +159,19 @@ export interface ToolKindRenderer<K extends ToolKind> {
    * Absent for a kind whose running call shows nothing beyond its request row.
    */
   pending?: (call: RequestSideCall<K>, view: ToolRowView) => JSX.Element | null
-  /**
-   * Whether `pending` draws anything for this call when the reader has `expanded` the
-   * row or not. The pending row takes its top space from this answer, and takes none
-   * while it draws nothing, so it must answer true exactly when `pending` draws
-   * something.
-   */
-  hasPending?: (call: RequestSideCall<K>, expanded: boolean) => boolean
   /** The result body. Composes shared `results/*` components. */
   result: (call: ResolvedCall<K>, view: ToolRowView) => JSX.Element | null
   /**
    * What the row that draws the result shows above it when the result is NOT the kind's
    * own payload: words the model could not read as that payload, a failure, or no result.
    * `answered` is false for a call that carries no result at all: the turn stopped it, or
-   * it never answered. A file change that completed with words alone states the changes
-   * it asked for, which the file took. Absent for a kind that adds nothing.
+   * it never answered. A file change that ended with no typed result and did not fail
+   * states the changes it asked for, under the heading of requested changes.
+   *
+   * A kind that previews a running call (`pending`) must declare it, even as a hook that
+   * draws nothing, because no pending row is left to show the preview once the call ended
+   * (results/tools/index.test.tsx enforces this). Absent for a kind with no preview that
+   * adds nothing.
    */
   withoutTypedResult?: (call: ParsedCall<K>, view: ToolRowView, answered: boolean) => JSX.Element | null
   /** What the toolbar adds for {@link withoutTypedResult}. Absent means nothing. */
@@ -185,8 +187,9 @@ export interface ToolKindRenderer<K extends ToolKind> {
  *
  * A call that ended with NO result at all -- the turn stopped it, or it never answered --
  * states that preview on the row that ended it, as its pending row did while it ran: the
- * pending row has left, and the request row never draws it. A result of any form answers
- * for the call instead.
+ * pending row has left, and a request row of a span never draws it (only a call with no
+ * span draws it inline, see ToolResultRenderContext.loneCall). A result of any form
+ * answers for the call instead.
  */
 export function previewWithoutResult<K extends ToolKind>(pending: (call: RequestSideCall<K>, view: ToolRowView) => JSX.Element | null): NonNullable<ToolKindRenderer<K>['withoutTypedResult']> {
   return (call, view, answered) => answered

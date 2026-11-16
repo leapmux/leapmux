@@ -270,8 +270,8 @@ function blockToolFrame(child: CodewhaleChildBlock): CodewhaleToolFrame | null {
  *
  * One result frame says so on its own, and the hide happens in the classifier
  * because only a classified-hidden row leaves the transcript. A row that the
- * extractor empties still takes a slot, and a slot of no height is never
- * measured, so it holds every later row of the transcript behind it.
+ * extractor empties still takes a slot: it measures at no height, but it keeps the
+ * gap that the list leaves between two rows, so the reader sees a blank strip.
  *
  * That frame is the result of an answered question. The runtime redacts the answers
  * from it, so it states nothing, and the saved answer beside it states the reply.

@@ -94,5 +94,14 @@ describe('toolCallRow', () => {
       expect(rowDrawsRequest(toolCallRow(call, 'result', { request: true }))).toBe(false)
       expect(rowDrawsRequest(toolCallRow(call, 'update', { request: true }))).toBe(false)
     })
+
+    // The request row beside it states no input, and only the result recovers it.
+    it('draws on a result row that restates its request, beside the request row', () => {
+      const result = toolCallRow(call, 'result', { request: true })
+      if (result.role !== 'result')
+        throw new Error('A result role must build a result row.')
+      expect(rowDrawsRequest({ ...result, restatesRequest: true })).toBe(true)
+      expect(toolRowPosition({ ...result, restatesRequest: true })).toEqual({ role: 'result', hasRequestRow: true, restatesRequest: true })
+    })
   })
 })

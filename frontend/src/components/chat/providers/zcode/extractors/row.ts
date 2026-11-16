@@ -75,12 +75,13 @@ function zcodeToolSpanRow(input: RowExtractionInput): ChatRow | null {
     : update?.kind === ZCODE_TOOL_KIND.Scheduled
       ? 'request'
       : 'update'
-  // A result row whose input comes from its own native record alone: the request row
-  // beside it states no input -- no command, no file -- and a result row beside its
-  // request row draws no request side. So this row draws the request side itself, as a
-  // result row with no request row beside it does.
-  const visibleRows = role === 'result' && zcodeInputFromNativeRecordAlone(row)
-    ? { request: false }
-    : span.visibleRows
-  return toolCallRow(call, role, visibleRows)
+  const built = toolCallRow(call, role, span.visibleRows)
+  // A result row whose input comes from its own native record alone: the body of the
+  // request row beside it states no input -- no command, no file -- and a result row
+  // beside its request row draws no request side. So this row restates the request side
+  // itself, under the request row's header, which reads the newest call and so states
+  // the file (see ToolSpanRowPosition.restatesRequest).
+  return built.role === 'result' && built.hasRequestRow && zcodeInputFromNativeRecordAlone(row)
+    ? { ...built, restatesRequest: true }
+    : built
 }

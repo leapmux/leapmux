@@ -77,7 +77,7 @@ const LEADING_BLANK_LINES_RE = /^(?:\s*\n)+/
  * Trim leading blank lines from a tool-result body. Lives here beside
  * {@link normalizeProgressOutput} because the two are applied together (CR
  * normalization first so a leading bare `\r`-turned-`\n` becomes trimmable).
- * ToolMessage also applies it alone, to the live output tail of a running command.
+ * ToolPendingMessage also applies it alone, to the live output tail of a running call.
  */
 export function stripLeadingBlankLines(content: string): string {
   return content.replace(LEADING_BLANK_LINES_RE, '')

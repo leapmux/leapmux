@@ -4,9 +4,9 @@ import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import '~/components/chat/providers'
 
-const { renderMessageContent } = await import('../messageContentRenderer')
+const { renderMessageContent } = await import('~/test-support/messageContentRenderer')
 const { formatTaskStatus, firstNonEmptyLine } = await import('../rendererUtils')
-type MessageContentRenderContext = import('../messageContentRenderer').MessageContentRenderContext
+type MessageContentRenderContext = import('~/test-support/messageContentRenderer').MessageContentRenderContext
 
 /** Construct a TaskOutput tool_use assistant message object. */
 function makeTaskOutputMessage() {

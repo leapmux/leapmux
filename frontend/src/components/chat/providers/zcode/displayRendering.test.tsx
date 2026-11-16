@@ -1,4 +1,4 @@
-import type { MessageContentRenderContext } from '../../messageContentRenderer'
+import type { MessageContentRenderContext } from '~/test-support/messageContentRenderer'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'

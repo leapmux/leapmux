@@ -102,6 +102,18 @@ describe('a file change whose result states no changes of its own', () => {
     expect(toolCallMeta(row).hasDiff).toBe(false)
   })
 
+  // The closing copy of a turn that ended while the call never answered: the call is
+  // incomplete, not failed, and nothing states what the file took. The row that ended it
+  // is the one row that can still show what the call asked for.
+  it('draws the requested changes of a call that ended incomplete with no result', async () => {
+    const row = resultRow({ status: 'incomplete' })
+    expect(row.call.result).toBeUndefined()
+    const text = await drawn(row)
+    expect(text).toContain('ASKED-AFTER')
+    expect(text).toContain('Requested changes')
+    expect(toolCallMeta(row).hasDiff).toBe(true)
+  })
+
   it('draws the changes that landed, not the requested ones, for a typed result', async () => {
     const landed = { filePath: '/project/a.ts', oldStr: 'LANDED-BEFORE\n', newStr: 'LANDED-AFTER\n' }
     const text = await drawn(resultRow({

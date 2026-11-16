@@ -50,15 +50,13 @@ export function renderAgentTitle(description: string, subagentType?: string): JS
  */
 function AgentPromptBody(props: { request: AgentRequest, view: ToolRowView, clip: boolean }): JSX.Element {
   const promptLabel = () => props.request.promptLabel || 'Prompt'
-  const hasPrompt = () => props.request.prompt.trim() !== ''
-  const markdownPrompt = () => props.request.promptFormat !== 'pre'
   return (
     <>
       <ToolMetadata items={props.request.metadata} />
-      <Show when={hasPrompt()}>
+      <Show when={agentHasPrompt(props.request)}>
         <div class={toolResultPrompt}>{promptLabel()}</div>
         <CollapsibleContent
-          kind={markdownPrompt()
+          kind={agentPromptIsMarkdown(props.request)
             ? 'markdown-tool-result'
             : 'pre'}
           text={props.request.prompt}
@@ -72,9 +70,19 @@ function AgentPromptBody(props: { request: AgentRequest, view: ToolRowView, clip
   )
 }
 
+/** Whether an agent launch states a prompt to draw. */
+function agentHasPrompt(request: AgentRequest): boolean {
+  return request.prompt.trim() !== ''
+}
+
+/** Whether an agent launch's prompt reads as Markdown, rather than as preformatted text. */
+function agentPromptIsMarkdown(request: AgentRequest): boolean {
+  return request.promptFormat !== 'pre'
+}
+
 /** Whether an agent launch states a prompt or metadata to draw. */
 function hasPromptOrMetadata(request: AgentRequest): boolean {
-  return request.prompt.trim() !== '' || (request.metadata?.length ?? 0) > 0
+  return agentHasPrompt(request) || (request.metadata?.length ?? 0) > 0
 }
 
 /** Whether a successful agent result needs one shared status instead of per-agent cards. */
@@ -120,7 +128,7 @@ export const agentRenderer: ToolKindRenderer<'agent'> = {
       <Show when={view.role !== 'result'}>
         <Show
           when={view.expanded()}
-          fallback={call.request.prompt.trim() !== '' && call.request.promptFormat !== 'pre'
+          fallback={agentHasPrompt(call.request) && agentPromptIsMarkdown(call.request)
             ? <MarkdownPrefetch text={call.request.prompt} context={view.context} />
             : null}
         >
@@ -138,7 +146,9 @@ export const agentRenderer: ToolKindRenderer<'agent'> = {
       </Show>
     )
   },
-  hasPending: (call, expanded) => !expanded && hasPromptOrMetadata(call.request),
+  // The row that ended a call with no result restates no prompt: the request row of the
+  // call offers the whole prompt on Expand, in every state of the call.
+  withoutTypedResult: () => null,
   result(call: ResolvedCall<'agent'>, view) {
     return (
       <Show
@@ -161,7 +171,7 @@ export const agentRenderer: ToolKindRenderer<'agent'> = {
     )
   },
   requestMeta(call: RequestSideCall<'agent'>): Partial<ToolKindMeta> {
-    const hasPrompt = call.request.prompt.trim() !== ''
+    const hasPrompt = agentHasPrompt(call.request)
     const promptLabel = (call.request.promptLabel || 'Prompt').toLowerCase()
     return {
       // The request row draws the prompt only on Expand, so a launch that states one

@@ -16,12 +16,14 @@ import { fileEditCopyFinal, fileEditCopyHunks, FileEditDiffBody, FileEditDiffTit
 import { RequestedFileChanges } from '../requestedFileChanges'
 
 /**
- * The changes a call ASKED for, drawn while the call runs.
+ * The changes a call ASKED for.
  *
  * `delete`, `edit`, `move` and `write` state a file change and share one rule: the
  * PENDING row states the request while the call runs, and it leaves when the result
- * row joins the list. Once the result exists, the changes that LANDED are the ones a
- * reader needs, and the request's copy would repeat them.
+ * row joins the list. Once the result states the changes that LANDED, those are the ones
+ * a reader needs, and the request's copy would repeat them. A call that ended with no
+ * typed result -- a result in words alone, or none at all -- states the changes it asked
+ * for on the row that ended it, under the heading of requested changes.
  *
  * A call that FAILED, was INTERRUPTED or was DECLINED draws none of it: its result row
  * states the reason, and no row draws a diff that never reached the file. The rule
@@ -169,10 +171,11 @@ export type FileChangeKind = {
  * it separately, down to the same two-line comment written out four times.
  *
  * A FAILED call shows only the reason, never the diff it asked for. Nothing it asked
- * for reached the file, so a diff would draw an edit that never happened. Only the
- * pending row of a running call draws `RequestedChangesBody`, so no kind can answer it
- * differently -- which is what used to happen, with Claude emptying its own request
- * and the Agent Client Protocol family keeping theirs.
+ * for reached the file, so a diff would draw an edit that never happened. Every row
+ * that draws `RequestedChangesBody` -- the pending row, a lone call, and the row that
+ * ended a call with no typed result -- draws it through this one renderer, so no kind can
+ * answer it differently -- which is what used to happen, with Claude emptying its own
+ * request and the Agent Client Protocol family keeping theirs.
  */
 export function fileChangeRenderer<K extends FileChangeKind>(options: {
   icon: LucideIcon
@@ -199,14 +202,14 @@ export function fileChangeRenderer<K extends FileChangeKind>(options: {
     pending(call, view) {
       return <RequestedChangesBody request={call.request} view={view} />
     },
-    hasPending: call => call.request.changes.length > 0,
     result(call, view) {
       return <FileChangesBody changes={call.result.changes} view={view} />
     },
-    // A call that ended with words alone and did not fail states the changes it asked
-    // for, which the file took: the result row is then the one place that shows them. A
-    // failed, interrupted or declined call states only its reason, because nothing it
-    // asked for reached the file.
+    // A call that ended with no typed result and did not fail -- a result in words alone,
+    // or no result at all -- states the changes it asked for, under the heading of
+    // requested changes: the row that ended the call is then the one place that shows
+    // them, and nothing on it claims that the file took them. A failed, interrupted or
+    // declined call states only its reason, because nothing it asked for reached the file.
     withoutTypedResult(call, view) {
       return <Show when={!(fileChangeFailed(call.status))}><RequestedChangesBody request={call.request} view={view} /></Show>
     },
@@ -217,9 +220,11 @@ export function fileChangeRenderer<K extends FileChangeKind>(options: {
             hasDiff: call.request.changes.some(fileEditHasDiff),
           }
     },
-    // The request row offers the changes it asked for whether or not the call still
-    // runs, because it never reads how the call ended. The diff toggle steers the
-    // pending row below it, which reads the same message's diff view.
+    // The request row states the changes it asked for whether or not the call still
+    // runs, because it never reads how the call ended. Its diff toggle steers the pending
+    // row below it, which reads the same message's diff view, so the row offers the
+    // toggle only while that pending row is listed (see MessageBubble's
+    // hasToolResultDiff).
     requestMeta(call) {
       return requestedFileChangesMeta(call.request.changes)
     },

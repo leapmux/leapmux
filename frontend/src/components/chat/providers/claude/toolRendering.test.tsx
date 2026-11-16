@@ -2,9 +2,9 @@ import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { renderMessageContent } from '~/test-support/messageContentRenderer'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { providerRow } from '~/test-support/toolCallFixture'
-import { renderMessageContent } from '../../messageContentRenderer'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
 import { CLAUDE_TOOL_NAMES } from './toolNames'
@@ -113,7 +113,7 @@ describe('claude Task rows', () => {
  * call in the same turn must not reach this row.
  */
 describe('claude Task rows and a sibling from another call', () => {
-  it('ignores a request whose tool-use id names another call', () => {
+  it('ignores a request whose tool-use id identifies another call', () => {
     const stranger = {
       type: 'assistant',
       message: {

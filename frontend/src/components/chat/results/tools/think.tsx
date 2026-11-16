@@ -13,7 +13,6 @@ export const thinkRenderer = proseRenderer<'think'>({
   // The thought's first line, while the call runs. The result row then draws the
   // answer, or the line again when the call ended with none.
   pending: thinkPreview,
-  hasPending: call => firstLine(call.request.text) !== undefined,
   withoutTypedResult: previewWithoutResult(thinkPreview),
 })
 

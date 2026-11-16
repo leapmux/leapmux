@@ -1,5 +1,5 @@
 import type { MessageCategory } from '../messageClassifier'
-import type { MessageContentRenderContext } from '../messageContentRenderer'
+import type { MessageContentRenderContext } from '~/test-support/messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it, vi } from 'vitest'
 import { MESSAGE_METADATA_FIELD } from '~/generated/contracts/worker-vocab'
@@ -13,7 +13,7 @@ import './codex/plugin'
 import './opencode/plugin'
 import '~/components/chat/providers'
 
-const { renderMessageContent, renderPendingMessageContent } = await import('../messageContentRenderer')
+const { renderMessageContent, renderPendingMessageContent } = await import('~/test-support/messageContentRenderer')
 const { classifyMessage } = await import('../messageClassifier')
 
 interface ToolUsePayload extends Record<string, unknown> {
@@ -242,7 +242,7 @@ describe('claude TaskUpdate renders a single-row card', () => {
     warn.mockRestore()
   })
 
-  // The Worker stores a snapshot only for an update that succeeded and names its task. A
+  // The Worker stores a snapshot only for an update that succeeded and identifies its task. A
   // failed update states its own error, and it misses no snapshot.
   it('states the error of a failed update, and no snapshot diagnostic', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})

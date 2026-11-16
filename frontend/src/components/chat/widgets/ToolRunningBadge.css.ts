@@ -9,10 +9,11 @@ import { style } from '@vanilla-extract/css'
 // title reads as an annotation on the tool, and the actions stay right-aligned.
 //
 // flexShrink 0 + nowrap keep the BADGE itself on one line, so its own text never
-// wraps. They do NOT keep the header at one line. A title that wraps -- the
-// `toolInputPath` and `toolInputSummary` forms, which set no nowrap -- gives up
-// horizontal space to the badge and can take a second line, which makes the
-// header taller. A clipped title absorbs the space instead and does not.
+// wraps. They do NOT keep the header at one line. While the row is collapsed, the
+// title box is one line tall and clips what does not fit (`toolUseTitle` in
+// ../toolStyles.css.ts), so the badge only takes space from the title. An EXPANDED row
+// wraps its title, and the space that the badge takes can push the title onto one more
+// line, which makes the header taller.
 //
 // That is why the premeasure pass must render this badge, and does: ChatView
 // builds one host for both the hidden measuring copy and the real row, so the

@@ -68,6 +68,13 @@ describe('the tool kind renderer table', () => {
       : title).toBeTruthy()
   })
 
+  // A call that ended with no result has no pending row left to show its preview, so a
+  // kind with a preview states, on the row that ended the call, whether that row restates
+  // it. A kind that forgot to state it would lose its preview with no failure.
+  it.each(TOOL_KINDS.filter(kind => TOOL_KIND_RENDERERS[kind].pending !== undefined))('states what the row that ended a call of %j shows', (kind) => {
+    expect(TOOL_KIND_RENDERERS[kind].withoutTypedResult).toBeDefined()
+  })
+
   it('lets the tool name lead for the nameless kinds alone', () => {
     // A kind with a category of its own draws the category's word beside the icon;
     // the nameless trio draws the humanized tool NAME, which identifies the tool.

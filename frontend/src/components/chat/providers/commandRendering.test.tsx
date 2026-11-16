@@ -1,8 +1,8 @@
 import type { MessageBubbleHost } from '../MessageBubble'
 import type { MessageCategory } from '../messageClassifier'
-import type { MessageContentRenderContext } from '../messageContentRenderer'
 import type { PreparedMessage } from '../rowPreparation'
 import type { ParsedMessageContent } from '~/lib/messageParser'
+import type { MessageContentRenderContext } from '~/test-support/messageContentRenderer'
 import { create } from '@bufbuild/protobuf'
 import { fireEvent, render } from '@solidjs/testing-library'
 import { createSignal } from 'solid-js'
@@ -58,7 +58,7 @@ vi.mock('~/context/PreferencesContext', () => ({
   }),
 }))
 
-const { renderMessageContent } = await import('../messageContentRenderer')
+const { renderMessageContent } = await import('~/test-support/messageContentRenderer')
 const { createMessageRenderCacheStore } = await import('../messageRenderCache')
 const { CommandHighlightHtml } = await import('../syntaxHighlight')
 const { COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT } = await import('../chatHeightShared')

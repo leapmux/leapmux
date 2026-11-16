@@ -4,13 +4,11 @@ import type { ToolCall } from '../model/toolCall'
 import type { ToolKind } from '../model/toolKind'
 import type { ToolResultRenderContext } from '../renderContext'
 import type { ToolCallDispatch } from './tools/index'
-import type { ToolRowView } from './tools/renderer'
 import CircleExclamationPoint from 'lucide-solid/icons/circle-exclamation-point'
 import TriangleExclamationPoint from 'lucide-solid/icons/triangle-exclamation-point'
-import { createEffect, createMemo, createSignal, Match, Show, Switch, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, Match, onCleanup, Show, Switch } from 'solid-js'
 import { useCopyButton } from '~/hooks/useCopyButton'
-import { useSharedExpandedState } from '../messageRenderers'
-import { rowDrawsRequest, rowDrawsResult, rowHasRequestRow, toolRowPosition } from '../model/derivations'
+import { rowDrawsRequest, rowDrawsResult, rowHasRequestRow } from '../model/derivations'
 import { isToolFailureResult, isUnparsedToolResult } from '../model/toolCall'
 import { toolCallStatusOutcome } from '../model/toolCallStatus'
 import { isDisplayHeld } from '../renderContext'
@@ -24,7 +22,7 @@ import { extraImages, resultImages } from './rowImages'
 import { toolHintIcon } from './toolIconHints'
 import { ToolMetadata } from './ToolMetadata'
 import { ToolOutputFilePaths } from './ToolOutputFilePaths'
-import { createRowBodyContext, rowExpandKey } from './toolRowState'
+import { createToolRowState } from './toolRowState'
 import { toolCallDisplayName } from './tools/header'
 import { dispatchParts } from './tools/index'
 import { toolCallMeta } from './tools/meta'
@@ -46,9 +44,14 @@ export function ToolMessage(props: { row: ToolCallRow, header?: ToolCall | undef
   const call = createMemo(() => props.row.call)
   const drawsRequest = () => rowDrawsRequest(props.row)
   const drawsResult = () => rowDrawsResult(props.row)
-  // Dispatch supplies the correlated renderer and call to each hook.
-  // This component requires no assertion to pair them again.
-  const parts = createMemo((): ToolCallDispatch<ToolKind> => dispatchParts(call()))
+  const [summaryOverflows, setSummaryOverflows] = createSignal(false)
+  const [titleOverflows, setTitleOverflows] = createSignal(false)
+  const { parts, expanded, setExpanded, bodyContext, view } = createToolRowState({
+    row: () => props.row,
+    context: () => props.context,
+    drawsResult,
+    onSummaryOverflow: setSummaryOverflows,
+  })
   // The call the header states. A result row heads itself with its own call, which is
   // already the newest. A request row heads itself with the newest call of its span.
   const headerParts = createMemo((): ToolCallDispatch<ToolKind> => {
@@ -63,34 +66,15 @@ export function ToolMessage(props: { row: ToolCallRow, header?: ToolCall | undef
       ? result
       : undefined
   })
-  const expandKey = untrack(() => rowExpandKey(drawsResult(), parts()))
-  const [expanded, setExpanded] = useSharedExpandedState(() => props.context, expandKey)
-  const [summaryOverflows, setSummaryOverflows] = createSignal(false)
-  const [titleOverflows, setTitleOverflows] = createSignal(false)
-
-  const bodyContext = createRowBodyContext(() => props.context, expanded, value => setExpanded(value))
-
-  // Solid compiles `view={view()}` to a getter.
-  // A plain function allocates a new view for each child property read.
-  // The new identity prevents the children from reusing the previous value.
-  // A memo preserves the view until its inputs change.
-  const view = createMemo((): ToolRowView => ({
-    // Preserve the complete row position and its role constraints.
-    // A field-by-field reconstruction can admit an invalid sibling.
-    ...toolRowPosition(props.row),
-    context: bodyContext(),
-    expanded,
-    setExpanded: value => setExpanded(value),
-    // The result body draws first, so its images start at index zero.
-    // imagesForRow uses the same order. An image tab uses that list's index.
-    imageIndexOffset: 0,
-    onSummaryOverflow: setSummaryOverflows,
-  }))
   const meta = createMemo(() => toolCallMeta(props.row))
   // Expand opens whatever the row clips: a body, a summary, or a header title.
   const expandable = () => meta().collapsible || summaryOverflows() || titleOverflows()
-  // The outer toolbar knows the meta alone, so it learns here what the header clips.
-  createEffect(() => props.context?.onHeaderClipsChange?.(summaryOverflows() || titleOverflows()))
+  // The outer toolbar and the context menu offer Expand exactly when this row does: only
+  // the drawn row knows what its header clips.
+  createEffect(() => props.context?.onExpandableChange?.(expandable()))
+  // A row can stop drawing this tool row in place, as when an outcome note replaces its
+  // body. Nothing then reads the expand state, so the report goes with the tool row.
+  onCleanup(() => props.context?.onExpandableChange?.(false))
   const { copied, copy } = useCopyButton(() => meta().copyableContent() ?? undefined)
   // Quote and Copy use the same getter for this row's text.
   // context.onReply adds the blockquote syntax, so this handler supplies bare text.
@@ -108,7 +92,6 @@ export function ToolMessage(props: { row: ToolCallRow, header?: ToolCall | undef
         reply(text)
     }
   }
-  const truncated = () => call().truncated === true
   const statusOutcome = () => toolCallStatusOutcome(call().status)
   // Use the call's title for image tabs when it supplies one.
   // Otherwise, use the display name when the renderer puts that name first.
@@ -188,7 +171,11 @@ export function ToolMessage(props: { row: ToolCallRow, header?: ToolCall | undef
       showHeaderActions={!props.context?.hasOuterToolbar}
       alwaysVisible
     >
-      <Show when={drawsRequest() && call().metadata}>{items => <ToolMetadata items={items()} />}</Show>
+      {/* A result row beside its request row draws no header, and its summary rides on the
+          header. A result row that restates its request draws the summary in its body, under
+          the request row's header (see ToolSpanRowPosition.restatesRequest). */}
+      <Show when={props.row.role === 'result' && props.row.restatesRequest === true && rowHasRequestRow(props.row)}>{summaryProps().summary}</Show>
+      <Show when={drawsRequest() && call().metadata}>{items => <ToolMetadata items={items()} workingDir={props.context?.workingDir} homeDir={props.context?.homeDir} />}</Show>
       <Show when={drawsRequest()}>{parts().renderer.request?.(parts().parsed, view())}</Show>
       {/* A row of no span is its whole call: no pending row follows it and no result row
           replaces it, so it draws the preview of its call itself. */}
@@ -201,7 +188,7 @@ export function ToolMessage(props: { row: ToolCallRow, header?: ToolCall | undef
           An image tab could then show the wrong image after reload.
           This shared condition keeps rendering and imagesForRow consistent. */}
       <Show when={drawsResult()}>
-        <Show when={call().resultMetadata}>{items => <ToolMetadata items={items()} />}</Show>
+        <Show when={call().resultMetadata}>{items => <ToolMetadata items={items()} workingDir={props.context?.workingDir} homeDir={props.context?.homeDir} />}</Show>
         <ToolOutputFilePaths paths={call().outputFilePaths} />
         <Show when={parts().resolved === undefined}>{parts().renderer.withoutTypedResult?.(parts().parsed, view(), call().result !== undefined)}</Show>
         <Switch>
@@ -210,7 +197,7 @@ export function ToolMessage(props: { row: ToolCallRow, header?: ToolCall | undef
               The correlated renderer and call require no assertion here. */}
           <Match when={parts().resolved}>{c => parts().renderer.result(c(), view())}</Match>
         </Switch>
-        <Show when={truncated()}><div class={toolInputSummary}>{TRUNCATION_NOTICE}</div></Show>
+        <Show when={call().truncated === true}><div class={toolInputSummary}>{TRUNCATION_NOTICE}</div></Show>
         {/* Extra content follows the result body, including its image indices.
             An offset of zero gives two images the same index.
             An image tab can then show the wrong image. */}

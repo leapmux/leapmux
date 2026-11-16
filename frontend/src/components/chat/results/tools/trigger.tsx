@@ -56,7 +56,6 @@ export const triggerRenderer = proseRenderer<'trigger'>({
   // The result row then draws the answer instead, so one span draws the line exactly
   // once -- or the line again when the call ended with no answer.
   pending: triggerPreview,
-  hasPending: call => !!call.request.schedule,
   withoutTypedResult: previewWithoutResult(triggerPreview),
 })
 

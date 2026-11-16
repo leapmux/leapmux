@@ -11,6 +11,7 @@ import type { ToolCallMeta } from './results/tools/meta'
 import type { RowExtractionContext } from './rowModelCache'
 import type { PreparedMessage } from './rowPreparation'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
+import type { MessageSpanIdentity } from '~/lib/messageSpan'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import Check from 'lucide-solid/icons/check'
 import Copy from 'lucide-solid/icons/copy'
@@ -38,14 +39,17 @@ import { createMessageRenderSources } from './messageContextResolver'
 import { bubbleRunsToRightEdge, isMirroredMessageRow, messageBubbleClass, messageRowClass } from './messageRowLayout'
 import * as chatStyles from './messageStyles.css'
 import { expandedUiKeyFor, MESSAGE_UI_KEY, messageUiDefault } from './messageUiKeys'
+import { rowDrawsResult } from './model/derivations'
 import { imageActionsFrom, reviewActionsFrom, subagentsFrom } from './renderContext'
 import { useRequestReadiness } from './renderReadiness'
 import { quotableTextForRow } from './results/rowText'
-import { ToolPendingMessage } from './results/ToolPendingMessage'
+import { pendingRowRequest, ToolPendingMessage } from './results/ToolPendingMessage'
+import { rowExpandKey } from './results/toolRowState'
+import { dispatchParts } from './results/tools/index'
 import { toolCallMeta } from './results/tools/meta'
 import { extractedRow } from './rowExtraction'
-import { cachedChatRow } from './rowModelCache'
-import { prepareChatRow, prepareMessage } from './rowPreparation'
+import { cachedChatRow, cachedSpanHeaderCall } from './rowModelCache'
+import { prepareMessage } from './rowPreparation'
 import { renderExtractedRow } from './rowRenderers'
 import { JsonHighlightHtml } from './syntaxHighlight'
 import { ToolHeaderActions } from './ToolHeaderActions'
@@ -220,6 +224,18 @@ export interface MessageBubbleHost {
    * pane changes its height. A row whose host states none reads its images at once.
    */
   rowNearView?: (() => boolean) | undefined
+  /**
+   * Whether the pending row of this message's tool call is in the list (see
+   * chatPendingRows): the row that draws what a running call asks. A host that lists no
+   * pending row states none.
+   */
+  pendingRowOpen?: (() => boolean) | undefined
+  /**
+   * Whether the list draws the REQUEST row of a span (see listedRequestSpanKeys). A row
+   * of the span reads it as `visibleRows.request`. A host that lists no rows states none,
+   * and the row then draws its request side itself.
+   */
+  requestRowListed?: ((identity: MessageSpanIdentity) => boolean) | undefined
 }
 
 interface MessageBubbleProps {
@@ -260,11 +276,6 @@ interface MessageBubbleProps {
 
 export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const prefs = usePreferences()
-  const toolResultExpanded = () =>
-    props.host?.getMessageUiState?.(MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)
-    ?? messageUiDefault(MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)
-  const toggleToolResultExpanded = () =>
-    props.host?.setMessageUiState?.(MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED, !toolResultExpanded())
   let contentRef: HTMLDivElement | undefined
 
   // ChatView's own preparation when it supplied one, so the row the virtual list
@@ -281,7 +292,12 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const parsed = () => prepared().original
   const category = () => prepared().category
   const displayParsed = () => prepared().resolved
-  const sources = createMessageRenderSources(() => props.host?.messages, () => prepared().message, displayParsed)
+  const sources = createMessageRenderSources(
+    () => props.host?.messages,
+    () => prepared().message,
+    displayParsed,
+    identity => props.host?.requestRowListed?.(identity) ?? false,
+  )
 
   // Full raw JSON for the Raw JSON display. Plain function (not createMemo)
   // so the JSON.parse + JSON.stringify only run when a consumer actually
@@ -386,39 +402,41 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       : null
   })
 
+  // The expand state that the row's own Expand control reads (see rowExpandKey): the
+  // request row of an agent launch reads the key of its prompt, every other row the key
+  // of its result. The outer toolbar and the context menu toggle the same state.
+  const toolExpandKey = createMemo((): MessageUiKey => {
+    const current = toolRow()
+    return current === null
+      ? MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED
+      : rowExpandKey(rowDrawsResult(current), dispatchParts(current.call))
+  })
+  const toolResultExpanded = () =>
+    props.host?.getMessageUiState?.(toolExpandKey()) ?? messageUiDefault(toolExpandKey())
+  const toggleToolResultExpanded = () =>
+    props.host?.setMessageUiState?.(toolExpandKey(), !toolResultExpanded())
+
   // The newest call of this row's span that the browser holds, which a REQUEST row heads
   // itself with: the call the result row draws, read through the same extraction. Only
-  // the one-line header reads it, and that header cannot change the height of the row
-  // (see ToolMessage). The row's own body never reads it. The result row's classification
-  // takes no child-transcript context: that context decides only how a user message
-  // reads, never how a tool result does.
+  // the one-line header reads it, and while the row is collapsed that header cannot
+  // change the height of the row (see ToolMessage). The row's own body never reads it. The
+  // pending row draws no header, so it reads none.
   //
   // The resolver hands the same object for the same revision of a side, so these memos
-  // pass on a change of the side alone, and the header is extracted once for each revision
-  // rather than once for each message of the agent.
+  // pass on a change of the side alone, and the shared cache extracts the header once for
+  // each revision rather than once for each copy of the row (see cachedSpanHeaderCall).
   const spanResult = createMemo(() => sources.result())
   const spanRequest = createMemo(() => sources.request())
   const toolHeader = createMemo((): ToolCall | undefined => {
     const current = toolRow()
-    if (current === null || current.role === 'result')
+    if (props.pending || current === null || current.role === 'result')
       return undefined
     const result = spanResult()
     if (result === undefined || result.message.id === prepared().message.id)
       return undefined
-    const header = extractedRow(prepareChatRow(result.message, {
-      original: result.original,
-      resolved: result.resolved,
-      span: {
-        // The span's request: the row's own message unless it is a later row of the
-        // span, such as an update row.
-        request: spanRequest() ?? displayParsed(),
-        role: 'result',
-        visibleRows: { request: true },
-      },
-    }).extraction)
-    return header?.kind === 'tool' && header.role === 'result'
-      ? header.call
-      : undefined
+    // The span's request: the row's own message unless it is a later row of the span,
+    // such as an update row.
+    return cachedSpanHeaderCall(result, spanRequest() ?? displayParsed())
   })
 
   // Toolbar metadata for the current message — collapsibility, diff presence, the
@@ -448,12 +466,24 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     return current?.kind !== 'tool' || current.role !== 'result'
   }
 
-  // Whether the header of the tool row clips words that only Expand shows. The row
-  // reports it (ToolResultRenderContext.onHeaderClipsChange), because only the drawn
-  // header knows.
-  const [toolHeaderClips, setToolHeaderClips] = createSignal(false)
-  const isCollapsibleToolResult = () => (toolMeta()?.collapsible ?? false) || toolHeaderClips()
-  const hasToolResultDiff = () => toolMeta()?.hasDiff ?? false
+  // Whether the tool row offers Expand. The row reports it
+  // (ToolResultRenderContext.onExpandableChange), because only the drawn row knows what
+  // its header clips. A result row whose outcome note replaces its body draws no tool
+  // row and reports nothing: nothing reads its expand state, so it offers no Expand.
+  const [toolExpandable, setToolExpandable] = createSignal(false)
+  // A row that draws no result offers the diff toggle of the changes that its call asks
+  // for only while a row of the call draws them: the pending row below it, or its own
+  // body for a call with no span (see ToolResultRenderContext.loneCall). Once the call
+  // ends, no row of the call draws them, and the toggle would steer nothing.
+  const hasToolResultDiff = (): boolean => {
+    if (!(toolMeta()?.hasDiff ?? false))
+      return false
+    const current = toolRow()
+    return current === null
+      || rowDrawsResult(current)
+      || props.message.spanId === ''
+      || props.host?.pendingRowOpen?.() === true
+  }
   const hasCopyableResult = () => toolMeta()?.hasCopyable ?? false
 
   const { copied: resultCopied, copy: copyResultContent } = useCopyButton(() => props.premeasureMode
@@ -538,7 +568,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // the getters they read, so changes to one field don't cascade to siblings.
   const renderContext: RowRenderContext = {
     get hasOuterToolbar() { return !hasInternalActions() },
-    onHeaderClipsChange: clips => setToolHeaderClips(clips),
+    onExpandableChange: expandable => setToolExpandable(expandable),
     get loneCall() { return props.message.spanId === '' },
     get workingDir() { return props.workingDir },
     get homeDir() { return props.homeDir },
@@ -640,12 +670,17 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const renderContent = () =>
     renderExtractedRow(extraction(), renderContext, displayParsed().messageMetadata)
 
-  // The pending row of this message's tool call: only a request or update row runs a
-  // call, so any other row draws nothing here.
+  // The pending row of this message's tool call: only a request row has one
+  // (pendingRowRequest), so any other row draws nothing here. A result message that is
+  // this message itself does not end the call (see chatPendingRows).
+  const resultHeld = (): boolean => {
+    const result = spanResult()
+    return result !== undefined && result.message.id !== props.message.id
+  }
   const renderPending = () => {
-    const current = toolRow()
-    return current !== null && current.role !== 'result'
-      ? <ToolPendingMessage row={current} context={renderContext} progress={toolProgress} />
+    const current = pendingRowRequest(toolRow())
+    return current !== null
+      ? <ToolPendingMessage row={current} context={renderContext} resultHeld={resultHeld} />
       : null
   }
 
@@ -832,7 +867,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       jsonCopied: jsonCopied(),
       hasDiff: hasToolResultDiff(),
       diffView: diffView(),
-      ...(isCollapsibleToolResult()
+      ...(toolExpandable()
         ? { onToggleExpand: toggleToolResultExpanded }
         : {}),
       ...(expandLabel !== undefined
@@ -855,9 +890,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     // is `visibility: hidden` and `pointer-events: none`, so it can never receive
     // the gesture -- but arming one per copy would still churn listeners on every
     // fling for nothing.
-    // The pending row carries no actions of its own: its request row above it holds the
-    // toolbar of the call.
-    if (!contextMenu || props.premeasureMode || props.pending)
+    // The pending row draws no toolbar, but a right-click or a long-press on it opens the
+    // actions of its request row: it draws the same message and the same call.
+    if (!contextMenu || props.premeasureMode)
       return
     const detach = attachContextMenuGesture(el, {
       // Message bodies are prose. Keep them selectable, and let a right-click on a

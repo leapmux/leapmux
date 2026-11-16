@@ -58,6 +58,7 @@ type Agent struct {
 	settings         lettaSettings
 	catalog          lettaCatalog
 	tools            map[string]*lettaTool
+	toolStarts       uint64
 	turnToolCallIDs  map[string]struct{}
 	children         map[string]*lettaChild
 	generation       providerkit.GenerationBuffer
@@ -111,12 +112,43 @@ type lettaModelVariant struct {
 
 // lettaTool is one open tool call.
 type lettaTool struct {
-	id             string
-	name           string
-	spanID         string
-	runID          string
-	subagentID     string
-	executionEnded bool
+	id         string
+	name       string
+	spanID     string
+	runID      string
+	subagentID string
+	// row is the stored row that opened the call. A call that its turn outlives
+	// stores it again as its closing row (see closeToolScope).
+	row []byte
+	// order is the place of the call among the calls that this process started,
+	// so the closing rows keep the order in which the calls opened.
+	order uint64
+	// endStatus is the status that `client_tool_end` stated for the call, and is
+	// empty while the call runs.
+	endStatus string
+}
+
+// ended reports whether `client_tool_end` ended the execution of the call.
+func (t *lettaTool) ended() bool {
+	return t.endStatus != ""
+}
+
+// closingCompletion is the completion that the closing row of an open call
+// states, when its scope ends with scopeCompletion. The status of
+// `client_tool_end` wins, because it describes this call. A call that never
+// ended did not finish, so it ended in error only when its scope did, and was
+// interrupted otherwise: a turn that ends normally can still outlive a call.
+func (t *lettaTool) closingCompletion(scopeCompletion agent.MessageCompletion) agent.MessageCompletion {
+	switch {
+	case t.endStatus == contracts.LettaToolStatusError:
+		return agent.MessageCompletionError
+	case t.endStatus == contracts.LettaToolStatusSuccess:
+		return agent.MessageCompletionComplete
+	case scopeCompletion == agent.MessageCompletionError:
+		return agent.MessageCompletionError
+	default:
+		return agent.MessageCompletionInterrupted
+	}
 }
 
 // lettaControlKind is the `type` of a published control request. It tells a

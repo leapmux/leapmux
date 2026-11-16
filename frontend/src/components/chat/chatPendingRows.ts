@@ -6,6 +6,7 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageSpanIdentity, ToolSpanRole } from '~/lib/messageSpan'
 import { createMemo } from 'solid-js'
 import { messageSpanIdentity } from '~/lib/messageSpan'
+import { shallowEqualSets } from '~/lib/shallowEqual'
 import { sameChatRowItems } from './chatRowItem'
 
 // ---------------------------------------------------------------------------
@@ -54,6 +55,16 @@ export function pendingRowId(messageId: string): string {
 /** Whether `rowId` is the id of a pending row (see pendingRowId). */
 export function isPendingRowId(rowId: string): boolean {
   return rowId.endsWith(PENDING_ROW_SUFFIX)
+}
+
+/**
+ * The id of the message that the row `rowId` draws: a pending row draws the message of
+ * its request row, and reads that message's state, such as its expand state.
+ */
+export function messageIdOfRow(rowId: string): string {
+  return isPendingRowId(rowId)
+    ? rowId.slice(0, -PENDING_ROW_SUFFIX.length)
+    : rowId
 }
 
 /**
@@ -125,6 +136,8 @@ export interface PendingRows {
   entries: Accessor<readonly ClassifiedEntry[]>
   /** The items of those rows, index-aligned with `entries`. */
   items: Accessor<ChatRowItem[]>
+  /** Whether the call that the message with `messageId` opens has a pending row in the list. */
+  isOpen: (messageId: string) => boolean
 }
 
 /**
@@ -174,17 +187,23 @@ export function createPendingRows(deps: PendingRowsDeps): PendingRows {
     }
     const ids = new Set<string>()
     for (const entry of entries) {
-      if (entry.category.kind !== 'tool_use' || entry.message.spanId === '' || deps.role(entry) !== 'request')
+      if (entry.category.kind !== 'tool_use' || entry.message.spanId === '')
         continue
+      const id = entry.message.id
       const result = deps.resultOf(messageSpanIdentity(entry.message))
-      const held = result !== undefined && result.id !== entry.message.id
-      if (!held || (open.has(entry.message.id) && resultRowWaits(result.id)))
-        ids.add(entry.message.id)
+      const held = result !== undefined && result.id !== id
+      // A call whose result the browser holds keeps only a pending row that is already
+      // open. Almost every call of the window has ended, so the cheaper test comes first,
+      // and the span role is read only for a row that can have a pending row.
+      if (held && !open.has(id))
+        continue
+      if (deps.role(entry) !== 'request')
+        continue
+      if (!held || resultRowWaits(result.id))
+        ids.add(id)
     }
     return ids
-  }, new Set<string>(), {
-    equals: (a, b) => a.size === b.size && [...a].every(id => b.has(id)),
-  })
+  }, new Set<string>(), { equals: shallowEqualSets })
 
   const listed = createMemo((): { entries: readonly ClassifiedEntry[], items: ChatRowItem[] } => {
     const entries = deps.entries()
@@ -209,6 +228,14 @@ export function createPendingRows(deps: PendingRowsDeps): PendingRows {
       const pendingEntry = pendingEntryOf(entry)
       listedItems.push({
         id: pendingEntry.rowId,
+        // The sequence of the request row, which the pending row continues. Every
+        // consumer of a row's sequence reads the list with its pending rows: the scroll
+        // rail, which splits the one unit between the two rows, and the scroll anchor,
+        // which recovers by the nearest sequence once the pending row leaves. A jump to
+        // the sequence still lands on the request row, which comes first.
+        ...(item.seq !== undefined
+          ? { seq: item.seq }
+          : {}),
         hasSpanLines: pendingEntry.parsedSpanLines.length > 0,
         // The pending row draws the request's preview: its own key, so it never answers
         // with the height of the request row.
@@ -216,8 +243,6 @@ export function createPendingRows(deps: PendingRowsDeps): PendingRows {
         ...(item.kind !== undefined
           ? { kind: item.kind }
           : {}),
-        // No sequence: the pending row draws no message of its own, so a jump to the
-        // request's sequence lands on the request row.
         continuesPrevious: true,
       })
       listedEntries.push(pendingEntry)
@@ -228,5 +253,6 @@ export function createPendingRows(deps: PendingRowsDeps): PendingRows {
   return {
     entries: () => listed().entries,
     items: createMemo(() => listed().items, [], { equals: sameChatRowItems }),
+    isOpen: messageId => pendingIds().has(messageId),
   }
 }

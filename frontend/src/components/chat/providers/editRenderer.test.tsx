@@ -6,7 +6,7 @@ import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import './claude/plugin'
 import '~/components/chat/providers'
 
-const { renderMessageContent, renderPendingMessageContent } = await import('../messageContentRenderer')
+const { renderMessageContent, renderPendingMessageContent } = await import('~/test-support/messageContentRenderer')
 
 /** Build a Claude-style Edit tool_use message. */
 function makeEditToolUse(input: Record<string, unknown>) {

@@ -75,6 +75,9 @@ function storedFunctionToolRow(payload: Record<string, unknown>, span: RowExtrac
     ? storedFunctionOutputText(payload.output)
     : ''
   const isError = isResult && storedFunctionFailed(payload)
+  // A stored `function_call` that LeapMux stored with a completion is the closing copy
+  // of the request, and the final row of its span (see codebuddySpanRole).
+  const rowFinal = isResult || retainedRowIsFinal(completion)
   const call = codebuddyToolCall({
     callId,
     toolName,
@@ -85,13 +88,11 @@ function storedFunctionToolRow(payload: Record<string, unknown>, span: RowExtrac
       frameStatus: isResult ? 'completed' : 'in_progress',
       providerOutcome: isError ? 'failed' : null,
       retainedOutcome: retainedOutcome(completion),
-      rowFinal: isResult || retainedRowIsFinal(completion),
+      rowFinal,
       resultFrameLanded: isResult,
     },
   })
-  // A stored `function_call` that LeapMux stored with a completion is the closing copy
-  // of the request, and the final row of its span (see codebuddySpanRole).
-  return toolCallRow(call, isResult || retainedRowIsFinal(completion)
+  return toolCallRow(call, rowFinal
     ? 'result'
     : 'request', span.visibleRows)
 }

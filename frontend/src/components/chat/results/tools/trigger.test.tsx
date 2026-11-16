@@ -66,7 +66,6 @@ describe('trigger renderer', () => {
         request: { action: 'create', name: 'nightly', schedule: '0 3 * * *' },
       })
       expect(pendingText(call)).toContain('0 3 * * *')
-      expect(triggerRenderer.hasPending?.(parsedCall(call), false)).toBe(true)
     })
 
     // Once the answer lands the endpoint restates the schedule in its own words, on the
@@ -89,7 +88,7 @@ describe('trigger renderer', () => {
         request: { action: 'list' },
       })
       expect(triggerRenderer.pending?.(parsedCall(call), rowView())).toBeNull()
-      expect(triggerRenderer.hasPending?.(parsedCall(call), false)).toBe(false)
+      expect(pendingText(call)).toBe('')
     })
 
     // The pending row leaves when the result row joins the list. A call that ended with no

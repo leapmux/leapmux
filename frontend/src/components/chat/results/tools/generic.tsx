@@ -100,11 +100,6 @@ export function genericPendingBody(call: RequestSideCall<GenericToolKind>, view:
   return <Show when={text}>{args => <PendingArguments text={args()} view={view} />}</Show>
 }
 
-/** Whether a generic call states arguments to preview while it runs. */
-export function genericHasPending(call: RequestSideCall<GenericToolKind>): boolean {
-  return genericArgsText(call.request) !== ''
-}
-
 /** The result body every generic kind shares, headed by the tab name its images open under. */
 export function genericResultBody(call: ResolvedCall<GenericToolKind>, view: ToolRowView, imageTabName: string): JSX.Element | null {
   return (
@@ -154,7 +149,6 @@ export function genericRenderer(options: { icon: LucideIcon, label: string }): T
         : options.label), call.request.args)
     },
     pending: genericPendingBody,
-    hasPending: genericHasPending,
     withoutTypedResult: previewWithoutResult(genericPendingBody),
     result(call: ResolvedCall<PlainGenericKind>, view: ToolRowView): JSX.Element | null {
       return genericResultBody(call, view, plainImageTabName(call))

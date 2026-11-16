@@ -45,17 +45,6 @@ import { ACP_SESSION_UPDATE } from '../updateVocabulary'
 // misspelled or renamed member stayed a branch that simply never fired.
 const FILE_TARGET_KINDS = new Set<ToolKind>(['read', 'edit', 'write', 'delete'])
 
-/**
- * The facts of one stored row that its provider payload does not supply.
- *
- * A row builds its call from its own frame, and a finished row also from the span's
- * request (see `acpExtractRow`). No row reads its result, so nothing here states one.
- */
-export interface ACPToolRow {
-  /** The native session stored on this row. Provider payloads do not supply this value. */
-  agentSessionId?: string
-}
-
 /** Everything the shared ACP build knows before a provider adapter runs. */
 export interface ACPToolFacts {
   /** The native session stored on this row, passed to the provider adapter. */
@@ -761,9 +750,14 @@ function acpSpecKind(facts: ACPToolFacts): ToolKind {
 /** The provider's own reading. `base()` = {@link acpBaseSpec} over the same facts. */
 export type ACPToolCallAdapter = (facts: ACPToolFacts, base: () => ToolCallSpec) => ToolCallSpec
 
-/** One call joined from the facts, the shared specification, and the provider's adapter. */
-export function acpToolCall(rawTool: Record<string, unknown>, adapter: ACPToolCallAdapter | undefined, supplemental: unknown, completion?: MessageCompletion, row?: ACPToolRow): ToolCall {
-  const facts = acpToolFacts(rawTool, supplemental, completion, row)
+/**
+ * One call joined from the facts, the shared specification, and the provider's adapter.
+ *
+ * `agentSessionId` is the native session stored on the row, which its provider payload
+ * does not supply.
+ */
+export function acpToolCall(rawTool: Record<string, unknown>, adapter: ACPToolCallAdapter | undefined, supplemental: unknown, completion?: MessageCompletion, agentSessionId?: string): ToolCall {
+  const facts = acpToolFacts(rawTool, supplemental, completion, agentSessionId)
   const base = () => acpBaseSpec(facts)
   const spec = adapter
     ? adapter(facts, base)
@@ -822,7 +816,7 @@ export function acpToolCall(rawTool: Record<string, unknown>, adapter: ACPToolCa
 }
 
 /** Collect everything the shared build and the adapters read, in one pass. */
-export function acpToolFacts(rawTool: Record<string, unknown>, supplemental?: unknown, completion?: MessageCompletion, place?: ACPToolRow): ACPToolFacts {
+export function acpToolFacts(rawTool: Record<string, unknown>, supplemental?: unknown, completion?: MessageCompletion, agentSessionId?: string): ACPToolFacts {
   const extra = acpToolSupplement(rawTool, supplemental)
   // The retained outcome stays a FACT of its own: the shared derivation owns the
   // precedence between it and the frame's own word, so nothing here rewrites the
@@ -877,9 +871,9 @@ export function acpToolFacts(rawTool: Record<string, unknown>, supplemental?: un
   return {
     tool,
     extra,
-    ...(place?.agentSessionId === undefined
+    ...(agentSessionId === undefined
       ? {}
-      : { agentSessionId: place.agentSessionId }),
+      : { agentSessionId }),
     wireKind,
     args,
     ...(argsText !== undefined

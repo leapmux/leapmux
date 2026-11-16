@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression, MessageSource } from '~/generated/proto/leapmux/v1/agent_pb'
 import { createChatStore } from '~/stores/chat.store'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
+import { createListedRequestRows } from '~/test-support/messageContext'
 import { createMessageContextResolver, createMessageRenderSources } from './messageContextResolver'
 import './providers/codex/plugin'
 import './providers/opencode/plugin'
@@ -99,6 +100,8 @@ function fixture(initial: AgentChatMessage[] = [], sources: FixtureSources = {})
     })
     return {
       resolver,
+      // The request rows the list draws over the window, as ChatView derives them.
+      visibleRows: createListedRequestRows(resolver, messages),
       fetchSpan,
       fetchMessage,
       dispose,
@@ -359,6 +362,16 @@ describe('message context resolver', () => {
     expect(resolver.result({ spanId: 'span', agentSessionId: '' })?.message.id).toBe('result')
   })
 
+  // No row reads its result, so a span whose request the browser holds has nothing to
+  // fetch, also while its result has not arrived.
+  it('fetches nothing for a span whose request the browser holds', async () => {
+    const request = toolMessage('request', 1n, 'request')
+    const { resolver, fetchSpan } = fixture([request])
+    await resolver.loadSpan({ spanId: 'span', agentSessionId: '' })
+    expect(fetchSpan).not.toHaveBeenCalled()
+    expect(resolver.result({ spanId: 'span', agentSessionId: '' })).toBeUndefined()
+  })
+
   it('loads a missing request and pairs messages regardless of response order', async () => {
     const request = toolMessage('request', 1n, 'request')
     const result = toolMessage('result', 2n, 'result')
@@ -377,11 +390,11 @@ describe('message context resolver', () => {
   it('keeps fetched sibling data separate from visible sibling rows', async () => {
     const request = toolMessage('request', 1n, 'request')
     const result = toolMessage('result', 2n, 'result')
-    const { resolver, fetchSpan } = fixture([result])
+    const { resolver, visibleRows, fetchSpan } = fixture([result])
     fetchSpan.mockResolvedValue([request, result])
     await resolver.loadSpan({ spanId: 'span', agentSessionId: '' })
     expect(resolver.request({ spanId: 'span', agentSessionId: '' })?.message.id).toBe('request')
-    expect(resolver.visibleRows({ spanId: 'span', agentSessionId: '' })).toEqual({ request: false })
+    expect(visibleRows({ spanId: 'span', agentSessionId: '' })).toEqual({ request: false })
     expect(resolver.role(result)).toBe('result')
   })
 
@@ -710,9 +723,9 @@ describe('visibleRows of a hidden request message', () => {
   }, true)
 
   it('counts no request row for a request message that draws none', () => {
-    const { resolver } = fixture([start, done])
+    const { resolver, visibleRows } = fixture([start, done])
     expect(resolver.role(start)).toBe('request')
-    expect(resolver.visibleRows(identity)).toEqual({ request: false })
+    expect(visibleRows(identity)).toEqual({ request: false })
   })
 
   it('counts the request row of a request message that draws one', () => {
@@ -720,9 +733,9 @@ describe('visibleRows of a hidden request message', () => {
       query: 'codex',
       action: { type: 'search', query: 'codex' },
     }, false)
-    const { resolver } = fixture([shown, done])
+    const { resolver, visibleRows } = fixture([shown, done])
     expect(resolver.role(shown)).toBe('request')
-    expect(resolver.visibleRows(identity)).toEqual({ request: true })
+    expect(visibleRows(identity)).toEqual({ request: true })
   })
 })
 
@@ -731,26 +744,26 @@ describe('explicit no-side message context', () => {
 
   it('keeps an isolated no-side record out of pair lookups and visible rows', () => {
     const progress = noSideMessage('window', 1n)
-    const { resolver } = fixture([progress])
+    const { resolver, visibleRows } = fixture([progress])
     expect(resolver.role(progress)).toBe('none')
     expect(resolver.request(identity)).toBeUndefined()
     expect(resolver.result(identity)).toBeUndefined()
-    expect(resolver.visibleRows(identity)).toEqual({ request: false })
+    expect(visibleRows(identity)).toEqual({ request: false })
   })
 
   it('keeps hidden no-side progress beside the genuine request', () => {
     const request = toolMessage('request', 1n, 'request')
     const progress = noSideMessage('window', 2n)
-    const { resolver } = fixture([request, progress])
+    const { resolver, visibleRows } = fixture([request, progress])
     expect(resolver.role(progress)).toBe('none')
     expect(resolver.request(identity)?.message).toBe(request)
     expect(resolver.result(identity)).toBeUndefined()
-    expect(resolver.visibleRows(identity)).toEqual({ request: true })
+    expect(visibleRows(identity)).toEqual({ request: true })
   })
 
   it.each(['request', 'result'] as const)('refuses a stale %s slot that contains a no-side record', (side) => {
     const progress = noSideMessage('window', 2n)
-    const { resolver } = fixture([progress], {
+    const { resolver, visibleRows } = fixture([progress], {
       spanMessage: (_identity, requestedSide) => requestedSide === side
         ? progress
         : undefined,
@@ -758,26 +771,26 @@ describe('explicit no-side message context', () => {
     expect(resolver.role(progress)).toBe('none')
     expect(resolver.request(identity)).toBeUndefined()
     expect(resolver.result(identity)).toBeUndefined()
-    expect(resolver.visibleRows(identity)).toEqual({ request: false })
+    expect(visibleRows(identity)).toEqual({ request: false })
   })
 
   it('keeps fetched no-side records out of pair lookups', async () => {
     const progress = noSideMessage('window', 1n)
-    const { resolver, fetchSpan } = fixture()
+    const { resolver, visibleRows, fetchSpan } = fixture()
     fetchSpan.mockResolvedValueOnce([progress])
     const release = resolver.retainSpan(identity)
     await resolver.loadSpan(identity)
     expect(resolver.role(progress)).toBe('none')
     expect(resolver.request(identity)).toBeUndefined()
     expect(resolver.result(identity)).toBeUndefined()
-    expect(resolver.visibleRows(identity)).toEqual({ request: false })
+    expect(visibleRows(identity)).toEqual({ request: false })
     release()
   })
 
   it('keeps a genuine fetched result when a newer resident slot contains no-side progress', async () => {
     const result = toolMessage('result', 2n, 'result')
     const progress = noSideMessage('window', 3n)
-    const { resolver, fetchSpan } = fixture([progress], {
+    const { resolver, visibleRows, fetchSpan } = fixture([progress], {
       spanMessage: (_identity, side) => side === 'result'
         ? progress
         : undefined,
@@ -787,7 +800,7 @@ describe('explicit no-side message context', () => {
     await resolver.loadSpan(identity)
     expect(resolver.result(identity)?.message).toBe(result)
     expect(resolver.role(progress)).toBe('none')
-    expect(resolver.visibleRows(identity)).toEqual({ request: false })
+    expect(visibleRows(identity)).toEqual({ request: false })
     release()
   })
 
@@ -796,7 +809,7 @@ describe('explicit no-side message context', () => {
     const second = noSideMessage('second-window', 2n)
     const request = toolMessage('request', 3n, 'request')
     const result = toolMessage('result', 4n, 'result')
-    const { resolver, fetchSpan } = fixture([first, second], {
+    const { resolver, visibleRows, fetchSpan } = fixture([first, second], {
       spanMessage: (_identity, side) => side === 'request'
         ? first
         : second,
@@ -807,29 +820,29 @@ describe('explicit no-side message context', () => {
     expect(fetchSpan).toHaveBeenCalledTimes(1)
     expect(resolver.request(identity)?.message).toBe(request)
     expect(resolver.result(identity)?.message).toBe(result)
-    expect(resolver.visibleRows(identity)).toEqual({ request: false })
+    expect(visibleRows(identity)).toEqual({ request: false })
     release()
   })
 
   it.each(['request', 'result'] as const)('removes a %s side after a same-ID replacement becomes no-side', (side) => {
     const original = toolMessage('changing', 1n, side)
     const replacement = noSideMessage(original.id, original.seq)
-    const { resolver, replaceMessages } = fixture([original])
+    const { resolver, visibleRows, replaceMessages } = fixture([original])
     expect(resolver.role(original)).toBe(side)
     replaceMessages([replacement])
     expect(resolver.role(original)).toBe('none')
     expect(resolver.request(identity)).toBeUndefined()
     expect(resolver.result(identity)).toBeUndefined()
-    expect(resolver.visibleRows(identity)).toEqual({ request: false })
+    expect(visibleRows(identity)).toEqual({ request: false })
   })
 
   it('keeps a reused span separate when only one session has no-side progress', () => {
     const first = toolMessage('first-request', 1n, 'request', { agentSessionId: 'first-session' })
     const second = toolMessage('second-result', 2n, 'result', { agentSessionId: 'second-session' })
     const progress = noSideMessage('window', 3n, { agentSessionId: 'first-session' })
-    const { resolver } = fixture([first, second, progress])
-    expect(resolver.visibleRows({ spanId: 'span', agentSessionId: 'first-session' })).toEqual({ request: true })
-    expect(resolver.visibleRows({ spanId: 'span', agentSessionId: 'second-session' })).toEqual({ request: false })
+    const { resolver, visibleRows } = fixture([first, second, progress])
+    expect(visibleRows({ spanId: 'span', agentSessionId: 'first-session' })).toEqual({ request: true })
+    expect(visibleRows({ spanId: 'span', agentSessionId: 'second-session' })).toEqual({ request: false })
     expect(resolver.request({ spanId: 'span', agentSessionId: 'first-session' })?.message).toBe(first)
     expect(resolver.result({ spanId: 'span', agentSessionId: 'second-session' })?.message).toBe(second)
   })

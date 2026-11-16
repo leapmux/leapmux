@@ -1,16 +1,16 @@
-import type { MessageContentRenderContext } from '../../messageContentRenderer'
 import type { ToolCall } from '../../model/toolCall'
+import type { MessageContentRenderContext } from '~/test-support/messageContentRenderer'
 import { render } from '@solidjs/testing-library'
 import { describe, expect, it } from 'vitest'
 import { PreferencesProvider } from '~/context/PreferencesContext'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
+import { renderListedMessageContent, renderMessageContent } from '~/test-support/messageContentRenderer'
 import { testMessageContext } from '~/test-support/messageContext'
 import { makeMessage, rawContent } from '~/test-support/messageFactory'
 import { testMessageSources } from '~/test-support/messageRenderSources'
 import { providerToolCall, providerToolMeta } from '~/test-support/toolCallFixture'
 import { MessageBubble } from '../../MessageBubble'
-import { renderListedMessageContent, renderMessageContent } from '../../messageContentRenderer'
 import { toolBodyBorder, toolUseHeader } from '../../toolStyles.css'
 import { providerFor } from '../registry'
 import { input } from '../testUtils'
@@ -446,7 +446,7 @@ describe('acp tool rendering', () => {
         },
       },
     }
-    // The request row reads its own frame, which names no file. Its header states the
+    // The request row reads its own frame, which states no file. Its header states the
     // newest call of its span -- the result row's call, which recovered the file from the
     // result's metadata -- once the browser holds the result (see ToolMessage).
     const context = (toolHeader?: ToolCall) => ({

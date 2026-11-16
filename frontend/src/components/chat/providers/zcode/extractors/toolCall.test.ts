@@ -1402,14 +1402,15 @@ describe('registered ZCode rows of one span', () => {
     if (row?.kind !== 'tool')
       throw new Error('The ZCode scheduled frame drew no tool row.')
     expect(row.role).toBe('request')
+    expect(row).not.toHaveProperty('restatesRequest')
     expect(row.call.status).toBe('unstated')
     expect(row.call.result).toBeUndefined()
     expect(row.call.kind === 'read' && row.call.request.path).toBe('')
   })
 
   // The request row beside it states no file, and a result row beside its request row
-  // draws no request summary. So the result row draws the request side itself, as a
-  // result row with no request row beside it does.
+  // draws no request summary. So the result row restates the request side itself, while
+  // it still states that its request row is beside it, so it draws no second header.
   it('recovers the omitted input on the result row, which draws the request side', () => {
     const row = providerRow(AgentProvider.ZCODE, completed, {
       request: input(scheduled),
@@ -1419,7 +1420,7 @@ describe('registered ZCode rows of one span', () => {
     })
     if (row?.kind !== 'tool')
       throw new Error('The ZCode result frame drew no tool row.')
-    expect(row).toMatchObject({ role: 'result', hasRequestRow: false })
+    expect(row).toMatchObject({ role: 'result', hasRequestRow: true, restatesRequest: true })
     expect(row.call.status).toBe('completed')
     expect(row.call.kind === 'read' && row.call.request.path).toBe('/project/recovered.ts')
   })
@@ -1436,5 +1437,21 @@ describe('registered ZCode rows of one span', () => {
       supplementalContent: supplement,
     })
     expect(row).toMatchObject({ role: 'result', hasRequestRow: true })
+    expect(row).not.toHaveProperty('restatesRequest')
+  })
+
+  // With no request row beside it, the result row draws its own header and request side,
+  // so it restates nothing that another row draws.
+  it('restates nothing on a result row with no request row beside it', () => {
+    const row = providerRow(AgentProvider.ZCODE, completed, {
+      role: 'result',
+      spanType: ZCODE_TOOL.Read,
+      supplementalContent: supplement,
+    })
+    if (row?.kind !== 'tool')
+      throw new Error('The ZCode result frame drew no tool row.')
+    expect(row).toMatchObject({ role: 'result', hasRequestRow: false })
+    expect(row).not.toHaveProperty('restatesRequest')
+    expect(row.call.kind === 'read' && row.call.request.path).toBe('/project/recovered.ts')
   })
 })
