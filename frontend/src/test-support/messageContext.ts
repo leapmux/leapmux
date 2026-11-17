@@ -44,6 +44,9 @@ export function testMessageContext(overrides: Partial<MessageContextSources> = {
       subscribe: () => () => undefined,
       backgroundTask: () => undefined,
       progress: () => undefined,
+      // The window holds the whole transcript unless a test states another edge.
+      holdsOldest: () => true,
+      holdsNewest: () => true,
       ...overrides,
     })
   })
@@ -120,6 +123,22 @@ export function createMutableTranscript(archive: readonly AgentChatMessage[], op
     spans.reindex('test', messages())
     return spans
   })
+  /**
+   * Whether the window holds the oldest message of the archive, or its newest one with
+   * `newest`. An empty archive has nothing outside the window.
+   */
+  function windowHoldsArchiveEdge(newest: boolean): boolean {
+    version()
+    let edge: AgentChatMessage | undefined
+    for (const message of archiveById.values()) {
+      if (edge === undefined || (newest
+        ? message.seq > edge.seq
+        : message.seq < edge.seq)) {
+        edge = message
+      }
+    }
+    return edge === undefined || windowIds().includes(edge.id)
+  }
   function store(message: AgentChatMessage, broadcast: boolean): void {
     const known = archiveById.has(message.id)
     archiveById.set(message.id, message)
@@ -168,6 +187,10 @@ export function createMutableTranscript(archive: readonly AgentChatMessage[], op
       },
       backgroundTask: options.backgroundTask ?? (() => undefined),
       progress: options.progress ?? (() => undefined),
+      // The window holds an edge of the transcript when it holds the message of the
+      // archive at that edge.
+      holdsOldest: () => windowHoldsArchiveEdge(false),
+      holdsNewest: () => windowHoldsArchiveEdge(true),
     },
     windowIds: () => windowIds(),
     append: message => store(message, false),

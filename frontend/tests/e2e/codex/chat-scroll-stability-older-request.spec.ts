@@ -1,7 +1,6 @@
 import type { Page } from '@playwright/test'
 import type { RowBox } from '../helpers/chatScrollStability'
 import type { ManagedNativeScenarioContext } from '../helpers/nativeScenario'
-import type { ScriptedTurn } from '../helpers/scriptedTurn'
 import { expect } from '@playwright/test'
 import { MESSAGE_PAGE_LIMIT } from '../../../src/generated/contracts/chat-history'
 import { AgentProvider } from '../../../src/generated/proto/leapmux/v1/agent_pb'
@@ -18,10 +17,10 @@ import {
   waitForScrollRest,
   watchFrames,
 } from '../helpers/chatScrollStability'
+import { fillerTurn, fillRows } from '../helpers/historyFill'
 import { readAllAgentMessages } from '../helpers/nativeMessages'
 import { runNativeToolTurn } from '../helpers/nativeToolExecution'
 import { bashToolCall } from '../helpers/providerToolCalls'
-import { sendScriptedTurn } from '../helpers/scriptedTurn'
 import { PHONE_METRICS, touchFling } from '../helpers/touch'
 import { assistantBubbles, chatScrollContainer, chatScrollTop, waitForAgentStarted } from '../helpers/ui'
 import { listAgentsViaAPI } from '../helpers/workerTabs'
@@ -75,25 +74,6 @@ interface CallRows {
   result: bigint
 }
 
-/** A short turn whose prompt and answer state its number. A turn with reasoning stores one row more in Codex. */
-function fillerTurn(turn: number, reasoning: boolean): ScriptedTurn {
-  return {
-    prompt: `Filler ${turn}: reply with its number.`,
-    answer: `Filler answer ${turn}.`,
-    entry: 'insert',
-    ...(reasoning
-      ? { reasoning: `Thinking about filler ${turn}.` }
-      : {}),
-  }
-}
-
-/** The greatest common divisor of two positive integers. */
-function greatestCommonDivisor(a: number, b: number): number {
-  return b === 0
-    ? a
-    : greatestCommonDivisor(b, a % b)
-}
-
 /**
  * Run the call, and find its two rows through the Worker: the one command span of the turn, with a request row and a
  * result row.
@@ -123,37 +103,19 @@ async function runCall(native: ManagedNativeScenarioContext, agentId: string): P
   return { request: request!, result: result! }
 }
 
-/**
- * Send filler turns until exactly ROWS_AFTER_RESULT rows follow the result row. A plain turn and a turn with reasoning
- * store different numbers of rows, and the first turn of each kind measures its number, so any count above a small
- * one can be reached. Returns the answer of the last turn.
- */
+/** Send filler turns until exactly ROWS_AFTER_RESULT rows follow the result row. Returns the answer of the last turn. */
 async function fillAfterResult(native: ManagedNativeScenarioContext, agentId: string, result: bigint): Promise<string> {
   const { page, modelScript } = native
   const rowsAfter = async (): Promise<number> => (await readAllAgentMessages(native, agentId)).filter(message => message.seq > result).length
-  let turn = 0
-  const send = (reasoning: boolean) => sendScriptedTurn(page, modelScript, fillerTurn(++turn, reasoning))
-  const measure = async (reasoning: boolean): Promise<number> => {
-    const before = await rowsAfter()
-    await send(reasoning)
-    return await rowsAfter() - before
-  }
-  const plainRows = await measure(false)
-  const reasoningRows = await measure(true)
-  expect(greatestCommonDivisor(plainRows, reasoningRows), `a plain turn (${plainRows} rows) and a turn with reasoning (${reasoningRows} rows) can fill any count`).toBe(1)
-  const remaining = ROWS_AFTER_RESULT - await rowsAfter()
-  let reasoningTurns = 0
-  while (reasoningTurns < plainRows && (remaining - reasoningTurns * reasoningRows) % plainRows !== 0)
-    reasoningTurns++
-  const plainTurns = (remaining - reasoningTurns * reasoningRows) / plainRows
-  expect(plainTurns, `the ${remaining} rows still to fill split into turns of ${plainRows} and ${reasoningRows} rows`).toBeGreaterThanOrEqual(0)
-  for (let i = 0; i < reasoningTurns; i++)
-    await send(true)
-  for (let i = 0; i < plainTurns; i++)
-    await send(false)
-  expect(await rowsAfter(), 'the result row is the first row of the newest page').toBe(ROWS_AFTER_RESULT)
+  const last = await fillRows({
+    page,
+    modelScript,
+    count: rowsAfter,
+    target: ROWS_AFTER_RESULT,
+    firstTurn: 1,
+  })
   await expectAtBottom(page, 'after the seed')
-  return fillerTurn(turn, false).answer
+  return fillerTurn(last, false).answer
 }
 
 /** Whether the row box reaches into a view of `viewHeight`. */

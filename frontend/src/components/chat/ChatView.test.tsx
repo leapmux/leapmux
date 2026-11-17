@@ -1698,6 +1698,49 @@ describe('ChatView', () => {
       expect(after).not.toBe(before)
     })
 
+    // The window does not hold the newest messages, as after a jump to the top: the result
+    // lies in a newer page. The expanded row loads it before it shows, so the page that
+    // brings the result later changes neither the words of its header nor its height.
+    it('keeps the key of an expanded request row when the newer page with its result loads', async () => {
+      const [messages, setMessages] = createSignal([request])
+      const fetchSpan = vi.fn(async () => [request, result])
+      const messageContext = testMessageContext({
+        messages,
+        fetchSpan,
+        holdsNewest: () => false,
+      })
+      const view = render(() => (
+        <PreferencesProvider>
+          <ChatView messages={messages()} messageContext={messageContext} pagination={{ hasNewerMessages: true }} />
+        </PreferencesProvider>
+      ))
+      await reportChatViewportSize(view)
+      const requestRow = view.container.querySelector<HTMLElement>('[data-seq="1"]')!
+      fireEvent.click(within(requestRow).getByRole('button', { name: 'Show full command' }))
+      const keyOf = () => wiringState.persistenceDeps!.loadedItems().find(item => item.id === 'bash-request')?.heightKey
+      await waitFor(() => expect(fetchSpan).toHaveBeenCalledOnce())
+      await waitFor(() => expect(keyOf()).toContain('header='))
+      const before = keyOf()
+      setMessages([request, result])
+      expect(keyOf()).toBe(before)
+      view.unmount()
+    })
+
+    // While the window holds the newest message, a request row with no result in it heads a
+    // call that runs: no fetch can return a result that the Worker did not send.
+    it('fetches nothing for an expanded request row while the window holds the newest message', async () => {
+      const [messages] = createSignal([request])
+      const fetchSpan = vi.fn(async () => [request])
+      const messageContext = testMessageContext({ messages, fetchSpan })
+      const view = render(() => <PreferencesProvider><ChatView messages={messages()} messageContext={messageContext} /></PreferencesProvider>)
+      await reportChatViewportSize(view)
+      const requestRow = view.container.querySelector<HTMLElement>('[data-seq="1"]')!
+      fireEvent.click(within(requestRow).getByRole('button', { name: 'Show full command' }))
+      await measureHiddenCopies(view.container)
+      expect(fetchSpan).not.toHaveBeenCalled()
+      view.unmount()
+    })
+
     // An agent launch opens its prompt under a key of its own (the agent prompt key), and
     // its expanded header wraps as any other does.
     it.each([false, true])('re-keys an agent launch only while its prompt is expanded: expanded %s', async (expanded) => {

@@ -66,7 +66,7 @@ function noSideMessage(id: string, seq: bigint, extra: MessageInitShape<typeof A
 }
 
 /** The sources that a case sets in place of the defaults of `fixture`. */
-type FixtureSources = Partial<Pick<MessageContextSources, 'spanMessage' | 'fetchFileImage' | 'fetchFileImageSize'>>
+type FixtureSources = Partial<Pick<MessageContextSources, 'spanMessage' | 'fetchFileImage' | 'fetchFileImageSize' | 'holdsOldest' | 'holdsNewest'>>
 
 function fixture(initial: AgentChatMessage[] = [], sources: FixtureSources = {}) {
   return createRoot((dispose) => {
@@ -97,6 +97,9 @@ function fixture(initial: AgentChatMessage[] = [], sources: FixtureSources = {})
       },
       backgroundTask: () => undefined,
       progress: () => undefined,
+      // The window holds the whole transcript unless a case states another edge.
+      holdsOldest: sources.holdsOldest ?? (() => true),
+      holdsNewest: sources.holdsNewest ?? (() => true),
     })
     return {
       resolver,
@@ -674,6 +677,8 @@ describe('message context resolver', () => {
         subscribe: observer => store.subscribeMessages(agentId, observer),
         backgroundTask: () => undefined,
         progress: () => undefined,
+        holdsOldest: () => !store.hasOlderMessages(agentId),
+        holdsNewest: () => !store.hasNewerMessages(agentId),
       })
     })
     // The effects of a root flush after its body returns, so the first walk is
@@ -815,6 +820,185 @@ describe('visibleRows of a hidden request message', () => {
     const { resolver, visibleRows } = fixture([shown, done])
     expect(resolver.role(shown)).toBe('request')
     expect(visibleRows(identity)).toEqual({ request: true })
+  })
+})
+
+// Neither frame of a Codex web search states its side, so the window pairs them by their
+// place in it. With the start in an older page, the completed frame is the first frame of
+// its span in the window, and the window takes it as the request: it drew as the request
+// row until the older page loaded, and then as the result row.
+describe('a span whose frames state no side', () => {
+  const identity = { spanId: 'ws-1', agentSessionId: '' }
+  const webSearch = (id: string, seq: bigint, item: Record<string, unknown>) => create(AgentChatMessageSchema, {
+    id,
+    seq,
+    spanId: 'ws-1',
+    spanType: 'webSearch',
+    agentProvider: AgentProvider.CODEX,
+    source: MessageSource.AGENT,
+    content: new TextEncoder().encode(JSON.stringify({
+      item: { type: 'webSearch', id: 'ws-1', ...item },
+      threadId: 'thread-1',
+      turnId: 'turn-1',
+    })),
+    contentCompression: ContentCompression.NONE,
+  })
+  const start = webSearch('ws-start', 1n, {
+    query: 'codex',
+    action: { type: 'search', query: 'codex' },
+  })
+  const done = webSearch('ws-done', 2n, {
+    query: 'codex app server',
+    action: { type: 'search', query: 'codex app server' },
+  })
+
+  it('fetches the span of the frame that the window pairs as the request while older pages remain, and pairs it by the whole span', async () => {
+    const { resolver, fetchSpan, replaceMessages } = fixture([done], {
+      holdsOldest: () => false,
+    })
+    expect(resolver.role(done)).toBe('request')
+    fetchSpan.mockResolvedValueOnce([start, done])
+    const release = resolver.retainSpan(identity)
+
+    const fetch = resolver.loadRequest(done)
+
+    expect(fetch).toBeInstanceOf(Promise)
+    await fetch
+    expect(resolver.request(identity)?.message.id).toBe('ws-start')
+    expect(resolver.role(done)).toBe('result')
+    // The span is settled: no second fetch.
+    expect(resolver.loadRequest(done)).toBeUndefined()
+    // The page of the start arrives: the pairing stays.
+    replaceMessages([start, done])
+    expect(resolver.request(identity)?.message.id).toBe('ws-start')
+    expect(resolver.role(done)).toBe('result')
+    expect(fetchSpan).toHaveBeenCalledOnce()
+    release()
+  })
+
+  it('fetches nothing for the first frame of the window while the window starts at the transcript', () => {
+    const { resolver, fetchSpan } = fixture([done], {
+      holdsOldest: () => true,
+    })
+    expect(resolver.loadRequest(done)).toBeUndefined()
+    expect(fetchSpan).not.toHaveBeenCalled()
+  })
+
+  it('fetches nothing for a later frame of the window, whose request the window holds', () => {
+    const { resolver, fetchSpan } = fixture([start, done], {
+      holdsOldest: () => false,
+    })
+    expect(resolver.role(done)).toBe('result')
+    expect(resolver.loadRequest(done)).toBeUndefined()
+    expect(fetchSpan).not.toHaveBeenCalled()
+  })
+})
+
+// A trim of the window removes one side of a span while the other side stays. The resolver
+// keeps the side that left, so no row of the span changes when the window moves.
+describe('a span that the window holds in part', () => {
+  const identity = { spanId: 'span', agentSessionId: '' }
+
+  it('keeps a request that left the window while its result stays, and drops it once the whole span left', async () => {
+    const request = toolMessage('request', 1n, 'request')
+    const result = toolMessage('result', 2n, 'result')
+    const { resolver, visibleRows, replaceMessages } = fixture([request, result])
+    expect(visibleRows(identity)).toEqual({ request: true })
+
+    replaceMessages([result])
+
+    expect(resolver.request(identity)?.message.id).toBe('request')
+    expect(visibleRows(identity)).toEqual({ request: true })
+    expect(resolver.loadRequest(result)).toBeUndefined()
+
+    replaceMessages([])
+    await waitForRenderPrune()
+    expect(resolver.request(identity)).toBeUndefined()
+  })
+
+  it('keeps a result that left the window while its request stays', () => {
+    const request = toolMessage('request', 1n, 'request')
+    const result = toolMessage('result', 2n, 'result')
+    const { resolver, replaceMessages } = fixture([request, result])
+
+    replaceMessages([request])
+
+    expect(resolver.result(identity)?.message.id).toBe('result')
+  })
+
+  it('keeps no message that left with the rest of its span', () => {
+    const request = toolMessage('request', 1n, 'request')
+    const other = toolMessage('other', 3n, 'request', { spanId: 'other-span' })
+    const { resolver, replaceMessages } = fixture([request, other])
+
+    replaceMessages([other])
+
+    expect(resolver.request(identity)).toBeUndefined()
+  })
+})
+
+describe('loadResult', () => {
+  const identity = { spanId: 'span', agentSessionId: '' }
+  const request = toolMessage('request', 1n, 'request')
+  const result = toolMessage('result', 2n, 'result')
+
+  it('returns the fetch of the span while the window holds no result and newer pages remain, and shares it', async () => {
+    const { resolver, fetchSpan } = fixture([request], {
+      holdsNewest: () => false,
+    })
+    let finish!: (messages: AgentChatMessage[]) => void
+    fetchSpan.mockImplementationOnce(() => new Promise(resolve => finish = resolve))
+    const release = resolver.retainSpan(identity)
+
+    const first = resolver.loadResult(identity)
+    const second = resolver.loadResult(identity)
+
+    expect(first).toBeInstanceOf(Promise)
+    expect(second).toBeInstanceOf(Promise)
+    expect(fetchSpan).toHaveBeenCalledOnce()
+    finish([request, result])
+    await Promise.all([first, second])
+    expect(resolver.result(identity)?.message.id).toBe('result')
+    expect(resolver.loadResult(identity)).toBeUndefined()
+    release()
+  })
+
+  // While the window holds the newest message, a span with no result in it has none yet:
+  // the call runs, and its result arrives live.
+  it('returns no fetch while the window holds the newest message', () => {
+    const { resolver, fetchSpan } = fixture([request], {
+      holdsNewest: () => true,
+    })
+    expect(resolver.loadResult(identity)).toBeUndefined()
+    expect(fetchSpan).not.toHaveBeenCalled()
+  })
+
+  it('returns no fetch while the window holds the result', () => {
+    const { resolver, fetchSpan } = fixture([request, result], {
+      holdsNewest: () => false,
+    })
+    expect(resolver.loadResult(identity)).toBeUndefined()
+    expect(fetchSpan).not.toHaveBeenCalled()
+  })
+
+  it('returns no fetch once a fetch of the span settled without a result', async () => {
+    const { resolver, fetchSpan } = fixture([request], {
+      holdsNewest: () => false,
+    })
+    fetchSpan.mockResolvedValueOnce([request])
+    const release = resolver.retainSpan(identity)
+    await resolver.loadResult(identity)
+    expect(resolver.loadResult(identity)).toBeUndefined()
+    expect(fetchSpan).toHaveBeenCalledOnce()
+    release()
+  })
+
+  it('returns no fetch for a message of no span', () => {
+    const { resolver, fetchSpan } = fixture([], {
+      holdsNewest: () => false,
+    })
+    expect(resolver.loadResult({ spanId: '', agentSessionId: '' })).toBeUndefined()
+    expect(fetchSpan).not.toHaveBeenCalled()
   })
 })
 
