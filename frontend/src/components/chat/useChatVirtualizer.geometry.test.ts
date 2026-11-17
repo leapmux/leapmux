@@ -1,7 +1,7 @@
 import type { Accessor } from 'solid-js'
 import type { RowHeightCache } from './chatRowHeightCache'
 import type { ChatRowItem } from './chatRowItem'
-import { batch, createMemo, createRenderEffect, createRoot, createSignal } from 'solid-js'
+import { batch, createEffect, createMemo, createRenderEffect, createRoot, createSignal, on } from 'solid-js'
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { MAX_LOADED_CHAT_MESSAGES_CEILING } from '~/stores/chat.store'
 import { createManualFrames } from '~/test-support/manualFrames'
@@ -1728,6 +1728,134 @@ describe('useChatVirtualizer layoutShift', () => {
     expect(virt.offsetOfId(ROW_10)! + virt.layoutShift()).toBe(1200)
     expect(virt.layoutShift()).toBe(-600)
     dispose()
+  })
+
+  describe('a geometry change inside an effect', () => {
+    // ChatView loads the stored heights of an older page in an effect, and the scroll hook
+    // refreshes the rendered rows in a later effect of the same batch. Solid runs no
+    // computation for a signal write inside an effect until the effects of the batch end.
+    // So the shift must follow the geometry for a reader in that batch. Otherwise the
+    // refresh slices the rows of the prepended page, and every mounted row unmounts and
+    // mounts again: as a skeleton, during a fling.
+
+    /** Prepend 5 rows in one effect, then run `read` in a later effect of the same batch. */
+    function prependInEffect<T>(read: (virt: ReturnType<typeof setup>['virt'], scroller: HTMLElement) => T): T[] {
+      const { scroller } = fakeLayout({ scrollTop: 1250 })
+      const { virt, setList, dispose } = mount({ scroller })
+      const [page, setPage] = createSignal(0)
+      const reads: T[] = []
+      const disposeEffects = createRoot((disposeRoot) => {
+        createEffect(on(page, () => setList([
+          ...plainItems(5, 100),
+          ...plainItems(20),
+        ]), { defer: true }))
+        createEffect(on(page, () => {
+          reads.push(read(virt, scroller))
+        }, { defer: true }))
+        return disposeRoot
+      })
+
+      setPage(1)
+
+      disposeEffects()
+      dispose()
+      return reads
+    }
+
+    it('gives a later effect of the batch the shift of the new geometry', () => {
+      expect(prependInEffect(virt => ({
+        shift: virt.layoutShift(),
+        rowTop: virt.offsetOfId(ROW_10)! + virt.layoutShift(),
+      }))).toEqual([
+        { shift: -600, rowTop: 1200 },
+      ])
+    })
+
+    it('slices the rows at the viewport for a refresh in a later effect of the batch', () => {
+      // The viewport spans the scroll coordinates 1250 to 1750: row 10 (`m11`) to row 14
+      // (`m15`), which the 5 prepended rows move to the indexes 15 to 19.
+      expect(prependInEffect((virt, scroller) => {
+        virt.updateViewport(scroller.scrollTop, scroller.clientHeight)
+        return virt.range()
+      })).toEqual([
+        { start: 15, end: 20 },
+      ])
+    })
+
+    it('converts the scroll coordinates of the viewport top to the content of the new geometry', () => {
+      // Row 10 starts at the content coordinate 1800 after the prepend, and the viewport top
+      // lies 50px inside it.
+      expect(prependInEffect((virt, scroller) => virt.contentTopOf(scroller.scrollTop))).toEqual([1850])
+    })
+
+    it('moves the shift of the new geometry into scrollTop for a rebase in a later effect of the batch', () => {
+      // The scroll hook rebases in an effect. A rebase that moved the shift of the old geometry
+      // would leave the 600px of the prepend above the reachable top.
+      expect(prependInEffect((virt, scroller) => ({
+        removed: virt.rebase(),
+        scrollTop: scroller.scrollTop,
+        shift: virt.layoutShift(),
+        row10: row10OnScreen(virt, scroller),
+      }))).toEqual([
+        {
+          removed: -600,
+          scrollTop: 1850,
+          shift: 0,
+          row10: -50,
+        },
+      ])
+    })
+  })
+
+  describe('a rebase and a geometry change in one batch', () => {
+    // Row 3 (`m4`) grows by 60px above the viewport top, so the shift is -60 before the batch.
+    // The 5 prepended rows then add 600px above the view.
+
+    /** Mount the rows with the layout elements attached, and grow row 3 by 60px. */
+    function mountWithShift() {
+      const layout = fakeLayout({ scrollTop: 1250 })
+      const mounted = mount({ scroller: layout.scroller })
+      mounted.virt.attachSpacer(layout.spacer)
+      mounted.virt.attachLayer(layout.layer)
+      mounted.virt.measure('m4', 160)
+      expect(mounted.virt.layoutShift()).toBe(-60)
+      return { ...mounted, layout }
+    }
+
+    const prepend = (): ChatRowItem[] => [
+      ...plainItems(5, 100),
+      ...plainItems(20),
+    ]
+
+    it('continues from the shift that the rebase kept for a prepend after it', () => {
+      const { virt, setList, layout, dispose } = mountWithShift()
+
+      batch(() => {
+        expect(virt.rebase()).toBe(-60)
+        setList(prepend())
+      })
+
+      expect(layout.scroller.scrollTop).toBe(1310)
+      expect(virt.layoutShift()).toBe(-600)
+      expect(row10OnScreen(virt, layout.scroller)).toBe(-50)
+      dispose()
+    })
+
+    it('removes the shift of a prepend before the rebase', () => {
+      const { virt, setList, layout, dispose } = mountWithShift()
+
+      batch(() => {
+        setList(prepend())
+        expect(virt.rebase()).toBe(-660)
+      })
+
+      expect(layout.scroller.scrollTop).toBe(1910)
+      expect(virt.layoutShift()).toBe(0)
+      expect(row10OnScreen(virt, layout.scroller)).toBe(-50)
+      expect(layout.state.layerTransform).toBe('translateY(0px)')
+      expect(layout.state.spacerHeight).toBe(`${virt.spacerHeight()}px`)
+      dispose()
+    })
   })
 
   /**

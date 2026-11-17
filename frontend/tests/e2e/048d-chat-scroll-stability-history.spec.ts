@@ -1,11 +1,11 @@
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import type { ModelScript } from './helpers/modelScriptFixture'
 import { expect } from '@playwright/test'
 import { ROW_ALIGN_OFFSET_PX } from '~/components/chat/chatLayoutShift'
 import { MESSAGE_PAGE_LIMIT } from '../../src/generated/contracts/chat-history'
 import { test } from './fixtures'
 import { RAIL, RAIL_DOT } from './helpers/chatScrollRail'
-import { clearStoredRenders, clearStoredRowHeights, expectNoVisibleHeightChange, expectRowMoved, pointAtChat, readRowBox, readRowSeqWithText, recordRowHeightChanges, requireTopRow, waitForScrollRest, watchFrames, watchRow, wheelChatUp } from './helpers/chatScrollStability'
+import { clearStoredRenders, clearStoredRowHeights, expectNoVisibleHeightChange, expectRowMoved, markedParagraphs, pointAtChat, readRowBox, readRowSeqWithText, recordRowHeightChanges, requireTopRow, sendLongTurn, waitForScrollRest, watchFrames, watchRow, wheelChatUp } from './helpers/chatScrollStability'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { assistantBubbles, chatScrollContainer, chatScrollTop, userBubbles, waitForAgentStarted } from './helpers/ui'
 
@@ -21,6 +21,9 @@ import { assistantBubbles, chatScrollContainer, chatScrollTop, userBubbles, wait
  * A seek to a row of an older page also changes the history above the reader. The seek waits only for the rows from
  * its row down, so its row joins the list first, and the rows above it join after the landing. The row lands at the
  * same distance below the top of the view as every other seek, and it stays there when the rows above it join.
+ *
+ * An older page whose rows have stored heights joins the list in one step, and every row in view keeps its element
+ * while it does. A row that mounts again vanishes for a moment, and during a fling it comes back as a skeleton.
  */
 
 /** The distance of one wheel step. */
@@ -28,6 +31,18 @@ const WHEEL_STEP_PX = 400
 
 /** The most short turns that the seed sends before it fails: about three times the turns that one page holds. */
 const MAX_SEED_TURNS = 40
+
+/** The most wheel steps that a reader needs to reach a row of an older page. */
+const MAX_WHEEL_STEPS = 40
+
+/**
+ * The long turns that open the history of the test of stored heights, and the paragraphs of each answer: a line or more
+ * each. The older page that holds the answers is then taller than the band of rows that the app keeps mounted beyond
+ * the view, which is 800px for the chat of a 600px viewport (computeOverscanPx). A page shorter than that band leaves
+ * the rows in view mounted, whatever range the app computes for it.
+ */
+const LONG_TURNS = 2
+const LONG_ANSWER_PARAGRAPHS = 40
 
 /** A short scripted turn whose prompt and answer state its number. */
 function shortTurn(turn: number) {
@@ -55,6 +70,33 @@ async function sendTurnsUntilPastOnePage(page: Page, modelScript: ModelScript, s
   return turns
 }
 
+/**
+ * Wheel the chat up until `target` is mounted. A wheel step below the top of the loaded rows moves every row down the
+ * screen by the wheel distance. At the top of the loaded rows, a wheel up asks for the older page, and the row at the
+ * top stays where it is in every frame while the page arrives above it.
+ */
+async function wheelUpUntilMounted(page: Page, target: Locator, what: string): Promise<void> {
+  for (let step = 1; await target.count() === 0; step++) {
+    expect(step, `the reader reaches ${what} within the expected number of steps`).toBeLessThanOrEqual(MAX_WHEEL_STEPS)
+    const top = await chatScrollTop(page)
+    const before = await requireTopRow(page)
+    if (top >= 1) {
+      // A step never passes the top of the loaded rows, so the browser applies the whole wheel distance. A position
+      // below one pixel counts as the top, because a wheel of less than a pixel scrolls nothing.
+      const pixels = Math.min(WHEEL_STEP_PX, top)
+      await wheelChatUp(page, pixels)
+      await expectRowMoved(page, before, pixels, `wheel step ${step}`)
+      continue
+    }
+    const watch = await watchRow(page, before.seq)
+    await pointAtChat(page)
+    await page.mouse.wheel(0, -WHEEL_STEP_PX)
+    await expect.poll(() => chatScrollTop(page), { message: 'an older page arrives above the reader' }).toBeGreaterThan(0)
+    await waitForScrollRest(page)
+    await watch.expectStill(`while the older page of step ${step} arrives`)
+  }
+}
+
 test.describe('chat scroll stability while the history above the reader changes', () => {
   test('keeps the content in place while older pages load above the reader', async ({ page, authenticatedWorkspace, modelScript }) => {
     await page.setViewportSize({ width: 1024, height: 600 })
@@ -74,29 +116,9 @@ test.describe('chat scroll stability while the history above the reader changes'
     const heights = await recordRowHeightChanges(page)
     const frames = await watchFrames(page)
 
-    for (let step = 1; await firstPrompt.count() === 0; step++) {
-      expect(step, 'the reader reaches the first turn within the expected number of steps').toBeLessThanOrEqual(40)
-      const top = await chatScrollTop(page)
-      const before = await requireTopRow(page)
-      if (top >= 1) {
-        // A step never passes the top of the loaded rows, so the browser applies the whole wheel distance. A position
-        // below one pixel counts as the top, because a wheel of less than a pixel scrolls nothing.
-        const pixels = Math.min(WHEEL_STEP_PX, top)
-        await wheelChatUp(page, pixels)
-        await expectRowMoved(page, before, pixels, `wheel step ${step}`)
-        continue
-      }
-      // At the top of the loaded rows, a wheel up asks for the older page. It arrives above the reader, and the rows
-      // under the reader stay where they are in every frame.
-      const watch = await watchRow(page, before.seq)
-      await pointAtChat(page)
-      await page.mouse.wheel(0, -WHEEL_STEP_PX)
-      await expect.poll(() => chatScrollTop(page), { message: 'an older page arrives above the reader' }).toBeGreaterThan(0)
-      await waitForScrollRest(page)
-      await watch.expectStill(`while the older page of step ${step} arrives`)
-    }
     // An older page loads ahead of the reader during a wheel step, or at the top of the loaded rows. A step that a load
     // moved fails its distance check, and a load at the top fails its watch.
+    await wheelUpUntilMounted(page, firstPrompt, 'the first turn')
     await expect(firstPrompt).toBeVisible()
     await frames.expectNoJump('while the reader scrolls up through the history')
     await expectNoVisibleHeightChange(heights, 'after the reader scrolled up through the history')
@@ -143,5 +165,35 @@ test.describe('chat scroll stability while the history above the reader changes'
     await expect(userBubbles(page).filter({ hasText: 'Turn 1:' }), 'the first turn joins the list above the prompt').toHaveCount(1)
     await waitForScrollRest(page)
     expect(await distanceFromPlace(), 'the prompt stays where it landed').toBeLessThanOrEqual(1)
+  })
+
+  test('keeps every row in view mounted while an older page with stored heights arrives', async ({ page, authenticatedWorkspace, modelScript }) => {
+    await page.setViewportSize({ width: 1024, height: 600 })
+    await waitForAgentStarted(page)
+    // The long turns open the history, and the short turns push them out of the newest page.
+    for (let turn = 1; turn <= LONG_TURNS; turn++) {
+      const label = `Long${turn}P`
+      await sendLongTurn(page, modelScript, `Long ${turn}: write the report.`, markedParagraphs(label, LONG_ANSWER_PARAGRAPHS, 'every word of this paragraph makes the report a little taller.'), `${label}${LONG_ANSWER_PARAGRAPHS - 1}:`)
+    }
+    const lastLongSeq = await readRowSeqWithText(page, `Long${LONG_TURNS}P0:`)
+    expect(lastLongSeq, 'the row of the last long answer is mounted').not.toBeNull()
+    const turns = await sendTurnsUntilPastOnePage(page, modelScript, Number(lastLongSeq), 0)
+
+    // The reload keeps the row heights that the app stored. The chat opens with the newest page alone, so the page of the
+    // long answers arrives later with the stored heights of its rows, and all of its rows join the list in one step.
+    await page.reload()
+    await expect(assistantBubbles(page).filter({ hasText: `Answer ${turns}.` }), 'the last answer shows after the reload').toHaveCount(1)
+    await waitForScrollRest(page)
+    const lastLongAnswer = assistantBubbles(page).filter({ hasText: `Long${LONG_TURNS}P0:` })
+    await expect(lastLongAnswer, 'the page of the long answers is not loaded').toHaveCount(0)
+    // The app loads the stored heights of an arriving page in an effect, and a later effect of that batch renders the
+    // rows at the viewport. That effect must read the layout shift of the new rows: with the shift of the old ones, it
+    // renders rows a page above the view, and every row in view unmounts and mounts again. The frames show such a row
+    // as a new element.
+    const frames = await watchFrames(page)
+
+    await wheelUpUntilMounted(page, lastLongAnswer, 'the last long answer')
+
+    await frames.expectNoJump('while the page of the long answers arrives above the reader')
   })
 })

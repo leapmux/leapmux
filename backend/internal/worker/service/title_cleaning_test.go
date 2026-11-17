@@ -211,7 +211,7 @@ func openTerminalWithTitle(t *testing.T, title string) (stored, reported string)
 	lastResponse(t, w, &resp)
 	terminalID := resp.GetTerminalId()
 	require.NotEmpty(t, terminalID)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 	testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
 
 	row, err := svc.Queries.GetTerminal(context.Background(), terminalID)

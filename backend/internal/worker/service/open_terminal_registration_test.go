@@ -125,7 +125,7 @@ func TestOpenTerminal_ReleasesTheStartupOfAQuakeOpenThatLosesTheRace(t *testing.
 	dir := t.TempDir()
 	createAgentForPath(t, svc, "agent-1", dir)
 	winner, _ := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(winner) }, "spawn")
+	waitForTerminalSpawn(t, svc, winner, "spawn")
 
 	hideWinner.Store(true)
 	loser, _ := openQuakeTerminal(t, svc, d, dir)

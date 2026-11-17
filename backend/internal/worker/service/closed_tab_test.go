@@ -471,7 +471,7 @@ func openTerminalViaRPC(t *testing.T, svc *Service, d testRPCDispatcher, w *test
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
 	terminalID := openResp.GetTerminalId()
 	require.NotEmpty(t, terminalID)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 	testutil.RegisterTerminalCleanup(t, svc.Terminals, terminalID)
 	return terminalID
 }

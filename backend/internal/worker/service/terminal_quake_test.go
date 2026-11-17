@@ -87,7 +87,7 @@ func TestOpenTerminal_SecondOpenForOneDirectoryReturnsTheSameTerminal(t *testing
 	createAgentForPath(t, svc, "agent-1", dir)
 
 	first, firstTitle := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(first) }, "spawn")
+	waitForTerminalSpawn(t, svc, first, "spawn")
 
 	second, secondTitle := openQuakeTerminal(t, svc, d, dir)
 
@@ -214,7 +214,7 @@ func TestQuakeTerminal_ShellExitClosesTheRow(t *testing.T) {
 	dir := t.TempDir()
 	createAgentForPath(t, svc, "agent-1", dir)
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 
 	// NOT through exitTerminalAndWait: that waits for the manager to report the
 	// terminal EXITED, and closing a quake terminal REMOVES it from the
@@ -303,7 +303,7 @@ func TestListTerminals_ResolvesAQuakeTerminalWithFileReadAndTerminalRead(t *test
 	dir := t.TempDir()
 	createAgentForPath(t, svc, "agent-1", dir)
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 
 	w := newTestWriter()
 	dispatchScoped(d, mustScopes("worker:read terminal:read file:read"), leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure,
@@ -328,7 +328,7 @@ func TestListTerminals_RefusesADirectoryProbeWithoutFileRead(t *testing.T) {
 	dir := t.TempDir()
 	createAgentForPath(t, svc, "agent-1", dir)
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 
 	w := newTestWriter()
 	dispatchScoped(d, mustScopes("worker:read terminal:read"), leapmuxv1connect.WorkerTerminalServiceListTerminalsProcedure,
@@ -353,7 +353,7 @@ func TestCloseAgent_ClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *testing.
 	dir := t.TempDir()
 	createAgentForPath(t, svc, "agent-1", dir)
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 
 	w := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, w)
@@ -377,7 +377,7 @@ func TestCloseAgent_KeepsTheQuakeTerminalWhileAnotherTabWorksInTheDirectory(t *t
 	createAgentForPath(t, svc, "agent-1", dir)
 	createAgentForPath(t, svc, "agent-2", dir)
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 
 	w := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, w)
@@ -403,7 +403,7 @@ func TestCloseTerminalTab_ClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *te
 	createAgentForPath(t, svc, "agent-1", dir)
 	tabID := openTerminalViaRPC(t, svc, d, w, dir)
 	quakeID, _ := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(quakeID) }, "spawn")
+	waitForTerminalSpawn(t, svc, quakeID, "spawn")
 
 	closeAgent := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, closeAgent)
@@ -433,7 +433,7 @@ func TestCloseAgentForConvergence_ClosesTheQuakeTerminal(t *testing.T) {
 	dir := t.TempDir()
 	createAgentForPath(t, svc, "agent-1", dir)
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 
 	svc.CloseTabForReconcile(leapmuxv1.TabType_TAB_TYPE_AGENT, "", "agent-1")
 
@@ -550,7 +550,7 @@ func TestCloseOrphanedQuakeTerminals_ClosesARowWithNoLiveShell(t *testing.T) {
 		IsQuake:    true,
 	}))
 	live, _ := openQuakeTerminal(t, svc, d, liveDir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(live) }, "spawn")
+	waitForTerminalSpawn(t, svc, live, "spawn")
 	plainTab := openTerminalViaRPC(t, svc, d, newTestWriter(), liveDir)
 
 	svc.CloseOrphanedQuakeTerminals(context.Background())
@@ -609,7 +609,7 @@ func TestQuakeTerminal_ShellExitPaintsNoRestartNotice(t *testing.T) {
 	dir := t.TempDir()
 	createAgentForPath(t, svc, "agent-1", dir)
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 
 	sendShellLine(t, d, terminalID, []byte("exit 0"+testutil.TestShellEnter()))
 
@@ -637,7 +637,7 @@ func TestApplyTabArchiveState_ClosesTheQuakeTerminalOfAnArchivedDirectory(t *tes
 	dir := t.TempDir()
 	createAgentForPath(t, svc, "agent-1", dir)
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 
 	_, err := svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
@@ -668,7 +668,7 @@ func TestApplyTabArchiveState_KeepsTheQuakeTerminalWhileALiveTabRemains(t *testi
 	createAgentForPath(t, svc, "agent-1", dir)
 	createAgentForPath(t, svc, "agent-2", dir)
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 
 	_, err := svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
@@ -788,7 +788,7 @@ func TestCloseAgent_KeepsTheQuakeTerminalWhileAFileTabWorksInTheDirectory(t *tes
 	createAgentForPath(t, svc, "agent-1", dir)
 	createFileTabForPath(t, svc, "user-1", "file-1", dir, "open.txt")
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 
 	w := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, w)
@@ -813,7 +813,7 @@ func TestCloseTab_FileTabClosesTheQuakeTerminalOfTheLastTabInTheDirectory(t *tes
 	createAgentForPath(t, svc, "agent-1", dir)
 	createFileTabForPath(t, svc, "user-1", "file-1", dir, "open.txt")
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 
 	closeAgent := newTestWriter()
 	dispatch(d, leapmuxv1connect.WorkerTabServiceCloseTabProcedure, &leapmuxv1.CloseTabRequest{Tab: agentTabIdent("agent-1")}, closeAgent)
@@ -850,7 +850,7 @@ func TestApplyTabArchiveState_AnArchivedFileTabStopsHoldingTheQuakeTerminal(t *t
 	createAgentForPath(t, svc, "agent-1", dir)
 	createFileTabForPath(t, svc, "user-1", "file-1", dir, "open.txt")
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 
 	_, err := svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
@@ -907,7 +907,7 @@ func TestApplyTabArchiveState_LeavesAQuakeTerminalInAnUnrelatedDirectory(t *test
 	// exactly the shape the unscoped sweep reaped. The reconciler reaps it
 	// later, after its grace window; this RPC must not.
 	otherQuake, _ := openQuakeTerminal(t, svc, d, otherDir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(otherQuake) }, "spawn")
+	waitForTerminalSpawn(t, svc, otherQuake, "spawn")
 
 	_, err := svc.ApplyTabArchiveState(ctx,
 		leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
@@ -933,7 +933,7 @@ func TestApplyTabArchiveState_NoFlagChangeSweepsNothing(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
 	quakeID, _ := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(quakeID) }, "spawn")
+	waitForTerminalSpawn(t, svc, quakeID, "spawn")
 
 	// A tab id no row matches: persistArchiveFlags reports zero changes.
 	_, err := svc.ApplyTabArchiveState(ctx,
@@ -1091,7 +1091,7 @@ func TestQuakeCloseIsJoinedByServiceCleanup(t *testing.T) {
 	dir := t.TempDir()
 	createAgentForPath(t, svc, "agent-1", dir)
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 
 	svc.closeQuakeTerminalOnShellExit(terminalID)
 	svc.Output.SetShuttingDown()
@@ -1114,7 +1114,7 @@ func TestCloseQuakeTerminalLeavesTheRowAfterShutdownBegins(t *testing.T) {
 	dir := t.TempDir()
 	createAgentForPath(t, svc, "agent-1", dir)
 	terminalID, _ := openQuakeTerminal(t, svc, d, dir)
-	testutil.AssertEventually(t, func() bool { return svc.Terminals.HasTerminal(terminalID) }, "spawn")
+	waitForTerminalSpawn(t, svc, terminalID, "spawn")
 	// The latch goes down first, so the shell's own exit -- which is what
 	// would normally close the row -- is refused, and the row survives with a
 	// dead shell: the state a restart inherits.
