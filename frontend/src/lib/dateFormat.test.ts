@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatCompactAge, formatLocalDateTime } from '~/lib/dateFormat'
+import { formatCompactAge, formatLocalDateTime, WIDEST_COMPACT_AGE } from '~/lib/dateFormat'
 
 const now = new Date('2026-09-01T12:00:00.000Z')
 const ago = (ms: number) => new Date(now.getTime() - ms)
@@ -74,5 +74,35 @@ describe('formatLocalDateTime', () => {
 
   it('leads with the abbreviated weekday', () => {
     expect(formatLocalDateTime(new Date('2026-09-01T12:00:00.000Z'))).toMatch(/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), /)
+  })
+})
+
+describe('WIDEST_COMPACT_AGE', () => {
+  it('is two digits and the longest suffix of the ladder', () => {
+    expect(WIDEST_COMPACT_AGE).toBe('00mo')
+  })
+
+  // A box as wide as this text holds every age below 100 years, in tabular digits: each
+  // age has at most two digits, and a suffix that is no longer and starts with no wider
+  // letter. The ages below walk each unit up to its last value before the next unit.
+  it('is no shorter than any age below 100 years, digit for digit', () => {
+    const ages = [
+      0,
+      9 * SECOND,
+      59 * SECOND,
+      59 * MINUTE,
+      23 * HOUR,
+      29 * DAY,
+      30 * DAY,
+      364 * DAY,
+      99 * 365 * DAY,
+    ]
+    for (const age of ages) {
+      const label = formatCompactAge(ago(age), now)
+      const [, digits = '', suffix = ''] = /^(\d+)(\D+)$/.exec(label) ?? []
+      expect(digits.length, `the digits of ${label}`).toBeLessThanOrEqual(2)
+      expect(suffix.length, `the suffix of ${label}`).toBeLessThanOrEqual(WIDEST_COMPACT_AGE.length - 2)
+      expect(['s', 'm', 'h', 'd', 'mo', 'y'], `the suffix of ${label}`).toContain(suffix)
+    }
   })
 })

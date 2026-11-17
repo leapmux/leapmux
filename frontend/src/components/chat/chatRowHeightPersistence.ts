@@ -57,8 +57,14 @@ type StoredRow = [id: string, digest: string, height: number]
  *    (a pending row draws it now) and a header of one line. The key of a request row
  *    that held no result revision is unchanged, so a stored height of version 5 could
  *    match it and admit the row at the height of the old drawing.
+ * 7: a result row whose request lies outside the loaded window draws no header and no
+ *    request side when the transcript draws that request as its own row (see
+ *    createRequestRowPresence). Before, it drew both until the page of the request
+ *    loaded. Its key is unchanged while the browser does not hold the request, so a
+ *    stored height of version 6 could match it and admit the row at the height of the
+ *    old drawing.
  */
-export const STORED_ROW_HEIGHTS_VERSION = 6
+export const STORED_ROW_HEIGHTS_VERSION = 7
 
 interface StoredRowHeights {
   v: typeof STORED_ROW_HEIGHTS_VERSION

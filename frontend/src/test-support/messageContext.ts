@@ -4,7 +4,7 @@ import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { MessageSpanIdentity } from '~/lib/messageSpan'
 import { createMemo, createRoot, createSignal } from 'solid-js'
 import { afterEach } from 'vitest'
-import { createClassifiedEntryCache, listedRequestSpanKeys } from '~/components/chat/chatEntryCache'
+import { createClassifiedEntryCache, createRequestRowPresence } from '~/components/chat/chatEntryCache'
 import { createMessageContextResolver } from '~/components/chat/messageContextResolver'
 import { messageSpanKey } from '~/lib/messageSpan'
 import { createSpanIndex } from '~/stores/chatSpanIndex'
@@ -44,6 +44,9 @@ export function testMessageContext(overrides: Partial<MessageContextSources> = {
       subscribe: () => () => undefined,
       backgroundTask: () => undefined,
       progress: () => undefined,
+      // The window holds the whole transcript unless a test states another edge.
+      holdsOldest: () => true,
+      holdsNewest: () => true,
       ...overrides,
     })
   })
@@ -120,6 +123,22 @@ export function createMutableTranscript(archive: readonly AgentChatMessage[], op
     spans.reindex('test', messages())
     return spans
   })
+  /**
+   * Whether the window holds the oldest message of the archive, or its newest one with
+   * `newest`. An empty archive has nothing outside the window.
+   */
+  function windowHoldsArchiveEdge(newest: boolean): boolean {
+    version()
+    let edge: AgentChatMessage | undefined
+    for (const message of archiveById.values()) {
+      if (edge === undefined || (newest
+        ? message.seq > edge.seq
+        : message.seq < edge.seq)) {
+        edge = message
+      }
+    }
+    return edge === undefined || windowIds().includes(edge.id)
+  }
   function store(message: AgentChatMessage, broadcast: boolean): void {
     const known = archiveById.has(message.id)
     archiveById.set(message.id, message)
@@ -168,6 +187,10 @@ export function createMutableTranscript(archive: readonly AgentChatMessage[], op
       },
       backgroundTask: options.backgroundTask ?? (() => undefined),
       progress: options.progress ?? (() => undefined),
+      // The window holds an edge of the transcript when it holds the message of the
+      // archive at that edge.
+      holdsOldest: () => windowHoldsArchiveEdge(false),
+      holdsNewest: () => windowHoldsArchiveEdge(true),
     },
     windowIds: () => windowIds(),
     append: message => store(message, false),
@@ -192,11 +215,12 @@ export function testTranscriptContext(archive: readonly AgentChatMessage[], opti
 }
 
 /**
- * The request rows that the list draws over `messages`, as ChatView derives them: from the
- * classified entries of the messages, through `resolver` (see listedRequestSpanKeys). It
- * answers for a span as a row reads it, as `visibleRows`. Call it within a reactive owner.
+ * The request rows that the transcript draws for the spans of `messages`, as ChatView
+ * derives them: from the classified entries of the messages and the requests that
+ * `resolver` holds outside them (see createRequestRowPresence). It answers for a span as
+ * a row reads it, as `visibleRows`. Call it within a reactive owner.
  */
-export function createListedRequestRows(
+export function createDrawnRequestRows(
   resolver: MessageContextResolver,
   messages: () => readonly AgentChatMessage[],
 ): (identity: MessageSpanIdentity) => ToolSpanRowPresence {
@@ -208,8 +232,13 @@ export function createListedRequestRows(
     role: message => resolver.role(message),
     showHiddenMessages: () => false,
   })
-  const listed = createMemo(() => listedRequestSpanKeys(entries.visibleEntries()))
+  const drawn = createRequestRowPresence({
+    entries: entries.visibleEntries,
+    windowEntry: entries.getEntry,
+    request: identity => resolver.request(identity),
+    role: message => resolver.role(message),
+  })
   return identity => ({
-    request: listed().has(messageSpanKey(identity)),
+    request: drawn(identity),
   })
 }

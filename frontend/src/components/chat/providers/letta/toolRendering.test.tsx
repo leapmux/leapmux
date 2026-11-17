@@ -5,7 +5,7 @@ import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/a
 import { createToolProgressStore } from '~/stores/chatToolProgress'
 import { settleWorkerReplies } from '~/test-support/fakeWorker'
 import { renderListedMessageContent } from '~/test-support/messageContentRenderer'
-import { createListedRequestRows, createMutableTranscript } from '~/test-support/messageContext'
+import { createDrawnRequestRows, createMutableTranscript } from '~/test-support/messageContext'
 import { makeMessage, makeTranscriptMessage, rawContent } from '~/test-support/messageFactory'
 import { createTranscriptScenario } from '~/test-support/transcriptScenario'
 import { createMessageContextResolver, createMessageRenderSources } from '../../messageContextResolver'
@@ -62,7 +62,7 @@ describe('letta live tool output', () => {
       const resolver = createMessageContextResolver(transcript.sources)
       const resolved = resolver.resolvedMessage(opening).resolved
       const sources = createMessageRenderSources(() => resolver, () => opening, () => resolved)
-      const visibleRows = createListedRequestRows(resolver, transcript.sources.messages)
+      const visibleRows = createDrawnRequestRows(resolver, transcript.sources.messages)
       expect(visibleRows({ spanId: fields.spanId, agentSessionId: fields.agentSessionId })).toEqual({ request: true })
       return renderListedMessageContent(request, {
         premeasureMode: true,
@@ -118,7 +118,7 @@ describe('letta live tool output', () => {
       live: ReturnType<typeof createToolProgressStore>
       transcript: ReturnType<typeof createMutableTranscript>
       resolver: ReturnType<typeof createMessageContextResolver>
-      visibleRows: ReturnType<typeof createListedRequestRows>
+      visibleRows: ReturnType<typeof createDrawnRequestRows>
     } | undefined
     const { container } = render(() => {
       const live = createToolProgressStore()
@@ -131,7 +131,7 @@ describe('letta live tool output', () => {
         live,
         transcript,
         resolver,
-        visibleRows: createListedRequestRows(resolver, transcript.sources.messages),
+        visibleRows: createDrawnRequestRows(resolver, transcript.sources.messages),
       }
       const rows = createMemo(() => transcript.sources.messages().map((message) => {
         const resolved = resolver.resolvedMessage(message).resolved

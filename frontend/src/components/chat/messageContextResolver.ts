@@ -55,6 +55,17 @@ export interface MessageContextSources {
   subscribe: (observer: (message: AgentChatMessage) => void) => () => void
   backgroundTask: (rowKey: string) => BackgroundTaskItem | undefined
   progress: (identity: MessageSpanIdentity) => ToolProgressEntry | undefined
+  /**
+   * The loaded window starts at the first message of the transcript: no older page
+   * remains. A frame that states no side of its span is then paired exactly by its place
+   * in the window, because no earlier frame of its span lies outside it.
+   */
+  holdsOldest: () => boolean
+  /**
+   * The loaded window ends at the newest message of the transcript: no newer page
+   * remains. A span with no result in the window then has none yet.
+   */
+  holdsNewest: () => boolean
 }
 
 /** One resolution path for tool renderers, image tabs, and message previews. */
@@ -68,22 +79,46 @@ export interface MessageContextResolver {
    * of a request row and the pending row that follows it read it. While the request row
    * is collapsed, neither can change its height (see ToolMessage); an expanded header
    * wraps, so the height key of an expanded row holds the result's revision (see
-   * ChatView).
+   * ChatView), and such a row loads the result first (see loadResult).
    */
   result: (identity: MessageSpanIdentity) => ResolvedMessage | undefined
   loadSpan: (identity: MessageSpanIdentity) => Promise<void>
   /**
-   * Load the REQUEST of the span of `message` when the row of `message` draws from it and
-   * the browser does not hold it (see `needsRequest` of the provider plugin).
+   * Load the REQUEST of the span of `message` when the row of `message` depends on it and
+   * the browser does not hold it. A row depends on the request in two ways:
    *
-   * Returns `undefined` when no fetch is needed: the row needs no request, the browser
-   * holds it, or the span has nothing left to fetch. A caller can then tell at once that
-   * the row shows what it will show. Otherwise it returns the promise of the fetch, which
-   * every caller of the span shares. That promise rejects when the fetch failed.
+   * - It draws from the request: its own frame states no tool name or no arguments (see
+   *   `needsRequest` of the provider plugin).
+   * - It is a row of the span other than the request (a result or an update row). Such a
+   *   row draws its own header and request side only while the transcript draws no request
+   *   row beside it (see createRequestRowPresence in chatEntryCache), and only the fetch
+   *   tells whether a request outside the loaded window exists.
+   * - Its frame states no side of its span, and the window pairs it as the request because
+   *   no earlier frame of its span is in the window. While older pages remain, an earlier
+   *   frame can lie in one of them, and the row is then a later row of the span.
    *
-   * No row ever waits for its RESULT: no row reads a later message of its span.
+   * Returns `undefined` when no fetch is needed: the row depends on no request, the
+   * browser holds it, or the span has nothing left to fetch. A caller can then tell at
+   * once that the row shows what it will show. Otherwise it returns the promise of the
+   * fetch, which every caller of the span shares. That promise rejects when the fetch
+   * failed.
+   *
+   * No row ever waits for its RESULT: no row reads a later message of its span. The one
+   * exception is an expanded header (see loadResult).
    */
   loadRequest: (message: AgentChatMessage, parsed?: ParsedMessageContent) => Promise<void> | undefined
+  /**
+   * Load the RESULT of a span for the expanded header of its request row, when the browser
+   * holds no result and newer pages remain. Such a header wraps the words of the newest
+   * call of its span, so without the result it would take other words, and another height,
+   * once the newer page that holds the result loads. While the window holds the newest
+   * message, a span with no result in it has none yet: the call runs, and its result
+   * arrives live.
+   *
+   * Returns `undefined` when no fetch is needed, else the promise of the fetch of the span
+   * (see loadRequest).
+   */
+  loadResult: (identity: MessageSpanIdentity) => Promise<void> | undefined
   retainSpan: (identity: MessageSpanIdentity) => () => void
   /** Retain a rendered row's span across a keyed component remount. */
   retainRenderSpan: (identity: MessageSpanIdentity) => () => void
@@ -116,15 +151,15 @@ export interface MessageRenderSources {
 }
 
 /**
- * The sources of one rendered row. `requestRowListed` answers whether the list draws the
- * request row of a span (see listedRequestSpanKeys in chatEntryCache); with none, no
- * request row is listed beside the row.
+ * The sources of one rendered row. `requestRowDrawn` answers whether the transcript draws
+ * the request of a span as its own row (see createRequestRowPresence in chatEntryCache);
+ * with none, no request row is drawn beside the row.
  */
 export function createMessageRenderSources(
   resolver: () => MessageContextResolver | undefined,
   message: () => AgentChatMessage,
   current: () => ResolvedMessageContent,
-  requestRowListed?: (identity: MessageSpanIdentity) => boolean,
+  requestRowDrawn?: (identity: MessageSpanIdentity) => boolean,
 ): MessageRenderSources {
   const span = () => messageSpanIdentity(message())
   return {
@@ -135,7 +170,7 @@ export function createMessageRenderSources(
       const own = message()
       return resolver()?.role(own) ?? resolvedSpanRole(current(), own.agentProvider)
     },
-    visibleRows: () => ({ request: requestRowListed?.(span()) ?? false }),
+    visibleRows: () => ({ request: requestRowDrawn?.(span()) ?? false }),
     // Each member reads the resolver at call time, so the one object follows the host.
     // With no resolver, each member answers as NO_FILE_IMAGES does.
     fileImages: {
@@ -315,10 +350,28 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     const cached = matches(side === 'request'
       ? spans.getRequestMessage(source.scopeKey, identity)
       : spans.getResultMessage(source.scopeKey, identity))
-    const message = newestRelatedMessage(resident, cached)
+    // The window pairs a frame that states no side of its span by its place in the window,
+    // so it takes the first such frame that it holds as the request. Once a fetch brought
+    // the whole span, the place in the whole span decides: an earlier frame can lie
+    // outside the window.
+    const message = side === 'request' && pairedByPlace(resident, cached, identity)
+      ? cached
+      : newestRelatedMessage(resident, cached)
     return message
       ? reference(message)
       : undefined
+  }
+
+  /**
+   * Whether the window took `resident` as the request of the span of `identity` by its
+   * place alone, while the whole span that a fetch brought pairs `cached`, another
+   * message, as the request.
+   */
+  function pairedByPlace(resident: AgentChatMessage | undefined, cached: AgentChatMessage | undefined, identity: MessageSpanIdentity): boolean {
+    if (resident === undefined || cached === undefined || resident.id === cached.id || !loadedSpans.has(messageSpanKey(identity)))
+      return false
+    const selected = current(resident)
+    return resolvedSpanRole(selected.resolved, selected.message.agentProvider) === 'other'
   }
 
   function messageBySeq(seq: bigint): AgentChatMessage | undefined {
@@ -397,10 +450,36 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
   // append, a prepend, a trim, and a reseq. An in-place merge into one row (the
   // store's updateExistingMessage) moves no membership, so it must wake nothing
   // here -- and a tracked walk wakes for each field of that merge which it reads.
+  //
+  // It keeps the window of its last run, so that the next run finds the messages that left
+  // the window (see keepDepartedSpanMessages).
+  let windowBefore: readonly AgentChatMessage[] = []
   createEffect(() => {
     const messages = source.messages()
-    untrack(() => prune(messages))
+    untrack(() => {
+      keepDepartedSpanMessages(windowBefore, messages)
+      prune(messages)
+    })
+    windowBefore = messages
   })
+
+  /**
+   * Keep each message that left the window while a message of its span stays in it, as a
+   * fetch of the span would have brought it. A trim of the window then changes no row of
+   * the span: a result row whose request left still draws beside a request row (see
+   * createRequestRowPresence in chatEntryCache), and an expanded request row whose result
+   * left still heads itself with the words of the result. `prune` drops such a message once
+   * its whole span left the window.
+   */
+  function keepDepartedSpanMessages(before: readonly AgentChatMessage[], after: readonly AgentChatMessage[]): void {
+    if (before.length === 0)
+      return
+    const present = new Set(after.map(message => message.id))
+    const spansInWindow = new Set(after.filter(message => message.spanId).map(messageSpanKey))
+    const departed = before.filter(message => message.spanId && !present.has(message.id) && spansInWindow.has(messageSpanKey(message)))
+    if (departed.length > 0)
+      remember(departed)
+  }
   const unsubscribe = source.subscribe((message) => {
     if (!disposed && (messageLeases.has(message.seq)
       || (message.spanId && (loadedSpans.has(messageSpanKey(message)) || inflight.has(`span:${messageSpanKey(message)}`))))) {
@@ -414,24 +493,40 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
   })
 
   /**
-   * Whether the span of `identity` has nothing left to fetch: it has no id, the resolver
-   * is disposed, the span is in `loadedSpans`, or the browser holds its request. No row
-   * reads its result (see ToolSpanContext), so a held request leaves nothing to fetch.
-   * Reads the caches, so a caller that must not subscribe to them calls it untracked.
+   * Whether no fetch of the span of `identity` can tell more: it has no id, the resolver is
+   * disposed, or a fetch brought the whole span (`loadedSpans`).
    */
-  function spanNeedsNoFetch(identity: MessageSpanIdentity): boolean {
+  function spanSettled(identity: MessageSpanIdentity): boolean {
     return !identity.spanId
       || disposed
       || loadedSpans.has(messageSpanKey(identity))
-      || related(identity, 'request') !== undefined
+  }
+
+  /**
+   * Whether the span of `identity` has nothing left to fetch for a row that reads its
+   * request: the span is settled, or the browser holds its request. No row reads its result
+   * (see ToolSpanContext), so a held request leaves nothing to fetch. Reads the caches, so a
+   * caller that must not subscribe to them calls it untracked.
+   */
+  function spanNeedsNoFetch(identity: MessageSpanIdentity): boolean {
+    return spanSettled(identity) || related(identity, 'request') !== undefined
   }
 
   function loadSpan(identity: MessageSpanIdentity): Promise<void> {
+    // Fetching must not subscribe the caller to cache changes that the fetch causes.
+    return untrack(() => spanNeedsNoFetch(identity)
+      ? Promise.resolve()
+      : fetchWholeSpan(identity))
+  }
+
+  /**
+   * Fetch every message of the span of `identity`, and mark the span as settled. A second
+   * caller while the fetch runs shares it.
+   */
+  function fetchWholeSpan(identity: MessageSpanIdentity): Promise<void> {
     const spanId = messageSpanKey(identity)
     // Fetching must not subscribe the caller to cache changes that the fetch causes.
     return untrack(async () => {
-      if (spanNeedsNoFetch(identity))
-        return Promise.resolve()
       const key = `span:${spanId}`
       const running = inflight.get(key)
       if (running)
@@ -548,16 +643,32 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       try {
         const identity = messageSpanIdentity(message)
         const resolved = current(message, parsed)
-        const needsRequest = pluginFor(message.agentProvider)?.transcript.needsRequest?.(resolved.resolved) ?? false
-        if (!needsRequest || spanNeedsNoFetch(identity))
+        const spanRole = role(message, parsed)
+        // The window paired this frame as the request of its span by its place alone, and
+        // an earlier frame of the span can lie in an older page (see pairedByPlace).
+        const pairedByPlaceInWindow = spanRole === 'request'
+          && resolvedSpanRole(resolved.resolved, resolved.message.agentProvider) === 'other'
+          && !source.holdsOldest()
+        if (pairedByPlaceInWindow) {
+          return spanSettled(identity)
+            ? undefined
+            : fetchWholeSpan(identity)
+        }
+        const drawsFromRequest = pluginFor(message.agentProvider)?.transcript.needsRequest?.(resolved.resolved) ?? false
+        const sitsBesideRequest = spanRole !== 'request' && spanRole !== 'none'
+        if ((!drawsFromRequest && !sitsBesideRequest) || spanNeedsNoFetch(identity))
           return undefined
-        return loadSpan(identity)
+        return fetchWholeSpan(identity)
       }
       catch (error) {
         // A failure to read the row is a failed lookup, as it was a rejection before.
         return Promise.reject(error)
       }
     }),
+    // Not an async function, for the reason of loadRequest.
+    loadResult: identity => untrack(() => spanSettled(identity) || source.holdsNewest() || related(identity, 'result') !== undefined
+      ? undefined
+      : fetchWholeSpan(identity)),
     retainSpan: (identity) => {
       if (!identity.spanId || disposed)
         return () => undefined

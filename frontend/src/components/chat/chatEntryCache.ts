@@ -1,5 +1,6 @@
 import type { Accessor } from 'solid-js'
 import type { ContentKeyInputs } from './chatRowGeometry'
+import type { MessageCategory } from './messageClassifier'
 import type { ResolvedMessage } from './messageContextResolver'
 import type { PreparedMessage } from './rowPreparation'
 import type { SpanLine } from './widgets/SpanLines'
@@ -9,7 +10,7 @@ import type { SettingsLabelDependency } from '~/lib/settingsLabelCache'
 import { createMemo } from 'solid-js'
 import { messageSpanIdentity, messageSpanKey } from '~/lib/messageSpan'
 import { collectSettingsLabelDependencies, settingsLabelCacheRevision, settingsLabelDependencyRevision } from '~/lib/settingsLabelCache'
-import { shallowEqual } from '~/lib/shallowEqual'
+import { shallowEqual, shallowEqualSets } from '~/lib/shallowEqual'
 import { rowRevisionKey } from './chatRevisionKey'
 import { buildContentKey, buildHeightKey } from './chatRowGeometry'
 import { hasCompactionEnd } from './model/notification'
@@ -317,19 +318,103 @@ export function createClassifiedEntryCache(deps: ClassifiedEntryCacheDeps): Clas
 }
 
 /**
- * The span keys of the request rows that the list draws, from the entries that it lists:
- * an entry of a span whose span role is request and whose category the transcript draws
- * as a row. A row of another span reads this as `ToolSpanRowPresence.request`: a result
- * row beside its request row draws no header and no request side.
+ * Whether the transcript draws a message as the request row of its span: the message has
+ * a span, its span role is request, and its category is one that the transcript draws as a
+ * row. The one rule for a message in the loaded window and for one outside it (see
+ * createRequestRowPresence).
  *
  * A hidden request draws no request row, also while the debug preference lists it as its
  * raw payload, so the row of its result then draws the request side itself.
  */
+function drawsRequestRow(spanId: string, role: ToolSpanRole, kind: MessageCategory['kind']): boolean {
+  return spanId !== '' && role === 'request' && kind !== 'hidden'
+}
+
+/**
+ * The span keys of the request rows that the list draws, from the entries that it lists
+ * (see drawsRequestRow).
+ */
 export function listedRequestSpanKeys(entries: readonly ClassifiedEntry[]): ReadonlySet<string> {
   const keys = new Set<string>()
   for (const entry of entries) {
-    if (entry.message.spanId !== '' && entry.freshness.role === 'request' && entry.category.kind !== 'hidden')
+    if (drawsRequestRow(entry.message.spanId, entry.freshness.role, entry.category.kind))
       keys.add(messageSpanKey(entry.message))
   }
   return keys
+}
+
+export interface RequestRowPresenceDeps {
+  /** The entries that the list draws (ClassifiedEntryCache.visibleEntries). */
+  entries: Accessor<readonly ClassifiedEntry[]>
+  /**
+   * The entry of a message of the loaded window, hidden or not, or `undefined` for a
+   * message outside it (ClassifiedEntryCache.getEntry).
+   */
+  windowEntry: (id: string) => ClassifiedEntry | undefined
+  /**
+   * The request of a span that the resolver holds: a message of the loaded window, or one
+   * that a fetch of the span brought (MessageContextResolver.request).
+   */
+  request: (identity: MessageSpanIdentity) => ResolvedMessage | undefined
+  /** The span role of a message (MessageContextResolver.role). */
+  role: (message: AgentChatMessage) => ToolSpanRole
+  /** Whether the messages belong to a subagent's own transcript (see ClassifiedEntryCacheDeps). */
+  isChildTranscript?: () => boolean
+}
+
+/**
+ * Whether the TRANSCRIPT draws the request of a span as its own row, as a row of the span
+ * reads it (`ToolSpanRowPresence.request`): a result row beside its request row draws no
+ * header and no request side. Call it within a reactive owner: it creates a memo.
+ *
+ * The answer must not follow the loaded window. A result row whose request lies in an
+ * older page would otherwise draw the request side until that page loads, and then lose
+ * it: the reader scrolls up to the result row, the older page arrives, and the row
+ * shrinks by its header and its request side in view. On a phone a command summary wraps
+ * to several lines, and the content moved by 170px. So the answer holds for the request
+ * that the resolver holds, in the window or not:
+ *
+ * - A span whose request row the list draws: yes.
+ * - A span whose request is in the loaded window, and the list draws no request row for
+ *   it (a hidden request): no.
+ * - A span whose request lies outside the window, and the resolver fetched it: the rule of
+ *   the list for that message (see drawsRequestRow), so the row draws the same thing
+ *   before and after the page of the request loads.
+ * - A span whose request the browser does not hold: no. A row that draws from this answer
+ *   waits for the fetch of its span before it reports a height (see
+ *   MessageContextResolver.loadRequest), so it keeps its height when the answer becomes
+ *   known.
+ */
+export function createRequestRowPresence(deps: RequestRowPresenceDeps): (identity: MessageSpanIdentity) => boolean {
+  const listed = createMemo(() => listedRequestSpanKeys(deps.entries()), new Set<string>(), { equals: shallowEqualSets })
+  // The category of a request outside the window depends only on its own payload and on
+  // the kind of transcript, so it is kept for each resolved payload and each kind. The role
+  // is read every time: it depends on the other messages of the span.
+  const outsideKinds = new WeakMap<ResolvedMessage, Map<boolean, MessageCategory['kind']>>()
+  const outsideKind = (request: ResolvedMessage): MessageCategory['kind'] => {
+    const isChildTranscript = deps.isChildTranscript?.() ?? false
+    let kinds = outsideKinds.get(request)
+    if (kinds === undefined) {
+      kinds = new Map()
+      outsideKinds.set(request, kinds)
+    }
+    let kind = kinds.get(isChildTranscript)
+    if (kind === undefined) {
+      kind = prepareMessage(request.message, { original: request.original, resolved: request.resolved, isChildTranscript }).category.kind
+      kinds.set(isChildTranscript, kind)
+    }
+    return kind
+  }
+  return (identity) => {
+    if (listed().has(messageSpanKey(identity)))
+      return true
+    const request = deps.request(identity)
+    if (request === undefined)
+      return false
+    // The list holds the request and draws no request row for it: `listed` holds every
+    // entry of the window that draws one.
+    if (deps.windowEntry(request.message.id) !== undefined)
+      return false
+    return drawsRequestRow(request.message.spanId, deps.role(request.message), outsideKind(request))
+  }
 }

@@ -28,6 +28,7 @@ import { formatErrorMessage } from '~/lib/errors'
 import { cancelIdle, requestIdle } from '~/lib/idleCallback'
 import { prettifyJson } from '~/lib/jsonFormat'
 import { createLogger } from '~/lib/logger'
+import { messageSpanIdentity } from '~/lib/messageSpan'
 import { formatChatQuote } from '~/lib/quoteUtils'
 import { resolveStack } from '~/lib/resolveStack'
 import { appendCompletionMarker } from './assembledMessage'
@@ -44,7 +45,7 @@ import { imageActionsFrom, reviewActionsFrom, subagentsFrom } from './renderCont
 import { useRequestReadiness } from './renderReadiness'
 import { quotableTextForRow } from './results/rowText'
 import { pendingRowRequest, ToolPendingMessage } from './results/ToolPendingMessage'
-import { rowExpandKey } from './results/toolRowState'
+import { REQUEST_ROW_EXPAND_KEYS, rowExpandKey } from './results/toolRowState'
 import { dispatchParts } from './results/tools/index'
 import { toolCallMeta } from './results/tools/meta'
 import { extractedRow } from './rowExtraction'
@@ -231,11 +232,12 @@ export interface MessageBubbleHost {
    */
   pendingRowOpen?: (() => boolean) | undefined
   /**
-   * Whether the list draws the REQUEST row of a span (see listedRequestSpanKeys). A row
-   * of the span reads it as `visibleRows.request`. A host that lists no rows states none,
-   * and the row then draws its request side itself.
+   * Whether the transcript draws the REQUEST of a span as its own row, also while that row
+   * lies outside the loaded window (see createRequestRowPresence). A row of the span reads
+   * it as `visibleRows.request`. A host that lists no rows states none, and the row then
+   * draws its request side itself.
    */
-  requestRowListed?: ((identity: MessageSpanIdentity) => boolean) | undefined
+  requestRowDrawn?: ((identity: MessageSpanIdentity) => boolean) | undefined
 }
 
 interface MessageBubbleProps {
@@ -296,7 +298,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     () => props.host?.messages,
     () => prepared().message,
     displayParsed,
-    identity => props.host?.requestRowListed?.(identity) ?? false,
+    identity => props.host?.requestRowDrawn?.(identity) ?? false,
   )
 
   // Full raw JSON for the Raw JSON display. Plain function (not createMemo)
@@ -325,10 +327,11 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   })
 
   // The fetch of the REQUEST of a tool call, as the bubble reports it to the readiness
-  // scope of its row copy. Only a row that draws from its request asks for it (see
-  // `needsRequest` of the provider plugin): a result row whose own frame states no tool
-  // name or no arguments. No row ever waits for its RESULT, because no row reads a later
-  // message of its span (see ToolSpanContext).
+  // scope of its row copy. A row asks for it when it depends on the request and the
+  // browser does not hold it (see MessageContextResolver.loadRequest): a row that draws
+  // from its request, and a result or update row, which draws its own header and request
+  // side only while the transcript draws no request row beside it. No row ever waits for
+  // its RESULT, because no row reads a later message of its span (see ToolSpanContext).
   //
   // - A hidden premeasure copy must not report a height before it shows what the row in
   //   the list will show: a height without the request is wrong, and the row would
@@ -415,6 +418,31 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     props.host?.getMessageUiState?.(toolExpandKey()) ?? messageUiDefault(toolExpandKey())
   const toggleToolResultExpanded = () =>
     props.host?.setMessageUiState?.(toolExpandKey(), !toolResultExpanded())
+
+  // The fetch of the RESULT of the span, for the header of an expanded request row (see
+  // MessageContextResolver.loadResult). Such a header wraps the words of the newest call of
+  // its span (see toolHeader below), so the row copy waits for the lookup as it waits for
+  // the request: a height measured with the words of the request alone changed when the
+  // newer page that holds the result loaded.
+  const headerWraps = (): boolean => REQUEST_ROW_EXPAND_KEYS.some(key => props.host?.getMessageUiState?.(key) ?? messageUiDefault(key))
+  createEffect(() => {
+    const resolver = props.host?.messages
+    const current = toolRow()
+    if (!resolver || props.pending || current === null || current.role === 'result' || !props.message.spanId || !headerWraps())
+      return
+    const spanId = props.message.spanId
+    const fetch = resolver.loadResult(messageSpanIdentity(props.message))
+    if (fetch === undefined)
+      return
+    const endWait = requestLookup.begin()
+    onCleanup(endWait)
+    void fetch
+      .catch((error: unknown) => {
+        if (!(error instanceof DOMException && error.name === 'AbortError'))
+          console.warn('Cannot load the result of a tool call for its header', { spanId, error })
+      })
+      .finally(endWait)
+  })
 
   // The newest call of this row's span that the browser holds, which a REQUEST row heads
   // itself with: the call the result row draws, read through the same extraction. Only

@@ -2802,6 +2802,74 @@ describe('the request of a tool call in a hidden copy', () => {
     await waitFor(() => expect(scope.measurable()).toBe(true))
   })
 
+  /**
+   * Mount the copy of the request row `request` with the expand state `expanded`, over a
+   * resolver whose lookup of the result the test controls.
+   */
+  function mountRequestCopy(request: AgentChatMessage, expanded: boolean, loadResult: MessageContextResolver['loadResult']) {
+    const resolver: MessageContextResolver = {
+      ...testMessageContext({
+        messages: () => [
+          request,
+        ],
+      }),
+      loadResult,
+    }
+    let scope!: RenderReadinessScope
+    render(() => {
+      scope = createRenderReadinessScope()
+      return (
+        <PreferencesProvider>
+          <MessageBubble
+            message={request}
+            host={{
+              messages: resolver,
+              getMessageUiState: key => key === MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED
+                ? expanded
+                : undefined,
+            }}
+            premeasureMode
+            readiness={scope}
+          />
+        </PreferencesProvider>
+      )
+    })
+    return scope
+  }
+
+  // An expanded request row heads itself with the words of the newest call of its span, so
+  // its copy waits for the lookup of the result as it waits for the request.
+  it('holds the copy of an expanded request row until the lookup of its result settles', async () => {
+    const lookup = deferred<void>()
+    const loadResult = vi.fn(() => lookup.promise)
+    const scope = mountRequestCopy(toolRequest('toolu_b'), true, loadResult)
+
+    await waitFor(() => expect(loadResult).toHaveBeenCalledOnce())
+    expect(loadResult).toHaveBeenCalledWith({ spanId: 'toolu_b', agentSessionId: '' })
+    expect(scope.measurable()).toBe(false)
+
+    lookup.resolve()
+    await waitFor(() => expect(scope.measurable()).toBe(true))
+  })
+
+  it('looks no result up, and holds nothing, for a collapsed request row', async () => {
+    const loadResult = vi.fn(() => undefined)
+    const scope = mountRequestCopy(toolRequest('toolu_b'), false, loadResult)
+    await settleWorkerReplies()
+
+    expect(loadResult).not.toHaveBeenCalled()
+    expect(scope.measurable()).toBe(true)
+  })
+
+  it('looks no result up for a result row, whose header is its own', async () => {
+    const loadResult = vi.fn(() => undefined)
+    const scope = mountRequestCopy(toolResult('toolu_a'), true, loadResult)
+    await settleWorkerReplies()
+
+    expect(loadResult).not.toHaveBeenCalled()
+    expect(scope.measurable()).toBe(true)
+  })
+
   it('releases the copy when the lookup fails', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {

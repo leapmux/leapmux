@@ -23,6 +23,18 @@ const AGE_UNITS = [
 ] as const
 
 /**
+ * The widest text that `formatCompactAge` gives for an age below 100 years: two digits and
+ * the longest suffix of the ladder. Every unit below a year counts to at most two digits,
+ * and only the year can reach three. The longest suffix, `mo`, starts with `m`, the widest
+ * letter of the single-letter suffixes. So in tabular digits no other age is wider, and a box
+ * that holds this text holds every age: a layout keeps one width while an age ticks from
+ * `9s` to `10s` or from `59s` to `1m`.
+ */
+export const WIDEST_COMPACT_AGE = `00${AGE_UNITS.reduce<string>((longest, unit) => unit.suffix.length > longest.length
+  ? unit.suffix
+  : longest, '')}`
+
+/**
  * Format how long ago an instant was, compactly: `3s`, `12m`, `2h`, `5d`,
  * `3mo`, `2y`.
  *

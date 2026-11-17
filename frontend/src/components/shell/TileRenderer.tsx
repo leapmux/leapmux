@@ -674,6 +674,8 @@ export function createTileRenderer(opts: TileRendererOpts) {
       subscribe: observer => chatStore.subscribeMessages(agentId, observer),
       backgroundTask: rowKey => backgroundRows().get(rowKey),
       progress: identity => chatStore.getToolProgress(agentId, identity),
+      holdsOldest: () => !chatStore.hasOlderMessages(agentId),
+      holdsNewest: () => !chatStore.hasNewerMessages(agentId),
     })
     return [key, resolver] as const
   }))

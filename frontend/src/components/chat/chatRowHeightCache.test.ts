@@ -615,3 +615,108 @@ describe('createRowHeightCache', () => {
     expect(cache.lastMeasurement()).toBe(recorded)
   })
 })
+
+describe('the leapmux:chat-row-height event', () => {
+  /** Run `body` with development events on, and return the details of the height events that it sent. */
+  function recordHeightEvents(body: () => void): unknown[] {
+    const events: unknown[] = []
+    const record = (event: Event) => {
+      if (event instanceof CustomEvent)
+        events.push(event.detail)
+    }
+    window.addEventListener('leapmux:chat-row-height', record)
+    vi.stubEnv('LEAPMUX_DEV', '1')
+    try {
+      body()
+    }
+    finally {
+      window.removeEventListener('leapmux:chat-row-height', record)
+      vi.unstubAllEnvs()
+    }
+    return events
+  }
+
+  // An E2E spec reads a commit of a mounted row as a row that changed its height in view.
+  it('reports each commit that changes a height, with the row, the source and both keys', () => {
+    const cache = newCache()
+    const sequenced = {
+      ...row('r1', 'k1'),
+      seq: 12n,
+    }
+    const events = recordHeightEvents(() => {
+      cache.commit(sequenced, 210.5, 'k1', 'premeasure')
+      cache.noteMounted('r1')
+      cache.commit({ ...sequenced, heightKey: 'k2' }, 40.25, 'k2', 'visible')
+    })
+    expect(events).toEqual([
+      {
+        id: 'r1',
+        seq: '12',
+        source: 'premeasure',
+        mounted: false,
+        previousHeight: null,
+        height: 210.5,
+        previousKey: null,
+        heightKey: 'k1',
+      },
+      {
+        id: 'r1',
+        seq: '12',
+        source: 'visible',
+        mounted: true,
+        previousHeight: 210.5,
+        height: 40.25,
+        previousKey: 'k1',
+        heightKey: 'k2',
+      },
+    ])
+  })
+
+  it('reports no commit that keeps the height, refuses the key, or confirms a height under a new key', () => {
+    const cache = newCache()
+    cache.commit(row('r1', 'k1'), 100, 'k1', 'premeasure')
+    cache.noteMounted('r1')
+    const events = recordHeightEvents(() => {
+      // Within the jitter of a measure.
+      cache.commit(row('r1', 'k1'), 100.25, 'k1', 'visible')
+      // The key of another state of the row.
+      cache.commit(row('r1', 'k1'), 300, 'k0', 'visible')
+      // The same height under a new key.
+      cache.commit(row('r1', 'k2'), 100, 'k2', 'visible')
+    })
+    expect(events).toEqual([])
+  })
+
+  it('reports a row with no sequence number with a null one', () => {
+    const cache = newCache()
+    const events = recordHeightEvents(() => cache.commit(row('pending'), 30, 'a', 'premeasure'))
+    expect(events).toEqual([
+      {
+        id: 'pending',
+        seq: null,
+        source: 'premeasure',
+        mounted: false,
+        previousHeight: null,
+        height: 30,
+        previousKey: null,
+        heightKey: 'a',
+      },
+    ])
+  })
+
+  it('reports nothing outside a development build', () => {
+    const cache = newCache()
+    const events: unknown[] = []
+    const record = (event: Event) => events.push(event)
+    window.addEventListener('leapmux:chat-row-height', record)
+    vi.stubEnv('LEAPMUX_DEV', '')
+    try {
+      cache.commit(row('r1'), 50, 'a', 'premeasure')
+    }
+    finally {
+      window.removeEventListener('leapmux:chat-row-height', record)
+      vi.unstubAllEnvs()
+    }
+    expect(events).toEqual([])
+  })
+})
