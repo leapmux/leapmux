@@ -9,7 +9,7 @@ import { assistantBubbles, CHAT_SCROLL_CONTAINER, chatDistanceFromBottom, chatSc
 
 /**
  * Reads and actions for the specs that check that the chat view keeps what the reader sees in place
- * (`048*-chat-scroll-stability*.spec.ts` and `codex/chat-scroll-stability-file-image.spec.ts`).
+ * (`048*-chat-scroll-stability*.spec.ts` and `codex/chat-scroll-stability-*.spec.ts`).
  *
  * Each read of a row runs in ONE `evaluate` on the scroll container, which the app never rebuilds. A read through a
  * chat locator could hold a row that ChatView replaced between the resolve and the read (see `readAttached`). The
@@ -398,29 +398,51 @@ export interface WatchedRow {
   /** The distance from the top edge of the scroll container to the top edge of the row. */
   top: number
   height: number
+  /**
+   * The identity of the element of the row: one number for each element, for the life of the watch. A row that mounts
+   * again has another element, and so another number.
+   */
+  element: number
+  /** Whether the row shows. A row that waits for its content (`visibility: hidden`) shows nothing. */
+  shown: boolean
 }
 
-/** The rows that one animation frame showed: each row that reaches into the view, and that shows. */
+/** The rows that one animation frame held in the view: each mounted row that reaches into it. */
 export type WatchedFrame = readonly WatchedRow[]
 
-/** A change between two consecutive frames that no scroll makes. */
+/** A change in the view that no scroll makes. */
 export interface FrameJump {
-  /** The index of the later frame, in the order of the watch. */
+  /** The index of the frame that shows the change, in the order of the watch. */
   frame: number
   /**
-   * `height`: a row in both frames changed its height. `shear`: two rows in both frames moved by distances that
-   * differ, so a part of the view moved against the rest of it.
+   * - `remount`: a row in the view mounted again: it had another element a few frames before (see
+   *   REMOUNT_WINDOW_FRAMES). The reader sees the row vanish and come back, or turn into its skeleton.
+   * - `height`: a row that shows in both of two consecutive frames changed its height.
+   * - `shear`: two rows that show in both frames moved by distances that differ, so a part of the view moved against
+   *   the rest of it.
    */
-  kind: 'height' | 'shear'
+  kind: 'remount' | 'height' | 'shear'
   /** The rows and the distances, for the failure message. */
   detail: string
 }
 
 /**
- * The jumps between consecutive frames of `frames`. A scroll moves every row on screen by one distance and changes no
- * height. So in a transcript that does not change, each row that two consecutive frames show keeps its height, within
- * `tolerancePx`, and all of them move by the same distance, within `tolerancePx`. A row that only one frame shows,
- * because it mounted, unmounted or scrolled into the view, counts for nothing.
+ * The most frames between two samples of a row in the view in which a new element of the row counts as a `remount`.
+ * The rendered rows reach past the view by the overscan, so a row that scrolls out of the rendered rows and back takes
+ * far more frames than this. A row that unmounts and mounts again within one task shows a new element in the next
+ * frame. One that unmounts in one task and mounts again in a later one can leave a frame or two with no row.
+ */
+export const REMOUNT_WINDOW_FRAMES = 3
+
+/**
+ * The jumps in `frames`. A scroll moves every row on screen by one distance, changes no height, and keeps every
+ * element. So in a transcript that does not change:
+ *
+ * - Each row in the view keeps its element. A row with a new element within REMOUNT_WINDOW_FRAMES frames of its last
+ *   sample mounted again. It counts whether it shows or waits for its content.
+ * - Each row that shows in two consecutive frames keeps its height, within `tolerancePx`, and all of those rows move
+ *   by the same distance, within `tolerancePx`. A row that only one of the two frames shows, because it mounted,
+ *   unmounted, scrolled into the view or waits for its content, counts for nothing here.
  *
  * The check needs no knowledge of the input: a wheel, a drag, a fling, and a rebase of the layout shift each move
  * every row by one distance. A row that changes its height in view moves the rows on one side of it and not the rows
@@ -431,12 +453,23 @@ export function frameJumps(frames: readonly WatchedFrame[], tolerancePx = 1): Fr
   // of the floating point sum.
   const px = (length: number): string => `${Number(length.toFixed(2))}px`
   const jumps: FrameJump[] = []
-  for (let frame = 1; frame < frames.length; frame++) {
-    const before = new Map(frames[frame - 1]!.map(row => [row.seq, row]))
+  // The last sample of each row: the index of its frame, and its element.
+  const lastSample = new Map<string, { frame: number, element: number }>()
+  for (let frame = 0; frame < frames.length; frame++) {
+    const rows = frames[frame]!
+    for (const row of rows) {
+      const last = lastSample.get(row.seq)
+      if (last !== undefined && last.element !== row.element && frame - last.frame <= REMOUNT_WINDOW_FRAMES)
+        jumps.push({ frame, kind: 'remount', detail: `the row of seq ${row.seq} mounted again ${frame - last.frame} frame(s) after its last sample` })
+      lastSample.set(row.seq, { frame, element: row.element })
+    }
+    if (frame === 0)
+      continue
+    const before = new Map(frames[frame - 1]!.filter(row => row.shown).map(row => [row.seq, row]))
     const moves: { seq: string, distance: number }[] = []
-    for (const row of frames[frame]!) {
+    for (const row of rows) {
       const earlier = before.get(row.seq)
-      if (earlier === undefined)
+      if (earlier === undefined || !row.shown)
         continue
       if (Math.abs(row.height - earlier.height) > tolerancePx)
         jumps.push({ frame, kind: 'height', detail: `the row of seq ${row.seq} changed its height from ${px(earlier.height)} to ${px(row.height)}` })
@@ -466,13 +499,16 @@ interface FrameWatchState {
 const FRAME_WATCH_KEY = '__chatScrollStabilityFrameWatch'
 
 /**
- * Sample, in every animation frame, each row of `container` that reaches into the view and shows, and keep the frames
- * on `window` under `key`. A row that waits for its content (`visibility: hidden`) shows nothing, so it counts for
- * nothing. Runs in the browser.
+ * Sample, in every animation frame, each mounted row of `container` that reaches into the view, and keep the frames on
+ * `window` under `key`. Each sample states the element of the row, and whether the row shows: a row that waits for its
+ * content (`visibility: hidden`) shows nothing. Runs in the browser.
  */
 export function startFrameWatchIn(container: Element, key: string): void {
   const state: FrameWatchState = { frames: [], stopped: false }
   Reflect.set(window, key, state)
+  // A number for each row element that the watch samples, so a row that mounts again shows as another element.
+  const elementIds = new WeakMap<Element, number>()
+  let nextElementId = 0
   const sample = () => {
     if (state.stopped)
       return
@@ -482,9 +518,20 @@ export function startFrameWatchIn(container: Element, key: string): void {
     for (const row of Array.from(container.querySelectorAll<HTMLElement>('[data-seq]'))) {
       const rect = row.getBoundingClientRect()
       const seq = row.dataset.seq
-      if (seq === undefined || row.style.visibility === 'hidden' || rect.bottom <= top || rect.top >= bottom)
+      if (seq === undefined || rect.bottom <= top || rect.top >= bottom)
         continue
-      rows.push({ seq, top: rect.top - top, height: rect.height })
+      let element = elementIds.get(row)
+      if (element === undefined) {
+        element = ++nextElementId
+        elementIds.set(row, element)
+      }
+      rows.push({
+        seq,
+        top: rect.top - top,
+        height: rect.height,
+        element,
+        shown: row.style.visibility !== 'hidden',
+      })
     }
     state.frames.push(rows)
     requestAnimationFrame(sample)
@@ -513,8 +560,9 @@ export interface FrameWatch {
 
 /**
  * Sample every row in the view in every animation frame, until the caller stops the watch, and check that the rows
- * only moved together, as a scroll moves them (see frameJumps). A check at rest sees only the end state, and a check of
- * one row sees no row that changes its height below it.
+ * only moved together, as a scroll moves them, and kept their elements (see frameJumps). A check at rest sees only the
+ * end state, and a check of one row sees no row that changes its height below it. A check of a row by its sequence
+ * number sees no row that mounts again.
  */
 export async function watchFrames(page: Page): Promise<FrameWatch> {
   await chatScrollContainer(page).evaluate(startFrameWatchIn, FRAME_WATCH_KEY)
@@ -523,7 +571,7 @@ export async function watchFrames(page: Page): Promise<FrameWatch> {
       const frames = await page.evaluate(stopFrameWatchIn, FRAME_WATCH_KEY)
       expect(frames, `${when}: the frame watch ran`).not.toBeNull()
       expect(frames!.length, `${when}: the frame watch sampled frames`).toBeGreaterThan(1)
-      expect(frameJumps(frames!), `${when}: the rows in view only move together`).toEqual([])
+      expect(frameJumps(frames!), `${when}: the rows in view keep their elements and only move together`).toEqual([])
     },
   }
 }

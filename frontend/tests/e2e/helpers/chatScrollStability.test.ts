@@ -19,6 +19,7 @@ import {
   paragraphMarker,
   premeasureCommitIn,
   releaseHeldRepliesIn,
+  REMOUNT_WINDOW_FRAMES,
   rowBoxIn,
   rowDistanceIn,
   rowHeightChangesIn,
@@ -978,8 +979,12 @@ describe('clearStoredRowHeights', () => {
 })
 
 describe('frameJumps', () => {
-  /** A frame of rows, from [seq, top, height] triples. */
-  const frame = (...rows: [string, number, number][]): WatchedFrame => rows.map(([seq, top, height]) => ({ seq, top, height }))
+  /**
+   * A frame of rows, from [seq, top, height] triples. Each row shows, and keeps one element per seq, unless a fourth
+   * member gives its element and a fifth whether it shows.
+   */
+  const frame = (...rows: ([string, number, number] | [string, number, number, number, boolean?])[]): WatchedFrame =>
+    rows.map(([seq, top, height, element = Number(seq), shown = true]) => ({ seq, top, height, element, shown }))
 
   it('finds no jump when every row moves by one distance and keeps its height', () => {
     expect(frameJumps([
@@ -1042,6 +1047,57 @@ describe('frameJumps', () => {
       frame(),
     ])).toEqual([])
   })
+
+  // The defect that the element check exists for: an older page arrived during a fling, and every row in the view
+  // unmounted and mounted again in one task, as a skeleton, at the same place.
+  it('reports each row in the view that has a new element in the next frame', () => {
+    expect(frameJumps([
+      frame(['3929', 0, 120, 10], ['3930', 140, 60, 11]),
+      frame(['3929', -20, 120, 12], ['3930', 120, 60, 13]),
+    ])).toEqual([
+      { frame: 1, kind: 'remount', detail: 'the row of seq 3929 mounted again 1 frame(s) after its last sample' },
+      { frame: 1, kind: 'remount', detail: 'the row of seq 3930 mounted again 1 frame(s) after its last sample' },
+    ])
+  })
+
+  it('reports a row that mounts again after frames with no row, up to REMOUNT_WINDOW_FRAMES frames apart', () => {
+    const gap = (frames: number) => Array.from({ length: frames }, () => frame())
+    expect(frameJumps([
+      frame(['1', 0, 100, 1]),
+      ...gap(REMOUNT_WINDOW_FRAMES - 1),
+      frame(['1', 0, 100, 2]),
+    ])).toEqual([
+      { frame: REMOUNT_WINDOW_FRAMES, kind: 'remount', detail: `the row of seq 1 mounted again ${REMOUNT_WINDOW_FRAMES} frame(s) after its last sample` },
+    ])
+  })
+
+  it('counts a new element for nothing when the row left the view for longer than REMOUNT_WINDOW_FRAMES frames', () => {
+    // A row that scrolls out of the rendered rows and back unmounts on the way, and comes back as another element.
+    expect(frameJumps([
+      frame(['1', 0, 100, 1]),
+      ...Array.from({ length: REMOUNT_WINDOW_FRAMES }, () => frame()),
+      frame(['1', 0, 100, 2]),
+    ])).toEqual([])
+  })
+
+  it('reports a row that mounts again while it waits for its content, and checks no height or move of such a row', () => {
+    expect(frameJumps([
+      frame(['1', 0, 100, 1, true], ['2', 120, 40, 2, true]),
+      // The row mounts again hidden, with no content yet, so it has no height of its own and stays where it was.
+      frame(['1', 10, 0, 3, false], ['2', 130, 40, 2, true]),
+      frame(['1', 20, 100, 3, true], ['2', 140, 40, 2, true]),
+    ])).toEqual([
+      { frame: 1, kind: 'remount', detail: 'the row of seq 1 mounted again 1 frame(s) after its last sample' },
+    ])
+  })
+
+  it('reports no remount for a row that keeps its element while it waits for its content', () => {
+    expect(frameJumps([
+      frame(['1', 0, 100, 1, false]),
+      frame(['1', 10, 100, 1, true]),
+      frame(['1', 20, 100, 1, false]),
+    ])).toEqual([])
+  })
 })
 
 describe('startFrameWatchIn', () => {
@@ -1066,7 +1122,7 @@ describe('startFrameWatchIn', () => {
     return container
   }
 
-  it('samples each row that reaches into the view and shows, in each frame, until the watch stops', () => {
+  it('samples each row that reaches into the view, with its element and whether it shows, until the watch stops', () => {
     const frames = installFrames()
     const container = viewWith([
       // Ends exactly at the top of the view.
@@ -1087,15 +1143,65 @@ describe('startFrameWatchIn', () => {
 
     expect(watched).toEqual([
       [
-        { seq: '2', top: -10, height: 40 },
-        { seq: '3', top: 200, height: 60 },
+        {
+          seq: '2',
+          top: -10,
+          height: 40,
+          element: 1,
+          shown: true,
+        },
+        {
+          seq: '3',
+          top: 200,
+          height: 60,
+          element: 2,
+          shown: true,
+        },
       ],
       [
-        { seq: '2', top: -10, height: 40 },
+        {
+          seq: '2',
+          top: -10,
+          height: 40,
+          element: 1,
+          shown: true,
+        },
+        {
+          seq: '3',
+          top: 200,
+          height: 60,
+          element: 2,
+          shown: false,
+        },
       ],
     ])
     // The stopped watch samples no more frames and leaves no state behind.
     expect(Reflect.get(window, KEY)).toBeUndefined()
+  })
+
+  it('gives a row that mounts again a new element, and a row that stays its element', () => {
+    const frames = installFrames()
+    const container = viewWith([
+      { seq: '1', top: 100, height: 100 },
+      { seq: '2', top: 220, height: 40 },
+    ])
+    const remounted = container.querySelector<HTMLElement>('[data-seq="2"]')!
+
+    startFrameWatchIn(container, KEY)
+    frames.runFrames()
+    const replacement = placeAt(document.createElement('div'), 220, 40)
+    replacement.dataset.seq = '2'
+    remounted.replaceWith(replacement)
+    frames.runFrames()
+    const watched = stopFrameWatchIn(KEY)
+
+    expect(watched?.map(rows => rows.map(row => `${row.seq}:${row.element}`))).toEqual([
+      ['1:1', '2:2'],
+      ['1:1', '2:3'],
+    ])
+    expect(frameJumps(watched!)).toEqual([
+      { frame: 1, kind: 'remount', detail: 'the row of seq 2 mounted again 1 frame(s) after its last sample' },
+    ])
   })
 
   it('returns null when no watch runs under the key', () => {

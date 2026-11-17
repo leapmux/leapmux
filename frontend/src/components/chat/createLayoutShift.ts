@@ -3,7 +3,7 @@ import type { LayoutPivot, PivotRow } from './chatLayoutPivot'
 import type { LayoutSnapshot } from './chatLayoutShift'
 import type { ContentMovedReporterDeps } from './chatScrollDiagnostics'
 import type { RowMeasurer } from './createRowMeasurer'
-import { createComputed, createEffect, createSignal, on, onCleanup, untrack } from 'solid-js'
+import { createEffect, createMemo, createSignal, on, onCleanup, untrack } from 'solid-js'
 import { cancelFrame, requestFrame } from '~/lib/animationFrame'
 import { createLayoutPivot } from './chatLayoutPivot'
 import { nextLayoutShift, rowCutAt } from './chatLayoutShift'
@@ -14,7 +14,7 @@ import { readLogicalScrollTop } from './chatScrollGeometry'
 // The layout shift controller of the chat list
 //
 // The virtualizer owns the offset map of the loaded rows. This module owns the layout
-// shift on top of it (see chatLayoutShift.ts): the shift signal, the conversions between
+// shift on top of it (see chatLayoutShift.ts): the shift memo, the conversions between
 // scroll and content coordinates, the spacer height, the pivot element that the shift
 // rule measures (see chatLayoutPivot.ts), and the rebase that moves the shift into
 // `scrollTop`. The virtualizer creates it once, after its row measurer, and exposes its
@@ -185,11 +185,73 @@ export function placementScrollTop(
     : scrollTopOf(contentTop)
 }
 
+/** A rebase: the shift that it kept, and the snapshot that it applied to. */
+interface RebaseRecord {
+  snapshot: LayoutSnapshot | undefined
+  shift: number
+}
+
+/** The layout shift, with the snapshot and the last rebase that it applies to. */
+interface ShiftState {
+  snapshot: LayoutSnapshot | undefined
+  shift: number
+  /** The last rebase that the state applied, or `undefined` before the first one. */
+  rebase: RebaseRecord | undefined
+}
+
+const INITIAL_SHIFT_STATE: ShiftState = { snapshot: undefined, shift: 0, rebase: undefined }
+
 /** Create the layout shift of the virtualized chat list (see the module comment). */
 export function createLayoutShift(deps: LayoutShiftDeps): LayoutShiftController {
-  // The layout shift: `scroll = content + layoutShift + inset`. A computation over the
-  // geometry below sets it, before the render effects of the same update run.
-  const [layoutShift, setLayoutShift] = createSignal(0)
+  // The pivot element that the shift rule measures. Only a list with a scroll element has
+  // one. It is created below, because it reads the conversions, which read the shift. The
+  // shift rule calls it only for a geometry change, after the setup.
+  let pivot: LayoutPivot | undefined
+  // The last rebase. Each rebase records a new object, and the shift continues from it.
+  const [lastRebase, setLastRebase] = createSignal<RebaseRecord>()
+  // The layout shift: `scroll = content + layoutShift + inset`, with the snapshot that it
+  // applies to. It is a memo of the geometry, so a reader gets the shift of the geometry
+  // that it reads, also in a batch whose computations have not run yet. A signal that a
+  // computation of the geometry sets cannot hold this. An effect that changes the heights,
+  // such as the load of the stored heights of an older page, runs no computation until
+  // the other effects of its batch end. A later effect of that batch, such as the refresh
+  // of the rendered rows, would read the new geometry with the old shift: it renders rows
+  // a page away from the viewport, and every mounted row unmounts and mounts again.
+  //
+  // Solid runs the memo before the render effects of an update, so the rows and the layer
+  // reach the DOM in the same flush. It tracks only the geometry and the last rebase.
+  const shiftState = createMemo<ShiftState>((before) => {
+    const next = deps.geometry()
+    const rebase = lastRebase()
+    return untrack((): ShiftState => {
+      // A rebase that the state did not apply yet: the shift continues from what it kept.
+      const from = rebase !== undefined && rebase !== before.rebase
+        ? rebase
+        : before
+      const el = deps.scrollElement?.()
+      if (el === undefined || el.clientHeight === 0)
+        return { snapshot: next, shift: 0, rebase }
+      if (from.snapshot === next)
+        return { snapshot: next, shift: from.shift, rebase }
+      return {
+        snapshot: next,
+        shift: nextLayoutShift({
+          previous: from.snapshot,
+          next,
+          previousShift: from.shift,
+          scrollTop: readLogicalScrollTop(el) - deps.spacerInsetPx(),
+          viewHeight: el.clientHeight,
+          pinBottom: deps.pinBottom(),
+          intraRowShift: rowId => pivot?.takeIntraRowShift(rowId) ?? 0,
+          sawHeight: deps.sawHeight,
+          enteredFromAbove: deps.enteredFromAbove,
+        }),
+        rebase,
+      }
+    })
+  }, INITIAL_SHIFT_STATE)
+  // The shift alone, so a reader runs again only when the shift changes.
+  const layoutShift = createMemo(() => shiftState().shift)
   const contentTopOf = (scrollTop: number): number => scrollTop - layoutShift() - deps.spacerInsetPx()
   const scrollTopOf = (contentTop: number): number => contentTop + layoutShift() + deps.spacerInsetPx()
   const placementScrollTopOf = (contentTop: number): number =>
@@ -219,13 +281,9 @@ export function createLayoutShift(deps: LayoutShiftDeps): LayoutShiftController 
         }
   }
 
-  /**
-   * Create the pivot element that the shift rule measures, and follow each geometry
-   * snapshot with a new shift. Only a list with a scroll element has either.
-   */
-  function followGeometry(scrollElement: () => HTMLElement | undefined): LayoutPivot {
-    const pivot = createLayoutPivot({
-      scrollElement,
+  if (deps.scrollElement !== undefined) {
+    const created = createLayoutPivot({
+      scrollElement: deps.scrollElement,
       pivotRow,
       hasUncommittedHeight: deps.rows.hasUncommittedHeight,
       isSuspended: deps.isSuspended,
@@ -237,47 +295,13 @@ export function createLayoutShift(deps: LayoutShiftDeps): LayoutShiftController 
         lastMeasurement: deps.lastMeasurement,
       }),
     })
-    onCleanup(pivot.dispose)
-
-    // The snapshot that the current shift applies to. The computation keeps its own
-    // copy: the geometry can recompute several times inside one batch, and the shift must
-    // compare the last snapshot that it saw with the one that reaches the DOM.
-    let shiftedSnapshot: LayoutSnapshot | undefined
-    // A computation, not an effect: the rows and the layer must reach the DOM in the
-    // same flush, so the shift must be set before the render effects run. It tracks
-    // only the geometry.
-    createComputed(() => {
-      const next = deps.geometry()
-      untrack(() => {
-        const previous = shiftedSnapshot
-        shiftedSnapshot = next
-        const el = scrollElement()
-        if (el === undefined || el.clientHeight === 0) {
-          setLayoutShift(0)
-          return
-        }
-        setLayoutShift(nextLayoutShift({
-          previous,
-          next,
-          previousShift: layoutShift(),
-          scrollTop: readLogicalScrollTop(el) - deps.spacerInsetPx(),
-          viewHeight: el.clientHeight,
-          pinBottom: deps.pinBottom(),
-          intraRowShift: pivot.takeIntraRowShift,
-          sawHeight: deps.sawHeight,
-          enteredFromAbove: deps.enteredFromAbove,
-        }))
-      })
-    })
+    pivot = created
+    onCleanup(created.dispose)
     // A geometry change or a new shift needs a new record of the pivot element. A fast
     // scroll needs no record when it ends: the pivot records once the scroll position holds
     // for a frame, also while the scroll still counts as fast (see createLayoutPivot).
-    createEffect(on([deps.geometry, layoutShift], () => pivot.scheduleRecord()))
-    return pivot
+    createEffect(on([deps.geometry, layoutShift], () => created.scheduleRecord()))
   }
-  const pivot = deps.scrollElement === undefined
-    ? undefined
-    : followGeometry(deps.scrollElement)
 
   // The two elements that `rebase` writes: the spacer and the layer that holds the rows.
   // Each has its own ref, so each attaches and detaches on its own.
@@ -299,13 +323,16 @@ export function createLayoutShift(deps: LayoutShiftDeps): LayoutShiftController 
   }
 
   const rebase = (): number => {
-    const shift = untrack(layoutShift)
     const el = deps.scrollElement?.()
     if (el === undefined || el.clientHeight === 0)
       return 0
+    // The shift of the current geometry, which the write moves into `scrollTop`.
+    const { snapshot, shift } = untrack(shiftState)
     const kept = applyRebaseWrite(el, shift, writeLayout)
-    // The style bindings write the same two values again on the next flush.
-    setLayoutShift(kept)
+    // A shift that stays as it is needs no record. The style bindings write the same two
+    // values again on the next flush.
+    if (kept !== shift)
+      setLastRebase({ snapshot, shift: kept })
     return shift - kept
   }
 
