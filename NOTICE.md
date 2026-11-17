@@ -53,7 +53,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/jackc/pgerrcode v0.0.0-20250907135507-afb5586c32a6](#githubcomjackcpgerrcode-v000-20250907135507-afb5586c32a6)
 - [github.com/jackc/pgpassfile v1.0.0](#githubcomjackcpgpassfile-v100)
 - [github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761](#githubcomjackcpgservicefile-v000-20240606120523-5a60cdf6a761)
-- [github.com/jackc/pgx/v5 v5.12.0](#githubcomjackcpgxv5-v5120)
+- [github.com/jackc/pgx/v5 v5.13.0](#githubcomjackcpgxv5-v5130)
 - [github.com/jackc/puddle/v2 v2.2.3](#githubcomjackcpuddlev2-v223)
 - [github.com/klauspost/compress v1.20.4](#githubcomklauspostcompress-v1204)
 - [github.com/knadh/koanf/maps v0.1.3](#githubcomknadhkoanfmaps-v013)
@@ -67,14 +67,14 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/magiconair/properties v1.18.12](#githubcommagiconairproperties-v11812)
 - [github.com/matoous/go-nanoid/v2 v2.1.0](#githubcommatoousgo-nanoidv2-v210)
 - [github.com/mattn/go-isatty v0.0.24](#githubcommattngo-isatty-v0024)
-- [github.com/mfridman/interpolate v0.0.2](#githubcommfridmaninterpolate-v002)
+- [github.com/mfridman/interpolate v0.2.0](#githubcommfridmaninterpolate-v020)
 - [github.com/microcosm-cc/bluemonday v1.0.27](#githubcommicrocosm-ccbluemonday-v1027)
 - [github.com/Microsoft/go-winio v0.6.4](#githubcommicrosoftgo-winio-v064)
 - [github.com/mitchellh/copystructure v1.2.0](#githubcommitchellhcopystructure-v120)
 - [github.com/mitchellh/reflectwalk v1.0.2](#githubcommitchellhreflectwalk-v102)
 - [github.com/moby/docker-image-spec v1.3.1](#githubcommobydocker-image-spec-v131)
 - [github.com/moby/go-archive v0.3.3](#githubcommobygo-archive-v033)
-- [github.com/moby/moby/api v1.56.1](#githubcommobymobyapi-v1561)
+- [github.com/moby/moby/api v1.57.0](#githubcommobymobyapi-v1570)
 - [github.com/moby/moby/client v0.6.2](#githubcommobymobyclient-v062)
 - [github.com/moby/patternmatcher v0.6.1](#githubcommobypatternmatcher-v061)
 - [github.com/moby/sys/sequential v0.7.0](#githubcommobysyssequential-v070)
@@ -87,7 +87,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [github.com/opencontainers/image-spec v1.1.1](#githubcomopencontainersimage-spec-v111)
 - [github.com/pandatix/go-abnf v0.5.5](#githubcompandatixgo-abnf-v055)
 - [github.com/philhofer/fwd v1.2.1](#githubcomphilhoferfwd-v121)
-- [github.com/pressly/goose/v3 v3.30.0](#githubcompresslygoosev3-v3300)
+- [github.com/pressly/goose/v3 v3.30.1](#githubcompresslygoosev3-v3301)
 - [github.com/prometheus/client_golang v1.25.0](#githubcomprometheusclient_golang-v1250)
 - [github.com/prometheus/client_model v0.6.3](#githubcomprometheusclient_model-v063)
 - [github.com/prometheus/common v0.73.1](#githubcomprometheuscommon-v0731)
@@ -4788,7 +4788,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### github.com/jackc/pgx/v5 v5.12.0
+### github.com/jackc/pgx/v5 v5.13.0
 
 ```
 Copyright (c) 2013-2021 Jack Christensen
@@ -5608,7 +5608,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### github.com/mfridman/interpolate v0.0.2
+### github.com/mfridman/interpolate v0.2.0
 
 ```
 MIT License
@@ -6160,7 +6160,7 @@ THE SOFTWARE.
    limitations under the License.
 ```
 
-### github.com/moby/moby/api v1.56.1
+### github.com/moby/moby/api v1.57.0
 
 ```
                                  Apache License
@@ -8071,7 +8071,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-### github.com/pressly/goose/v3 v3.30.0
+### github.com/pressly/goose/v3 v3.30.1
 
 ```
 MIT License
