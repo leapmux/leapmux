@@ -114,7 +114,9 @@ describe('message context rendering', () => {
     expect(fetchSpan).toHaveBeenCalledOnce()
   })
 
-  it('does not fetch related history for a self-contained Codex tool row', async () => {
+  // The row draws its own header and command only while the transcript draws no request
+  // row beside it, so it learns from the span whether a request row exists before it shows.
+  it('fetches the span of a self-contained Codex result row whose request the window does not hold', async () => {
     const message = makeMessage({
       id: 'command',
       seq: 3n,
@@ -140,7 +142,7 @@ describe('message context rendering', () => {
       <PreferencesProvider><MessageBubble message={message} host={{ messages: context }} /></PreferencesProvider>
     ))
     await waitFor(() => expect(container.textContent).toContain('/project'))
-    expect(fetchSpan).not.toHaveBeenCalled()
+    expect(fetchSpan).toHaveBeenCalledOnce()
   })
 
   it('loads an edit request outside the visible history window in a hidden measurement copy', async () => {
@@ -171,7 +173,9 @@ describe('message context rendering', () => {
     expect(fetchSpan).toHaveBeenCalledOnce()
   })
 
-  it('does not fetch related history for a self-contained Codex tool row in a hidden measurement copy', async () => {
+  // The row draws its own header and command only while the transcript draws no request
+  // row beside it, so it learns from the span whether a request row exists before it shows.
+  it('fetches the span of a self-contained Codex result row whose request the window does not hold, in a hidden measurement copy', async () => {
     const message = makeMessage({
       id: 'command',
       seq: 3n,
@@ -197,6 +201,6 @@ describe('message context rendering', () => {
       <PreferencesProvider><MessageBubble message={message} host={{ messages: context }} premeasureMode /></PreferencesProvider>
     ))
     await waitFor(() => expect(container.textContent).toContain('/project'))
-    expect(fetchSpan).not.toHaveBeenCalled()
+    expect(fetchSpan).toHaveBeenCalledOnce()
   })
 })

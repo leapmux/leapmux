@@ -5,7 +5,7 @@ import { ROW_ALIGN_OFFSET_PX } from '~/components/chat/chatLayoutShift'
 import { MESSAGE_PAGE_LIMIT } from '../../src/generated/contracts/chat-history'
 import { test } from './fixtures'
 import { RAIL, RAIL_DOT } from './helpers/chatScrollRail'
-import { clearStoredRenders, clearStoredRowHeights, expectRowMoved, pointAtChat, readRowBox, readRowSeqWithText, requireTopRow, waitForScrollRest, watchRow, wheelChatUp } from './helpers/chatScrollStability'
+import { clearStoredRenders, clearStoredRowHeights, expectNoVisibleHeightChange, expectRowMoved, pointAtChat, readRowBox, readRowSeqWithText, recordRowHeightChanges, requireTopRow, waitForScrollRest, watchFrames, watchRow, wheelChatUp } from './helpers/chatScrollStability'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { assistantBubbles, chatScrollContainer, chatScrollTop, userBubbles, waitForAgentStarted } from './helpers/ui'
 
@@ -69,6 +69,10 @@ test.describe('chat scroll stability while the history above the reader changes'
     await expect(assistantBubbles(page).filter({ hasText: `Answer ${turns}.` })).toHaveCount(1)
     await waitForScrollRest(page)
     const firstPrompt = userBubbles(page).filter({ hasText: 'Turn 1:' })
+    // Every frame of the scroll, and every height that the app commits during it: a row that changes its height in view
+    // moves a part of the view against the rest, also where no step checks its distance.
+    const heights = await recordRowHeightChanges(page)
+    const frames = await watchFrames(page)
 
     for (let step = 1; await firstPrompt.count() === 0; step++) {
       expect(step, 'the reader reaches the first turn within the expected number of steps').toBeLessThanOrEqual(40)
@@ -94,6 +98,8 @@ test.describe('chat scroll stability while the history above the reader changes'
     // An older page loads ahead of the reader during a wheel step, or at the top of the loaded rows. A step that a load
     // moved fails its distance check, and a load at the top fails its watch.
     await expect(firstPrompt).toBeVisible()
+    await frames.expectNoJump('while the reader scrolls up through the history')
+    await expectNoVisibleHeightChange(heights, 'after the reader scrolled up through the history')
   })
 
   test('lands a seek on a row of an older page at its place while the rows above it wait for their measure', async ({ page, authenticatedWorkspace, modelScript }) => {

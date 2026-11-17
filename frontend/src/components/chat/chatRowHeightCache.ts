@@ -1,6 +1,7 @@
 import type { Accessor } from 'solid-js'
 import type { ChatRowItem } from './chatRowItem'
 import { createSignal } from 'solid-js'
+import { emitDevEvent } from '~/lib/devInstrument'
 import { capMapInsertionOrder } from '~/lib/mapLru'
 import { MEASURE_EPSILON_PX } from './createRowMeasurer'
 
@@ -381,6 +382,22 @@ export function createRowHeightCache(options: RowHeightCacheOptions): RowHeightC
       newHeight: height,
       commitSeq: measurementCommitSeq,
     }
+    // A development build reports each commit that changed a height. An E2E spec reads a
+    // commit of a mounted row (`source: 'visible'`, `mounted: true`) as a row that changed
+    // its height where the reader could see it: the first read of a mounted row confirms
+    // the height of its hidden copy, so in a transcript that does not change, only a
+    // height that a hidden copy, the storage or an earlier mount got wrong commits such a
+    // change. The two keys tell which input of the height changed.
+    emitDevEvent('leapmux:chat-row-height', () => ({
+      id,
+      seq: row.seq?.toString() ?? null,
+      source,
+      mounted: isMounted(id),
+      previousHeight: previousHeight ?? null,
+      height,
+      previousKey: prevEntry?.key ?? null,
+      heightKey: measuredKey ?? null,
+    }))
     return 'moved'
   }
 

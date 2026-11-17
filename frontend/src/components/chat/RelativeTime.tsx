@@ -16,7 +16,8 @@ import { Show } from 'solid-js'
 import { Icon } from '~/components/common/Icon'
 import { Tooltip } from '~/components/common/Tooltip'
 import { createSharedTicker } from '~/lib/createSharedTicker'
-import { formatCompactAge, formatLocalDateTime } from '~/lib/dateFormat'
+import { formatCompactAge, formatLocalDateTime, WIDEST_COMPACT_AGE } from '~/lib/dateFormat'
+import { steadyAgeText } from './RelativeTime.css'
 
 const clockIcons: LucideIcon[] = [
   Clock12,
@@ -49,6 +50,14 @@ interface RelativeTimeProps {
    * unparseable timestamp renders nothing at all rather than a bare suffix.
    */
   suffix?: string
+  /**
+   * Keep one width at every age: the age text takes the width of the widest age
+   * (WIDEST_COMPACT_AGE), so its box does not change as the age ticks. A layout that
+   * places other content beside the time needs it. The toolbar of a user row sits beside
+   * the bubble, so an age that grew from `9s` to `10s` narrowed the bubble on a phone, and
+   * the bubble wrapped one more line: the row changed its height in view with no input.
+   */
+  steadyWidth?: boolean
 }
 
 export function RelativeTime(props: RelativeTimeProps) {
@@ -77,7 +86,11 @@ export function RelativeTime(props: RelativeTimeProps) {
         <span class={props.class}>
           <ClockIcon />
           {' '}
-          {relative()}
+          <Show when={props.steadyWidth} fallback={relative()}>
+            <span class={steadyAgeText} data-widest-age={WIDEST_COMPACT_AGE}>
+              <span>{relative()}</span>
+            </span>
+          </Show>
           {props.suffix}
         </span>
       </Tooltip>

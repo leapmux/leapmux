@@ -39,11 +39,14 @@ export function ToolHeaderActions(props: {
   const liveAction = (id: MessageActionId): MessageAction =>
     actions().find(a => a.id === id)!
 
+  // The toolbar of a user row sits beside the bubble, so the timestamp keeps one width at
+  // every age (see RelativeTime's steadyWidth): a wider age narrowed the bubble.
   const timestampEl = (
     <Show when={layout()?.createdAt}>
       <RelativeTime
         timestamp={layout()!.createdAt!}
         class={toolHeaderTimestamp}
+        steadyWidth
       />
     </Show>
   )

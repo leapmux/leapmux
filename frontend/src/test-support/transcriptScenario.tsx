@@ -7,15 +7,15 @@ import type { ChatRowExtraction } from '~/components/chat/rowExtraction'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { TranscriptFrame } from '~/test-support/messageFactory'
 import { render } from '@solidjs/testing-library'
-import { createMemo, createRoot, createSignal, For } from 'solid-js'
-import { createClassifiedEntryCache, listedRequestSpanKeys, renderKeyForEntry } from '~/components/chat/chatEntryCache'
+import { createRoot, createSignal, For } from 'solid-js'
+import { createClassifiedEntryCache, createRequestRowPresence, renderKeyForEntry } from '~/components/chat/chatEntryCache'
 import { createPendingRows, pendingRowId } from '~/components/chat/chatPendingRows'
 import { MessageBubble } from '~/components/chat/MessageBubble'
 import { createMessageRenderSources } from '~/components/chat/messageContextResolver'
 import { createMessageRenderCacheStore } from '~/components/chat/messageRenderCache'
 import { cachedChatRow } from '~/components/chat/rowModelCache'
 import { PreferencesProvider } from '~/context/PreferencesContext'
-import { messageSpanIdentity, messageSpanKey } from '~/lib/messageSpan'
+import { messageSpanIdentity } from '~/lib/messageSpan'
 import { cleanups, testTranscriptContext } from '~/test-support/messageContext'
 import { makeTranscriptMessage } from '~/test-support/messageFactory'
 // Every provider plugin registers at import time; the scenario reads them all.
@@ -109,8 +109,14 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
     role: message => resolver.role(message),
     showHiddenMessages: () => false,
   })
-  // The request rows the list draws, by the list's own decision (see listedRequestSpanKeys).
-  const listedRequests = createMemo(() => listedRequestSpanKeys(entries.visibleEntries()))
+  // The request rows the transcript draws, by the list's own decision (see
+  // createRequestRowPresence).
+  const requestRowDrawn = createRequestRowPresence({
+    entries: entries.visibleEntries,
+    windowEntry: entries.getEntry,
+    request: identity => resolver.request(identity),
+    role: message => resolver.role(message),
+  })
 
   // The pending rows the list adds to the scenario's rows, by the list's own decision.
   const listed = createPendingRows({
@@ -144,7 +150,7 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
   function extract(id: string): ChatRowExtraction {
     const prepared = entry(id)
     const message = prepared.message
-    const sources = createMessageRenderSources(() => resolver, () => message, () => prepared.resolved, identity => listedRequests().has(messageSpanKey(identity)))
+    const sources = createMessageRenderSources(() => resolver, () => message, () => prepared.resolved, requestRowDrawn)
     return cachedChatRow(
       {
         renderCache: renderCacheStore.forRow(renderKeyForEntry(prepared)),

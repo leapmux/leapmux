@@ -231,11 +231,12 @@ export interface MessageBubbleHost {
    */
   pendingRowOpen?: (() => boolean) | undefined
   /**
-   * Whether the list draws the REQUEST row of a span (see listedRequestSpanKeys). A row
-   * of the span reads it as `visibleRows.request`. A host that lists no rows states none,
-   * and the row then draws its request side itself.
+   * Whether the transcript draws the REQUEST of a span as its own row, also while that row
+   * lies outside the loaded window (see createRequestRowPresence). A row of the span reads
+   * it as `visibleRows.request`. A host that lists no rows states none, and the row then
+   * draws its request side itself.
    */
-  requestRowListed?: ((identity: MessageSpanIdentity) => boolean) | undefined
+  requestRowDrawn?: ((identity: MessageSpanIdentity) => boolean) | undefined
 }
 
 interface MessageBubbleProps {
@@ -296,7 +297,7 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     () => props.host?.messages,
     () => prepared().message,
     displayParsed,
-    identity => props.host?.requestRowListed?.(identity) ?? false,
+    identity => props.host?.requestRowDrawn?.(identity) ?? false,
   )
 
   // Full raw JSON for the Raw JSON display. Plain function (not createMemo)
@@ -325,10 +326,11 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   })
 
   // The fetch of the REQUEST of a tool call, as the bubble reports it to the readiness
-  // scope of its row copy. Only a row that draws from its request asks for it (see
-  // `needsRequest` of the provider plugin): a result row whose own frame states no tool
-  // name or no arguments. No row ever waits for its RESULT, because no row reads a later
-  // message of its span (see ToolSpanContext).
+  // scope of its row copy. A row asks for it when it depends on the request and the
+  // browser does not hold it (see MessageContextResolver.loadRequest): a row that draws
+  // from its request, and a result or update row, which draws its own header and request
+  // side only while the transcript draws no request row beside it. No row ever waits for
+  // its RESULT, because no row reads a later message of its span (see ToolSpanContext).
   //
   // - A hidden premeasure copy must not report a height before it shows what the row in
   //   the list will show: a height without the request is wrong, and the row would

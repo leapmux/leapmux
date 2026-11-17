@@ -73,13 +73,21 @@ export interface MessageContextResolver {
   result: (identity: MessageSpanIdentity) => ResolvedMessage | undefined
   loadSpan: (identity: MessageSpanIdentity) => Promise<void>
   /**
-   * Load the REQUEST of the span of `message` when the row of `message` draws from it and
-   * the browser does not hold it (see `needsRequest` of the provider plugin).
+   * Load the REQUEST of the span of `message` when the row of `message` depends on it and
+   * the browser does not hold it. A row depends on the request in two ways:
    *
-   * Returns `undefined` when no fetch is needed: the row needs no request, the browser
-   * holds it, or the span has nothing left to fetch. A caller can then tell at once that
-   * the row shows what it will show. Otherwise it returns the promise of the fetch, which
-   * every caller of the span shares. That promise rejects when the fetch failed.
+   * - It draws from the request: its own frame states no tool name or no arguments (see
+   *   `needsRequest` of the provider plugin).
+   * - It is a row of the span other than the request (a result or an update row). Such a
+   *   row draws its own header and request side only while the transcript draws no request
+   *   row beside it (see createRequestRowPresence in chatEntryCache), and only the fetch
+   *   tells whether a request outside the loaded window exists.
+   *
+   * Returns `undefined` when no fetch is needed: the row depends on no request, the
+   * browser holds it, or the span has nothing left to fetch. A caller can then tell at
+   * once that the row shows what it will show. Otherwise it returns the promise of the
+   * fetch, which every caller of the span shares. That promise rejects when the fetch
+   * failed.
    *
    * No row ever waits for its RESULT: no row reads a later message of its span.
    */
@@ -116,15 +124,15 @@ export interface MessageRenderSources {
 }
 
 /**
- * The sources of one rendered row. `requestRowListed` answers whether the list draws the
- * request row of a span (see listedRequestSpanKeys in chatEntryCache); with none, no
- * request row is listed beside the row.
+ * The sources of one rendered row. `requestRowDrawn` answers whether the transcript draws
+ * the request of a span as its own row (see createRequestRowPresence in chatEntryCache);
+ * with none, no request row is drawn beside the row.
  */
 export function createMessageRenderSources(
   resolver: () => MessageContextResolver | undefined,
   message: () => AgentChatMessage,
   current: () => ResolvedMessageContent,
-  requestRowListed?: (identity: MessageSpanIdentity) => boolean,
+  requestRowDrawn?: (identity: MessageSpanIdentity) => boolean,
 ): MessageRenderSources {
   const span = () => messageSpanIdentity(message())
   return {
@@ -135,7 +143,7 @@ export function createMessageRenderSources(
       const own = message()
       return resolver()?.role(own) ?? resolvedSpanRole(current(), own.agentProvider)
     },
-    visibleRows: () => ({ request: requestRowListed?.(span()) ?? false }),
+    visibleRows: () => ({ request: requestRowDrawn?.(span()) ?? false }),
     // Each member reads the resolver at call time, so the one object follows the host.
     // With no resolver, each member answers as NO_FILE_IMAGES does.
     fileImages: {
@@ -548,8 +556,10 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       try {
         const identity = messageSpanIdentity(message)
         const resolved = current(message, parsed)
-        const needsRequest = pluginFor(message.agentProvider)?.transcript.needsRequest?.(resolved.resolved) ?? false
-        if (!needsRequest || spanNeedsNoFetch(identity))
+        const drawsFromRequest = pluginFor(message.agentProvider)?.transcript.needsRequest?.(resolved.resolved) ?? false
+        const spanRole = role(message, parsed)
+        const sitsBesideRequest = spanRole !== 'request' && spanRole !== 'none'
+        if ((!drawsFromRequest && !sitsBesideRequest) || spanNeedsNoFetch(identity))
           return undefined
         return loadSpan(identity)
       }

@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test'
+import type { WatchedFrame } from './chatScrollStability'
 import { IDBFactory } from 'fake-indexeddb'
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { LARGE_MARKDOWN_BODY_CHARS } from '~/lib/markdownWorkerClient'
@@ -7,6 +8,7 @@ import {
   clearObjectStoreIn,
   clearStoredRowHeights,
   contentBoxWidthIn,
+  frameJumps,
   framesPassIn,
   heldReplyCountIn,
   installReplyHoldIn,
@@ -19,11 +21,15 @@ import {
   releaseHeldRepliesIn,
   rowBoxIn,
   rowDistanceIn,
+  rowHeightChangesIn,
   rowSeqWithTextIn,
   rowStatesIn,
   shortTurn,
+  startFrameWatchIn,
   startPremeasureRecordIn,
+  startRowHeightRecordIn,
   startRowWatchIn,
+  stopFrameWatchIn,
   stopRowWatchIn,
   topParagraphIn,
   topRowIn,
@@ -968,5 +974,230 @@ describe('clearStoredRowHeights', () => {
     })
 
     await expect(clearStoredRowHeights(page)).rejects.toThrow('the helper deletes the stored row heights')
+  })
+})
+
+describe('frameJumps', () => {
+  /** A frame of rows, from [seq, top, height] triples. */
+  const frame = (...rows: [string, number, number][]): WatchedFrame => rows.map(([seq, top, height]) => ({ seq, top, height }))
+
+  it('finds no jump when every row moves by one distance and keeps its height', () => {
+    expect(frameJumps([
+      frame(['1', 0, 100], ['2', 120, 40]),
+      frame(['1', 37.5, 100], ['2', 157.5, 40]),
+      frame(['1', 37.5, 100], ['2', 157.5, 40]),
+    ])).toEqual([])
+  })
+
+  // The defect that the frame watch exists for: a row in view lost its header, and the rows below it moved up while the
+  // rows above it held.
+  it('reports a row that changes its height, and the rows that it moves against the others', () => {
+    expect(frameJumps([
+      frame(['5406', 141.8, 297.94], ['5407', 447.8, 210.56], ['5408', 678.3, 21]),
+      frame(['5406', 141.8, 297.94], ['5407', 447.8, 40.39], ['5408', 508.1, 21]),
+    ])).toEqual([
+      { frame: 1, kind: 'height', detail: 'the row of seq 5407 changed its height from 210.56px to 40.39px' },
+      { frame: 1, kind: 'shear', detail: 'the row of seq 5408 moved -170.2px and the row of seq 5406 moved 0px' },
+    ])
+  })
+
+  it('reports rows that move by different distances while every height holds', () => {
+    expect(frameJumps([
+      frame(['1', 0, 100], ['2', 120, 40]),
+      frame(['1', 10, 100], ['2', 120, 40]),
+    ])).toEqual([
+      { frame: 1, kind: 'shear', detail: 'the row of seq 2 moved 0px and the row of seq 1 moved 10px' },
+    ])
+  })
+
+  it('counts a row that only one of the two frames shows for nothing', () => {
+    expect(frameJumps([
+      frame(['1', 0, 100]),
+      frame(['1', 20, 100], ['2', 140, 300]),
+      frame(['2', 50, 300]),
+    ])).toEqual([])
+  })
+
+  it('accepts a change of 1px and reports a larger one', () => {
+    expect(frameJumps([
+      frame(['1', 0, 100], ['2', 120, 40]),
+      frame(['1', 1, 101], ['2', 120, 40]),
+    ])).toEqual([])
+    expect(frameJumps([
+      frame(['1', 0, 100], ['2', 120, 40]),
+      frame(['1', 0, 101.5], ['2', 121.5, 40]),
+    ])).toEqual([
+      { frame: 1, kind: 'height', detail: 'the row of seq 1 changed its height from 100px to 101.5px' },
+      { frame: 1, kind: 'shear', detail: 'the row of seq 1 moved 0px and the row of seq 2 moved 1.5px' },
+    ])
+  })
+
+  it('finds no jump in no frame, in one frame, and in frames of no row', () => {
+    expect(frameJumps([])).toEqual([])
+    expect(frameJumps([
+      frame(['1', 0, 100]),
+    ])).toEqual([])
+    expect(frameJumps([
+      frame(),
+      frame(),
+    ])).toEqual([])
+  })
+})
+
+describe('startFrameWatchIn', () => {
+  const KEY = 'testFrameWatch'
+
+  /** Install manual frames as the frames of the page, and remove them after the test. */
+  function installFrames() {
+    const frames = createManualFrames()
+    vi.stubGlobal('requestAnimationFrame', frames.requestFrame)
+    vi.stubGlobal('cancelAnimationFrame', frames.cancelFrame)
+    onTestFinished(() => {
+      vi.unstubAllGlobals()
+      Reflect.deleteProperty(window, KEY)
+    })
+    return frames
+  }
+
+  /** The container of `containerWith`, with the client height of its box: jsdom lays nothing out. */
+  function viewWith(rows: { seq: string, top: number, height: number }[]): HTMLElement {
+    const container = containerWith(rows)
+    Object.defineProperty(container, 'clientHeight', { value: 500 })
+    return container
+  }
+
+  it('samples each row that reaches into the view and shows, in each frame, until the watch stops', () => {
+    const frames = installFrames()
+    const container = viewWith([
+      // Ends exactly at the top of the view.
+      { seq: '1', top: 0, height: 100 },
+      { seq: '2', top: 90, height: 40 },
+      { seq: '3', top: 300, height: 60 },
+      // Starts exactly at the bottom of the view.
+      { seq: '4', top: 600, height: 60 },
+    ])
+    const waiting = container.querySelector<HTMLElement>('[data-seq="3"]')!
+
+    startFrameWatchIn(container, KEY)
+    frames.runFrames()
+    waiting.style.visibility = 'hidden'
+    frames.runFrames()
+    const watched = stopFrameWatchIn(KEY)
+    frames.runFrames()
+
+    expect(watched).toEqual([
+      [
+        { seq: '2', top: -10, height: 40 },
+        { seq: '3', top: 200, height: 60 },
+      ],
+      [
+        { seq: '2', top: -10, height: 40 },
+      ],
+    ])
+    // The stopped watch samples no more frames and leaves no state behind.
+    expect(Reflect.get(window, KEY)).toBeUndefined()
+  })
+
+  it('returns null when no watch runs under the key', () => {
+    expect(stopFrameWatchIn('noFrameWatch')).toBeNull()
+  })
+})
+
+describe('startRowHeightRecordIn', () => {
+  const KEY = 'testRowHeightChanges'
+
+  /** Start a record under KEY, and remove its state after the test. Its listener stays, and writes to no state then. */
+  function startRecord(): void {
+    startRowHeightRecordIn(KEY)
+    onTestFinished(() => {
+      Reflect.deleteProperty(window, KEY)
+    })
+  }
+
+  /** Dispatch the event that the app sends for one commit that changed the height of a row. */
+  function dispatchHeight(detail: unknown): void {
+    window.dispatchEvent(new CustomEvent('leapmux:chat-row-height', { detail }))
+  }
+
+  it('records each change in the order of its arrival, with the fields that the app states', () => {
+    startRecord()
+    dispatchHeight({
+      id: 'a',
+      seq: '12',
+      source: 'premeasure',
+      mounted: false,
+      previousHeight: null,
+      height: 40.5,
+      previousKey: null,
+      heightKey: 'k1',
+    })
+    dispatchHeight({
+      id: 'a',
+      seq: '12',
+      source: 'visible',
+      mounted: true,
+      previousHeight: 40.5,
+      height: 210,
+      previousKey: 'k1',
+      heightKey: 'k2',
+    })
+
+    expect(rowHeightChangesIn(KEY)).toEqual([
+      {
+        seq: '12',
+        source: 'premeasure',
+        mounted: false,
+        previousHeight: null,
+        height: 40.5,
+        previousKey: null,
+        heightKey: 'k1',
+      },
+      {
+        seq: '12',
+        source: 'visible',
+        mounted: true,
+        previousHeight: 40.5,
+        height: 210,
+        previousKey: 'k1',
+        heightKey: 'k2',
+      },
+    ])
+  })
+
+  it('reads an absent or a malformed optional field as null, and a mounted flag that is not true as false', () => {
+    startRecord()
+    dispatchHeight({
+      source: 'visible',
+      height: 0,
+      mounted: 'yes',
+      previousHeight: '40',
+      seq: 12,
+    })
+
+    expect(rowHeightChangesIn(KEY)).toEqual([
+      {
+        seq: null,
+        source: 'visible',
+        mounted: false,
+        previousHeight: null,
+        height: 0,
+        previousKey: null,
+        heightKey: null,
+      },
+    ])
+  })
+
+  it('ignores an event with no detail, an unknown source, or no height', () => {
+    startRecord()
+    window.dispatchEvent(new Event('leapmux:chat-row-height'))
+    dispatchHeight(null)
+    dispatchHeight({ source: 'storage', height: 10 })
+    dispatchHeight({ source: 'visible', height: '10' })
+
+    expect(rowHeightChangesIn(KEY)).toEqual([])
+  })
+
+  it('returns no change when no record runs under the key', () => {
+    expect(rowHeightChangesIn('noRowHeightRecord')).toEqual([])
   })
 })

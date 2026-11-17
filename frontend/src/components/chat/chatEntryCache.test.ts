@@ -1,4 +1,5 @@
 import type { ClassifiedEntryCacheDeps } from './chatEntryCache'
+import type { ResolvedMessage } from './messageContextResolver'
 import type { NotificationEntry } from './model/notification'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
 import type { ToolSpanRole } from '~/lib/messageSpan'
@@ -10,7 +11,7 @@ import { AgentChatMessageSchema, AgentProvider, AvailableOptionGroupSchema, Avai
 import { invalidateMessageParseCache } from '~/lib/messageParser'
 import { messageSpanKey } from '~/lib/messageSpan'
 import { clearSettingsLabelCache, updateSettingsLabelCache } from '~/lib/settingsLabelCache'
-import { createClassifiedEntryCache, heightKeyForEntry, listedRequestSpanKeys, renderKeyForEntry } from './chatEntryCache'
+import { createClassifiedEntryCache, createRequestRowPresence, heightKeyForEntry, listedRequestSpanKeys, renderKeyForEntry } from './chatEntryCache'
 import { resolvedSpanRole } from './providers/registry'
 import { prepareMessage } from './rowPreparation'
 import * as rowPreparation from './rowPreparation'
@@ -1277,9 +1278,9 @@ describe('renderKeyForEntry', () => {
   })
 })
 
-describe('listedRequestSpanKeys', () => {
-  /** A Claude tool row of span `spanId`: a `tool_use` request, or its `tool_result`. */
-  const claudeTool = (id: string, seq: bigint, spanId: string, side: 'request' | 'result', name = 'Bash') => create(AgentChatMessageSchema, {
+/** A Claude tool row of span `spanId`: a `tool_use` request, or its `tool_result`. */
+function claudeTool(id: string, seq: bigint, spanId: string, side: 'request' | 'result', name = 'Bash') {
+  return create(AgentChatMessageSchema, {
     id,
     seq,
     spanId,
@@ -1312,7 +1313,9 @@ describe('listedRequestSpanKeys', () => {
           },
         })),
   })
+}
 
+describe('listedRequestSpanKeys', () => {
   /** The span keys that the list counts as request rows over `messages`. */
   function listed(messages: AgentChatMessage[], showHiddenMessages = false): string[] {
     return createRoot((dispose) => {
@@ -1393,5 +1396,97 @@ describe('listedRequestSpanKeys', () => {
       ]).toEqual([])
       dispose()
     })
+  })
+})
+
+describe('createRequestRowPresence', () => {
+  const identity = { spanId: 'span-1', agentSessionId: '' }
+  const request = claudeTool('req', 1n, 'span-1', 'request')
+  // Claude hides its ToolSearch request, so the transcript draws no request row for it.
+  const hiddenRequest = claudeTool('req', 1n, 'span-1', 'request', 'ToolSearch')
+  const result = claudeTool('res', 2n, 'span-1', 'result')
+  const roleOf = (message: AgentChatMessage): ToolSpanRole => resolvedSpanRole(prepareMessage(message).resolved, message.agentProvider)
+  const resolvedOf = (message: AgentChatMessage): ResolvedMessage => {
+    const prepared = prepareMessage(message)
+    return {
+      message,
+      original: prepared.original,
+      resolved: prepared.resolved,
+      revision: {
+        id: message.id,
+        seq: message.seq,
+        contentVersion: 0,
+        supplementalRevision: message.supplementalRevision,
+      },
+    }
+  }
+
+  /**
+   * The presence over a window of `initial` while the resolver holds `held` as the request
+   * of the span, in the window or outside it. Returns the answer for the span, and a
+   * setter of the window.
+   */
+  function presence(initial: AgentChatMessage[], held: AgentChatMessage | undefined, role: (message: AgentChatMessage) => ToolSpanRole = roleOf) {
+    return createRoot((dispose) => {
+      const [messages, setMessages] = createSignal(initial)
+      const heldRequest = held === undefined
+        ? undefined
+        : resolvedOf(held)
+      const cache = createClassifiedEntryCache({
+        messages,
+        role,
+        showHiddenMessages: () => false,
+      })
+      const drawn = createRequestRowPresence({
+        entries: cache.visibleEntries,
+        windowEntry: cache.getEntry,
+        request: () => heldRequest,
+        role,
+      })
+      return {
+        drawn: () => drawn(identity),
+        setMessages,
+        dispose,
+      }
+    })
+  }
+
+  it('answers yes for a span whose request row the list draws', () => {
+    const { drawn, dispose } = presence([request, result], request)
+    expect(drawn()).toBe(true)
+    dispose()
+  })
+
+  it('answers no for a span whose request the window holds and the transcript hides', () => {
+    const { drawn, dispose } = presence([hiddenRequest, result], hiddenRequest)
+    expect(drawn()).toBe(false)
+    dispose()
+  })
+
+  it('answers no while the browser holds no request of the span', () => {
+    const { drawn, dispose } = presence([result], undefined)
+    expect(drawn()).toBe(false)
+    dispose()
+  })
+
+  // The result row draws the same thing before and after the page of its request loads:
+  // it shrank in view when that page arrived.
+  it.each([
+    { name: 'a request that the transcript draws', held: request, expected: true },
+    { name: 'a request that the transcript hides', held: hiddenRequest, expected: false },
+  ])('answers for $name outside the window as for one inside it, before and after its page loads', ({ held, expected }) => {
+    const { drawn, setMessages, dispose } = presence([result], held)
+    expect(drawn()).toBe(expected)
+    setMessages([held, result])
+    expect(drawn()).toBe(expected)
+    dispose()
+  })
+
+  it('answers no for a message outside the window whose span role is not request', () => {
+    const { drawn, dispose } = presence([result], request, message => message.id === request.id
+      ? 'other'
+      : roleOf(message))
+    expect(drawn()).toBe(false)
+    dispose()
   })
 })

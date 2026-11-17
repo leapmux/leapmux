@@ -198,9 +198,9 @@ function claudeToolSpanRow(input: RowExtractionInput): ChatRow | null {
   const rowRole = own.role === 'request' && retainedRowIsFinal(completion)
     ? 'result'
     : own.role
-  // A request of another call is no request row of this one. The list counts no request
-  // row for a request that the transcript hides (see listedRequestSpanKeys in chatEntryCache),
-  // so this row then draws the request side itself.
+  // A request of another call is no request row of this one. The transcript draws no
+  // request row for a request that it hides (see createRequestRowPresence in
+  // chatEntryCache), so this row then draws the request side itself.
   return toolCallRow(call, rowRole, {
     request: span.visibleRows.request && !!requestSide,
   })

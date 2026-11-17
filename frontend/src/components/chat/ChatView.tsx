@@ -8,7 +8,6 @@ import type { RenderReadiness } from './renderReadiness'
 import type { ChatLoadedRows, ChatScrollState, PaginationCallbacks, UseChatScrollResult } from './useChatScroll'
 import type { ChatVirtualizerRange } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
-import type { MessageSpanIdentity } from '~/lib/messageSpan'
 import type { TodoItem } from '~/models/todo'
 import type { BackgroundTaskItem } from '~/stores/chatBackgroundTasks'
 import type { LiveCompaction } from '~/stores/chatCompaction'
@@ -23,13 +22,13 @@ import { Spinner } from '~/components/common/Spinner'
 import { Tooltip } from '~/components/common/Tooltip'
 import { usePreferences } from '~/context/PreferencesContext'
 import { AgentStatus } from '~/generated/proto/leapmux/v1/agent_pb'
-import { messageSpanIdentity, messageSpanKey } from '~/lib/messageSpan'
+import { messageSpanIdentity } from '~/lib/messageSpan'
 import { formatChatQuote } from '~/lib/quoteUtils'
-import { shallowEqual, shallowEqualSets } from '~/lib/shallowEqual'
+import { shallowEqual } from '~/lib/shallowEqual'
 import { onSyntaxThemeChange } from '~/lib/syntaxThemeStore'
 import { motion } from '~/styles/tokens'
 import { AgentStartupBanner } from './AgentStartupBanner'
-import { createClassifiedEntryCache, heightKeyForEntry, listedRequestSpanKeys, renderKeyForEntry } from './chatEntryCache'
+import { createClassifiedEntryCache, createRequestRowPresence, heightKeyForEntry, renderKeyForEntry } from './chatEntryCache'
 import { createChatFonts } from './chatFonts'
 import { ChatHiddenPremeasure } from './chatHiddenPremeasure'
 import { createMessageUiState } from './chatMessageUiState'
@@ -328,12 +327,18 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   })
   const visibleEntries = entries.visibleEntries
   const hasVisibleEntries = entries.hasVisibleEntries
-  // The spans whose REQUEST row the list draws, from the entries that it lists (see
-  // listedRequestSpanKeys). A row of the span reads it as `visibleRows.request`, and the
-  // height key of a tool row holds it (see requestRowKey). One decision, by the list that
-  // draws the rows: no second walk of the window classifies the messages again.
-  const listedRequestSpans = createMemo(() => listedRequestSpanKeys(visibleEntries()), new Set<string>(), { equals: shallowEqualSets })
-  const requestRowListed = (identity: MessageSpanIdentity): boolean => listedRequestSpans().has(messageSpanKey(identity))
+  // Whether the transcript draws the REQUEST of a span as its own row, also for a request
+  // outside the loaded window (see createRequestRowPresence). A row of the span reads it
+  // as `visibleRows.request`, and the height key of a tool row holds it (see
+  // requestRowKey). One decision, by the list that draws the rows: no second walk of the
+  // window classifies the messages again.
+  const requestRowDrawn = createRequestRowPresence({
+    entries: visibleEntries,
+    windowEntry: entries.getEntry,
+    request: identity => props.messageContext?.request(identity),
+    role: message => props.messageContext?.role(message) ?? 'other',
+    isChildTranscript: () => !!props.isChildTranscript,
+  })
 
   // The measured heights of the rows. ChatView owns the cache, because the admission, the
   // virtualizer, the staging bands, and the persistence all read it. Its eviction keeps the
@@ -497,14 +502,15 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       : `|${revisionKeyMember('header', revision)}`
   }
 
-  // Whether the REQUEST row of a tool row's span is in the list. A result row beside its
-  // request row draws no header and no request side, so its height follows this fact,
-  // and the window decides it: an older page can bring the request row in, or a trim can
-  // take it out, while the result row stays mounted.
+  // Whether the transcript draws the REQUEST of a tool row's span as its own row. A result
+  // row beside its request row draws no header and no request side, so its height follows
+  // this fact. The fact follows the transcript and not the loaded window (see
+  // createRequestRowPresence), so an older page that brings the request row in changes
+  // no key.
   const requestRowKey = (entry: ClassifiedEntry): string => {
     if ((entry.category.kind !== 'tool_use' && entry.category.kind !== 'tool_result') || entry.message.spanId === '')
       return ''
-    return requestRowListed(messageSpanIdentity(entry.message))
+    return requestRowDrawn(messageSpanIdentity(entry.message))
       ? '|request-row'
       : ''
   }
@@ -798,7 +804,7 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     // row, so they are getters like the five above.
     syntaxHighlightingPaused,
     textSelectionActive,
-    requestRowListed,
+    requestRowDrawn,
     get rowOffscreen() {
       return () => !isRowNearViewport(entry.rowId)
     },

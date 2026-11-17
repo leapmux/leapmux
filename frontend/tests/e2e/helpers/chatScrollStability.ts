@@ -392,6 +392,142 @@ export async function watchRow(page: Page, seq: string): Promise<RowWatch> {
   }
 }
 
+/** A row of the chat in one animation frame, as the frame watch samples it. */
+export interface WatchedRow {
+  seq: string
+  /** The distance from the top edge of the scroll container to the top edge of the row. */
+  top: number
+  height: number
+}
+
+/** The rows that one animation frame showed: each row that reaches into the view, and that shows. */
+export type WatchedFrame = readonly WatchedRow[]
+
+/** A change between two consecutive frames that no scroll makes. */
+export interface FrameJump {
+  /** The index of the later frame, in the order of the watch. */
+  frame: number
+  /**
+   * `height`: a row in both frames changed its height. `shear`: two rows in both frames moved by distances that
+   * differ, so a part of the view moved against the rest of it.
+   */
+  kind: 'height' | 'shear'
+  /** The rows and the distances, for the failure message. */
+  detail: string
+}
+
+/**
+ * The jumps between consecutive frames of `frames`. A scroll moves every row on screen by one distance and changes no
+ * height. So in a transcript that does not change, each row that two consecutive frames show keeps its height, within
+ * `tolerancePx`, and all of them move by the same distance, within `tolerancePx`. A row that only one frame shows,
+ * because it mounted, unmounted or scrolled into the view, counts for nothing.
+ *
+ * The check needs no knowledge of the input: a wheel, a drag, a fling, and a rebase of the layout shift each move
+ * every row by one distance. A row that changes its height in view moves the rows on one side of it and not the rows
+ * on the other side, and the row itself.
+ */
+export function frameJumps(frames: readonly WatchedFrame[], tolerancePx = 1): FrameJump[] {
+  // A length in a message, rounded to a hundredth of a pixel: a difference of two layout positions carries the error
+  // of the floating point sum.
+  const px = (length: number): string => `${Number(length.toFixed(2))}px`
+  const jumps: FrameJump[] = []
+  for (let frame = 1; frame < frames.length; frame++) {
+    const before = new Map(frames[frame - 1]!.map(row => [row.seq, row]))
+    const moves: { seq: string, distance: number }[] = []
+    for (const row of frames[frame]!) {
+      const earlier = before.get(row.seq)
+      if (earlier === undefined)
+        continue
+      if (Math.abs(row.height - earlier.height) > tolerancePx)
+        jumps.push({ frame, kind: 'height', detail: `the row of seq ${row.seq} changed its height from ${px(earlier.height)} to ${px(row.height)}` })
+      moves.push({ seq: row.seq, distance: row.top - earlier.top })
+    }
+    if (moves.length < 2)
+      continue
+    const least = moves.reduce((a, b) => (b.distance < a.distance
+      ? b
+      : a))
+    const most = moves.reduce((a, b) => (b.distance > a.distance
+      ? b
+      : a))
+    if (most.distance - least.distance > tolerancePx)
+      jumps.push({ frame, kind: 'shear', detail: `the row of seq ${least.seq} moved ${px(least.distance)} and the row of seq ${most.seq} moved ${px(most.distance)}` })
+  }
+  return jumps
+}
+
+/** The state of a running frame watch, which the page keeps on `window` under the key of the watch. */
+interface FrameWatchState {
+  frames: WatchedFrame[]
+  stopped: boolean
+}
+
+/** The property of `window` that holds the state of the running frame watch. One frame watch runs at a time. */
+const FRAME_WATCH_KEY = '__chatScrollStabilityFrameWatch'
+
+/**
+ * Sample, in every animation frame, each row of `container` that reaches into the view and shows, and keep the frames
+ * on `window` under `key`. A row that waits for its content (`visibility: hidden`) shows nothing, so it counts for
+ * nothing. Runs in the browser.
+ */
+export function startFrameWatchIn(container: Element, key: string): void {
+  const state: FrameWatchState = { frames: [], stopped: false }
+  Reflect.set(window, key, state)
+  const sample = () => {
+    if (state.stopped)
+      return
+    const top = container.getBoundingClientRect().top
+    const bottom = top + container.clientHeight
+    const rows: WatchedRow[] = []
+    for (const row of Array.from(container.querySelectorAll<HTMLElement>('[data-seq]'))) {
+      const rect = row.getBoundingClientRect()
+      const seq = row.dataset.seq
+      if (seq === undefined || row.style.visibility === 'hidden' || rect.bottom <= top || rect.top >= bottom)
+        continue
+      rows.push({ seq, top: rect.top - top, height: rect.height })
+    }
+    state.frames.push(rows)
+    requestAnimationFrame(sample)
+  }
+  requestAnimationFrame(sample)
+}
+
+/** Stop the frame watch under `key`, and return its frames, or null when no watch runs under it. Runs in the browser. */
+export function stopFrameWatchIn(key: string): WatchedFrame[] | null {
+  const state = Reflect.get(window, key) as FrameWatchState | undefined
+  if (state === undefined)
+    return null
+  state.stopped = true
+  Reflect.deleteProperty(window, key)
+  return state.frames
+}
+
+/** The frame watch that `watchFrames` starts. */
+export interface FrameWatch {
+  /**
+   * Stop the watch, and expect that it sampled frames and that no two consecutive frames show a jump (see
+   * frameJumps).
+   */
+  expectNoJump: (when: string) => Promise<void>
+}
+
+/**
+ * Sample every row in the view in every animation frame, until the caller stops the watch, and check that the rows
+ * only moved together, as a scroll moves them (see frameJumps). A check at rest sees only the end state, and a check of
+ * one row sees no row that changes its height below it.
+ */
+export async function watchFrames(page: Page): Promise<FrameWatch> {
+  await chatScrollContainer(page).evaluate(startFrameWatchIn, FRAME_WATCH_KEY)
+  return {
+    expectNoJump: async (when) => {
+      const frames = await page.evaluate(stopFrameWatchIn, FRAME_WATCH_KEY)
+      expect(frames, `${when}: the frame watch ran`).not.toBeNull()
+      expect(frames!.length, `${when}: the frame watch sampled frames`).toBeGreaterThan(1)
+      expect(frameJumps(frames!), `${when}: the rows in view only move together`).toEqual([])
+    },
+  }
+}
+
 /** `count` paragraphs of the form `${label}${i}: ${filler}`, with a blank line between two paragraphs. */
 export function markedParagraphs(label: string, count: number, filler: string): string {
   return Array.from({ length: count }, (_, i) => `${label}${i}: ${filler}`).join('\n\n')
@@ -498,6 +634,107 @@ export async function recordPremeasureCommitsFromNextLoad(page: Page): Promise<P
   return {
     commitOf: seq => page.evaluate(premeasureCommitIn, { key: PREMEASURE_COMMITS_KEY, seq }),
   }
+}
+
+/**
+ * A commit that changed the height of a row, as a development build of the app reports it in a
+ * `leapmux:chat-row-height` event (see RowHeightCache.commit in the app).
+ */
+export interface RowHeightChange {
+  /** The sequence number of the row, or null for a row with none. */
+  seq: string | null
+  /** What read the height: the row in the list (`visible`), or a hidden copy or the storage (`premeasure`). */
+  source: 'visible' | 'premeasure'
+  /** Whether the row was mounted at the commit. */
+  mounted: boolean
+  /** The height that the app held for the row before the commit, or null for a row with none. */
+  previousHeight: number | null
+  height: number
+  /** The height key of the height before the commit, or null. */
+  previousKey: string | null
+  heightKey: string | null
+}
+
+/** The property of `window` that holds the changes that `recordRowHeightChangesFromNextLoad` collects. */
+const ROW_HEIGHT_CHANGES_KEY = '__chatScrollStabilityRowHeightChanges'
+
+/**
+ * Collect, on `window` under `key`, each `leapmux:chat-row-height` event of the page, in the order of its arrival.
+ * Runs in the browser.
+ */
+export function startRowHeightRecordIn(key: string): void {
+  const changes: RowHeightChange[] = []
+  Reflect.set(window, key, changes)
+  window.addEventListener('leapmux:chat-row-height', (event) => {
+    const detail: unknown = event instanceof CustomEvent
+      ? event.detail
+      : undefined
+    if (typeof detail !== 'object' || detail === null)
+      return
+    const { seq, source, mounted, previousHeight, height, previousKey, heightKey } = detail as Record<string, unknown>
+    if ((source !== 'visible' && source !== 'premeasure') || typeof height !== 'number')
+      return
+    changes.push({
+      seq: typeof seq === 'string'
+        ? seq
+        : null,
+      source,
+      mounted: mounted === true,
+      previousHeight: typeof previousHeight === 'number'
+        ? previousHeight
+        : null,
+      height,
+      previousKey: typeof previousKey === 'string'
+        ? previousKey
+        : null,
+      heightKey: typeof heightKey === 'string'
+        ? heightKey
+        : null,
+    })
+  })
+}
+
+/** The changes that the record under `key` collected, or an empty list when no record runs. Runs in the browser. */
+export function rowHeightChangesIn(key: string): RowHeightChange[] {
+  return (Reflect.get(window, key) as RowHeightChange[] | undefined) ?? []
+}
+
+/** The record that `recordRowHeightChangesFromNextLoad` starts. */
+export interface RowHeightChanges {
+  /** The changes since the record started, in the order of their commits. */
+  all: () => Promise<RowHeightChange[]>
+}
+
+/**
+ * Record each commit that changes the height of a row from now on (see startRowHeightRecordIn). In a transcript that
+ * does not change, a commit of a mounted row (`source: 'visible'`) changed a height that the reader could see, so a
+ * spec expects none while it scrolls through history. A navigation ends the record.
+ */
+export async function recordRowHeightChanges(page: Page): Promise<RowHeightChanges> {
+  await page.evaluate(startRowHeightRecordIn, ROW_HEIGHT_CHANGES_KEY)
+  return {
+    all: () => page.evaluate(rowHeightChangesIn, ROW_HEIGHT_CHANGES_KEY),
+  }
+}
+
+/**
+ * Record each commit that changes the height of a row, from the next load of the page on (see recordRowHeightChanges).
+ * Use it for a commit that can come before a call in the loaded page could start the record, as right after the chat
+ * opens.
+ *
+ * It adds an init script to the page and hands its `Disposable` to no one, so only a spec with a page of its own may
+ * call it (see recordPremeasureCommitsFromNextLoad).
+ */
+export async function recordRowHeightChangesFromNextLoad(page: Page): Promise<RowHeightChanges> {
+  await page.addInitScript(startRowHeightRecordIn, ROW_HEIGHT_CHANGES_KEY)
+  return {
+    all: () => page.evaluate(rowHeightChangesIn, ROW_HEIGHT_CHANGES_KEY),
+  }
+}
+
+/** Expect that no commit of `changes` changed the height of a mounted row: the reader saw no row change its height. */
+export async function expectNoVisibleHeightChange(changes: RowHeightChanges, when: string): Promise<void> {
+  expect((await changes.all()).filter(change => change.source === 'visible'), `${when}: no row changes its height where the reader can see it`).toEqual([])
 }
 
 /** A short scripted turn. */

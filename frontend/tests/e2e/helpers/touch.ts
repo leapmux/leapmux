@@ -29,6 +29,15 @@ export const COARSE_POINTER_METRICS = {
   hasTouch: devices['Pixel 7'].hasTouch,
 } as const
 
+/**
+ * A phone screen: COARSE_POINTER_METRICS at the height of a phone, for a spec that needs the layout of a phone and
+ * room to scroll in it.
+ */
+export const PHONE_METRICS = {
+  ...COARSE_POINTER_METRICS,
+  viewport: { width: COARSE_POINTER_METRICS.viewport.width, height: 760 },
+} as const
+
 /** A finger held on the screen. Move it, then end it -- both in viewport CSS pixels. */
 export interface TouchPointer {
   /** Drag the finger to an absolute viewport position. */
@@ -148,6 +157,51 @@ export async function touchSwipe(
   }
   finally {
     await finger.end()
+  }
+}
+
+/** A fling of one finger, in viewport CSS pixels. */
+export interface TouchFling {
+  /** Where the finger starts. */
+  from: TouchPoint
+  /**
+   * How far the finger travels down the screen, which scrolls the content UP toward older rows. A negative distance
+   * travels up the screen.
+   */
+  distanceY: number
+  /** How fast the finger travels, in CSS pixels per second. */
+  speed: number
+}
+
+/**
+ * Fling the page with one finger, through the browser's own scroll gesture: the finger travels `distanceY` at
+ * `speed`, lifts, and the content coasts on with the momentum of the browser. Resolves when the finger lifted; the
+ * coast can go on, so wait for the scroll to rest after it. Chromium only, and the context must have `hasTouch` (see
+ * {@link COARSE_POINTER_METRICS}).
+ *
+ * {@link touchSwipe} moves the finger in steps of the test's own timing, so the browser sees no speed to coast with.
+ */
+export async function touchFling(page: Page, fling: TouchFling): Promise<void> {
+  if (fling.distanceY === 0 || !Number.isFinite(fling.distanceY))
+    throw new Error('A touch fling needs a finite distance other than 0.')
+  if (!(fling.speed > 0) || !Number.isFinite(fling.speed))
+    throw new Error('A touch fling needs a finite speed above 0.')
+  const cdp = await page.context().newCDPSession(page)
+  // `finally`, for the reason {@link touchSwipe} states.
+  try {
+    // A positive `yDistance` scrolls up, as a finger that travels down the screen does.
+    await cdp.send('Input.synthesizeScrollGesture', {
+      x: fling.from.x,
+      y: fling.from.y,
+      xDistance: 0,
+      yDistance: fling.distanceY,
+      speed: fling.speed,
+      gestureSourceType: 'touch',
+      preventFling: false,
+    })
+  }
+  finally {
+    await cdp.detach()
   }
 }
 

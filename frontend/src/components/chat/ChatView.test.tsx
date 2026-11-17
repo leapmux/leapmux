@@ -6,6 +6,7 @@ import type { ChatRowItem } from './chatRowItem'
 import type { ChatScrollRail } from './ChatScrollRail'
 import type { RowContentReadiness } from './createRowMeasurer'
 import type { MessageBubbleHost } from './MessageBubble'
+import type { MessageContextSources } from './messageContextResolver'
 import type { UseChatScrollOptions } from './useChatScroll'
 import type { ChatVirtualizerRange, UseChatVirtualizerResult } from './useChatVirtualizer'
 import type { AgentChatMessage } from '~/generated/proto/leapmux/v1/agent_pb'
@@ -1540,9 +1541,10 @@ describe('ChatView', () => {
   })
 
   // A result row beside its request row draws no header and no request side, so its
-  // height follows whether the window holds the request row. An older page that brings
-  // the request row in must re-key the mounted result row.
-  it('re-keys a result row when its request row enters the window', async () => {
+  // height follows whether the transcript draws the request row. That answer must not
+  // follow the window: an older page that brings the request row in shrank a mounted
+  // result row in view by its header and its request side.
+  describe('the height key of a result row whose request lies in an older page', () => {
     const SPAN = 'window-presence'
     const claudeMessage = (id: string, seq: bigint, payload: Record<string, unknown>) => create(AgentChatMessageSchema, {
       id,
@@ -1578,32 +1580,50 @@ describe('ChatView', () => {
       },
       tool_use_result: { stdout: 'built', stderr: '', interrupted: false },
     })
-    const [messages, setMessages] = createSignal([result])
-    // The browser holds the request before the window does, as after a fetch of the
-    // request for the result row: the request revision of the result row stays the same,
-    // and only the presence of the request row changes.
-    const messageContext = testMessageContext({
-      messages,
-      spanMessage: (_identity, side) => side === 'request'
+
+    function renderResultAlone(spanMessage: MessageContextSources['spanMessage']) {
+      const [messages, setMessages] = createSignal([result])
+      const messageContext = testMessageContext({ messages, spanMessage })
+      const view = render(() => <PreferencesProvider><ChatView messages={messages()} messageContext={messageContext} /></PreferencesProvider>)
+      const keyOf = () => wiringState.persistenceDeps!.loadedItems().find(item => item.id === 'presence-result')?.heightKey
+      const row = (seq: number) => view.container.querySelector<HTMLElement>(`[data-seq="${seq}"]`)
+      return { view, setMessages, keyOf, row }
+    }
+
+    it('keeps the key and the drawing of the row when its request row enters the window', async () => {
+      // The browser holds the request before the window does, as after the fetch of the
+      // span that the row waits for.
+      const { view, setMessages, keyOf, row } = renderResultAlone((_identity, side) => side === 'request'
         ? request
-        : result,
+        : result)
+      await reportChatViewportSize(view)
+      const alone = keyOf()
+      expect(alone).toBeDefined()
+      await measureHiddenCopies(view.container)
+      // The transcript draws the request row, so the result row leaves the call to it
+      // already while the window does not hold it.
+      expect(row(2)).toHaveTextContent('built')
+      expect(row(2)).not.toHaveTextContent('Run command')
+      setMessages([request, result])
+      expect(keyOf()).toBe(alone)
+      await measureHiddenCopies(view.container)
+      expect(row(1)).toHaveTextContent('make')
+      expect(row(2)).toHaveTextContent('built')
+      expect(row(2)).not.toHaveTextContent('Run command')
+      view.unmount()
     })
-    const view = render(() => <PreferencesProvider><ChatView messages={messages()} messageContext={messageContext} /></PreferencesProvider>)
-    await reportChatViewportSize(view)
-    const keyOf = () => wiringState.persistenceDeps!.loadedItems().find(item => item.id === 'presence-result')?.heightKey
-    const row = (seq: number) => view.container.querySelector<HTMLElement>(`[data-seq="${seq}"]`)
-    const alone = keyOf()
-    expect(alone).toBeDefined()
-    // Alone, the result row states the call that it ends.
-    expect(row(2)).toHaveTextContent('make')
-    setMessages([request, result])
-    expect(keyOf()).not.toBe(alone)
-    await measureHiddenCopies(view.container)
-    // Beside its request row, the result row leaves the call to the request row.
-    expect(row(1)).toHaveTextContent('make')
-    expect(row(2)).not.toHaveTextContent('make')
-    expect(row(2)).toHaveTextContent('built')
-    view.unmount()
+
+    it('draws the call on the row while the browser holds no request of its span', async () => {
+      const { view, row } = renderResultAlone((_identity, side) => side === 'request'
+        ? undefined
+        : result)
+      await reportChatViewportSize(view)
+      await measureHiddenCopies(view.container)
+      // No request row stands beside the result row, so the row draws its own header.
+      expect(row(2)).toHaveTextContent('Run command')
+      expect(row(2)).toHaveTextContent('built')
+      view.unmount()
+    })
   })
 
   // A collapsed header is one line, so the newer call of the span changes its words and

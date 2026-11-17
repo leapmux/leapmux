@@ -36,6 +36,20 @@ beforeEach(() => {
 })
 
 describe('sendScriptedTurn', () => {
+  it('queues the reasoning of a turn with its answer, and no reasoning for a turn that states none', async () => {
+    const script = recordingScript([], 0)
+    await sendScriptedTurn(page, script, { prompt: 'Think first.', answer: 'Done.', reasoning: 'Thinking it over.' })
+    await sendScriptedTurn(page, script, { prompt: 'Answer now.', answer: 'Now.' })
+    expect(vi.mocked(script.queue).mock.calls).toEqual([
+      [
+        { text: 'Done.', reasoning: 'Thinking it over.' },
+      ],
+      [
+        { text: 'Now.' },
+      ],
+    ])
+  })
+
   it('queues the answer, sends the marked prompt, waits for that step, checks the answer, and waits for idle', async () => {
     const log: string[] = []
     vi.mocked(sendMessage).mockImplementation(async (_page, text, entry) => {

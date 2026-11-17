@@ -1,6 +1,7 @@
 import { cleanup, render, screen } from '@solidjs/testing-library'
 import { createRoot } from 'solid-js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { WIDEST_COMPACT_AGE } from '~/lib/dateFormat'
 import { RelativeTime, RelativeTimeAgo } from './RelativeTime'
 
 describe('RelativeTime', () => {
@@ -97,5 +98,27 @@ describe('RelativeTime', () => {
     second.unmount()
     expect(clearSpy).toHaveBeenCalled()
     clearSpy.mockRestore()
+  })
+
+  // The toolbar of a user row sits beside the bubble, so an age that grew narrowed the bubble
+  // on a phone. With steadyWidth, the age text sits in a cell as wide as the widest age.
+  it('puts the age text in a cell that holds the widest age with steadyWidth, and adds no text', () => {
+    // Hoisted, for the reason of the shared tick test above.
+    const tenSecondsAgo = iso(10)
+    const { container } = render(() => <RelativeTime timestamp={tenSecondsAgo} steadyWidth />)
+    const cell = container.querySelector('[data-widest-age]')
+    expect(cell?.getAttribute('data-widest-age')).toBe(WIDEST_COMPACT_AGE)
+    expect(cell?.textContent).toBe('10s')
+    expect(container.textContent?.trim()).toBe('10s')
+
+    vi.advanceTimersByTime(15_000)
+
+    expect(container.querySelector('[data-widest-age]')?.textContent).toBe('25s')
+  })
+
+  it('draws no cell of the widest age without steadyWidth', () => {
+    const { container } = render(() => <RelativeTime timestamp={iso(10)} />)
+    expect(container.querySelector('[data-widest-age]')).toBeNull()
+    expect(container.textContent?.trim()).toBe('10s')
   })
 })

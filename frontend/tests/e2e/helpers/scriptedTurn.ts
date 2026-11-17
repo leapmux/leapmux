@@ -15,6 +15,8 @@ export interface ScriptedTurn {
   answer: string
   /** How the prompt enters the composer. The default types it. */
   entry?: MessageEntry
+  /** The thinking that the model reports before the answer. A provider can store it as a row of its own. */
+  reasoning?: string
 }
 
 /** The arithmetic turn that most chat tests use. */
@@ -39,7 +41,12 @@ export function sayExactly(text: string): ScriptedTurn {
 export async function sendScriptedTurn(page: Page, script: ModelScript, turn: ScriptedTurn = ARITHMETIC_TURN): Promise<number> {
   if (turn.answer.trim() === '')
     throw new Error('A scripted turn needs an answer that the transcript can show.')
-  const step = await script.queue({ text: turn.answer })
+  const step = await script.queue({
+    text: turn.answer,
+    ...(turn.reasoning === undefined
+      ? {}
+      : { reasoning: turn.reasoning }),
+  })
   await sendMessage(page, script.prompt(turn.prompt), turn.entry)
   await script.waitForSteps(step + 1)
   await expectAssistantAnswer(page, {
