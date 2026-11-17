@@ -1349,8 +1349,16 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 	t.Parallel()
 
 	svc, d, w := setupTestService(t)
-	defer drainAllInFlight(svc)
-	svc.startAgentFn = func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
+	startEntered, failStart := make(chan struct{}), make(chan struct{})
+	releaseStart := sync.OnceFunc(func() { close(failStart) })
+	defer func() { releaseStart(); drainAllInFlight(svc) }()
+	svc.startAgentFn = func(ctx context.Context, _ agent.Options, _ agent.ProviderServices) (map[string]string, error) {
+		close(startEntered)
+		select {
+		case <-failStart:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 		return nil, errors.New("forced start failure")
 	}
 
@@ -1382,19 +1390,27 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(w.responses[0].GetPayload(), &openResp))
 	agentID := openResp.GetAgent().GetId()
 
-	// Drain STATUS_CHANGE broadcasts until we see the final STARTUP_FAILED.
-	require.Eventually(t, func() bool {
-		for _, s := range wWatch.streamsSnapshot() {
-			var resp leapmuxv1.WatchEventsResponse
-			if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
-				continue
-			}
-			if sc := resp.GetAgentEvent().GetStatusChange(); sc != nil && sc.GetStatus() == leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED {
-				return true
-			}
-		}
-		return false
-	}, 5*time.Second, 20*time.Millisecond, "expected STARTUP_FAILED after start failure")
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	select {
+	case <-startEntered:
+	case <-ctx.Done():
+		t.Fatal("provider startup never reached the injected failure")
+	}
+
+	status, _, _, found := svc.AgentStartup.status(agentID)
+	require.True(t, found)
+	require.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTING, status)
+	require.DirExists(t, expectedWorktreePath(t, repoDir, branchName))
+
+	// Wait for startup to return, including rollback and status broadcasts.
+	// A polling deadline makes this assertion depend on Git and filesystem
+	// speed on a loaded runner.
+	releaseStart()
+	svc.AgentStartup.WaitForInFlight()
+	status, _, _, found = svc.AgentStartup.status(agentID)
+	require.True(t, found)
+	assert.Equal(t, leapmuxv1.AgentStatus_AGENT_STATUS_STARTUP_FAILED, status)
 
 	// Walk the full sequence. Because the watcher is subscribed before
 	// runAgentStartup spawns, every STARTING broadcast lands live; we
@@ -1404,9 +1420,7 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 	var failedError string
 	for index, s := range wWatch.streamsSnapshot() {
 		var resp leapmuxv1.WatchEventsResponse
-		if err := proto.Unmarshal(s.GetPayload(), &resp); err != nil {
-			continue
-		}
+		require.NoError(t, proto.Unmarshal(s.GetPayload(), &resp))
 		sc := resp.GetAgentEvent().GetStatusChange()
 		if sc == nil {
 			continue
@@ -1441,7 +1455,6 @@ func TestOpenAgent_BroadcastsRollbackLabelOnStartFailure(t *testing.T) {
 	assert.Contains(t, failedError, "forced start failure")
 
 	// After rollback completes, the worktree dir and branch should be gone.
-	waitForStartupFailure(t, svc, agentID)
 	assert.NoDirExists(t, expectedWorktreePath(t, repoDir, branchName))
 	assert.False(t, localBranchExists(t, repoDir, branchName))
 }
